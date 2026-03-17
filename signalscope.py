@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 SETTINGS_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Settings</title>
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#e2e8f0;--mu:#64748b}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:14px}
-header{background:var(--sur);border-bottom:1px solid var(--bor);padding:11px 20px;display:flex;align-items:center;gap:10px}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
+header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;box-shadow:0 10px 24px rgba(0,0,0,.18)}
 header h1{font-size:16px;font-weight:700}
-.btn{display:inline-block;padding:5px 12px;border-radius:6px;font-size:13px;cursor:pointer;border:none;text-decoration:none}
+.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600}.btn:hover{filter:brightness(1.05)}
 .bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}
 .bd{background:var(--al);color:#fff}.bw{background:#7c2d12;color:#fca5a5}
 .bo{background:#78350f;color:#fde68a}.bs{padding:3px 9px;font-size:12px}
@@ -19,14 +19,14 @@ header h1{font-size:16px;font-weight:700}
 .ct{flex:1;padding:26px;max-width:680px}
 .pn{display:none}.pn.on{display:block}
 label{display:block;margin-top:13px;color:var(--mu);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-input[type=text],input[type=number],input[type=password],input[type=email]{width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
+input[type=text],input[type=number],input[type=password],input[type=email]{width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
 .cr{display:flex;align-items:center;gap:8px;margin-top:10px}input[type=checkbox]{width:16px;height:16px;accent-color:var(--acc)}
 .sec{margin-top:22px;padding-top:14px;border-top:1px solid var(--bor);font-weight:600;font-size:14px}
 .sec:first-of-type{margin-top:0;padding-top:0;border-top:none}
 .help{font-size:12px;color:var(--mu);margin-top:4px;line-height:1.5}
 .act{margin-top:22px;padding-top:16px;border-top:1px solid var(--bor);display:flex;gap:8px}
 .fl{list-style:none;margin-bottom:14px}.fl li{padding:8px 12px;border-radius:6px;background:#1e3a5f;border-left:3px solid var(--acc);margin-bottom:5px;font-size:13px}
-</style><link rel="icon" type="image/x-icon" href="/favicon.ico"></head><body>
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body class="{{'wall-mode' if wall_mode else ''}}">
 <script nonce="{{csp_nonce()}}">
 function _csrfFetch(url,opts){
   opts=opts||{};
@@ -42,6 +42,32 @@ function st(id){
   if(p)p.classList.add('on');if(b)b.classList.add('on');
   history.replaceState(null,'','#'+id);
 }
+
+
+var lastAlertState={};
+function playAlertSound(){
+  try{ new Audio('/static/alert.wav').play(); }catch(e){}
+}
+
+function updateAlertTicker(data){
+  var el=document.getElementById('alertTicker');
+  if(!el) return;
+  var events=[];
+  data.forEach(function(site){
+    (site.streams||[]).forEach(function(st){
+      var ai=st.ai_status||"";
+      if(ai.includes("ALERT")||ai.includes("WARN")){
+        events.push(site.site+" / "+st.name+" "+ai);
+      }
+    });
+  });
+  if(!events.length){
+    el.textContent="✓ All monitored streams healthy";
+  }else{
+    el.textContent="⚠ "+events.slice(0,5).join("  |  ");
+  }
+}
+
 document.addEventListener('DOMContentLoaded',function(){
   st(location.hash.replace('#','')||'notif');
   if(typeof updateHubPanels==='function')updateHubPanels();
@@ -75,7 +101,7 @@ document.addEventListener('DOMContentLoaded',function(){
           <label>User Key<input type="text" name="pv_user_key" value="{{cfg.pushover.user_key}}" placeholder="Your Pushover user key"></label>
           <label>App Token<input type="text" name="pv_app_token" value="{{cfg.pushover.app_token}}" placeholder="Your application API token"></label>
           <label>Priority for WARN
-            <select name="pv_pri_warn" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+            <select name="pv_pri_warn" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
               <option value="-2" {{'-2'==cfg.pushover.priority_warn|string and 'selected' or ''}}>Lowest (silent)</option>
               <option value="-1" {{'-1'==cfg.pushover.priority_warn|string and 'selected' or ''}}>Low</option>
               <option value="0" {{'0'==cfg.pushover.priority_warn|string and 'selected' or ''}}>Normal</option>
@@ -83,7 +109,7 @@ document.addEventListener('DOMContentLoaded',function(){
             </select>
           </label>
           <label>Priority for ALERT
-            <select name="pv_pri_alert" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+            <select name="pv_pri_alert" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
               <option value="-1" {{'-1'==cfg.pushover.priority_alert|string and 'selected' or ''}}>Low</option>
               <option value="0" {{'0'==cfg.pushover.priority_alert|string and 'selected' or ''}}>Normal</option>
               <option value="1" {{'1'==cfg.pushover.priority_alert|string and 'selected' or ''}}>High</option>
@@ -112,20 +138,20 @@ document.addEventListener('DOMContentLoaded',function(){
             {% for i, r in cfg.webhook.routes | enumerate %}
             <div class="wh-row" style="display:grid;grid-template-columns:0.8fr 1.5fr 0.6fr 0.8fr 0.8fr 0.8fr 0.6fr auto;gap:6px;align-items:center;margin-bottom:6px">
               <input type="text" name="wr_name_{{i}}"    value="{{r.name}}"    placeholder="e.g. Breakfast"
-                     style="padding:6px 8px;background:#1e2433;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
+                     style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
               <input type="text" name="wr_url_{{i}}"     value="{{r.url}}"     placeholder="https://…"
-                     style="padding:6px 8px;background:#1e2433;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
-              <select name="wr_style_{{i}}" style="padding:6px 8px;background:#1e2433;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
+                     style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
+              <select name="wr_style_{{i}}" style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
                 <option value="teams" {{'selected' if r.teams_style}}>Teams Card</option>
                 <option value="slack" {{'selected' if not r.teams_style}}>Plain text</option>
               </select>
               <input type="text" name="wr_streams_{{i}}" value="{{r.filter_streams | join(', ')}}" placeholder="blank = all"
-                     style="padding:6px 8px;background:#1e2433;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
+                     style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
               <input type="text" name="wr_types_{{i}}"   value="{{r.filter_types | join(', ')}}"   placeholder="blank = all"
-                     style="padding:6px 8px;background:#1e2433;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
+                     style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
               <input type="text" name="wr_sites_{{i}}"   value="{{r.filter_sites | join(', ')}}"   placeholder="blank = all"
-                     style="padding:6px 8px;background:#1e2433;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
-              <select name="wr_severity_{{i}}" style="padding:6px 8px;background:#1e2433;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
+                     style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
+              <select name="wr_severity_{{i}}" style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
                 <option value=""      {{'selected' if not r.filter_severity}}>Both</option>
                 <option value="ALERT" {{'selected' if r.filter_severity=='ALERT'}}>Alert</option>
                 <option value="WARN"  {{'selected' if r.filter_severity=='WARN'}}>Warn</option>
@@ -139,7 +165,7 @@ document.addEventListener('DOMContentLoaded',function(){
                     style="margin-top:4px;padding:6px 14px;background:#1e3a5f;color:var(--acc);border:1px solid var(--acc);border-radius:6px;cursor:pointer;font-size:12px">+ Add route</button>
           </div>
         
-          <div style="margin-top:14px;padding:10px 12px;background:#1e2433;border:1px solid var(--bor);border-radius:6px">
+          <div style="margin-top:14px;padding:10px 12px;background:#173a69;border:1px solid var(--bor);border-radius:6px">
             <div style="font-size:12px;font-weight:600;color:var(--mu);margin-bottom:6px">Fallback (used when no route matches)</div>
             <div class="cr" style="margin-bottom:6px">
               <input type="checkbox" name="webhook_teams_style" value="1" {{'checked' if cfg.webhook.teams_style}}>
@@ -162,7 +188,7 @@ document.addEventListener('DOMContentLoaded',function(){
             var row = document.createElement('div');
             row.className = 'wh-row';
             row.style.cssText = 'display:grid;grid-template-columns:0.8fr 1.5fr 0.6fr 0.8fr 0.8fr 0.8fr 0.6fr auto;gap:6px;align-items:center;margin-bottom:6px';
-            var inp = 'padding:6px 8px;background:#1e2433;border:1px solid #252b38;border-radius:5px;color:#e2e8f0;font-size:12px;width:100%';
+            var inp = 'padding:6px 8px;background:#173a69;border:1px solid #252b38;border-radius:5px;color:#e2e8f0;font-size:12px;width:100%';
             row.innerHTML =
               '<input type="text" name="wr_name_'+i+'" placeholder="e.g. Engineering" style="'+inp+'">'
               +'<input type="text" name="wr_url_'+i+'" placeholder="https://…" style="'+inp+'">'
@@ -231,7 +257,7 @@ document.addEventListener('DOMContentLoaded',function(){
         
           <label>Mode
             <select name="hub_mode" id="hub_mode_sel" onchange="updateHubPanels()"
-                    style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+                    style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
               <option value="client" {{'selected' if cfg.hub.mode=='client'}}>Client — this site sends data to a central hub</option>
               <option value="hub"    {{'selected' if cfg.hub.mode=='hub'}}>Hub — this machine receives data from all sites</option>
               <option value="both"   {{'selected' if cfg.hub.mode=='both'}}>Both — client + hub on this machine</option>
@@ -249,7 +275,7 @@ document.addEventListener('DOMContentLoaded',function(){
               <input type="text" name="hub_url" value="{{cfg.hub.hub_url}}"
                      placeholder="https://hub.yourdomain.com  or  http://hub-server-ip">
             </label>
-            <p class="help">The address of the hub server. If the hub has a certificate, use <code style="background:#1e2433;padding:1px 5px;border-radius:3px">https://hub.yourdomain.com</code>. Without a cert, use <code style="background:#1e2433;padding:1px 5px;border-radius:3px">http://hub-server-ip</code> (hub runs on port 80 automatically).</p>
+            <p class="help">The address of the hub server. If the hub has a certificate, use <code style="background:#173a69;padding:1px 5px;border-radius:3px">https://hub.yourdomain.com</code>. Without a cert, use <code style="background:#173a69;padding:1px 5px;border-radius:3px">http://hub-server-ip</code> (hub runs on port 80 automatically).</p>
           </div>
         
           {# ── Hub panel ── #}
@@ -257,7 +283,7 @@ document.addEventListener('DOMContentLoaded',function(){
             <div style="font-size:12px;font-weight:600;color:#86efac;margin-bottom:10px">🛰 Hub Server Settings</div>
             <p class="help" style="margin-bottom:8px">
               This machine will listen for heartbeats from client sites on port 5000 at
-              <code style="background:#1e2433;padding:1px 6px;border-radius:4px">/api/v1/heartbeat</code>.
+              <code style="background:#173a69;padding:1px 6px;border-radius:4px">/api/v1/heartbeat</code>.
               Make sure this port is accessible from all client sites.
             </p>
           </div>
@@ -447,7 +473,7 @@ document.addEventListener('DOMContentLoaded',function(){
 </div>
 <div class="pn" id="p-sdr">
   <div class="sec">📻 SDR Devices</div>
-  <p class="help" style="margin-bottom:10px">Register RTL-SDR dongles by serial number so inputs can reference them reliably regardless of USB port order. Program a serial once with <code style="background:#1e2433;padding:1px 6px;border-radius:3px">rtl_eeprom -d 0 -s "MY_DONGLE"</code>, then unplug and replug.</p>
+  <p class="help" style="margin-bottom:10px">Register RTL-SDR dongles by serial number so inputs can reference them reliably regardless of USB port order. Program a serial once with <code style="background:#173a69;padding:1px 6px;border-radius:3px">rtl_eeprom -d 0 -s "MY_DONGLE"</code>, then unplug and replug.</p>
   <div id="sdr-connected" style="margin-bottom:10px;font-size:12px;color:var(--mu)">
     <button type="button" class="btn bg bs" onclick="sdrScan()">🔍 Scan for dongles</button>
     <span id="sdr-scan-result" style="margin-left:8px"></span>
@@ -463,37 +489,37 @@ document.addEventListener('DOMContentLoaded',function(){
     <tbody id="sdr-rows">
     {% for dev in cfg.sdr_devices %}
     <tr style="border-top:1px solid var(--bor)">
-      <td style="padding:6px 8px"><input type="text" name="sdr_serial" value="{{dev.serial}}" style="width:160px;font-family:monospace;font-size:12px;padding:4px 6px;background:#1e2433;border:1px solid var(--bor);border-radius:4px;color:var(--tx)"></td>
+      <td style="padding:6px 8px"><input type="text" name="sdr_serial" value="{{dev.serial}}" style="width:160px;font-family:monospace;font-size:12px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx)"></td>
       <td style="padding:6px 8px">
-        <select name="sdr_role" style="padding:4px 6px;background:#1e2433;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px">
+        <select name="sdr_role" style="padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px">
           <option value="none" {{'selected' if dev.role=='none'}}>None</option>
           <option value="dab"  {{'selected' if dev.role=='dab' }}>DAB</option>
           <option value="fm"   {{'selected' if dev.role=='fm'  }}>FM</option>
         </select>
       </td>
-      <td style="padding:6px 8px"><input type="number" name="sdr_ppm" value="{{dev.ppm}}" style="width:70px;padding:4px 6px;background:#1e2433;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-150" max="150"></td>
-      <td style="padding:6px 8px"><input type="text" name="sdr_label" value="{{dev.label}}" placeholder="e.g. Studio 1 DAB" style="width:160px;padding:4px 6px;background:#1e2433;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px"></td>
+      <td style="padding:6px 8px"><input type="number" name="sdr_ppm" value="{{dev.ppm}}" style="width:70px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-150" max="150"></td>
+      <td style="padding:6px 8px"><input type="text" name="sdr_label" value="{{dev.label}}" placeholder="e.g. Studio 1 DAB" style="width:160px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px"></td>
       <td style="padding:6px 8px"><button type="button" class="btn bw bs" onclick="this.closest('tr').remove()">✕</button></td>
     </tr>
     {% endfor %}
     </tbody>
   </table>
   <button type="button" class="btn bg bs" style="margin-top:8px" onclick="sdrAddRow()">+ Add device</button>
-  <p class="help" style="margin-top:6px">PPM = frequency correction for your specific dongle. Run <code style="background:#1e2433;padding:1px 5px;border-radius:3px">rtl_test -p</code> for ~5 minutes to measure it.</p>
+  <p class="help" style="margin-top:6px">PPM = frequency correction for your specific dongle. Run <code style="background:#173a69;padding:1px 5px;border-radius:3px">rtl_test -p</code> for ~5 minutes to measure it.</p>
   <div id="sdr-warnings" style="margin-top:8px"></div>
   <script nonce="{{csp_nonce()}}">
   function sdrAddRow(serial, role, ppm, label){
     serial=serial||''; role=role||'none'; ppm=ppm||0; label=label||'';
     var tr=document.createElement('tr');
     tr.style.borderTop='1px solid var(--bor)';
-    tr.innerHTML='<td style="padding:6px 8px"><input type="text" name="sdr_serial" value="'+serial+'" style="width:160px;font-family:monospace;font-size:12px;padding:4px 6px;background:#1e2433;border:1px solid var(--bor);border-radius:4px;color:var(--tx)"></td>'
-      +'<td style="padding:6px 8px"><select name="sdr_role" style="padding:4px 6px;background:#1e2433;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px">'
+    tr.innerHTML='<td style="padding:6px 8px"><input type="text" name="sdr_serial" value="'+serial+'" style="width:160px;font-family:monospace;font-size:12px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx)"></td>'
+      +'<td style="padding:6px 8px"><select name="sdr_role" style="padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px">'
       +'<option value="none"'+(role==="none"?" selected":"")+'">None</option>'
       +'<option value="dab"'+(role==="dab"?" selected":"")+'">DAB</option>'
       +'<option value="fm"'+(role==="fm"?" selected":"")+'">FM</option>'
       +'</select></td>'
-      +'<td style="padding:6px 8px"><input type="number" name="sdr_ppm" value="'+ppm+'" style="width:70px;padding:4px 6px;background:#1e2433;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-150" max="150"></td>'
-      +'<td style="padding:6px 8px"><input type="text" name="sdr_label" value="'+label+'" placeholder="e.g. Studio 1 DAB" style="width:160px;padding:4px 6px;background:#1e2433;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px"></td>'
+      +'<td style="padding:6px 8px"><input type="number" name="sdr_ppm" value="'+ppm+'" style="width:70px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-150" max="150"></td>'
+      +'<td style="padding:6px 8px"><input type="text" name="sdr_label" value="'+label+'" placeholder="e.g. Studio 1 DAB" style="width:160px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px"></td>'
       +'<td style="padding:6px 8px"><button type="button" class="btn bw bs" onclick="this.closest(&quot;tr&quot;).remove()">✕</button></td>';
     document.getElementById('sdr-rows').appendChild(tr);
   }
@@ -570,7 +596,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.5.37"
+BUILD                  = "SignalScope-2.6.17"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
 CHUNK_SIZE             = int(SAMPLE_RATE * CHUNK_DURATION)
@@ -628,7 +654,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, "lwai_config.json")
 MODELS_DIR  = os.path.join(BASE_DIR, "ai_models")
 STATIC_DIR  = os.path.join(BASE_DIR, "static")
 LOGO_FILE   = "signalscope_logo.png"
-ICON_FILE   = "signalscope_icon.ico"
+ICON_FILE   = "signalscope_icon.png"
 ICON_PNG    = "signalscope_icon.png"
 os.makedirs(MODELS_DIR, exist_ok=True)
 
@@ -1225,21 +1251,11 @@ def csrf_protect(f):
         from flask import session
         cfg = monitor.app_cfg
         # Only enforce when auth is enabled — unauthenticated instances are
-        # LAN-only so CSRF is less critical, but still generate tokens.
-        # On some first-run / clean-install flows auth is enabled mid-wizard,
-        # and the browser can legitimately submit a valid-looking CSRF token
-        # before the session has persisted one yet. In that narrow case, if the
-        # user is already authenticated, adopt the submitted token as the
-        # session token for this browser session.
+        # LAN-only so CSRF is less critical, but still generate tokens
         if request.method in ("POST","PUT","DELETE","PATCH"):
-            if cfg.auth.enabled:
-                if not session.get("_csrf") and session.get("logged_in"):
-                    submitted = request.form.get("_csrf_token","") or request.headers.get("X-CSRFToken","")
-                    if submitted:
-                        session["_csrf"] = submitted
-                if not _csrf_valid():
-                    _log_security(f"CSRF validation failed for {request.path} from {request.remote_addr}")
-                    return jsonify({"error": "CSRF validation failed"}), 403
+            if cfg.auth.enabled and not _csrf_valid():
+                _log_security(f"CSRF validation failed for {request.path} from {request.remote_addr}")
+                return jsonify({"error": "CSRF validation failed"}), 403
         return f(*args, **kwargs)
     return decorated
 
@@ -1250,12 +1266,14 @@ def login_required(f):
         from flask import session
         cfg = monitor.app_cfg
 
-        # During first-run setup, allow the setup wizard and setup API calls to
-        # complete even if authentication has just been enabled mid-wizard.
-        # Otherwise the final /setup/complete POST can be bounced to /login
-        # before wizard_done is written, which causes the setup loop.
-        if (not cfg.wizard_done) and (
-            request.path.startswith("/setup") or request.path.startswith("/api/setup/")
+        # During first-run setup, allow the setup wizard endpoints to finish
+        # even if authentication was enabled part-way through the wizard.
+        # This prevents the final POST to /setup/complete from being
+        # interrupted by a login redirect before wizard_done is saved.
+        if not cfg.wizard_done and (
+            request.path == "/setup"
+            or request.path == "/setup/complete"
+            or request.path.startswith("/api/setup/")
         ):
             return f(*args, **kwargs)
 
@@ -5393,121 +5411,178 @@ class HubClient:
 
         for req in listen_requests:
             slot_id    = req.get("slot_id","")
-            stream_idx = req.get("stream_idx", 0)
+            stream_idx = int(req.get("stream_idx", 0) or 0)
+            kind       = req.get("kind", "live")
             if not slot_id or slot_id in active:
                 continue
             with self._lock:
                 self._active_slots.add(slot_id)
-            print(f"[HubRelay] Starting push for slot {slot_id} stream {stream_idx}")
+            print(f"[HubRelay] Starting push for slot {slot_id} kind={kind} stream {stream_idx}")
             t = threading.Thread(
-                target=self._push_audio,
-                args=(cfg, slot_id, stream_idx),
+                target=self._push_audio_request,
+                args=(cfg, req),
                 daemon=True,
                 name=f"Relay-{slot_id[:6]}"
             )
             t.start()
 
-    def _push_audio(self, cfg, slot_id: str, stream_idx: int):
+    def _post_relay_chunk(self, cfg, chunk_url: str, data: bytes) -> dict:
+        ts_c   = time.time()
+        nonce_c= hashlib.md5(os.urandom(8)).hexdigest()[:16]
+        sig_c  = hub_sign_payload(cfg.hub.secret_key, data, ts_c) if cfg.hub.secret_key else ""
+        req = urllib.request.Request(
+            chunk_url, data=data,
+            headers={
+                "Content-Type":  "application/octet-stream",
+                "X-Hub-Sig":     sig_c,
+                "X-Hub-Ts":      f"{ts_c:.0f}",
+                "X-Hub-Nonce":   nonce_c,
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())
+
+    def _push_audio_request(self, cfg, req: dict):
         """
-        Encode audio from the requested stream as MP3 and POST chunks to the hub.
-        Runs until the hub stops accepting (slot expired or browser disconnected).
+        Fulfil one relay request from the hub. Supports:
+        - live MP3 relay from stream buffer
+        - on-demand WAV from current stream buffer
+        - saved alert WAV file relay
         """
-        import subprocess, shutil
-        hub_url  = HubClient._normalise_url(cfg.hub.hub_url).rstrip("/")
+        import subprocess
+
+        slot_id    = req.get("slot_id","")
+        stream_idx = int(req.get("stream_idx", 0) or 0)
+        kind       = req.get("kind", "live")
+        seconds    = float(req.get("seconds", 10.0) or 10.0)
+        stream_name= req.get("stream_name","") or ""
+        filename   = req.get("filename","") or ""
+
+        hub_url   = HubClient._normalise_url(cfg.hub.hub_url).rstrip("/")
         chunk_url = f"{hub_url}/api/{HUB_API_VERSION}/audio_chunk/{slot_id}"
         inps = cfg.inputs
-        if stream_idx < 0 or stream_idx >= len(inps):
-            print(f"[HubRelay] Invalid stream index {stream_idx}")
-            with self._lock: self._active_slots.discard(slot_id)
-            return
 
-        inp = inps[stream_idx]
-
-        if not _find_binary("ffmpeg"):
-            print(f"[HubRelay] ffmpeg not found, cannot relay")
-            with self._lock: self._active_slots.discard(slot_id)
-            return
-
-        sr  = SAMPLE_RATE
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-f", "s16le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
-            "-f", "mp3", "-b:a", "128k", "-reservoir", "0", "pipe:1",
-        ]
-        proc = subprocess.Popen(cmd,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, bufsize=0)
-
-        stop_event = threading.Event()
-
-        def _pcm(c):
-            return (np.clip(c, -1., 1.) * 32767).astype(np.int16).tobytes()
-
-        def writer():
-            try:
-                # Seed 3s of backlog for instant playback
-                if inp._stream_buffer:
-                    seed_n = int(3.0 / CHUNK_DURATION)
-                    for c in list(inp._stream_buffer)[-seed_n:]:
-                        proc.stdin.write(_pcm(c))
-                sent_seq = getattr(inp, "_live_chunk_seq", 0)
-                while not stop_event.is_set():
-                    cur = getattr(inp, "_live_chunk_seq", 0)
-                    if cur > sent_seq:
-                        n = min(cur - sent_seq, 50)
-                        if inp._stream_buffer:
-                            for c in list(inp._stream_buffer)[-n:]:
-                                proc.stdin.write(_pcm(c))
-                        sent_seq = cur
-                    else:
-                        time.sleep(0.02)
-            except Exception:
-                pass
-            finally:
-                try: proc.stdin.close()
-                except: pass
-
-        wt = threading.Thread(target=writer, daemon=True)
-        wt.start()
-
-        consecutive_fails = 0
         try:
-            while not stop_event.is_set():
-                data = proc.stdout.read(4096)
-                if not data:
-                    break
+            if kind == "live":
+                if stream_idx < 0 or stream_idx >= len(inps):
+                    print(f"[HubRelay] Invalid stream index {stream_idx}")
+                    return
+                inp = inps[stream_idx]
+                if not _find_binary("ffmpeg"):
+                    print(f"[HubRelay] ffmpeg not found, cannot relay live audio")
+                    return
+
+                sr  = SAMPLE_RATE
+                cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error",
+                    "-f", "s16le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
+                    "-f", "mp3", "-b:a", "128k", "-reservoir", "0", "pipe:1",
+                ]
+                proc = subprocess.Popen(cmd,
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, bufsize=0)
+
+                stop_event = threading.Event()
+
+                def _pcm(c):
+                    return (np.clip(c, -1., 1.) * 32767).astype(np.int16).tobytes()
+
+                def writer():
+                    try:
+                        if inp._stream_buffer:
+                            seed_n = int(3.0 / CHUNK_DURATION)
+                            for c in list(inp._stream_buffer)[-seed_n:]:
+                                proc.stdin.write(_pcm(c))
+                        sent_seq = getattr(inp, "_live_chunk_seq", 0)
+                        while not stop_event.is_set():
+                            cur = getattr(inp, "_live_chunk_seq", 0)
+                            if cur > sent_seq:
+                                n = min(cur - sent_seq, 50)
+                                if inp._stream_buffer:
+                                    for c in list(inp._stream_buffer)[-n:]:
+                                        proc.stdin.write(_pcm(c))
+                                sent_seq = cur
+                            else:
+                                time.sleep(0.02)
+                    except Exception:
+                        pass
+                    finally:
+                        try: proc.stdin.close()
+                        except: pass
+
+                wt = threading.Thread(target=writer, daemon=True)
+                wt.start()
+
+                consecutive_fails = 0
                 try:
-                    ts_c   = time.time()
-                    nonce_c= hashlib.md5(os.urandom(8)).hexdigest()[:16]
-                    sig_c  = hub_sign_payload(cfg.hub.secret_key, data, ts_c) if cfg.hub.secret_key else ""
-                    req = urllib.request.Request(
-                        chunk_url, data=data,
-                        headers={
-                            "Content-Type":  "application/octet-stream",
-                            "X-Hub-Sig":     sig_c,
-                            "X-Hub-Ts":      f"{ts_c:.0f}",
-                            "X-Hub-Nonce":   nonce_c,
-                        },
-                        method="POST"
-                    )
-                    with urllib.request.urlopen(req, timeout=5) as resp:
-                        body = json.loads(resp.read())
-                        if body.get("error") == "slot not found or expired":
-                            print(f"[HubRelay] Slot {slot_id[:6]} expired, stopping")
+                    while not stop_event.is_set():
+                        data = proc.stdout.read(4096)
+                        if not data:
                             break
-                        consecutive_fails = 0
-                except Exception as e:
-                    consecutive_fails += 1
-                    if consecutive_fails >= 5:
-                        print(f"[HubRelay] Too many push failures for {slot_id[:6]}: {e}")
+                        try:
+                            body = self._post_relay_chunk(cfg, chunk_url, data)
+                            if body.get("error") == "slot not found or expired":
+                                print(f"[HubRelay] Slot {slot_id[:6]} expired, stopping")
+                                break
+                            consecutive_fails = 0
+                        except Exception as e:
+                            consecutive_fails += 1
+                            if consecutive_fails >= 5:
+                                print(f"[HubRelay] Too many push failures for {slot_id[:6]}: {e}")
+                                break
+                finally:
+                    stop_event.set()
+                    try: proc.kill(); proc.wait(timeout=2)
+                    except: pass
+
+            elif kind == "buffer_wav":
+                if stream_idx < 0 or stream_idx >= len(inps):
+                    print(f"[HubRelay] Invalid stream index {stream_idx} for WAV relay")
+                    return
+                inp = inps[stream_idx]
+                if not inp._stream_buffer:
+                    print(f"[HubRelay] No stream buffer for WAV relay {slot_id[:6]}")
+                    return
+                chunks = list(inp._stream_buffer)
+                if not chunks:
+                    print(f"[HubRelay] Empty stream buffer for WAV relay {slot_id[:6]}")
+                    return
+                secs = max(1.0, min(seconds, STREAM_BUFFER_SECONDS))
+                audio = np.concatenate(chunks)[-int(SAMPLE_RATE * secs):]
+                wav_bytes = _make_wav_bytes(audio.astype(np.float32))
+                for off in range(0, len(wav_bytes), 8192):
+                    body = self._post_relay_chunk(cfg, chunk_url, wav_bytes[off:off+8192])
+                    if body.get("error") == "slot not found or expired":
+                        print(f"[HubRelay] Slot {slot_id[:6]} expired during WAV relay")
                         break
+
+            elif kind == "alert_wav":
+                snip_dir = os.path.join(BASE_DIR, "alert_snippets")
+                safe_filename = os.path.basename(filename)
+                path = os.path.join(snip_dir, safe_filename)
+                if not os.path.abspath(path).startswith(os.path.abspath(snip_dir)):
+                    print(f"[HubRelay] Refusing unsafe clip path for {slot_id[:6]}")
+                    return
+                if not os.path.exists(path):
+                    print(f"[HubRelay] Alert clip not found for relay: {safe_filename}")
+                    return
+                with open(path, "rb") as f:
+                    while True:
+                        chunk = f.read(8192)
+                        if not chunk:
+                            break
+                        body = self._post_relay_chunk(cfg, chunk_url, chunk)
+                        if body.get("error") == "slot not found or expired":
+                            print(f"[HubRelay] Slot {slot_id[:6]} expired during clip relay")
+                            break
+
+            else:
+                print(f"[HubRelay] Unknown relay kind '{kind}' for slot {slot_id[:6]}")
         finally:
-            stop_event.set()
-            try: proc.kill(); proc.wait(timeout=2)
-            except: pass
             with self._lock:
                 self._active_slots.discard(slot_id)
-            print(f"[HubRelay] Push complete for slot {slot_id[:6]}")
+            print(f"[HubRelay] Push complete for slot {slot_id[:6]} ({kind})")
 
     def _send_one(self, url: str, payload_bytes: bytes, secret: str = "") -> dict:
         """Sign, encrypt and send a payload. Returns full ACK body.
@@ -5746,8 +5821,11 @@ class HubServer:
                 total_rx  = data.get("_total_received", 0)
                 total_miss= data.get("_total_missed", 0)
                 health    = round(total_rx / max(total_rx + total_miss, 1) * 100, 1)
+                tx_ts = float(data.get("ts", 0) or 0)
+                latency_ms = round(max(0.0, (data.get("_received", now) - tx_ts) * 1000), 1) if tx_ts else None
                 result.append({**data, "online": online, "age_s": round(age, 1),
                                 "health_pct": health,
+                                "latency_ms": latency_ms,
                                 "consecutive_missed": data.get("_consecutive_missed", 0)})
             return sorted(result, key=lambda x: x["site"])
 
@@ -5764,21 +5842,29 @@ hub_server = HubServer()
 class ListenSlot:
     """
     Represents one browser listener waiting for audio from a remote client.
-    The hub creates a slot when a browser hits /hub/site/.../live.
+    The hub creates a slot when a browser hits a /hub/site/... audio route.
     The slot ID is sent to the client in the next heartbeat ACK.
-    The client pushes MP3 chunks to /api/v1/audio_chunk/<slot_id>.
-    The hub streams those chunks to the browser.
+    The client pushes bytes to /api/v1/audio_chunk/<slot_id>.
+    The hub streams those bytes back to the browser.
     """
     SLOT_TIMEOUT = 30.0   # drop slot if no chunks arrive within this many seconds
 
-    def __init__(self, slot_id: str, site: str, stream_idx: int):
-        self.slot_id    = slot_id
-        self.site       = site
-        self.stream_idx = stream_idx
-        self.created    = time.time()
-        self.last_chunk = time.time()
+    def __init__(self, slot_id: str, site: str, stream_idx: int,
+                 kind: str = "live", seconds: float = 10.0,
+                 stream_name: str = "", filename: str = "",
+                 mimetype: str = "audio/mpeg"):
+        self.slot_id     = slot_id
+        self.site        = site
+        self.stream_idx  = stream_idx
+        self.kind        = kind
+        self.seconds     = float(seconds or 10.0)
+        self.stream_name = stream_name or ""
+        self.filename    = filename or ""
+        self.mimetype    = mimetype or "application/octet-stream"
+        self.created     = time.time()
+        self.last_chunk  = time.time()
         self.q: queue.Queue = queue.Queue(maxsize=200)
-        self.closed     = False
+        self.closed      = False
 
     def put(self, data: bytes):
         self.last_chunk = time.time()
@@ -5808,9 +5894,12 @@ class ListenSlotRegistry:
         # Start background reaper
         threading.Thread(target=self._reap, daemon=True, name="SlotReaper").start()
 
-    def create(self, site: str, stream_idx: int) -> ListenSlot:
-        slot_id = hashlib.md5(f"{site}{stream_idx}{time.time()}".encode()).hexdigest()[:12]
-        slot = ListenSlot(slot_id, site, stream_idx)
+    def create(self, site: str, stream_idx: int, kind: str = "live",
+               seconds: float = 10.0, stream_name: str = "",
+               filename: str = "", mimetype: str = "audio/mpeg") -> ListenSlot:
+        slot_id = hashlib.md5(f"{site}{stream_idx}{kind}{filename}{time.time()}".encode()).hexdigest()[:12]
+        slot = ListenSlot(slot_id, site, stream_idx, kind=kind, seconds=seconds,
+                          stream_name=stream_name, filename=filename, mimetype=mimetype)
         with self._lock:
             self._slots[slot_id] = slot
         return slot
@@ -5824,10 +5913,18 @@ class ListenSlotRegistry:
             self._slots.pop(slot_id, None)
 
     def pending_for_site(self, site: str) -> List[dict]:
-        """Return list of {slot_id, stream_idx} for slots awaiting a client push."""
+        """Return pending listen requests for a site awaiting a client push."""
         with self._lock:
             return [
-                {"slot_id": s.slot_id, "stream_idx": s.stream_idx}
+                {
+                    "slot_id": s.slot_id,
+                    "stream_idx": s.stream_idx,
+                    "kind": s.kind,
+                    "seconds": s.seconds,
+                    "stream_name": s.stream_name,
+                    "filename": s.filename,
+                    "mimetype": s.mimetype,
+                }
                 for s in self._slots.values()
                 if s.site == site and not s.closed and not s.stale
             ]
@@ -6498,7 +6595,7 @@ sdr_manager = SdrDeviceManager()
 
 app=Flask(__name__)
 
-@app.route("/favicon.ico")
+@app.route("/static/signalscope_icon.png")
 def favicon():
     return send_from_directory(STATIC_DIR, ICON_FILE, mimetype="image/vnd.microsoft.icon")
 
@@ -6530,28 +6627,34 @@ def _inject_nav():
 
     def topnav(active=""):
         show_hub = mode in ("hub", "both")
+        hub_only = (mode == "hub")
         def _a(page, label, href):
             cls = "btn bg bs nav-active" if active == page else "btn bg bs"
             return f'<a class="{cls}" href="{href}">{label}</a>'
         start_stop = ""
-        if active == "dashboard":
+        if active == "dashboard" and not hub_only:
             if running_:
                 start_stop = '<form method="post" action="/stop" style="margin:0"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}"><button class="btn bd bs">⏹ Stop</button></form>'
             else:
                 start_stop = '<form method="post" action="/start" style="margin:0"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}"><button class="btn bp bs">▶ Start</button></form>'
+        home_href = "/hub" if hub_only else "/"
+        local_links = "" if hub_only else (_a("dashboard", "Dashboard", "/") + _a("inputs", "Inputs", "/inputs") + _a("reports", "Reports", "/reports") + _a("sla", "SLA", "/sla"))
         hub_link = (_a("hub", "Hub", "/hub") + _a("hub_reports", "Hub Reports", "/hub/reports")) if show_hub else ""
         return (
-            '<header>'
-            '<a href="/" style="text-decoration:none;display:flex;align-items:center;gap:10px">'
-            '<img src="/static/signalscope_logo.png" alt="SignalScope" style="height:36px;width:auto;display:block">'
-            f'<span style="font-weight:700;font-size:15px;color:var(--tx)">{build_}</span>'
+            '<header style="background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);box-shadow:0 10px 24px rgba(0,0,0,.18)">'
+            f'<a href="{home_href}" style="text-decoration:none;display:flex;align-items:center;gap:12px;min-width:0">'
+            '<img src="/static/signalscope_icon.png" alt="SignalScope" style="height:46px;width:46px;display:block;object-fit:contain;flex-shrink:0;filter:drop-shadow(0 4px 12px rgba(23,168,255,.28))">'
+            '<div style="display:flex;flex-direction:column;line-height:1.05;min-width:0">'
+            '<span style="font-weight:800;font-size:24px;color:var(--tx);letter-spacing:-.02em">SignalScope</span>'
+            '<span style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.16em">Broadcast Signal Intelligence</span>'
+            '</div>'
             '</a>'
+            '<div style="margin-left:14px;padding:5px 10px;border-radius:999px;background:#0f2e5e;border:1px solid var(--bor);font-size:11px;font-weight:700;color:#b7d8ff;white-space:nowrap">v'
+            f'{build_.split("-")[-1]}'
+            '</div>'
             '<nav style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-left:auto">'
             + start_stop
-            + _a("dashboard", "Dashboard", "/")
-            + _a("inputs",    "Inputs",    "/inputs")
-            + _a("reports",   "Reports",   "/reports")
-            + _a("sla",       "SLA",       "/sla")
+            + local_links
             + hub_link
             + _a("settings",  "Settings",  "/settings")
             + '<form method="post" action="/logout" style="margin:0">'+'<input type="hidden" name="_csrf_token" value="{{csrf_token()}}">'+'<button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
@@ -6574,29 +6677,44 @@ monitor=MonitorManager()
 MAIN_TPL = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>SignalScope</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="{{csrf_token()}}">
+<meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#e2e8f0;--mu:#64748b}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:14px}a{color:var(--acc);text-decoration:none}
-header{background:var(--sur);border-bottom:1px solid var(--bor);padding:11px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}a{color:var(--acc);text-decoration:none}
+header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
 header h1{font-size:17px;font-weight:700}.badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
 .nav-active{background:var(--acc)!important;color:#fff!important}
 nav{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
-.btn{display:inline-block;padding:5px 12px;border-radius:6px;font-size:13px;cursor:pointer;border:none;text-decoration:none}
+.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600}.btn:hover{filter:brightness(1.05)}
 .bp{background:var(--acc);color:#fff}.bd{background:var(--al);color:#fff}.bg{background:var(--bor);color:var(--tx)}
 .bs{padding:3px 9px;font-size:12px}
 main{padding:16px;max-width:1440px;margin:0 auto}
 .fl{list-style:none;margin-bottom:10px}.fl li{padding:8px 12px;border-radius:6px;background:#1e3a5f;border-left:3px solid var(--acc);margin-bottom:5px;font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 14px}
+.search{min-width:260px;flex:1;max-width:420px;padding:9px 11px;background:linear-gradient(180deg,#143766,#102b54);border:1px solid var(--bor);border-radius:8px;color:var(--tx)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px}
+.alert-badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.04em;margin-left:4px}
+.badge-silence{background:#102033;color:#93c5fd}.badge-hiss{background:#3a2f0f;color:#fde68a}.badge-clip{background:#381414;color:#fca5a5}.badge-ai{background:#14263a;color:#93c5fd}
+.stats-block{margin-top:6px;border-top:1px solid var(--bor);padding-top:6px}
+.stats-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;color:var(--mu);font-size:11px;padding:4px 0;cursor:pointer}
+.stats-toggle:hover{color:var(--tx)}
+.card.dragging{opacity:.55;transform:scale(.99)}
+.card.drop-target{outline:1px dashed var(--acc);outline-offset:2px}
+.card.skeleton{position:relative}
+.card.skeleton::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.05),transparent);transform:translateX(-100%);animation:shimmer 1.2s infinite}
+@keyframes shimmer{100%{transform:translateX(100%)}}
 /* ── Card ── */
-.card{background:var(--sur);border:1px solid var(--bor);border-radius:10px;overflow:hidden}
-.card.al-alert{border-color:#991b1b}.card.al-warn{border-color:#92400e}
-.ch{padding:9px 13px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--bor);background:#11151d}
+.card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;box-shadow:0 3px 10px rgba(0,0,0,.16);transition:transform .14s, box-shadow .14s, border-color .14s}
+.card:hover{transform:translateY(-1px);box-shadow:0 8px 18px rgba(0,0,0,.22)}
+.card.al-alert{border-left:4px solid #ef4444}.card.al-warn{border-left:4px solid #f59e0b}
+.ch{padding:9px 13px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54)}
 .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
 .dok{background:var(--ok)}.dwn{background:var(--wn)}.dal{background:var(--al);animation:p 1s infinite}.did{background:var(--mu)}.dlr{background:#38bdf8}
 @keyframes p{0%,100%{opacity:1}50%{opacity:.3}}
 /* ── Level bar ── */
 .lbar-wrap{padding:8px 13px;border-bottom:1px solid var(--bor);display:flex;align-items:center;gap:8px}
-.lbar-track{flex:1;height:7px;background:#1a1f2e;border-radius:4px;overflow:hidden}
+.lbar-track{flex:1;height:7px;background:#123764;border-radius:4px;overflow:hidden}
 .lbar-fill{height:7px;border-radius:4px;transition:width .4s,background .4s;min-width:2px}
 .lbar-val{font-size:12px;font-weight:600;min-width:62px;text-align:right;font-variant-numeric:tabular-nums}
 /* ── Rows ── */
@@ -6615,7 +6733,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 /* ── History ── */
 .hist-wrap{border-top:1px solid var(--bor)}
 .hist-toggle{width:100%;padding:5px 13px;background:none;border:none;color:var(--mu);font-size:11px;text-align:left;cursor:pointer;display:flex;justify-content:space-between}
-.hist-toggle:hover{background:#1a1f2e}
+.hist-toggle:hover{background:#123764}
 .hist{max-height:90px;overflow-y:auto;font-size:11px;color:var(--mu)}
 .hev{padding:3px 13px;border-bottom:1px solid var(--bor)}
 .hSILENCE,.hAI_ALERT,.hRTP_LOSS{color:#f87171}.hCLIP{color:#fb923c}.hHISS,.hRTP_LOSS_WARN{color:#fbbf24}.hAI_WARN{color:#fcd34d}
@@ -6633,14 +6751,19 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 .cb{padding:11px 13px}
 .logbox{background:var(--sur);border:1px solid var(--bor);border-radius:8px;padding:12px;font-family:monospace;font-size:11px;height:190px;overflow-y:auto;margin-top:12px;white-space:pre-wrap;word-break:break-all}
 .st{font-size:12px;font-weight:600;color:var(--mu);letter-spacing:.06em;text-transform:uppercase;margin:14px 0 8px}
-</style><link rel="icon" type="image/x-icon" href="/favicon.ico"></head><body>
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("dashboard") }}
 <main>
+<div class="card">
 {% with m=get_flashed_messages() %}{% if m %}<ul class="fl">{% for x in m %}<li>{{x}}</li>{% endfor %}</ul>{% endif %}{% endwith %}
 {% if not inputs %}<p style="color:var(--mu);margin:24px 0">No inputs. <a href="/inputs/add">Add one →</a></p>
 {% else %}
   <div class="st">Streams ({{inputs|length}})</div>
-  <div class="grid">
+  <div class="toolbar">
+    <input id="streamSearch" class="search" type="text" placeholder="Search streams, formats, device IDs, FM, DAB…">
+    <span class="badge">Drag cards to reorder</span>
+  </div>
+  <div class="grid" id="card-grid">
   {% for idx,inp in inputs %}
     {% set ai=inp._ai_status %}{% set ph=inp._ai_phase %}
     {% set ac='aid' %}
@@ -6653,7 +6776,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
     {% set lpct=[(lev+80)/80*100,100]|min|int %}
     {% set lcol='var(--al)' if lev<=-55 else ('var(--wn)' if lev<=-20 else 'var(--ok)') %}
 
-    <div class="card" id="card_{{idx}}" data-name="{{inp.name}}" data-dev="{{inp.device_index}}">
+    <div class="card skeleton" draggable="true" id="card_{{idx}}" data-name="{{inp.name}}" data-dev="{{inp.device_index}}">
       {# ── Header ── #}
       <div class="ch">
         <div class="dot {{dc}}" id="dot_{{idx}}"></div>
@@ -6693,29 +6816,35 @@ main{padding:16px;max-width:1440px;margin:0 auto}
         <div class="row">
           <span class="rl">Alerts</span>
           <span class="rv" style="font-size:12px">
-            {%if inp.alert_on_silence%}<span title="Silence">🔇</span>{%endif%}
-            {%if inp.alert_on_hiss%}<span title="Hiss">〰</span>{%endif%}
-            {%if inp.alert_on_clip%}<span title="Clip">📈</span>{%endif%}
-            {%if inp.ai_monitor%}<span title="AI">🤖</span>{%endif%}
+            {%if inp.alert_on_silence%}<span class="alert-badge badge-silence" title="Silence">SIL</span>{%endif%}
+            {%if inp.alert_on_hiss%}<span class="alert-badge badge-hiss" title="Hiss">HISS</span>{%endif%}
+            {%if inp.alert_on_clip%}<span class="alert-badge badge-clip" title="Clip">CLIP</span>{%endif%}
+            {%if inp.ai_monitor%}<span class="alert-badge badge-ai" title="AI">AI</span>{%endif%}
           </span>
         </div>
         {% if inp.device_index.lower().startswith('dab://') %}
-        <div class="row"><span class="rl">DAB SNR</span>
-          <span class="rv" id="dab_snr_{{idx}}" style="color:{%if inp._dab_snr>=12%}var(--ok){%elif inp._dab_snr>=6%}var(--wn){%else%}var(--al){%endif%}">{{inp._dab_snr|round(1)}} dB</span></div>
-        <div class="row"><span class="rl">Signal</span><span class="rv" id="dab_sig_{{idx}}">{{inp._dab_sig|round(1)}} dBm</span></div>
-        <div class="row"><span class="rl">Ensemble</span><span class="rv" id="dab_ens_{{idx}}" style="font-size:11px">{{inp._dab_ensemble or '—'}}</span></div>
+        <details class="stats-block">
+          <summary class="stats-toggle">DAB signal stats <span>▼</span></summary>
+          <div class="row"><span class="rl">DAB SNR</span>
+            <span class="rv" id="dab_snr_{{idx}}" style="color:{%if inp._dab_snr>=12%}var(--ok){%elif inp._dab_snr>=6%}var(--wn){%else%}var(--al){%endif%}">{{inp._dab_snr|round(1)}} dB</span></div>
+          <div class="row"><span class="rl">Signal</span><span class="rv" id="dab_sig_{{idx}}">{{inp._dab_sig|round(1)}} dBm</span></div>
+          <div class="row"><span class="rl">Ensemble</span><span class="rv" id="dab_ens_{{idx}}" style="font-size:11px">{{inp._dab_ensemble or '—'}}</span></div>
+        </details>
         {% endif %}
         {% if inp.device_index.lower().startswith('fm://') %}
-        <div class="row"><span class="rl">Level</span>
-          <span class="rv" id="fm_sig_{{idx}}" style="color:{%if inp._fm_signal_dbm>=-18%}var(--ok){%elif inp._fm_signal_dbm>=-28%}var(--wn){%else%}var(--al){%endif%}">{{inp._fm_signal_dbm|round(1)}} dBFS</span></div>
-        <div class="row"><span class="rl">Pilot</span>
-          <span class="rv" id="fm_snr_{{idx}}" style="color:{%if inp._fm_snr_db>=12%}var(--ok){%elif inp._fm_snr_db>=6%}var(--wn){%else%}var(--al){%endif%}">{{inp._fm_snr_db|round(1)}} dB</span></div>
-        <div class="row"><span class="rl">Stereo</span>
-          <span class="rv" id="fm_stereo_{{idx}}" style="color:{%if inp._fm_stereo%}var(--ok){%else%}var(--mu){%endif%}">{%if inp._fm_stereo%}✓ Stereo{%else%}Mono{%endif%}</span></div>
-        <div class="row"><span class="rl">RDS</span>
-          <span class="rv" id="fm_rds_{{idx}}" style="color:{% if inp._fm_rds_ok %}var(--ok){% else %}var(--mu){% endif %};font-size:11px">{{ inp._fm_rds_ps or (inp._fm_rds_status|default('No lock', true)) }}</span></div>
-        <div class="row"><span class="rl">Text</span>
-          <span class="rv" id="fm_rt_{{idx}}" style="font-size:11px">{{ inp._fm_rds_rt or '—' }}</span></div>
+        <details class="stats-block">
+          <summary class="stats-toggle">FM / RDS stats <span>▼</span></summary>
+          <div class="row"><span class="rl">Level</span>
+            <span class="rv" id="fm_sig_{{idx}}" style="color:{%if inp._fm_signal_dbm>=-18%}var(--ok){%elif inp._fm_signal_dbm>=-28%}var(--wn){%else%}var(--al){%endif%}">{{inp._fm_signal_dbm|round(1)}} dBFS</span></div>
+          <div class="row"><span class="rl">Pilot</span>
+            <span class="rv" id="fm_snr_{{idx}}" style="color:{%if inp._fm_snr_db>=12%}var(--ok){%elif inp._fm_snr_db>=6%}var(--wn){%else%}var(--al){%endif%}">{{inp._fm_snr_db|round(1)}} dB</span></div>
+          <div class="row"><span class="rl">Stereo</span>
+            <span class="rv" id="fm_stereo_{{idx}}" style="color:{%if inp._fm_stereo%}var(--ok){%else%}var(--mu){%endif%}">{%if inp._fm_stereo%}✓ Stereo{%else%}Mono{%endif%}</span></div>
+          <div class="row"><span class="rl">RDS</span>
+            <span class="rv" id="fm_rds_{{idx}}" style="color:{% if inp._fm_rds_ok %}var(--ok){% else %}var(--mu){% endif %};font-size:11px">{{ inp._fm_rds_ps or (inp._fm_rds_status|default('No lock', true)) }}</span></div>
+          <div class="row"><span class="rl">Text</span>
+            <span class="rv" id="fm_rt_{{idx}}" style="font-size:11px">{{ inp._fm_rds_rt or '—' }}</span></div>
+        </details>
         {% endif %}
       </div>
 
@@ -6760,7 +6889,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
       {# ── Listen strip ── #}
       {% if running and inp.enabled %}
       <div class="listen-strip">
-        <select id="dur_{{idx}}" style="padding:3px 5px;font-size:12px;background:#1e2433;border:1px solid var(--bor);border-radius:4px;color:var(--tx)">
+        <select id="dur_{{idx}}" style="padding:3px 5px;font-size:12px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx)">
           <option value="5">5s</option><option value="10" selected>10s</option>
           <option value="20">20s</option><option value="30">30s</option>
         </select>
@@ -6864,7 +6993,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
           {{(cmp.correlation*100)|round|int}}%
         </span>
       </div>
-      <div style="background:#1e2433;border-radius:4px;height:8px;overflow:hidden">
+      <div style="background:#173a69;border-radius:4px;height:8px;overflow:hidden">
         <div id="cmp-corr-bar-{{loop.index0}}"
              style="height:100%;border-radius:4px;transition:width 0.5s;
                     width:{{(cmp.correlation*100)|round|int}}%;
@@ -6876,7 +7005,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
     <div style="display:flex;gap:8px;margin-top:6px">
       <div style="flex:1">
         <div style="font-size:10px;color:var(--mu);margin-bottom:3px">PRE (source)</div>
-        <div style="background:#1e2433;border-radius:3px;height:6px;overflow:hidden">
+        <div style="background:#173a69;border-radius:3px;height:6px;overflow:hidden">
           <div id="cmp-pre-bar-{{loop.index0}}"
                style="height:100%;border-radius:3px;transition:width 0.4s;
                       background:#60a5fa;
@@ -6889,7 +7018,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
       </div>
       <div style="flex:1">
         <div style="font-size:10px;color:var(--mu);margin-bottom:3px">POST (output)</div>
-        <div style="background:#1e2433;border-radius:3px;height:6px;overflow:hidden">
+        <div style="background:#173a69;border-radius:3px;height:6px;overflow:hidden">
           <div id="cmp-post-bar-{{loop.index0}}"
                style="height:100%;border-radius:3px;transition:width 0.4s;
                       background:#a78bfa;
@@ -7287,16 +7416,70 @@ function deleteClip(streamEnc,fileEnc,idx){
     .then(function(r){return r.json();})
     .then(function(j){if(j.ok) loadClips(idx,decodeURIComponent(streamEnc));});
 }
+
+function initCardSearch(inputId, gridId){
+  var input=document.getElementById(inputId), grid=document.getElementById(gridId);
+  if(!input || !grid) return;
+  function apply(){
+    var q=(input.value||'').toLowerCase().trim();
+    grid.querySelectorAll('.card').forEach(function(card){
+      var hay=((card.dataset.name||'')+' '+(card.dataset.dev||'')+' '+(card.innerText||'')).toLowerCase();
+      card.style.display = !q || hay.indexOf(q) !== -1 ? '' : 'none';
+    });
+  }
+  input.addEventListener('input', apply);
+}
+function initDragGrid(gridId, storageKey, itemSelector){
+  var grid=document.getElementById(gridId);
+  if(!grid) return;
+  var dragEl=null;
+  function saveOrder(){
+    var ids=Array.from(grid.querySelectorAll(itemSelector)).map(function(el){return el.id;}).filter(Boolean);
+    localStorage.setItem(storageKey, JSON.stringify(ids));
+  }
+  function restoreOrder(){
+    try{
+      var ids=JSON.parse(localStorage.getItem(storageKey)||'[]');
+      ids.forEach(function(id){
+        var el=document.getElementById(id);
+        if(el) grid.appendChild(el);
+      });
+    }catch(e){}
+  }
+  restoreOrder();
+  grid.querySelectorAll(itemSelector).forEach(function(card){
+    card.addEventListener('dragstart', function(){dragEl=card; card.classList.add('dragging');});
+    card.addEventListener('dragend', function(){card.classList.remove('dragging'); saveOrder();});
+    card.addEventListener('dragover', function(e){
+      e.preventDefault();
+      if(!dragEl || dragEl===card) return;
+      card.classList.add('drop-target');
+      var rect=card.getBoundingClientRect();
+      var before=(e.clientY - rect.top) < rect.height/2;
+      grid.insertBefore(dragEl, before ? card : card.nextSibling);
+    });
+    card.addEventListener('dragleave', function(){card.classList.remove('drop-target');});
+    card.addEventListener('drop', function(){card.classList.remove('drop-target');});
+  });
+}
+document.addEventListener('DOMContentLoaded', function(){
+  initCardSearch('streamSearch','card-grid');
+  initDragGrid('card-grid','signalscope.dashboard.order','.card');
+  setTimeout(function(){
+    document.querySelectorAll('#card-grid .card').forEach(function(el){el.classList.remove('skeleton');});
+  }, 350);
+});
+
 </script>
 </body></html>"""
 
 REPORTS_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Alert Reports — SignalScope</title>
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#e2e8f0;--mu:#64748b}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:13px}
-header{background:var(--sur);border-bottom:1px solid var(--bor);padding:11px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 42%, #05101f 100%);color:var(--tx);font-size:13px}
+header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
 header h1{font-size:16px;font-weight:700}
 .badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
 .nav-active{background:var(--acc)!important;color:#fff!important}
@@ -7306,7 +7489,7 @@ header h1{font-size:16px;font-weight:700}
 .bd{background:var(--al);color:#fff}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
 main{padding:16px 20px}
 .filters{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
-.filters select,.filters input{background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 9px;font-size:12px}
+.filters select,.filters input{background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 9px;font-size:12px}
 .filters label{color:var(--mu);font-size:12px}
 .summary{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
 .sc{background:var(--sur);border:1px solid var(--bor);border-radius:8px;padding:10px 14px;min-width:100px}
@@ -7314,12 +7497,12 @@ main{padding:16px 20px}
 table{width:100%;border-collapse:collapse}
 thead th{text-align:left;padding:7px 10px;background:var(--sur);border-bottom:2px solid var(--bor);font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;position:sticky;top:0;z-index:2}
 tbody td{padding:8px 10px;border-bottom:1px solid var(--bor);vertical-align:top}
-tr:hover td{background:#1a1f2e}
+tr:hover td{background:#123764}
 .type-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
-.t-silence{background:#1e2433;color:#93c5fd}
+.t-silence{background:#173a69;color:#93c5fd}
 .t-clip{background:#3a1e1e;color:#fca5a5}
 .t-hiss{background:#2a2a1e;color:#fde68a}
-.t-rtp{background:#1e2433;color:#c4b5fd}
+.t-rtp{background:#173a69;color:#c4b5fd}
 .t-ai_alert{background:#3a1e1e;color:#fca5a5}
 .t-ai_warn{background:#3a2a1e;color:#fde68a}
 .t-ptp{background:#1e3a2a;color:#86efac}
@@ -7334,7 +7517,7 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 .no-data{text-align:center;padding:48px;color:var(--mu)}
 .page-info{color:var(--mu);font-size:12px;margin-left:auto}
 </style>
-<link rel="icon" type="image/x-icon" href="/favicon.ico"></head><body>
+<link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("reports") }}
 <div style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;gap:7px;align-items:center;flex-wrap:wrap">
   <span style="font-size:13px;font-weight:600">📋 Alert Reports</span>
@@ -7356,6 +7539,8 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
   </div>
 
   {# Filters #}
+  </div>
+  <div class="card">
   <div class="filters">
     <label>Stream
       <select id="f_stream" onchange="applyFilters()">
@@ -7377,6 +7562,8 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 
   {# Events table #}
   <div class="table-wrap">
+  </div>
+  <div class="card">
   <table id="evt_table">
     <thead>
       <tr>
@@ -7572,26 +7759,26 @@ window.addEventListener('DOMContentLoaded', function(){
 </body></html>"""
 
 SLA_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>SLA Dashboard</title>
-<style nonce="{{csp_nonce()}}">:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--ok:#22c55e;--al:#ef4444;--tx:#e2e8f0;--mu:#64748b}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:14px}
-header{background:var(--sur);border-bottom:1px solid var(--bor);padding:11px 20px;display:flex;align-items:center;gap:10px}
+<style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
+header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
 header h1{font-size:16px;font-weight:700}.badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
 .nav-active{background:var(--acc)!important;color:#fff!important}
-.btn{display:inline-block;padding:5px 12px;border-radius:6px;font-size:13px;cursor:pointer;border:none;text-decoration:none}
-.bg{background:var(--bor);color:var(--tx)}.bp{background:var(--acc);color:#fff}.bd{background:var(--al);color:#fff}.bw{background:#7c2d12;color:#fca5a5}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
-main{padding:22px;max-width:900px;margin:0 auto}
-table{width:100%;border-collapse:collapse;margin-top:16px}
-th{text-align:left;padding:8px 12px;background:var(--sur);border-bottom:2px solid var(--bor);font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.05em}
+.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600}.btn:hover{filter:brightness(1.05)}
+.bg{background:var(--bor);color:var(--tx)}.bp{background:var(--acc);color:#fff}.bd{background:var(--al);color:#fff}.bw{background:#7c2d12;color:#fca5a5}.bs{padding:3px 9px;font-size:12px}
+main{padding:22px;max-width:980px;margin:0 auto}
+table{width:100%;border-collapse:collapse;margin-top:16px;background:rgba(13,35,70,.96);border:1px solid var(--bor);border-radius:12px;overflow:hidden;box-shadow:0 4px 10px rgba(0,0,0,.14)}
+th{text-align:left;padding:8px 12px;background:#12305c;border-bottom:2px solid var(--bor);font-size:12px;color:#c5dcff;text-transform:uppercase;letter-spacing:.05em}
 td{padding:10px 12px;border-bottom:1px solid var(--bor);font-size:13px}
-tr:hover td{background:#1a1f2e}
+tr:hover td{background:#123764}
 .bar-wrap{background:var(--bor);border-radius:999px;height:8px;width:120px;display:inline-block;vertical-align:middle;margin-left:8px}
 .bar-fill{height:8px;border-radius:999px;transition:width .3s}
 .ok-color{color:var(--ok)}.al-color{color:var(--al)}
 .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
-.tag-ok{background:#1e3a1e;color:var(--ok)}.tag-fail{background:#3a1e1e;color:var(--al)}
-</style><link rel="icon" type="image/x-icon" href="/favicon.ico"></head><body>
+.tag-ok{background:#1e3a1e;color:var(--ok)}.tag-fail{background:#3a1e1e;color:var(--al)}.panelbar{padding:8px 20px;background:linear-gradient(180deg,#12305c,#10284f);border-bottom:1px solid var(--bor);display:flex;gap:7px;align-items:center}
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("sla") }}
-<div style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;gap:7px;align-items:center">
+<div class="panelbar">
   <span style="font-size:13px;font-weight:600">📊 SLA Dashboard</span>
   <span style="color:var(--mu);font-size:12px;margin-left:4px">Target: {{target}}%</span>
   <div style="margin-left:auto"><a href="/sla.csv" class="btn bp">⬇ Export CSV</a></div>
@@ -7622,20 +7809,22 @@ tr:hover td{background:#1a1f2e}
     </tbody>
   </table>
   <p style="margin-top:14px;font-size:12px;color:var(--mu)">SLA resets monthly. Downtime counted when stream level is at or below the silence threshold.</p>
-</main></body></html>"""
+</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
 
 INPUT_LIST_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Inputs</title>
-<style nonce="{{csp_nonce()}}">:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--tx:#e2e8f0;--mu:#64748b}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:14px}
-header{background:var(--sur);border-bottom:1px solid var(--bor);padding:11px 20px;display:flex;align-items:center;gap:10px}
-header h1{font-size:16px;font-weight:700}.btn{display:inline-block;padding:5px 12px;border-radius:6px;font-size:13px;cursor:pointer;border:none;text-decoration:none}
-.bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}.bd{background:var(--al);color:#fff}.bw{background:#7c2d12;color:#fca5a5}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}.bd{background:var(--al);color:#fff}.bw{background:#7c2d12;color:#fca5a5}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
-main{padding:20px;max-width:900px;margin:0 auto}
-table{width:100%;border-collapse:collapse;background:var(--sur);border-radius:8px;overflow:hidden}
-th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--bor)}th{color:var(--mu);font-weight:600;font-size:12px;text-transform:uppercase}
-.fl{list-style:none;margin-bottom:10px}.fl li{padding:8px 12px;border-radius:6px;background:#1e3a5f;border-left:3px solid var(--acc);margin-bottom:5px}</style><link rel="icon" type="image/x-icon" href="/favicon.ico"></head><body>
+<style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--tx:#eef5ff;--mu:#8aa4c8;--al:#ef4444}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
+header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
+header h1{font-size:16px;font-weight:700}.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600}.btn:hover{filter:brightness(1.05)}
+.bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}.bd{background:var(--al);color:#fff}.bw{background:#7c2d12;color:#fca5a5}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
+main{padding:20px;max-width:980px;margin:0 auto}
+table{width:100%;border-collapse:collapse;background:rgba(13,35,70,.96);border:1px solid var(--bor);border-radius:12px;overflow:hidden;box-shadow:0 4px 10px rgba(0,0,0,.14)}
+th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--bor)}th{color:#c5dcff;font-weight:600;font-size:12px;text-transform:uppercase;background:#12305c}
+tr:hover td{background:#123764}
+.fl{list-style:none;margin-bottom:10px}.fl li{padding:8px 12px;border-radius:6px;background:#1e3a5f;border-left:3px solid var(--acc);margin-bottom:5px}.panelbar{padding:8px 20px;background:linear-gradient(180deg,#12305c,#10284f);border-bottom:1px solid var(--bor);display:flex;align-items:center}
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("inputs") }}
-<div style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;align-items:center">
+<div class="panelbar">
   <span style="font-size:13px;font-weight:600">Inputs</span>
   <a class="btn bp" style="margin-left:auto" href="/inputs/add">+ Add</a>
 </div>
@@ -7655,7 +7844,7 @@ th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--bor)}th{co
 </tr>{% endfor %}
 </tbody></table>
 {% else %}<p style="color:#64748b;margin:24px 0">No inputs yet.</p>{% endif %}
-</main></body></html>"""
+</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
 
 
 # ─── First-run setup wizard ───────────────────────────────────────────────────
@@ -7664,9 +7853,9 @@ SETUP_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>SignalScope — Setup</title>
 <meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#e2e8f0;--mu:#64748b}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:14px;min-height:100vh}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;min-height:100vh;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:300px;height:300px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
 .header{background:var(--sur);border-bottom:1px solid var(--bor);padding:14px 24px;display:flex;align-items:center;gap:12px}
 .header h1{font-size:18px;font-weight:700}.header .sub{font-size:13px;color:var(--mu)}
 .layout{display:flex;min-height:calc(100vh - 50px)}
@@ -7693,23 +7882,22 @@ h2{font-size:20px;font-weight:700;margin-bottom:8px;color:var(--tx)}
 .badge-err{background:#450a0a;color:#fca5a5}
 .badge-na{background:var(--bor);color:var(--mu)}
 label{display:block;margin-top:14px;color:var(--mu);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-input[type=text],input[type=password],select{width:100%;margin-top:4px;padding:9px 11px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
+input[type=text],input[type=password],select{width:100%;margin-top:4px;padding:9px 11px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
 .cr{display:flex;align-items:center;gap:8px;margin-top:10px}input[type=checkbox]{width:16px;height:16px;accent-color:var(--acc)}
 .help{font-size:12px;color:var(--mu);margin-top:5px;line-height:1.5}
 .btn{display:inline-block;padding:8px 18px;border-radius:6px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600}
 .bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}
 .act{margin-top:28px;display:flex;gap:10px;align-items:center}
-code{background:#1e2433;padding:1px 7px;border-radius:4px;font-family:monospace;font-size:12px}
+code{background:#173a69;padding:1px 7px;border-radius:4px;font-family:monospace;font-size:12px}
 .cmd-block{background:#060810;border:1px solid var(--bor);border-radius:6px;padding:10px 14px;font-family:monospace;font-size:12px;color:#94a3b8;margin:8px 0;position:relative}
 .cmd-block .copy-btn{position:absolute;top:6px;right:8px;padding:2px 8px;font-size:11px;cursor:pointer;background:var(--bor);border:none;border-radius:4px;color:var(--tx)}
 .warn-box{padding:10px 14px;background:#2a1a0f;border-left:3px solid var(--wn);border-radius:4px;font-size:12px;margin:10px 0}
 .ok-box{padding:10px 14px;background:#0d2010;border-left:3px solid var(--ok);border-radius:4px;font-size:12px;margin:10px 0}
-</style><link rel="icon" type="image/x-icon" href="/favicon.ico"></head><body>
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 
 <div class="header">
-  <span style="font-size:28px">🎙</span>
-  <div style="display:flex;align-items:center;gap:12px">
-    <img src="/static/signalscope_logo.png" alt="SignalScope" style="height:46px;width:auto;display:block">
+  <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <img src="/static/signalscope_logo.png" alt="SignalScope" style="height:68px;max-width:min(420px, 58vw);width:auto;display:block;filter:drop-shadow(0 8px 22px rgba(23,168,255,.18))">
     <div><h1>SignalScope</h1><div class="sub">Setup Wizard — {{build}}</div></div>
   </div>
 </div>
@@ -7883,7 +8071,7 @@ kill %1<button class="copy-btn" onclick="copyCmd(this)">Copy</button></div>
 
   <label style="margin-top:16px">Mode
     <select name="hub_mode" id="wiz_hub_mode" onchange="wizModeChanged()"
-            style="width:100%;margin-top:4px;padding:9px 11px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
+            style="width:100%;margin-top:4px;padding:9px 11px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
       <option value="client" {{'selected' if cfg.hub.mode=='client'}}>Client — this site sends data to a central hub</option>
       <option value="hub"    {{'selected' if cfg.hub.mode=='hub'}}>Hub — this machine receives data from all sites</option>
       <option value="both"   {{'selected' if cfg.hub.mode=='both'}}>Both — client + hub on this machine</option>
@@ -8017,6 +8205,7 @@ kill %1<button class="copy-btn" onclick="copyCmd(this)">Copy</button></div>
 
 </div><!-- content -->
 </div><!-- layout -->
+<div style="padding:12px 24px;border-top:1px solid var(--bor);font-size:11px;color:var(--mu);background:rgba(6,18,34,.86)">SignalScope {{build}} • Broadcast Signal Intelligence</div>
 
 <script nonce="{{csp_nonce()}}">
 var _currentStep = 0;
@@ -8143,10 +8332,22 @@ function saveAuth(){
   var pw2 = fd.get('auth_confirm');
   if(pw && pw !== pw2){ alert('Passwords do not match.'); return; }
   if(pw && pw.length < 8){ alert('Password must be at least 8 characters.'); return; }
-  _csrfFetch('/api/setup/auth', {method:'POST', body:fd}).then(function(r){ return r.json(); })
+  _csrfFetch('/api/setup/auth', {method:'POST', body:fd})
+    .then(function(r){
+      if(!r.ok){
+        return r.text().then(function(t){
+          throw new Error('HTTP '+r.status+(t ? ' — '+t.slice(0,200) : ''));
+        });
+      }
+      return r.json();
+    })
     .then(function(d){
       if(d.ok) goStep(5);
-      else alert('Save failed: '+d.message);
+      else alert('Save failed: '+(d.message || 'Unknown error'));
+    })
+    .catch(function(e){
+      alert('Save failed: '+e);
+      console.error('Wizard auth save failed', e);
     });
 }
 
@@ -8164,20 +8365,21 @@ function copyCmd(btn){
 
 
 INPUT_FORM_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{{title}}</title>
-<style nonce="{{csp_nonce()}}">:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--tx:#e2e8f0;--mu:#64748b}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:14px}
-header{background:var(--sur);border-bottom:1px solid var(--bor);padding:11px 20px;display:flex;align-items:center;gap:10px}
-header h1{font-size:16px;font-weight:700}.btn{display:inline-block;padding:5px 12px;border-radius:6px;font-size:13px;cursor:pointer;border:none;text-decoration:none}
-.bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}.bd{background:var(--al);color:#fff}.bw{background:#7c2d12;color:#fca5a5}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}.bd{background:var(--al);color:#fff}.bw{background:#7c2d12;color:#fca5a5}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
-main{padding:22px;max-width:560px;margin:0 auto}
+<style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--tx:#eef5ff;--mu:#8aa4c8;--ok:#22c55e;--al:#ef4444}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
+header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
+header h1{font-size:16px;font-weight:700}.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600}.btn:hover{filter:brightness(1.05)}
+.bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}.bd{background:var(--al);color:#fff}.bw{background:#7c2d12;color:#fca5a5}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
+main{padding:22px;max-width:620px;margin:0 auto}
 label{display:block;margin-top:13px;color:var(--mu);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
+input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
 .cr{display:flex;align-items:center;gap:8px;margin-top:10px}input[type=checkbox]{width:16px;height:16px;accent-color:var(--acc)}
 .help{font-size:12px;color:var(--mu);margin-top:4px;line-height:1.5}
 .sec{margin-top:18px;padding-top:13px;border-top:1px solid var(--bor);font-weight:600;font-size:14px}
-.act{margin-top:20px;display:flex;gap:8px}</style><link rel="icon" type="image/x-icon" href="/favicon.ico"></head><body>
+.act{margin-top:20px;display:flex;gap:8px}.panelbar{padding:8px 20px;background:linear-gradient(180deg,#12305c,#10284f);border-bottom:1px solid var(--bor);display:flex;align-items:center;gap:8px}
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("inputs") }}
-<div style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;align-items:center">
+<div class="panelbar">
   <span style="font-size:13px;font-weight:600">{{title}}</span>
   <a class="btn bg" style="margin-left:auto" href="/inputs">← Back</a>
 </div>
@@ -8185,7 +8387,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   <label>Name<input type="text" name="name" value="{{inp.name}}" required placeholder="e.g. TX Output"></label>
   <!-- Source type selector -->
   <label>Source Type
-    <select id="src_type" onchange="srcTypeChanged()" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+    <select id="src_type" onchange="srcTypeChanged()" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
       <option value="other"  id="opt_other">Livewire / RTP / HTTP</option>
       <option value="dab"    id="opt_dab">DAB (RTL-SDR via welle-cli)</option>
       <option value="fm"     id="opt_fm">FM (RTL-SDR)</option>
@@ -8204,7 +8406,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   <div id="src_dab" style="display:none">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
       <label>Channel
-        <select id="dab_channel" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+        <select id="dab_channel" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
           <option value="5A">5A (174.928 MHz)</option>
           <option value="5B">5B (177.008 MHz)</option>
           <option value="5C">5C (178.352 MHz)</option>
@@ -8240,7 +8442,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
         </select>
       </label>
       <label>Dongle (serial)
-        <select id="dab_serial" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+        <select id="dab_serial" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
           <option value="">Any available</option>
           {% for dev in sdr_devices %}
           {% if dev.role in ("dab","none") %}
@@ -8255,7 +8457,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
     </div>
     <div id="dab_service_wrap" style="display:none;margin-top:10px">
       <label>Station
-        <select id="dab_service" onchange="dabServiceSelected()" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+        <select id="dab_service" onchange="dabServiceSelected()" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
           <option value="">— Select station —</option>
         </select>
       </label>
@@ -8268,10 +8470,10 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   <div id="src_fm" style="display:none">
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:10px">
       <label>Frequency (MHz)
-        <input type="number" id="fm_freq" step="0.1" min="76" max="108" placeholder="96.7" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+        <input type="number" id="fm_freq" step="0.1" min="76" max="108" placeholder="96.7" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
       </label>
       <label>Dongle (serial)
-        <select id="fm_serial" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+        <select id="fm_serial" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
           <option value="">Any available</option>
           {% for dev in sdr_devices %}
           {% if dev.role in ("fm","none") %}
@@ -8280,17 +8482,17 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
         </select>
       </label>
       <label>Gain (dB)
-        <input type="number" id="fm_gain" step="0.1" min="0" max="49.6" placeholder="38.0" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+        <input type="number" id="fm_gain" step="0.1" min="0" max="49.6" placeholder="38.0" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
       </label>
       <label>Backend
-        <select id="fm_backend" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+        <select id="fm_backend" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
           <option value="auto">Auto (prefer rtl_fm)</option>
           <option value="rtl_fm">rtl_fm (recommended)</option>
           <option value="pyrtlsdr">pyrtlsdr</option>
         </select>
       </label>
     </div>
-    <p class="help" style="margin-top:8px">FM backend can be selected per input. <code style="background:#1e2433;padding:1px 5px;border-radius:3px">rtl_fm</code> is recommended for stable audio. <code style="background:#1e2433;padding:1px 5px;border-radius:3px">pyrtlsdr</code> is available for development work on metrics/RDS. Leave gain blank for current automatic behaviour, or set a manual tuner gain such as 38&ndash;42 dB. Register dongles in Settings → Hub &amp; Network → SDR Devices.</p>
+    <p class="help" style="margin-top:8px">FM backend can be selected per input. <code style="background:#173a69;padding:1px 5px;border-radius:3px">rtl_fm</code> is recommended for stable audio. <code style="background:#173a69;padding:1px 5px;border-radius:3px">pyrtlsdr</code> is available for development work on metrics/RDS. Leave gain blank for current automatic behaviour, or set a manual tuner gain such as 38&ndash;42 dB. Register dongles in Settings → Hub &amp; Network → SDR Devices.</p>
   </div>
 
   <!-- Hidden actual field submitted with the form -->
@@ -8476,7 +8678,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
 
   <div class="sec">Stream Comparison</div>
   <label>Compare role
-    <select name="compare_role" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
+    <select name="compare_role" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
       <option value="" {{'selected' if not inp.compare_role}}>— Not in a comparison pair —</option>
       <option value="pre"  {{'selected' if inp.compare_role=='pre'}}>Pre-processing (source)</option>
       <option value="post" {{'selected' if inp.compare_role=='post'}}>Post-processing (output)</option>
@@ -8491,7 +8693,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   <label style="margin-top:8px;display:block">Gain shift alert threshold (dB)
     <input type="number" name="compare_gain_alert_db" min="1" max="30" step="0.5"
            value="{{inp.compare_gain_alert_db if inp.compare_gain_alert_db is defined else 3.0}}"
-           style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
+           style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
   </label>
   <p class="help">Set one stream as Pre, the other as Post, and select each other as the peer. The monitor will auto-align for delay up to {{cmp_search}}s. The gain shift threshold controls how much the output level is allowed to drift from its learned baseline before alerting — set this higher (e.g. 4&ndash;6 dB) for chains with dynamic loudness processing.</p>
 
@@ -8506,7 +8708,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
 
   <div class="sec">🎵 Now Playing (Planet Radio)</div>
   <label>Station
-    <select name="nowplaying_station_id" id="np_select" style="width:100%;margin-top:4px;padding:8px 10px;background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+    <select name="nowplaying_station_id" id="np_select" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
       <option value="">— None —</option>
     </select>
   </label>
@@ -8527,7 +8729,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   </script>
 
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/inputs">Cancel</a></div>
-</form></main></body></html>"""
+</form></main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -8535,10 +8737,11 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
 @app.get("/")
 @login_required
 def index():
-    _csrf_token()  # ensure the dashboard always has a persisted CSRF token
     # Redirect to setup wizard on first run
     if not monitor.app_cfg.wizard_done:
         return redirect(url_for("setup_wizard"))
+    if monitor.app_cfg.hub.mode == "hub":
+        return redirect(url_for("hub_dashboard"))
     comparators_data = [
         {"pre_name": c.pre.name, "post_name": c.post.name, "status": c.status}
         for c in monitor._comparators
@@ -9105,20 +9308,21 @@ def clips_delete(stream_name, filename):
 
 LOGIN_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Login — SignalScope</title>
 <style nonce="{{csp_nonce()}}">:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--tx:#e2e8f0;--mu:#64748b}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:14px;display:flex;align-items:center;justify-content:center;min-height:100vh}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;display:flex;align-items:center;justify-content:center;min-height:100vh;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:320px;height:320px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.05;pointer-events:none;filter:drop-shadow(0 0 30px rgba(23,168,255,.12));z-index:0}body>*{position:relative;z-index:1}
 .box{background:var(--sur);border:1px solid var(--bor);border-radius:12px;padding:32px;width:100%;max-width:380px}
 h1{font-size:20px;margin-bottom:6px;text-align:center}
 .sub{color:var(--mu);font-size:13px;text-align:center;margin-bottom:24px}
 label{display:block;margin-top:14px;color:var(--mu);font-size:12px;font-weight:600;text-transform:uppercase}
-input[type=text],input[type=password]{width:100%;margin-top:4px;padding:9px 11px;background:#1e2433;border:1px solid var(--bor);border-radius:7px;color:var(--tx);font-size:14px}
+input[type=text],input[type=password]{width:100%;margin-top:4px;padding:9px 11px;background:#173a69;border:1px solid var(--bor);border-radius:7px;color:var(--tx);font-size:14px}
 .btn{width:100%;margin-top:20px;padding:10px;background:var(--acc);color:#fff;border:none;border-radius:7px;font-size:14px;font-weight:600;cursor:pointer}
 .err{margin-top:12px;padding:9px 12px;background:#3a0f0f;border-left:3px solid #ef4444;border-radius:5px;font-size:13px;color:#fca5a5}
 .warn{margin-top:12px;padding:9px 12px;background:#2a1a0f;border-left:3px solid #f59e0b;border-radius:5px;font-size:13px;color:#fde68a}
 .ok{margin-top:12px;padding:9px 12px;background:#1a2a0f;border-left:3px solid #22c55e;border-radius:5px;font-size:13px;color:#86efac}
-</style><link rel="icon" type="image/x-icon" href="/favicon.ico"></head><body>
-<div class="box">
-  <div style="text-align:center;margin-bottom:10px"><img src="/static/signalscope_logo.png" alt="SignalScope" style="max-width:220px;width:100%;height:auto"></div>
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
+<div class="box" style="box-shadow:0 20px 60px rgba(0,0,0,.28)">
+  <div style="text-align:center;margin-bottom:14px"><img src="/static/signalscope_logo.png" alt="SignalScope" style="max-width:380px;width:100%;height:auto;display:block;margin:0 auto;filter:drop-shadow(0 8px 22px rgba(23,168,255,.20))"></div>
   <h1 style="display:none">SignalScope</h1>
+  <div class="sub" style="margin-bottom:8px">Broadcast Signal Intelligence</div>
   <div class="sub">{{build}}</div>
   {% if locked %}
   <div class="warn">🔒 Too many failed attempts.<br>Access locked — try again in {{locked_mins}} minute{{'' if locked_mins==1 else 's'}}.</div>
@@ -9135,6 +9339,7 @@ input[type=text],input[type=password]{width:100%;margin-top:4px;padding:9px 11px
     <button class="btn" type="submit">{% if first_login %}Set Password & Sign In{% else %}Sign In{% endif %}</button>
   </form>
   {% endif %}
+  <div style="margin-top:18px;text-align:center;font-size:11px;color:var(--mu)">SignalScope {{build}} • Broadcast Signal Intelligence</div>
 </div></body></html>"""
 
 @app.get("/.well-known/acme-challenge/<token>")
@@ -9506,7 +9711,6 @@ def api_dab_scan():
 @login_required
 def setup_wizard():
     """First-run setup wizard."""
-    _csrf_token()  # ensure a session CSRF token exists during wizard flows
     cfg = monitor.app_cfg
     return render_template_string(SETUP_TPL,
         cfg=cfg, build=BUILD,
@@ -9529,7 +9733,7 @@ def setup_complete():
 @login_required
 def api_setup_deps():
     """Return dependency check results for the wizard."""
-    import shutil, importlib
+    import importlib
 
     def _pkg_version(name):
         try:
@@ -9545,6 +9749,17 @@ def api_setup_deps():
             return first[:60] if first else "found"
         except Exception:
             return None
+
+    pyrtlsdr_ver = _pkg_version("pyrtlsdr")
+    if pyrtlsdr_ver == "0.2.93":
+        pyrtlsdr_status = "ok"
+        pyrtlsdr_desc = "Python RTL-SDR library for FM monitoring with signal metrics"
+    elif pyrtlsdr_ver:
+        pyrtlsdr_status = "warn"
+        pyrtlsdr_desc = "Installed, but SignalScope expects pyrtlsdr 0.2.93"
+    else:
+        pyrtlsdr_status = "err"
+        pyrtlsdr_desc = "Python RTL-SDR library for FM monitoring with signal metrics"
 
     deps = [
         # Required
@@ -9580,7 +9795,7 @@ def api_setup_deps():
             "version":  f"v{_pkg_version('onnxruntime')}" if _pkg_version("onnxruntime") else None,
             "install":  "pip install onnxruntime onnx",
         },
-        # Recommended
+        # Recommended / optional
         {
             "name":     "waitress",
             "desc":     "Production WSGI server — recommended",
@@ -9589,46 +9804,61 @@ def api_setup_deps():
             "version":  f"v{_pkg_version('waitress')}" if _pkg_version("waitress") else None,
             "install":  "pip install waitress",
         },
-        # Optional tools
-        {
-            "name":     "ffmpeg",
-            "desc":     "HTTP/HTTPS stream decoding and live audio — optional",
-            "optional": True,
-            "status":   "ok" if _find_binary("ffmpeg") else "err",
-            "version":  _cmd_version("ffmpeg", ("-version",))[:40] if _find_binary("ffmpeg") else None,
-            "install":  "sudo apt install ffmpeg  # Linux\n# or: winget install ffmpeg  # Windows",
-        },
         {
             "name":     "cryptography",
-            "desc":     "Let's Encrypt certificate issuance — optional",
+            "desc":     "TLS / Let's Encrypt support — recommended",
             "optional": True,
             "status":   "ok" if _pkg_version("cryptography") else "err",
             "version":  f"v{_pkg_version('cryptography')}" if _pkg_version("cryptography") else None,
             "install":  "pip install cryptography",
         },
         {
-            "name":     "rtl-sdr tools",
-            "desc":     "RTL-SDR command line tools (rtl_test, rtl_eeprom) — needed for DAB/FM",
+            "name":     "psutil",
+            "desc":     "Hub CPU / memory stats — optional",
             "optional": True,
-            "status":   "ok" if _find_binary("rtl_test") else "err",
+            "status":   "ok" if _pkg_version("psutil") else "err",
+            "version":  f"v{_pkg_version('psutil')}" if _pkg_version("psutil") else None,
+            "install":  "pip install psutil",
+        },
+        {
+            "name":     "ffmpeg",
+            "desc":     "HTTP/HTTPS stream decoding and live audio — optional",
+            "optional": True,
+            "status":   "ok" if _find_binary("ffmpeg") else "err",
+            "version":  _cmd_version("ffmpeg", ("-version",))[:40] if _find_binary("ffmpeg") else None,
+            "install":  "sudo apt install ffmpeg",
+        },
+        {
+            "name":     "rtl-sdr tools",
+            "desc":     "RTL-SDR command line tools (rtl_test, rtl_eeprom, rtl_fm) — needed for DAB/FM",
+            "optional": True,
+            "status":   "ok" if _find_binary("rtl_test") and _find_binary("rtl_fm") else "err",
             "version":  "found" if _find_binary("rtl_test") else None,
-            "install":  "sudo apt install rtl-sdr  # Linux",
+            "install":  "sudo apt install rtl-sdr librtlsdr-dev",
         },
         {
             "name":     "pyrtlsdr",
-            "desc":     "Python RTL-SDR library for FM monitoring with signal metrics",
+            "desc":     pyrtlsdr_desc,
             "optional": True,
-            "status":   "ok" if _pkg_version("pyrtlsdr") else "err",
-            "version":  f"v{_pkg_version('pyrtlsdr')}" if _pkg_version("pyrtlsdr") else None,
-            "install":  "pip install pyrtlsdr",
+            "status":   pyrtlsdr_status,
+            "version":  f"v{pyrtlsdr_ver}" if pyrtlsdr_ver else None,
+            "install":  'pip install --upgrade "pyrtlsdr==0.2.93"',
+        },
+        {
+            "name":     "redsea",
+            "desc":     "FM RDS decoder for rtl_fm backend — optional",
+            "optional": True,
+            "status":   "ok" if _find_binary("redsea") else "err",
+            "version":  _cmd_version("redsea", ("--version",)) if _find_binary("redsea") else None,
+            "install":  "git clone https://github.com/windytan/redsea.git\ncd redsea\nmeson setup build .\nmeson compile -C build\nsudo meson install -C build",
         },
         {
             "name":     "welle-cli",
             "desc":     "DAB demodulator — needed for DAB stream monitoring",
             "optional": True,
             "status":   "ok" if _find_binary("welle-cli") else "err",
-            "version":  _cmd_version("welle-cli") if _find_binary("welle-cli") else None,
-            "install":  "sudo add-apt-repository ppa:jonelo/welle-io\nsudo apt install welle-cli",
+            "version":  _cmd_version("welle-cli", ("-v",)) if _find_binary("welle-cli") else None,
+            "install":  "sudo apt install welle.io",
         },
     ]
     return jsonify(deps)
@@ -9676,13 +9906,7 @@ def api_setup_config():
 @login_required
 @csrf_protect
 def api_setup_auth():
-    """Save auth config from wizard step 4.
-
-    If auth is enabled during the wizard, treat the current browser session as
-    authenticated immediately. Otherwise the final /setup/complete POST is
-    forced through login_required, gets bounced to /login, and wizard_done is
-    never written until the user goes through the wizard a second time.
-    """
+    """Save auth config from wizard step 4."""
     from flask import session
     cfg = monitor.app_cfg
     f   = request.form
@@ -9696,12 +9920,11 @@ def api_setup_auth():
         cfg.auth.first_login   = False
     save_config(cfg)
 
+    # If auth was enabled during setup, keep this browser session authenticated
+    # so the final wizard POST can complete without interruption.
     if cfg.auth.enabled:
         session["logged_in"] = True
         session["login_ts"]  = time.time()
-        # Keep the existing CSRF token if present; if not, create one now so
-        # the final wizard form submit remains valid after auth is enabled.
-        session.setdefault("_csrf", hashlib.sha256(os.urandom(32)).hexdigest())
 
     return jsonify({"ok": True})
 
@@ -9713,7 +9936,6 @@ def login():
     if not cfg.auth.enabled:
         session["logged_in"] = True
         session["login_ts"]  = time.time()
-        session.setdefault("_csrf", hashlib.sha256(os.urandom(32)).hexdigest())
         return redirect(url_for("index"))
 
     ip    = request.remote_addr or "unknown"
@@ -9757,7 +9979,6 @@ def login():
                     login_limiter.clear(ip)
                     session["logged_in"] = True
                     session["login_ts"]  = time.time()
-                    session.setdefault("_csrf", hashlib.sha256(os.urandom(32)).hexdigest())
                     flash("Password set. Welcome!")
                     return redirect(_safe_next())
         else:
@@ -9774,16 +9995,7 @@ def login():
                     _log_security(f"Upgraded password hash to pbkdf2 for '{uname}'")
                 session["logged_in"] = True
                 session["login_ts"]  = time.time()
-                session.setdefault("_csrf", hashlib.sha256(os.urandom(32)).hexdigest())
-                # If login was triggered by the final setup POST being bounced to /login,
-                # complete the wizard here because the original target only accepts POST.
-                next_url = _safe_next()
-                if next_url == "/setup/complete":
-                    cfg.wizard_done = True
-                    save_config(cfg)
-                    flash("Welcome to SignalScope!")
-                    return redirect(url_for("index"))
-                return redirect(next_url)
+                return redirect(_safe_next())
 
     return render_template_string(LOGIN_TPL, error=error, first_login=first,
                                   username=request.form.get("username",""),
@@ -10031,6 +10243,8 @@ def hub_dashboard():
     if cfg.hub.mode not in ("hub","both"):
         return "This instance is not configured as a hub. Set mode to 'hub' or 'both' in Settings.", 404
     hub_server.set_secret(cfg.hub.secret_key)
+    wall_mode = str(request.args.get("wall", "")).strip().lower() in ("1", "true", "yes", "on")
+    problems_only = str(request.args.get("problems", "")).strip().lower() in ("1", "true", "yes", "on")
     sites = hub_server.get_sites()
     for s in sites:
         streams = s.get("streams", [])
@@ -10042,6 +10256,30 @@ def hub_dashboard():
             s["site_status"] = "WARN"
         else:
             s["site_status"] = "OK"
+        for st in streams:
+            ai = st.get("ai_status","") or ""
+            if "ALERT" in ai:
+                st["_sort_pri"] = 0
+            elif "WARN" in ai:
+                st["_sort_pri"] = 1
+            else:
+                st["_sort_pri"] = 2
+        streams.sort(key=lambda st: (st.get("_sort_pri", 2), st.get("name","").lower()))
+        s["alert_count"] = sum(1 for st in streams if "ALERT" in (st.get("ai_status","") or ""))
+        s["warn_count"]  = sum(1 for st in streams if "WARN" in (st.get("ai_status","") or ""))
+        s["ok_count"]    = max(0, len(streams) - s["alert_count"] - s["warn_count"])
+        s["problem_count"] = s["alert_count"] + s["warn_count"]
+    if problems_only:
+        sites = [s for s in sites if (not s.get("online")) or s.get("problem_count", 0) > 0]
+    def _site_sort_key(s):
+        status = s.get("site_status")
+        pri = 0 if status == "offline" else 1 if status == "ALERT" else 2 if status == "WARN" else 3
+        return (pri, -(s.get("problem_count", 0)), -(s.get("age_s", 0)), s.get("site","").lower())
+    sites = sorted(sites, key=_site_sort_key)
+    offline_count = sum(1 for s in sites if not s.get("online"))
+    alert_site_count = sum(1 for s in sites if s.get("site_status") == "ALERT")
+    warn_site_count = sum(1 for s in sites if s.get("site_status") == "WARN")
+    stale_count = sum(1 for s in sites if s.get("online") and float(s.get("age_s", 0) or 0) >= HUB_HEARTBEAT_INTERVAL * 2)
     def _ago(s):
         s = int(s or 0)
         if s < 5:   return "just now"
@@ -10060,21 +10298,38 @@ def hub_dashboard():
         if p >= 2:   return "rtp-al"
         if p >= 0.5: return "rtp-wn"
         return "rtp-ok"
+    
+    hub_cpu=None
+    hub_mem=None
+    try:
+        import psutil
+        hub_cpu=psutil.cpu_percent()
+        hub_mem=psutil.virtual_memory().percent
+    except Exception:
+        pass
+
     return render_template_string(HUB_TPL, sites=sites, build=BUILD, now=time.time(),
         mode_both=(cfg.hub.mode=="both"), ago=_ago, fmt=_fmt,
         aiClass=_ai_class, rtpClass=_rtp_class,
+        wall_mode=wall_mode, problems_only=problems_only,
+        offline_count=offline_count, alert_site_count=alert_site_count,
+        warn_site_count=warn_site_count, stale_count=stale_count, hub_cpu=hub_cpu, hub_mem=hub_mem,
     )
 
 @app.post(f"/api/{HUB_API_VERSION}/audio_chunk/<slot_id>")
 def hub_audio_chunk(slot_id):
-    """Receive a signed audio chunk from a client and feed it to the waiting browser."""
+    """Receive a signed audio chunk from a client and feed it to the waiting browser.
+
+    Important: this route must NOT use the normal per-client hub rate limiter.
+    Live relay audio arrives as many small POSTs per second, so generic API
+    throttling breaks remote listening. Security here comes from:
+      - valid relay slot ID
+      - relay slot lifetime / expiry
+      - signed requests when a hub secret is configured
+    """
     cfg    = monitor.app_cfg
     secret = cfg.hub.secret_key
     client_ip = request.remote_addr or ""
-
-    # Rate limit
-    if not hub_rate_limiter.allow(client_ip):
-        return jsonify({"error":"rate limit exceeded"}), 429
 
     # Verify signature on audio chunks if secret is configured
     if secret:
@@ -10146,7 +10401,165 @@ def hub_data():
             s["site_status"] = "WARN"
         else:
             s["site_status"] = "OK"
+        for st in streams:
+            ai = st.get("ai_status","") or ""
+            if "ALERT" in ai:
+                st["_sort_pri"] = 0
+            elif "WARN" in ai:
+                st["_sort_pri"] = 1
+            else:
+                st["_sort_pri"] = 2
+        streams.sort(key=lambda st: (st.get("_sort_pri", 2), st.get("name","").lower()))
+        s["alert_count"] = sum(1 for st in streams if "ALERT" in (st.get("ai_status","") or ""))
+        s["warn_count"]  = sum(1 for st in streams if "WARN" in (st.get("ai_status","") or ""))
+        s["ok_count"]    = max(0, len(streams) - s["alert_count"] - s["warn_count"])
+        s["problem_count"] = s["alert_count"] + s["warn_count"]
+    sites = sorted(sites, key=lambda s: (0 if s.get("site_status") == "offline" else 1 if s.get("site_status") == "ALERT" else 2 if s.get("site_status") == "WARN" else 3, -(s.get("problem_count", 0)), s.get("site","").lower()))
     return jsonify({"sites": sites, "hub_build": BUILD})
+
+@app.post("/hub/site/remove/<path:site_name>")
+@login_required
+@csrf_protect
+def hub_remove_site(site_name):
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub","both"):
+        return jsonify({"error":"not a hub"}), 404
+    removed = False
+    with hub_server._lock:
+        if site_name in hub_server._sites:
+            hub_server._sites.pop(site_name, None)
+            removed = True
+        snapshot = dict(hub_server._sites)
+    threading.Thread(target=hub_server._save_snapshot, args=(snapshot,),
+                     daemon=True, name="HubSave").start()
+    return jsonify({"ok": True, "removed": removed, "site": site_name})
+
+
+def _hub_stream_relay_response(slot: ListenSlot, startup_timeout: float = 20.0):
+    """
+    Stream bytes arriving on a relay slot back to the browser.
+    Used for live MP3 and NAT-safe WAV fetches.
+    """
+    def generate_relay():
+        deadline = time.time() + startup_timeout
+        started  = False
+        try:
+            while True:
+                try:
+                    chunk = slot.get(timeout=2.0)
+                    started = True
+                    yield chunk
+                except queue.Empty:
+                    if slot.closed:
+                        break
+                    if not started and time.time() > deadline:
+                        print(f"[HubProxy] Relay slot {slot.slot_id} timed out waiting for client ({slot.kind})")
+                        break
+                    if started and slot.stale:
+                        break
+        finally:
+            slot.closed = True
+            listen_registry.remove(slot.slot_id)
+            print(f"[HubProxy] Relay slot {slot.slot_id} closed ({slot.kind})")
+
+    return Response(generate_relay(), mimetype=slot.mimetype,
+        headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no",
+                 "Transfer-Encoding":"chunked"})
+
+def _hub_client_addr_is_private(client_addr: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(client_addr)
+        host = (parsed.hostname or "").strip().lower()
+        if host in ("", "localhost") or host.startswith("127.") or host == "::1":
+            return True
+        import ipaddress
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except Exception:
+        return False
+
+def _hub_prepare_site(site: dict) -> dict:
+    """Prepare one site payload for hub display or replica rendering."""
+    s = dict(site or {})
+    streams = s.get("streams", []) or []
+    if not s.get("online"):
+        s["site_status"] = "offline"
+    elif any("ALERT" in (st.get("ai_status","") or "") for st in streams):
+        s["site_status"] = "ALERT"
+    elif any("WARN" in (st.get("ai_status","") or "") for st in streams):
+        s["site_status"] = "WARN"
+    else:
+        s["site_status"] = "OK"
+    for st in streams:
+        ai = st.get("ai_status","") or ""
+        if "ALERT" in ai:
+            st["_sort_pri"] = 0
+        elif "WARN" in ai:
+            st["_sort_pri"] = 1
+        else:
+            st["_sort_pri"] = 2
+    streams.sort(key=lambda st: (st.get("_sort_pri", 2), st.get("name","").lower()))
+    s["alert_count"] = sum(1 for st in streams if "ALERT" in (st.get("ai_status","") or ""))
+    s["warn_count"] = sum(1 for st in streams if "WARN" in (st.get("ai_status","") or ""))
+    s["ok_count"] = max(0, len(streams) - s["alert_count"] - s["warn_count"])
+    s["problem_count"] = s["alert_count"] + s["warn_count"]
+    return s
+
+@app.get("/hub/site/<path:site_name>/open")
+@login_required
+def hub_open_site(site_name):
+    """Open real client UI when reachable, otherwise open the hub-hosted replica."""
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub","both"):
+        return "Not a hub", 404
+    site = hub_server.get_site(site_name)
+    if not site:
+        return "Site not found", 404
+    client_addr = site.get("_client_addr","")
+    if client_addr and not _hub_client_addr_is_private(client_addr):
+        url = client_addr.rstrip("/") + "/"
+        try:
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                status = getattr(resp, "status", 200)
+                ct = (resp.headers.get("Content-Type","") or "").lower()
+                if status == 200 and ("text/html" in ct or not ct):
+                    return redirect(url)
+        except Exception:
+            pass
+    return redirect(url_for("hub_site_replica", site_name=site_name))
+
+@app.get("/hub/site/<path:site_name>")
+@login_required
+def hub_site_replica(site_name):
+    """Read-only hub replica page populated from the latest heartbeat state."""
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub","both"):
+        return "Not a hub", 404
+    raw_site = hub_server.get_site(site_name)
+    if not raw_site:
+        return "Site not found", 404
+
+    site = _hub_prepare_site(raw_site)
+    client_addr = site.get("_client_addr","")
+    direct_url = None
+    if client_addr and not _hub_client_addr_is_private(client_addr):
+        direct_url = client_addr.rstrip("/") + "/"
+
+    def _ago(s):
+        s = int(s or 0)
+        if s < 5: return "just now"
+        if s < 60: return f"{s}s ago"
+        return f"{s//60}m ago"
+
+    def _rtp_class(p):
+        p = float(p or 0)
+        if p >= 2:   return "rtp-al"
+        if p >= 0.5: return "rtp-wn"
+        return "rtp-ok"
+
+    return render_template_string(HUB_SITE_TPL, site=site, build=BUILD, now=time.time(),
+                                  ago=_ago, rtpClass=_rtp_class, direct_url=direct_url)
 
 @app.get("/hub/site/<path:site_name>/stream/<int:sidx>/live")
 @login_required
@@ -10168,19 +10581,17 @@ def hub_proxy_live(site_name, sidx):
 
     client_addr = site.get("_client_addr","")
 
-    # ── Try direct pull first ─────────────────────────────────────────────────
-    if client_addr:
+    # ── Try direct pull first only when it looks routable from the hub ───────
+    if client_addr and not _hub_client_addr_is_private(client_addr):
         url = f"{client_addr}/stream/{sidx}/live"
         try:
-            # Only use direct pull if the endpoint is genuinely reachable and returns audio.
-            # This avoids treating login pages / redirects / HTML errors as a valid live stream.
             class _NoRedirect(urllib.request.HTTPRedirectHandler):
                 def redirect_request(self, req, fp, code, msg, hdrs, newurl):
                     return None
 
             opener = urllib.request.build_opener(_NoRedirect)
             test_req = urllib.request.Request(url, method="HEAD")
-            with opener.open(test_req, timeout=3) as _test:
+            with opener.open(test_req, timeout=2) as _test:
                 ct = (_test.headers.get("Content-Type", "") or "").split(";")[0].strip().lower()
                 status = getattr(_test, "status", 200)
                 if status != 200 or not ct.startswith("audio/"):
@@ -10207,38 +10618,11 @@ def hub_proxy_live(site_name, sidx):
                          "Transfer-Encoding":"chunked"})
         except Exception as e:
             print(f"[HubProxy] Falling back to relay for {site_name}/{sidx}: {e}")
-            pass  # Not directly reachable / not audio — fall through to relay mode
 
     # ── Relay mode — client is behind NAT ────────────────────────────────────
-    slot = listen_registry.create(site_name, sidx)
+    slot = listen_registry.create(site_name, sidx, kind="live", mimetype="audio/mpeg")
     print(f"[HubProxy] Relay slot {slot.slot_id} created for {site_name}/stream/{sidx}")
-
-    def generate_relay():
-        # Wait up to 12s for the client to start pushing (covers 2 heartbeat cycles)
-        deadline = time.time() + 12.0
-        started  = False
-        try:
-            while True:
-                try:
-                    chunk = slot.get(timeout=2.0)
-                    started = True
-                    yield chunk
-                except queue.Empty:
-                    if slot.closed:
-                        break
-                    if not started and time.time() > deadline:
-                        print(f"[HubProxy] Relay slot {slot.slot_id} timed out waiting for client")
-                        break
-                    if started and slot.stale:
-                        break
-        finally:
-            slot.closed = True
-            listen_registry.remove(slot.slot_id)
-            print(f"[HubProxy] Relay slot {slot.slot_id} closed")
-
-    return Response(generate_relay(), mimetype="audio/mpeg",
-        headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no",
-                 "Transfer-Encoding":"chunked"})
+    return _hub_stream_relay_response(slot, startup_timeout=20.0)
 
 @app.get("/hub/site/<path:site_name>/stream/<int:sidx>/clip")
 @login_required
@@ -10251,18 +10635,27 @@ def hub_proxy_clip(site_name, sidx):
     if not site:
         return "Site not found", 404
     client_addr = site.get("_client_addr","")
-    if not client_addr:
-        return "Client address unknown", 503
     secs = request.args.get("seconds","10")
-    url  = f"{client_addr}/stream/{sidx}/audio.wav?seconds={secs}"
+
+    if client_addr and not _hub_client_addr_is_private(client_addr):
+        url  = f"{client_addr}/stream/{sidx}/audio.wav?seconds={secs}"
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read()
+            return Response(data, mimetype="audio/wav",
+                headers={"Content-Disposition":f'attachment; filename="hub_{site_name}_{sidx}.wav"'})
+        except Exception as e:
+            print(f"[HubProxy] Falling back to relay WAV for {site_name}/{sidx}: {e}")
+
     try:
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = resp.read()
-        return Response(data, mimetype="audio/wav",
-            headers={"Content-Disposition":f'attachment; filename="hub_{site_name}_{sidx}.wav"'})
-    except Exception as e:
-        return f"Could not fetch clip from client: {e}", 502
+        secs_f = max(1.0, min(float(secs), STREAM_BUFFER_SECONDS))
+    except Exception:
+        secs_f = 10.0
+    slot = listen_registry.create(site_name, sidx, kind="buffer_wav",
+                                  seconds=secs_f, mimetype="audio/wav")
+    print(f"[HubProxy] Relay WAV slot {slot.slot_id} created for {site_name}/stream/{sidx}")
+    return _hub_stream_relay_response(slot, startup_timeout=20.0)
 
 @app.get("/hub/site/<path:site_name>/alerts/clip/<stream_name>/<filename>")
 @login_required
@@ -10275,17 +10668,23 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
     if not site:
         return "Site not found", 404
     client_addr = site.get("_client_addr","")
-    if not client_addr:
-        return "Client address unknown", 503
-    url = f"{client_addr}/clips/{urllib.parse.quote(stream_name)}/{urllib.parse.quote(filename)}"
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as resp:
-            data = resp.read()
-        return Response(data, mimetype="audio/wav",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"',
-                     "Cache-Control": "public, max-age=3600"})
-    except Exception as e:
-        return f"Could not fetch clip: {e}", 502
+
+    if client_addr and not _hub_client_addr_is_private(client_addr):
+        url = f"{client_addr}/clips/{urllib.parse.quote(stream_name)}/{urllib.parse.quote(filename)}"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as resp:
+                data = resp.read()
+            return Response(data, mimetype="audio/wav",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                         "Cache-Control": "public, max-age=3600"})
+        except Exception as e:
+            print(f"[HubProxy] Falling back to relay alert clip for {site_name}: {e}")
+
+    slot = listen_registry.create(site_name, 0, kind="alert_wav",
+                                  stream_name=stream_name, filename=filename,
+                                  mimetype="audio/wav")
+    print(f"[HubProxy] Relay alert clip slot {slot.slot_id} created for {site_name}/{filename}")
+    return _hub_stream_relay_response(slot, startup_timeout=20.0)
 
 
 @app.get("/hub/reports")
@@ -10342,45 +10741,41 @@ def hub_reports():
 HUB_REPORTS_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Hub Alert Reports — SignalScope</title>
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#e2e8f0;--mu:#64748b}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:13px}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 42%, #05101f 100%);color:var(--tx);font-size:13px;position:relative}
+body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}
+body>*{position:relative;z-index:1}
+a{color:var(--acc);text-decoration:none}
+header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
+nav{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap;align-items:center}
 .badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
-.btn{display:inline-block;padding:5px 12px;border-radius:6px;font-size:12px;cursor:pointer;border:none;text-decoration:none;font-weight:500}
+.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600}.btn:hover{filter:brightness(1.05)}
 .bg{background:var(--bor);color:var(--tx)}.bp{background:var(--acc);color:#fff}.bw{background:#7c2d12;color:#fca5a5}
 .bd{background:var(--al);color:#fff}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
-.ss-header{background:linear-gradient(180deg,#111827,#0b1220)!important;border-bottom:1px solid var(--bor)!important;padding:14px 22px!important;display:flex;align-items:center;gap:16px;flex-wrap:wrap;box-shadow:0 3px 14px rgba(0,0,0,.28)}
-.ss-brand{display:flex;align-items:center;gap:14px;color:var(--tx)}
-.ss-logo{height:72px;width:auto;display:block;filter:drop-shadow(0 2px 6px rgba(0,0,0,.45))}
-.ss-brandcopy{display:flex;flex-direction:column;gap:2px}
-.ss-title{font-size:24px;font-weight:800;letter-spacing:.2px;line-height:1}
-.ss-subtitle{font-size:12px;color:var(--mu);letter-spacing:.08em;text-transform:uppercase}
-.ss-build{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
-.ss-nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-left:auto}
-body.report-page .ss-logo{height:42px;max-height:42px}
-body.report-page .ss-title{font-size:20px}
+/* Hub reports uses the shared topnav/header styling from the main app */
 main{padding:18px 20px 24px}
-.report-hero{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:14px 18px;background:linear-gradient(180deg,#161a22,#131722);border-bottom:1px solid var(--bor)}
+.report-hero{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:14px 18px;background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;margin-bottom:14px}
 .report-title{font-size:20px;font-weight:800;line-height:1.1}
 .report-sub{font-size:12px;color:var(--mu);margin-top:4px}
 .hero-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.filters{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center;background:#121722;border:1px solid var(--bor);border-radius:12px;padding:12px}
-.filters select,.filters input{background:#1e2433;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 10px;font-size:12px}
+.filters{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center;background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px}
+.filters select,.filters input{background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 10px;font-size:12px}
 .filters label{color:var(--mu);font-size:12px}
 .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px}
-.sc{background:linear-gradient(180deg,#161a22,#131722);border:1px solid var(--bor);border-radius:12px;padding:12px 14px;box-shadow:0 4px 10px rgba(0,0,0,.18)}
+.sc{background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px 14px;box-shadow:0 4px 10px rgba(0,0,0,.14)}
 .sc-val{font-size:24px;font-weight:800;line-height:1.1}.sc-lbl{font-size:11px;color:var(--mu);margin-top:4px;text-transform:uppercase;letter-spacing:.08em}
-.metrics-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.metric-chip{padding:8px 10px;border:1px solid var(--bor);border-radius:999px;background:#121722;font-size:12px}.metric-chip strong{color:var(--tx)}
-.table-wrap{border:1px solid var(--bor);border-radius:12px;overflow:hidden;background:var(--sur);box-shadow:0 4px 10px rgba(0,0,0,.18)}
+.metrics-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.metric-chip{padding:8px 10px;border:1px solid var(--bor);border-radius:999px;background:#12305c;font-size:12px}.metric-chip strong{color:var(--tx)}
+.table-wrap{border:1px solid var(--bor);border-radius:12px;overflow:hidden;background:rgba(13,35,70,.96);box-shadow:0 4px 10px rgba(0,0,0,.14)}
 table{width:100%;border-collapse:collapse}
-thead th{text-align:left;padding:8px 10px;background:#151b26;border-bottom:2px solid var(--bor);font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;position:sticky;top:0;z-index:2}
+thead th{text-align:left;padding:8px 10px;background:#12305c;border-bottom:2px solid var(--bor);font-size:11px;color:#c5dcff;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;position:sticky;top:0;z-index:2}
 tbody td{padding:8px 10px;border-bottom:1px solid var(--bor);vertical-align:top}
-tr:hover td{background:#1a1f2e}
+tr:hover td{background:#123764}
 .type-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
 .site-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;background:#1e2a3a;color:var(--acc);white-space:nowrap}
 .offline-site{opacity:0.6}
-.t-silence{background:#1e2433;color:#93c5fd}.t-clip{background:#3a1e1e;color:#fca5a5}
-.t-hiss{background:#2a2a1e;color:#fde68a}.t-rtp{background:#1e2433;color:#c4b5fd}
+.t-silence{background:#173a69;color:#93c5fd}.t-clip{background:#3a1e1e;color:#fca5a5}
+.t-hiss{background:#2a2a1e;color:#fde68a}.t-rtp{background:#173a69;color:#c4b5fd}
 .t-ai_alert{background:#3a1e1e;color:#fca5a5}.t-ai_warn{background:#3a2a0f;color:#fde68a}
 .t-ptp{background:#1e3a2a;color:#86efac}.t-cmp{background:#2a1e3a;color:#d8b4fe}
 .t-other{background:var(--bor);color:var(--mu)}
@@ -10390,20 +10785,12 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 .no-data{text-align:center;padding:48px;color:var(--mu)}
 .page-info{color:var(--mu);font-size:12px;margin-left:auto}
 </style>
-<link rel="icon" type="image/x-icon" href="/favicon.ico"></head><body class="report-page">
+<link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("hub_reports") }}
-<div class="report-hero">
-  <div>
-    <div class="report-title">Hub Alert Reports</div>
-    <div class="report-sub">Multi-site alert timeline, clip playback, and network event summary for SignalScope.</div>
-  </div>
-  <div class="hero-actions">
-    <span class="badge">{{total}} events from {{site_names|length}} site{{"s" if site_names|length!=1 else ""}}</span>
-    <a href="/hub" class="btn bg">← Hub</a>
-  </div>
-</div>
-
 <main>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+    <span class="badge">{{total}} events from {{site_names|length}} site{{"s" if site_names|length!=1 else ""}}</span>
+  </div>
   <div class="summary">
     <div class="sc"><div class="sc-val" id="sc-total">{{total}}</div><div class="sc-lbl">Total Events</div></div>
     <div class="sc"><div class="sc-val" id="sc-critical" style="color:var(--al)">{{counts.get('SILENCE',0)+counts.get('AI_ALERT',0)+counts.get('RTP_LOSS',0)}}</div><div class="sc-lbl">🔴 Critical</div></div>
@@ -10540,26 +10927,275 @@ window.addEventListener('DOMContentLoaded', function(){
 
 # ─── Hub dashboard template ───────────────────────────────────────────────────
 
+HUB_SITE_TPL = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{{site.site}} — SignalScope Replica</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style nonce="{{csp_nonce()}}">
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}
+body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}
+body>*{position:relative;z-index:1}
+a{color:var(--acc);text-decoration:none}
+header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
+main{padding:18px;max-width:1500px;margin:0 auto}
+.btn{display:inline-block;padding:6px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600}
+.bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}
+.badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
+.site-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.18)}
+.site-card.site-ok{border-left:4px solid var(--ok)}.site-card.site-warn{border-left:4px solid var(--wn)}.site-card.site-alert{border-left:4px solid var(--al)}.site-card.site-offline{border-left:4px solid var(--mu)}
+.site-header{padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--bor);flex-wrap:wrap}
+.site-name{font-size:18px;font-weight:700}
+.site-meta{font-size:12px;color:var(--mu)}
+.sum-pill{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border-radius:999px;background:linear-gradient(180deg,#143766,#102b54);border:1px solid var(--bor);font-size:12px}
+.note{padding:10px 16px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#12305c,#10284f);color:#b7d0f3;font-size:12px}
+.offline-banner{padding:10px 16px;background:#2a1e1e;color:#fecaca;border-bottom:1px solid #3f2323}
+.streams{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;padding:14px}
+.sc{background:#123764;border:1px solid var(--bor);border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.sc.stats-alert{border-left:3px solid var(--al)}.sc.stats-warn{border-left:3px solid var(--wn)}
+.dot{width:9px;height:9px;border-radius:999px;display:inline-block;flex-shrink:0}
+.dok{background:var(--ok)}.dwn{background:var(--wn)}.dal{background:var(--al)}.dlr{background:#60a5fa}.dot-off{background:#64748b}
+.sc-name{padding:9px 10px;border-bottom:1px solid var(--bor);display:flex;align-items:center;gap:7px}
+.lbar-wrap{display:flex;align-items:center;gap:7px;padding:6px 10px}
+.lbar-track{flex:1;height:8px;background:linear-gradient(180deg,#12305c,#10284f);border-radius:999px;overflow:hidden;border:1px solid var(--bor)}
+.lbar-fill{height:100%}.lbar-val{font-size:11px;min-width:62px;text-align:right}
+.sc-row{display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(255,255,255,.04)}
+.sc-row:last-child{border-bottom:none}
+.alert-badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.04em;margin-left:4px}
+.badge-silence{background:#102033;color:#93c5fd}.badge-hiss{background:#3a2f0f;color:#fde68a}.badge-clip{background:#381414;color:#fca5a5}.badge-ai{background:#14263a;color:#93c5fd}
+.stats-block{margin-top:6px;border-top:1px solid var(--bor);padding-top:6px}
+.stats-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;color:var(--mu);font-size:11px;padding:4px 0;cursor:pointer}
+.aib{padding:6px 10px;font-size:11px;font-weight:700;border-top:1px solid var(--bor)} .aok{background:#13261a;color:#86efac}.awn{background:#2f2410;color:#fde68a}.aal{background:#341313;color:#fca5a5}.aid{background:#1a2130;color:#94a3b8}.alr{background:#10263a;color:#93c5fd}
+.pb{background:var(--bor);border-radius:4px;height:4px;margin:4px 13px 8px;overflow:hidden}.pbi{height:4px;border-radius:4px;background:var(--acc);transition:width .6s}
+.np-strip{padding:7px 13px;border-top:1px solid var(--bor);display:flex;gap:9px;align-items:center;min-height:52px}
+.np-art{width:38px;height:38px;border-radius:4px;object-fit:cover;display:none;flex-shrink:0}
+.np-text{min-width:0}.np-title{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.np-sub{font-size:11px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.listen-strip{padding:7px 13px;border-top:1px solid var(--bor);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.listen-strip audio{flex:1;min-width:0;height:28px}
+.hist-wrap{border-top:1px solid var(--bor)} .hist-toggle{width:100%;padding:5px 13px;background:none;border:none;color:var(--mu);font-size:11px;text-align:left;cursor:pointer;display:flex;justify-content:space-between}
+.hist-toggle:hover{background:#123764} .hist{max-height:90px;overflow-y:auto;font-size:11px;color:var(--mu)} .hev{padding:3px 13px;border-bottom:1px solid var(--bor)}
+.rtp-ok{color:var(--ok)}.rtp-wn{color:var(--wn)}.rtp-al{color:var(--al)}
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
+{{ topnav("hub") }}
+<main>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+    <a class="btn bg" href="/hub">← Back to Hub</a>
+    <span class="badge">Read-only replica</span>
+    {% if direct_url %}<a class="btn bp" href="{{direct_url}}" target="_blank" rel="noopener">Open Real Site</a>{% endif %}
+  </div>
+
+  <div class="site-card site-{{'ok' if site.site_status=='OK' else 'warn' if site.site_status=='WARN' else 'alert' if site.site_status=='ALERT' else 'offline'}}">
+    <div class="site-header">
+      <span class="dot {{'dok' if site.site_status=='OK' else 'dwn' if site.site_status=='WARN' else 'dal' if site.site_status=='ALERT' else 'dot-off'}}"></span>
+      <span class="site-name">{{site.site}}</span>
+      <span class="badge">{{site.site_status}}</span>
+      {% if site.running %}<span class="badge" style="background:#1e2a1e;color:#86efac">▶ Running</span>{% else %}<span class="badge" style="background:#2a2a1e;color:var(--mu)">⏸ Stopped</span>{% endif %}
+      {% if site.build %}<span class="badge">{{site.build}}</span>{% endif %}
+      <span class="site-meta">Last seen: {{ago(site.age_s)}}</span>
+      {% if site.latency_ms is not none %}<span class="site-meta">Latency: {{site.latency_ms}} ms</span>{% endif %}
+      {% if site.health_pct is defined %}<span class="site-meta" style="color:{{'var(--ok)' if site.health_pct>=99 else ('var(--wn)' if site.health_pct>=95 else 'var(--al)')}}">⚡ {{site.health_pct}}%</span>{% endif %}
+    </div>
+    <div style="padding:8px 16px;border-bottom:1px solid var(--bor);display:flex;gap:8px;flex-wrap:wrap;background:linear-gradient(180deg,#12305c,#10284f)">
+      <span class="sum-pill">🎚 {{site.streams|length}} streams</span>
+      <span class="sum-pill" style="color:var(--al)">🚨 {{site.alert_count}} alert</span>
+      <span class="sum-pill" style="color:var(--wn)">⚠ {{site.warn_count}} warn</span>
+      <span class="sum-pill" style="color:var(--ok)">✅ {{site.ok_count}} ok</span>
+    </div>
+    <div class="note">This page is a hub-hosted read-only replica populated from heartbeat data. Remote add, remove, and edit controls can come later.</div>
+
+    {% if not site.online %}
+    <div class="offline-banner">⚠ No heartbeat received for {{site.age_s}}s — site may be down</div>
+    {% else %}
+    <div class="streams">
+      {% for s in site.streams %}
+      {% set i = loop.index0 %}
+      {% set ai = s.ai_status or 'Idle' %}
+      {% set lev = s.level_dbfs %}
+      {% set lpct = [(lev+80)/80*100, 100]|min|int %}
+      {% set lcol = 'var(--al)' if lev<=-55 else ('var(--wn)' if lev<=-20 else 'var(--ok)') %}
+      {% set ph = s.ai_phase or '' %}
+      {% set dc = 'dok' %}
+      {% if '[ALERT]' in ai %}{% set dc='dal' %}{% elif '[WARN]' in ai %}{% set dc='dwn' %}{% elif ph=='learning' %}{% set dc='dlr' %}{% endif %}
+      <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}">
+        <div class="sc-name">
+          <span class="dot {{dc}}"></span>
+          <strong style="font-size:12px">{{s.name}}</strong>
+          <span style="font-size:10px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap">{{s.device_index or ''}}</span>
+        </div>
+        <div class="lbar-wrap">
+          <span style="font-size:11px;color:var(--mu);width:28px">Lvl</span>
+          <div class="lbar-track"><div class="lbar-fill" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
+          <span class="lbar-val" style="color:{{lcol}}">{{lev}} dB</span>
+        </div>
+        <div style="padding:0 10px 4px">
+          <div class="sc-row">Format <span style="font-size:11px;color:var(--mu)">{{s.format or '—'}}</span></div>
+          <div class="sc-row">RTP Loss <span class="{{rtpClass(s.rtp_loss_pct)}}">{{s.rtp_loss_pct}}% <span style="color:var(--mu);font-size:11px">{{s.rtp_total or 0}} pkts</span></span></div>
+          {% if s.sla_pct is not none %}<div class="sc-row">SLA <span style="color:{{'var(--ok)' if s.sla_pct>=99 else 'var(--wn)'}}">{{s.sla_pct}}%</span></div>{% endif %}
+          <div class="sc-row">Alerts
+            <span style="font-size:12px">
+              {%if s.alert_on_silence%}<span class="alert-badge badge-silence">SIL</span>{%endif%}
+              {%if s.alert_on_hiss%}<span class="alert-badge badge-hiss">HISS</span>{%endif%}
+              {%if s.alert_on_clip%}<span class="alert-badge badge-clip">CLIP</span>{%endif%}
+              {%if s.ai_monitor%}<span class="alert-badge badge-ai">AI</span>{%endif%}
+            </span>
+          </div>
+          {% if s.device_index and s.device_index.lower().startswith('dab://') %}
+          <details class="stats-block">
+            <summary class="stats-toggle">DAB signal stats <span>▼</span></summary>
+            <div class="sc-row">DAB SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">📶 {{s.dab_snr}} dB</span></div>
+            <div class="sc-row">Signal <span>📶 {{s.dab_sig}} dBm</span></div>
+            <div class="sc-row">Ensemble <span style="font-size:11px">{{s.dab_ensemble or '—'}}</span></div>
+            <div class="sc-row">Service <span style="font-size:11px">{{s.dab_service or '—'}}</span></div>
+          </details>
+          {% endif %}
+          {% if s.device_index and s.device_index.lower().startswith('fm://') %}
+          <details class="stats-block">
+            <summary class="stats-toggle">FM / RDS stats <span>▼</span></summary>
+            <div class="sc-row">Signal <span>📶 {{s.fm_signal_dbm}} dBFS</span></div>
+            <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
+            <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
+            <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}}">{% if s.fm_rds_ok %}📡 {{s.fm_rds_ps or 'Locked'}}{% else %}— No RDS{% endif %}</span></div>
+            <div class="sc-row" {% if not s.fm_rds_rt %}style="display:none"{% endif %}>Text <span style="font-size:11px">{% if s.fm_rds_rt %}🎵 {{s.fm_rds_rt}}{% else %}—{% endif %}</span></div>
+          </details>
+          {% endif %}
+        </div>
+        {% if s.ai_monitor %}
+        {% set ac = 'alr' if ph=='learning' else ('aal' if '[ALERT]' in ai else ('awn' if '[WARN]' in ai else ('aok' if '[OK]' in ai else 'aid'))) %}
+        <div class="aib {{ac}}">🤖 {{ai if ai else ('Waiting…' if site.running else 'Not running')}}</div>
+        {% if ph=='learning' and s.ai_learn_start %}
+          {% set pct = [(now - s.ai_learn_start) / site.learn_dur * 100, 100]|min|int %}
+          <div class="pb"><div class="pbi" style="width:{{pct}}%"></div></div>
+        {% endif %}
+        {% endif %}
+        {% if s.nowplaying_station_id %}
+        <div class="np-strip" id="rnp_{{i}}">
+          <img class="np-art" id="rnpa_{{i}}" src="" alt="" style="display:none">
+          <div class="np-text">
+            <div class="np-title" id="rnpt_{{i}}">Loading…</div>
+            <div class="np-sub" id="rnpar_{{i}}"></div>
+            <div class="np-sub" id="rnps_{{i}}" style="color:var(--acc)"></div>
+          </div>
+        </div>
+        <script nonce="{{csp_nonce()}}">(function(){
+          var si='{{i}}', rpuid='{{s.nowplaying_station_id}}';
+          function fnp(){fetch('/api/nowplaying/'+rpuid).then(r=>r.json()).then(function(d){
+            document.getElementById('rnpt_'+si).textContent=d.title||'—';
+            document.getElementById('rnpar_'+si).textContent=d.artist||'';
+            document.getElementById('rnps_'+si).textContent=d.show||'';
+            var a=document.getElementById('rnpa_'+si);
+            if(d.artwork){a.src='/api/nowplaying_art/'+encodeURIComponent(rpuid)+'?ts='+Date.now();a.style.display='block';} else {a.removeAttribute('src'); a.style.display='none';}
+          }).catch(()=>{});}
+          fnp(); setInterval(fnp,30000);
+        })();</script>
+        {% endif %}
+        <div class="listen-strip">
+          <select id="rhdur_{{i}}" style="padding:3px 5px;font-size:11px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx)">
+            <option value="5">5s</option><option value="10" selected>10s</option><option value="20">20s</option><option value="30">30s</option>
+          </select>
+          <a class="btn bg" href="/hub/site/{{site.site|urlencode}}/stream/{{i}}/clip?seconds=10" download>⬇ Clip</a>
+          <button class="btn bp" data-rep-live="{{i}}" data-url="/hub/site/{{site.site|urlencode}}/stream/{{i}}/live">▶ Live</button>
+          <audio id="rep_live_{{i}}" style="display:none;flex:1;min-width:0;height:24px" controls></audio>
+        </div>
+        {% if s.history %}
+        <div class="hist-wrap">
+          <button class="hist-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='block'?'none':'block'">Recent events <span>▼</span></button>
+          <div class="hist" style="display:none">
+            {% for h in s.history[:8] %}
+            <div class="hev">{{h.ts or ''}} — {{h.msg or h.text or h.type or 'Event'}}</div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</main>
+<script nonce="{{csp_nonce()}}">
+document.addEventListener('click', function(ev){
+  var btn = ev.target.closest('button[data-rep-live]');
+  if(!btn) return;
+  var idx = btn.getAttribute('data-rep-live');
+  var url = btn.getAttribute('data-url');
+  var audio = document.getElementById('rep_live_'+idx);
+  if(!audio) return;
+  if(audio.style.display === 'none'){
+    audio.src = url;
+    audio.style.display = 'block';
+    audio.play().catch(function(){});
+    btn.textContent = '⏹ Stop';
+  }else{
+    audio.pause(); audio.removeAttribute('src'); audio.load();
+    audio.style.display = 'none';
+    btn.textContent = '▶ Live';
+  }
+});
+document.addEventListener('change', function(ev){
+  var sel = ev.target;
+  if(!sel.id || !sel.id.startsWith('rhdur_')) return;
+  var a = sel.parentElement.querySelector('a[href*="/clip?seconds="]');
+  if(a){ a.href = a.href.replace(/seconds=\d+/, 'seconds=' + encodeURIComponent(sel.value)); }
+});
+</script>
+<footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build}} • Broadcast Signal Intelligence</footer>
+</body></html>"""
+
 HUB_TPL = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>SignalScope — Hub</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#e2e8f0;--mu:#64748b}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:14px}
-header{background:var(--sur);border-bottom:1px solid var(--bor);padding:11px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
+header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
 header h1{font-size:17px;font-weight:700}.badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
 .nav-active{background:var(--acc)!important;color:#fff!important}
 nav a{color:var(--tx);font-size:13px;padding:5px 10px;border-radius:6px;background:var(--bor);text-decoration:none}
-main{padding:18px;max-width:1400px;margin:0 auto}
-.site-card{background:var(--sur);border:1px solid var(--bor);border-radius:10px;margin-bottom:20px;overflow:hidden}
+main{padding:18px;max-width:1600px;margin:0 auto}
+body.wall-mode header, body.wall-mode .hub-topbar{display:none}
+body.wall-mode main{padding:10px;max-width:none}
+.hub-summary{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.sum-pill{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border-radius:999px;background:linear-gradient(180deg,#143766,#102b54);border:1px solid var(--bor);font-size:12px}
+.hub-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.search{min-width:280px;flex:1;max-width:460px;padding:9px 11px;background:#12305c;border:1px solid var(--bor);border-radius:8px;color:var(--tx)}
+.site-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;align-items:start}
+body.wall-mode .site-grid{grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:14px}
+.site-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;margin-bottom:0;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.18);transition:transform .14s, box-shadow .14s}
+.site-card:hover{transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.24)}
+.site-card.site-ok{border-left:4px solid var(--ok)}.site-card.site-warn{border-left:4px solid var(--wn)}.site-card.site-alert{border-left:4px solid var(--al)}.site-card.site-offline{border-left:4px solid var(--mu)}
 .site-header{padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--bor);flex-wrap:wrap}
 .site-name{font-size:16px;font-weight:700}
+body.wall-mode .site-card{border-radius:10px}
+body.wall-mode .site-header{padding:10px 14px;background:linear-gradient(180deg,#143766,#102b54)}
+body.wall-mode .site-name{font-size:18px}
+body.wall-mode .site-meta{font-size:13px}
 .site-meta{color:var(--mu);font-size:12px;margin-left:auto}
 .dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0}
 .dot-ok{background:var(--ok)}.dot-wn{background:var(--wn)}.dot-al{background:var(--al)}.dot-off{background:var(--mu)}
 .dok{background:var(--ok)}.dwn{background:var(--wn)}.dal{background:var(--al)}.dlr{background:var(--acc)}.did{background:var(--mu)}
-.streams{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:14px}
-.sc{background:#1a1f2e;border:1px solid var(--bor);border-radius:8px;overflow:hidden}
+.streams{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;padding:14px}
+
+@keyframes alertPulse {
+  0% { box-shadow:0 0 0 0 rgba(239,68,68,0.7); }
+  70% { box-shadow:0 0 0 10px rgba(239,68,68,0); }
+  100% { box-shadow:0 0 0 0 rgba(239,68,68,0); }
+}
+.alert-flash{
+  animation:alertPulse 1.2s ease-out;
+}
+
+body.wall-mode .streams{grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;padding:10px}
+.sc{background:#123764;border:1px solid var(--bor);border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.12);min-height:330px}
+body.wall-mode .sc{min-height:260px}
+.sc.stats-alert{border-left:3px solid var(--al)}.sc.stats-warn{border-left:3px solid var(--wn)}
+.alert-badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.04em;margin-left:4px}
+.badge-silence{background:#102033;color:#93c5fd}.badge-hiss{background:#3a2f0f;color:#fde68a}.badge-clip{background:#381414;color:#fca5a5}.badge-ai{background:#14263a;color:#93c5fd}
+.stats-block{margin-top:6px;border-top:1px solid var(--bor);padding-top:6px}
+.stats-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;color:var(--mu);font-size:11px;padding:4px 0;cursor:pointer}
+.stats-toggle:hover{color:var(--tx)}
+.site-card.dragging{opacity:.55}.site-card.skeleton{position:relative}
+.site-card.skeleton::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.05),transparent);transform:translateX(-100%);animation:hubshimmer 1.2s infinite}
+@keyframes hubshimmer{100%{transform:translateX(100%)}}
 .sc-name{font-weight:600;font-size:13px;padding:10px 10px 4px;display:flex;align-items:center;gap:6px}
 .sc-row{display:flex;justify-content:space-between;font-size:12px;color:var(--mu);margin-top:4px}
 .sc-row span{color:var(--tx)}
@@ -10573,7 +11209,7 @@ main{padding:18px;max-width:1400px;margin:0 auto}
 .aok{background:#1e3a1e;color:var(--ok)}.awn{background:#3a2a0f;color:var(--wn)}.aal{background:#3a0f0f;color:var(--al)}.alr{background:#1e2a3a;color:var(--acc)}.aid{background:var(--bor);color:var(--mu)}
 .pb{height:4px;background:var(--bor);margin:0 10px 4px;border-radius:2px}
 .pbi{height:4px;background:var(--acc);border-radius:2px;transition:width .5s}
-.np-strip{display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid var(--bor);background:#0d1218}
+.np-strip{display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid var(--bor);background:linear-gradient(180deg,#12305c,#10284f)}
 .np-art{width:36px;height:36px;border-radius:4px;object-fit:cover}
 .np-text{flex:1;min-width:0}
 .np-title{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -10641,14 +11277,31 @@ function toggleLive(siteIdx,streamIdx,btn){
 }// ── Hub AJAX refresh ──────────────────────────────────────────
 function hubRefresh(){
   fetch('/hub/data').then(r=>r.json()).then(data=>{
-    data.sites.forEach(function(site){
+    data.updateAlertTicker(sites);
+      
+        (site.streams||[]).forEach(function(st){
+          var key=site.site+"_"+st.name;
+          var state=(st.ai_status||"");
+          if((state.includes("ALERT")||state.includes("WARN")) && lastAlertState[key]!==state){
+            playAlertSound();
+            var card=document.querySelector('[data-name="'+st.name+'"]');
+            if(card){card.classList.add('alert-flash');setTimeout(()=>card.classList.remove('alert-flash'),1200);}
+          }
+          lastAlertState[key]=state;
+        });
+
+sites.forEach(function(site){
       var sid = 'site-' + site.site.replace(/ /g,'_').replace(/[.]/g,'_').replace(/-/g,'_');
       var card = document.getElementById(sid);
       if(!card) return;
       var dot = card.querySelector('.site-header .dot');
       if(dot) dot.className='dot dot-'+(site.site_status==='OK'?'ok':site.site_status==='WARN'?'wn':site.site_status==='ALERT'?'al':'off');
+      card.className='site-card site-'+(site.site_status==='OK'?'ok':site.site_status==='WARN'?'warn':site.site_status==='ALERT'?'alert':'offline');
+      card.classList.remove('skeleton');
       var meta = card.querySelector('.site-meta');
       if(meta) meta.textContent = 'Last seen: ' + agoJS(site.age_s);
+      var latency = card.querySelector('.site-meta-latency');
+      if(latency && site.latency_ms != null) latency.textContent = 'Latency: ' + site.latency_ms + ' ms';
       // Update version badge colour against hub build
       var vbadge = card.querySelector('.site-version-badge');
       if(vbadge && site.build){
@@ -10715,6 +11368,75 @@ function hubRefresh(){
   }).catch(()=>{});
 }
 function agoJS(s){ s=Math.round(s||0); if(s<5)return'just now'; if(s<60)return s+'s ago'; return Math.round(s/60)+'m ago'; }
+function _csrfFetch(url,opts){
+  opts=opts||{};
+  if(!opts.headers) opts.headers={};
+  var t=(document.querySelector('meta[name="csrf-token"]') || {}).content || "";
+  opts.headers["X-CSRFToken"]=t;
+  return fetch(url,opts);
+}
+function initCardSearch(inputId, gridId, itemSelector){
+  var input=document.getElementById(inputId), grid=document.getElementById(gridId);
+  if(!input || !grid) return;
+  function apply(){
+    var q=(input.value||'').toLowerCase().trim();
+    grid.querySelectorAll(itemSelector).forEach(function(card){
+      var hay=(card.innerText||'').toLowerCase();
+      card.style.display = !q || hay.indexOf(q) !== -1 ? '' : 'none';
+    });
+  }
+  input.addEventListener('input', apply);
+}
+function initDragGrid(gridId, storageKey, itemSelector){
+  var grid=document.getElementById(gridId);
+  if(!grid) return;
+  var dragEl=null;
+  function saveOrder(){
+    var ids=Array.from(grid.querySelectorAll(itemSelector)).map(function(el){return el.id;}).filter(Boolean);
+    localStorage.setItem(storageKey, JSON.stringify(ids));
+  }
+  function restoreOrder(){
+    try{
+      var ids=JSON.parse(localStorage.getItem(storageKey)||'[]');
+      ids.forEach(function(id){
+        var el=document.getElementById(id);
+        if(el) grid.appendChild(el);
+      });
+    }catch(e){}
+  }
+  restoreOrder();
+  grid.querySelectorAll(itemSelector).forEach(function(card){
+    card.addEventListener('dragstart', function(){dragEl=card; card.classList.add('dragging');});
+    card.addEventListener('dragend', function(){card.classList.remove('dragging'); saveOrder();});
+    card.addEventListener('dragover', function(e){
+      e.preventDefault();
+      if(!dragEl || dragEl===card) return;
+      var rect=card.getBoundingClientRect();
+      var before=(e.clientY - rect.top) < rect.height/2;
+      grid.insertBefore(dragEl, before ? card : card.nextSibling);
+    });
+  });
+}
+function removeSite(siteName, btn){
+  if(!confirm('Remove '+siteName+' from the hub dashboard?')) return;
+  _csrfFetch('/hub/site/remove/'+encodeURIComponent(siteName), {method:'POST'})
+    .then(function(r){return r.json();})
+    .then(function(d){ if(d.ok){ var card=btn.closest('.site-card'); if(card) card.remove(); } })
+    .catch(function(){});
+}
+function toggleFullscreen(){
+  if(!document.fullscreenElement){
+    document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+  }else{
+    document.exitFullscreen && document.exitFullscreen();
+  }
+}
+function tickClock(){
+  var el=document.getElementById('wallClock');
+  if(!el) return;
+  var d=new Date();
+  el.textContent=d.toLocaleTimeString();
+}
 
 // CSP-safe button wiring for hub listen buttons
 document.addEventListener('click', function(e){
@@ -10727,17 +11449,47 @@ document.addEventListener('click', function(e){
 
 // Only start polling after the DOM is fully rendered
 document.addEventListener('DOMContentLoaded', function(){
-  setTimeout(function(){ setInterval(hubRefresh, 5000); }, 2000);
+  initCardSearch('hubSearch', 'site-grid', '.site-card');
+  initDragGrid('site-grid', 'signalscope.hub.order', '.site-card');
+  tickClock();
+  setInterval(tickClock, 1000);
+  setTimeout(function(){
+    document.querySelectorAll('.site-card').forEach(function(el){el.classList.remove('skeleton');});
+    setInterval(hubRefresh, 5000);
+  }, 800);
 });
 </script>
-<link rel="icon" type="image/x-icon" href="/favicon.ico"></head><body>
+<link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("hub") }}
-<div style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;gap:7px;align-items:center">
+<div class="hub-topbar" style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;gap:7px;align-items:center">
   <span style="font-size:13px;font-weight:600">🛰 Hub Dashboard</span>
   <span class="badge">{{sites|length}} site{{"s" if sites|length!=1 else ""}}</span>
-  <div style="margin-left:auto"><a href="/hub/reports" class="btn bp bs">📋 Hub Reports</a></div>
+  <div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+    <a href="/hub?wall={{'0' if wall_mode else '1'}}{% if problems_only %}&problems=1{% endif %}" class="btn bg bs">{{'🧰 Normal Mode' if wall_mode else '🖥 Wall Mode'}}</a>
+    <button type="button" class="btn bg bs" onclick="toggleFullscreen()">⛶ Fullscreen</button>
+    <a href="/hub?{% if wall_mode %}wall=1&{% endif %}problems={{'0' if problems_only else '1'}}" class="btn bg bs">{{'Show all sites' if problems_only else 'Show only problem sites'}}</a>
+    <a href="/hub/reports" class="btn bp bs">📋 Hub Reports</a>
+  </div>
 </div>
 <main>
+  <div class="hub-summary">
+    <div id="alertTicker" style="width:100%;margin-top:6px;font-size:12px;color:var(--wn)"></div>
+    <span class="sum-pill">🕒 <span id="wallClock">{{fmt(now)}}</span></span>
+    <span class="sum-pill">🏗 {{build}}</span>
+    <span class="sum-pill">📡 {{sites|length}} site{{"s" if sites|length!=1 else ""}}</span>
+    <span class="sum-pill" style="color:var(--al)">⛔ {{offline_count}} offline</span>
+    <span class="sum-pill" style="color:var(--al)">🚨 {{alert_site_count}} alert</span>
+    <span class="sum-pill" style="color:var(--wn)">⚠ {{warn_site_count}} warn</span>
+    <span class="sum-pill" style="color:var(--acc)">⏳ {{stale_count}} stale</span>
+  </div>
+
+  <div class="sum-pill">🖥 CPU {{hub_cpu if hub_cpu!=None else "—"}}%</div>
+  <div class="sum-pill">💾 RAM {{hub_mem if hub_mem!=None else "—"}}%</div>
+
+  <div class="hub-toolbar">
+    <input id="hubSearch" class="search" type="text" placeholder="Search sites, streams, FM, DAB, alerts…">
+    <span class="badge">Drag site cards to reorder</span>
+  </div>
 {% if not sites %}
   <div class="no-sites">
     <div style="font-size:48px;margin-bottom:12px">📡</div>
@@ -10745,9 +11497,10 @@ document.addEventListener('DOMContentLoaded', function(){
     <div>No heartbeats received yet. Configure each site to point to this hub and enable hub reporting in their Settings.</div>
   </div>
 {% else %}
+<div class="site-grid" id="site-grid">
 {% for site in sites %}
 {% set st = site.site_status %}
-<div class="site-card" id="site-{{site.site|replace(' ','_')|replace('.','_')|replace('-','_')}}">
+<div class="site-card site-{{'ok' if st=='OK' else 'warn' if st=='WARN' else 'alert' if st=='ALERT' else 'offline'}} skeleton" draggable="true" id="site-{{site.site|replace(' ','_')|replace('.','_')|replace('-','_')}}">
   <div class="site-header">
     <span class="dot {{'dot-ok' if st=='OK' else 'dot-wn' if st=='WARN' else 'dot-al' if st=='ALERT' else 'dot-off'}}"></span>
     <span class="site-name">{{site.site}}</span>
@@ -10768,12 +11521,24 @@ document.addEventListener('DOMContentLoaded', function(){
       <span class="badge" style="background:#2a1e1e;color:var(--al)">OFFLINE</span>
     {% endif %}
     <span class="site-meta">Last seen: {{ago(site.age_s)}}</span>
+    {% if site.latency_ms is not none %}<span class="site-meta site-meta-latency" title="Heartbeat latency">Latency: {{site.latency_ms}} ms</span>{% endif %}
+    <a class="btn bg bs" href="/hub/site/{{site.site|urlencode}}/open" target="_blank" rel="noopener">Open Dashboard</a>
+    <button class="btn bd bs" type="button" onclick="removeSite({{site.site|tojson}}, this)">✕ Remove</button>
     {% if site.health_pct is defined %}
     <span class="site-meta" style="margin-left:8px;color:{{'var(--ok)' if site.health_pct>=99 else ('var(--wn)' if site.health_pct>=95 else 'var(--al)')}}" title="Heartbeat reliability">⚡ {{site.health_pct}}%</span>
     {% endif %}
     {% if site.consecutive_missed > 0 %}
     <span class="site-meta" style="color:var(--wn);margin-left:4px" title="Consecutive missed heartbeats">⚠ {{site.consecutive_missed}} missed</span>
     {% endif %}
+    {% if site.online and site.age_s >= 10 %}
+    <span class="badge" style="background:#2a2412;color:var(--wn)">STALE</span>
+    {% endif %}
+  </div>
+  <div style="padding:8px 16px;border-bottom:1px solid var(--bor);display:flex;gap:8px;flex-wrap:wrap;background:linear-gradient(180deg,#12305c,#10284f)">
+    <span class="sum-pill" style="padding:4px 8px">🎚 {{site.streams|length}} streams</span>
+    <span class="sum-pill" style="padding:4px 8px;color:var(--al)">🚨 {{site.alert_count}} alert</span>
+    <span class="sum-pill" style="padding:4px 8px;color:var(--wn)">⚠ {{site.warn_count}} warn</span>
+    <span class="sum-pill" style="padding:4px 8px;color:var(--ok)">✅ {{site.ok_count}} ok</span>
   </div>
 
   {% if not site.online %}
@@ -10790,7 +11555,7 @@ document.addEventListener('DOMContentLoaded', function(){
     {% set ph  = s.ai_phase  or '' %}
     {% set dc  = 'dok' %}
     {% if '[ALERT]' in ai %}{% set dc='dal' %}{% elif '[WARN]' in ai %}{% set dc='dwn' %}{% elif ph=='learning' %}{% set dc='dlr' %}{% endif %}
-    <div class="sc" data-idx="{{i}}">
+    <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}" data-idx="{{i}}">
 
       {# Header #}
       <div class="sc-name">
@@ -10819,55 +11584,61 @@ document.addEventListener('DOMContentLoaded', function(){
         {% endif %}
         <div class="sc-row">Alerts
           <span style="font-size:12px">
-            {%if s.alert_on_silence%}<span title="Silence">🔇</span>{%endif%}
-            {%if s.alert_on_hiss%}<span title="Hiss">〰</span>{%endif%}
-            {%if s.alert_on_clip%}<span title="Clip">📈</span>{%endif%}
-            {%if s.ai_monitor%}<span title="AI">🤖</span>{%endif%}
+            {%if s.alert_on_silence%}<span class="alert-badge badge-silence" title="Silence">SIL</span>{%endif%}
+            {%if s.alert_on_hiss%}<span class="alert-badge badge-hiss" title="Hiss">HISS</span>{%endif%}
+            {%if s.alert_on_clip%}<span class="alert-badge badge-clip" title="Clip">CLIP</span>{%endif%}
+            {%if s.ai_monitor%}<span class="alert-badge badge-ai" title="AI">AI</span>{%endif%}
           </span>
         </div>
         {% if s.device_index and s.device_index.lower().startswith('dab://') %}
-        <div class="sc-row">DAB SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">📶 {{s.dab_snr}} dB</span></div>
-        <div class="sc-row">Signal  <span>
-          {% set db = s.dab_sig|default(-120) %}
-          {% set bars = 0 %}
-          {% if db >= -55 %}{% set bars = 5 %}
-          {% elif db >= -65 %}{% set bars = 4 %}
-          {% elif db >= -75 %}{% set bars = 3 %}
-          {% elif db >= -85 %}{% set bars = 2 %}
-          {% elif db >= -95 %}{% set bars = 1 %}
-          {% endif %}
-          📶{{"▮"*bars}}{{"▯"*(5-bars)}} {{s.dab_sig}} dBm
-        </span></div>
-        <div class="sc-row">Ensemble <span style="font-size:11px">{{s.dab_ensemble or '—'}}</span></div>
-        <div class="sc-row">Service <span style="font-size:11px">{{s.dab_service or '—'}}</span></div>
+        <details class="stats-block">
+          <summary class="stats-toggle">DAB signal stats <span>▼</span></summary>
+          <div class="sc-row">DAB SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">📶 {{s.dab_snr}} dB</span></div>
+          <div class="sc-row">Signal  <span>
+            {% set db = s.dab_sig|default(-120) %}
+            {% set bars = 0 %}
+            {% if db >= -55 %}{% set bars = 5 %}
+            {% elif db >= -65 %}{% set bars = 4 %}
+            {% elif db >= -75 %}{% set bars = 3 %}
+            {% elif db >= -85 %}{% set bars = 2 %}
+            {% elif db >= -95 %}{% set bars = 1 %}
+            {% endif %}
+            📶{{"▮"*bars}}{{"▯"*(5-bars)}} {{s.dab_sig}} dBm
+          </span></div>
+          <div class="sc-row">Ensemble <span style="font-size:11px">{{s.dab_ensemble or '—'}}</span></div>
+          <div class="sc-row">Service <span style="font-size:11px">{{s.dab_service or '—'}}</span></div>
+        </details>
         {% endif %}
         {% if s.device_index and s.device_index.lower().startswith('fm://') %}
-        <div class="sc-row">Signal  <span>
-          {% set db = s.fm_signal_dbm|default(-120) %}
-          {% set bars = 0 %}
-          {% if db >= -55 %}{% set bars = 5 %}
-          {% elif db >= -65 %}{% set bars = 4 %}
-          {% elif db >= -75 %}{% set bars = 3 %}
-          {% elif db >= -85 %}{% set bars = 2 %}
-          {% elif db >= -95 %}{% set bars = 1 %}
-          {% endif %}
-          📶{{"▮"*bars}}{{"▯"*(5-bars)}} {{s.fm_signal_dbm}} dBFS
-        </span></div>
-        <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
-        <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
-        <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}}">{% if s.fm_rds_ok %}📡 {{s.fm_rds_ps or 'Locked'}}{% else %}— No RDS{% endif %}</span></div>
-        <div class="sc-row sc-rt-row" {% if not s.fm_rds_rt %}style="display:none"{% endif %}>Text
-          <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px" title="{{s.fm_rds_rt or ''}}">
-            {% if s.fm_rds_rt and s.fm_rds_rt|length > 40 %}
-            <span class="rds-rt-scroll sc-rt-text">
-              <span>🎵 {{s.fm_rds_rt}}</span>
-              <span aria-hidden="true">🎵 {{s.fm_rds_rt}}</span>
-            </span>
-            {% else %}
-            <span class="rds-rt-static sc-rt-text">{% if s.fm_rds_rt %}🎵 {{s.fm_rds_rt}}{% else %}—{% endif %}</span>
+        <details class="stats-block">
+          <summary class="stats-toggle">FM / RDS stats <span>▼</span></summary>
+          <div class="sc-row">Signal  <span>
+            {% set db = s.fm_signal_dbm|default(-120) %}
+            {% set bars = 0 %}
+            {% if db >= -55 %}{% set bars = 5 %}
+            {% elif db >= -65 %}{% set bars = 4 %}
+            {% elif db >= -75 %}{% set bars = 3 %}
+            {% elif db >= -85 %}{% set bars = 2 %}
+            {% elif db >= -95 %}{% set bars = 1 %}
             {% endif %}
-          </span>
-        </div>
+            📶{{"▮"*bars}}{{"▯"*(5-bars)}} {{s.fm_signal_dbm}} dBFS
+          </span></div>
+          <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
+          <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
+          <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}}">{% if s.fm_rds_ok %}📡 {{s.fm_rds_ps or 'Locked'}}{% else %}— No RDS{% endif %}</span></div>
+          <div class="sc-row sc-rt-row" {% if not s.fm_rds_rt %}style="display:none"{% endif %}>Text
+            <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px" title="{{s.fm_rds_rt or ''}}">
+              {% if s.fm_rds_rt and s.fm_rds_rt|length > 40 %}
+              <span class="rds-rt-scroll sc-rt-text">
+                <span>🎵 {{s.fm_rds_rt}}</span>
+                <span aria-hidden="true">🎵 {{s.fm_rds_rt}}</span>
+              </span>
+              {% else %}
+              <span class="rds-rt-static sc-rt-text">{% if s.fm_rds_rt %}🎵 {{s.fm_rds_rt}}{% else %}—{% endif %}</span>
+              {% endif %}
+            </span>
+          </div>
+        </details>
         {% endif %}
       </div>
 
@@ -10906,7 +11677,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
       {# Listen / Clip strip #}
       <div class="listen-strip">
-        <select id="hdur_{{loop.index0}}_{{i}}" style="padding:3px 5px;font-size:11px;background:#1e2433;border:1px solid var(--bor);border-radius:4px;color:var(--tx)">
+        <select id="hdur_{{loop.index0}}_{{i}}" style="padding:3px 5px;font-size:11px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx)">
           <option value="5">5s</option><option value="10" selected>10s</option>
           <option value="20">20s</option><option value="30">30s</option>
         </select>
@@ -11010,8 +11781,9 @@ document.addEventListener('DOMContentLoaded', function(){
   {% endif %}
 </div>
 {% endfor %}
+</div>
 {% endif %}
-</main></body></html>"""
+</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
