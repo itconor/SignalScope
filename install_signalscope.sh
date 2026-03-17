@@ -250,7 +250,7 @@ install_redsea() {
   echo "Installing redsea..."
   rm -rf "${build_root}"
   git clone --depth 1 https://github.com/windytan/redsea.git "${build_root}"
-  meson setup "${build_root}/build" "${build_root}"
+  meson setup "${build_root}/build" --wipe
   meson compile -C "${build_root}/build"
   sudo meson install -C "${build_root}/build"
   rm -rf "${build_root}"
