@@ -23,11 +23,11 @@ TEMP_SOURCE_DIR=""
 
 usage() {
   cat <<EOF2
-Usage: $0 [--sdr] [--install-dir /opt/signalscope] [--force] [--no-service]
+Usage: $0 [--no-service] [--service] [--sdr] [--install-dir /opt/signalscope] [--force]
 
 Options:
   --service                 Install and enable systemd service + watchdog (default)
-  --no-service              Skip systemd service installation
+  --no-service              Do not install or enable the systemd service
   --sdr                     Install RTL-SDR tooling, pyrtlsdr, and redsea build deps
   --install-dir <path>      Install application under this path (default: ${INSTALL_ROOT_DEFAULT})
   --force                   Overwrite existing app files in install dir
@@ -146,7 +146,6 @@ echo "== ${APP_NAME} production installer =="
 echo "OS: ${OS_PRETTY}"
 echo "Arch: ${ARCH}"
 echo "Install dir: ${INSTALL_ROOT}"
-echo "Install systemd service: $([[ ${ENABLE_SERVICE} -eq 1 ]] && echo yes || echo no)"
 if [[ $IS_PI -eq 1 ]]; then
   echo "Platform detected: Raspberry Pi"
 fi
@@ -198,7 +197,7 @@ source "${VENV_DIR}/bin/activate"
 python -m pip install --upgrade "pip<25" wheel "setuptools<81"
 
 python -m pip install \
-  flask waitress cheroot numpy scipy requests certifi
+  flask waitress cheroot numpy scipy requests certifi cryptography
 
 install_onnx_stack() {
   local onnx_ok=0
@@ -251,7 +250,7 @@ install_redsea() {
   echo "Installing redsea..."
   rm -rf "${build_root}"
   git clone --depth 1 https://github.com/windytan/redsea.git "${build_root}"
-  meson setup "${build_root}/build" "${build_root}" --wipe
+  meson setup "${build_root}/build" --wipe
   meson compile -C "${build_root}/build"
   sudo meson install -C "${build_root}/build"
   rm -rf "${build_root}"
