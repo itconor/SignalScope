@@ -13,7 +13,7 @@ DATA_ROOT_DEFAULT="/var/lib/signalscope"
 LOG_ROOT_DEFAULT="/var/log/signalscope"
 
 ENABLE_SDR=0
-ENABLE_SERVICE=1
+ENABLE_SERVICE=0
 FORCE_OVERWRITE=0
 INSTALL_ROOT="${INSTALL_ROOT_DEFAULT}"
 
@@ -23,11 +23,10 @@ TEMP_SOURCE_DIR=""
 
 usage() {
   cat <<EOF2
-Usage: $0 [--no-service] [--service] [--sdr] [--install-dir /opt/signalscope] [--force]
+Usage: $0 [--service] [--sdr] [--install-dir /opt/signalscope] [--force]
 
 Options:
-  --service                 Install and enable systemd service + watchdog (default)
-  --no-service              Do not install or enable the systemd service
+  --service                 Install and enable systemd service + watchdog
   --sdr                     Install RTL-SDR tooling, pyrtlsdr, and redsea build deps
   --install-dir <path>      Install application under this path (default: ${INSTALL_ROOT_DEFAULT})
   --force                   Overwrite existing app files in install dir
@@ -44,7 +43,6 @@ trap cleanup EXIT
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --service) ENABLE_SERVICE=1; shift ;;
-    --no-service) ENABLE_SERVICE=0; shift ;;
     --sdr) ENABLE_SDR=1; shift ;;
     --force) FORCE_OVERWRITE=1; shift ;;
     --install-dir)
@@ -250,7 +248,7 @@ install_redsea() {
   echo "Installing redsea..."
   rm -rf "${build_root}"
   git clone --depth 1 https://github.com/windytan/redsea.git "${build_root}"
-  meson setup "${build_root}/build" --wipe
+  meson setup "${build_root}/build" "${build_root}" --wipe
   meson compile -C "${build_root}/build"
   sudo meson install -C "${build_root}/build"
   rm -rf "${build_root}"
