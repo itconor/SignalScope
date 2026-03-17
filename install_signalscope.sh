@@ -5,31 +5,46 @@ APP_NAME="SignalScope"
 SERVICE_NAME="signalscope"
 APP_PY_NAME="signalscope.py"
 LEGACY_APP_PY="LivewireAIMonitor.py"
+REPO_URL="https://github.com/itconor/SignalScope.git"
+RAW_BASE_URL="https://raw.githubusercontent.com/itconor/SignalScope/main"
 
 INSTALL_ROOT_DEFAULT="/opt/signalscope"
 DATA_ROOT_DEFAULT="/var/lib/signalscope"
 LOG_ROOT_DEFAULT="/var/log/signalscope"
 
 ENABLE_SDR=0
-ENABLE_SERVICE=0
+ENABLE_SERVICE=1
 FORCE_OVERWRITE=0
 INSTALL_ROOT="${INSTALL_ROOT_DEFAULT}"
 
+SOURCE_DIR=""
+SOURCE_APP=""
+TEMP_SOURCE_DIR=""
+
 usage() {
-  cat <<EOF
-Usage: $0 [--service] [--sdr] [--install-dir /opt/signalscope] [--force]
+  cat <<EOF2
+Usage: $0 [--no-service] [--service] [--sdr] [--install-dir /opt/signalscope] [--force]
 
 Options:
-  --service                 Install and enable systemd service + watchdog
-  --sdr                     Install RTL-SDR tooling and pyrtlsdr
+  --service                 Install and enable systemd service + watchdog (default)
+  --no-service              Do not install or enable the systemd service
+  --sdr                     Install RTL-SDR tooling, pyrtlsdr, and redsea build deps
   --install-dir <path>      Install application under this path (default: ${INSTALL_ROOT_DEFAULT})
   --force                   Overwrite existing app files in install dir
-EOF
+EOF2
 }
+
+cleanup() {
+  if [[ -n "${TEMP_SOURCE_DIR:-}" && -d "${TEMP_SOURCE_DIR}" ]]; then
+    rm -rf "${TEMP_SOURCE_DIR}" || true
+  fi
+}
+trap cleanup EXIT
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --service) ENABLE_SERVICE=1; shift ;;
+    --no-service) ENABLE_SERVICE=0; shift ;;
     --sdr) ENABLE_SDR=1; shift ;;
     --force) FORCE_OVERWRITE=1; shift ;;
     --install-dir)
@@ -66,18 +81,6 @@ fi
 
 SERVICE_USER="${SUDO_USER:-$USER}"
 SERVICE_GROUP="$(id -gn "${SERVICE_USER}")"
-
-SOURCE_DIR="$(pwd)"
-SOURCE_APP=""
-if [[ -f "${SOURCE_DIR}/${APP_PY_NAME}" ]]; then
-  SOURCE_APP="${SOURCE_DIR}/${APP_PY_NAME}"
-elif [[ -f "${SOURCE_DIR}/${LEGACY_APP_PY}" ]]; then
-  SOURCE_APP="${SOURCE_DIR}/${LEGACY_APP_PY}"
-else
-  echo "Could not find ${APP_PY_NAME} or ${LEGACY_APP_PY} in ${SOURCE_DIR}"
-  exit 1
-fi
-
 ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
 OS_PRETTY="$(. /etc/os-release && echo "${PRETTY_NAME:-Linux}")"
 IS_ARM=0
@@ -88,6 +91,56 @@ esac
 if grep -qi "raspberry pi" /proc/device-tree/model 2>/dev/null || grep -qi "raspbian\|raspberry pi" /etc/os-release 2>/dev/null; then
   IS_PI=1
 fi
+
+resolve_source_tree() {
+  local cwd app_from_cwd legacy_from_cwd
+  cwd="$(pwd)"
+  app_from_cwd="${cwd}/${APP_PY_NAME}"
+  legacy_from_cwd="${cwd}/${LEGACY_APP_PY}"
+
+  if [[ -f "${app_from_cwd}" ]]; then
+    SOURCE_DIR="${cwd}"
+    SOURCE_APP="${app_from_cwd}"
+    echo "Using local source: ${SOURCE_APP}"
+    return 0
+  fi
+
+  if [[ -f "${legacy_from_cwd}" ]]; then
+    SOURCE_DIR="${cwd}"
+    SOURCE_APP="${legacy_from_cwd}"
+    echo "Using local legacy source: ${SOURCE_APP}"
+    return 0
+  fi
+
+  TEMP_SOURCE_DIR="$(mktemp -d /tmp/signalscope-src.XXXXXX)"
+  echo "Local app file missing; fetching SignalScope from GitHub..."
+
+  if command -v git >/dev/null 2>&1; then
+    if git clone --depth 1 "${REPO_URL}" "${TEMP_SOURCE_DIR}" >/dev/null 2>&1; then
+      :
+    else
+      echo "Git clone failed, falling back to direct file download..."
+      mkdir -p "${TEMP_SOURCE_DIR}/static"
+      curl -fsSL "${RAW_BASE_URL}/${APP_PY_NAME}" -o "${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
+    fi
+  else
+    mkdir -p "${TEMP_SOURCE_DIR}/static"
+    curl -fsSL "${RAW_BASE_URL}/${APP_PY_NAME}" -o "${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
+  fi
+
+  if [[ ! -f "${TEMP_SOURCE_DIR}/${APP_PY_NAME}" && -f "${TEMP_SOURCE_DIR}/${LEGACY_APP_PY}" ]]; then
+    cp -f "${TEMP_SOURCE_DIR}/${LEGACY_APP_PY}" "${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
+  fi
+
+  if [[ ! -f "${TEMP_SOURCE_DIR}/${APP_PY_NAME}" ]]; then
+    echo "Failed to obtain ${APP_PY_NAME} from ${REPO_URL}"
+    exit 1
+  fi
+
+  SOURCE_DIR="${TEMP_SOURCE_DIR}"
+  SOURCE_APP="${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
+  echo "Fetched source from GitHub: ${SOURCE_APP}"
+}
 
 echo "== ${APP_NAME} production installer =="
 echo "OS: ${OS_PRETTY}"
@@ -100,14 +153,17 @@ fi
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3 python3-venv python3-pip python3-dev python3-setuptools \
-  build-essential pkg-config git curl wget ca-certificates \
+  build-essential pkg-config git curl wget ca-certificates rsync \
   ffmpeg ethtool net-tools iproute2 jq \
-  libffi-dev libssl-dev
+  libffi-dev libssl-dev meson ninja-build
 
 if [[ $ENABLE_SDR -eq 1 ]]; then
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    rtl-sdr librtlsdr-dev welle.io || true
+    rtl-sdr librtlsdr-dev welle.io \
+    libsndfile1 libsndfile1-dev libliquid-dev libfftw3-dev nlohmann-json3-dev || true
 fi
+
+resolve_source_tree
 
 sudo mkdir -p "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
 sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
@@ -125,13 +181,13 @@ else
   sudo chown "${SERVICE_USER}:${SERVICE_GROUP}" "${TARGET_APP}"
 fi
 
-# Copy optional static assets if present
+# Copy optional static assets if present locally or from fetched repo
 if [[ -d "${SOURCE_DIR}/static" ]]; then
   sudo mkdir -p "${INSTALL_ROOT}/static"
-  sudo rsync -a --delete "${SOURCE_DIR}/static/" "${INSTALL_ROOT}/static/" >/dev/null 2>&1 || {
-    sudo cp -a "${SOURCE_DIR}/static/." "${INSTALL_ROOT}/static/" || true
-  }
+  sudo rsync -a --delete "${SOURCE_DIR}/static/" "${INSTALL_ROOT}/static/"
   sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}/static"
+else
+  echo "No static/ directory found in source tree; continuing without copied assets."
 fi
 
 # Create venv if needed
@@ -167,11 +223,49 @@ install_onnx_stack() {
 install_onnx_stack
 
 if [[ $ENABLE_SDR -eq 1 ]]; then
-  python -m pip install "pyrtlsdr==0.2.93"
+  python -m pip install --upgrade "pyrtlsdr==0.2.93"
+  python - <<'PYEOF'
+import sys
+try:
+    import rtlsdr
+    version = getattr(rtlsdr, "__version__", "unknown")
+    print(f"[OK] pyrtlsdr version: {version}")
+except Exception as exc:
+    print(f"[WARN] pyrtlsdr import check failed: {exc}")
+    sys.exit(1)
+PYEOF
 fi
 
+install_redsea() {
+  if ! [[ $ENABLE_SDR -eq 1 ]]; then
+    return 0
+  fi
+
+  if command -v redsea >/dev/null 2>&1; then
+    echo "INFO: redsea already installed at $(command -v redsea)"
+    return 0
+  fi
+
+  local build_root="/tmp/redsea-build.$$"
+  echo "Installing redsea..."
+  rm -rf "${build_root}"
+  git clone --depth 1 https://github.com/windytan/redsea.git "${build_root}"
+  meson setup "${build_root}/build" --wipe
+  meson compile -C "${build_root}/build"
+  sudo meson install -C "${build_root}/build"
+  rm -rf "${build_root}"
+
+  if command -v redsea >/dev/null 2>&1; then
+    echo "INFO: redsea installed successfully."
+  else
+    echo "WARN: redsea installation completed but binary was not found in PATH."
+  fi
+}
+
+install_redsea
+
 # Network tuning
-sudo tee /etc/sysctl.d/99-signalscope-network.conf > /dev/null <<'EOF'
+sudo tee /etc/sysctl.d/99-signalscope-network.conf > /dev/null <<'EOF2'
 net.core.rmem_max=536870912
 net.core.rmem_default=536870912
 net.core.wmem_max=536870912
@@ -180,7 +274,7 @@ net.ipv4.udp_rmem_min=1048576
 net.ipv4.udp_wmem_min=1048576
 net.core.netdev_max_backlog=750000
 net.core.optmem_max=65536
-EOF
+EOF2
 sudo sysctl --system >/dev/null || true
 
 DEFAULT_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
@@ -202,14 +296,14 @@ if getent group plugdev >/dev/null 2>&1; then
 fi
 
 # Create env file used by service
-sudo tee /etc/default/${SERVICE_NAME} > /dev/null <<EOF
+sudo tee /etc/default/${SERVICE_NAME} > /dev/null <<EOF2
 SIGNALSCOPE_INSTALL_DIR=${INSTALL_ROOT}
 SIGNALSCOPE_DATA_DIR=${DATA_ROOT_DEFAULT}
 SIGNALSCOPE_LOG_DIR=${LOG_ROOT_DEFAULT}
-EOF
+EOF2
 
 create_service() {
-  sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" > /dev/null <<EOF
+  sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" > /dev/null <<EOF2
 [Unit]
 Description=${APP_NAME}
 After=network-online.target
@@ -232,9 +326,9 @@ LimitNICE=-20
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOF2
 
-  sudo tee /usr/local/bin/${SERVICE_NAME}-watchdog.sh > /dev/null <<'EOF'
+  sudo tee /usr/local/bin/${SERVICE_NAME}-watchdog.sh > /dev/null <<'EOF2'
 #!/usr/bin/env bash
 set -euo pipefail
 SERVICE="signalscope"
@@ -247,19 +341,19 @@ if ! curl -sk --max-time 10 https://127.0.0.1/ >/dev/null 2>&1; then
     systemctl restart "${SERVICE}"
   fi
 fi
-EOF
+EOF2
   sudo chmod +x /usr/local/bin/${SERVICE_NAME}-watchdog.sh
 
-  sudo tee "/etc/systemd/system/${SERVICE_NAME}-watchdog.service" > /dev/null <<EOF
+  sudo tee "/etc/systemd/system/${SERVICE_NAME}-watchdog.service" > /dev/null <<EOF2
 [Unit]
 Description=${APP_NAME} watchdog
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/${SERVICE_NAME}-watchdog.sh
-EOF
+EOF2
 
-  sudo tee "/etc/systemd/system/${SERVICE_NAME}-watchdog.timer" > /dev/null <<EOF
+  sudo tee "/etc/systemd/system/${SERVICE_NAME}-watchdog.timer" > /dev/null <<EOF2
 [Unit]
 Description=Run ${APP_NAME} watchdog every minute
 
@@ -270,7 +364,7 @@ Unit=${SERVICE_NAME}-watchdog.service
 
 [Install]
 WantedBy=timers.target
-EOF
+EOF2
 
   sudo systemctl daemon-reload
   sudo systemctl enable --now "${SERVICE_NAME}.service"
@@ -295,6 +389,15 @@ if [[ $ENABLE_SERVICE -eq 1 ]]; then
 else
   echo "Run manually with:"
   echo "  source \"${VENV_DIR}/bin/activate\" && python \"${TARGET_APP}\""
+fi
+
+if [[ $ENABLE_SDR -eq 1 ]]; then
+  echo
+  echo "SDR components:"
+  echo "  rtl_fm: $(command -v rtl_fm || echo not found)"
+  echo "  redsea: $(command -v redsea || echo not found)"
+  echo "Recommended FM URL format:"
+  echo "  fm://99.7?serial=DAB1&ppm=-52&gain=38&backend=rtl_fm"
 fi
 
 if [[ $IS_ARM -eq 1 ]]; then
