@@ -13,7 +13,7 @@ DATA_ROOT_DEFAULT="/var/lib/signalscope"
 LOG_ROOT_DEFAULT="/var/log/signalscope"
 
 ENABLE_SDR=0
-ENABLE_SERVICE=0
+ENABLE_SERVICE=1
 FORCE_OVERWRITE=0
 INSTALL_ROOT="${INSTALL_ROOT_DEFAULT}"
 
@@ -23,10 +23,11 @@ TEMP_SOURCE_DIR=""
 
 usage() {
   cat <<EOF2
-Usage: $0 [--service] [--sdr] [--install-dir /opt/signalscope] [--force]
+Usage: $0 [--sdr] [--install-dir /opt/signalscope] [--force] [--no-service]
 
 Options:
-  --service                 Install and enable systemd service + watchdog
+  --service                 Install and enable systemd service + watchdog (default)
+  --no-service              Skip systemd service installation
   --sdr                     Install RTL-SDR tooling, pyrtlsdr, and redsea build deps
   --install-dir <path>      Install application under this path (default: ${INSTALL_ROOT_DEFAULT})
   --force                   Overwrite existing app files in install dir
@@ -43,6 +44,7 @@ trap cleanup EXIT
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --service) ENABLE_SERVICE=1; shift ;;
+    --no-service) ENABLE_SERVICE=0; shift ;;
     --sdr) ENABLE_SDR=1; shift ;;
     --force) FORCE_OVERWRITE=1; shift ;;
     --install-dir)
@@ -144,6 +146,7 @@ echo "== ${APP_NAME} production installer =="
 echo "OS: ${OS_PRETTY}"
 echo "Arch: ${ARCH}"
 echo "Install dir: ${INSTALL_ROOT}"
+echo "Install systemd service: $([[ ${ENABLE_SERVICE} -eq 1 ]] && echo yes || echo no)"
 if [[ $IS_PI -eq 1 ]]; then
   echo "Platform detected: Raspberry Pi"
 fi
