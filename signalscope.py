@@ -1225,11 +1225,21 @@ def csrf_protect(f):
         from flask import session
         cfg = monitor.app_cfg
         # Only enforce when auth is enabled — unauthenticated instances are
-        # LAN-only so CSRF is less critical, but still generate tokens
+        # LAN-only so CSRF is less critical, but still generate tokens.
+        # On some first-run / clean-install flows auth is enabled mid-wizard,
+        # and the browser can legitimately submit a valid-looking CSRF token
+        # before the session has persisted one yet. In that narrow case, if the
+        # user is already authenticated, adopt the submitted token as the
+        # session token for this browser session.
         if request.method in ("POST","PUT","DELETE","PATCH"):
-            if cfg.auth.enabled and not _csrf_valid():
-                _log_security(f"CSRF validation failed for {request.path} from {request.remote_addr}")
-                return jsonify({"error": "CSRF validation failed"}), 403
+            if cfg.auth.enabled:
+                if not session.get("_csrf") and session.get("logged_in"):
+                    submitted = request.form.get("_csrf_token","") or request.headers.get("X-CSRFToken","")
+                    if submitted:
+                        session["_csrf"] = submitted
+                if not _csrf_valid():
+                    _log_security(f"CSRF validation failed for {request.path} from {request.remote_addr}")
+                    return jsonify({"error": "CSRF validation failed"}), 403
         return f(*args, **kwargs)
     return decorated
 
@@ -1239,6 +1249,16 @@ def login_required(f):
     def decorated(*args, **kwargs):
         from flask import session
         cfg = monitor.app_cfg
+
+        # During first-run setup, allow the setup wizard and setup API calls to
+        # complete even if authentication has just been enabled mid-wizard.
+        # Otherwise the final /setup/complete POST can be bounced to /login
+        # before wizard_done is written, which causes the setup loop.
+        if (not cfg.wizard_done) and (
+            request.path.startswith("/setup") or request.path.startswith("/api/setup/")
+        ):
+            return f(*args, **kwargs)
+
         if not cfg.auth.enabled:
             return f(*args, **kwargs)
         if not session.get("logged_in"):
@@ -8515,6 +8535,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
 @app.get("/")
 @login_required
 def index():
+    _csrf_token()  # ensure the dashboard always has a persisted CSRF token
     # Redirect to setup wizard on first run
     if not monitor.app_cfg.wizard_done:
         return redirect(url_for("setup_wizard"))
@@ -9485,6 +9506,7 @@ def api_dab_scan():
 @login_required
 def setup_wizard():
     """First-run setup wizard."""
+    _csrf_token()  # ensure a session CSRF token exists during wizard flows
     cfg = monitor.app_cfg
     return render_template_string(SETUP_TPL,
         cfg=cfg, build=BUILD,
@@ -9654,7 +9676,14 @@ def api_setup_config():
 @login_required
 @csrf_protect
 def api_setup_auth():
-    """Save auth config from wizard step 4."""
+    """Save auth config from wizard step 4.
+
+    If auth is enabled during the wizard, treat the current browser session as
+    authenticated immediately. Otherwise the final /setup/complete POST is
+    forced through login_required, gets bounced to /login, and wizard_done is
+    never written until the user goes through the wizard a second time.
+    """
+    from flask import session
     cfg = monitor.app_cfg
     f   = request.form
     cfg.auth.enabled  = bool(f.get("auth_enabled"))
@@ -9666,6 +9695,14 @@ def api_setup_auth():
         cfg.auth.password_hash = _hash_password(pw)
         cfg.auth.first_login   = False
     save_config(cfg)
+
+    if cfg.auth.enabled:
+        session["logged_in"] = True
+        session["login_ts"]  = time.time()
+        # Keep the existing CSRF token if present; if not, create one now so
+        # the final wizard form submit remains valid after auth is enabled.
+        session.setdefault("_csrf", hashlib.sha256(os.urandom(32)).hexdigest())
+
     return jsonify({"ok": True})
 
 
@@ -9676,6 +9713,7 @@ def login():
     if not cfg.auth.enabled:
         session["logged_in"] = True
         session["login_ts"]  = time.time()
+        session.setdefault("_csrf", hashlib.sha256(os.urandom(32)).hexdigest())
         return redirect(url_for("index"))
 
     ip    = request.remote_addr or "unknown"
@@ -9719,6 +9757,7 @@ def login():
                     login_limiter.clear(ip)
                     session["logged_in"] = True
                     session["login_ts"]  = time.time()
+                    session.setdefault("_csrf", hashlib.sha256(os.urandom(32)).hexdigest())
                     flash("Password set. Welcome!")
                     return redirect(_safe_next())
         else:
@@ -9735,7 +9774,16 @@ def login():
                     _log_security(f"Upgraded password hash to pbkdf2 for '{uname}'")
                 session["logged_in"] = True
                 session["login_ts"]  = time.time()
-                return redirect(_safe_next())
+                session.setdefault("_csrf", hashlib.sha256(os.urandom(32)).hexdigest())
+                # If login was triggered by the final setup POST being bounced to /login,
+                # complete the wizard here because the original target only accepts POST.
+                next_url = _safe_next()
+                if next_url == "/setup/complete":
+                    cfg.wizard_done = True
+                    save_config(cfg)
+                    flash("Welcome to SignalScope!")
+                    return redirect(url_for("index"))
+                return redirect(next_url)
 
     return render_template_string(LOGIN_TPL, error=error, first_login=first,
                                   username=request.form.get("username",""),
