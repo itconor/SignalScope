@@ -155,7 +155,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3 python3-venv python3-pip python3-dev python3-setuptools \
   build-essential pkg-config git curl wget ca-certificates rsync \
   ffmpeg ethtool net-tools iproute2 jq \
-  libffi-dev libssl-dev meson ninja-build
+  libffi-dev libssl-dev meson ninja-build libfftw3-dev
 
 if [[ $ENABLE_SDR -eq 1 ]]; then
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -250,7 +250,7 @@ install_redsea() {
   echo "Installing redsea..."
   rm -rf "${build_root}"
   git clone --depth 1 https://github.com/windytan/redsea.git "${build_root}"
-  meson setup "${build_root}/build" --wipe
+  meson setup "${build_root}/build" "${build_root}"
   meson compile -C "${build_root}/build"
   sudo meson install -C "${build_root}/build"
   rm -rf "${build_root}"
@@ -263,6 +263,25 @@ install_redsea() {
 }
 
 install_redsea
+
+
+# Prevent DVB kernel drivers from grabbing RTL-SDR dongles
+configure_rtlsdr_blacklist() {
+  if ! [[ $ENABLE_SDR -eq 1 ]]; then
+    return 0
+  fi
+
+  echo "Configuring RTL-SDR driver blacklist..."
+  printf 'blacklist dvb_usb_rtl28xxu\nblacklist rtl2832\nblacklist rtl2830\n' \
+    | sudo tee /etc/modprobe.d/rtlsdr.conf > /dev/null
+
+  sudo modprobe -r dvb_usb_rtl28xxu rtl2832 rtl2830 2>/dev/null || true
+  if command -v update-initramfs >/dev/null 2>&1; then
+    sudo update-initramfs -u || true
+  fi
+}
+
+configure_rtlsdr_blacklist
 
 # Network tuning
 sudo tee /etc/sysctl.d/99-signalscope-network.conf > /dev/null <<'EOF2'
@@ -396,6 +415,7 @@ if [[ $ENABLE_SDR -eq 1 ]]; then
   echo "SDR components:"
   echo "  rtl_fm: $(command -v rtl_fm || echo not found)"
   echo "  redsea: $(command -v redsea || echo not found)"
+  echo "  RTL-SDR blacklist: /etc/modprobe.d/rtlsdr.conf"
   echo "Recommended FM URL format:"
   echo "  fm://99.7?serial=DAB1&ppm=-52&gain=38&backend=rtl_fm"
 fi
