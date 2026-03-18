@@ -1,5 +1,62 @@
 #!/usr/bin/env bash
+
+echo ""
+echo "   _____ _                   _  _____"
+echo "  / ____(_)                 | |/ ____|"
+echo " | (___  _  __ _ _ __   __ _| | (___   ___ ___  _ __   ___"
+echo "  \___ \| |/ _\` | '_ \ / _\` | |\___ \ / __/ _ \| '_ \ / _ \\"
+echo "  ____) | | (_| | | | | (_| | |____) | (_| (_) | |_) |  __/"
+echo " |_____/|_|\__, |_| |_|\__,_|_|_____/ \___\___/| .__/ \___|"
+echo "             __/ |                              | |"
+echo "            |___/                               |_|"
+
+step "Verifying installation"
+
+if command -v ss >/dev/null 2>&1; then
+    if ss -lnt | grep -q ":5000"; then
+        ok "SignalScope appears to be running on port 5000"
+    else
+        warn "Port 5000 not detected yet. The service may still be starting."
+    fi
+fi
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+ok(){ echo -e "${GREEN}✔ $1${NC}"; }
+warn(){ echo -e "${YELLOW}⚠ $1${NC}"; }
+err(){ echo -e "${RED}✖ $1${NC}"; }
+step(){ echo -e "\n${BLUE}==> $1${NC}"; }
+
+# Detect OS
+OS_NAME="Unknown"
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS_NAME="$PRETTY_NAME"
+fi
+
+echo -e "${BLUE}Detected OS:${NC} $OS_NAME"
+
 set -euo pipefail
+
+
+print_step() {
+  echo ""
+  echo "==> $1"
+}
+
+print_ok() {
+  echo "✔ $1"
+}
+
+print_warn() {
+  echo "⚠ $1"
+}
+
 
 APP_NAME="SignalScope"
 SERVICE_NAME="signalscope"
@@ -41,27 +98,51 @@ cleanup() {
 }
 trap cleanup EXIT
 
+
+# Ignore any CLI options (kept for backwards compatibility)
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --service) ENABLE_SERVICE=1; shift ;;
-    --no-service) ENABLE_SERVICE=0; shift ;;
-    --sdr) ENABLE_SDR=1; shift ;;
-    --force) FORCE_OVERWRITE=1; shift ;;
-    --install-dir)
-      INSTALL_ROOT="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
+    --service|--no-service|--sdr|--force|--install-dir)
+      shift
+      if [[ "$1" != "" && "$1" != --* ]]; then shift; fi
       ;;
     *)
-      echo "Unknown option: $1"
-      usage
-      exit 1
+      shift
       ;;
   esac
 done
+
+echo ""
+echo "================================="
+echo "       SignalScope Installer"
+echo "================================="
+echo "This installer will set up SignalScope"
+echo "and optionally configure SDR/RDS support"
+echo "and a system service."
+echo ""
+
+read -rp "Install SignalScope as a system service? [Y/n]: " SERVICE_REPLY
+SERVICE_REPLY=${SERVICE_REPLY:-Y}
+if [[ "$SERVICE_REPLY" =~ ^[Yy]$ ]]; then
+  ENABLE_SERVICE=1
+else
+  ENABLE_SERVICE=0
+fi
+
+read -rp "Enable SDR + RDS decoding support (RTL-SDR + redsea)? [Y/n]: " SDR_REPLY
+SDR_REPLY=${SDR_REPLY:-Y}
+if [[ "$SDR_REPLY" =~ ^[Yy]$ ]]; then
+  ENABLE_SDR=1
+else
+  ENABLE_SDR=0
+fi
+
+echo ""
+echo "Configuration:"
+echo "  Service install : $ENABLE_SERVICE"
+echo "  SDR/RDS support : $ENABLE_SDR"
+echo ""
+
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -191,6 +272,7 @@ else
 fi
 
 # Create venv if needed
+print_step "Step 2/6: Creating Python virtual environment"
 python3 -m venv "${VENV_DIR}"
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
@@ -349,6 +431,28 @@ EOF2
 
   sudo tee /usr/local/bin/${SERVICE_NAME}-watchdog.sh > /dev/null <<'EOF2'
 #!/usr/bin/env bash
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+ok(){ echo -e "${GREEN}✔ $1${NC}"; }
+warn(){ echo -e "${YELLOW}⚠ $1${NC}"; }
+err(){ echo -e "${RED}✖ $1${NC}"; }
+step(){ echo -e "\n${BLUE}==> $1${NC}"; }
+
+# Detect OS
+OS_NAME="Unknown"
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS_NAME="$PRETTY_NAME"
+fi
+
+echo -e "${BLUE}Detected OS:${NC} $OS_NAME"
+
 set -euo pipefail
 SERVICE="signalscope"
 if ! systemctl is-active --quiet "${SERVICE}"; then
@@ -395,7 +499,15 @@ if [[ $ENABLE_SERVICE -eq 1 ]]; then
 fi
 
 echo
+echo ""
+echo "================================="
 echo "Installation complete."
+echo "================================="
+echo "Next steps:"
+echo "  1. Open http://localhost:5000"
+echo "  2. Complete the setup wizard"
+echo "  3. Start monitoring from the dashboard"
+echo ""
 echo "Installed app: ${TARGET_APP}"
 echo "Virtualenv: ${VENV_DIR}"
 echo "Data dir: ${DATA_ROOT_DEFAULT}"
@@ -424,3 +536,23 @@ if [[ $IS_ARM -eq 1 ]]; then
   echo
   echo "ARM note: onnxruntime may not be available automatically on all Raspberry Pi OS builds."
 fi
+
+
+echo ""
+echo "================================="
+echo " SignalScope Installation Complete"
+echo "================================="
+echo "Install path : ${INSTALL_ROOT}"
+echo "Service      : ${ENABLE_SERVICE}"
+echo "SDR/RDS      : ${ENABLE_SDR}"
+echo "Web UI       : http://localhost:5000"
+echo ""
+echo "To manage the service:"
+echo "  sudo systemctl status signalscope"
+echo "  sudo systemctl restart signalscope"
+echo ""
+echo "Logs:"
+echo "  /var/log/signalscope/"
+echo ""
+echo "Next step:"
+echo "  Open the web UI and complete the setup wizard."
