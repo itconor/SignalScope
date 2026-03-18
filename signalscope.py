@@ -7908,7 +7908,7 @@ code{background:#173a69;padding:1px 7px;border-radius:4px;font-family:monospace;
   <button class="step-btn"        id="sb-1" onclick="goStep(1)"><span class="step-icon">2</span>Dependencies</button>
   <button class="step-btn"        id="sb-2" onclick="goStep(2)"><span class="step-icon">3</span>SDR Setup</button>
   <button class="step-btn"        id="sb-3" onclick="goStep(3)"><span class="step-icon">4</span>Instance Config</button>
-  <button class="step-btn"        id="sb-4" onclick="goStep(4)"><span class="step-icon">5</span>Security</button>
+  <button class="step-btn"        id="sb-4" onclick="goStep(4)"><span class="step-icon">5</span>Security Info</button>
   <button class="step-btn"        id="sb-5" onclick="goStep(5)"><span class="step-icon">6</span>Done</button>
 </nav>
 
@@ -8109,51 +8109,24 @@ kill %1<button class="copy-btn" onclick="copyCmd(this)">Copy</button></div>
   </div>
 </div>
 
-<!-- ── Step 4: Security ────────────────────────────────────────────────────── -->
+<!-- ── Step 4: Security Info ───────────────────────────────────────────────── -->
 <div class="pn" id="pn-4">
-  <h2>Security</h2>
-  <div class="sub-h">Set up login credentials. Highly recommended if this instance is accessible from the network.</div>
+  <h2>Authentication</h2>
+  <div class="sub-h">To keep setup reliable, login creation is completed after the wizard rather than during it.</div>
 
-  <form id="auth-form">
-  <input type="hidden" name="_csrf_token" value="{{csrf_token()}}">
-
-  <div class="cr" style="margin-top:0">
-    <input type="checkbox" name="auth_enabled" value="1" id="wiz_auth_en"
-           {{'checked' if cfg.auth.enabled}} onchange="wizAuthChanged()">
-    <label style="margin:0;text-transform:none;font-weight:600" for="wiz_auth_en">Require login to access dashboard</label>
+  <div style="padding:16px;background:var(--sur);border:1px solid var(--bor);border-radius:10px;display:flex;flex-direction:column;gap:10px;margin-top:6px">
+    <div style="font-weight:700;font-size:14px;color:var(--tx)">Enable login after setup</div>
+    <div style="font-size:13px;color:var(--mu);line-height:1.55">
+      Once the wizard is complete, go to <b>Settings → Security</b> to enable authentication and create your username and password.
+    </div>
+    <div class="warn-box" style="margin:0">
+      Authentication is not configured during Quick Start. This avoids CSRF/session issues while the initial setup is being saved.
+    </div>
   </div>
-
-  <div id="wiz_auth_fields" style="margin-top:14px">
-    <label>Username
-      <input type="text" name="auth_username" value="{{cfg.auth.username or 'admin'}}"
-             autocomplete="username">
-    </label>
-    <label>Password
-      <input type="password" name="auth_password" placeholder="Minimum 8 characters"
-             autocomplete="new-password">
-    </label>
-    <label>Confirm Password
-      <input type="password" name="auth_confirm" placeholder="Re-enter password"
-             autocomplete="new-password">
-    </label>
-    <p class="help">Stored as PBKDF2-SHA256 (260,000 rounds). Leave password blank to keep current password.</p>
-  </div>
-
-  <script nonce="{{csp_nonce()}}">
-  function wizAuthChanged(){
-    var el = document.getElementById('wiz_auth_en');
-    if(!el) return;
-    document.getElementById('wiz_auth_fields').style.display =
-      el.checked ? '' : 'none';
-  }
-  wizAuthChanged();
-  </script>
-  </form>
 
   <div class="act">
     <button class="btn bg" onclick="goStep(3)">← Back</button>
-    <button class="btn bp" onclick="saveAuth()">Save &amp; Next →</button>
-    <a href="#" onclick="goStep(5)" style="font-size:12px;color:var(--mu);text-decoration:none">Skip</a>
+    <button class="btn bp" onclick="goStep(5)">Next →</button>
   </div>
 </div>
 
@@ -8166,19 +8139,26 @@ kill %1<button class="copy-btn" onclick="copyCmd(this)">Copy</button></div>
     <div style="padding:14px;background:var(--sur);border:1px solid var(--bor);border-radius:8px;display:flex;gap:14px;align-items:flex-start">
       <span style="font-size:22px;flex-shrink:0">1️⃣</span>
       <div>
+        <div style="font-weight:600;font-size:13px;margin-bottom:3px">Enable authentication in Settings → Security</div>
+        <div style="font-size:12px;color:var(--mu)">Setup complete! Next recommended step: enable authentication in Settings → Security and create your login there.</div>
+      </div>
+    </div>
+    <div style="padding:14px;background:var(--sur);border:1px solid var(--bor);border-radius:8px;display:flex;gap:14px;align-items:flex-start">
+      <span style="font-size:22px;flex-shrink:0">2️⃣</span>
+      <div>
         <div style="font-weight:600;font-size:13px;margin-bottom:3px">Add your streams</div>
         <div style="font-size:12px;color:var(--mu)">Go to Inputs → Add Input. Enter a Livewire stream ID, RTP address, DAB service, FM frequency, or HTTP URL.</div>
       </div>
     </div>
     <div style="padding:14px;background:var(--sur);border:1px solid var(--bor);border-radius:8px;display:flex;gap:14px;align-items:flex-start">
-      <span style="font-size:22px;flex-shrink:0">2️⃣</span>
+      <span style="font-size:22px;flex-shrink:0">3️⃣</span>
       <div>
         <div style="font-weight:600;font-size:13px;margin-bottom:3px">Configure notifications</div>
         <div style="font-size:12px;color:var(--mu)">Settings → Notifications — set up email, Pushover, or webhook alerts. Use Test Notifications to verify.</div>
       </div>
     </div>
     <div style="padding:14px;background:var(--sur);border:1px solid var(--bor);border-radius:8px;display:flex;gap:14px;align-items:flex-start">
-      <span style="font-size:22px;flex-shrink:0">3️⃣</span>
+      <span style="font-size:22px;flex-shrink:0">4️⃣</span>
       <div>
         <div style="font-weight:600;font-size:13px;margin-bottom:3px">Start monitoring</div>
         <div style="font-size:12px;color:var(--mu)">Click ▶ Start on the dashboard. The AI needs 24 hours to learn each stream's normal baseline before anomaly alerts are active.</div>
@@ -8186,7 +8166,7 @@ kill %1<button class="copy-btn" onclick="copyCmd(this)">Copy</button></div>
     </div>
     {% if cfg.hub.mode in ('hub','both') %}
     <div style="padding:14px;background:var(--sur);border:1px solid var(--bor);border-radius:8px;display:flex;gap:14px;align-items:flex-start">
-      <span style="font-size:22px;flex-shrink:0">4️⃣</span>
+      <span style="font-size:22px;flex-shrink:0">5️⃣</span>
       <div>
         <div style="font-weight:600;font-size:13px;margin-bottom:3px">Get an HTTPS certificate</div>
         <div style="font-size:12px;color:var(--mu)">Settings → Hub &amp; Network → HTTPS / Let's Encrypt. Enter your domain and click Get Certificate.</div>
