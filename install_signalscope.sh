@@ -89,7 +89,7 @@ ask_yes_no() {
       read -r -p "${prompt} [y/N]: " reply || true
       reply="${reply:-N}"
     fi
-    case "${reply,,}" in
+    case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')" in
       y|yes) return 0 ;;
       n|no) return 1 ;;
       *) warn "Please answer y or n." ;;
