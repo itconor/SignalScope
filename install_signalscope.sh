@@ -344,7 +344,7 @@ main() {
   need_cmd install
   need_cmd curl
 
-  if [[ $EUID -eq 0 ]]; then
+  if [[ $EUID -eq 0 && -z "${SUDO_USER:-}" ]]; then
     err "Please run this installer as a normal user with sudo access, not as root."
     exit 1
   fi
