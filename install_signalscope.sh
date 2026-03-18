@@ -163,13 +163,14 @@ make_rerunnable_copy_if_needed() {
   echo "${SELF_COPY}"
 }
 
-reexec_with_sudo() {
+init_sudo() {
   if [[ $EUID -ne 0 ]]; then
     need_cmd sudo
-    local rerun_path
-    rerun_path="$(make_rerunnable_copy_if_needed)"
-    info "Re-running installer with sudo..."
-    exec sudo -E bash "${rerun_path}" "$@"
+    info "Requesting sudo access..."
+    sudo -v
+    SUDO="sudo"
+  else
+    SUDO=""
   fi
 }
 
@@ -266,7 +267,7 @@ install_redsea() {
 create_service() {
   step "Installing systemd service"
 
-  cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
+  ${SUDO} tee "/etc/systemd/system/${SERVICE_NAME}.service" > /dev/null <<EOF
 [Unit]
 Description=${APP_NAME}
 After=network-online.target
@@ -291,7 +292,7 @@ LimitNICE=-20
 WantedBy=multi-user.target
 EOF
 
-  cat > /usr/local/bin/${SERVICE_NAME}-watchdog.sh <<'EOF'
+  ${SUDO} tee /usr/local/bin/${SERVICE_NAME}-watchdog.sh > /dev/null <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 SERVICE="signalscope"
@@ -305,9 +306,9 @@ if ! curl -sk --max-time 10 https://127.0.0.1/ >/dev/null 2>&1; then
   fi
 fi
 EOF
-  chmod +x /usr/local/bin/${SERVICE_NAME}-watchdog.sh
+  ${SUDO} chmod +x /usr/local/bin/${SERVICE_NAME}-watchdog.sh
 
-  cat > "/etc/systemd/system/${SERVICE_NAME}-watchdog.service" <<EOF
+  ${SUDO} tee "/etc/systemd/system/${SERVICE_NAME}-watchdog.service" > /dev/null <<EOF
 [Unit]
 Description=${APP_NAME} watchdog
 
@@ -316,7 +317,7 @@ Type=oneshot
 ExecStart=/usr/local/bin/${SERVICE_NAME}-watchdog.sh
 EOF
 
-  cat > "/etc/systemd/system/${SERVICE_NAME}-watchdog.timer" <<EOF
+  ${SUDO} tee "/etc/systemd/system/${SERVICE_NAME}-watchdog.timer" > /dev/null <<EOF
 [Unit]
 Description=Run ${APP_NAME} watchdog every minute
 
@@ -329,9 +330,9 @@ Unit=${SERVICE_NAME}-watchdog.service
 WantedBy=timers.target
 EOF
 
-  systemctl daemon-reload
-  systemctl enable --now "${SERVICE_NAME}.service"
-  systemctl enable --now "${SERVICE_NAME}-watchdog.timer"
+  ${SUDO} systemctl daemon-reload
+  ${SUDO} systemctl enable --now "${SERVICE_NAME}.service"
+  ${SUDO} systemctl enable --now "${SERVICE_NAME}-watchdog.timer"
   ok "Service enabled: ${SERVICE_NAME}"
 }
 
@@ -345,9 +346,10 @@ main() {
   need_cmd curl
 
   if [[ $EUID -eq 0 && -z "${SUDO_USER:-}" ]]; then
-    err "Please run this installer as a normal user with sudo access, not as root."
-    exit 1
+    warn "Running directly as root."
   fi
+
+  init_sudo
 
   if [[ -z "${ENABLE_SERVICE}" ]]; then
     if ask_yes_no "Install and enable the systemd service?" "y"; then
@@ -381,8 +383,6 @@ main() {
     fi
   fi
 
-  reexec_with_sudo "$@"
-
   SERVICE_USER="${SUDO_USER:-$USER}"
   SERVICE_GROUP="$(id -gn "${SERVICE_USER}")"
   ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
@@ -393,8 +393,8 @@ main() {
 
   step "Installing apt packages"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y \
+  ${SUDO} apt-get update -y
+  ${SUDO} apt-get install -y \
     python3 python3-venv python3-pip python3-dev python3-setuptools \
     build-essential pkg-config git curl wget ca-certificates rsync \
     ffmpeg ethtool net-tools iproute2 jq \
@@ -402,7 +402,7 @@ main() {
 
   if [[ "${ENABLE_SDR}" == "1" ]]; then
     step "Installing SDR apt packages"
-    apt-get install -y \
+    ${SUDO} apt-get install -y \
       rtl-sdr librtlsdr-dev welle.io \
       libsndfile1 libsndfile1-dev libliquid-dev libfftw3-dev nlohmann-json3-dev || true
   fi
@@ -410,8 +410,8 @@ main() {
   resolve_source_tree
 
   step "Preparing directories"
-  mkdir -p "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
-  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
+  ${SUDO} mkdir -p "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
+  ${SUDO} chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
 
   VENV_DIR="${INSTALL_ROOT}/venv"
   TARGET_APP="${INSTALL_ROOT}/${APP_PY_NAME}"
@@ -421,15 +421,15 @@ main() {
     warn "Existing ${TARGET_APP} found; keeping it. Re-run with --force to overwrite."
   else
     install -m 0644 "${SOURCE_APP}" "/tmp/${APP_PY_NAME}.$$"
-    mv "/tmp/${APP_PY_NAME}.$$" "${TARGET_APP}"
-    chown "${SERVICE_USER}:${SERVICE_GROUP}" "${TARGET_APP}"
+    ${SUDO} mv "/tmp/${APP_PY_NAME}.$$" "${TARGET_APP}"
+    ${SUDO} chown "${SERVICE_USER}:${SERVICE_GROUP}" "${TARGET_APP}"
     ok "Installed ${TARGET_APP}"
   fi
 
   if [[ -d "${SOURCE_DIR}/static" ]]; then
-    mkdir -p "${INSTALL_ROOT}/static"
-    rsync -a --delete "${SOURCE_DIR}/static/" "${INSTALL_ROOT}/static/"
-    chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}/static"
+    ${SUDO} mkdir -p "${INSTALL_ROOT}/static"
+    ${SUDO} rsync -a --delete "${SOURCE_DIR}/static/" "${INSTALL_ROOT}/static/"
+    ${SUDO} chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}/static"
     ok "Copied static assets"
   else
     warn "No static/ directory found in source tree; continuing without copied assets."
@@ -474,7 +474,7 @@ PYEOF
   fi
 
   step "Applying network tuning"
-  cat > /etc/sysctl.d/99-signalscope-network.conf <<'EOF'
+  ${SUDO} tee /etc/sysctl.d/99-signalscope-network.conf > /dev/null <<'EOF'
 net.core.rmem_max=536870912
 net.core.rmem_default=536870912
 net.core.wmem_max=536870912
@@ -484,27 +484,27 @@ net.ipv4.udp_wmem_min=1048576
 net.core.netdev_max_backlog=750000
 net.core.optmem_max=65536
 EOF
-  sysctl --system >/dev/null || true
+  ${SUDO} sysctl --system >/dev/null || true
 
   DEFAULT_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
   if [[ -n "${DEFAULT_IFACE:-}" ]]; then
     info "Applying best-effort NIC tuning to ${DEFAULT_IFACE}"
-    ethtool -K "${DEFAULT_IFACE}" gro off gso off tso off lro off >/dev/null 2>&1 || true
-    ethtool -G "${DEFAULT_IFACE}" rx 4096 tx 4096 >/dev/null 2>&1 || true
+    ${SUDO} ethtool -K "${DEFAULT_IFACE}" gro off gso off tso off lro off >/dev/null 2>&1 || true
+    ${SUDO} ethtool -G "${DEFAULT_IFACE}" rx 4096 tx 4096 >/dev/null 2>&1 || true
   fi
 
   step "Setting Python low-port capability"
   PYBIN="$(readlink -f "$(command -v python3)")"
   if [[ -f "${PYBIN}" ]]; then
-    setcap cap_net_bind_service=+ep "${PYBIN}" || true
+    ${SUDO} setcap cap_net_bind_service=+ep "${PYBIN}" || true
   fi
 
   if getent group plugdev >/dev/null 2>&1; then
-    usermod -aG plugdev "${SERVICE_USER}" || true
+    ${SUDO} usermod -aG plugdev "${SERVICE_USER}" || true
   fi
 
   step "Writing environment file"
-  cat > /etc/default/${SERVICE_NAME} <<EOF
+  ${SUDO} tee /etc/default/${SERVICE_NAME} > /dev/null <<EOF
 SIGNALSCOPE_INSTALL_DIR=${INSTALL_ROOT}
 SIGNALSCOPE_DATA_DIR=${DATA_ROOT_DEFAULT}
 SIGNALSCOPE_LOG_DIR=${LOG_ROOT_DEFAULT}
