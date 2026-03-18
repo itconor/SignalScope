@@ -33,6 +33,7 @@ INSTALL_ROOT="${INSTALL_ROOT_DEFAULT}"
 SOURCE_DIR=""
 SOURCE_APP=""
 TEMP_SOURCE_DIR=""
+SELF_COPY=""
 SCRIPT_PATH="${BASH_SOURCE[0]:-}"
 
 INTERACTIVE=0
@@ -44,6 +45,9 @@ cleanup() {
   if [[ -n "${TEMP_SOURCE_DIR:-}" && -d "${TEMP_SOURCE_DIR}" ]]; then
     rm -rf "${TEMP_SOURCE_DIR}" || true
   fi
+  if [[ -n "${SELF_COPY:-}" && -f "${SELF_COPY}" ]]; then
+    rm -f "${SELF_COPY}" || true
+  fi
 }
 trap cleanup EXIT
 
@@ -52,10 +56,10 @@ usage() {
 ${APP_NAME} installer
 
 Interactive:
-  /bin/bash <(curl -fsSL https://your-url/install_signalscope.sh)
+  /bin/bash <(curl -fsSL https://raw.githubusercontent.com/itconor/SignalScope/main/install_signalscope.sh)
 
 Non-interactive:
-  curl -fsSL https://your-url/install_signalscope.sh | bash -s -- --service --sdr
+  curl -fsSL https://raw.githubusercontent.com/itconor/SignalScope/main/install_signalscope.sh | bash -s -- --service --sdr
 
 Options:
   --service                 Install and enable systemd service
@@ -140,11 +144,32 @@ need_cmd() {
   }
 }
 
+make_rerunnable_copy_if_needed() {
+  if [[ -f "${SCRIPT_PATH}" && "${SCRIPT_PATH}" != /dev/fd/* && "${SCRIPT_PATH}" != /proc/self/fd/* ]]; then
+    echo "${SCRIPT_PATH}"
+    return 0
+  fi
+
+  SELF_COPY="$(mktemp /tmp/signalscope-installer.XXXXXX.sh)"
+  chmod 700 "${SELF_COPY}"
+
+  if [[ -r "${SCRIPT_PATH}" ]]; then
+    cat "${SCRIPT_PATH}" > "${SELF_COPY}"
+  else
+    err "Could not read installer source for sudo re-launch."
+    err "As a workaround, save the script to a file and run it locally."
+    exit 1
+  fi
+  echo "${SELF_COPY}"
+}
+
 reexec_with_sudo() {
   if [[ $EUID -ne 0 ]]; then
     need_cmd sudo
+    local rerun_path
+    rerun_path="$(make_rerunnable_copy_if_needed)"
     info "Re-running installer with sudo..."
-    exec sudo -E bash "$SCRIPT_PATH" "$@"
+    exec sudo -E bash "${rerun_path}" "$@"
   fi
 }
 
@@ -324,17 +349,6 @@ main() {
     exit 1
   fi
 
-  # If launched via curl pipe, there is no reusable script path for sudo re-exec.
-  # In that case require the caller to use sudo on the outside or process substitution.
-  if [[ ! -f "${SCRIPT_PATH}" ]]; then
-    warn "Installer appears to be running from stdin."
-    warn "For interactive prompts use:"
-    warn "  /bin/bash <(curl -fsSL https://your-url/install_signalscope.sh)"
-    warn "For non-interactive curl|bash use:"
-    warn "  curl -fsSL https://your-url/install_signalscope.sh | bash -s -- --service --sdr"
-    exec sudo -E bash -s -- "$@" < /dev/stdin
-  fi
-
   if [[ -z "${ENABLE_SERVICE}" ]]; then
     if ask_yes_no "Install and enable the systemd service?" "y"; then
       ENABLE_SERVICE=1
@@ -367,7 +381,6 @@ main() {
     fi
   fi
 
-  # escalate after prompts
   reexec_with_sudo "$@"
 
   SERVICE_USER="${SUDO_USER:-$USER}"
