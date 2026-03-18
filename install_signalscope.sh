@@ -32,6 +32,9 @@ LEGACY_APP_PATH=""
 
 ENABLE_SDR=""
 ENABLE_SERVICE=""
+ENABLE_NGINX=""
+NGINX_FQDN=""
+NGINX_HTTPS=""
 FORCE_OVERWRITE=0
 INSTALL_ROOT="${INSTALL_ROOT_DEFAULT}"
 
@@ -71,6 +74,11 @@ Options:
   --no-service              Skip systemd service installation
   --sdr                     Install RTL-SDR tooling, pyrtlsdr, and redsea build deps
   --no-sdr                  Skip SDR support
+  --nginx                   Install and configure nginx reverse proxy
+  --no-nginx                Skip nginx setup
+  --fqdn <hostname>         Fully-qualified domain name for nginx vhost and TLS cert
+  --https                   Request a Let's Encrypt certificate via certbot (requires --fqdn)
+  --no-https                Skip Let's Encrypt even if --fqdn is set
   --install-dir <path>      Install application under this path (default: ${INSTALL_ROOT_DEFAULT})
   --force                   Overwrite existing app files in install dir
   -h, --help                Show help
@@ -210,6 +218,13 @@ parse_args() {
       --no-service) ENABLE_SERVICE=0; shift ;;
       --sdr) ENABLE_SDR=1; shift ;;
       --no-sdr) ENABLE_SDR=0; shift ;;
+      --nginx) ENABLE_NGINX=1; shift ;;
+      --no-nginx) ENABLE_NGINX=0; shift ;;
+      --fqdn)
+        [[ $# -ge 2 ]] || { err "--fqdn requires a value"; exit 1; }
+        NGINX_FQDN="$2"; shift 2 ;;
+      --https) NGINX_HTTPS=1; shift ;;
+      --no-https) NGINX_HTTPS=0; shift ;;
       --force) FORCE_OVERWRITE=1; shift ;;
       --install-dir)
         [[ $# -ge 2 ]] || { err "--install-dir requires a value"; exit 1; }
