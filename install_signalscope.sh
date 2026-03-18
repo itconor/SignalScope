@@ -254,7 +254,11 @@ install_redsea() {
   git clone --depth 1 https://github.com/windytan/redsea.git "${build_root}" >/dev/null 2>&1
   meson setup "${build_root}/build" "${build_root}" --wipe >/dev/null
   meson compile -C "${build_root}/build" >/dev/null
-  meson install -C "${build_root}/build" >/dev/null
+  if ! sudo meson install -C "${build_root}/build" >/dev/null; then
+    err "redsea install failed"
+    rm -rf "${build_root}"
+    exit 1
+  fi
   rm -rf "${build_root}"
 
   if command -v redsea >/dev/null 2>&1; then
