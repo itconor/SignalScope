@@ -11,8 +11,7 @@ SignalScope is written in **Python (Flask)** and designed to run easily on **Lin
 
 ## Install in 30 seconds
 
-```bash
-curl -sSL https://raw.githubusercontent.com/itconor/SignalScope/main/install_signalscope.sh | bash
+```/bin/bash <(curl -fsSL https://raw.githubusercontent.com/itconor/SignalScope/main/install_signalscope.sh)
 ```
 
 ---
