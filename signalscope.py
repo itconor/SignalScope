@@ -6628,15 +6628,16 @@ def _inject_nav():
     def topnav(active=""):
         show_hub = mode in ("hub", "both")
         hub_only = (mode == "hub")
+        csrf = _csrf_token()
         def _a(page, label, href):
             cls = "btn bg bs nav-active" if active == page else "btn bg bs"
             return f'<a class="{cls}" href="{href}">{label}</a>'
         start_stop = ""
         if active == "dashboard" and not hub_only:
             if running_:
-                start_stop = '<form method="post" action="/stop" style="margin:0"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}"><button class="btn bd bs">⏹ Stop</button></form>'
+                start_stop = f'<form method="post" action="/stop" style="margin:0"><input type="hidden" name="_csrf_token" value="{csrf}"><button class="btn bd bs">⏹ Stop</button></form>'
             else:
-                start_stop = '<form method="post" action="/start" style="margin:0"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}"><button class="btn bp bs">▶ Start</button></form>'
+                start_stop = f'<form method="post" action="/start" style="margin:0"><input type="hidden" name="_csrf_token" value="{csrf}"><button class="btn bp bs">▶ Start</button></form>'
         home_href = "/hub" if hub_only else "/"
         local_links = "" if hub_only else (_a("dashboard", "Dashboard", "/") + _a("inputs", "Inputs", "/inputs") + _a("reports", "Reports", "/reports") + _a("sla", "SLA", "/sla"))
         hub_link = (_a("hub", "Hub", "/hub") + _a("hub_reports", "Hub Reports", "/hub/reports")) if show_hub else ""
@@ -6657,7 +6658,7 @@ def _inject_nav():
             + local_links
             + hub_link
             + _a("settings",  "Settings",  "/settings")
-            + '<form method="post" action="/logout" style="margin:0">'+'<input type="hidden" name="_csrf_token" value="{{csrf_token()}}">'+'<button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
+            + f'<form method="post" action="/logout" style="margin:0"><input type="hidden" name="_csrf_token" value="{csrf}"><button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
             + '</nav></header>'
         )
 
