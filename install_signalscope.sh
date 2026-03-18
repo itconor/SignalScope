@@ -295,54 +295,17 @@ print_banner() {
   echo "== ${APP_NAME} production installer =="
 }
 
-resolve_source_tree() {
-  local cwd app_from_cwd legacy_from_cwd
-  cwd="$(pwd)"
-  app_from_cwd="${cwd}/${APP_PY_NAME}"
-  legacy_from_cwd="${cwd}/${LEGACY_APP_PY}"
-
-  if [[ -f "${app_from_cwd}" ]]; then
-    SOURCE_DIR="${cwd}"
-    SOURCE_APP="${app_from_cwd}"
-    ok "Using local source: ${SOURCE_APP}"
-    return 0
+ensure_rtlsdr_blacklist() {
+  local bl="/etc/modprobe.d/blacklist-rtlsdr.conf"
+  if [[ ! -f "${bl}" ]]; then
+    ${SUDO} tee "${bl}" > /dev/null <<'EOF'
+# Prevent DVB-T kernel driver from claiming the RTL-SDR dongle
+blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+blacklist rtl2830
+EOF
+    ok "RTL-SDR kernel module blacklist written"
   fi
-
-  if [[ -f "${legacy_from_cwd}" ]]; then
-    SOURCE_DIR="${cwd}"
-    SOURCE_APP="${legacy_from_cwd}"
-    ok "Using local legacy source: ${SOURCE_APP}"
-    return 0
-  fi
-
-  TEMP_SOURCE_DIR="$(mktemp -d /tmp/signalscope-src.XXXXXX)"
-  info "Local app file missing; fetching SignalScope from GitHub..."
-
-  if command -v git >/dev/null 2>&1; then
-    if git clone --depth 1 "${REPO_URL}" "${TEMP_SOURCE_DIR}" >/dev/null 2>&1; then
-      :
-    else
-      warn "Git clone failed, falling back to direct file download..."
-      mkdir -p "${TEMP_SOURCE_DIR}/static"
-      curl -fsSL "${RAW_BASE_URL}/${APP_PY_NAME}" -o "${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
-    fi
-  else
-    mkdir -p "${TEMP_SOURCE_DIR}/static"
-    curl -fsSL "${RAW_BASE_URL}/${APP_PY_NAME}" -o "${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
-  fi
-
-  if [[ ! -f "${TEMP_SOURCE_DIR}/${APP_PY_NAME}" && -f "${TEMP_SOURCE_DIR}/${LEGACY_APP_PY}" ]]; then
-    cp -f "${TEMP_SOURCE_DIR}/${LEGACY_APP_PY}" "${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
-  fi
-
-  if [[ ! -f "${TEMP_SOURCE_DIR}/${APP_PY_NAME}" ]]; then
-    err "Failed to obtain ${APP_PY_NAME} from ${REPO_URL}"
-    exit 1
-  fi
-
-  SOURCE_DIR="${TEMP_SOURCE_DIR}"
-  SOURCE_APP="${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
-  ok "Fetched source from GitHub: ${SOURCE_APP}"
 }
 
 install_redsea() {
@@ -372,6 +335,252 @@ install_redsea() {
     ok "redsea installed successfully"
   else
     warn "redsea installation completed but binary was not found in PATH"
+  fi
+}
+
+# ── Version helpers ───────────────────────────────────────────────────────────
+
+# Extract "X.Y.Z" from the BUILD line in a signalscope.py file.
+extract_build_version() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  grep -oP '(?<=SignalScope-)\d+\.\d+\.\d+' "$file" 2>/dev/null | head -1 || true
+}
+
+# Returns 0 (true) if $1 > $2 (both "X.Y.Z"). Empty treated as 0.0.0.
+version_gt() {
+  python3 - <<PYEOF
+a = tuple(int(x) for x in ('${1:-0.0.0}'.split('.')))
+b = tuple(int(x) for x in ('${2:-0.0.0}'.split('.')))
+import sys; sys.exit(0 if a > b else 1)
+PYEOF
+}
+
+# Global state set by resolve_best_source
+INSTALLED_VER=""
+WINNING_VER=""
+WINNING_SOURCE=""  # "installed" | "local" | "remote"
+IS_UPDATE=0
+
+# Compare installed / local CWD / remote GitHub versions and pick the highest.
+# Sets SOURCE_DIR, SOURCE_APP, INSTALLED_VER, WINNING_VER, WINNING_SOURCE, IS_UPDATE.
+resolve_best_source() {
+  local cwd installed_app local_app remote_app fetch_ok local_ver remote_ver
+
+  cwd="$(pwd)"
+  installed_app="${INSTALL_ROOT}/${APP_PY_NAME}"
+  local_app="${cwd}/${APP_PY_NAME}"
+
+  # 1. Installed version
+  INSTALLED_VER=$(extract_build_version "${installed_app}")
+  if [[ -n "${INSTALLED_VER}" ]]; then
+    info "Installed version : ${INSTALLED_VER}  (${installed_app})"
+    IS_UPDATE=1
+  else
+    info "No existing installation found at ${installed_app}"
+  fi
+
+  # 2. Local source version (CWD)
+  local_ver=$(extract_build_version "${local_app}")
+  [[ -n "${local_ver}" ]] && info "Local file version: ${local_ver}  (${local_app})"
+
+  # 3. Remote version from GitHub
+  step "Checking remote version on GitHub"
+  TEMP_SOURCE_DIR="$(mktemp -d /tmp/signalscope-src.XXXXXX)"
+  remote_app="${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
+  fetch_ok=0
+
+  if command -v git >/dev/null 2>&1; then
+    if git clone --depth 1 "${REPO_URL}" "${TEMP_SOURCE_DIR}" >/dev/null 2>&1; then
+      fetch_ok=1
+    else
+      warn "git clone failed, trying direct download"
+    fi
+  fi
+  if [[ "${fetch_ok}" -eq 0 ]]; then
+    mkdir -p "${TEMP_SOURCE_DIR}"
+    if curl -fsSL --max-time 30 "${RAW_BASE_URL}/${APP_PY_NAME}" -o "${remote_app}" 2>/dev/null; then
+      fetch_ok=1
+    else
+      warn "Could not fetch remote file from GitHub"
+    fi
+  fi
+
+  remote_ver=""
+  if [[ "${fetch_ok}" -eq 1 && -f "${remote_app}" ]]; then
+    remote_ver=$(extract_build_version "${remote_app}")
+    [[ -n "${remote_ver}" ]] && info "Remote version     : ${remote_ver}  (GitHub)" \
+                              || warn "Could not parse version from remote file"
+  fi
+
+  # 4. Pick winner (highest version)
+  WINNING_VER="${INSTALLED_VER:-0.0.0}"
+  WINNING_SOURCE="installed"
+
+  if [[ -n "${local_ver}" ]] && version_gt "${local_ver}" "${WINNING_VER}"; then
+    WINNING_VER="${local_ver}"; WINNING_SOURCE="local"
+  fi
+  if [[ -n "${remote_ver}" ]] && version_gt "${remote_ver}" "${WINNING_VER}"; then
+    WINNING_VER="${remote_ver}"; WINNING_SOURCE="remote"
+  fi
+
+  # 5. Set SOURCE_DIR / SOURCE_APP
+  case "${WINNING_SOURCE}" in
+    local)
+      SOURCE_DIR="${cwd}"; SOURCE_APP="${local_app}"
+      [[ -n "${INSTALLED_VER}" ]] \
+        && ok "Update available: ${INSTALLED_VER} → ${WINNING_VER}  (local file wins)" \
+        || ok "Source: local file ${WINNING_VER}"
+      ;;
+    remote)
+      SOURCE_DIR="${TEMP_SOURCE_DIR}"; SOURCE_APP="${remote_app}"
+      [[ -n "${INSTALLED_VER}" ]] \
+        && ok "Update available: ${INSTALLED_VER} → ${WINNING_VER}  (GitHub wins)" \
+        || ok "Source: GitHub ${WINNING_VER}"
+      ;;
+    installed)
+      SOURCE_DIR="${INSTALL_ROOT}"; SOURCE_APP="${installed_app}"
+      ok "Already up to date: ${WINNING_VER}"
+      ;;
+  esac
+
+  # Legacy filename fallback
+  if [[ ! -f "${SOURCE_APP}" ]]; then
+    local legacy_cwd="${cwd}/${LEGACY_APP_PY}"
+    if [[ -f "${legacy_cwd}" ]]; then
+      SOURCE_DIR="${cwd}"; SOURCE_APP="${legacy_cwd}"
+      warn "Using legacy app file: ${SOURCE_APP}"
+    elif [[ -f "${INSTALL_ROOT}/${LEGACY_APP_PY}" ]]; then
+      SOURCE_DIR="${INSTALL_ROOT}"; SOURCE_APP="${INSTALL_ROOT}/${LEGACY_APP_PY}"
+      warn "Using legacy installed app file: ${SOURCE_APP}"
+    else
+      err "No application file found — cannot continue"; exit 1
+    fi
+  fi
+}
+
+# ── nginx reverse proxy ───────────────────────────────────────────────────────
+
+configure_nginx() {
+  local fqdn="$1"
+  local use_https="${2:-0}"
+
+  step "Installing nginx"
+  export DEBIAN_FRONTEND=noninteractive
+  ${SUDO} apt-get install -y nginx
+
+  local conf_file="/etc/nginx/sites-available/signalscope"
+  local enabled_dir="/etc/nginx/sites-enabled"
+
+  # Common stream location block (reused in both HTTP and HTTPS configs)
+  local stream_loc
+  stream_loc='    # Live audio — disable buffering so chunks flow immediately
+    location /stream/ {
+        proxy_pass             http://127.0.0.1:5000;
+        proxy_buffering        off;
+        proxy_cache            off;
+        proxy_read_timeout     3600s;
+        proxy_send_timeout     3600s;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }'
+
+  if [[ -z "${fqdn}" ]]; then
+    # HTTP-only, no FQDN — proxy on port 80 to app on 5000
+    ${SUDO} tee "${conf_file}" > /dev/null <<EOF
+# SignalScope nginx reverse proxy (HTTP, no FQDN)
+server {
+    listen 80 default_server;
+    server_name _;
+
+    proxy_set_header Host              \$host;
+    proxy_set_header X-Real-IP         \$remote_addr;
+    proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+
+    location /stream/ {
+        proxy_pass          http://127.0.0.1:5000;
+        proxy_buffering     off;
+        proxy_cache         off;
+        proxy_read_timeout  3600s;
+        proxy_send_timeout  3600s;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location / {
+        proxy_pass          http://127.0.0.1:5000;
+        proxy_read_timeout  120s;
+        proxy_send_timeout  120s;
+    }
+}
+EOF
+  else
+    # Write full config — start with HTTP-only so nginx can start even before cert
+    ${SUDO} tee "${conf_file}" > /dev/null <<EOF
+# SignalScope nginx reverse proxy
+server {
+    listen 80;
+    server_name ${fqdn};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location /stream/ {
+        proxy_pass          http://127.0.0.1:5000;
+        proxy_buffering     off;
+        proxy_cache         off;
+        proxy_read_timeout  3600s;
+        proxy_send_timeout  3600s;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location / {
+        proxy_pass          http://127.0.0.1:5000;
+        proxy_read_timeout  120s;
+        proxy_send_timeout  120s;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+  fi
+
+  ${SUDO} ln -sf "${conf_file}" "${enabled_dir}/signalscope"
+  ${SUDO} rm -f "${enabled_dir}/default" 2>/dev/null || true
+  ${SUDO} systemctl enable --now nginx
+  ${SUDO} nginx -t && { ${SUDO} nginx -s reload 2>/dev/null || ${SUDO} systemctl restart nginx; }
+  ok "nginx configured${fqdn:+ for ${fqdn}}"
+
+  # TLS via certbot
+  if [[ "${use_https}" == "1" && -n "${fqdn}" ]]; then
+    step "Installing certbot"
+    ${SUDO} apt-get install -y certbot python3-certbot-nginx
+
+    step "Requesting Let's Encrypt certificate for ${fqdn}"
+    info "Port 80 must be reachable from the internet for the ACME HTTP-01 challenge."
+    if ${SUDO} certbot --nginx -d "${fqdn}" --non-interactive --agree-tos \
+         --register-unsafely-without-email --redirect 2>&1; then
+      ok "TLS certificate issued for ${fqdn}"
+      ${SUDO} nginx -s reload
+    else
+      warn "certbot failed — you can retry manually: sudo certbot --nginx -d ${fqdn}"
+    fi
+
+    # Auto-renewal
+    ${SUDO} systemctl enable --now certbot.timer 2>/dev/null \
+      || ${SUDO} systemctl enable --now snap.certbot.renew.timer 2>/dev/null || true
+    ok "certbot auto-renewal enabled"
   fi
 }
 
@@ -480,44 +689,72 @@ main() {
 
   INSTALL_ROOT="$(ask_value "Install directory" "${INSTALL_ROOT}")"
 
+  # ── Legacy LivewireAIMonitor detection (must run before version check) ───────
+  # If the old service exists we always treat this as a fresh install so that
+  # the full setup path (apt, venv, service creation) runs and files are migrated.
   if detect_legacy_livewire_install; then
     warn "Legacy LivewireAIMonitor service detected${LEGACY_WORKDIR:+ at ${LEGACY_WORKDIR}}."
-    warn "This will be treated as a fresh SignalScope install and legacy config/models will be migrated."
-    EXISTING_APP=0
+    warn "The old service will be stopped and config/models migrated to ${INSTALL_ROOT}."
+    warn "This will be treated as a fresh SignalScope install."
+    IS_UPDATE=0   # force fresh-install mode regardless of what resolve_best_source finds
   fi
 
-  EXISTING_APP=0
-  if [[ -f "${INSTALL_ROOT}/${APP_PY_NAME}" || -f "${INSTALL_ROOT}/${LEGACY_APP_PY}" ]]; then
-    EXISTING_APP=1
+  # ── Version check: compare installed / local / remote ──────────────────────
+  echo
+  resolve_best_source
+
+  # If legacy was detected, override the IS_UPDATE that resolve_best_source may
+  # have re-set to 1 (e.g. a partial SignalScope install already exists).
+  if [[ "${LEGACY_INSTALL_DETECTED}" -eq 1 ]]; then
+    IS_UPDATE=0
+  fi
+
+  # ── Already current? (only relevant when no legacy migration needed) ─────────
+  if [[ "${IS_UPDATE}" -eq 1 && "${WINNING_SOURCE}" == "installed" && "${FORCE_OVERWRITE}" -ne 1 ]]; then
+    ok "${APP_NAME} ${WINNING_VER} is already the latest version."
+    if [[ "${INTERACTIVE}" -eq 1 ]]; then
+      ask_yes_no "Reinstall/repair dependencies anyway?" "n" || { warn "Nothing to do."; exit 0; }
+    else
+      exit 0
+    fi
+  fi
+
+  # ── Interactive prompts — skip heavy questions in update mode ───────────────
+  if [[ "${IS_UPDATE}" -eq 1 ]]; then
+    info "Update mode: ${INSTALLED_VER} → ${WINNING_VER}"
+    [[ -z "${ENABLE_SERVICE}" ]] && ENABLE_SERVICE=0
+    [[ -z "${ENABLE_SDR}" ]]     && ENABLE_SDR=0
+  else
+    info "Fresh install mode${LEGACY_INSTALL_DETECTED:+ (migrating from LivewireAIMonitor)}"
   fi
 
   EXISTING_PROXY=0
-  if detect_existing_proxy_setup; then
-    EXISTING_PROXY=1
-  fi
+  detect_existing_proxy_setup && EXISTING_PROXY=1 || true
 
   if [[ -z "${ENABLE_NGINX}" ]]; then
-    if [[ "${EXISTING_APP}" == "1" && "${EXISTING_PROXY}" == "0" ]]; then
-      if ask_yes_no "Existing install detected with no reverse proxy config. Install nginx reverse proxy now?" "y"; then
+    if [[ "${IS_UPDATE}" -eq 1 && "${EXISTING_PROXY}" -eq 0 ]]; then
+      if ask_yes_no "No reverse proxy detected. Install nginx now?" "y"; then
+        ENABLE_NGINX=1
+      else
+        ENABLE_NGINX=0
+      fi
+    elif [[ "${IS_UPDATE}" -ne 1 ]]; then
+      if ask_yes_no "Install nginx as a reverse proxy (recommended)?" "y"; then
         ENABLE_NGINX=1
       else
         ENABLE_NGINX=0
       fi
     else
-      if ask_yes_no "Install nginx reverse proxy?" "n"; then
-        ENABLE_NGINX=1
-      else
-        ENABLE_NGINX=0
-      fi
+      ENABLE_NGINX=0
     fi
   fi
 
   if [[ "${ENABLE_NGINX}" == "1" && -z "${NGINX_FQDN}" ]]; then
-    NGINX_FQDN="$(ask_value "FQDN for reverse proxy" "${NGINX_FQDN:-signalscope.local}")"
+    NGINX_FQDN="$(ask_value "FQDN for nginx vhost (blank for HTTP-only)" "")"
   fi
 
-  if [[ "${ENABLE_NGINX}" == "1" && -z "${NGINX_HTTPS}" ]]; then
-    if ask_yes_no "Request Let's Encrypt certificate for ${NGINX_FQDN}?" "n"; then
+  if [[ "${ENABLE_NGINX}" == "1" && -n "${NGINX_FQDN}" && -z "${NGINX_HTTPS}" ]]; then
+    if ask_yes_no "Request a Let's Encrypt TLS certificate for ${NGINX_FQDN}?" "y"; then
       NGINX_HTTPS=1
     else
       NGINX_HTTPS=0
@@ -528,19 +765,24 @@ main() {
   info "OS: $(. /etc/os-release && echo "${PRETTY_NAME:-Linux}")"
   info "Arch: $(dpkg --print-architecture 2>/dev/null || uname -m)"
   info "Install dir: ${INSTALL_ROOT}"
+  if [[ "${IS_UPDATE}" -eq 1 ]]; then
+    info "Mode: update ${INSTALLED_VER} → ${WINNING_VER}"
+  elif [[ "${LEGACY_INSTALL_DETECTED}" -eq 1 ]]; then
+    info "Mode: fresh install ${WINNING_VER}  (migrating from LivewireAIMonitor)"
+  else
+    info "Mode: fresh install ${WINNING_VER}"
+  fi
   info "Install service: $([[ "${ENABLE_SERVICE}" == "1" ]] && echo yes || echo no)"
-  info "Legacy migration: $([[ "${LEGACY_INSTALL_DETECTED}" == "1" ]] && echo yes || echo no)"
   info "Install SDR: $([[ "${ENABLE_SDR}" == "1" ]] && echo yes || echo no)"
   info "Install nginx: $([[ "${ENABLE_NGINX}" == "1" ]] && echo yes || echo no)"
   if [[ "${ENABLE_NGINX}" == "1" ]]; then
-    info "Reverse proxy FQDN: ${NGINX_FQDN}"
+    info "nginx FQDN: ${NGINX_FQDN:-<none, HTTP-only>}"
     info "Let's Encrypt: $([[ "${NGINX_HTTPS}" == "1" ]] && echo yes || echo no)"
   fi
   if [[ "${INTERACTIVE}" == "1" ]]; then
     echo
-    if ! ask_yes_no "Continue with installation?" "y"; then
-      warn "Cancelled."
-      exit 0
+    if ! ask_yes_no "Continue?" "y"; then
+      warn "Cancelled."; exit 0
     fi
   fi
 
@@ -548,78 +790,89 @@ main() {
   SERVICE_GROUP="$(id -gn "${SERVICE_USER}")"
   ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
   IS_ARM=0
-  case "$ARCH" in
-    armhf|arm64|aarch64) IS_ARM=1 ;;
-  esac
+  case "$ARCH" in armhf|arm64|aarch64) IS_ARM=1 ;; esac
 
-  step "Installing apt packages"
-  export DEBIAN_FRONTEND=noninteractive
-  ${SUDO} apt-get update -y
-  ${SUDO} apt-get install -y \
-    python3 python3-venv python3-pip python3-dev python3-setuptools \
-    build-essential pkg-config git curl wget ca-certificates rsync \
-    ffmpeg ethtool net-tools iproute2 jq \
-    libffi-dev libssl-dev meson ninja-build
-
-  if [[ "${ENABLE_SDR}" == "1" ]]; then
-    step "Installing SDR apt packages"
+  # ── System packages — only on fresh install ─────────────────────────────────
+  if [[ "${IS_UPDATE}" -ne 1 ]]; then
+    step "Installing apt packages"
+    export DEBIAN_FRONTEND=noninteractive
+    ${SUDO} apt-get update -y
     ${SUDO} apt-get install -y \
-      rtl-sdr librtlsdr-dev welle.io \
-      libsndfile1 libsndfile1-dev libliquid-dev libfftw3-dev nlohmann-json3-dev || true
+      python3 python3-venv python3-dev python3-setuptools \
+      build-essential pkg-config git curl wget ca-certificates rsync \
+      ffmpeg ethtool net-tools iproute2 jq \
+      libffi-dev libssl-dev
+
+    if [[ "${ENABLE_SDR}" == "1" ]]; then
+      step "Installing SDR apt packages"
+      ${SUDO} apt-get install -y \
+        rtl-sdr librtlsdr-dev welle.io \
+        libsndfile1 libsndfile1-dev libliquid-dev libfftw3-dev nlohmann-json3-dev \
+        meson ninja-build || true
+      ensure_rtlsdr_blacklist
+    fi
+
   fi
 
-  resolve_source_tree
-
-  if [[ "${LEGACY_INSTALL_DETECTED}" == "1" ]]; then
-    migrate_legacy_livewire_install
-  fi
-
+  # ── Directories ──────────────────────────────────────────────────────────────
   step "Preparing directories"
   ${SUDO} mkdir -p "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
   ${SUDO} chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
 
+  # ── Migrate legacy LivewireAIMonitor install (runs whenever detected) ─────────
+  if [[ "${LEGACY_INSTALL_DETECTED}" -eq 1 ]]; then
+    migrate_legacy_livewire_install
+  fi
+
   VENV_DIR="${INSTALL_ROOT}/venv"
   TARGET_APP="${INSTALL_ROOT}/${APP_PY_NAME}"
 
+  # ── Application file ─────────────────────────────────────────────────────────
   step "Installing application files"
-  if [[ -f "${TARGET_APP}" && "${FORCE_OVERWRITE}" -ne 1 ]]; then
-    warn "Existing ${TARGET_APP} found; keeping it. Re-run with --force to overwrite."
+  if [[ "${WINNING_SOURCE}" == "installed" && "${FORCE_OVERWRITE}" -ne 1 ]]; then
+    info "App file is current (${WINNING_VER}), skipping copy."
   else
     install -m 0644 "${SOURCE_APP}" "/tmp/${APP_PY_NAME}.$$"
     ${SUDO} mv "/tmp/${APP_PY_NAME}.$$" "${TARGET_APP}"
     ${SUDO} chown "${SERVICE_USER}:${SERVICE_GROUP}" "${TARGET_APP}"
-    ok "Installed ${TARGET_APP}"
+    ok "Installed ${TARGET_APP} (${WINNING_VER})"
   fi
 
-  if [[ -d "${SOURCE_DIR}/static" ]]; then
+  if [[ -d "${SOURCE_DIR}/static" && "${WINNING_SOURCE}" != "installed" ]]; then
     ${SUDO} mkdir -p "${INSTALL_ROOT}/static"
     ${SUDO} rsync -a --delete "${SOURCE_DIR}/static/" "${INSTALL_ROOT}/static/"
     ${SUDO} chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}/static"
-    ok "Copied static assets"
-  else
-    warn "No static/ directory found in source tree; continuing without copied assets."
+    ok "Updated static assets"
   fi
 
-  step "Creating Python virtual environment"
+  # ── Python version check ─────────────────────────────────────────────────────
+  step "Checking Python version"
+  PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  PY_MAJ="$(python3 -c 'import sys; print(sys.version_info.major)')"
+  PY_MIN="$(python3 -c 'import sys; print(sys.version_info.minor)')"
+  if [[ "${PY_MAJ}" -lt 3 || ( "${PY_MAJ}" -eq 3 && "${PY_MIN}" -lt 9 ) ]]; then
+    warn "Python ${PY_VER} detected — 3.9+ required for AI/ONNX features."
+  else
+    ok "Python ${PY_VER}"
+  fi
+
+  # ── Virtual environment ───────────────────────────────────────────────────────
+  step "Creating/updating Python virtual environment"
   python3 -m venv "${VENV_DIR}"
   # shellcheck disable=SC1091
   source "${VENV_DIR}/bin/activate"
 
-  step "Installing Python packages"
-  python -m pip install --upgrade "pip<25" wheel "setuptools<81"
-  python -m pip install \
-    flask waitress cheroot numpy scipy requests certifi cryptography
+  # ── Python packages — pip is idempotent, safe to run on updates too ──────────
+  step "Installing/updating Python packages"
+  python -m pip install --upgrade pip wheel "setuptools<81"
+  python -m pip install flask waitress cheroot numpy scipy requests certifi cryptography
 
-  step "Installing ONNX stack"
-  if ! python -m pip install onnx; then
-    warn "Failed to install onnx"
-  fi
+  step "Installing/checking ONNX stack"
+  python -m pip install onnx || warn "Failed to install onnx"
   if ! python -m pip install onnxruntime; then
-    if [[ $IS_ARM -eq 1 ]]; then
-      warn "onnxruntime wheel may be unavailable on this ARM platform; AI features may be unavailable."
-    else
-      warn "Failed to install onnxruntime"
-    fi
+    [[ $IS_ARM -eq 1 ]] \
+      && warn "onnxruntime wheel may be unavailable on this ARM platform; AI features may be unavailable." \
+      || warn "Failed to install onnxruntime"
   fi
 
   if [[ "${ENABLE_SDR}" == "1" ]]; then
@@ -638,8 +891,10 @@ PYEOF
     install_redsea
   fi
 
-  step "Applying network tuning"
-  ${SUDO} tee /etc/sysctl.d/99-signalscope-network.conf > /dev/null <<'EOF'
+  # ── System tuning — only on fresh install ────────────────────────────────────
+  if [[ "${IS_UPDATE}" -ne 1 ]]; then
+    step "Applying network tuning"
+    ${SUDO} tee /etc/sysctl.d/99-signalscope-network.conf > /dev/null <<'EOF'
 net.core.rmem_max=536870912
 net.core.rmem_default=536870912
 net.core.wmem_max=536870912
@@ -649,53 +904,72 @@ net.ipv4.udp_wmem_min=1048576
 net.core.netdev_max_backlog=750000
 net.core.optmem_max=65536
 EOF
-  ${SUDO} sysctl --system >/dev/null || true
+    ${SUDO} sysctl --system >/dev/null || true
 
-  DEFAULT_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
-  if [[ -n "${DEFAULT_IFACE:-}" ]]; then
-    info "Applying best-effort NIC tuning to ${DEFAULT_IFACE}"
-    ${SUDO} ethtool -K "${DEFAULT_IFACE}" gro off gso off tso off lro off >/dev/null 2>&1 || true
-    ${SUDO} ethtool -G "${DEFAULT_IFACE}" rx 4096 tx 4096 >/dev/null 2>&1 || true
-  fi
+    DEFAULT_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
+    if [[ -n "${DEFAULT_IFACE:-}" ]]; then
+      info "Applying best-effort NIC tuning to ${DEFAULT_IFACE}"
+      ${SUDO} ethtool -K "${DEFAULT_IFACE}" gro off gso off tso off lro off >/dev/null 2>&1 || true
+      ${SUDO} ethtool -G "${DEFAULT_IFACE}" rx 4096 tx 4096 >/dev/null 2>&1 || true
+    fi
 
-  step "Setting Python low-port capability"
-  PYBIN="$(readlink -f "$(command -v python3)")"
-  if [[ -f "${PYBIN}" ]]; then
-    ${SUDO} setcap cap_net_bind_service=+ep "${PYBIN}" || true
-  fi
+    step "Setting Python low-port capability"
+    PYBIN="$(readlink -f "$(command -v python3)")"
+    [[ -f "${PYBIN}" ]] && ${SUDO} setcap cap_net_bind_service=+ep "${PYBIN}" || true
 
-  if getent group plugdev >/dev/null 2>&1; then
-    ${SUDO} usermod -aG plugdev "${SERVICE_USER}" || true
-  fi
+    getent group plugdev >/dev/null 2>&1 && ${SUDO} usermod -aG plugdev "${SERVICE_USER}" || true
 
-  step "Writing environment file"
-  ${SUDO} tee /etc/default/${SERVICE_NAME} > /dev/null <<EOF
+    step "Writing environment file"
+    ${SUDO} tee /etc/default/${SERVICE_NAME} > /dev/null <<EOF
 SIGNALSCOPE_INSTALL_DIR=${INSTALL_ROOT}
 SIGNALSCOPE_DATA_DIR=${DATA_ROOT_DEFAULT}
 SIGNALSCOPE_LOG_DIR=${LOG_ROOT_DEFAULT}
 EOF
 
-  if [[ "${ENABLE_SERVICE}" == "1" ]]; then
-    create_service
+    [[ "${ENABLE_SERVICE}" == "1" ]] && create_service
   fi
 
+  # ── nginx (fresh install or explicitly requested) ────────────────────────────
   if [[ "${ENABLE_NGINX}" == "1" ]]; then
-    configure_nginx "${NGINX_FQDN}" "${NGINX_HTTPS}"
+    configure_nginx "${NGINX_FQDN:-}" "${NGINX_HTTPS:-0}"
   fi
 
+  # ── Restart service after update ─────────────────────────────────────────────
+  if [[ "${IS_UPDATE}" -eq 1 && "${WINNING_SOURCE}" != "installed" ]]; then
+    if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+      step "Restarting ${SERVICE_NAME} to apply update"
+      ${SUDO} systemctl restart "${SERVICE_NAME}"
+      ok "Service restarted"
+    elif systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
+      step "Starting ${SERVICE_NAME}"
+      ${SUDO} systemctl start "${SERVICE_NAME}"
+      ok "Service started"
+    fi
+  fi
+
+  # ── Summary ───────────────────────────────────────────────────────────────────
   echo
-  ok "Installation complete"
-  echo "Installed app: ${TARGET_APP}"
-  echo "Virtualenv: ${VENV_DIR}"
-  echo "Data dir: ${DATA_ROOT_DEFAULT}"
-  echo "Log dir: ${LOG_ROOT_DEFAULT}"
-  if [[ "${ENABLE_SERVICE}" == "1" ]]; then
-    echo "Service enabled: ${SERVICE_NAME}"
-    echo "Status: systemctl status ${SERVICE_NAME}"
-    echo "Logs: journalctl -fu ${SERVICE_NAME}"
+  if [[ "${IS_UPDATE}" -eq 1 && "${WINNING_SOURCE}" != "installed" ]]; then
+    ok "Update complete: ${INSTALLED_VER} → ${WINNING_VER}"
   else
-    echo "Run manually with:"
-    echo "  source \"${VENV_DIR}/bin/activate\" && python \"${TARGET_APP}\""
+    ok "Installation complete (${WINNING_VER})"
+  fi
+  echo "Installed app : ${TARGET_APP}"
+  echo "Virtualenv    : ${VENV_DIR}"
+  echo "Data dir      : ${DATA_ROOT_DEFAULT}"
+  echo "Log dir       : ${LOG_ROOT_DEFAULT}"
+  if [[ "${ENABLE_SERVICE}" == "1" ]] || systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
+    echo "Service       : ${SERVICE_NAME}"
+    echo "Status        : systemctl status ${SERVICE_NAME}"
+    echo "Logs          : journalctl -fu ${SERVICE_NAME}"
+  else
+    echo "Run manually  : source \"${VENV_DIR}/bin/activate\" && python \"${TARGET_APP}\""
+  fi
+  echo
+  if [[ "${ENABLE_NGINX}" == "1" && -n "${NGINX_FQDN:-}" ]]; then
+    [[ "${NGINX_HTTPS:-0}" == "1" ]] && echo "Open: https://${NGINX_FQDN}" || echo "Open: http://${NGINX_FQDN}"
+  else
+    echo "Open: http://<server-ip>:5000"
   fi
 }
 
