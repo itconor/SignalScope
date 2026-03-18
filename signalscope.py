@@ -328,91 +328,105 @@ document.addEventListener('DOMContentLoaded',function(){
           }
           document.addEventListener('DOMContentLoaded', updateHubPanels);
           </script>
-  <div class="sec">🔒 HTTPS / Let's Encrypt</div>
-          {% if cfg.hub.mode in ('hub','both') %}
-          <div style="padding:12px;background:#0d1520;border:1px solid var(--bor);border-radius:8px;margin-bottom:8px">
-            <div style="font-size:12px;font-weight:600;color:var(--acc);margin-bottom:10px">Current status</div>
-            <div id="acme-cert-info" style="font-size:12px;color:var(--mu);margin-bottom:10px">
-              {% if cfg.tls_enabled and cfg.tls_domain %}
-                <span style="color:var(--ok)">✓ HTTPS active</span> — {{cfg.tls_domain}}
-                <span style="margin-left:12px;color:var(--mu)">(restart app to apply changes)</span>
-              {% else %}
-                <span style="color:var(--mu)">HTTP only — no certificate configured</span>
-              {% endif %}
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
-              <label>Domain (FQDN)
-                <input type="text" id="acme_domain" value="{{cfg.tls_domain}}"
-                       placeholder="hub.yourdomain.com"
-                       style="width:100%;padding:7px 10px;background:#141820;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px;margin-top:4px">
-              </label>
-              <label>Contact email (optional)
-                <input type="text" id="acme_email" value=""
-                       placeholder="admin@yourdomain.com"
-                       style="width:100%;padding:7px 10px;background:#141820;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px;margin-top:4px">
-              </label>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <button type="button" class="btn bp" onclick="acmeIssue()">🔒 Get Certificate</button>
-              <button type="button" class="btn bg" onclick="acmeIssue(true)" style="font-size:11px">Use staging (test)</button>
-              <button type="button" class="btn bg" onclick="acmeClear()" style="font-size:11px;color:var(--wn)">↺ Clear &amp; retry fresh</button>
-              {% if cfg.tls_enabled %}
-              <button type="button" class="btn bw" onclick="tlsToggle(false)">Disable HTTPS</button>
-              {% elif cfg.tls_cert_path %}
-              <button type="button" class="btn bg" onclick="tlsToggle(true)">Enable HTTPS</button>
-              {% endif %}
-            </div>
-            <p class="help" style="margin-top:8px">The hub already listens on port 80 (HTTP) so the ACME challenge is served automatically — just ensure port 80 is open in your firewall. Certificate auto-renews when less than 30 days remain.</p>
-            <div id="acme-log" style="margin-top:10px;padding:8px;background:#060810;border-radius:5px;font-family:monospace;font-size:11px;color:#64748b;max-height:140px;overflow-y:auto;display:none"></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a></div>
+</div>
+<div class="pn" id="p-hub">
+  <div class="sec">🌐 Network Interfaces</div>
+          <label>Audio interface IP (for multicast reception)<input type="text" name="audio_ip" value="{{cfg.network.audio_interface_ip}}" placeholder="0.0.0.0"></label>
+          <p class="help">Use 0.0.0.0 to accept on any interface.</p>
+          <label>Management interface IP (for outbound alerts)<input type="text" name="mgmt_ip" value="{{cfg.network.management_interface_ip}}" placeholder="0.0.0.0"></label>
+  <div class="sec">📡 PTP Clock Thresholds</div>
+  <p class="help" style="margin-bottom:8px">This monitor is a passive PTP observer, not a slave — absolute offset depends on NTP accuracy. Set thresholds to match your network. Defaults are suitable for NTP-synced systems (±5 ms warn, ±50 ms alert).</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <label>Offset warn (µs)
+      <input type="number" name="ptp_offset_warn_us" value="{{cfg.ptp_offset_warn_us}}" min="100" max="1000000">
+    </label>
+    <label>Offset alert (µs)
+      <input type="number" name="ptp_offset_alert_us" value="{{cfg.ptp_offset_alert_us}}" min="100" max="1000000">
+    </label>
+    <label>Jitter warn (µs)
+      <input type="number" name="ptp_jitter_warn_us" value="{{cfg.ptp_jitter_warn_us}}" min="100" max="1000000">
+    </label>
+    <label>Jitter alert (µs)
+      <input type="number" name="ptp_jitter_alert_us" value="{{cfg.ptp_jitter_alert_us}}" min="100" max="1000000">
+    </label>
+  </div>
+  <p class="help">1000 µs = 1 ms. For a PTP-slaved system you could tighten these to 500/5000 µs. For NTP-only, keep at 5000/50000.</p>
+  <div class="sec">🛰 Multi-Site Hub</div>
+        
+          <label>Mode
+            <select name="hub_mode" id="hub_mode_sel" onchange="updateHubPanels()"
+                    style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+              <option value="client" {{'selected' if cfg.hub.mode=='client'}}>Client — this site sends data to a central hub</option>
+              <option value="hub"    {{'selected' if cfg.hub.mode=='hub'}}>Hub — this machine receives data from all sites</option>
+              <option value="both"   {{'selected' if cfg.hub.mode=='both'}}>Both — client + hub on this machine</option>
+            </select>
+          </label>
+        
+          {# ── Client panel ── #}
+          <div id="hub_client_panel" style="margin-top:12px;padding:12px;background:#0d1520;border:1px solid var(--bor);border-radius:8px">
+            <div style="font-size:12px;font-weight:600;color:var(--acc);margin-bottom:10px">📡 Client Settings</div>
+            <label>Site Name
+              <input type="text" name="hub_site_name" value="{{cfg.hub.site_name}}"
+                     placeholder="e.g. Cool FM Belfast — shown on the hub dashboard">
+            </label>
+            <label style="margin-top:8px;display:block">Hub URL
+              <input type="text" name="hub_url" value="{{cfg.hub.hub_url}}"
+                     placeholder="https://hub.yourdomain.com  or  http://hub-server-ip">
+            </label>
+            <p class="help">The address of the hub server. If the hub has a certificate, use <code style="background:#173a69;padding:1px 5px;border-radius:3px">https://hub.yourdomain.com</code>. Without a cert, use <code style="background:#173a69;padding:1px 5px;border-radius:3px">http://hub-server-ip</code> (hub runs on port 80 automatically).</p>
           </div>
+        
+          {# ── Hub panel ── #}
+          <div id="hub_server_panel" style="margin-top:12px;padding:12px;background:#0d1520;border:1px solid var(--bor);border-radius:8px">
+            <div style="font-size:12px;font-weight:600;color:#86efac;margin-bottom:10px">🛰 Hub Server Settings</div>
+            <p class="help" style="margin-bottom:8px">
+              This machine will listen for heartbeats from client sites on port 5000 at
+              <code style="background:#173a69;padding:1px 6px;border-radius:4px">/api/v1/heartbeat</code>.
+              Make sure this port is accessible from all client sites.
+            </p>
+          </div>
+        
+          {# ── Shared secret — applies to BOTH sides, always shown prominently ── #}
+          <div style="margin-top:12px;padding:12px;background:#1a1020;border:2px solid
+               {{'#22c55e' if cfg.hub.secret_key|length >= 16 else ('#f59e0b' if cfg.hub.secret_key else '#ef4444')}};border-radius:8px">
+            <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:
+                 {{'var(--ok)' if cfg.hub.secret_key|length >= 16 else ('var(--wn)' if cfg.hub.secret_key else 'var(--al)')}}">
+              🔑 Shared Secret Key
+              — must be identical on the hub server AND every client site
+            </div>
+            <input type="password" name="hub_secret" value="{{cfg.hub.secret_key}}"
+                   placeholder="Enter a strong secret — minimum 16 characters"
+                   style="width:100%;padding:8px 10px;background:#141820;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+            <p style="margin-top:8px;font-size:12px;color:
+                 {{'var(--ok)' if cfg.hub.secret_key|length >= 16 else ('var(--wn)' if cfg.hub.secret_key else 'var(--al)')}}">
+              {%if cfg.hub.secret_key|length >= 16%}
+                ✓ Strong secret set — heartbeats are HMAC-signed, replay-protected, and payload-encrypted.
+              {%elif cfg.hub.secret_key%}
+                ⚠ Secret too short — use at least 16 characters for adequate security.
+              {%else%}
+                ✗ No secret set — connections are unsigned and unencrypted. Set this on the hub first, then on all client sites.
+              {%endif%}
+            </p>
+          </div>
+        
+          <div class="cr" style="margin-top:8px">
+            <input type="checkbox" name="hub_enabled" value="1" {{'checked' if cfg.hub.enabled}}>
+            <label style="margin:0;text-transform:none;font-size:12px;color:var(--mu)">
+              Mark as hub-reporting enabled (informational — heartbeats send whenever Mode and Hub URL are set)
+            </label>
+          </div>
+        
           <script nonce="{{csp_nonce()}}">
-          function acmeClear(){
-            if(!confirm("Clear cached ACME account key? This forces a completely fresh certificate request.")) return;
-            _csrfFetch('/settings/acme-clear',{method:'POST'})
-              .then(r=>r.json()).then(function(d){
-                var logEl=document.getElementById('acme-log');
-                logEl.style.display='';
-                logEl.textContent=d.message;
-              });
+          function updateHubPanels(){
+            var mode = document.getElementById('hub_mode_sel').value;
+            var cp = document.getElementById('hub_client_panel');
+            var sp = document.getElementById('hub_server_panel');
+            cp.style.display = (mode==='client'||mode==='both') ? '' : 'none';
+            sp.style.display = (mode==='hub'   ||mode==='both') ? '' : 'none';
           }
-          function acmeIssue(staging){
-            var domain  = document.getElementById('acme_domain').value.trim();
-            var email   = document.getElementById('acme_email').value.trim();
-            var logEl   = document.getElementById('acme-log');
-            if(!domain){ alert('Enter a domain name first.'); return; }
-            logEl.style.display=''; logEl.textContent='Starting…';
-            var fd = new FormData();
-            fd.append('tls_domain', domain);
-            fd.append('tls_email',  email);
-            if(staging) fd.append('staging','1');
-            _csrfFetch('/settings/acme-issue',{method:'POST',body:fd})
-              .then(r=>r.json()).then(function(d){
-                logEl.textContent = d.message;
-                if(d.ok) pollAcmeStatus();
-              });
-          }
-          function pollAcmeStatus(){
-            var logEl = document.getElementById('acme-log');
-            logEl.style.display='';
-            var iv = setInterval(function(){
-              fetch('/settings/acme-status').then(r=>r.json()).then(function(d){
-                logEl.innerHTML = d.log.join('<br>');
-                logEl.scrollTop = logEl.scrollHeight;
-                if(d.status !== 'running'){ clearInterval(iv); }
-              });
-            }, 2000);
-          }
-          function tlsToggle(enable){
-            var fd = new FormData(); fd.append('enable', enable?'1':'0');
-            _csrfFetch('/settings/tls-toggle',{method:'POST',body:fd})
-              .then(r=>r.json()).then(function(d){ alert(d.message); location.reload(); });
-          }
-          // Poll if currently running
-          {% if acme_running %}pollAcmeStatus();{% endif %}
+          document.addEventListener('DOMContentLoaded', updateHubPanels);
           </script>
-          {% else %}
-          <p class="help">Let's Encrypt is only available on instances configured in Hub or Both mode (requires a public FQDN).</p>
-          {% endif %}
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a></div>
 </div>
 <div class="pn" id="p-sec">
@@ -596,7 +610,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.17"
+BUILD                  = "SignalScope-2.6.24"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
 CHUNK_SIZE             = int(SAMPLE_RATE * CHUNK_DURATION)
@@ -679,6 +693,7 @@ class InputConfig:
     clip_threshold_dbfs:    float = -3.0
     clip_window_seconds:    float = 2.0
     clip_count_threshold:   int   = 3
+    alert_wav_duration:     float = 10.0
     cascade_parent:          Optional[str] = None
     cascade_suppress_alerts: bool          = False
     compare_peer:            Optional[str] = None
@@ -875,11 +890,13 @@ class AppConfig:
     ptp_jitter_alert_us: int = 10000
     # First-run wizard
     wizard_done:   bool = False   # True once setup wizard has been completed
-    # HTTPS / Let's Encrypt
-    tls_domain:    str  = ""     # FQDN for Let's Encrypt cert
-    tls_cert_path: str  = ""     # path to fullchain.pem
-    tls_key_path:  str  = ""     # path to privkey.pem
-    tls_enabled:   bool = False  # serve HTTPS instead of HTTP
+    # Reverse-proxy / HTTPS compatibility
+    # nginx handles TLS in this branch, but these fields are still referenced by
+    # shared security-header code and older merged paths, so keep them present.
+    tls_domain:    str  = ""
+    tls_cert_path: str  = ""
+    tls_key_path:  str  = ""
+    tls_enabled:   bool = False
     # Login security
     login_max_attempts: int   = 10    # lockout after N failures
     login_lockout_mins: int   = 15    # lockout duration in minutes
@@ -923,7 +940,7 @@ def load_config() -> AppConfig:
     inputs = []
     for item in raw.get("inputs", []):
         inputs.append(InputConfig(
-            name=item["name"], device_index=str(item["device_index"]),
+            name=item.get("name",""), device_index=str(item.get("device_index","")),
             enabled=item.get("enabled", True),
             alert_on_silence=item.get("alert_on_silence", True),
             alert_on_hiss=item.get("alert_on_hiss", True),
@@ -937,6 +954,7 @@ def load_config() -> AppConfig:
             clip_threshold_dbfs=item.get("clip_threshold_dbfs", -3.0),
             clip_window_seconds=item.get("clip_window_seconds", 2.0),
             clip_count_threshold=item.get("clip_count_threshold", 3),
+            alert_wav_duration=item.get("alert_wav_duration", 10.0),
             cascade_parent=item.get("cascade_parent"),
             cascade_suppress_alerts=item.get("cascade_suppress_alerts", False),
             compare_peer=item.get("compare_peer"),
@@ -1022,8 +1040,10 @@ def save_config(cfg: AppConfig):
         "ptp_jitter_warn_us": cfg.ptp_jitter_warn_us,
         "ptp_jitter_alert_us": cfg.ptp_jitter_alert_us,
         "wizard_done": cfg.wizard_done,
-        "tls_domain": cfg.tls_domain, "tls_cert_path": cfg.tls_cert_path,
-        "tls_key_path": cfg.tls_key_path, "tls_enabled": cfg.tls_enabled,
+        "tls_domain": getattr(cfg, "tls_domain", ""),
+        "tls_cert_path": getattr(cfg, "tls_cert_path", ""),
+        "tls_key_path": getattr(cfg, "tls_key_path", ""),
+        "tls_enabled": bool(getattr(cfg, "tls_enabled", False)),
         "login_max_attempts": cfg.login_max_attempts,
         "login_lockout_mins": cfg.login_lockout_mins,
         "session_timeout_hrs": cfg.session_timeout_hrs,
@@ -1042,6 +1062,7 @@ def save_config(cfg: AppConfig):
             "clip_threshold_dbfs": i.clip_threshold_dbfs,
             "clip_window_seconds": i.clip_window_seconds,
             "clip_count_threshold": i.clip_count_threshold,
+            "alert_wav_duration": i.alert_wav_duration,
             "cascade_parent": i.cascade_parent,
             "cascade_suppress_alerts": i.cascade_suppress_alerts,
             "compare_peer": i.compare_peer,
@@ -2124,7 +2145,7 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
             if now-cfg._last_alerts.get("SILENCE",0)>=ALERT_COOLDOWN:
                 cfg._last_alerts["SILENCE"]=now
                 msg=f"Silence on '{cfg.name}' for {cfg._silence_secs:.1f}s ({lev:.1f} dBFS)"
-                clip=_save_alert_wav(cfg,"silence",wav_dur)
+                clip=_save_alert_wav(cfg,"silence",cfg.alert_wav_duration)
                 _add_history(cfg,"SILENCE",msg,clip_path=clip or "")
                 sender.send(f"SILENCE on {cfg.name}", msg, clip,
                     alert_type="SILENCE", stream=cfg.name, level_dbfs=lev)
@@ -2142,7 +2163,7 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                 if now-cfg._last_alerts.get("CLIP",0)>=ALERT_COOLDOWN:
                     cfg._last_alerts["CLIP"]=now
                     msg=f"Clipping on '{cfg.name}' — {cfg._clip_count}x in {cfg.clip_window_seconds}s (peak {peak_db:.1f} dBFS)"
-                    clip=_save_alert_wav(cfg,"clip",wav_dur)
+                    clip=_save_alert_wav(cfg,"clip",cfg.alert_wav_duration)
                     _add_history(cfg,"CLIP",msg,clip_path=clip or "")
                     sender.send(f"CLIP on {cfg.name}", msg, clip,
                     alert_type="CLIP", stream=cfg.name, level_dbfs=peak_db)
@@ -2171,7 +2192,7 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                 if now-cfg._last_alerts.get("HISS",0)>=ALERT_COOLDOWN:
                     cfg._last_alerts["HISS"]=now
                     msg=f"Hiss/HF noise on '{cfg.name}' — HF up {hf_db:.1f}dB for {cfg._hiss_secs:.1f}s"
-                    clip=_save_alert_wav(cfg,"hiss",wav_dur)
+                    clip=_save_alert_wav(cfg,"hiss",cfg.alert_wav_duration)
                     _add_history(cfg,"HISS",msg,clip_path=clip or "")
                     sender.send(f"HISS on {cfg.name}", msg, clip,
                     alert_type="HISS", stream=cfg.name,
@@ -3179,6 +3200,7 @@ class MonitorManager:
                 cfg._dab_ok = False
                 return
 
+            # ── Initial probe: wait for the audio endpoint to serve data ────────
             stream_ready = False
             ready_deadline = time.time() + 15
             while time.time() < ready_deadline and not stop_evt.is_set():
@@ -3204,73 +3226,144 @@ class MonitorManager:
             ff_cmd = [ffmpeg_bin, "-loglevel", "warning", "-i", audio_url,
                       "-f", "s16le", "-ar", str(SAMPLE_RATE),
                       "-ac", "1", "-"]
-            try:
-                ff_proc = _sp.Popen(ff_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE, bufsize=0)
-            except Exception as e:
-                self.log(f"[{name}] DAB: ffmpeg failed: {e}")
-                return
-
-            def _read_ffmpeg_stderr():
-                try:
-                    for raw in ff_proc.stderr:
-                        line = raw.decode(errors="ignore").strip()
-                        if line:
-                            self.log(f"[{name}] DAB/ffmpeg: {line}")
-                except Exception:
-                    pass
-
-            ff_stderr_t = threading.Thread(target=_read_ffmpeg_stderr, daemon=True)
-            ff_stderr_t.start()
-
             CHUNK_BYTES = int(SAMPLE_RATE * CHUNK_DURATION) * 2
-            buf = bytearray()
-            pcm_started = False
-            pcm_deadline = time.time() + 15
-            while not stop_evt.is_set():
-                try:
-                    if session.proc.poll() is not None:
-                        self.log(f"[{name}] DAB: welle-cli stopped")
-                        break
-                    if ff_proc.poll() is not None:
-                        self.log(f"[{name}] DAB: ffmpeg stopped")
-                        break
-                    chunk = ff_proc.stdout.read(4096)
-                    if not chunk:
-                        if (not pcm_started) and time.time() > pcm_deadline:
-                            self.log(f"[{name}] DAB: ffmpeg connected but no PCM arrived")
-                            break
-                        time.sleep(0.1)
-                        continue
-                    pcm_started = True
-                    buf.extend(chunk)
-                    while len(buf) >= CHUNK_BYTES:
-                        raw = bytes(buf[:CHUNK_BYTES])
-                        del buf[:CHUNK_BYTES]
-                        samp = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-                        samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
-                        cfg._stream_buffer.append(samp.copy())
-                        cfg._audio_buffer.append(samp.copy())
-                        cfg._live_chunk_seq = getattr(cfg, "_live_chunk_seq", 0) + 1
-                        analyse_chunk(cfg, sender,
-                                      lambda m, n=name: self.log(f"[{n}] {m}"),
-                                      samp, CHUNK_DURATION,
-                                      self.app_cfg.alert_wav_duration,
-                                      self.app_cfg.inputs)
-                    if int(time.time()) % 10 == 0:
-                        mux = session.mux or {}
-                        self._copy_dab_metrics_from_mux(cfg, mux)
-                except Exception as e:
-                    self.log(f"[{name}] DAB: audio loop error: {e}")
-                    time.sleep(0.25)
 
-            try:
-                ff_proc.terminate()
-                ff_proc.wait(timeout=2)
-            except Exception:
+            # ── Outer reconnect loop — retries ffmpeg when the audio stream drops ─
+            # welle-cli may briefly remove an MP3 sender during signal loss/SyncOnPhase
+            # events.  Instead of propagating the failure up and releasing the entire
+            # shared session (which kills welle-cli for all consumers), we hold the
+            # session reference and retry the HTTP connection once the endpoint comes
+            # back up.
+            _MAX_AUDIO_FAILURES = 8
+            _audio_fail_count = 0
+
+            while not stop_evt.is_set():
+                # ── Check welle-cli is still alive ───────────────────────────────
+                if session.proc.poll() is not None:
+                    self.log(f"[{name}] DAB: welle-cli process exited")
+                    break
+                if session.failed:
+                    self.log(f"[{name}] DAB: shared mux session failed")
+                    break
+
+                # ── (Re)launch ffmpeg ────────────────────────────────────────────
                 try:
-                    ff_proc.kill()
+                    ff_proc = _sp.Popen(ff_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE, bufsize=0)
+                except Exception as e:
+                    self.log(f"[{name}] DAB: ffmpeg launch failed: {e}")
+                    _audio_fail_count += 1
+                    if _audio_fail_count >= _MAX_AUDIO_FAILURES:
+                        self.log(f"[{name}] DAB: too many ffmpeg failures, giving up")
+                        break
+                    time.sleep(3)
+                    continue
+
+                def _read_ffmpeg_stderr(proc=ff_proc):
+                    try:
+                        for raw in proc.stderr:
+                            line = raw.decode(errors="ignore").strip()
+                            if line:
+                                self.log(f"[{name}] DAB/ffmpeg: {line}")
+                    except Exception:
+                        pass
+
+                ff_stderr_t = threading.Thread(target=_read_ffmpeg_stderr, daemon=True)
+                ff_stderr_t.start()
+
+                buf = bytearray()
+                pcm_started = False
+                pcm_deadline = time.time() + 15
+                audio_lost = False
+
+                # ── Inner audio read loop ────────────────────────────────────────
+                while not stop_evt.is_set():
+                    try:
+                        if session.proc.poll() is not None:
+                            self.log(f"[{name}] DAB: welle-cli stopped")
+                            audio_lost = True
+                            break
+                        if ff_proc.poll() is not None:
+                            self.log(f"[{name}] DAB: ffmpeg stopped — will reconnect")
+                            audio_lost = True
+                            break
+                        chunk = ff_proc.stdout.read(4096)
+                        if not chunk:
+                            if (not pcm_started) and time.time() > pcm_deadline:
+                                self.log(f"[{name}] DAB: ffmpeg connected but no PCM arrived")
+                                audio_lost = True
+                                break
+                            time.sleep(0.1)
+                            continue
+                        pcm_started = True
+                        _audio_fail_count = 0   # reset on successful data
+                        buf.extend(chunk)
+                        while len(buf) >= CHUNK_BYTES:
+                            raw = bytes(buf[:CHUNK_BYTES])
+                            del buf[:CHUNK_BYTES]
+                            samp = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+                            samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
+                            cfg._stream_buffer.append(samp.copy())
+                            cfg._audio_buffer.append(samp.copy())
+                            cfg._live_chunk_seq = getattr(cfg, "_live_chunk_seq", 0) + 1
+                            analyse_chunk(cfg, sender,
+                                          lambda m, n=name: self.log(f"[{n}] {m}"),
+                                          samp, CHUNK_DURATION,
+                                          self.app_cfg.alert_wav_duration,
+                                          self.app_cfg.inputs)
+                        if int(time.time()) % 10 == 0:
+                            mux = session.mux or {}
+                            self._copy_dab_metrics_from_mux(cfg, mux)
+                    except Exception as e:
+                        self.log(f"[{name}] DAB: audio loop error: {e}")
+                        time.sleep(0.25)
+
+                # ── Clean up this ffmpeg instance ────────────────────────────────
+                try:
+                    ff_proc.terminate()
+                    ff_proc.wait(timeout=2)
                 except Exception:
-                    pass
+                    try:
+                        ff_proc.kill()
+                    except Exception:
+                        pass
+
+                if stop_evt.is_set():
+                    break
+
+                # welle-cli itself died — no point retrying the audio stream
+                if session.proc.poll() is not None or session.failed:
+                    break
+
+                if audio_lost:
+                    _audio_fail_count += 1
+                    if _audio_fail_count >= _MAX_AUDIO_FAILURES:
+                        self.log(f"[{name}] DAB: too many consecutive audio failures, giving up")
+                        break
+
+                    # Wait for the audio endpoint to come back before relaunching ffmpeg
+                    self.log(f"[{name}] DAB: audio stream lost, waiting for endpoint to recover (attempt {_audio_fail_count}/{_MAX_AUDIO_FAILURES})...")
+                    recover_deadline = time.time() + 20
+                    recovered = False
+                    while time.time() < recover_deadline and not stop_evt.is_set():
+                        if session.proc.poll() is not None or session.failed:
+                            break
+                        try:
+                            with _ur.urlopen(audio_url, timeout=3) as _trig:
+                                probe = _trig.read(8192)
+                                if probe and len(probe) >= 2048:
+                                    recovered = True
+                                    break
+                        except Exception:
+                            pass
+                        time.sleep(2)
+
+                    if not recovered:
+                        if session.proc.poll() is not None or session.failed:
+                            self.log(f"[{name}] DAB: welle-cli not recovering, stopping")
+                        else:
+                            self.log(f"[{name}] DAB: audio endpoint did not recover within 20s")
+                        break
+                    self.log(f"[{name}] DAB: audio endpoint recovered, restarting stream")
         finally:
             if session is not None:
                 self._release_dab_session(session, name)
@@ -4647,7 +4740,7 @@ class MonitorManager:
                         if time.time() - cfg._last_alerts.get(key,0) >= ALERT_COOLDOWN:
                             cfg._last_alerts[key] = time.time()
                             msg = f"RTP packet loss {cfg._rtp_loss_pct:.1f}% on '{cfg.name}'"
-                            clip = _save_alert_wav(cfg, "rtp_loss")
+                            clip = _save_alert_wav(cfg, "rtp_loss", cfg.alert_wav_duration)
                             _add_history(cfg, "RTP_LOSS", msg, clip_path=clip or "")
                             sender.send(f"RTP Loss — {cfg.name}", msg, clip,
                                 alert_type="RTP_LOSS", stream=cfg.name,
@@ -4657,7 +4750,7 @@ class MonitorManager:
                         if time.time() - cfg._last_alerts.get(key,0) >= ALERT_COOLDOWN*2:
                             cfg._last_alerts[key] = time.time()
                             msg = f"RTP packet loss {cfg._rtp_loss_pct:.1f}% on '{cfg.name}'"
-                            clip = _save_alert_wav(cfg, "rtp_loss_warn")
+                            clip = _save_alert_wav(cfg, "rtp_loss_warn", cfg.alert_wav_duration)
                             _add_history(cfg, "RTP_LOSS_WARN", msg, clip_path=clip or "")
             cfg._rtp_last_seq = seqno
             rtp_cc = pkt_bytes[0] & 0x0F
@@ -4957,7 +5050,7 @@ class MonitorManager:
                         if time.time() - cfg._last_alerts.get(key,0) >= ALERT_COOLDOWN:
                             cfg._last_alerts[key] = time.time()
                             msg = f"RTP packet loss {cfg._rtp_loss_pct:.1f}% on '{cfg.name}'"
-                            clip = _save_alert_wav(cfg, "rtp_loss")
+                            clip = _save_alert_wav(cfg, "rtp_loss", cfg.alert_wav_duration)
                             _add_history(cfg, "RTP_LOSS", msg, clip_path=clip or "")
                             sender.send(f"RTP Loss — {cfg.name}", msg, clip,
                                 alert_type="RTP_LOSS", stream=cfg.name,
@@ -4967,7 +5060,7 @@ class MonitorManager:
                         if time.time() - cfg._last_alerts.get(key,0) >= ALERT_COOLDOWN*2:
                             cfg._last_alerts[key] = time.time()
                             msg = f"RTP packet loss {cfg._rtp_loss_pct:.1f}% on '{cfg.name}'"
-                            clip = _save_alert_wav(cfg, "rtp_loss_warn")
+                            clip = _save_alert_wav(cfg, "rtp_loss_warn", cfg.alert_wav_duration)
                             _add_history(cfg, "RTP_LOSS_WARN", msg, clip_path=clip or "")
             cfg._rtp_last_seq = rtp_seq
             rtp_cc=packet[0]&0x0F; rtp_ext=(packet[0]>>4)&0x01; rtp_pt=packet[1]&0x7F
@@ -5945,448 +6038,6 @@ listen_registry = ListenSlotRegistry()
 # ─── Flask + templates ────────────────────────────────────────────────────────
 
 
-# ─── ACME / Let's Encrypt client ──────────────────────────────────────────────
-# Pure-Python ACME v2 using the cryptography package (already a Flask dep).
-# Handles account registration, HTTP-01 challenge, cert issuance and renewal.
-
-# cryptography is imported lazily inside AcmeClient — app starts even without it
-def _require_cryptography():
-    """Import cryptography package. Raises clear error if not installed."""
-    try:
-        from cryptography.hazmat.primitives.asymmetric import rsa, padding
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography import x509
-        from cryptography.x509.oid import NameOID
-        return rsa, padding, hashes, serialization, x509, NameOID
-    except ImportError:
-        raise RuntimeError(
-            "The 'cryptography' package is required for Let's Encrypt.\n"
-            "Install it with:  pip install cryptography"
-        )
-ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
-ACME_STAGING   = "https://acme-staging-v02.api.letsencrypt.org/directory"
-CERT_DIR       = os.path.join(BASE_DIR, "certs")
-ACME_LOG: list = []          # in-memory log shown in the UI
-
-# HTTP-01 challenge token store — { token: key_authorisation }
-_acme_challenges: dict = {}
-
-
-def _acme_log(msg: str):
-    ts = time.strftime("%H:%M:%S")
-    line = f"[{ts}] {msg}"
-    ACME_LOG.append(line)
-    if len(ACME_LOG) > 200: ACME_LOG.pop(0)
-    print(f"[ACME] {msg}")
-
-
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def _jwk_from_key(key) -> dict:
-    rsa, padding, hashes, serialization, x509, NameOID = _require_cryptography()
-    pub = key.public_key()
-    nums = pub.public_numbers()
-    def _int_b64(n, length=256):
-        return _b64url(n.to_bytes(length, "big").lstrip(b"\x00") or b"\x00")
-    return {
-        "kty": "RSA",
-        "n":   _int_b64(nums.n, (nums.n.bit_length() + 7) // 8),
-        "e":   _int_b64(nums.e, (nums.e.bit_length() + 7) // 8),
-    }
-
-
-def _jwk_thumbprint(key) -> bytes:
-    jwk = _jwk_from_key(key)
-    canonical = json.dumps({"e": jwk["e"], "kty": jwk["kty"], "n": jwk["n"]},
-                           separators=(",", ":"), sort_keys=True).encode()
-    return hashlib.sha256(canonical).digest()
-
-
-def _jws(key, url: str, payload, nonce: str, kid: str = "") -> dict:
-    rsa, padding, hashes, serialization, x509, NameOID = _require_cryptography()
-    header = {"alg": "RS256", "nonce": nonce, "url": url}
-    if kid:
-        header["kid"] = kid
-    else:
-        header["jwk"] = _jwk_from_key(key)
-    hdr_b64 = _b64url(json.dumps(header, separators=(",",":")).encode())
-    if payload is None:
-        pay_b64 = ""
-    else:
-        pay_b64 = _b64url(json.dumps(payload, separators=(",",":")).encode())
-    signing_input = f"{hdr_b64}.{pay_b64}".encode()
-    sig = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
-    return {"protected": hdr_b64, "payload": pay_b64, "signature": _b64url(sig)}
-
-
-# Sentinel for ACME POST-as-GET requests (signed POST with empty payload)
-_ACME_POST_AS_GET = object()
-
-def _acme_request(url: str, body=None, *, nonce: str = "",
-                  key=None, kid: str = "", get_nonce_url: str = "",
-                  _retry: bool = True) -> tuple:
-    """Make an ACME request. Returns (response_dict, headers, new_nonce).
-    Auto-retries once on badNonce using the fresh nonce from the error response.
-    """
-    if body is _ACME_POST_AS_GET:
-        # POST-as-GET: signed POST with empty (None) payload
-        jws = _jws(key, url, None, nonce, kid)
-        data = json.dumps(jws).encode()
-        req = urllib.request.Request(url, data=data,
-            headers={"Content-Type": "application/jose+json"}, method="POST")
-    elif body is not None and key:
-        jws = _jws(key, url, body, nonce, kid)
-        data = json.dumps(jws).encode()
-        headers = {"Content-Type": "application/jose+json"}
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    else:
-        req = urllib.request.Request(url, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw      = resp.read()
-            hdrs     = dict(resp.headers)
-            new_nonce= hdrs.get("Replay-Nonce","")
-            ct       = hdrs.get("Content-Type","")
-            try:
-                result = json.loads(raw) if raw else {}
-            except Exception:
-                result = {"_raw": raw.decode(errors="replace")}
-            return result, hdrs, new_nonce
-    except urllib.error.HTTPError as e:
-        raw  = e.read()
-        hdrs = dict(e.headers)
-        new_nonce = hdrs.get("Replay-Nonce","")
-        try:
-            result = json.loads(raw)
-        except Exception:
-            result = {"_raw": raw.decode(errors="replace")}
-        _acme_log(f"HTTP {e.code} from {e.url[:60]}: {result}")
-        # Auto-retry on badNonce — LE provides a fresh nonce in the error headers
-        if (_retry and body is not None
-                and isinstance(result, dict)
-                and result.get("type","").endswith("badNonce")
-                and new_nonce):
-            _acme_log(f"Retrying with fresh nonce…")
-            return _acme_request(url, body, nonce=new_nonce, key=key,
-                                 kid=kid, _retry=False)
-        return result, hdrs, new_nonce
-
-
-class AcmeClient:
-    """
-    Minimal ACME v2 client.  Handles:
-    - Account key generation / registration
-    - HTTP-01 challenge (challenge token served by Flask on port 80)
-    - CSR generation
-    - Certificate download and storage
-    - Auto-renewal (checks daily, renews if <30 days remain)
-    """
-
-    def __init__(self, staging: bool = False):
-        self.staging   = staging
-        self.directory: dict = {}
-        self.nonce:     str  = ""
-        self.account_url: str = ""
-        self._lock     = threading.Lock()
-        self._status   = "idle"   # idle | running | ok | error
-        self._thread: threading.Thread = None
-
-    @property
-    def status(self): return self._status
-
-    def _ensure_cert_dir(self):
-        os.makedirs(CERT_DIR, exist_ok=True)
-
-    def _account_key_path(self):
-        return os.path.join(CERT_DIR, "account.key")
-
-    def _load_or_create_account_key(self):
-        rsa, padding, hashes, serialization, x509, NameOID = _require_cryptography()
-        path = self._account_key_path()
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                return serialization.load_pem_private_key(f.read(), password=None)
-        _acme_log("Generating 2048-bit RSA account key…")
-        key = rsa.generate_private_key(65537, 2048)
-        with open(path, "wb") as f:
-            f.write(key.private_bytes(
-                serialization.Encoding.PEM,
-                serialization.PrivateFormat.TraditionalOpenSSL,
-                serialization.NoEncryption()
-            ))
-        return key
-
-    def _get_directory(self):
-        url = ACME_STAGING if self.staging else ACME_DIRECTORY
-        _acme_log(f"Fetching ACME directory from {url}")
-        result, _, _ = _acme_request(url)
-        self.directory = result
-        _acme_log("Directory OK")
-
-    def _get_nonce(self):
-        url = self.directory.get("newNonce","")
-        _, hdrs, nonce = _acme_request(url)
-        self.nonce = nonce or hdrs.get("Replay-Nonce","")
-
-    def _register_account(self, key, email: str):
-        _acme_log("Registering / retrieving ACME account…")
-        payload = {"termsOfServiceAgreed": True}
-        if email:
-            payload["contact"] = [f"mailto:{email}"]
-        result, hdrs, nonce = _acme_request(
-            self.directory["newAccount"], payload,
-            nonce=self.nonce, key=key)
-        self.nonce = nonce
-        self.account_url = hdrs.get("Location","")
-        status = result.get("status","")
-        _acme_log(f"Account status: {status}  url: {self.account_url[:60]}")
-        if status not in ("valid","created"):
-            raise RuntimeError(f"Account registration failed: {result}")
-
-    def _new_order(self, key, domain: str):
-        _acme_log(f"Creating order for {domain}…")
-        payload = {"identifiers": [{"type":"dns","value":domain}]}
-        result, hdrs, nonce = _acme_request(
-            self.directory["newOrder"], payload,
-            nonce=self.nonce, key=key, kid=self.account_url)
-        self.nonce = nonce
-        order_url = hdrs.get("Location","")
-        _acme_log(f"Order created: {order_url[-40:]}")
-        return result, order_url
-
-    def _get_http01_challenge(self, key, authz_url: str) -> tuple:
-        result, _, nonce = _acme_request(authz_url, None, nonce=self.nonce,
-                                          key=key, kid=self.account_url)
-        self.nonce = nonce
-        for ch in result.get("challenges",[]):
-            if ch.get("type") == "http-01":
-                token   = ch["token"]
-                thumbpr = _b64url(_jwk_thumbprint(key))
-                key_auth= f"{token}.{thumbpr}"
-                return ch["url"], token, key_auth
-        raise RuntimeError("No http-01 challenge found in authorisation")
-
-    def _respond_to_challenge(self, key, ch_url: str):
-        _acme_log("Responding to HTTP-01 challenge…")
-        result, _, nonce = _acme_request(ch_url, {}, nonce=self.nonce,
-                                          key=key, kid=self.account_url)
-        self.nonce = nonce
-        _acme_log(f"Challenge response: {result}")
-
-    def _wait_for_valid(self, key, url: str, label: str, timeout: int = 120):
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            # ACME v2 requires POST-as-GET for polling — signed POST with None payload
-            result, _, nonce = _acme_request(url, _ACME_POST_AS_GET,
-                                              nonce=self.nonce, key=key,
-                                              kid=self.account_url)
-            self.nonce = nonce
-            status = result.get("status","")
-            err    = result.get("error",{})
-            # Log challenges detail when stuck pending
-            for ch in result.get("challenges",[]):
-                if ch.get("type") == "http-01":
-                    ch_err = ch.get("error",{})
-                    ch_st  = ch.get("status","")
-                    if ch_err:
-                        _acme_log(f"  http-01 challenge error: {ch_err}")
-                    elif ch_st:
-                        _acme_log(f"  http-01 challenge status: {ch_st}")
-            if err:
-                _acme_log(f"{label} status: {status}  error: {err}")
-            else:
-                _acme_log(f"{label} status: {status}")
-            if status == "valid":
-                return result
-            if status in ("invalid","revoked","deactivated"):
-                raise RuntimeError(f"{label} failed: {err or status}")
-            time.sleep(5)
-        raise RuntimeError(f"{label} timed out after {timeout}s")
-
-    def _make_csr(self, domain: str) -> tuple:
-        """Generate a domain private key and CSR. Returns (key_pem, csr_der)."""
-        rsa, padding, hashes, serialization, x509, NameOID = _require_cryptography()
-        _acme_log("Generating domain key and CSR…")
-        dom_key = rsa.generate_private_key(65537, 2048)
-        csr = (x509.CertificateSigningRequestBuilder()
-               .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, domain)]))
-               .add_extension(x509.SubjectAlternativeName([x509.DNSName(domain)]), critical=False)
-               .sign(dom_key, hashes.SHA256()))
-        key_pem = dom_key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.TraditionalOpenSSL,
-            serialization.NoEncryption())
-        csr_der = csr.public_bytes(serialization.Encoding.DER)
-        return key_pem, csr_der
-
-    def _finalise_order(self, key, finalise_url: str, csr_der: bytes):
-        _acme_log("Finalising order…")
-        payload = {"csr": _b64url(csr_der)}
-        result, _, nonce = _acme_request(finalise_url, payload,
-                                          nonce=self.nonce, key=key,
-                                          kid=self.account_url)
-        self.nonce = nonce
-        return result
-
-    def _download_cert(self, key, cert_url: str) -> bytes:
-        _acme_log("Downloading certificate…")
-        # LE returns PEM directly — use raw HTTP to avoid JSON parsing
-        import ssl as _ssl2
-        ctx = _ssl2.create_default_context()
-        jws = _jws(key, cert_url, None, self.nonce, self.account_url)
-        data = json.dumps(jws).encode()
-        req = urllib.request.Request(cert_url, data=data,
-            headers={"Content-Type": "application/jose+json",
-                     "Accept": "application/pem-certificate-chain"},
-            method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
-                self.nonce = resp.headers.get("Replay-Nonce", self.nonce)
-                raw = resp.read()
-                _acme_log(f"Certificate download: {len(raw)} bytes")
-                if b"BEGIN CERTIFICATE" in raw:
-                    return raw
-                raise RuntimeError(f"Unexpected cert response: {raw[:200]}")
-        except urllib.error.HTTPError as e:
-            body = e.read()
-            self.nonce = e.headers.get("Replay-Nonce", self.nonce)
-            raise RuntimeError(f"Cert download failed {e.code}: {body[:200]}")
-
-    def issue(self, domain: str, email: str = "") -> bool:
-        """Run full certificate issuance flow. Returns True on success."""
-        with self._lock:
-            if self._status == "running":
-                _acme_log("Already running")
-                return False
-            self._status = "running"
-        try:
-            self._ensure_cert_dir()
-            key = self._load_or_create_account_key()
-            self._get_directory()
-            self._get_nonce()
-            self._register_account(key, email)
-            order, order_url = self._new_order(key, domain)
-
-            for authz_url in order.get("authorizations",[]):
-                ch_url, token, key_auth = self._get_http01_challenge(key, authz_url)
-                _acme_challenges[token] = key_auth
-                _acme_log(f"Challenge token set: {token[:20]}…")
-                _acme_log(f"Key auth value: {key_auth[:40]}…")
-                # Self-test: verify the token is reachable before telling LE
-                _test_url = f"http://{domain}/.well-known/acme-challenge/{token}"
-                _acme_log(f"Self-test: GET {_test_url}")
-                try:
-                    import urllib.request as _ur
-                    with _ur.urlopen(_ur.Request(_test_url), timeout=10) as _r:
-                        _body = _r.read().decode().strip()
-                        if _body == key_auth:
-                            _acme_log("Self-test PASSED — challenge token reachable")
-                        else:
-                            _acme_log(f"Self-test MISMATCH — got: {_body[:60]}")
-                            raise RuntimeError(f"Challenge self-test failed: response does not match key_auth")
-                except Exception as _e:
-                    _acme_log(f"Self-test FAILED: {_e}")
-                    raise RuntimeError(f"Challenge not reachable at {_test_url}: {_e}\n"
-                                       f"Ensure port 80 is open and {domain} resolves to this server.")
-                try:
-                    # Refresh nonce immediately before responding to avoid badNonce
-                    self._get_nonce()
-                    self._respond_to_challenge(key, ch_url)
-                    time.sleep(3)  # brief pause before LE validates
-                    self._wait_for_valid(key, authz_url, "Authorisation")
-                finally:
-                    _acme_challenges.pop(token, None)
-
-            key_pem, csr_der = self._make_csr(domain)
-            order = self._finalise_order(key, order["finalize"], csr_der)
-            order = self._wait_for_valid(key, order_url, "Order")
-
-            cert_url = order.get("certificate","")
-            if not cert_url:
-                raise RuntimeError("No certificate URL in completed order")
-
-            # Try downloading via POST-as-GET
-            cert_pem = self._download_cert(key, cert_url)
-
-            # Save files
-            cert_path = os.path.join(CERT_DIR, "fullchain.pem")
-            key_path  = os.path.join(CERT_DIR, "privkey.pem")
-            with open(cert_path, "wb") as f: f.write(cert_pem)
-            with open(key_path,  "wb") as f: f.write(key_pem)
-            os.chmod(key_path, 0o600)
-
-            # Update config
-            cfg = monitor.app_cfg
-            cfg.tls_cert_path = cert_path
-            cfg.tls_key_path  = key_path
-            cfg.tls_domain    = domain
-            cfg.tls_enabled   = True
-            save_config(cfg)
-
-            _acme_log(f"Certificate issued and saved. Restart the app to enable HTTPS.")
-            self._status = "ok"
-            return True
-
-        except Exception as e:
-            _acme_log(f"ERROR: {e}")
-            import traceback as _tb
-            _acme_log(_tb.format_exc().split("\n")[-2])
-            self._status = "error"
-            return False
-
-    def clear_state(self):
-        """Delete cached account key and cert to force completely fresh issuance."""
-        self._ensure_cert_dir()
-        for f in ["account.key"]:
-            p = os.path.join(CERT_DIR, f)
-            if os.path.exists(p):
-                os.remove(p)
-                _acme_log(f"Cleared {f}")
-        self.account_url = ""
-        self.nonce = ""
-        _acme_log("State cleared — next issuance will create a fresh account and order")
-
-    def start_issue_thread(self, domain: str, email: str = ""):
-        self._thread = threading.Thread(
-            target=self.issue, args=(domain, email),
-            daemon=True, name="AcmeIssue")
-        self._thread.start()
-
-    def check_renewal(self):
-        """Check if the cert expires within 30 days and renew if so."""
-        cfg = monitor.app_cfg
-        if not cfg.tls_enabled or not cfg.tls_cert_path:
-            return
-        if not os.path.exists(cfg.tls_cert_path):
-            return
-        try:
-            _, _, _, _, x509, _ = _require_cryptography()
-            with open(cfg.tls_cert_path, "rb") as f:
-                cert = x509.load_pem_x509_certificate(f.read())
-            expires = cert.not_valid_after_utc.replace(tzinfo=None)
-            days_left = (expires - datetime.datetime.utcnow()).days
-            _acme_log(f"Cert expires in {days_left} days ({expires.strftime('%Y-%m-%d')})")
-            if days_left < 30:
-                _acme_log("Cert expires soon — renewing…")
-                self.start_issue_thread(cfg.tls_domain)
-        except Exception as e:
-            _acme_log(f"Renewal check failed: {e}")
-
-
-acme_client = AcmeClient()
-
-
-def _acme_renewal_loop():
-    """Check cert renewal once per day."""
-    while True:
-        time.sleep(86400)
-        acme_client.check_renewal()
-
-threading.Thread(target=_acme_renewal_loop, daemon=True, name="AcmeRenewal").start()
-
-
 # ─── Login brute-force protection ─────────────────────────────────────────────
 
 class LoginLimiter:
@@ -6594,6 +6245,8 @@ sdr_manager = SdrDeviceManager()
 
 
 app=Flask(__name__)
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 @app.route("/static/signalscope_icon.png")
 def favicon():
@@ -8208,6 +7861,37 @@ function goStep(n){
   if(n===1) checkDeps();
 }
 
+function copyCmd(btn){
+  var block = btn.parentElement;
+  var clone = block.cloneNode(true);
+  clone.querySelectorAll('button').forEach(function(b){ b.remove(); });
+  var text = clone.textContent.trim();
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(function(){
+      btn.textContent = 'Copied!';
+      setTimeout(function(){ btn.textContent = 'Copy'; }, 2000);
+    }).catch(function(){ _copyFallback(text, btn); });
+  } else {
+    _copyFallback(text, btn);
+  }
+}
+
+function _copyFallback(text, btn){
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    btn.textContent = 'Copied!';
+    setTimeout(function(){ btn.textContent = 'Copy'; }, 2000);
+  } catch(e) {
+    btn.textContent = 'Error';
+  }
+  document.body.removeChild(ta);
+}
+
 // ── Dependency checker ────────────────────────────────────────────────────────
 function checkDeps(){
   document.getElementById('dep-list').innerHTML =
@@ -8493,8 +8177,9 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
     var sel = document.getElementById("src_type");
     if(v.toLowerCase().startsWith("dab://")){
       sel.value = "dab";
-      // Pre-fill channel if ?freq= is present
-      var m = v.match(/\?freq=(\d+)/);
+      // Pre-fill channel
+      var cm = v.match(/channel=([^&?]+)/);
+      if(cm) document.getElementById("dab_channel").value = cm[1];
       // Pre-fill service name
       var svc = v.slice(6).split("?")[0].trim();
       if(svc){
@@ -8651,7 +8336,14 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   <div class="cr"><input type="checkbox" name="alert_on_clip" value="1" {{'checked' if inp.alert_on_clip}}><label style="margin:0;text-transform:none">Clipping / over-mod</label></div>
   <label>Silence threshold (dBFS)<input type="number" name="silence_threshold_dbfs" value="{{inp.silence_threshold_dbfs}}" step="0.5"></label>
   <label>Silence min duration (s)<input type="number" name="silence_min_duration" value="{{inp.silence_min_duration}}" step="0.5" min="0.5"></label>
+  <label>Hiss HF band (Hz)<input type="number" name="hiss_hf_band_hz" value="{{inp.hiss_hf_band_hz}}" step="100" min="1000" max="20000"></label>
+  <label>Hiss rise threshold (dB)<input type="number" name="hiss_rise_db" value="{{inp.hiss_rise_db}}" step="0.5" min="1"></label>
+  <label>Hiss min duration (s)<input type="number" name="hiss_min_duration" value="{{inp.hiss_min_duration}}" step="0.5" min="0.5"></label>
   <label>Clip threshold (dBFS)<input type="number" name="clip_threshold_dbfs" value="{{inp.clip_threshold_dbfs}}" step="0.5"></label>
+  <label>Clip detection window (s)<input type="number" name="clip_window_seconds" value="{{inp.clip_window_seconds}}" step="0.5" min="0.5"></label>
+  <label>Clip count threshold<input type="number" name="clip_count_threshold" value="{{inp.clip_count_threshold}}" step="1" min="1"></label>
+  <label>Alert clip length (s)<input type="number" name="alert_wav_duration" value="{{inp.alert_wav_duration}}" step="1" min="1" max="60"></label>
+  <p class="help">Duration of the WAV clip saved and attached to alerts for this stream. Default: 10s.</p>
 
   <div class="sec">🤖 Local AI (ONNX autoencoder)</div>
   <div class="cr"><input type="checkbox" name="ai_monitor" value="1" {{'checked' if inp.ai_monitor}}><label style="margin:0;text-transform:none">Enable AI monitoring</label></div>
@@ -8846,7 +8538,13 @@ def _inp_from_form(f):
         ai_monitor=bool(f.get("ai_monitor")),
         silence_threshold_dbfs=float(f.get("silence_threshold_dbfs",-55.0)),
         silence_min_duration=float(f.get("silence_min_duration",3.0)),
+        hiss_hf_band_hz=float(f.get("hiss_hf_band_hz",6000.0)),
+        hiss_rise_db=float(f.get("hiss_rise_db",12.0)),
+        hiss_min_duration=float(f.get("hiss_min_duration",3.0)),
         clip_threshold_dbfs=float(f.get("clip_threshold_dbfs",-3.0)),
+        clip_window_seconds=float(f.get("clip_window_seconds",2.0)),
+        clip_count_threshold=int(f.get("clip_count_threshold",3)),
+        alert_wav_duration=float(f.get("alert_wav_duration",10.0)),
         cascade_parent=f.get("cascade_parent") or None,
         cascade_suppress_alerts=bool(f.get("cascade_suppress_alerts")),
         compare_peer=f.get("compare_peer") or None,
@@ -9044,8 +8742,7 @@ def settings():
         try: cfg.clip_max_per_stream = max(0, int(f.get("clip_max_per_stream", 200)))
         except: pass
         save_config(cfg); flash("Settings saved."); return redirect(url_for("settings"))
-    return render_template_string(SETTINGS_TPL, cfg=cfg,
-        acme_running=(acme_client.status=="running"))
+    return render_template_string(SETTINGS_TPL, cfg=cfg)
 
 @app.get("/stream/<int:idx>/audio.wav")
 @login_required
@@ -9322,85 +9019,6 @@ input[type=text],input[type=password]{width:100%;margin-top:4px;padding:9px 11px
   {% endif %}
   <div style="margin-top:18px;text-align:center;font-size:11px;color:var(--mu)">SignalScope {{build}} • Broadcast Signal Intelligence</div>
 </div></body></html>"""
-
-@app.get("/.well-known/acme-challenge/<token>")
-def acme_challenge(token):
-    """Serve ACME HTTP-01 challenge tokens. Must be accessible on port 80."""
-    key_auth = _acme_challenges.get(token)
-    if key_auth:
-        return key_auth, 200, {"Content-Type": "text/plain"}
-    return "Not found", 404
-
-
-@app.post("/settings/acme-clear")
-@login_required
-@csrf_protect
-def settings_acme_clear():
-    """Clear cached ACME account key to force fresh issuance."""
-    acme_client.clear_state()
-    return jsonify({"ok": True, "message": "State cleared. Click Get Certificate to start fresh."})
-
-
-@app.post("/settings/acme-issue")
-@login_required
-@csrf_protect
-def settings_acme_issue():
-    """Start Let's Encrypt certificate issuance."""
-    cfg    = monitor.app_cfg
-    domain = request.form.get("tls_domain","").strip()
-    email  = request.form.get("tls_email","").strip()
-    staging= request.form.get("staging","") == "1"
-    if not domain:
-        return jsonify({"ok":False,"message":"Domain name required"})
-    if cfg.hub.mode not in ("hub","both"):
-        return jsonify({"ok":False,"message":"Let's Encrypt is only available on hub instances"})
-    acme_client.staging = staging
-    acme_client.start_issue_thread(domain, email)
-    return jsonify({"ok":True,"message":f"Certificate issuance started for {domain}"})
-
-
-@app.get("/settings/acme-status")
-@login_required
-def settings_acme_status():
-    """Return current ACME status and log."""
-    cfg = monitor.app_cfg
-    cert_info = {}
-    if cfg.tls_cert_path and os.path.exists(cfg.tls_cert_path):
-        try:
-            from cryptography import x509 as _x509
-            with open(cfg.tls_cert_path,"rb") as f:
-                cert = _x509.load_pem_x509_certificate(f.read())
-            expires = cert.not_valid_after_utc.replace(tzinfo=None)
-            cert_info = {
-                "domain":  cfg.tls_domain,
-                "expires": expires.strftime("%Y-%m-%d"),
-                "days":    (expires - datetime.datetime.utcnow()).days,
-            }
-        except Exception as e:
-            cert_info = {"error": str(e)}
-    return jsonify({
-        "status":    acme_client.status,
-        "log":       ACME_LOG[-30:],
-        "cert":      cert_info,
-        "enabled":   cfg.tls_enabled,
-        "domain":    cfg.tls_domain,
-    })
-
-
-@app.post("/settings/tls-toggle")
-@login_required
-@csrf_protect
-def settings_tls_toggle():
-    """Enable or disable HTTPS. Requires restart to take effect."""
-    cfg = monitor.app_cfg
-    enable = request.form.get("enable","") == "1"
-    if enable and (not cfg.tls_cert_path or not os.path.exists(cfg.tls_cert_path)):
-        return jsonify({"ok":False,"message":"No certificate found. Issue one first."})
-    cfg.tls_enabled = enable
-    save_config(cfg)
-    state = "enabled" if enable else "disabled"
-    return jsonify({"ok":True,"message":f"HTTPS {state}. Restart the app to apply."})
-
 
 @app.get("/api/sdr/scan")
 def api_sdr_scan():
@@ -10443,9 +10061,15 @@ def _hub_stream_relay_response(slot: ListenSlot, startup_timeout: float = 20.0):
             listen_registry.remove(slot.slot_id)
             print(f"[HubProxy] Relay slot {slot.slot_id} closed ({slot.kind})")
 
-    return Response(generate_relay(), mimetype=slot.mimetype,
-        headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no",
-                 "Transfer-Encoding":"chunked"})
+    return Response(
+        generate_relay(),
+        mimetype=slot.mimetype,
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+        direct_passthrough=True,
+    )
 
 def _hub_client_addr_is_private(client_addr: str) -> bool:
     try:
@@ -10489,22 +10113,23 @@ def _hub_prepare_site(site: dict) -> dict:
 @app.get("/hub/site/<path:site_name>/open")
 @login_required
 def hub_open_site(site_name):
-    """Open real client UI when reachable, otherwise open the hub-hosted replica."""
+    """Open real client UI when reachable from the hub, otherwise open the hub-hosted replica."""
     cfg = monitor.app_cfg
     if cfg.hub.mode not in ("hub","both"):
         return "Not a hub", 404
     site = hub_server.get_site(site_name)
     if not site:
         return "Site not found", 404
-    client_addr = site.get("_client_addr","")
-    if client_addr and not _hub_client_addr_is_private(client_addr):
-        url = client_addr.rstrip("/") + "/"
+    # Use client's self-reported URL first (most accurate), fall back to request IP
+    self_url = (site.get("self_url") or site.get("_client_addr") or "").rstrip("/")
+    if self_url:
+        url = self_url + "/"
         try:
             req = urllib.request.Request(url, method="HEAD")
             with urllib.request.urlopen(req, timeout=2) as resp:
                 status = getattr(resp, "status", 200)
                 ct = (resp.headers.get("Content-Type","") or "").lower()
-                if status == 200 and ("text/html" in ct or not ct):
+                if status < 400 and ("text/html" in ct or not ct):
                     return redirect(url)
         except Exception:
             pass
@@ -10522,10 +10147,10 @@ def hub_site_replica(site_name):
         return "Site not found", 404
 
     site = _hub_prepare_site(raw_site)
-    client_addr = site.get("_client_addr","")
-    direct_url = None
-    if client_addr and not _hub_client_addr_is_private(client_addr):
-        direct_url = client_addr.rstrip("/") + "/"
+    # Use client's self-reported URL — shown regardless of private/public so
+    # users on the same LAN as the client always get the direct link.
+    _self_url = (raw_site.get("self_url") or "").rstrip("/")
+    direct_url = (_self_url + "/") if _self_url else None
 
     def _ago(s):
         s = int(s or 0)
@@ -10956,14 +10581,38 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 .hist-wrap{border-top:1px solid var(--bor)} .hist-toggle{width:100%;padding:5px 13px;background:none;border:none;color:var(--mu);font-size:11px;text-align:left;cursor:pointer;display:flex;justify-content:space-between}
 .hist-toggle:hover{background:#123764} .hist{max-height:90px;overflow-y:auto;font-size:11px;color:var(--mu)} .hev{padding:3px 13px;border-bottom:1px solid var(--bor)}
 .rtp-ok{color:var(--ok)}.rtp-wn{color:var(--wn)}.rtp-al{color:var(--al)}
+.direct-banner{display:none;align-items:center;gap:12px;padding:10px 16px;background:linear-gradient(90deg,#0f3a1a,#0e2e14);border:1px solid #22c55e44;border-radius:10px;margin-bottom:12px;color:#86efac;font-size:13px}
+.direct-banner a{color:#fff;background:var(--ok);padding:5px 12px;border-radius:6px;font-weight:600;text-decoration:none}
+.ptp-strip{padding:8px 16px;border-bottom:1px solid var(--bor);display:flex;gap:16px;flex-wrap:wrap;font-size:12px;background:linear-gradient(180deg,#0f2845,#0c2237)}
+.ptp-item{display:flex;flex-direction:column;gap:1px}.ptp-lbl{color:var(--mu);font-size:10px;text-transform:uppercase;letter-spacing:.04em}.ptp-val{font-weight:600}
+.cmp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;padding:14px}
+.cmp-card{background:#0f2845;border:1px solid var(--bor);border-radius:10px;padding:10px 12px}
+.cmp-title{font-size:12px;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.alerts-section{border-top:1px solid var(--bor)}
+.alerts-toggle{width:100%;padding:8px 16px;background:none;border:none;color:var(--mu);font-size:12px;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.alerts-toggle:hover{background:#0f2845}.alerts-list{max-height:220px;overflow-y:auto;font-size:11px}
+.alert-row{padding:5px 16px;border-bottom:1px solid rgba(255,255,255,.04);display:flex;gap:10px;align-items:flex-start}
+.alert-row-time{color:var(--mu);white-space:nowrap;flex-shrink:0}.alert-row-msg{flex:1;word-break:break-word}
+.clip-badge{font-size:10px;padding:1px 6px;border-radius:999px;background:#381414;color:#fca5a5;margin-left:4px}
+.refresh-bar{font-size:11px;color:var(--mu);display:flex;align-items:center;gap:8px}
+.refresh-dot{width:7px;height:7px;border-radius:999px;background:var(--ok);display:inline-block;animation:rpulse 2s infinite}
+@keyframes rpulse{0%,100%{opacity:1}50%{opacity:.3}}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("hub") }}
 <main>
-  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
     <a class="btn bg" href="/hub">← Back to Hub</a>
-    <span class="badge">Read-only replica</span>
-    {% if direct_url %}<a class="btn bp" href="{{direct_url}}" target="_blank" rel="noopener">Open Real Site</a>{% endif %}
+    <span class="badge">Live replica</span>
+    {% if direct_url %}<a class="btn bg" id="direct-link" href="{{direct_url}}" target="_blank" rel="noopener">Open Direct</a>{% endif %}
+    <span class="refresh-bar" id="refresh-bar"><span class="refresh-dot"></span> <span id="refresh-countdown">Refreshing in 15s</span></span>
   </div>
+  {% if direct_url %}
+  <div class="direct-banner" id="direct-banner">
+    <span>✅ Direct site access is available from your browser</span>
+    <a href="{{direct_url}}" target="_blank" rel="noopener">Open Live Dashboard →</a>
+    <button onclick="document.getElementById('direct-banner').style.display='none'" style="background:none;border:none;color:var(--mu);cursor:pointer;margin-left:auto">✕</button>
+  </div>
+  {% endif %}
 
   <div class="site-card site-{{'ok' if site.site_status=='OK' else 'warn' if site.site_status=='WARN' else 'alert' if site.site_status=='ALERT' else 'offline'}}">
     <div class="site-header">
@@ -10982,13 +10631,23 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       <span class="sum-pill" style="color:var(--wn)">⚠ {{site.warn_count}} warn</span>
       <span class="sum-pill" style="color:var(--ok)">✅ {{site.ok_count}} ok</span>
     </div>
-    <div class="note">This page is a hub-hosted read-only replica populated from heartbeat data. Remote add, remove, and edit controls can come later.</div>
+    {% set _ptp = site.get('ptp', {}) or {} %}
+    {% if _ptp and _ptp.get('state') and _ptp.get('state') != 'idle' %}
+    <div class="ptp-strip">
+      <div class="ptp-item"><span class="ptp-lbl">PTP State</span><span class="ptp-val" style="color:{{'var(--ok)' if _ptp.get('state')=='locked' else 'var(--wn)'}}">{{_ptp.get('state','—')|upper}}</span></div>
+      <div class="ptp-item"><span class="ptp-lbl">Offset</span><span class="ptp-val">{{_ptp.get('offset_us',0)}} µs</span></div>
+      <div class="ptp-item"><span class="ptp-lbl">Drift</span><span class="ptp-val">{{_ptp.get('drift_us',0)}} µs</span></div>
+      <div class="ptp-item"><span class="ptp-lbl">Jitter</span><span class="ptp-val">{{_ptp.get('jitter_us',0)}} µs</span></div>
+      {% if _ptp.get('gm_id') %}<div class="ptp-item"><span class="ptp-lbl">GM ID</span><span class="ptp-val" style="font-size:11px">{{_ptp.get('gm_id','')}}</span></div>{% endif %}
+      {% if _ptp.get('domain') %}<div class="ptp-item"><span class="ptp-lbl">Domain</span><span class="ptp-val">{{_ptp.get('domain',0)}}</span></div>{% endif %}
+    </div>
+    {% endif %}
 
     {% if not site.online %}
     <div class="offline-banner">⚠ No heartbeat received for {{site.age_s}}s — site may be down</div>
     {% else %}
     <div class="streams">
-      {% for s in site.streams %}
+      {% for s in site.get('streams', []) %}
       {% set i = loop.index0 %}
       {% set ai = s.ai_status or 'Idle' %}
       {% set lev = s.level_dbfs %}
@@ -11001,6 +10660,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         <div class="sc-name">
           <span class="dot {{dc}}"></span>
           <strong style="font-size:12px">{{s.name}}</strong>
+          {% if s.get('clip_count') %}<span class="clip-badge" title="Saved alert clips">{{s.get('clip_count')}} clips</span>{% endif %}
           <span style="font-size:10px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap">{{s.device_index or ''}}</span>
         </div>
         <div class="lbar-wrap">
@@ -11036,7 +10696,9 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
             <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
             <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}}">{% if s.fm_rds_ok %}📡 {{s.fm_rds_ps or 'Locked'}}{% else %}— No RDS{% endif %}</span></div>
-            <div class="sc-row" {% if not s.fm_rds_rt %}style="display:none"{% endif %}>Text <span style="font-size:11px">{% if s.fm_rds_rt %}🎵 {{s.fm_rds_rt}}{% else %}—{% endif %}</span></div>
+            {% if s.fm_rds_rt %}<div class="sc-row">Text <span style="font-size:11px">🎵 {{s.fm_rds_rt}}</span></div>{% endif %}
+            {% if s.get('fm_rds_status') %}<div class="sc-row">Lock <span style="font-size:11px;color:var(--mu)">{{s.fm_rds_status}}</span></div>{% endif %}
+            {% if s.get('fm_rds_valid') %}<div class="sc-row">Groups <span style="font-size:11px">{{s.fm_rds_valid}}</span></div>{% endif %}
           </details>
           {% endif %}
         </div>
@@ -11090,10 +10752,55 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       </div>
       {% endfor %}
     </div>
+
+    {% set _cmps = site.get('comparators', []) or [] %}
+    {% if _cmps %}
+    <div style="border-top:1px solid var(--bor);padding:8px 16px 4px">
+      <div style="font-size:12px;font-weight:700;color:var(--mu);margin-bottom:6px">COMPARATORS</div>
+      <div class="cmp-grid">
+        {% for c in _cmps %}
+        {% set cs = c.get('status','') or '' %}
+        {% set c_col = 'var(--al)' if 'ALERT' in cs else ('var(--wn)' if 'WARN' in cs else 'var(--ok)') %}
+        <div class="cmp-card">
+          <div class="cmp-title">
+            <span class="dot" style="background:{{c_col}}"></span>
+            <span>{{c.get('pre_name','?')}} → {{c.get('post_name','?')}}</span>
+          </div>
+          <div class="sc-row">Status <span style="color:{{c_col}}">{{cs or 'Unknown'}}</span></div>
+          <div class="sc-row">Aligned <span style="color:{{'var(--ok)' if c.get('aligned') else 'var(--wn)'}}">{% if c.get('aligned') %}✓ Yes{% else %}✗ No{% endif %}</span></div>
+          <div class="sc-row">Delay <span>{{c.get('delay_ms',0)|int}} ms</span></div>
+          <div class="sc-row">Correlation <span>{{c.get('correlation',0)}}</span></div>
+          <div class="sc-row">Gain Diff <span style="color:{{'var(--al)' if c.get('gain_diff_db',0)|abs > c.get('gain_alert_db',3) else 'var(--ok)'}}">{{c.get('gain_diff_db',0)}} dB</span></div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% set _alerts = site.get('recent_alerts', []) or [] %}
+    {% if _alerts %}
+    <div class="alerts-section">
+      <button class="alerts-toggle" onclick="var d=this.nextElementSibling;d.style.display=d.style.display==='block'?'none':'block'">
+        Recent Alerts ({{_alerts|length}}) <span>▼</span>
+      </button>
+      <div class="alerts-list" style="display:none">
+        {% for a in _alerts %}
+        <div class="alert-row">
+          <span class="alert-row-time">{{a.get('ts_str') or a.get('ts','')[:19] or '—'}}</span>
+          <span class="alert-row-msg" style="color:{{'var(--al)' if a.get('level','')=='ALERT' else ('var(--wn)' if a.get('level','')=='WARN' else 'var(--tx)')}}">
+            {% if a.get('stream') %}<strong>{{a.get('stream')}}</strong> — {% endif %}{{a.get('msg') or a.get('message') or a.get('type') or 'Event'}}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
     {% endif %}
   </div>
 </main>
 <script nonce="{{csp_nonce()}}">
+// ── Live audio toggle ────────────────────────────────────────────────────────
 document.addEventListener('click', function(ev){
   var btn = ev.target.closest('button[data-rep-live]');
   if(!btn) return;
@@ -11112,12 +10819,47 @@ document.addEventListener('click', function(ev){
     btn.textContent = '▶ Live';
   }
 });
+// ── Clip duration selector updates URL ──────────────────────────────────────
 document.addEventListener('change', function(ev){
   var sel = ev.target;
   if(!sel.id || !sel.id.startsWith('rhdur_')) return;
   var a = sel.parentElement.querySelector('a[href*="/clip?seconds="]');
   if(a){ a.href = a.href.replace(/seconds=\d+/, 'seconds=' + encodeURIComponent(sel.value)); }
 });
+// ── Auto-refresh: reload the page every 15s unless audio is playing ──────────
+(function(){
+  var countdown = 15;
+  var label = document.getElementById('refresh-countdown');
+  function tick(){
+    countdown--;
+    if(label) label.textContent = 'Refreshing in ' + countdown + 's';
+    if(countdown <= 0){
+      var anyPlaying = false;
+      document.querySelectorAll('audio').forEach(function(a){ if(!a.paused) anyPlaying = true; });
+      if(!anyPlaying){
+        location.reload();
+      } else {
+        // Audio is playing — postpone refresh
+        countdown = 15;
+        if(label) label.textContent = 'Paused (audio playing)';
+      }
+    }
+  }
+  setInterval(tick, 1000);
+})();
+// ── Direct access probe: check if client URL is reachable from this browser ──
+(function(){
+  var directUrl = {{direct_url|tojson}};
+  if(!directUrl) return;
+  fetch(directUrl, {mode:'no-cors', cache:'no-store'})
+    .then(function(){
+      var banner = document.getElementById('direct-banner');
+      if(banner) banner.style.display = 'flex';
+    })
+    .catch(function(){
+      // Not reachable from this browser — stay on replica
+    });
+})();
 </script>
 <footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build}} • Broadcast Signal Intelligence</footer>
 </body></html>"""
@@ -11784,119 +11526,27 @@ if __name__=="__main__":
 
     cfg  = monitor.app_cfg
     mode = cfg.hub.mode
-    import ssl as _ssl
 
-    # ── Port and SSL selection ──────────────────────────────────────────────────
-    # Hub/both with cert  → HTTPS on 443, HTTP→HTTPS redirect on 80
-    # Hub/both no cert    → HTTP on 80
-    # Client              → HTTP on 5000 (behind NAT, not public-facing)
-
-    is_hub   = mode in ("hub", "both")
-    ssl_ctx  = None
-    port     = 5000  # default for client mode
-
-    if is_hub:
-        tls_ready = (cfg.tls_enabled and cfg.tls_cert_path and cfg.tls_key_path
-                     and os.path.exists(cfg.tls_cert_path)
-                     and os.path.exists(cfg.tls_key_path))
-
-        if cfg.tls_enabled and not tls_ready:
-            print(f"[{BUILD}] WARNING: TLS enabled but cert files not found — falling back to HTTP on port 80")
-
-        if tls_ready:
-            port = 443
-        else:
-            port = 80
-
-        # ── Check port binding BEFORE starting any threads ───────────────────
-        import socket as _sock, sys as _sys
-        for _p in ([443, 80] if tls_ready else [80]):
-            try:
-                _s = _sock.socket(); _s.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
-                _s.bind(("0.0.0.0", _p)); _s.close()
-            except OSError:
-                print(f"[{BUILD}] ✗ Cannot bind port {_p} — insufficient permissions.")
-                print(f"[{BUILD}]   Find your real Python binary:  readlink -f $(which python3)")
-                print(f"[{BUILD}]   Then run:  sudo setcap cap_net_bind_service=+ep /path/to/python3.x")
-                _sys.exit(1)
-
-        if tls_ready:
-            ssl_ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
-            ssl_ctx.load_cert_chain(cfg.tls_cert_path, cfg.tls_key_path)
-            app.config["SESSION_COOKIE_SECURE"] = True
-            print(f"[{BUILD}] HTTPS on port 443  ({cfg.tls_domain})")
-
-            # ── HTTP→HTTPS redirect + ACME challenge server on port 80 ──────────
-            from flask import Flask as _Flask, redirect as _redirect
-            _redirect_app = _Flask("_redirect")
-
-            @_redirect_app.route("/.well-known/acme-challenge/<token>")
-            def _acme_pass(token):
-                key_auth = _acme_challenges.get(token)
-                if key_auth:
-                    return key_auth, 200, {"Content-Type": "text/plain"}
-                return "Not found", 404
-
-            @_redirect_app.route("/", defaults={"path": ""})
-            @_redirect_app.route("/<path:path>")
-            def _http_redirect(path):
-                target = f"https://{cfg.tls_domain}" + ("/" + path if path else "/")
-                return _redirect(target, 301)
-
-            def _run_redirect():
-                try:
-                    from waitress import serve as _ws
-                    _ws(_redirect_app, host="0.0.0.0", port=80,
-                        threads=2, ident="redirect")
-                except ImportError:
-                    _redirect_app.run(host="0.0.0.0", port=80,
-                                      debug=False, use_reloader=False)
-
-            threading.Thread(target=_run_redirect, daemon=True, name="HTTP-Redirect").start()
-            print(f"[{BUILD}] HTTP→HTTPS redirect on port 80")
-
-        else:
-            print(f"[{BUILD}] HTTP on port 80")
-            if cfg.auth.enabled:
-                print(f"[{BUILD}] WARNING: Auth is enabled but running HTTP — session cookie is not Secure. Enable HTTPS for production use.")
-            print(f"[{BUILD}] Tip: get a cert in Settings → HTTPS to enable HTTPS on port 443")
-
+    if mode in ("hub", "both"):
         suffix = "/hub" if mode == "hub" else "  (hub at /hub)"
-        proto  = "https" if tls_ready else "http"
         label  = "HUB" if mode == "hub" else "CLIENT+HUB"
-        print(f"[{BUILD}] {label} mode — {proto}://0.0.0.0:{port}{suffix}")
-
+        print(f"[{BUILD}] {label} mode — http://0.0.0.0:5000{suffix}")
     else:
-        # Client mode — stays on 5000, behind NAT
-        print(f"[{BUILD}] CLIENT mode — http://0.0.0.0:{port}")
+        print(f"[{BUILD}] CLIENT mode — http://0.0.0.0:5000")
 
-    # ── Server startup ───────────────────────────────────────────────────────
-    # Use waitress (production WSGI) if available and no SSL needed.
-    # Fall back to Flask dev server when SSL is active (waitress doesn't
-    # handle TLS directly) or if waitress isn't installed.
-    if ssl_ctx:
-        # HTTPS — Flask dev server with SSL context
-        # For production scale, put nginx/caddy in front instead
-        print(f"[{BUILD}] Starting Flask+SSL server on port {port}")
-        app.run(host="0.0.0.0", port=port, debug=False, threaded=True,
-                ssl_context=ssl_ctx)
-    else:
-        try:
-            from waitress import serve
-            from waitress.adjustments import Adjustments
-            # Waitress config — tune for broadcast monitoring workload:
-            #   threads=8     : handles concurrent browser tabs + hub clients
-            #   channel_timeout=120: long-lived audio streams need more time
-            #   asyncore_use_poll=True: more efficient on Linux
-            print(f"[{BUILD}] Starting waitress WSGI server on port {port} (threads=8)")
-            serve(app,
-                  host="0.0.0.0",
-                  port=port,
-                  threads=8,
-                  channel_timeout=120,
-                  asyncore_use_poll=True,
-                  ident=BUILD)
-        except ImportError:
-            print(f"[{BUILD}] waitress not found — using Flask dev server")
-            print(f"[{BUILD}] Install for better performance:  pip install waitress")
-            app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    print(f"[{BUILD}] HTTPS/SSL is handled by nginx — app always binds port 5000")
+
+    try:
+        from waitress import serve
+        print(f"[{BUILD}] Starting waitress WSGI server on port 5000 (threads=8)")
+        serve(app,
+              host="0.0.0.0",
+              port=5000,
+              threads=8,
+              channel_timeout=120,
+              asyncore_use_poll=True,
+              ident=BUILD)
+    except ImportError:
+        print(f"[{BUILD}] waitress not found — using Flask dev server")
+        print(f"[{BUILD}] Install for better performance:  pip install waitress")
+        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
