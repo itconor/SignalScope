@@ -268,6 +268,26 @@ install_redsea() {
   fi
 }
 
+
+ensure_rtlsdr_blacklist() {
+  if [[ "${ENABLE_SDR}" != "1" ]]; then
+    return 0
+  fi
+
+  step "Configuring RTL-SDR blacklist"
+  ${SUDO} mkdir -p /etc/modprobe.d
+  echo 'blacklist dvb_usb_rtl28xxu' | ${SUDO} tee /etc/modprobe.d/rtlsdr.conf > /dev/null
+  ${SUDO} modprobe -r dvb_usb_rtl28xxu >/dev/null 2>&1 || true
+
+  if command -v update-initramfs >/dev/null 2>&1; then
+    ${SUDO} update-initramfs -u >/dev/null 2>&1 || warn "update-initramfs failed; blacklist file was still written"
+  else
+    warn "update-initramfs not found; blacklist file was written but initramfs was not rebuilt"
+  fi
+
+  ok "RTL-SDR blacklist applied (replug any connected dongles)"
+}
+
 create_service() {
   step "Installing systemd service"
 
@@ -409,6 +429,7 @@ main() {
     ${SUDO} apt-get install -y \
       rtl-sdr librtlsdr-dev welle.io \
       libsndfile1 libsndfile1-dev libliquid-dev libfftw3-dev nlohmann-json3-dev || true
+    ensure_rtlsdr_blacklist
   fi
 
   resolve_source_tree
