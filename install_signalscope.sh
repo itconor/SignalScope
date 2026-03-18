@@ -1,558 +1,334 @@
 #!/usr/bin/env bash
-
-echo ""
-echo "   _____ _                   _  _____"
-echo "  / ____(_)                 | |/ ____|"
-echo " | (___  _  __ _ _ __   __ _| | (___   ___ ___  _ __   ___"
-echo "  \___ \| |/ _\` | '_ \ / _\` | |\___ \ / __/ _ \| '_ \ / _ \\"
-echo "  ____) | | (_| | | | | (_| | |____) | (_| (_) | |_) |  __/"
-echo " |_____/|_|\__, |_| |_|\__,_|_|_____/ \___\___/| .__/ \___|"
-echo "             __/ |                              | |"
-echo "            |___/                               |_|"
-
-step "Verifying installation"
-
-if command -v ss >/dev/null 2>&1; then
-    if ss -lnt | grep -q ":5000"; then
-        ok "SignalScope appears to be running on port 5000"
-    else
-        warn "Port 5000 not detected yet. The service may still be starting."
-    fi
-fi
-
-# Colors
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-ok(){ echo -e "${GREEN}✔ $1${NC}"; }
-warn(){ echo -e "${YELLOW}⚠ $1${NC}"; }
-err(){ echo -e "${RED}✖ $1${NC}"; }
-step(){ echo -e "\n${BLUE}==> $1${NC}"; }
-
-# Detect OS
-OS_NAME="Unknown"
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    OS_NAME="$PRETTY_NAME"
-fi
-
-echo -e "${BLUE}Detected OS:${NC} $OS_NAME"
-
-set -euo pipefail
-
-
-print_step() {
-  echo ""
-  echo "==> $1"
-}
-
-print_ok() {
-  echo "✔ $1"
-}
-
-print_warn() {
-  echo "⚠ $1"
-}
-
+set -Eeuo pipefail
 
 APP_NAME="SignalScope"
-SERVICE_NAME="signalscope"
-APP_PY_NAME="signalscope.py"
-LEGACY_APP_PY="LivewireAIMonitor.py"
 REPO_URL="https://github.com/itconor/SignalScope.git"
-RAW_BASE_URL="https://raw.githubusercontent.com/itconor/SignalScope/main"
+DEFAULT_BRANCH="main"
+DEFAULT_INSTALL_DIR="/opt/signalscope"
+DEFAULT_SERVICE_NAME="signalscope"
+DEFAULT_USER="signalscope"
+PYTHON_BIN="python3"
+APP_FILE="signalscope.py"
 
-INSTALL_ROOT_DEFAULT="/opt/signalscope"
-DATA_ROOT_DEFAULT="/var/lib/signalscope"
-LOG_ROOT_DEFAULT="/var/log/signalscope"
+INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+INSTALL_SERVICE=""
+INSTALL_SDR=""
+FORCE=0
+BRANCH="$DEFAULT_BRANCH"
 
-ENABLE_SDR=0
-ENABLE_SERVICE=1
-FORCE_OVERWRITE=0
-INSTALL_ROOT="${INSTALL_ROOT_DEFAULT}"
+if [[ -t 0 && -t 1 ]]; then
+  INTERACTIVE=1
+else
+  INTERACTIVE=0
+fi
 
-SOURCE_DIR=""
-SOURCE_APP=""
-TEMP_SOURCE_DIR=""
+RED='\033[0;31m'
+GRN='\033[0;32m'
+YLW='\033[1;33m'
+BLU='\033[0;34m'
+CYN='\033[0;36m'
+NC='\033[0m'
+
+log()  { echo -e "${BLU}[$APP_NAME]${NC} $*"; }
+ok()   { echo -e "${GRN}[OK]${NC} $*"; }
+warn() { echo -e "${YLW}[WARN]${NC} $*"; }
+err()  { echo -e "${RED}[ERR]${NC} $*" >&2; }
+step() { echo; echo -e "${CYN}==>${NC} $*"; }
+
+die() {
+  err "$*"
+  exit 1
+}
 
 usage() {
-  cat <<EOF2
-Usage: $0 [--no-service] [--service] [--sdr] [--install-dir /opt/signalscope] [--force]
+  cat <<EOF
+$APP_NAME installer
+
+Interactive:
+  /bin/bash <(curl -fsSL https://your-url/install_signalscope.sh)
+
+Non-interactive:
+  curl -fsSL https://your-url/install_signalscope.sh | bash -s -- --service --sdr
 
 Options:
-  --service                 Install and enable systemd service + watchdog (default)
-  --no-service              Do not install or enable the systemd service
-  --sdr                     Install RTL-SDR tooling, pyrtlsdr, and redsea build deps
-  --install-dir <path>      Install application under this path (default: ${INSTALL_ROOT_DEFAULT})
-  --force                   Overwrite existing app files in install dir
-EOF2
+  --service           Install systemd service
+  --no-service        Do not install systemd service
+  --sdr               Install SDR support
+  --no-sdr            Do not install SDR support
+  --install-dir PATH  Install directory (default: $DEFAULT_INSTALL_DIR)
+  --branch NAME       Git branch/tag to use (default: $DEFAULT_BRANCH)
+  --force             Skip confirmation prompts where possible
+  -h, --help          Show this help
+EOF
 }
 
-cleanup() {
-  if [[ -n "${TEMP_SOURCE_DIR:-}" && -d "${TEMP_SOURCE_DIR}" ]]; then
-    rm -rf "${TEMP_SOURCE_DIR}" || true
-  fi
-}
-trap cleanup EXIT
-
-
-# Ignore any CLI options (kept for backwards compatibility)
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --service|--no-service|--sdr|--force|--install-dir)
-      shift
-      if [[ "$1" != "" && "$1" != --* ]]; then shift; fi
-      ;;
-    *)
-      shift
-      ;;
+    --service) INSTALL_SERVICE=1; shift ;;
+    --no-service) INSTALL_SERVICE=0; shift ;;
+    --sdr) INSTALL_SDR=1; shift ;;
+    --no-sdr) INSTALL_SDR=0; shift ;;
+    --install-dir)
+      [[ $# -ge 2 ]] || die "--install-dir needs a value"
+      INSTALL_DIR="$2"; shift 2 ;;
+    --branch)
+      [[ $# -ge 2 ]] || die "--branch needs a value"
+      BRANCH="$2"; shift 2 ;;
+    --force) FORCE=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Unknown option: $1" ;;
   esac
 done
 
-echo ""
-echo "================================="
-echo "       SignalScope Installer"
-echo "================================="
-echo "This installer will set up SignalScope"
-echo "and optionally configure SDR/RDS support"
-echo "and a system service."
-echo ""
+ask_yes_no() {
+  local prompt="$1"
+  local default="$2"
+  local reply
 
-read -rp "Install SignalScope as a system service? [Y/n]: " SERVICE_REPLY
-SERVICE_REPLY=${SERVICE_REPLY:-Y}
-if [[ "$SERVICE_REPLY" =~ ^[Yy]$ ]]; then
-  ENABLE_SERVICE=1
-else
-  ENABLE_SERVICE=0
-fi
+  if [[ "$FORCE" -eq 1 ]]; then
+    [[ "$default" == "y" ]] && return 0 || return 1
+  fi
 
-read -rp "Enable SDR + RDS decoding support (RTL-SDR + redsea)? [Y/n]: " SDR_REPLY
-SDR_REPLY=${SDR_REPLY:-Y}
-if [[ "$SDR_REPLY" =~ ^[Yy]$ ]]; then
-  ENABLE_SDR=1
-else
-  ENABLE_SDR=0
-fi
+  if [[ "$INTERACTIVE" -eq 0 ]]; then
+    [[ "$default" == "y" ]] && return 0 || return 1
+  fi
 
-echo ""
-echo "Configuration:"
-echo "  Service install : $ENABLE_SERVICE"
-echo "  SDR/RDS support : $ENABLE_SDR"
-echo ""
+  while true; do
+    if [[ "$default" == "y" ]]; then
+      read -r -p "$prompt [Y/n]: " reply
+      reply="${reply:-Y}"
+    else
+      read -r -p "$prompt [y/N]: " reply
+      reply="${reply:-N}"
+    fi
+    case "${reply,,}" in
+      y|yes) return 0 ;;
+      n|no) return 1 ;;
+    esac
+  done
+}
 
+ask_value() {
+  local prompt="$1"
+  local default="$2"
+  local reply
+
+  if [[ "$FORCE" -eq 1 || "$INTERACTIVE" -eq 0 ]]; then
+    echo "$default"
+    return
+  fi
+
+  read -r -p "$prompt [$default]: " reply
+  echo "${reply:-$default}"
+}
+
+require_root() {
+  if [[ $EUID -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      log "Re-running with sudo..."
+      exec sudo bash "$0" "$@"
+    else
+      die "Run this installer as root or install sudo."
+    fi
+  fi
+}
 
 need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
-    echo "Missing required command: $1"
-    exit 1
-  }
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
 }
 
-need_cmd sudo
-need_cmd python3
-need_cmd install
+apt_install() {
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y "$@"
+}
 
-if [[ $EUID -eq 0 ]]; then
-  echo "Please run this installer as a normal user with sudo access, not as root."
-  exit 1
-fi
+install_base_packages() {
+  step "Installing base packages"
+  apt_install \
+    git curl ca-certificates \
+    ffmpeg \
+    "$PYTHON_BIN" "$PYTHON_BIN"-venv "$PYTHON_BIN"-dev \
+    build-essential pkg-config \
+    libsndfile1
+}
 
-SERVICE_USER="${SUDO_USER:-$USER}"
-SERVICE_GROUP="$(id -gn "${SERVICE_USER}")"
-ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
-OS_PRETTY="$(. /etc/os-release && echo "${PRETTY_NAME:-Linux}")"
-IS_ARM=0
-IS_PI=0
-case "$ARCH" in
-  armhf|arm64|aarch64) IS_ARM=1 ;;
-esac
-if grep -qi "raspberry pi" /proc/device-tree/model 2>/dev/null || grep -qi "raspbian\|raspberry pi" /etc/os-release 2>/dev/null; then
-  IS_PI=1
-fi
+install_sdr_packages() {
+  step "Installing SDR packages"
+  apt_install rtl-sdr librtlsdr-dev welle-cli
 
-resolve_source_tree() {
-  local cwd app_from_cwd legacy_from_cwd
-  cwd="$(pwd)"
-  app_from_cwd="${cwd}/${APP_PY_NAME}"
-  legacy_from_cwd="${cwd}/${LEGACY_APP_PY}"
-
-  if [[ -f "${app_from_cwd}" ]]; then
-    SOURCE_DIR="${cwd}"
-    SOURCE_APP="${app_from_cwd}"
-    echo "Using local source: ${SOURCE_APP}"
-    return 0
+  if [[ ! -f /etc/modprobe.d/rtlsdr.conf ]]; then
+    echo 'blacklist dvb_usb_rtl28xxu' > /etc/modprobe.d/rtlsdr.conf
+    ok "Created /etc/modprobe.d/rtlsdr.conf"
   fi
 
-  if [[ -f "${legacy_from_cwd}" ]]; then
-    SOURCE_DIR="${cwd}"
-    SOURCE_APP="${legacy_from_cwd}"
-    echo "Using local legacy source: ${SOURCE_APP}"
-    return 0
+  modprobe -r dvb_usb_rtl28xxu >/dev/null 2>&1 || true
+}
+
+clone_or_update_repo() {
+  step "Fetching $APP_NAME"
+  if [[ -d "$INSTALL_DIR/.git" ]]; then
+    log "Existing git repo found, updating..."
+    git -C "$INSTALL_DIR" fetch --all --tags
+    git -C "$INSTALL_DIR" checkout "$BRANCH"
+    git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" || true
+  else
+    rm -rf "$INSTALL_DIR"
+    git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
   fi
+}
 
-  TEMP_SOURCE_DIR="$(mktemp -d /tmp/signalscope-src.XXXXXX)"
-  echo "Local app file missing; fetching SignalScope from GitHub..."
+ensure_app_file() {
+  [[ -f "$INSTALL_DIR/$APP_FILE" ]] || die "Expected app file not found: $INSTALL_DIR/$APP_FILE"
+}
 
-  if command -v git >/dev/null 2>&1; then
-    if git clone --depth 1 "${REPO_URL}" "${TEMP_SOURCE_DIR}" >/dev/null 2>&1; then
-      :
+setup_venv() {
+  step "Creating Python virtual environment"
+  "$PYTHON_BIN" -m venv "$INSTALL_DIR/venv"
+  # shellcheck disable=SC1091
+  source "$INSTALL_DIR/venv/bin/activate"
+
+  step "Upgrading pip"
+  pip install --upgrade pip wheel setuptools
+
+  step "Installing Python dependencies"
+  pip install \
+    flask waitress numpy onnx onnxruntime cryptography \
+    pyrtlsdr==0.2.93
+}
+
+set_python_cap() {
+  step "Setting Python capability for low ports"
+  local pybin
+  pybin="$(readlink -f "$(command -v "$PYTHON_BIN")")"
+  if [[ -n "$pybin" && -f "$pybin" ]]; then
+    if command -v setcap >/dev/null 2>&1; then
+      setcap cap_net_bind_service=+ep "$pybin" || warn "Could not set cap_net_bind_service on $pybin"
+      ok "Capability set on $pybin"
     else
-      echo "Git clone failed, falling back to direct file download..."
-      mkdir -p "${TEMP_SOURCE_DIR}/static"
-      curl -fsSL "${RAW_BASE_URL}/${APP_PY_NAME}" -o "${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
+      warn "setcap not found; low ports may require root"
     fi
-  else
-    mkdir -p "${TEMP_SOURCE_DIR}/static"
-    curl -fsSL "${RAW_BASE_URL}/${APP_PY_NAME}" -o "${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
-  fi
-
-  if [[ ! -f "${TEMP_SOURCE_DIR}/${APP_PY_NAME}" && -f "${TEMP_SOURCE_DIR}/${LEGACY_APP_PY}" ]]; then
-    cp -f "${TEMP_SOURCE_DIR}/${LEGACY_APP_PY}" "${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
-  fi
-
-  if [[ ! -f "${TEMP_SOURCE_DIR}/${APP_PY_NAME}" ]]; then
-    echo "Failed to obtain ${APP_PY_NAME} from ${REPO_URL}"
-    exit 1
-  fi
-
-  SOURCE_DIR="${TEMP_SOURCE_DIR}"
-  SOURCE_APP="${TEMP_SOURCE_DIR}/${APP_PY_NAME}"
-  echo "Fetched source from GitHub: ${SOURCE_APP}"
-}
-
-echo "== ${APP_NAME} production installer =="
-echo "OS: ${OS_PRETTY}"
-echo "Arch: ${ARCH}"
-echo "Install dir: ${INSTALL_ROOT}"
-if [[ $IS_PI -eq 1 ]]; then
-  echo "Platform detected: Raspberry Pi"
-fi
-
-sudo apt-get update
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  python3 python3-venv python3-pip python3-dev python3-setuptools \
-  build-essential pkg-config git curl wget ca-certificates rsync \
-  ffmpeg ethtool net-tools iproute2 jq \
-  libffi-dev libssl-dev meson ninja-build libfftw3-dev
-
-if [[ $ENABLE_SDR -eq 1 ]]; then
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    rtl-sdr librtlsdr-dev welle.io \
-    libsndfile1 libsndfile1-dev libliquid-dev libfftw3-dev nlohmann-json3-dev || true
-fi
-
-resolve_source_tree
-
-sudo mkdir -p "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
-sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
-
-VENV_DIR="${INSTALL_ROOT}/venv"
-TARGET_APP="${INSTALL_ROOT}/${APP_PY_NAME}"
-
-# Copy application
-if [[ -f "${TARGET_APP}" && $FORCE_OVERWRITE -ne 1 ]]; then
-  echo "Existing ${TARGET_APP} found."
-  echo "Re-run with --force if you want to overwrite the installed app file."
-else
-  install -m 0644 "${SOURCE_APP}" "/tmp/${APP_PY_NAME}.$$"
-  sudo mv "/tmp/${APP_PY_NAME}.$$" "${TARGET_APP}"
-  sudo chown "${SERVICE_USER}:${SERVICE_GROUP}" "${TARGET_APP}"
-fi
-
-# Copy optional static assets if present locally or from fetched repo
-if [[ -d "${SOURCE_DIR}/static" ]]; then
-  sudo mkdir -p "${INSTALL_ROOT}/static"
-  sudo rsync -a --delete "${SOURCE_DIR}/static/" "${INSTALL_ROOT}/static/"
-  sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}/static"
-else
-  echo "No static/ directory found in source tree; continuing without copied assets."
-fi
-
-# Create venv if needed
-print_step "Step 2/6: Creating Python virtual environment"
-python3 -m venv "${VENV_DIR}"
-# shellcheck disable=SC1091
-source "${VENV_DIR}/bin/activate"
-python -m pip install --upgrade "pip<25" wheel "setuptools<81"
-
-python -m pip install \
-  flask waitress cheroot numpy scipy requests certifi cryptography
-
-install_onnx_stack() {
-  local onnx_ok=0
-  local ort_ok=0
-  if python -m pip install onnx; then
-    onnx_ok=1
-  else
-    echo "WARN: Failed to install onnx."
-  fi
-  if python -m pip install onnxruntime; then
-    ort_ok=1
-  else
-    echo "WARN: Failed to install onnxruntime."
-  fi
-  if [[ $IS_ARM -eq 1 && $ort_ok -eq 0 ]]; then
-    echo "INFO: ARM platform detected; onnxruntime wheel may be unavailable."
-    echo "INFO: ${APP_NAME} will still install, but AI/ONNX features may be unavailable until onnxruntime is installed manually."
-  fi
-  if [[ $onnx_ok -eq 0 ]]; then
-    echo "WARN: onnx not installed."
-  fi
-}
-install_onnx_stack
-
-if [[ $ENABLE_SDR -eq 1 ]]; then
-  python -m pip install --upgrade "pyrtlsdr==0.2.93"
-  python - <<'PYEOF'
-import sys
-try:
-    import rtlsdr
-    version = getattr(rtlsdr, "__version__", "unknown")
-    print(f"[OK] pyrtlsdr version: {version}")
-except Exception as exc:
-    print(f"[WARN] pyrtlsdr import check failed: {exc}")
-    sys.exit(1)
-PYEOF
-fi
-
-install_redsea() {
-  if ! [[ $ENABLE_SDR -eq 1 ]]; then
-    return 0
-  fi
-
-  if command -v redsea >/dev/null 2>&1; then
-    echo "INFO: redsea already installed at $(command -v redsea)"
-    return 0
-  fi
-
-  local build_root="/tmp/redsea-build.$$"
-  echo "Installing redsea..."
-  rm -rf "${build_root}"
-  git clone --depth 1 https://github.com/windytan/redsea.git "${build_root}"
-  meson setup "${build_root}/build" "${build_root}"
-  meson compile -C "${build_root}/build"
-  sudo meson install -C "${build_root}/build"
-  rm -rf "${build_root}"
-
-  if command -v redsea >/dev/null 2>&1; then
-    echo "INFO: redsea installed successfully."
-  else
-    echo "WARN: redsea installation completed but binary was not found in PATH."
   fi
 }
 
-install_redsea
-
-
-# Prevent DVB kernel drivers from grabbing RTL-SDR dongles
-configure_rtlsdr_blacklist() {
-  if ! [[ $ENABLE_SDR -eq 1 ]]; then
-    return 0
-  fi
-
-  echo "Configuring RTL-SDR driver blacklist..."
-  printf 'blacklist dvb_usb_rtl28xxu\nblacklist rtl2832\nblacklist rtl2830\n' \
-    | sudo tee /etc/modprobe.d/rtlsdr.conf > /dev/null
-
-  sudo modprobe -r dvb_usb_rtl28xxu rtl2832 rtl2830 2>/dev/null || true
-  if command -v update-initramfs >/dev/null 2>&1; then
-    sudo update-initramfs -u || true
-  fi
+create_service_user() {
+  id -u "$DEFAULT_USER" >/dev/null 2>&1 || useradd --system --home "$INSTALL_DIR" --shell /usr/sbin/nologin "$DEFAULT_USER"
+  chown -R "$DEFAULT_USER:$DEFAULT_USER" "$INSTALL_DIR"
 }
 
-configure_rtlsdr_blacklist
+install_systemd_service() {
+  step "Installing systemd service"
+  create_service_user
 
-# Network tuning
-sudo tee /etc/sysctl.d/99-signalscope-network.conf > /dev/null <<'EOF2'
-net.core.rmem_max=536870912
-net.core.rmem_default=536870912
-net.core.wmem_max=536870912
-net.core.wmem_default=536870912
-net.ipv4.udp_rmem_min=1048576
-net.ipv4.udp_wmem_min=1048576
-net.core.netdev_max_backlog=750000
-net.core.optmem_max=65536
-EOF2
-sudo sysctl --system >/dev/null || true
-
-DEFAULT_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
-if [[ -n "${DEFAULT_IFACE:-}" ]]; then
-  echo "Applying best-effort NIC tuning to ${DEFAULT_IFACE}"
-  sudo ethtool -K "${DEFAULT_IFACE}" gro off gso off tso off lro off >/dev/null 2>&1 || true
-  sudo ethtool -G "${DEFAULT_IFACE}" rx 4096 tx 4096 >/dev/null 2>&1 || true
-fi
-
-# Capability for low ports, best effort
-PYBIN="$(readlink -f "$(command -v python3)")"
-if [[ -f "${PYBIN}" ]]; then
-  sudo setcap cap_net_bind_service=+ep "${PYBIN}" || true
-fi
-
-# SDR access group
-if getent group plugdev >/dev/null 2>&1; then
-  sudo usermod -aG plugdev "${SERVICE_USER}" || true
-fi
-
-# Create env file used by service
-sudo tee /etc/default/${SERVICE_NAME} > /dev/null <<EOF2
-SIGNALSCOPE_INSTALL_DIR=${INSTALL_ROOT}
-SIGNALSCOPE_DATA_DIR=${DATA_ROOT_DEFAULT}
-SIGNALSCOPE_LOG_DIR=${LOG_ROOT_DEFAULT}
-EOF2
-
-create_service() {
-  sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" > /dev/null <<EOF2
+  cat >/etc/systemd/system/${DEFAULT_SERVICE_NAME}.service <<EOF
 [Unit]
-Description=${APP_NAME}
+Description=$APP_NAME
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=${SERVICE_USER}
-Group=${SERVICE_GROUP}
-EnvironmentFile=/etc/default/${SERVICE_NAME}
-WorkingDirectory=${INSTALL_ROOT}
-ExecStart=${VENV_DIR}/bin/python ${TARGET_APP}
-Restart=always
-RestartSec=5
-CPUSchedulingPolicy=rr
-CPUSchedulingPriority=20
-Nice=-10
-LimitRTPRIO=95
-LimitNICE=-20
+User=$DEFAULT_USER
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/$APP_FILE
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
-EOF2
+EOF
 
-  sudo tee /usr/local/bin/${SERVICE_NAME}-watchdog.sh > /dev/null <<'EOF2'
-#!/usr/bin/env bash
-
-# Colors
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-ok(){ echo -e "${GREEN}✔ $1${NC}"; }
-warn(){ echo -e "${YELLOW}⚠ $1${NC}"; }
-err(){ echo -e "${RED}✖ $1${NC}"; }
-step(){ echo -e "\n${BLUE}==> $1${NC}"; }
-
-# Detect OS
-OS_NAME="Unknown"
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    OS_NAME="$PRETTY_NAME"
-fi
-
-echo -e "${BLUE}Detected OS:${NC} $OS_NAME"
-
-set -euo pipefail
-SERVICE="signalscope"
-if ! systemctl is-active --quiet "${SERVICE}"; then
-  exit 0
-fi
-if ! curl -sk --max-time 10 https://127.0.0.1/ >/dev/null 2>&1; then
-  if ! curl -s --max-time 10 http://127.0.0.1:5000/ >/dev/null 2>&1; then
-    logger -t signalscope-watchdog "Health check failed; restarting ${SERVICE}"
-    systemctl restart "${SERVICE}"
-  fi
-fi
-EOF2
-  sudo chmod +x /usr/local/bin/${SERVICE_NAME}-watchdog.sh
-
-  sudo tee "/etc/systemd/system/${SERVICE_NAME}-watchdog.service" > /dev/null <<EOF2
-[Unit]
-Description=${APP_NAME} watchdog
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/${SERVICE_NAME}-watchdog.sh
-EOF2
-
-  sudo tee "/etc/systemd/system/${SERVICE_NAME}-watchdog.timer" > /dev/null <<EOF2
-[Unit]
-Description=Run ${APP_NAME} watchdog every minute
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
-Unit=${SERVICE_NAME}-watchdog.service
-
-[Install]
-WantedBy=timers.target
-EOF2
-
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now "${SERVICE_NAME}.service"
-  sudo systemctl enable --now "${SERVICE_NAME}-watchdog.timer"
+  systemctl daemon-reload
+  systemctl enable "${DEFAULT_SERVICE_NAME}.service"
+  ok "Service installed: ${DEFAULT_SERVICE_NAME}.service"
 }
 
-if [[ $ENABLE_SERVICE -eq 1 ]]; then
-  create_service
-fi
+show_banner() {
+  cat <<EOF
 
-echo
-echo ""
-echo "================================="
-echo "Installation complete."
-echo "================================="
-echo "Next steps:"
-echo "  1. Open http://localhost:5000"
-echo "  2. Complete the setup wizard"
-echo "  3. Start monitoring from the dashboard"
-echo ""
-echo "Installed app: ${TARGET_APP}"
-echo "Virtualenv: ${VENV_DIR}"
-echo "Data dir: ${DATA_ROOT_DEFAULT}"
-echo "Log dir: ${LOG_ROOT_DEFAULT}"
+${APP_NAME} Installer
+---------------------
+This installer will:
+ - install system dependencies
+ - clone/update the SignalScope repository
+ - create a Python virtualenv
+ - install Python dependencies
+ - optionally install SDR support
+ - optionally create a systemd service
 
-if [[ $ENABLE_SERVICE -eq 1 ]]; then
-  echo "Service enabled: ${SERVICE_NAME}"
-  echo "Status: systemctl status ${SERVICE_NAME}"
-  echo "Logs: journalctl -fu ${SERVICE_NAME}"
-else
-  echo "Run manually with:"
-  echo "  source \"${VENV_DIR}/bin/activate\" && python \"${TARGET_APP}\""
-fi
+EOF
+}
 
-if [[ $ENABLE_SDR -eq 1 ]]; then
+main() {
+  if [[ -f /etc/os-release ]]; then
+    . /etc/os-release
+    [[ "${ID:-}" == "ubuntu" || "${ID_LIKE:-}" == *debian* ]] || warn "This installer is designed for Ubuntu/Debian."
+  fi
+
+  if [[ -z "$INSTALL_SERVICE" ]]; then
+    if ask_yes_no "Install as a systemd service?" "y"; then
+      INSTALL_SERVICE=1
+    else
+      INSTALL_SERVICE=0
+    fi
+  fi
+
+  if [[ -z "$INSTALL_SDR" ]]; then
+    if ask_yes_no "Install SDR support (rtl-sdr + welle-cli)?" "y"; then
+      INSTALL_SDR=1
+    else
+      INSTALL_SDR=0
+    fi
+  fi
+
+  INSTALL_DIR="$(ask_value "Install directory" "$INSTALL_DIR")"
+
+  show_banner
+  log "Install dir: $INSTALL_DIR"
+  log "Service: $([[ "$INSTALL_SERVICE" -eq 1 ]] && echo yes || echo no)"
+  log "SDR support: $([[ "$INSTALL_SDR" -eq 1 ]] && echo yes || echo no)"
+  log "Branch: $BRANCH"
+
+  if [[ "$FORCE" -ne 1 && "$INTERACTIVE" -eq 1 ]]; then
+    echo
+    read -r -p "Continue? [Y/n]: " confirm
+    confirm="${confirm:-Y}"
+    [[ "${confirm,,}" == "y" || "${confirm,,}" == "yes" ]] || exit 0
+  fi
+
+  need_cmd git
+  need_cmd curl
+
+  install_base_packages
+
+  if [[ "$INSTALL_SDR" -eq 1 ]]; then
+    install_sdr_packages
+  fi
+
+  clone_or_update_repo
+  ensure_app_file
+  setup_venv
+  set_python_cap
+
+  mkdir -p /var/log/signalscope
+  chmod 755 /var/log/signalscope || true
+
+  if [[ "$INSTALL_SERVICE" -eq 1 ]]; then
+    install_systemd_service
+    echo
+    ok "Start with:"
+    echo "  sudo systemctl start ${DEFAULT_SERVICE_NAME}.service"
+    echo "  sudo systemctl status ${DEFAULT_SERVICE_NAME}.service"
+  else
+    echo
+    ok "Run manually with:"
+    echo "  source \"$INSTALL_DIR/venv/bin/activate\" && python \"$INSTALL_DIR/$APP_FILE\""
+  fi
+
   echo
-  echo "SDR components:"
-  echo "  rtl_fm: $(command -v rtl_fm || echo not found)"
-  echo "  redsea: $(command -v redsea || echo not found)"
-  echo "  RTL-SDR blacklist: /etc/modprobe.d/rtlsdr.conf"
-  echo "Recommended FM URL format:"
-  echo "  fm://99.7?serial=DAB1&ppm=-52&gain=38&backend=rtl_fm"
-fi
+  ok "Installation complete."
+}
 
-if [[ $IS_ARM -eq 1 ]]; then
-  echo
-  echo "ARM note: onnxruntime may not be available automatically on all Raspberry Pi OS builds."
-fi
-
-
-echo ""
-echo "================================="
-echo " SignalScope Installation Complete"
-echo "================================="
-echo "Install path : ${INSTALL_ROOT}"
-echo "Service      : ${ENABLE_SERVICE}"
-echo "SDR/RDS      : ${ENABLE_SDR}"
-echo "Web UI       : http://localhost:5000"
-echo ""
-echo "To manage the service:"
-echo "  sudo systemctl status signalscope"
-echo "  sudo systemctl restart signalscope"
-echo ""
-echo "Logs:"
-echo "  /var/log/signalscope/"
-echo ""
-echo "Next step:"
-echo "  Open the web UI and complete the setup wizard."
+require_root "$@"
+main "$@"
