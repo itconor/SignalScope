@@ -31,7 +31,7 @@ input[type=text],input[type=number],input[type=password],input[type=email]{width
 function _csrfFetch(url,opts){
   opts=opts||{};
   if(!opts.headers)opts.headers={};
-  var t=(document.querySelector('meta[name="csrf-token"]') || {}).content||"";
+  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||"";
   opts.headers["X-CSRFToken"]=t;
   return fetch(url,opts);
 }
@@ -655,7 +655,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.45"
+BUILD                  = "SignalScope-2.6.50"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
 CHUNK_SIZE             = int(SAMPLE_RATE * CHUNK_DURATION)
@@ -6112,6 +6112,14 @@ class HubClient:
                 hub_br = last_body.get("relay_bitrate")
                 if isinstance(hub_br, int) and hub_br > 0:
                     self._hub_relay_bitrate = hub_br
+                # Execute hub-issued remote command (start/stop monitoring)
+                hub_cmd = (last_body.get("command") or "").strip().lower()
+                if hub_cmd == "start" and not monitor.is_running():
+                    monitor.log("[Hub] Remote start command received — starting monitoring")
+                    monitor.start_monitoring()
+                elif hub_cmd == "stop" and monitor.is_running():
+                    monitor.log("[Hub] Remote stop command received — stopping monitoring")
+                    monitor.stop_monitoring()
             else:
                 self.fail_total += 1
                 self._backoff    = min(self._backoff + 1, 10)
@@ -6136,6 +6144,21 @@ class HubServer:
 
     def set_secret(self, secret: str):
         self._secret = secret
+
+    # ── Per-site pending command (one-shot, hub → client) ────────────────────
+    def set_pending_command(self, site_name: str, command: str):
+        """Queue a one-shot command to be delivered on the next heartbeat ACK."""
+        with self._lock:
+            if site_name in self._sites:
+                self._sites[site_name]["_pending_command"] = command
+
+    def pop_pending_command(self, site_name: str) -> str:
+        """Return and clear any queued command for this site (one-shot delivery)."""
+        with self._lock:
+            site = self._sites.get(site_name)
+            if site is None:
+                return ""
+            return site.pop("_pending_command", "") or ""
 
     # ── Per-site relay bitrate (hub-controlled) ───────────────────────────────
     def get_relay_bitrate(self, site_name: str) -> int:
@@ -6219,6 +6242,7 @@ class HubServer:
                 "_first_seen":         prev.get("_first_seen", now),
                 # Preserve hub-controlled settings across heartbeat updates
                 "_relay_bitrate":      prev.get("_relay_bitrate", 128),
+                "_pending_command":    prev.get("_pending_command", ""),
             })
             self._sites[site] = stored
             # Snapshot outside lock scope for persistence
@@ -6596,6 +6620,24 @@ app.jinja_env.filters["enumerate"] = enumerate
 
 # Apply security headers to every response
 app.after_request(_apply_security_headers)
+
+def _set_csrf_cookie(response):
+    """Set a JS-readable csrf_token cookie on every response so any page's JS
+    can read it without needing a <meta> tag in the template."""
+    try:
+        token = session.get("_csrf", "")
+        if token:
+            response.set_cookie(
+                "csrf_token", token,
+                samesite="Strict",
+                secure=request.is_secure,
+                httponly=False,   # Must NOT be HttpOnly — JS needs to read it
+                path="/",
+            )
+    except Exception:
+        pass
+    return response
+app.after_request(_set_csrf_cookie)
 
 @app.context_processor
 def _inject_csrf():
@@ -7096,7 +7138,7 @@ var running={{running|lower}};
 function _csrfFetch(url,opts){
   opts=opts||{};
   if(!opts.headers)opts.headers={};
-  var t=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
   opts.headers['X-CSRFToken']=t;
   return fetch(url,opts);
 }
@@ -7386,13 +7428,13 @@ refresh();
 // ── Toggles ─────────────────────────────────────────────────────────────────
 // CSRF helper — reads token from meta tag injected by server
 function _csrfHeaders(){
-  var t=(document.querySelector('meta[name="csrf-token"]') || {}).content || "";
+  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||"";
   return {"X-CSRFToken": t, "Content-Type": "application/json"};
 }
 function _csrfFetch(url, opts){
   opts = opts || {};
   if(!opts.headers) opts.headers = {};
-  var t=(document.querySelector('meta[name="csrf-token"]') || {}).content || "";
+  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||"";
   opts.headers["X-CSRFToken"] = t;
   return fetch(url, opts);
 }
@@ -8265,7 +8307,7 @@ var _currentStep = 0;
 function _csrfFetch(url, opts){
   opts = opts || {};
   if(!opts.headers) opts.headers = {};
-  var t = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
   opts.headers['X-CSRFToken'] = t;
   return fetch(url, opts);
 }
@@ -8605,7 +8647,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   function _csrfFetch(url,opts){
     opts=opts||{};
     if(!opts.headers)opts.headers={};
-    var t=(document.querySelector('meta[name="csrf-token"]') || {}).content||"";
+    var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||"";
     opts.headers["X-CSRFToken"]=t;
     return fetch(url,opts);
   }
@@ -10470,10 +10512,13 @@ def hub_heartbeat():
         return jsonify({"error":"forbidden"}), 403
 
     # ── Build ACK — encrypt if secret is set ─────────────────────────────────
-    site_name    = payload.get("site","")
-    listen_reqs  = listen_registry.pending_for_site(site_name)
+    site_name     = payload.get("site","")
+    listen_reqs   = listen_registry.pending_for_site(site_name)
     relay_bitrate = hub_server.get_relay_bitrate(site_name)
+    pending_cmd   = hub_server.pop_pending_command(site_name)
     ack = {"ok": True, "listen_requests": listen_reqs, "relay_bitrate": relay_bitrate}
+    if pending_cmd:
+        ack["command"] = pending_cmd
     ack_bytes = json.dumps(ack).encode()
 
     if secret:
@@ -10498,6 +10543,26 @@ def hub_set_relay_bitrate(site_name):
         return jsonify({"error": "bitrate must be one of 32/48/64/96/128/192"}), 400
     hub_server.set_relay_bitrate(site_name, bitrate)
     return jsonify({"ok": True, "site": site_name, "relay_bitrate": bitrate})
+
+
+@app.post("/api/hub/site/<path:site_name>/command")
+@login_required
+@csrf_protect
+def hub_send_command(site_name):
+    """Hub admin: queue a remote start/stop command for a client site."""
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 403
+    raw_site = hub_server.get_site(site_name)
+    if not raw_site:
+        return jsonify({"error": "site not found"}), 404
+    data = request.get_json(silent=True) or {}
+    command = (data.get("command") or "").strip().lower()
+    if command not in ("start", "stop"):
+        return jsonify({"error": "command must be 'start' or 'stop'"}), 400
+    hub_server.set_pending_command(site_name, command)
+    return jsonify({"ok": True, "site": site_name, "command": command,
+                    "note": "command will be delivered on the client's next heartbeat"})
 
 
 @app.get("/hub")
@@ -11294,6 +11359,13 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       <span class="site-name">{{site.site}}</span>
       <span class="badge">{{site.site_status}}</span>
       {% if site.running %}<span class="badge" style="background:#1e2a1e;color:#86efac">▶ Running</span>{% else %}<span class="badge" style="background:#2a2a1e;color:var(--mu)">⏸ Stopped</span>{% endif %}
+      {% if site.online %}
+      {% if site.running %}
+      <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="stop" style="background:#3a1e1e;color:#fca5a5;font-size:11px;padding:2px 10px">⏹ Stop</button>
+      {% else %}
+      <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="start" style="background:#1e3a1e;color:#86efac;font-size:11px;padding:2px 10px">▶ Start</button>
+      {% endif %}
+      {% endif %}
       {% if site.build %}<span class="badge">{{site.build}}</span>{% endif %}
       <span class="site-meta">Last seen: {{ago(site.age_s)}}</span>
       {% if site.latency_ms is not none %}<span class="site-meta">Latency: {{site.latency_ms}} ms</span>{% endif %}
@@ -11504,13 +11576,44 @@ main{padding:18px;max-width:1500px;margin:0 auto}
   </div>
 </main>
 <script nonce="{{csp_nonce()}}">
+// ── Remote start/stop command ─────────────────────────────────────────────────
+function sendSiteCommand(site, command, btn){
+  var csrfToken=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  fetch('/api/hub/site/' + encodeURIComponent(site) + '/command', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','X-CSRFToken': csrfToken},
+    body: JSON.stringify({command: command})
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(d.ok){
+      btn.textContent = '✓ Queued';
+      btn.style.background = '#1e3a5f';
+      btn.style.color = 'var(--acc)';
+    } else {
+      btn.disabled = false;
+      btn.textContent = command === 'start' ? '▶ Start' : '⏹ Stop';
+      alert('Failed: ' + (d.error||'unknown error'));
+    }
+  }).catch(function(){
+    btn.disabled = false;
+    btn.textContent = command === 'start' ? '▶ Start' : '⏹ Stop';
+  });
+}
+document.addEventListener('click', function(e){
+  var btn = e.target.closest('.sc-cmd-btn');
+  if(!btn) return;
+  var site = btn.getAttribute('data-site');
+  var cmd  = btn.getAttribute('data-cmd');
+  if(site && cmd) sendSiteCommand(site, cmd, btn);
+});
 // ── Per-site relay bitrate control ───────────────────────────────────────────
 function setRelayBitrate(sel){
   var site    = sel.getAttribute('data-site');
   var bitrate = parseInt(sel.value, 10);
   var orig    = sel.value;
   sel.disabled = true;
-  var csrfToken = (document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var csrfToken=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
   fetch('/api/hub/site/' + encodeURIComponent(site) + '/relay_bitrate', {
     method: 'POST',
     headers: {'Content-Type':'application/json','X-CSRFToken': csrfToken},
@@ -11587,6 +11690,7 @@ document.addEventListener('change', function(ev){
 HUB_TPL = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>SignalScope — Hub</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
@@ -11824,7 +11928,7 @@ function agoJS(s){ s=Math.round(s||0); if(s<5)return'just now'; if(s<60)return s
 function _csrfFetch(url,opts){
   opts=opts||{};
   if(!opts.headers) opts.headers={};
-  var t=(document.querySelector('meta[name="csrf-token"]') || {}).content || "";
+  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||"";
   opts.headers["X-CSRFToken"]=t;
   return fetch(url,opts);
 }
@@ -11870,6 +11974,37 @@ function initDragGrid(gridId, storageKey, itemSelector){
     });
   });
 }
+function sendSiteCommand(site, command, btn){
+  var csrfToken=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  btn.disabled = true;
+  btn.textContent = '…';
+  fetch('/api/hub/site/' + encodeURIComponent(site) + '/command', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','X-CSRFToken': csrfToken},
+    body: JSON.stringify({command: command})
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(d.ok){
+      btn.textContent = '✓';
+      btn.style.background = '#1e3a5f';
+      btn.style.color = 'var(--acc)';
+      setTimeout(function(){ btn.textContent = command==='start'?'▶ Start':'⏹ Stop'; btn.disabled=false; btn.style.background=''; btn.style.color=''; }, 8000);
+    } else {
+      btn.disabled = false;
+      btn.textContent = command==='start'?'▶ Start':'⏹ Stop';
+      alert('Failed: '+(d.error||'unknown error'));
+    }
+  }).catch(function(){
+    btn.disabled = false;
+    btn.textContent = command==='start'?'▶ Start':'⏹ Stop';
+  });
+}
+document.addEventListener('click', function(e){
+  var btn = e.target.closest('.sc-cmd-btn');
+  if(!btn) return;
+  var site = btn.getAttribute('data-site');
+  var cmd  = btn.getAttribute('data-cmd');
+  if(site && cmd) sendSiteCommand(site, cmd, btn);
+});
 function removeSite(siteName, btn){
   if(!confirm('Remove '+siteName+' from the hub dashboard?')) return;
   _csrfFetch('/hub/site/remove/'+encodeURIComponent(siteName), {method:'POST'})
@@ -11970,8 +12105,10 @@ document.addEventListener('DOMContentLoaded', function(){
       </span>
       {% if site.running %}
       <span class="badge" style="background:#1e2a1e">▶ Running</span>
+      <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="stop" style="background:#3a1e1e;color:#fca5a5;font-size:10px;padding:2px 8px">⏹ Stop</button>
       {% else %}
       <span class="badge" style="background:#2a2a1e;color:var(--mu)">⏸ Stopped</span>
+      <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="start" style="background:#1e3a1e;color:#86efac;font-size:10px;padding:2px 8px">▶ Start</button>
       {% endif %}
       {% if site.build %}
       <span class="badge site-version-badge" style="background:{{' #1e2433' if site.build==build else '#3a2a0f'}};font-size:10px"
