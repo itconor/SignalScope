@@ -655,7 +655,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.41"
+BUILD                  = "SignalScope-2.6.45"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
 CHUNK_SIZE             = int(SAMPLE_RATE * CHUNK_DURATION)
@@ -3194,7 +3194,12 @@ class MonitorManager:
         self.log(f"[{name}] DAB shared: launching {' '.join(cmd)}")
 
         try:
-            session.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+            import os as _os
+            def _elevate_priority():
+                try: _os.nice(-10)
+                except Exception: pass
+            session.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                            bufsize=0, preexec_fn=_elevate_priority)
         except Exception as e:
             session.failed = True
             session.ready.set()
@@ -6245,8 +6250,21 @@ class HubServer:
             return sorted(result, key=lambda x: x["site"])
 
     def get_site(self, name: str) -> Optional[dict]:
+        now = time.time()
         with self._lock:
-            return self._sites.get(name)
+            data = self._sites.get(name)
+            if data is None:
+                return None
+            age       = now - data.get("_received", 0)
+            online    = age < HUB_SITE_TIMEOUT
+            total_rx  = data.get("_total_received", 0)
+            total_miss= data.get("_total_missed", 0)
+            health    = round(total_rx / max(total_rx + total_miss, 1) * 100, 1)
+            tx_ts     = float(data.get("ts", 0) or 0)
+            latency_ms= round(max(0.0, (data.get("_received", now) - tx_ts) * 1000), 1) if tx_ts else None
+            return {**data, "online": online, "age_s": round(age, 1),
+                    "health_pct": health, "latency_ms": latency_ms,
+                    "consecutive_missed": data.get("_consecutive_missed", 0)}
 
 
 hub_server = HubServer()
@@ -11191,6 +11209,7 @@ window.addEventListener('DOMContentLoaded', function(){
 HUB_SITE_TPL = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>{{site.site}} — SignalScope Replica</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -11491,9 +11510,10 @@ function setRelayBitrate(sel){
   var bitrate = parseInt(sel.value, 10);
   var orig    = sel.value;
   sel.disabled = true;
+  var csrfToken = (document.querySelector('meta[name="csrf-token"]')||{}).content||'';
   fetch('/api/hub/site/' + encodeURIComponent(site) + '/relay_bitrate', {
     method: 'POST',
-    headers: {'Content-Type':'application/json','X-CSRFToken': document.cookie.match(/csrf_token=([^;]+)/)?.[1]||''},
+    headers: {'Content-Type':'application/json','X-CSRFToken': csrfToken},
     body: JSON.stringify({bitrate: bitrate})
   }).then(function(r){ return r.json(); }).then(function(d){
     sel.disabled = false;
