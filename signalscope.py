@@ -746,7 +746,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.64"
+BUILD                  = "SignalScope-2.6.65"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -11636,7 +11636,9 @@ main{padding:18px 20px 24px}
 .filters select,.filters input{background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 10px;font-size:12px}
 .filters label{color:var(--mu);font-size:12px}
 .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px}
-.sc{background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px 14px;box-shadow:0 4px 10px rgba(0,0,0,.14)}
+.sc{background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px 14px;box-shadow:0 4px 10px rgba(0,0,0,.14);cursor:pointer;transition:border-color .15s,box-shadow .15s,background .15s;user-select:none}
+.sc:hover{border-color:var(--acc);box-shadow:0 0 0 2px rgba(23,168,255,.18)}
+.sc.sc-active{border-color:var(--acc);box-shadow:0 0 0 3px rgba(23,168,255,.35);background:linear-gradient(180deg,#153461,#102a54)}
 .sc-val{font-size:24px;font-weight:800;line-height:1.1}.sc-lbl{font-size:11px;color:var(--mu);margin-top:4px;text-transform:uppercase;letter-spacing:.08em}
 .metrics-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.metric-chip{padding:8px 10px;border:1px solid var(--bor);border-radius:999px;background:#12305c;font-size:12px}.metric-chip strong{color:var(--tx)}
 .table-wrap{border:1px solid var(--bor);border-radius:12px;overflow:hidden;background:rgba(13,35,70,.96);box-shadow:0 4px 10px rgba(0,0,0,.14)}
@@ -11665,12 +11667,12 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
     <span class="badge">{{total}} events from {{site_names|length}} site{{"s" if site_names|length!=1 else ""}}</span>
   </div>
   <div class="summary">
-    <div class="sc"><div class="sc-val" id="sc-total">{{total}}</div><div class="sc-lbl">Total Events</div></div>
-    <div class="sc"><div class="sc-val" id="sc-critical" style="color:var(--al)">{{counts.get('SILENCE',0)+counts.get('AI_ALERT',0)+counts.get('RTP_LOSS',0)}}</div><div class="sc-lbl">🔴 Critical</div></div>
-    <div class="sc"><div class="sc-val" id="sc-warn" style="color:var(--wn)">{{counts.get('AI_WARN',0)+counts.get('RTP_LOSS_WARN',0)+counts.get('HISS',0)}}</div><div class="sc-lbl">🟡 Warnings</div></div>
-    <div class="sc"><div class="sc-val" style="color:var(--acc)">{{counts.get('RTP_LOSS',0)+counts.get('RTP_LOSS_WARN',0)}}</div><div class="sc-lbl">📦 RTP Loss</div></div>
-    <div class="sc"><div class="sc-val" style="color:#86efac">{{counts.get('PTP_OFFSET',0)+counts.get('PTP_JITTER',0)+counts.get('PTP_LOST',0)+counts.get('PTP_GM_CHANGE',0)}}</div><div class="sc-lbl">🕐 PTP Events</div></div>
-    <div class="sc"><div class="sc-val">{{with_clips}}</div><div class="sc-lbl">🎵 With Clips</div></div>
+    <div class="sc" data-ftypes="" onclick="filterByStat(this)" title="Show all events"><div class="sc-val" id="sc-total">{{total}}</div><div class="sc-lbl">Total Events</div></div>
+    <div class="sc" data-ftypes="SILENCE,AI_ALERT,RTP_LOSS,CLIP" onclick="filterByStat(this)" title="Filter: critical events"><div class="sc-val" id="sc-critical" style="color:var(--al)">{{counts.get('SILENCE',0)+counts.get('AI_ALERT',0)+counts.get('RTP_LOSS',0)}}</div><div class="sc-lbl">🔴 Critical</div></div>
+    <div class="sc" data-ftypes="AI_WARN,RTP_LOSS_WARN,HISS" onclick="filterByStat(this)" title="Filter: warnings"><div class="sc-val" id="sc-warn" style="color:var(--wn)">{{counts.get('AI_WARN',0)+counts.get('RTP_LOSS_WARN',0)+counts.get('HISS',0)}}</div><div class="sc-lbl">🟡 Warnings</div></div>
+    <div class="sc" data-ftypes="RTP_LOSS,RTP_LOSS_WARN" onclick="filterByStat(this)" title="Filter: RTP loss events"><div class="sc-val" style="color:var(--acc)">{{counts.get('RTP_LOSS',0)+counts.get('RTP_LOSS_WARN',0)}}</div><div class="sc-lbl">📦 RTP Loss</div></div>
+    <div class="sc" data-ftypes="PTP_OFFSET,PTP_JITTER,PTP_LOST,PTP_GM_CHANGE" onclick="filterByStat(this)" title="Filter: PTP events"><div class="sc-val" style="color:#86efac">{{counts.get('PTP_OFFSET',0)+counts.get('PTP_JITTER',0)+counts.get('PTP_LOST',0)+counts.get('PTP_GM_CHANGE',0)}}</div><div class="sc-lbl">🕐 PTP Events</div></div>
+    <div class="sc" data-ftypes="" data-fclips="1" onclick="filterByStat(this)" title="Filter: events with clips"><div class="sc-val">{{with_clips}}</div><div class="sc-lbl">🎵 With Clips</div></div>
   </div>
 
   <div class="metrics-strip">
@@ -11763,6 +11765,28 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 </main>
 
 <script nonce="{{csp_nonce()}}">
+var _statTypes  = [];   // types set by stat card click (empty = no group filter)
+var _statClips  = false;
+
+function filterByStat(el){
+  var wasActive = el.classList.contains('sc-active');
+  // Clear all active cards
+  document.querySelectorAll('.sc.sc-active').forEach(function(c){c.classList.remove('sc-active');});
+  if(wasActive){
+    // Toggle off — show all
+    _statTypes = []; _statClips = false;
+  } else {
+    el.classList.add('sc-active');
+    var ft = el.dataset.ftypes || '';
+    _statTypes = ft ? ft.split(',').map(function(t){return t.toLowerCase();}) : [];
+    _statClips = el.dataset.fclips === '1';
+    // Clear the manual type filter and clips checkbox so they don't double-filter
+    document.getElementById('f_type').value = '';
+    document.getElementById('f_clips').checked = false;
+  }
+  applyFilters();
+}
+
 function applyFilters(){
   var fs = document.getElementById('f_site').value.toLowerCase();
   var fst= document.getElementById('f_stream').value.toLowerCase();
@@ -11785,6 +11809,9 @@ function applyFilters(){
     if(ff  && ts < ff.replace('T',' ')) show=false;
     if(ft2 && ts > ft2.replace('T',' ')) show=false;
     if(fc  && !c) show=false;
+    // Stat card group filter
+    if(_statTypes.length && !_statTypes.includes(t)) show=false;
+    if(_statClips && !c) show=false;
     r.style.display = show ? '' : 'none';
     if(show) vis++;
   });
@@ -11797,6 +11824,14 @@ window.addEventListener('DOMContentLoaded', function(){
   if(p.get('stream'))document.getElementById('f_stream').value = p.get('stream');
   if(p.get('type'))  document.getElementById('f_type').value   = p.get('type');
   applyFilters();
+  // Clear stat card highlight if user manually changes a filter control
+  ['f_site','f_stream','f_type','f_clips','f_from','f_to'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el) el.addEventListener('change',function(){
+      document.querySelectorAll('.sc.sc-active').forEach(function(c){c.classList.remove('sc-active');});
+      _statTypes=[]; _statClips=false;
+    });
+  });
 });
 </script>
 </body></html>"""
