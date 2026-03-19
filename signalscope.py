@@ -619,6 +619,15 @@ document.addEventListener('DOMContentLoaded',function(){
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a></div>
 </div>
 </form>
+
+<div class="panel" style="margin-top:24px">
+  <div class="panel-title">⬇ Backup &amp; Export</div>
+  <div class="panel-body">
+    <p style="font-size:13px;color:var(--mu);margin-bottom:14px">Download a ZIP archive containing your configuration file and all trained AI models. Use this to back up your setup or migrate to a new server.</p>
+    <a href="/settings/backup" class="btn bp" style="font-size:13px">⬇ Download Backup (config + AI models)</a>
+  </div>
+</div>
+
 </div></div>
 
 </body></html>"""#!/usr/bin/env python3
@@ -656,7 +665,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.53"
+BUILD                  = "SignalScope-2.6.55"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
@@ -9495,6 +9504,33 @@ def settings():
         save_config(cfg); flash("Settings saved."); return redirect(url_for("settings"))
     return render_template_string(SETTINGS_TPL, cfg=cfg)
 
+@app.get("/settings/backup")
+@login_required
+def settings_backup():
+    """Stream a ZIP containing lwai_config.json and all ai_models/ files."""
+    import zipfile, io as _io
+    buf = _io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Config file
+        if os.path.isfile(CONFIG_PATH):
+            zf.write(CONFIG_PATH, "lwai_config.json")
+        # AI models directory
+        if os.path.isdir(MODELS_DIR):
+            for root, _dirs, files in os.walk(MODELS_DIR):
+                for fname in files:
+                    full = os.path.join(root, fname)
+                    arc  = os.path.relpath(full, BASE_DIR)
+                    zf.write(full, arc)
+    buf.seek(0)
+    import datetime as _dt
+    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dl_name = f"signalscope_backup_{ts}.zip"
+    return Response(
+        buf.read(),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
+    )
+
 @app.get("/stream/<int:idx>/audio.wav")
 @login_required
 def stream_audio(idx):
@@ -11332,9 +11368,12 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
       </td>
       <td>
         {% if e.clip and e._client_addr %}
-        <audio controls preload="none"
-          src="/hub/site/{{e._site|urlencode}}/alerts/clip/{{e.stream|urlencode}}/{{e.clip}}">
-        </audio>
+        {% set clip_url = "/hub/site/" + (e._site|urlencode) + "/alerts/clip/" + (e.stream|urlencode) + "/" + e.clip %}
+        <div style="display:flex;align-items:center;gap:6px">
+          <audio controls preload="none" src="{{clip_url}}" style="height:28px;width:180px"></audio>
+          <a href="{{clip_url}}" download="{{e.clip}}" title="Download clip"
+             style="color:var(--acc);font-size:16px;line-height:1;text-decoration:none" aria-label="Download">⬇</a>
+        </div>
         {% elif e.clip %}
         <span style="color:var(--mu);font-size:11px">clip on site (offline)</span>
         {% else %}<span style="color:var(--mu);font-size:11px">—</span>{% endif %}
