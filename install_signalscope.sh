@@ -37,6 +37,7 @@ NGINX_FQDN=""
 NGINX_HTTPS=""
 FORCE_OVERWRITE=0
 INSTALL_ROOT="${INSTALL_ROOT_DEFAULT}"
+APP_BACKUP=""
 
 SOURCE_DIR=""
 SOURCE_APP=""
@@ -584,6 +585,104 @@ EOF
   fi
 }
 
+write_logrotate() {
+  ${SUDO} tee /etc/logrotate.d/${SERVICE_NAME} > /dev/null <<'EOF'
+/var/log/signalscope/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}
+EOF
+}
+
+rollback_app() {
+  local backup="$1"
+  warn "Rolling back to backup: $(basename "${backup}")"
+  ${SUDO} cp -a "${backup}" "${TARGET_APP}"
+  ${SUDO} chown "${SERVICE_USER}:${SERVICE_GROUP}" "${TARGET_APP}"
+  if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+    ${SUDO} systemctl restart "${SERVICE_NAME}" 2>/dev/null || true
+  elif systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
+    ${SUDO} systemctl start "${SERVICE_NAME}" 2>/dev/null || true
+  fi
+  sleep 8
+  if curl -fsS --max-time 4 http://127.0.0.1:5000/ >/dev/null 2>&1; then
+    ok "Rollback succeeded — previous version is running"
+    ok "Backup retained at: ${backup}"
+  else
+    err "Rollback also failed — manual intervention required"
+    err "Backup file: ${backup}"
+    err "Logs: journalctl -fu ${SERVICE_NAME}"
+  fi
+}
+
+verify_app_health() {
+  local max_tries=12   # 12 × 5 s = 60 s
+  step "Verifying application is responding on port 5000"
+  local i
+  for i in $(seq 1 "${max_tries}"); do
+    sleep 5
+    if curl -fsS --max-time 4 http://127.0.0.1:5000/ >/dev/null 2>&1; then
+      ok "Application is up and responding (tried ${i}/${max_tries})"
+      # New version is healthy — remove backup so disk isn't wasted
+      if [[ -n "${APP_BACKUP}" && -f "${APP_BACKUP}" ]]; then
+        ${SUDO} rm -f "${APP_BACKUP}" 2>/dev/null || true
+        info "Backup removed (new version verified healthy)"
+      fi
+      return 0
+    fi
+    info "  Waiting for app to start... (${i}/${max_tries})"
+  done
+
+  err "Application did not respond on port 5000 within 60 s"
+  err "Logs: journalctl -fu ${SERVICE_NAME}"
+  if [[ -n "${APP_BACKUP}" && -f "${APP_BACKUP}" ]]; then
+    warn "Attempting automatic rollback to $(basename "${APP_BACKUP}")"
+    rollback_app "${APP_BACKUP}"
+  fi
+  return 1
+}
+
+write_watchdog() {
+  ${SUDO} tee /usr/local/bin/${SERVICE_NAME}-watchdog.sh > /dev/null <<'WDEOF'
+#!/usr/bin/env bash
+APP_SERVICE="signalscope"
+NGINX_SERVICE="nginx"
+LOG_TAG="signalscope-watchdog"
+
+# ── SignalScope app on port 5000 ──────────────────────────────────────────────
+if curl -fsS --max-time 8 http://127.0.0.1:5000/ >/dev/null 2>&1; then
+  : # app responding — nothing to do
+elif systemctl is-active --quiet "${APP_SERVICE}" 2>/dev/null; then
+  logger -t "${LOG_TAG}" "Port 5000 unresponsive — restarting ${APP_SERVICE}"
+  systemctl restart "${APP_SERVICE}"
+elif systemctl is-enabled --quiet "${APP_SERVICE}" 2>/dev/null; then
+  logger -t "${LOG_TAG}" "${APP_SERVICE} not running — starting"
+  systemctl start "${APP_SERVICE}" || true
+fi
+
+# ── nginx on port 443 / 80 ────────────────────────────────────────────────────
+if systemctl is-enabled --quiet "${NGINX_SERVICE}" 2>/dev/null; then
+  if curl -fsk --max-time 8 https://127.0.0.1/ >/dev/null 2>&1 || \
+     curl -fs  --max-time 8 http://127.0.0.1/  >/dev/null 2>&1; then
+    : # nginx responding — nothing to do
+  elif systemctl is-active --quiet "${NGINX_SERVICE}" 2>/dev/null; then
+    logger -t "${LOG_TAG}" "nginx not responding on 80/443 — restarting"
+    systemctl restart "${NGINX_SERVICE}"
+  else
+    logger -t "${LOG_TAG}" "nginx not active — starting"
+    systemctl start "${NGINX_SERVICE}" || true
+  fi
+fi
+WDEOF
+  ${SUDO} chmod +x /usr/local/bin/${SERVICE_NAME}-watchdog.sh
+}
+
 create_service() {
   step "Installing systemd service"
 
@@ -612,20 +711,7 @@ LimitNICE=-20
 WantedBy=multi-user.target
 EOF
 
-  ${SUDO} tee /usr/local/bin/${SERVICE_NAME}-watchdog.sh > /dev/null <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-SERVICE="signalscope"
-if ! systemctl is-active --quiet "${SERVICE}"; then
-  exit 0
-fi
-if ! curl -sk --max-time 10 https://127.0.0.1/ >/dev/null 2>&1; then
-  if ! curl -s --max-time 10 http://127.0.0.1:5000/ >/dev/null 2>&1; then
-    logger -t signalscope-watchdog "Health check failed; restarting ${SERVICE}"
-    systemctl restart "${SERVICE}"
-  fi
-fi
-EOF
+  write_watchdog
   ${SUDO} chmod +x /usr/local/bin/${SERVICE_NAME}-watchdog.sh
 
   ${SUDO} tee "/etc/systemd/system/${SERVICE_NAME}-watchdog.service" > /dev/null <<EOF
@@ -671,22 +757,6 @@ main() {
 
   init_sudo
 
-  if [[ -z "${ENABLE_SERVICE}" ]]; then
-    if ask_yes_no "Install and enable the systemd service?" "y"; then
-      ENABLE_SERVICE=1
-    else
-      ENABLE_SERVICE=0
-    fi
-  fi
-
-  if [[ -z "${ENABLE_SDR}" ]]; then
-    if ask_yes_no "Install SDR support (rtl-sdr, pyrtlsdr, redsea, welle.io)?" "n"; then
-      ENABLE_SDR=1
-    else
-      ENABLE_SDR=0
-    fi
-  fi
-
   INSTALL_ROOT="$(ask_value "Install directory" "${INSTALL_ROOT}")"
 
   # ── Legacy LivewireAIMonitor detection (must run before version check) ───────
@@ -726,6 +796,22 @@ main() {
     [[ -z "${ENABLE_SDR}" ]]     && ENABLE_SDR=0
   else
     info "Fresh install mode${LEGACY_INSTALL_DETECTED:+ (migrating from LivewireAIMonitor)}"
+
+    if [[ -z "${ENABLE_SERVICE}" ]]; then
+      if ask_yes_no "Install and enable the systemd service?" "y"; then
+        ENABLE_SERVICE=1
+      else
+        ENABLE_SERVICE=0
+      fi
+    fi
+
+    if [[ -z "${ENABLE_SDR}" ]]; then
+      if ask_yes_no "Install SDR support (rtl-sdr, pyrtlsdr, redsea, welle.io)?" "n"; then
+        ENABLE_SDR=1
+      else
+        ENABLE_SDR=0
+      fi
+    fi
   fi
 
   EXISTING_PROXY=0
@@ -832,6 +918,13 @@ main() {
   if [[ "${WINNING_SOURCE}" == "installed" && "${FORCE_OVERWRITE}" -ne 1 ]]; then
     info "App file is current (${WINNING_VER}), skipping copy."
   else
+    # Back up the running file before replacing it so we can auto-rollback if
+    # the new version fails to start.
+    if [[ -f "${TARGET_APP}" ]]; then
+      APP_BACKUP="${TARGET_APP%.py}.backup-${INSTALLED_VER:-prev}.py"
+      ${SUDO} cp -a "${TARGET_APP}" "${APP_BACKUP}"
+      ok "Backed up current version (${INSTALLED_VER:-?}) → $(basename "${APP_BACKUP}")"
+    fi
     install -m 0644 "${SOURCE_APP}" "/tmp/${APP_PY_NAME}.$$"
     ${SUDO} mv "/tmp/${APP_PY_NAME}.$$" "${TARGET_APP}"
     ${SUDO} chown "${SERVICE_USER}:${SERVICE_GROUP}" "${TARGET_APP}"
@@ -934,17 +1027,33 @@ EOF
     configure_nginx "${NGINX_FQDN:-}" "${NGINX_HTTPS:-0}"
   fi
 
-  # ── Restart service after update ─────────────────────────────────────────────
+  # ── Log rotation — written on every run so updates also get it ──────────────
+  write_logrotate
+  ok "Log rotation configured (daily, 14-day retention)"
+
+  # ── Refresh watchdog script on every run (update or reinstall) ───────────────
+  if systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
+    step "Refreshing watchdog script"
+    write_watchdog
+    ${SUDO} systemctl daemon-reload
+    ${SUDO} systemctl enable --now "${SERVICE_NAME}-watchdog.timer" 2>/dev/null || true
+    ok "Watchdog updated"
+  fi
+
+  # ── Restart service after update, then health-check with auto-rollback ────────
   if [[ "${IS_UPDATE}" -eq 1 && "${WINNING_SOURCE}" != "installed" ]]; then
     if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
       step "Restarting ${SERVICE_NAME} to apply update"
       ${SUDO} systemctl restart "${SERVICE_NAME}"
-      ok "Service restarted"
     elif systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
       step "Starting ${SERVICE_NAME}"
       ${SUDO} systemctl start "${SERVICE_NAME}"
-      ok "Service started"
     fi
+  fi
+
+  # ── Post-start health check (fresh install and updates) ──────────────────────
+  if systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
+    verify_app_health || true
   fi
 
   # ── Summary ───────────────────────────────────────────────────────────────────
