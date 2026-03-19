@@ -650,11 +650,7 @@ function checkForUpdates(){
           if(d.error && !d.latest){
             res.innerHTML='<span style="color:var(--wn)">⚠ Could not check for updates: <code style="font-size:11px;color:#fde68a">'+d.error+'</code></span>';
           } else if(d.update_available){
-            res.innerHTML=
-              '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 14px;background:#1c3a10;border:1px solid #4ade80;border-radius:8px">'
-              +'<span style="color:#fde68a">⬆ <strong style="color:#fff">SignalScope '+d.latest+'</strong> is available <span style="color:var(--mu);font-size:11px">(you are on '+d.current+')</span></span>'
-              +'<button class="btn" style="background:#166534;color:#fff;font-size:12px" onclick="applyUpdate(\''+d.latest+'\')">⬆ Apply Update &amp; Restart</button>'
-              +'</div>';
+            showUpdateAvailable(d.latest, d.current);
           } else {
             res.innerHTML='<span style="color:var(--ok)">✓ You are on the latest version ('+d.current+').</span>';
           }
@@ -666,8 +662,33 @@ function checkForUpdates(){
     });
 }
 
-function applyUpdate(ver){
-  if(!confirm('Apply SignalScope '+ver+' and restart the service?\n\nThe page will reload automatically once the service comes back up (usually ~15 seconds).')){return;}
+function showUpdateAvailable(latest, current){
+  var res=document.getElementById('upd-result');
+  res.style.display='';
+  res.innerHTML=
+    '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 14px;background:#1c3a10;border:1px solid #4ade80;border-radius:8px">'
+    +'<span style="color:#fde68a">⬆ <strong style="color:#fff">SignalScope '+latest+'</strong> is available'
+    +(current?' <span style="color:var(--mu);font-size:11px">(you are on '+current+')</span>':'')
+    +'</span>'
+    +'<button class="btn" style="background:#166534;color:#fff;font-size:12px" onclick="applyUpdate(\''+latest+'\',\''+(current||'')+'\')">⬆ Apply Update &amp; Restart</button>'
+    +'</div>';
+}
+
+function applyUpdate(ver, current){
+  /* Replace the update-available div with an in-page confirmation.
+     We avoid confirm() because browsers silently block it on LAN IPs / non-HTTPS origins. */
+  var res=document.getElementById('upd-result');
+  res.innerHTML=
+    '<div style="padding:10px 14px;background:#2a1505;border:1px solid #f97316;border-radius:8px">'
+    +'<p style="color:#fde68a;font-size:13px;margin:0 0 10px">⚠ Apply <strong style="color:#fff">SignalScope '+ver+'</strong> and restart?'
+    +' <span style="font-size:11px;color:var(--mu)">The page will reload automatically once the service restarts (~15 s).</span></p>'
+    +'<div style="display:flex;gap:10px;flex-wrap:wrap">'
+    +'<button class="btn" style="background:#166534;color:#fff;font-size:12px" onclick="doApplyUpdate(\''+ver+'\')">✓ Apply Update</button>'
+    +'<button class="btn" style="background:#374151;color:#fff;font-size:12px" onclick="showUpdateAvailable(\''+ver+'\',\''+(current||'')+'\')">✗ Cancel</button>'
+    +'</div></div>';
+}
+
+function doApplyUpdate(ver){
   var res=document.getElementById('upd-result');
   res.innerHTML='<span style="color:var(--acc)">⏳ Downloading and applying update…</span>';
   fetch('/api/update/apply',{method:'POST',headers:{'X-CSRFToken':_csrf()}})
@@ -682,7 +703,7 @@ function applyUpdate(ver){
           if(n<=0){clearInterval(iv);location.reload();}
         },1000);
       } else {
-        res.innerHTML='<span style="color:var(--al)">✗ '+( d.error||'Unknown error')+'</span>';
+        res.innerHTML='<span style="color:var(--al)">✗ '+(d.error||'Unknown error')+'</span>';
       }
     }).catch(function(e){
       res.innerHTML='<span style="color:var(--al)">✗ Request failed: '+e.message+'</span>';
@@ -746,7 +767,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.65"
+BUILD                  = "SignalScope-2.6.66"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
