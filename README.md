@@ -66,6 +66,72 @@ bash install_signalscope.sh
 
 ---
 
+# ✨ What's New in 3.0 (3.0.1–3.0.2)
+
+## Composite Logic Alerts (FM)
+- **STUDIO_FAULT** — silence detected while carrier and RDS are healthy; points to a studio/console fault upstream of the transmitter
+- **STL_FAULT** — silence with carrier present but RDS absent; indicates a studio-to-transmitter link failure
+- **TX_DOWN** — silence with weak or absent carrier; indicates transmitter or antenna failure
+- All three replace the generic SILENCE alert for FM streams with an RTL-SDR source, giving engineers an immediate fault location rather than just a silence notification
+
+## DAB Service Missing Alert
+- **DAB_SERVICE_MISSING** — fires when the DAB ensemble is locked but the configured service disappears from the multiplex; useful for detecting mux software faults while the RF path remains healthy
+
+## RTP Jitter Metric
+- RFC 3550-style inter-arrival time jitter tracked per Livewire/AES67 stream
+- Displayed live on each stream card (hidden when zero)
+- Colour-coded: green below 5 ms, amber above
+
+## Hub Notification Delegation (3.0.2)
+- **Suppress local notifications** — new per-client setting; when a client is connected to a hub, all email/webhook/Pushover alerts are suppressed locally and delegated to the hub instead
+- **Per-site alert rules on hub** — hub operators can configure forwarding rules on a per-client-site basis: enable/disable forwarding and select which alert types to forward (from the full type list)
+- Deduplication by event UUID prevents duplicate notifications when a client reconnects
+
+---
+
+# ✨ What's New in 2.6.56–2.6.67
+
+## LUFS / EBU R128 Loudness Monitoring
+- **True peak alert (LUFS_TP)** — alert when the true peak level exceeds a configurable dBTP threshold (default −1.0 dBTP); fires per chunk
+- **Integrated loudness alert (LUFS_I)** — alert when the 30-second rolling integrated loudness deviates from a configurable EBU R128 target (default −23 LUFS ± 3 LU)
+- K-weighting filter applied in real-time via biquad cascade; no additional Python dependencies
+- Displayed on stream cards with momentary, short-term, and integrated LUFS values
+
+## Alert Escalation
+- **Escalation alerts** — re-notify via all configured channels (email, webhook, Pushover) if an alert remains unacknowledged after a configurable number of minutes (per stream); 0 = off
+- Escalation uses the same cooldown deduplication as standard alerts
+
+## Stream Comparator
+- **Pre/post processing comparison** — pair any two streams (e.g. studio feed vs. air monitor) and SignalScope will cross-correlate them to measure processing delay
+- **Processor failure detection** — alerts (CMP_ALERT) when the post-processing stream goes silent while the pre-processing stream has audio
+- **Gain drift detection** — alerts when the level difference between pre and post streams exceeds a threshold, indicating compressor or AGC issues
+- **Dropout discrimination** — distinguishes single-path RTP loss from full processing chain failure
+- Comparator status and delay shown on the dashboard
+
+## In-App Self-Update
+- **Apply Update & Restart** button in the Maintenance panel checks GitHub for a newer version and, on confirmation, downloads the new `signalscope.py`, validates it with `py_compile`, replaces the running file, and sends SIGTERM — systemd/watchdog handles the restart automatically
+- No `sudo` required; only the app's own Python file is replaced
+
+## PTP Configurable Thresholds
+- PTP offset and jitter alert/warn thresholds are now configurable in the Settings UI (in µs) rather than being compile-time constants
+- Defaults remain 5 ms warn / 50 ms alert for offset and 2 ms / 10 ms for jitter — appropriate for NTP-synced passive observers
+- Guidance note in the settings explains how to tighten thresholds for a true PTP-slaved system
+
+## Installer: Raspberry Pi Overclock
+- Installer detects Raspberry Pi 3 and 4 and offers optional overclock settings at install/update time
+- Pi 3: arm_freq=1450 MHz, over_voltage=2, gpu_freq=500
+- Pi 4: arm_freq=2000 MHz, over_voltage=6, gpu_freq=750
+- Pi 5 is detected and excluded (overclock not supported via this method on Pi 5)
+- Settings are written idempotently to `/boot/firmware/config.txt` or `/boot/config.txt`
+
+## Installer: Nginx Repair Flow
+- On update runs where an existing nginx config is detected, the installer now checks config validity (`nginx -t`) and certificate presence
+- **Broken config** (test fails or cert missing): warns the user and prompts to remove and start the nginx setup from scratch, pre-filling the previous FQDN
+- **Healthy config**: shows the current FQDN and asks if the user wants to reconfigure
+- Previously the installer silently skipped nginx on all update runs, with no way to fix a failed Let's Encrypt setup without manually removing files
+
+---
+
 # ✨ What's New in 2.6.52–2.6.55
 
 ## Hub Reports
@@ -174,6 +240,10 @@ bash install_signalscope.sh
 
 ## Alerting & AI
 - Rule-based alerts: silence, clipping, hiss
+- **Composite FM fault classification** — silence alerts automatically diagnose STUDIO_FAULT, STL_FAULT, or TX_DOWN based on carrier and RDS state
+- **DAB_SERVICE_MISSING** — alert when a service vanishes from a locked ensemble
+- **LUFS / EBU R128 loudness monitoring** — true peak and integrated loudness alerts per stream
+- **Alert escalation** — re-notify if an alert remains unacknowledged after N minutes
 - **AI anomaly detection** — per-stream ONNX autoencoder, 24-hour learning phase
 - Email, webhook (MS Teams Adaptive Cards), and Pushover notifications
 - **SLA tracking** — monthly per-stream uptime percentage
@@ -183,6 +253,8 @@ bash install_signalscope.sh
 - Remote client reporting with HMAC-SHA256 + AES-256-GCM encryption
 - Hub relay for audio playback through NAT / reverse proxies
 - **Remote start/stop** — hub operators can control monitoring state on client nodes
+- **Hub notification delegation** — clients can suppress local alerts and let the hub handle all notifications with per-site forwarding rules
+- **Stream comparator** — cross-correlate pre/post processing pairs to detect processor failures, gain drift, and single-path dropouts
 
 ## Web Dashboard
 - Real-time monitoring interface with live AJAX updates
@@ -369,7 +441,7 @@ journalctl -t signalscope-watchdog
 
 SignalScope is under **active development**.
 
-Current build: **SignalScope-2.6.55**
+Current build: **SignalScope-3.0.2**
 
 New features and improvements are added regularly.
 
