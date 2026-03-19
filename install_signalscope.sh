@@ -35,9 +35,13 @@ ENABLE_SERVICE=""
 ENABLE_NGINX=""
 NGINX_FQDN=""
 NGINX_HTTPS=""
+ENABLE_OVERCLOCK=""
 FORCE_OVERWRITE=0
 INSTALL_ROOT="${INSTALL_ROOT_DEFAULT}"
 APP_BACKUP=""
+
+PI_MODEL_STR=""
+PI_GEN=0
 
 SOURCE_DIR=""
 SOURCE_APP=""
@@ -82,6 +86,8 @@ Options:
   --no-https                Skip Let's Encrypt even if --fqdn is set
   --install-dir <path>      Install application under this path (default: ${INSTALL_ROOT_DEFAULT})
   --force                   Overwrite existing app files in install dir
+  --pi-overclock            Apply Raspberry Pi overclock settings (requires reboot)
+  --no-pi-overclock         Skip Raspberry Pi overclock prompt
   -h, --help                Show help
 EOF
 }
@@ -131,6 +137,21 @@ detect_existing_proxy_setup() {
   if [[ -f "$conf" ]] || [[ -L "/etc/nginx/sites-enabled/signalscope" ]]; then
     return 0
   fi
+  return 1
+}
+
+detect_existing_tls_setup() {
+  local live_dir="/etc/letsencrypt/live"
+  local conf_file="/etc/nginx/sites-available/signalscope"
+
+  if [[ -d "${live_dir}" ]] && find "${live_dir}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -q .; then
+    return 0
+  fi
+
+  if [[ -f "${conf_file}" ]] && grep -Eq 'listen[[:space:]]+443|ssl_certificate' "${conf_file}"; then
+    return 0
+  fi
+
   return 1
 }
 
@@ -227,6 +248,8 @@ parse_args() {
       --https) NGINX_HTTPS=1; shift ;;
       --no-https) NGINX_HTTPS=0; shift ;;
       --force) FORCE_OVERWRITE=1; shift ;;
+      --pi-overclock) ENABLE_OVERCLOCK=1; shift ;;
+      --no-pi-overclock) ENABLE_OVERCLOCK=0; shift ;;
       --install-dir)
         [[ $# -ge 2 ]] || { err "--install-dir requires a value"; exit 1; }
         INSTALL_ROOT="$2"
@@ -307,6 +330,67 @@ blacklist rtl2830
 EOF
     ok "RTL-SDR kernel module blacklist written"
   fi
+}
+
+detect_pi_model() {
+  PI_MODEL_STR=""
+  PI_GEN=0
+  [[ -f /proc/device-tree/model ]] || return 1
+  PI_MODEL_STR="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
+  [[ "${PI_MODEL_STR}" == *"Raspberry Pi"* ]] || { PI_MODEL_STR=""; return 1; }
+  if   [[ "${PI_MODEL_STR}" == *"Raspberry Pi 5"* ]]; then PI_GEN=5
+  elif [[ "${PI_MODEL_STR}" == *"Raspberry Pi 4"* ]]; then PI_GEN=4
+  elif [[ "${PI_MODEL_STR}" == *"Raspberry Pi 3"* ]]; then PI_GEN=3
+  elif [[ "${PI_MODEL_STR}" == *"Raspberry Pi 2"* ]]; then PI_GEN=2
+  else PI_GEN=1
+  fi
+  return 0
+}
+
+apply_pi_overclock() {
+  local boot_config=""
+  if   [[ -f /boot/firmware/config.txt ]]; then boot_config="/boot/firmware/config.txt"
+  elif [[ -f /boot/config.txt         ]]; then boot_config="/boot/config.txt"
+  else
+    warn "Cannot find /boot/firmware/config.txt or /boot/config.txt — skipping overclock"
+    return 1
+  fi
+
+  # Idempotent — don't apply twice
+  if grep -q "# SignalScope overclock" "${boot_config}" 2>/dev/null; then
+    ok "Raspberry Pi overclock already applied in ${boot_config}"
+    return 0
+  fi
+
+  local oc_block=""
+  case "${PI_GEN}" in
+    5)
+      info "Pi 5: arm_freq=2800 MHz (stock 2400 MHz) — requires heatsink + fan"
+      oc_block=$'arm_freq=2800'
+      ;;
+    4)
+      info "Pi 4: arm_freq=2000 MHz, over_voltage=6, gpu_freq=750 (stock 1500 MHz) — requires heatsink"
+      oc_block=$'over_voltage=6\narm_freq=2000\ngpu_freq=750'
+      ;;
+    3)
+      info "Pi 3: arm_freq=1450 MHz, over_voltage=2, gpu_freq=500 (stock 1200–1400 MHz) — requires heatsink"
+      oc_block=$'over_voltage=2\narm_freq=1450\ngpu_freq=500'
+      ;;
+    *)
+      warn "Overclocking not configured for Pi generation ${PI_GEN} — skipping"
+      return 0
+      ;;
+  esac
+
+  warn "Overclocking requires adequate cooling. Ensure a heatsink (and fan for Pi 4/5) is fitted."
+  warn "A reboot is required for the overclock to take effect."
+
+  ${SUDO} tee -a "${boot_config}" > /dev/null <<EOF
+
+# SignalScope overclock — applied $(date '+%Y-%m-%d')
+${oc_block}
+EOF
+  ok "Overclock settings written to ${boot_config} — reboot to apply"
 }
 
 install_redsea() {
@@ -815,11 +899,19 @@ main() {
   fi
 
   EXISTING_PROXY=0
+  EXISTING_TLS=0
   detect_existing_proxy_setup && EXISTING_PROXY=1 || true
+  detect_existing_tls_setup && EXISTING_TLS=1 || true
 
   if [[ -z "${ENABLE_NGINX}" ]]; then
     if [[ "${IS_UPDATE}" -eq 1 && "${EXISTING_PROXY}" -eq 0 ]]; then
       if ask_yes_no "No reverse proxy detected. Install nginx now?" "y"; then
+        ENABLE_NGINX=1
+      else
+        ENABLE_NGINX=0
+      fi
+    elif [[ "${IS_UPDATE}" -eq 1 && "${EXISTING_PROXY}" -eq 1 ]]; then
+      if ask_yes_no "Existing nginx reverse proxy detected. Reinstall/repair or reconfigure nginx?" "n"; then
         ENABLE_NGINX=1
       else
         ENABLE_NGINX=0
@@ -836,14 +928,25 @@ main() {
   fi
 
   if [[ "${ENABLE_NGINX}" == "1" && -z "${NGINX_FQDN}" ]]; then
-    NGINX_FQDN="$(ask_value "FQDN for nginx vhost (blank for HTTP-only)" "")"
+    if [[ "${EXISTING_PROXY:-0}" -eq 1 ]]; then
+      NGINX_FQDN="$(awk '/^[[:space:]]*server_name[[:space:]]+/ {gsub(/;/, "", $2); if ($2 != "_") { print $2; exit }}' /etc/nginx/sites-available/signalscope 2>/dev/null || true)"
+    fi
+    NGINX_FQDN="$(ask_value "FQDN for nginx vhost (blank for HTTP-only)" "${NGINX_FQDN:-}")"
   fi
 
   if [[ "${ENABLE_NGINX}" == "1" && -n "${NGINX_FQDN}" && -z "${NGINX_HTTPS}" ]]; then
-    if ask_yes_no "Request a Let's Encrypt TLS certificate for ${NGINX_FQDN}?" "y"; then
-      NGINX_HTTPS=1
+    if [[ "${EXISTING_TLS:-0}" -eq 1 ]]; then
+      if ask_yes_no "TLS already appears to be configured for ${NGINX_FQDN}. Reinstall/repair Let's Encrypt anyway?" "n"; then
+        NGINX_HTTPS=1
+      else
+        NGINX_HTTPS=0
+      fi
     else
-      NGINX_HTTPS=0
+      if ask_yes_no "Enable HTTPS with Let's Encrypt for ${NGINX_FQDN}?" "y"; then
+        NGINX_HTTPS=1
+      else
+        NGINX_HTTPS=0
+      fi
     fi
   fi
 
@@ -861,6 +964,8 @@ main() {
   info "Install service: $([[ "${ENABLE_SERVICE}" == "1" ]] && echo yes || echo no)"
   info "Install SDR: $([[ "${ENABLE_SDR}" == "1" ]] && echo yes || echo no)"
   info "Install nginx: $([[ "${ENABLE_NGINX}" == "1" ]] && echo yes || echo no)"
+  [[ -n "${PI_MODEL_STR}" ]] && info "Pi model: ${PI_MODEL_STR}"
+  [[ -n "${PI_MODEL_STR}" ]] && info "Pi overclock: $([[ "${ENABLE_OVERCLOCK}" == "1" ]] && echo yes || echo no)"
   if [[ "${ENABLE_NGINX}" == "1" ]]; then
     info "nginx FQDN: ${NGINX_FQDN:-<none, HTTP-only>}"
     info "Let's Encrypt: $([[ "${NGINX_HTTPS}" == "1" ]] && echo yes || echo no)"
@@ -877,6 +982,25 @@ main() {
   ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
   IS_ARM=0
   case "$ARCH" in armhf|arm64|aarch64) IS_ARM=1 ;; esac
+
+  # ── Raspberry Pi detection & optional overclock ───────────────────────────────
+  detect_pi_model || true
+  if [[ "${PI_GEN}" -ge 3 ]]; then
+    info "Detected: ${PI_MODEL_STR}"
+    if [[ -z "${ENABLE_OVERCLOCK}" && "${INTERACTIVE}" -eq 1 ]]; then
+      echo
+      warn "Overclocking can improve DAB decode / AI performance but requires adequate cooling."
+      if ask_yes_no "Apply Raspberry Pi overclock settings for ${PI_MODEL_STR}?" "n"; then
+        ENABLE_OVERCLOCK=1
+      else
+        ENABLE_OVERCLOCK=0
+      fi
+    fi
+    if [[ "${ENABLE_OVERCLOCK}" == "1" ]]; then
+      step "Applying Raspberry Pi overclock settings"
+      apply_pi_overclock
+    fi
+  fi
 
   # ── System packages — only on fresh install ─────────────────────────────────
   if [[ "${IS_UPDATE}" -ne 1 ]]; then
@@ -1079,6 +1203,10 @@ EOF
     [[ "${NGINX_HTTPS:-0}" == "1" ]] && echo "Open: https://${NGINX_FQDN}" || echo "Open: http://${NGINX_FQDN}"
   else
     echo "Open: http://<server-ip>:5000"
+  fi
+  if [[ "${ENABLE_OVERCLOCK}" == "1" && "${PI_GEN}" -ge 3 ]]; then
+    echo
+    warn "Raspberry Pi overclock settings were written. Reboot to apply: sudo reboot"
   fi
 }
 
