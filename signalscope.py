@@ -694,14 +694,20 @@ function doApplyUpdate(ver){
   fetch('/api/update/apply',{method:'POST',headers:{'X-CSRFToken':_csrf()}})
     .then(r=>r.json()).then(function(d){
       if(d.ok){
-        res.innerHTML='<span style="color:var(--ok)">✓ Update applied ('+d.from_version+' → '+d.to_version+'). Restarting… <span id="upd-countdown">15</span>s</span>';
-        var n=15;
-        var iv=setInterval(function(){
-          n--;
+        res.innerHTML='<span style="color:var(--ok)">✓ Update applied ('+d.from_version+' → '+d.to_version+'). Restarting… <span id="upd-countdown">--</span></span>';
+        var _start=Date.now(); var _maxWait=90000; var _pollDelay=3000;
+        function _pollReady(){
+          var elapsed=Math.round((Date.now()-_start)/1000);
           var el=document.getElementById('upd-countdown');
-          if(el) el.textContent=n;
-          if(n<=0){clearInterval(iv);location.reload();}
-        },1000);
+          if(el) el.textContent=elapsed+'s';
+          fetch('/',{method:'HEAD',cache:'no-store'})
+            .then(function(r){if(r.ok){location.reload();}else{throw new Error('not ready');} })
+            .catch(function(){
+              if(Date.now()-_start<_maxWait){ setTimeout(_pollReady,_pollDelay); }
+              else{ if(el) el.parentElement.innerHTML='<span style="color:var(--wn)">⚠ Service did not respond after 90 s — try reloading manually.</span>'; }
+            });
+        }
+        setTimeout(_pollReady, 5000);
       } else {
         res.innerHTML='<span style="color:var(--al)">✗ '+(d.error||'Unknown error')+'</span>';
       }
@@ -767,7 +773,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.66"
+BUILD                  = "SignalScope-2.6.67"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -6841,13 +6847,16 @@ def _fetch_latest_version() -> tuple:
 def _version_check_loop():
     time.sleep(30)          # allow app to finish starting before first check
     while True:
-        ver, err = _fetch_latest_version()
-        if ver:
-            _UPDATE_STATE["latest"] = ver
-            _UPDATE_STATE["error"]  = None
-        else:
-            _UPDATE_STATE["error"] = err or "Could not reach GitHub"
-        _UPDATE_STATE["checked_at"] = time.time()
+        try:
+            ver, err = _fetch_latest_version()
+            if ver:
+                _UPDATE_STATE["latest"] = ver
+                _UPDATE_STATE["error"]  = None
+            else:
+                _UPDATE_STATE["error"] = err or "Could not reach GitHub"
+            _UPDATE_STATE["checked_at"] = time.time()
+        except Exception as _e:
+            _UPDATE_STATE["error"] = f"Version check crashed: {_e}"
         time.sleep(6 * 3600)   # re-check every 6 h
 
 @app.context_processor
@@ -7046,7 +7055,12 @@ def api_update_apply():
     # ── Restart after response is delivered ───────────────────────────────────
     def _restart():
         time.sleep(3)
-        os.kill(os.getpid(), _sig.SIGTERM)
+        try:
+            os.kill(os.getpid(), _sig.SIGTERM)
+        except Exception:
+            # SIGTERM failed (e.g. Windows) — fall back to hard exit
+            import sys as _sys
+            _sys.exit(0)
     threading.Thread(target=_restart, daemon=True, name="UpdateRestart").start()
 
     return jsonify({
@@ -10091,6 +10105,7 @@ def clips_serve(stream_name, filename):
 
 @app.delete("/clips/<path:stream_name>/<filename>")
 @login_required
+@csrf_protect
 def clips_delete(stream_name, filename):
     """Delete a saved alert clip."""
     snip_dir  = os.path.join(BASE_DIR, "alert_snippets")
@@ -13000,6 +13015,25 @@ document.addEventListener('DOMContentLoaded', function(){
 </div>
 {% endif %}
 </main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
+
+# ─── Error handlers ──────────────────────────────────────────────────────────
+
+@app.errorhandler(404)
+def _err_404(e):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Not found"}), 404
+    return f"<html><body style='font-family:sans-serif;background:#06121e;color:#e2e8f0;padding:40px'>" \
+           f"<h2>404 — Page not found</h2><p>{request.path}</p>" \
+           f"<a href='/' style='color:#17a8ff'>← Dashboard</a></body></html>", 404
+
+@app.errorhandler(500)
+def _err_500(e):
+    monitor.log(f"[HTTP 500] {request.method} {request.path} — {e}")
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Internal server error"}), 500
+    return f"<html><body style='font-family:sans-serif;background:#06121e;color:#e2e8f0;padding:40px'>" \
+           f"<h2>500 — Internal server error</h2><p>{e}</p>" \
+           f"<a href='/' style='color:#17a8ff'>← Dashboard</a></body></html>", 500
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
