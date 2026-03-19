@@ -621,10 +621,21 @@ document.addEventListener('DOMContentLoaded',function(){
 </form>
 
 <div class="panel" style="margin-top:24px">
-  <div class="panel-title">⬇ Backup &amp; Export</div>
+  <div class="panel-title">⬇ Backup &amp; Restore</div>
   <div class="panel-body">
     <p style="font-size:13px;color:var(--mu);margin-bottom:14px">Download a ZIP archive containing your configuration file and all trained AI models. Use this to back up your setup or migrate to a new server.</p>
     <a href="/settings/backup" class="btn bp" style="font-size:13px">⬇ Download Backup (config + AI models)</a>
+    <hr style="border:none;border-top:1px solid var(--bor);margin:18px 0">
+    <p style="font-size:13px;color:var(--mu);margin-bottom:10px">Restore from a previously downloaded backup ZIP. The config and AI models will be overwritten and monitoring will restart automatically.</p>
+    <form method="post" action="/settings/restore" enctype="multipart/form-data" onsubmit="return confirm('This will overwrite your current config and AI models. Continue?')">
+      <input type="hidden" name="_csrf_token" value="{{csrf_token()}}">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <input type="file" name="backup_zip" accept=".zip" required
+               style="font-size:13px;color:var(--tx);background:#173a69;border:1px solid var(--bor);border-radius:6px;padding:6px 10px">
+        <button type="submit" class="btn bw" style="font-size:13px">⬆ Restore Backup</button>
+      </div>
+      <p id="restore-hint" style="font-size:11px;color:var(--mu);margin-top:6px">Only files from a SignalScope backup ZIP are restored — all other zip contents are ignored.</p>
+    </form>
   </div>
 </div>
 
@@ -665,7 +676,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.55"
+BUILD                  = "SignalScope-2.6.59"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
@@ -5680,12 +5691,13 @@ class HubClient:
         mon  = self._monitor
         ptp  = mon.ptp
         streams = []
-        for inp in cfg.inputs:
+        for _client_idx, inp in enumerate(cfg.inputs):
             sla_pct = None
             if inp._sla_monitored_s:
                 total = inp._sla_monitored_s + inp._sla_alert_s
                 sla_pct = round(inp._sla_monitored_s / max(total, 1) * 100, 3)
             streams.append({
+                "_client_idx":       _client_idx,   # original cfg.inputs position — survives hub-side sorting
                 "name":              inp.name,
                 "enabled":           inp.enabled,
                 "device_index":      inp.device_index,
@@ -9531,6 +9543,75 @@ def settings_backup():
         headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
     )
 
+@app.post("/settings/restore")
+@login_required
+@csrf_protect
+def settings_restore():
+    """Restore config + AI models from an uploaded backup ZIP."""
+    import zipfile, io as _io
+    f = request.files.get("backup_zip")
+    if not f or not f.filename:
+        flash("No file uploaded."); return redirect(url_for("settings"))
+
+    data = f.read(64 * 1024 * 1024)  # cap at 64 MB
+    if not zipfile.is_zipfile(_io.BytesIO(data)):
+        flash("Uploaded file is not a valid ZIP."); return redirect(url_for("settings"))
+
+    restored_config = False
+    restored_models = 0
+    errors = []
+
+    with zipfile.ZipFile(_io.BytesIO(data)) as zf:
+        for entry in zf.infolist():
+            # Zip-slip guard: reject any entry with path traversal
+            entry_path = os.path.normpath(entry.filename)
+            if entry_path.startswith("..") or os.path.isabs(entry_path):
+                errors.append(f"Skipped unsafe path: {entry.filename}")
+                continue
+
+            if entry_path == "lwai_config.json":
+                raw = zf.read(entry)
+                try:
+                    json.loads(raw)  # validate JSON before writing
+                except Exception:
+                    errors.append("lwai_config.json is not valid JSON — skipped.")
+                    continue
+                with open(CONFIG_PATH, "wb") as fh:
+                    fh.write(raw)
+                restored_config = True
+
+            elif entry_path.startswith("ai_models" + os.sep) or entry_path.startswith("ai_models/"):
+                dest = os.path.join(BASE_DIR, entry_path)
+                dest = os.path.normpath(dest)
+                # Confirm still inside BASE_DIR after normalization
+                if not dest.startswith(os.path.abspath(BASE_DIR) + os.sep):
+                    errors.append(f"Skipped unsafe model path: {entry.filename}")
+                    continue
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                if not entry.is_dir():
+                    with open(dest, "wb") as fh:
+                        fh.write(zf.read(entry))
+                    restored_models += 1
+
+    if restored_config:
+        # Reload config and restart monitoring with restored settings
+        try:
+            new_cfg = load_config()
+            monitor.app_cfg = new_cfg
+            monitor.stop_monitoring()
+            monitor.start_monitoring()
+        except Exception as e:
+            errors.append(f"Config reloaded but monitor restart failed: {e}")
+
+    parts = []
+    if restored_config: parts.append("config restored")
+    if restored_models:  parts.append(f"{restored_models} AI model file(s) restored")
+    if not parts:        parts.append("nothing recognised in ZIP")
+    msg = "Restore complete: " + ", ".join(parts) + "."
+    if errors:           msg += " Warnings: " + "; ".join(errors)
+    flash(msg)
+    return redirect(url_for("settings"))
+
 @app.get("/stream/<int:idx>/audio.wav")
 @login_required
 def stream_audio(idx):
@@ -11157,7 +11238,13 @@ def hub_proxy_clip(site_name, sidx):
 @app.get("/hub/site/<path:site_name>/alerts/clip/<stream_name>/<filename>")
 @login_required
 def hub_proxy_alert_clip(site_name, stream_name, filename):
-    """Proxy a saved alert clip WAV from a client site through the hub."""
+    """Proxy a saved alert clip WAV from a client site through the hub.
+
+    Alert clips are small fixed-length WAV files.  We buffer the entire file
+    before responding so we can set Content-Length and Accept-Ranges headers.
+    Safari (and other strict audio players) reject chunked WAV responses with
+    no Content-Length — they send a Range request and need a 206 reply.
+    """
     cfg = monitor.app_cfg
     if cfg.hub.mode not in ("hub","both"):
         return "Not a hub", 404
@@ -11166,22 +11253,79 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
         return "Site not found", 404
     client_addr = _hub_sanitise_client_addr(site.get("_client_addr",""))
 
+    wav_data: bytes = b""
+
     if client_addr and not _hub_client_addr_is_private(client_addr):
         url = f"{client_addr}/clips/{urllib.parse.quote(stream_name)}/{urllib.parse.quote(filename)}"
         try:
             with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as resp:
-                data = resp.read()
-            return Response(data, mimetype="audio/wav",
-                headers={"Content-Disposition": f'attachment; filename="{filename}"',
-                         "Cache-Control": "public, max-age=3600"})
+                wav_data = resp.read()
         except Exception as e:
             print(f"[HubProxy] Falling back to relay alert clip for {site_name}: {e}")
 
-    slot = listen_registry.create(site_name, 0, kind="alert_wav",
-                                  stream_name=stream_name, filename=filename,
-                                  mimetype="audio/wav")
-    print(f"[HubProxy] Relay alert clip slot {slot.slot_id} created for {site_name}/{filename}")
-    return _hub_stream_relay_response(slot, startup_timeout=20.0)
+    if not wav_data:
+        # Relay mode: buffer the entire WAV from the client before responding.
+        slot = listen_registry.create(site_name, 0, kind="alert_wav",
+                                      stream_name=stream_name, filename=filename,
+                                      mimetype="audio/wav")
+        print(f"[HubProxy] Relay alert clip slot {slot.slot_id} created for {site_name}/{filename}")
+        buf = io.BytesIO()
+        deadline = time.time() + 25.0
+        started  = False
+        while True:
+            try:
+                chunk = slot.get(timeout=2.0)
+                started = True
+                buf.write(chunk)
+            except queue.Empty:
+                if slot.closed:
+                    break
+                if not started and time.time() > deadline:
+                    listen_registry.remove(slot.slot_id)
+                    return "Clip relay timed out — client did not respond in time", 504
+                if started and slot.stale:
+                    break
+        listen_registry.remove(slot.slot_id)
+        wav_data = buf.getvalue()
+
+    if not wav_data:
+        return "No clip data received from client", 502
+
+    # Serve with proper headers so browser audio players work.
+    # Handle Range requests (required by Safari).
+    total      = len(wav_data)
+    safe_name  = os.path.basename(filename)
+    range_hdr  = request.headers.get("Range", "")
+    if range_hdr:
+        import re as _re
+        m = _re.match(r"bytes=(\d+)-(\d*)", range_hdr)
+        if m:
+            start = int(m.group(1))
+            end   = int(m.group(2)) if m.group(2) else total - 1
+            end   = min(end, total - 1)
+            length = end - start + 1
+            return Response(
+                wav_data[start : end + 1],
+                status=206,
+                mimetype="audio/wav",
+                headers={
+                    "Content-Range":  f"bytes {start}-{end}/{total}",
+                    "Accept-Ranges":  "bytes",
+                    "Content-Length": str(length),
+                    "Cache-Control":  "public, max-age=3600",
+                    "Content-Disposition": f'inline; filename="{safe_name}"',
+                },
+            )
+    return Response(
+        wav_data,
+        mimetype="audio/wav",
+        headers={
+            "Accept-Ranges":  "bytes",
+            "Content-Length": str(total),
+            "Cache-Control":  "public, max-age=3600",
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+        },
+    )
 
 
 @app.get("/hub/reports")
@@ -11668,8 +11812,9 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           <select id="rhdur_{{i}}" style="padding:3px 5px;font-size:11px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx)">
             <option value="5">5s</option><option value="10" selected>10s</option><option value="20">20s</option><option value="30">30s</option>
           </select>
-          <a class="btn bg" href="/hub/site/{{site.site|urlencode}}/stream/{{i}}/clip?seconds=10" download>⬇ Clip</a>
-          <button class="btn bp" data-rep-live="{{i}}" data-url="/hub/site/{{site.site|urlencode}}/stream/{{i}}/live">▶ Live</button>
+          {% set ci = s._client_idx if s._client_idx is not none else i %}
+          <a class="btn bg" href="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/clip?seconds=10" download>⬇ Clip</a>
+          <button class="btn bp" data-rep-live="{{ci}}" data-url="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/live">▶ Live</button>
           <audio id="rep_live_{{i}}" style="display:none;flex:1;min-width:0;height:24px" controls></audio>
         </div>
         {% if s.history %}
@@ -12020,6 +12165,13 @@ function hubRefresh(){
       (site.streams||[]).forEach(function(s, i){
         var sc = card.querySelector('.sc[data-idx="'+i+'"]');
         if(!sc) return;
+        // Keep stream name and listen URL in sync with heartbeat (handles post-upgrade reorders)
+        var sname = sc.querySelector('.sc-name strong');
+        if(sname && sname.textContent.trim() !== (s.name||'').trim()) sname.textContent = s.name||'';
+        var liveBtn = sc.querySelector('[data-action="live"]');
+        var ci = (s._client_idx != null) ? s._client_idx : i;
+        if(liveBtn){ liveBtn.dataset.url = '/hub/site/'+encodeURIComponent(site.site)+'/stream/'+ci+'/live';
+                     liveBtn.dataset.site = ci; }
         var ai = s.ai_status || '';
         var ph = s.ai_phase  || '';
         var sdot = sc.querySelector('.dot');
@@ -12071,10 +12223,17 @@ function hubRefresh(){
     });
     var knownIds = Array.from(document.querySelectorAll('.site-card')).map(c=>c.id);
     var incoming = data.sites.map(s=>'site-'+s.site.replace(/ /g,'_').replace(/[.]/g,'_').replace(/-/g,'_'));
-    // Only reload if a genuinely new site appeared AND we have existing cards AND
-    // it has been at least 30 s since the last reload (prevents reload storms).
+    // Reload if a new site appeared OR if stream count changed for any existing site.
+    // Both require at least 30 s since last reload to prevent reload storms.
     var hasNew = knownIds.length > 0 && incoming.some(id=>!knownIds.includes(id));
-    if(hasNew && (Date.now() - _hubLastReload) > 30000){
+    var streamCountChanged = !hasNew && data.sites.some(function(site){
+      var sid='site-'+site.site.replace(/ /g,'_').replace(/[.]/g,'_').replace(/-/g,'_');
+      var c=document.getElementById(sid);
+      if(!c) return false;
+      var domN=c.querySelectorAll('.sc[data-idx]').length;
+      return domN>0 && domN!==(site.streams||[]).length;
+    });
+    if((hasNew||streamCountChanged) && (Date.now() - _hubLastReload) > 30000){
       _hubLastReload = Date.now();
       location.reload();
       return;
@@ -12450,9 +12609,10 @@ document.addEventListener('DOMContentLoaded', function(){
           <option value="5">5s</option><option value="10" selected>10s</option>
           <option value="20">20s</option><option value="30">30s</option>
         </select>
-        <a class="btn bg bs" href="/hub/site/{{site.site|urlencode}}/stream/{{i}}/clip?seconds=10" download>⬇ Clip</a>
-        <button class="btn bp bs" data-sidx="{{loop.index0}}" data-site="{{i}}" data-action="live"
-          data-url="/hub/site/{{site.site|urlencode}}/stream/{{i}}/live">▶ Live</button>
+        {% set ci = s._client_idx if s._client_idx is not none else i %}
+        <a class="btn bg bs" href="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/clip?seconds=10" download>⬇ Clip</a>
+        <button class="btn bp bs" data-sidx="{{loop.index0}}" data-site="{{ci}}" data-action="live"
+          data-url="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/live">▶ Live</button>
         <audio id="hlive_{{loop.index0}}_{{i}}" style="display:none;flex:1;min-width:0;height:24px" controls></audio>
       </div>
 
