@@ -317,6 +317,28 @@ document.addEventListener('DOMContentLoaded',function(){
               Mark as hub-reporting enabled (informational — heartbeats send whenever Mode and Hub URL are set)
             </label>
           </div>
+
+          <div style="margin-top:12px">
+            <label style="font-size:12px;font-weight:600;color:var(--mu);display:block;margin-bottom:4px">
+              Hub Audio Relay Quality
+            </label>
+            <select name="hub_relay_bitrate" style="width:100%;padding:8px 10px;background:#141820;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+              {% for kbps in [32, 48, 64, 96, 128, 192] %}
+              <option value="{{kbps}}" {{'selected' if cfg.hub.relay_bitrate == kbps}}>{{kbps}} kbps
+                {%- if kbps == 32 %} — very low (satellite / metered SIM){%- endif %}
+                {%- if kbps == 48 %} — low (slow broadband){%- endif %}
+                {%- if kbps == 64 %} — medium-low{%- endif %}
+                {%- if kbps == 96 %} — medium{%- endif %}
+                {%- if kbps == 128 %} — standard (default){%- endif %}
+                {%- if kbps == 192 %} — high quality{%- endif %}
+              </option>
+              {% endfor %}
+            </select>
+            <p style="margin-top:6px;font-size:12px;color:var(--mu)">
+              Bitrate used when streaming live audio from this client to the hub.
+              Lower values reduce bandwidth — 64 kbps works well for most monitoring use cases.
+            </p>
+          </div>
         
           <script nonce="{{csp_nonce()}}">
           function updateHubPanels(){
@@ -415,6 +437,28 @@ document.addEventListener('DOMContentLoaded',function(){
             <label style="margin:0;text-transform:none;font-size:12px;color:var(--mu)">
               Mark as hub-reporting enabled (informational — heartbeats send whenever Mode and Hub URL are set)
             </label>
+          </div>
+
+          <div style="margin-top:12px">
+            <label style="font-size:12px;font-weight:600;color:var(--mu);display:block;margin-bottom:4px">
+              Hub Audio Relay Quality
+            </label>
+            <select name="hub_relay_bitrate" style="width:100%;padding:8px 10px;background:#141820;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+              {% for kbps in [32, 48, 64, 96, 128, 192] %}
+              <option value="{{kbps}}" {{'selected' if cfg.hub.relay_bitrate == kbps}}>{{kbps}} kbps
+                {%- if kbps == 32 %} — very low (satellite / metered SIM){%- endif %}
+                {%- if kbps == 48 %} — low (slow broadband){%- endif %}
+                {%- if kbps == 64 %} — medium-low{%- endif %}
+                {%- if kbps == 96 %} — medium{%- endif %}
+                {%- if kbps == 128 %} — standard (default){%- endif %}
+                {%- if kbps == 192 %} — high quality{%- endif %}
+              </option>
+              {% endfor %}
+            </select>
+            <p style="margin-top:6px;font-size:12px;color:var(--mu)">
+              Bitrate used when streaming live audio from this client to the hub.
+              Lower values reduce bandwidth — 64 kbps works well for most monitoring use cases.
+            </p>
           </div>
         
           <script nonce="{{csp_nonce()}}">
@@ -596,6 +640,7 @@ import collections, urllib.request, urllib.error, urllib.parse, datetime, base64
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple, Any
 
+import uuid
 import numpy as np
 from flask import Flask, jsonify, request, render_template_string, redirect, url_for, flash, Response, send_from_directory, make_response
 
@@ -610,7 +655,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.24"
+BUILD                  = "SignalScope-2.6.41"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
 CHUNK_SIZE             = int(SAMPLE_RATE * CHUNK_DURATION)
@@ -690,7 +735,7 @@ class InputConfig:
     hiss_hf_band_hz:        float = 6000.0
     hiss_rise_db:           float = 12.0
     hiss_min_duration:      float = 3.0
-    clip_threshold_dbfs:    float = -3.0
+    clip_threshold_dbfs:    float = -1.0
     clip_window_seconds:    float = 2.0
     clip_count_threshold:   int   = 3
     alert_wav_duration:     float = 10.0
@@ -700,6 +745,14 @@ class InputConfig:
     compare_role:            str           = ""
     compare_gain_alert_db:   float         = 3.0   # alert if gain drifts more than this from baseline
     nowplaying_station_id:   str           = ""   # Planet Radio station rpuid
+
+    # EBU R128 / loudness alerting
+    alert_on_lufs_tp:         bool  = False
+    lufs_tp_threshold:        float = -1.0       # dBTP — true peak alert threshold
+    alert_on_lufs_integrated: bool  = False
+    lufs_target:              float = -23.0      # target integrated loudness (LUFS, EBU R128)
+    lufs_tolerance_db:        float = 3.0        # alert if I-LUFS deviates more than this (LU)
+    escalation_minutes:       int   = 0          # re-notify for unacked alerts after N minutes (0 = off)
 
     # RTP tracking (runtime)
     _rtp_last_seq:      int   = field(default=-1,   init=False, repr=False)
@@ -714,6 +767,10 @@ class InputConfig:
     _dab_ensemble:      str   = field(default="",   init=False, repr=False)
     _dab_service:       str   = field(default="",   init=False, repr=False)
     _dab_ok:            bool  = field(default=False, init=False, repr=False)
+    _dab_mode:          str   = field(default="",   init=False, repr=False)  # "DAB" or "DAB+"
+    _dab_bitrate:       int   = field(default=0,    init=False, repr=False)  # kbps
+    _dab_stereo:        bool  = field(default=False, init=False, repr=False)
+    _dab_dls:           str   = field(default="",   init=False, repr=False)  # Dynamic Label (now playing)
     # FM status (populated for fm:// sources)
     _fm_freq_mhz:       float = field(default=0.0,  init=False, repr=False)
     _fm_signal_dbm:     float = field(default=-120.0, init=False, repr=False)
@@ -757,6 +814,16 @@ class InputConfig:
     _ai_session:        Optional[object] = field(default=None, init=False, repr=False)
     _ai_retrain_flag:   bool  = field(default=False, init=False, repr=False)
     _baseline_learning_remaining: float = field(default=5.0, init=False, repr=False)
+
+    # EBU R128 loudness (runtime)
+    _lufs_m:      float = field(default=-70.0, init=False, repr=False)   # momentary (400 ms)
+    _lufs_s:      float = field(default=-70.0, init=False, repr=False)   # short-term (3 s)
+    _lufs_i:      float = field(default=-70.0, init=False, repr=False)   # integrated (gated)
+    _lufs_tp:     float = field(default=-70.0, init=False, repr=False)   # true peak dBTP
+    _lufs_kw_zi1: Optional[object] = field(default=None, init=False, repr=False)
+    _lufs_kw_zi2: Optional[object] = field(default=None, init=False, repr=False)
+    _lufs_s_buf:  List  = field(default_factory=list, init=False, repr=False)
+    _lufs_i_buf:  List  = field(default_factory=list, init=False, repr=False)
 
 
 @dataclass
@@ -850,11 +917,12 @@ class NetworkConfig:
 
 @dataclass
 class HubConfig:
-    mode:       str  = "client"   # "client" | "hub" | "both"
-    site_name:  str  = ""         # shown on hub dashboard (client mode)
-    hub_url:    str  = ""         # e.g. http://1.2.3.4:5001  (client mode)
-    secret_key: str  = ""         # shared secret (both sides must match)
-    enabled:    bool = False      # hub push enabled?
+    mode:          str  = "client"   # "client" | "hub" | "both"
+    site_name:     str  = ""         # shown on hub dashboard (client mode)
+    hub_url:       str  = ""         # e.g. http://1.2.3.4:5001  (client mode)
+    secret_key:    str  = ""         # shared secret (both sides must match)
+    enabled:       bool = False      # hub push enabled?
+    relay_bitrate: int  = 128        # kbps for live audio relay to hub (32/48/64/96/128/192)
 
 
 @dataclass
@@ -951,7 +1019,7 @@ def load_config() -> AppConfig:
             hiss_hf_band_hz=item.get("hiss_hf_band_hz", 6000.0),
             hiss_rise_db=item.get("hiss_rise_db", 12.0),
             hiss_min_duration=item.get("hiss_min_duration", 3.0),
-            clip_threshold_dbfs=item.get("clip_threshold_dbfs", -3.0),
+            clip_threshold_dbfs=item.get("clip_threshold_dbfs", -1.0),
             clip_window_seconds=item.get("clip_window_seconds", 2.0),
             clip_count_threshold=item.get("clip_count_threshold", 3),
             alert_wav_duration=item.get("alert_wav_duration", 10.0),
@@ -961,6 +1029,12 @@ def load_config() -> AppConfig:
             compare_role=item.get("compare_role",""),
             compare_gain_alert_db=float(item.get("compare_gain_alert_db", 3.0)),
             nowplaying_station_id=item.get("nowplaying_station_id",""),
+            alert_on_lufs_tp=item.get("alert_on_lufs_tp", False),
+            lufs_tp_threshold=float(item.get("lufs_tp_threshold", -1.0)),
+            alert_on_lufs_integrated=item.get("alert_on_lufs_integrated", False),
+            lufs_target=float(item.get("lufs_target", -23.0)),
+            lufs_tolerance_db=float(item.get("lufs_tolerance_db", 3.0)),
+            escalation_minutes=int(item.get("escalation_minutes", 0)),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {})
     return AppConfig(
@@ -1001,6 +1075,7 @@ def load_config() -> AppConfig:
             mode=h.get("mode","client"), site_name=h.get("site_name",""),
             hub_url=h.get("hub_url",""), secret_key=h.get("secret_key",""),
             enabled=h.get("enabled",False),
+            relay_bitrate=int(h.get("relay_bitrate", 128)),
         ),
         auth=AuthConfig(
             enabled=au.get("enabled",False), username=au.get("username","admin"),
@@ -1069,6 +1144,12 @@ def save_config(cfg: AppConfig):
             "compare_role": i.compare_role,
             "compare_gain_alert_db": i.compare_gain_alert_db,
             "nowplaying_station_id": i.nowplaying_station_id,
+            "alert_on_lufs_tp": i.alert_on_lufs_tp,
+            "lufs_tp_threshold": i.lufs_tp_threshold,
+            "alert_on_lufs_integrated": i.alert_on_lufs_integrated,
+            "lufs_target": i.lufs_target,
+            "lufs_tolerance_db": i.lufs_tolerance_db,
+            "escalation_minutes": i.escalation_minutes,
         } for i in cfg.inputs],
         "email": {
             "enabled": cfg.email.enabled, "smtp_host": cfg.email.smtp_host,
@@ -1102,7 +1183,7 @@ def save_config(cfg: AppConfig):
         "hub": {
             "mode": cfg.hub.mode, "site_name": cfg.hub.site_name,
             "hub_url": cfg.hub.hub_url, "secret_key": cfg.hub.secret_key,
-            "enabled": cfg.hub.enabled,
+            "enabled": cfg.hub.enabled, "relay_bitrate": cfg.hub.relay_bitrate,
         },
         "auth": {
             "enabled": cfg.auth.enabled, "username": cfg.auth.username,
@@ -1120,6 +1201,42 @@ def save_config(cfg: AppConfig):
 def dbfs(rms: float) -> float:
     return 20.0 * math.log10(max(float(rms), 1e-10))
 
+# ─── EBU R128 / ITU-R BS.1770 K-weighting filter (48 kHz) ────────────────────
+# Stage 1: pre-filter (high-shelf, +4 dB @ ~2 kHz)
+_KW_B1 = np.array([1.53512485958697, -2.69169618940638, 1.19839281085285])
+_KW_A1 = np.array([1.0, -1.69065929318241, 0.73248077421585])
+# Stage 2: RLB weighting filter (high-pass)
+_KW_B2 = np.array([1.0, -2.0, 1.0])
+_KW_A2 = np.array([1.0, -1.99004745483398, 0.99007225036919])
+_LUFS_GATE_ABS = -70.0   # absolute gating threshold (LUFS)
+_LUFS_S_BLOCKS  = 6      # 6 × 0.5 s chunks = 3 s short-term window
+_LUFS_I_BLOCKS  = 60     # 60 × 0.5 s = 30 s rolling integrated window
+
+def _kweight(data: np.ndarray, zi1, zi2):
+    """Apply BS.1770 K-weighting two-stage biquad filter, preserving state."""
+    try:
+        from scipy.signal import lfilter, lfilter_zi
+        if zi1 is None: zi1 = lfilter_zi(_KW_B1, _KW_A1)
+        if zi2 is None: zi2 = lfilter_zi(_KW_B2, _KW_A2)
+        y1, zf1 = lfilter(_KW_B1, _KW_A1, data.astype(np.float64), zi=zi1)
+        y2, zf2 = lfilter(_KW_B2, _KW_A2, y1, zi=zi2)
+        return y2, zf1, zf2
+    except Exception:
+        return data.astype(np.float64), zi1, zi2
+
+def _ms_to_lufs(ms: float) -> float:
+    """Convert mean-square power of K-weighted signal to LUFS."""
+    return -0.691 + 10.0 * math.log10(max(ms, 1e-12))
+
+def _true_peak_dbtp(data: np.ndarray) -> float:
+    """Estimate true peak dBTP via 4× oversampling (BS.1770-4)."""
+    try:
+        from scipy.signal import resample_poly
+        up = resample_poly(data.astype(np.float64), 4, 1)
+        return 20.0 * math.log10(max(float(np.max(np.abs(up))), 1e-12))
+    except Exception:
+        return 20.0 * math.log10(max(float(np.max(np.abs(data))), 1e-12))
+
 def _safe_name(name: str) -> str:
     return "".join(c for c in name if c.isalnum() or c in "-_").strip() or "stream"
 
@@ -1130,8 +1247,11 @@ def _stats_path(name: str) -> str:
     return os.path.join(MODELS_DIR, f"{_safe_name(name)}_stats.json")
 
 ALERT_LOG_PATH  = os.path.join(BASE_DIR, "alert_log.json")
+ALERT_ACKS_PATH = os.path.join(BASE_DIR, "alert_acks.json")
 HUB_STATE_PATH  = os.path.join(BASE_DIR, "hub_state.json")  # persists site data across hub restarts
 _alert_log_lock = threading.Lock()
+_alert_acks: Dict[str, dict] = {}
+_alert_acks_lock = threading.Lock()
 
 def _alert_log_append(event: dict):
     """Append one event to the alert log, pruning if over the configured limit."""
@@ -1187,6 +1307,7 @@ def _add_history(cfg: InputConfig, kind: str, msg: str, clip_path: str = ""):
     """Append a rich event record to per-input history and persistent alert log."""
     ptp = monitor.ptp if (monitor and hasattr(monitor, 'ptp')) else None
     event = {
+        "id":            str(uuid.uuid4()),
         "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
         "stream":        cfg.name,
         "type":          kind,
@@ -1204,6 +1325,33 @@ def _add_history(cfg: InputConfig, kind: str, msg: str, clip_path: str = ""):
     if len(cfg._history) > 300:
         cfg._history = cfg._history[-300:]
     _alert_log_append(event)
+
+
+def _load_acks():
+    """Load persisted acknowledgements from disk into memory."""
+    global _alert_acks
+    if not os.path.exists(ALERT_ACKS_PATH):
+        return
+    try:
+        with _alert_acks_lock:
+            with open(ALERT_ACKS_PATH, "r", encoding="utf-8") as f:
+                _alert_acks = json.load(f)
+    except Exception:
+        _alert_acks = {}
+
+
+def _save_ack(alert_id: str, ack_by: str) -> dict:
+    """Record an acknowledgement both in memory and on disk."""
+    record = {"by": ack_by, "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
+    with _alert_acks_lock:
+        _alert_acks[alert_id] = record
+        snapshot = dict(_alert_acks)
+    try:
+        with open(ALERT_ACKS_PATH, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f)
+    except Exception:
+        pass
+    return record
 
 # ─── Auth helpers ─────────────────────────────────────────────────────────────
 
@@ -1588,14 +1736,14 @@ def _clip_cleanup(stream_name: str):
 def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0) -> Optional[str]:
     # Prune old clips before saving a new one
     threading.Thread(target=_clip_cleanup, args=(cfg.name,), daemon=True).start()
-    out = os.path.join(BASE_DIR, "alert_snippets")
+    out = os.path.join(BASE_DIR, "alert_snippets", _safe_name(cfg.name))
     os.makedirs(out, exist_ok=True)
     if not cfg._audio_buffer: return None
     chunks = list(cfg._audio_buffer)
     if not chunks: return None
     audio = np.concatenate(chunks)[-int(SAMPLE_RATE * duration):]
     safe_lbl = _safe_label(label)
-    path = os.path.join(out, f"{time.strftime('%Y%m%d-%H%M%S')}_{_safe_name(cfg.name)}_{safe_lbl}.wav")
+    path = os.path.join(out, f"{time.strftime('%Y%m%d-%H%M%S')}_{safe_lbl}.wav")
     pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
     try:
         with wave.open(path, "wb") as wf:
@@ -2132,6 +2280,16 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
     in_alert = lev <= cfg.silence_threshold_dbfs
     _sla_update(cfg, elapsed, in_alert)
 
+    # EBU R128 loudness
+    _lufs_update(cfg, sender, log_fn, data, elapsed)
+
+    # Escalation check (rate-limited to once per minute per stream)
+    if cfg.escalation_minutes > 0:
+        _now_e = time.time()
+        if _now_e - cfg._last_alerts.get("_escalation_check", 0) >= 60.0:
+            cfg._last_alerts["_escalation_check"] = _now_e
+            _check_escalation(cfg, sender, log_fn)
+
     if cfg.cascade_suppress_alerts and cfg.cascade_parent and all_inputs:
         parent=next((i for i in all_inputs if i.name==cfg.cascade_parent),None)
         if parent and parent._last_level_dbfs<=parent.silence_threshold_dbfs:
@@ -2199,6 +2357,96 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                     level_dbfs=float(cfg._last_level_dbfs))
                     log_fn(f"[ALERT] {msg}")
                 cfg._hiss_secs=0.0
+
+def _lufs_update(cfg: InputConfig, sender: AlertSender, log_fn, data: np.ndarray, elapsed: float):
+    """Update EBU R128 loudness measurements and fire threshold alerts."""
+    mono = data if data.ndim == 1 else data.mean(axis=1)
+
+    # Apply BS.1770-4 K-weighting filter (state preserved across chunks)
+    kw, cfg._lufs_kw_zi1, cfg._lufs_kw_zi2 = _kweight(mono, cfg._lufs_kw_zi1, cfg._lufs_kw_zi2)
+    ms = float(np.mean(kw ** 2))
+
+    # Momentary LUFS — current chunk (~400–500 ms, close to spec 400 ms gate)
+    cfg._lufs_m = _ms_to_lufs(ms)
+
+    # Short-term LUFS — rolling 3 s window
+    cfg._lufs_s_buf.append(ms)
+    if len(cfg._lufs_s_buf) > _LUFS_S_BLOCKS:
+        cfg._lufs_s_buf = cfg._lufs_s_buf[-_LUFS_S_BLOCKS:]
+    cfg._lufs_s = _ms_to_lufs(float(np.mean(cfg._lufs_s_buf)))
+
+    # Integrated LUFS — rolling 30 s window with absolute + relative gating
+    if cfg._lufs_m > _LUFS_GATE_ABS:
+        cfg._lufs_i_buf.append(ms)
+        if len(cfg._lufs_i_buf) > _LUFS_I_BLOCKS:
+            cfg._lufs_i_buf = cfg._lufs_i_buf[-_LUFS_I_BLOCKS:]
+    if cfg._lufs_i_buf:
+        ungated = _ms_to_lufs(float(np.mean(cfg._lufs_i_buf)))
+        rel_gate = ungated - 10.0
+        gated = [m for m in cfg._lufs_i_buf if _ms_to_lufs(m) > rel_gate]
+        if gated:
+            cfg._lufs_i = _ms_to_lufs(float(np.mean(gated)))
+
+    # True peak dBTP
+    cfg._lufs_tp = _true_peak_dbtp(mono)
+
+    # ── Alerts ──────────────────────────────────────────────────────────────
+    now = time.time()
+
+    if cfg.alert_on_lufs_tp and cfg._lufs_tp > cfg.lufs_tp_threshold:
+        if now - cfg._last_alerts.get("LUFS_TP", 0) >= ALERT_COOLDOWN:
+            cfg._last_alerts["LUFS_TP"] = now
+            msg = (f"True peak on '{cfg.name}': {cfg._lufs_tp:.1f} dBTP "
+                   f"(threshold {cfg.lufs_tp_threshold:.1f} dBTP)")
+            clip = _save_alert_wav(cfg, "lufs_tp", cfg.alert_wav_duration)
+            _add_history(cfg, "LUFS_TP", msg, clip_path=clip or "")
+            sender.send(f"TRUE PEAK on {cfg.name}", msg, clip,
+                alert_type="LUFS_TP", stream=cfg.name, level_dbfs=float(cfg._last_level_dbfs))
+            log_fn(f"[ALERT] {msg}")
+
+    if cfg.alert_on_lufs_integrated and len(cfg._lufs_i_buf) >= _LUFS_S_BLOCKS:
+        deviation = abs(cfg._lufs_i - cfg.lufs_target)
+        if deviation > cfg.lufs_tolerance_db:
+            if now - cfg._last_alerts.get("LUFS_I", 0) >= ALERT_COOLDOWN:
+                cfg._last_alerts["LUFS_I"] = now
+                msg = (f"Integrated loudness on '{cfg.name}': {cfg._lufs_i:.1f} LUFS "
+                       f"(target {cfg.lufs_target:.1f} ±{cfg.lufs_tolerance_db:.1f} LU)")
+                clip = _save_alert_wav(cfg, "lufs_i", cfg.alert_wav_duration)
+                _add_history(cfg, "LUFS_I", msg, clip_path=clip or "")
+                sender.send(f"LOUDNESS on {cfg.name}", msg, clip,
+                    alert_type="LUFS_I", stream=cfg.name, level_dbfs=float(cfg._last_level_dbfs))
+                log_fn(f"[ALERT] {msg}")
+
+
+def _check_escalation(cfg: InputConfig, sender: AlertSender, log_fn):
+    """Re-notify for unacknowledged alerts that have exceeded the escalation window."""
+    if cfg.escalation_minutes <= 0:
+        return
+    cutoff = time.time() - cfg.escalation_minutes * 60.0
+    with _alert_acks_lock:
+        acked = set(_alert_acks.keys())
+    for ev in list(cfg._history):
+        aid = ev.get("id", "")
+        if not aid or aid in acked:
+            continue
+        # Skip info / escalation events themselves
+        if ev.get("type", "") in ("ESCALATION",):
+            continue
+        try:
+            ev_ts = time.mktime(time.strptime(ev["ts"], "%Y-%m-%d %H:%M:%S"))
+        except Exception:
+            continue
+        if ev_ts < cutoff:
+            esc_key = f"_esc_{aid}"
+            if esc_key not in cfg._last_alerts:
+                cfg._last_alerts[esc_key] = time.time()
+                msg = f"[ESCALATION] Unacknowledged alert on '{cfg.name}': {ev['message']}"
+                _add_history(cfg, "ESCALATION", msg)
+                sender.send(f"ESCALATION: {cfg.name}", msg, None,
+                    alert_type="ESCALATION", stream=cfg.name,
+                    level_dbfs=float(cfg._last_level_dbfs))
+                log_fn(f"[ESCALATION] {msg}")
+
 
 # ─── RTP / Livewire receive ───────────────────────────────────────────────────
 
@@ -2872,7 +3120,7 @@ class MonitorManager:
     def _dab_session_key(self, serial, device_idx, channel):
         return (serial or f"idx:{device_idx}", str(channel).upper())
 
-    def _copy_dab_metrics_from_mux(self, cfg, mux):
+    def _copy_dab_metrics_from_mux(self, cfg, mux, service: str = ""):
         try:
             demod = mux.get("demodulator", {})
             cfg._dab_snr = float(demod.get("snr", cfg._dab_snr))
@@ -2890,6 +3138,34 @@ class MonitorManager:
             cfg._dab_ensemble = (lbl.get("label", "") or lbl.get("shortlabel", "")).strip()
         except Exception:
             pass
+        # Service-level metadata (mode, bitrate, stereo, DLS)
+        if service:
+            service_l = service.strip().lower()
+            try:
+                for svc in mux.get("services", []):
+                    svc_lbl = svc.get("label", {})
+                    svc_name = (svc_lbl.get("label", "") or svc_lbl.get("shortlabel", "")).strip()
+                    if not (svc_name.lower() == service_l or service_l in svc_name.lower()):
+                        continue
+                    cfg._dab_mode   = svc.get("mode", cfg._dab_mode)
+                    cfg._dab_stereo = svc.get("channels", 1) > 1
+                    dls = svc.get("dynamicLabel", "") or svc.get("dls", "")
+                    if dls:
+                        # welle-cli returns dynamicLabel as a dict
+                        # e.g. {'label': 'Now playing...', 'lastchange': 0, 'time': 1234567890}
+                        # Extract just the label text; fall back to str() for plain strings.
+                        if isinstance(dls, dict):
+                            dls = dls.get("label", "") or dls.get("text", "") or ""
+                        cfg._dab_dls = str(dls).strip()
+                    for comp in svc.get("components", []):
+                        if comp.get("transportmode") == "audio":
+                            br = comp.get("subchannel", {}).get("bitrate", 0)
+                            if br:
+                                cfg._dab_bitrate = int(br)
+                            break
+                    break
+            except Exception:
+                pass
 
     def _find_dab_service_in_mux(self, mux, service):
         service_l = (service or "").strip().lower()
@@ -3067,8 +3343,9 @@ class MonitorManager:
         import subprocess as _sp
 
         name = cfg.name
+        import urllib.parse as _urlparse
         spec = cfg.device_index.strip()[6:]
-        service = spec.split("?", 1)[0].strip()
+        service = _urlparse.unquote(spec.split("?", 1)[0].strip())
 
         freq = None
         channel_name = None
@@ -3169,14 +3446,14 @@ class MonitorManager:
                     continue
 
                 mux = session.mux or {}
-                self._copy_dab_metrics_from_mux(cfg, mux)
+                self._copy_dab_metrics_from_mux(cfg, mux, service)
                 sid, svc_name = self._find_dab_service_in_mux(mux, service)
                 if not sid:
                     # Give the mux a little extra time to populate services.
                     deadline = time.time() + 8
                     while time.time() < deadline and not stop_evt.is_set():
                         mux = session.mux or {}
-                        self._copy_dab_metrics_from_mux(cfg, mux)
+                        self._copy_dab_metrics_from_mux(cfg, mux, service)
                         sid, svc_name = self._find_dab_service_in_mux(mux, service)
                         if sid:
                             break
@@ -3312,7 +3589,7 @@ class MonitorManager:
                                           self.app_cfg.inputs)
                         if int(time.time()) % 10 == 0:
                             mux = session.mux or {}
-                            self._copy_dab_metrics_from_mux(cfg, mux)
+                            self._copy_dab_metrics_from_mux(cfg, mux, service)
                     except Exception as e:
                         self.log(f"[{name}] DAB: audio loop error: {e}")
                         time.sleep(0.25)
@@ -5355,6 +5632,8 @@ class HubClient:
         self._queue: list = []    # payloads built during hub outage (max 60)
         self._backoff   = 0       # consecutive failures → backoff multiplier
         self._lock      = threading.Lock()
+        # Hub-controlled relay bitrate (0 = not set, fall back to local cfg)
+        self._hub_relay_bitrate: int = 0
 
     @staticmethod
     def _normalise_url(url: str) -> str:
@@ -5411,6 +5690,10 @@ class HubClient:
                 "dab_ensemble":      inp._dab_ensemble,
                 "dab_service":       inp._dab_service,
                 "dab_ok":            inp._dab_ok,
+                "dab_mode":          inp._dab_mode,
+                "dab_bitrate":       inp._dab_bitrate,
+                "dab_stereo":        inp._dab_stereo,
+                "dab_dls":           inp._dab_dls,
                 "fm_freq_mhz":       inp._fm_freq_mhz,
                 "fm_signal_dbm":     round(inp._fm_signal_dbm, 1),
                 "fm_snr_db":         round(inp._fm_snr_db, 1),
@@ -5422,6 +5705,10 @@ class HubClient:
                 "fm_rds_valid":      int(getattr(inp, "_fm_rds_valid_groups", 0)),
                 "history":           list(inp._history)[-8:],
                 "nowplaying_station_id": inp.nowplaying_station_id,
+                "lufs_m":            round(inp._lufs_m, 1),
+                "lufs_s":            round(inp._lufs_s, 1),
+                "lufs_i":            round(inp._lufs_i, 1),
+                "lufs_tp":           round(inp._lufs_tp, 1),
             })
         comparators = []
         for c in mon._comparators:
@@ -5566,11 +5853,12 @@ class HubClient:
                     print(f"[HubRelay] ffmpeg not found, cannot relay live audio")
                     return
 
-                sr  = SAMPLE_RATE
+                sr      = SAMPLE_RATE
+                bitrate = f"{self._hub_relay_bitrate or cfg.hub.relay_bitrate}k"
                 cmd = [
                     "ffmpeg", "-hide_banner", "-loglevel", "error",
                     "-f", "s16le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
-                    "-f", "mp3", "-b:a", "128k", "-reservoir", "0", "pipe:1",
+                    "-f", "mp3", "-b:a", bitrate, "-reservoir", "0", "pipe:1",
                 ]
                 proc = subprocess.Popen(cmd,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -5652,14 +5940,17 @@ class HubClient:
 
             elif kind == "alert_wav":
                 snip_dir = os.path.join(BASE_DIR, "alert_snippets")
+                safe_stream   = _safe_name(stream_name) if stream_name else ""
                 safe_filename = os.path.basename(filename)
-                path = os.path.join(snip_dir, safe_filename)
+                # Clips are stored in alert_snippets/<stream_name>/<filename>
+                path = os.path.join(snip_dir, safe_stream, safe_filename) if safe_stream else os.path.join(snip_dir, safe_filename)
                 if not os.path.abspath(path).startswith(os.path.abspath(snip_dir)):
                     print(f"[HubRelay] Refusing unsafe clip path for {slot_id[:6]}")
                     return
                 if not os.path.exists(path):
                     print(f"[HubRelay] Alert clip not found for relay: {safe_filename}")
                     return
+                expired = False
                 with open(path, "rb") as f:
                     while True:
                         chunk = f.read(8192)
@@ -5668,7 +5959,15 @@ class HubClient:
                         body = self._post_relay_chunk(cfg, chunk_url, chunk)
                         if body.get("error") == "slot not found or expired":
                             print(f"[HubRelay] Slot {slot_id[:6]} expired during clip relay")
+                            expired = True
                             break
+                # Send empty EOF POST so the hub closes the slot immediately
+                # (avoids the 30-second stale-timeout hold which breaks NGINX proxying)
+                if not expired:
+                    try:
+                        self._post_relay_chunk(cfg, chunk_url, b"")
+                    except Exception:
+                        pass
 
             else:
                 print(f"[HubRelay] Unknown relay kind '{kind}' for slot {slot_id[:6]}")
@@ -5804,6 +6103,10 @@ class HubClient:
                 listen_reqs = last_body.get("listen_requests", [])
                 if listen_reqs:
                     self._handle_listen_requests(cfg, listen_reqs)
+                # Apply hub-controlled relay bitrate if provided
+                hub_br = last_body.get("relay_bitrate")
+                if isinstance(hub_br, int) and hub_br > 0:
+                    self._hub_relay_bitrate = hub_br
             else:
                 self.fail_total += 1
                 self._backoff    = min(self._backoff + 1, 10)
@@ -5828,6 +6131,23 @@ class HubServer:
 
     def set_secret(self, secret: str):
         self._secret = secret
+
+    # ── Per-site relay bitrate (hub-controlled) ───────────────────────────────
+    def get_relay_bitrate(self, site_name: str) -> int:
+        with self._lock:
+            return self._sites.get(site_name, {}).get("_relay_bitrate", 128)
+
+    def set_relay_bitrate(self, site_name: str, bitrate: int):
+        with self._lock:
+            if site_name in self._sites:
+                self._sites[site_name]["_relay_bitrate"] = bitrate
+            else:
+                # Site not yet seen — pre-create a stub so it persists
+                self._sites[site_name] = {"_relay_bitrate": bitrate,
+                                          "_received": 0, "_first_seen": time.time()}
+            snapshot = dict(self._sites)
+        threading.Thread(target=self._save_snapshot, args=(snapshot,),
+                         daemon=True, name="HubSave").start()
 
     # ── Persistence ──────────────────────────────────────────────────────────
     def _load_state(self):
@@ -5892,6 +6212,8 @@ class HubServer:
                 "_total_missed":       prev.get("_total_missed", 0) + missed,
                 "_total_received":     prev.get("_total_received", 0) + 1,
                 "_first_seen":         prev.get("_first_seen", now),
+                # Preserve hub-controlled settings across heartbeat updates
+                "_relay_bitrate":      prev.get("_relay_bitrate", 128),
             })
             self._sites[site] = stored
             # Snapshot outside lock scope for persistence
@@ -6327,6 +6649,7 @@ else:
     app.secret_key = os.urandom(32)
     with open(_sk_path,"wb") as _f: _f.write(app.secret_key)
 monitor=MonitorManager()
+_load_acks()
 
 MAIN_TPL = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>SignalScope</title>
@@ -6456,6 +6779,8 @@ main{padding:16px;max-width:1440px;margin:0 auto}
           <span class="rl">Format</span>
           <span class="rv" id="fmt_{{idx}}" style="font-size:11px;color:var(--mu)">{{inp._livewire_mode or '—'}}</span>
         </div>
+        {% set _dev = inp.device_index.lower() %}
+        {% if not (_dev.startswith('dab://') or _dev.startswith('fm://') or _dev.startswith('http://') or _dev.startswith('https://')) %}
         <div class="row">
           <span class="rl">RTP Loss</span>
           <span class="rv" id="rtp_{{idx}}" style="color:{%if inp._rtp_loss_pct>=2.0%}var(--al){%elif inp._rtp_loss_pct>=0.5%}var(--wn){%else%}var(--ok){%endif%}">
@@ -6463,9 +6788,14 @@ main{padding:16px;max-width:1440px;margin:0 auto}
             <span style="color:var(--mu);font-size:11px"> {{inp._rtp_total|int}} pkts</span>
           </span>
         </div>
+        {% endif %}
         <div class="row">
           <span class="rl">SLA</span>
           <span class="rv" id="sla_{{idx}}" style="font-size:12px;color:var(--ok)">—</span>
+        </div>
+        <div class="row">
+          <span class="rl" style="white-space:nowrap">Loudness</span>
+          <span class="rv" id="lufs_{{idx}}" style="font-size:11px;font-family:monospace;color:var(--mu)">—</span>
         </div>
         <div class="row">
           <span class="rl">Alerts</span>
@@ -6478,11 +6808,22 @@ main{padding:16px;max-width:1440px;margin:0 auto}
         </div>
         {% if inp.device_index.lower().startswith('dab://') %}
         <details class="stats-block">
-          <summary class="stats-toggle">DAB signal stats <span>▼</span></summary>
-          <div class="row"><span class="rl">DAB SNR</span>
+          <summary class="stats-toggle">DAB stats <span>▼</span></summary>
+          <div class="row"><span class="rl">SNR</span>
             <span class="rv" id="dab_snr_{{idx}}" style="color:{%if inp._dab_snr>=12%}var(--ok){%elif inp._dab_snr>=6%}var(--wn){%else%}var(--al){%endif%}">{{inp._dab_snr|round(1)}} dB</span></div>
           <div class="row"><span class="rl">Signal</span><span class="rv" id="dab_sig_{{idx}}">{{inp._dab_sig|round(1)}} dBm</span></div>
           <div class="row"><span class="rl">Ensemble</span><span class="rv" id="dab_ens_{{idx}}" style="font-size:11px">{{inp._dab_ensemble or '—'}}</span></div>
+          <div class="row"><span class="rl">Mode</span><span class="rv" id="dab_mode_{{idx}}" style="font-size:11px">{{inp._dab_mode or '—'}}</span></div>
+          <div class="row"><span class="rl">Bitrate</span><span class="rv" id="dab_br_{{idx}}">{% if inp._dab_bitrate %}{{inp._dab_bitrate}} kbps{% else %}—{% endif %}</span></div>
+          <div class="row"><span class="rl">Audio</span>
+            <span class="rv" id="dab_st_{{idx}}" style="color:{%if inp._dab_stereo%}var(--ok){%else%}var(--mu){%endif%}">
+              {%if inp._dab_stereo%}Stereo{%else%}Mono{%endif%}
+            </span></div>
+          {% if inp._dab_dls %}
+          <div class="row"><span class="rl">DLS</span><span class="rv" id="dab_dls_{{idx}}" style="font-size:11px;color:var(--mu)">{{inp._dab_dls}}</span></div>
+          {% else %}
+          <div class="row" id="dab_dls_row_{{idx}}" style="display:none"><span class="rl">DLS</span><span class="rv" id="dab_dls_{{idx}}" style="font-size:11px;color:var(--mu)">—</span></div>
+          {% endif %}
         </details>
         {% endif %}
         {% if inp.device_index.lower().startswith('fm://') %}
@@ -6571,10 +6912,14 @@ main{padding:16px;max-width:1440px;margin:0 auto}
         <div id="hist_panel_{{idx}}" style="display:none">
           <div class="hist" id="hist_{{idx}}">
             {% for ev in inp._history[-5:]|reverse %}
+            {% set aid = ev.get('id','') %}
+            {% set is_acked = aid and aid in _acked_ids %}
             <div class="hev h{{ev.type}}">
               <span style="color:var(--mu)">{{ev.ts[-8:]}}</span>
               <span style="margin:0 4px;opacity:.5">[{{ev.type}}]</span>
               {{ev.message[:90]}}{{'…' if ev.message|length>90 else ''}}
+              {% if is_acked %}<span style="font-size:10px;color:var(--ok);margin-left:6px">✓ Acked</span>
+              {% elif aid %}<button class="btn bg bs" data-ack-id="{{aid}}" style="font-size:10px;padding:1px 6px;margin-left:6px">Ack</button>{% endif %}
             </div>
             {% else %}
             <div style="padding:6px 13px;color:var(--mu)">No events yet</div>
@@ -6730,6 +7075,24 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 <script nonce="{{csp_nonce()}}">
 var running={{running|lower}};
 
+function _csrfFetch(url,opts){
+  opts=opts||{};
+  if(!opts.headers)opts.headers={};
+  var t=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  opts.headers['X-CSRFToken']=t;
+  return fetch(url,opts);
+}
+function ackAlert(id, btnEl){
+  _csrfFetch('/api/alerts/'+id+'/ack',{method:'POST'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok && btnEl){
+        btnEl.outerHTML='<span style="font-size:10px;color:var(--ok);margin-left:6px">✓ Acked</span>';
+      }
+    })
+    .catch(function(){});
+}
+
 // ── Card live update ────────────────────────────────────────────────────────
 function setEl(id,val){ var e=document.getElementById(id); if(e) e.textContent=val; }
 function setHTML(id,val){ var e=document.getElementById(id); if(e) e.innerHTML=val; }
@@ -6756,7 +7119,8 @@ function aiClass(ai){
 }
 
 var HIST_COLORS={'SILENCE':'#f87171','AI_ALERT':'#f87171','RTP_LOSS':'#f87171',
-  'CLIP':'#fb923c','HISS':'#fbbf24','AI_WARN':'#fcd34d','RTP_LOSS_WARN':'#fbbf24'};
+  'CLIP':'#fb923c','HISS':'#fbbf24','AI_WARN':'#fcd34d','RTP_LOSS_WARN':'#fbbf24',
+  'LUFS_TP':'#f97316','LUFS_I':'#fb923c','ESCALATION':'#e879f9'};
 
 function updateCards(inputs){
   inputs.forEach(function(inp, idx){
@@ -6789,6 +7153,17 @@ function updateCards(inputs){
       slaEl.style.color=slaColor(inp.sla_pct);
     }
 
+    // Loudness (EBU R128)
+    var lufsEl=document.getElementById('lufs_'+idx);
+    if(lufsEl && inp.lufs_m !== undefined){
+      var m=inp.lufs_m, s=inp.lufs_s, i_=inp.lufs_i, tp=inp.lufs_tp;
+      var tpCol=tp>-1?'var(--al)':tp>-3?'var(--wn)':'var(--mu)';
+      lufsEl.innerHTML='M&nbsp;<b>'+m.toFixed(1)+'</b>'
+        +'&nbsp;S&nbsp;<b>'+s.toFixed(1)+'</b>'
+        +'&nbsp;I&nbsp;<b>'+i_.toFixed(1)+'</b>'
+        +'&nbsp;TP&nbsp;<b style="color:'+tpCol+'">'+tp.toFixed(1)+'</b>';
+    }
+
     // DAB
     if(inp.dab_snr!==undefined){
       var snrEl=document.getElementById('dab_snr_'+idx);
@@ -6798,6 +7173,19 @@ function updateCards(inputs){
       }
       setEl('dab_sig_'+idx, inp.dab_sig.toFixed(1)+' dBm');
       setEl('dab_ens_'+idx, inp.dab_ensemble||'—');
+      setEl('dab_mode_'+idx, inp.dab_mode||'—');
+      setEl('dab_br_'+idx, inp.dab_bitrate ? inp.dab_bitrate+' kbps' : '—');
+      var stEl=document.getElementById('dab_st_'+idx);
+      if(stEl){
+        stEl.textContent=inp.dab_stereo?'Stereo':'Mono';
+        stEl.style.color=inp.dab_stereo?'var(--ok)':'var(--mu)';
+      }
+      var dlsEl=document.getElementById('dab_dls_'+idx);
+      if(dlsEl && inp.dab_dls){
+        dlsEl.textContent=inp.dab_dls;
+        var dlsRow=document.getElementById('dab_dls_row_'+idx);
+        if(dlsRow) dlsRow.style.display='';
+      }
     }
 
     // FM
@@ -6841,9 +7229,17 @@ function updateCards(inputs){
         hist.innerHTML=inp.history.slice().reverse().map(function(e){
           var col=HIST_COLORS[e.type]||'var(--mu)';
           var ts=(e.ts||'').slice(-8);
+          var ackHtml='';
+          if(e.acked){
+            ackHtml='<span style="font-size:10px;color:var(--ok);margin-left:6px">✓ Acked</span>';
+          } else if(e.id){
+            ackHtml='<button class="btn bg bs" data-ack-id="'+e.id
+              +'" style="font-size:10px;padding:1px 6px;margin-left:6px">Ack</button>';
+          }
           return '<div class="hev"><span style="color:var(--mu)">'+ts+'</span>'
             +'<span style="margin:0 4px;opacity:.5">['+e.type+']</span>'
-            +'<span style="color:'+col+'">'+e.message.slice(0,90)+'</span></div>';
+            +'<span style="color:'+col+'">'+e.message.slice(0,90)+'</span>'
+            +ackHtml+'</div>';
         }).join('');
       }
     }
@@ -7017,6 +7413,10 @@ function toggleClips(idx){
 
 // ── Event delegation for data-action buttons (CSP-safe, no inline onclick) ──
 document.addEventListener('click', function(e){
+  // Alert ack button
+  var ackBtn = e.target.closest('[data-ack-id]');
+  if(ackBtn){ ackAlert(ackBtn.dataset.ackId, ackBtn); return; }
+
   var btn = e.target.closest('[data-action]');
   if(!btn) return;
   var action = btn.dataset.action;
@@ -8049,7 +8449,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   <a class="btn bg" style="margin-left:auto" href="/inputs">← Back</a>
 </div>
 <main><form method="post"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}">
-  <label>Name<input type="text" name="name" value="{{inp.name}}" required placeholder="e.g. TX Output"></label>
+  <div id="name_wrap"><label>Name<input type="text" id="inp_name" name="name" value="{{inp.name}}" required placeholder="e.g. TX Output"></label></div>
   <!-- Source type selector -->
   <label>Source Type
     <select id="src_type" onchange="srcTypeChanged()" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
@@ -8120,6 +8520,25 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       <button type="button" class="btn bp" id="dab_scan_btn" onclick="dabScan()">🔍 Scan multiplex</button>
       <span id="dab_scan_status" style="font-size:12px;color:var(--mu)"></span>
     </div>
+    {% if title == "Add Input" %}
+    {# ── Add mode: multi-select checklist ── #}
+    <div id="dab_service_wrap" style="display:none;margin-top:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:12px;font-weight:600;color:var(--mu)">Services found — tick the ones you want to add:</span>
+        <label style="font-size:12px;color:var(--mu);display:flex;align-items:center;gap:5px;cursor:pointer">
+          <input type="checkbox" id="dab_select_all" checked onchange="dabSelectAll(this)"> Select all
+        </label>
+      </div>
+      <div id="dab_service_list"></div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+        <button type="button" class="btn bp" id="dab_add_btn" onclick="dabBulkAdd()" style="display:none">
+          ➕ Add <span id="dab_add_count">0</span> service(s)
+        </button>
+        <span id="dab_bulk_status" style="font-size:12px;color:var(--mu)"></span>
+      </div>
+    </div>
+    {% else %}
+    {# ── Edit mode: single dropdown ── #}
     <div id="dab_service_wrap" style="display:none;margin-top:10px">
       <label>Station
         <select id="dab_service" onchange="dabServiceSelected()" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
@@ -8128,6 +8547,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       </label>
       <div id="dab_service_info" style="margin-top:6px;font-size:12px;color:var(--mu)"></div>
     </div>
+    {% endif %}
     <p class="help" style="margin-top:8px">Requires welle-cli and an RTL-SDR dongle. Register dongles in Settings → Hub &amp; Network → SDR Devices.</p>
   </div>
 
@@ -8181,11 +8601,12 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       var cm = v.match(/channel=([^&?]+)/);
       if(cm) document.getElementById("dab_channel").value = cm[1];
       // Pre-fill service name
-      var svc = v.slice(6).split("?")[0].trim();
-      if(svc){
+      var svc = decodeURIComponent(v.slice(6).split("?")[0].trim());
+      var svcSelEl = document.getElementById("dab_service");
+      if(svc && svcSelEl){
         var opt = document.createElement("option");
         opt.value = svc; opt.textContent = svc; opt.selected = true;
-        document.getElementById("dab_service").appendChild(opt);
+        svcSelEl.appendChild(opt);
         document.getElementById("dab_service_wrap").style.display = "";
       }
       // Extract serial if present
@@ -8209,10 +8630,19 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   })();
 
   function srcTypeChanged(){
-    var t = document.getElementById("src_type").value;
-    document.getElementById("src_other").style.display = t==="other" ? "" : "none";
-    document.getElementById("src_dab").style.display   = t==="dab"   ? "" : "none";
-    document.getElementById("src_fm").style.display    = t==="fm"    ? "" : "none";
+    var t       = document.getElementById("src_type").value;
+    var elOther = document.getElementById("src_other");
+    var elDab   = document.getElementById("src_dab");
+    var elFm    = document.getElementById("src_fm");
+    var elName  = document.getElementById("name_wrap");
+    var elNonDab= document.getElementById("non_dab_fields");
+    var nameInp = document.getElementById("inp_name");
+    if(elOther)  elOther.style.display  = t==="other" ? "" : "none";
+    if(elDab)    elDab.style.display    = t==="dab"   ? "" : "none";
+    if(elFm)     elFm.style.display     = t==="fm"    ? "" : "none";
+    if(elName)   elName.style.display   = t==="dab"   ? "none" : "";
+    if(elNonDab) elNonDab.style.display = t==="dab"   ? "none" : "";
+    if(nameInp)  nameInp.required       = (t !== "dab");
     updateHiddenField();
   }
 
@@ -8222,7 +8652,8 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
     if(t === "other"){
       val = document.getElementById("device_index_other").value.trim();
     } else if(t === "dab"){
-      var svc = document.getElementById("dab_service").value.trim();
+      var svcEl = document.getElementById("dab_service");
+      var svc = svcEl ? svcEl.value.trim() : "";
       if(svc){
         val = "dab://" + svc;
         var ch  = document.getElementById("dab_channel").value;
@@ -8256,6 +8687,9 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
     document.getElementById("device_index").value = val;
   }
 
+  // Wire up source type switching
+  document.getElementById("src_type").addEventListener("change", srcTypeChanged);
+
   // Wire up live updates
   ["device_index_other","fm_freq","fm_serial","fm_gain","fm_backend","dab_serial","dab_channel"]
     .forEach(function(id){
@@ -8268,11 +8702,14 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
     updateHiddenField();
     // Show service info
     var sel = document.getElementById("dab_service");
+    if(!sel) return;
     var opt = sel.selectedOptions[0];
     var info = document.getElementById("dab_service_info");
     if(opt && opt.dataset.info) info.textContent = opt.dataset.info;
     else info.textContent = "";
   }
+
+  var DAB_ADD_MODE = '{{"add" if title == "Add Input" else "edit"}}';
 
   function dabScan(){
     var ch  = document.getElementById("dab_channel").value;
@@ -8304,20 +8741,51 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       st.textContent = "✓ " + d.ensemble
         + " — SNR: " + (d.snr||0).toFixed(1) + " dB"
         + " — " + d.services.length + " service(s)";
-      // Populate service dropdown
-      var sel = document.getElementById("dab_service");
-      var prev = sel.value;
-      sel.innerHTML = '<option value="">— Select station —</option>';
-      d.services.forEach(function(svc){
-        var opt = document.createElement("option");
-        opt.value = svc.name;
-        opt.textContent = svc.name + (svc.bitrate ? "  (" + svc.bitrate + "kbps" + (svc.stereo?" stereo":"") + ")" : "");
-        opt.dataset.info = (svc.bitrate ? svc.bitrate + "kbps" : "") + (svc.stereo ? "  Stereo" : "  Mono");
-        if(svc.name === prev) opt.selected = true;
-        sel.appendChild(opt);
-      });
-      wrap.style.display = "";
-      updateHiddenField();
+
+      if(DAB_ADD_MODE === "add"){
+        // ── Checklist mode ──────────────────────────────────────────────────
+        var list = document.getElementById("dab_service_list");
+        list.innerHTML = "";
+        d.services.forEach(function(svc){
+          var row = document.createElement("div");
+          row.className = "dab-svc-row";
+          row.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--bor);border-radius:6px;margin-bottom:4px;background:var(--sur)";
+          var cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = svc.ok !== false;
+          cb.onchange = dabUpdateAddBtn;
+          var nameInput = document.createElement("input");
+          nameInput.type = "text";
+          nameInput.value = svc.name;
+          nameInput.style.cssText = "flex:1;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px";
+          nameInput.oninput = dabUpdateAddBtn;
+          var badge = document.createElement("span");
+          badge.style.cssText = "font-size:11px;color:var(--mu);white-space:nowrap";
+          badge.textContent = (svc.bitrate ? svc.bitrate + " kbps" : "")
+                            + (svc.stereo !== undefined ? (svc.stereo ? " · stereo" : " · mono") : "");
+          row.appendChild(cb);
+          row.appendChild(nameInput);
+          row.appendChild(badge);
+          list.appendChild(row);
+        });
+        wrap.style.display = "";
+        dabUpdateAddBtn();
+      } else {
+        // ── Single-select dropdown (edit mode) ──────────────────────────────
+        var sel = document.getElementById("dab_service");
+        var prev = sel.value;
+        sel.innerHTML = '<option value="">— Select station —</option>';
+        d.services.forEach(function(svc){
+          var opt = document.createElement("option");
+          opt.value = svc.name;
+          opt.textContent = svc.name + (svc.bitrate ? "  (" + svc.bitrate + "kbps" + (svc.stereo?" stereo":"") + ")" : "");
+          opt.dataset.info = (svc.bitrate ? svc.bitrate + "kbps" : "") + (svc.stereo ? "  Stereo" : "  Mono");
+          if(svc.name === prev) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        wrap.style.display = "";
+        updateHiddenField();
+      }
     }).catch(function(e){
       clearTimeout(fetchTimeout);
       btn.disabled = false;
@@ -8327,9 +8795,65 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
         : "✗ Request failed: " + e;
     });
   }
+
+  function dabUpdateAddBtn(){
+    var rows = document.querySelectorAll(".dab-svc-row");
+    var count = 0;
+    rows.forEach(function(row){
+      var cb = row.querySelector("input[type=checkbox]");
+      var nm = row.querySelector("input[type=text]");
+      if(cb && cb.checked && nm && nm.value.trim()) count++;
+    });
+    var btn = document.getElementById("dab_add_btn");
+    var cntEl = document.getElementById("dab_add_count");
+    if(btn){ btn.style.display = count ? "" : "none"; }
+    if(cntEl){ cntEl.textContent = count; }
+  }
+
+  function dabSelectAll(masterCb){
+    document.querySelectorAll(".dab-svc-row input[type=checkbox]").forEach(function(cb){
+      cb.checked = masterCb.checked;
+    });
+    dabUpdateAddBtn();
+  }
+
+  function dabBulkAdd(){
+    var ch  = document.getElementById("dab_channel").value;
+    var ser = document.getElementById("dab_serial").value.trim();
+    var services = [];
+    document.querySelectorAll(".dab-svc-row").forEach(function(row){
+      var cb = row.querySelector("input[type=checkbox]");
+      var nm = row.querySelector("input[type=text]");
+      if(!cb || !cb.checked || !nm) return;
+      var name = nm.value.trim();
+      if(!name) return;
+      var di = "dab://" + encodeURIComponent(name) + "?channel=" + encodeURIComponent(ch);
+      if(ser) di += "&serial=" + encodeURIComponent(ser);
+      services.push({name: name, device_index: di});
+    });
+    if(!services.length){ alert("No services selected."); return; }
+    var btn = document.getElementById("dab_add_btn");
+    var st  = document.getElementById("dab_bulk_status");
+    btn.disabled = true;
+    st.textContent = "Adding…";
+    _csrfFetch("/inputs/add_dab_bulk", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({services: services})
+    }).then(function(r){ return r.json(); }).then(function(d){
+      btn.disabled = false;
+      if(d.error){ st.style.color="var(--al)"; st.textContent="✗ " + d.error; return; }
+      window.location.href = "/inputs";
+    }).catch(function(e){
+      btn.disabled = false;
+      st.style.color = "var(--al)";
+      st.textContent = "✗ " + e;
+    });
+  }
   </script>
 
 
+  <div id="non_dab_fields">
   <div class="sec">Rule-based alerts</div>
   <div class="cr"><input type="checkbox" name="alert_on_silence" value="1" {{'checked' if inp.alert_on_silence}}><label style="margin:0;text-transform:none">Silence / low level</label></div>
   <div class="cr"><input type="checkbox" name="alert_on_hiss" value="1" {{'checked' if inp.alert_on_hiss}}><label style="margin:0;text-transform:none">Hiss / HF noise</label></div>
@@ -8344,6 +8868,21 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   <label>Clip count threshold<input type="number" name="clip_count_threshold" value="{{inp.clip_count_threshold}}" step="1" min="1"></label>
   <label>Alert clip length (s)<input type="number" name="alert_wav_duration" value="{{inp.alert_wav_duration}}" step="1" min="1" max="60"></label>
   <p class="help">Duration of the WAV clip saved and attached to alerts for this stream. Default: 10s.</p>
+
+  <div class="sec">📊 EBU R128 Loudness Monitoring</div>
+  <div class="cr"><input type="checkbox" name="alert_on_lufs_tp" value="1" {{'checked' if inp.alert_on_lufs_tp}}><label style="margin:0;text-transform:none">Alert on true peak (dBTP) threshold</label></div>
+  <label>True peak threshold (dBTP)<input type="number" name="lufs_tp_threshold" value="{{inp.lufs_tp_threshold}}" step="0.1" max="0"></label>
+  <p class="help">EBU R128 / BS.1770-4: −1.0 dBTP is standard. Alert fires when the measured true peak exceeds this value.</p>
+  <div class="cr"><input type="checkbox" name="alert_on_lufs_integrated" value="1" {{'checked' if inp.alert_on_lufs_integrated}}><label style="margin:0;text-transform:none">Alert when integrated loudness deviates from target</label></div>
+  <label>Target loudness (LUFS)<input type="number" name="lufs_target" value="{{inp.lufs_target}}" step="0.5"></label>
+  <label>Tolerance (LU)<input type="number" name="lufs_tolerance_db" value="{{inp.lufs_tolerance_db}}" step="0.5" min="0.5"></label>
+  <p class="help">Alert fires when the 30 s integrated loudness deviates more than the tolerance from the target. EBU R128 target is −23 LUFS ±1 LU. Requires scipy.</p>
+
+  <div class="sec">🔔 Alert Escalation</div>
+  <label>Escalation time (minutes, 0 = off)
+    <input type="number" name="escalation_minutes" value="{{inp.escalation_minutes}}" step="1" min="0">
+  </label>
+  <p class="help">Re-send an alert notification if it has not been acknowledged within this many minutes. Set to 0 to disable.</p>
 
   <div class="sec">🤖 Local AI (ONNX autoencoder)</div>
   <div class="cr"><input type="checkbox" name="ai_monitor" value="1" {{'checked' if inp.ai_monitor}}><label style="margin:0;text-transform:none">Enable AI monitoring</label></div>
@@ -8401,6 +8940,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   })();
   </script>
 
+  </div>{# /non_dab_fields #}
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/inputs">Cancel</a></div>
 </form></main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
 
@@ -8421,12 +8961,15 @@ def index():
     ]
     hc  = monitor._hub_client
     hub_cfg = monitor.app_cfg.hub
+    with _alert_acks_lock:
+        _acked_ids = set(_alert_acks.keys())
     return render_template_string(MAIN_TPL, comparators=comparators_data, build=BUILD,
         running=monitor.is_running(), inputs=list(enumerate(monitor.app_cfg.inputs)),
         log_text="\n".join(monitor.get_logs(150)),
         now=time.time(), learn_dur=LEARN_DURATION_SECONDS,
         hub_client_enabled=bool(hub_cfg.hub_url and hub_cfg.mode in ("client","both")),
-        hub_url=hub_cfg.hub_url)
+        hub_url=hub_cfg.hub_url,
+        _acked_ids=_acked_ids)
 
 @app.post("/start")
 @login_required
@@ -8440,6 +8983,22 @@ def route_start():
 @csrf_protect
 def route_stop():
     monitor.stop_monitoring(); flash("Monitoring stopped."); return redirect(url_for("index"))
+
+def _history_with_acks(events: list) -> list:
+    """Annotate history events with ack status for API responses."""
+    with _alert_acks_lock:
+        acked = dict(_alert_acks)
+    out = []
+    for ev in events:
+        e = dict(ev)
+        aid = e.get("id", "")
+        if aid and aid in acked:
+            e["acked"] = acked[aid]
+        else:
+            e["acked"] = None
+        out.append(e)
+    return out
+
 
 @app.get("/status.json")
 @login_required
@@ -8459,6 +9018,10 @@ def status_json():
             "dab_ensemble": i._dab_ensemble,
             "dab_service":  i._dab_service,
             "dab_ok":       i._dab_ok,
+            "dab_mode":     i._dab_mode,
+            "dab_bitrate":  i._dab_bitrate,
+            "dab_stereo":   i._dab_stereo,
+            "dab_dls":      i._dab_dls,
             "fm_freq_mhz":  i._fm_freq_mhz,
             "fm_signal_dbm":round(i._fm_signal_dbm, 1),
             "fm_snr_db":    round(i._fm_snr_db, 1),
@@ -8470,7 +9033,11 @@ def status_json():
             "fm_rds_valid": int(getattr(i, "_fm_rds_valid_groups", 0)),
             "fm_backend":   i._fm_backend,
             "sla_pct":      round(sla_pct(i), 3),
-            "history":      i._history[-5:],
+            "history":      _history_with_acks(i._history[-5:]),
+            "lufs_m":       round(i._lufs_m, 1),
+            "lufs_s":       round(i._lufs_s, 1),
+            "lufs_i":       round(i._lufs_i, 1),
+            "lufs_tp":      round(i._lufs_tp, 1),
             "alert_on_silence": i.alert_on_silence,
             "alert_on_hiss":    i.alert_on_hiss,
             "alert_on_clip":    i.alert_on_clip,
@@ -8523,6 +9090,17 @@ def status_json():
         } if monitor.is_running() else {"state":"idle","status":"Not running","offset_us":0,"jitter_us":0,"gm_id":"","domain":0,"last_sync":0,"history":[]},
     })
 
+@app.post("/api/alerts/<alert_id>/ack")
+@login_required
+@csrf_protect
+def alert_ack(alert_id: str):
+    """Acknowledge an alert by its UUID."""
+    from flask import session as _session
+    user = _session.get("user", "admin")
+    ack = _save_ack(alert_id, user)
+    return jsonify({"ok": True, "ack": ack})
+
+
 @app.get("/inputs")
 @login_required
 def inputs_list():
@@ -8541,7 +9119,7 @@ def _inp_from_form(f):
         hiss_hf_band_hz=float(f.get("hiss_hf_band_hz",6000.0)),
         hiss_rise_db=float(f.get("hiss_rise_db",12.0)),
         hiss_min_duration=float(f.get("hiss_min_duration",3.0)),
-        clip_threshold_dbfs=float(f.get("clip_threshold_dbfs",-3.0)),
+        clip_threshold_dbfs=float(f.get("clip_threshold_dbfs",-1.0)),
         clip_window_seconds=float(f.get("clip_window_seconds",2.0)),
         clip_count_threshold=int(f.get("clip_count_threshold",3)),
         alert_wav_duration=float(f.get("alert_wav_duration",10.0)),
@@ -8551,6 +9129,12 @@ def _inp_from_form(f):
         compare_role=f.get("compare_role",""),
         compare_gain_alert_db=float(f.get("compare_gain_alert_db") or 3.0),
         nowplaying_station_id=f.get("nowplaying_station_id",""),
+        alert_on_lufs_tp=bool(f.get("alert_on_lufs_tp")),
+        lufs_tp_threshold=float(f.get("lufs_tp_threshold", -1.0)),
+        alert_on_lufs_integrated=bool(f.get("alert_on_lufs_integrated")),
+        lufs_target=float(f.get("lufs_target", -23.0)),
+        lufs_tolerance_db=float(f.get("lufs_tolerance_db", 3.0)),
+        escalation_minutes=int(f.get("escalation_minutes") or 0),
     )
 
 @app.route("/inputs/add", methods=["GET","POST"])
@@ -8563,6 +9147,35 @@ def input_add():
     return render_template_string(INPUT_FORM_TPL, cmp_search=int(COMPARE_SEARCH_SECS),title="Add Input",
         sdr_devices=monitor.app_cfg.sdr_devices,
         inp=InputConfig(name="",device_index=""),all_names=[i.name for i in monitor.app_cfg.inputs])
+
+@app.post("/inputs/add_dab_bulk")
+@login_required
+@csrf_protect
+def inputs_add_dab_bulk():
+    """Add multiple DAB services from one mux scan in a single request."""
+    data     = request.get_json(silent=True) or {}
+    services = data.get("services", [])
+    if not services:
+        return jsonify({"error": "no services provided"}), 400
+    existing_names = {i.name.lower() for i in monitor.app_cfg.inputs}
+    added = []
+    skipped = []
+    for svc in services:
+        name = str(svc.get("name", "")).strip()
+        di   = str(svc.get("device_index", "")).strip()
+        if not name or not di:
+            continue
+        if name.lower() in existing_names:
+            skipped.append(name)
+            continue
+        inp = InputConfig(name=name, device_index=di)
+        monitor.app_cfg.inputs.append(inp)
+        existing_names.add(name.lower())
+        added.append(name)
+    if added:
+        save_config(monitor.app_cfg)
+    return jsonify({"ok": True, "added": added, "skipped": skipped})
+
 
 @app.route("/inputs/<int:idx>/edit", methods=["GET","POST"])
 @login_required
@@ -8686,6 +9299,8 @@ def settings():
         _raw_url = f.get("hub_url","").strip()
         cfg.hub.hub_url = HubClient._normalise_url(_raw_url) if _raw_url else ""
         cfg.hub.secret_key=f.get("hub_secret","").strip()
+        try: cfg.hub.relay_bitrate = int(f.get("hub_relay_bitrate", 128))
+        except ValueError: pass
         # Auth
         cfg.auth.enabled  = bool(f.get("auth_enabled"))
         cfg.auth.username = f.get("auth_username","admin").strip() or "admin"
@@ -8925,14 +9540,12 @@ def stream_live(idx):
 @login_required
 def clips_list(stream_name):
     """Return JSON list of saved alert clips for a stream."""
-    snip_dir = os.path.join(BASE_DIR, "alert_snippets")
+    snip_dir = os.path.join(BASE_DIR, "alert_snippets", _safe_name(stream_name))
     if not os.path.exists(snip_dir):
         return jsonify([])
-    safe = _safe_name(stream_name)
     files = []
     for fn in sorted(os.listdir(snip_dir), reverse=True):
         if not fn.endswith(".wav"): continue
-        if safe.lower() not in fn.lower(): continue
         path = os.path.join(snip_dir, fn)
         # Parse filename: YYYYMMDD-HHMMSS_StreamName_alerttype.wav
         parts = fn.replace(".wav","").split("_")
@@ -8957,7 +9570,8 @@ def clips_list(stream_name):
 def clips_serve(stream_name, filename):
     """Serve a saved alert clip WAV file."""
     snip_dir = os.path.join(BASE_DIR, "alert_snippets")
-    path = os.path.join(snip_dir, filename)
+    safe_stream = _safe_name(stream_name)
+    path = os.path.join(snip_dir, safe_stream, filename)
     # Security: stay within snip_dir
     if not os.path.abspath(path).startswith(os.path.abspath(snip_dir)):
         return "Forbidden", 403
@@ -9198,10 +9812,17 @@ def api_dab_scan():
 
         available_urls = {}  # populated during polling
 
-        # Poll for up to 60s — sync can take 15-20s on weaker signals
-        deadline = time.time() + 60
-        services  = []
-        ensemble  = {}
+        # Poll for up to 60s — sync can take 15-20s on weaker signals.
+        # We wait for the service list to stabilise (unchanged for 4 consecutive
+        # polls) rather than breaking on the first result, so we capture all
+        # services on the mux and not just the first few that respond.
+        deadline        = time.time() + 60
+        services        = []
+        ensemble        = {}
+        stable_count    = 0   # consecutive polls with same service count
+        STABLE_NEEDED   = 4   # require 4 stable polls (~4s) before accepting
+        MIN_WAIT        = 10  # always wait at least 10s for slower signals
+        scan_start      = time.time()
 
         while time.time() < deadline:
             time.sleep(1)
@@ -9211,14 +9832,10 @@ def api_dab_scan():
                 return jsonify({"error": f"welle-cli crashed: {err_out}"}), 500
             try:
                 # Try both API path variants (Ubuntu vs welle.io PPA)
-                # Ubuntu build: /api/mux.json, /api/stations.json (or /api/services)
-                # welle-cli Ubuntu build uses /mux.json for everything
-                # Services are nested inside the mux JSON
                 ensemble_urls = [
                     f"http://localhost:{WELLE_PORT}/mux.json",
                     f"http://localhost:{WELLE_PORT}/api/mux.json",
                 ]
-                # Fetch /mux.json — contains ensemble + all services
                 mux_data = None
                 for eurl in ensemble_urls:
                     try:
@@ -9229,9 +9846,10 @@ def api_dab_scan():
                         continue
 
                 if not mux_data:
+                    stable_count = 0
                     continue  # not ready yet
 
-                # Extract ensemble — mux_data.ensemble.label.label
+                # Extract ensemble
                 ens_obj = mux_data.get("ensemble", {})
                 ens_lbl = ens_obj.get("label", {})
                 ensemble = {
@@ -9240,15 +9858,13 @@ def api_dab_scan():
                     "snr": mux_data.get("demodulator", {}).get("snr", 0),
                 }
 
-                # Services are in mux_data["services"] array
-                # Each service: label.label, components[].subchannel.bitrate,
-                #                channels (1=mono, 2=stereo), audiolevel.left >= 0 = active
+                # Build candidate service list from this poll
+                candidate = []
                 for svc in mux_data.get("services", []):
                     lbl  = svc.get("label", {})
                     name = (lbl.get("label", "") or lbl.get("shortlabel", "")).strip()
                     if not name:
                         continue
-                    # Get bitrate from first audio component
                     bitrate  = 0
                     is_audio = False
                     for c in svc.get("components", []):
@@ -9258,9 +9874,9 @@ def api_dab_scan():
                             break
                     if not is_audio and svc.get("components"):
                         continue  # data-only service
-                    stereo  = svc.get("channels", 1) > 1
-                    active  = svc.get("audiolevel", {}).get("left", -1) >= 0
-                    services.append({
+                    stereo = svc.get("channels", 1) > 1
+                    active = svc.get("audiolevel", {}).get("left", -1) >= 0
+                    candidate.append({
                         "name":    name,
                         "label":   lbl.get("label", name).strip(),
                         "sid":     svc.get("sid", ""),
@@ -9269,10 +9885,19 @@ def api_dab_scan():
                         "mode":    svc.get("mode", ""),
                         "ok":      active,
                     })
-                if services:
-                    break  # got useful data
+
+                if len(candidate) == len(services) and candidate:
+                    stable_count += 1
+                else:
+                    stable_count = 0
+                    services = candidate
+
+                elapsed = time.time() - scan_start
+                if candidate and elapsed >= MIN_WAIT and stable_count >= STABLE_NEEDED:
+                    services = candidate
+                    break  # list is stable — done
             except Exception:
-                pass  # not ready yet
+                stable_count = 0
 
         if not services:
             # Return full stderr for diagnosis
@@ -9497,6 +10122,8 @@ def api_setup_config():
     raw_url            = f.get("hub_url", "").strip()
     cfg.hub.hub_url    = HubClient._normalise_url(raw_url) if raw_url else ""
     cfg.hub.secret_key = f.get("hub_secret", "").strip()
+    try: cfg.hub.relay_bitrate = int(f.get("hub_relay_bitrate", 128))
+    except ValueError: pass
     save_config(cfg)
     return jsonify({"ok": True})
 
@@ -9825,15 +10452,35 @@ def hub_heartbeat():
         return jsonify({"error":"forbidden"}), 403
 
     # ── Build ACK — encrypt if secret is set ─────────────────────────────────
-    site_name   = payload.get("site","")
-    listen_reqs = listen_registry.pending_for_site(site_name)
-    ack = {"ok": True, "listen_requests": listen_reqs}
+    site_name    = payload.get("site","")
+    listen_reqs  = listen_registry.pending_for_site(site_name)
+    relay_bitrate = hub_server.get_relay_bitrate(site_name)
+    ack = {"ok": True, "listen_requests": listen_reqs, "relay_bitrate": relay_bitrate}
     ack_bytes = json.dumps(ack).encode()
 
     if secret:
         enc = hub_encrypt_payload(secret, ack_bytes)
         return Response(enc, content_type="application/octet-stream")
     return jsonify(ack)
+
+@app.post("/api/hub/site/<site_name>/relay_bitrate")
+@login_required
+@csrf_protect
+def hub_set_relay_bitrate(site_name):
+    """Hub admin: set the relay audio bitrate for a specific client site."""
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 403
+    data = request.get_json(silent=True) or {}
+    try:
+        bitrate = int(data.get("bitrate", 128))
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid bitrate"}), 400
+    if bitrate not in (32, 48, 64, 96, 128, 192):
+        return jsonify({"error": "bitrate must be one of 32/48/64/96/128/192"}), 400
+    hub_server.set_relay_bitrate(site_name, bitrate)
+    return jsonify({"ok": True, "site": site_name, "relay_bitrate": bitrate})
+
 
 @app.get("/hub")
 @login_required
@@ -9955,6 +10602,11 @@ def hub_audio_chunk(slot_id):
         return jsonify({"error": "slot not found or expired"}), 404
     if data:
         slot.put(data)
+    else:
+        # Empty body = EOF signal from client — close the slot immediately so the
+        # relay generator ends right away instead of waiting for the 30-second
+        # stale timeout (which trips NGINX proxy_read_timeout when behind a proxy).
+        slot.closed = True
     return jsonify({"ok": True, "queued": slot.q.qsize()})
 
 
@@ -10014,7 +10666,10 @@ def hub_data():
         s["ok_count"]    = max(0, len(streams) - s["alert_count"] - s["warn_count"])
         s["problem_count"] = s["alert_count"] + s["warn_count"]
     sites = sorted(sites, key=lambda s: (0 if s.get("site_status") == "offline" else 1 if s.get("site_status") == "ALERT" else 2 if s.get("site_status") == "WARN" else 3, -(s.get("problem_count", 0)), s.get("site","").lower()))
-    return jsonify({"sites": sites, "hub_build": BUILD})
+    resp = jsonify({"sites": sites, "hub_build": BUILD})
+    resp.headers["Cache-Control"] = "no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 @app.post("/hub/site/remove/<path:site_name>")
 @login_required
@@ -10625,11 +11280,20 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% if site.latency_ms is not none %}<span class="site-meta">Latency: {{site.latency_ms}} ms</span>{% endif %}
       {% if site.health_pct is defined %}<span class="site-meta" style="color:{{'var(--ok)' if site.health_pct>=99 else ('var(--wn)' if site.health_pct>=95 else 'var(--al)')}}">⚡ {{site.health_pct}}%</span>{% endif %}
     </div>
-    <div style="padding:8px 16px;border-bottom:1px solid var(--bor);display:flex;gap:8px;flex-wrap:wrap;background:linear-gradient(180deg,#12305c,#10284f)">
+    <div style="padding:8px 16px;border-bottom:1px solid var(--bor);display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:linear-gradient(180deg,#12305c,#10284f)">
       <span class="sum-pill">🎚 {{site.streams|length}} streams</span>
       <span class="sum-pill" style="color:var(--al)">🚨 {{site.alert_count}} alert</span>
       <span class="sum-pill" style="color:var(--wn)">⚠ {{site.warn_count}} warn</span>
       <span class="sum-pill" style="color:var(--ok)">✅ {{site.ok_count}} ok</span>
+      <span class="sum-pill" style="margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--mu)">
+        📡 Relay
+        <select data-site="{{site.site}}" onchange="setRelayBitrate(this)"
+                style="background:#0d1117;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:11px;padding:2px 4px;cursor:pointer">
+          {% for kbps in [32, 48, 64, 96, 128, 192] %}
+          <option value="{{kbps}}" {{'selected' if site.get('_relay_bitrate', 128) == kbps}}>{{kbps}}k</option>
+          {% endfor %}
+        </select>
+      </span>
     </div>
     {% set _ptp = site.get('ptp', {}) or {} %}
     {% if _ptp and _ptp.get('state') and _ptp.get('state') != 'idle' %}
@@ -10670,7 +11334,10 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         </div>
         <div style="padding:0 10px 4px">
           <div class="sc-row">Format <span style="font-size:11px;color:var(--mu)">{{s.format or '—'}}</span></div>
+          {% set _sdev = (s.device_index or '').lower() %}
+          {% if not (_sdev.startswith('dab://') or _sdev.startswith('fm://') or _sdev.startswith('http://') or _sdev.startswith('https://')) %}
           <div class="sc-row">RTP Loss <span class="{{rtpClass(s.rtp_loss_pct)}}">{{s.rtp_loss_pct}}% <span style="color:var(--mu);font-size:11px">{{s.rtp_total or 0}} pkts</span></span></div>
+          {% endif %}
           {% if s.sla_pct is not none %}<div class="sc-row">SLA <span style="color:{{'var(--ok)' if s.sla_pct>=99 else 'var(--wn)'}}">{{s.sla_pct}}%</span></div>{% endif %}
           <div class="sc-row">Alerts
             <span style="font-size:12px">
@@ -10682,11 +11349,22 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           </div>
           {% if s.device_index and s.device_index.lower().startswith('dab://') %}
           <details class="stats-block">
-            <summary class="stats-toggle">DAB signal stats <span>▼</span></summary>
-            <div class="sc-row">DAB SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">📶 {{s.dab_snr}} dB</span></div>
-            <div class="sc-row">Signal <span>📶 {{s.dab_sig}} dBm</span></div>
+            <summary class="stats-toggle">DAB stats <span>▼</span></summary>
+            <div class="sc-row">SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">{{s.dab_snr}} dB</span></div>
+            <div class="sc-row">Signal <span>{{s.dab_sig}} dBm</span></div>
             <div class="sc-row">Ensemble <span style="font-size:11px">{{s.dab_ensemble or '—'}}</span></div>
             <div class="sc-row">Service <span style="font-size:11px">{{s.dab_service or '—'}}</span></div>
+            <div class="sc-row">Mode <span style="font-size:11px">{{s.dab_mode or '—'}}</span></div>
+            <div class="sc-row">Bitrate <span>{% if s.dab_bitrate %}{{s.dab_bitrate}} kbps{% else %}—{% endif %}</span></div>
+            <div class="sc-row">Audio <span style="color:{{'var(--ok)' if s.dab_stereo else 'var(--mu)'}}">{% if s.dab_stereo %}Stereo{% else %}Mono{% endif %}</span></div>
+            {% if s.dab_dls %}
+            <div class="sc-row sc-rt-row" style="align-items:center">DLS
+              <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px;color:var(--mu)" title="{{s.dab_dls}}">
+                {% if s.dab_dls|length > 28 %}<span class="rds-rt-scroll sc-rt-text"><span>🎵 {{s.dab_dls}}</span><span aria-hidden="true">🎵 {{s.dab_dls}}</span></span>
+                {% else %}<span class="rds-rt-static sc-rt-text">🎵 {{s.dab_dls}}</span>{% endif %}
+              </span>
+            </div>
+            {% endif %}
           </details>
           {% endif %}
           {% if s.device_index and s.device_index.lower().startswith('fm://') %}
@@ -10696,7 +11374,14 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
             <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
             <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}}">{% if s.fm_rds_ok %}📡 {{s.fm_rds_ps or 'Locked'}}{% else %}— No RDS{% endif %}</span></div>
-            {% if s.fm_rds_rt %}<div class="sc-row">Text <span style="font-size:11px">🎵 {{s.fm_rds_rt}}</span></div>{% endif %}
+            {% if s.fm_rds_rt %}
+            <div class="sc-row sc-rt-row" style="align-items:center">Text
+              <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px" title="{{s.fm_rds_rt}}">
+                {% if s.fm_rds_rt|length > 28 %}<span class="rds-rt-scroll sc-rt-text"><span>🎵 {{s.fm_rds_rt}}</span><span aria-hidden="true">🎵 {{s.fm_rds_rt}}</span></span>
+                {% else %}<span class="rds-rt-static sc-rt-text">🎵 {{s.fm_rds_rt}}</span>{% endif %}
+              </span>
+            </div>
+            {% endif %}
             {% if s.get('fm_rds_status') %}<div class="sc-row">Lock <span style="font-size:11px;color:var(--mu)">{{s.fm_rds_status}}</span></div>{% endif %}
             {% if s.get('fm_rds_valid') %}<div class="sc-row">Groups <span style="font-size:11px">{{s.fm_rds_valid}}</span></div>{% endif %}
           </details>
@@ -10800,6 +11485,21 @@ main{padding:18px;max-width:1500px;margin:0 auto}
   </div>
 </main>
 <script nonce="{{csp_nonce()}}">
+// ── Per-site relay bitrate control ───────────────────────────────────────────
+function setRelayBitrate(sel){
+  var site    = sel.getAttribute('data-site');
+  var bitrate = parseInt(sel.value, 10);
+  var orig    = sel.value;
+  sel.disabled = true;
+  fetch('/api/hub/site/' + encodeURIComponent(site) + '/relay_bitrate', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','X-CSRFToken': document.cookie.match(/csrf_token=([^;]+)/)?.[1]||''},
+    body: JSON.stringify({bitrate: bitrate})
+  }).then(function(r){ return r.json(); }).then(function(d){
+    sel.disabled = false;
+    if(!d.ok){ sel.value = orig; alert('Failed to set relay bitrate: ' + (d.error||'unknown error')); }
+  }).catch(function(){ sel.disabled = false; sel.value = orig; });
+}
 // ── Live audio toggle ────────────────────────────────────────────────────────
 document.addEventListener('click', function(ev){
   var btn = ev.target.closest('button[data-rep-live]');
@@ -10975,6 +11675,8 @@ function escapeHtml(s){return String(s).replace(/[&<>"']/g,function(c){return({'
 function fmt(ts){if(!ts)return'—';const d=new Date(ts*1000);return d.toLocaleTimeString();}
 function ago(s){if(s<5)return'just now';if(s<60)return s+'s ago';return Math.round(s/60)+'m ago';}
 function toggleHist(id){const el=document.getElementById(id);el.classList.toggle('open');}
+var lastAlertState={};
+function playAlertSound(){try{new Audio('/static/alert.wav').play();}catch(e){}}
 let liveAudio={};
 function toggleLive(siteIdx,streamIdx,btn){
   const key=siteIdx+'-'+streamIdx;
@@ -10998,22 +11700,24 @@ function toggleLive(siteIdx,streamIdx,btn){
   el.load();
   el.play().catch(()=>{});
 }// ── Hub AJAX refresh ──────────────────────────────────────────
+var _hubTimer = null;
+var _hubLastReload = 0; // epoch ms — guard against reload loops
+function _hubSchedule(){ _hubTimer = setTimeout(hubRefresh, 5000); }
 function hubRefresh(){
-  fetch('/hub/data').then(r=>r.json()).then(data=>{
-    data.updateAlertTicker(sites);
-      
-        (site.streams||[]).forEach(function(st){
-          var key=site.site+"_"+st.name;
-          var state=(st.ai_status||"");
-          if((state.includes("ALERT")||state.includes("WARN")) && lastAlertState[key]!==state){
-            playAlertSound();
-            var card=document.querySelector('[data-name="'+st.name+'"]');
-            if(card){card.classList.add('alert-flash');setTimeout(()=>card.classList.remove('alert-flash'),1200);}
-          }
-          lastAlertState[key]=state;
-        });
-
-sites.forEach(function(site){
+  clearTimeout(_hubTimer);
+  fetch('/hub/data?_='+Date.now(),{cache:'no-store'}).then(r=>r.json()).then(data=>{
+    data.sites.forEach(function(site){
+      // Alert sound + flash for new alerts
+      (site.streams||[]).forEach(function(st){
+        var key=site.site+"_"+st.name;
+        var state=(st.ai_status||"");
+        if((state.includes("ALERT")||state.includes("WARN")) && lastAlertState[key]!==state){
+          playAlertSound();
+          var card=document.querySelector('[data-name="'+st.name+'"]');
+          if(card){card.classList.add('alert-flash');setTimeout(()=>card.classList.remove('alert-flash'),1200);}
+        }
+        lastAlertState[key]=state;
+      });
       var sid = 'site-' + site.site.replace(/ /g,'_').replace(/[.]/g,'_').replace(/-/g,'_');
       var card = document.getElementById(sid);
       if(!card) return;
@@ -11048,7 +11752,7 @@ sites.forEach(function(site){
         var rtRow = sc.querySelector('.sc-rt-row');
         var rtWrap = sc.querySelector('.sc-rt-wrap');
         var rtText = sc.querySelector('.sc-rt-text');
-        var rtVal = (s.fm_rds_rt || '').trim();
+        var rtVal = (s.fm_rds_rt || s.dab_dls || '').trim();
         if(rtRow && rtWrap){
           rtRow.style.display = rtVal ? '' : 'none';
           rtWrap.title = rtVal;
@@ -11086,9 +11790,15 @@ sites.forEach(function(site){
     });
     var knownIds = Array.from(document.querySelectorAll('.site-card')).map(c=>c.id);
     var incoming = data.sites.map(s=>'site-'+s.site.replace(/ /g,'_').replace(/[.]/g,'_').replace(/-/g,'_'));
-    // Only reload if new site appeared AND we already have cards rendered
-    if(knownIds.length > 0 && incoming.some(id=>!knownIds.includes(id))) location.reload();
-  }).catch(()=>{});
+    // Only reload if a genuinely new site appeared AND we have existing cards AND
+    // it has been at least 30 s since the last reload (prevents reload storms).
+    var hasNew = knownIds.length > 0 && incoming.some(id=>!knownIds.includes(id));
+    if(hasNew && (Date.now() - _hubLastReload) > 30000){
+      _hubLastReload = Date.now();
+      location.reload();
+      return;
+    }
+  }).catch(function(e){console.warn('[hubRefresh]',e);}).finally(function(){ _hubSchedule(); });
 }
 function agoJS(s){ s=Math.round(s||0); if(s<5)return'just now'; if(s<60)return s+'s ago'; return Math.round(s/60)+'m ago'; }
 function _csrfFetch(url,opts){
@@ -11178,8 +11888,15 @@ document.addEventListener('DOMContentLoaded', function(){
   setInterval(tickClock, 1000);
   setTimeout(function(){
     document.querySelectorAll('.site-card').forEach(function(el){el.classList.remove('skeleton');});
-    setInterval(hubRefresh, 5000);
+    hubRefresh(); // starts the self-rescheduling loop via .finally()
   }, 800);
+  // When the tab becomes visible again after being hidden, fire immediately
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden){
+      clearTimeout(_hubTimer);
+      hubRefresh();
+    }
+  });
 });
 </script>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
@@ -11297,11 +12014,14 @@ document.addEventListener('DOMContentLoaded', function(){
       {# Info rows #}
       <div style="padding:0 10px 4px">
         <div class="sc-row">Format <span class="sc-fmt" style="font-size:11px;color:var(--mu)">{{s.format or '—'}}</span></div>
+        {% set _edev = (s.device_index or '').lower() %}
+        {% if not (_edev.startswith('dab://') or _edev.startswith('fm://') or _edev.startswith('http://') or _edev.startswith('https://')) %}
         <div class="sc-row">RTP Loss
           <span class="sc-rtp {{rtpClass(s.rtp_loss_pct)}}">{{s.rtp_loss_pct}}%
             <span style="color:var(--mu);font-size:11px"> {{s.rtp_total or 0}} pkts</span>
           </span>
         </div>
+        {% endif %}
         {% if s.sla_pct is not none %}
         <div class="sc-row">SLA <span class="sc-sla" style="color:{{'var(--ok)' if s.sla_pct>=99 else 'var(--wn)'}}">{{s.sla_pct}}%</span></div>
         {% endif %}
@@ -11315,8 +12035,8 @@ document.addEventListener('DOMContentLoaded', function(){
         </div>
         {% if s.device_index and s.device_index.lower().startswith('dab://') %}
         <details class="stats-block">
-          <summary class="stats-toggle">DAB signal stats <span>▼</span></summary>
-          <div class="sc-row">DAB SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">📶 {{s.dab_snr}} dB</span></div>
+          <summary class="stats-toggle">DAB stats <span>▼</span></summary>
+          <div class="sc-row">SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">{{s.dab_snr}} dB</span></div>
           <div class="sc-row">Signal  <span>
             {% set db = s.dab_sig|default(-120) %}
             {% set bars = 0 %}
@@ -11330,6 +12050,17 @@ document.addEventListener('DOMContentLoaded', function(){
           </span></div>
           <div class="sc-row">Ensemble <span style="font-size:11px">{{s.dab_ensemble or '—'}}</span></div>
           <div class="sc-row">Service <span style="font-size:11px">{{s.dab_service or '—'}}</span></div>
+          <div class="sc-row">Mode <span style="font-size:11px">{{s.dab_mode or '—'}}</span></div>
+          <div class="sc-row">Bitrate <span>{% if s.dab_bitrate %}{{s.dab_bitrate}} kbps{% else %}—{% endif %}</span></div>
+          <div class="sc-row">Audio <span style="color:{{'var(--ok)' if s.dab_stereo else 'var(--mu)'}}">{% if s.dab_stereo %}Stereo{% else %}Mono{% endif %}</span></div>
+          {% if s.dab_dls %}
+          <div class="sc-row sc-rt-row" style="align-items:center">DLS
+            <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px;color:var(--mu)" title="{{s.dab_dls}}">
+              {% if s.dab_dls|length > 28 %}<span class="rds-rt-scroll sc-rt-text"><span>🎵 {{s.dab_dls}}</span><span aria-hidden="true">🎵 {{s.dab_dls}}</span></span>
+              {% else %}<span class="rds-rt-static sc-rt-text">🎵 {{s.dab_dls}}</span>{% endif %}
+            </span>
+          </div>
+          {% endif %}
         </details>
         {% endif %}
         {% if s.device_index and s.device_index.lower().startswith('fm://') %}
@@ -11349,15 +12080,16 @@ document.addEventListener('DOMContentLoaded', function(){
           <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
           <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
           <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}}">{% if s.fm_rds_ok %}📡 {{s.fm_rds_ps or 'Locked'}}{% else %}— No RDS{% endif %}</span></div>
-          <div class="sc-row sc-rt-row" {% if not s.fm_rds_rt %}style="display:none"{% endif %}>Text
-            <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px" title="{{s.fm_rds_rt or ''}}">
-              {% if s.fm_rds_rt and s.fm_rds_rt|length > 40 %}
+          {% set rt_text = s.fm_rds_rt or s.dab_dls or '' %}
+          <div class="sc-row sc-rt-row" {% if not rt_text %}style="display:none"{% endif %}>Text
+            <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px" title="{{rt_text}}">
+              {% if rt_text|length > 40 %}
               <span class="rds-rt-scroll sc-rt-text">
-                <span>🎵 {{s.fm_rds_rt}}</span>
-                <span aria-hidden="true">🎵 {{s.fm_rds_rt}}</span>
+                <span>🎵 {{rt_text}}</span>
+                <span aria-hidden="true">🎵 {{rt_text}}</span>
               </span>
               {% else %}
-              <span class="rds-rt-static sc-rt-text">{% if s.fm_rds_rt %}🎵 {{s.fm_rds_rt}}{% else %}—{% endif %}</span>
+              <span class="rds-rt-static sc-rt-text">{% if rt_text %}🎵 {{rt_text}}{% else %}—{% endif %}</span>
               {% endif %}
             </span>
           </div>
