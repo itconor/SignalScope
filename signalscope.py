@@ -655,7 +655,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.50"
+BUILD                  = "SignalScope-2.6.51"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
 CHUNK_SIZE             = int(SAMPLE_RATE * CHUNK_DURATION)
@@ -6707,7 +6707,13 @@ if os.path.exists(_sk_path):
     with open(_sk_path,"rb") as _f: app.secret_key = _f.read()
 else:
     app.secret_key = os.urandom(32)
-    with open(_sk_path,"wb") as _f: _f.write(app.secret_key)
+    _sk_fd = os.open(_sk_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(_sk_fd, "wb") as _f: _f.write(app.secret_key)
+# Ensure restrictive permissions even if file already existed
+try:
+    os.chmod(_sk_path, 0o600)
+except Exception:
+    pass
 monitor=MonitorManager()
 _load_acks()
 
@@ -9631,28 +9637,35 @@ def clips_serve(stream_name, filename):
     """Serve a saved alert clip WAV file."""
     snip_dir = os.path.join(BASE_DIR, "alert_snippets")
     safe_stream = _safe_name(stream_name)
-    path = os.path.join(snip_dir, safe_stream, filename)
-    # Security: stay within snip_dir
-    if not os.path.abspath(path).startswith(os.path.abspath(snip_dir)):
+    safe_file   = os.path.basename(filename)
+    path = os.path.join(snip_dir, safe_stream, safe_file)
+    # Security: must stay within snip_dir
+    if not os.path.abspath(path).startswith(os.path.abspath(snip_dir) + os.sep):
         return "Forbidden", 403
     if not os.path.exists(path):
         return "Not found", 404
     with open(path, "rb") as f:
         data = f.read()
+    safe_cd = safe_file.replace('"', '').replace('\r', '').replace('\n', '')
     return Response(data, mimetype="audio/wav",
-        headers={"Content-Disposition": f'inline; filename="{filename}"'})
+        headers={"Content-Disposition": f'inline; filename="{safe_cd}"'})
 
 @app.delete("/clips/<path:stream_name>/<filename>")
 @login_required
 def clips_delete(stream_name, filename):
     """Delete a saved alert clip."""
-    snip_dir = os.path.join(BASE_DIR, "alert_snippets")
-    path = os.path.join(snip_dir, filename)
-    if not os.path.abspath(path).startswith(os.path.abspath(snip_dir)):
-        return jsonify({"error":"forbidden"}), 403
+    snip_dir  = os.path.join(BASE_DIR, "alert_snippets")
+    safe_stream = _safe_name(stream_name)
+    safe_file   = os.path.basename(filename)   # strip any path components
+    path = os.path.join(snip_dir, safe_stream, safe_file)
+    # Security: must stay within snip_dir
+    if not os.path.abspath(path).startswith(os.path.abspath(snip_dir) + os.sep):
+        return jsonify({"error": "forbidden"}), 403
     try:
         os.remove(path)
         return jsonify({"ok": True})
+    except FileNotFoundError:
+        return jsonify({"error": "not found"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -9695,6 +9708,7 @@ input[type=text],input[type=password]{width:100%;margin-top:4px;padding:9px 11px
 </div></body></html>"""
 
 @app.get("/api/sdr/scan")
+@login_required
 def api_sdr_scan():
     """Scan for connected RTL-SDR dongles and return their details."""
     devices = sdr_manager.scan(force=True)
@@ -9727,9 +9741,21 @@ def api_dab_test():
     """Diagnostic: run welle-cli for 5 seconds and return all output.
     Helps identify correct flags and whether the HTTP API starts."""
     import shutil, subprocess as _sp
+    _VALID_DAB_CHANNELS = {
+        "5A","5B","5C","5D","6A","6B","6C","6D","7A","7B","7C","7D",
+        "8A","8B","8C","8D","9A","9B","9C","9D","10A","10B","10C","10D",
+        "11A","11B","11C","11D","12A","12B","12C","12D","13A","13B","13C","13D","13E","13F",
+    }
     channel = request.args.get("channel", "5C").strip().upper()
+    if channel not in _VALID_DAB_CHANNELS:
+        return jsonify({"error": f"invalid channel '{channel}'"}), 400
     device  = request.args.get("device", "0").strip()
-    ppm     = request.args.get("ppm", "0").strip()
+    try:
+        ppm = int(request.args.get("ppm", "0").strip())
+        if not (-1000 <= ppm <= 1000):
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify({"error": "ppm must be an integer between -1000 and 1000"}), 400
 
     if not _find_binary("welle-cli"):
         return jsonify({"error": "welle-cli not found"})
@@ -9750,8 +9776,8 @@ def api_dab_test():
             help_out = f"help failed: {e}"
 
     cmd = ["welle-cli", "-w", "7979", "-c", channel, "-g", "-1", "-F", "rtl_sdr"]
-    if ppm and ppm != "0":
-        cmd += ["-g", ppm]
+    if ppm != 0:
+        cmd += ["-p", str(ppm)]
 
     try:
         proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
