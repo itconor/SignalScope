@@ -34,6 +34,7 @@ ENABLE_SDR=""
 ENABLE_SERVICE=""
 ENABLE_NGINX=""
 NGINX_FQDN=""
+NGINX_FQDN_DEFAULT=""   # pre-filled from a broken/existing config during repair
 NGINX_HTTPS=""
 ENABLE_OVERCLOCK=""
 FORCE_OVERWRITE=0
@@ -137,21 +138,6 @@ detect_existing_proxy_setup() {
   if [[ -f "$conf" ]] || [[ -L "/etc/nginx/sites-enabled/signalscope" ]]; then
     return 0
   fi
-  return 1
-}
-
-detect_existing_tls_setup() {
-  local live_dir="/etc/letsencrypt/live"
-  local conf_file="/etc/nginx/sites-available/signalscope"
-
-  if [[ -d "${live_dir}" ]] && find "${live_dir}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -q .; then
-    return 0
-  fi
-
-  if [[ -f "${conf_file}" ]] && grep -Eq 'listen[[:space:]]+443|ssl_certificate' "${conf_file}"; then
-    return 0
-  fi
-
   return 1
 }
 
@@ -899,19 +885,11 @@ main() {
   fi
 
   EXISTING_PROXY=0
-  EXISTING_TLS=0
   detect_existing_proxy_setup && EXISTING_PROXY=1 || true
-  detect_existing_tls_setup && EXISTING_TLS=1 || true
 
   if [[ -z "${ENABLE_NGINX}" ]]; then
     if [[ "${IS_UPDATE}" -eq 1 && "${EXISTING_PROXY}" -eq 0 ]]; then
       if ask_yes_no "No reverse proxy detected. Install nginx now?" "y"; then
-        ENABLE_NGINX=1
-      else
-        ENABLE_NGINX=0
-      fi
-    elif [[ "${IS_UPDATE}" -eq 1 && "${EXISTING_PROXY}" -eq 1 ]]; then
-      if ask_yes_no "Existing nginx reverse proxy detected. Reinstall/repair or reconfigure nginx?" "n"; then
         ENABLE_NGINX=1
       else
         ENABLE_NGINX=0
@@ -923,30 +901,62 @@ main() {
         ENABLE_NGINX=0
       fi
     else
-      ENABLE_NGINX=0
+      # ── Repair / update run with existing nginx config ─────────────────────
+      _nginx_ok=0; ${SUDO} nginx -t >/dev/null 2>&1 && _nginx_ok=1 || true
+      _exist_fqdn=""
+      if [[ -f /etc/nginx/sites-available/signalscope ]]; then
+        _exist_fqdn=$(grep -oP 'server_name\s+\K[^\s;]+' /etc/nginx/sites-available/signalscope 2>/dev/null \
+                     | grep -v '^_' | grep '\.' | head -1 || true)
+      fi
+      _cert_ok=0
+      [[ -n "${_exist_fqdn}" && -f "/etc/letsencrypt/live/${_exist_fqdn}/fullchain.pem" ]] && _cert_ok=1 || true
+      _needs_repair=0
+      if [[ "${_nginx_ok}" -eq 0 ]]; then
+        warn "Existing nginx config fails the config test — it is broken."
+        _needs_repair=1
+      elif [[ -n "${_exist_fqdn}" && "${_cert_ok}" -eq 0 ]]; then
+        warn "Nginx is configured for '${_exist_fqdn}' but no TLS certificate was found."
+        warn "The Let's Encrypt step most likely failed during the original install."
+        _needs_repair=1
+      fi
+      if [[ "${_needs_repair}" -eq 1 ]]; then
+        info "Existing config: /etc/nginx/sites-available/signalscope${_exist_fqdn:+ — FQDN: ${_exist_fqdn}}"
+        if ask_yes_no "Remove the existing nginx config and start over?" "y"; then
+          ${SUDO} rm -f /etc/nginx/sites-available/signalscope
+          ${SUDO} rm -f /etc/nginx/sites-enabled/signalscope
+          [[ -n "${_exist_fqdn}" ]] && ${SUDO} rm -f "/etc/letsencrypt/renewal/${_exist_fqdn}.conf" 2>/dev/null || true
+          ok "Existing nginx config cleared"
+          EXISTING_PROXY=0
+          ENABLE_NGINX=1
+          [[ -n "${_exist_fqdn}" ]] && NGINX_FQDN_DEFAULT="${_exist_fqdn}"
+        else
+          ENABLE_NGINX=0
+        fi
+      else
+        ok "Nginx appears healthy${_exist_fqdn:+ (serving ${_exist_fqdn})}."
+        if ask_yes_no "Reconfigure nginx (change FQDN or TLS settings)?" "n"; then
+          ${SUDO} rm -f /etc/nginx/sites-available/signalscope
+          ${SUDO} rm -f /etc/nginx/sites-enabled/signalscope
+          ok "Existing nginx config cleared"
+          EXISTING_PROXY=0
+          ENABLE_NGINX=1
+          [[ -n "${_exist_fqdn}" ]] && NGINX_FQDN_DEFAULT="${_exist_fqdn}"
+        else
+          ENABLE_NGINX=0
+        fi
+      fi
     fi
   fi
 
   if [[ "${ENABLE_NGINX}" == "1" && -z "${NGINX_FQDN}" ]]; then
-    if [[ "${EXISTING_PROXY:-0}" -eq 1 ]]; then
-      NGINX_FQDN="$(awk '/^[[:space:]]*server_name[[:space:]]+/ {gsub(/;/, "", $2); if ($2 != "_") { print $2; exit }}' /etc/nginx/sites-available/signalscope 2>/dev/null || true)"
-    fi
-    NGINX_FQDN="$(ask_value "FQDN for nginx vhost (blank for HTTP-only)" "${NGINX_FQDN:-}")"
+    NGINX_FQDN="$(ask_value "FQDN for nginx vhost (blank for HTTP-only)" "${NGINX_FQDN_DEFAULT:-}")"
   fi
 
   if [[ "${ENABLE_NGINX}" == "1" && -n "${NGINX_FQDN}" && -z "${NGINX_HTTPS}" ]]; then
-    if [[ "${EXISTING_TLS:-0}" -eq 1 ]]; then
-      if ask_yes_no "TLS already appears to be configured for ${NGINX_FQDN}. Reinstall/repair Let's Encrypt anyway?" "n"; then
-        NGINX_HTTPS=1
-      else
-        NGINX_HTTPS=0
-      fi
+    if ask_yes_no "Request a Let's Encrypt TLS certificate for ${NGINX_FQDN}?" "y"; then
+      NGINX_HTTPS=1
     else
-      if ask_yes_no "Enable HTTPS with Let's Encrypt for ${NGINX_FQDN}?" "y"; then
-        NGINX_HTTPS=1
-      else
-        NGINX_HTTPS=0
-      fi
+      NGINX_HTTPS=0
     fi
   fi
 
