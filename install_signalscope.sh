@@ -350,10 +350,6 @@ apply_pi_overclock() {
 
   local oc_block=""
   case "${PI_GEN}" in
-    5)
-      info "Pi 5: arm_freq=2800 MHz (stock 2400 MHz) — requires heatsink + fan"
-      oc_block=$'arm_freq=2800'
-      ;;
     4)
       info "Pi 4: arm_freq=2000 MHz, over_voltage=6, gpu_freq=750 (stock 1500 MHz) — requires heatsink"
       oc_block=$'over_voltage=6\narm_freq=2000\ngpu_freq=750'
@@ -975,7 +971,7 @@ main() {
   info "Install SDR: $([[ "${ENABLE_SDR}" == "1" ]] && echo yes || echo no)"
   info "Install nginx: $([[ "${ENABLE_NGINX}" == "1" ]] && echo yes || echo no)"
   [[ -n "${PI_MODEL_STR}" ]] && info "Pi model: ${PI_MODEL_STR}"
-  [[ -n "${PI_MODEL_STR}" ]] && info "Pi overclock: $([[ "${ENABLE_OVERCLOCK}" == "1" ]] && echo yes || echo no)"
+  [[ -n "${PI_MODEL_STR}" && "${PI_GEN}" -ne 5 ]] && info "Pi overclock: $([[ "${ENABLE_OVERCLOCK}" == "1" ]] && echo yes || echo no)"
   if [[ "${ENABLE_NGINX}" == "1" ]]; then
     info "nginx FQDN: ${NGINX_FQDN:-<none, HTTP-only>}"
     info "Let's Encrypt: $([[ "${NGINX_HTTPS}" == "1" ]] && echo yes || echo no)"
@@ -997,18 +993,23 @@ main() {
   detect_pi_model || true
   if [[ "${PI_GEN}" -ge 3 ]]; then
     info "Detected: ${PI_MODEL_STR}"
-    if [[ -z "${ENABLE_OVERCLOCK}" && "${INTERACTIVE}" -eq 1 ]]; then
-      echo
-      warn "Overclocking can improve DAB decode / AI performance but requires adequate cooling."
-      if ask_yes_no "Apply Raspberry Pi overclock settings for ${PI_MODEL_STR}?" "n"; then
-        ENABLE_OVERCLOCK=1
-      else
-        ENABLE_OVERCLOCK=0
+    if [[ "${PI_GEN}" -eq 5 ]]; then
+      info "Raspberry Pi 5 detected — overclocking is not supported by this installer (skip)."
+      ENABLE_OVERCLOCK=0
+    else
+      if [[ -z "${ENABLE_OVERCLOCK}" && "${INTERACTIVE}" -eq 1 ]]; then
+        echo
+        warn "Overclocking can improve DAB decode / AI performance but requires adequate cooling."
+        if ask_yes_no "Apply Raspberry Pi overclock settings for ${PI_MODEL_STR}?" "n"; then
+          ENABLE_OVERCLOCK=1
+        else
+          ENABLE_OVERCLOCK=0
+        fi
       fi
-    fi
-    if [[ "${ENABLE_OVERCLOCK}" == "1" ]]; then
-      step "Applying Raspberry Pi overclock settings"
-      apply_pi_overclock
+      if [[ "${ENABLE_OVERCLOCK}" == "1" ]]; then
+        step "Applying Raspberry Pi overclock settings"
+        apply_pi_overclock
+      fi
     fi
   fi
 
