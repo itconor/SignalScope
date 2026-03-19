@@ -66,26 +66,6 @@ bash install_signalscope.sh
 
 ---
 
-# ✨ What's New in 3.0 (3.0.1–3.0.2)
-
-## Composite Logic Alerts (FM)
-- **STUDIO_FAULT** — silence detected while carrier and RDS are healthy; points to a studio/console fault upstream of the transmitter
-- **STL_FAULT** — silence with carrier present but RDS absent; indicates a studio-to-transmitter link failure
-- **TX_DOWN** — silence with weak or absent carrier; indicates transmitter or antenna failure
-- All three replace the generic SILENCE alert for FM streams with an RTL-SDR source, giving engineers an immediate fault location rather than just a silence notification
-
-## DAB Service Missing Alert
-- **DAB_SERVICE_MISSING** — fires when the DAB ensemble is locked but the configured service disappears from the multiplex; useful for detecting mux software faults while the RF path remains healthy
-
-## RTP Jitter Metric
-- RFC 3550-style inter-arrival time jitter tracked per Livewire/AES67 stream
-- Displayed live on each stream card (hidden when zero)
-- Colour-coded: green below 5 ms, amber above
-
-## Hub Notification Delegation (3.0.2)
-- **Suppress local notifications** — new per-client setting; when a client is connected to a hub, all email/webhook/Pushover alerts are suppressed locally and delegated to the hub instead
-- **Per-site alert rules on hub** — hub operators can configure forwarding rules on a per-client-site basis: enable/disable forwarding and select which alert types to forward (from the full type list)
-- Deduplication by event UUID prevents duplicate notifications when a client reconnects
 
 ---
 
