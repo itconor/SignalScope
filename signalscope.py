@@ -655,7 +655,8 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.51"
+BUILD                  = "SignalScope-2.6.52"
+_GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
 CHUNK_SIZE             = int(SAMPLE_RATE * CHUNK_DURATION)
@@ -6236,6 +6237,7 @@ class HubServer:
             stored.update({
                 "_received":           now,
                 "_client_addr":        self_url,
+                "_verified_ip":        client_ip,   # actual TCP peer — not payload-supplied
                 "_consecutive_missed": consecutive_missed,
                 "_total_missed":       prev.get("_total_missed", 0) + missed,
                 "_total_received":     prev.get("_total_received", 0) + 1,
@@ -6650,6 +6652,35 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 # SESSION_COOKIE_SECURE is set at startup once we know if TLS/auth is active
 # (see entry point — set True when cert loaded or auth enabled on HTTPS)
 
+# ── Update availability check ─────────────────────────────────────────────────
+_UPDATE_STATE: dict = {"latest": None, "checked_at": 0.0}
+
+def _ver_tuple(v: str):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except Exception:
+        return (0, 0, 0)
+
+def _version_check_loop():
+    import re as _re
+    time.sleep(30)          # allow app to finish starting before first hit
+    while True:
+        try:
+            resp = requests.get(_GH_RAW_VER_URL, timeout=20, stream=True)
+            chunk = b""
+            for part in resp.iter_content(8192):
+                chunk += part
+                break
+            resp.close()
+            text = chunk.decode("utf-8", errors="ignore")
+            m = _re.search(r'SignalScope-(\d+\.\d+\.\d+)', text)
+            if m:
+                _UPDATE_STATE["latest"] = m.group(1)
+        except Exception:
+            pass
+        _UPDATE_STATE["checked_at"] = time.time()
+        time.sleep(86400)   # re-check every 24 h
+
 @app.context_processor
 def _inject_nav():
     """Inject topnav() and hub_mode into every template."""
@@ -6676,6 +6707,29 @@ def _inject_nav():
         home_href = "/hub" if hub_only else "/"
         local_links = "" if hub_only else (_a("dashboard", "Dashboard", "/") + _a("inputs", "Inputs", "/inputs") + _a("reports", "Reports", "/reports") + _a("sla", "SLA", "/sla"))
         hub_link = (_a("hub", "Hub", "/hub") + _a("hub_reports", "Hub Reports", "/hub/reports")) if show_hub else ""
+        # ── Update-available banner ───────────────────────────────────────────
+        nonce       = _csp_nonce()
+        current_ver = build_.split("-")[-1]
+        _latest     = _UPDATE_STATE.get("latest")
+        update_banner = ""
+        if _latest and _ver_tuple(_latest) > _ver_tuple(current_ver):
+            _lv = _latest          # captured for f-string use
+            update_banner = (
+                f'<div id="ss-update-banner" style="background:linear-gradient(90deg,#78350f,#92400e);'
+                f'border-bottom:1px solid #b45309;padding:7px 20px;display:flex;align-items:center;'
+                f'gap:14px;font-size:13px;flex-wrap:wrap">'
+                f'<span style="color:#fde68a">&#11014; SignalScope <strong style="color:#fff">{_lv}</strong> is available</span>'
+                f'<a href="https://github.com/itconor/SignalScope/releases" target="_blank" rel="noopener noreferrer" '
+                f'style="color:#fbbf24;font-weight:600;text-decoration:underline">View release</a>'
+                f'<span style="color:#d97706;font-size:12px">&#xb7; re-run the installer to update</span>'
+                f'<button onclick="sessionStorage.setItem(\'ss_upd\',\'{_lv}\');document.getElementById(\'ss-update-banner\').remove()" '
+                f'style="margin-left:auto;background:none;border:none;color:#fde68a;cursor:pointer;font-size:20px;'
+                f'line-height:1;padding:0 4px;flex-shrink:0" title="Dismiss">&times;</button>'
+                f'</div>'
+                f'<script nonce="{nonce}">'
+                f'(function(){{if(sessionStorage.getItem("ss_upd")==={_lv!r})'
+                f'{{var b=document.getElementById("ss-update-banner");if(b)b.remove();}}}})();</script>'
+            )
         return (
             '<header style="background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);box-shadow:0 10px 24px rgba(0,0,0,.18)">'
             f'<a href="{home_href}" style="text-decoration:none;display:flex;align-items:center;gap:12px;min-width:0">'
@@ -6686,7 +6740,7 @@ def _inject_nav():
             '</div>'
             '</a>'
             '<div style="margin-left:14px;padding:5px 10px;border-radius:999px;background:#0f2e5e;border:1px solid var(--bor);font-size:11px;font-weight:700;color:#b7d8ff;white-space:nowrap">v'
-            f'{build_.split("-")[-1]}'
+            f'{current_ver}'
             '</div>'
             '<nav style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-left:auto">'
             + start_stop
@@ -6695,6 +6749,7 @@ def _inject_nav():
             + _a("settings",  "Settings",  "/settings")
             + f'<form method="post" action="/logout" style="margin:0"><input type="hidden" name="_csrf_token" value="{csrf}"><button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
             + '</nav></header>'
+            + update_banner
         )
 
     from markupsafe import Markup
@@ -6716,6 +6771,17 @@ except Exception:
     pass
 monitor=MonitorManager()
 _load_acks()
+threading.Thread(target=_version_check_loop, daemon=True, name="VersionCheck").start()
+
+@app.get("/api/version_check")
+@login_required
+def api_version_check():
+    current = BUILD.split("-")[-1]
+    latest  = _UPDATE_STATE.get("latest")
+    update  = bool(latest and _ver_tuple(latest) > _ver_tuple(current))
+    return jsonify({"current": current, "latest": latest,
+                    "update_available": update,
+                    "checked_at": _UPDATE_STATE.get("checked_at")})
 
 MAIN_TPL = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>SignalScope</title>
@@ -10847,6 +10913,35 @@ def _hub_client_addr_is_private(client_addr: str) -> bool:
     except Exception:
         return False
 
+def _hub_sanitise_client_addr(client_addr: str) -> str:
+    """Validate a client-reported URL before the hub uses it for outbound proxy requests.
+
+    Accepts only bare http:// origins — no credentials, no non-root paths, no unusual
+    characters in the hostname.  Returns the original string if valid, empty string if not.
+    (HTTPS was already stripped to HTTP in ingest(); the client network is LAN-only.)
+    """
+    if not client_addr:
+        return ""
+    try:
+        import re as _re
+        p = urllib.parse.urlparse(client_addr)
+        if p.scheme != "http":
+            return ""
+        if p.username or p.password:        # reject embedded credentials
+            return ""
+        host = (p.hostname or "").strip().lower()
+        if not host:
+            return ""
+        if not _re.match(r'^[a-z0-9.\-]+$', host):  # hostname chars only
+            return ""
+        if p.path not in ("", "/"):         # stored addr must be an origin, not a path
+            return ""
+        if p.query or p.fragment:
+            return ""
+        return client_addr
+    except Exception:
+        return ""
+
 def _hub_prepare_site(site: dict) -> dict:
     """Prepare one site payload for hub display or replica rendering."""
     s = dict(site or {})
@@ -10877,26 +10972,18 @@ def _hub_prepare_site(site: dict) -> dict:
 @app.get("/hub/site/<path:site_name>/open")
 @login_required
 def hub_open_site(site_name):
-    """Open real client UI when reachable from the hub, otherwise open the hub-hosted replica."""
+    """Redirect to the hub-hosted replica page for this site.
+
+    We no longer issue server-side requests to the client-supplied self_url
+    (SSRF) or redirect the operator's browser to an unvalidated external URL
+    (open redirect).  The replica page displays the site's self_url as a
+    plain anchor so operators can choose to open it themselves.
+    """
     cfg = monitor.app_cfg
     if cfg.hub.mode not in ("hub","both"):
         return "Not a hub", 404
-    site = hub_server.get_site(site_name)
-    if not site:
+    if not hub_server.get_site(site_name):
         return "Site not found", 404
-    # Use client's self-reported URL first (most accurate), fall back to request IP
-    self_url = (site.get("self_url") or site.get("_client_addr") or "").rstrip("/")
-    if self_url:
-        url = self_url + "/"
-        try:
-            req = urllib.request.Request(url, method="HEAD")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                status = getattr(resp, "status", 200)
-                ct = (resp.headers.get("Content-Type","") or "").lower()
-                if status < 400 and ("text/html" in ct or not ct):
-                    return redirect(url)
-        except Exception:
-            pass
     return redirect(url_for("hub_site_replica", site_name=site_name))
 
 @app.get("/hub/site/<path:site_name>")
@@ -10949,7 +11036,7 @@ def hub_proxy_live(site_name, sidx):
     if not site:
         return "Site not found", 404
 
-    client_addr = site.get("_client_addr","")
+    client_addr = _hub_sanitise_client_addr(site.get("_client_addr",""))
 
     # ── Try direct pull first only when it looks routable from the hub ───────
     if client_addr and not _hub_client_addr_is_private(client_addr):
@@ -11004,7 +11091,7 @@ def hub_proxy_clip(site_name, sidx):
     site = hub_server.get_site(site_name)
     if not site:
         return "Site not found", 404
-    client_addr = site.get("_client_addr","")
+    client_addr = _hub_sanitise_client_addr(site.get("_client_addr",""))
     secs = request.args.get("seconds","10")
 
     if client_addr and not _hub_client_addr_is_private(client_addr):
@@ -11037,7 +11124,7 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
     site = hub_server.get_site(site_name)
     if not site:
         return "Site not found", 404
-    client_addr = site.get("_client_addr","")
+    client_addr = _hub_sanitise_client_addr(site.get("_client_addr",""))
 
     if client_addr and not _hub_client_addr_is_private(client_addr):
         url = f"{client_addr}/clips/{urllib.parse.quote(stream_name)}/{urllib.parse.quote(filename)}"
