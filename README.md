@@ -66,6 +66,19 @@ bash install_signalscope.sh
 
 ---
 
+# ✨ What's New in 2.6.52–2.6.55
+
+## Hub Reports
+- **Alert clip download** — each clip row on the hub reports page now has a ⬇ download button alongside the audio player, allowing engineers to save alert WAV files directly from the hub
+
+## Settings
+- **Backup & Export** — new panel at the bottom of Settings page; one click downloads a timestamped ZIP containing `lwai_config.json` and all trained AI model files (`ai_models/`), making migration and backup straightforward
+
+## CSRF fixes (all templates)
+- **Universal CSRF meta tag** — `<meta name="csrf-token">` added to every template that was missing it (`SETTINGS_TPL`, `REPORTS_TPL`, `INPUT_LIST_TPL`, `INPUT_FORM_TPL`, `HUB_REPORTS_TPL`); eliminates CSRF validation failures on DAB bulk-add, settings test-notify, and hub alert acknowledgement
+
+---
+
 # ✨ What's New in 2.6.51
 
 ## Security Hardening
@@ -177,6 +190,10 @@ bash install_signalscope.sh
 - Signal metadata display with scrolling RDS/DLS text
 - Card-based monitoring layout with drag-to-reorder
 - Wall mode for NOC/control room displays
+
+## Backup & Migration
+- **One-click backup** — download a ZIP of your config + all trained AI models from the Settings page
+- Timestamped archive (`signalscope_backup_YYYYMMDD_HHMMSS.zip`) — extract into a new install to migrate instantly
 
 ## Security
 - CSRF protection on all state-changing routes
@@ -352,7 +369,7 @@ journalctl -t signalscope-watchdog
 
 SignalScope is under **active development**.
 
-Current build: **SignalScope-2.6.51**
+Current build: **SignalScope-2.6.55**
 
 New features and improvements are added regularly.
 
