@@ -621,6 +621,76 @@ document.addEventListener('DOMContentLoaded',function(){
 </form>
 
 <div class="panel" style="margin-top:24px">
+  <div class="panel-title">🔄 Software Update</div>
+  <div class="panel-body">
+    <p style="font-size:13px;color:var(--mu);margin-bottom:12px">SignalScope checks GitHub for updates every 6 hours. Use the button below to check right now.</p>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <button id="upd-check-btn" class="btn bp" style="font-size:13px" onclick="checkForUpdates()">🔍 Check for Updates</button>
+      <span id="upd-status" style="font-size:12px;color:var(--mu)">
+        Current: <strong style="color:var(--tx)">{{build}}</strong>
+      </span>
+    </div>
+    <div id="upd-result" style="margin-top:12px;font-size:13px;display:none"></div>
+  </div>
+</div>
+<script nonce="{{csp_nonce()}}">
+function _csrf(){return document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';}
+
+function checkForUpdates(){
+  var btn=document.getElementById('upd-check-btn');
+  var res=document.getElementById('upd-result');
+  btn.disabled=true; btn.textContent='Checking…';
+  res.style.display='none';
+  fetch('/api/version_check/refresh',{method:'POST',headers:{'X-CSRFToken':_csrf()}})
+    .then(r=>r.json()).then(function(){
+      setTimeout(function(){
+        fetch('/api/version_check').then(r=>r.json()).then(function(d){
+          btn.disabled=false; btn.textContent='🔍 Check for Updates';
+          res.style.display='';
+          if(d.error && !d.latest){
+            res.innerHTML='<span style="color:var(--wn)">⚠ Could not check for updates: <code style="font-size:11px;color:#fde68a">'+d.error+'</code></span>';
+          } else if(d.update_available){
+            res.innerHTML=
+              '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 14px;background:#1c3a10;border:1px solid #4ade80;border-radius:8px">'
+              +'<span style="color:#fde68a">⬆ <strong style="color:#fff">SignalScope '+d.latest+'</strong> is available <span style="color:var(--mu);font-size:11px">(you are on '+d.current+')</span></span>'
+              +'<button class="btn" style="background:#166534;color:#fff;font-size:12px" onclick="applyUpdate(\''+d.latest+'\')">⬆ Apply Update &amp; Restart</button>'
+              +'</div>';
+          } else {
+            res.innerHTML='<span style="color:var(--ok)">✓ You are on the latest version ('+d.current+').</span>';
+          }
+        });
+      }, 4000);
+    }).catch(function(){
+      btn.disabled=false; btn.textContent='🔍 Check for Updates';
+      res.style.display=''; res.innerHTML='<span style="color:var(--al)">Request failed — check network.</span>';
+    });
+}
+
+function applyUpdate(ver){
+  if(!confirm('Apply SignalScope '+ver+' and restart the service?\n\nThe page will reload automatically once the service comes back up (usually ~15 seconds).')){return;}
+  var res=document.getElementById('upd-result');
+  res.innerHTML='<span style="color:var(--acc)">⏳ Downloading and applying update…</span>';
+  fetch('/api/update/apply',{method:'POST',headers:{'X-CSRFToken':_csrf()}})
+    .then(r=>r.json()).then(function(d){
+      if(d.ok){
+        res.innerHTML='<span style="color:var(--ok)">✓ Update applied ('+d.from_version+' → '+d.to_version+'). Restarting… <span id="upd-countdown">15</span>s</span>';
+        var n=15;
+        var iv=setInterval(function(){
+          n--;
+          var el=document.getElementById('upd-countdown');
+          if(el) el.textContent=n;
+          if(n<=0){clearInterval(iv);location.reload();}
+        },1000);
+      } else {
+        res.innerHTML='<span style="color:var(--al)">✗ '+( d.error||'Unknown error')+'</span>';
+      }
+    }).catch(function(e){
+      res.innerHTML='<span style="color:var(--al)">✗ Request failed: '+e.message+'</span>';
+    });
+}
+</script>
+
+<div class="panel" style="margin-top:24px">
   <div class="panel-title">⬇ Backup &amp; Restore</div>
   <div class="panel-body">
     <p style="font-size:13px;color:var(--mu);margin-bottom:14px">Download a ZIP archive containing your configuration file and all trained AI models. Use this to back up your setup or migrate to a new server.</p>
@@ -676,7 +746,8 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.59"
+BUILD                  = "SignalScope-2.6.64"
+_GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
@@ -6683,25 +6754,80 @@ def _ver_tuple(v: str):
     except Exception:
         return (0, 0, 0)
 
-def _version_check_loop():
+def _fetch_latest_version() -> tuple:
+    """Return (version_str, error_str).
+
+    version_str is '' on failure.  error_str is '' on success.
+
+    Strategy:
+    1. GitHub releases API — tag_name like 'SignalScope-2.6.59'
+    2. Fallback: parse first 8 KB of raw signalscope.py (tries main then master)
+    """
     import re as _re
-    time.sleep(30)          # allow app to finish starting before first hit
-    while True:
-        try:
-            resp = requests.get(_GH_RAW_VER_URL, timeout=20, stream=True)
-            chunk = b""
-            for part in resp.iter_content(8192):
-                chunk += part
-                break
-            resp.close()
-            text = chunk.decode("utf-8", errors="ignore")
-            m = _re.search(r'SignalScope-(\d+\.\d+\.\d+)', text)
+    try:
+        import requests as _requests
+    except ImportError:
+        return "", "requests library not installed"
+    errors = []
+
+    # ── Try releases API ──────────────────────────────────────────────────────
+    try:
+        resp = _requests.get(
+            _GH_API_RELEASES_URL,
+            timeout=15,
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": f"SignalScope/{BUILD}"},
+        )
+        if resp.status_code == 200:
+            tag = resp.json().get("tag_name", "")
+            m = _re.search(r"(\d+\.\d+\.\d+)", tag)
             if m:
-                _UPDATE_STATE["latest"] = m.group(1)
-        except Exception:
-            pass
+                return m.group(1), ""
+        elif resp.status_code == 404:
+            errors.append("GitHub: no releases published yet")
+        else:
+            errors.append(f"GitHub releases API HTTP {resp.status_code}")
+    except Exception as e:
+        errors.append(f"GitHub releases API: {e}")
+
+    # ── Fallback: raw file (try main then master) ─────────────────────────────
+    # BUILD is past the HTML templates so we scan up to 256 KB to find it.
+    for branch in ("main", "master"):
+        raw_url = f"https://raw.githubusercontent.com/itconor/SignalScope/{branch}/signalscope.py"
+        try:
+            resp = _requests.get(raw_url, timeout=30, stream=True)
+            if resp.status_code != 200:
+                errors.append(f"raw {branch}: HTTP {resp.status_code}")
+                resp.close()
+                continue
+            buf = b""
+            found = False
+            for part in resp.iter_content(8192):
+                buf += part
+                m = _re.search(rb"SignalScope-(\d+\.\d+\.\d+)", buf)
+                if m:
+                    resp.close()
+                    return m.group(1).decode(), ""
+                if len(buf) >= 256 * 1024:
+                    break
+            resp.close()
+            errors.append(f"raw {branch}: no version string found in first 256 KB")
+        except Exception as e:
+            errors.append(f"raw {branch}: {e}")
+
+    return "", " | ".join(errors)
+
+def _version_check_loop():
+    time.sleep(30)          # allow app to finish starting before first check
+    while True:
+        ver, err = _fetch_latest_version()
+        if ver:
+            _UPDATE_STATE["latest"] = ver
+            _UPDATE_STATE["error"]  = None
+        else:
+            _UPDATE_STATE["error"] = err or "Could not reach GitHub"
         _UPDATE_STATE["checked_at"] = time.time()
-        time.sleep(86400)   # re-check every 24 h
+        time.sleep(6 * 3600)   # re-check every 6 h
 
 @app.context_processor
 def _inject_nav():
@@ -6803,7 +6929,112 @@ def api_version_check():
     update  = bool(latest and _ver_tuple(latest) > _ver_tuple(current))
     return jsonify({"current": current, "latest": latest,
                     "update_available": update,
-                    "checked_at": _UPDATE_STATE.get("checked_at")})
+                    "checked_at": _UPDATE_STATE.get("checked_at"),
+                    "error": _UPDATE_STATE.get("error")})
+
+@app.post("/api/version_check/refresh")
+@login_required
+@csrf_protect
+def api_version_check_refresh():
+    """Manually trigger an immediate version check."""
+    def _run():
+        ver, err = _fetch_latest_version()
+        if ver:
+            _UPDATE_STATE["latest"] = ver
+            _UPDATE_STATE["error"]  = None
+        else:
+            _UPDATE_STATE["error"] = err or "Could not reach GitHub"
+        _UPDATE_STATE["checked_at"] = time.time()
+    threading.Thread(target=_run, daemon=True, name="VersionCheckOnDemand").start()
+    return jsonify({"ok": True, "note": "version check running in background"})
+
+@app.post("/api/update/apply")
+@login_required
+@csrf_protect
+def api_update_apply():
+    """Download the latest signalscope.py from GitHub, validate, replace, and restart.
+
+    No sudo required — we replace only our own .py file and send SIGTERM to
+    ourselves; systemd (or the watchdog) handles the restart.
+    """
+    import shutil as _shutil, py_compile as _pyc, signal as _sig, re as _re
+    try:
+        import requests as _requests
+    except ImportError:
+        return jsonify({"error": "requests library not installed"}), 500
+
+    current_ver = BUILD.split("-")[-1]
+    latest_ver  = _UPDATE_STATE.get("latest")
+    if not latest_ver:
+        return jsonify({"error": "No update info available — run a version check first"}), 400
+    if _ver_tuple(latest_ver) <= _ver_tuple(current_ver):
+        return jsonify({"error": f"Already on latest version ({current_ver})"}), 400
+
+    # ── Download ──────────────────────────────────────────────────────────────
+    try:
+        resp = _requests.get(_GH_RAW_VER_URL, timeout=60)
+        resp.raise_for_status()
+        new_bytes = resp.content
+    except Exception as e:
+        return jsonify({"error": f"Download failed: {e}"}), 502
+
+    # ── Sanity-check the downloaded file ─────────────────────────────────────
+    text = new_bytes.decode("utf-8", errors="ignore")
+    m = _re.search(r"SignalScope-(\d+\.\d+\.\d+)", text)
+    if not m:
+        return jsonify({"error": "Downloaded file does not look like a valid SignalScope release"}), 502
+    dl_ver = m.group(1)
+    if _ver_tuple(dl_ver) <= _ver_tuple(current_ver):
+        return jsonify({"error": f"Downloaded version ({dl_ver}) is not newer than running ({current_ver})"}), 400
+
+    this_file = os.path.abspath(__file__)
+    tmp_path  = this_file + ".update_tmp"
+    bak_path  = this_file + f".bak_{current_ver}"
+
+    # ── Write temp file and check Python syntax ───────────────────────────────
+    try:
+        with open(tmp_path, "wb") as fh:
+            fh.write(new_bytes)
+        _pyc.compile(tmp_path, doraise=True)
+    except Exception as e:
+        try: os.remove(tmp_path)
+        except OSError: pass
+        return jsonify({"error": f"Downloaded file failed syntax check: {e}"}), 502
+
+    # ── Backup current file ───────────────────────────────────────────────────
+    try:
+        _shutil.copy2(this_file, bak_path)
+    except Exception as e:
+        try: os.remove(tmp_path)
+        except OSError: pass
+        return jsonify({"error": f"Could not create backup at {bak_path}: {e}"}), 500
+
+    # ── Atomic replace ────────────────────────────────────────────────────────
+    try:
+        os.replace(tmp_path, this_file)
+    except Exception as e:
+        # Try to restore the backup
+        try: _shutil.copy2(bak_path, this_file)
+        except OSError: pass
+        try: os.remove(tmp_path)
+        except OSError: pass
+        return jsonify({"error": f"Could not replace application file: {e}"}), 500
+
+    monitor.log(f"[Update] signalscope.py replaced: {current_ver} → {dl_ver}. Restarting in 3 s…")
+
+    # ── Restart after response is delivered ───────────────────────────────────
+    def _restart():
+        time.sleep(3)
+        os.kill(os.getpid(), _sig.SIGTERM)
+    threading.Thread(target=_restart, daemon=True, name="UpdateRestart").start()
+
+    return jsonify({
+        "ok":           True,
+        "from_version": current_ver,
+        "to_version":   dl_ver,
+        "backup":       bak_path,
+        "note":         "Update applied — restarting in 3 s. Page will reload automatically.",
+    })
 
 MAIN_TPL = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>SignalScope</title>
