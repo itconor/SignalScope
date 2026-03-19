@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 SETTINGS_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Settings</title>
+<meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -655,7 +656,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.52"
+BUILD                  = "SignalScope-2.6.53"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
@@ -7660,6 +7661,7 @@ document.addEventListener('DOMContentLoaded', function(){
 </body></html>"""
 
 REPORTS_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="csrf-token" content="{{csrf_token()}}">
 <title>Alert Reports — SignalScope</title>
 <style nonce="{{csp_nonce()}}">
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
@@ -7998,6 +8000,7 @@ tr:hover td{background:#123764}
 </main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
 
 INPUT_LIST_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Inputs</title>
+<meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--tx:#eef5ff;--mu:#8aa4c8;--al:#ef4444}
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
 header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
@@ -8562,6 +8565,7 @@ function copyCmd(btn){
 
 
 INPUT_FORM_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{{title}}</title>
+<meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--tx:#eef5ff;--mu:#8aa4c8;--ok:#22c55e;--al:#ef4444}
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
 header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
@@ -11196,6 +11200,7 @@ def hub_reports():
 # client_ip is now passed directly in hub_heartbeat — no monkey-patch needed
 
 HUB_REPORTS_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="csrf-token" content="{{csrf_token()}}">
 <title>Hub Alert Reports — SignalScope</title>
 <style nonce="{{csp_nonce()}}">
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
