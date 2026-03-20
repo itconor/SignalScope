@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.11"
+BUILD                  = "SignalScope-3.2.13"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -7647,34 +7647,39 @@ class HubServer:
             inp = next((i for i in cfg.inputs if i.name == sname and i.enabled), None)
             if inp is None:
                 return {"label": label, "site": site, "stream": sname, "machine": machine,
-                        "status": "unknown", "level": None}
+                        "status": "unknown", "level": None, "rtp_loss_pct": None}
             dev  = (inp.device_index or "").strip().lower()
             down = inp._last_level_dbfs <= inp.silence_threshold_dbfs
             if dev.startswith("dab://") and not inp._dab_ok:
                 down = True
+            is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
             return {"label": label, "site": site, "stream": sname, "machine": machine,
                     "status": "down" if down else "ok",
-                    "level": round(inp._last_level_dbfs, 1)}
+                    "level": round(inp._last_level_dbfs, 1),
+                    "rtp_loss_pct": round(inp._rtp_loss_pct, 2) if is_rtp else None}
         else:
             site_data = sites_snap.get(site)
             if not site_data:
                 return {"label": label, "site": site, "stream": sname, "machine": machine,
-                        "status": "offline", "level": None}
+                        "status": "offline", "level": None, "rtp_loss_pct": None}
             if not site_data["online"]:
                 return {"label": label, "site": site, "stream": sname, "machine": machine,
-                        "status": "offline", "level": None}
+                        "status": "offline", "level": None, "rtp_loss_pct": None}
             sd = next((s for s in site_data["streams"] if s.get("name") == sname), None)
             if sd is None:
                 return {"label": label, "site": site, "stream": sname, "machine": machine,
-                        "status": "unknown", "level": None}
+                        "status": "unknown", "level": None, "rtp_loss_pct": None}
             lev  = float(sd.get("level_dbfs", -120.0))
             dev  = str(sd.get("device_index", "")).strip().lower()
             down = lev <= -55.0
             if dev.startswith("dab://") and not sd.get("dab_ok", True):
                 down = True
+            is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
+            rtp_loss = sd.get("rtp_loss_pct")
             return {"label": label, "site": site, "stream": sname, "machine": machine,
                     "status": "down" if down else "ok",
-                    "level": round(lev, 1)}
+                    "level": round(lev, 1),
+                    "rtp_loss_pct": round(float(rtp_loss), 2) if is_rtp and rtp_loss is not None else None}
 
     def eval_chain(self, chain: dict, maintenance: "dict | None" = None) -> dict:
         """Evaluate a single chain and return its status dict.
@@ -7872,6 +7877,7 @@ class HubServer:
                                              "fault_node_label": fn_info.get("label", "?"),
                                              "fault_site": fn_info.get("site", "?"),
                                              "fault_stream": fn_info.get("stream", "?"),
+                                             "rtp_loss_pct": fn_info.get("rtp_loss_pct"),
                                              "ts_recovered": None})
                                 if len(flog) > 25:
                                     flog.pop(0)
@@ -7910,6 +7916,7 @@ class HubServer:
                                              "fault_node_label": fn_info.get("label", "?"),
                                              "fault_site": fn_info.get("site", "?"),
                                              "fault_stream": fn_info.get("stream", "?"),
+                                             "rtp_loss_pct": fn_info.get("rtp_loss_pct"),
                                              "ts_recovered": None})
                                 if len(flog) > 25:
                                     flog.pop(0)
@@ -14292,6 +14299,7 @@ var _chainData={
         <div class="node-sub">{{sub.site|e}}</div>
         {% if sub.get('machine') %}<div class="node-sub" style="color:#60a5fa;font-size:9px" title="Hardware tag">🖥 {{sub.machine|e}}</div>{% endif %}
         <div class="node-level" style="color:var(--mu)">…</div>
+        <div class="node-rtp" style="display:none;font-size:10px;margin-top:2px;font-variant-numeric:tabular-nums"></div>
       </div>
       {% endfor %}
       <div class="chain-stack-mode" title="Stack fault mode: fault triggers when {{node.mode or 'all'}} node(s) are silent">fault if {{(node.mode or 'all')|upper}} silent</div>
@@ -14303,6 +14311,7 @@ var _chainData={
       <div class="node-sub">{{node.site|e}}</div>
       {% if node.get('machine') %}<div class="node-sub" style="color:#60a5fa;font-size:9px" title="Hardware tag">🖥 {{node.machine|e}}</div>{% endif %}
       <div class="node-level" style="color:var(--mu)">…</div>
+      <div class="node-rtp" style="display:none;font-size:10px;margin-top:2px;font-variant-numeric:tabular-nums"></div>
     </div>
     {% endif %}
     {% endfor %}
@@ -14779,6 +14788,15 @@ function refreshStatus(){
                   if(sub.trend==='down'&&sub.level!=null){lvlEl.innerHTML+='<span class="trend-down" title="Level trending down ('+sub.trend_slope+' dBFS/min)">&#8600;</span>';}
                 }
               }
+              var rtpEl=subEl.querySelector('.node-rtp');
+              if(rtpEl){
+                var rtp=sub.rtp_loss_pct;
+                if(rtp!=null){
+                  rtpEl.style.display='';
+                  rtpEl.textContent='RTP Loss: '+rtp.toFixed(1)+'%';
+                  rtpEl.style.color=rtp>5?'var(--al)':rtp>0.5?'var(--wn)':'var(--mu)';
+                } else { rtpEl.style.display='none'; }
+              }
             });
             // Fault marker on the stack wrapper (only for the fault position)
             if(stackEl){
@@ -14830,6 +14848,15 @@ function refreshStatus(){
                 lvlEl.textContent=node.level!==null&&node.level!==undefined?node.level.toFixed(1)+' dBFS':(node.status==='offline'?'Offline':'—');
                 if(node.trend==='down'&&node.level!=null){lvlEl.innerHTML+='<span class="trend-down" title="Level trending down ('+node.trend_slope+' dBFS/min)">&#8600;</span>';}
               }
+            }
+            var rtpEl2=el.querySelector('.node-rtp');
+            if(rtpEl2){
+              var rtp2=node.rtp_loss_pct;
+              if(rtp2!=null){
+                rtpEl2.style.display='';
+                rtpEl2.textContent='RTP Loss: '+rtp2.toFixed(1)+'%';
+                rtpEl2.style.color=rtp2>5?'var(--al)':rtp2>0.5?'var(--wn)':'var(--mu)';
+              } else { rtpEl2.style.display='none'; }
             }
             // Shared fault badge on fault node
             if(isFaultPos&&chain.shared_fault_chains&&chain.shared_fault_chains.length>0){
@@ -14935,11 +14962,19 @@ document.getElementById('chains_list').addEventListener('click', function(e){
       _f('/api/chains/'+encodeURIComponent(cid)+'/fault_log').then(function(r){return r.json();}).then(function(d){
         var entries=d.entries||[];
         if(!entries.length){body.innerHTML='<div class="flog-empty">No faults recorded yet.</div>';return;}
-        var html='<table class="flog-table"><thead><tr><th>Date/Time</th><th>Fault Point</th><th>Site</th><th>Duration</th></tr></thead><tbody>';
+        var hasRtp=entries.some(function(ev){return ev.rtp_loss_pct!=null;});
+        var html='<table class="flog-table"><thead><tr><th>Date/Time</th><th>Fault Point</th><th>Site</th>'+(hasRtp?'<th>RTP Loss</th>':'')+'<th>Duration</th></tr></thead><tbody>';
         entries.forEach(function(ev){
           var dt=new Date(ev.ts_start*1000).toLocaleString();
           var dur=ev.ts_recovered?_fmtDur(ev.ts_recovered-ev.ts_start):'<span style="color:var(--al)">Ongoing</span>';
-          html+='<tr><td>'+dt+'</td><td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td><td>'+dur+'</td></tr>';
+          var rtpCell='';
+          if(hasRtp){
+            if(ev.rtp_loss_pct!=null){
+              var rc=ev.rtp_loss_pct>5?'var(--al)':ev.rtp_loss_pct>0.5?'var(--wn)':'var(--mu)';
+              rtpCell='<td style="color:'+rc+'">'+ev.rtp_loss_pct.toFixed(1)+'%</td>';
+            } else { rtpCell='<td style="color:var(--mu)">—</td>'; }
+          }
+          html+='<tr><td>'+dt+'</td><td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td>'+rtpCell+'<td>'+dur+'</td></tr>';
         });
         html+='</tbody></table>';
         body.innerHTML=html;
@@ -15395,11 +15430,15 @@ def api_chains_save():
         return jsonify({"ok": False, "error": "name required"}), 400
     # Sanitise nodes (supports regular nodes and stack nodes)
     def _clean_single_node(n):
-        site   = str(n.get("site", "")).strip()
-        stream = str(n.get("stream", "")).strip()
-        label  = str(n.get("label", "")).strip()
+        site    = str(n.get("site", "")).strip()
+        stream  = str(n.get("stream", "")).strip()
+        label   = str(n.get("label", "")).strip()
+        machine = str(n.get("machine", "")).strip()
         if site and stream:
-            return {"site": site, "stream": stream, "label": label}
+            node = {"site": site, "stream": stream, "label": label}
+            if machine:
+                node["machine"] = machine
+            return node
         return None
 
     clean_nodes = []
