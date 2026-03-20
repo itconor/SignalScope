@@ -280,14 +280,24 @@ make_rerunnable_copy_if_needed() {
   echo "${SELF_COPY}"
 }
 
+# Set the SUDO variable immediately (no password prompt yet).
+# Call auth_sudo later, right before any privileged commands run.
 init_sudo() {
   if [[ $EUID -ne 0 ]]; then
     need_cmd sudo
-    info "Requesting sudo access..."
-    sudo -v
     SUDO="sudo"
   else
     SUDO=""
+  fi
+}
+
+# Prompt for the sudo password (if needed).  Call this after all interactive
+# questions have been answered so the password prompt doesn't appear in the
+# middle of unrelated prompts.
+auth_sudo() {
+  if [[ -n "${SUDO}" ]]; then
+    info "Requesting sudo access..."
+    sudo -v
   fi
 }
 
@@ -484,8 +494,12 @@ resolve_best_source() {
   WINNING_VER="${INSTALLED_VER:-0.0.0}"
   WINNING_SOURCE="installed"
 
-  if [[ -n "${local_ver}" ]] && version_gt "${local_ver}" "${WINNING_VER}"; then
-    WINNING_VER="${local_ver}"; WINNING_SOURCE="local"
+  # Local file wins if strictly higher version, or equal version but from a
+  # different path (e.g. user is reinstalling a locally-modified copy).
+  if [[ -n "${local_ver}" && "${local_app}" != "${installed_app}" ]]; then
+    if version_gt "${local_ver}" "${WINNING_VER}" || [[ "${local_ver}" == "${WINNING_VER}" ]]; then
+      WINNING_VER="${local_ver}"; WINNING_SOURCE="local"
+    fi
   fi
   if [[ -n "${remote_ver}" ]] && version_gt "${remote_ver}" "${WINNING_VER}"; then
     WINNING_VER="${remote_ver}"; WINNING_SOURCE="remote"
@@ -495,9 +509,15 @@ resolve_best_source() {
   case "${WINNING_SOURCE}" in
     local)
       SOURCE_DIR="${cwd}"; SOURCE_APP="${local_app}"
-      [[ -n "${INSTALLED_VER}" ]] \
-        && ok "Update available: ${INSTALLED_VER} → ${WINNING_VER}  (local file wins)" \
-        || ok "Source: local file ${WINNING_VER}"
+      if [[ -n "${INSTALLED_VER}" ]]; then
+        if version_gt "${WINNING_VER}" "${INSTALLED_VER}"; then
+          ok "Update available: ${INSTALLED_VER} → ${WINNING_VER}  (local file wins)"
+        else
+          ok "Reinstalling ${WINNING_VER} from local file (same version, local copy used)"
+        fi
+      else
+        ok "Source: local file ${WINNING_VER}"
+      fi
       ;;
     remote)
       SOURCE_DIR="${TEMP_SOURCE_DIR}"; SOURCE_APP="${remote_app}"
@@ -821,6 +841,8 @@ main() {
     warn "Running directly as root."
   fi
 
+  # Set SUDO variable now so it's always defined; actual password prompt
+  # (auth_sudo) runs later, after all interactive questions are answered.
   init_sudo
 
   INSTALL_ROOT="$(ask_value "Install directory" "${INSTALL_ROOT}")"
@@ -983,6 +1005,9 @@ main() {
     fi
   fi
 
+  # All questions answered — now authenticate sudo before any privileged work.
+  auth_sudo
+
   SERVICE_USER="${SUDO_USER:-$USER}"
   SERVICE_GROUP="$(id -gn "${SERVICE_USER}")"
   ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
@@ -1022,7 +1047,8 @@ main() {
       python3 python3-venv python3-dev python3-setuptools \
       build-essential pkg-config git curl wget ca-certificates rsync \
       ffmpeg ethtool net-tools iproute2 jq \
-      libffi-dev libssl-dev
+      libffi-dev libssl-dev \
+      libportaudio2
 
     if [[ "${ENABLE_SDR}" == "1" ]]; then
       step "Installing SDR apt packages"
@@ -1033,6 +1059,13 @@ main() {
       ensure_rtlsdr_blacklist
     fi
 
+  fi
+
+  # ── Runtime apt packages needed on fresh installs AND updates ────────────────
+  # (libportaudio2 is required by sounddevice; apt-get install is idempotent)
+  if command -v apt-get &>/dev/null; then
+    export DEBIAN_FRONTEND=noninteractive
+    ${SUDO} apt-get install -y libportaudio2 || warn "Could not install libportaudio2 (sound device input may not work)"
   fi
 
   # ── Directories ──────────────────────────────────────────────────────────────
@@ -1066,6 +1099,18 @@ main() {
     ok "Installed ${TARGET_APP} (${WINNING_VER})"
   fi
 
+  # ── Metrics DB migration note (3.0.5+) ───────────────────────────────────────
+  # metrics_history.db is created automatically by SignalScope on first start via
+  # CREATE TABLE IF NOT EXISTS — no manual step is required.  We just note it so
+  # operators know where the file lives.
+  if [[ "${IS_UPDATE}" -eq 1 ]]; then
+    METRICS_DB="${INSTALL_ROOT}/metrics_history.db"
+    if [[ ! -f "${METRICS_DB}" ]]; then
+      info "New in this version: SQLite metric history (metrics_history.db)."
+      info "  → The file will be created automatically on first start at ${METRICS_DB}"
+    fi
+  fi
+
   if [[ -d "${SOURCE_DIR}/static" && "${WINNING_SOURCE}" != "installed" ]]; then
     ${SUDO} mkdir -p "${INSTALL_ROOT}/static"
     ${SUDO} rsync -a --delete "${SOURCE_DIR}/static/" "${INSTALL_ROOT}/static/"
@@ -1093,7 +1138,7 @@ main() {
   # ── Python packages — pip is idempotent, safe to run on updates too ──────────
   step "Installing/updating Python packages"
   python -m pip install --upgrade pip wheel "setuptools<81"
-  python -m pip install flask waitress cheroot numpy scipy requests certifi cryptography
+  python -m pip install flask waitress cheroot numpy scipy requests certifi cryptography psutil sounddevice
 
   step "Installing/checking ONNX stack"
   python -m pip install onnx || warn "Failed to install onnx"

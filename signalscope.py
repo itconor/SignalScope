@@ -230,7 +230,7 @@ document.addEventListener('DOMContentLoaded',function(){
               }).catch(function(e){ el.style.color='var(--al)'; el.textContent='✗ Request failed: '+e; });
           }
           </script>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-hub">
   <div class="sec">🌐 Network Interfaces</div>
@@ -277,8 +277,18 @@ document.addEventListener('DOMContentLoaded',function(){
                      placeholder="https://hub.yourdomain.com  or  http://hub-server-ip">
             </label>
             <p class="help">The address of the hub server. If the hub has a certificate, use <code style="background:#173a69;padding:1px 5px;border-radius:3px">https://hub.yourdomain.com</code>. Without a cert, use <code style="background:#173a69;padding:1px 5px;border-radius:3px">http://hub-server-ip</code> (hub runs on port 80 automatically).</p>
+            <div class="cr" style="margin-top:10px">
+              <input type="checkbox" name="hub_suppress_local" value="1" {{'checked' if cfg.suppress_local_notifications}}>
+              <label style="margin:0;text-transform:none;font-size:12px;color:var(--tx)">
+                <strong>Suppress local notifications when connected to hub</strong>
+                <span style="display:block;color:var(--mu);margin-top:2px">
+                  When enabled, email / webhook / Pushover alerts from this site are silenced while the hub connection is active.
+                  The hub receives all events and forwards them using its own per-site notification rules.
+                </span>
+              </label>
+            </div>
           </div>
-        
+
           {# ── Hub panel ── #}
           <div id="hub_server_panel" style="margin-top:12px;padding:12px;background:#0d1520;border:1px solid var(--bor);border-radius:8px">
             <div style="font-size:12px;font-weight:600;color:#86efac;margin-bottom:10px">🛰 Hub Server Settings</div>
@@ -287,6 +297,50 @@ document.addEventListener('DOMContentLoaded',function(){
               <code style="background:#173a69;padding:1px 6px;border-radius:4px">/api/v1/heartbeat</code>.
               Make sure this port is accessible from all client sites.
             </p>
+            {# ── Per-site alert rules ── #}
+            <div style="margin-top:10px;border-top:1px solid var(--bor);padding-top:10px">
+              <div style="font-size:12px;font-weight:600;color:var(--acc);margin-bottom:8px">📋 Per-Site Alert Rules</div>
+              <p class="help" style="margin-bottom:10px">
+                Configure which alert types the hub forwards for each connected site. Sites using
+                <em>Suppress local notifications</em> rely on the hub for all notification delivery.
+              </p>
+              {% set known_sites = hub_sites or [] %}
+              {% if known_sites %}
+                {% for site in known_sites %}
+                  {% set srules = cfg.hub_site_rules.get(site.site, {}) %}
+                  {% set sfwd   = srules.get('forward_types', _hub_default_fwd) %}
+                  <div style="margin-bottom:10px;padding:10px;background:#0a1628;border:1px solid var(--bor);border-radius:6px" id="hub_site_{{loop.index}}">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                      <strong style="font-size:12px">{{site.site}}</strong>
+                      <span style="font-size:11px;color:{{'var(--ok)' if site.online else 'var(--al)'}}">
+                        {{'● Online' if site.online else '○ Offline'}}
+                      </span>
+                    </div>
+                    <div class="cr" style="margin-bottom:8px">
+                      <input type="checkbox" id="hsr_en_{{loop.index}}"
+                             {{'checked' if srules.get('enabled', True)}}>
+                      <label for="hsr_en_{{loop.index}}" style="margin:0;font-size:12px;text-transform:none;color:var(--mu)">
+                        Enabled — forward alerts from this site
+                      </label>
+                    </div>
+                    <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px">
+                      {% for atype in _all_alert_types %}
+                      <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--mu);background:#102540;padding:3px 7px;border-radius:4px;cursor:pointer">
+                        <input type="checkbox" class="hsr-type" data-site="{{site.site}}"
+                               {{'checked' if atype in sfwd}} value="{{atype}}" style="margin:0">
+                        {{atype}}
+                      </label>
+                      {% endfor %}
+                    </div>
+                    <button type="button" class="btn bp bs" style="font-size:11px;padding:4px 10px"
+                            onclick="saveHubSiteRules('{{site.site}}', {{loop.index}})">Save Rules</button>
+                    <span id="hsr_status_{{loop.index}}" style="font-size:11px;margin-left:8px;color:var(--mu)"></span>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <p style="font-size:12px;color:var(--mu)">No client sites have connected yet. Rules can be configured once sites come online.</p>
+              {% endif %}
+            </div>
           </div>
         
           {# ── Shared secret — applies to BOTH sides, always shown prominently ── #}
@@ -350,8 +404,21 @@ document.addEventListener('DOMContentLoaded',function(){
             sp.style.display = (mode==='hub'   ||mode==='both') ? '' : 'none';
           }
           document.addEventListener('DOMContentLoaded', updateHubPanels);
+          function saveHubSiteRules(siteName, idx){
+            var enEl = document.getElementById('hsr_en_'+idx);
+            var typeEls = document.querySelectorAll('.hsr-type[data-site="'+siteName+'"]');
+            var fwdTypes = [];
+            typeEls.forEach(function(el){ if(el.checked) fwdTypes.push(el.value); });
+            var body = JSON.stringify({site_name: siteName, enabled: enEl ? enEl.checked : true, forward_types: fwdTypes});
+            var statusEl = document.getElementById('hsr_status_'+idx);
+            if(statusEl) statusEl.textContent = 'Saving…';
+            fetch('/api/hub/site_rules', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':document.querySelector('meta[name=csrf-token]').content},body:body})
+              .then(function(r){return r.json();})
+              .then(function(d){if(statusEl) statusEl.textContent = d.ok ? '✓ Saved' : '✗ '+d.error;})
+              .catch(function(e){if(statusEl) statusEl.textContent = '✗ '+e;});
+          }
           </script>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-hub">
   <div class="sec">🌐 Network Interfaces</div>
@@ -398,8 +465,18 @@ document.addEventListener('DOMContentLoaded',function(){
                      placeholder="https://hub.yourdomain.com  or  http://hub-server-ip">
             </label>
             <p class="help">The address of the hub server. If the hub has a certificate, use <code style="background:#173a69;padding:1px 5px;border-radius:3px">https://hub.yourdomain.com</code>. Without a cert, use <code style="background:#173a69;padding:1px 5px;border-radius:3px">http://hub-server-ip</code> (hub runs on port 80 automatically).</p>
+            <div class="cr" style="margin-top:10px">
+              <input type="checkbox" name="hub_suppress_local" value="1" {{'checked' if cfg.suppress_local_notifications}}>
+              <label style="margin:0;text-transform:none;font-size:12px;color:var(--tx)">
+                <strong>Suppress local notifications when connected to hub</strong>
+                <span style="display:block;color:var(--mu);margin-top:2px">
+                  When enabled, email / webhook / Pushover alerts from this site are silenced while the hub connection is active.
+                  The hub receives all events and forwards them using its own per-site notification rules.
+                </span>
+              </label>
+            </div>
           </div>
-        
+
           {# ── Hub panel ── #}
           <div id="hub_server_panel" style="margin-top:12px;padding:12px;background:#0d1520;border:1px solid var(--bor);border-radius:8px">
             <div style="font-size:12px;font-weight:600;color:#86efac;margin-bottom:10px">🛰 Hub Server Settings</div>
@@ -408,6 +485,50 @@ document.addEventListener('DOMContentLoaded',function(){
               <code style="background:#173a69;padding:1px 6px;border-radius:4px">/api/v1/heartbeat</code>.
               Make sure this port is accessible from all client sites.
             </p>
+            {# ── Per-site alert rules ── #}
+            <div style="margin-top:10px;border-top:1px solid var(--bor);padding-top:10px">
+              <div style="font-size:12px;font-weight:600;color:var(--acc);margin-bottom:8px">📋 Per-Site Alert Rules</div>
+              <p class="help" style="margin-bottom:10px">
+                Configure which alert types the hub forwards for each connected site. Sites using
+                <em>Suppress local notifications</em> rely on the hub for all notification delivery.
+              </p>
+              {% set known_sites = hub_sites or [] %}
+              {% if known_sites %}
+                {% for site in known_sites %}
+                  {% set srules = cfg.hub_site_rules.get(site.site, {}) %}
+                  {% set sfwd   = srules.get('forward_types', _hub_default_fwd) %}
+                  <div style="margin-bottom:10px;padding:10px;background:#0a1628;border:1px solid var(--bor);border-radius:6px" id="hub_site_{{loop.index}}">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                      <strong style="font-size:12px">{{site.site}}</strong>
+                      <span style="font-size:11px;color:{{'var(--ok)' if site.online else 'var(--al)'}}">
+                        {{'● Online' if site.online else '○ Offline'}}
+                      </span>
+                    </div>
+                    <div class="cr" style="margin-bottom:8px">
+                      <input type="checkbox" id="hsr_en_{{loop.index}}"
+                             {{'checked' if srules.get('enabled', True)}}>
+                      <label for="hsr_en_{{loop.index}}" style="margin:0;font-size:12px;text-transform:none;color:var(--mu)">
+                        Enabled — forward alerts from this site
+                      </label>
+                    </div>
+                    <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px">
+                      {% for atype in _all_alert_types %}
+                      <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--mu);background:#102540;padding:3px 7px;border-radius:4px;cursor:pointer">
+                        <input type="checkbox" class="hsr-type" data-site="{{site.site}}"
+                               {{'checked' if atype in sfwd}} value="{{atype}}" style="margin:0">
+                        {{atype}}
+                      </label>
+                      {% endfor %}
+                    </div>
+                    <button type="button" class="btn bp bs" style="font-size:11px;padding:4px 10px"
+                            onclick="saveHubSiteRules('{{site.site}}', {{loop.index}})">Save Rules</button>
+                    <span id="hsr_status_{{loop.index}}" style="font-size:11px;margin-left:8px;color:var(--mu)"></span>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <p style="font-size:12px;color:var(--mu)">No client sites have connected yet. Rules can be configured once sites come online.</p>
+              {% endif %}
+            </div>
           </div>
         
           {# ── Shared secret — applies to BOTH sides, always shown prominently ── #}
@@ -471,8 +592,21 @@ document.addEventListener('DOMContentLoaded',function(){
             sp.style.display = (mode==='hub'   ||mode==='both') ? '' : 'none';
           }
           document.addEventListener('DOMContentLoaded', updateHubPanels);
+          function saveHubSiteRules(siteName, idx){
+            var enEl = document.getElementById('hsr_en_'+idx);
+            var typeEls = document.querySelectorAll('.hsr-type[data-site="'+siteName+'"]');
+            var fwdTypes = [];
+            typeEls.forEach(function(el){ if(el.checked) fwdTypes.push(el.value); });
+            var body = JSON.stringify({site_name: siteName, enabled: enEl ? enEl.checked : true, forward_types: fwdTypes});
+            var statusEl = document.getElementById('hsr_status_'+idx);
+            if(statusEl) statusEl.textContent = 'Saving…';
+            fetch('/api/hub/site_rules', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':document.querySelector('meta[name=csrf-token]').content},body:body})
+              .then(function(r){return r.json();})
+              .then(function(d){if(statusEl) statusEl.textContent = d.ok ? '✓ Saved' : '✗ '+d.error;})
+              .catch(function(e){if(statusEl) statusEl.textContent = '✗ '+e;});
+          }
           </script>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-sec">
   <div class="sec">🔐 Web UI Authentication</div>
@@ -494,7 +628,7 @@ document.addEventListener('DOMContentLoaded',function(){
               <span class="help" style="display:block;margin-top:2px">Auto logout after inactivity</span>
             </label>
           </div>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-gen">
   <div class="sec">📊 SLA Reporting</div>
@@ -510,7 +644,7 @@ document.addEventListener('DOMContentLoaded',function(){
                    style="width:120px">
           </label>
           <p class="help">Daily summary email is sent at this time each day. Requires email to be configured. Uses 24-hour local time.</p>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-maint">
   <div class="sec">🗂 Maintenance</div>
@@ -528,7 +662,27 @@ document.addEventListener('DOMContentLoaded',function(){
               <span class="help" style="display:block;margin-top:2px">Oldest clips removed when over limit (0 = unlimited)</span>
             </label>
           </div>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a></div>
+
+  <div class="sec" style="margin-top:24px">🔄 Software Update</div>
+  <p class="help" style="margin-bottom:12px">SignalScope checks GitHub for updates every 6 hours. Use the button below to check right now.</p>
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <button id="upd-check-btn" type="button" class="btn bp" style="font-size:13px">🔍 Check for Updates</button>
+    <span id="upd-status" style="font-size:12px;color:var(--mu)">Current: <strong style="color:var(--tx)">{{build}}</strong></span>
+  </div>
+  <div id="upd-result" style="margin-top:12px;font-size:13px;display:none"></div>
+
+  <div class="sec" style="margin-top:24px">⬇ Backup &amp; Restore</div>
+  <p class="help" style="margin-bottom:12px">Download a ZIP archive containing your configuration and AI models. Use this to back up your setup or migrate to a new server.</p>
+  <a href="/settings/backup" class="btn bp" style="font-size:13px">⬇ Download Backup (config + AI models)</a>
+  <hr style="border:none;border-top:1px solid var(--bor);margin:18px 0">
+  <p class="help" style="margin-bottom:8px">Restore from a previously downloaded backup ZIP. The config and AI models will be overwritten and monitoring will restart automatically.</p>
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <input type="file" id="restore-file-input" accept=".zip" style="font-size:13px;color:var(--tx);background:#173a69;border:1px solid var(--bor);border-radius:6px;padding:6px 10px">
+    <button type="button" id="restore-upload-btn" class="btn bw" style="font-size:13px">⬆ Restore Backup</button>
+  </div>
+  <p style="font-size:11px;color:var(--mu);margin-top:6px">Only files from a SignalScope backup ZIP are restored — all other zip contents are ignored.</p>
+  <div id="restore-status" style="font-size:12px;margin-top:8px"></div>
 </div>
 <div class="pn" id="p-sdr">
   <div class="sec">📻 SDR Devices</div>
@@ -616,22 +770,7 @@ document.addEventListener('DOMContentLoaded',function(){
   }
   </script>
 
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a></div>
-</div>
-</form>
-
-<div class="panel" style="margin-top:24px">
-  <div class="panel-title">🔄 Software Update</div>
-  <div class="panel-body">
-    <p style="font-size:13px;color:var(--mu);margin-bottom:12px">SignalScope checks GitHub for updates every 6 hours. Use the button below to check right now.</p>
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <button id="upd-check-btn" class="btn bp" style="font-size:13px" onclick="checkForUpdates()">🔍 Check for Updates</button>
-      <span id="upd-status" style="font-size:12px;color:var(--mu)">
-        Current: <strong style="color:var(--tx)">{{build}}</strong>
-      </span>
-    </div>
-    <div id="upd-result" style="margin-top:12px;font-size:13px;display:none"></div>
-  </div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <script nonce="{{csp_nonce()}}">
 function _csrf(){return document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';}
@@ -639,6 +778,7 @@ function _csrf(){return document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[
 function checkForUpdates(){
   var btn=document.getElementById('upd-check-btn');
   var res=document.getElementById('upd-result');
+  if(!btn||!res) return;
   btn.disabled=true; btn.textContent='Checking…';
   res.style.display='none';
   fetch('/api/version_check/refresh',{method:'POST',headers:{'X-CSRFToken':_csrf()}})
@@ -664,32 +804,33 @@ function checkForUpdates(){
 
 function showUpdateAvailable(latest, current){
   var res=document.getElementById('upd-result');
+  if(!res) return;
   res.style.display='';
   res.innerHTML=
     '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 14px;background:#1c3a10;border:1px solid #4ade80;border-radius:8px">'
     +'<span style="color:#fde68a">⬆ <strong style="color:#fff">SignalScope '+latest+'</strong> is available'
     +(current?' <span style="color:var(--mu);font-size:11px">(you are on '+current+')</span>':'')
     +'</span>'
-    +'<button class="btn" style="background:#166534;color:#fff;font-size:12px" onclick="applyUpdate(\''+latest+'\',\''+(current||'')+'\')">⬆ Apply Update &amp; Restart</button>'
+    +'<button class="btn" style="background:#166534;color:#fff;font-size:12px" data-action="upd-confirm" data-ver="'+latest+'" data-current="'+(current||'')+'">⬆ Apply Update &amp; Restart</button>'
     +'</div>';
 }
 
 function applyUpdate(ver, current){
-  /* Replace the update-available div with an in-page confirmation.
-     We avoid confirm() because browsers silently block it on LAN IPs / non-HTTPS origins. */
   var res=document.getElementById('upd-result');
+  if(!res) return;
   res.innerHTML=
     '<div style="padding:10px 14px;background:#2a1505;border:1px solid #f97316;border-radius:8px">'
     +'<p style="color:#fde68a;font-size:13px;margin:0 0 10px">⚠ Apply <strong style="color:#fff">SignalScope '+ver+'</strong> and restart?'
     +' <span style="font-size:11px;color:var(--mu)">The page will reload automatically once the service restarts (~15 s).</span></p>'
     +'<div style="display:flex;gap:10px;flex-wrap:wrap">'
-    +'<button class="btn" style="background:#166534;color:#fff;font-size:12px" onclick="doApplyUpdate(\''+ver+'\')">✓ Apply Update</button>'
-    +'<button class="btn" style="background:#374151;color:#fff;font-size:12px" onclick="showUpdateAvailable(\''+ver+'\',\''+(current||'')+'\')">✗ Cancel</button>'
+    +'<button class="btn" style="background:#166534;color:#fff;font-size:12px" data-action="upd-apply" data-ver="'+ver+'">✓ Apply Update</button>'
+    +'<button class="btn" style="background:#374151;color:#fff;font-size:12px" data-action="upd-cancel" data-ver="'+ver+'" data-current="'+(current||'')+'">✗ Cancel</button>'
     +'</div></div>';
 }
 
 function doApplyUpdate(ver){
   var res=document.getElementById('upd-result');
+  if(!res) return;
   res.innerHTML='<span style="color:var(--acc)">⏳ Downloading and applying update…</span>';
   fetch('/api/update/apply',{method:'POST',headers:{'X-CSRFToken':_csrf()}})
     .then(r=>r.json()).then(function(d){
@@ -715,26 +856,39 @@ function doApplyUpdate(ver){
       res.innerHTML='<span style="color:var(--al)">✗ Request failed: '+e.message+'</span>';
     });
 }
-</script>
 
-<div class="panel" style="margin-top:24px">
-  <div class="panel-title">⬇ Backup &amp; Restore</div>
-  <div class="panel-body">
-    <p style="font-size:13px;color:var(--mu);margin-bottom:14px">Download a ZIP archive containing your configuration file and all trained AI models. Use this to back up your setup or migrate to a new server.</p>
-    <a href="/settings/backup" class="btn bp" style="font-size:13px">⬇ Download Backup (config + AI models)</a>
-    <hr style="border:none;border-top:1px solid var(--bor);margin:18px 0">
-    <p style="font-size:13px;color:var(--mu);margin-bottom:10px">Restore from a previously downloaded backup ZIP. The config and AI models will be overwritten and monitoring will restart automatically.</p>
-    <form method="post" action="/settings/restore" enctype="multipart/form-data" onsubmit="return confirm('This will overwrite your current config and AI models. Continue?')">
-      <input type="hidden" name="_csrf_token" value="{{csrf_token()}}">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <input type="file" name="backup_zip" accept=".zip" required
-               style="font-size:13px;color:var(--tx);background:#173a69;border:1px solid var(--bor);border-radius:6px;padding:6px 10px">
-        <button type="submit" class="btn bw" style="font-size:13px">⬆ Restore Backup</button>
-      </div>
-      <p id="restore-hint" style="font-size:11px;color:var(--mu);margin-top:6px">Only files from a SignalScope backup ZIP are restored — all other zip contents are ignored.</p>
-    </form>
-  </div>
-</div>
+// Delegated listener for update action buttons
+document.addEventListener('click', function(e){
+  var btn=e.target.closest('#upd-result [data-action]');
+  if(!btn) return;
+  var action=btn.dataset.action, ver=btn.dataset.ver, current=btn.dataset.current;
+  if(action==='upd-confirm') applyUpdate(ver, current);
+  else if(action==='upd-apply')  doApplyUpdate(ver);
+  else if(action==='upd-cancel') showUpdateAvailable(ver, current);
+});
+
+// Wire up the update check button
+document.getElementById('upd-check-btn').addEventListener('click', checkForUpdates);
+
+// Restore upload via fetch — avoids nested-form HTML issues
+document.getElementById('restore-upload-btn').addEventListener('click', function(){
+  var fi=document.getElementById('restore-file-input');
+  var st=document.getElementById('restore-status');
+  if(!fi.files.length){st.style.color='var(--wn)';st.textContent='Select a backup ZIP first.';return;}
+  if(!confirm('This will overwrite your current config and AI models. Continue?')) return;
+  var fd=new FormData();
+  fd.append('backup_zip', fi.files[0]);
+  fd.append('_csrf_token', _csrf());
+  st.style.color='var(--acc)'; st.textContent='Uploading…';
+  fetch('/settings/restore',{method:'POST',body:fd})
+    .then(function(r){
+      if(r.redirected||r.ok){ st.style.color='var(--ok)'; st.textContent='Restore complete — reloading…'; setTimeout(function(){location.reload();},2000); }
+      else { return r.text().then(function(t){ st.style.color='var(--al)'; st.textContent='Restore failed (HTTP '+r.status+').'; }); }
+    })
+    .catch(function(e){ st.style.color='var(--al)'; st.textContent='Request failed: '+e.message; });
+});
+</script>
+</form>
 
 </div></div>
 
@@ -773,13 +927,32 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-2.6.67"
+BUILD                  = "SignalScope-3.1.0"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
 CHUNK_SIZE             = int(SAMPLE_RATE * CHUNK_DURATION)
 ALERT_COOLDOWN         = 60.0
+
+# Alert types the hub forwards by default when a site has no explicit rules
+_HUB_DEFAULT_FORWARD_TYPES = [
+    "SILENCE", "STUDIO_FAULT", "STL_FAULT", "TX_DOWN",
+    "CLIP", "AI_ALERT", "RTP_LOSS", "RTP_FAULT",
+    "DAB_SERVICE_MISSING", "DAB_AUDIO_FAULT",
+    "LUFS_TP", "ESCALATION", "CHAIN_FAULT",
+    "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
+]
+# All alert type identifiers (shown as checkboxes in hub site rules UI)
+_ALL_ALERT_TYPES = [
+    "SILENCE", "STUDIO_FAULT", "STL_FAULT", "TX_DOWN",
+    "CLIP", "HISS", "AI_ALERT", "AI_WARN",
+    "RTP_LOSS", "RTP_LOSS_WARN", "RTP_FAULT",
+    "DAB_SERVICE_MISSING", "DAB_AUDIO_FAULT",
+    "LUFS_TP", "LUFS_I", "ESCALATION",
+    "PTP_OFFSET", "PTP_JITTER", "PTP_LOST", "PTP_GM_CHANGE",
+    "CHAIN_FAULT", "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
+]
 STREAM_BUFFER_SECONDS  = 20.0
 ALERT_BUFFER_SECONDS   = 8.0
 LIVE_PLAYOUT_BUFFER_SECS = 1.5  # extra browser listen jitter buffer on Linux/VMs
@@ -873,6 +1046,9 @@ class InputConfig:
     lufs_target:              float = -23.0      # target integrated loudness (LUFS, EBU R128)
     lufs_tolerance_db:        float = 3.0        # alert if I-LUFS deviates more than this (LU)
     escalation_minutes:       int   = 0          # re-notify for unacked alerts after N minutes (0 = off)
+    # Expected identity — alert when actual name differs or changes
+    expected_fm_rds_ps:   str = ""   # expected RDS Programme Service name; blank = alert on any change
+    expected_dab_service: str = ""   # expected DAB service name; blank = alert on any change
 
     # RTP tracking (runtime)
     _rtp_last_seq:      int   = field(default=-1,   init=False, repr=False)
@@ -881,6 +1057,9 @@ class InputConfig:
     _rtp_loss_pct:      float = field(default=0.0,  init=False, repr=False)
     _rtp_loss_window:   int   = field(default=0,    init=False, repr=False)
     _rtp_total_window:  int   = field(default=0,    init=False, repr=False)
+    _rtp_jitter_ms:     float = field(default=0.0,  init=False, repr=False)  # running jitter estimate (ms)
+    _rtp_jitter_acc:    float = field(default=0.0,  init=False, repr=False)  # EWMA of inter-arrival time
+    _rtp_last_arrival:  float = field(default=0.0,  init=False, repr=False)  # monotonic time of last packet
     # DAB status (populated for dab:// sources)
     _dab_snr:           float = field(default=0.0,  init=False, repr=False)
     _dab_sig:           float = field(default=0.0,  init=False, repr=False)
@@ -905,6 +1084,9 @@ class InputConfig:
     _fm_rds_best_phase: int   = field(default=-1, init=False, repr=False)
     _fm_rds_last_good:  float = field(default=0.0, init=False, repr=False)
     _fm_backend:        str   = field(default="",   init=False, repr=False)
+    # Name-change tracking (runtime)
+    _fm_rds_ps_prev:    str   = field(default="",   init=False, repr=False)
+    _dab_service_prev:  str   = field(default="",   init=False, repr=False)
     # SLA tracking (runtime)
     _sla_monitored_s:   float = field(default=0.0,  init=False, repr=False)
     _sla_alert_s:       float = field(default=0.0,  init=False, repr=False)
@@ -1089,6 +1271,10 @@ class AppConfig:
     login_max_attempts: int   = 10    # lockout after N failures
     login_lockout_mins: int   = 15    # lockout duration in minutes
     session_timeout_hrs: int  = 12    # hours before session expires
+    # Hub notification delegation
+    suppress_local_notifications: bool = False   # client: skip email/webhook/pushover when hub is connected
+    hub_site_rules: dict = field(default_factory=dict)  # hub: per-site {enabled, forward_types}
+    signal_chains: list = field(default_factory=list)   # hub: broadcast signal chains [{id,name,nodes}]
 
 # ─── Config persistence ───────────────────────────────────────────────────────
 
@@ -1155,6 +1341,8 @@ def load_config() -> AppConfig:
             lufs_target=float(item.get("lufs_target", -23.0)),
             lufs_tolerance_db=float(item.get("lufs_tolerance_db", 3.0)),
             escalation_minutes=int(item.get("escalation_minutes", 0)),
+            expected_fm_rds_ps=item.get("expected_fm_rds_ps", ""),
+            expected_dab_service=item.get("expected_dab_service", ""),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {})
     return AppConfig(
@@ -1220,6 +1408,9 @@ def load_config() -> AppConfig:
         login_max_attempts=int(raw.get("login_max_attempts",10)),
         login_lockout_mins=int(raw.get("login_lockout_mins",15)),
         session_timeout_hrs=int(raw.get("session_timeout_hrs",12)),
+        suppress_local_notifications=bool(raw.get("suppress_local_notifications", False)),
+        hub_site_rules=raw.get("hub_site_rules", {}),
+        signal_chains=raw.get("signal_chains", []),
     )
 
 
@@ -1270,6 +1461,8 @@ def save_config(cfg: AppConfig):
             "lufs_target": i.lufs_target,
             "lufs_tolerance_db": i.lufs_tolerance_db,
             "escalation_minutes": i.escalation_minutes,
+            "expected_fm_rds_ps": i.expected_fm_rds_ps,
+            "expected_dab_service": i.expected_dab_service,
         } for i in cfg.inputs],
         "email": {
             "enabled": cfg.email.enabled, "smtp_host": cfg.email.smtp_host,
@@ -1311,6 +1504,9 @@ def save_config(cfg: AppConfig):
         },
         "sla_target_pct": cfg.sla_target_pct,
         "nowplaying_country": cfg.nowplaying_country,
+        "suppress_local_notifications": cfg.suppress_local_notifications,
+        "hub_site_rules": cfg.hub_site_rules,
+        "signal_chains": cfg.signal_chains,
     }
     with open(CONFIG_PATH, "w") as f:
         json.dump(data, f, indent=2)
@@ -1369,6 +1565,7 @@ def _stats_path(name: str) -> str:
 ALERT_LOG_PATH  = os.path.join(BASE_DIR, "alert_log.json")
 ALERT_ACKS_PATH = os.path.join(BASE_DIR, "alert_acks.json")
 HUB_STATE_PATH  = os.path.join(BASE_DIR, "hub_state.json")  # persists site data across hub restarts
+METRICS_DB_PATH = os.path.join(BASE_DIR, "metrics_history.db")
 _alert_log_lock = threading.Lock()
 _alert_acks: Dict[str, dict] = {}
 _alert_acks_lock = threading.Lock()
@@ -1434,6 +1631,7 @@ def _add_history(cfg: InputConfig, kind: str, msg: str, clip_path: str = ""):
         "message":       msg,
         "level_dbfs":    round(cfg._last_level_dbfs, 1),
         "rtp_loss_pct":  round(cfg._rtp_loss_pct, 2),
+        "rtp_jitter_ms": round(cfg._rtp_jitter_ms, 2),
         "clip":          os.path.basename(clip_path) if clip_path else "",
         "ptp_state":     ptp.state       if ptp else "",
         "ptp_offset_us": round(ptp.offset_us, 1)  if ptp else 0,
@@ -1811,6 +2009,291 @@ def sla_pct(cfg: InputConfig) -> float:
     return 100.0 * (1.0 - cfg._sla_alert_s / cfg._sla_monitored_s)
     if len(cfg._history) > 300:
         cfg._history = cfg._history[-300:]
+
+# ─── SQLite metric history ────────────────────────────────────────────────────
+#
+# metrics_history.db is created automatically on first start — existing installs
+# need no manual migration step.  The schema uses CREATE TABLE IF NOT EXISTS so
+# it is safe to run against both a fresh file and one already populated.
+#
+# Retention default: 90 days.  Old rows are pruned once per day from _ai_loop.
+#
+# Logged metrics (written once per minute per stream):
+#   level_dbfs      — audio level (all stream types)
+#   lufs_m          — momentary LUFS (all)
+#   lufs_s          — short-term LUFS (all)
+#   lufs_i          — integrated LUFS (all)
+#   fm_signal_dbm   — FM carrier strength (FM streams only)
+#   dab_snr         — DAB signal-to-noise ratio (DAB streams only)
+#   dab_ok          — DAB service present: 1.0 = up, 0.0 = missing (DAB streams)
+#   rtp_loss_pct    — RTP packet loss % (Livewire/AES67 streams only)
+#   rtp_jitter_ms   — RTP inter-arrival jitter ms (Livewire/AES67 streams only)
+
+import sqlite3 as _sqlite3
+
+METRICS_RETENTION_DAYS = 90   # rows older than this are pruned
+
+class MetricsDB:
+    """Thread-safe SQLite wrapper for time-series metric history."""
+
+    def __init__(self, path: str):
+        self._path = path
+        self._lock = threading.Lock()
+        self._conn: Optional[_sqlite3.Connection] = None
+        self._init_db()
+
+    def _connect(self) -> _sqlite3.Connection:
+        conn = _sqlite3.connect(self._path, check_same_thread=False, timeout=10)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
+    def _init_db(self):
+        try:
+            with self._lock:
+                conn = self._connect()
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS metric_history (
+                        stream  TEXT    NOT NULL,
+                        metric  TEXT    NOT NULL,
+                        ts      REAL    NOT NULL,
+                        value   REAL    NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_mh_lookup
+                        ON metric_history(stream, metric, ts);
+                """)
+                conn.commit()
+                self._conn = conn
+        except Exception as e:
+            print(f"[MetricsDB] Init error: {e}")
+
+    def write(self, rows: list):
+        """Insert a list of (stream, metric, ts, value) tuples."""
+        if not rows:
+            return
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                self._conn.executemany(
+                    "INSERT INTO metric_history(stream, metric, ts, value) VALUES(?,?,?,?)",
+                    rows
+                )
+                self._conn.commit()
+        except Exception as e:
+            print(f"[MetricsDB] Write error: {e}")
+            self._conn = None   # force reconnect next time
+
+    def query(self, stream: str, metric: str, hours: float = 24.0) -> list:
+        """Return [(ts, value), ...] for the given stream/metric over the last N hours."""
+        since = time.time() - hours * 3600
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                cur = self._conn.execute(
+                    "SELECT ts, value FROM metric_history "
+                    "WHERE stream=? AND metric=? AND ts>=? ORDER BY ts ASC",
+                    (stream, metric, since)
+                )
+                return cur.fetchall()
+        except Exception as e:
+            print(f"[MetricsDB] Query error: {e}")
+            self._conn = None
+            return []
+
+    def available_metrics(self, stream: str) -> list:
+        """Return list of metric names that have data for the given stream."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                cur = self._conn.execute(
+                    "SELECT DISTINCT metric FROM metric_history WHERE stream=?",
+                    (stream,)
+                )
+                return [r[0] for r in cur.fetchall()]
+        except Exception as e:
+            print(f"[MetricsDB] available_metrics error: {e}")
+            self._conn = None
+            return []
+
+    def prune(self, days: int = METRICS_RETENTION_DAYS):
+        """Delete rows older than `days` days. Called once per day from _ai_loop."""
+        cutoff = time.time() - days * 86400
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                self._conn.execute(
+                    "DELETE FROM metric_history WHERE ts<?", (cutoff,)
+                )
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                self._conn.commit()
+        except Exception as e:
+            print(f"[MetricsDB] Prune error: {e}")
+            self._conn = None
+
+    def hourly_baseline(self, stream: str, metric: str, days: int = 14) -> dict:
+        """Return {hour: {"mean": float, "std": float, "n": int}} grouped by local hour-of-day.
+
+        Only non-silence values (> -80 dBFS / equivalent) are included so that
+        scheduled off-air periods don't skew the baseline downward.
+        Uses the computational variance formula (no STDDEV in SQLite built-ins):
+            std = sqrt(E[x²] - E[x]²)
+        """
+        since = time.time() - days * 86400
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                cur = self._conn.execute(
+                    """SELECT
+                           CAST(strftime('%H', datetime(ts, 'unixepoch', 'localtime')) AS INTEGER) AS h,
+                           AVG(value)                                                               AS mean,
+                           AVG(value * value) - AVG(value) * AVG(value)                            AS variance,
+                           COUNT(*)                                                                 AS n
+                       FROM metric_history
+                       WHERE stream=? AND metric=? AND ts>=? AND value>-80
+                       GROUP BY h""",
+                    (stream, metric, since)
+                )
+                result = {}
+                for h, mean, variance, n in cur.fetchall():
+                    std = float(variance ** 0.5) if variance and variance > 0 else 0.0
+                    result[int(h)] = {
+                        "mean": round(float(mean), 1),
+                        "std":  round(std, 2),
+                        "n":    int(n),
+                    }
+                return result
+        except Exception as e:
+            print(f"[MetricsDB] hourly_baseline error: {e}")
+            self._conn = None
+            return {}
+
+    def dow_hourly_baseline(self, stream: str, metric: str, days: int = 28) -> dict:
+        """Return {(dow, hour): {"mean", "std", "n"}} grouped by (day-of-week, hour).
+
+        Uses 28 days by default so each (dow, hour) cell has ~4 weeks of samples.
+        dow: 0=Sunday … 6=Saturday (SQLite strftime('%w')).
+        Falls back gracefully — the caller should prefer this over hourly_baseline
+        when n >= MIN_SAMPLES, otherwise fall back to hour-only.
+        """
+        since = time.time() - days * 86400
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                cur = self._conn.execute(
+                    """SELECT
+                           CAST(strftime('%w', datetime(ts, 'unixepoch', 'localtime')) AS INTEGER) AS dow,
+                           CAST(strftime('%H', datetime(ts, 'unixepoch', 'localtime')) AS INTEGER) AS h,
+                           AVG(value)                                                               AS mean,
+                           AVG(value * value) - AVG(value) * AVG(value)                            AS variance,
+                           COUNT(*)                                                                 AS n
+                       FROM metric_history
+                       WHERE stream=? AND metric=? AND ts>=? AND value>-80
+                       GROUP BY dow, h""",
+                    (stream, metric, since)
+                )
+                result = {}
+                for dow, h, mean, variance, n in cur.fetchall():
+                    std = float(variance ** 0.5) if variance and variance > 0 else 0.0
+                    result[(int(dow), int(h))] = {
+                        "mean": round(float(mean), 1),
+                        "std":  round(std, 2),
+                        "n":    int(n),
+                    }
+                return result
+        except Exception as e:
+            print(f"[MetricsDB] dow_hourly_baseline error: {e}")
+            self._conn = None
+            return {}
+
+    def recent_values(self, stream: str, metric: str, minutes: int = 30) -> list:
+        """Return [(ts, value), ...] for the last `minutes` minutes, newest first.
+
+        Used for sustained-deviation scoring — check whether a deviation has
+        been present for an extended period rather than just the latest point.
+        """
+        since = time.time() - minutes * 60
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                cur = self._conn.execute(
+                    "SELECT ts, value FROM metric_history "
+                    "WHERE stream=? AND metric=? AND ts>=? ORDER BY ts DESC",
+                    (stream, metric, since)
+                )
+                return cur.fetchall()
+        except Exception as e:
+            print(f"[MetricsDB] recent_values error: {e}")
+            self._conn = None
+            return []
+
+    def last_value(self, stream: str, metric: str) -> "Optional[float]":
+        """Return the most recent stored value for stream/metric, or None."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                cur = self._conn.execute(
+                    "SELECT value FROM metric_history WHERE stream=? AND metric=? "
+                    "ORDER BY ts DESC LIMIT 1",
+                    (stream, metric)
+                )
+                row = cur.fetchone()
+                return float(row[0]) if row else None
+        except Exception as e:
+            print(f"[MetricsDB] last_value error: {e}")
+            self._conn = None
+            return None
+
+# Module-level singleton — created once, shared across all threads.
+metrics_db = MetricsDB(METRICS_DB_PATH)
+
+
+def _metrics_flush(inputs: list):
+    """Snapshot current metric values for all enabled inputs and write to SQLite.
+
+    Called once per minute from _ai_loop.  Only metrics whose values are
+    meaningful for the stream type are written (e.g. fm_signal_dbm is only
+    written for fm:// streams; dab_snr only for dab:// streams).
+    """
+    now = time.time()
+    rows = []
+    for cfg in inputs:
+        if not cfg.enabled:
+            continue
+        name = cfg.name
+        dev  = (cfg.device_index or "").lower()
+
+        # Universal metrics — every stream type
+        rows.append((name, "level_dbfs",   now, cfg._last_level_dbfs))
+        rows.append((name, "lufs_m",       now, cfg._lufs_m))
+        rows.append((name, "lufs_s",       now, cfg._lufs_s))
+        rows.append((name, "lufs_i",       now, cfg._lufs_i))
+
+        # FM-specific
+        if dev.startswith("fm://"):
+            rows.append((name, "fm_signal_dbm", now, cfg._fm_signal_dbm))
+
+        # DAB-specific
+        if dev.startswith("dab://"):
+            rows.append((name, "dab_snr", now, cfg._dab_snr))
+            rows.append((name, "dab_ok",  now, 1.0 if cfg._dab_ok else 0.0))
+
+        # Livewire / AES67 / RTP (not FM or DAB or HTTP)
+        if not dev.startswith("fm://") and not dev.startswith("dab://") \
+                and not dev.startswith("http://") and not dev.startswith("https://"):
+            rows.append((name, "rtp_loss_pct",  now, cfg._rtp_loss_pct))
+            rows.append((name, "rtp_jitter_ms", now, cfg._rtp_jitter_ms))
+
+    if rows:
+        metrics_db.write(rows)
+
 
 def _make_wav_bytes(audio: np.ndarray) -> bytes:
     pcm = (np.clip(audio.astype(np.float32), -1.0, 1.0) * 32767).astype(np.int16)
@@ -2190,6 +2673,19 @@ class StreamAI:
 
 # ─── Alerting ─────────────────────────────────────────────────────────────────
 
+def _hub_is_connected() -> bool:
+    """Return True if the hub client has an active, recently confirmed connection.
+    Used by AlertSender to suppress local notifications when the hub is handling them.
+    """
+    try:
+        hc = monitor._hub_client
+        if hc is None:
+            return False
+        return hc.state == "connected" and (time.time() - hc.last_ack) < 30.0
+    except Exception:
+        return False
+
+
 class AlertSender:
     def __init__(self, cfg: AppConfig, log_fn):
         self.cfg=cfg; self.log=log_fn
@@ -2198,6 +2694,9 @@ class AlertSender:
              alert_type: str = "", stream: str = "",
              level_dbfs: float = None, ptp_state: str = ""):
         self.log(f"[ALERT] {subject}")
+        if getattr(self.cfg, "suppress_local_notifications", False) and _hub_is_connected():
+            self.log(f"[ALERT] Local notifications suppressed — delegated to hub")
+            return
         self._email(subject, body, attachment)
         self._webhook(subject, body, alert_type=alert_type, stream=stream,
                       level_dbfs=level_dbfs, ptp_state=ptp_state)
@@ -2390,6 +2889,145 @@ class AlertSender:
 
 # ─── Rule-based analysis ──────────────────────────────────────────────────────
 
+def _check_rds_name(cfg, sender, log_fn, now: float):
+    """Check RDS PS name vs expected (or detect change). Call after a stable PS update."""
+    if not cfg._fm_rds_ok:
+        return
+    ps = (cfg._fm_rds_ps or "").strip()
+    if len(ps) < 4:
+        return   # too short / still decoding
+    prev     = (cfg._fm_rds_ps_prev or "").strip()
+    expected = (cfg.expected_fm_rds_ps or "").strip().upper()
+    fired    = False
+    if expected:
+        if ps.upper() != expected:
+            key = "FM_RDS_MISMATCH"
+            if now - cfg._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 2:
+                cfg._last_alerts[key] = now
+                msg = (f"RDS name mismatch on '{cfg.name}' — "
+                       f"expected '{expected}', receiving '{ps}'")
+                _add_history(cfg, key, msg)
+                sender.send(f"RDS MISMATCH — {cfg.name}", msg, None,
+                            alert_type=key, stream=cfg.name,
+                            level_dbfs=float(cfg._last_level_dbfs))
+                log_fn(f"[ALERT] {msg}")
+                fired = True
+    else:
+        # Change detection when no expected name is configured
+        if prev and ps != prev:
+            key = "FM_RDS_MISMATCH"
+            if now - cfg._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 2:
+                cfg._last_alerts[key] = now
+                msg = (f"RDS name changed on '{cfg.name}' — "
+                       f"was '{prev}', now '{ps}'")
+                _add_history(cfg, key, msg)
+                sender.send(f"RDS NAME CHANGED — {cfg.name}", msg, None,
+                            alert_type=key, stream=cfg.name,
+                            level_dbfs=float(cfg._last_level_dbfs))
+                log_fn(f"[ALERT] {msg}")
+                fired = True
+    # Always update prev so the next check has the latest baseline
+    if ps:
+        cfg._fm_rds_ps_prev = ps
+
+
+def _check_dab_service_name(cfg, sender, log_fn, now: float):
+    """Check DAB service name vs expected (or detect change). Call after service is set."""
+    if not cfg._dab_ok:
+        return
+    svc = (cfg._dab_service or "").strip()
+    if not svc:
+        return
+    prev     = (cfg._dab_service_prev or "").strip()
+    expected = (cfg.expected_dab_service or "").strip()
+    if expected:
+        if svc.lower() != expected.lower():
+            key = "DAB_SERVICE_MISMATCH"
+            if now - cfg._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 2:
+                cfg._last_alerts[key] = now
+                msg = (f"DAB service mismatch on '{cfg.name}' — "
+                       f"expected '{expected}', receiving '{svc}'")
+                _add_history(cfg, key, msg)
+                sender.send(f"DAB SERVICE MISMATCH — {cfg.name}", msg, None,
+                            alert_type=key, stream=cfg.name,
+                            level_dbfs=float(cfg._last_level_dbfs))
+                log_fn(f"[ALERT] {msg}")
+    else:
+        if prev and svc != prev:
+            key = "DAB_SERVICE_MISMATCH"
+            if now - cfg._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 2:
+                cfg._last_alerts[key] = now
+                msg = (f"DAB service name changed on '{cfg.name}' — "
+                       f"was '{prev}', now '{svc}'")
+                _add_history(cfg, key, msg)
+                sender.send(f"DAB SERVICE CHANGED — {cfg.name}", msg, None,
+                            alert_type=key, stream=cfg.name,
+                            level_dbfs=float(cfg._last_level_dbfs))
+                log_fn(f"[ALERT] {msg}")
+    if svc:
+        cfg._dab_service_prev = svc
+
+
+def _classify_silence_alert(cfg, lev: float):
+    """Return (alert_key, title, message) for a silence event.
+
+    Composite fault classification by source type:
+      FM:
+        STUDIO_FAULT    — carrier and RDS present, only audio silent (playout failure)
+        STL_FAULT       — carrier healthy but RDS gone (STL/link failure)
+        TX_DOWN         — weak/no carrier and no RDS (transmitter or RF problem)
+      DAB:
+        DAB_AUDIO_FAULT — mux locked, SNR healthy, but audio silent (studio/playout fault)
+        DAB_SERVICE_MISSING — service gone from mux (separate alert, in _run_dab)
+      RTP/Livewire:
+        RTP_FAULT       — ≥10% packet loss is causing the silence (network fault)
+      All other sources:
+        SILENCE         — generic content silence
+    """
+    name  = cfg.name
+    sil_s = cfg._silence_secs
+    # FM composite: only when the FM thread has populated real signal data
+    if cfg._fm_freq_mhz > 0.0 and cfg._fm_signal_dbm > -119.0:
+        rds_alive  = cfg._fm_rds_ok and bool(cfg._fm_rds_ps)
+        carrier_ok = cfg._fm_signal_dbm >= -85.0
+        if rds_alive:
+            key = "STUDIO_FAULT"
+            msg = (f"Studio fault on '{name}' — silence {sil_s:.1f}s, "
+                   f"carrier and RDS active (PS: {cfg._fm_rds_ps}, "
+                   f"RSSI {cfg._fm_signal_dbm:.0f} dBm)")
+            return key, f"STUDIO FAULT — {name}", msg
+        elif carrier_ok:
+            key = "STL_FAULT"
+            msg = (f"STL fault on '{name}' — silence {sil_s:.1f}s, "
+                   f"RDS absent, carrier OK ({cfg._fm_signal_dbm:.0f} dBm)")
+            return key, f"STL FAULT — {name}", msg
+        else:
+            key = "TX_DOWN"
+            msg = (f"TX down on '{name}' — silence {sil_s:.1f}s, "
+                   f"no RDS, weak/no carrier ({cfg._fm_signal_dbm:.0f} dBm)")
+            return key, f"TX DOWN — {name}", msg
+    # DAB composite: mux locked and SNR healthy but audio is silent → studio/playout fault
+    if cfg._dab_ensemble and cfg._dab_ok and cfg._dab_snr >= 5.0:
+        key = "DAB_AUDIO_FAULT"
+        msg = (f"DAB audio fault on '{name}' — silence {sil_s:.1f}s, "
+               f"service present in mux (SNR {cfg._dab_snr:.1f} dB, "
+               f"ensemble: {cfg._dab_ensemble})")
+        return key, f"DAB AUDIO FAULT — {name}", msg
+
+    # RTP-linked silence: high packet loss is causing the silence (network fault, not content)
+    dev = (cfg.device_index or "").strip().lower()
+    if (not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
+            and cfg._rtp_loss_pct >= 10.0):
+        key = "RTP_FAULT"
+        msg = (f"RTP fault on '{name}' — silence {sil_s:.1f}s "
+               f"with {cfg._rtp_loss_pct:.1f}% packet loss")
+        return key, f"RTP FAULT — {name}", msg
+
+    # Generic silence (Livewire, AES67, HTTP, DAB audio path, etc.)
+    msg = f"Silence on '{name}' for {sil_s:.1f}s ({lev:.1f} dBFS)"
+    return "SILENCE", f"SILENCE on {name}", msg
+
+
 def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                   data: np.ndarray, elapsed: float, wav_dur: float,
                   all_inputs: List[InputConfig]):
@@ -2415,19 +3053,19 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
         if parent and parent._last_level_dbfs<=parent.silence_threshold_dbfs:
             cfg._silence_secs=0.0; return
 
-    # Silence
+    # Silence / composite fault classification
     if cfg.alert_on_silence:
         cfg._silence_secs = cfg._silence_secs+elapsed if lev<=cfg.silence_threshold_dbfs else 0.0
         if cfg._silence_secs>=cfg.silence_min_duration:
             now=time.time()
-            if now-cfg._last_alerts.get("SILENCE",0)>=ALERT_COOLDOWN:
-                cfg._last_alerts["SILENCE"]=now
-                msg=f"Silence on '{cfg.name}' for {cfg._silence_secs:.1f}s ({lev:.1f} dBFS)"
+            alert_key, alert_title, alert_msg = _classify_silence_alert(cfg, lev)
+            if now-cfg._last_alerts.get(alert_key,0)>=ALERT_COOLDOWN:
+                cfg._last_alerts[alert_key]=now
                 clip=_save_alert_wav(cfg,"silence",cfg.alert_wav_duration)
-                _add_history(cfg,"SILENCE",msg,clip_path=clip or "")
-                sender.send(f"SILENCE on {cfg.name}", msg, clip,
-                    alert_type="SILENCE", stream=cfg.name, level_dbfs=lev)
-                log_fn(f"[ALERT] {msg}")
+                _add_history(cfg,alert_key,alert_msg,clip_path=clip or "")
+                sender.send(alert_title, alert_msg, clip,
+                    alert_type=alert_key, stream=cfg.name, level_dbfs=lev)
+                log_fn(f"[ALERT] {alert_msg}")
             cfg._silence_secs=0.0
 
     # Clip
@@ -3144,6 +3782,8 @@ class MonitorManager:
         self.ptp: Optional[PTPMonitor]=None
         self._comparators: List[StreamComparator]=[]
         self._report_sent_date: str=""
+        self._metrics_last_flush: float = 0.0   # unix ts of last metrics write
+        self._metrics_last_prune: str   = ""    # date string "YYYY-MM-DD" of last prune
         self._hub_client: Optional[HubClient]=None
         self._dab_sessions: Dict[tuple, DabSharedSession]={}
         self._dab_sessions_lock=threading.Lock()
@@ -3182,7 +3822,7 @@ class MonitorManager:
 
                 ai=StreamAI(cfg,self.log,sender); self._stream_ais[cfg.name]=ai; ai.start()
                 dev=(cfg.device_index or '').strip().lower()
-                if dev.startswith('dab://') or dev.startswith('fm://') or dev.startswith('http://') or dev.startswith('https://'):
+                if dev.startswith('dab://') or dev.startswith('fm://') or dev.startswith('http://') or dev.startswith('https://') or dev.startswith('sound://'):
                     stop=threading.Event(); self._stop_flags.append(stop)
                     t=threading.Thread(target=self._run_input,args=(cfg,sender,stop),daemon=True)
                     self._threads.append(t)
@@ -3207,12 +3847,25 @@ class MonitorManager:
                 daemon=True)
             self._threads.append(ptp_t)
 
+            # Build stream comparators from compare_peer / compare_role config
+            self._comparators.clear()
+            _enabled_by_name = {c.name: c for c in self.app_cfg.inputs if c.enabled}
+            for cfg in self.app_cfg.inputs:
+                if not cfg.enabled: continue
+                if cfg.compare_role == "pre" and cfg.compare_peer:
+                    _peer = _enabled_by_name.get(cfg.compare_peer)
+                    if _peer and _peer.compare_role == "post":
+                        self._comparators.append(StreamComparator(cfg, _peer, self.log, sender))
+                        self.log(f"[CMP] Comparator registered: '{cfg.name}' (pre) → '{_peer.name}' (post)")
+                    elif _peer is None:
+                        self.log(f"[CMP] Warning: peer '{cfg.compare_peer}' for '{cfg.name}' not found or disabled — comparator skipped")
+
             for t in self._threads: t.start()
             self._running=True
             self.log(f"[Monitor] Started — {sum(1 for i in self.app_cfg.inputs if i.enabled)} stream(s).")
-            # Hub client is started independently at app startup via start_hub_client()
-            # so it works even when monitoring is not yet running.
-            # Re-start it here in case it was stopped with a previous stop_monitoring call.
+            # Hub client runs independently of monitoring — started at app startup
+            # and kept alive across stop/start cycles. Only launch it here if it
+            # somehow never got started (e.g. app_cfg wasn't ready at boot time).
             if self._hub_client is None:
                 self.start_hub_client()
 
@@ -3222,8 +3875,7 @@ class MonitorManager:
             for e in self._stop_flags: e.set()
             for t in self._threads: t.join(timeout=2.0)
             self._threads.clear(); self._stop_flags.clear()
-            if self._hub_client:
-                self._hub_client.stop(); self._hub_client=None
+            self._comparators.clear()
             self._running=False; self.log("[Monitor] Stopped.")
 
     def request_retrain(self, name: str):
@@ -3379,9 +4031,21 @@ class MonitorManager:
                     session.mux = mux
                     if services:
                         if not session.ready.is_set():
-                            session.ready.set()
-                            announced = True
-                            self.log(f"[DAB {session.channel}] shared mux ready on port {session.dab_port} ({len(services)} services)")
+                            # Wait for the service count to stabilise across two consecutive polls
+                            # before announcing ready — ensures the full ensemble is enumerated.
+                            prev_count = getattr(session, "_prev_svc_count", None)
+                            cur_count  = len(services)
+                            if prev_count is None:
+                                # First non-empty poll — record and wait one more cycle
+                                session._prev_svc_count = cur_count
+                            elif cur_count == prev_count:
+                                # Count identical across two consecutive polls — stable, announce
+                                session.ready.set()
+                                announced = True
+                                self.log(f"[DAB {session.channel}] shared mux ready on port {session.dab_port} ({cur_count} services)")
+                            else:
+                                # Count still changing — update and wait another cycle
+                                session._prev_svc_count = cur_count
                         time.sleep(5)
                         continue
                     if time.time() >= deadline and not announced:
@@ -3575,7 +4239,7 @@ class MonitorManager:
                 sid, svc_name = self._find_dab_service_in_mux(mux, service)
                 if not sid:
                     # Give the mux a little extra time to populate services.
-                    deadline = time.time() + 8
+                    deadline = time.time() + 20
                     while time.time() < deadline and not stop_evt.is_set():
                         mux = session.mux or {}
                         self._copy_dab_metrics_from_mux(cfg, mux, service)
@@ -3588,6 +4252,13 @@ class MonitorManager:
                     cfg._dab_ok = True
                     audio_url = f"http://localhost:{session.dab_port}/mp3/{sid}"
                     self.log(f"[{name}] DAB: streaming audio from {audio_url} (shared mux {channel})")
+                    # Log initial availability and write immediate metric row
+                    _now_avail = time.time()
+                    metrics_db.write([(name, "dab_ok", _now_avail, 1.0)])
+                    _add_history(cfg, "DAB_AVAILABLE",
+                                 f"DAB service '{cfg._dab_service}' available on '{name}' "
+                                 f"(ensemble: {cfg._dab_ensemble}, SNR {cfg._dab_snr:.1f} dB)")
+                    _check_dab_service_name(cfg, sender, self.log, _now_avail)
                     break
 
                 self.log(f"[{name}] DAB: could not find service {service!r} in mux {channel}; will retry")
@@ -3715,6 +4386,52 @@ class MonitorManager:
                         if int(time.time()) % 10 == 0:
                             mux = session.mux or {}
                             self._copy_dab_metrics_from_mux(cfg, mux, service)
+                            # DAB availability tracking: log state transitions + immediate metric writes
+                            if cfg._dab_ensemble and mux:
+                                _sid_chk, _ = self._find_dab_service_in_mux(mux, service)
+                                _was_ok = cfg._dab_ok
+                                if not _sid_chk:
+                                    # Service missing from mux
+                                    if _was_ok:
+                                        # Transition: available → unavailable
+                                        cfg._dab_ok = False
+                                        _ts_tr = time.time()
+                                        metrics_db.write([(name, "dab_ok", _ts_tr, 0.0)])
+                                        _add_history(cfg, "DAB_UNAVAILABLE",
+                                                     f"DAB service '{service}' left mux on '{name}' "
+                                                     f"(ensemble: {cfg._dab_ensemble}, "
+                                                     f"SNR {cfg._dab_snr:.1f} dB)")
+                                        self.log(f"[{name}] DAB: service '{service}' no longer in mux")
+                                    # Alert (rate-limited separately from the state log)
+                                    _now_dab = time.time()
+                                    _key_dab = "DAB_SERVICE_MISSING"
+                                    if _now_dab - cfg._last_alerts.get(_key_dab, 0) >= ALERT_COOLDOWN * 2:
+                                        cfg._last_alerts[_key_dab] = _now_dab
+                                        _msg_dab = (
+                                            f"DAB service '{service}' missing from mux on '{name}' "
+                                            f"(ensemble: {cfg._dab_ensemble}, SNR {cfg._dab_snr:.1f} dB)"
+                                        )
+                                        _add_history(cfg, _key_dab, _msg_dab)
+                                        sender.send(
+                                            f"DAB SERVICE MISSING — {name}", _msg_dab, None,
+                                            alert_type=_key_dab, stream=name,
+                                            level_dbfs=float(cfg._last_level_dbfs)
+                                        )
+                                        self.log(f"[ALERT] {_msg_dab}")
+                                else:
+                                    # Service present in mux
+                                    if not _was_ok:
+                                        # Transition: unavailable → available (recovery)
+                                        cfg._dab_ok = True
+                                        _ts_tr = time.time()
+                                        metrics_db.write([(name, "dab_ok", _ts_tr, 1.0)])
+                                        _msg_rec = (
+                                            f"DAB service '{service}' restored on '{name}' "
+                                            f"(ensemble: {cfg._dab_ensemble}, SNR {cfg._dab_snr:.1f} dB)"
+                                        )
+                                        _add_history(cfg, "DAB_AVAILABLE", _msg_rec)
+                                        self.log(f"[{name}] DAB: service '{service}' restored in mux")
+                                        _check_dab_service_name(cfg, sender, self.log, _ts_tr)
                     except Exception as e:
                         self.log(f"[{name}] DAB: audio loop error: {e}")
                         time.sleep(0.25)
@@ -4077,6 +4794,7 @@ class MonitorManager:
                             cfg._fm_rds_ps = _latest.get("ps", getattr(cfg, "_fm_rds_ps", ""))
                             cfg._fm_rds_rt = _latest.get("rt", getattr(cfg, "_fm_rds_rt", ""))
                             cfg._fm_rds_last_good = _latest.get("last_good", getattr(cfg, "_fm_rds_last_good", 0.0))
+                            _check_rds_name(cfg, sender, self.log, time.time())
                             cfg._fm_rds_bp_rms = _latest.get("bp", getattr(cfg, "_fm_rds_bp_rms", 0.0))
                             cfg._fm_rds_bb_rms = _latest.get("bb", getattr(cfg, "_fm_rds_bb_rms", 0.0))
                             cfg._fm_rds_sym_metric = _latest.get("sym", getattr(cfg, "_fm_rds_sym_metric", 0.0))
@@ -4789,6 +5507,7 @@ class MonitorManager:
                         stable_ps, count = Counter(cfg._fm_ps_hist).most_common(1)[0]
                         if count >= 3 and len(stable_ps) >= max(6, len(current_ps)):
                             cfg._fm_rds_ps = stable_ps
+                            _check_rds_name(cfg, sender, self.log, time.time())
 
                 # ---- Stabilise RadioText ----
                 if not hasattr(cfg, "_fm_rt_hist"):
@@ -5110,6 +5829,17 @@ class MonitorManager:
         if len(packet) <= 12:
             return
 
+        # RTP jitter — inter-arrival time variance (RFC 3550 style, wall-clock)
+        _arr_now = time.monotonic()
+        if cfg._rtp_last_arrival > 0.0:
+            _iat_ms = (_arr_now - cfg._rtp_last_arrival) * 1000.0
+            if cfg._rtp_jitter_acc == 0.0:
+                cfg._rtp_jitter_acc = _iat_ms
+            else:
+                cfg._rtp_jitter_acc = 0.9375 * cfg._rtp_jitter_acc + 0.0625 * _iat_ms
+            cfg._rtp_jitter_ms += (abs(_iat_ms - cfg._rtp_jitter_acc) - cfg._rtp_jitter_ms) / 16.0
+        cfg._rtp_last_arrival = _arr_now
+
         # Keep a short RTP sequence reorder buffer so packets are processed in
         # sequence order rather than raw arrival order. This is important on
         # Linux/VMware where small bursts or mild reordering are common.
@@ -5386,6 +6116,45 @@ class MonitorManager:
         except Exception:
             pass
 
+    def _run_sound(self, cfg, sender, stop_evt):
+        """Capture audio from a local ALSA/PulseAudio sound device via sounddevice."""
+        name = cfg.name
+        dev_str = cfg.device_index.strip()
+        # Format: sound://<device_index_or_name>
+        dev_part = dev_str[len("sound://"):]
+        # Try as integer index, otherwise use as name substring
+        device = int(dev_part) if dev_part.isdigit() else (dev_part or None)
+
+        try:
+            import sounddevice as sd
+        except ImportError:
+            self.log(f"[{name}] sounddevice not installed — run: pip install sounddevice")
+            return
+
+        self.log(f"[{name}] Opening sound device: {device!r} at {SAMPLE_RATE} Hz")
+        inputs = self.app_cfg.inputs
+        alert_wav_duration = getattr(self.app_cfg, 'alert_wav_duration', 10)
+        q = collections.deque(maxlen=8)
+
+        def _cb(indata, frames, time_info, status):
+            mono = indata.mean(axis=1).astype(np.float32)
+            q.append(mono.copy())
+
+        try:
+            with sd.InputStream(device=device, channels=None, samplerate=SAMPLE_RATE,
+                                dtype='float32', blocksize=CHUNK_SIZE, callback=_cb):
+                self.log(f"[{name}] Sound device stream open.")
+                while not stop_evt.is_set():
+                    if q:
+                        chunk = q.popleft()
+                        analyse_chunk(cfg, sender, self.log, chunk, CHUNK_DURATION,
+                                      alert_wav_duration, inputs)
+                    else:
+                        time.sleep(0.05)
+        except Exception as e:
+            self.log(f"[{name}] Sound device error: {e}")
+        self.log(f"[{name}] Sound device thread stopped.")
+
     def _run_input(self, cfg, sender, stop_evt):
         name=cfg.name
         # Check for DAB source
@@ -5395,6 +6164,10 @@ class MonitorManager:
         # Check for FM source
         if cfg.device_index.strip().lower().startswith("fm://"):
             self._run_fm(cfg, sender, stop_evt)
+            return
+        # Check for local sound device
+        if cfg.device_index.strip().lower().startswith("sound://"):
+            self._run_sound(cfg, sender, stop_evt)
             return
         # Check for HTTP/HTTPS stream
         dev = cfg.device_index.strip()
@@ -5432,6 +6205,16 @@ class MonitorManager:
             except socket.timeout: continue
             except Exception as e: self.log(f"[{name}] recv: {e}"); time.sleep(0.5); continue
             if len(packet)<=12: continue
+            # RTP jitter — inter-arrival time variance
+            _arr_now = time.monotonic()
+            if cfg._rtp_last_arrival > 0.0:
+                _iat_ms = (_arr_now - cfg._rtp_last_arrival) * 1000.0
+                if cfg._rtp_jitter_acc == 0.0:
+                    cfg._rtp_jitter_acc = _iat_ms
+                else:
+                    cfg._rtp_jitter_acc = 0.9375 * cfg._rtp_jitter_acc + 0.0625 * _iat_ms
+                cfg._rtp_jitter_ms += (abs(_iat_ms - cfg._rtp_jitter_acc) - cfg._rtp_jitter_ms) / 16.0
+            cfg._rtp_last_arrival = _arr_now
             rtp_seq = struct.unpack_from(">H", packet, 2)[0]
             # RTP packet loss tracking
             if cfg._rtp_last_seq >= 0:
@@ -5510,7 +6293,23 @@ class MonitorManager:
             for comp in self._comparators:
                 try: comp.update()
                 except Exception as e: self.log(f"[CMP] Error: {e}")
-            # Daily report check
+            # Metrics flush — write a snapshot to SQLite once per minute
+            _now = time.time()
+            if _now - self._metrics_last_flush >= 60.0:
+                self._metrics_last_flush = _now
+                try:
+                    _metrics_flush(list(self.app_cfg.inputs))
+                except Exception as e:
+                    self.log(f"[METRICS] Flush error: {e}")
+            # Daily metrics prune + report
+            _today = time.strftime("%Y-%m-%d")
+            if _today != self._metrics_last_prune:
+                self._metrics_last_prune = _today
+                try:
+                    metrics_db.prune()
+                    self.log(f"[METRICS] Pruned rows older than {METRICS_RETENTION_DAYS} days")
+                except Exception as e:
+                    self.log(f"[METRICS] Prune error: {e}")
             try: self._check_daily_report()
             except Exception as e: self.log(f"[REPORT] {e}")
             time.sleep(1.0)
@@ -5759,6 +6558,9 @@ class HubClient:
         self._lock      = threading.Lock()
         # Hub-controlled relay bitrate (0 = not set, fall back to local cfg)
         self._hub_relay_bitrate: int = 0
+        # Pending DAB scan result to include in next heartbeat (set by background scan thread)
+        self._dab_scan_result: Optional[dict] = None
+        self._dab_scan_lock = threading.Lock()
 
     @staticmethod
     def _normalise_url(url: str) -> str:
@@ -5773,6 +6575,114 @@ class HubClient:
         is_ip = bool(_re.match(r'\d+\.\d+\.\d+\.\d+', url.split(":")[0]))
         scheme = "http" if is_ip else "https"
         return f"{scheme}://{url}"
+
+    def _pop_dab_scan_result(self) -> Optional[dict]:
+        """Return and clear any pending DAB scan result (thread-safe)."""
+        with self._dab_scan_lock:
+            r = self._dab_scan_result
+            self._dab_scan_result = None
+            return r
+
+    # ── Hub-issued command handlers ───────────────────────────────────────────
+
+    def _cmd_add_input(self, payload: dict):
+        name  = str(payload.get("name", "")).strip()
+        dev   = str(payload.get("device_index", "")).strip()
+        if not name or not dev:
+            monitor.log("[Hub] add_input: missing name or device_index — ignored"); return
+        cfg = self._cfg_fn()
+        if any(i.name == name for i in cfg.inputs):
+            monitor.log(f"[Hub] add_input: '{name}' already exists — ignored"); return
+        new_inp = InputConfig(
+            name=name, device_index=dev,
+            enabled=bool(payload.get("enabled", True)),
+            alert_on_silence=bool(payload.get("alert_on_silence", True)),
+            alert_on_hiss=bool(payload.get("alert_on_hiss", False)),
+            alert_on_clip=bool(payload.get("alert_on_clip", True)),
+            silence_threshold_dbfs=float(payload.get("silence_threshold_dbfs", -55.0)),
+            silence_min_duration=float(payload.get("silence_min_duration", 3.0)),
+            clip_threshold_dbfs=float(payload.get("clip_threshold_dbfs", -1.0)),
+            ai_monitor=bool(payload.get("ai_monitor", True)),
+        )
+        cfg.inputs.append(new_inp)
+        save_config(cfg)
+        monitor.log(f"[Hub] Remote add_input: '{name}' ({dev}) added")
+        self._restart_if_running()
+
+    def _cmd_remove_input(self, payload: dict):
+        name = str(payload.get("name", "")).strip()
+        cfg  = self._cfg_fn()
+        before = len(cfg.inputs)
+        cfg.inputs = [i for i in cfg.inputs if i.name != name]
+        if len(cfg.inputs) == before:
+            monitor.log(f"[Hub] remove_input: '{name}' not found — ignored"); return
+        save_config(cfg)
+        monitor.log(f"[Hub] Remote remove_input: '{name}' removed")
+        self._restart_if_running()
+
+    def _cmd_toggle_input(self, payload: dict, enabled: bool):
+        name = str(payload.get("name", "")).strip()
+        cfg  = self._cfg_fn()
+        for inp in cfg.inputs:
+            if inp.name == name:
+                inp.enabled = enabled
+                save_config(cfg)
+                monitor.log(f"[Hub] Remote {'enable' if enabled else 'disable'}_input: '{name}'")
+                self._restart_if_running()
+                return
+        monitor.log(f"[Hub] toggle_input: '{name}' not found — ignored")
+
+    def _cmd_dab_scan(self, payload: dict):
+        channel = str(payload.get("channel", "")).strip().upper()
+        ppm     = int(payload.get("ppm", 0))
+        serial  = str(payload.get("serial", "")).strip()
+        if not channel:
+            monitor.log("[Hub] dab_scan: no channel specified — ignored"); return
+        monitor.log(f"[Hub] Remote DAB scan: channel={channel} ppm={ppm}")
+        def _run():
+            try:
+                device_idx = "0"
+                if serial:
+                    try: device_idx = str(sdr_manager.resolve_index(serial))
+                    except Exception: pass
+                elif not serial:
+                    # Resolve PPM from registry if not explicitly provided
+                    cfg = self._cfg_fn()
+                    for dev in cfg.sdr_devices:
+                        if hasattr(dev, "ppm") and not ppm:
+                            break
+                result = _dab_scan_mux(channel, device_idx, ppm)
+                with self._dab_scan_lock:
+                    self._dab_scan_result = result
+                monitor.log(f"[Hub] DAB scan complete: {len(result.get('services',[]))} services on {channel}")
+            except Exception as e:
+                with self._dab_scan_lock:
+                    self._dab_scan_result = {"channel": channel, "error": str(e), "services": []}
+                monitor.log(f"[Hub] DAB scan failed: {e}")
+        threading.Thread(target=_run, daemon=True, name="HubDabScan").start()
+
+    def _cmd_set_expected_name(self, payload: dict):
+        """Hub command: set expected_fm_rds_ps or expected_dab_service on a local stream."""
+        stream = str(payload.get("stream", "")).strip()
+        field  = str(payload.get("field",  "")).strip()
+        value  = str(payload.get("value",  "")).strip()
+        if field not in ("expected_fm_rds_ps", "expected_dab_service"):
+            monitor.log(f"[Hub] set_expected_name: unknown field '{field}' — ignored"); return
+        if not stream:
+            monitor.log("[Hub] set_expected_name: no stream specified — ignored"); return
+        cfg = monitor.app_cfg
+        inp = next((i for i in cfg.inputs if i.name == stream), None)
+        if inp is None:
+            monitor.log(f"[Hub] set_expected_name: stream '{stream}' not found — ignored"); return
+        setattr(inp, field, value)
+        save_config(cfg)
+        monitor.log(f"[Hub] set_expected_name: '{stream}'.{field} = '{value}'")
+
+    def _restart_if_running(self):
+        """Restart monitoring if it is currently active (to apply config changes)."""
+        if monitor.is_running():
+            monitor.stop_monitoring()
+            monitor.start_monitoring()
 
     def start(self):
         self.state = self.STATE_CONNECTING
@@ -5805,6 +6715,7 @@ class HubClient:
                 "ai_monitor":        inp.ai_monitor,
                 "ai_learn_start":    getattr(inp, "_ai_learn_start", 0),
                 "rtp_loss_pct":      round(inp._rtp_loss_pct, 2),
+                "rtp_jitter_ms":     round(inp._rtp_jitter_ms, 2),
                 "rtp_total":         inp._rtp_total,
                 "format":            inp._livewire_mode or "—",
                 "sla_pct":           sla_pct,
@@ -5815,6 +6726,7 @@ class HubClient:
                 "dab_sig":           round(inp._dab_sig, 1),
                 "dab_ensemble":      inp._dab_ensemble,
                 "dab_service":       inp._dab_service,
+                "expected_dab_service": inp.expected_dab_service,
                 "dab_ok":            inp._dab_ok,
                 "dab_mode":          inp._dab_mode,
                 "dab_bitrate":       inp._dab_bitrate,
@@ -5825,6 +6737,7 @@ class HubClient:
                 "fm_snr_db":         round(inp._fm_snr_db, 1),
                 "fm_stereo":         inp._fm_stereo,
                 "fm_rds_ps":         inp._fm_rds_ps,
+                "expected_fm_rds_ps": inp.expected_fm_rds_ps,
                 "fm_rds_rt":         getattr(inp, "_fm_rds_rt", ""),
                 "fm_rds_ok":         inp._fm_rds_ok,
                 "fm_rds_status":     getattr(inp, "_fm_rds_status", "No lock"),
@@ -5902,6 +6815,7 @@ class HubClient:
                 "domain":    ptp.domain    if ptp else 0,
                 "last_sync": ptp.last_sync if ptp else 0,
             } if mon.is_running() else {"state":"idle","status":"Not running","offset_us":0,"drift_us":0,"jitter_us":0,"gm_id":"","domain":0,"last_sync":0},
+            "dab_scan_result": self._pop_dab_scan_result(),
         }
 
     def _handle_listen_requests(self, cfg, listen_requests: list):
@@ -6233,14 +7147,32 @@ class HubClient:
                 hub_br = last_body.get("relay_bitrate")
                 if isinstance(hub_br, int) and hub_br > 0:
                     self._hub_relay_bitrate = hub_br
-                # Execute hub-issued remote command (start/stop monitoring)
-                hub_cmd = (last_body.get("command") or "").strip().lower()
-                if hub_cmd == "start" and not monitor.is_running():
-                    monitor.log("[Hub] Remote start command received — starting monitoring")
-                    monitor.start_monitoring()
-                elif hub_cmd == "stop" and monitor.is_running():
-                    monitor.log("[Hub] Remote stop command received — stopping monitoring")
-                    monitor.stop_monitoring()
+                # Execute hub-issued remote command (structured dict or legacy string)
+                hub_cmd = last_body.get("command")
+                if hub_cmd:
+                    if isinstance(hub_cmd, str):
+                        cmd_type, cmd_payload = hub_cmd.strip().lower(), {}
+                    else:
+                        cmd_type    = str(hub_cmd.get("type", "")).strip().lower()
+                        cmd_payload = hub_cmd.get("payload") or {}
+                    if cmd_type == "start" and not monitor.is_running():
+                        monitor.log("[Hub] Remote start command received — starting monitoring")
+                        monitor.start_monitoring()
+                    elif cmd_type == "stop" and monitor.is_running():
+                        monitor.log("[Hub] Remote stop command received — stopping monitoring")
+                        monitor.stop_monitoring()
+                    elif cmd_type == "add_input":
+                        self._cmd_add_input(cmd_payload)
+                    elif cmd_type == "remove_input":
+                        self._cmd_remove_input(cmd_payload)
+                    elif cmd_type == "enable_input":
+                        self._cmd_toggle_input(cmd_payload, True)
+                    elif cmd_type == "disable_input":
+                        self._cmd_toggle_input(cmd_payload, False)
+                    elif cmd_type == "dab_scan":
+                        self._cmd_dab_scan(cmd_payload)
+                    elif cmd_type == "set_expected_name":
+                        self._cmd_set_expected_name(cmd_payload)
             else:
                 self.fail_total += 1
                 self._backoff    = min(self._backoff + 1, 10)
@@ -6261,25 +7193,62 @@ class HubServer:
         self._sites:  Dict[str, dict] = {}
         self._lock    = threading.Lock()
         self._secret: str = ""
+        # Alert forwarding dedup — track event IDs already notified (max 10 000)
+        self._notified_ids: "collections.OrderedDict[str, bool]" = __import__("collections").OrderedDict()
+        self._notified_lock = threading.Lock()
+        # Transient DAB scan results — keyed by site name, cleared after delivery
+        self._dab_scan_results: Dict[str, dict] = {}
+        # Chain fault state for dedup alerting — chain_id → last known status
+        self._chain_fault_state: dict = {}
         self._load_state()   # restore across restarts
 
     def set_secret(self, secret: str):
         self._secret = secret
 
-    # ── Per-site pending command (one-shot, hub → client) ────────────────────
-    def set_pending_command(self, site_name: str, command: str):
-        """Queue a one-shot command to be delivered on the next heartbeat ACK."""
-        with self._lock:
-            if site_name in self._sites:
-                self._sites[site_name]["_pending_command"] = command
+    # ── Per-site pending command queue (hub → client) ────────────────────────
+    _CMD_QUEUE_MAX = 8   # maximum queued commands per site
 
-    def pop_pending_command(self, site_name: str) -> str:
-        """Return and clear any queued command for this site (one-shot delivery)."""
+    def push_pending_command(self, site_name: str, cmd: dict):
+        """Append a structured command dict to the site's command queue (max _CMD_QUEUE_MAX)."""
+        with self._lock:
+            if site_name not in self._sites:
+                return
+            q = self._sites[site_name].setdefault("_pending_commands", [])
+            if len(q) < self._CMD_QUEUE_MAX:
+                q.append(cmd)
+
+    def set_pending_command(self, site_name: str, command: str):
+        """Backward-compat: queue a simple start/stop command."""
+        self.push_pending_command(site_name, {"type": command})
+
+    def pop_pending_command(self, site_name: str) -> Optional[dict]:
+        """Return and remove the next queued command dict, or None if empty."""
         with self._lock:
             site = self._sites.get(site_name)
-            if site is None:
-                return ""
-            return site.pop("_pending_command", "") or ""
+            if not site:
+                return None
+            q = site.get("_pending_commands", [])
+            if not q:
+                return None
+            cmd = q.pop(0)
+            site["_pending_commands"] = q
+            return cmd
+
+    # ── Per-site DAB scan results (client → hub, transient) ──────────────────
+    def store_dab_scan_result(self, site_name: str, result: dict):
+        """Store a DAB scan result received in a client heartbeat."""
+        with self._lock:
+            self._dab_scan_results[site_name] = result
+
+    def pop_dab_scan_result(self, site_name: str) -> Optional[dict]:
+        """Return and clear any pending DAB scan result for this site."""
+        with self._lock:
+            return self._dab_scan_results.pop(site_name, None)
+
+    def peek_dab_scan_result(self, site_name: str) -> Optional[dict]:
+        """Return any pending DAB scan result without clearing it."""
+        with self._lock:
+            return self._dab_scan_results.get(site_name)
 
     # ── Per-site relay bitrate (hub-controlled) ───────────────────────────────
     def get_relay_bitrate(self, site_name: str) -> int:
@@ -6315,25 +7284,34 @@ class HubServer:
             print(f"[HubServer] Could not load state: {e}")
 
     def _save_snapshot(self, snapshot: dict):
-        """Persist a snapshot of site data to disk. Called from ingest thread.
-        Sites not seen in >7 days are pruned from the state file.
+        """Persist a snapshot of site data to disk.
+        Sites are never auto-pruned — only explicit removal via the hub UI deletes a site.
         """
         try:
-            save = {}
-            cutoff = time.time() - 7 * 86400
-            for name, data in snapshot.items():
-                if data.get("_received", 0) < cutoff:
-                    continue  # prune stale site
-                save[name] = {k: v for k, v in data.items()
-                              if k not in ("_client_addr",)}
+            save = {name: {k: v for k, v in data.items() if k not in ("_client_addr",)}
+                    for name, data in snapshot.items()}
             with open(HUB_STATE_PATH, "w") as f:
                 json.dump(save, f)
         except Exception as e:
             print(f"[HubServer] Could not save state: {e}")
 
     # ── Ingest ───────────────────────────────────────────────────────────────
-    def ingest(self, payload: dict, client_ip: str = "") -> bool:
-        """Store a heartbeat. Signature already verified by route handler."""
+    def approve_site(self, site_name: str) -> bool:
+        """Mark a pending site as approved so it can send data. Returns True if site existed."""
+        with self._lock:
+            if site_name not in self._sites:
+                return False
+            self._sites[site_name]["_approved"] = True
+            snapshot = dict(self._sites)
+        threading.Thread(target=self._save_snapshot, args=(snapshot,),
+                         daemon=True, name="HubSave").start()
+        print(f"[HubServer] Site '{site_name}' approved")
+        return True
+
+    def ingest(self, payload: dict, client_ip: str = "") -> str:
+        """Store a heartbeat. Signature already verified by route handler.
+        Returns 'approved' for accepted sites, 'pending' for sites awaiting approval.
+        """
         site = payload.get("site", "unknown")
         now  = time.time()
 
@@ -6347,33 +7325,289 @@ class HubServer:
 
         with self._lock:
             prev = self._sites.get(site, {})
-            last_rx = prev.get("_received", 0)
-            gap     = now - last_rx if last_rx else 0
-            missed  = max(0, int(gap / HUB_HEARTBEAT_INTERVAL) - 1) if last_rx else 0
-            consecutive_missed = prev.get("_consecutive_missed", 0)
-            consecutive_missed = consecutive_missed + missed if missed else 0
+            is_new = not prev
 
-            stored = {k: v for k, v in payload.items() if k != "secret"}
-            stored.update({
-                "_received":           now,
-                "_client_addr":        self_url,
-                "_verified_ip":        client_ip,   # actual TCP peer — not payload-supplied
-                "_consecutive_missed": consecutive_missed,
-                "_total_missed":       prev.get("_total_missed", 0) + missed,
-                "_total_received":     prev.get("_total_received", 0) + 1,
-                "_first_seen":         prev.get("_first_seen", now),
-                # Preserve hub-controlled settings across heartbeat updates
-                "_relay_bitrate":      prev.get("_relay_bitrate", 128),
-                "_pending_command":    prev.get("_pending_command", ""),
-            })
-            self._sites[site] = stored
-            # Snapshot outside lock scope for persistence
-            snapshot = dict(self._sites)
+            # ── New site: create a pending stub, don't process data ────────────
+            if is_new:
+                self._sites[site] = {
+                    "site":          site,
+                    "_approved":     False,
+                    "_pending_since": now,
+                    "_received":     now,
+                    "_first_seen":   now,
+                    "_client_addr":  self_url,
+                    "_verified_ip":  client_ip,
+                    "_total_received": 1,
+                    "_total_missed":   0,
+                    "_consecutive_missed": 0,
+                    "_relay_bitrate": 128,
+                    "_pending_commands": [],
+                    # store minimal payload fields for display in pending banner
+                    "build":   payload.get("build", ""),
+                    "self_url": self_url,
+                }
+                snapshot = dict(self._sites)
+                print(f"[HubServer] New site '{site}' from {client_ip} — pending approval")
+            elif not prev.get("_approved", True):
+                # Known but not yet approved — update heartbeat time and IP only
+                self._sites[site]["_received"]    = now
+                self._sites[site]["_client_addr"] = self_url
+                self._sites[site]["_verified_ip"] = client_ip
+                self._sites[site]["build"]        = payload.get("build", "")
+                snapshot = dict(self._sites)
+            else:
+                # ── Approved site: full processing ────────────────────────────
+                last_rx = prev.get("_received", 0)
+                gap     = now - last_rx if last_rx else 0
+                missed  = max(0, int(gap / HUB_HEARTBEAT_INTERVAL) - 1) if last_rx else 0
+                consecutive_missed = prev.get("_consecutive_missed", 0)
+                consecutive_missed = consecutive_missed + missed if missed else 0
 
-        # Persist asynchronously — pass snapshot so no lock needed in thread
+                stored = {k: v for k, v in payload.items() if k != "secret"}
+                stored.update({
+                    "_approved":           True,
+                    "_received":           now,
+                    "_client_addr":        self_url,
+                    "_verified_ip":        client_ip,
+                    "_consecutive_missed": consecutive_missed,
+                    "_total_missed":       prev.get("_total_missed", 0) + missed,
+                    "_total_received":     prev.get("_total_received", 0) + 1,
+                    "_first_seen":         prev.get("_first_seen", now),
+                    "_relay_bitrate":      prev.get("_relay_bitrate", 128),
+                    "_pending_commands":   prev.get("_pending_commands", []),
+                })
+                self._sites[site] = stored
+                snapshot = dict(self._sites)
+
+        approved = self._sites[site].get("_approved", True)
+
+        # Persist asynchronously
         threading.Thread(target=self._save_snapshot, args=(snapshot,),
                          daemon=True, name="HubSave").start()
-        return True
+
+        if not approved:
+            return "pending"
+
+        # Forward new alert events via hub's own notification channels
+        recent = payload.get("recent_alerts", [])
+        if recent:
+            threading.Thread(
+                target=self._process_hub_alerts,
+                args=(site, recent),
+                daemon=True, name="HubAlerts"
+            ).start()
+        # Store DAB scan results reported by the client
+        dab_result = payload.get("dab_scan_result")
+        if dab_result and isinstance(dab_result, dict):
+            self.store_dab_scan_result(site, dab_result)
+
+        # Write stream metrics to the hub's local metrics_history.db so that
+        # hub-mode-only installations accumulate history for all remote sites.
+        streams_payload = payload.get("streams", [])
+        if streams_payload:
+            threading.Thread(
+                target=self._flush_site_metrics,
+                args=(site, streams_payload, time.time()),
+                daemon=True, name="HubMetrics"
+            ).start()
+
+        return "approved"
+
+    def _flush_site_metrics(self, site_name: str, streams: list, now: float):
+        """Write per-stream metric rows from a client heartbeat into metrics_history.db.
+
+        Uses the hub's module-level metrics_db singleton — same DB used by local
+        streams, but namespaced by the stream name which includes the site prefix
+        if streams share names across sites.  For now, stream names are stored
+        as-is (matching what the API and dashboard already use).
+        """
+        rows = []
+        for st in streams:
+            if not st.get("enabled", True):
+                continue
+            stream_name = st.get("name", "")
+            if not stream_name:
+                continue
+            # Prefix with site name so streams from different sites never collide
+            name = f"{site_name}/{stream_name}"
+            dev = (st.get("device_index") or "").lower()
+
+            # Universal metrics
+            for metric in ("level_dbfs", "lufs_m", "lufs_s", "lufs_i"):
+                val = st.get(metric)
+                if val is not None:
+                    rows.append((name, metric, now, float(val)))
+
+            # FM-specific
+            if dev.startswith("fm://"):
+                val = st.get("fm_signal_dbm")
+                if val is not None:
+                    rows.append((name, "fm_signal_dbm", now, float(val)))
+
+            # DAB-specific
+            if dev.startswith("dab://"):
+                val = st.get("dab_snr")
+                if val is not None:
+                    rows.append((name, "dab_snr", now, float(val)))
+                val = st.get("dab_ok")
+                if val is not None:
+                    rows.append((name, "dab_ok", now, 1.0 if val else 0.0))
+
+            # Livewire / AES67
+            if not dev.startswith(("fm://", "dab://", "http://", "https://")):
+                for metric in ("rtp_loss_pct", "rtp_jitter_ms"):
+                    val = st.get(metric)
+                    if val is not None:
+                        rows.append((name, metric, now, float(val)))
+
+        if rows:
+            metrics_db.write(rows)
+
+    def _process_hub_alerts(self, site_name: str, alerts: list):
+        """Forward new alert events from a client heartbeat using hub's notification channels."""
+        try:
+            cfg = monitor.app_cfg
+        except Exception:
+            return
+        rules = cfg.hub_site_rules.get(site_name, {})
+        if not rules.get("enabled", True):
+            return
+        fwd_types = {t.upper() for t in rules.get("forward_types", _HUB_DEFAULT_FORWARD_TYPES)}
+
+        new_events = []
+        with self._notified_lock:
+            for evt in alerts:
+                eid = evt.get("id", "")
+                if not eid:
+                    continue
+                if eid not in self._notified_ids:
+                    self._notified_ids[eid] = True
+                    if evt.get("type", "").upper() in fwd_types:
+                        new_events.append(evt)
+            # Prune sliding window
+            while len(self._notified_ids) > 10000:
+                self._notified_ids.popitem(last=False)
+
+        if not new_events:
+            return
+        try:
+            sender = AlertSender(cfg, monitor.log)
+            for evt in new_events:
+                atype  = evt.get("type", "ALERT")
+                stream = evt.get("stream", "")
+                msg    = evt.get("message", "")
+                subj   = f"[{site_name}] {atype} — {stream}"
+                sender.send(subj, msg, alert_type=atype, stream=stream,
+                            level_dbfs=evt.get("level_dbfs"))
+        except Exception as e:
+            try:
+                monitor.log(f"[Hub] Alert forwarding error: {e}")
+            except Exception:
+                pass
+
+    # ── Broadcast chain evaluation ────────────────────────────────────────────
+    def eval_chain(self, chain: dict) -> dict:
+        """Evaluate a single chain and return its status dict."""
+        cfg = monitor.app_cfg
+        now = time.time()
+        with self._lock:
+            sites_snap = {
+                sname: {
+                    "online": (now - data.get("_received", 0)) < HUB_SITE_TIMEOUT,
+                    "streams": data.get("streams", []),
+                }
+                for sname, data in self._sites.items()
+            }
+
+        nodes_out = []
+        for node in chain.get("nodes", []):
+            site    = node.get("site", "")
+            sname   = node.get("stream", "")
+            label   = node.get("label") or f"{site}/{sname}"
+
+            if site == "local":
+                inp = next((i for i in cfg.inputs if i.name == sname and i.enabled), None)
+                if inp is None:
+                    nodes_out.append({"label": label, "site": site, "stream": sname, "status": "unknown", "level": None})
+                else:
+                    dev  = (inp.device_index or "").strip().lower()
+                    down = inp._last_level_dbfs <= inp.silence_threshold_dbfs
+                    if dev.startswith("dab://") and not inp._dab_ok:
+                        down = True
+                    nodes_out.append({"label": label, "site": site, "stream": sname,
+                                      "status": "down" if down else "ok",
+                                      "level": round(inp._last_level_dbfs, 1)})
+            else:
+                site_data = sites_snap.get(site)
+                if not site_data:
+                    nodes_out.append({"label": label, "site": site, "stream": sname, "status": "offline", "level": None})
+                elif not site_data["online"]:
+                    nodes_out.append({"label": label, "site": site, "stream": sname, "status": "offline", "level": None})
+                else:
+                    sd = next((s for s in site_data["streams"] if s.get("name") == sname), None)
+                    if sd is None:
+                        nodes_out.append({"label": label, "site": site, "stream": sname, "status": "unknown", "level": None})
+                    else:
+                        lev  = float(sd.get("level_dbfs", -120.0))
+                        dev  = str(sd.get("device_index", "")).strip().lower()
+                        down = lev <= -55.0
+                        if dev.startswith("dab://") and not sd.get("dab_ok", True):
+                            down = True
+                        nodes_out.append({"label": label, "site": site, "stream": sname,
+                                          "status": "down" if down else "ok",
+                                          "level": round(lev, 1)})
+
+        fault_idx = next((i for i, n in enumerate(nodes_out) if n["status"] in ("down", "offline")), None)
+        chain_status = "fault" if fault_idx is not None else ("ok" if nodes_out else "unknown")
+        return {
+            "id":          chain.get("id", ""),
+            "name":        chain.get("name", ""),
+            "status":      chain_status,
+            "fault_index": fault_idx,
+            "fault_node":  nodes_out[fault_idx] if fault_idx is not None else None,
+            "nodes":       nodes_out,
+        }
+
+    def _chains_monitor_loop(self, stop_evt):
+        """Background thread: evaluate all chains every 30 s and fire CHAIN_FAULT alerts."""
+        while not stop_evt.is_set():
+            try:
+                cfg    = monitor.app_cfg
+                sender = AlertSender(cfg, monitor.log)
+                for chain in cfg.signal_chains:
+                    cid = chain.get("id", "")
+                    if not cid:
+                        continue
+                    result = self.eval_chain(chain)
+                    prev   = self._chain_fault_state.get(cid)
+                    curr   = result["status"]
+                    if curr == "fault" and prev != "fault":
+                        fn  = result["fault_node"] or {}
+                        msg = (f"Chain fault in '{result['name']}' — "
+                               f"fault at '{fn.get('label', '?')}' "
+                               f"(site: {fn.get('site', '?')}, "
+                               f"stream: {fn.get('stream', '?')})")
+                        try:
+                            sender.send(f"CHAIN FAULT — {result['name']}", msg,
+                                        alert_type="CHAIN_FAULT", stream=result["name"])
+                            monitor.log(f"[Chain] {msg}")
+                        except Exception as e:
+                            monitor.log(f"[Chain] Alert send error: {e}")
+                    elif curr == "ok" and prev == "fault":
+                        rec_msg = f"Chain '{result['name']}' has recovered — all nodes OK."
+                        try:
+                            sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
+                                        alert_type="CHAIN_FAULT", stream=result["name"])
+                            monitor.log(f"[Chain] {rec_msg}")
+                        except Exception as e:
+                            monitor.log(f"[Chain] Recovery notification error: {e}")
+                    self._chain_fault_state[cid] = curr
+            except Exception as e:
+                try:
+                    monitor.log(f"[Chain] Monitor loop error: {e}")
+                except Exception:
+                    pass
+            stop_evt.wait(30)
 
     # ── Query ─────────────────────────────────────────────────────────────────
     def get_sites(self) -> List[dict]:
@@ -6884,7 +8118,7 @@ def _inject_nav():
                 start_stop = f'<form method="post" action="/start" style="margin:0"><input type="hidden" name="_csrf_token" value="{csrf}"><button class="btn bp bs">▶ Start</button></form>'
         home_href = "/hub" if hub_only else "/"
         local_links = "" if hub_only else (_a("dashboard", "Dashboard", "/") + _a("inputs", "Inputs", "/inputs") + _a("reports", "Reports", "/reports") + _a("sla", "SLA", "/sla"))
-        hub_link = (_a("hub", "Hub", "/hub") + _a("hub_reports", "Hub Reports", "/hub/reports")) if show_hub else ""
+        hub_link = (_a("hub", "Hub", "/hub") + _a("hub_reports", "Hub Reports", "/hub/reports") + _a("chains", "Broadcast Chains", "/chains")) if show_hub else ""
         # ── Update-available banner ───────────────────────────────────────────
         nonce       = _csp_nonce()
         current_ver = build_.split("-")[-1]
@@ -7075,7 +8309,6 @@ MAIN_TPL = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>SignalScope</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
-<meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}a{color:var(--acc);text-decoration:none}
@@ -7133,7 +8366,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 .hist-toggle:hover{background:#123764}
 .hist{max-height:90px;overflow-y:auto;font-size:11px;color:var(--mu)}
 .hev{padding:3px 13px;border-bottom:1px solid var(--bor)}
-.hSILENCE,.hAI_ALERT,.hRTP_LOSS{color:#f87171}.hCLIP{color:#fb923c}.hHISS,.hRTP_LOSS_WARN{color:#fbbf24}.hAI_WARN{color:#fcd34d}
+.hSILENCE,.hAI_ALERT,.hRTP_LOSS{color:#f87171}.hCLIP{color:#fb923c}.hHISS,.hRTP_LOSS_WARN,.hDAB_SERVICE_MISSING{color:#fbbf24}.hAI_WARN{color:#fcd34d}.hSTL_FAULT,.hTX_DOWN{color:#ef4444}.hSTUDIO_FAULT{color:#f97316}
 /* ── Now Playing ── */
 .np-strip{padding:7px 13px;border-top:1px solid var(--bor);display:flex;gap:9px;align-items:center;min-height:52px}
 .np-art{width:38px;height:38px;border-radius:4px;object-fit:cover;display:none;flex-shrink:0}
@@ -7208,6 +8441,12 @@ main{padding:16px;max-width:1440px;margin:0 auto}
             <span style="color:var(--mu);font-size:11px"> {{inp._rtp_total|int}} pkts</span>
           </span>
         </div>
+        <div class="row" id="jitter_row_{{idx}}" style="display:{%if inp._rtp_jitter_ms>0%}flex{%else%}none{%endif%}">
+          <span class="rl">Jitter</span>
+          <span class="rv" id="jitter_{{idx}}" style="color:{%if inp._rtp_jitter_ms>5.0%}var(--wn){%else%}var(--ok){%endif%}">
+            {{inp._rtp_jitter_ms|round(2)}}ms
+          </span>
+        </div>
         {% endif %}
         <div class="row">
           <span class="rl">SLA</span>
@@ -7224,6 +8463,8 @@ main{padding:16px;max-width:1440px;margin:0 auto}
             {%if inp.alert_on_hiss%}<span class="alert-badge badge-hiss" title="Hiss">HISS</span>{%endif%}
             {%if inp.alert_on_clip%}<span class="alert-badge badge-clip" title="Clip">CLIP</span>{%endif%}
             {%if inp.ai_monitor%}<span class="alert-badge badge-ai" title="AI">AI</span>{%endif%}
+            {%if inp.compare_role=='pre'%}<span class="alert-badge" title="Stream Comparison — Pre (source)" style="background:#1a2e50;color:#60a5fa">PRE</span>{%endif%}
+            {%if inp.compare_role=='post'%}<span class="alert-badge" title="Stream Comparison — Post (output)" style="background:#1a2e50;color:#a78bfa">POST</span>{%endif%}
           </span>
         </div>
         {% if inp.device_index.lower().startswith('dab://') %}
@@ -7392,6 +8633,19 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 </div>
 {% endif %}
 
+{% set _cmp_configured = inputs | selectattr('1.compare_role') | list %}
+{% if not comparators and _cmp_configured and running %}
+<div class="st">Stream Comparison</div>
+<div style="padding:10px 16px;background:#1a2a1e;border:1px solid #22c55e44;border-radius:8px;margin-bottom:12px;font-size:13px;color:var(--mu)">
+  ⚠ Streams have comparison roles configured but no pairs are active. Check that:
+  <ul style="margin:6px 0 0 18px;line-height:1.8">
+    <li>One stream is set to <strong>Pre</strong> and the other to <strong>Post</strong></li>
+    <li>Each stream's <em>Compare peer</em> is set to the other stream's name</li>
+    <li>Both streams are enabled</li>
+    <li>Monitoring was restarted after saving the configuration</li>
+  </ul>
+</div>
+{% endif %}
 {% if comparators %}
 <div class="st">Stream Comparison</div>
 <div class="grid" style="margin-bottom:12px" id="cmp-grid">
@@ -7540,7 +8794,8 @@ function aiClass(ai){
 
 var HIST_COLORS={'SILENCE':'#f87171','AI_ALERT':'#f87171','RTP_LOSS':'#f87171',
   'CLIP':'#fb923c','HISS':'#fbbf24','AI_WARN':'#fcd34d','RTP_LOSS_WARN':'#fbbf24',
-  'LUFS_TP':'#f97316','LUFS_I':'#fb923c','ESCALATION':'#e879f9'};
+  'LUFS_TP':'#f97316','LUFS_I':'#fb923c','ESCALATION':'#e879f9',
+  'STUDIO_FAULT':'#f97316','STL_FAULT':'#ef4444','TX_DOWN':'#ef4444','DAB_SERVICE_MISSING':'#fbbf24'};
 
 function updateCards(inputs){
   inputs.forEach(function(inp, idx){
@@ -7564,6 +8819,15 @@ function updateCards(inputs){
     if(rtp){
       rtp.style.color=rtpColor(inp.rtp_loss_pct);
       rtp.innerHTML=inp.rtp_loss_pct.toFixed(2)+'% <span style="color:var(--mu);font-size:11px">'+inp.rtp_total+' pkts</span>';
+    }
+    // Jitter
+    var jitterEl=document.getElementById('jitter_'+idx);
+    var jitterRow=document.getElementById('jitter_row_'+idx);
+    if(jitterEl && inp.rtp_jitter_ms!==undefined){
+      var jms=inp.rtp_jitter_ms||0;
+      jitterEl.textContent=jms.toFixed(2)+'ms';
+      jitterEl.style.color=jms>5.0?'var(--wn)':'var(--ok)';
+      if(jitterRow) jitterRow.style.display=jms>0?'flex':'none';
     }
 
     // SLA
@@ -8879,6 +10143,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       <option value="other"  id="opt_other">Livewire / RTP / HTTP</option>
       <option value="dab"    id="opt_dab">DAB (RTL-SDR via welle-cli)</option>
       <option value="fm"     id="opt_fm">FM (RTL-SDR)</option>
+      <option value="sound"  id="opt_sound">Local Sound Device (ALSA/PulseAudio)</option>
     </select>
   </label>
 
@@ -8971,6 +10236,12 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       <div id="dab_service_info" style="margin-top:6px;font-size:12px;color:var(--mu)"></div>
     </div>
     {% endif %}
+    <div style="margin-top:10px">
+      <label style="font-size:12px;color:var(--mu);display:block;margin-bottom:4px">Expected DAB Service Name
+        <input type="text" name="expected_dab_service" value="{{inp.expected_dab_service}}" maxlength="64" placeholder="e.g. Cool FM" style="width:220px;margin-top:4px;padding:6px 10px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:13px">
+      </label>
+      <p class="help">The service name as broadcast on the multiplex. Leave blank to alert on any service name change without requiring a specific name.</p>
+    </div>
     <p class="help" style="margin-top:8px">Requires welle-cli and an RTL-SDR dongle. Register dongles in Settings → Hub &amp; Network → SDR Devices.</p>
   </div>
 
@@ -9001,6 +10272,28 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       </label>
     </div>
     <p class="help" style="margin-top:8px">FM backend can be selected per input. <code style="background:#173a69;padding:1px 5px;border-radius:3px">rtl_fm</code> is recommended for stable audio. <code style="background:#173a69;padding:1px 5px;border-radius:3px">pyrtlsdr</code> is available for development work on metrics/RDS. Leave gain blank for current automatic behaviour, or set a manual tuner gain such as 38&ndash;42 dB. Register dongles in Settings → Hub &amp; Network → SDR Devices.</p>
+    <div style="margin-top:10px">
+      <label style="font-size:12px;color:var(--mu);display:block;margin-bottom:4px">Expected RDS Station Name (PS)
+        <input type="text" name="expected_fm_rds_ps" value="{{inp.expected_fm_rds_ps}}" maxlength="8" placeholder="e.g. COOL FM" style="width:180px;margin-top:4px;padding:6px 10px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:13px;text-transform:uppercase" oninput="this.value=this.value.toUpperCase()">
+      </label>
+      <p class="help">Up to 8 characters — the station name shown on car radios. Leave blank to alert on any name change without requiring a specific name.</p>
+    </div>
+  </div>
+
+  <!-- Local sound device (ALSA/PulseAudio) -->
+  <div id="src_sound" style="display:none">
+    <div style="margin-top:10px">
+      <label>Device
+        <select id="sound_device" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+          <option value="">— Select device —</option>
+        </select>
+      </label>
+      <div style="margin-top:8px;display:flex;align-items:center;gap:10px">
+        <button type="button" class="btn bp" id="sound_refresh_btn" onclick="soundRefresh()" style="width:auto;margin-top:0;padding:6px 14px;font-size:13px">🔄 Refresh devices</button>
+        <span id="sound_status" style="font-size:12px;color:var(--mu)"></span>
+      </div>
+    </div>
+    <p class="help" style="margin-top:8px">Capture from a local ALSA or PulseAudio input device (microphone, line-in, loopback). Requires <code style="background:#173a69;padding:1px 5px;border-radius:3px">libportaudio2</code> and the <code style="background:#173a69;padding:1px 5px;border-radius:3px">sounddevice</code> Python package.</p>
   </div>
 
   <!-- Hidden actual field submitted with the form -->
@@ -9045,6 +10338,10 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       if(gm2) document.getElementById("fm_gain").value = decodeURIComponent(gm2[1]);
       var bm2 = v.match(/backend=([^&?]+)/);
       if(bm2) document.getElementById("fm_backend").value = decodeURIComponent(bm2[1]);
+    } else if(v.toLowerCase().startsWith("sound://")){
+      sel.value = "sound";
+      var sdv = v.slice(8);
+      document.getElementById("sound_device").dataset.preselect = sdv;
     } else {
       sel.value = "other";
       document.getElementById("device_index_other").value = v;
@@ -9057,15 +10354,18 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
     var elOther = document.getElementById("src_other");
     var elDab   = document.getElementById("src_dab");
     var elFm    = document.getElementById("src_fm");
+    var elSound = document.getElementById("src_sound");
     var elName  = document.getElementById("name_wrap");
     var elNonDab= document.getElementById("non_dab_fields");
     var nameInp = document.getElementById("inp_name");
     if(elOther)  elOther.style.display  = t==="other" ? "" : "none";
     if(elDab)    elDab.style.display    = t==="dab"   ? "" : "none";
     if(elFm)     elFm.style.display     = t==="fm"    ? "" : "none";
+    if(elSound)  elSound.style.display  = t==="sound" ? "" : "none";
     if(elName)   elName.style.display   = t==="dab"   ? "none" : "";
     if(elNonDab) elNonDab.style.display = t==="dab"   ? "none" : "";
     if(nameInp)  nameInp.required       = (t !== "dab");
+    if(t === "sound") soundRefresh();
     updateHiddenField();
   }
 
@@ -9106,6 +10406,10 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
         if(backend2 && backend2 !== "auto") params.push("backend=" + encodeURIComponent(backend2));
         if(params.length) val += "?" + params.join("&");
       }
+    } else if(t === "sound"){
+      var sdSel = document.getElementById("sound_device");
+      var sdVal = sdSel ? sdSel.value.trim() : "";
+      if(sdVal) val = "sound://" + sdVal;
     }
     document.getElementById("device_index").value = val;
   }
@@ -9114,12 +10418,43 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
   document.getElementById("src_type").addEventListener("change", srcTypeChanged);
 
   // Wire up live updates
-  ["device_index_other","fm_freq","fm_serial","fm_gain","fm_backend","dab_serial","dab_channel"]
+  ["device_index_other","fm_freq","fm_serial","fm_gain","fm_backend","dab_serial","dab_channel","sound_device"]
     .forEach(function(id){
       var el = document.getElementById(id);
       if(el) el.addEventListener("input", updateHiddenField);
       if(el) el.addEventListener("change", updateHiddenField);
     });
+
+  function soundRefresh(){
+    var sel = document.getElementById("sound_device");
+    var st  = document.getElementById("sound_status");
+    var btn = document.getElementById("sound_refresh_btn");
+    if(!sel) return;
+    var preselect = sel.dataset.preselect || sel.value;
+    if(btn) btn.disabled = true;
+    if(st){ st.style.color = "var(--mu)"; st.textContent = "Scanning…"; }
+    _csrfFetch("/api/sound_devices").then(function(r){ return r.json(); }).then(function(d){
+      if(btn) btn.disabled = false;
+      if(d.error){
+        if(st){ st.style.color = "var(--al)"; st.textContent = "✗ " + d.error; }
+        return;
+      }
+      sel.innerHTML = '<option value="">— Select device —</option>';
+      (d.devices || []).forEach(function(dev){
+        var opt = document.createElement("option");
+        opt.value = String(dev.index);
+        opt.textContent = dev.index + ": " + dev.name + " (" + dev.channels + " ch, " + dev.default_samplerate + " Hz)";
+        if(String(dev.index) === preselect || dev.name === preselect) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      delete sel.dataset.preselect;
+      if(st){ st.style.color = "var(--ok)"; st.textContent = "✓ " + (d.devices || []).length + " device(s)"; }
+      updateHiddenField();
+    }).catch(function(e){
+      if(btn) btn.disabled = false;
+      if(st){ st.style.color = "var(--al)"; st.textContent = "✗ " + e; }
+    });
+  }
 
   function dabServiceSelected(){
     updateHiddenField();
@@ -9379,7 +10714,19 @@ def index():
     if monitor.app_cfg.hub.mode == "hub":
         return redirect(url_for("hub_dashboard"))
     comparators_data = [
-        {"pre_name": c.pre.name, "post_name": c.post.name, "status": c.status}
+        {
+            "pre_name":     c.pre.name,
+            "post_name":    c.post.name,
+            "status":       c.status,
+            "aligned":      c.aligned,
+            "delay_ms":     round(c.delay_ms, 0),
+            "correlation":  round(c.correlation, 3),
+            "pre_dbfs":     round(c.pre_dbfs, 1),
+            "post_dbfs":    round(c.post_dbfs, 1),
+            "gain_diff_db": round(c.gain_diff_db, 1),
+            "gain_alert_db": getattr(c.pre, "compare_gain_alert_db", 3.0),
+            "cmp_history":  c.cmp_history[-8:],
+        }
         for c in monitor._comparators
     ]
     hc  = monitor._hub_client
@@ -9435,6 +10782,7 @@ def status_json():
             "ai_phase":     i._ai_phase,
             "livewire_mode":i._livewire_mode,
             "rtp_loss_pct": round(i._rtp_loss_pct, 2),
+            "rtp_jitter_ms":round(i._rtp_jitter_ms, 2),
             "rtp_total":    i._rtp_total,
             "dab_snr":      round(i._dab_snr, 1),
             "dab_sig":      round(i._dab_sig, 1),
@@ -9558,6 +10906,8 @@ def _inp_from_form(f):
         lufs_target=float(f.get("lufs_target", -23.0)),
         lufs_tolerance_db=float(f.get("lufs_tolerance_db", 3.0)),
         escalation_minutes=int(f.get("escalation_minutes") or 0),
+        expected_fm_rds_ps=f.get("expected_fm_rds_ps", "").strip().upper(),
+        expected_dab_service=f.get("expected_dab_service", "").strip(),
     )
 
 @app.route("/inputs/add", methods=["GET","POST"])
@@ -9779,8 +11129,36 @@ def settings():
         except: pass
         try: cfg.clip_max_per_stream = max(0, int(f.get("clip_max_per_stream", 200)))
         except: pass
+        cfg.suppress_local_notifications = bool(f.get("hub_suppress_local"))
         save_config(cfg); flash("Settings saved."); return redirect(url_for("settings"))
-    return render_template_string(SETTINGS_TPL, cfg=cfg)
+    _hub_sites = hub_server.get_sites() if hub_server else []
+    return render_template_string(SETTINGS_TPL, cfg=cfg,
+        hub_sites=_hub_sites,
+        _hub_default_fwd=_HUB_DEFAULT_FORWARD_TYPES,
+        _all_alert_types=_ALL_ALERT_TYPES)
+
+@app.post("/api/hub/site_rules")
+@login_required
+@csrf_protect
+def api_hub_site_rules():
+    """Save per-site alert forwarding rules for the hub."""
+    try:
+        data = request.get_json(force=True) or {}
+        site_name = str(data.get("site_name", "")).strip()
+        if not site_name:
+            return jsonify({"ok": False, "error": "site_name required"}), 400
+        enabled      = bool(data.get("enabled", True))
+        forward_types = [str(t).strip().upper() for t in data.get("forward_types", _HUB_DEFAULT_FORWARD_TYPES)
+                         if str(t).strip().upper() in _ALL_ALERT_TYPES]
+        cfg = monitor.app_cfg
+        if not isinstance(cfg.hub_site_rules, dict):
+            cfg.hub_site_rules = {}
+        cfg.hub_site_rules[site_name] = {"enabled": enabled, "forward_types": forward_types}
+        save_config(cfg)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @app.get("/settings/backup")
 @login_required
@@ -10126,6 +11504,7 @@ def clips_delete(stream_name, filename):
 # ─── Auth routes ─────────────────────────────────────────────────────────────
 
 LOGIN_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Login — SignalScope</title>
+<meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--tx:#e2e8f0;--mu:#64748b}
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;display:flex;align-items:center;justify-content:center;min-height:100vh;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:320px;height:320px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.05;pointer-events:none;filter:drop-shadow(0 0 30px rgba(23,168,255,.12));z-index:0}body>*{position:relative;z-index:1}
 .box{background:var(--sur);border:1px solid var(--bor);border-radius:12px;padding:32px;width:100%;max-width:380px}
@@ -10187,6 +11566,29 @@ def api_sdr_scan():
         "welle_cli":  bool(__import__("shutil").which("welle-cli")),
     })
 
+
+
+@app.get("/api/sound_devices")
+@login_required
+def api_sound_devices():
+    """List available sounddevice input devices."""
+    try:
+        import sounddevice as sd
+        devs = sd.query_devices()
+        result = []
+        for i, d in enumerate(devs):
+            if d.get("max_input_channels", 0) > 0:
+                result.append({
+                    "index":             i,
+                    "name":              d["name"],
+                    "channels":          d["max_input_channels"],
+                    "default_samplerate": int(d.get("default_samplerate", 0)),
+                })
+        return jsonify({"devices": result})
+    except ImportError:
+        return jsonify({"error": "sounddevice not installed — run: pip install sounddevice"})
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 
 @app.get("/api/dab/test")
@@ -10251,6 +11653,98 @@ def api_dab_test():
     except Exception as e:
         return jsonify({"error": str(e), "cmd": " ".join(cmd),
                         "help": help_out.split("\n")})
+
+
+def _dab_scan_mux(channel: str, device_idx: str = "0", ppm: int = 0) -> dict:
+    """Core DAB mux scan logic. Returns the same dict as api_dab_scan on success,
+    or raises RuntimeError on failure. Callable from both Flask routes and background threads."""
+    import shutil as _sh, subprocess as _sp, urllib.request as _ur
+    WELLE_PORT  = 7979
+    welle_bin   = _find_binary("welle-cli")
+    if not welle_bin:
+        raise RuntimeError("welle-cli not found")
+    cmd = [welle_bin, "-w", str(WELLE_PORT), "-c", channel, "-g", "-1"]
+    if device_idx and device_idx != "0":
+        cmd += ["-F", f"rtl_sdr,{device_idx}"]
+    else:
+        cmd += ["-F", "rtl_sdr"]
+    if ppm:
+        cmd += ["-p", str(ppm)]
+    proc = None
+    try:
+        proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
+        stderr_lines: list = []
+        def _rd(pipe, buf):
+            for ln in pipe:
+                d = ln.decode(errors="ignore").strip()
+                if d: buf.append(d)
+        import threading as _th
+        _th.Thread(target=_rd, args=(proc.stderr, stderr_lines), daemon=True).start()
+        _th.Thread(target=_rd, args=(proc.stdout, []), daemon=True).start()
+        time.sleep(2.0)
+        if proc.poll() is not None:
+            raise RuntimeError(f"welle-cli exited: {' | '.join(stderr_lines[-5:])}")
+        services, ensemble = [], {}
+        stable_count, deadline = 0, time.time() + 60
+        STABLE_NEEDED, MIN_WAIT = 4, 10
+        scan_start = time.time()
+        while time.time() < deadline:
+            time.sleep(1)
+            if proc.poll() is not None:
+                raise RuntimeError(f"welle-cli crashed: {' | '.join(stderr_lines[-3:])}")
+            try:
+                mux_data = None
+                for url in [f"http://localhost:{WELLE_PORT}/mux.json",
+                             f"http://localhost:{WELLE_PORT}/api/mux.json"]:
+                    try:
+                        with _ur.urlopen(url, timeout=2) as r:
+                            mux_data = json.loads(r.read()); break
+                    except Exception: continue
+                if not mux_data: stable_count = 0; continue
+                ens_obj = mux_data.get("ensemble", {})
+                ens_lbl = ens_obj.get("label", {})
+                ensemble = {
+                    "ensembleLabel": (ens_lbl.get("label","") or ens_lbl.get("shortlabel","")).strip(),
+                    "snr": mux_data.get("demodulator",{}).get("snr", 0),
+                }
+                candidate = []
+                for svc in mux_data.get("services", []):
+                    lbl  = svc.get("label", {})
+                    name = (lbl.get("label","") or lbl.get("shortlabel","")).strip()
+                    if not name: continue
+                    bitrate, is_audio = 0, False
+                    for c in svc.get("components", []):
+                        if c.get("transportmode") == "audio":
+                            is_audio = True; bitrate = c.get("subchannel",{}).get("bitrate",0); break
+                    if not is_audio and svc.get("components"): continue
+                    candidate.append({
+                        "name":    name,
+                        "label":   lbl.get("label", name).strip(),
+                        "sid":     svc.get("sid",""),
+                        "bitrate": bitrate,
+                        "stereo":  svc.get("channels",1) > 1,
+                        "mode":    svc.get("mode",""),
+                        "ok":      svc.get("audiolevel",{}).get("left",-1) >= 0,
+                    })
+                if len(candidate) == len(services) and candidate: stable_count += 1
+                else: stable_count = 0; services = candidate
+                if candidate and time.time()-scan_start >= MIN_WAIT and stable_count >= STABLE_NEEDED:
+                    services = candidate; break
+            except Exception: stable_count = 0
+        if not services:
+            raise RuntimeError(f"No services found on {channel}")
+        return {
+            "channel":  channel,
+            "ensemble": ensemble.get("ensembleLabel") or channel,
+            "snr":      round(float(ensemble.get("snr", 0)), 1),
+            "services": sorted(services, key=lambda s: s["name"].lower()),
+        }
+    finally:
+        if proc:
+            try: proc.terminate()
+            except: pass
+            try: proc.wait(timeout=3)
+            except: proc.kill()
 
 
 @app.get("/api/dab/scan")
@@ -10862,6 +12356,220 @@ def api_nowplaying_debug():
         "last_fetch_at": nowplaying_poller._last_fetch_at,
     })
 
+# ─── Metric history API ───────────────────────────────────────────────────────
+
+@app.get("/api/metrics/<path:stream_name>")
+@login_required
+def api_metrics(stream_name):
+    """Return time-series data for one metric on one stream.
+
+    Query params:
+        metric  — metric name, e.g. level_dbfs, fm_signal_dbm, dab_snr (required)
+        hours   — how many hours of history to return (default 24, max 168 / 7 days)
+
+    Response:
+        {"stream": "...", "metric": "...", "hours": 24,
+         "points": [[ts, value], ...],
+         "available_metrics": [...]}
+    """
+    metric = request.args.get("metric", "").strip()
+    try:
+        hours = min(float(request.args.get("hours", 24)), 168.0)
+    except ValueError:
+        hours = 24.0
+
+    available = metrics_db.available_metrics(stream_name)
+
+    if not metric:
+        return jsonify({"stream": stream_name, "metric": None, "hours": hours,
+                        "points": [], "available_metrics": available})
+
+    points = metrics_db.query(stream_name, metric, hours)
+    return jsonify({
+        "stream":            stream_name,
+        "metric":            metric,
+        "hours":             hours,
+        "points":            points,        # [[ts, value], ...]
+        "available_metrics": available,
+    })
+
+
+@app.get("/api/timeline/<path:stream_name>")
+@login_required
+def api_timeline(stream_name):
+    """Return a bucketed availability/silence timeline for one stream.
+
+    Query params:
+        hours  — hours of history (default 24, max 168)
+
+    Response:
+        {"stream": "...", "hours": 24, "bucket_secs": 300,
+         "segments": [[ts, "ok"|"silence"|"dab_missing"|"nodata"], ...]}
+
+    Buckets are coloured by the average level_dbfs in that window:
+        nodata       — no metric rows in bucket
+        silence      — avg level_dbfs < -80 dBFS (includes startup floor of -120)
+        dab_missing  — DAB stream with avg dab_ok < 0.5
+        ok           — signal present
+    """
+    try:
+        hours = min(float(request.args.get("hours", 24)), 168.0)
+    except ValueError:
+        hours = 24.0
+
+    bucket_secs = 60 if hours <= 2 else (300 if hours <= 12 else 900)
+    now   = time.time()
+    since = now - hours * 3600
+    n_buckets = max(1, int(hours * 3600 / bucket_secs))
+
+    level_pts = metrics_db.query(stream_name, "level_dbfs", hours)
+    dab_pts   = metrics_db.query(stream_name, "dab_ok",     hours)
+
+    # Accumulate sums per bucket
+    sum_level = [0.0] * n_buckets
+    cnt_level = [0]   * n_buckets
+    sum_dab   = [0.0] * n_buckets
+    cnt_dab   = [0]   * n_buckets
+
+    for ts, val in level_pts:
+        idx = int((ts - since) / bucket_secs)
+        if 0 <= idx < n_buckets:
+            sum_level[idx] += val
+            cnt_level[idx] += 1
+
+    for ts, val in dab_pts:
+        idx = int((ts - since) / bucket_secs)
+        if 0 <= idx < n_buckets:
+            sum_dab[idx] += val
+            cnt_dab[idx] += 1
+
+    segments = []
+    for i in range(n_buckets):
+        ts = since + i * bucket_secs
+        if cnt_level[i] == 0:
+            status = "nodata"
+        elif (sum_level[i] / cnt_level[i]) < -80.0:
+            status = "silence"
+        elif cnt_dab[i] > 0 and (sum_dab[i] / cnt_dab[i]) < 0.5:
+            status = "dab_missing"
+        else:
+            status = "ok"
+        segments.append([round(ts, 1), status])
+
+    return jsonify({
+        "stream":      stream_name,
+        "hours":       hours,
+        "bucket_secs": bucket_secs,
+        "segments":    segments,
+    })
+
+
+@app.get("/api/trend/<path:stream_name>")
+@login_required
+def api_trend(stream_name):
+    """Return trend analysis for a stream using a day-of-week + hour-of-day baseline.
+
+    Strategy:
+      1. Try (dow, hour) cell from 28-day baseline — if n >= MIN_SAMPLES use it.
+      2. Fall back to hour-only cell from 14-day baseline if dow+hour is sparse.
+      3. If neither has enough data, return "insufficient_data".
+
+    Also computes a sustained_minutes score: how many consecutive minutes in the
+    last 30 minutes have been deviating in the same direction at >1.5σ.
+    A sustained deviation is more operationally significant than a single point.
+
+    Response:
+        {"stream": "...", "current_dow": 1, "current_hour": 14,
+         "current_level": -14.2,
+         "baseline": {"mean": -13.5, "std": 1.1, "n": 42},
+         "baseline_type": "dow_hour" | "hour_only",
+         "status": "normal"|"lower_than_usual"|"higher_than_usual"|"insufficient_data",
+         "deviation": -0.64,
+         "sustained_minutes": 12,
+         "baselines": {"0_0": {...}, ...}   // all (dow,hour) cells, keys as "dow_hour"
+        }
+    """
+    MIN_SAMPLES   = 10
+    SUSTAIN_MINS  = 30   # look-back window for duration scoring
+    lt = time.localtime()
+    current_dow  = lt.tm_wday + 1 if lt.tm_wday < 6 else 0  # Mon=1…Sat=6, Sun=0 (match SQLite %w)
+    current_hour = lt.tm_hour
+
+    # Fetch both baseline tables in parallel (both are fast SQLite GROUP BY queries)
+    dow_baselines  = metrics_db.dow_hourly_baseline(stream_name, "level_dbfs", days=28)
+    hour_baselines = metrics_db.hourly_baseline(stream_name,     "level_dbfs", days=14)
+    current_level  = metrics_db.last_value(stream_name, "level_dbfs")
+
+    # Pick best available baseline for this moment
+    dow_cell  = dow_baselines.get((current_dow, current_hour))
+    hour_cell = hour_baselines.get(current_hour)
+
+    if dow_cell and dow_cell["n"] >= MIN_SAMPLES:
+        hour_data      = dow_cell
+        baseline_type  = "dow_hour"
+    elif hour_cell and hour_cell["n"] >= MIN_SAMPLES:
+        hour_data      = hour_cell
+        baseline_type  = "hour_only"
+    else:
+        hour_data      = hour_cell or dow_cell  # may be None
+        baseline_type  = "insufficient"
+
+    status    = "insufficient_data"
+    deviation = None
+
+    if (hour_data and hour_data["n"] >= MIN_SAMPLES
+            and current_level is not None and current_level > -80.0):
+        mean      = hour_data["mean"]
+        std       = max(hour_data["std"], 0.5)
+        deviation = (current_level - mean) / std
+        if deviation < -1.5:
+            status = "lower_than_usual"
+        elif deviation > 1.5:
+            status = "higher_than_usual"
+        else:
+            status = "normal"
+
+    # Sustained deviation scoring — count consecutive minutes all deviating same way
+    sustained_minutes = 0
+    if status in ("lower_than_usual", "higher_than_usual") and hour_data:
+        mean = hour_data["mean"]
+        std  = max(hour_data["std"], 0.5)
+        recent = metrics_db.recent_values(stream_name, "level_dbfs", minutes=SUSTAIN_MINS)
+        # recent is newest-first; walk from newest backward counting sustained direction
+        direction = 1 if status == "higher_than_usual" else -1
+        prev_ts = None
+        for ts, val in recent:
+            if val <= -80.0:
+                break   # silence floor interrupts the streak
+            dev = (val - mean) / std
+            if dev * direction < 1.5:
+                break   # deviation ended
+            if prev_ts is None:
+                sustained_minutes = 1
+            else:
+                gap = prev_ts - ts
+                sustained_minutes += max(1, round(gap / 60))
+            prev_ts = ts
+
+    # Serialise dow_baselines with string keys (JSON doesn't allow tuple keys)
+    dow_baselines_serial = {
+        f"{d}_{h}": v for (d, h), v in dow_baselines.items()
+    }
+
+    return jsonify({
+        "stream":            stream_name,
+        "current_dow":       current_dow,
+        "current_hour":      current_hour,
+        "current_level":     round(current_level, 1) if current_level is not None else None,
+        "baseline":          hour_data,
+        "baseline_type":     baseline_type,
+        "status":            status,
+        "deviation":         round(deviation, 2) if deviation is not None else None,
+        "sustained_minutes": sustained_minutes,
+        "baselines":         dow_baselines_serial,
+    })
+
+
 # ─── Reports routes ───────────────────────────────────────────────────────────
 
 @app.get("/reports")
@@ -10988,17 +12696,27 @@ def hub_heartbeat():
 
     # ── Ingest ────────────────────────────────────────────────────────────────
     hub_server.set_secret(secret)
-    if not hub_server.ingest(payload, client_ip=client_ip):
-        return jsonify({"error":"forbidden"}), 403
+    ingest_status = hub_server.ingest(payload, client_ip=client_ip)
+
+    site_name = payload.get("site","")
+
+    # Pending approval — acknowledge receipt but send no commands
+    if ingest_status == "pending":
+        ack = {"ok": True, "status": "pending_approval",
+               "message": "This site is awaiting approval on the hub dashboard."}
+        ack_bytes = json.dumps(ack).encode()
+        if secret:
+            enc = hub_encrypt_payload(secret, ack_bytes)
+            return Response(enc, content_type="application/octet-stream")
+        return jsonify(ack)
 
     # ── Build ACK — encrypt if secret is set ─────────────────────────────────
-    site_name     = payload.get("site","")
     listen_reqs   = listen_registry.pending_for_site(site_name)
     relay_bitrate = hub_server.get_relay_bitrate(site_name)
-    pending_cmd   = hub_server.pop_pending_command(site_name)
+    pending_cmd   = hub_server.pop_pending_command(site_name)   # dict or None
     ack = {"ok": True, "listen_requests": listen_reqs, "relay_bitrate": relay_bitrate}
     if pending_cmd:
-        ack["command"] = pending_cmd
+        ack["command"] = pending_cmd  # structured dict: {"type": ..., "payload": {...}}
     ack_bytes = json.dumps(ack).encode()
 
     if secret:
@@ -11033,16 +12751,157 @@ def hub_send_command(site_name):
     cfg = monitor.app_cfg
     if cfg.hub.mode not in ("hub", "both"):
         return jsonify({"error": "not a hub"}), 403
-    raw_site = hub_server.get_site(site_name)
-    if not raw_site:
+    if not hub_server.get_site(site_name):
         return jsonify({"error": "site not found"}), 404
     data = request.get_json(silent=True) or {}
     command = (data.get("command") or "").strip().lower()
     if command not in ("start", "stop"):
         return jsonify({"error": "command must be 'start' or 'stop'"}), 400
-    hub_server.set_pending_command(site_name, command)
+    hub_server.push_pending_command(site_name, {"type": command})
     return jsonify({"ok": True, "site": site_name, "command": command,
                     "note": "command will be delivered on the client's next heartbeat"})
+
+
+def _hub_site_guard(site_name: str):
+    """Return (site_dict, None) or (None, error_response)."""
+    if monitor.app_cfg.hub.mode not in ("hub", "both"):
+        return None, (jsonify({"error": "not a hub"}), 403)
+    site = hub_server.get_site(site_name)
+    if not site:
+        return None, (jsonify({"error": "site not found"}), 404)
+    return site, None
+
+
+@app.post("/api/hub/site/<path:site_name>/input/add")
+@login_required
+@csrf_protect
+def hub_input_add(site_name):
+    """Hub admin: send an add_input command to a client site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()
+    dev  = str(data.get("device_index", "")).strip()
+    if not name or not dev:
+        return jsonify({"error": "name and device_index are required"}), 400
+    payload = {
+        "name":                  name,
+        "device_index":          dev,
+        "enabled":               bool(data.get("enabled", True)),
+        "alert_on_silence":      bool(data.get("alert_on_silence", True)),
+        "alert_on_hiss":         bool(data.get("alert_on_hiss", False)),
+        "alert_on_clip":         bool(data.get("alert_on_clip", True)),
+        "silence_threshold_dbfs": float(data.get("silence_threshold_dbfs", -55.0)),
+        "silence_min_duration":   float(data.get("silence_min_duration", 3.0)),
+        "clip_threshold_dbfs":    float(data.get("clip_threshold_dbfs", -1.0)),
+        "ai_monitor":             bool(data.get("ai_monitor", True)),
+    }
+    hub_server.push_pending_command(site_name, {"type": "add_input", "payload": payload})
+    return jsonify({"ok": True, "note": "add_input queued for next heartbeat"})
+
+
+@app.post("/api/hub/site/<path:site_name>/input/remove")
+@login_required
+@csrf_protect
+def hub_input_remove(site_name):
+    """Hub admin: send a remove_input command to a client site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    hub_server.push_pending_command(site_name, {"type": "remove_input", "payload": {"name": name}})
+    return jsonify({"ok": True, "note": "remove_input queued for next heartbeat"})
+
+
+@app.post("/api/hub/site/<path:site_name>/input/enable")
+@login_required
+@csrf_protect
+def hub_input_enable(site_name):
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()
+    if not name: return jsonify({"error": "name is required"}), 400
+    hub_server.push_pending_command(site_name, {"type": "enable_input", "payload": {"name": name}})
+    return jsonify({"ok": True})
+
+
+@app.post("/api/hub/site/<path:site_name>/input/disable")
+@login_required
+@csrf_protect
+def hub_input_disable(site_name):
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()
+    if not name: return jsonify({"error": "name is required"}), 400
+    hub_server.push_pending_command(site_name, {"type": "disable_input", "payload": {"name": name}})
+    return jsonify({"ok": True})
+
+
+@app.post("/api/hub/site/<path:site_name>/set_expected_name")
+@login_required
+@csrf_protect
+def hub_set_expected_name(site_name):
+    """Hub admin: tell a client to pin the current RDS PS or DAB service name as expected."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data   = request.get_json(silent=True) or {}
+    stream = str(data.get("stream", "")).strip()
+    field  = str(data.get("field",  "")).strip()
+    value  = str(data.get("value",  "")).strip()
+    if field not in ("expected_fm_rds_ps", "expected_dab_service"):
+        return jsonify({"error": "invalid field"}), 400
+    if not stream:
+        return jsonify({"error": "stream required"}), 400
+    hub_server.push_pending_command(site_name, {
+        "type": "set_expected_name",
+        "payload": {"stream": stream, "field": field, "value": value},
+    })
+    return jsonify({"ok": True})
+
+
+@app.post("/api/hub/site/<path:site_name>/dab/scan")
+@login_required
+@csrf_protect
+def hub_dab_scan(site_name):
+    """Hub admin: send a DAB scan command to a client site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data    = request.get_json(silent=True) or {}
+    channel = str(data.get("channel", "")).strip().upper()
+    _VALID  = {"5A","5B","5C","5D","6A","6B","6C","6D","7A","7B","7C","7D",
+               "8A","8B","8C","8D","9A","9B","9C","9D","10A","10B","10C","10D",
+               "11A","11B","11C","11D","12A","12B","12C","12D","13A","13B","13C","13D","13E","13F"}
+    if channel not in _VALID:
+        return jsonify({"error": f"Invalid DAB channel '{channel}'"}), 400
+    try:
+        ppm = int(data.get("ppm", 0))
+        if not (-1000 <= ppm <= 1000): raise ValueError
+    except (ValueError, TypeError):
+        return jsonify({"error": "ppm must be integer ±1000"}), 400
+    serial = str(data.get("serial", "")).strip()
+    hub_server.push_pending_command(site_name, {
+        "type": "dab_scan",
+        "payload": {"channel": channel, "ppm": ppm, "serial": serial},
+    })
+    # Clear any stale previous scan result for this site
+    hub_server.pop_dab_scan_result(site_name)
+    return jsonify({"ok": True, "note": "dab_scan queued — poll /dab/scan_result for result"})
+
+
+@app.get("/api/hub/site/<path:site_name>/dab/scan_result")
+@login_required
+def hub_dab_scan_result(site_name):
+    """Hub admin: poll for a DAB scan result sent back by a client."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    result = hub_server.peek_dab_scan_result(site_name)
+    if result is None:
+        return jsonify({"ready": False})
+    return jsonify({"ready": True, **result})
 
 
 @app.get("/hub")
@@ -11057,7 +12916,13 @@ def hub_dashboard():
     sites = hub_server.get_sites()
     for s in sites:
         streams = s.get("streams", [])
-        if not s["online"]:
+        if not s.get("_approved", True):
+            s["site_status"] = "WARN"   # pending sites use WARN colour (amber border)
+            # Detect pre-approval-era builds so the hub can prompt an update
+            import re as _re
+            _bm = _re.search(r'SignalScope-(\d+)\.(\d+)\.(\d+)', s.get("build", "") or "")
+            s["_needs_update"] = tuple(int(x) for x in _bm.groups()) < (3, 0, 3) if _bm else True
+        elif not s["online"]:
             s["site_status"] = "offline"
         elif any("ALERT" in st.get("ai_status","") for st in streams):
             s["site_status"] = "ALERT"
@@ -11078,8 +12943,16 @@ def hub_dashboard():
         s["warn_count"]  = sum(1 for st in streams if "WARN" in (st.get("ai_status","") or ""))
         s["ok_count"]    = max(0, len(streams) - s["alert_count"] - s["warn_count"])
         s["problem_count"] = s["alert_count"] + s["warn_count"]
+        # Guarantee fields the template accesses unconditionally so a newly-
+        # approved site (stub only, no full heartbeat yet) never causes a 500.
+        s.setdefault("streams",     [])
+        s.setdefault("running",     False)
+        s.setdefault("comparators", [])
+        s.setdefault("ptp", {"state": "—", "offset_us": 0, "drift_us": 0,
+                              "jitter_us": 0, "gm_id": "—", "last_sync": None})
     if problems_only:
-        sites = [s for s in sites if (not s.get("online")) or s.get("problem_count", 0) > 0]
+        # Always show pending sites — they always need attention
+        sites = [s for s in sites if not s.get("_approved", True) or (not s.get("online")) or s.get("problem_count", 0) > 0]
     def _site_sort_key(s):
         status = s.get("site_status")
         pri = 0 if status == "offline" else 1 if status == "ALERT" else 2 if status == "WARN" else 3
@@ -11116,6 +12989,17 @@ def hub_dashboard():
         hub_mem=psutil.virtual_memory().percent
     except Exception:
         pass
+
+    if wall_mode:
+        # Build chain evaluation results for the wall display
+        wall_chains = []
+        for chain in (cfg.signal_chains or []):
+            try:
+                wall_chains.append(hub_server.eval_chain(chain))
+            except Exception:
+                pass
+        return render_template_string(HUB_WALL_TPL, sites=sites, chains=wall_chains,
+            build=BUILD, now=time.time(), csp_nonce=_csp_nonce)
 
     return render_template_string(HUB_TPL, sites=sites, build=BUILD, now=time.time(),
         mode_both=(cfg.hub.mode=="both"), ago=_ago, fmt=_fmt,
@@ -11250,6 +13134,16 @@ def hub_remove_site(site_name):
     threading.Thread(target=hub_server._save_snapshot, args=(snapshot,),
                      daemon=True, name="HubSave").start()
     return jsonify({"ok": True, "removed": removed, "site": site_name})
+
+@app.post("/hub/site/approve/<path:site_name>")
+@login_required
+@csrf_protect
+def hub_approve_site(site_name):
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub","both"):
+        return jsonify({"error":"not a hub"}), 404
+    ok = hub_server.approve_site(site_name)
+    return jsonify({"ok": ok, "site": site_name})
 
 
 def _hub_stream_relay_response(slot: ListenSlot, startup_timeout: float = 20.0):
@@ -11595,6 +13489,376 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
     )
 
 
+BROADCAST_CHAINS_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Broadcast Chains — SignalScope</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="{{csrf_token()}}">
+<link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
+<style nonce="{{csp_nonce()}}">
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:14px;position:relative}
+body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}
+body>*{position:relative;z-index:1}
+/* nav / header — matches hub exactly */
+header{display:flex;align-items:center;gap:10px;padding:0 20px;min-height:64px;flex-wrap:wrap}
+nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.nav-active{background:var(--acc)!important;color:#fff!important}
+/* buttons — identical classes to hub */
+.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600;transition:filter .15s}
+.btn:hover{filter:brightness(1.08)}
+.bp{background:var(--acc);color:#fff}
+.bg{background:var(--bor);color:var(--tx)}
+.bd{background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d}
+.bs{padding:3px 9px;font-size:12px}
+/* form inputs */
+select,input[type=text]{background:#12305c;border:1px solid var(--bor);color:var(--tx);border-radius:8px;padding:7px 10px;font-size:13px}
+select:focus,input[type=text]:focus{outline:none;border-color:var(--acc)}
+label{display:block;font-size:12px;color:var(--mu);margin-bottom:4px}
+/* layout */
+main{padding:18px;max-width:1600px;margin:0 auto}
+.page-title{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+.page-title h1{font-size:18px;font-weight:700}
+/* chain cards — matches .site-card style */
+.chain-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;margin-bottom:16px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.18);transition:transform .14s,box-shadow .14s}
+.chain-card:hover{transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.24)}
+.chain-card.card-ok{border-left:4px solid var(--ok)}
+.chain-card.card-fault{border-left:4px solid var(--al)}
+.chain-card.card-unknown{border-left:4px solid var(--mu)}
+.chain-header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--bor);flex-wrap:wrap}
+.chain-name{font-size:16px;font-weight:700}
+/* status badge — matches hub .badge style */
+.badge{font-size:11px;padding:2px 8px;border-radius:999px;font-weight:700}
+.badge-ok{background:#14532d;color:#86efac}
+.badge-fault{background:#450a0a;color:#fca5a5}
+.badge-unknown{background:#1e3a5f;color:var(--acc)}
+.chain-actions{margin-left:auto;display:flex;gap:6px;flex-shrink:0}
+/* chain visual area */
+.chain-visual{display:flex;align-items:center;flex-wrap:wrap;gap:0;padding:14px 16px;overflow-x:auto}
+.chain-arrow{display:flex;align-items:center;color:var(--mu);font-size:22px;padding:0 8px;flex-shrink:0}
+.chain-node{border:2px solid var(--bor);border-radius:10px;padding:10px 14px;min-width:120px;max-width:180px;text-align:center;position:relative;transition:border-color .3s,background .3s;background:var(--bg)}
+.chain-node.ok{border-color:var(--ok);background:rgba(34,197,94,.07)}
+.chain-node.down{border-color:var(--al);background:rgba(239,68,68,.09)}
+.chain-node.offline{border-color:#374151;opacity:.6}
+.chain-node.unknown{border-color:var(--bor)}
+.chain-node.downstream{border-color:#1e3a5f;opacity:.5}
+.node-label{font-weight:700;font-size:12px;word-break:break-word}
+.node-sub{font-size:10px;color:var(--mu);margin-top:3px;word-break:break-word}
+.node-level{font-size:11px;margin-top:5px;font-variant-numeric:tabular-nums}
+.fault-marker{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;white-space:nowrap}
+/* builder panel — matches hub settings card style */
+.builder-panel{background:var(--sur);border:1px solid var(--bor);border-radius:14px;padding:18px 20px;margin-bottom:16px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
+.builder-title{font-weight:700;font-size:15px;margin-bottom:14px;color:var(--tx)}
+.node-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.empty{text-align:center;padding:56px 0;color:var(--mu);font-size:15px}
+</style></head><body>
+{{topnav('chains')|safe}}
+<main>
+<div class="page-title">
+  <h1>⛓ Broadcast Chains</h1>
+  <button class="btn bp" onclick="showBuilder(null)">+ New Chain</button>
+</div>
+
+<!-- Builder panel -->
+<div id="builder" class="builder-panel" style="display:none">
+  <div class="builder-title" id="builder_title">New Chain</div>
+  <input type="hidden" id="builder_id">
+  <div style="margin-bottom:14px">
+    <label>Chain Name</label>
+    <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%;max-width:380px">
+  </div>
+  <div style="font-size:12px;color:var(--mu);margin-bottom:10px">Nodes — left = source, right = destination. The first node that is down is identified as the fault point.</div>
+  <div id="builder_nodes"></div>
+  <button class="btn bg bs" onclick="addNode(null)" style="margin-top:8px">+ Add Node</button>
+  <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+    <button class="btn bp" onclick="saveChain()">💾 Save Chain</button>
+    <button class="btn bg" onclick="cancelBuilder()">Cancel</button>
+  </div>
+  <div id="builder_status" style="margin-top:8px;font-size:12px;color:var(--mu)"></div>
+</div>
+
+<!-- Chain list -->
+<div id="chains_list">
+{% if not chains %}
+<div class="empty">No chains defined yet. Click <strong>+ New Chain</strong> to get started.</div>
+{% endif %}
+{% for c in chains %}
+<div class="chain-card card-unknown" id="chain_{{c.id|e}}">
+  <div class="chain-header">
+    <span class="chain-name">{{c.name|e}}</span>
+    <span class="badge badge-unknown" id="badge_{{c.id|e}}">…</span>
+    <span style="font-size:12px;color:var(--al)" id="fault_label_{{c.id|e}}"></span>
+    <div class="chain-actions">
+      <button class="btn bg bs chain-edit-btn" data-chain="{{c|tojson|e}}">✎ Edit</button>
+      <button class="btn bd bs chain-delete-btn" data-id="{{c.id|e}}" data-name="{{c.name|e}}">✕ Delete</button>
+    </div>
+  </div>
+  <div class="chain-visual" id="visual_{{c.id|e}}">
+    {% for node in c.nodes %}
+    {% if not loop.first %}<div class="chain-arrow">→</div>{% endif %}
+    <div class="chain-node unknown">
+      <div class="node-label">{{(node.label or node.stream)|e}}</div>
+      <div class="node-sub">{{node.site|e}}</div>
+      <div class="node-level" style="color:var(--mu)">…</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+</div>
+</main>
+<footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope • Broadcast Signal Intelligence</footer>
+
+<script nonce="{{csp_nonce()}}">
+var _csrf=(document.cookie.match(/csrf_token=([^;]+)/)||[])[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+var _opts=[];
+
+function _f(url,o){o=o||{};o.headers=Object.assign({'X-CSRFToken':_csrf,'Content-Type':'application/json'},o.headers||{});return fetch(url,o);}
+
+function loadOpts(cb){
+  _f('/api/chains/streams').then(r=>r.json()).then(d=>{_opts=d.options||[];if(cb)cb();}).catch(()=>{if(cb)cb();});
+}
+
+function sitesFromOpts(){
+  var s={};_opts.forEach(function(o){if(!s[o.site])s[o.site]=o.site_label||o.site;});return s;
+}
+
+function streamsFor(site){return _opts.filter(o=>o.site===site).map(o=>o.stream);}
+
+function addNode(nd){
+  var container=document.getElementById('builder_nodes');
+  var idx=container.querySelectorAll('.node-row').length;
+  var row=document.createElement('div');row.className='node-row';
+
+  if(idx>0){var arr=document.createElement('span');arr.textContent='→';arr.style.cssText='color:var(--mu);font-size:20px;flex-shrink:0';row.appendChild(arr);}
+
+  var siteSel=document.createElement('select');siteSel.className='ns';siteSel.style.width='160px';
+  var sites=sitesFromOpts();
+  Object.keys(sites).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=sites[s];siteSel.appendChild(o);});
+
+  var streamSel=document.createElement('select');streamSel.className='nst';streamSel.style.width='180px';
+  function fillStreams(){
+    streamSel.innerHTML='';
+    streamsFor(siteSel.value).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;streamSel.appendChild(o);});
+    if(nd&&nd.stream)streamSel.value=nd.stream;
+  }
+  siteSel.addEventListener('change',fillStreams);
+
+  var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';labelIn.placeholder='Label (optional)';labelIn.style.width='150px';
+
+  var rm=document.createElement('button');rm.type='button';rm.textContent='✕';rm.className='btn bd bs';rm.onclick=function(){container.removeChild(row);};
+
+  if(nd){
+    if(nd.site&&siteSel.querySelector('option[value="'+nd.site+'"]'))siteSel.value=nd.site;
+    fillStreams();
+    if(nd.stream)streamSel.value=nd.stream;
+    if(nd.label)labelIn.value=nd.label;
+  } else { fillStreams(); }
+
+  row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(rm);
+  container.appendChild(row);
+}
+
+function showBuilder(chain){
+  var b=document.getElementById('builder');
+  document.getElementById('builder_status').textContent='';
+  document.getElementById('builder_nodes').innerHTML='';
+  if(chain){
+    document.getElementById('builder_title').textContent='Edit: '+chain.name;
+    document.getElementById('builder_id').value=chain.id||'';
+    document.getElementById('builder_name').value=chain.name||'';
+    loadOpts(function(){(chain.nodes||[]).forEach(addNode);});
+  } else {
+    document.getElementById('builder_title').textContent='New Chain';
+    document.getElementById('builder_id').value='';
+    document.getElementById('builder_name').value='';
+    loadOpts(function(){addNode(null);});
+  }
+  b.style.display='';b.scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+function cancelBuilder(){document.getElementById('builder').style.display='none';}
+
+function saveChain(){
+  var name=document.getElementById('builder_name').value.trim();
+  var cid=document.getElementById('builder_id').value.trim();
+  var st=document.getElementById('builder_status');
+  if(!name){st.style.color='var(--al)';st.textContent='Chain name required.';return;}
+  var nodes=[];
+  document.querySelectorAll('#builder_nodes .node-row').forEach(function(row){
+    var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl');
+    if(s&&st2&&st2.value)nodes.push({site:s.value,stream:st2.value,label:(l?l.value.trim():'')});
+  });
+  if(!nodes.length){st.style.color='var(--al)';st.textContent='Add at least one node.';return;}
+  var payload={name,nodes};if(cid)payload.id=cid;
+  st.style.color='var(--mu)';st.textContent='Saving…';
+  _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
+    if(d.ok){st.style.color='var(--ok)';st.textContent='Saved.';setTimeout(()=>location.reload(),600);}
+    else{st.style.color='var(--al)';st.textContent='Error: '+(d.error||'?');}
+  }).catch(e=>{st.style.color='var(--al)';st.textContent=''+e;});
+}
+
+function deleteChain(id,name){
+  if(!confirm('Delete chain "'+name+'"?'))return;
+  _f('/api/chains/'+encodeURIComponent(id),{method:'DELETE'}).then(r=>r.json()).then(d=>{
+    if(d.ok){var el=document.getElementById('chain_'+id);if(el)el.remove();}
+  }).catch(()=>{});
+}
+
+// Delegated listeners — avoids CSP inline-handler hash requirement for dynamic values
+document.addEventListener('click',function(e){
+  var eb=e.target.closest('.chain-edit-btn');
+  if(eb){try{showBuilder(JSON.parse(eb.dataset.chain));}catch(_){}return;}
+  var db=e.target.closest('.chain-delete-btn');
+  if(db){deleteChain(db.dataset.id,db.dataset.name);return;}
+});
+
+var BORDER={ok:'var(--ok)',down:'var(--al)',offline:'#374151',unknown:'var(--bor)',downstream:'#1e3a5f'};
+var BG={ok:'rgba(34,197,94,.07)',down:'rgba(239,68,68,.09)',offline:'',unknown:'var(--bg)',downstream:''};
+var CARD_CLS={ok:'chain-card card-ok',fault:'chain-card card-fault',unknown:'chain-card card-unknown'};
+
+function refreshStatus(){
+  _f('/api/chains/status').then(r=>r.json()).then(d=>{
+    (d.results||[]).forEach(function(chain){
+      var badge=document.getElementById('badge_'+chain.id);
+      var fl=document.getElementById('fault_label_'+chain.id);
+      var visual=document.getElementById('visual_'+chain.id);
+      var card=document.getElementById('chain_'+chain.id);
+      if(badge){
+        badge.textContent=chain.status==='ok'?'OK':chain.status==='fault'?'FAULT':'…';
+        badge.className='badge badge-'+(chain.status==='ok'?'ok':chain.status==='fault'?'fault':'unknown');
+      }
+      if(card&&CARD_CLS[chain.status]){card.className=CARD_CLS[chain.status];}
+      if(fl){
+        if(chain.fault_node){
+          var fn=chain.fault_node;
+          fl.textContent='↳ fault at '+fn.label+' ('+fn.site+')';
+        } else { fl.textContent=''; }
+      }
+      if(visual){
+        var nodeEls=visual.querySelectorAll('.chain-node');
+        (chain.nodes||[]).forEach(function(node,i){
+          var el=nodeEls[i];if(!el)return;
+          var fi=chain.fault_index;
+          var eff=(fi!==null&&fi!==undefined&&i>fi)?'downstream':node.status;
+          el.className='chain-node '+eff;
+          el.style.borderColor=BORDER[eff]||BORDER.unknown;
+          el.style.background=BG[eff]||'';
+          var old=el.querySelector('.fault-marker');if(old)old.remove();
+          var lvlEl=el.querySelector('.node-level');
+          if(lvlEl){
+            lvlEl.style.color=node.status==='ok'?'var(--ok)':node.status==='down'?'var(--al)':'var(--mu)';
+            lvlEl.textContent=node.level!==null&&node.level!==undefined?node.level.toFixed(1)+' dBFS':(node.status==='offline'?'Offline':'—');
+          }
+          if(fi!==null&&fi!==undefined&&i===fi){
+            var m=document.createElement('div');m.className='fault-marker';m.textContent='⚠ Fault here';el.appendChild(m);
+          }
+        });
+      }
+    });
+  }).catch(()=>{});
+}
+refreshStatus();setInterval(refreshStatus,5000);
+</script>
+</body></html>"""
+
+
+@app.get("/chains")
+@login_required
+def broadcast_chains():
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub", "both"):
+        return "Not a hub", 404
+    chains = cfg.signal_chains or []
+    return render_template_string(BROADCAST_CHAINS_TPL, chains=chains)
+
+
+@app.get("/api/chains/streams")
+@login_required
+def api_chains_streams():
+    """Return all available site/stream options for the chain node builder."""
+    cfg = monitor.app_cfg
+    options = []
+    # Local streams on this node
+    for inp in cfg.inputs:
+        if inp.enabled:
+            options.append({"site": "local", "site_label": f"This node (local)", "stream": inp.name})
+    # Remote hub sites
+    if hub_server:
+        for site in hub_server.get_sites():
+            sname = site.get("site", "")
+            for s in site.get("streams", []):
+                options.append({"site": sname, "site_label": sname, "stream": s.get("name", "")})
+    return jsonify({"options": options})
+
+
+@app.get("/api/chains/status")
+@login_required
+def api_chains_status():
+    """Evaluate all chains and return their current status."""
+    cfg = monitor.app_cfg
+    results = []
+    for chain in cfg.signal_chains:
+        try:
+            results.append(hub_server.eval_chain(chain))
+        except Exception as e:
+            results.append({"id": chain.get("id", ""), "name": chain.get("name", ""),
+                            "status": "unknown", "fault_index": None, "fault_node": None,
+                            "nodes": [], "error": str(e)})
+    return jsonify({"results": results})
+
+
+@app.post("/api/chains")
+@login_required
+@csrf_protect
+def api_chains_save():
+    """Create or update a signal chain."""
+    import uuid as _uuid
+    data = request.get_json(force=True) or {}
+    name  = str(data.get("name", "")).strip()
+    nodes = data.get("nodes", [])
+    if not name:
+        return jsonify({"ok": False, "error": "name required"}), 400
+    # Sanitise nodes
+    clean_nodes = []
+    for n in nodes:
+        site   = str(n.get("site", "")).strip()
+        stream = str(n.get("stream", "")).strip()
+        label  = str(n.get("label", "")).strip()
+        if site and stream:
+            clean_nodes.append({"site": site, "stream": stream, "label": label})
+    cfg    = monitor.app_cfg
+    chains = list(cfg.signal_chains)
+    cid    = str(data.get("id", "")).strip()
+    if cid:
+        # Update existing
+        for i, c in enumerate(chains):
+            if c.get("id") == cid:
+                chains[i] = {"id": cid, "name": name, "nodes": clean_nodes}
+                break
+        else:
+            chains.append({"id": cid, "name": name, "nodes": clean_nodes})
+    else:
+        # New chain
+        cid = str(_uuid.uuid4())
+        chains.append({"id": cid, "name": name, "nodes": clean_nodes})
+    cfg.signal_chains = chains
+    save_config(cfg)
+    return jsonify({"ok": True, "id": cid})
+
+
+@app.delete("/api/chains/<chain_id>")
+@login_required
+@csrf_protect
+def api_chains_delete(chain_id):
+    """Delete a signal chain by id."""
+    cfg    = monitor.app_cfg
+    before = len(cfg.signal_chains)
+    cfg.signal_chains = [c for c in cfg.signal_chains if c.get("id") != chain_id]
+    if len(cfg.signal_chains) < before:
+        save_config(cfg)
+    return jsonify({"ok": True})
+
+
 @app.get("/hub/reports")
 @login_required
 def hub_reports():
@@ -11704,8 +13968,8 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
   </div>
   <div class="summary">
     <div class="sc" data-ftypes="" onclick="filterByStat(this)" title="Show all events"><div class="sc-val" id="sc-total">{{total}}</div><div class="sc-lbl">Total Events</div></div>
-    <div class="sc" data-ftypes="SILENCE,AI_ALERT,RTP_LOSS,CLIP" onclick="filterByStat(this)" title="Filter: critical events"><div class="sc-val" id="sc-critical" style="color:var(--al)">{{counts.get('SILENCE',0)+counts.get('AI_ALERT',0)+counts.get('RTP_LOSS',0)}}</div><div class="sc-lbl">🔴 Critical</div></div>
-    <div class="sc" data-ftypes="AI_WARN,RTP_LOSS_WARN,HISS" onclick="filterByStat(this)" title="Filter: warnings"><div class="sc-val" id="sc-warn" style="color:var(--wn)">{{counts.get('AI_WARN',0)+counts.get('RTP_LOSS_WARN',0)+counts.get('HISS',0)}}</div><div class="sc-lbl">🟡 Warnings</div></div>
+    <div class="sc" data-ftypes="SILENCE,AI_ALERT,RTP_LOSS,CLIP,STUDIO_FAULT,STL_FAULT,TX_DOWN" onclick="filterByStat(this)" title="Filter: critical events"><div class="sc-val" id="sc-critical" style="color:var(--al)">{{counts.get('SILENCE',0)+counts.get('AI_ALERT',0)+counts.get('RTP_LOSS',0)+counts.get('STUDIO_FAULT',0)+counts.get('STL_FAULT',0)+counts.get('TX_DOWN',0)}}</div><div class="sc-lbl">🔴 Critical</div></div>
+    <div class="sc" data-ftypes="AI_WARN,RTP_LOSS_WARN,HISS,DAB_SERVICE_MISSING" onclick="filterByStat(this)" title="Filter: warnings"><div class="sc-val" id="sc-warn" style="color:var(--wn)">{{counts.get('AI_WARN',0)+counts.get('RTP_LOSS_WARN',0)+counts.get('HISS',0)+counts.get('DAB_SERVICE_MISSING',0)}}</div><div class="sc-lbl">🟡 Warnings</div></div>
     <div class="sc" data-ftypes="RTP_LOSS,RTP_LOSS_WARN" onclick="filterByStat(this)" title="Filter: RTP loss events"><div class="sc-val" style="color:var(--acc)">{{counts.get('RTP_LOSS',0)+counts.get('RTP_LOSS_WARN',0)}}</div><div class="sc-lbl">📦 RTP Loss</div></div>
     <div class="sc" data-ftypes="PTP_OFFSET,PTP_JITTER,PTP_LOST,PTP_GM_CHANGE" onclick="filterByStat(this)" title="Filter: PTP events"><div class="sc-val" style="color:#86efac">{{counts.get('PTP_OFFSET',0)+counts.get('PTP_JITTER',0)+counts.get('PTP_LOST',0)+counts.get('PTP_GM_CHANGE',0)}}</div><div class="sc-lbl">🕐 PTP Events</div></div>
     <div class="sc" data-ftypes="" data-fclips="1" onclick="filterByStat(this)" title="Filter: events with clips"><div class="sc-val">{{with_clips}}</div><div class="sc-lbl">🎵 With Clips</div></div>
@@ -11968,6 +14232,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% else %}
       <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="start" style="background:#1e3a1e;color:#86efac;font-size:11px;padding:2px 10px">▶ Start</button>
       {% endif %}
+      <button class="btn" data-action="hub-mgr-toggle" data-site="{{site.site|e}}" style="background:#1a3050;color:var(--acc);font-size:11px;padding:2px 10px">⚙ Sources</button>
       {% endif %}
       {% if site.build %}<span class="badge">{{site.build}}</span>{% endif %}
       <span class="site-meta">Last seen: {{ago(site.age_s)}}</span>
@@ -12026,6 +14291,15 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           <div class="lbar-track"><div class="lbar-fill" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
           <span class="lbar-val" style="color:{{lcol}}">{{lev}} dB</span>
         </div>
+        <div class="sc-tl-wrap" style="display:flex;align-items:center;gap:5px;padding:0 10px 4px">
+          <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">24h</span>
+          <canvas class="sc-tl" data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-hours="24"
+                  height="16" style="flex:1;height:16px;border-radius:2px;cursor:pointer"
+                  title="24h availability — click to cycle 1h/6h/24h"></canvas>
+          <span style="font-size:9px;color:var(--mu);white-space:nowrap">
+            <span style="color:#22c55e">■</span> <span style="color:#ef4444">■</span> <span style="color:#f59e0b">■</span> <span style="color:#374151">■</span>
+          </span>
+        </div>
         <div style="padding:0 10px 4px">
           <div class="sc-row">Format <span style="font-size:11px;color:var(--mu)">{{s.format or '—'}}</span></div>
           {% set _sdev = (s.device_index or '').lower() %}
@@ -12047,7 +14321,19 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             <div class="sc-row">SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">{{s.dab_snr}} dB</span></div>
             <div class="sc-row">Signal <span>{{s.dab_sig}} dBm</span></div>
             <div class="sc-row">Ensemble <span style="font-size:11px">{{s.dab_ensemble or '—'}}</span></div>
-            <div class="sc-row">Service <span style="font-size:11px">{{s.dab_service or '—'}}</span></div>
+            <div class="sc-row">Service <span style="font-size:11px;display:flex;align-items:center;gap:5px">
+              <span>{{s.dab_service or '—'}}</span>
+              {% if s.dab_service %}
+                {% if not s.expected_dab_service %}
+                  <button class="btn bg bs set-expected-btn" style="padding:1px 6px;font-size:10px" title="Pin '{{s.dab_service}}' as expected service name" data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-field="expected_dab_service" data-value="{{s.dab_service|e}}">📌 Set</button>
+                {% elif s.expected_dab_service.lower() == s.dab_service.lower() %}
+                  <span style="color:var(--ok);font-size:10px" title="Expected: {{s.expected_dab_service}}">✓</span>
+                {% else %}
+                  <span style="color:var(--al);font-size:10px" title="Expected: {{s.expected_dab_service}}">⚠ {{s.expected_dab_service}}</span>
+                  <button class="btn bg bs set-expected-btn" style="padding:1px 6px;font-size:10px" title="Update expected to '{{s.dab_service}}'" data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-field="expected_dab_service" data-value="{{s.dab_service|e}}">📌 Update</button>
+                {% endif %}
+              {% endif %}
+            </span></div>
             <div class="sc-row">Mode <span style="font-size:11px">{{s.dab_mode or '—'}}</span></div>
             <div class="sc-row">Bitrate <span>{% if s.dab_bitrate %}{{s.dab_bitrate}} kbps{% else %}—{% endif %}</span></div>
             <div class="sc-row">Audio <span style="color:{{'var(--ok)' if s.dab_stereo else 'var(--mu)'}}">{% if s.dab_stereo %}Stereo{% else %}Mono{% endif %}</span></div>
@@ -12067,7 +14353,23 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             <div class="sc-row">Signal <span>📶 {{s.fm_signal_dbm}} dBFS</span></div>
             <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
             <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
-            <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}}">{% if s.fm_rds_ok %}📡 {{s.fm_rds_ps or 'Locked'}}{% else %}— No RDS{% endif %}</span></div>
+            <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}};display:flex;align-items:center;gap:5px">
+              {% if s.fm_rds_ok %}
+                <span>📡 {{s.fm_rds_ps or 'Locked'}}</span>
+                {% if s.fm_rds_ps %}
+                  {% if not s.expected_fm_rds_ps %}
+                    <button class="btn bg bs set-expected-btn" style="padding:1px 6px;font-size:10px;color:var(--tx)" title="Pin '{{s.fm_rds_ps}}' as expected RDS name" data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-field="expected_fm_rds_ps" data-value="{{s.fm_rds_ps|e}}">📌 Set</button>
+                  {% elif s.expected_fm_rds_ps == s.fm_rds_ps %}
+                    <span style="color:var(--ok);font-size:10px" title="Expected: {{s.expected_fm_rds_ps}}">✓</span>
+                  {% else %}
+                    <span style="color:var(--al);font-size:10px" title="Expected: {{s.expected_fm_rds_ps}}">⚠ {{s.expected_fm_rds_ps}}</span>
+                    <button class="btn bg bs set-expected-btn" style="padding:1px 6px;font-size:10px;color:var(--tx)" title="Update expected to '{{s.fm_rds_ps}}'" data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-field="expected_fm_rds_ps" data-value="{{s.fm_rds_ps|e}}">📌 Update</button>
+                  {% endif %}
+                {% endif %}
+              {% else %}
+                <span>— No RDS</span>
+              {% endif %}
+            </span></div>
             {% if s.fm_rds_rt %}
             <div class="sc-row sc-rt-row" style="align-items:center">Text
               <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px" title="{{s.fm_rds_rt}}">
@@ -12129,8 +14431,126 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           </div>
         </div>
         {% endif %}
+        <!-- Signal History chart -->
+        <div class="sc-hist" data-site="{{site.site|e}}" data-stream="{{s.name|e}}">
+          <button class="hist-toggle" onclick="scHistToggle(this)">📈 Signal History <span>▼</span></button>
+          <div class="sc-hist-body" style="display:none">
+            <div style="display:flex;gap:4px;padding:6px 10px 2px;flex-wrap:wrap;align-items:center">
+              <span style="font-size:10px;color:var(--mu)">Range:</span>
+              <button class="btn sc-hr active" data-h="1" style="font-size:10px;padding:1px 7px">1h</button>
+              <button class="btn sc-hr" data-h="6" style="font-size:10px;padding:1px 7px">6h</button>
+              <button class="btn sc-hr" data-h="24" style="font-size:10px;padding:1px 7px">24h</button>
+              <select class="sc-hm" style="margin-left:8px;font-size:11px;background:#0d1117;border:1px solid var(--bor);border-radius:4px;color:var(--tx);padding:2px 4px">
+                <option value="level_dbfs">Level dBFS</option>
+                {%if _sdev.startswith('fm://')%}<option value="fm_signal_dbm">FM Signal dBm</option>{%endif%}
+                {%if _sdev.startswith('dab://')%}<option value="dab_snr">DAB SNR dB</option>{%endif%}
+                <option value="lufs_m">LUFS Momentary</option>
+                <option value="lufs_s">LUFS Short-term</option>
+                <option value="lufs_i">LUFS Integrated</option>
+                {%if not _sdev.startswith('fm://') and not _sdev.startswith('dab://') and not _sdev.startswith('http')%}
+                <option value="rtp_jitter_ms">RTP Jitter ms</option>
+                {%endif%}
+              </select>
+            </div>
+            <canvas class="sc-hc" height="110" style="display:block;width:100%;height:110px"></canvas>
+            <div class="sc-hs" style="display:none;font-size:11px;color:var(--mu);text-align:center;padding:4px 0 6px"></div>
+          </div>
+        </div>
+        {% if site.online %}
+        <div style="padding:4px 10px 6px;display:flex;gap:6px;border-top:1px solid var(--bor);background:#080f1f">
+          <button class="btn" data-action="hub-remove-input" data-site="{{site.site|e}}" data-name="{{s.name|e}}"
+                  style="font-size:10px;padding:2px 8px;background:#2a1010;color:#fca5a5">🗑 Remove</button>
+          {% if s.enabled %}
+          <button class="btn" data-action="hub-disable-input" data-site="{{site.site|e}}" data-name="{{s.name|e}}"
+                  style="font-size:10px;padding:2px 8px;background:#1a2a10;color:#86efac">⏸ Disable</button>
+          {% else %}
+          <button class="btn" data-action="hub-enable-input" data-site="{{site.site|e}}" data-name="{{s.name|e}}"
+                  style="font-size:10px;padding:2px 8px;background:#2a2a10;color:#fde68a">▶ Enable</button>
+          {% endif %}
+        </div>
+        {% endif %}
       </div>
       {% endfor %}
+    </div>
+
+    <!-- ── Source management panel (hidden by default) ──────────────────── -->
+    <div id="hub-mgr-{{site.site|e}}" style="display:none;border-top:2px solid var(--acc);background:#080f1f;padding:12px 16px">
+      <div style="font-size:12px;font-weight:700;color:var(--acc);margin-bottom:10px">⚙ Source Management — {{site.site}}</div>
+      <!-- Add source form -->
+      <div style="background:#0d2346;border:1px solid var(--bor);border-radius:8px;padding:12px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:700;color:var(--mu);margin-bottom:8px">➕ Add Source</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+          <div class="hub-mgr-name-wrap" data-site="{{site.site|e}}">
+            <label style="font-size:11px;color:var(--mu)">Name</label>
+            <input class="hub-mgr-name" data-site="{{site.site|e}}" placeholder="e.g. BBC R4" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--mu)">Source Type</label>
+            <select class="hub-mgr-type" data-site="{{site.site|e}}" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
+              <option value="rtp">Livewire / AES67 (RTP)</option>
+              <option value="http">HTTP Audio Stream</option>
+              <option value="fm">FM via RTL-SDR</option>
+              <option value="dab">DAB via RTL-SDR</option>
+            </select>
+          </div>
+          <div class="hub-mgr-dev-wrap" data-site="{{site.site|e}}" style="grid-column:1/-1">
+            <label class="hub-mgr-dev-lbl" data-site="{{site.site|e}}" style="font-size:11px;color:var(--mu)">Device Address</label>
+            <input class="hub-mgr-dev" data-site="{{site.site|e}}" placeholder="e.g. 239.192.0.1:5004" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
+          </div>
+          <!-- FM fields (shown only when type=fm) -->
+          <div class="hub-mgr-fm-fields" data-site="{{site.site|e}}" style="display:none;grid-column:1/-1">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;align-items:end">
+              <div>
+                <label style="font-size:11px;color:var(--mu)">Frequency (MHz)</label>
+                <input class="hub-mgr-fm-freq" data-site="{{site.site|e}}" type="number" step="0.1" min="64" max="108" placeholder="e.g. 96.7" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--mu)">PPM Offset</label>
+                <input class="hub-mgr-fm-ppm" data-site="{{site.site|e}}" type="number" value="0" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--mu)">Dongle Serial (opt.)</label>
+                <input class="hub-mgr-fm-serial" data-site="{{site.site|e}}" placeholder="auto" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
+              </div>
+            </div>
+          </div>
+          <!-- DAB scan fields (shown only when type=dab) -->
+          <div class="hub-mgr-dab-fields" data-site="{{site.site|e}}" style="display:none;grid-column:1/-1;display:none">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:6px;align-items:end">
+              <div>
+                <label style="font-size:11px;color:var(--mu)">Channel</label>
+                <select class="hub-mgr-dab-ch" data-site="{{site.site|e}}" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
+                  {% for ch in ['5A','5B','5C','5D','6A','6B','6C','6D','7A','7B','7C','7D','8A','8B','8C','8D','9A','9B','9C','9D','10A','10B','10C','10D','11A','11B','11C','11D','12A','12B','12C','12D','13A','13B','13C','13D','13E','13F'] %}
+                  <option value="{{ch}}" {{'selected' if ch=='12C'}}>{{ch}}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--mu)">PPM Offset</label>
+                <input class="hub-mgr-dab-ppm" data-site="{{site.site|e}}" type="number" value="0" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--mu)">Dongle Serial (opt.)</label>
+                <input class="hub-mgr-dab-serial" data-site="{{site.site|e}}" placeholder="auto" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
+              </div>
+              <button class="btn bp hub-mgr-dab-scan-btn" data-site="{{site.site|e}}" style="font-size:12px;padding:5px 12px;white-space:nowrap">🔍 Scan Mux</button>
+            </div>
+            <!-- Scan results area -->
+            <div class="hub-mgr-dab-results" data-site="{{site.site|e}}" style="margin-top:8px;display:none">
+              <div style="font-size:11px;color:var(--mu);margin-bottom:6px">Select services to add:</div>
+              <div class="hub-mgr-dab-svc-list" data-site="{{site.site|e}}" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+              <button class="btn hub-mgr-dab-add-sel" data-site="{{site.site|e}}" style="background:#166534;color:#fff;font-size:12px;padding:4px 14px">➕ Add Selected Services</button>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="font-size:11px;color:var(--mu)"><input type="checkbox" class="hub-mgr-sil" data-site="{{site.site|e}}" checked style="margin-right:4px">Silence alert</label>
+          <label style="font-size:11px;color:var(--mu)"><input type="checkbox" class="hub-mgr-clip" data-site="{{site.site|e}}" checked style="margin-right:4px">Clip alert</label>
+          <label style="font-size:11px;color:var(--mu)"><input type="checkbox" class="hub-mgr-ai" data-site="{{site.site|e}}" checked style="margin-right:4px">AI monitor</label>
+          <button class="btn hub-mgr-add-btn" data-site="{{site.site|e}}" style="background:#166534;color:#fff;font-size:12px;padding:4px 14px;margin-left:auto" data-site-add="{{site.site|e}}">➕ Add Source</button>
+        </div>
+        <div class="hub-mgr-msg" data-site="{{site.site|e}}" style="font-size:12px;margin-top:6px;display:none"></div>
+      </div>
     </div>
 
     {% set _cmps = site.get('comparators', []) or [] %}
@@ -12211,6 +14631,157 @@ document.addEventListener('click', function(e){
   var cmd  = btn.getAttribute('data-cmd');
   if(site && cmd) sendSiteCommand(site, cmd, btn);
 });
+
+// ── Source management ─────────────────────────────────────────────────────────
+function _hubCsrf(){return document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';}
+function hubPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_hubCsrf()},body:JSON.stringify(body)}).then(function(r){return r.json();});}
+function setExpectedName(site,stream,field,value,btn){
+  if(btn){btn.disabled=true;btn.textContent='...';}
+  var csrfTok=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  fetch('/api/hub/site/'+encodeURIComponent(site)+'/set_expected_name',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-CSRFToken':csrfTok},
+    body:JSON.stringify({stream:stream,field:field,value:value})
+  }).then(function(r){
+    if(!r.ok){return r.text().then(function(t){throw new Error('Server error '+r.status+': '+t.substring(0,120));});}
+    return r.json();
+  }).then(function(d){
+    if(d.ok){
+      if(btn){var sp=document.createElement('span');sp.style.cssText='color:var(--ok);font-size:10px';sp.textContent='✓ Saved';btn.replaceWith(sp);}
+    } else {
+      if(btn){btn.disabled=false;btn.textContent='📌 Set';}
+      alert('Set name failed: '+(d.error||'unknown error'));
+    }
+  }).catch(function(err){
+    if(btn){btn.disabled=false;btn.textContent='📌 Set';}
+    alert('Set name error: '+(err.message||err));
+  });
+}
+// Delegated listener for set-expected buttons (avoids CSP inline-handler hash requirement)
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.set-expected-btn');
+  if(!btn)return;
+  setExpectedName(btn.dataset.site,btn.dataset.stream,btn.dataset.field,btn.dataset.value,btn);
+});
+function hubMgrMsg(site,txt,ok){var el=document.querySelector('.hub-mgr-msg[data-site="'+site+'"]');if(!el)return;el.style.display='';el.style.color=ok?'var(--ok)':'var(--al)';el.textContent=txt;if(ok)setTimeout(function(){el.style.display='none';},5000);}
+
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('[data-action="hub-mgr-toggle"]');if(!btn)return;
+  var panel=document.getElementById('hub-mgr-'+btn.dataset.site);
+  if(panel)panel.style.display=panel.style.display==='none'?'block':'none';
+});
+document.addEventListener('change',function(e){
+  var sel=e.target.closest('.hub-mgr-type');if(!sel)return;
+  var site=sel.dataset.site, t=sel.value;
+  var dw=document.querySelector('.hub-mgr-dev-wrap[data-site="'+site+'"]');
+  var lbl=document.querySelector('.hub-mgr-dev-lbl[data-site="'+site+'"]');
+  var ff=document.querySelector('.hub-mgr-fm-fields[data-site="'+site+'"]');
+  var df=document.querySelector('.hub-mgr-dab-fields[data-site="'+site+'"]');
+  var nw=document.querySelector('.hub-mgr-name-wrap[data-site="'+site+'"]');
+  var ab=document.querySelector('.hub-mgr-add-btn[data-site-add="'+site+'"]');
+  if(dw)dw.style.display=(t==='fm'||t==='dab')?'none':'block';
+  if(ff)ff.style.display=t==='fm'?'block':'none';
+  if(df)df.style.display=t==='dab'?'block':'none';
+  if(lbl)lbl.textContent=t==='http'?'Stream URL':'Device Address';
+  // For DAB, station names come from the scan — hide the manual name field and
+  // generic Add button; the "Add Selected Services" button inside the scan
+  // results is the correct control.
+  if(nw)nw.style.display=t==='dab'?'none':'';
+  if(ab)ab.style.display=t==='dab'?'none':'';
+});
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.hub-mgr-dab-scan-btn');if(!btn)return;
+  var site=btn.dataset.site;
+  var ch=(document.querySelector('.hub-mgr-dab-ch[data-site="'+site+'"]')||{}).value||'';
+  var ppm=parseInt((document.querySelector('.hub-mgr-dab-ppm[data-site="'+site+'"]')||{}).value||0);
+  var serial=(document.querySelector('.hub-mgr-dab-serial[data-site="'+site+'"]')||{}).value||'';
+  var resArea=document.querySelector('.hub-mgr-dab-results[data-site="'+site+'"]');
+  var svcList=document.querySelector('.hub-mgr-dab-svc-list[data-site="'+site+'"]');
+  btn.disabled=true;btn.textContent='Scanning…';if(resArea)resArea.style.display='none';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/dab/scan',{channel:ch,ppm:ppm,serial:serial})
+  .then(function(d){
+    if(!d.ok){btn.disabled=false;btn.textContent='🔍 Scan Mux';hubMgrMsg(site,'Scan failed: '+(d.error||'unknown'));return;}
+    hubMgrMsg(site,'Scan queued — waiting for client (~60s)…',true);
+    var polls=0,max=75;
+    function poll(){fetch('/api/hub/site/'+encodeURIComponent(site)+'/dab/scan_result').then(function(r){return r.json();}).then(function(r){
+      if(r.ready){
+        btn.disabled=false;btn.textContent='🔍 Scan Mux';
+        if(r.error){hubMgrMsg(site,'Scan error: '+r.error);return;}
+        if(svcList){svcList.innerHTML='';(r.services||[]).forEach(function(s){var lbl=document.createElement('label');lbl.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;background:#0d2346;border:1px solid var(--bor);border-radius:5px;padding:3px 8px;cursor:pointer;color:var(--tx)';lbl.innerHTML='<input type="checkbox" checked data-svc-name="'+s.name+'" style="margin-right:2px"><span>'+s.name+(s.bitrate?' <span style="color:var(--mu)">'+s.bitrate+'k</span>':'')+'</span>';svcList.appendChild(lbl);});}
+        if(resArea){resArea.style.display='';hubMgrMsg(site,'Found '+(r.services||[]).length+' services on '+(r.channel||ch)+(r.ensemble?' — '+r.ensemble:''),true);}
+      } else if(polls++<max){setTimeout(poll,2000);}
+      else{btn.disabled=false;btn.textContent='🔍 Scan Mux';hubMgrMsg(site,'Scan timed out');}
+    }).catch(function(){if(polls++<max)setTimeout(poll,2000);});}
+    setTimeout(poll,3000);
+  }).catch(function(){btn.disabled=false;btn.textContent='🔍 Scan Mux';hubMgrMsg(site,'Request failed');});
+});
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.hub-mgr-dab-add-sel');if(!btn)return;
+  var site=btn.dataset.site;
+  var ch=(document.querySelector('.hub-mgr-dab-ch[data-site="'+site+'"]')||{}).value||'';
+  var ppm=parseInt((document.querySelector('.hub-mgr-dab-ppm[data-site="'+site+'"]')||{}).value||0);
+  var serial=(document.querySelector('.hub-mgr-dab-serial[data-site="'+site+'"]')||{}).value||'';
+  var svcList=document.querySelector('.hub-mgr-dab-svc-list[data-site="'+site+'"]');
+  var checked=[].slice.call(svcList?svcList.querySelectorAll('input[type=checkbox]:checked'):[]);
+  if(!checked.length){hubMgrMsg(site,'No services selected');return;}
+  btn.disabled=true;var done=0;
+  checked.forEach(function(cb){
+    var sn=cb.dataset.svcName||'';
+    var diParams=['channel='+encodeURIComponent(ch)];
+    if(serial)diParams.push('serial='+encodeURIComponent(serial));
+    if(ppm)diParams.push('ppm='+ppm);
+    var di='dab://'+encodeURIComponent(sn)+'?'+diParams.join('&');
+    hubPost('/api/hub/site/'+encodeURIComponent(site)+'/input/add',{name:sn,device_index:di,alert_on_silence:true,alert_on_clip:false,ai_monitor:true})
+    .then(function(){if(++done===checked.length){btn.disabled=false;hubMgrMsg(site,done+' service(s) queued for add',true);}})
+    .catch(function(){if(++done===checked.length)btn.disabled=false;});
+  });
+});
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.hub-mgr-add-btn');if(!btn)return;
+  var site=btn.dataset.site;
+  var name=(document.querySelector('.hub-mgr-name[data-site="'+site+'"]')||{}).value||'';
+  var type=(document.querySelector('.hub-mgr-type[data-site="'+site+'"]')||{}).value||'rtp';
+  var sil=!!(document.querySelector('.hub-mgr-sil[data-site="'+site+'"]')||{}).checked;
+  var clip=!!(document.querySelector('.hub-mgr-clip[data-site="'+site+'"]')||{}).checked;
+  var ai=!!(document.querySelector('.hub-mgr-ai[data-site="'+site+'"]')||{}).checked;
+  if(!name){hubMgrMsg(site,'Name is required');return;}
+  var dev='';
+  if(type==='fm'){
+    var freq=parseFloat((document.querySelector('.hub-mgr-fm-freq[data-site="'+site+'"]')||{}).value||'');
+    if(!freq||isNaN(freq)||freq<64||freq>108){hubMgrMsg(site,'Enter a valid FM frequency (64–108 MHz)');return;}
+    var fppm=parseInt((document.querySelector('.hub-mgr-fm-ppm[data-site="'+site+'"]')||{}).value||0)||0;
+    var fserial=((document.querySelector('.hub-mgr-fm-serial[data-site="'+site+'"]')||{}).value||'').trim();
+    dev='fm://'+freq;
+    var fparams=[];
+    if(fserial)fparams.push('serial='+encodeURIComponent(fserial));
+    if(fppm)fparams.push('ppm='+fppm);
+    if(fparams.length)dev+='?'+fparams.join('&');
+  } else {
+    dev=((document.querySelector('.hub-mgr-dev[data-site="'+site+'"]')||{}).value||'').trim();
+    if(!dev){hubMgrMsg(site,type==='http'?'Stream URL is required':'Device address is required');return;}
+  }
+  btn.disabled=true;
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/input/add',{name:name,device_index:dev,alert_on_silence:sil,alert_on_clip:clip,ai_monitor:ai})
+  .then(function(d){btn.disabled=false;if(d.ok)hubMgrMsg(site,'✓ Add queued',true);else hubMgrMsg(site,'Failed: '+(d.error||'unknown'));})
+  .catch(function(){btn.disabled=false;hubMgrMsg(site,'Request failed');});
+});
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('[data-action="hub-remove-input"]');if(!btn)return;
+  if(!confirm('Remove "'+btn.dataset.name+'" from '+btn.dataset.site+'? Monitoring will restart.'))return;
+  btn.disabled=true;
+  hubPost('/api/hub/site/'+encodeURIComponent(btn.dataset.site)+'/input/remove',{name:btn.dataset.name})
+  .then(function(d){btn.disabled=false;if(d.ok)btn.textContent='✓ Queued';else alert('Failed: '+(d.error||'unknown'));})
+  .catch(function(){btn.disabled=false;});
+});
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('[data-action="hub-enable-input"],[data-action="hub-disable-input"]');if(!btn)return;
+  var ep=btn.dataset.action==='hub-enable-input'?'enable':'disable';
+  btn.disabled=true;
+  hubPost('/api/hub/site/'+encodeURIComponent(btn.dataset.site)+'/input/'+ep,{name:btn.dataset.name})
+  .then(function(d){btn.disabled=false;if(d.ok)btn.textContent='✓ Queued';else alert('Failed: '+(d.error||'unknown'));})
+  .catch(function(){btn.disabled=false;});
+});
+
 // ── Per-site relay bitrate control ───────────────────────────────────────────
 function setRelayBitrate(sel){
   var site    = sel.getAttribute('data-site');
@@ -12253,7 +14824,7 @@ document.addEventListener('change', function(ev){
   var a = sel.parentElement.querySelector('a[href*="/clip?seconds="]');
   if(a){ a.href = a.href.replace(/seconds=\d+/, 'seconds=' + encodeURIComponent(sel.value)); }
 });
-// ── Auto-refresh: reload the page every 15s unless audio is playing ──────────
+// ── Auto-refresh: reload the page every 15s unless something needs keeping ───
 (function(){
   var countdown = 15;
   var label = document.getElementById('refresh-countdown');
@@ -12263,12 +14834,27 @@ document.addEventListener('change', function(ev){
     if(countdown <= 0){
       var anyPlaying = false;
       document.querySelectorAll('audio').forEach(function(a){ if(!a.paused) anyPlaying = true; });
-      if(!anyPlaying){
+      // Pause if a source management panel is open
+      var panelOpen = false;
+      document.querySelectorAll('[id^="hub-mgr-"]').forEach(function(p){
+        if(p.style.display && p.style.display !== 'none') panelOpen = true;
+      });
+      // Pause if the user has typed something into a management input
+      var inputDirty = false;
+      document.querySelectorAll('.hub-mgr-name,.hub-mgr-dev,.hub-mgr-fm-freq,.hub-mgr-dab-serial').forEach(function(i){
+        if(i.value && i.value.trim()) inputDirty = true;
+      });
+      // Pause if any stats accordion (DAB/FM details) is open
+      var detailsOpen = false;
+      document.querySelectorAll('details').forEach(function(d){ if(d.open) detailsOpen = true; });
+      if(!anyPlaying && !panelOpen && !inputDirty && !detailsOpen){
         location.reload();
       } else {
-        // Audio is playing — postpone refresh
         countdown = 15;
-        if(label) label.textContent = 'Paused (audio playing)';
+        if(label){
+          if(anyPlaying) label.textContent = 'Paused (audio playing)';
+          else label.textContent = 'Paused (panel open)';
+        }
       }
     }
   }
@@ -12287,8 +14873,393 @@ document.addEventListener('change', function(ev){
       // Not reachable from this browser — stay on replica
     });
 })();
+// ── Signal history charts ──────────────────────────────────────────────────────
+function drawMetricChart(canvas, points, color) {
+  var W = canvas.offsetWidth || 400, H = 110;
+  canvas.width = W; canvas.height = H;
+  var ctx = canvas.getContext('2d');
+  var pad = {t:8, r:8, b:24, l:44};
+  var cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+  ctx.clearRect(0,0,W,H);
+  if (!points || points.length < 2) {
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(points && points.length === 1 ? 'Only 1 point — wait for more data' : 'No data', W/2, H/2);
+    return;
+  }
+  var vals = points.map(function(p){return p[1];});
+  var times = points.map(function(p){return p[0];});
+  var minV = Math.min.apply(null,vals), maxV = Math.max.apply(null,vals);
+  var rng = maxV - minV || 1;
+  minV -= rng*0.08; maxV += rng*0.08; rng = maxV - minV;
+  var minT = times[0], maxT = times[times.length-1], tRng = maxT - minT || 1;
+  ctx.strokeStyle='rgba(255,255,255,0.06)'; ctx.lineWidth=1;
+  ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.font='9px monospace'; ctx.textAlign='right';
+  for(var g=0;g<=4;g++){
+    var gy=pad.t+ch*g/4;
+    ctx.beginPath();ctx.moveTo(pad.l,gy);ctx.lineTo(pad.l+cw,gy);ctx.stroke();
+    ctx.fillText((maxV-rng*g/4).toFixed(1), pad.l-3, gy+3);
+  }
+  ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.textAlign='center';
+  for(var tx=0;tx<=4;tx++){
+    var gx=pad.l+cw*tx/4, gt=minT+tRng*tx/4, d=new Date(gt*1000);
+    ctx.fillText(('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2), gx, H-4);
+  }
+  ctx.beginPath();
+  points.forEach(function(p,i){
+    var x=pad.l+(p[0]-minT)/tRng*cw, y=pad.t+(1-(p[1]-minV)/rng)*ch;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  var lx=pad.l+(points[points.length-1][0]-minT)/tRng*cw;
+  ctx.lineTo(lx,pad.t+ch); ctx.lineTo(pad.l,pad.t+ch); ctx.closePath();
+  ctx.fillStyle=color.replace(/^#/,'').length===6
+    ? 'rgba('+parseInt(color.slice(1,3),16)+','+parseInt(color.slice(3,5),16)+','+parseInt(color.slice(5,7),16)+',0.13)'
+    : 'rgba(96,165,250,0.13)';
+  ctx.fill();
+  ctx.beginPath();
+  points.forEach(function(p,i){
+    var x=pad.l+(p[0]-minT)/tRng*cw, y=pad.t+(1-(p[1]-minV)/rng)*ch;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.strokeStyle=color; ctx.lineWidth=1.5; ctx.lineJoin='round'; ctx.stroke();
+}
+function _scHistLoad(section) {
+  var canvas=section.querySelector('.sc-hc'), status=section.querySelector('.sc-hs');
+  var metric=section.querySelector('.sc-hm').value;
+  var hours=parseFloat((section.querySelector('.sc-hr.active')||{dataset:{h:1}}).dataset.h);
+  var site=section.dataset.site, stream=section.dataset.stream;
+  var colorMap={fm_signal_dbm:'#34d399',dab_snr:'#a78bfa',lufs_m:'#fbbf24',lufs_s:'#fb923c',lufs_i:'#f87171',rtp_jitter_ms:'#e879f9'};
+  status.textContent='Loading…'; status.style.display='block';
+  fetch('/api/metrics/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream)+'?metric='+encodeURIComponent(metric)+'&hours='+hours)
+    .then(function(r){return r.json();})
+    .then(function(d){status.style.display='none'; drawMetricChart(canvas,d.points,colorMap[metric]||'#60a5fa');})
+    .catch(function(){status.textContent='Failed to load'; status.style.display='block';});
+}
+function scHistToggle(btn) {
+  var body=btn.nextElementSibling, open=body.style.display==='block';
+  body.style.display=open?'none':'block';
+  btn.querySelector('span').textContent=open?'▼':'▲';
+  if(!open) _scHistLoad(btn.parentElement);
+}
+document.addEventListener('click',function(e){
+  var rb=e.target.closest('.sc-hr'); if(!rb) return;
+  var section=rb.closest('.sc-hist'); if(!section) return;
+  section.querySelectorAll('.sc-hr').forEach(function(b){b.classList.remove('active');});
+  rb.classList.add('active');
+  if(rb.closest('.sc-hist-body').style.display==='block') _scHistLoad(section);
+});
+document.addEventListener('change',function(e){
+  var sel=e.target.closest('.sc-hm'); if(!sel) return;
+  var section=sel.closest('.sc-hist'); if(!section) return;
+  if(sel.closest('.sc-hist-body').style.display==='block') _scHistLoad(section);
+});
+// ── Availability timeline ──────────────────────────────────────────────────────
+var _TL_HOURS = [24, 1, 6];
+var _TL_COLORS = {ok:'#22c55e', silence:'#ef4444', dab_missing:'#f59e0b', nodata:'#1e2a3a'};
+function drawTimeline(canvas, segments, hours) {
+  var W = canvas.offsetWidth || 400, H = 16;
+  canvas.width = W; canvas.height = H;
+  var ctx = canvas.getContext('2d');
+  var n = segments.length, sw = W / n;
+  segments.forEach(function(seg, i) {
+    ctx.fillStyle = _TL_COLORS[seg[1]] || '#1e2a3a';
+    ctx.fillRect(Math.floor(i*sw), 0, Math.ceil(sw)+1, H);
+  });
+  // Start/end time labels
+  if (segments.length > 1) {
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.font = '8px monospace';
+    var d0=new Date(segments[0][0]*1000), d1=new Date(segments[segments.length-1][0]*1000);
+    ctx.textAlign='left';  ctx.fillText(('0'+d0.getHours()).slice(-2)+':'+('0'+d0.getMinutes()).slice(-2), 2, H-2);
+    ctx.textAlign='right'; ctx.fillText(('0'+d1.getHours()).slice(-2)+':'+('0'+d1.getMinutes()).slice(-2), W-2, H-2);
+  }
+}
+function _tlLoad(canvas) {
+  var site=canvas.dataset.site, stream=canvas.dataset.stream, hours=canvas.dataset.hours||24;
+  var label=canvas.previousElementSibling;
+  fetch('/api/timeline/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream)+'?hours='+hours)
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(label) label.textContent=hours+'h';
+      drawTimeline(canvas, d.segments, hours);
+    }).catch(function(){});
+}
+function _tlLoadAll() {
+  document.querySelectorAll('canvas.sc-tl').forEach(function(c){ _tlLoad(c); });
+}
+document.addEventListener('click',function(e){
+  var c=e.target.closest('canvas.sc-tl'); if(!c) return;
+  var cur=parseInt(c.dataset.hours)||24;
+  var idx=(_TL_HOURS.indexOf(cur)+1)%_TL_HOURS.length;
+  c.dataset.hours=_TL_HOURS[idx];
+  _tlLoad(c);
+});
+// Auto-load timelines after a short delay (let page render first)
+setTimeout(_tlLoadAll, 600);
 </script>
 <footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build}} • Broadcast Signal Intelligence</footer>
+</body></html>"""
+
+HUB_WALL_TPL = r"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>SignalScope Wall</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
+<style>
+:root{--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--mu:#6b7280;--bg:#060d1a;--bg2:#0d1629;--bg3:#111f35;--bor:#1e3048;--tx:#f0f4ff;--acc:#3b82f6}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;overflow-x:hidden}
+/* ── Header ─────────────────────────────────────────────── */
+.wall-hdr{display:flex;align-items:center;gap:14px;padding:8px 20px;background:var(--bg2);border-bottom:2px solid var(--bor);position:sticky;top:0;z-index:100}
+.wall-logo{font-size:16px;font-weight:800;letter-spacing:1.5px;color:var(--acc);white-space:nowrap;flex-shrink:0}
+.wall-logo span{color:var(--tx)}
+.wall-pills{display:flex;gap:8px;flex-wrap:wrap}
+.wall-pill{display:flex;align-items:center;gap:5px;padding:3px 11px;border-radius:20px;font-size:12px;font-weight:700}
+.wall-pill.ok{background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3)}
+.wall-pill.warn{background:rgba(245,158,11,.15);color:var(--wn);border:1px solid rgba(245,158,11,.3)}
+.wall-pill.alert{background:rgba(239,68,68,.15);color:var(--al);border:1px solid rgba(239,68,68,.3)}
+.wall-clock{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:3px;margin-left:auto;color:var(--ok);flex-shrink:0}
+.wall-exit{padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;background:var(--bg3);color:var(--mu);text-decoration:none;border:1px solid var(--bor);flex-shrink:0}
+.wall-exit:hover{color:var(--tx)}
+/* ── Section chrome ─────────────────────────────────────── */
+.wall-section{padding:12px 20px 4px}
+.wall-sep{height:1px;background:var(--bor);margin:10px 20px 0}
+.wall-section-hdr{font-size:9px;font-weight:800;letter-spacing:2.5px;color:var(--mu);text-transform:uppercase;margin-bottom:8px}
+/* ── Sites strip ─────────────────────────────────────────── */
+.sites-strip{display:flex;gap:8px;flex-wrap:wrap}
+.site-pill{display:flex;align-items:center;gap:6px;padding:5px 13px;border-radius:8px;font-size:13px;font-weight:700;border:1.5px solid}
+.site-pill.ok{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.4);color:var(--ok)}
+.site-pill.warn{background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.4);color:var(--wn)}
+.site-pill.alert{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.4);color:var(--al)}
+.site-pill.offline{background:rgba(107,114,128,.08);border-color:var(--bor);color:var(--mu)}
+.site-pill .sdot{width:8px;height:8px;border-radius:50%;background:currentColor;flex-shrink:0}
+.site-pill .sc-cnt{font-size:10px;opacity:.7;margin-left:2px}
+/* ── Broadcast Chains ────────────────────────────────────── */
+.chains-grid{display:flex;flex-direction:column;gap:8px}
+.chain-row{display:flex;align-items:center;gap:0;background:var(--bg2);border:1px solid var(--bor);border-radius:10px;padding:9px 14px;overflow-x:auto}
+.chain-row-name{font-size:11px;font-weight:800;color:var(--mu);white-space:nowrap;min-width:120px;max-width:160px;margin-right:12px;letter-spacing:.5px;overflow:hidden;text-overflow:ellipsis}
+.chain-nodes{display:flex;align-items:center;flex-wrap:nowrap;gap:0}
+.cnode{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:90px;max-width:130px;padding:6px 9px;border-radius:8px;border:2px solid;position:relative;text-align:center;transition:border-color .4s,background .4s}
+.cnode.ok{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.45);color:var(--ok)}
+.cnode.down{background:rgba(239,68,68,.13);border-color:var(--al);color:var(--al)}
+.cnode.offline{background:rgba(107,114,128,.08);border-color:var(--bor);color:var(--mu)}
+.cnode.unknown{background:rgba(59,130,246,.07);border-color:rgba(59,130,246,.3);color:#93c5fd}
+.cnode.downstream{background:rgba(30,58,95,.15);border-color:#1e3048;color:#4b7bb5}
+.cnode-lbl{font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:118px}
+.cnode-sub{font-size:10px;opacity:.65;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:118px}
+.cnode-lev{font-size:10px;margin-top:2px;font-variant-numeric:tabular-nums}
+.cnode-fault{position:absolute;top:-8px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;white-space:nowrap}
+.c-arrow{color:var(--bor);font-size:20px;font-weight:300;padding:0 5px;flex-shrink:0;line-height:1;user-select:none}
+.chain-badge{margin-left:12px;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:800;white-space:nowrap;flex-shrink:0;letter-spacing:.5px}
+.chain-badge.ok{background:rgba(34,197,94,.18);color:var(--ok)}
+.chain-badge.fault{background:rgba(239,68,68,.2);color:var(--al)}
+.chain-badge.unknown{background:rgba(107,114,128,.13);color:var(--mu)}
+/* ── Stream grid ─────────────────────────────────────────── */
+.streams-wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+.sw-card{background:var(--bg2);border-radius:10px;border:2px solid;padding:10px 12px;display:flex;flex-direction:column;gap:5px}
+.sw-card.ok{border-color:rgba(34,197,94,.28)}
+.sw-card.warn{border-color:rgba(245,158,11,.4)}
+.sw-card.alert{border-color:rgba(239,68,68,.5)}
+.sw-card.down{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.04)}
+.sw-card.offline{border-color:var(--bor);opacity:.55}
+.sw-top{display:flex;align-items:center;gap:6px}
+.sw-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.sw-dot.ok{background:var(--ok)}.sw-dot.warn{background:var(--wn)}
+.sw-dot.alert,.sw-dot.down{background:var(--al);box-shadow:0 0 6px rgba(239,68,68,.5)}
+.sw-dot.offline{background:var(--mu)}
+.sw-name{font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-site{font-size:10px;color:var(--mu);margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px;text-align:right}
+.sw-bar-wrap{display:flex;align-items:center;gap:6px}
+.sw-bar-track{flex:1;height:7px;background:var(--bg3);border-radius:4px;overflow:hidden}
+.sw-bar-fill{height:100%;border-radius:4px}
+.sw-bar-val{font-size:11px;font-variant-numeric:tabular-nums;width:46px;text-align:right;flex-shrink:0}
+.sw-meta{font-size:11px;color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:5px}
+.sw-type{display:inline-block;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:.5px;flex-shrink:0}
+.sw-type.dab{background:rgba(59,130,246,.2);color:#93c5fd}
+.sw-type.fm{background:rgba(168,85,247,.2);color:#c084fc}
+.sw-type.lw{background:rgba(20,184,166,.2);color:#2dd4bf}
+.sw-type.other{background:rgba(107,114,128,.2);color:var(--mu)}
+</style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────── -->
+<div class="wall-hdr">
+  <div class="wall-logo">📡 Signal<span>Scope</span></div>
+  <div class="wall-pills">
+    {% set n_alert = sites|selectattr('site_status','eq','ALERT')|list|length %}
+    {% set n_warn  = sites|selectattr('site_status','eq','WARN')|list|length %}
+    {% set n_off   = sites|rejectattr('online')|list|length %}
+    {% if n_alert %}
+      <div class="wall-pill alert">⚠ {{n_alert}} Alert{{'s' if n_alert>1}}</div>
+    {% endif %}
+    {% if n_warn %}
+      <div class="wall-pill warn">⚡ {{n_warn}} Warning{{'s' if n_warn>1}}</div>
+    {% endif %}
+    {% if n_off %}
+      <div class="wall-pill alert">✗ {{n_off}} Site{{'s' if n_off>1}} Offline</div>
+    {% endif %}
+    {% if not n_alert and not n_warn and not n_off %}
+      <div class="wall-pill ok">✓ All Systems OK</div>
+    {% endif %}
+  </div>
+  <div class="wall-clock" id="wallClock">--:--:--</div>
+  <a href="/hub" class="wall-exit">🧰 Exit Wall Mode</a>
+</div>
+
+<!-- ── Sites strip ───────────────────────────────────────────────── -->
+<div class="wall-section">
+  <div class="wall-section-hdr">Connected Sites</div>
+  <div class="sites-strip">
+    {% for s in sites %}
+    {% set sc = 'offline' if not s.online else ('alert' if s.site_status=='ALERT' else ('warn' if s.site_status=='WARN' else 'ok')) %}
+    <div class="site-pill {{sc}}">
+      <div class="sdot"></div>
+      {{s.site}}
+      {% if s.alert_count %}<span class="sc-cnt">{{s.alert_count}}⚠</span>{% endif %}
+      {% if s.warn_count and not s.alert_count %}<span class="sc-cnt">{{s.warn_count}}⚡</span>{% endif %}
+      {% if not s.online %}<span class="sc-cnt">offline</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="wall-sep"></div>
+
+{% if chains %}
+<!-- ── Broadcast Chains ───────────────────────────────────────────── -->
+<div class="wall-section">
+  <div class="wall-section-hdr">Broadcast Chains</div>
+  <div class="chains-grid">
+    {% for chain in chains %}
+    <div class="chain-row">
+      <div class="chain-row-name" title="{{chain.name|e}}">{{chain.name|e}}</div>
+      <div class="chain-nodes" id="wc_nodes_{{chain.id|e}}">
+        {% for node in chain.nodes %}
+        {% if not loop.first %}<div class="c-arrow">→</div>{% endif %}
+        <div class="cnode unknown" id="wc_node_{{chain.id|e}}_{{loop.index0}}">
+          <div class="cnode-lbl" title="{{(node.label or node.stream)|e}}">{{(node.label or node.stream)|e}}</div>
+          <div class="cnode-sub">{{node.site|e}}</div>
+          <div class="cnode-lev">…</div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="chain-badge unknown" id="wc_badge_{{chain.id|e}}">…</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="wall-sep"></div>
+{% endif %}
+
+<!-- ── Stream Status ──────────────────────────────────────────────── -->
+<div class="wall-section" style="padding-bottom:18px">
+  <div class="wall-section-hdr">Stream Status</div>
+  <div class="streams-wall">
+    {% set ns = namespace(found=false) %}
+    {% for s in sites %}
+    {% for st in s.get('streams',[]) %}
+    {% set ns.found = true %}
+    {% set ai  = st.get('ai_status','') or '' %}
+    {% set lev = st.get('level_dbfs', -120.0) %}
+    {% set lpct = [(lev+80)/80*100, 100]|min|int %}
+    {% set is_down = lev <= -55.0 %}
+    {% if not s.online %}
+      {% set card_cls='offline' %}{% set dot_cls='offline' %}{% set lcol='#4b5563' %}
+    {% elif is_down %}
+      {% set card_cls='down' %}{% set dot_cls='down' %}{% set lcol='var(--al)' %}
+    {% elif '[ALERT]' in ai %}
+      {% set card_cls='alert' %}{% set dot_cls='alert' %}{% set lcol='var(--al)' %}
+    {% elif '[WARN]' in ai %}
+      {% set card_cls='warn' %}{% set dot_cls='warn' %}{% set lcol='var(--wn)' %}
+    {% else %}
+      {% set card_cls='ok' %}{% set dot_cls='ok' %}{% set lcol='var(--ok)' %}
+    {% endif %}
+    {% set dev = (st.get('device_index','') or '').lower() %}
+    {% if dev.startswith('dab://') %}{% set dtype='dab' %}
+    {% elif dev.startswith('fm://') %}{% set dtype='fm' %}
+    {% elif dev.startswith('rtp://') or dev.startswith('livewire') or dev|int(-1) >= 0 %}{% set dtype='lw' %}
+    {% else %}{% set dtype='other' %}{% endif %}
+    <div class="sw-card {{card_cls}}">
+      <div class="sw-top">
+        <div class="sw-dot {{dot_cls}}"></div>
+        <div class="sw-name" title="{{st.name|e}}">{{st.name|e}}</div>
+        <div class="sw-site" title="{{s.site|e}}">{{s.site|e}}</div>
+      </div>
+      <div class="sw-bar-wrap">
+        <div class="sw-bar-track"><div class="sw-bar-fill" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
+        <div class="sw-bar-val" style="color:{{lcol}}">{{lev}} dB</div>
+      </div>
+      <div class="sw-meta">
+        <span class="sw-type {{dtype}}">{{dtype|upper}}</span>
+        {% if dtype=='dab' and st.get('dab_service') %}{{st.dab_service}}{% endif %}
+        {% if dtype=='fm' and st.get('fm_rds_ps') %}📡 {{st.fm_rds_ps}}{% endif %}
+        {% if dtype=='lw' and st.get('rtp_loss_pct') %}RTP loss {{st.rtp_loss_pct}}%{% endif %}
+        {% if not s.online %}Offline{% elif is_down %}Signal Lost{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% endfor %}
+    {% if not ns.found %}
+    <div style="color:var(--mu);font-size:13px;grid-column:1/-1">No streams reporting yet.</div>
+    {% endif %}
+  </div>
+</div>
+
+<script nonce="{{csp_nonce()}}">
+// ── Clock ──────────────────────────────────────────────────────────
+(function tick(){
+  var n=new Date(),pad=function(x){return String(x).padStart(2,'0');};
+  var el=document.getElementById('wallClock');
+  if(el)el.textContent=pad(n.getHours())+':'+pad(n.getMinutes())+':'+pad(n.getSeconds());
+  setTimeout(tick,1000);
+})();
+
+// ── Chain status polling ───────────────────────────────────────────
+var _CSTYLE={
+  ok:    {bg:'rgba(34,197,94,.1)',  bc:'rgba(34,197,94,.45)', cl:'var(--ok)'},
+  down:  {bg:'rgba(239,68,68,.13)',bc:'var(--al)',            cl:'var(--al)'},
+  offline:{bg:'rgba(107,114,128,.08)',bc:'var(--bor)',        cl:'var(--mu)'},
+  unknown:{bg:'rgba(59,130,246,.07)',bc:'rgba(59,130,246,.3)',cl:'#93c5fd'},
+  downstream:{bg:'rgba(30,58,95,.15)',bc:'#1e3048',          cl:'#4b7bb5'}
+};
+function _applyNodeStyle(el,st){
+  var s=_CSTYLE[st]||_CSTYLE.unknown;
+  el.style.background=s.bg;el.style.borderColor=s.bc;el.style.color=s.cl;
+  el.className='cnode '+st;
+}
+function pollChains(){
+  fetch('/api/chains/status').then(function(r){return r.json();}).then(function(data){
+    (data.results||[]).forEach(function(chain){
+      var badge=document.getElementById('wc_badge_'+chain.id);
+      if(badge){
+        badge.textContent=chain.status==='ok'?'ALL OK':chain.status==='fault'?'FAULT':'…';
+        badge.className='chain-badge '+(chain.status==='ok'?'ok':chain.status==='fault'?'fault':'unknown');
+      }
+      (chain.nodes||[]).forEach(function(node,idx){
+        var el=document.getElementById('wc_node_'+chain.id+'_'+idx);
+        if(!el)return;
+        var fi=chain.fault_index;
+        var st=(fi!==null&&fi!==undefined&&idx>fi)?'downstream':node.status;
+        _applyNodeStyle(el,st);
+        var lv=el.querySelector('.cnode-lev');
+        if(lv)lv.textContent=(node.level!==null&&node.level!==undefined)?(node.level+' dB'):'—';
+        var oldfb=el.querySelector('.cnode-fault');if(oldfb)oldfb.remove();
+        if(fi!==null&&fi!==undefined&&idx===fi){
+          var fb=document.createElement('div');fb.className='cnode-fault';fb.textContent='FAULT POINT';
+          el.appendChild(fb);
+        }
+      });
+    });
+  }).catch(function(){});
+}
+pollChains();
+setInterval(pollChains,15000);
+
+// ── Page refresh every 60s to pick up new streams/sites ────────────
+setTimeout(function(){location.reload();},60000);
+</script>
 </body></html>"""
 
 HUB_TPL = r"""<!doctype html>
@@ -12624,12 +15595,44 @@ document.addEventListener('click', function(e){
   if(site && cmd) sendSiteCommand(site, cmd, btn);
 });
 function removeSite(siteName, btn){
-  if(!confirm('Remove '+siteName+' from the hub dashboard?')) return;
-  _csrfFetch('/hub/site/remove/'+encodeURIComponent(siteName), {method:'POST'})
-    .then(function(r){return r.json();})
-    .then(function(d){ if(d.ok){ var card=btn.closest('.site-card'); if(card) card.remove(); } })
-    .catch(function(){});
+  // Inline confirmation — confirm() is blocked on LAN HTTP origins in modern browsers
+  var card = btn.closest('.site-card');
+  if(!card) return;
+  var existingConf = card.querySelector('.site-remove-confirm');
+  if(existingConf){ existingConf.remove(); return; }
+  var bar = document.createElement('div');
+  bar.className = 'site-remove-confirm';
+  bar.style.cssText = 'padding:8px 16px;background:#2a1010;border-top:1px solid var(--al);display:flex;align-items:center;gap:10px;font-size:13px;color:#fca5a5';
+  bar.innerHTML = 'Remove <strong>'+siteName+'</strong> from hub? '
+    +'<button class="btn bd bs" data-confirm-remove="1" style="margin-left:auto">✓ Yes, Remove</button>'
+    +'<button class="btn bg bs" data-confirm-cancel="1">Cancel</button>';
+  bar.querySelector('[data-confirm-cancel]').addEventListener('click', function(){ bar.remove(); });
+  bar.querySelector('[data-confirm-remove]').addEventListener('click', function(){
+    _csrfFetch('/hub/site/remove/'+encodeURIComponent(siteName), {method:'POST'})
+      .then(function(r){return r.json();})
+      .then(function(d){ if(d.ok && card){ card.remove(); } else { bar.remove(); } })
+      .catch(function(){ bar.remove(); });
+  });
+  card.insertBefore(bar, card.firstChild);
 }
+
+// Delegated listeners for approve/remove actions on hub site cards
+document.addEventListener('click', function(e){
+  var btn = e.target.closest('[data-action="hub-approve-site"]');
+  if(btn){
+    var site = btn.dataset.site;
+    btn.disabled = true; btn.textContent = 'Approving…';
+    _csrfFetch('/hub/site/approve/'+encodeURIComponent(site), {method:'POST'})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(d.ok){ location.reload(); }
+        else { btn.disabled=false; btn.textContent='✓ Approve'; }
+      }).catch(function(){ btn.disabled=false; btn.textContent='✓ Approve'; });
+    return;
+  }
+  var rbtn = e.target.closest('[data-action="hub-remove-site"]');
+  if(rbtn){ removeSite(rbtn.dataset.site, rbtn); }
+});
 function toggleFullscreen(){
   if(!document.fullscreenElement){
     document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
@@ -12671,6 +15674,216 @@ document.addEventListener('DOMContentLoaded', function(){
     }
   });
 });
+
+// ── Signal history charts ──────────────────────────────────────────────────────
+function drawMetricChart(canvas, points, color, refBand) {
+  var W = canvas.offsetWidth || 400, H = 110;
+  canvas.width = W; canvas.height = H;
+  var ctx = canvas.getContext('2d');
+  var pad = {t:8, r:8, b:24, l:44};
+  var cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+  ctx.clearRect(0,0,W,H);
+  if (!points || points.length < 2) {
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(points && points.length === 1 ? 'Only 1 point — wait for more data' : 'No data', W/2, H/2);
+    return;
+  }
+  var vals = points.map(function(p){return p[1];});
+  var times = points.map(function(p){return p[0];});
+  var minV = Math.min.apply(null,vals), maxV = Math.max.apply(null,vals);
+  if(refBand){ minV=Math.min(minV,refBand.mean-refBand.std*2); maxV=Math.max(maxV,refBand.mean+refBand.std*2); }
+  var rng = maxV - minV || 1;
+  minV -= rng*0.08; maxV += rng*0.08; rng = maxV - minV;
+  var minT = times[0], maxT = times[times.length-1], tRng = maxT - minT || 1;
+  // Grid + Y labels
+  ctx.strokeStyle='rgba(255,255,255,0.06)'; ctx.lineWidth=1;
+  ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.font='9px monospace'; ctx.textAlign='right';
+  for(var g=0;g<=4;g++){
+    var gy=pad.t+ch*g/4;
+    ctx.beginPath();ctx.moveTo(pad.l,gy);ctx.lineTo(pad.l+cw,gy);ctx.stroke();
+    ctx.fillText((maxV-rng*g/4).toFixed(1), pad.l-3, gy+3);
+  }
+  // X labels
+  ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.textAlign='center';
+  for(var tx=0;tx<=4;tx++){
+    var gx=pad.l+cw*tx/4, gt=minT+tRng*tx/4, d=new Date(gt*1000);
+    ctx.fillText(('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2), gx, H-4);
+  }
+  // Reference band — ±1σ baseline for current hour
+  if(refBand && refBand.n >= 10){
+    var meanY=pad.t+(1-(refBand.mean-minV)/rng)*ch;
+    var loY  =pad.t+(1-((refBand.mean-refBand.std)-minV)/rng)*ch;
+    var hiY  =pad.t+(1-((refBand.mean+refBand.std)-minV)/rng)*ch;
+    ctx.fillStyle='rgba(250,204,21,0.09)';
+    ctx.fillRect(pad.l, Math.min(loY,hiY), cw, Math.abs(hiY-loY));
+    ctx.save(); ctx.setLineDash([4,4]);
+    ctx.strokeStyle='rgba(250,204,21,0.35)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(pad.l,meanY); ctx.lineTo(pad.l+cw,meanY); ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle='rgba(250,204,21,0.6)'; ctx.font='8px monospace'; ctx.textAlign='left';
+    ctx.fillText('usual: '+refBand.mean.toFixed(1)+'±'+refBand.std.toFixed(1), pad.l+3, meanY-2);
+  }
+  // Fill + line
+  ctx.beginPath();
+  points.forEach(function(p,i){
+    var x=pad.l+(p[0]-minT)/tRng*cw, y=pad.t+(1-(p[1]-minV)/rng)*ch;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  var lx=pad.l+(points[points.length-1][0]-minT)/tRng*cw;
+  ctx.lineTo(lx,pad.t+ch); ctx.lineTo(pad.l,pad.t+ch); ctx.closePath();
+  ctx.fillStyle=color.replace(/^#/,'').length===6
+    ? 'rgba('+parseInt(color.slice(1,3),16)+','+parseInt(color.slice(3,5),16)+','+parseInt(color.slice(5,7),16)+',0.13)'
+    : 'rgba(96,165,250,0.13)';
+  ctx.fill();
+  ctx.beginPath();
+  points.forEach(function(p,i){
+    var x=pad.l+(p[0]-minT)/tRng*cw, y=pad.t+(1-(p[1]-minV)/rng)*ch;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.strokeStyle=color; ctx.lineWidth=1.5; ctx.lineJoin='round'; ctx.stroke();
+}
+
+function _scHistLoad(section) {
+  var canvas = section.querySelector('.sc-hc');
+  var status = section.querySelector('.sc-hs');
+  var metric = section.querySelector('.sc-hm').value;
+  var hours  = parseFloat((section.querySelector('.sc-hr.active')||{}).dataset&&section.querySelector('.sc-hr.active').dataset.h||1);
+  var site   = section.dataset.site, stream = section.dataset.stream;
+  var colorMap = {fm_signal_dbm:'#34d399',dab_snr:'#a78bfa',lufs_m:'#fbbf24',lufs_s:'#fb923c',lufs_i:'#f87171',rtp_jitter_ms:'#e879f9'};
+  var color  = colorMap[metric] || '#60a5fa';
+  status.textContent='Loading…'; status.style.display='block';
+  var metricUrl = '/api/metrics/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream)+'?metric='+encodeURIComponent(metric)+'&hours='+hours;
+  var trendUrl  = metric==='level_dbfs' ? '/api/trend/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream) : null;
+  Promise.all([
+    fetch(metricUrl).then(function(r){return r.json();}),
+    trendUrl ? fetch(trendUrl).then(function(r){return r.json();}).catch(function(){return null;}) : Promise.resolve(null)
+  ]).then(function(res){
+    var d=res[0], trend=res[1];
+    status.style.display='none';
+    var refBand=(trend && trend.baseline && metric==='level_dbfs') ? trend.baseline : null;
+    drawMetricChart(canvas, d.points, color, refBand);
+  }).catch(function(){status.textContent='Failed to load'; status.style.display='block';});
+}
+
+function scHistToggle(btn) {
+  var body=btn.nextElementSibling, open=body.style.display==='block';
+  body.style.display=open?'none':'block';
+  btn.querySelector('span').textContent=open?'▼':'▲';
+  if(!open) _scHistLoad(btn.parentElement);
+}
+
+document.addEventListener('click',function(e){
+  var rb=e.target.closest('.sc-hr');
+  if(!rb) return;
+  var section=rb.closest('.sc-hist'); if(!section) return;
+  section.querySelectorAll('.sc-hr').forEach(function(b){b.classList.remove('active');});
+  rb.classList.add('active');
+  if(rb.closest('.sc-hist-body').style.display==='block') _scHistLoad(section);
+});
+document.addEventListener('change',function(e){
+  var sel=e.target.closest('.sc-hm');
+  if(!sel) return;
+  var section=sel.closest('.sc-hist'); if(!section) return;
+  if(sel.closest('.sc-hist-body').style.display==='block') _scHistLoad(section);
+});
+// ── Availability timeline ──────────────────────────────────────────────────────
+var _TL_HOURS = [24, 1, 6];
+var _TL_COLORS = {ok:'#22c55e', silence:'#ef4444', dab_missing:'#f59e0b', nodata:'#1e2a3a'};
+function drawTimeline(canvas, segments) {
+  var W = canvas.offsetWidth || 400, H = 16;
+  canvas.width = W; canvas.height = H;
+  var ctx = canvas.getContext('2d');
+  var n = segments.length, sw = W / n;
+  segments.forEach(function(seg, i) {
+    ctx.fillStyle = _TL_COLORS[seg[1]] || '#1e2a3a';
+    ctx.fillRect(Math.floor(i*sw), 0, Math.ceil(sw)+1, H);
+  });
+  if (segments.length > 1) {
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.font = '8px monospace';
+    var d0=new Date(segments[0][0]*1000), d1=new Date(segments[segments.length-1][0]*1000);
+    ctx.textAlign='left';  ctx.fillText(('0'+d0.getHours()).slice(-2)+':'+('0'+d0.getMinutes()).slice(-2), 2, H-2);
+    ctx.textAlign='right'; ctx.fillText(('0'+d1.getHours()).slice(-2)+':'+('0'+d1.getMinutes()).slice(-2), W-2, H-2);
+  }
+}
+function _tlLoad(canvas) {
+  var site=canvas.dataset.site, stream=canvas.dataset.stream, hours=canvas.dataset.hours||24;
+  var label=canvas.previousElementSibling;
+  fetch('/api/timeline/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream)+'?hours='+hours)
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(label) label.textContent=hours+'h';
+      drawTimeline(canvas, d.segments);
+    }).catch(function(){});
+}
+document.addEventListener('click',function(e){
+  var c=e.target.closest('canvas.sc-tl'); if(!c) return;
+  var cur=parseInt(c.dataset.hours)||24;
+  c.dataset.hours=_TL_HOURS[(_TL_HOURS.indexOf(cur)+1)%_TL_HOURS.length];
+  _tlLoad(c);
+});
+setTimeout(function(){ document.querySelectorAll('canvas.sc-tl').forEach(_tlLoad); }, 600);
+// ── Trend / pattern indicators ────────────────────────────────────────────────
+var _trendCache = {};  // keyed by "site/stream"
+function _applyTrend(site, stream, data) {
+  var key = site + '/' + stream;
+  _trendCache[key] = data;
+  document.querySelectorAll('.sc[data-site][data-stream]').forEach(function(sc){
+    if(sc.dataset.site !== site || sc.dataset.stream !== stream) return;
+    var row = sc.querySelector('.sc-trend-row');
+    var val = sc.querySelector('.sc-trend-val');
+    if(!row || !val) return;
+    var s = data.status, dev = data.deviation, mins = data.sustained_minutes || 0;
+    var btype = data.baseline_type === 'dow_hour' ? ' ·dow' : '';
+    var durStr = mins >= 2 ? ', ' + mins + ' min' : '';
+    if(s === 'lower_than_usual'){
+      val.textContent = '📉 Lower than usual (' + (dev>0?'+':'') + dev.toFixed(1) + 'σ' + durStr + btype + ')';
+      val.style.color = mins >= 10 ? 'var(--al)' : 'var(--wn)';
+      row.style.display = '';
+    } else if(s === 'higher_than_usual'){
+      val.textContent = '📈 Higher than usual (+' + dev.toFixed(1) + 'σ' + durStr + btype + ')';
+      val.style.color = '#60a5fa';
+      row.style.display = '';
+    } else {
+      row.style.display = 'none';
+    }
+  });
+}
+function _loadTrends() {
+  document.querySelectorAll('.sc[data-site][data-stream]').forEach(function(sc){
+    var site=sc.dataset.site, stream=sc.dataset.stream;
+    if(!site || !stream) return;
+    fetch('/api/trend/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream))
+      .then(function(r){return r.json();})
+      .then(function(d){ _applyTrend(site, stream, d); })
+      .catch(function(){});
+  });
+}
+// Re-apply cached trends after each hubRefresh (survives AJAX card updates)
+var _origHubRefresh = hubRefresh;
+hubRefresh = function(){
+  return _origHubRefresh.apply(this, arguments).then
+    ? _origHubRefresh.apply(this, arguments)
+    : _origHubRefresh.apply(this, arguments);
+};
+// Load trends once on page ready, then every 5 minutes
+setTimeout(_loadTrends, 1200);
+setInterval(_loadTrends, 300000);
+// Re-apply cached values immediately after each hubRefresh completes
+(function(){
+  var orig = hubRefresh;
+  hubRefresh = function(){
+    var p = orig.apply(this, arguments);
+    if(p && p.finally) p.finally(function(){
+      Object.keys(_trendCache).forEach(function(k){
+        var parts=k.split('/'), site=parts[0], stream=parts.slice(1).join('/');
+        _applyTrend(site, stream, _trendCache[k]);
+      });
+    });
+    return p;
+  };
+})();
 </script>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("hub") }}
@@ -12713,11 +15926,33 @@ document.addEventListener('DOMContentLoaded', function(){
 <div class="site-grid" id="site-grid">
 {% for site in sites %}
 {% set st = site.site_status %}
+{% set _pending = not site.get('_approved', True) %}
 <div class="site-card site-{{'ok' if st=='OK' else 'warn' if st=='WARN' else 'alert' if st=='ALERT' else 'offline'}} skeleton" draggable="true" id="site-{{site.site|replace(' ','_')|replace('.','_')|replace('-','_')}}">
+  {% if _pending %}
+  {% set _nu = site.get('_needs_update', False) %}
+  <div style="padding:10px 16px;background:{{'#2a1a00' if _nu else '#1a2a10'}};border-bottom:2px solid var(--wn);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    {% if _nu %}
+    <span style="color:#fb923c;font-weight:700;font-size:13px">⚠ Update Required</span>
+    <span style="font-size:12px;color:var(--mu)">
+      <strong>{{site.site}}</strong> (build: {{site.get('build') or 'unknown'}}) is running a version that predates the hub approval system.
+      Update this site to SignalScope 3.0.3 or later, then reconnect and approve it here.
+    </span>
+    <button class="btn bd bs" data-action="hub-remove-site" data-site="{{site.site|e}}" style="margin-left:auto">✕ Dismiss</button>
+    {% else %}
+    <span style="color:#fde68a;font-weight:700;font-size:13px">⏳ Pending Approval</span>
+    <span style="font-size:12px;color:var(--mu)">{{site.site}} is requesting to connect from {{site.get('_client_addr') or site.get('_verified_ip','unknown')}}</span>
+    <button class="btn" style="background:#166534;color:#fff;font-size:12px;padding:3px 12px;margin-left:auto"
+            data-action="hub-approve-site" data-site="{{site.site|e}}">✓ Approve</button>
+    <button class="btn bd bs" data-action="hub-remove-site" data-site="{{site.site|e}}">✕ Reject</button>
+    {% endif %}
+  </div>
+  {% endif %}
   <div class="site-header">
     <span class="dot {{'dot-ok' if st=='OK' else 'dot-wn' if st=='WARN' else 'dot-al' if st=='ALERT' else 'dot-off'}}"></span>
     <span class="site-name">{{site.site}}</span>
-    {% if site.online %}
+    {% if _pending %}
+      <span class="badge" style="background:#3a3010;color:#fde68a">PENDING</span>
+    {% elif site.online %}
       <span class="badge" style="background:{{'#1e3a5f' if st=='OK' else '#3a2a0f' if st=='WARN' else '#3a0f0f'}}">
         {{st}}
       </span>
@@ -12737,8 +15972,8 @@ document.addEventListener('DOMContentLoaded', function(){
     {% endif %}
     <span class="site-meta">Last seen: {{ago(site.age_s)}}</span>
     {% if site.latency_ms is not none %}<span class="site-meta site-meta-latency" title="Heartbeat latency">Latency: {{site.latency_ms}} ms</span>{% endif %}
-    <a class="btn bg bs" href="/hub/site/{{site.site|urlencode}}/open" target="_blank" rel="noopener">Open Dashboard</a>
-    <button class="btn bd bs" type="button" onclick="removeSite({{site.site|tojson}}, this)">✕ Remove</button>
+    {% if not _pending %}<a class="btn bg bs" href="/hub/site/{{site.site|urlencode}}/open">Open Dashboard</a>{% endif %}
+    <button class="btn bd bs" data-action="hub-remove-site" data-site="{{site.site|e}}">✕ Remove</button>
     {% if site.health_pct is defined %}
     <span class="site-meta" style="margin-left:8px;color:{{'var(--ok)' if site.health_pct>=99 else ('var(--wn)' if site.health_pct>=95 else 'var(--al)')}}" title="Heartbeat reliability">⚡ {{site.health_pct}}%</span>
     {% endif %}
@@ -12749,6 +15984,7 @@ document.addEventListener('DOMContentLoaded', function(){
     <span class="badge" style="background:#2a2412;color:var(--wn)">STALE</span>
     {% endif %}
   </div>
+  {% if not _pending %}
   <div style="padding:8px 16px;border-bottom:1px solid var(--bor);display:flex;gap:8px;flex-wrap:wrap;background:linear-gradient(180deg,#12305c,#10284f)">
     <span class="sum-pill" style="padding:4px 8px">🎚 {{site.streams|length}} streams</span>
     <span class="sum-pill" style="padding:4px 8px;color:var(--al)">🚨 {{site.alert_count}} alert</span>
@@ -12770,7 +16006,7 @@ document.addEventListener('DOMContentLoaded', function(){
     {% set ph  = s.ai_phase  or '' %}
     {% set dc  = 'dok' %}
     {% if '[ALERT]' in ai %}{% set dc='dal' %}{% elif '[WARN]' in ai %}{% set dc='dwn' %}{% elif ph=='learning' %}{% set dc='dlr' %}{% endif %}
-    <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}" data-idx="{{i}}">
+    <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}" data-idx="{{i}}" data-site="{{site.site|e}}" data-stream="{{s.name|e}}">
 
       {# Header #}
       <div class="sc-name">
@@ -12785,10 +16021,20 @@ document.addEventListener('DOMContentLoaded', function(){
         <div class="lbar-track"><div class="lbar-fill sc-lbar" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
         <span class="sc-level lbar-val" style="color:{{lcol}}">{{lev}} dB</span>
       </div>
+      <div class="sc-tl-wrap" style="display:flex;align-items:center;gap:5px;padding:0 10px 4px">
+        <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">24h</span>
+        <canvas class="sc-tl" data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-hours="24"
+                height="16" style="flex:1;height:16px;border-radius:2px;cursor:pointer"
+                title="24h availability — click to cycle 1h/6h/24h"></canvas>
+        <span style="font-size:9px;color:var(--mu);white-space:nowrap">
+          <span style="color:#22c55e">■</span> <span style="color:#ef4444">■</span> <span style="color:#f59e0b">■</span> <span style="color:#374151">■</span>
+        </span>
+      </div>
 
       {# Info rows #}
       <div style="padding:0 10px 4px">
         <div class="sc-row">Format <span class="sc-fmt" style="font-size:11px;color:var(--mu)">{{s.format or '—'}}</span></div>
+        <div class="sc-row sc-trend-row" style="display:none">Trend <span class="sc-trend-val" style="font-size:11px"></span></div>
         {% set _edev = (s.device_index or '').lower() %}
         {% if not (_edev.startswith('dab://') or _edev.startswith('fm://') or _edev.startswith('http://') or _edev.startswith('https://')) %}
         <div class="sc-row">RTP Loss
@@ -12824,7 +16070,16 @@ document.addEventListener('DOMContentLoaded', function(){
             📶{{"▮"*bars}}{{"▯"*(5-bars)}} {{s.dab_sig}} dBm
           </span></div>
           <div class="sc-row">Ensemble <span style="font-size:11px">{{s.dab_ensemble or '—'}}</span></div>
-          <div class="sc-row">Service <span style="font-size:11px">{{s.dab_service or '—'}}</span></div>
+          <div class="sc-row">Service <span style="font-size:11px;display:flex;align-items:center;gap:5px">
+            <span>{{s.dab_service or '—'}}</span>
+            {% if s.dab_service and s.expected_dab_service %}
+              {% if s.expected_dab_service.lower() == s.dab_service.lower() %}
+                <span style="color:var(--ok);font-size:10px" title="Expected: {{s.expected_dab_service}}">✓</span>
+              {% else %}
+                <span style="color:var(--al);font-size:10px" title="Expected: {{s.expected_dab_service}}">⚠ {{s.expected_dab_service}}</span>
+              {% endif %}
+            {% endif %}
+          </span></div>
           <div class="sc-row">Mode <span style="font-size:11px">{{s.dab_mode or '—'}}</span></div>
           <div class="sc-row">Bitrate <span>{% if s.dab_bitrate %}{{s.dab_bitrate}} kbps{% else %}—{% endif %}</span></div>
           <div class="sc-row">Audio <span style="color:{{'var(--ok)' if s.dab_stereo else 'var(--mu)'}}">{% if s.dab_stereo %}Stereo{% else %}Mono{% endif %}</span></div>
@@ -12854,7 +16109,18 @@ document.addEventListener('DOMContentLoaded', function(){
           </span></div>
           <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
           <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
-          <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}}">{% if s.fm_rds_ok %}📡 {{s.fm_rds_ps or 'Locked'}}{% else %}— No RDS{% endif %}</span></div>
+          <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}};display:flex;align-items:center;gap:5px">
+            {% if s.fm_rds_ok %}
+              <span>📡 {{s.fm_rds_ps or 'Locked'}}</span>
+              {% if s.fm_rds_ps and s.expected_fm_rds_ps %}
+                {% if s.expected_fm_rds_ps == s.fm_rds_ps %}
+                  <span style="color:var(--ok);font-size:10px" title="Expected: {{s.expected_fm_rds_ps}}">✓</span>
+                {% else %}
+                  <span style="color:var(--al);font-size:10px" title="Expected: {{s.expected_fm_rds_ps}}">⚠ {{s.expected_fm_rds_ps}}</span>
+                {% endif %}
+              {% endif %}
+            {% else %}<span>— No RDS</span>{% endif %}
+          </span></div>
           {% set rt_text = s.fm_rds_rt or s.dab_dls or '' %}
           <div class="sc-row sc-rt-row" {% if not rt_text %}style="display:none"{% endif %}>Text
             <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px" title="{{rt_text}}">
@@ -12943,6 +16209,32 @@ document.addEventListener('DOMContentLoaded', function(){
         </div>
       </div>
       {% endif %}
+      <!-- Signal History chart -->
+      {% set _sdev = (s.device_index or '').lower() %}
+      <div class="sc-hist" data-site="{{site.site|e}}" data-stream="{{s.name|e}}">
+        <button class="hist-toggle" onclick="scHistToggle(this)">📈 Signal History <span>▼</span></button>
+        <div class="sc-hist-body" style="display:none">
+          <div style="display:flex;gap:4px;padding:6px 10px 2px;flex-wrap:wrap;align-items:center">
+            <span style="font-size:10px;color:var(--mu)">Range:</span>
+            <button class="btn sc-hr active" data-h="1" style="font-size:10px;padding:1px 7px">1h</button>
+            <button class="btn sc-hr" data-h="6" style="font-size:10px;padding:1px 7px">6h</button>
+            <button class="btn sc-hr" data-h="24" style="font-size:10px;padding:1px 7px">24h</button>
+            <select class="sc-hm" style="margin-left:8px;font-size:11px;background:#0d1117;border:1px solid var(--bor);border-radius:4px;color:var(--tx);padding:2px 4px">
+              <option value="level_dbfs">Level dBFS</option>
+              {%if _sdev.startswith('fm://')%}<option value="fm_signal_dbm">FM Signal dBm</option>{%endif%}
+              {%if _sdev.startswith('dab://')%}<option value="dab_snr">DAB SNR dB</option>{%endif%}
+              <option value="lufs_m">LUFS Momentary</option>
+              <option value="lufs_s">LUFS Short-term</option>
+              <option value="lufs_i">LUFS Integrated</option>
+              {%if not _sdev.startswith('fm://') and not _sdev.startswith('dab://') and not _sdev.startswith('http')%}
+              <option value="rtp_jitter_ms">RTP Jitter ms</option>
+              {%endif%}
+            </select>
+          </div>
+          <canvas class="sc-hc" height="110" style="display:block;width:100%;height:110px"></canvas>
+          <div class="sc-hs" style="display:none;font-size:11px;color:var(--mu);text-align:center;padding:4px 0 6px"></div>
+        </div>
+      </div>
     </div>
     {% else %}
     <div style="padding:20px;text-align:center;color:var(--mu);font-size:13px">
@@ -13010,6 +16302,7 @@ document.addEventListener('DOMContentLoaded', function(){
       <span>Last sync <span>{{fmt(ptp.last_sync)}}</span></span>
     </div>
   {% endif %}
+  {% endif %}{# end if not _pending #}
 </div>
 {% endfor %}
 </div>
@@ -13058,6 +16351,10 @@ if __name__=="__main__":
         suffix = "/hub" if mode == "hub" else "  (hub at /hub)"
         label  = "HUB" if mode == "hub" else "CLIENT+HUB"
         print(f"[{BUILD}] {label} mode — http://0.0.0.0:5000{suffix}")
+        _chains_stop = threading.Event()
+        _chains_t = threading.Thread(target=hub_server._chains_monitor_loop,
+                                     args=(_chains_stop,), daemon=True)
+        _chains_t.start()
     else:
         print(f"[{BUILD}] CLIENT mode — http://0.0.0.0:5000")
 
