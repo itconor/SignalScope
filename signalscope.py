@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.5"
+BUILD                  = "SignalScope-3.2.6"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -2974,7 +2974,11 @@ def _stream_in_any_chain(stream_name: str, app_cfg) -> bool:
     fault covers the same event — the chain alert provides richer context."""
     for chain in getattr(app_cfg, "signal_chains", None) or []:
         for node in chain.get("nodes", []):
-            if node.get("stream") == stream_name:
+            if node.get("type") == "stack":
+                for sub in node.get("nodes", []):
+                    if sub.get("stream") == stream_name:
+                        return True
+            elif node.get("stream") == stream_name:
                 return True
     return False
 
@@ -7534,8 +7538,43 @@ class HubServer:
                 pass
 
     # ── Broadcast chain evaluation ────────────────────────────────────────────
+    def _eval_one_node(self, node: dict, cfg, sites_snap: dict) -> dict:
+        """Evaluate a single (non-stack) chain node and return its status dict."""
+        site  = node.get("site", "")
+        sname = node.get("stream", "")
+        label = node.get("label") or f"{site}/{sname}"
+        if site == "local":
+            inp = next((i for i in cfg.inputs if i.name == sname and i.enabled), None)
+            if inp is None:
+                return {"label": label, "site": site, "stream": sname, "status": "unknown", "level": None}
+            dev  = (inp.device_index or "").strip().lower()
+            down = inp._last_level_dbfs <= inp.silence_threshold_dbfs
+            if dev.startswith("dab://") and not inp._dab_ok:
+                down = True
+            return {"label": label, "site": site, "stream": sname,
+                    "status": "down" if down else "ok",
+                    "level": round(inp._last_level_dbfs, 1)}
+        else:
+            site_data = sites_snap.get(site)
+            if not site_data:
+                return {"label": label, "site": site, "stream": sname, "status": "offline", "level": None}
+            if not site_data["online"]:
+                return {"label": label, "site": site, "stream": sname, "status": "offline", "level": None}
+            sd = next((s for s in site_data["streams"] if s.get("name") == sname), None)
+            if sd is None:
+                return {"label": label, "site": site, "stream": sname, "status": "unknown", "level": None}
+            lev  = float(sd.get("level_dbfs", -120.0))
+            dev  = str(sd.get("device_index", "")).strip().lower()
+            down = lev <= -55.0
+            if dev.startswith("dab://") and not sd.get("dab_ok", True):
+                down = True
+            return {"label": label, "site": site, "stream": sname,
+                    "status": "down" if down else "ok",
+                    "level": round(lev, 1)}
+
     def eval_chain(self, chain: dict) -> dict:
-        """Evaluate a single chain and return its status dict."""
+        """Evaluate a single chain and return its status dict.
+        Nodes can be regular node dicts or stack dicts (type=='stack')."""
         cfg = monitor.app_cfg
         now = time.time()
         with self._lock:
@@ -7549,41 +7588,29 @@ class HubServer:
 
         nodes_out = []
         for node in chain.get("nodes", []):
-            site    = node.get("site", "")
-            sname   = node.get("stream", "")
-            label   = node.get("label") or f"{site}/{sname}"
-
-            if site == "local":
-                inp = next((i for i in cfg.inputs if i.name == sname and i.enabled), None)
-                if inp is None:
-                    nodes_out.append({"label": label, "site": site, "stream": sname, "status": "unknown", "level": None})
+            if node.get("type") == "stack":
+                mode     = node.get("mode", "all")
+                sub_eval = [self._eval_one_node(n, cfg, sites_snap) for n in node.get("nodes", [])]
+                if sub_eval:
+                    if mode == "any":
+                        is_down = any(n["status"] in ("down", "offline") for n in sub_eval)
+                    else:  # "all" — position only faults when every sub-node is down
+                        is_down = all(n["status"] in ("down", "offline") for n in sub_eval)
                 else:
-                    dev  = (inp.device_index or "").strip().lower()
-                    down = inp._last_level_dbfs <= inp.silence_threshold_dbfs
-                    if dev.startswith("dab://") and not inp._dab_ok:
-                        down = True
-                    nodes_out.append({"label": label, "site": site, "stream": sname,
-                                      "status": "down" if down else "ok",
-                                      "level": round(inp._last_level_dbfs, 1)})
+                    is_down = False
+                # Best level = highest (most healthy) sub-node level
+                levels = [n["level"] for n in sub_eval if n["level"] is not None]
+                agg_level = round(max(levels), 1) if levels else None
+                nodes_out.append({
+                    "type":   "stack",
+                    "mode":   mode,
+                    "label":  node.get("label") or "Stack",
+                    "status": "down" if is_down else "ok",
+                    "level":  agg_level,
+                    "nodes":  sub_eval,
+                })
             else:
-                site_data = sites_snap.get(site)
-                if not site_data:
-                    nodes_out.append({"label": label, "site": site, "stream": sname, "status": "offline", "level": None})
-                elif not site_data["online"]:
-                    nodes_out.append({"label": label, "site": site, "stream": sname, "status": "offline", "level": None})
-                else:
-                    sd = next((s for s in site_data["streams"] if s.get("name") == sname), None)
-                    if sd is None:
-                        nodes_out.append({"label": label, "site": site, "stream": sname, "status": "unknown", "level": None})
-                    else:
-                        lev  = float(sd.get("level_dbfs", -120.0))
-                        dev  = str(sd.get("device_index", "")).strip().lower()
-                        down = lev <= -55.0
-                        if dev.startswith("dab://") and not sd.get("dab_ok", True):
-                            down = True
-                        nodes_out.append({"label": label, "site": site, "stream": sname,
-                                          "status": "down" if down else "ok",
-                                          "level": round(lev, 1)})
+                nodes_out.append(self._eval_one_node(node, cfg, sites_snap))
 
         fault_idx = next((i for i, n in enumerate(nodes_out) if n["status"] in ("down", "offline")), None)
         chain_status = "fault" if fault_idx is not None else ("ok" if nodes_out else "unknown")
@@ -7650,8 +7677,17 @@ class HubServer:
 
                     if not _warmed_up:
                         # Seed state silently so pre-existing faults don't re-fire.
-                        # Treat existing faults as already alerted so recovery is still detected.
-                        self._chain_fault_state[cid] = "alerted" if curr == "fault" else "ok"
+                        # If the fault looks like an ad break (pre-mixin, mixin still up),
+                        # seed as "pending" so the yellow adbreak UI shows correctly on
+                        # startup rather than jumping straight to red.
+                        # Real faults (or mixin-down) go to "alerted" to suppress duplicates.
+                        if curr == "fault" and result.get("adbreak_candidate"):
+                            self._chain_fault_state[cid] = "pending"
+                            self._chain_fault_since[cid] = now
+                        elif curr == "fault":
+                            self._chain_fault_state[cid] = "alerted"
+                        else:
+                            self._chain_fault_state[cid] = "ok"
                         continue
 
                     prev = self._chain_fault_state.get(cid, "ok")
@@ -7694,13 +7730,17 @@ class HubServer:
                     elif curr == "ok":
                         if prev == "alerted":
                             # Real fault recovered — send recovery notification
-                            rec_msg = f"Chain '{result['name']}' has recovered — all nodes OK."
+                            rec_msg = f"Chain '{result['name']}' has recovered — all positions OK."
                             for node in result.get("nodes", []):
-                                if node.get("site") == "local":
-                                    rc_cfg = next((i for i in cfg.inputs
-                                                   if i.name == node.get("stream", "") and i.enabled), None)
-                                    if rc_cfg:
-                                        _add_history(rc_cfg, "CHAIN_FAULT", rec_msg)
+                                # Descend into stacks to log recovery against each local sub-node
+                                local_nodes = (node.get("nodes", [])
+                                               if node.get("type") == "stack" else [node])
+                                for n in local_nodes:
+                                    if n.get("site") == "local":
+                                        rc_cfg = next((i for i in cfg.inputs
+                                                       if i.name == n.get("stream", "") and i.enabled), None)
+                                        if rc_cfg:
+                                            _add_history(rc_cfg, "CHAIN_FAULT", rec_msg)
                             try:
                                 sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
                                             alert_type="CHAIN_FAULT", stream=result["name"])
@@ -7727,45 +7767,108 @@ class HubServer:
             stop_evt.wait(30)
 
     def _fire_chain_fault(self, result: dict, chain: dict, cfg, sender, now: float):
-        """Send CHAIN_FAULT alert, save audio clips, and log to alert history."""
-        fn   = result["fault_node"] or {}
-        idx  = result.get("fault_index", 0) or 0
-        nodes = result.get("nodes", [])
-        total = len(nodes)
-        downstream = total - idx - 1
-        ds_note = (f" {downstream} downstream node(s) may also be affected."
-                   if downstream > 0 else "")
-        msg = (f"Chain fault in '{result['name']}' — signal lost at "
-               f"'{fn.get('label', '?')}' (site: {fn.get('site', '?')}, "
-               f"stream: {fn.get('stream', '?')}). "
-               f"This is the first failed point in the chain.{ds_note}")
-        # Clip the fault node (if local)
-        fault_cfg  = None
+        """Send CHAIN_FAULT alert, save audio clips, and log to alert history.
+
+        Handles both regular nodes and stack nodes (type=='stack').  For stacks
+        the alert message describes which sub-streams are down vs still OK so
+        the engineer immediately knows the scope of the failure.
+        """
+        fn          = result["fault_node"] or {}
+        idx         = result.get("fault_index", 0) or 0
+        nodes       = result.get("nodes", [])
+        total       = len(nodes)
+        chain_label = result["name"]
+        downstream  = total - idx - 1
+        ds_note     = (f" {downstream} downstream position(s) may also be affected."
+                       if downstream > 0 else "")
+
+        # ── Build the fault description ────────────────────────────────────────
+        if fn.get("type") == "stack":
+            # Stack fault — describe each sub-node's individual state
+            sub_nodes = fn.get("nodes", [])
+            mode      = fn.get("mode", "all")
+            n_total   = len(sub_nodes)
+            down_subs = [n for n in sub_nodes if n.get("status") in ("down", "offline")]
+            ok_subs   = [n for n in sub_nodes if n.get("status") not in ("down", "offline")]
+            n_down    = len(down_subs)
+            pos_label = fn.get("label") or f"position {idx + 1}"
+
+            down_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in down_subs)
+            ok_names   = ", ".join(n.get("label") or n.get("stream") or "?" for n in ok_subs)
+
+            if n_down == n_total:
+                # Every stream at this position is silent
+                detail = (f"all {n_total} stream(s) at '{pos_label}' are silent "
+                          f"({down_names})")
+            else:
+                # Partial failure — some streams still OK
+                detail = (f"{n_down} of {n_total} stream(s) at '{pos_label}' "
+                          f"{'is' if n_down == 1 else 'are'} silent "
+                          f"({down_names} silent; {ok_names} OK)")
+                if mode == "any":
+                    detail += " — stack mode is ANY, so this triggers a fault"
+
+            msg = (f"Chain fault in '{chain_label}' — {detail}. "
+                   f"This is the first failed position in the chain.{ds_note}")
+        else:
+            # Regular single node
+            msg = (f"Chain fault in '{chain_label}' — signal lost at "
+                   f"'{fn.get('label', '?')}' (site: {fn.get('site', '?')}, "
+                   f"stream: {fn.get('stream', '?')}). "
+                   f"This is the first failed point in the chain.{ds_note}")
+
+        # ── Clip and log the fault position ───────────────────────────────────
         fault_clip = None
-        fault_stream = fn.get("stream", "")
-        chain_label  = result["name"]
-        if fn.get("site") == "local":
-            fault_cfg = next((i for i in cfg.inputs
-                              if i.name == fault_stream and i.enabled), None)
-            if fault_cfg:
-                fault_clip = _save_alert_wav(fault_cfg, f"chain_{chain_label}_fault")
-                _add_history(fault_cfg, "CHAIN_FAULT", msg, clip_path=fault_clip or "")
-        # Clip the last-good node (node just before fault, if local)
+        if fn.get("type") == "stack":
+            # Clip every down local sub-node; use the first clip for the notification
+            for sub in fn.get("nodes", []):
+                if sub.get("status") not in ("down", "offline"):
+                    continue
+                if sub.get("site") == "local":
+                    sc = next((i for i in cfg.inputs
+                               if i.name == sub.get("stream", "") and i.enabled), None)
+                    if sc:
+                        clip = _save_alert_wav(sc, f"chain_{chain_label}_fault")
+                        _add_history(sc, "CHAIN_FAULT", msg, clip_path=clip or "")
+                        if fault_clip is None:
+                            fault_clip = clip  # first clip attached to notification
+        else:
+            if fn.get("site") == "local":
+                fc = next((i for i in cfg.inputs
+                           if i.name == fn.get("stream", "") and i.enabled), None)
+                if fc:
+                    fault_clip = _save_alert_wav(fc, f"chain_{chain_label}_fault")
+                    _add_history(fc, "CHAIN_FAULT", msg, clip_path=fault_clip or "")
+
+        # ── Clip the last-good position (node just before fault) ──────────────
         if idx > 0:
-            lg_node = nodes[idx - 1]
-            if lg_node.get("site") == "local":
-                lg_stream = lg_node.get("stream", "")
-                lg_cfg = next((i for i in cfg.inputs
-                               if i.name == lg_stream and i.enabled), None)
-                if lg_cfg:
-                    lg_clip = _save_alert_wav(lg_cfg, f"chain_{chain_label}_last_good")
-                    lg_msg = (f"Chain '{result['name']}' — '{lg_cfg.name}' was "
-                              f"the last node with signal before fault at "
-                              f"'{fn.get('label', '?')}'.")
-                    _add_history(lg_cfg, "CHAIN_FAULT", lg_msg, clip_path=lg_clip or "")
+            lg_pos = nodes[idx - 1]
+            pos_label_str = fn.get("label") or f"position {idx + 1}"
+            if lg_pos.get("type") == "stack":
+                # Clip each OK local sub-node in the last-good stack
+                for sub in lg_pos.get("nodes", []):
+                    if sub.get("site") == "local":
+                        lc = next((i for i in cfg.inputs
+                                   if i.name == sub.get("stream", "") and i.enabled), None)
+                        if lc:
+                            lg_clip = _save_alert_wav(lc, f"chain_{chain_label}_last_good")
+                            lg_msg  = (f"Chain '{chain_label}' — '{lc.name}' was still "
+                                       f"active in the last-good position before the fault "
+                                       f"at '{pos_label_str}'.")
+                            _add_history(lc, "CHAIN_FAULT", lg_msg, clip_path=lg_clip or "")
+            elif lg_pos.get("site") == "local":
+                lc = next((i for i in cfg.inputs
+                           if i.name == lg_pos.get("stream", "") and i.enabled), None)
+                if lc:
+                    lg_clip = _save_alert_wav(lc, f"chain_{chain_label}_last_good")
+                    lg_msg  = (f"Chain '{chain_label}' — '{lc.name}' was the last "
+                               f"node with signal before the fault at '{pos_label_str}'.")
+                    _add_history(lc, "CHAIN_FAULT", lg_msg, clip_path=lg_clip or "")
+
+        # ── Send notification ─────────────────────────────────────────────────
         try:
-            sender.send(f"CHAIN FAULT — {result['name']}", msg, fault_clip,
-                        alert_type="CHAIN_FAULT", stream=result["name"])
+            sender.send(f"CHAIN FAULT — {chain_label}", msg, fault_clip,
+                        alert_type="CHAIN_FAULT", stream=chain_label)
             monitor.log(f"[Chain] {msg}")
         except Exception as e:
             monitor.log(f"[Chain] Alert send error: {e}")
@@ -13684,6 +13787,11 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .chain-node{border:2px solid var(--bor);border-radius:10px;padding:10px 14px;min-width:120px;max-width:180px;text-align:center;position:relative;transition:border-color .3s,background .3s;background:var(--bg)}
 .chain-node.ok{border-color:var(--ok);background:rgba(34,197,94,.07)}.chain-node.down{border-color:var(--al);background:rgba(239,68,68,.09)}
 .chain-node.offline{border-color:#374151;opacity:.6}.chain-node.unknown{border-color:var(--bor)}.chain-node.downstream{border-color:#1e3a5f;opacity:.5}.chain-node.adbreak{border-color:#b45309;background:rgba(251,191,36,.08)}
+.chain-node.listening{cursor:pointer;box-shadow:0 0 0 3px rgba(59,130,246,.5),0 0 14px rgba(59,130,246,.25);animation:listen-pulse 1.4s ease-in-out infinite}
+.chain-node[data-live-url]{cursor:pointer}.chain-node[data-live-url]:hover{filter:brightness(1.12)}
+@keyframes listen-pulse{0%,100%{box-shadow:0 0 0 3px rgba(59,130,246,.5),0 0 14px rgba(59,130,246,.2)}50%{box-shadow:0 0 0 5px rgba(59,130,246,.2),0 0 22px rgba(59,130,246,.1)}}
+.listen-icon{position:absolute;top:4px;right:5px;font-size:11px;opacity:.6;pointer-events:none;user-select:none}.chain-node.listening .listen-icon{opacity:1;animation:icon-pulse 1.4s ease-in-out infinite}
+@keyframes icon-pulse{0%,100%{opacity:.8}50%{opacity:.4}}.chain-stack{display:flex;flex-direction:column;align-items:stretch;gap:0;position:relative}.chain-stack .chain-node{border-radius:6px;min-width:120px;max-width:180px}.chain-stack-sep{display:flex;justify-content:center;color:var(--mu);font-size:13px;line-height:1;padding:1px 0}.chain-stack-mode{font-size:10px;text-align:center;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:1px 7px;margin:3px auto 0;display:table}
 .node-label{font-weight:700;font-size:12px;word-break:break-word}.node-sub{font-size:10px;color:var(--mu);margin-top:3px;word-break:break-word}.node-level{font-size:11px;margin-top:5px;font-variant-numeric:tabular-nums}
 .fault-marker{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;white-space:nowrap}
 /* Correlation row */
@@ -13730,9 +13838,9 @@ main{padding:18px;max-width:1600px;margin:0 auto}
       <div style="font-size:11px;color:var(--mu);margin-top:3px">Silent here = real fault, skip delay</div>
     </div>
   </div>
-  <div style="font-size:12px;color:var(--mu);margin-bottom:10px">Nodes — left = source, right = destination. The first node that is down is identified as the fault point.</div>
-  <div id="builder_nodes"></div>
-  <button class="btn bg bs" id="btn_add_node" style="margin-top:8px">+ Add Node</button>
+  <div style="font-size:12px;color:var(--mu);margin-bottom:10px">Positions — left = source, right = destination. Each position can hold multiple streams (stack). The first position that is down is the fault point.</div>
+  <div id="builder_nodes" style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;margin-bottom:8px"></div>
+  <button class="btn bg bs" id="btn_add_node" style="margin-top:8px">+ Add Position</button>
   <!-- Comparators section -->
   <div style="margin-top:18px;border-top:1px solid var(--bor);padding-top:14px">
     <div style="font-size:12px;color:var(--mu);margin-bottom:10px">
@@ -13781,7 +13889,21 @@ var _chainData={
   <div class="chain-visual" id="visual_{{c.id|e}}">
     {% for node in c.nodes %}
     {% if not loop.first %}<div class="chain-arrow">→</div>{% endif %}
-    <div class="chain-node unknown">
+    {% if node.get('type') == 'stack' %}
+    <div class="chain-stack" data-pos="{{loop.index0}}">
+      {% for sub in node.nodes %}
+      {% if not loop.first %}<div class="chain-stack-sep">│</div>{% endif %}
+      <div class="chain-node unknown" data-sub="{{loop.index0}}">
+        <div class="node-label">{{(sub.label or sub.stream)|e}}</div>
+        <div class="node-sub">{{sub.site|e}}</div>
+        <div class="node-level" style="color:var(--mu)">…</div>
+      </div>
+      {% endfor %}
+      <div class="chain-stack-mode" title="Stack fault mode: '{{node.mode or 'all'}}' — fault triggers when {{node.mode or 'all'}} nodes are silent">{{(node.mode or 'all')|upper}} down</div>
+      {% if c.mixin_node_idx is not none and loop.index0 == c.mixin_node_idx %}<span class="mixin-badge" style="display:block;text-align:center;margin-top:3px" title="Ad mix-in point">🔀</span>{% endif %}
+    </div>
+    {% else %}
+    <div class="chain-node unknown" data-pos="{{loop.index0}}">
       <div class="node-label">
         {{(node.label or node.stream)|e}}
         {% if c.mixin_node_idx is not none and loop.index0 == c.mixin_node_idx %}<span class="mixin-badge" title="Ad mix-in point — silence here bypasses fault confirmation delay">🔀</span>{% endif %}
@@ -13789,6 +13911,7 @@ var _chainData={
       <div class="node-sub">{{node.site|e}}</div>
       <div class="node-level" style="color:var(--mu)">…</div>
     </div>
+    {% endif %}
     {% endfor %}
   </div>
   {% if c.comparators %}
@@ -13831,12 +13954,19 @@ function streamsFor(site){return _opts.filter(o=>o.site===site).map(o=>o.stream)
 
 // ── Comparator helpers ────────────────────────────────────────────────────────
 function getNodeOptions(){
-  var rows=document.querySelectorAll('#builder_nodes .node-row');
+  var grps=document.querySelectorAll('#builder_nodes .pos-group');
   var opts=[];
-  rows.forEach(function(row,i){
-    var st=row.querySelector('.nst');
-    var lbl=row.querySelector('.nl');
-    var name=(lbl&&lbl.value.trim())||(st&&st.value)||('Node '+i);
+  grps.forEach(function(grp,i){
+    // Label: first node's label or stream name
+    var lbl=grp.querySelector('.nl');
+    var st=grp.querySelector('.nst');
+    var rows=grp.querySelectorAll('.node-row');
+    var name='Position '+i;
+    if(rows.length>1){
+      name='Stack '+(i+1);
+    } else {
+      name=(lbl&&lbl.value.trim())||(st&&st.value)||('Node '+i);
+    }
     opts.push({idx:i,label:name});
   });
   return opts;
@@ -13880,17 +14010,15 @@ function addComparator(fromIdx,toIdx){
 }
 document.getElementById('btn_add_comp').addEventListener('click',function(){addComparator();});
 document.getElementById('btn_add_e2e').addEventListener('click',function(){
-  var n=document.querySelectorAll('#builder_nodes .node-row').length;
-  if(n<2){alert('Add at least 2 nodes first.');return;}
+  var n=document.querySelectorAll('#builder_nodes .pos-group').length;
+  if(n<2){alert('Add at least 2 positions first.');return;}
   addComparator(0,n-1);
 });
 
 // ── Node builder ──────────────────────────────────────────────────────────────
-function addNode(nd){
-  var container=document.getElementById('builder_nodes');
-  var idx=container.querySelectorAll('.node-row').length;
+function _addNodeRowToGroup(group, nd){
   var row=document.createElement('div');row.className='node-row';
-  if(idx>0){var arr=document.createElement('span');arr.textContent='→';arr.style.cssText='color:var(--mu);font-size:20px;flex-shrink:0';row.appendChild(arr);}
+  row.style.cssText='display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px';
   var siteSel=document.createElement('select');siteSel.className='ns';siteSel.style.width='160px';
   var sites=sitesFromOpts();
   Object.keys(sites).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=sites[s];siteSel.appendChild(o);});
@@ -13902,20 +14030,83 @@ function addNode(nd){
   }
   siteSel.addEventListener('change',function(){fillStreams();_refreshCompSels();_refreshMixinSel();});
   streamSel.addEventListener('change',function(){_refreshCompSels();_refreshMixinSel();});
-  var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';labelIn.placeholder='Label (optional)';labelIn.style.width='150px';
+  var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';labelIn.placeholder='Label (optional)';labelIn.style.width='140px';
   labelIn.addEventListener('input',function(){_refreshCompSels();_refreshMixinSel();});
-  var rm=document.createElement('button');rm.type='button';rm.textContent='✕';rm.className='btn bd bs';
-  rm.onclick=function(){container.removeChild(row);_refreshCompSels();};
+  var rmRow=document.createElement('button');rmRow.type='button';rmRow.textContent='−';rmRow.className='btn bd bs';rmRow.title='Remove this stream';
+  rmRow.style.cssText='padding:3px 8px;font-size:14px';
+  rmRow.onclick=function(){
+    group.removeChild(row);
+    _updateGroupControls(group);
+    _refreshCompSels();_refreshMixinSel();
+    // If group is now empty, remove it from builder_nodes
+    if(!group.querySelector('.node-row')){
+      var container=document.getElementById('builder_nodes');
+      container.removeChild(group);
+    }
+  };
   if(nd){
     if(nd.site&&siteSel.querySelector('option[value="'+nd.site+'"]'))siteSel.value=nd.site;
     fillStreams();
     if(nd.stream)streamSel.value=nd.stream;
     if(nd.label)labelIn.value=nd.label;
   } else { fillStreams(); }
-  row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(rm);
-  container.appendChild(row);
+  row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(rmRow);
+  // Insert before the controls footer of the group
+  var footer=group.querySelector('.pos-footer');
+  if(footer){group.insertBefore(row,footer);}else{group.appendChild(row);}
+  _updateGroupControls(group);
   _refreshCompSels();
   _refreshMixinSel();
+}
+
+function _updateGroupControls(group){
+  var rows=group.querySelectorAll('.node-row');
+  var footer=group.querySelector('.pos-footer');
+  if(!footer)return;
+  var modeSel=footer.querySelector('.stack-mode-sel');
+  if(modeSel){modeSel.style.display=rows.length>1?'':'none';}
+  // Update remove-row button visibility: only show if >1 row
+  group.querySelectorAll('.node-row button').forEach(function(btn){
+    btn.style.display=rows.length>1?'':'none';
+  });
+}
+
+function _mkPosGroup(){
+  var grp=document.createElement('div');grp.className='pos-group';
+  grp.style.cssText='display:flex;flex-direction:column;border:1px solid var(--bor);border-radius:8px;padding:8px 10px;background:#0a1e42;margin-bottom:2px;position:relative';
+  // Footer controls
+  var footer=document.createElement('div');footer.className='pos-footer';
+  footer.style.cssText='display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap';
+  var addBtn=document.createElement('button');addBtn.type='button';addBtn.textContent='+ Stack';addBtn.className='btn bg bs';
+  addBtn.style.cssText='font-size:11px;padding:2px 8px';
+  addBtn.onclick=function(){_addNodeRowToGroup(grp,null);};
+  var modeSel=document.createElement('select');modeSel.className='stack-mode-sel';modeSel.style.cssText='font-size:11px;display:none;padding:2px 4px';
+  ['all','any'].forEach(function(m){var o=document.createElement('option');o.value=m;o.textContent=m==='all'?'ALL down = fault':'ANY down = fault';modeSel.appendChild(o);});
+  var removePos=document.createElement('button');removePos.type='button';removePos.textContent='✕ Remove position';removePos.className='btn bd bs';
+  removePos.style.cssText='font-size:11px;padding:2px 8px;margin-left:auto';
+  removePos.onclick=function(){
+    var container=document.getElementById('builder_nodes');
+    container.removeChild(grp);
+    _refreshCompSels();_refreshMixinSel();
+  };
+  footer.appendChild(addBtn);footer.appendChild(modeSel);footer.appendChild(removePos);
+  grp.appendChild(footer);
+  return grp;
+}
+
+function addPosition(nd){
+  // nd can be a single node dict, a stack dict, or null
+  var container=document.getElementById('builder_nodes');
+  var grp=_mkPosGroup();
+  if(nd&&nd.type==='stack'){
+    // Restore a saved stack
+    var ms=grp.querySelector('.stack-mode-sel');if(ms)ms.value=nd.mode||'all';
+    (nd.nodes||[nd]).forEach(function(sub){_addNodeRowToGroup(grp,sub);});
+  } else {
+    _addNodeRowToGroup(grp,nd||null);
+  }
+  container.appendChild(grp);
+  _updateGroupControls(grp);
 }
 
 // ── Builder show/hide ─────────────────────────────────────────────────────────
@@ -13930,7 +14121,7 @@ function showBuilder(chain){
     document.getElementById('builder_name').value=chain.name||'';
     document.getElementById('builder_min_fault').value=chain.min_fault_seconds||0;
     loadOpts(function(){
-      (chain.nodes||[]).forEach(addNode);
+      (chain.nodes||[]).forEach(addPosition);
       (chain.comparators||[]).forEach(function(c){addComparator(c.from_idx,c.to_idx);});
       // Restore mix-in point after nodes are rendered (options are now populated)
       var mi=chain.mixin_node_idx;
@@ -13944,13 +14135,13 @@ function showBuilder(chain){
     document.getElementById('builder_id').value='';
     document.getElementById('builder_name').value='';
     document.getElementById('builder_min_fault').value=0;
-    loadOpts(function(){addNode(null);});
+    loadOpts(function(){addPosition(null);});
   }
   b.style.display='';b.scrollIntoView({behavior:'smooth',block:'start'});
 }
 document.getElementById('btn_new_chain').addEventListener('click',function(){showBuilder(null);});
 document.getElementById('btn_cancel_builder').addEventListener('click',function(){document.getElementById('builder').style.display='none';});
-document.getElementById('btn_add_node').addEventListener('click',function(){addNode(null);});
+document.getElementById('btn_add_node').addEventListener('click',function(){addPosition(null);});
 
 // ── Save chain ────────────────────────────────────────────────────────────────
 function saveChain(){
@@ -13959,9 +14150,20 @@ function saveChain(){
   var st=document.getElementById('builder_status');
   if(!name){st.style.color='var(--al)';st.textContent='Chain name required.';return;}
   var nodes=[];
-  document.querySelectorAll('#builder_nodes .node-row').forEach(function(row){
-    var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl');
-    if(s&&st2&&st2.value)nodes.push({site:s.value,stream:st2.value,label:(l?l.value.trim():'')});
+  document.querySelectorAll('#builder_nodes .pos-group').forEach(function(grp){
+    var rows=grp.querySelectorAll('.node-row');
+    var modeSel=grp.querySelector('.stack-mode-sel');
+    var mode=modeSel?modeSel.value:'all';
+    var subNodes=[];
+    rows.forEach(function(row){
+      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl');
+      if(s&&st2&&st2.value)subNodes.push({site:s.value,stream:st2.value,label:(l?l.value.trim():'')});
+    });
+    if(subNodes.length===1){
+      nodes.push(subNodes[0]);  // single node — save as plain node (backward compatible)
+    } else if(subNodes.length>1){
+      nodes.push({type:'stack',mode:mode,nodes:subNodes});
+    }
   });
   if(!nodes.length){st.style.color='var(--al)';st.textContent='Add at least one node.';return;}
   var comparators=[];
@@ -14048,66 +14250,98 @@ function refreshStatus(){
         }
       }
       if(visual){
-        var nodeEls=visual.querySelectorAll('.chain-node');
         var mi=chain.mixin_node_idx;
         var miInt=(mi!==null&&mi!==undefined)?parseInt(mi):null;
         (chain.nodes||[]).forEach(function(node,i){
-          var el=nodeEls[i];if(!el)return;
           var fi=chain.fault_index;
-          var isFaultNode=(fi!==null&&fi!==undefined&&i===fi);
+          var isFaultPos=(fi!==null&&fi!==undefined&&i===fi);
           var isMixin=(miInt!==null&&i===miInt);
-          var eff;
+          // Determine effective display status for this position
+          var posEff;
           if(isAdbreak){
-            // Ad break: fault is pre-mixin, mixin still up.
-            // Nodes from fault point up to (not including) mixin → yellow.
-            // Mixin and everything after → green (they're all still playing).
-            if(fi!==null&&fi!==undefined&&i>=fi&&(miInt===null||i<miInt)){
-              eff='adbreak';
-            } else {
-              eff='ok';
-            }
+            posEff=(fi!==null&&fi!==undefined&&i>=fi&&(miInt===null||i<miInt))?'adbreak':'ok';
           } else if(isPending){
-            // Generic delay: show faulted/downstream nodes amber, rest normal
-            if(fi!==null&&fi!==undefined&&i===fi){
-              eff='adbreak';  // amber for the fault node
-            } else if(fi!==null&&fi!==undefined&&i>fi){
-              eff='downstream';
-            } else {
-              eff=node.status;
+            posEff=isFaultPos?'adbreak':(fi!==null&&fi!==undefined&&i>fi?'downstream':node.status);
+          } else {
+            posEff=(fi!==null&&fi!==undefined&&i>fi)?'downstream':node.status;
+          }
+
+          if(node.type==='stack'){
+            // Update each sub-node individually, then update the stack wrapper colour
+            var stackEl=visual.querySelector('[data-pos="'+i+'"].chain-stack')||
+                        visual.querySelector('.chain-stack[data-pos="'+i+'"]');
+            // Find sub-node elements (they have data-sub attribute)
+            var subEls=stackEl?stackEl.querySelectorAll('[data-sub]'):[];
+            (node.nodes||[]).forEach(function(sub,j){
+              var subEl=subEls[j];if(!subEl)return;
+              // Stamp live URL so click-to-listen works on sub-nodes
+              if(sub.live_url){subEl.dataset.liveUrl=sub.live_url;}
+              else{delete subEl.dataset.liveUrl;}
+              // Ensure speaker icon exists
+              if(!subEl.querySelector('.listen-icon')){var si=document.createElement('span');si.className='listen-icon';si.textContent='🔊';subEl.appendChild(si);}
+              // Sub-node status: if whole position is downstream/adbreak override, use that; else individual
+              var subEff=posEff==='downstream'?'downstream':(posEff==='adbreak'?'adbreak':sub.status);
+              var isListeningEl=(window._chainAudioEl===subEl);
+              subEl.className='chain-node '+subEff+(isListeningEl?' listening':'');
+              subEl.style.borderColor=BORDER[subEff]||BORDER.unknown;
+              subEl.style.background=BG[subEff]||'';
+              subEl.querySelectorAll('.fault-marker').forEach(function(m){m.remove();});
+              var lvlEl=subEl.querySelector('.node-level');
+              if(lvlEl){
+                lvlEl.style.color=subEff==='adbreak'?'#fbbf24':sub.status==='ok'?'var(--ok)':sub.status==='down'?'var(--al)':'var(--mu)';
+                lvlEl.textContent=sub.level!==null&&sub.level!==undefined?sub.level.toFixed(1)+' dBFS':(sub.status==='offline'?'Offline':'—');
+              }
+            });
+            // Fault marker on the stack wrapper (only for the fault position)
+            if(stackEl){
+              stackEl.querySelectorAll('.fault-marker').forEach(function(m){m.remove();});
+              if(isFaultPos&&!isAdbreak&&!isPending){
+                var m=document.createElement('div');m.className='fault-marker';m.textContent='⚠ Fault here';stackEl.appendChild(m);
+              } else if(isFaultPos&&(isAdbreak||isPending)){
+                var m=document.createElement('div');m.className='fault-marker';
+                m.style.cssText='background:rgba(180,83,9,.18);color:#fbbf24;border-color:#b45309';
+                m.textContent=isAdbreak?'⏸ Likely ad break':'⏳ Confirming…';
+                stackEl.appendChild(m);
+              }
+              if(isAdbreak&&isMixin){
+                var mx=document.createElement('div');mx.className='fault-marker';
+                mx.style.cssText='background:rgba(37,99,235,.15);color:#93c5fd;border-color:#1d4ed8';
+                mx.textContent='🔀 Mix-in — playing';
+                stackEl.appendChild(mx);
+              }
             }
           } else {
-            eff=(fi!==null&&fi!==undefined&&i>fi)?'downstream':node.status;
-          }
-          el.className='chain-node '+eff;
-          el.style.borderColor=BORDER[eff]||BORDER.unknown;
-          el.style.background=BG[eff]||'';
-          // Remove any previous markers
-          el.querySelectorAll('.fault-marker').forEach(function(m){m.remove();});
-          var lvlEl=el.querySelector('.node-level');
-          if(lvlEl){
-            lvlEl.style.color=eff==='adbreak'?'#fbbf24':node.status==='ok'?'var(--ok)':node.status==='down'?'var(--al)':'var(--mu)';
-            lvlEl.textContent=node.level!==null&&node.level!==undefined?node.level.toFixed(1)+' dBFS':(node.status==='offline'?'Offline':'—');
-          }
-          // Fault / status markers
-          if(isFaultNode){
-            var m=document.createElement('div');m.className='fault-marker';
-            if(isAdbreak){
-              m.style.cssText='background:rgba(180,83,9,.18);color:#fbbf24;border-color:#b45309';
-              m.textContent='⏸ Likely ad break';
-            } else if(isPending){
-              m.style.cssText='background:rgba(180,83,9,.18);color:#fbbf24;border-color:#b45309';
-              m.textContent='⏳ Confirming…';
-            } else {
-              m.textContent='⚠ Fault here';
+            // Regular single node
+            var el=visual.querySelector('[data-pos="'+i+'"].chain-node')||
+                   visual.querySelector('.chain-node[data-pos="'+i+'"]');
+            if(!el)return;
+            // Stamp live URL
+            if(node.live_url){el.dataset.liveUrl=node.live_url;}
+            else{delete el.dataset.liveUrl;}
+            if(!el.querySelector('.listen-icon')){var si=document.createElement('span');si.className='listen-icon';si.textContent='🔊';el.appendChild(si);}
+            var isListeningEl=(window._chainAudioEl===el);
+            el.className='chain-node '+posEff+(isListeningEl?' listening':'');
+            el.style.borderColor=BORDER[posEff]||BORDER.unknown;
+            el.style.background=BG[posEff]||'';
+            el.querySelectorAll('.fault-marker').forEach(function(m){m.remove();});
+            var lvlEl=el.querySelector('.node-level');
+            if(lvlEl){
+              lvlEl.style.color=posEff==='adbreak'?'#fbbf24':node.status==='ok'?'var(--ok)':node.status==='down'?'var(--al)':'var(--mu)';
+              lvlEl.textContent=node.level!==null&&node.level!==undefined?node.level.toFixed(1)+' dBFS':(node.status==='offline'?'Offline':'—');
             }
-            el.appendChild(m);
-          }
-          // Mix-in point marker — only shown during adbreak state, and only if mixin is green (playing)
-          if(isAdbreak&&isMixin){
-            var mx=document.createElement('div');mx.className='fault-marker';
-            mx.style.cssText='background:rgba(37,99,235,.15);color:#93c5fd;border-color:#1d4ed8';
-            mx.textContent='🔀 Mix-in — playing';
-            el.appendChild(mx);
+            if(isFaultPos){
+              var m=document.createElement('div');m.className='fault-marker';
+              if(isAdbreak){m.style.cssText='background:rgba(180,83,9,.18);color:#fbbf24;border-color:#b45309';m.textContent='⏸ Likely ad break';}
+              else if(isPending){m.style.cssText='background:rgba(180,83,9,.18);color:#fbbf24;border-color:#b45309';m.textContent='⏳ Confirming…';}
+              else{m.textContent='⚠ Fault here';}
+              el.appendChild(m);
+            }
+            if(isAdbreak&&isMixin){
+              var mx=document.createElement('div');mx.className='fault-marker';
+              mx.style.cssText='background:rgba(37,99,235,.15);color:#93c5fd;border-color:#1d4ed8';
+              mx.textContent='🔀 Mix-in — playing';
+              el.appendChild(mx);
+            }
           }
         });
       }
@@ -14128,6 +14362,51 @@ function refreshStatus(){
     });
   }).catch(()=>{});
 }
+// ── Click-to-listen ───────────────────────────────────────────────────────────
+// One hidden <audio> element shared across all nodes. Clicking a node bubble
+// starts/stops live audio — no visible player, just a pulsing blue ring.
+var _chainAudio = new Audio();
+_chainAudio.preload = 'none';
+window._chainAudioEl = null;   // the .chain-node DOM element currently active
+
+function _stopListen(){
+  _chainAudio.pause();
+  _chainAudio.src = '';
+  if(window._chainAudioEl){
+    window._chainAudioEl.classList.remove('listening');
+    window._chainAudioEl = null;
+  }
+}
+
+function _startListen(nodeEl, url){
+  _stopListen();
+  window._chainAudioEl = nodeEl;
+  nodeEl.classList.add('listening');
+  _chainAudio.src = url;
+  _chainAudio.play().catch(function(){
+    // Autoplay blocked — browser may require a prior user gesture;
+    // the click itself is a user gesture so this should rarely fire
+    _stopListen();
+  });
+}
+
+_chainAudio.addEventListener('ended', _stopListen);
+_chainAudio.addEventListener('error', _stopListen);
+
+// Delegated click handler — fires for any .chain-node with data-live-url
+document.getElementById('chains_list').addEventListener('click', function(e){
+  var nodeEl = e.target.closest('.chain-node[data-live-url]');
+  if(!nodeEl) return;
+  // Don't intercept clicks on Edit/Delete buttons that may be inside a node
+  if(e.target.closest('button')) return;
+  e.stopPropagation();
+  if(window._chainAudioEl === nodeEl){
+    _stopListen();  // clicking the same node again stops playback
+  } else {
+    _startListen(nodeEl, nodeEl.dataset.liveUrl);
+  }
+});
+
 refreshStatus();setInterval(refreshStatus,5000);
 </script>
 </body></html>"""
@@ -14215,28 +14494,75 @@ def api_chains_status():
     """Evaluate all chains and return their current status including correlation data."""
     cfg = monitor.app_cfg
     now = time.time()
+
+    # Build input-name → stream-index map for local live URLs
+    local_idx = {inp.name: idx for idx, inp in enumerate(cfg.inputs)}
+
+    # Build site → (stream-name → stream-index) for hub live URLs
+    hub_idx: dict = {}
+    if hub_server:
+        with hub_server._lock:
+            for sname, data in hub_server._sites.items():
+                hub_idx[sname] = {s.get("name", ""): i
+                                  for i, s in enumerate(data.get("streams", []))}
+
+    def _live_url(node: dict) -> "str | None":
+        """Return the live-audio URL for a single (non-stack) node, or None."""
+        site   = node.get("site", "")
+        stream = node.get("stream", "")
+        if not stream:
+            return None
+        if site == "local":
+            idx = local_idx.get(stream)
+            return f"/stream/{idx}/live" if idx is not None else None
+        else:
+            sidx = hub_idx.get(site, {}).get(stream)
+            return (f"/hub/site/{site}/stream/{sidx}/live"
+                    if sidx is not None else None)
+
+    def _annotate_nodes(nodes: list) -> None:
+        """Add live_url to every node (and sub-node inside stacks) in-place."""
+        for node in nodes:
+            if node.get("type") == "stack":
+                for sub in node.get("nodes", []):
+                    sub["live_url"] = _live_url(sub)
+            else:
+                node["live_url"] = _live_url(node)
+
     results = []
     for chain in cfg.signal_chains:
         try:
             result = hub_server.eval_chain(chain)
             cid = chain.get("id", "")
             # Enrich with live pending/adbreak state from the monitor loop
-            internal_state = hub_server._chain_fault_state.get(cid, "ok")
+            # Use sentinel None to distinguish "not yet evaluated" from explicit "ok"
+            internal_state = hub_server._chain_fault_state.get(cid)
             since = hub_server._chain_fault_since.get(cid)
             min_fault_secs = result.get("min_fault_seconds", 0)
             adbreak_candidate = result.get("adbreak_candidate", False)
-            # "adbreak" display state: chain is in pending AND looks like an ad break
+            chain_status = result.get("status", "unknown")
+
             if internal_state == "pending" and adbreak_candidate and since is not None:
+                # Monitor loop has confirmed the pending/adbreak state — show countdown
                 result["display_status"] = "adbreak"
                 remaining = max(0.0, min_fault_secs - (now - since))
                 result["adbreak_remaining"] = round(remaining)
             elif internal_state == "pending" and since is not None:
+                # Pending but not an adbreak candidate
                 result["display_status"] = "pending"
                 remaining = max(0.0, min_fault_secs - (now - since))
                 result["adbreak_remaining"] = round(remaining)
+            elif internal_state is None and chain_status == "fault" and adbreak_candidate:
+                # Monitor loop hasn't run its first pass yet — eval already shows fault
+                # and it looks like an ad break. Show adbreak state immediately so the
+                # UI never flashes red before the warm-up pass completes.
+                result["display_status"] = "adbreak"
+                result["adbreak_remaining"] = min_fault_secs  # full window; no since yet
             else:
-                result["display_status"] = result["status"]
+                result["display_status"] = chain_status
                 result["adbreak_remaining"] = None
+            # Stamp live_url onto every node so the UI can wire up click-to-listen
+            _annotate_nodes(result.get("nodes", []))
             # Compute correlation for each configured comparator pair
             chain_nodes = chain.get("nodes", [])
             corr_out = []
@@ -14268,14 +14594,34 @@ def api_chains_save():
     nodes = data.get("nodes", [])
     if not name:
         return jsonify({"ok": False, "error": "name required"}), 400
-    # Sanitise nodes
-    clean_nodes = []
-    for n in nodes:
+    # Sanitise nodes (supports regular nodes and stack nodes)
+    def _clean_single_node(n):
         site   = str(n.get("site", "")).strip()
         stream = str(n.get("stream", "")).strip()
         label  = str(n.get("label", "")).strip()
         if site and stream:
-            clean_nodes.append({"site": site, "stream": stream, "label": label})
+            return {"site": site, "stream": stream, "label": label}
+        return None
+
+    clean_nodes = []
+    for n in nodes:
+        if n.get("type") == "stack":
+            sub_clean = [_clean_single_node(s) for s in n.get("nodes", [])]
+            sub_clean = [s for s in sub_clean if s]
+            if sub_clean:
+                mode = n.get("mode", "all")
+                if mode not in ("any", "all"):
+                    mode = "all"
+                clean_nodes.append({
+                    "type":  "stack",
+                    "mode":  mode,
+                    "label": str(n.get("label", "")).strip(),
+                    "nodes": sub_clean,
+                })
+        else:
+            cn = _clean_single_node(n)
+            if cn:
+                clean_nodes.append(cn)
     # Sanitise comparators — validate indices are in range and not equal
     clean_comps = []
     for comp in data.get("comparators", []):
