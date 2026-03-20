@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.6"
+BUILD                  = "SignalScope-3.2.8"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -940,7 +940,7 @@ _HUB_DEFAULT_FORWARD_TYPES = [
     "SILENCE", "STUDIO_FAULT", "STL_FAULT", "TX_DOWN",
     "CLIP", "AI_ALERT", "RTP_LOSS", "RTP_FAULT",
     "DAB_SERVICE_MISSING", "DAB_AUDIO_FAULT",
-    "LUFS_TP", "ESCALATION", "CHAIN_FAULT",
+    "LUFS_TP", "ESCALATION", "CHAIN_FAULT", "CHAIN_FLAPPING",
     "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
 ]
 # All alert type identifiers (shown as checkboxes in hub site rules UI)
@@ -951,8 +951,13 @@ _ALL_ALERT_TYPES = [
     "DAB_SERVICE_MISSING", "DAB_AUDIO_FAULT",
     "LUFS_TP", "LUFS_I", "ESCALATION",
     "PTP_OFFSET", "PTP_JITTER", "PTP_LOST", "PTP_GM_CHANGE",
-    "CHAIN_FAULT", "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
+    "CHAIN_FAULT", "CHAIN_FLAPPING", "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
 ]
+# Chain monitoring constants
+CHAIN_FLAP_WINDOW  = 600    # seconds — window for flap detection
+CHAIN_FLAP_COUNT   = 3      # fault transitions in window = flapping
+CHAIN_TREND_WINDOW = 60     # minutes of level history used for predictive trend
+CHAIN_TREND_THRESH = -0.3   # dBFS/min — slope steeper than this triggers amber warning
 STREAM_BUFFER_SECONDS  = 20.0
 ALERT_BUFFER_SECONDS   = 8.0
 LIVE_PLAYOUT_BUFFER_SECS = 1.5  # extra browser listen jitter buffer on Linux/VMs
@@ -7223,6 +7228,18 @@ class HubServer:
         self._chain_fault_state: dict = {}
         # When a chain entered "pending" state (epoch seconds)
         self._chain_fault_since: dict = {}
+        # Flap detection — cid → list of recent fault timestamps
+        self._chain_flap_events: dict = {}
+        # cid → True while chain is in flapping state
+        self._chain_flapping: dict = {}
+        # Maintenance bypass — cid → {"site|stream": expiry_ts}
+        self._chain_maintenance: dict = {}
+        # Fault log ring buffer — cid → list of fault dicts (max 25)
+        self._chain_fault_log: dict = {}
+        # Predictive trend cache — stream_key → {"trend": str, "slope": float, "ts": float}
+        self._chain_node_trend: dict = {}
+        # SLA metric write tracker — cid → last write ts
+        self._chain_sla_last_write: dict = {}
         self._load_state()   # restore across restarts
 
     def set_secret(self, secret: str):
@@ -7538,11 +7555,20 @@ class HubServer:
                 pass
 
     # ── Broadcast chain evaluation ────────────────────────────────────────────
-    def _eval_one_node(self, node: dict, cfg, sites_snap: dict) -> dict:
+    def _eval_one_node(self, node: dict, cfg, sites_snap: dict,
+                       maintenance: "dict | None" = None) -> dict:
         """Evaluate a single (non-stack) chain node and return its status dict."""
         site  = node.get("site", "")
         sname = node.get("stream", "")
         label = node.get("label") or f"{site}/{sname}"
+        # Maintenance bypass — return neutral status so this node is skipped in fault detection
+        if maintenance:
+            mkey = f"{site}|{sname}"
+            mexp = maintenance.get(mkey, 0)
+            if mexp > time.time():
+                return {"label": label, "site": site, "stream": sname,
+                        "status": "maintenance", "level": None,
+                        "maintenance_until": mexp}
         if site == "local":
             inp = next((i for i in cfg.inputs if i.name == sname and i.enabled), None)
             if inp is None:
@@ -7572,9 +7598,10 @@ class HubServer:
                     "status": "down" if down else "ok",
                     "level": round(lev, 1)}
 
-    def eval_chain(self, chain: dict) -> dict:
+    def eval_chain(self, chain: dict, maintenance: "dict | None" = None) -> dict:
         """Evaluate a single chain and return its status dict.
-        Nodes can be regular node dicts or stack dicts (type=='stack')."""
+        Nodes can be regular node dicts or stack dicts (type=='stack').
+        maintenance: optional dict of "site|stream" → expiry_ts for bypassed nodes."""
         cfg = monitor.app_cfg
         now = time.time()
         with self._lock:
@@ -7590,7 +7617,7 @@ class HubServer:
         for node in chain.get("nodes", []):
             if node.get("type") == "stack":
                 mode     = node.get("mode", "all")
-                sub_eval = [self._eval_one_node(n, cfg, sites_snap) for n in node.get("nodes", [])]
+                sub_eval = [self._eval_one_node(n, cfg, sites_snap, maintenance) for n in node.get("nodes", [])]
                 if sub_eval:
                     if mode == "any":
                         is_down = any(n["status"] in ("down", "offline") for n in sub_eval)
@@ -7610,10 +7637,17 @@ class HubServer:
                     "nodes":  sub_eval,
                 })
             else:
-                nodes_out.append(self._eval_one_node(node, cfg, sites_snap))
+                nodes_out.append(self._eval_one_node(node, cfg, sites_snap, maintenance))
 
-        fault_idx = next((i for i, n in enumerate(nodes_out) if n["status"] in ("down", "offline")), None)
+        # maintenance nodes are skipped in fault detection — they count as ok
+        fault_idx = next((i for i, n in enumerate(nodes_out)
+                          if n["status"] in ("down", "offline")), None)
         chain_status = "fault" if fault_idx is not None else ("ok" if nodes_out else "unknown")
+        has_maintenance = any(
+            (n.get("status") == "maintenance" or
+             any(s.get("status") == "maintenance" for s in n.get("nodes", [])))
+            for n in nodes_out
+        )
         mixin_idx = chain.get("mixin_node_idx")
         min_fault_secs = max(0, int(chain.get("min_fault_seconds", 0) or 0))
         # Determine whether this looks like an ad break (fault is pre-mixin and mixin is still up)
@@ -7633,6 +7667,7 @@ class HubServer:
             "mixin_node_idx":   mixin_idx,
             "min_fault_seconds": min_fault_secs,
             "adbreak_candidate": adbreak_candidate,
+            "has_maintenance":  has_maintenance,
         }
 
     def _chains_monitor_loop(self, stop_evt):
@@ -7651,16 +7686,61 @@ class HubServer:
           "alerted" — fault confirmed and notification already sent
         """
         _warmed_up = False   # first pass: populate state without firing alerts
+        _trend_last = 0.0    # last time node trends were computed
         while not stop_evt.is_set():
             try:
                 now    = time.time()
                 cfg    = monitor.app_cfg
                 sender = AlertSender(cfg, monitor.log)
+
+                # ── Predictive trend computation (every 30 s) ──────────────
+                if now - _trend_last >= 30:
+                    _trend_last = now
+                    try:
+                        import sqlite3 as _sqt
+                        cutoff = now - CHAIN_TREND_WINDOW * 60
+                        seen_keys: set = set()
+                        for _ch in cfg.signal_chains:
+                            for _nd in _ch.get("nodes", []):
+                                subs = _nd.get("nodes", []) if _nd.get("type") == "stack" else [_nd]
+                                for _s in subs:
+                                    _site = _s.get("site", "")
+                                    _strm = _s.get("stream", "")
+                                    if not _strm:
+                                        continue
+                                    db_key = _strm if _site == "local" else f"{_site}/{_strm}"
+                                    if db_key in seen_keys:
+                                        continue
+                                    seen_keys.add(db_key)
+                                    with _sqt.connect(METRICS_DB_PATH) as _tc:
+                                        rows = _tc.execute(
+                                            "SELECT ts, value FROM metric_history "
+                                            "WHERE stream=? AND metric='level_dbfs' AND ts>? ORDER BY ts",
+                                            (db_key, cutoff)
+                                        ).fetchall()
+                                    if len(rows) < 10:
+                                        self._chain_node_trend[db_key] = {"trend": "unknown", "slope": None, "ts": now}
+                                        continue
+                                    ts0 = rows[0][0]
+                                    xs = [(r[0] - ts0) / 60.0 for r in rows]
+                                    ys = [r[1] for r in rows]
+                                    n  = len(xs)
+                                    mx, my = sum(xs) / n, sum(ys) / n
+                                    num = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+                                    den = sum((xs[i] - mx) ** 2 for i in range(n))
+                                    slope = num / den if den != 0 else 0.0
+                                    trend = ("down" if slope <= CHAIN_TREND_THRESH
+                                             else "up" if slope >= abs(CHAIN_TREND_THRESH) else "stable")
+                                    self._chain_node_trend[db_key] = {"trend": trend, "slope": round(slope, 3), "ts": now}
+                    except Exception as _te:
+                        monitor.log(f"[Chain] Trend compute error: {_te}")
+
                 for chain in cfg.signal_chains:
                     cid = chain.get("id", "")
                     if not cid:
                         continue
-                    result = self.eval_chain(chain)
+                    maint = self._chain_maintenance.get(cid, {})
+                    result = self.eval_chain(chain, maintenance=maint)
                     curr   = result["status"]   # "ok" | "fault" | "unknown"
                     min_fault_secs = max(0, int(chain.get("min_fault_seconds", 0) or 0))
 
@@ -7703,7 +7783,26 @@ class HubServer:
                                         f"bypassing {min_fault_secs}s confirmation window.")
                                 self._chain_fault_state[cid] = "alerted"
                                 self._chain_fault_since.pop(cid, None)
-                                self._fire_chain_fault(result, chain, cfg, sender, now)
+                                # Track flap events
+                                flap_evts = self._chain_flap_events.setdefault(cid, [])
+                                flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
+                                flap_evts.append(now)
+                                # Update fault log ring buffer
+                                fn_info = result.get("fault_node") or {}
+                                flog = self._chain_fault_log.setdefault(cid, [])
+                                flog.append({"ts_start": now,
+                                             "fault_node_label": fn_info.get("label", "?"),
+                                             "fault_site": fn_info.get("site", "?"),
+                                             "fault_stream": fn_info.get("stream", "?"),
+                                             "ts_recovered": None})
+                                if len(flog) > 25:
+                                    flog.pop(0)
+                                if len(flap_evts) >= CHAIN_FLAP_COUNT and not self._chain_flapping.get(cid):
+                                    # Flapping detected — suppress normal fault alert, fire CHAIN_FLAPPING
+                                    self._chain_flapping[cid] = True
+                                    self._fire_chain_flapping(result, chain, cfg, sender, now)
+                                else:
+                                    self._fire_chain_fault(result, chain, cfg, sender, now)
                             else:
                                 # Start confirmation window
                                 self._chain_fault_state[cid] = "pending"
@@ -7722,31 +7821,63 @@ class HubServer:
                                     f"[Chain] '{result['name']}' fault confirmed ({reason}).")
                                 self._chain_fault_state[cid] = "alerted"
                                 self._chain_fault_since.pop(cid, None)
-                                self._fire_chain_fault(result, chain, cfg, sender, now)
+                                # Track flap events
+                                flap_evts = self._chain_flap_events.setdefault(cid, [])
+                                flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
+                                flap_evts.append(now)
+                                # Update fault log ring buffer
+                                fn_info = result.get("fault_node") or {}
+                                flog = self._chain_fault_log.setdefault(cid, [])
+                                flog.append({"ts_start": now,
+                                             "fault_node_label": fn_info.get("label", "?"),
+                                             "fault_site": fn_info.get("site", "?"),
+                                             "fault_stream": fn_info.get("stream", "?"),
+                                             "ts_recovered": None})
+                                if len(flog) > 25:
+                                    flog.pop(0)
+                                if len(flap_evts) >= CHAIN_FLAP_COUNT and not self._chain_flapping.get(cid):
+                                    self._chain_flapping[cid] = True
+                                    self._fire_chain_flapping(result, chain, cfg, sender, now)
+                                else:
+                                    self._fire_chain_fault(result, chain, cfg, sender, now)
                             # else: still waiting — do nothing
                         # prev == "alerted": already notified, nothing to do
 
                     # ── Recovery detection ───────────────────────────────────
                     elif curr == "ok":
                         if prev == "alerted":
-                            # Real fault recovered — send recovery notification
-                            rec_msg = f"Chain '{result['name']}' has recovered — all positions OK."
-                            for node in result.get("nodes", []):
-                                # Descend into stacks to log recovery against each local sub-node
-                                local_nodes = (node.get("nodes", [])
-                                               if node.get("type") == "stack" else [node])
-                                for n in local_nodes:
-                                    if n.get("site") == "local":
-                                        rc_cfg = next((i for i in cfg.inputs
-                                                       if i.name == n.get("stream", "") and i.enabled), None)
-                                        if rc_cfg:
-                                            _add_history(rc_cfg, "CHAIN_FAULT", rec_msg)
-                            try:
-                                sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
-                                            alert_type="CHAIN_FAULT", stream=result["name"])
-                                monitor.log(f"[Chain] {rec_msg}")
-                            except Exception as e:
-                                monitor.log(f"[Chain] Recovery notification error: {e}")
+                            # Record recovery in fault log
+                            flog = self._chain_fault_log.setdefault(cid, [])
+                            if flog and flog[-1].get("ts_recovered") is None:
+                                flog[-1]["ts_recovered"] = now
+                            # Check if chain was in flapping state — if so send flapping resolved
+                            if self._chain_flapping.get(cid):
+                                self._chain_flapping.pop(cid, None)
+                                try:
+                                    flap_msg = f"Chain '{result['name']}' flapping has resolved — chain is now stable."
+                                    sender.send(f"CHAIN STABLE — {result['name']}", flap_msg,
+                                                alert_type="CHAIN_FLAPPING", stream=result["name"])
+                                    monitor.log(f"[Chain] {flap_msg}")
+                                except Exception as _fe:
+                                    monitor.log(f"[Chain] Flap-resolved notify error: {_fe}")
+                            else:
+                                # Normal recovery notification
+                                rec_msg = f"Chain '{result['name']}' has recovered — all positions OK."
+                                for node in result.get("nodes", []):
+                                    local_nodes = (node.get("nodes", [])
+                                                   if node.get("type") == "stack" else [node])
+                                    for n in local_nodes:
+                                        if n.get("site") == "local":
+                                            rc_cfg = next((i for i in cfg.inputs
+                                                           if i.name == n.get("stream", "") and i.enabled), None)
+                                            if rc_cfg:
+                                                _add_history(rc_cfg, "CHAIN_FAULT", rec_msg)
+                                try:
+                                    sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
+                                                alert_type="CHAIN_FAULT", stream=result["name"])
+                                    monitor.log(f"[Chain] {rec_msg}")
+                                except Exception as e:
+                                    monitor.log(f"[Chain] Recovery notification error: {e}")
                             self._chain_fault_state[cid] = "ok"
                         elif prev == "pending":
                             # Fault resolved within confirmation window (e.g. ad break ended)
@@ -7758,6 +7889,17 @@ class HubServer:
                             self._chain_fault_since.pop(cid, None)
                         # prev == "ok": already ok, nothing to do
 
+                    # ── SLA metric write (every 60 s) ─────────────────────────
+                    last_sla = self._chain_sla_last_write.get(cid, 0)
+                    if _warmed_up and now - last_sla >= 60:
+                        self._chain_sla_last_write[cid] = now
+                        # Only count as downtime when an alert has actually fired
+                        sla_val = 0.0 if self._chain_fault_state.get(cid) == "alerted" else 1.0
+                        try:
+                            metrics_db.write([(f"chain/{cid}", "chain_status", now, sla_val)])
+                        except Exception:
+                            pass
+
             except Exception as e:
                 try:
                     monitor.log(f"[Chain] Monitor loop error: {e}")
@@ -7765,6 +7907,22 @@ class HubServer:
                     pass
             _warmed_up = True
             stop_evt.wait(30)
+
+    def _fire_chain_flapping(self, result: dict, chain: dict, cfg, sender, now: float):
+        """Fire CHAIN_FLAPPING alert when a chain is fault-cycling rapidly."""
+        chain_label = result["name"]
+        fn = result.get("fault_node") or {}
+        fn_label = fn.get("label", "?")
+        msg = (f"Chain '{chain_label}' is flapping — it has faulted and recovered "
+               f"{CHAIN_FLAP_COUNT}+ times in {CHAIN_FLAP_WINDOW // 60} minutes. "
+               f"Current fault point: '{fn_label}'. Individual CHAIN_FAULT/CHAIN_RECOVERED "
+               f"alerts are suppressed until the chain stabilises.")
+        try:
+            sender.send(f"CHAIN FLAPPING — {chain_label}", msg,
+                        alert_type="CHAIN_FLAPPING", stream=chain_label)
+            monitor.log(f"[Chain] {msg}")
+        except Exception as e:
+            monitor.log(f"[Chain] Flap alert error: {e}")
 
     def _fire_chain_fault(self, result: dict, chain: dict, cfg, sender, now: float):
         """Send CHAIN_FAULT alert, save audio clips, and log to alert history.
@@ -7864,6 +8022,24 @@ class HubServer:
                     lg_msg  = (f"Chain '{chain_label}' — '{lc.name}' was the last "
                                f"node with signal before the fault at '{pos_label_str}'.")
                     _add_history(lc, "CHAIN_FAULT", lg_msg, clip_path=lg_clip or "")
+
+        # ── Check for shared fault across other chains ─────────────────────────
+        fault_site   = fn.get("site", "")
+        fault_stream = fn.get("stream", "")
+        if fault_site and fault_stream:
+            shared_names = []
+            for _oc in (monitor.app_cfg.signal_chains or []):
+                if _oc.get("id") == chain.get("id"):
+                    continue
+                for _on in _oc.get("nodes", []):
+                    subs = _on.get("nodes", []) if _on.get("type") == "stack" else [_on]
+                    if any(s.get("site") == fault_site and s.get("stream") == fault_stream
+                           for s in subs):
+                        shared_names.append(_oc.get("name", "?"))
+                        break
+            if shared_names:
+                msg += (f" NOTE: this fault node also appears in: "
+                        f"{', '.join(shared_names)} — those chains may also be affected.")
 
         # ── Send notification ─────────────────────────────────────────────────
         try:
@@ -13801,6 +13977,34 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .corr-chip .cv{font-weight:700;margin-left:2px}
 .corr-ok{border-color:var(--ok)!important;color:var(--ok)!important}.corr-warn{border-color:var(--wn)!important;color:var(--wn)!important}.corr-poor{border-color:var(--al)!important;color:var(--al)!important}
 .mixin-badge{font-size:10px;opacity:.75;margin-left:3px;cursor:default}
+/* Maintenance node */
+.chain-node.maintenance{border-color:#1d4ed8;background:rgba(29,78,216,.08);opacity:.8}
+.maint-badge{font-size:10px;color:#93c5fd;display:block;text-align:center;margin-top:3px}
+/* Trend indicator */
+.trend-down{color:#f59e0b;font-size:10px;margin-left:3px;cursor:default}
+/* SLA badge */
+.sla-badge{font-size:11px;color:var(--mu);padding:2px 7px;border:1px solid var(--bor);border-radius:999px;white-space:nowrap}
+.sla-ok{color:#86efac;border-color:#14532d}.sla-warn{color:#fde68a;border-color:#78350f}
+/* Flapping badge */
+.badge-flap{background:#78350f;color:#fde68a}
+/* Shared fault */
+.shared-badge{font-size:10px;color:#93c5fd;display:block;text-align:center;margin-top:2px}
+/* Fault log panel */
+.flog-panel{border-top:1px solid var(--bor);padding:0 16px}
+.flog-toggle{font-size:11px;color:var(--mu);cursor:pointer;padding:6px 0;display:flex;align-items:center;gap:6px;user-select:none}
+.flog-toggle:hover{color:var(--tx)}
+.flog-table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px}
+.flog-table th{color:var(--mu);font-weight:600;padding:3px 6px;text-align:left;border-bottom:1px solid var(--bor)}
+.flog-table td{padding:4px 6px;border-bottom:1px solid rgba(255,255,255,.04);color:var(--tx)}
+.flog-empty{color:var(--mu);font-size:11px;padding:8px 0}
+/* Maintenance button */
+.maint-btn{font-size:10px;padding:1px 6px;border-radius:6px;background:#1e3a5f;border:1px solid #1d4ed8;color:#93c5fd;cursor:pointer;white-space:nowrap}
+.maint-btn:hover{background:#1d4ed8;color:#fff}
+/* History bar */
+.hist-bar{display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--sur);border:1px solid var(--bor);border-radius:10px;margin-bottom:14px;flex-wrap:wrap}
+input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:var(--tx);border-radius:8px;padding:5px 8px;font-size:12px;color-scheme:dark}
+.hist-banner{background:#071e3d;border:1px solid var(--acc);border-radius:8px;padding:8px 14px;margin-bottom:14px;font-size:12px;color:var(--acc);display:none;align-items:center;gap:8px;flex-wrap:wrap}
+.hist-banner.active{display:flex}
 /* Builder */
 .builder-panel{background:var(--sur);border:1px solid var(--bor);border-radius:14px;padding:18px 20px;margin-bottom:16px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
 .builder-title{font-weight:700;font-size:15px;margin-bottom:14px;color:var(--tx)}
@@ -13814,6 +14018,23 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 <div class="page-title">
   <h1>⛓ Broadcast Chains</h1>
   <button class="btn bp" id="btn_new_chain">+ New Chain</button>
+</div>
+
+<!-- History time-travel bar -->
+<div class="hist-bar">
+  <span style="font-size:12px;font-weight:600;color:var(--mu)">📅 History:</span>
+  <input type="datetime-local" id="hist_dt" step="60" title="Select date and time to view">
+  <button class="btn bg bs" id="hist_m1h" title="Back 1 hour">−1h</button>
+  <button class="btn bg bs" id="hist_m15" title="Back 15 minutes">−15m</button>
+  <button class="btn bg bs" id="hist_p15" title="Forward 15 minutes">+15m</button>
+  <button class="btn bg bs" id="hist_p1h" title="Forward 1 hour">+1h</button>
+  <button class="btn bp bs" id="hist_go">▶ View</button>
+  <button class="btn bg bs" id="hist_live_btn" style="display:none">⬤ Back to Live</button>
+  <span id="hist_note" style="font-size:11px;color:var(--mu)">Select a date &amp; time to inspect historical chain state (up to 90 days back)</span>
+</div>
+<div class="hist-banner" id="hist_banner">
+  📅 <strong>Historical view</strong> — chain state at <strong id="hist_time_label"></strong> &nbsp;·&nbsp; Live refresh paused &nbsp;·&nbsp; Data from metrics DB (1-min resolution)
+  <button class="btn bg bs" id="hist_banner_live" style="margin-left:auto">⬤ Back to Live</button>
 </div>
 
 <!-- Builder panel -->
@@ -13877,6 +14098,7 @@ var _chainData={
   <div class="chain-header">
     <span class="chain-name">{{c.name|e}}</span>
     <span class="badge badge-unknown" id="badge_{{c.id|e}}">…</span>
+    <span class="sla-badge" id="sla_{{c.id|e}}" style="display:none"></span>
     {% if c.min_fault_seconds %}
     <span style="font-size:11px;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:2px 8px" title="Fault confirmation delay — alert fires only after fault persists this long">⏱ {{c.min_fault_seconds}}s delay</span>
     {% endif %}
@@ -13899,7 +14121,7 @@ var _chainData={
         <div class="node-level" style="color:var(--mu)">…</div>
       </div>
       {% endfor %}
-      <div class="chain-stack-mode" title="Stack fault mode: '{{node.mode or 'all'}}' — fault triggers when {{node.mode or 'all'}} nodes are silent">{{(node.mode or 'all')|upper}} down</div>
+      <div class="chain-stack-mode" title="Stack fault mode: fault triggers when {{node.mode or 'all'}} node(s) are silent">fault if {{(node.mode or 'all')|upper}} silent</div>
       {% if c.mixin_node_idx is not none and loop.index0 == c.mixin_node_idx %}<span class="mixin-badge" style="display:block;text-align:center;margin-top:3px" title="Ad mix-in point">🔀</span>{% endif %}
     </div>
     {% else %}
@@ -13913,6 +14135,14 @@ var _chainData={
     </div>
     {% endif %}
     {% endfor %}
+  </div>
+  <!-- Fault log panel -->
+  <div class="flog-panel" id="flog_panel_{{c.id|e}}">
+    <div class="flog-toggle" id="flog_toggle_{{c.id|e}}" data-chain-id="{{c.id|e}}">
+      <span id="flog_arrow_{{c.id|e}}">&#9658;</span> &#128203; Fault History
+      <span id="flog_count_{{c.id|e}}" style="color:var(--mu)"></span>
+    </div>
+    <div id="flog_body_{{c.id|e}}" style="display:none"></div>
   </div>
   {% if c.comparators %}
   <div class="chain-corr-row">
@@ -14081,7 +14311,7 @@ function _mkPosGroup(){
   addBtn.style.cssText='font-size:11px;padding:2px 8px';
   addBtn.onclick=function(){_addNodeRowToGroup(grp,null);};
   var modeSel=document.createElement('select');modeSel.className='stack-mode-sel';modeSel.style.cssText='font-size:11px;display:none;padding:2px 4px';
-  ['all','any'].forEach(function(m){var o=document.createElement('option');o.value=m;o.textContent=m==='all'?'ALL down = fault':'ANY down = fault';modeSel.appendChild(o);});
+  ['all','any'].forEach(function(m){var o=document.createElement('option');o.value=m;o.textContent=m==='all'?'Fault if ALL silent':'Fault if ANY silent';modeSel.appendChild(o);});
   var removePos=document.createElement('button');removePos.type='button';removePos.textContent='✕ Remove position';removePos.className='btn bd bs';
   removePos.style.cssText='font-size:11px;padding:2px 8px;margin-left:auto';
   removePos.onclick=function(){
@@ -14207,13 +14437,74 @@ document.addEventListener('click',function(e){
   if(db){deleteChain(db.dataset.id,db.dataset.name);return;}
 });
 
+// ── History time-travel controls ──────────────────────────────────────────────
+var _histTs = null;   // null = live mode; epoch seconds = history mode
+var _liveTimer = null;
+
+function _dtLocalToEpoch(dtStr){ return dtStr ? Math.floor(new Date(dtStr).getTime()/1000) : null; }
+function _epochToDtLocal(ep){
+  var d=new Date(ep*1000);
+  var pad=function(n){return String(n).padStart(2,'0');};
+  return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+}
+function _enterHistMode(ts){
+  _histTs=ts;
+  document.getElementById('hist_dt').value=_epochToDtLocal(ts);
+  var lbl=new Date(ts*1000).toLocaleString();
+  document.getElementById('hist_time_label').textContent=lbl;
+  document.getElementById('hist_banner').classList.add('active');
+  document.getElementById('hist_live_btn').style.display='';
+  document.getElementById('hist_note').textContent='';
+  if(_liveTimer){clearInterval(_liveTimer);_liveTimer=null;}
+  // Stop any playing audio
+  if(window._chainAudio){window._chainAudio.pause();}
+  refreshStatus();
+}
+function _exitHistMode(){
+  _histTs=null;
+  document.getElementById('hist_banner').classList.remove('active');
+  document.getElementById('hist_live_btn').style.display='none';
+  document.getElementById('hist_note').textContent='Select a date & time to inspect historical chain state (up to 90 days back)';
+  if(!_liveTimer){_liveTimer=setInterval(refreshStatus,5000);}
+  refreshStatus();
+}
+document.getElementById('hist_go').addEventListener('click',function(){
+  var v=document.getElementById('hist_dt').value;
+  if(!v){alert('Please pick a date and time first.');return;}
+  var ts=_dtLocalToEpoch(v);
+  if(!ts||isNaN(ts)){alert('Invalid date/time.');return;}
+  if(ts>Date.now()/1000){alert('Cannot view the future — choose a past time.');return;}
+  _enterHistMode(ts);
+});
+function _histStep(deltaSecs){
+  var cur=_histTs||(Math.floor(Date.now()/1000));
+  _enterHistMode(cur+deltaSecs);
+}
+document.getElementById('hist_m1h').addEventListener('click',function(){_histStep(-3600);});
+document.getElementById('hist_m15').addEventListener('click',function(){_histStep(-900);});
+document.getElementById('hist_p15').addEventListener('click',function(){
+  if(!_histTs){return;}  // can't step forward when already live
+  var next=_histTs+900;
+  if(next>Date.now()/1000){_exitHistMode();return;}
+  _histStep(900);
+});
+document.getElementById('hist_p1h').addEventListener('click',function(){
+  if(!_histTs){return;}
+  var next=_histTs+3600;
+  if(next>Date.now()/1000){_exitHistMode();return;}
+  _histStep(3600);
+});
+document.getElementById('hist_live_btn').addEventListener('click',_exitHistMode);
+document.getElementById('hist_banner_live').addEventListener('click',_exitHistMode);
+
 // ── Live status refresh ───────────────────────────────────────────────────────
 var BORDER={ok:'var(--ok)',down:'var(--al)',offline:'#374151',unknown:'var(--bor)',downstream:'#1e3a5f',adbreak:'#b45309'};
 var BG={ok:'rgba(34,197,94,.07)',down:'rgba(239,68,68,.09)',offline:'',unknown:'var(--bg)',downstream:'',adbreak:'rgba(251,191,36,.08)'};
 var CARD_CLS={ok:'chain-card card-ok',fault:'chain-card card-fault',unknown:'chain-card card-unknown',adbreak:'chain-card card-adbreak',pending:'chain-card card-adbreak'};
 
 function refreshStatus(){
-  _f('/api/chains/status').then(r=>r.json()).then(d=>{
+  var url=_histTs?('/api/chains/history?ts='+_histTs):'/api/chains/status';
+  _f(url).then(r=>r.json()).then(d=>{
     (d.results||[]).forEach(function(chain){
       var badge=document.getElementById('badge_'+chain.id);
       var fl=document.getElementById('fault_label_'+chain.id);
@@ -14239,6 +14530,17 @@ function refreshStatus(){
         }
       }
       if(card&&CARD_CLS[ds])card.className=CARD_CLS[ds];
+      // SLA badge
+      var slaBadge=document.getElementById('sla_'+chain.id);
+      if(slaBadge&&chain.sla_pct!=null){
+        slaBadge.textContent=chain.sla_pct+'% uptime';
+        slaBadge.className='sla-badge '+(chain.sla_pct>=99.5?'sla-ok':'sla-warn');
+        slaBadge.style.display='';
+      }
+      // Flapping override badge
+      if(chain.flapping&&badge){
+        badge.textContent='FLAPPING';badge.className='badge badge-flap';
+      }
       if(fl){
         if(isAdbreak){
           var secs=remaining>0?remaining+'s remaining':'confirming…';
@@ -14280,16 +14582,24 @@ function refreshStatus(){
               // Ensure speaker icon exists
               if(!subEl.querySelector('.listen-icon')){var si=document.createElement('span');si.className='listen-icon';si.textContent='🔊';subEl.appendChild(si);}
               // Sub-node status: if whole position is downstream/adbreak override, use that; else individual
-              var subEff=posEff==='downstream'?'downstream':(posEff==='adbreak'?'adbreak':sub.status);
+              var subEff=posEff==='downstream'?'downstream':(posEff==='adbreak'?'adbreak':(sub.status==='maintenance'?'maintenance':sub.status));
               var isListeningEl=(window._chainAudioEl===subEl);
               subEl.className='chain-node '+subEff+(isListeningEl?' listening':'');
               subEl.style.borderColor=BORDER[subEff]||BORDER.unknown;
               subEl.style.background=BG[subEff]||'';
-              subEl.querySelectorAll('.fault-marker').forEach(function(m){m.remove();});
+              subEl.querySelectorAll('.fault-marker,.maint-badge,.shared-badge').forEach(function(m){m.remove();});
               var lvlEl=subEl.querySelector('.node-level');
               if(lvlEl){
                 lvlEl.style.color=subEff==='adbreak'?'#fbbf24':sub.status==='ok'?'var(--ok)':sub.status==='down'?'var(--al)':'var(--mu)';
-                lvlEl.textContent=sub.level!==null&&sub.level!==undefined?sub.level.toFixed(1)+' dBFS':(sub.status==='offline'?'Offline':'—');
+                if(sub.status==='maintenance'&&sub.maintenance_until){
+                  var mu=new Date(sub.maintenance_until*1000);
+                  var mh=String(mu.getHours()).padStart(2,'0'),mm2=String(mu.getMinutes()).padStart(2,'0');
+                  lvlEl.textContent='';
+                  var mb=document.createElement('span');mb.className='maint-badge';mb.textContent='🔧 Maint until '+mh+':'+mm2;subEl.appendChild(mb);
+                } else {
+                  lvlEl.textContent=sub.level!==null&&sub.level!==undefined?sub.level.toFixed(1)+' dBFS':(sub.status==='offline'?'Offline':'—');
+                  if(sub.trend==='down'&&sub.level!=null){lvlEl.innerHTML+='<span class="trend-down" title="Level trending down ('+sub.trend_slope+' dBFS/min)">&#8600;</span>';}
+                }
               }
             });
             // Fault marker on the stack wrapper (only for the fault position)
@@ -14320,14 +14630,29 @@ function refreshStatus(){
             else{delete el.dataset.liveUrl;}
             if(!el.querySelector('.listen-icon')){var si=document.createElement('span');si.className='listen-icon';si.textContent='🔊';el.appendChild(si);}
             var isListeningEl=(window._chainAudioEl===el);
-            el.className='chain-node '+posEff+(isListeningEl?' listening':'');
-            el.style.borderColor=BORDER[posEff]||BORDER.unknown;
-            el.style.background=BG[posEff]||'';
-            el.querySelectorAll('.fault-marker').forEach(function(m){m.remove();});
+            var nodeEff=node.status==='maintenance'?'maintenance':posEff;
+            el.className='chain-node '+nodeEff+(isListeningEl?' listening':'');
+            el.style.borderColor=BORDER[nodeEff]||BORDER.unknown;
+            el.style.background=BG[nodeEff]||'';
+            el.querySelectorAll('.fault-marker,.maint-badge,.shared-badge').forEach(function(m){m.remove();});
             var lvlEl=el.querySelector('.node-level');
             if(lvlEl){
-              lvlEl.style.color=posEff==='adbreak'?'#fbbf24':node.status==='ok'?'var(--ok)':node.status==='down'?'var(--al)':'var(--mu)';
-              lvlEl.textContent=node.level!==null&&node.level!==undefined?node.level.toFixed(1)+' dBFS':(node.status==='offline'?'Offline':'—');
+              lvlEl.style.color=nodeEff==='adbreak'?'#fbbf24':node.status==='ok'?'var(--ok)':node.status==='down'?'var(--al)':'var(--mu)';
+              if(node.status==='maintenance'&&node.maintenance_until){
+                var mu2=new Date(node.maintenance_until*1000);
+                var mh2=String(mu2.getHours()).padStart(2,'0'),mm3=String(mu2.getMinutes()).padStart(2,'0');
+                lvlEl.textContent='';
+                var mb2=document.createElement('span');mb2.className='maint-badge';mb2.textContent='🔧 Maint until '+mh2+':'+mm3;el.appendChild(mb2);
+              } else {
+                lvlEl.textContent=node.level!==null&&node.level!==undefined?node.level.toFixed(1)+' dBFS':(node.status==='offline'?'Offline':'—');
+                if(node.trend==='down'&&node.level!=null){lvlEl.innerHTML+='<span class="trend-down" title="Level trending down ('+node.trend_slope+' dBFS/min)">&#8600;</span>';}
+              }
+            }
+            // Shared fault badge on fault node
+            if(isFaultPos&&chain.shared_fault_chains&&chain.shared_fault_chains.length>0){
+              var sb=document.createElement('span');sb.className='shared-badge';
+              sb.textContent='Also affecting: '+chain.shared_fault_chains.join(', ');
+              el.appendChild(sb);
             }
             if(isFaultPos){
               var m=document.createElement('div');m.className='fault-marker';
@@ -14397,17 +14722,61 @@ _chainAudio.addEventListener('error', _stopListen);
 document.getElementById('chains_list').addEventListener('click', function(e){
   var nodeEl = e.target.closest('.chain-node[data-live-url]');
   if(!nodeEl) return;
-  // Don't intercept clicks on Edit/Delete buttons that may be inside a node
   if(e.target.closest('button')) return;
+  if(_histTs) return;  // no live audio in history mode
   e.stopPropagation();
   if(window._chainAudioEl === nodeEl){
-    _stopListen();  // clicking the same node again stops playback
+    _stopListen();
   } else {
     _startListen(nodeEl, nodeEl.dataset.liveUrl);
   }
 });
 
-refreshStatus();setInterval(refreshStatus,5000);
+// Fault log toggle handler
+document.getElementById('chains_list').addEventListener('click', function(e){
+  var tog=e.target.closest('.flog-toggle');
+  if(!tog)return;
+  var cid=tog.dataset.chainId;
+  if(!cid)return;
+  var body=document.getElementById('flog_body_'+cid);
+  var arrow=document.getElementById('flog_arrow_'+cid);
+  if(!body)return;
+  if(body.style.display==='none'){
+    body.style.display='';
+    if(arrow)arrow.innerHTML='&#9660;';
+    if(!body.dataset.loaded){
+      body.dataset.loaded='1';
+      body.innerHTML='<div style="color:var(--mu);font-size:11px;padding:4px 0">Loading\u2026</div>';
+      _f('/api/chains/'+encodeURIComponent(cid)+'/fault_log').then(function(r){return r.json();}).then(function(d){
+        var entries=d.entries||[];
+        if(!entries.length){body.innerHTML='<div class="flog-empty">No faults recorded yet.</div>';return;}
+        var html='<table class="flog-table"><thead><tr><th>Date/Time</th><th>Fault Point</th><th>Site</th><th>Duration</th></tr></thead><tbody>';
+        entries.forEach(function(ev){
+          var dt=new Date(ev.ts_start*1000).toLocaleString();
+          var dur=ev.ts_recovered?_fmtDur(ev.ts_recovered-ev.ts_start):'<span style="color:var(--al)">Ongoing</span>';
+          html+='<tr><td>'+dt+'</td><td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td><td>'+dur+'</td></tr>';
+        });
+        html+='</tbody></table>';
+        body.innerHTML=html;
+      }).catch(function(){body.innerHTML='<div class="flog-empty">Error loading fault log.</div>';});
+    }
+  } else {
+    body.style.display='none';
+    if(arrow)arrow.innerHTML='&#9658;';
+  }
+});
+function _fmtDur(secs){
+  secs=Math.round(secs);
+  if(secs<60)return secs+'s';
+  if(secs<3600)return Math.floor(secs/60)+'m '+(secs%60)+'s';
+  return Math.floor(secs/3600)+'h '+Math.floor((secs%3600)/60)+'m';
+}
+function _esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+
+// Initialise datetime picker to now so the user has a sensible starting point
+(function(){var d=new Date();var pad=function(n){return String(n).padStart(2,'0');};document.getElementById('hist_dt').value=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());})();
+
+refreshStatus();_liveTimer=setInterval(refreshStatus,5000);
 </script>
 </body></html>"""
 
@@ -14488,6 +14857,136 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 10) -> dic
         return {"status": "error", "error": str(e), "r": None, "pct": None, "samples": 0}
 
 
+@app.get("/api/chains/history")
+@login_required
+def api_chains_history():
+    """Return chain state reconstructed from metric_history at a given epoch timestamp."""
+    try:
+        ts = float(request.args.get("ts", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid ts"}), 400
+    if ts <= 0:
+        return jsonify({"error": "ts required"}), 400
+
+    cfg = monitor.app_cfg
+    WINDOW = 600  # accept the nearest sample within 10 minutes before the requested time
+
+    def _node_hist(site: str, stream: str) -> dict:
+        """Query historical level_dbfs + dab_ok for one node."""
+        if site == "local":
+            db_key = stream
+            inp = next((i for i in cfg.inputs if i.name == stream), None)
+            thresh = inp.silence_threshold_dbfs if inp else -55.0
+            is_dab = inp is not None and (inp.device_index or "").strip().lower().startswith("dab://")
+        else:
+            db_key = f"{site}/{stream}"
+            thresh = -55.0
+            is_dab = False  # we check dab_ok from the DB regardless
+
+        level = None
+        dab_ok_val = None
+        try:
+            import sqlite3 as _sq
+            with _sq.connect(METRICS_DB_PATH) as conn:
+                row = conn.execute(
+                    "SELECT value FROM metric_history WHERE stream=? AND metric='level_dbfs'"
+                    " AND ts<=? AND ts>=? ORDER BY ts DESC LIMIT 1",
+                    (db_key, ts, ts - WINDOW)
+                ).fetchone()
+                level = row[0] if row else None
+
+                drow = conn.execute(
+                    "SELECT value FROM metric_history WHERE stream=? AND metric='dab_ok'"
+                    " AND ts<=? AND ts>=? ORDER BY ts DESC LIMIT 1",
+                    (db_key, ts, ts - WINDOW)
+                ).fetchone()
+                dab_ok_val = bool(drow[0]) if drow is not None else None
+        except Exception:
+            pass
+
+        if level is None:
+            return {"status": "unknown", "level": None}
+
+        down = level <= thresh
+        # For DAB nodes, also treat dab_ok=False as down
+        if dab_ok_val is not None and not dab_ok_val and (is_dab or site != "local"):
+            down = True
+        return {"status": "down" if down else "ok", "level": round(level, 1)}
+
+    def _eval_hist_chain(chain: dict) -> dict:
+        nodes_out = []
+        for node in chain.get("nodes", []):
+            if node.get("type") == "stack":
+                mode = node.get("mode", "all")
+                sub_eval = []
+                for sub in node.get("nodes", []):
+                    h = _node_hist(sub.get("site", ""), sub.get("stream", ""))
+                    sub_eval.append({
+                        "label":  sub.get("label") or f"{sub.get('site','')}/{sub.get('stream','')}",
+                        "site":   sub.get("site", ""),
+                        "stream": sub.get("stream", ""),
+                        "status": h["status"],
+                        "level":  h["level"],
+                    })
+                if sub_eval:
+                    if mode == "any":
+                        is_down = any(n["status"] == "down" for n in sub_eval)
+                    else:
+                        is_down = all(n["status"] in ("down", "unknown") for n in sub_eval) and any(n["status"] == "down" for n in sub_eval)
+                else:
+                    is_down = False
+                levels = [n["level"] for n in sub_eval if n["level"] is not None]
+                nodes_out.append({
+                    "type":   "stack",
+                    "mode":   mode,
+                    "label":  node.get("label") or "Stack",
+                    "status": "down" if is_down else "ok",
+                    "level":  round(max(levels), 1) if levels else None,
+                    "nodes":  sub_eval,
+                })
+            else:
+                h = _node_hist(node.get("site", ""), node.get("stream", ""))
+                nodes_out.append({
+                    "label":  node.get("label") or f"{node.get('site','')}/{node.get('stream','')}",
+                    "site":   node.get("site", ""),
+                    "stream": node.get("stream", ""),
+                    "status": h["status"],
+                    "level":  h["level"],
+                })
+
+        fault_idx = next((i for i, n in enumerate(nodes_out) if n["status"] == "down"), None)
+        chain_status = "fault" if fault_idx is not None else ("ok" if nodes_out else "unknown")
+        # Mark any node whose data was entirely missing as unknown-status downstream
+        return {
+            "id":               chain.get("id", ""),
+            "name":             chain.get("name", ""),
+            "status":           chain_status,
+            "display_status":   chain_status,   # no pending/adbreak in history
+            "fault_index":      fault_idx,
+            "fault_node":       nodes_out[fault_idx] if fault_idx is not None else None,
+            "nodes":            nodes_out,
+            "mixin_node_idx":   chain.get("mixin_node_idx"),
+            "min_fault_seconds": chain.get("min_fault_seconds", 0),
+            "adbreak_candidate": False,
+            "adbreak_remaining": None,
+            "comparators":      [],   # skip correlation for historical view
+        }
+
+    results = []
+    for chain in cfg.signal_chains:
+        try:
+            results.append(_eval_hist_chain(chain))
+        except Exception as e:
+            results.append({
+                "id": chain.get("id", ""), "name": chain.get("name", ""),
+                "status": "unknown", "display_status": "unknown",
+                "fault_index": None, "fault_node": None,
+                "nodes": [], "comparators": [], "adbreak_remaining": None,
+                "error": str(e),
+            })
+    return jsonify({"results": results, "ts": ts})
+
+
 @app.get("/api/chains/status")
 @login_required
 def api_chains_status():
@@ -14532,8 +15031,9 @@ def api_chains_status():
     results = []
     for chain in cfg.signal_chains:
         try:
-            result = hub_server.eval_chain(chain)
-            cid = chain.get("id", "")
+            cid   = chain.get("id", "")
+            maint = hub_server._chain_maintenance.get(cid, {})
+            result = hub_server.eval_chain(chain, maintenance=maint)
             # Enrich with live pending/adbreak state from the monitor loop
             # Use sentinel None to distinguish "not yet evaluated" from explicit "ok"
             internal_state = hub_server._chain_fault_state.get(cid)
@@ -14573,6 +15073,47 @@ def api_chains_status():
                     corr = _chain_correlate_nodes(chain_nodes[fi], chain_nodes[ti])
                     corr_out.append({"from_idx": fi, "to_idx": ti, **corr})
             result["comparators"] = corr_out
+
+            # ── Maintenance state ──────────────────────────────────────────
+            result["maintenance"] = {k: v for k, v in maint.items() if v > now}
+
+            # ── Node trend annotation ──────────────────────────────────────
+            def _stamp_trend(node_list):
+                for nd in node_list:
+                    if nd.get("type") == "stack":
+                        _stamp_trend(nd.get("nodes", []))
+                    else:
+                        _s = nd.get("site", "")
+                        _n = nd.get("stream", "")
+                        dk = _n if _s == "local" else f"{_s}/{_n}"
+                        tr = hub_server._chain_node_trend.get(dk)
+                        nd["trend"] = tr.get("trend") if tr else None
+                        nd["trend_slope"] = tr.get("slope") if tr else None
+            _stamp_trend(result.get("nodes", []))
+
+            # ── SLA computation ────────────────────────────────────────────
+            try:
+                import sqlite3 as _sq2
+                _sla_cutoff = now - 30 * 86400
+                with _sq2.connect(METRICS_DB_PATH) as _sc:
+                    _sla_row = _sc.execute(
+                        "SELECT COUNT(*), SUM(value) FROM metric_history "
+                        "WHERE stream=? AND metric='chain_status' AND ts>?",
+                        (f"chain/{cid}", _sla_cutoff)
+                    ).fetchone()
+                if _sla_row and _sla_row[0] and _sla_row[0] > 0:
+                    result["sla_pct"] = round((_sla_row[1] / _sla_row[0]) * 100, 2)
+                    result["sla_samples"] = _sla_row[0]
+                else:
+                    result["sla_pct"] = None
+                    result["sla_samples"] = 0
+            except Exception:
+                result["sla_pct"] = None
+                result["sla_samples"] = 0
+
+            # ── Flapping state ─────────────────────────────────────────────
+            result["flapping"] = hub_server._chain_flapping.get(cid, False)
+
             results.append(result)
         except Exception as e:
             results.append({"id": chain.get("id", ""), "name": chain.get("name", ""),
@@ -14580,7 +15121,67 @@ def api_chains_status():
                             "fault_index": None, "fault_node": None,
                             "nodes": [], "comparators": [], "adbreak_remaining": None,
                             "error": str(e)})
+
+    # ── Shared fault detection ─────────────────────────────────────────────────
+    fault_node_map: dict = {}   # "site|stream" → [chain_name, ...]
+    for r in results:
+        fn = r.get("fault_node")
+        if fn:
+            subs = fn.get("nodes", []) if fn.get("type") == "stack" else [fn]
+            for s in subs:
+                if s.get("status") in ("down", "offline"):
+                    key = f"{s.get('site','')}|{s.get('stream','')}"
+                    fault_node_map.setdefault(key, []).append(r["name"])
+    for r in results:
+        fn = r.get("fault_node")
+        shared: list = []
+        if fn:
+            subs = fn.get("nodes", []) if fn.get("type") == "stack" else [fn]
+            for s in subs:
+                if s.get("status") in ("down", "offline"):
+                    key = f"{s.get('site','')}|{s.get('stream','')}"
+                    shared += [n for n in fault_node_map.get(key, []) if n != r["name"]]
+        r["shared_fault_chains"] = list(dict.fromkeys(shared))  # dedup, preserve order
+
     return jsonify({"results": results})
+
+
+@app.get("/api/chains/<cid>/fault_log")
+@login_required
+def api_chains_fault_log(cid: str):
+    """Return the in-memory fault log for a chain (up to 25 most recent faults)."""
+    if not hub_server:
+        return jsonify({"entries": []})
+    log = hub_server._chain_fault_log.get(cid, [])
+    return jsonify({"entries": list(reversed(log))})  # newest first
+
+
+@app.post("/api/chains/<cid>/maintenance")
+@login_required
+@csrf_protect
+def api_chain_maintenance(cid: str):
+    """Set or clear maintenance mode for a node in a chain.
+    POST body: {"site": "...", "stream": "...", "duration": <seconds>}
+    duration=0 clears maintenance.
+    """
+    if not hub_server:
+        return jsonify({"ok": False, "error": "No hub server"}), 400
+    data = request.get_json(silent=True) or {}
+    site     = str(data.get("site", "")).strip()
+    stream   = str(data.get("stream", "")).strip()
+    duration = int(data.get("duration", 0))
+    if not site or not stream:
+        return jsonify({"ok": False, "error": "site and stream required"}), 400
+    mkey = f"{site}|{stream}"
+    maint = hub_server._chain_maintenance.setdefault(cid, {})
+    if duration <= 0:
+        maint.pop(mkey, None)
+        monitor.log(f"[Chain] Maintenance cleared for {mkey} in chain {cid}")
+    else:
+        expiry = time.time() + duration
+        maint[mkey] = expiry
+        monitor.log(f"[Chain] Maintenance set for {mkey} in chain {cid} — expires in {duration}s")
+    return jsonify({"ok": True, "expiry": maint.get(mkey, 0)})
 
 
 @app.post("/api/chains")
