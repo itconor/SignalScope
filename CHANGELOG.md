@@ -2,6 +2,31 @@
 
 ---
 
+## [3.2.10] - 2026-03-20
+
+### Changed
+- Backup ZIP now includes all critical data files: `metrics_history.db` (signal history), `sla_data.json`, `alert_log.json`, and `hub_state.json` in addition to config and AI models
+- Restore handler updated to restore metrics DB (closes shared connection first), SLA data, alert log and hub state from backup ZIP
+- Restore upload cap raised from 64 MB to 512 MB to accommodate large metrics databases
+- Settings page backup description and button label updated to reflect full backup scope
+
+---
+
+## [3.2.9] - 2026-03-20
+
+### Added
+- Extended SQLite metric history to capture all previously unused metrics:
+  - `silence_flag` (1.0 = silent, 0.0 = audio present) for all stream types
+  - `clip_count` (clipping events per snapshot) for all stream types
+  - `fm_snr_db`, `fm_stereo` (0/1), `fm_rds_ok` (0/1) for FM streams
+  - `dab_sig` (signal level dBm), `dab_bitrate` (kbps) for DAB streams
+  - `rtp_loss_pct` now also included in the metric history selector UI
+  - `ptp_offset_us`, `ptp_jitter_us`, `ptp_drift_us` written once per minute for local PTP monitor (keyed `ptp/local`) and per connected hub site (keyed `ptp/<site>`)
+  - Hub site `health_pct` and `latency_ms` written to metric history once per heartbeat (keyed `site/<name>`)
+- Both stream metric history chart selectors updated with all new metric options
+
+---
+
 ## [3.2.6] — Broadcast Chain Stacking, Ad Break Intelligence & Click-to-Listen
 
 ### Broadcast Chain Node Stacking

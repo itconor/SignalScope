@@ -673,10 +673,10 @@ document.addEventListener('DOMContentLoaded',function(){
   <div id="upd-result" style="margin-top:12px;font-size:13px;display:none"></div>
 
   <div class="sec" style="margin-top:24px">⬇ Backup &amp; Restore</div>
-  <p class="help" style="margin-bottom:12px">Download a ZIP archive containing your configuration and AI models. Use this to back up your setup or migrate to a new server.</p>
-  <a href="/settings/backup" class="btn bp" style="font-size:13px">⬇ Download Backup (config + AI models)</a>
+  <p class="help" style="margin-bottom:12px">Download a ZIP archive containing your configuration, AI models, signal history database, SLA data, alert log and hub state. Use this to back up your setup or migrate to a new server.</p>
+  <a href="/settings/backup" class="btn bp" style="font-size:13px">⬇ Download Backup (config + AI models + DB)</a>
   <hr style="border:none;border-top:1px solid var(--bor);margin:18px 0">
-  <p class="help" style="margin-bottom:8px">Restore from a previously downloaded backup ZIP. The config and AI models will be overwritten and monitoring will restart automatically.</p>
+  <p class="help" style="margin-bottom:8px">Restore from a previously downloaded backup ZIP. Config, AI models, metrics DB, SLA data, alert log and hub state will be overwritten and monitoring will restart automatically.</p>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <input type="file" id="restore-file-input" accept=".zip" style="font-size:13px;color:var(--tx);background:#173a69;border:1px solid var(--bor);border-radius:6px;padding:6px 10px">
     <button type="button" id="restore-upload-btn" class="btn bw" style="font-size:13px">⬆ Restore Backup</button>
@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.8"
+BUILD                  = "SignalScope-3.2.10"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -2276,19 +2276,28 @@ def _metrics_flush(inputs: list):
         dev  = (cfg.device_index or "").lower()
 
         # Universal metrics — every stream type
-        rows.append((name, "level_dbfs",   now, cfg._last_level_dbfs))
-        rows.append((name, "lufs_m",       now, cfg._lufs_m))
-        rows.append((name, "lufs_s",       now, cfg._lufs_s))
-        rows.append((name, "lufs_i",       now, cfg._lufs_i))
+        rows.append((name, "level_dbfs",    now, cfg._last_level_dbfs))
+        rows.append((name, "lufs_m",        now, cfg._lufs_m))
+        rows.append((name, "lufs_s",        now, cfg._lufs_s))
+        rows.append((name, "lufs_i",        now, cfg._lufs_i))
+        # silence_flag: 1.0 = currently silent (level at or below threshold)
+        rows.append((name, "silence_flag",  now, 1.0 if cfg._last_level_dbfs <= cfg.silence_threshold_dbfs else 0.0))
+        # clip_count: clipping events per monitoring chunk (reset by monitor loop)
+        rows.append((name, "clip_count",    now, float(cfg._clip_count)))
 
         # FM-specific
         if dev.startswith("fm://"):
             rows.append((name, "fm_signal_dbm", now, cfg._fm_signal_dbm))
+            rows.append((name, "fm_snr_db",     now, cfg._fm_snr_db))
+            rows.append((name, "fm_stereo",     now, 1.0 if cfg._fm_stereo else 0.0))
+            rows.append((name, "fm_rds_ok",     now, 1.0 if cfg._fm_rds_ok else 0.0))
 
         # DAB-specific
         if dev.startswith("dab://"):
-            rows.append((name, "dab_snr", now, cfg._dab_snr))
-            rows.append((name, "dab_ok",  now, 1.0 if cfg._dab_ok else 0.0))
+            rows.append((name, "dab_snr",     now, cfg._dab_snr))
+            rows.append((name, "dab_ok",      now, 1.0 if cfg._dab_ok else 0.0))
+            rows.append((name, "dab_sig",     now, cfg._dab_sig))
+            rows.append((name, "dab_bitrate", now, float(cfg._dab_bitrate or 0)))
 
         # Livewire / AES67 / RTP (not FM or DAB or HTTP)
         if not dev.startswith("fm://") and not dev.startswith("dab://") \
@@ -6325,6 +6334,17 @@ class MonitorManager:
                     _metrics_flush(list(self.app_cfg.inputs))
                 except Exception as e:
                     self.log(f"[METRICS] Flush error: {e}")
+                # PTP metrics — keyed as "ptp/local"
+                try:
+                    ptp = self.ptp
+                    if ptp and ptp.state not in ("idle", ""):
+                        metrics_db.write([
+                            ("ptp/local", "ptp_offset_us", _now, ptp.offset_us),
+                            ("ptp/local", "ptp_jitter_us", _now, ptp.jitter_us),
+                            ("ptp/local", "ptp_drift_us",  _now, ptp.drift_us),
+                        ])
+                except Exception as e:
+                    self.log(f"[METRICS] PTP flush error: {e}")
             # Daily metrics prune + report
             _today = time.strftime("%Y-%m-%d")
             if _today != self._metrics_last_prune:
@@ -7460,6 +7480,25 @@ class HubServer:
                 daemon=True, name="HubMetrics"
             ).start()
 
+        # Write hub site health and latency metrics once per heartbeat
+        try:
+            _hb_now = time.time()
+            tx_ts = float(payload.get("ts", 0) or 0)
+            _lat = round(max(0.0, (_hb_now - tx_ts) * 1000), 1) if tx_ts else None
+            with self._lock:
+                _stored = self._sites.get(site, {})
+            _total_rx   = _stored.get("_total_received", 1)
+            _total_miss = _stored.get("_total_missed",   0)
+            _hlth = round(_total_rx / max(_total_rx + _total_miss, 1) * 100, 1)
+            _site_rows = [
+                (f"site/{site}", "health_pct", _hb_now, _hlth),
+            ]
+            if _lat is not None:
+                _site_rows.append((f"site/{site}", "latency_ms", _hb_now, _lat))
+            metrics_db.write(_site_rows)
+        except Exception:
+            pass
+
         return "approved"
 
     def _flush_site_metrics(self, site_name: str, streams: list, now: float):
@@ -7486,21 +7525,38 @@ class HubServer:
                 val = st.get(metric)
                 if val is not None:
                     rows.append((name, metric, now, float(val)))
+            # silence_flag and clip_count
+            lv = st.get("level_dbfs")
+            if lv is not None:
+                silence_thresh = st.get("silence_threshold_dbfs", -55.0)
+                rows.append((name, "silence_flag", now, 1.0 if float(lv) <= float(silence_thresh) else 0.0))
+            cc = st.get("clip_count")
+            if cc is not None:
+                rows.append((name, "clip_count", now, float(cc)))
 
             # FM-specific
             if dev.startswith("fm://"):
-                val = st.get("fm_signal_dbm")
-                if val is not None:
-                    rows.append((name, "fm_signal_dbm", now, float(val)))
+                for metric in ("fm_signal_dbm", "fm_snr_db"):
+                    val = st.get(metric)
+                    if val is not None:
+                        rows.append((name, metric, now, float(val)))
+                for bool_metric in ("fm_stereo", "fm_rds_ok"):
+                    val = st.get(bool_metric)
+                    if val is not None:
+                        rows.append((name, bool_metric, now, 1.0 if val else 0.0))
 
             # DAB-specific
             if dev.startswith("dab://"):
-                val = st.get("dab_snr")
-                if val is not None:
-                    rows.append((name, "dab_snr", now, float(val)))
+                for metric in ("dab_snr", "dab_sig"):
+                    val = st.get(metric)
+                    if val is not None:
+                        rows.append((name, metric, now, float(val)))
                 val = st.get("dab_ok")
                 if val is not None:
                     rows.append((name, "dab_ok", now, 1.0 if val else 0.0))
+                val = st.get("dab_bitrate")
+                if val is not None:
+                    rows.append((name, "dab_bitrate", now, float(val)))
 
             # Livewire / AES67
             if not dev.startswith(("fm://", "dab://", "http://", "https://")):
@@ -7508,6 +7564,23 @@ class HubServer:
                     val = st.get(metric)
                     if val is not None:
                         rows.append((name, metric, now, float(val)))
+
+        # PTP metrics from the client heartbeat payload
+        ptp_data = self._sites.get(site_name, {}).get("ptp") if hasattr(self, "_sites") else None
+        if not ptp_data:
+            # Fall back: the caller passes the payload dict; we stash it on self temporarily
+            # but hub heartbeat handler already stores full payload in _sites[site]
+            pass
+        # Write PTP rows using ptp data from stored site state
+        with self._lock:
+            site_data = self._sites.get(site_name, {})
+        ptp_d = site_data.get("ptp") or {}
+        ptp_state = ptp_d.get("state", "idle")
+        if ptp_state not in ("idle", "", "Not running"):
+            ptp_key = f"ptp/{site_name}"
+            rows.append((ptp_key, "ptp_offset_us", now, float(ptp_d.get("offset_us", 0))))
+            rows.append((ptp_key, "ptp_jitter_us", now, float(ptp_d.get("jitter_us", 0))))
+            rows.append((ptp_key, "ptp_drift_us",  now, float(ptp_d.get("drift_us",  0))))
 
         if rows:
             metrics_db.write(rows)
@@ -7558,43 +7631,48 @@ class HubServer:
     def _eval_one_node(self, node: dict, cfg, sites_snap: dict,
                        maintenance: "dict | None" = None) -> dict:
         """Evaluate a single (non-stack) chain node and return its status dict."""
-        site  = node.get("site", "")
-        sname = node.get("stream", "")
-        label = node.get("label") or f"{site}/{sname}"
+        site    = node.get("site", "")
+        sname   = node.get("stream", "")
+        label   = node.get("label") or f"{site}/{sname}"
+        machine = (node.get("machine") or "").strip()
         # Maintenance bypass — return neutral status so this node is skipped in fault detection
         if maintenance:
             mkey = f"{site}|{sname}"
             mexp = maintenance.get(mkey, 0)
             if mexp > time.time():
-                return {"label": label, "site": site, "stream": sname,
+                return {"label": label, "site": site, "stream": sname, "machine": machine,
                         "status": "maintenance", "level": None,
                         "maintenance_until": mexp}
         if site == "local":
             inp = next((i for i in cfg.inputs if i.name == sname and i.enabled), None)
             if inp is None:
-                return {"label": label, "site": site, "stream": sname, "status": "unknown", "level": None}
+                return {"label": label, "site": site, "stream": sname, "machine": machine,
+                        "status": "unknown", "level": None}
             dev  = (inp.device_index or "").strip().lower()
             down = inp._last_level_dbfs <= inp.silence_threshold_dbfs
             if dev.startswith("dab://") and not inp._dab_ok:
                 down = True
-            return {"label": label, "site": site, "stream": sname,
+            return {"label": label, "site": site, "stream": sname, "machine": machine,
                     "status": "down" if down else "ok",
                     "level": round(inp._last_level_dbfs, 1)}
         else:
             site_data = sites_snap.get(site)
             if not site_data:
-                return {"label": label, "site": site, "stream": sname, "status": "offline", "level": None}
+                return {"label": label, "site": site, "stream": sname, "machine": machine,
+                        "status": "offline", "level": None}
             if not site_data["online"]:
-                return {"label": label, "site": site, "stream": sname, "status": "offline", "level": None}
+                return {"label": label, "site": site, "stream": sname, "machine": machine,
+                        "status": "offline", "level": None}
             sd = next((s for s in site_data["streams"] if s.get("name") == sname), None)
             if sd is None:
-                return {"label": label, "site": site, "stream": sname, "status": "unknown", "level": None}
+                return {"label": label, "site": site, "stream": sname, "machine": machine,
+                        "status": "unknown", "level": None}
             lev  = float(sd.get("level_dbfs", -120.0))
             dev  = str(sd.get("device_index", "")).strip().lower()
             down = lev <= -55.0
             if dev.startswith("dab://") and not sd.get("dab_ok", True):
                 down = True
-            return {"label": label, "site": site, "stream": sname,
+            return {"label": label, "site": site, "stream": sname, "machine": machine,
                     "status": "down" if down else "ok",
                     "level": round(lev, 1)}
 
@@ -8024,21 +8102,35 @@ class HubServer:
                     _add_history(lc, "CHAIN_FAULT", lg_msg, clip_path=lg_clip or "")
 
         # ── Check for shared fault across other chains ─────────────────────────
-        fault_site   = fn.get("site", "")
-        fault_stream = fn.get("stream", "")
-        if fault_site and fault_stream:
+        # Priority: machine tag > site > local stream name
+        fault_machine = (fn.get("machine") or "").strip()
+        fault_site    = fn.get("site", "")
+        fault_stream  = fn.get("stream", "")
+        if fault_site or fault_machine:
             shared_names = []
             for _oc in (monitor.app_cfg.signal_chains or []):
                 if _oc.get("id") == chain.get("id"):
                     continue
                 for _on in _oc.get("nodes", []):
                     subs = _on.get("nodes", []) if _on.get("type") == "stack" else [_on]
-                    if any(s.get("site") == fault_site and s.get("stream") == fault_stream
-                           for s in subs):
+                    if fault_machine:
+                        match = any((s.get("machine") or "").strip() == fault_machine for s in subs)
+                    elif fault_site == "local":
+                        match = any(s.get("site") == "local" and s.get("stream") == fault_stream
+                                    for s in subs)
+                    else:
+                        match = any(s.get("site") == fault_site for s in subs)
+                    if match:
                         shared_names.append(_oc.get("name", "?"))
                         break
             if shared_names:
-                msg += (f" NOTE: this fault node also appears in: "
+                if fault_machine:
+                    desc = f"hardware '{fault_machine}'"
+                elif fault_site != "local":
+                    desc = f"site '{fault_site}'"
+                else:
+                    desc = f"stream '{fault_stream}'"
+                msg += (f" NOTE: other chains share {desc}: "
                         f"{', '.join(shared_names)} — those chains may also be affected.")
 
         # ── Send notification ─────────────────────────────────────────────────
@@ -11603,7 +11695,7 @@ def api_hub_site_rules():
 @app.get("/settings/backup")
 @login_required
 def settings_backup():
-    """Stream a ZIP containing lwai_config.json and all ai_models/ files."""
+    """Stream a ZIP containing config, AI models, metrics DB, SLA data, alert log and hub state."""
     import zipfile, io as _io
     buf = _io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -11617,6 +11709,35 @@ def settings_backup():
                     full = os.path.join(root, fname)
                     arc  = os.path.relpath(full, BASE_DIR)
                     zf.write(full, arc)
+        # Metrics history SQLite database
+        if os.path.isfile(METRICS_DB_PATH):
+            try:
+                # Read via a fresh connection so WAL is checkpointed cleanly
+                import sqlite3 as _sq3, tempfile as _tf, shutil as _sh
+                tmp = _tf.NamedTemporaryFile(suffix=".db", delete=False)
+                tmp.close()
+                try:
+                    src = _sq3.connect(METRICS_DB_PATH)
+                    dst = _sq3.connect(tmp.name)
+                    src.backup(dst)
+                    dst.close()
+                    src.close()
+                    zf.write(tmp.name, "metrics_history.db")
+                finally:
+                    try: os.unlink(tmp.name)
+                    except: pass
+            except Exception:
+                # Fallback: just include the file directly
+                zf.write(METRICS_DB_PATH, "metrics_history.db")
+        # SLA data
+        if os.path.isfile(SLA_PATH):
+            zf.write(SLA_PATH, "sla_data.json")
+        # Alert log
+        if os.path.isfile(ALERT_LOG_PATH):
+            zf.write(ALERT_LOG_PATH, "alert_log.json")
+        # Hub state
+        if os.path.isfile(HUB_STATE_PATH):
+            zf.write(HUB_STATE_PATH, "hub_state.json")
     buf.seek(0)
     import datetime as _dt
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -11637,12 +11758,16 @@ def settings_restore():
     if not f or not f.filename:
         flash("No file uploaded."); return redirect(url_for("settings"))
 
-    data = f.read(64 * 1024 * 1024)  # cap at 64 MB
+    data = f.read(512 * 1024 * 1024)  # cap at 512 MB (metrics DB can be large)
     if not zipfile.is_zipfile(_io.BytesIO(data)):
         flash("Uploaded file is not a valid ZIP."); return redirect(url_for("settings"))
 
-    restored_config = False
-    restored_models = 0
+    restored_config  = False
+    restored_models  = 0
+    restored_db      = False
+    restored_sla     = False
+    restored_alerts  = False
+    restored_hub     = False
     errors = []
 
     with zipfile.ZipFile(_io.BytesIO(data)) as zf:
@@ -11677,6 +11802,46 @@ def settings_restore():
                         fh.write(zf.read(entry))
                     restored_models += 1
 
+            elif entry_path == "metrics_history.db":
+                try:
+                    raw = zf.read(entry)
+                    # Close the shared metrics_db connection before overwriting
+                    metrics_db._conn = None
+                    with open(METRICS_DB_PATH, "wb") as fh:
+                        fh.write(raw)
+                    restored_db = True
+                except Exception as e:
+                    errors.append(f"metrics_history.db restore failed: {e}")
+
+            elif entry_path == "sla_data.json":
+                raw = zf.read(entry)
+                try:
+                    json.loads(raw)
+                except Exception:
+                    errors.append("sla_data.json is not valid JSON — skipped.")
+                    continue
+                with open(SLA_PATH, "wb") as fh:
+                    fh.write(raw)
+                restored_sla = True
+
+            elif entry_path == "alert_log.json":
+                raw = zf.read(entry)
+                with _alert_log_lock:
+                    with open(ALERT_LOG_PATH, "wb") as fh:
+                        fh.write(raw)
+                restored_alerts = True
+
+            elif entry_path == "hub_state.json":
+                raw = zf.read(entry)
+                try:
+                    json.loads(raw)
+                except Exception:
+                    errors.append("hub_state.json is not valid JSON — skipped.")
+                    continue
+                with open(HUB_STATE_PATH, "wb") as fh:
+                    fh.write(raw)
+                restored_hub = True
+
     if restored_config:
         # Reload config and restart monitoring with restored settings
         try:
@@ -11688,8 +11853,12 @@ def settings_restore():
             errors.append(f"Config reloaded but monitor restart failed: {e}")
 
     parts = []
-    if restored_config: parts.append("config restored")
+    if restored_config:  parts.append("config restored")
     if restored_models:  parts.append(f"{restored_models} AI model file(s) restored")
+    if restored_db:      parts.append("metrics history DB restored")
+    if restored_sla:     parts.append("SLA data restored")
+    if restored_alerts:  parts.append("alert log restored")
+    if restored_hub:     parts.append("hub state restored")
     if not parts:        parts.append("nothing recognised in ZIP")
     msg = "Restore complete: " + ", ".join(parts) + "."
     if errors:           msg += " Warnings: " + "; ".join(errors)
@@ -13970,6 +14139,9 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 @keyframes icon-pulse{0%,100%{opacity:.8}50%{opacity:.4}}.chain-stack{display:flex;flex-direction:column;align-items:stretch;gap:0;position:relative}.chain-stack .chain-node{border-radius:6px;min-width:120px;max-width:180px}.chain-stack-sep{display:flex;justify-content:center;color:var(--mu);font-size:13px;line-height:1;padding:1px 0}.chain-stack-mode{font-size:10px;text-align:center;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:1px 7px;margin:3px auto 0;display:table}
 .node-label{font-weight:700;font-size:12px;word-break:break-word}.node-sub{font-size:10px;color:var(--mu);margin-top:3px;word-break:break-word}.node-level{font-size:11px;margin-top:5px;font-variant-numeric:tabular-nums}
 .fault-marker{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;white-space:nowrap}
+.node-pill{font-size:9px;font-weight:700;border-radius:3px;padding:1px 5px;text-align:center;display:block;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.node-pill-adbreak{background:rgba(180,83,9,.25);color:#fbbf24;border:1px solid #b45309}
+.node-pill-mixin{background:rgba(37,99,235,.15);color:#93c5fd;border:1px solid #1d4ed8}
 /* Correlation row */
 .chain-corr-row{display:flex;gap:8px;flex-wrap:wrap;padding:8px 16px 12px;border-top:1px solid var(--bor);align-items:center}
 .chain-corr-row .corr-label{font-size:11px;color:var(--mu);margin-right:4px}
@@ -14008,7 +14180,7 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 /* Builder */
 .builder-panel{background:var(--sur);border:1px solid var(--bor);border-radius:14px;padding:18px 20px;margin-bottom:16px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
 .builder-title{font-weight:700;font-size:15px;margin-bottom:14px;color:var(--tx)}
-.node-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.node-row{display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap}
 .comp-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
 .comp-node-sel{background:#12305c;border:1px solid var(--bor);color:var(--tx);border-radius:8px;padding:5px 8px;font-size:12px;width:160px}
 .empty{text-align:center;padding:56px 0;color:var(--mu);font-size:15px}
@@ -14060,7 +14232,7 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
     </div>
   </div>
   <div style="font-size:12px;color:var(--mu);margin-bottom:10px">Positions — left = source, right = destination. Each position can hold multiple streams (stack). The first position that is down is the fault point.</div>
-  <div id="builder_nodes" style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;margin-bottom:8px"></div>
+  <div id="builder_nodes" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px"></div>
   <button class="btn bg bs" id="btn_add_node" style="margin-top:8px">+ Add Position</button>
   <!-- Comparators section -->
   <div style="margin-top:18px;border-top:1px solid var(--bor);padding-top:14px">
@@ -14118,6 +14290,7 @@ var _chainData={
       <div class="chain-node unknown" data-sub="{{loop.index0}}">
         <div class="node-label">{{(sub.label or sub.stream)|e}}</div>
         <div class="node-sub">{{sub.site|e}}</div>
+        {% if sub.get('machine') %}<div class="node-sub" style="color:#60a5fa;font-size:9px" title="Hardware tag">🖥 {{sub.machine|e}}</div>{% endif %}
         <div class="node-level" style="color:var(--mu)">…</div>
       </div>
       {% endfor %}
@@ -14126,11 +14299,9 @@ var _chainData={
     </div>
     {% else %}
     <div class="chain-node unknown" data-pos="{{loop.index0}}">
-      <div class="node-label">
-        {{(node.label or node.stream)|e}}
-        {% if c.mixin_node_idx is not none and loop.index0 == c.mixin_node_idx %}<span class="mixin-badge" title="Ad mix-in point — silence here bypasses fault confirmation delay">🔀</span>{% endif %}
-      </div>
+      <div class="node-label">{{(node.label or node.stream)|e}}</div>
       <div class="node-sub">{{node.site|e}}</div>
+      {% if node.get('machine') %}<div class="node-sub" style="color:#60a5fa;font-size:9px" title="Hardware tag">🖥 {{node.machine|e}}</div>{% endif %}
       <div class="node-level" style="color:var(--mu)">…</div>
     </div>
     {% endif %}
@@ -14248,11 +14419,10 @@ document.getElementById('btn_add_e2e').addEventListener('click',function(){
 // ── Node builder ──────────────────────────────────────────────────────────────
 function _addNodeRowToGroup(group, nd){
   var row=document.createElement('div');row.className='node-row';
-  row.style.cssText='display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px';
-  var siteSel=document.createElement('select');siteSel.className='ns';siteSel.style.width='160px';
+  var siteSel=document.createElement('select');siteSel.className='ns';siteSel.style.cssText='flex:1;min-width:130px;max-width:220px';
   var sites=sitesFromOpts();
   Object.keys(sites).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=sites[s];siteSel.appendChild(o);});
-  var streamSel=document.createElement('select');streamSel.className='nst';streamSel.style.width='180px';
+  var streamSel=document.createElement('select');streamSel.className='nst';streamSel.style.cssText='flex:2;min-width:160px;max-width:280px';
   function fillStreams(){
     streamSel.innerHTML='';
     streamsFor(siteSel.value).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;streamSel.appendChild(o);});
@@ -14260,8 +14430,11 @@ function _addNodeRowToGroup(group, nd){
   }
   siteSel.addEventListener('change',function(){fillStreams();_refreshCompSels();_refreshMixinSel();});
   streamSel.addEventListener('change',function(){_refreshCompSels();_refreshMixinSel();});
-  var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';labelIn.placeholder='Label (optional)';labelIn.style.width='140px';
+  var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';labelIn.placeholder='Label (optional)';labelIn.style.cssText='flex:1;min-width:110px;max-width:180px';
   labelIn.addEventListener('input',function(){_refreshCompSels();_refreshMixinSel();});
+  var machineIn=document.createElement('input');machineIn.type='text';machineIn.className='nm';
+  machineIn.placeholder='Machine tag (optional)';machineIn.style.cssText='flex:1;min-width:110px;max-width:180px';
+  machineIn.title='Hardware tag — nodes with the same tag across chains are treated as being on the same physical machine for shared-fault detection (e.g. LONCTAXZC03)';
   var rmRow=document.createElement('button');rmRow.type='button';rmRow.textContent='−';rmRow.className='btn bd bs';rmRow.title='Remove this stream';
   rmRow.style.cssText='padding:3px 8px;font-size:14px';
   rmRow.onclick=function(){
@@ -14279,8 +14452,9 @@ function _addNodeRowToGroup(group, nd){
     fillStreams();
     if(nd.stream)streamSel.value=nd.stream;
     if(nd.label)labelIn.value=nd.label;
+    if(nd.machine)machineIn.value=nd.machine;
   } else { fillStreams(); }
-  row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(rmRow);
+  row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(machineIn);row.appendChild(rmRow);
   // Insert before the controls footer of the group
   var footer=group.querySelector('.pos-footer');
   if(footer){group.insertBefore(row,footer);}else{group.appendChild(row);}
@@ -14386,8 +14560,12 @@ function saveChain(){
     var mode=modeSel?modeSel.value:'all';
     var subNodes=[];
     rows.forEach(function(row){
-      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl');
-      if(s&&st2&&st2.value)subNodes.push({site:s.value,stream:st2.value,label:(l?l.value.trim():'')});
+      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl'),m=row.querySelector('.nm');
+      if(s&&st2&&st2.value){
+        var nd2={site:s.value,stream:st2.value,label:(l?l.value.trim():'')};
+        var mval=m?m.value.trim():'';if(mval)nd2.machine=mval;
+        subNodes.push(nd2);
+      }
     });
     if(subNodes.length===1){
       nodes.push(subNodes[0]);  // single node — save as plain node (backward compatible)
@@ -14587,7 +14765,7 @@ function refreshStatus(){
               subEl.className='chain-node '+subEff+(isListeningEl?' listening':'');
               subEl.style.borderColor=BORDER[subEff]||BORDER.unknown;
               subEl.style.background=BG[subEff]||'';
-              subEl.querySelectorAll('.fault-marker,.maint-badge,.shared-badge').forEach(function(m){m.remove();});
+              subEl.querySelectorAll('.fault-marker,.maint-badge,.shared-badge,.node-pill').forEach(function(m){m.remove();});
               var lvlEl=subEl.querySelector('.node-level');
               if(lvlEl){
                 lvlEl.style.color=subEff==='adbreak'?'#fbbf24':sub.status==='ok'?'var(--ok)':sub.status==='down'?'var(--al)':'var(--mu)';
@@ -14607,18 +14785,23 @@ function refreshStatus(){
               stackEl.querySelectorAll('.fault-marker').forEach(function(m){m.remove();});
               if(isFaultPos&&!isAdbreak&&!isPending){
                 var m=document.createElement('div');m.className='fault-marker';m.textContent='⚠ Fault here';stackEl.appendChild(m);
-              } else if(isFaultPos&&(isAdbreak||isPending)){
-                var m=document.createElement('div');m.className='fault-marker';
-                m.style.cssText='background:rgba(180,83,9,.18);color:#fbbf24;border-color:#b45309';
-                m.textContent=isAdbreak?'⏸ Likely ad break':'⏳ Confirming…';
-                stackEl.appendChild(m);
               }
-              if(isAdbreak&&isMixin){
-                var mx=document.createElement('div');mx.className='fault-marker';
-                mx.style.cssText='background:rgba(37,99,235,.15);color:#93c5fd;border-color:#1d4ed8';
-                mx.textContent='🔀 Mix-in — playing';
-                stackEl.appendChild(mx);
-              }
+              // Adbreak and mixin indicators rendered as in-node pills on each sub-node
+              (node.nodes||[]).forEach(function(sub,j){
+                var subEl2=subEls[j];if(!subEl2)return;
+                subEl2.querySelectorAll('.node-pill').forEach(function(p){p.remove();});
+                var lbl2=subEl2.querySelector('.node-label');
+                if(isFaultPos&&(isAdbreak||isPending)){
+                  var p=document.createElement('span');p.className='node-pill node-pill-adbreak';
+                  p.textContent=isAdbreak?'⏸ Ad break':'⏳ Confirming…';
+                  if(lbl2)subEl2.insertBefore(p,lbl2);else subEl2.prepend(p);
+                }
+                if(isAdbreak&&isMixin){
+                  var p2=document.createElement('span');p2.className='node-pill node-pill-mixin';
+                  p2.textContent='🔀 Mix-in active';
+                  if(lbl2)subEl2.insertBefore(p2,lbl2);else subEl2.prepend(p2);
+                }
+              });
             }
           } else {
             // Regular single node
@@ -14634,7 +14817,7 @@ function refreshStatus(){
             el.className='chain-node '+nodeEff+(isListeningEl?' listening':'');
             el.style.borderColor=BORDER[nodeEff]||BORDER.unknown;
             el.style.background=BG[nodeEff]||'';
-            el.querySelectorAll('.fault-marker,.maint-badge,.shared-badge').forEach(function(m){m.remove();});
+            el.querySelectorAll('.fault-marker,.maint-badge,.shared-badge,.node-pill').forEach(function(m){m.remove();});
             var lvlEl=el.querySelector('.node-level');
             if(lvlEl){
               lvlEl.style.color=nodeEff==='adbreak'?'#fbbf24':node.status==='ok'?'var(--ok)':node.status==='down'?'var(--al)':'var(--mu)';
@@ -14654,18 +14837,20 @@ function refreshStatus(){
               sb.textContent='Also affecting: '+chain.shared_fault_chains.join(', ');
               el.appendChild(sb);
             }
-            if(isFaultPos){
-              var m=document.createElement('div');m.className='fault-marker';
-              if(isAdbreak){m.style.cssText='background:rgba(180,83,9,.18);color:#fbbf24;border-color:#b45309';m.textContent='⏸ Likely ad break';}
-              else if(isPending){m.style.cssText='background:rgba(180,83,9,.18);color:#fbbf24;border-color:#b45309';m.textContent='⏳ Confirming…';}
-              else{m.textContent='⚠ Fault here';}
+            if(isFaultPos&&!isAdbreak&&!isPending){
+              var m=document.createElement('div');m.className='fault-marker';m.textContent='⚠ Fault here';
               el.appendChild(m);
             }
+            var lbl=el.querySelector('.node-label');
+            if(isFaultPos&&(isAdbreak||isPending)){
+              var p=document.createElement('span');p.className='node-pill node-pill-adbreak';
+              p.textContent=isAdbreak?'⏸ Ad break':'⏳ Confirming…';
+              if(lbl)el.insertBefore(p,lbl);else el.prepend(p);
+            }
             if(isAdbreak&&isMixin){
-              var mx=document.createElement('div');mx.className='fault-marker';
-              mx.style.cssText='background:rgba(37,99,235,.15);color:#93c5fd;border-color:#1d4ed8';
-              mx.textContent='🔀 Mix-in — playing';
-              el.appendChild(mx);
+              var p2=document.createElement('span');p2.className='node-pill node-pill-mixin';
+              p2.textContent='🔀 Mix-in active';
+              if(lbl)el.insertBefore(p2,lbl);else el.prepend(p2);
             }
           }
         });
@@ -15123,15 +15308,24 @@ def api_chains_status():
                             "error": str(e)})
 
     # ── Shared fault detection ─────────────────────────────────────────────────
-    fault_node_map: dict = {}   # "site|stream" → [chain_name, ...]
+    # Priority: 1) explicit machine tag (most precise — set by the user in the builder)
+    #           2) hub site name (same server likely has common failure mode)
+    #           3) local stream exact name
+    def _fault_key(node: dict) -> str:
+        machine = (node.get("machine") or "").strip()
+        if machine:
+            return f"machine|{machine}"
+        site = node.get("site", "")
+        return site if site and site != "local" else f"local|{node.get('stream','')}"
+
+    fault_site_map: dict = {}   # fault_key → [chain_name, ...]
     for r in results:
         fn = r.get("fault_node")
         if fn:
             subs = fn.get("nodes", []) if fn.get("type") == "stack" else [fn]
             for s in subs:
                 if s.get("status") in ("down", "offline"):
-                    key = f"{s.get('site','')}|{s.get('stream','')}"
-                    fault_node_map.setdefault(key, []).append(r["name"])
+                    fault_site_map.setdefault(_fault_key(s), []).append(r["name"])
     for r in results:
         fn = r.get("fault_node")
         shared: list = []
@@ -15139,8 +15333,8 @@ def api_chains_status():
             subs = fn.get("nodes", []) if fn.get("type") == "stack" else [fn]
             for s in subs:
                 if s.get("status") in ("down", "offline"):
-                    key = f"{s.get('site','')}|{s.get('stream','')}"
-                    shared += [n for n in fault_node_map.get(key, []) if n != r["name"]]
+                    shared += [n for n in fault_site_map.get(_fault_key(s), [])
+                               if n != r["name"]]
         r["shared_fault_chains"] = list(dict.fromkeys(shared))  # dedup, preserve order
 
     return jsonify({"results": results})
@@ -15774,7 +15968,12 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           <div class="sc-row">Format <span style="font-size:11px;color:var(--mu)">{{s.format or '—'}}</span></div>
           {% set _sdev = (s.device_index or '').lower() %}
           {% if not (_sdev.startswith('dab://') or _sdev.startswith('fm://') or _sdev.startswith('http://') or _sdev.startswith('https://')) %}
-          <div class="sc-row">RTP Loss <span class="{{rtpClass(s.rtp_loss_pct)}}">{{s.rtp_loss_pct}}% <span style="color:var(--mu);font-size:11px">{{s.rtp_total or 0}} pkts</span></span></div>
+          <div class="sc-row">RTP Loss <span class="sc-rtp {{rtpClass(s.rtp_loss_pct)}}">{{s.rtp_loss_pct}}% <span style="color:var(--mu);font-size:11px">{{s.rtp_total or 0}} pkts</span></span></div>
+          {% if s.rtp_jitter_ms and s.rtp_jitter_ms > 0 %}
+          <div class="sc-row">RTP Jitter <span class="sc-jitter" style="color:{{'var(--wn)' if s.rtp_jitter_ms > 5 else 'var(--ok)'}}">{{s.rtp_jitter_ms}} ms</span></div>
+          {% else %}
+          <div class="sc-row" style="display:none">RTP Jitter <span class="sc-jitter">0 ms</span></div>
+          {% endif %}
           {% endif %}
           {% if s.sla_pct is not none %}<div class="sc-row">SLA <span style="color:{{'var(--ok)' if s.sla_pct>=99 else 'var(--wn)'}}">{{s.sla_pct}}%</span></div>{% endif %}
           <div class="sc-row">Alerts
@@ -15912,13 +16111,21 @@ main{padding:18px;max-width:1500px;margin:0 auto}
               <button class="btn sc-hr" data-h="24" style="font-size:10px;padding:1px 7px">24h</button>
               <select class="sc-hm" style="margin-left:8px;font-size:11px;background:#0d1117;border:1px solid var(--bor);border-radius:4px;color:var(--tx);padding:2px 4px">
                 <option value="level_dbfs">Level dBFS</option>
+                <option value="silence_flag">Silence Flag</option>
+                <option value="clip_count">Clip Count</option>
                 {%if _sdev.startswith('fm://')%}<option value="fm_signal_dbm">FM Signal dBm</option>{%endif%}
+                {%if _sdev.startswith('fm://')%}<option value="fm_snr_db">FM SNR dB</option>{%endif%}
+                {%if _sdev.startswith('fm://')%}<option value="fm_stereo">FM Stereo</option>{%endif%}
+                {%if _sdev.startswith('fm://')%}<option value="fm_rds_ok">FM RDS Lock</option>{%endif%}
                 {%if _sdev.startswith('dab://')%}<option value="dab_snr">DAB SNR dB</option>{%endif%}
+                {%if _sdev.startswith('dab://')%}<option value="dab_sig">DAB Signal dBm</option>{%endif%}
+                {%if _sdev.startswith('dab://')%}<option value="dab_bitrate">DAB Bitrate kbps</option>{%endif%}
                 <option value="lufs_m">LUFS Momentary</option>
                 <option value="lufs_s">LUFS Short-term</option>
                 <option value="lufs_i">LUFS Integrated</option>
                 {%if not _sdev.startswith('fm://') and not _sdev.startswith('dab://') and not _sdev.startswith('http')%}
                 <option value="rtp_jitter_ms">RTP Jitter ms</option>
+                <option value="rtp_loss_pct">RTP Loss %</option>
                 {%endif%}
               </select>
             </div>
@@ -16398,7 +16605,7 @@ function _scHistLoad(section) {
   var metric=section.querySelector('.sc-hm').value;
   var hours=parseFloat((section.querySelector('.sc-hr.active')||{dataset:{h:1}}).dataset.h);
   var site=section.dataset.site, stream=section.dataset.stream;
-  var colorMap={fm_signal_dbm:'#34d399',dab_snr:'#a78bfa',lufs_m:'#fbbf24',lufs_s:'#fb923c',lufs_i:'#f87171',rtp_jitter_ms:'#e879f9'};
+  var colorMap={fm_signal_dbm:'#34d399',fm_snr_db:'#6ee7b7',fm_stereo:'#a7f3d0',fm_rds_ok:'#34d399',dab_snr:'#a78bfa',dab_sig:'#c4b5fd',dab_bitrate:'#818cf8',lufs_m:'#fbbf24',lufs_s:'#fb923c',lufs_i:'#f87171',rtp_jitter_ms:'#e879f9',rtp_loss_pct:'#f472b6',silence_flag:'#64748b',clip_count:'#ef4444'};
   status.textContent='Loading…'; status.style.display='block';
   fetch('/api/metrics/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream)+'?metric='+encodeURIComponent(metric)+'&hours='+hours)
     .then(function(r){return r.json();})
@@ -16944,6 +17151,14 @@ function hubRefresh(){
         }
         var rtp = sc.querySelector('.sc-rtp');
         if(rtp){ rtp.textContent=s.rtp_loss_pct+'%'; rtp.className='sc-rtp '+(s.rtp_loss_pct>=2?'rtp-al':s.rtp_loss_pct>=0.5?'rtp-wn':'rtp-ok'); }
+        var jitterEl = sc.querySelector('.sc-jitter');
+        if(jitterEl){
+          var jms = s.rtp_jitter_ms || 0;
+          jitterEl.textContent = jms.toFixed(2)+' ms';
+          jitterEl.style.color = jms > 5 ? 'var(--wn)' : 'var(--ok)';
+          var jRow = jitterEl.closest('.sc-row');
+          if(jRow) jRow.style.display = jms > 0 ? '' : 'none';
+        }
         var sla = sc.querySelector('.sc-sla');
         if(sla && s.sla_pct!=null){ sla.textContent=s.sla_pct+'%'; sla.style.color=s.sla_pct>=99?'var(--ok)':'var(--wn)'; }
         var aib = sc.querySelector('.aib');
@@ -17220,7 +17435,7 @@ function _scHistLoad(section) {
   var metric = section.querySelector('.sc-hm').value;
   var hours  = parseFloat((section.querySelector('.sc-hr.active')||{}).dataset&&section.querySelector('.sc-hr.active').dataset.h||1);
   var site   = section.dataset.site, stream = section.dataset.stream;
-  var colorMap = {fm_signal_dbm:'#34d399',dab_snr:'#a78bfa',lufs_m:'#fbbf24',lufs_s:'#fb923c',lufs_i:'#f87171',rtp_jitter_ms:'#e879f9'};
+  var colorMap = {fm_signal_dbm:'#34d399',fm_snr_db:'#6ee7b7',fm_stereo:'#a7f3d0',fm_rds_ok:'#34d399',dab_snr:'#a78bfa',dab_sig:'#c4b5fd',dab_bitrate:'#818cf8',lufs_m:'#fbbf24',lufs_s:'#fb923c',lufs_i:'#f87171',rtp_jitter_ms:'#e879f9',rtp_loss_pct:'#f472b6',silence_flag:'#64748b',clip_count:'#ef4444'};
   var color  = colorMap[metric] || '#60a5fa';
   status.textContent='Loading…'; status.style.display='block';
   var metricUrl = '/api/metrics/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream)+'?metric='+encodeURIComponent(metric)+'&hours='+hours;
@@ -17691,13 +17906,21 @@ setInterval(_loadTrends, 300000);
             <button class="btn sc-hr" data-h="24" style="font-size:10px;padding:1px 7px">24h</button>
             <select class="sc-hm" style="margin-left:8px;font-size:11px;background:#0d1117;border:1px solid var(--bor);border-radius:4px;color:var(--tx);padding:2px 4px">
               <option value="level_dbfs">Level dBFS</option>
+              <option value="silence_flag">Silence Flag</option>
+              <option value="clip_count">Clip Count</option>
               {%if _sdev.startswith('fm://')%}<option value="fm_signal_dbm">FM Signal dBm</option>{%endif%}
+              {%if _sdev.startswith('fm://')%}<option value="fm_snr_db">FM SNR dB</option>{%endif%}
+              {%if _sdev.startswith('fm://')%}<option value="fm_stereo">FM Stereo</option>{%endif%}
+              {%if _sdev.startswith('fm://')%}<option value="fm_rds_ok">FM RDS Lock</option>{%endif%}
               {%if _sdev.startswith('dab://')%}<option value="dab_snr">DAB SNR dB</option>{%endif%}
+              {%if _sdev.startswith('dab://')%}<option value="dab_sig">DAB Signal dBm</option>{%endif%}
+              {%if _sdev.startswith('dab://')%}<option value="dab_bitrate">DAB Bitrate kbps</option>{%endif%}
               <option value="lufs_m">LUFS Momentary</option>
               <option value="lufs_s">LUFS Short-term</option>
               <option value="lufs_i">LUFS Integrated</option>
               {%if not _sdev.startswith('fm://') and not _sdev.startswith('dab://') and not _sdev.startswith('http')%}
               <option value="rtp_jitter_ms">RTP Jitter ms</option>
+              <option value="rtp_loss_pct">RTP Loss %</option>
               {%endif%}
             </select>
           </div>
