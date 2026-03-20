@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.3"
+BUILD                  = "SignalScope-3.2.5"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -7587,13 +7587,25 @@ class HubServer:
 
         fault_idx = next((i for i, n in enumerate(nodes_out) if n["status"] in ("down", "offline")), None)
         chain_status = "fault" if fault_idx is not None else ("ok" if nodes_out else "unknown")
+        mixin_idx = chain.get("mixin_node_idx")
+        min_fault_secs = max(0, int(chain.get("min_fault_seconds", 0) or 0))
+        # Determine whether this looks like an ad break (fault is pre-mixin and mixin is still up)
+        adbreak_candidate = False
+        if (chain_status == "fault" and mixin_idx is not None and min_fault_secs > 0
+                and fault_idx is not None and fault_idx < int(mixin_idx)):
+            mixin_node = nodes_out[int(mixin_idx)] if int(mixin_idx) < len(nodes_out) else None
+            if mixin_node and mixin_node.get("status") not in ("down", "offline"):
+                adbreak_candidate = True
         return {
-            "id":          chain.get("id", ""),
-            "name":        chain.get("name", ""),
-            "status":      chain_status,
-            "fault_index": fault_idx,
-            "fault_node":  nodes_out[fault_idx] if fault_idx is not None else None,
-            "nodes":       nodes_out,
+            "id":               chain.get("id", ""),
+            "name":             chain.get("name", ""),
+            "status":           chain_status,
+            "fault_index":      fault_idx,
+            "fault_node":       nodes_out[fault_idx] if fault_idx is not None else None,
+            "nodes":            nodes_out,
+            "mixin_node_idx":   mixin_idx,
+            "min_fault_seconds": min_fault_secs,
+            "adbreak_candidate": adbreak_candidate,
         }
 
     def _chains_monitor_loop(self, stop_evt):
@@ -13661,17 +13673,17 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .page-title h1{font-size:18px;font-weight:700}
 .chain-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;margin-bottom:16px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.18);transition:transform .14s,box-shadow .14s}
 .chain-card:hover{transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.24)}
-.chain-card.card-ok{border-left:4px solid var(--ok)}.chain-card.card-fault{border-left:4px solid var(--al)}.chain-card.card-unknown{border-left:4px solid var(--mu)}
+.chain-card.card-ok{border-left:4px solid var(--ok)}.chain-card.card-fault{border-left:4px solid var(--al)}.chain-card.card-unknown{border-left:4px solid var(--mu)}.chain-card.card-adbreak{border-left:4px solid #b45309}
 .chain-header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--bor);flex-wrap:wrap}
 .chain-name{font-size:16px;font-weight:700}
 .badge{font-size:11px;padding:2px 8px;border-radius:999px;font-weight:700}
-.badge-ok{background:#14532d;color:#86efac}.badge-fault{background:#450a0a;color:#fca5a5}.badge-unknown{background:#1e3a5f;color:var(--acc)}
+.badge-ok{background:#14532d;color:#86efac}.badge-fault{background:#450a0a;color:#fca5a5}.badge-unknown{background:#1e3a5f;color:var(--acc)}.badge-adbreak{background:#78350f;color:#fde68a}
 .chain-actions{margin-left:auto;display:flex;gap:6px;flex-shrink:0}
 .chain-visual{display:flex;align-items:center;flex-wrap:wrap;gap:0;padding:14px 16px;overflow-x:auto}
 .chain-arrow{display:flex;align-items:center;color:var(--mu);font-size:22px;padding:0 8px;flex-shrink:0}
 .chain-node{border:2px solid var(--bor);border-radius:10px;padding:10px 14px;min-width:120px;max-width:180px;text-align:center;position:relative;transition:border-color .3s,background .3s;background:var(--bg)}
 .chain-node.ok{border-color:var(--ok);background:rgba(34,197,94,.07)}.chain-node.down{border-color:var(--al);background:rgba(239,68,68,.09)}
-.chain-node.offline{border-color:#374151;opacity:.6}.chain-node.unknown{border-color:var(--bor)}.chain-node.downstream{border-color:#1e3a5f;opacity:.5}
+.chain-node.offline{border-color:#374151;opacity:.6}.chain-node.unknown{border-color:var(--bor)}.chain-node.downstream{border-color:#1e3a5f;opacity:.5}.chain-node.adbreak{border-color:#b45309;background:rgba(251,191,36,.08)}
 .node-label{font-weight:700;font-size:12px;word-break:break-word}.node-sub{font-size:10px;color:var(--mu);margin-top:3px;word-break:break-word}.node-level{font-size:11px;margin-top:5px;font-variant-numeric:tabular-nums}
 .fault-marker{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;white-space:nowrap}
 /* Correlation row */
@@ -13994,9 +14006,9 @@ document.addEventListener('click',function(e){
 });
 
 // ── Live status refresh ───────────────────────────────────────────────────────
-var BORDER={ok:'var(--ok)',down:'var(--al)',offline:'#374151',unknown:'var(--bor)',downstream:'#1e3a5f'};
-var BG={ok:'rgba(34,197,94,.07)',down:'rgba(239,68,68,.09)',offline:'',unknown:'var(--bg)',downstream:''};
-var CARD_CLS={ok:'chain-card card-ok',fault:'chain-card card-fault',unknown:'chain-card card-unknown'};
+var BORDER={ok:'var(--ok)',down:'var(--al)',offline:'#374151',unknown:'var(--bor)',downstream:'#1e3a5f',adbreak:'#b45309'};
+var BG={ok:'rgba(34,197,94,.07)',down:'rgba(239,68,68,.09)',offline:'',unknown:'var(--bg)',downstream:'',adbreak:'rgba(251,191,36,.08)'};
+var CARD_CLS={ok:'chain-card card-ok',fault:'chain-card card-fault',unknown:'chain-card card-unknown',adbreak:'chain-card card-adbreak',pending:'chain-card card-adbreak'};
 
 function refreshStatus(){
   _f('/api/chains/status').then(r=>r.json()).then(d=>{
@@ -14005,31 +14017,97 @@ function refreshStatus(){
       var fl=document.getElementById('fault_label_'+chain.id);
       var visual=document.getElementById('visual_'+chain.id);
       var card=document.getElementById('chain_'+chain.id);
+      var ds=chain.display_status||chain.status;
+      var isAdbreak=(ds==='adbreak');
+      var isPending=(ds==='pending');
+      var remaining=chain.adbreak_remaining;
+
       if(badge){
-        badge.textContent=chain.status==='ok'?'OK':chain.status==='fault'?'FAULT':'…';
-        badge.className='badge badge-'+(chain.status==='ok'?'ok':chain.status==='fault'?'fault':'unknown');
+        if(isAdbreak){
+          var cdStr=remaining>0?(' — '+remaining+'s'):'';
+          badge.textContent='AD BREAK'+cdStr;
+          badge.className='badge badge-adbreak';
+        } else if(isPending){
+          var cdStr2=remaining>0?(' '+remaining+'s'):'';
+          badge.textContent='CHECKING…'+cdStr2;
+          badge.className='badge badge-adbreak';
+        } else {
+          badge.textContent=chain.status==='ok'?'OK':chain.status==='fault'?'FAULT':'…';
+          badge.className='badge badge-'+(chain.status==='ok'?'ok':chain.status==='fault'?'fault':'unknown');
+        }
       }
-      if(card&&CARD_CLS[chain.status])card.className=CARD_CLS[chain.status];
+      if(card&&CARD_CLS[ds])card.className=CARD_CLS[ds];
       if(fl){
-        fl.textContent=chain.fault_node?('↳ fault at '+chain.fault_node.label+' ('+chain.fault_node.site+')'):'';
+        if(isAdbreak){
+          var secs=remaining>0?remaining+'s remaining':'confirming…';
+          fl.textContent='↳ Likely ad break — '+secs+' before fault alert';
+        } else if(isPending){
+          fl.textContent='↳ Fault detected — confirming ('+( remaining||'…')+'s remaining)';
+        } else {
+          fl.textContent=chain.fault_node?('↳ fault at '+chain.fault_node.label+' ('+chain.fault_node.site+')'):'';
+        }
       }
       if(visual){
         var nodeEls=visual.querySelectorAll('.chain-node');
+        var mi=chain.mixin_node_idx;
+        var miInt=(mi!==null&&mi!==undefined)?parseInt(mi):null;
         (chain.nodes||[]).forEach(function(node,i){
           var el=nodeEls[i];if(!el)return;
           var fi=chain.fault_index;
-          var eff=(fi!==null&&fi!==undefined&&i>fi)?'downstream':node.status;
+          var isFaultNode=(fi!==null&&fi!==undefined&&i===fi);
+          var isMixin=(miInt!==null&&i===miInt);
+          var eff;
+          if(isAdbreak){
+            // Ad break: fault is pre-mixin, mixin still up.
+            // Nodes from fault point up to (not including) mixin → yellow.
+            // Mixin and everything after → green (they're all still playing).
+            if(fi!==null&&fi!==undefined&&i>=fi&&(miInt===null||i<miInt)){
+              eff='adbreak';
+            } else {
+              eff='ok';
+            }
+          } else if(isPending){
+            // Generic delay: show faulted/downstream nodes amber, rest normal
+            if(fi!==null&&fi!==undefined&&i===fi){
+              eff='adbreak';  // amber for the fault node
+            } else if(fi!==null&&fi!==undefined&&i>fi){
+              eff='downstream';
+            } else {
+              eff=node.status;
+            }
+          } else {
+            eff=(fi!==null&&fi!==undefined&&i>fi)?'downstream':node.status;
+          }
           el.className='chain-node '+eff;
           el.style.borderColor=BORDER[eff]||BORDER.unknown;
           el.style.background=BG[eff]||'';
-          var old=el.querySelector('.fault-marker');if(old)old.remove();
+          // Remove any previous markers
+          el.querySelectorAll('.fault-marker').forEach(function(m){m.remove();});
           var lvlEl=el.querySelector('.node-level');
           if(lvlEl){
-            lvlEl.style.color=node.status==='ok'?'var(--ok)':node.status==='down'?'var(--al)':'var(--mu)';
+            lvlEl.style.color=eff==='adbreak'?'#fbbf24':node.status==='ok'?'var(--ok)':node.status==='down'?'var(--al)':'var(--mu)';
             lvlEl.textContent=node.level!==null&&node.level!==undefined?node.level.toFixed(1)+' dBFS':(node.status==='offline'?'Offline':'—');
           }
-          if(fi!==null&&fi!==undefined&&i===fi){
-            var m=document.createElement('div');m.className='fault-marker';m.textContent='⚠ Fault here';el.appendChild(m);
+          // Fault / status markers
+          if(isFaultNode){
+            var m=document.createElement('div');m.className='fault-marker';
+            if(isAdbreak){
+              m.style.cssText='background:rgba(180,83,9,.18);color:#fbbf24;border-color:#b45309';
+              m.textContent='⏸ Likely ad break';
+            } else if(isPending){
+              m.style.cssText='background:rgba(180,83,9,.18);color:#fbbf24;border-color:#b45309';
+              m.textContent='⏳ Confirming…';
+            } else {
+              m.textContent='⚠ Fault here';
+            }
+            el.appendChild(m);
+          }
+          // Mix-in point marker — only shown during adbreak state, and only if mixin is green (playing)
+          if(isAdbreak&&isMixin){
+            var mx=document.createElement('div');mx.className='fault-marker';
+            mx.style.cssText='background:rgba(37,99,235,.15);color:#93c5fd;border-color:#1d4ed8';
+            mx.textContent='🔀 Mix-in — playing';
+            el.appendChild(mx);
           }
         });
       }
@@ -14136,10 +14214,29 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 10) -> dic
 def api_chains_status():
     """Evaluate all chains and return their current status including correlation data."""
     cfg = monitor.app_cfg
+    now = time.time()
     results = []
     for chain in cfg.signal_chains:
         try:
             result = hub_server.eval_chain(chain)
+            cid = chain.get("id", "")
+            # Enrich with live pending/adbreak state from the monitor loop
+            internal_state = hub_server._chain_fault_state.get(cid, "ok")
+            since = hub_server._chain_fault_since.get(cid)
+            min_fault_secs = result.get("min_fault_seconds", 0)
+            adbreak_candidate = result.get("adbreak_candidate", False)
+            # "adbreak" display state: chain is in pending AND looks like an ad break
+            if internal_state == "pending" and adbreak_candidate and since is not None:
+                result["display_status"] = "adbreak"
+                remaining = max(0.0, min_fault_secs - (now - since))
+                result["adbreak_remaining"] = round(remaining)
+            elif internal_state == "pending" and since is not None:
+                result["display_status"] = "pending"
+                remaining = max(0.0, min_fault_secs - (now - since))
+                result["adbreak_remaining"] = round(remaining)
+            else:
+                result["display_status"] = result["status"]
+                result["adbreak_remaining"] = None
             # Compute correlation for each configured comparator pair
             chain_nodes = chain.get("nodes", [])
             corr_out = []
@@ -14153,8 +14250,10 @@ def api_chains_status():
             results.append(result)
         except Exception as e:
             results.append({"id": chain.get("id", ""), "name": chain.get("name", ""),
-                            "status": "unknown", "fault_index": None, "fault_node": None,
-                            "nodes": [], "comparators": [], "error": str(e)})
+                            "status": "unknown", "display_status": "unknown",
+                            "fault_index": None, "fault_node": None,
+                            "nodes": [], "comparators": [], "adbreak_remaining": None,
+                            "error": str(e)})
     return jsonify({"results": results})
 
 
