@@ -9,53 +9,19 @@ SignalScope is written in **Python (Flask)** and designed to run easily on **Lin
 
 ---
 
-## Install in 30 seconds
+## Quick Install
 
 ```bash
 /bin/bash <(curl -fsSL https://raw.githubusercontent.com/itconor/SignalScope/main/install_signalscope.sh)
 ```
 
----
-
-# 🚀 Quick Install
-
-Clone the repository and run the installer:
+Or clone and run the installer:
 
 ```bash
 git clone https://github.com/itconor/SignalScope.git
 cd SignalScope
 bash install_signalscope.sh
 ```
-
-The installer will:
-
-- Detect existing installations and offer to update in-place
-- Install system dependencies
-- Create the Python virtual environment
-- Install required Python packages
-- Configure the systemd service and self-healing watchdog
-- Optionally configure NGINX as a reverse proxy
-- Start SignalScope
-
-Once complete, open:
-
-```text
-http://localhost:5000
-```
-
-The setup wizard will guide you through the rest.
-
----
-
-# ⚡ One-Line Install
-
-You can also install SignalScope directly using `curl`:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/itconor/SignalScope/main/install_signalscope.sh | bash
-```
-
-### Optional safer version
 
 If you prefer to inspect the script first:
 
@@ -64,497 +30,323 @@ curl -O https://raw.githubusercontent.com/itconor/SignalScope/main/install_signa
 bash install_signalscope.sh
 ```
 
----
+The installer will:
 
-# ✨ What's New in 3.2.0 — Wall Mode, RDS/DAB Name Alerting & Broadcast Chain Improvements
+- Detect existing installations and offer to update in-place
+- Install system dependencies (including `rtl-sdr`, `welle.io`, `libportaudio2`)
+- Create the Python virtual environment and install required packages
+- Configure the systemd service and self-healing watchdog
+- Optionally configure NGINX as a reverse proxy with Let's Encrypt TLS
+- Start SignalScope
 
-## Hub Wall Mode — Complete Redesign
+Once complete, open `http://localhost:5000`. The setup wizard will guide you through the rest.
 
-Wall mode (`/hub?wall=1`) is now a purpose-built wall board display rather than a CSS-enlarged version of the hub dashboard.
+### Windows
 
-**What it shows:**
-
-- **Header bar** — live clock (ticking every second), summary pills (⚠ Alerts / ⚡ Warnings / ✗ Sites Offline / ✓ All Systems OK), Exit Wall Mode link
-- **Connected Sites strip** — one colour-coded pill per connected site: 🟢 green = OK, 🟡 amber = warnings, 🔴 red = alerts or offline, ⬜ grey = offline; alert/warn count shown on the pill
-- **Broadcast Chains panel** — every configured chain shown as a horizontal row of colour-coded nodes with arrows; fault node marked **FAULT POINT**, downstream nodes greyed out; chain status badge (ALL OK / FAULT) at the right; updates every 15 seconds via AJAX without page reload
-- **Stream Status grid** — every stream from every site in one unified grid, colour-coded border (green/amber/red/grey), level bar, device type badge (DAB/FM/LW), RDS PS or DAB service name, Signal Lost / Offline label when down; sorted alerts-first
-- Page auto-refreshes every 60 seconds to pick up newly added streams or sites
-
-## RDS Programme Service Name Alerting
-
-Alert when the station name received on an FM stream does not match what is expected.
-
-**Two modes:**
-- **Expected name set** — fires `FM_RDS_MISMATCH` when the received RDS PS name differs from the configured expected name (e.g. wrong station on the feed)
-- **No expected name** — fires `FM_RDS_MISMATCH` when the name changes from what was previously seen (unexpected format change or wrong feed)
-
-**📌 Set button on hub** — next to the live RDS PS name on each FM stream card, a **📌 Set** button pins the current live name as the expected name without typing anything. A ✓ indicator replaces the button when the name matches; a ⚠ indicator with the expected name shows when there is a mismatch. An **📌 Update** button lets you re-pin to the new name in one click.
-
-Alert type: `FM_RDS_MISMATCH` — included in all notification channels and hub forwarding rules.
-
-## DAB Service Name Alerting
-
-Same capability for DAB streams — alert when the service name received from the mux does not match expected.
-
-**📌 Set button on hub** — same one-click pinning on each DAB stream card. Shows ✓ when matching, ⚠ when mismatched.
-
-Alert type: `DAB_SERVICE_MISMATCH` — included in all notification channels and hub forwarding rules.
-
-## Broadcast Chains — Design & UX Improvements
-
-- **Chains page redesign** — now fully matches the hub/dashboard visual design: same CSS variables, background watermark, `border-radius:14px` cards with box-shadow, `border-left:4px` status strip, matching button styles
-- **Card status colouring** — chain cards now update their left border colour live (green = OK, red = FAULT, grey = unknown) as the chain status changes, matching the hub site card pattern
-- **Edit and Delete buttons fixed** — were silently blocked by CSP; moved to `data-*` attributes with delegated event listeners
-- **Header layout fixed** — logo, version, and nav now render correctly on one line
-
-## DAB Mux Startup Reliability
-
-- **Service count stabilisation** — `_poll_mux` now waits for the service count to be **identical across two consecutive 5-second polls** before announcing the mux as ready, rather than announcing on the first non-empty batch. Prevents monitoring threads from starting before welle-cli has finished enumerating all services on large multiplexes
-- **Service lookup deadline extended** — the per-stream service lookup window after mux-ready has been increased from 8 to 20 seconds, accommodating services that take longer to appear on some hardware
+A PowerShell installer (`install_signalscope_windows.ps1`) is included for Windows installations using a venv and scheduled task.
 
 ---
 
-# ✨ What's New in 3.1.0 — Phase 3 (Broadcast Chains, Extended Alerts & Local Audio Input)
+## Features Overview
 
-## Broadcast Signal Chains
+| Category | What SignalScope does |
+|---|---|
+| **Inputs** | FM via RTL-SDR, DAB via RTL-SDR, Livewire/AES67 (RTP multicast), HTTP/HTTPS audio streams, local ALSA/PulseAudio devices |
+| **Level & loudness** | dBFS level, LUFS Momentary/Short-term/Integrated (EBU R128), true peak |
+| **Metadata** | RDS PS name, RDS RadioText, DAB service name, DAB DLS now-playing text, DAB ensemble/mode/bitrate/SNR |
+| **Rule alerts** | Silence, clipping, hiss, LUFS true peak, LUFS integrated loudness |
+| **Composite fault alerts** | STUDIO_FAULT, STL_FAULT, TX_DOWN (FM); DAB_AUDIO_FAULT, DAB_SERVICE_MISSING (DAB); RTP_FAULT (Livewire/AES67) |
+| **Name mismatch alerts** | FM_RDS_MISMATCH, DAB_SERVICE_MISMATCH |
+| **AI anomaly detection** | Per-stream ONNX autoencoder with 24-hour learning phase |
+| **Broadcast Chains** | Visual signal path builder with fault location, node stacking, ad break handling, click-to-listen, comparators |
+| **Stream comparator** | Cross-correlate pre/post processing pairs; detect processor failure, gain drift, dropout |
+| **Metric history** | SQLite time-series, 90-day retention, signal history charts, availability timeline, trend analysis |
+| **Notifications** | Email (SMTP), MS Teams Adaptive Cards, Pushover, plain text webhooks, alert escalation |
+| **Hub mode** | Multi-site aggregation, site approval, remote source management, wall mode, hub reports |
+| **PTP monitoring** | Offset, jitter, drift, grandmaster change detection |
+| **SLA tracking** | Monthly per-stream uptime percentage |
+| **Security** | CSRF, PBKDF2-SHA256 passwords, HMAC+AES-256-GCM hub comms, session timeouts, rate limiting |
 
-A new **Broadcast Chains** page (hub-only) lets you model the physical signal path of any service as an ordered chain of monitoring points — from studio through STL, transmitter sites, and DAB mux — and immediately see where a fault has occurred.
+---
 
-### What it does
+## Getting Started
 
-- **Visual chain diagram** — each node is a live status box; green = audio present, red = fault, grey = site offline, amber = unknown
-- **Fault location** — the hub walks the chain left to right; the first node that is down or offline is identified as the fault point and marked with a **⚠ Fault here** badge
-- **Downstream suppression** — nodes after the fault point are greyed out; a fault upstream means their status is indeterminate
-- **Live level display** — each node shows the current dBFS level, refreshed every 5 seconds via AJAX without a page reload
-- **CHAIN_FAULT alert** — fires through all configured notification channels (email, Teams, Pushover, webhooks) when a chain transitions from OK to fault; subject line is `CHAIN FAULT — <chain name>`, body names the exact fault node, site, and stream
-- **CHAIN RECOVERED alert** — fires when a faulted chain returns to fully OK, so you know when the issue has resolved without checking the dashboard
-- **Hub site rules** — `CHAIN_FAULT` is included in the default forwarding types; you can enable/disable it per-site in hub settings like any other alert type
+### First Run
 
-### Setting up a chain
+After installation, open `http://localhost:5000`. The setup wizard walks through:
 
-1. Go to **Hub → Broadcast Chains** in the top navigation
-2. Click **+ New Chain**
-3. Give the chain a name, e.g. `Cool FM Distribution`
-4. Click **+ Add Node** for each point in the signal path:
-   - **Site dropdown** — choose `This node (local)` for streams running on the hub machine itself, or any connected remote site by name
-   - **Stream dropdown** — populated automatically from the selected site's available streams
-   - **Label field** — optional friendly name shown on the node box, e.g. `Manchester TX`; defaults to the stream name if left blank
-5. Nodes are ordered left to right — add them in signal flow order (source first, destinations last)
-6. Click **💾 Save Chain**
+1. **Authentication setup** — set an admin password
+2. **SDR configuration** — detect and configure RTL-SDR dongles if present
+3. **Hub configuration** — optionally configure this node as a hub client or hub server
+4. **Monitoring settings** — silence threshold, alert cooldown, notification channels
 
-### Example chain layouts
+After the wizard completes, the dashboard loads automatically.
+
+### Adding Your First Input
+
+1. Go to **Settings → Inputs** and click **+ Add Input**
+2. Choose a source type, enter a name and device address (see the Inputs section below)
+3. Save — monitoring starts within a few seconds
+
+### Dashboard Overview
+
+The dashboard shows a card for each monitored stream. Each card displays:
+
+- Live level bar and dBFS reading
+- LUFS Momentary/Short-term/Integrated values
+- RDS Programme Service name and RadioText (FM), or DAB service name and DLS text (DAB)
+- AI status badge (Learning / OK / Anomaly)
+- Trend badge when level is notably above or below the expected range
+- 24-hour availability timeline bar
+- Alert/warning status strip on the card border
+- Listen button for live audio in the browser
+
+Cards are drag-to-reorder. Alert cards sort to the top automatically.
+
+---
+
+## Inputs
+
+### Source Types and Device Address Formats
+
+| Source type | Address format | Example |
+|---|---|---|
+| FM via RTL-SDR | `fm://<frequency_MHz>` | `fm://96.3` |
+| FM with specific dongle | `fm://<freq>?serial=<serial>&ppm=<offset>` | `fm://96.3?serial=00000001&ppm=-2` |
+| DAB service | `dab://<ServiceName>?channel=<CH>` | `dab://Cool FM?channel=12D` |
+| Livewire (multicast RTP) | `rtp://<multicast_address>:<port>` | `rtp://239.192.10.1:5004` |
+| AES67 (RTP) | `rtp://<multicast_address>:<port>` | `rtp://239.69.0.1:5004` |
+| HTTP/HTTPS audio stream | Full URL | `http://relay.example.com:8000/stream` |
+| Local sound device | `sound://<device_index>` | `sound://2` |
+
+### Adding FM Sources
+
+1. In the Add Input form, select **FM**
+2. Enter the frequency in MHz as the device address
+3. Optionally specify a dongle serial number (if you have multiple RTL-SDR dongles) and PPM calibration offset
+4. Save — SignalScope starts the RTL-SDR receiver and will begin reporting level, carrier strength, and RDS data
+
+### Adding DAB Sources
+
+1. Select **DAB** in the Add Input form
+2. Select a DAB channel (e.g. `12D`) and click **🔍 Scan Mux** to enumerate all services on that multiplex
+3. Select one or more services from the list and click **➕ Add Selected Services**
+4. Each service is added with its broadcast name and the correct `dab://` address automatically
+
+Multiple DAB services on the same multiplex share a single `welle-cli` process, started with elevated scheduling priority (`nice -10`) to maintain stability on ARM hardware.
+
+### Adding Livewire / AES67 Sources
+
+Enter the multicast RTP address and port as the device address. SignalScope joins the multicast group and measures RTP packet loss and jitter (RFC 3550 EWMA) in addition to audio levels.
+
+### Adding Local Sound Devices
+
+Select **Local Sound Device** — a drop-down is populated from the OS device list via `/api/sound_devices`. Select a device (microphone, line-in, USB audio, loopback) and save. The device index is stored as `sound://<index>`.
+
+---
+
+## Alerting
+
+### Alert Types
+
+**Level alerts** (apply to all source types):
+
+| Alert | Condition |
+|---|---|
+| `SILENCE` | Audio level falls below the configured silence floor |
+| `CLIP` | Audio level reaches or exceeds the clip threshold (default −1.0 dBFS) |
+| `HISS` | High-frequency noise floor detected above threshold |
+| `LUFS_TP` | True peak exceeds configured dBTP threshold (default −1.0 dBTP) |
+| `LUFS_I` | 30-second integrated loudness deviates from EBU R128 target (default −23 LUFS ± 3 LU) |
+
+**Composite fault alerts** (silence is diagnosed automatically):
+
+| Alert | Source | What it means |
+|---|---|---|
+| `STUDIO_FAULT` | FM | Silence + carrier present + RDS present → playout/studio failure |
+| `STL_FAULT` | FM | Silence + carrier present + RDS absent → STL/link failure |
+| `TX_DOWN` | FM | Silence + weak/no carrier + no RDS → transmitter or RF failure |
+| `DAB_AUDIO_FAULT` | DAB | Silence + mux locked + SNR ≥ 5 dB → studio/playout fault |
+| `DAB_SERVICE_MISSING` | DAB | Ensemble locked but configured service absent from mux |
+| `RTP_FAULT` | Livewire/AES67 | Silence + ≥ 10% packet loss → network fault |
+
+**Metadata mismatch alerts**:
+
+| Alert | Condition |
+|---|---|
+| `FM_RDS_MISMATCH` | Received RDS PS name differs from configured expected name, or changes unexpectedly |
+| `DAB_SERVICE_MISMATCH` | Received DAB service name differs from configured expected name, or changes unexpectedly |
+
+**AI and chain alerts**:
+
+| Alert | Condition |
+|---|---|
+| `AI_ANOMALY` | AI autoencoder reconstruction error exceeds learned threshold |
+| `CMP_ALERT` | Post-processing stream silent while pre-processing stream has audio |
+| `CHAIN_FAULT` | First down node identified in a broadcast chain |
+| `CHAIN_RECOVERED` | Previously faulted chain returns to fully OK |
+
+### Setting Expected RDS / DAB Names
+
+On any FM stream card, click **📌 Set** next to the live RDS PS name to pin it as the expected name. A ✓ indicator appears when the received name matches; ⚠ appears with the expected name on mismatch. Click **📌 Update** to re-pin to the current name.
+
+The same 📌 Set button is available on DAB stream cards for the service name.
+
+### Notification Channels
+
+Configure notification channels in **Settings → Notifications**:
+
+- **Email (SMTP)** — standard SMTP with TLS; per-alert subject and body
+- **MS Teams** — Adaptive Card format with colour-coded severity; or plain text webhook
+- **Pushover** — mobile push notifications with priority levels
+- **Webhook** — generic HTTP POST with JSON payload; configurable URL and headers
+
+All channels receive the same alert types. You can test each channel from the Settings page.
+
+### Escalation
+
+Set a per-stream escalation timeout (minutes) in stream settings. If an alert remains unacknowledged after that period, all configured notification channels fire again. Set to 0 to disable escalation.
+
+### Alert Cooldown
+
+A 60-second cooldown prevents duplicate notifications for the same alert type on the same stream. Alert history is always written regardless of cooldown state.
+
+---
+
+## Broadcast Chains
+
+Broadcast Chains model the physical signal path of a service as an ordered sequence of monitoring points. The hub identifies the first failed point in the chain and fires a named alert, giving engineers a specific fault location rather than a generic silence notification.
+
+Broadcast Chains are configured and viewed on the hub under **Hub → Broadcast Chains**.
+
+### Creating a Chain
+
+1. Click **+ New Chain** and give it a name (e.g. `Cool FM Distribution`)
+2. Click **+ Add Node** for each point in the signal path, in order from source to destination:
+   - **Site** — choose `This node (local)` for streams on the hub machine, or any connected remote site
+   - **Stream** — populated from the selected site's available streams
+   - **Label** — optional friendly name (e.g. `Manchester TX`); defaults to the stream name
+3. Click **💾 Save Chain**
+
+Example chain layouts:
 
 **Studio → STL → Transmitter:**
 ```
 [Studio Feed (local)] → [STL Monitor (Site: STL Node)] → [TX Air Monitor (Site: Manchester TX)]
 ```
-If the STL monitor goes down but the Studio Feed is healthy, the fault marker appears on the STL node — pointing directly at the STL link rather than requiring you to check each site manually.
 
 **Multi-TX same service:**
 ```
 [Cool FM DAB (Site: NI DAB Hub)] → [Cool FM FM Site 1 (Site: Manchester TX)] → [Cool FM FM Site 2 (Site: Liverpool TX)]
 ```
-If Site 1 is up but Site 2 goes silent, the chain shows fault at `Liverpool TX` — you get a named TX site in the alert rather than a generic silence notification.
 
-**DAB mux chain:**
-```
-[Studio Playout (local)] → [DAB Mux Input (Site: Mux Node)] → [Cool FM DAB (Site: NI DAB Hub)] → [Downtown Country DAB (Site: NI DAB Hub)]
-```
+### Node Stacking
 
-### Alert example
+Place multiple streams at the same chain position to model parallel monitoring (e.g. FM Rx and DAB Rx both connected to the same transmitter output).
 
-When a fault is detected you will receive:
+Click **+ Stack** within a position to add a second stream. Each stack has a **fault mode**:
 
-> **Subject:** `CHAIN FAULT — Cool FM Distribution`
-> **Body:** `Chain fault in 'Cool FM Distribution' — fault at 'Manchester TX' (site: Manchester TX, stream: Cool FM FM)`
+- **ALL down = fault** — the position only faults when every stream in the stack is silent. Use this for redundant receivers: one surviving receiver means the transmitter is still on air.
+- **ANY down = fault** — the position faults if any single stream in the stack goes silent. Use this for stricter monitoring where every path is required.
 
-When the chain recovers:
+Stack fault alerts are descriptive:
 
-> **Subject:** `CHAIN RECOVERED — Cool FM Distribution`
-> **Body:** `Chain 'Cool FM Distribution' has recovered — all nodes OK.`
+> `Chain fault in 'Absolute' — all 2 stream(s) at 'TX Output' are silent (DAB Rx, FM Rx). First failed position in the chain.`
 
-### Fault detection logic
+> `Chain fault in 'Absolute' — 1 of 2 stream(s) at 'TX Output' is silent (DAB Rx silent; FM Rx OK) — stack mode is ANY, so this triggers a fault.`
 
-A node is considered **down** if:
-- Its stream's audio level is ≤ −55 dBFS (silence floor), **or**
-- It is a DAB stream and `dab_ok` is false (service missing from ensemble)
+### Ad Break Handling
 
-A node is **offline** if its site has not sent a heartbeat within the site timeout window.
+If upstream nodes legitimately go silent during ad breaks (because ad audio enters from a separate feed), mark the injection point as the **Ad mix-in point** in the chain builder. While that node carries audio, SignalScope treats upstream silence as an ad break and holds the fault alert.
 
-Chains are evaluated every **30 seconds** by a background thread on the hub. A `CHAIN_FAULT` alert fires on the OK → fault transition only (not repeatedly while the fault persists), and a `CHAIN RECOVERED` alert fires on the fault → OK transition.
+Set a **Fault confirmation delay** (seconds) — the chain must remain in the faulted state for this entire window before the alert fires. Typical values: 90–180 s.
 
----
+During the confirmation window:
 
-# ✨ What's New in 3.1.0 — Phase 3 (Extended Alerts & Local Audio Input)
+- Faulted upstream nodes turn **amber** (not red)
+- A badge shows **AD BREAK — 87s** with a live countdown
+- The mix-in point node shows a **🔀 Mix-in — playing** marker
+- Nodes downstream of the mix-in remain green
 
-## Composite Alert Classification — DAB & RTP
+If the mix-in point itself goes silent mid-countdown, the confirmation timer is bypassed and the alert fires immediately.
 
-The silence alert classification introduced in 3.0 for FM sources now extends to DAB and RTP/Livewire:
+### Signal Comparators on Chains
 
-- **DAB_AUDIO_FAULT** — fires when a DAB stream goes silent while the mux is locked and SNR is healthy (≥ 5 dB); indicates a studio or playout fault on that service rather than an RF or receiver problem
-- **RTP_FAULT** — fires when a Livewire/AES67 stream goes silent with ≥ 10% concurrent packet loss; distinguishes a network fault from a genuine content silence
-- Both alert types are included in `_HUB_DEFAULT_FORWARD_TYPES` and the hub site rules checkbox list, so they propagate through the hub to email/Teams/Pushover exactly like FM composite faults
+Add correlation comparators between any two positions to measure how well the signal tracks across that section of the chain.
 
-Full composite alert matrix:
+- Click **+ Add Comparator** and select any two positions
+- **↔ Add End-to-End** adds a comparator from position 0 to the last position in one click
+- Correlation is computed as Pearson r over the last 10 minutes of metric history (requires ≥ 5 minutes of shared data)
+- Results shown as colour-coded chips:
+  - 🟢 ≥ 80% — good correlation
+  - 🟡 50–79% — moderate (check for processing delay or dropout)
+  - 🔴 < 50% — poor (potential fault or mismatch)
 
-| Alert | Source | Condition |
-|---|---|---|
-| `STUDIO_FAULT` | FM | Silence + carrier + RDS present → playout failure |
-| `STL_FAULT` | FM | Silence + carrier healthy but RDS absent → STL/link failure |
-| `TX_DOWN` | FM | Silence + weak/no carrier + no RDS → transmitter/RF failure |
-| `DAB_SERVICE_MISSING` | DAB | Ensemble locked but service gone from mux |
-| `DAB_AUDIO_FAULT` | DAB | Silence + mux locked + SNR ≥ 5 dB → studio/playout fault |
-| `RTP_FAULT` | Livewire/AES67 | Silence + ≥ 10% packet loss → network fault |
+### Click-to-Listen
 
-## Local Sound Device Input (ALSA/PulseAudio)
+Click any node bubble on the Broadcast Chains page to start live audio monitoring from that point. A pulsing blue ring indicates the active node. Click again to stop, or click a different node to switch. Stack sub-nodes each have their own listen URL.
 
-- **New input type** — "Local Sound Device" added to the Add Input form alongside Livewire/RTP/HTTP, DAB, and FM
-- **Device picker** — clicking the type reveals a drop-down populated from `/api/sound_devices`; a Refresh button re-queries the OS at any time
-- **ALSA/PulseAudio support** — captures from any input device (microphone, line-in, USB audio, loopback) via the `sounddevice` Python library (PortAudio backend)
-- **Address format** — stored as `sound://<device_index>` (e.g. `sound://2`); device index is an integer from the OS device list
-- **Full pipeline** — captured audio feeds into the same `analyse_chunk()` pipeline as all other source types: level, LUFS, AI, silence/clip/hiss alerts, SLA tracking
-- **Installer** — `libportaudio2` added to the apt package list (installed on both fresh installs and updates); `sounddevice` added to the pip install line
+### Chain Fault Alerts
 
-## Extended Trend Analysis
+When a chain transitions from OK to fault, SignalScope sends a `CHAIN_FAULT` notification through all configured channels. The message names the exact fault node, its site, and how many downstream nodes may be affected.
 
-- **Day-of-week baseline** — in addition to the hour-of-day baseline, trend analysis now builds a 168-bucket (day × hour) model from 28 days of history; used when a bucket has ≥ 10 samples, otherwise falls back to the 14-day hour-only baseline
-- **Sustained deviation scoring** — the trend badge escalates from amber to red when a stream has been continuously above or below the ±1.5σ band for ≥ 10 consecutive minutes; duration shown in the badge (e.g. `📉 Lower than usual (−2.3σ, 14 min)`)
-- **Baseline type indicator** — badge shows `·dow` suffix when the day-of-week model is active
-- **API** — `/api/trend/<stream>` returns `baseline_type` (`dow_hour` or `hour`), `sustained_minutes`, and the full 168-bucket baseline table
+When a chain returns to fully OK, a `CHAIN_RECOVERED` notification fires.
+
+When a stream is part of a chain, the CHAIN_FAULT notification takes priority: individual stream silence alerts are still logged to alert history but push notifications for those streams are suppressed, preventing alert storms.
+
+Audio evidence clips are saved for faulted nodes (and the last-good node) in the stream's `alert_snippets/` folder, and appear in Hub Reports with playback and download links.
 
 ---
 
-# ✨ What's New in 3.1.0 — Phase 2 (Metric History & Trend Analysis)
-
-## SQLite Metric History
-- **`metrics_history.db`** — a local SQLite database is created automatically on first start (no migration needed for existing installs); no new Python dependencies (`sqlite3` is built-in)
-- **Per-stream time-series storage** — `level_dbfs`, `lufs_m/s/i`, `fm_signal_dbm`, `dab_snr`, `dab_ok`, `rtp_loss_pct`, and `rtp_jitter_ms` are written once per minute per stream
-- **Hub aggregation** — hub-mode nodes write metrics for all connected remote sites on every approved heartbeat (keyed as `SiteName/StreamName`), so a hub-only machine with no local streams still accumulates full history
-- **90-day rolling retention** — rows older than 90 days are pruned automatically once per day; configurable via `METRICS_RETENTION_DAYS`
-
-## Signal History Charts
-- **📈 Signal History** — collapsible chart on every stream card in the hub dashboard and replica page; lazy-loaded when opened, no page refresh required
-- **Range selector** — 1 h / 6 h / 24 h buttons reload the chart without a page reload
-- **Metric selector** — Level dBFS, FM Signal dBm, DAB SNR, LUFS Momentary / Short-term / Integrated, RTP Jitter; only metrics relevant to the stream type are shown
-- **Canvas-rendered** — lightweight inline canvas chart with no external dependencies; works fully offline on LAN installations
-- **Trend reference band** — when viewing Level dBFS, a dashed yellow line and shaded ±1σ band shows the expected level range for the current hour of day (requires ≥10 data points; see Trend Analysis below)
-
-## Availability Timeline
-- **24 h availability bar** — a thin colour-coded timeline bar sits below the level bar on every hub stream card and replica page card, auto-loaded on page render
-- **Click to cycle** — click the bar to cycle between 24 h → 1 h → 6 h → 24 h views; the label on the left updates to match
-- **Colour coding**: 🟢 green = signal present, 🔴 red = silence / audio floor, 🟡 amber = DAB service missing (ensemble locked but service absent), ⬛ dark = no data
-- **API** — `/api/timeline/<stream>?hours=24` returns bucketed segments (1-min / 5-min / 15-min buckets depending on time range)
-
-## Trend & Pattern Analysis
-- **Hour-of-day baseline** — a 14-day rolling baseline is computed per stream per hour of day using an efficient SQLite GROUP BY query (no per-row Python processing)
-- **Deviation detection** — current level is compared to the baseline mean; deviations beyond ±1.5σ trigger a `lower_than_usual` or `higher_than_usual` status
-- **Stream card badge** — `📉 Lower than usual (-2.1σ)` shown in amber, `📈 Higher than usual (+1.7σ)` shown in blue; hidden when within normal range or when there is insufficient history (< 10 data points for the current hour)
-- **AJAX-safe** — trend badges survive the hub dashboard's 5-second AJAX refresh cycle; results are cached in JS memory and re-applied after each `hubRefresh()` call
-- **API** — `/api/trend/<stream>` returns `status`, `deviation` (σ), `current_level`, `baseline` (mean/std/n), and the full 24-hour baseline table for all hours
-
-## Metric History API
-- **`/api/metrics/<stream>?metric=level_dbfs&hours=24`** — returns `[[ts, value], …]` points and `available_metrics` list; hub uses `site/stream` path format
-- **`/api/timeline/<stream>?hours=24`** — availability segments with bucket size adaptive to the requested time range
-- **`/api/trend/<stream>`** — current-hour deviation analysis vs 14-day baseline
-
----
-
-# ✨ What's New in 3.0.3–3.0.5
-
-## Hub: Site Approval (3.0.3)
-- **New sites require explicit approval** — when a client connects for the first time the hub holds it in a *Pending Approval* state; no data is processed and no commands are delivered until a hub admin clicks **✓ Approve** on the hub dashboard
-- **Old-build detection** — clients running a build older than 3.0.3 (which predate the approval system) are flagged with an **⚠ Update Required** banner instead of an Approve button; the operator is prompted to update the site before adopting it
-- **Reject** button dismisses an unwanted connection request without approving it
-
-## Hub: Site Persistence (3.0.3)
-- **No auto-prune** — sites are never automatically removed regardless of how long they have been offline; only the explicit **✕ Remove** button deletes a site from the hub
-- **Remove button fixed** — modern browsers block `confirm()` on LAN/HTTP origins; replaced with an inline confirmation bar using delegated event listeners
-
-## Hub: Remote Source Management (3.0.3)
-- **Add sources from the hub** — hub operators can add RTP, HTTP, FM, and DAB sources to any connected client directly from the hub dashboard without logging into the client
-- **FM-specific fields** — selecting FM reveals frequency (MHz), PPM offset, and dongle serial fields; the correct `fm://<freq>?serial=...&ppm=...` device address is built automatically
-- **DAB scan and bulk-add** — selecting DAB reveals a channel/PPM/serial scan panel; clicking **🔍 Scan Mux** queries the client's welle-cli session and returns all services on the multiplex; select any or all and click **➕ Add Selected Services** — each service is added with its broadcast name and a correctly-formed `dab://<Service>?channel=<CH>` device address
-- **Name field hidden for DAB** — station names come from the scan result; manual name entry and the generic Add Source button are hidden when DAB is selected
-- **DAB device_index format fixed** — hub-added DAB sources now produce `dab://ServiceName?channel=12D` (matching the local add form) instead of the incorrect `dab://12D` that was produced previously
-
-## Hub Dashboard UX (3.0.3)
-- **Open Dashboard opens in same tab** — removed `target="_blank"` from the replica dashboard link
-- **Auto-refresh pauses when panel is open or inputs are dirty** — the 15-second hub replica page refresh no longer wipes form inputs mid-edit
-
-## Stream Comparator Fixes (3.0.3)
-- **Cards now show PRE / POST badges** — stream cards with a comparison role display a coloured PRE or POST badge
-- **Dashboard 500 fixed** — the index route was only passing 3 fields in `comparators_data` but the template accessed 10+ fields; all fields now passed, eliminating silent Jinja2 `UndefinedError`
-- **Configuration hint** — if streams have comparison roles configured but no active pair exists, a guidance panel is shown explaining what to check
-
-## Settings Discoverability (3.0.3)
-- **Update and Backup accessible from every settings tab** — a ⬇ Backup link and 🔄 Update button are present in the action row of every settings panel; no longer necessary to scroll to the Maintenance tab to check for updates or download a backup
-
-## Installer Fixes (3.0.3–3.0.5)
-- **Raspberry Pi 5 overclock suppressed** — the installer no longer offers overclock settings when Pi 5 is detected (overclock is not supported on Pi 5 via this method)
-- **Sudo prompt timing fixed** — the sudo password prompt now appears only after all interactive questions have been answered, preventing the password from being entered into the wrong field
-- **Local file tie-breaking** — if a local `signalscope.py` in the current directory has the same version as the installed copy, the installer now prefers the local file (prompting a reinstall) rather than reporting "already up to date"
-- **psutil added** to the core pip install line for hub CPU / memory stats
-
-## Hub Dashboard Crash Fixes (3.0.4–3.0.5)
-- **500 after site removal fixed** — pending site stubs lack `streams`, `ptp`, `comparators` etc.; the template now skips those sections entirely for pending sites via `{% if not _pending %}` guards
-- **500 after site approval fixed** — between approval and the client's next full heartbeat, the site dict is still a minimal stub; `hub_dashboard()` now sets safe defaults (`streams=[]`, `ptp=…`) so the page renders cleanly immediately after approval
-- **psutil hub stats** — hub CPU and RAM usage now displayed in the hub summary bar (requires psutil, installed automatically from 3.0.5)
-
----
-
-# ✨ What's New in 3.0 (3.0.1–3.0.2)
-
-## Composite Logic Alerts (FM)
-- **STUDIO_FAULT** — silence detected while carrier and RDS are healthy; points to a studio/console fault upstream of the transmitter
-- **STL_FAULT** — silence with carrier present but RDS absent; indicates a studio-to-transmitter link failure
-- **TX_DOWN** — silence with weak or absent carrier; indicates transmitter or antenna failure
-- All three replace the generic SILENCE alert for FM streams with an RTL-SDR source, giving engineers an immediate fault location rather than just a silence notification
-
-## DAB Service Missing Alert
-- **DAB_SERVICE_MISSING** — fires when the DAB ensemble is locked but the configured service disappears from the multiplex; useful for detecting mux software faults while the RF path remains healthy
-
-## RTP Jitter Metric
-- RFC 3550-style inter-arrival time jitter tracked per Livewire/AES67 stream
-- Displayed live on each stream card (hidden when zero)
-- Colour-coded: green below 5 ms, amber above
-
-## Hub Notification Delegation (3.0.2)
-- **Suppress local notifications** — new per-client setting; when a client is connected to a hub, all email/webhook/Pushover alerts are suppressed locally and delegated to the hub instead
-- **Per-site alert rules on hub** — hub operators can configure forwarding rules on a per-client-site basis: enable/disable forwarding and select which alert types to forward (from the full type list)
-- Deduplication by event UUID prevents duplicate notifications when a client reconnects
-
----
-
-# ✨ What's New in 2.6.56–2.6.67
-
-## LUFS / EBU R128 Loudness Monitoring
-- **True peak alert (LUFS_TP)** — alert when the true peak level exceeds a configurable dBTP threshold (default −1.0 dBTP); fires per chunk
-- **Integrated loudness alert (LUFS_I)** — alert when the 30-second rolling integrated loudness deviates from a configurable EBU R128 target (default −23 LUFS ± 3 LU)
-- K-weighting filter applied in real-time via biquad cascade; no additional Python dependencies
-- Displayed on stream cards with momentary, short-term, and integrated LUFS values
+## Hub Mode
 
-## Alert Escalation
-- **Escalation alerts** — re-notify via all configured channels (email, webhook, Pushover) if an alert remains unacknowledged after a configurable number of minutes (per stream); 0 = off
-- Escalation uses the same cooldown deduplication as standard alerts
+SignalScope can operate as a central hub receiving data from multiple monitoring client nodes.
 
-## Stream Comparator
-- **Pre/post processing comparison** — pair any two streams (e.g. studio feed vs. air monitor) and SignalScope will cross-correlate them to measure processing delay
-- **Processor failure detection** — alerts (CMP_ALERT) when the post-processing stream goes silent while the pre-processing stream has audio
-- **Gain drift detection** — alerts when the level difference between pre and post streams exceeds a threshold, indicating compressor or AGC issues
-- **Dropout discrimination** — distinguishes single-path RTP loss from full processing chain failure
-- Comparator status and delay shown on the dashboard
+### Setting Up a Hub
 
-## In-App Self-Update
-- **Apply Update & Restart** button in the Maintenance panel checks GitHub for a newer version and, on confirmation, downloads the new `signalscope.py`, validates it with `py_compile`, replaces the running file, and sends SIGTERM — systemd/watchdog handles the restart automatically
-- No `sudo` required; only the app's own Python file is replaced
-
-## PTP Configurable Thresholds
-- PTP offset and jitter alert/warn thresholds are now configurable in the Settings UI (in µs) rather than being compile-time constants
-- Defaults remain 5 ms warn / 50 ms alert for offset and 2 ms / 10 ms for jitter — appropriate for NTP-synced passive observers
-- Guidance note in the settings explains how to tighten thresholds for a true PTP-slaved system
-
-## Installer: Raspberry Pi Overclock
-- Installer detects Raspberry Pi 3 and 4 and offers optional overclock settings at install/update time
-- Pi 3: arm_freq=1450 MHz, over_voltage=2, gpu_freq=500
-- Pi 4: arm_freq=2000 MHz, over_voltage=6, gpu_freq=750
-- Pi 5 is detected and excluded (overclock not supported via this method on Pi 5)
-- Settings are written idempotently to `/boot/firmware/config.txt` or `/boot/config.txt`
-
-## Installer: Nginx Repair Flow
-- On update runs where an existing nginx config is detected, the installer now checks config validity (`nginx -t`) and certificate presence
-- **Broken config** (test fails or cert missing): warns the user and prompts to remove and start the nginx setup from scratch, pre-filling the previous FQDN
-- **Healthy config**: shows the current FQDN and asks if the user wants to reconfigure
-- Previously the installer silently skipped nginx on all update runs, with no way to fix a failed Let's Encrypt setup without manually removing files
-
----
-
-# ✨ What's New in 2.6.52–2.6.55
-
-## Hub Reports
-- **Alert clip download** — each clip row on the hub reports page now has a ⬇ download button alongside the audio player, allowing engineers to save alert WAV files directly from the hub
-
-## Settings
-- **Backup & Export** — new panel at the bottom of Settings page; one click downloads a timestamped ZIP containing `lwai_config.json` and all trained AI model files (`ai_models/`), making migration and backup straightforward
-
-## CSRF fixes (all templates)
-- **Universal CSRF meta tag** — `<meta name="csrf-token">` added to every template that was missing it (`SETTINGS_TPL`, `REPORTS_TPL`, `INPUT_LIST_TPL`, `INPUT_FORM_TPL`, `HUB_REPORTS_TPL`); eliminates CSRF validation failures on DAB bulk-add, settings test-notify, and hub alert acknowledgement
-
----
-
-# ✨ What's New in 2.6.51
-
-## Security Hardening
-- **Path traversal fix** — `clips_delete` now validates stream name and filename against the snippet directory boundary using `os.path.abspath` checks, matching the existing `clips_serve` pattern
-- **DAB channel whitelist** — `/api/dab/test` now validates the channel parameter against an explicit allowlist of valid DAB channels; PPM offset is validated as a signed integer within ±1000
-- **SDR scan authentication** — `/api/sdr/scan` now requires a valid login session
-- **Flask secret key hardening** — secret key file is created with `0o600` permissions; `Content-Disposition` filenames are sanitised before being sent in headers
-
-## Hub Improvements
-- **Remote start/stop control** — hub operators can now start or stop monitoring on any client node directly from the hub dashboard; commands are delivered securely via the heartbeat ACK
-- **Reliable command delivery** — hub-controlled fields (`relay_bitrate`, pending commands) are now explicitly preserved across heartbeat updates so queued commands are never silently dropped
-- **Hub replica cards fixed** — `get_site()` now computes `online`, `age_s`, `health_pct`, and `latency_ms` dynamically, matching `get_sites()`; replica page cards now populate correctly
-- **CSRF fixed across all hub templates** — CSRF token is written to a `csrf_token` cookie via an `after_request` hook; all hub JavaScript now reads the token from the cookie first, eliminating template-specific meta-tag misses
-
-## DAB Improvements
-- **Shared mux stability on Pi 4** — `welle-cli` processes are now started with elevated scheduling priority (`nice -10`) to reduce CPU contention when running 4+ DAB services simultaneously on ARM hardware
-
----
-
-# ✨ What's New in 2.6.41–2.6.50
-
-## Hub Dashboard
-- **Live card updates working** — fixed a silent JavaScript error (`lastAlertState` undefined) that was preventing all AJAX DOM updates on the hub page
-- **Cache-busting on `/hub/data`** — added `Cache-Control: no-store` headers and `?_=timestamp` fetch parameters to prevent NGINX/browser caching stale data
-- **Reliable polling loop** — switched from `setInterval` to recursive `setTimeout` via `.finally()` to prevent timer stacking on slow connections
-- **Instant refresh on tab focus** — Page Visibility API handler fires `hubRefresh` immediately when switching back to the hub tab
-- **Reload-loop guard** — prevents "new site appeared" reloads from triggering more than once every 30 seconds
-- **Start/Stop buttons** — remote monitoring control buttons use `data-` attributes and event delegation to avoid HTML injection issues with site names containing spaces
-
-## DAB Improvements
-- **Bulk-add service fix** — service names were being URL-encoded in JavaScript but not decoded in `_run_dab`; fixed with `urllib.parse.unquote()`
-- **DAB add form UX** — name field and rule-based alert settings are hidden when DAB source type is selected
-- **DAB station list styling** — service rows now match the app's blue theme
-- **DLS text parsing** — `welle-cli` returns `dynamicLabel` as a JSON object; fixed to extract the `label` key
-- **DLS display** — DLS text on hub cards uses the same scrolling marquee as RDS RadioText
-
-## RDS / Metadata
-- **RDS RadioText scrolling restored** — hub cards check `fm_rds_rt || dab_dls` in both template and AJAX refresh loop
-- **DLS shown for DAB on hub cards** — `sc-rt-row` classes added to DAB DLS rows for live AJAX updates
-
-## Monitoring
-- **Clip threshold default** changed from `-3.0 dBFS` to `-1.0 dBFS` for more accurate clipping detection
-
-## Hub Audio
-- **Alert audio playback behind reverse proxy** — relay client sends an empty EOF chunk after WAV delivery so the hub closes the relay slot immediately rather than waiting for proxy timeout
-
----
-
-# ✨ What's New in 2.6
-
-## UI Improvements
-- Moveable dashboard cards
-- Improved layout and spacing
-- Cleaner hub dashboard
-- Improved top navigation and logo rendering
-
-## Hub Improvements
-- **Hub-only mode** removes the local dashboard
-- Ability to remove dead clients
-- Improved client visibility
-- More metadata displayed on hub cards
-
-## Metadata Enhancements
-- Improved **RDS handling**
-- Proper **RDS name locking**
-- **RDS RadioText display**
-- Improved DAB metadata support
-
-## Monitoring Improvements
-- Improved monitor reliability
-- Better SDR restart handling
-- Improved audio stream stability
-
-## Stability Fixes
-- Fixed setup wizard authentication bug
-- Improved session handling
-- Better fresh-install startup reliability
-
----
-
-# 📡 Features
-
-## Real-Time Signal Monitoring
-- FM monitoring via **RTL-SDR**
-- **DAB monitoring** with bulk service add
-- **Livewire / AES67 stream monitoring**
-
-## Metadata Detection
-- RDS Program Service name
-- RDS RadioText (scrolling display)
-- DAB DLS now-playing text (scrolling display)
-- DAB ensemble, service, mode, bitrate, signal strength
-
-## Alerting & AI
-- Rule-based alerts: silence, clipping, hiss
-- **Composite fault classification** — silence alerts automatically diagnose fault location across all source types:
-  - FM: STUDIO_FAULT / STL_FAULT / TX_DOWN based on carrier and RDS state
-  - DAB: DAB_AUDIO_FAULT (silence with mux locked and SNR healthy) / DAB_SERVICE_MISSING (service gone from ensemble)
-  - Livewire/AES67: RTP_FAULT (silence with ≥ 10% packet loss)
-- **LUFS / EBU R128 loudness monitoring** — true peak and integrated loudness alerts per stream
-- **Alert escalation** — re-notify if an alert remains unacknowledged after N minutes
-- **AI anomaly detection** — per-stream ONNX autoencoder, 24-hour learning phase
-- Email, webhook (MS Teams Adaptive Cards), and Pushover notifications
-- **SLA tracking** — monthly per-stream uptime percentage
-
-## Distributed Monitoring
-- Multi-node monitoring with a central **SignalScope Hub**
-- Remote client reporting with HMAC-SHA256 + AES-256-GCM encryption
-- Hub relay for audio playback through NAT / reverse proxies
-- **Remote start/stop** — hub operators can control monitoring state on client nodes
-- **Hub notification delegation** — clients can suppress local alerts and let the hub handle all notifications with per-site forwarding rules
-- **Stream comparator** — cross-correlate pre/post processing pairs to detect processor failures, gain drift, and single-path dropouts
-- **Broadcast Chains** — model full signal paths across sites; hub identifies the exact fault node and fires named CHAIN_FAULT / CHAIN_RECOVERED alerts through all notification channels
-
-## Metric History & Analytics
-- **SQLite time-series storage** — per-stream metrics written every minute; 90-day rolling retention; zero new dependencies
-- **Signal history charts** — collapsible Canvas chart on every stream card (level, LUFS, FM signal, DAB SNR, RTP jitter); 1 h / 6 h / 24 h range selector
-- **Availability timeline** — colour-coded 24 h bar on every card (green/red/amber/dark); click to cycle time range
-- **Trend analysis** — hour-of-day and day-of-week baselines; stream card badge when level is notably above or below the usual range; sustained deviation scoring escalates amber → red after ≥ 10 minutes
-- **Hub metric aggregation** — hub-only nodes accumulate history for all remote sites via heartbeat data; chart and timeline work on hub and replica pages
-
-## Web Dashboard
-- Real-time monitoring interface with live AJAX updates
-- Stream listen buttons (live audio in browser)
-- Signal metadata display with scrolling RDS/DLS text
-- Card-based monitoring layout with drag-to-reorder
-- Wall mode for NOC/control room displays
-
-## Backup & Migration
-- **One-click backup** — download a ZIP of your config + all trained AI models from the Settings page
-- Timestamped archive (`signalscope_backup_YYYYMMDD_HHMMSS.zip`) — extract into a new install to migrate instantly
-
-## Security
-- CSRF protection on all state-changing routes
-- PBKDF2-SHA256 password hashing with session timeouts and login rate limiting
-- Hub communication: HMAC signing, AES-256-GCM payload encryption, 30-second replay protection window, 60 RPM rate limiting
-- Path traversal protection on all file-serving routes
-- Input validation and channel whitelisting on SDR API endpoints
-
-## Network Friendly
-- Works behind reverse proxies (NGINX, Caddy, etc.)
-- NAT-friendly hub communication
-- Low bandwidth client reporting
-- `ProxyFix` middleware with correct header forwarding
-
----
-
-# 🖥 Dashboard
-
-Example dashboard layout showing monitored stations and metadata.
-
-_Add screenshot here_
-
-```text
-docs/images/dashboard.png
-```
-
----
-
-# 🌐 Hub Dashboard
-
-The hub dashboard aggregates data from multiple SignalScope clients across the network.
-
-_Add screenshot here_
-
-```text
-docs/images/hub-dashboard.png
-```
-
----
-
-# 🏗 Architecture
-
-SignalScope uses a **hub and client monitoring model**.
+Enable hub mode in **Settings → Hub**. Set a hub secret key — all client nodes must use the same key to connect.
+
+Client nodes connect to the hub by configuring the hub URL and secret in their own **Settings → Hub** page.
+
+### Site Approval
+
+New client connections wait in a **Pending Approval** state until a hub admin clicks **✓ Approve** on the hub dashboard. This prevents unauthorised nodes from feeding data to the hub. Client nodes running an outdated build are flagged with an **⚠ Update Required** banner.
+
+Sites persist until explicitly removed via the **✕ Remove** button — they are never pruned automatically, regardless of how long they have been offline.
+
+### Remote Management
+
+From the hub dashboard, operators can:
+
+- **Start/stop monitoring** on any client node without logging into that node
+- **Add or remove sources** on any client — FM, DAB, RTP, and HTTP sources can be added remotely, including a full DAB scan-and-bulk-add workflow
+- **View hub reports** — aggregated alert history, audio clips, and SLA data from all connected sites
+
+### Hub Notification Delegation
+
+Configure a client node to suppress its own notifications and delegate all alerting to the hub. The hub can then apply per-site forwarding rules — enabling or disabling specific alert types per site — before sending notifications. Deduplication by event UUID prevents duplicate notifications when a client reconnects.
+
+### Wall Mode
+
+Open `/hub?wall=1` (or click **Wall Mode** on the hub dashboard) for a purpose-built large-screen display:
+
+- **Header bar** — live clock, summary pills (Alerts / Warnings / Sites Offline / All OK)
+- **Connected Sites strip** — one colour-coded pill per site (green/amber/red/grey) with alert/warn count
+- **Broadcast Chains panel** — all chains as horizontal rows; fault node marked **FAULT POINT**; updates every 15 seconds via AJAX
+- **Stream Status grid** — every stream from every site in a unified grid, sorted alerts-first
+
+The page auto-refreshes every 60 seconds to pick up new streams or sites.
+
+### Hub Reports
+
+Hub Reports shows a consolidated alert timeline across all sites, with:
+
+- Summary cards for each alert type with click-to-filter
+- Chain column showing which broadcast chain each event belongs to
+- Audio clip playback and download for all alert snippets
+- SLA data per stream
+
+### Architecture
 
 ```mermaid
 flowchart LR
@@ -582,97 +374,131 @@ flowchart LR
     F --> G
 ```
 
-Each client monitors local RF or IP audio sources and reports status, metadata, and monitoring data back to a central hub. The hub can issue commands back to clients on heartbeat ACKs — including remote start/stop of monitoring.
+Each client monitors local RF or IP audio sources and reports status, metadata, and alert data to the hub via HMAC-signed, AES-256-GCM encrypted heartbeats. The hub issues commands back to clients on heartbeat ACKs.
 
 ---
 
-# 📻 Supported Inputs
+## Metric History & Analytics
 
-| Source | Supported |
-|------|------|
-| RTL-SDR FM | ✅ |
-| DAB via SDR | ✅ |
-| Livewire audio streams | ✅ |
-| AES67 streams | ✅ |
-| HTTP/HTTPS audio streams | ✅ |
-| Local ALSA/PulseAudio devices | ✅ |
-| Remote hub clients | ✅ |
+### SQLite History
 
----
+SignalScope writes per-stream metrics to `metrics_history.db` (SQLite) once per minute. No new Python dependencies are required. The database is created automatically on first start.
 
-# 🧰 Installation (Manual)
+Metrics stored per stream:
 
-SignalScope runs on **Ubuntu / Debian systems**.
+| Metric | Description |
+|---|---|
+| `level_dbfs` | Audio level |
+| `lufs_m`, `lufs_s`, `lufs_i` | LUFS Momentary, Short-term, Integrated |
+| `fm_signal_dbm` | FM carrier strength (FM streams only) |
+| `dab_snr` | DAB signal-to-noise ratio (DAB streams only) |
+| `dab_ok` | DAB service present in ensemble |
+| `rtp_loss_pct` | RTP packet loss percentage |
+| `rtp_jitter_ms` | RTP jitter (RFC 3550 EWMA) |
 
-## Install dependencies
+Data older than 90 days is pruned automatically once per day. This is configurable via `METRICS_RETENTION_DAYS`.
 
-```bash
-sudo apt update
-sudo apt install -y \
-python3 \
-python3-venv \
-rtl-sdr \
-welle.io \
-git
-```
+In hub mode, the hub accumulates history for all remote sites via heartbeat data — a hub-only machine with no local streams still builds full charts and timelines for all connected sites.
 
-## Clone repository
+### Signal History Charts
 
-```bash
-git clone https://github.com/itconor/SignalScope.git
-cd SignalScope
-```
+Click **📈 Signal History** on any stream card to expand a canvas-rendered chart. Select a time range (1 h / 6 h / 24 h) and a metric. When viewing Level dBFS, a dashed reference line and shaded band shows the expected level range for the current hour (requires ≥ 10 data points; see Trend Analysis).
 
-## Run installer
+### Availability Timeline
 
-```bash
-bash install_signalscope.sh
-```
+A colour-coded timeline bar sits below the level bar on every stream card:
 
----
+- 🟢 Green — signal present
+- 🔴 Red — silence / audio floor
+- 🟡 Amber — DAB service missing (ensemble locked, service absent)
+- ⬛ Dark — no data
 
-# ⚙ First Run Setup
+Click the bar to cycle between 24 h, 1 h, and 6 h views.
 
-The setup wizard will guide you through:
+### Trend Analysis
 
-1. SDR configuration
-2. Hub configuration (optional)
-3. Authentication setup
-4. Monitoring settings
+SignalScope builds an hour-of-day baseline (14-day rolling) and a day-of-week baseline (28-day rolling, 168 buckets). When the current level deviates more than ±1.5σ from the expected range, the stream card shows a trend badge:
 
-After setup completes the **dashboard will load automatically**.
+- `📉 Lower than usual (−2.1σ)` — amber
+- `📈 Higher than usual (+1.7σ)` — blue
+- When sustained for ≥ 10 consecutive minutes, the badge escalates to red and shows duration: `📉 Lower than usual (−2.3σ, 14 min)`
+
+The badge shows a `·dow` suffix when the day-of-week model is active.
+
+Trend data is available via the API at `/api/trend/<stream>`.
 
 ---
 
-# 🌍 Hub Mode
+## AI Anomaly Detection
 
-SignalScope can operate as a **central hub server** receiving data from multiple monitoring nodes.
+Each stream has its own ONNX autoencoder model trained on 14 audio features extracted from the 48 kHz / 24k-sample chunks:
 
-Hub features:
+- **Learning phase** — the model trains continuously for 24 hours after a stream is added. During this period the stream card shows a **Learning** badge and no anomaly alerts are raised.
+- **Detection** — after the learning phase, the autoencoder reconstruction error is compared to a learned threshold. Significant deviations trigger an `AI_ANOMALY` alert.
+- **Models are stored** in `ai_models/` and persist across restarts. They are included in the one-click backup ZIP.
 
-- Central monitoring dashboard with live AJAX updates (no page refresh needed)
-- Aggregated station data with per-stream level bars, AI status and RDS/DLS text
-- Remote node visibility with latency, heartbeat health %, and last-seen indicators
-- **Site approval gating** — new client connections wait in a *Pending* state until a hub admin approves them; old-build clients are flagged for update
-- **Remote start/stop** — control monitoring state on client nodes from the hub UI
-- **Remote source management** — add or remove FM, DAB, RTP, and HTTP sources on any client node directly from the hub dashboard
-- Client health monitoring with consecutive missed heartbeat tracking
-- Sites persist until explicitly removed — no automatic pruning of offline sites
-- Alert sound and card flash on new ALERT/WARN events
-- Wall mode for large-screen / NOC deployments
-- Encrypted hub relay for audio playback from behind NAT
-- **Broadcast Chains** — define signal chains across any combination of hub-local and remote-site streams; fault location identified and notified automatically
+AI analysis runs every 5 seconds on each stream, independently of the rule-based alert checks.
 
 ---
 
-# 🔧 Watchdog
+## Stream Comparator
 
-The installer configures a **systemd watchdog timer** that runs every minute and independently monitors:
+Pair two streams as PRE and POST to monitor signal integrity through a processing chain (e.g. studio feed vs. on-air monitor, or pre-processor vs. post-processor):
+
+- SignalScope cross-correlates the two streams to measure processing delay
+- **CMP_ALERT** fires when the post-processing stream goes silent while the pre-processing stream has audio — indicating processor failure rather than a content silence
+- Gain drift alerts fire when the level difference between pre and post exceeds a threshold, indicating compressor or AGC issues
+- Single-path RTP dropout is distinguished from full processing chain failure
+
+Configure comparator pairs in **Settings → Comparators**. PRE / POST badges appear on stream cards in the comparator role. Status and measured processing delay are shown on the dashboard.
+
+---
+
+## SLA Tracking
+
+SignalScope tracks monthly per-stream uptime as a percentage. A stream is counted as available for any minute in which its audio level is above the silence floor.
+
+SLA data is stored in `sla_data.json` and displayed per stream in Hub Reports.
+
+---
+
+## Security
+
+- **Authentication** — PBKDF2-SHA256 password hashing, session timeouts, and login rate limiting
+- **CSRF protection** — all state-changing routes require a valid CSRF token
+- **Hub communication** — HMAC-SHA256 signing, AES-256-GCM payload encryption, 30-second replay protection window, 60 RPM rate limiting per client
+- **Path traversal protection** — all file-serving routes validate paths against the snippet directory boundary
+- **SDR API** — DAB channel parameter validated against an explicit allowlist; PPM offset validated as a signed integer within ±1000; SDR scan endpoints require authentication
+- **Secret key** — Flask secret key file created with `0o600` permissions
+
+---
+
+## Supported Hardware
+
+| SDR Hardware | Supported |
+|---|---|
+| RTL-SDR Blog V3 | Yes |
+| RTL-SDR Blog V4 | Yes |
+| Generic RTL2832U dongles | Yes |
+
+| Input Type | Supported |
+|---|---|
+| RTL-SDR FM | Yes |
+| DAB via RTL-SDR | Yes |
+| Livewire / AES67 streams | Yes |
+| HTTP/HTTPS audio streams | Yes |
+| Local ALSA/PulseAudio devices | Yes |
+
+---
+
+## Watchdog
+
+The installer configures a systemd watchdog timer that runs every minute and independently monitors:
 
 - **SignalScope app** on port 5000 — restarts the `signalscope` service if unresponsive
 - **NGINX** on ports 443/80 — restarts nginx if configured and unresponsive
 
-Each service is monitored and restarted independently. Watchdog events are logged via `logger` and visible in the system journal:
+Each service is monitored and restarted independently. Watchdog events are visible in the system journal:
 
 ```bash
 journalctl -t signalscope-watchdog
@@ -680,33 +506,31 @@ journalctl -t signalscope-watchdog
 
 ---
 
-# 📻 Supported SDR Hardware
+## Backup & Migration
 
-- RTL-SDR
-- RTL-SDR Blog V3
-- RTL-SDR Blog V4
-- Generic RTL2832U dongles
+One-click backup is available in **Settings → Backup & Export**. This downloads a timestamped ZIP (`signalscope_backup_YYYYMMDD_HHMMSS.zip`) containing:
 
----
+- `lwai_config.json` — all configuration
+- `ai_models/` — all trained ONNX model files
 
-# 🛠 Project Status
+To migrate to a new machine: install SignalScope on the target, then extract the backup ZIP into the install directory before starting the service.
 
-SignalScope is under **active development**.
-
-Current build: **SignalScope-3.1.0** (Phase 3)
-
-New features and improvements are added regularly.
+In-app self-update is available in **Settings → Maintenance**. The **Apply Update & Restart** button checks GitHub for a newer version and, on confirmation, downloads the new `signalscope.py`, validates it with `py_compile`, replaces the running file, and sends SIGTERM — the systemd service and watchdog handle the restart automatically.
 
 ---
 
-# 🤝 Contributing
+## Contributing
 
-Pull requests and suggestions are welcome.
-
-If you encounter issues please open a **GitHub issue**.
+Pull requests and suggestions are welcome. If you encounter issues, please open a GitHub issue.
 
 ---
 
-# 📜 License
+## License
 
 MIT License
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for full version history.
