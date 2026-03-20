@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.0"
+BUILD                  = "SignalScope-3.2.1"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -2968,6 +2968,17 @@ def _check_dab_service_name(cfg, sender, log_fn, now: float):
         cfg._dab_service_prev = svc
 
 
+def _stream_in_any_chain(stream_name: str, app_cfg) -> bool:
+    """Return True if stream_name is a node in any configured signal chain.
+    Used to suppress redundant individual-stream notifications when a chain
+    fault covers the same event — the chain alert provides richer context."""
+    for chain in getattr(app_cfg, "signal_chains", None) or []:
+        for node in chain.get("nodes", []):
+            if node.get("stream") == stream_name:
+                return True
+    return False
+
+
 def _classify_silence_alert(cfg, lev: float):
     """Return (alert_key, title, message) for a silence event.
 
@@ -3063,8 +3074,12 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                 cfg._last_alerts[alert_key]=now
                 clip=_save_alert_wav(cfg,"silence",cfg.alert_wav_duration)
                 _add_history(cfg,alert_key,alert_msg,clip_path=clip or "")
-                sender.send(alert_title, alert_msg, clip,
-                    alert_type=alert_key, stream=cfg.name, level_dbfs=lev)
+                # If this stream is covered by a broadcast chain, suppress the
+                # individual notification — the CHAIN_FAULT alert provides
+                # richer context (fault location, downstream impact). Still logged above.
+                if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                    sender.send(alert_title, alert_msg, clip,
+                        alert_type=alert_key, stream=cfg.name, level_dbfs=lev)
                 log_fn(f"[ALERT] {alert_msg}")
             cfg._silence_secs=0.0
 
@@ -7583,18 +7598,61 @@ class HubServer:
                     curr   = result["status"]
                     if curr == "fault" and prev != "fault":
                         fn  = result["fault_node"] or {}
-                        msg = (f"Chain fault in '{result['name']}' — "
-                               f"fault at '{fn.get('label', '?')}' "
-                               f"(site: {fn.get('site', '?')}, "
-                               f"stream: {fn.get('stream', '?')})")
+                        idx = result.get("fault_index", 0) or 0
+                        nodes = result.get("nodes", [])
+                        total = len(nodes)
+                        downstream = total - idx - 1
+                        ds_note = (f" {downstream} downstream node(s) may also be affected."
+                                   if downstream > 0 else "")
+                        msg = (f"Chain fault in '{result['name']}' — signal lost at "
+                               f"'{fn.get('label', '?')}' (site: {fn.get('site', '?')}, "
+                               f"stream: {fn.get('stream', '?')}). "
+                               f"This is the first failed point in the chain.{ds_note}")
+                        # --- Audio clips & history ---
+                        # Clip the fault node (if local)
+                        fault_cfg = None
+                        fault_clip = None
+                        fault_stream = fn.get("stream", "")
+                        chain_label = result["name"]
+                        if fn.get("site") == "local":
+                            fault_cfg = next((i for i in cfg.inputs
+                                              if i.name == fault_stream and i.enabled), None)
+                            if fault_cfg:
+                                fault_clip = _save_alert_wav(
+                                    fault_cfg, f"chain_{chain_label}_fault")
+                                _add_history(fault_cfg, "CHAIN_FAULT", msg,
+                                             clip_path=fault_clip or "")
+                        # Clip the last-good node (node just before fault, if local)
+                        if idx > 0:
+                            lg_node = nodes[idx - 1]
+                            if lg_node.get("site") == "local":
+                                lg_stream = lg_node.get("stream", "")
+                                lg_cfg = next((i for i in cfg.inputs
+                                               if i.name == lg_stream and i.enabled), None)
+                                if lg_cfg:
+                                    lg_clip = _save_alert_wav(
+                                        lg_cfg, f"chain_{chain_label}_last_good")
+                                    lg_msg = (f"Chain '{result['name']}' — '{lg_cfg.name}' was "
+                                              f"the last node with signal before fault at "
+                                              f"'{fn.get('label', '?')}'.")
+                                    _add_history(lg_cfg, "CHAIN_FAULT", lg_msg,
+                                                 clip_path=lg_clip or "")
                         try:
                             sender.send(f"CHAIN FAULT — {result['name']}", msg,
+                                        fault_clip,
                                         alert_type="CHAIN_FAULT", stream=result["name"])
                             monitor.log(f"[Chain] {msg}")
                         except Exception as e:
                             monitor.log(f"[Chain] Alert send error: {e}")
                     elif curr == "ok" and prev == "fault":
                         rec_msg = f"Chain '{result['name']}' has recovered — all nodes OK."
+                        # Log recovery against all local nodes in the chain
+                        for node in result.get("nodes", []):
+                            if node.get("site") == "local":
+                                rc_cfg = next((i for i in cfg.inputs
+                                               if i.name == node.get("stream","") and i.enabled), None)
+                                if rc_cfg:
+                                    _add_history(rc_cfg, "CHAIN_FAULT", rec_msg)
                         try:
                             sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
                                         alert_type="CHAIN_FAULT", stream=result["name"])
@@ -13869,7 +13927,20 @@ def hub_reports():
     hub_server.set_secret(cfg.hub.secret_key)
     sites = hub_server.get_sites()
 
-    # Merge all sites' recent_alerts, tagging each with site name and client_addr
+    # Build stream→chain lookup from hub chain config
+    chain_cfg = cfg.signal_chains if cfg.hub.mode in ("hub","both") else []
+    stream_to_chain: dict = {}
+    chain_names_list: list = []
+    for ch in chain_cfg:
+        cname = ch.get("name","")
+        if cname and cname not in chain_names_list:
+            chain_names_list.append(cname)
+        for node in ch.get("nodes", []):
+            sname = node.get("stream","")
+            if sname:
+                stream_to_chain[sname] = cname
+
+    # Merge all sites' recent_alerts, tagging each with site name and chain membership
     all_events = []
     for s in sites:
         client_addr = s.get("_client_addr","")
@@ -13879,6 +13950,12 @@ def hub_reports():
             merged["_site"]        = site_name
             merged["_client_addr"] = client_addr
             merged["_online"]      = s.get("online", False)
+            ev_stream = merged.get("stream","")
+            # CHAIN_FAULT events: stream field holds the chain name directly
+            if merged.get("type") == "CHAIN_FAULT":
+                merged["_chain"] = ev_stream
+            else:
+                merged["_chain"] = stream_to_chain.get(ev_stream, "")
             all_events.append(merged)
 
     # Sort newest first
@@ -13888,6 +13965,7 @@ def hub_reports():
     f_site   = request.args.get("site","")
     f_stream = request.args.get("stream","")
     f_type   = request.args.get("type","")
+    f_chain  = request.args.get("chain","")
 
     site_names  = sorted(set(e["_site"]   for e in all_events))
     stream_names= sorted(set(e.get("stream","") for e in all_events if e.get("stream")))
@@ -13902,8 +13980,9 @@ def hub_reports():
         events=all_events, total=len(all_events),
         counts=counts, site_names=site_names,
         stream_names=stream_names, type_names=type_names,
+        chain_names=chain_names_list,
         with_clips=with_clips, build=BUILD,
-        f_site=f_site, f_stream=f_stream, f_type=f_type,
+        f_site=f_site, f_stream=f_stream, f_type=f_type, f_chain=f_chain,
     )
 
 
@@ -13953,7 +14032,10 @@ tr:hover td{background:#123764}
 .t-hiss{background:#2a2a1e;color:#fde68a}.t-rtp{background:#173a69;color:#c4b5fd}
 .t-ai_alert{background:#3a1e1e;color:#fca5a5}.t-ai_warn{background:#3a2a0f;color:#fde68a}
 .t-ptp{background:#1e3a2a;color:#86efac}.t-cmp{background:#2a1e3a;color:#d8b4fe}
+.t-chain_fault{background:#4a1010;color:#fca5a5;font-weight:700}
 .t-other{background:var(--bor);color:var(--mu)}
+.chain-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;background:#1e2e1a;color:#86efac;white-space:nowrap;font-weight:600}
+.chain-row td{border-left:3px solid var(--al)}
 .level-bar{display:inline-block;width:60px;height:6px;background:var(--bor);border-radius:3px;vertical-align:middle;margin-left:4px}
 .level-fill{height:6px;border-radius:3px}
 audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
@@ -13969,6 +14051,7 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
   <div class="summary">
     <div class="sc" data-ftypes="" onclick="filterByStat(this)" title="Show all events"><div class="sc-val" id="sc-total">{{total}}</div><div class="sc-lbl">Total Events</div></div>
     <div class="sc" data-ftypes="SILENCE,AI_ALERT,RTP_LOSS,CLIP,STUDIO_FAULT,STL_FAULT,TX_DOWN" onclick="filterByStat(this)" title="Filter: critical events"><div class="sc-val" id="sc-critical" style="color:var(--al)">{{counts.get('SILENCE',0)+counts.get('AI_ALERT',0)+counts.get('RTP_LOSS',0)+counts.get('STUDIO_FAULT',0)+counts.get('STL_FAULT',0)+counts.get('TX_DOWN',0)}}</div><div class="sc-lbl">🔴 Critical</div></div>
+    <div class="sc" data-ftypes="CHAIN_FAULT" onclick="filterByStat(this)" title="Filter: chain fault events"><div class="sc-val" style="color:var(--al)">{{counts.get('CHAIN_FAULT',0)}}</div><div class="sc-lbl">⛓ Chain Faults</div></div>
     <div class="sc" data-ftypes="AI_WARN,RTP_LOSS_WARN,HISS,DAB_SERVICE_MISSING" onclick="filterByStat(this)" title="Filter: warnings"><div class="sc-val" id="sc-warn" style="color:var(--wn)">{{counts.get('AI_WARN',0)+counts.get('RTP_LOSS_WARN',0)+counts.get('HISS',0)+counts.get('DAB_SERVICE_MISSING',0)}}</div><div class="sc-lbl">🟡 Warnings</div></div>
     <div class="sc" data-ftypes="RTP_LOSS,RTP_LOSS_WARN" onclick="filterByStat(this)" title="Filter: RTP loss events"><div class="sc-val" style="color:var(--acc)">{{counts.get('RTP_LOSS',0)+counts.get('RTP_LOSS_WARN',0)}}</div><div class="sc-lbl">📦 RTP Loss</div></div>
     <div class="sc" data-ftypes="PTP_OFFSET,PTP_JITTER,PTP_LOST,PTP_GM_CHANGE" onclick="filterByStat(this)" title="Filter: PTP events"><div class="sc-val" style="color:#86efac">{{counts.get('PTP_OFFSET',0)+counts.get('PTP_JITTER',0)+counts.get('PTP_LOST',0)+counts.get('PTP_GM_CHANGE',0)}}</div><div class="sc-lbl">🕐 PTP Events</div></div>
@@ -14002,6 +14085,14 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
         {% for t in type_names %}<option value="{{t}}" {{'selected' if f_type==t}}>{{t}}</option>{% endfor %}
       </select>
     </label>
+    {% if chain_names %}
+    <label>Chain
+      <select id="f_chain" onchange="applyFilters()">
+        <option value="">All chains</option>
+        {% for c in chain_names %}<option value="{{c}}" {{'selected' if f_chain==c}}>{{c}}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
     <label>From <input type="datetime-local" id="f_from" onchange="applyFilters()"></label>
     <label>To   <input type="datetime-local" id="f_to"   onchange="applyFilters()"></label>
     <label><input type="checkbox" id="f_clips" onchange="applyFilters()"> Clips only</label>
@@ -14016,6 +14107,7 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
         <th style="width:110px">Site</th>
         <th style="width:120px">Stream</th>
         <th style="width:95px">Type</th>
+        <th style="width:110px">Chain</th>
         <th>Detail</th>
         <th style="width:75px">Level</th>
         <th style="width:70px">RTP Loss</th>
@@ -14025,12 +14117,14 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
     <tbody id="evt_body">
     {% for e in events %}
     {% set tl = e.type.lower() if e.type else '' %}
-    {% set tc = 't-silence' if tl=='silence' else ('t-clip' if tl=='clip' else ('t-hiss' if tl=='hiss' else ('t-rtp' if 'rtp' in tl else ('t-ai_alert' if tl=='ai_alert' else ('t-ai_warn' if tl=='ai_warn' else ('t-ptp' if 'ptp' in tl else ('t-cmp' if 'cmp' in tl else 't-other'))))))) %}
-    <tr data-site="{{e._site}}" data-stream="{{e.stream or ''}}" data-type="{{e.type or ''}}" data-ts="{{e.ts or ''}}" data-clip="{{e.clip or ''}}" class="{{'offline-site' if not e._online else ''}}">
+    {% set tc = 'chain_fault' if tl=='chain_fault' else ('t-silence' if tl=='silence' else ('t-clip' if tl=='clip' else ('t-hiss' if tl=='hiss' else ('t-rtp' if 'rtp' in tl else ('t-ai_alert' if tl=='ai_alert' else ('t-ai_warn' if tl=='ai_warn' else ('t-ptp' if 'ptp' in tl else ('t-cmp' if 'cmp' in tl else 't-other')))))))) %}
+    {% set is_chain_row = tl == 'chain_fault' %}
+    <tr data-site="{{e._site}}" data-stream="{{e.stream or ''}}" data-type="{{e.type or ''}}" data-ts="{{e.ts or ''}}" data-clip="{{e.clip or ''}}" data-chain="{{e._chain or ''}}" class="{{'chain-row ' if is_chain_row else ''}}{{'offline-site' if not e._online else ''}}">
       <td style="color:var(--mu);font-size:12px;white-space:nowrap">{{e.ts or ''}}</td>
       <td><span class="site-badge">{{e._site}}</span></td>
       <td><strong>{{e.stream or ''}}</strong></td>
-      <td><span class="type-badge {{tc}}">{{e.type or ''}}</span></td>
+      <td><span class="type-badge t-{{tc}}">{{e.type or ''}}</span></td>
+      <td>{% if e._chain %}<span class="chain-badge" title="Broadcast chain">⛓ {{e._chain}}</span>{% else %}—{% endif %}</td>
       <td style="font-size:12px">{{e.message or ''}}</td>
       <td>
         {% if e.level_dbfs and e.level_dbfs > -120 %}
@@ -14057,7 +14151,7 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="8" class="no-data">No alert events from connected sites yet.</td></tr>
+    <tr><td colspan="9" class="no-data">No alert events from connected sites yet.</td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -14088,24 +14182,28 @@ function filterByStat(el){
 }
 
 function applyFilters(){
-  var fs = document.getElementById('f_site').value.toLowerCase();
-  var fst= document.getElementById('f_stream').value.toLowerCase();
-  var ft = document.getElementById('f_type').value.toLowerCase();
-  var ff = document.getElementById('f_from').value;
-  var ft2= document.getElementById('f_to').value;
-  var fc = document.getElementById('f_clips').checked;
+  var fs  = document.getElementById('f_site').value.toLowerCase();
+  var fst = document.getElementById('f_stream').value.toLowerCase();
+  var ft  = document.getElementById('f_type').value.toLowerCase();
+  var fch = (document.getElementById('f_chain')||{}).value||'';
+  fch = fch.toLowerCase();
+  var ff  = document.getElementById('f_from').value;
+  var ft2 = document.getElementById('f_to').value;
+  var fc  = document.getElementById('f_clips').checked;
   var rows = document.querySelectorAll('#evt_body tr[data-stream]');
   var vis = 0;
   rows.forEach(function(r){
-    var site = (r.dataset.site||'').toLowerCase();
-    var s = (r.dataset.stream||'').toLowerCase();
-    var t = (r.dataset.type||'').toLowerCase();
-    var ts= r.dataset.ts||'';
-    var c = r.dataset.clip||'';
-    var show = true;
+    var site  = (r.dataset.site||'').toLowerCase();
+    var s     = (r.dataset.stream||'').toLowerCase();
+    var t     = (r.dataset.type||'').toLowerCase();
+    var chain = (r.dataset.chain||'').toLowerCase();
+    var ts    = r.dataset.ts||'';
+    var c     = r.dataset.clip||'';
+    var show  = true;
     if(fs  && site!==fs) show=false;
     if(fst && s!==fst) show=false;
     if(ft  && !t.includes(ft)) show=false;
+    if(fch && chain!==fch) show=false;
     if(ff  && ts < ff.replace('T',' ')) show=false;
     if(ft2 && ts > ft2.replace('T',' ')) show=false;
     if(fc  && !c) show=false;
@@ -14120,12 +14218,14 @@ function applyFilters(){
 window.addEventListener('DOMContentLoaded', function(){
   // Pre-set filter dropdowns from URL params
   var p = new URLSearchParams(window.location.search);
-  if(p.get('site'))  document.getElementById('f_site').value   = p.get('site');
-  if(p.get('stream'))document.getElementById('f_stream').value = p.get('stream');
-  if(p.get('type'))  document.getElementById('f_type').value   = p.get('type');
+  if(p.get('site'))   document.getElementById('f_site').value   = p.get('site');
+  if(p.get('stream')) document.getElementById('f_stream').value = p.get('stream');
+  if(p.get('type'))   document.getElementById('f_type').value   = p.get('type');
+  if(p.get('chain') && document.getElementById('f_chain'))
+    document.getElementById('f_chain').value = p.get('chain');
   applyFilters();
   // Clear stat card highlight if user manually changes a filter control
-  ['f_site','f_stream','f_type','f_clips','f_from','f_to'].forEach(function(id){
+  ['f_site','f_stream','f_type','f_chain','f_clips','f_from','f_to'].forEach(function(id){
     var el=document.getElementById(id);
     if(el) el.addEventListener('change',function(){
       document.querySelectorAll('.sc.sc-active').forEach(function(c){c.classList.remove('sc-active');});
