@@ -58,14 +58,15 @@ A PowerShell installer (`install_signalscope_windows.ps1`) is included for Windo
 | **Composite fault alerts** | STUDIO_FAULT, STL_FAULT, TX_DOWN (FM); DAB_AUDIO_FAULT, DAB_SERVICE_MISSING (DAB); RTP_FAULT (Livewire/AES67) |
 | **Name mismatch alerts** | FM_RDS_MISMATCH, DAB_SERVICE_MISMATCH |
 | **AI anomaly detection** | Per-stream ONNX autoencoder with 24-hour learning phase |
-| **Broadcast Chains** | Visual signal path builder with fault location, node stacking, ad break handling, click-to-listen, comparators |
+| **Broadcast Chains** | Visual signal path builder with fault location, node stacking, ad break handling, maintenance bypass, flap detection, chain SLA, fault history, predictive level trend, shared fault detection, historical time-travel view |
 | **Stream comparator** | Cross-correlate pre/post processing pairs; detect processor failure, gain drift, dropout |
-| **Metric history** | SQLite time-series, 90-day retention, signal history charts, availability timeline, trend analysis |
+| **Metric history** | SQLite time-series, 90-day retention, signal history charts (15+ metrics), availability timeline, trend analysis |
 | **Notifications** | Email (SMTP), MS Teams Adaptive Cards, Pushover, plain text webhooks, alert escalation |
 | **Hub mode** | Multi-site aggregation, site approval, remote source management, wall mode, hub reports |
-| **PTP monitoring** | Offset, jitter, drift, grandmaster change detection |
-| **SLA tracking** | Monthly per-stream uptime percentage |
+| **PTP monitoring** | Offset, jitter, drift, grandmaster change detection; values logged to metric history |
+| **SLA tracking** | Monthly per-stream uptime percentage; chain SLA tracking |
 | **Security** | CSRF, PBKDF2-SHA256 passwords, HMAC+AES-256-GCM hub comms, session timeouts, rate limiting |
+| **Backup & restore** | One-click ZIP backup of config, AI models, signal history DB, SLA data, alert log and hub state |
 
 ---
 
@@ -185,6 +186,7 @@ Select **Local Sound Device** — a drop-down is populated from the OS device li
 | `CMP_ALERT` | Post-processing stream silent while pre-processing stream has audio |
 | `CHAIN_FAULT` | First down node identified in a broadcast chain |
 | `CHAIN_RECOVERED` | Previously faulted chain returns to fully OK |
+| `CHAIN_FLAPPING` | Chain has faulted and recovered 3+ times within 10 minutes |
 
 ### Setting Expected RDS / DAB Names
 
@@ -226,6 +228,7 @@ Broadcast Chains are configured and viewed on the hub under **Hub → Broadcast 
    - **Site** — choose `This node (local)` for streams on the hub machine, or any connected remote site
    - **Stream** — populated from the selected site's available streams
    - **Label** — optional friendly name (e.g. `Manchester TX`); defaults to the stream name
+   - **Machine tag** — optional server/hardware identifier (e.g. `LONCTAXZC03`); used for cross-chain shared fault correlation
 3. Click **💾 Save Chain**
 
 Example chain layouts:
@@ -246,14 +249,8 @@ Place multiple streams at the same chain position to model parallel monitoring (
 
 Click **+ Stack** within a position to add a second stream. Each stack has a **fault mode**:
 
-- **ALL down = fault** — the position only faults when every stream in the stack is silent. Use this for redundant receivers: one surviving receiver means the transmitter is still on air.
+- **Fault if ALL silent** — the position only faults when every stream in the stack is silent. Use this for redundant receivers: one surviving receiver means the transmitter is still on air.
 - **ANY down = fault** — the position faults if any single stream in the stack goes silent. Use this for stricter monitoring where every path is required.
-
-Stack fault alerts are descriptive:
-
-> `Chain fault in 'Absolute' — all 2 stream(s) at 'TX Output' are silent (DAB Rx, FM Rx). First failed position in the chain.`
-
-> `Chain fault in 'Absolute' — 1 of 2 stream(s) at 'TX Output' is silent (DAB Rx silent; FM Rx OK) — stack mode is ANY, so this triggers a fault.`
 
 ### Ad Break Handling
 
@@ -268,7 +265,45 @@ During the confirmation window:
 - The mix-in point node shows a **🔀 Mix-in — playing** marker
 - Nodes downstream of the mix-in remain green
 
-If the mix-in point itself goes silent mid-countdown, the confirmation timer is bypassed and the alert fires immediately.
+If the mix-in point itself goes silent mid-countdown, the confirmation timer is bypassed and the alert fires immediately. Ad break countdown time is not counted as downtime in chain SLA calculations — only confirmed faults count.
+
+### Flap Detection
+
+If a chain faults and recovers 3 or more times within a 10-minute window, SignalScope fires a `CHAIN_FLAPPING` alert instead of continued individual FAULT/RECOVERED notifications. Flapping is indicated on the chain view with an amber status badge. This typically indicates an intermittent connection or borderline RF signal rather than a hard failure.
+
+### Node Maintenance Bypass
+
+Mark any node as **In Maintenance** to exclude it from fault detection without removing it from the chain. A maintenance period is set in minutes; the node displays a maintenance badge and is skipped during chain evaluation until the timer expires. Useful when planned work on a single point would otherwise trigger false chain alerts.
+
+### Chain SLA
+
+Each chain accumulates an uptime percentage based on how long it has been in a confirmed-fault state versus monitored time. The SLA is displayed on the chain status view and updated once per minute. Ad break countdown periods and maintenance bypass periods are excluded from downtime — only confirmed faults count against the SLA.
+
+### Fault History Log
+
+Each chain maintains a rolling fault event log showing the last 50 fault/recovery transitions with timestamps, fault node details and duration. View it via the chain status API at `/api/chains/<id>/fault_log`.
+
+### Predictive Level Trend Warning
+
+SignalScope monitors the level trend for each node over the last 60 minutes. If level is falling at ≥ 0.3 dBFS/min (linear regression slope), the node shows a **📉 Falling** trend indicator before silence actually occurs. This gives engineers early warning of a degrading input — for example a transmitter slowly losing power or an IP feed with increasing congestion.
+
+### Shared Fault Detection
+
+When a chain fault fires, SignalScope checks whether the faulted node's hardware appears in any other chain and includes a note in the alert message:
+
+> `NOTE: other chains share hardware 'LONCTAXZC03': Cool FM Distribution, Absolute Radio Chain`
+
+This helps engineers immediately understand whether a fault is isolated to one chain or affects multiple services sharing the same server or hardware. Correlation priority:
+
+1. **Machine tag** (explicit, most reliable) — set in the chain builder node form
+2. **Hub site name** — streams from the same remote site are assumed to share hardware
+3. **Local stream name** — exact name match for local streams
+
+### Historical Chain View (Time Travel)
+
+The Broadcast Chains page includes a **📅 View History** picker. Select any past date and time to reconstruct how the chain appeared at that moment, using stored metric history. This is useful for post-incident review: see exactly which node was down and when, without relying on alert logs alone.
+
+Historical state is reconstructed from `metrics_history.db` — data is available for the retention window (default 90 days). Nodes with no data in a ±10-minute window around the selected time are shown as **Unknown**.
 
 ### Signal Comparators on Chains
 
@@ -288,9 +323,11 @@ Click any node bubble on the Broadcast Chains page to start live audio monitorin
 
 ### Chain Fault Alerts
 
-When a chain transitions from OK to fault, SignalScope sends a `CHAIN_FAULT` notification through all configured channels. The message names the exact fault node, its site, and how many downstream nodes may be affected.
+When a chain transitions from OK to fault, SignalScope sends a `CHAIN_FAULT` notification through all configured channels. The message names the exact fault node, its site, any shared hardware across other chains, and how many downstream nodes may be affected.
 
 When a chain returns to fully OK, a `CHAIN_RECOVERED` notification fires.
+
+When a chain is flapping (repeated fault/recovery), a single `CHAIN_FLAPPING` alert fires in place of continued individual fault/recovery notifications.
 
 When a stream is part of a chain, the CHAIN_FAULT notification takes priority: individual stream silence alerts are still logged to alert history but push notifications for those streams are suppressed, preventing alert storms.
 
@@ -376,33 +413,46 @@ flowchart LR
 
 Each client monitors local RF or IP audio sources and reports status, metadata, and alert data to the hub via HMAC-signed, AES-256-GCM encrypted heartbeats. The hub issues commands back to clients on heartbeat ACKs.
 
+In hub mode, the hub accumulates metric history for all remote sites from heartbeat data — a hub-only machine with no local streams still builds full signal history charts for all connected sites.
+
 ---
 
 ## Metric History & Analytics
 
 ### SQLite History
 
-SignalScope writes per-stream metrics to `metrics_history.db` (SQLite) once per minute. No new Python dependencies are required. The database is created automatically on first start.
+SignalScope writes per-stream metrics to `metrics_history.db` (SQLite) once per minute. No additional Python dependencies are required. The database is created automatically on first start.
 
 Metrics stored per stream:
 
-| Metric | Description |
-|---|---|
-| `level_dbfs` | Audio level |
-| `lufs_m`, `lufs_s`, `lufs_i` | LUFS Momentary, Short-term, Integrated |
-| `fm_signal_dbm` | FM carrier strength (FM streams only) |
-| `dab_snr` | DAB signal-to-noise ratio (DAB streams only) |
-| `dab_ok` | DAB service present in ensemble |
-| `rtp_loss_pct` | RTP packet loss percentage |
-| `rtp_jitter_ms` | RTP jitter (RFC 3550 EWMA) |
+| Metric | Streams | Description |
+|---|---|---|
+| `level_dbfs` | All | Audio level in dBFS |
+| `lufs_m`, `lufs_s`, `lufs_i` | All | LUFS Momentary, Short-term, Integrated |
+| `silence_flag` | All | 1.0 = currently silent (at or below threshold), 0.0 = audio present |
+| `clip_count` | All | Clipping events per snapshot window |
+| `fm_signal_dbm` | FM | RF carrier strength |
+| `fm_snr_db` | FM | Signal-to-noise ratio |
+| `fm_stereo` | FM | 1.0 = stereo pilot present, 0.0 = mono |
+| `fm_rds_ok` | FM | 1.0 = RDS lock confirmed, 0.0 = no lock |
+| `dab_snr` | DAB | DAB signal-to-noise ratio |
+| `dab_ok` | DAB | 1.0 = service present in ensemble |
+| `dab_sig` | DAB | DAB signal level dBm |
+| `dab_bitrate` | DAB | Service bitrate in kbps |
+| `rtp_loss_pct` | RTP/AES67 | Packet loss percentage |
+| `rtp_jitter_ms` | RTP/AES67 | Jitter (RFC 3550 EWMA) in milliseconds |
+| `ptp_offset_us` | PTP | Clock offset in microseconds (keyed `ptp/local` or `ptp/<site>`) |
+| `ptp_jitter_us` | PTP | PTP jitter in microseconds |
+| `ptp_drift_us` | PTP | PTP drift in microseconds |
+| `chain_status` | Chains | 1.0 = OK, 0.0 = faulted (keyed `chain/<id>`) |
+| `health_pct` | Hub sites | Heartbeat success rate % (keyed `site/<name>`) |
+| `latency_ms` | Hub sites | Round-trip heartbeat latency in milliseconds |
 
-Data older than 90 days is pruned automatically once per day. This is configurable via `METRICS_RETENTION_DAYS`.
-
-In hub mode, the hub accumulates history for all remote sites via heartbeat data — a hub-only machine with no local streams still builds full charts and timelines for all connected sites.
+Data older than 90 days is pruned automatically once per day.
 
 ### Signal History Charts
 
-Click **📈 Signal History** on any stream card to expand a canvas-rendered chart. Select a time range (1 h / 6 h / 24 h) and a metric. When viewing Level dBFS, a dashed reference line and shaded band shows the expected level range for the current hour (requires ≥ 10 data points; see Trend Analysis).
+Click **📈 Signal History** on any stream card to expand a canvas-rendered chart. Select a time range (1 h / 6 h / 24 h) and a metric from the dropdown — all applicable metrics for the stream type are listed. When viewing Level dBFS, a dashed reference line and shaded band shows the expected level range for the current hour (see Trend Analysis).
 
 ### Availability Timeline
 
@@ -435,7 +485,7 @@ Each stream has its own ONNX autoencoder model trained on 14 audio features extr
 
 - **Learning phase** — the model trains continuously for 24 hours after a stream is added. During this period the stream card shows a **Learning** badge and no anomaly alerts are raised.
 - **Detection** — after the learning phase, the autoencoder reconstruction error is compared to a learned threshold. Significant deviations trigger an `AI_ANOMALY` alert.
-- **Models are stored** in `ai_models/` and persist across restarts. They are included in the one-click backup ZIP.
+- **Models are stored** in `ai_models/` and persist across restarts. They are included in the backup ZIP.
 
 AI analysis runs every 5 seconds on each stream, independently of the rule-based alert checks.
 
@@ -457,6 +507,8 @@ Configure comparator pairs in **Settings → Comparators**. PRE / POST badges ap
 ## SLA Tracking
 
 SignalScope tracks monthly per-stream uptime as a percentage. A stream is counted as available for any minute in which its audio level is above the silence floor.
+
+Broadcast Chains also have their own SLA tracking — a chain is counted as down only when it has transitioned to a confirmed-fault state. Ad break countdown periods and maintenance bypass periods do not count as downtime.
 
 SLA data is stored in `sla_data.json` and displayed per stream in Hub Reports.
 
@@ -508,12 +560,22 @@ journalctl -t signalscope-watchdog
 
 ## Backup & Migration
 
-One-click backup is available in **Settings → Backup & Export**. This downloads a timestamped ZIP (`signalscope_backup_YYYYMMDD_HHMMSS.zip`) containing:
+One-click backup is available in **Settings → Maintenance → Backup & Restore**. This downloads a timestamped ZIP (`signalscope_backup_YYYYMMDD_HHMMSS.zip`) containing everything needed to fully restore or migrate an installation:
 
-- `lwai_config.json` — all configuration
-- `ai_models/` — all trained ONNX model files
+| File | Contents |
+|---|---|
+| `lwai_config.json` | All configuration and stream settings |
+| `ai_models/` | All trained ONNX autoencoder model files |
+| `metrics_history.db` | Signal history database (90 days of per-stream metrics) |
+| `sla_data.json` | SLA uptime records |
+| `alert_log.json` | Full alert event history |
+| `hub_state.json` | Hub site registrations and connection state |
 
-To migrate to a new machine: install SignalScope on the target, then extract the backup ZIP into the install directory before starting the service.
+The metrics database is snapshotted cleanly using SQLite's built-in backup API, so the file is always consistent even if SignalScope is actively writing at the time.
+
+To restore, upload the ZIP via **Settings → Maintenance → Restore from Backup**. Config, AI models, metrics history, SLA data, alert log and hub state are all restored and monitoring restarts automatically.
+
+To migrate to a new machine: install SignalScope on the target, upload the backup ZIP via the restore page, and monitoring will restart with the full history and configuration intact.
 
 In-app self-update is available in **Settings → Maintenance**. The **Apply Update & Restart** button checks GitHub for a newer version and, on confirmation, downloads the new `signalscope.py`, validates it with `py_compile`, replaces the running file, and sends SIGTERM — the systemd service and watchdog handle the restart automatically.
 
