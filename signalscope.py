@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.2"
+BUILD                  = "SignalScope-3.2.3"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -13739,6 +13739,14 @@ main{padding:18px;max-width:1600px;margin:0 auto}
   <div id="builder_status" style="margin-top:8px;font-size:12px;color:var(--mu)"></div>
 </div>
 
+<!-- Chain data lookup — avoids JSON-in-HTML-attribute encoding issues -->
+<script nonce="{{csp_nonce()}}">
+var _chainData={
+{% for c in chains %}{{c.id|tojson}}:{{c|tojson}}{{',' if not loop.last else ''}}
+{% endfor %}
+};
+</script>
+
 <!-- Chain list -->
 <div id="chains_list">
 {% if not chains %}
@@ -13754,7 +13762,7 @@ main{padding:18px;max-width:1600px;margin:0 auto}
     {% endif %}
     <span style="font-size:12px;color:var(--al)" id="fault_label_{{c.id|e}}"></span>
     <div class="chain-actions">
-      <button class="btn bg bs chain-edit-btn" data-chain="{{c|tojson|e}}">✎ Edit</button>
+      <button class="btn bg bs chain-edit-btn" data-chain-id="{{c.id|e}}">✎ Edit</button>
       <button class="btn bd bs chain-delete-btn" data-id="{{c.id|e}}" data-name="{{c.name|e}}">✕ Delete</button>
     </div>
   </div>
@@ -13975,7 +13983,12 @@ function deleteChain(id,name){
 // Delegated listeners
 document.addEventListener('click',function(e){
   var eb=e.target.closest('.chain-edit-btn');
-  if(eb){try{showBuilder(JSON.parse(eb.dataset.chain));}catch(_){}return;}
+  if(eb){
+    var chain=_chainData[eb.dataset.chainId];
+    if(chain){try{showBuilder(chain);}catch(err){console.error('[Chain edit]',err);}}
+    else{console.error('[Chain edit] No data for id:',eb.dataset.chainId);}
+    return;
+  }
   var db=e.target.closest('.chain-delete-btn');
   if(db){deleteChain(db.dataset.id,db.dataset.name);return;}
 });
