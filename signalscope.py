@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.1"
+BUILD                  = "SignalScope-3.2.2"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -7213,8 +7213,12 @@ class HubServer:
         self._notified_lock = threading.Lock()
         # Transient DAB scan results — keyed by site name, cleared after delivery
         self._dab_scan_results: Dict[str, dict] = {}
-        # Chain fault state for dedup alerting — chain_id → last known status
+        # Chain fault state for dedup alerting — chain_id → "ok" | "pending" | "alerted"
+        # "pending"  = fault detected but confirmation window not yet elapsed
+        # "alerted"  = fault confirmed and notification sent
         self._chain_fault_state: dict = {}
+        # When a chain entered "pending" state (epoch seconds)
+        self._chain_fault_since: dict = {}
         self._load_state()   # restore across restarts
 
     def set_secret(self, secret: str):
@@ -7295,6 +7299,15 @@ class HubServer:
                     data.pop("_client_addr", None)   # IP may have changed
                     self._sites[name] = data
                 print(f"[HubServer] Loaded {len(saved)} site(s) from state file")
+                # Pre-populate notified IDs from saved alert history so that
+                # existing alerts are not re-forwarded as new events after restart.
+                with self._notified_lock:
+                    for data in self._sites.values():
+                        for evt in data.get("recent_alerts", []):
+                            eid = evt.get("id", "")
+                            if eid:
+                                self._notified_ids[eid] = True
+                print(f"[HubServer] Pre-seeded {len(self._notified_ids)} alert ID(s) to prevent restart spam")
         except Exception as e:
             print(f"[HubServer] Could not load state: {e}")
 
@@ -7584,9 +7597,24 @@ class HubServer:
         }
 
     def _chains_monitor_loop(self, stop_evt):
-        """Background thread: evaluate all chains every 30 s and fire CHAIN_FAULT alerts."""
+        """Background thread: evaluate all chains every 30 s and fire CHAIN_FAULT alerts.
+
+        Fault confirmation window (min_fault_seconds):
+          Each chain can define ``min_fault_seconds`` (default 0).  A chain must
+          remain in fault continuously for at least that many seconds before an
+          alert is sent.  This suppresses spurious alerts during ad breaks, where
+          the upstream node (playout / studio) goes silent while the TX continues
+          playing spots from a separate source.
+
+        Internal state values stored in ``_chain_fault_state``:
+          "ok"      — chain is healthy (or no state yet)
+          "pending" — fault detected; confirmation window not yet elapsed
+          "alerted" — fault confirmed and notification already sent
+        """
+        _warmed_up = False   # first pass: populate state without firing alerts
         while not stop_evt.is_set():
             try:
+                now    = time.time()
                 cfg    = monitor.app_cfg
                 sender = AlertSender(cfg, monitor.log)
                 for chain in cfg.signal_chains:
@@ -7594,78 +7622,141 @@ class HubServer:
                     if not cid:
                         continue
                     result = self.eval_chain(chain)
-                    prev   = self._chain_fault_state.get(cid)
-                    curr   = result["status"]
-                    if curr == "fault" and prev != "fault":
-                        fn  = result["fault_node"] or {}
-                        idx = result.get("fault_index", 0) or 0
-                        nodes = result.get("nodes", [])
-                        total = len(nodes)
-                        downstream = total - idx - 1
-                        ds_note = (f" {downstream} downstream node(s) may also be affected."
-                                   if downstream > 0 else "")
-                        msg = (f"Chain fault in '{result['name']}' — signal lost at "
-                               f"'{fn.get('label', '?')}' (site: {fn.get('site', '?')}, "
-                               f"stream: {fn.get('stream', '?')}). "
-                               f"This is the first failed point in the chain.{ds_note}")
-                        # --- Audio clips & history ---
-                        # Clip the fault node (if local)
-                        fault_cfg = None
-                        fault_clip = None
-                        fault_stream = fn.get("stream", "")
-                        chain_label = result["name"]
-                        if fn.get("site") == "local":
-                            fault_cfg = next((i for i in cfg.inputs
-                                              if i.name == fault_stream and i.enabled), None)
-                            if fault_cfg:
-                                fault_clip = _save_alert_wav(
-                                    fault_cfg, f"chain_{chain_label}_fault")
-                                _add_history(fault_cfg, "CHAIN_FAULT", msg,
-                                             clip_path=fault_clip or "")
-                        # Clip the last-good node (node just before fault, if local)
-                        if idx > 0:
-                            lg_node = nodes[idx - 1]
-                            if lg_node.get("site") == "local":
-                                lg_stream = lg_node.get("stream", "")
-                                lg_cfg = next((i for i in cfg.inputs
-                                               if i.name == lg_stream and i.enabled), None)
-                                if lg_cfg:
-                                    lg_clip = _save_alert_wav(
-                                        lg_cfg, f"chain_{chain_label}_last_good")
-                                    lg_msg = (f"Chain '{result['name']}' — '{lg_cfg.name}' was "
-                                              f"the last node with signal before fault at "
-                                              f"'{fn.get('label', '?')}'.")
-                                    _add_history(lg_cfg, "CHAIN_FAULT", lg_msg,
-                                                 clip_path=lg_clip or "")
-                        try:
-                            sender.send(f"CHAIN FAULT — {result['name']}", msg,
-                                        fault_clip,
-                                        alert_type="CHAIN_FAULT", stream=result["name"])
-                            monitor.log(f"[Chain] {msg}")
-                        except Exception as e:
-                            monitor.log(f"[Chain] Alert send error: {e}")
-                    elif curr == "ok" and prev == "fault":
-                        rec_msg = f"Chain '{result['name']}' has recovered — all nodes OK."
-                        # Log recovery against all local nodes in the chain
-                        for node in result.get("nodes", []):
-                            if node.get("site") == "local":
-                                rc_cfg = next((i for i in cfg.inputs
-                                               if i.name == node.get("stream","") and i.enabled), None)
-                                if rc_cfg:
-                                    _add_history(rc_cfg, "CHAIN_FAULT", rec_msg)
-                        try:
-                            sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
-                                        alert_type="CHAIN_FAULT", stream=result["name"])
-                            monitor.log(f"[Chain] {rec_msg}")
-                        except Exception as e:
-                            monitor.log(f"[Chain] Recovery notification error: {e}")
-                    self._chain_fault_state[cid] = curr
+                    curr   = result["status"]   # "ok" | "fault" | "unknown"
+                    min_fault_secs = max(0, int(chain.get("min_fault_seconds", 0) or 0))
+
+                    # Check whether the configured ad mix-in point is also silent.
+                    # If it is, we know this can't be an ad break (ads would keep it
+                    # alive) — skip the confirmation timer and alert immediately.
+                    mixin_idx = chain.get("mixin_node_idx")
+                    mixin_is_down = False
+                    if mixin_idx is not None:
+                        _eval_nodes = result.get("nodes", [])
+                        if 0 <= int(mixin_idx) < len(_eval_nodes):
+                            mixin_is_down = _eval_nodes[int(mixin_idx)].get("status") in (
+                                "down", "offline")
+
+                    if not _warmed_up:
+                        # Seed state silently so pre-existing faults don't re-fire.
+                        # Treat existing faults as already alerted so recovery is still detected.
+                        self._chain_fault_state[cid] = "alerted" if curr == "fault" else "ok"
+                        continue
+
+                    prev = self._chain_fault_state.get(cid, "ok")
+
+                    # ── Fault detection ──────────────────────────────────────
+                    if curr == "fault":
+                        if prev == "ok":
+                            if min_fault_secs == 0 or mixin_is_down:
+                                # Alert immediately — no delay, or mix-in is also down
+                                if mixin_is_down and min_fault_secs > 0:
+                                    monitor.log(
+                                        f"[Chain] '{result['name']}' — mix-in point also silent, "
+                                        f"bypassing {min_fault_secs}s confirmation window.")
+                                self._chain_fault_state[cid] = "alerted"
+                                self._chain_fault_since.pop(cid, None)
+                                self._fire_chain_fault(result, chain, cfg, sender, now)
+                            else:
+                                # Start confirmation window
+                                self._chain_fault_state[cid] = "pending"
+                                self._chain_fault_since[cid] = now
+                                monitor.log(
+                                    f"[Chain] '{result['name']}' entered fault state — "
+                                    f"waiting {min_fault_secs}s confirmation before alerting.")
+                        elif prev == "pending":
+                            elapsed = now - self._chain_fault_since.get(cid, now)
+                            if elapsed >= min_fault_secs or mixin_is_down:
+                                # Confirmation window elapsed, or mix-in just went silent
+                                reason = ("mix-in point also silent"
+                                          if mixin_is_down and elapsed < min_fault_secs
+                                          else f"{round(elapsed)}s elapsed")
+                                monitor.log(
+                                    f"[Chain] '{result['name']}' fault confirmed ({reason}).")
+                                self._chain_fault_state[cid] = "alerted"
+                                self._chain_fault_since.pop(cid, None)
+                                self._fire_chain_fault(result, chain, cfg, sender, now)
+                            # else: still waiting — do nothing
+                        # prev == "alerted": already notified, nothing to do
+
+                    # ── Recovery detection ───────────────────────────────────
+                    elif curr == "ok":
+                        if prev == "alerted":
+                            # Real fault recovered — send recovery notification
+                            rec_msg = f"Chain '{result['name']}' has recovered — all nodes OK."
+                            for node in result.get("nodes", []):
+                                if node.get("site") == "local":
+                                    rc_cfg = next((i for i in cfg.inputs
+                                                   if i.name == node.get("stream", "") and i.enabled), None)
+                                    if rc_cfg:
+                                        _add_history(rc_cfg, "CHAIN_FAULT", rec_msg)
+                            try:
+                                sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
+                                            alert_type="CHAIN_FAULT", stream=result["name"])
+                                monitor.log(f"[Chain] {rec_msg}")
+                            except Exception as e:
+                                monitor.log(f"[Chain] Recovery notification error: {e}")
+                            self._chain_fault_state[cid] = "ok"
+                        elif prev == "pending":
+                            # Fault resolved within confirmation window (e.g. ad break ended)
+                            elapsed = round(now - self._chain_fault_since.get(cid, now), 1)
+                            monitor.log(
+                                f"[Chain] '{result['name']}' recovered within confirmation "
+                                f"window ({elapsed}s) — no alert sent (likely ad break).")
+                            self._chain_fault_state[cid] = "ok"
+                            self._chain_fault_since.pop(cid, None)
+                        # prev == "ok": already ok, nothing to do
+
             except Exception as e:
                 try:
                     monitor.log(f"[Chain] Monitor loop error: {e}")
                 except Exception:
                     pass
+            _warmed_up = True
             stop_evt.wait(30)
+
+    def _fire_chain_fault(self, result: dict, chain: dict, cfg, sender, now: float):
+        """Send CHAIN_FAULT alert, save audio clips, and log to alert history."""
+        fn   = result["fault_node"] or {}
+        idx  = result.get("fault_index", 0) or 0
+        nodes = result.get("nodes", [])
+        total = len(nodes)
+        downstream = total - idx - 1
+        ds_note = (f" {downstream} downstream node(s) may also be affected."
+                   if downstream > 0 else "")
+        msg = (f"Chain fault in '{result['name']}' — signal lost at "
+               f"'{fn.get('label', '?')}' (site: {fn.get('site', '?')}, "
+               f"stream: {fn.get('stream', '?')}). "
+               f"This is the first failed point in the chain.{ds_note}")
+        # Clip the fault node (if local)
+        fault_cfg  = None
+        fault_clip = None
+        fault_stream = fn.get("stream", "")
+        chain_label  = result["name"]
+        if fn.get("site") == "local":
+            fault_cfg = next((i for i in cfg.inputs
+                              if i.name == fault_stream and i.enabled), None)
+            if fault_cfg:
+                fault_clip = _save_alert_wav(fault_cfg, f"chain_{chain_label}_fault")
+                _add_history(fault_cfg, "CHAIN_FAULT", msg, clip_path=fault_clip or "")
+        # Clip the last-good node (node just before fault, if local)
+        if idx > 0:
+            lg_node = nodes[idx - 1]
+            if lg_node.get("site") == "local":
+                lg_stream = lg_node.get("stream", "")
+                lg_cfg = next((i for i in cfg.inputs
+                               if i.name == lg_stream and i.enabled), None)
+                if lg_cfg:
+                    lg_clip = _save_alert_wav(lg_cfg, f"chain_{chain_label}_last_good")
+                    lg_msg = (f"Chain '{result['name']}' — '{lg_cfg.name}' was "
+                              f"the last node with signal before fault at "
+                              f"'{fn.get('label', '?')}'.")
+                    _add_history(lg_cfg, "CHAIN_FAULT", lg_msg, clip_path=lg_clip or "")
+        try:
+            sender.send(f"CHAIN FAULT — {result['name']}", msg, fault_clip,
+                        alert_type="CHAIN_FAULT", stream=result["name"])
+            monitor.log(f"[Chain] {msg}")
+        except Exception as e:
+            monitor.log(f"[Chain] Alert send error: {e}")
 
     # ── Query ─────────────────────────────────────────────────────────────────
     def get_sites(self) -> List[dict]:
@@ -13557,79 +13648,93 @@ BROADCAST_CHAINS_TPL = r"""<!doctype html><html lang="en"><head><meta charset="u
 body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:14px;position:relative}
 body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}
 body>*{position:relative;z-index:1}
-/* nav / header — matches hub exactly */
 header{display:flex;align-items:center;gap:10px;padding:0 20px;min-height:64px;flex-wrap:wrap}
 nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .nav-active{background:var(--acc)!important;color:#fff!important}
-/* buttons — identical classes to hub */
-.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600;transition:filter .15s}
-.btn:hover{filter:brightness(1.08)}
-.bp{background:var(--acc);color:#fff}
-.bg{background:var(--bor);color:var(--tx)}
-.bd{background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d}
-.bs{padding:3px 9px;font-size:12px}
-/* form inputs */
+.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600;transition:filter .15s}.btn:hover{filter:brightness(1.08)}
+.bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}.bd{background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d}.bs{padding:3px 9px;font-size:12px}
 select,input[type=text]{background:#12305c;border:1px solid var(--bor);color:var(--tx);border-radius:8px;padding:7px 10px;font-size:13px}
 select:focus,input[type=text]:focus{outline:none;border-color:var(--acc)}
 label{display:block;font-size:12px;color:var(--mu);margin-bottom:4px}
-/* layout */
 main{padding:18px;max-width:1600px;margin:0 auto}
 .page-title{display:flex;align-items:center;gap:12px;margin-bottom:20px}
 .page-title h1{font-size:18px;font-weight:700}
-/* chain cards — matches .site-card style */
 .chain-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;margin-bottom:16px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.18);transition:transform .14s,box-shadow .14s}
 .chain-card:hover{transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.24)}
-.chain-card.card-ok{border-left:4px solid var(--ok)}
-.chain-card.card-fault{border-left:4px solid var(--al)}
-.chain-card.card-unknown{border-left:4px solid var(--mu)}
+.chain-card.card-ok{border-left:4px solid var(--ok)}.chain-card.card-fault{border-left:4px solid var(--al)}.chain-card.card-unknown{border-left:4px solid var(--mu)}
 .chain-header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--bor);flex-wrap:wrap}
 .chain-name{font-size:16px;font-weight:700}
-/* status badge — matches hub .badge style */
 .badge{font-size:11px;padding:2px 8px;border-radius:999px;font-weight:700}
-.badge-ok{background:#14532d;color:#86efac}
-.badge-fault{background:#450a0a;color:#fca5a5}
-.badge-unknown{background:#1e3a5f;color:var(--acc)}
+.badge-ok{background:#14532d;color:#86efac}.badge-fault{background:#450a0a;color:#fca5a5}.badge-unknown{background:#1e3a5f;color:var(--acc)}
 .chain-actions{margin-left:auto;display:flex;gap:6px;flex-shrink:0}
-/* chain visual area */
 .chain-visual{display:flex;align-items:center;flex-wrap:wrap;gap:0;padding:14px 16px;overflow-x:auto}
 .chain-arrow{display:flex;align-items:center;color:var(--mu);font-size:22px;padding:0 8px;flex-shrink:0}
 .chain-node{border:2px solid var(--bor);border-radius:10px;padding:10px 14px;min-width:120px;max-width:180px;text-align:center;position:relative;transition:border-color .3s,background .3s;background:var(--bg)}
-.chain-node.ok{border-color:var(--ok);background:rgba(34,197,94,.07)}
-.chain-node.down{border-color:var(--al);background:rgba(239,68,68,.09)}
-.chain-node.offline{border-color:#374151;opacity:.6}
-.chain-node.unknown{border-color:var(--bor)}
-.chain-node.downstream{border-color:#1e3a5f;opacity:.5}
-.node-label{font-weight:700;font-size:12px;word-break:break-word}
-.node-sub{font-size:10px;color:var(--mu);margin-top:3px;word-break:break-word}
-.node-level{font-size:11px;margin-top:5px;font-variant-numeric:tabular-nums}
+.chain-node.ok{border-color:var(--ok);background:rgba(34,197,94,.07)}.chain-node.down{border-color:var(--al);background:rgba(239,68,68,.09)}
+.chain-node.offline{border-color:#374151;opacity:.6}.chain-node.unknown{border-color:var(--bor)}.chain-node.downstream{border-color:#1e3a5f;opacity:.5}
+.node-label{font-weight:700;font-size:12px;word-break:break-word}.node-sub{font-size:10px;color:var(--mu);margin-top:3px;word-break:break-word}.node-level{font-size:11px;margin-top:5px;font-variant-numeric:tabular-nums}
 .fault-marker{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;white-space:nowrap}
-/* builder panel — matches hub settings card style */
+/* Correlation row */
+.chain-corr-row{display:flex;gap:8px;flex-wrap:wrap;padding:8px 16px 12px;border-top:1px solid var(--bor);align-items:center}
+.chain-corr-row .corr-label{font-size:11px;color:var(--mu);margin-right:4px}
+.corr-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:999px;font-size:11px;background:#0d2346;border:1px solid var(--bor);white-space:nowrap;transition:border-color .3s,color .3s;color:var(--mu)}
+.corr-chip .cv{font-weight:700;margin-left:2px}
+.corr-ok{border-color:var(--ok)!important;color:var(--ok)!important}.corr-warn{border-color:var(--wn)!important;color:var(--wn)!important}.corr-poor{border-color:var(--al)!important;color:var(--al)!important}
+.mixin-badge{font-size:10px;opacity:.75;margin-left:3px;cursor:default}
+/* Builder */
 .builder-panel{background:var(--sur);border:1px solid var(--bor);border-radius:14px;padding:18px 20px;margin-bottom:16px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
 .builder-title{font-weight:700;font-size:15px;margin-bottom:14px;color:var(--tx)}
 .node-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.comp-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+.comp-node-sel{background:#12305c;border:1px solid var(--bor);color:var(--tx);border-radius:8px;padding:5px 8px;font-size:12px;width:160px}
 .empty{text-align:center;padding:56px 0;color:var(--mu);font-size:15px}
 </style></head><body>
 {{topnav('chains')|safe}}
 <main>
 <div class="page-title">
   <h1>⛓ Broadcast Chains</h1>
-  <button class="btn bp" onclick="showBuilder(null)">+ New Chain</button>
+  <button class="btn bp" id="btn_new_chain">+ New Chain</button>
 </div>
 
 <!-- Builder panel -->
 <div id="builder" class="builder-panel" style="display:none">
   <div class="builder-title" id="builder_title">New Chain</div>
   <input type="hidden" id="builder_id">
-  <div style="margin-bottom:14px">
-    <label>Chain Name</label>
-    <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%;max-width:380px">
+  <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px">
+    <div style="flex:1;min-width:200px">
+      <label>Chain Name</label>
+      <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%">
+    </div>
+    <div style="min-width:160px">
+      <label title="How long the chain must stay in fault before an alert fires. Set this longer than your typical ad break to avoid false alarms.">Fault confirmation delay (seconds)</label>
+      <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:100px">
+      <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = alert immediately · 180 = 3 min</div>
+    </div>
+    <div style="min-width:180px">
+      <label title="Mark the node where ad audio is injected into the chain. If this node is also silent, it cannot be an ad break — the confirmation timer is bypassed and the alert fires immediately.">Ad mix-in point <span style="color:var(--mu)">(optional)</span></label>
+      <select id="builder_mixin_idx" style="width:100%">
+        <option value="">— None —</option>
+      </select>
+      <div style="font-size:11px;color:var(--mu);margin-top:3px">Silent here = real fault, skip delay</div>
+    </div>
   </div>
   <div style="font-size:12px;color:var(--mu);margin-bottom:10px">Nodes — left = source, right = destination. The first node that is down is identified as the fault point.</div>
   <div id="builder_nodes"></div>
-  <button class="btn bg bs" onclick="addNode(null)" style="margin-top:8px">+ Add Node</button>
+  <button class="btn bg bs" id="btn_add_node" style="margin-top:8px">+ Add Node</button>
+  <!-- Comparators section -->
+  <div style="margin-top:18px;border-top:1px solid var(--bor);padding-top:14px">
+    <div style="font-size:12px;color:var(--mu);margin-bottom:10px">
+      ↔ <strong style="color:var(--tx)">Signal Comparators</strong> — Measure level correlation between two points in the chain. Needs ≥ 5 minutes of shared metric history to show a result.
+    </div>
+    <div id="builder_comparators"></div>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+      <button class="btn bg bs" type="button" id="btn_add_comp">+ Add Comparator</button>
+      <button class="btn bg bs" type="button" id="btn_add_e2e">↔ Add End-to-End</button>
+    </div>
+  </div>
   <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
-    <button class="btn bp" onclick="saveChain()">💾 Save Chain</button>
-    <button class="btn bg" onclick="cancelBuilder()">Cancel</button>
+    <button class="btn bp" id="btn_save_chain">💾 Save Chain</button>
+    <button class="btn bg" id="btn_cancel_builder">Cancel</button>
   </div>
   <div id="builder_status" style="margin-top:8px;font-size:12px;color:var(--mu)"></div>
 </div>
@@ -13644,6 +13749,9 @@ main{padding:18px;max-width:1600px;margin:0 auto}
   <div class="chain-header">
     <span class="chain-name">{{c.name|e}}</span>
     <span class="badge badge-unknown" id="badge_{{c.id|e}}">…</span>
+    {% if c.min_fault_seconds %}
+    <span style="font-size:11px;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:2px 8px" title="Fault confirmation delay — alert fires only after fault persists this long">⏱ {{c.min_fault_seconds}}s delay</span>
+    {% endif %}
     <span style="font-size:12px;color:var(--al)" id="fault_label_{{c.id|e}}"></span>
     <div class="chain-actions">
       <button class="btn bg bs chain-edit-btn" data-chain="{{c|tojson|e}}">✎ Edit</button>
@@ -13654,12 +13762,35 @@ main{padding:18px;max-width:1600px;margin:0 auto}
     {% for node in c.nodes %}
     {% if not loop.first %}<div class="chain-arrow">→</div>{% endif %}
     <div class="chain-node unknown">
-      <div class="node-label">{{(node.label or node.stream)|e}}</div>
+      <div class="node-label">
+        {{(node.label or node.stream)|e}}
+        {% if c.mixin_node_idx is not none and loop.index0 == c.mixin_node_idx %}<span class="mixin-badge" title="Ad mix-in point — silence here bypasses fault confirmation delay">🔀</span>{% endif %}
+      </div>
       <div class="node-sub">{{node.site|e}}</div>
       <div class="node-level" style="color:var(--mu)">…</div>
     </div>
     {% endfor %}
   </div>
+  {% if c.comparators %}
+  <div class="chain-corr-row">
+    <span class="corr-label">↔ Correlation:</span>
+    {% for comp in c.comparators %}
+    {% set fi = comp.from_idx %}
+    {% set ti = comp.to_idx %}
+    {% if fi < c.nodes|length and ti < c.nodes|length %}
+    {% set fl = c.nodes[fi].label or c.nodes[fi].stream %}
+    {% set tl = c.nodes[ti].label or c.nodes[ti].stream %}
+    <div class="corr-chip" id="corr_{{c.id|e}}_{{fi}}_{{ti}}"
+         title="Level correlation: {{fl|e}} → {{tl|e}} (10 min window)">
+      <span>{{fl|e}}</span>
+      <span style="opacity:.5">{{'⟶' if (ti-fi)>1 else '→'}}</span>
+      <span>{{tl|e}}</span>:
+      <span class="cv">…</span>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
 </div>
 {% endfor %}
 </div>
@@ -13675,67 +13806,133 @@ function _f(url,o){o=o||{};o.headers=Object.assign({'X-CSRFToken':_csrf,'Content
 function loadOpts(cb){
   _f('/api/chains/streams').then(r=>r.json()).then(d=>{_opts=d.options||[];if(cb)cb();}).catch(()=>{if(cb)cb();});
 }
-
-function sitesFromOpts(){
-  var s={};_opts.forEach(function(o){if(!s[o.site])s[o.site]=o.site_label||o.site;});return s;
-}
-
+function sitesFromOpts(){var s={};_opts.forEach(function(o){if(!s[o.site])s[o.site]=o.site_label||o.site;});return s;}
 function streamsFor(site){return _opts.filter(o=>o.site===site).map(o=>o.stream);}
 
+// ── Comparator helpers ────────────────────────────────────────────────────────
+function getNodeOptions(){
+  var rows=document.querySelectorAll('#builder_nodes .node-row');
+  var opts=[];
+  rows.forEach(function(row,i){
+    var st=row.querySelector('.nst');
+    var lbl=row.querySelector('.nl');
+    var name=(lbl&&lbl.value.trim())||(st&&st.value)||('Node '+i);
+    opts.push({idx:i,label:name});
+  });
+  return opts;
+}
+function _refreshCompSels(){
+  var opts=getNodeOptions();
+  document.querySelectorAll('.comp-node-sel').forEach(function(sel){
+    var cur=sel.value;
+    sel.innerHTML='';
+    opts.forEach(function(o){var opt=document.createElement('option');opt.value=String(o.idx);opt.textContent=o.label;sel.appendChild(opt);});
+    if(cur!==''&&sel.querySelector('option[value="'+cur+'"]'))sel.value=cur;
+  });
+}
+function _refreshMixinSel(){
+  var sel=document.getElementById('builder_mixin_idx');
+  if(!sel)return;
+  var cur=sel.value;
+  sel.innerHTML='<option value="">— None —</option>';
+  getNodeOptions().forEach(function(o){
+    var opt=document.createElement('option');opt.value=String(o.idx);opt.textContent=o.label;sel.appendChild(opt);
+  });
+  if(cur!==''&&sel.querySelector('option[value="'+cur+'"]'))sel.value=cur;
+}
+function _mkCompSel(val){
+  var sel=document.createElement('select');sel.className='comp-node-sel';
+  getNodeOptions().forEach(function(o){var opt=document.createElement('option');opt.value=String(o.idx);opt.textContent=o.label;sel.appendChild(opt);});
+  if(val!==undefined&&val!==null)sel.value=String(val);
+  return sel;
+}
+function addComparator(fromIdx,toIdx){
+  var container=document.getElementById('builder_comparators');
+  var row=document.createElement('div');row.className='comp-row';
+  var n=getNodeOptions().length;
+  var fs=_mkCompSel(fromIdx!==undefined?fromIdx:0);
+  var sep=document.createElement('span');sep.textContent='↔';sep.style.cssText='color:var(--mu);font-size:16px;flex-shrink:0';
+  var ts=_mkCompSel(toIdx!==undefined?toIdx:(n>1?1:0));
+  var rm=document.createElement('button');rm.type='button';rm.textContent='✕';rm.className='btn bd bs';
+  rm.onclick=function(){container.removeChild(row);};
+  row.appendChild(fs);row.appendChild(sep);row.appendChild(ts);row.appendChild(rm);
+  container.appendChild(row);
+}
+document.getElementById('btn_add_comp').addEventListener('click',function(){addComparator();});
+document.getElementById('btn_add_e2e').addEventListener('click',function(){
+  var n=document.querySelectorAll('#builder_nodes .node-row').length;
+  if(n<2){alert('Add at least 2 nodes first.');return;}
+  addComparator(0,n-1);
+});
+
+// ── Node builder ──────────────────────────────────────────────────────────────
 function addNode(nd){
   var container=document.getElementById('builder_nodes');
   var idx=container.querySelectorAll('.node-row').length;
   var row=document.createElement('div');row.className='node-row';
-
   if(idx>0){var arr=document.createElement('span');arr.textContent='→';arr.style.cssText='color:var(--mu);font-size:20px;flex-shrink:0';row.appendChild(arr);}
-
   var siteSel=document.createElement('select');siteSel.className='ns';siteSel.style.width='160px';
   var sites=sitesFromOpts();
   Object.keys(sites).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=sites[s];siteSel.appendChild(o);});
-
   var streamSel=document.createElement('select');streamSel.className='nst';streamSel.style.width='180px';
   function fillStreams(){
     streamSel.innerHTML='';
     streamsFor(siteSel.value).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;streamSel.appendChild(o);});
     if(nd&&nd.stream)streamSel.value=nd.stream;
   }
-  siteSel.addEventListener('change',fillStreams);
-
+  siteSel.addEventListener('change',function(){fillStreams();_refreshCompSels();_refreshMixinSel();});
+  streamSel.addEventListener('change',function(){_refreshCompSels();_refreshMixinSel();});
   var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';labelIn.placeholder='Label (optional)';labelIn.style.width='150px';
-
-  var rm=document.createElement('button');rm.type='button';rm.textContent='✕';rm.className='btn bd bs';rm.onclick=function(){container.removeChild(row);};
-
+  labelIn.addEventListener('input',function(){_refreshCompSels();_refreshMixinSel();});
+  var rm=document.createElement('button');rm.type='button';rm.textContent='✕';rm.className='btn bd bs';
+  rm.onclick=function(){container.removeChild(row);_refreshCompSels();};
   if(nd){
     if(nd.site&&siteSel.querySelector('option[value="'+nd.site+'"]'))siteSel.value=nd.site;
     fillStreams();
     if(nd.stream)streamSel.value=nd.stream;
     if(nd.label)labelIn.value=nd.label;
   } else { fillStreams(); }
-
   row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(rm);
   container.appendChild(row);
+  _refreshCompSels();
+  _refreshMixinSel();
 }
 
+// ── Builder show/hide ─────────────────────────────────────────────────────────
 function showBuilder(chain){
   var b=document.getElementById('builder');
   document.getElementById('builder_status').textContent='';
   document.getElementById('builder_nodes').innerHTML='';
+  document.getElementById('builder_comparators').innerHTML='';
   if(chain){
     document.getElementById('builder_title').textContent='Edit: '+chain.name;
     document.getElementById('builder_id').value=chain.id||'';
     document.getElementById('builder_name').value=chain.name||'';
-    loadOpts(function(){(chain.nodes||[]).forEach(addNode);});
+    document.getElementById('builder_min_fault').value=chain.min_fault_seconds||0;
+    loadOpts(function(){
+      (chain.nodes||[]).forEach(addNode);
+      (chain.comparators||[]).forEach(function(c){addComparator(c.from_idx,c.to_idx);});
+      // Restore mix-in point after nodes are rendered (options are now populated)
+      var mi=chain.mixin_node_idx;
+      if(mi!==null&&mi!==undefined&&mi!==''){
+        var ms=document.getElementById('builder_mixin_idx');
+        if(ms&&ms.querySelector('option[value="'+mi+'"]'))ms.value=String(mi);
+      }
+    });
   } else {
     document.getElementById('builder_title').textContent='New Chain';
     document.getElementById('builder_id').value='';
     document.getElementById('builder_name').value='';
+    document.getElementById('builder_min_fault').value=0;
     loadOpts(function(){addNode(null);});
   }
   b.style.display='';b.scrollIntoView({behavior:'smooth',block:'start'});
 }
+document.getElementById('btn_new_chain').addEventListener('click',function(){showBuilder(null);});
+document.getElementById('btn_cancel_builder').addEventListener('click',function(){document.getElementById('builder').style.display='none';});
+document.getElementById('btn_add_node').addEventListener('click',function(){addNode(null);});
 
-function cancelBuilder(){document.getElementById('builder').style.display='none';}
-
+// ── Save chain ────────────────────────────────────────────────────────────────
 function saveChain(){
   var name=document.getElementById('builder_name').value.trim();
   var cid=document.getElementById('builder_id').value.trim();
@@ -13747,13 +13944,26 @@ function saveChain(){
     if(s&&st2&&st2.value)nodes.push({site:s.value,stream:st2.value,label:(l?l.value.trim():'')});
   });
   if(!nodes.length){st.style.color='var(--al)';st.textContent='Add at least one node.';return;}
-  var payload={name,nodes};if(cid)payload.id=cid;
+  var comparators=[];
+  document.querySelectorAll('#builder_comparators .comp-row').forEach(function(row){
+    var sels=row.querySelectorAll('.comp-node-sel');
+    if(sels.length>=2){
+      var fi=parseInt(sels[0].value),ti=parseInt(sels[1].value);
+      if(!isNaN(fi)&&!isNaN(ti)&&fi!==ti)comparators.push({from_idx:fi,to_idx:ti});
+    }
+  });
+  var minFault=parseInt(document.getElementById('builder_min_fault').value||'0',10)||0;
+  var mixinRaw=document.getElementById('builder_mixin_idx').value;
+  var mixinIdx=(mixinRaw!=='')?parseInt(mixinRaw,10):null;
+  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,mixin_node_idx:mixinIdx};
+  if(cid)payload.id=cid;
   st.style.color='var(--mu)';st.textContent='Saving…';
   _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
     if(d.ok){st.style.color='var(--ok)';st.textContent='Saved.';setTimeout(()=>location.reload(),600);}
     else{st.style.color='var(--al)';st.textContent='Error: '+(d.error||'?');}
   }).catch(e=>{st.style.color='var(--al)';st.textContent=''+e;});
 }
+document.getElementById('btn_save_chain').addEventListener('click',saveChain);
 
 function deleteChain(id,name){
   if(!confirm('Delete chain "'+name+'"?'))return;
@@ -13762,7 +13972,7 @@ function deleteChain(id,name){
   }).catch(()=>{});
 }
 
-// Delegated listeners — avoids CSP inline-handler hash requirement for dynamic values
+// Delegated listeners
 document.addEventListener('click',function(e){
   var eb=e.target.closest('.chain-edit-btn');
   if(eb){try{showBuilder(JSON.parse(eb.dataset.chain));}catch(_){}return;}
@@ -13770,6 +13980,7 @@ document.addEventListener('click',function(e){
   if(db){deleteChain(db.dataset.id,db.dataset.name);return;}
 });
 
+// ── Live status refresh ───────────────────────────────────────────────────────
 var BORDER={ok:'var(--ok)',down:'var(--al)',offline:'#374151',unknown:'var(--bor)',downstream:'#1e3a5f'};
 var BG={ok:'rgba(34,197,94,.07)',down:'rgba(239,68,68,.09)',offline:'',unknown:'var(--bg)',downstream:''};
 var CARD_CLS={ok:'chain-card card-ok',fault:'chain-card card-fault',unknown:'chain-card card-unknown'};
@@ -13785,12 +13996,9 @@ function refreshStatus(){
         badge.textContent=chain.status==='ok'?'OK':chain.status==='fault'?'FAULT':'…';
         badge.className='badge badge-'+(chain.status==='ok'?'ok':chain.status==='fault'?'fault':'unknown');
       }
-      if(card&&CARD_CLS[chain.status]){card.className=CARD_CLS[chain.status];}
+      if(card&&CARD_CLS[chain.status])card.className=CARD_CLS[chain.status];
       if(fl){
-        if(chain.fault_node){
-          var fn=chain.fault_node;
-          fl.textContent='↳ fault at '+fn.label+' ('+fn.site+')';
-        } else { fl.textContent=''; }
+        fl.textContent=chain.fault_node?('↳ fault at '+chain.fault_node.label+' ('+chain.fault_node.site+')'):'';
       }
       if(visual){
         var nodeEls=visual.querySelectorAll('.chain-node');
@@ -13812,6 +14020,20 @@ function refreshStatus(){
           }
         });
       }
+      // Update correlation chips
+      (chain.comparators||[]).forEach(function(comp){
+        var el=document.getElementById('corr_'+chain.id+'_'+comp.from_idx+'_'+comp.to_idx);
+        if(!el)return;
+        var cv=el.querySelector('.cv');if(!cv)return;
+        var pct=comp.pct;
+        if(pct===null||pct===undefined){
+          cv.textContent=(comp.status==='no_data'||comp.status==='no_overlap')?'No data yet':'—';
+          el.className='corr-chip';
+        } else {
+          cv.textContent=pct.toFixed(1)+'%';
+          el.className='corr-chip '+(pct>=80?'corr-ok':pct>=50?'corr-warn':'corr-poor');
+        }
+      });
     });
   }).catch(()=>{});
 }
@@ -13849,19 +14071,77 @@ def api_chains_streams():
     return jsonify({"options": options})
 
 
+def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 10) -> dict:
+    """Compute level-based Pearson correlation between two chain nodes using metrics history.
+    Works for local (plain stream name) and remote (Site/Stream) nodes alike."""
+    def _key(n):
+        site   = n.get("site", "")
+        stream = n.get("stream", "")
+        return stream if site == "local" else f"{site}/{stream}"
+
+    ka, kb = _key(node_a), _key(node_b)
+    try:
+        import sqlite3 as _sq
+        cutoff = time.time() - minutes * 60
+        with _sq.connect(METRICS_DB_PATH) as conn:
+            # Bucket by minute for consistent alignment between streams
+            a_rows = conn.execute(
+                "SELECT CAST(ts/60 AS INT)*60 AS t, AVG(value) FROM metric_history "
+                "WHERE stream=? AND metric='level_dbfs' AND ts>? GROUP BY t ORDER BY t",
+                (ka, cutoff)
+            ).fetchall()
+            b_rows = conn.execute(
+                "SELECT CAST(ts/60 AS INT)*60 AS t, AVG(value) FROM metric_history "
+                "WHERE stream=? AND metric='level_dbfs' AND ts>? GROUP BY t ORDER BY t",
+                (kb, cutoff)
+            ).fetchall()
+        if len(a_rows) < 5 or len(b_rows) < 5:
+            return {"status": "no_data", "r": None, "pct": None,
+                    "samples": min(len(a_rows), len(b_rows))}
+        a_d = {r[0]: r[1] for r in a_rows}
+        b_d = {r[0]: r[1] for r in b_rows}
+        common = sorted(set(a_d) & set(b_d))
+        if len(common) < 5:
+            return {"status": "no_overlap", "r": None, "pct": None, "samples": len(common)}
+        av = [a_d[t] for t in common]
+        bv = [b_d[t] for t in common]
+        n  = len(av)
+        ma, mb = sum(av) / n, sum(bv) / n
+        num = sum((av[i] - ma) * (bv[i] - mb) for i in range(n))
+        da  = sum((v - ma) ** 2 for v in av) ** 0.5
+        db  = sum((v - mb) ** 2 for v in bv) ** 0.5
+        if da * db == 0:
+            return {"status": "no_variance", "r": None, "pct": None, "samples": n}
+        r = max(-1.0, min(1.0, num / (da * db)))
+        return {"status": "ok", "r": round(r, 3), "pct": round(abs(r) * 100, 1), "samples": n}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "r": None, "pct": None, "samples": 0}
+
+
 @app.get("/api/chains/status")
 @login_required
 def api_chains_status():
-    """Evaluate all chains and return their current status."""
+    """Evaluate all chains and return their current status including correlation data."""
     cfg = monitor.app_cfg
     results = []
     for chain in cfg.signal_chains:
         try:
-            results.append(hub_server.eval_chain(chain))
+            result = hub_server.eval_chain(chain)
+            # Compute correlation for each configured comparator pair
+            chain_nodes = chain.get("nodes", [])
+            corr_out = []
+            for comp in chain.get("comparators", []):
+                fi = int(comp.get("from_idx", 0))
+                ti = int(comp.get("to_idx", 1))
+                if fi < len(chain_nodes) and ti < len(chain_nodes) and fi != ti:
+                    corr = _chain_correlate_nodes(chain_nodes[fi], chain_nodes[ti])
+                    corr_out.append({"from_idx": fi, "to_idx": ti, **corr})
+            result["comparators"] = corr_out
+            results.append(result)
         except Exception as e:
             results.append({"id": chain.get("id", ""), "name": chain.get("name", ""),
                             "status": "unknown", "fault_index": None, "fault_node": None,
-                            "nodes": [], "error": str(e)})
+                            "nodes": [], "comparators": [], "error": str(e)})
     return jsonify({"results": results})
 
 
@@ -13884,21 +14164,52 @@ def api_chains_save():
         label  = str(n.get("label", "")).strip()
         if site and stream:
             clean_nodes.append({"site": site, "stream": stream, "label": label})
+    # Sanitise comparators — validate indices are in range and not equal
+    clean_comps = []
+    for comp in data.get("comparators", []):
+        try:
+            fi = int(comp.get("from_idx", 0))
+            ti = int(comp.get("to_idx",   1))
+            if fi >= 0 and ti >= 0 and fi != ti and fi < len(clean_nodes) and ti < len(clean_nodes):
+                clean_comps.append({"from_idx": fi, "to_idx": ti})
+        except (TypeError, ValueError):
+            pass
     cfg    = monitor.app_cfg
     chains = list(cfg.signal_chains)
     cid    = str(data.get("id", "")).strip()
+    # Fault confirmation delay — clamp to 0–3600 s (0 = alert immediately)
+    try:
+        min_fault_seconds = max(0, min(3600, int(data.get("min_fault_seconds", 0) or 0)))
+    except (TypeError, ValueError):
+        min_fault_seconds = 0
+    # Ad mix-in point — node index whose silence proves the fault is real (not an ad break)
+    mixin_raw = data.get("mixin_node_idx")
+    if mixin_raw is not None and mixin_raw != "":
+        try:
+            mixin_node_idx: "Optional[int]" = int(mixin_raw)
+            if not (0 <= mixin_node_idx < len(clean_nodes)):
+                mixin_node_idx = None   # out of range after node list was trimmed
+        except (TypeError, ValueError):
+            mixin_node_idx = None
+    else:
+        mixin_node_idx = None
+    chain_dict = {"id": cid if cid else "", "name": name,
+                  "nodes": clean_nodes, "comparators": clean_comps,
+                  "min_fault_seconds": min_fault_seconds,
+                  "mixin_node_idx": mixin_node_idx}
     if cid:
         # Update existing
         for i, c in enumerate(chains):
             if c.get("id") == cid:
-                chains[i] = {"id": cid, "name": name, "nodes": clean_nodes}
+                chains[i] = chain_dict
                 break
         else:
-            chains.append({"id": cid, "name": name, "nodes": clean_nodes})
+            chains.append(chain_dict)
     else:
         # New chain
         cid = str(_uuid.uuid4())
-        chains.append({"id": cid, "name": name, "nodes": clean_nodes})
+        chain_dict["id"] = cid
+        chains.append(chain_dict)
     cfg.signal_chains = chains
     save_config(cfg)
     return jsonify({"ok": True, "id": cid})
