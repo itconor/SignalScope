@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.10"
+BUILD                  = "SignalScope-3.2.11"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -15237,12 +15237,16 @@ def api_chains_status():
                 result["display_status"] = "pending"
                 remaining = max(0.0, min_fault_secs - (now - since))
                 result["adbreak_remaining"] = round(remaining)
-            elif internal_state is None and chain_status == "fault" and adbreak_candidate:
-                # Monitor loop hasn't run its first pass yet — eval already shows fault
-                # and it looks like an ad break. Show adbreak state immediately so the
-                # UI never flashes red before the warm-up pass completes.
-                result["display_status"] = "adbreak"
-                result["adbreak_remaining"] = min_fault_secs  # full window; no since yet
+            elif internal_state in (None, "ok") and chain_status == "fault" and min_fault_secs > 0:
+                # API is polled faster than the 30s monitor loop.  The eval already
+                # shows a fault but the loop hasn't had a chance to set "pending" yet.
+                # Jump straight to amber so the UI never flashes red first.
+                # (Covers both startup/pre-warmup and normal mid-run new faults.)
+                if adbreak_candidate:
+                    result["display_status"] = "adbreak"
+                else:
+                    result["display_status"] = "pending"
+                result["adbreak_remaining"] = min_fault_secs  # full window; since not known yet
             else:
                 result["display_status"] = chain_status
                 result["adbreak_remaining"] = None
