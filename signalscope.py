@@ -933,7 +933,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.25"
+BUILD                  = "SignalScope-3.2.28"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -10440,6 +10440,9 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 .clip-btn{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:5px;background:#1e3a5f;color:var(--acc);font-size:11px;cursor:pointer;border:none}
 .no-data{text-align:center;padding:48px;color:var(--mu)}
 .page-info{color:var(--mu);font-size:12px;margin-left:auto}
+.tab-bar{display:flex;gap:0;margin:0 0 0 0}
+.tab-btn{padding:6px 16px;border-radius:8px 8px 0 0;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;background:transparent;color:var(--mu);transition:background .12s,color .12s}
+.tab-btn.tab-active{background:var(--sur);color:var(--tx);border-color:var(--bor);border-bottom-color:var(--sur)}
 </style>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("reports") }}
@@ -10465,6 +10468,10 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
   {# Filters #}
   </div>
   <div class="card">
+  <div class="tab-bar">
+    <button class="tab-btn tab-active" data-tab="alerts">Alerts</button>
+    <button class="tab-btn" data-tab="logs">Logs</button>
+  </div>
   <div class="filters">
     <label>Stream
       <select id="f_stream" onchange="applyFilters()">
@@ -10505,7 +10512,8 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
     {% for e in events %}
     {% set tl = e.type.lower() %}
     {% set tc = 't-silence' if tl=='silence' else ('t-clip' if tl=='clip' else ('t-hiss' if tl=='hiss' else ('t-rtp' if 'rtp' in tl else ('t-ai_alert' if tl=='ai_alert' else ('t-ai_warn' if tl=='ai_warn' else ('t-ptp' if 'ptp' in tl else ('t-cmp' if 'cmp' in tl else 't-other'))))))) %}
-    <tr data-stream="{{e.stream}}" data-type="{{e.type}}" data-ts="{{e.ts}}" data-clip="{{e.clip}}">
+    {% set _is_log = e.type in ('DAB_AVAILABLE','DAB_UNAVAILABLE') %}
+    <tr data-stream="{{e.stream}}" data-type="{{e.type}}" data-ts="{{e.ts}}" data-clip="{{e.clip}}" data-category="{{'log' if _is_log else 'alert'}}">
       <td style="color:var(--mu);font-size:12px;white-space:nowrap">{{e.ts}}</td>
       <td><strong>{{e.stream}}</strong></td>
       <td><span class="type-badge {{tc}}">{{e.type}}</span></td>
@@ -10547,6 +10555,19 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 </main>
 
 <script nonce="{{csp_nonce()}}">
+var LOG_TYPES={'DAB_AVAILABLE':1,'DAB_UNAVAILABLE':1};
+var _activeTab='alerts';
+function switchTab(tab){
+  _activeTab=tab;
+  document.querySelectorAll('.tab-btn').forEach(function(b){
+    b.classList.toggle('tab-active', b.dataset.tab===tab);
+  });
+  applyFilters();
+}
+document.addEventListener('click',function(e){
+  var b=e.target.closest('.tab-btn');
+  if(b && b.dataset.tab) switchTab(b.dataset.tab);
+});
 function typeCls(t){
   t=(t||'').toLowerCase();
   if(t==='silence') return 't-silence';
@@ -10572,7 +10593,10 @@ function applyFilters(){
     var t = (r.dataset.type||'').toLowerCase();
     var ts= r.dataset.ts||'';
     var c = r.dataset.clip||'';
+    var cat = r.dataset.category||'alert';
     var show = true;
+    if(_activeTab==='alerts' && cat==='log') show=false;
+    if(_activeTab==='logs'   && cat!=='log') show=false;
     if(fs && s!==fs) show=false;
     if(ft && !t.includes(ft)) show=false;
     if(ff && ts < ff.replace('T',' ')) show=false;
@@ -10615,7 +10639,8 @@ function rowHTML(e){
   if(e.clip){
     clip='<audio controls preload="none" src="/clips/'+encodeURIComponent(e.stream)+'/'+e.clip+'" style="height:28px;width:200px;accent-color:var(--acc);vertical-align:middle"></audio>';
   }
-  return '<tr data-stream="'+escAttr(e.stream)+'" data-type="'+escAttr(e.type)+'" data-ts="'+escAttr(e.ts||'')+'" data-clip="'+escAttr(e.clip||'')+'">'
+  var cat=LOG_TYPES[e.type||'']?'log':'alert';
+  return '<tr data-stream="'+escAttr(e.stream)+'" data-type="'+escAttr(e.type)+'" data-ts="'+escAttr(e.ts||'')+'" data-clip="'+escAttr(e.clip||'')+'" data-category="'+cat+'">'
     +'<td style="color:var(--mu);font-size:12px;white-space:nowrap">'+escHTML(e.ts||'')+'</td>'
     +'<td><strong>'+escHTML(e.stream||'')+'</strong></td>'
     +'<td><span class="type-badge '+tc+'">'+escHTML(e.type||'')+'</span></td>'
@@ -15209,6 +15234,10 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .flog-table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px}
 .flog-table th{color:var(--mu);font-weight:600;padding:3px 6px;text-align:left;border-bottom:1px solid var(--bor)}
 .flog-table td{padding:4px 6px;border-bottom:1px solid rgba(255,255,255,.04);color:var(--tx)}
+.flog-row{cursor:pointer;transition:background .12s}
+.flog-row:hover{background:rgba(96,165,250,.08)}
+.flog-view-hint{font-size:10px;opacity:.45;transition:opacity .12s}
+.flog-row:hover .flog-view-hint{opacity:1}
 .flog-empty{color:var(--mu);font-size:11px;padding:8px 0}
 /* Maintenance button */
 .maint-btn{font-size:10px;padding:1px 6px;border-radius:6px;background:#1e3a5f;border:1px solid #1d4ed8;color:#93c5fd;cursor:pointer;white-space:nowrap}
@@ -16019,7 +16048,12 @@ document.getElementById('chains_list').addEventListener('click', function(e){
               }).join(' ')+'</td>';
             } else { clipsCell='<td style="color:var(--mu)">—</td>'; }
           }
-          html+='<tr><td>'+dt+'</td><td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td>'+rtpCell+clipsCell+'<td>'+dur+'</td></tr>';
+          // data-ts enables click-to-replay: clicking the row jumps the history
+          // time-travel view to the fault's start time
+          html+='<tr class="flog-row" data-ts="'+ev.ts_start+'" title="Click to view all chains at this moment">'
+               +'<td><span class="flog-dt">'+dt+'</span> <span class="flog-view-hint">🕐</span></td>'
+               +'<td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td>'
+               +rtpCell+clipsCell+'<td>'+dur+'</td></tr>';
         });
         html+='</tbody></table>';
         body.innerHTML=html;
@@ -16030,6 +16064,20 @@ document.getElementById('chains_list').addEventListener('click', function(e){
     if(arrow)arrow.innerHTML='&#9658;';
   }
 });
+// Click a fault log row → jump history view to that fault's start time
+document.getElementById('chains_list').addEventListener('click',function(e){
+  // Ignore clicks on links/buttons inside the row (e.g. clip download anchors)
+  if(e.target.closest('a')||e.target.closest('button'))return;
+  var row=e.target.closest('.flog-row');
+  if(!row)return;
+  var ts=parseFloat(row.dataset.ts);
+  if(!ts||isNaN(ts))return;
+  _enterHistMode(ts);
+  // Scroll the history banner into view so the user sees the time-travel controls
+  var banner=document.getElementById('hist_banner');
+  if(banner)banner.scrollIntoView({behavior:'smooth',block:'nearest'});
+});
+
 function _fmtDur(secs){
   secs=Math.round(secs);
   if(secs<60)return secs+'s';
@@ -16178,6 +16226,37 @@ def api_chains_history():
             down = True
         return {"status": "down" if down else "ok", "level": round(level, 1)}
 
+    def _node_thresh(site: str, stream: str) -> float:
+        """Return the silence threshold for a node (for fault-duration calculation)."""
+        if site == "local":
+            inp = next((i for i in cfg.inputs if i.name == stream), None)
+            return inp.silence_threshold_dbfs if inp else -55.0
+        return -55.0
+
+    def _fault_duration_at(site: str, stream: str, thresh: float, look_back: float) -> float:
+        """Return how many seconds before `ts` the node has been continuously below `thresh`.
+        Looks back up to `look_back` seconds.  Returns 0.0 if no DB data."""
+        db_key = stream if site == "local" else f"{site}/{stream}"
+        try:
+            import sqlite3 as _sq
+            with _sq.connect(METRICS_DB_PATH) as conn:
+                rows = conn.execute(
+                    "SELECT ts, value FROM metric_history WHERE stream=? AND metric='level_dbfs'"
+                    " AND ts<=? AND ts>=? ORDER BY ts DESC",
+                    (db_key, ts, ts - look_back)
+                ).fetchall()
+            if not rows:
+                return 0.0
+            # Walk backward from ts; find the first (most-recent-going-back) sample
+            # that was ABOVE threshold — that marks when the fault started.
+            for sample_ts, val in rows:
+                if val > thresh:
+                    return ts - sample_ts
+            # All samples in the window were below threshold → been down >= look_back
+            return look_back
+        except Exception:
+            return 0.0
+
     def _eval_hist_chain(chain: dict) -> dict:
         nodes_out = []
         for node in chain.get("nodes", []):
@@ -16221,20 +16300,54 @@ def api_chains_history():
 
         fault_idx = next((i for i, n in enumerate(nodes_out) if n["status"] == "down"), None)
         chain_status = "fault" if fault_idx is not None else ("ok" if nodes_out else "unknown")
-        # Mark any node whose data was entirely missing as unknown-status downstream
+
+        # Reconstruct pending / adbreak display state from metric history
+        min_fault_secs = float(chain.get("min_fault_seconds") or 0)
+        mixin_idx      = chain.get("mixin_node_idx")
+        adbreak_candidate = False
+        display_status    = chain_status
+        adbreak_remaining = None
+
+        if fault_idx is not None and min_fault_secs > 0:
+            # Is the fault before the mixin node (mixin still up)? → adbreak candidate
+            if (mixin_idx is not None
+                    and fault_idx < int(mixin_idx)
+                    and nodes_out[int(mixin_idx)]["status"] not in ("down",)):
+                adbreak_candidate = True
+
+            # Find which node is at fault to query its metric history
+            fn = nodes_out[fault_idx]
+            if fn.get("type") == "stack":
+                fault_sub = next(
+                    (s for s in fn.get("nodes", []) if s["status"] == "down"), None)
+                f_site   = fault_sub["site"]   if fault_sub else ""
+                f_stream = fault_sub["stream"] if fault_sub else ""
+            else:
+                f_site   = fn.get("site", "")
+                f_stream = fn.get("stream", "")
+
+            f_thresh  = _node_thresh(f_site, f_stream)
+            look_back = min_fault_secs + WINDOW  # search back far enough to cover the window
+            dur = _fault_duration_at(f_site, f_stream, f_thresh, look_back)
+
+            if dur < min_fault_secs:
+                # At this moment in time the fault was still inside the confirmation window
+                display_status    = "adbreak" if adbreak_candidate else "pending"
+                adbreak_remaining = round(max(0.0, min_fault_secs - dur))
+
         return {
-            "id":               chain.get("id", ""),
-            "name":             chain.get("name", ""),
-            "status":           chain_status,
-            "display_status":   chain_status,   # no pending/adbreak in history
-            "fault_index":      fault_idx,
-            "fault_node":       nodes_out[fault_idx] if fault_idx is not None else None,
-            "nodes":            nodes_out,
-            "mixin_node_idx":   chain.get("mixin_node_idx"),
-            "min_fault_seconds": chain.get("min_fault_seconds", 0),
-            "adbreak_candidate": False,
-            "adbreak_remaining": None,
-            "comparators":      [],   # skip correlation for historical view
+            "id":                chain.get("id", ""),
+            "name":              chain.get("name", ""),
+            "status":            chain_status,
+            "display_status":    display_status,
+            "fault_index":       fault_idx,
+            "fault_node":        nodes_out[fault_idx] if fault_idx is not None else None,
+            "nodes":             nodes_out,
+            "mixin_node_idx":    mixin_idx,
+            "min_fault_seconds": min_fault_secs,
+            "adbreak_candidate": adbreak_candidate,
+            "adbreak_remaining": adbreak_remaining,
+            "comparators":       [],   # skip correlation for historical view
         }
 
     results = []
