@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.15"
+BUILD                  = "SignalScope-3.2.18"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -2066,11 +2066,136 @@ class MetricsDB:
                     );
                     CREATE INDEX IF NOT EXISTS idx_mh_lookup
                         ON metric_history(stream, metric, ts);
+                    CREATE TABLE IF NOT EXISTS chain_fault_log (
+                        id               TEXT PRIMARY KEY,
+                        chain_id         TEXT NOT NULL,
+                        ts_start         REAL NOT NULL,
+                        fault_node_label TEXT,
+                        fault_site       TEXT,
+                        fault_stream     TEXT,
+                        rtp_loss_pct     REAL,
+                        ts_recovered     REAL,
+                        clips            TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_cfl_chain
+                        ON chain_fault_log(chain_id, ts_start);
                 """)
                 conn.commit()
                 self._conn = conn
         except Exception as e:
             print(f"[MetricsDB] Init error: {e}")
+
+    # ── Chain fault log persistence ───────────────────────────────────────────
+
+    def fault_log_insert(self, entry: dict):
+        """Insert a new chain fault log entry. entry must have an 'id' field."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO chain_fault_log"
+                    "(id, chain_id, ts_start, fault_node_label, fault_site,"
+                    " fault_stream, rtp_loss_pct, ts_recovered, clips)"
+                    " VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        entry.get("id"),
+                        entry.get("chain_id", ""),
+                        entry.get("ts_start"),
+                        entry.get("fault_node_label"),
+                        entry.get("fault_site"),
+                        entry.get("fault_stream"),
+                        entry.get("rtp_loss_pct"),
+                        entry.get("ts_recovered"),
+                        json.dumps(entry.get("clips") or []),
+                    ),
+                )
+                self._conn.commit()
+        except Exception as e:
+            print(f"[MetricsDB] fault_log_insert error: {e}")
+            self._conn = None
+
+    def fault_log_set_recovered(self, entry_id: str, ts_recovered: float):
+        """Mark a fault log entry as recovered."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                self._conn.execute(
+                    "UPDATE chain_fault_log SET ts_recovered=? WHERE id=?",
+                    (ts_recovered, entry_id),
+                )
+                self._conn.commit()
+        except Exception as e:
+            print(f"[MetricsDB] fault_log_set_recovered error: {e}")
+            self._conn = None
+
+    def fault_log_update_clips(self, entry_id: str, clips: list):
+        """Overwrite the clips JSON for a fault log entry."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                self._conn.execute(
+                    "UPDATE chain_fault_log SET clips=? WHERE id=?",
+                    (json.dumps(clips), entry_id),
+                )
+                self._conn.commit()
+        except Exception as e:
+            print(f"[MetricsDB] fault_log_update_clips error: {e}")
+            self._conn = None
+
+    def fault_log_load(self, chain_id: str, limit: int = 25) -> list:
+        """Return the most recent `limit` fault log entries for a chain, oldest first."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                cur = self._conn.execute(
+                    "SELECT id, chain_id, ts_start, fault_node_label, fault_site,"
+                    " fault_stream, rtp_loss_pct, ts_recovered, clips"
+                    " FROM chain_fault_log WHERE chain_id=?"
+                    " ORDER BY ts_start DESC LIMIT ?",
+                    (chain_id, limit),
+                )
+                rows = cur.fetchall()
+        except Exception as e:
+            print(f"[MetricsDB] fault_log_load error: {e}")
+            self._conn = None
+            return []
+        entries = []
+        for r in reversed(rows):   # oldest first so in-memory list matches append order
+            try:
+                clips = json.loads(r[8]) if r[8] else []
+            except Exception:
+                clips = []
+            entries.append({
+                "id":               r[0],
+                "chain_id":         r[1],
+                "ts_start":         r[2],
+                "fault_node_label": r[3] or "?",
+                "fault_site":       r[4] or "?",
+                "fault_stream":     r[5] or "?",
+                "rtp_loss_pct":     r[6],
+                "ts_recovered":     r[7],
+                "clips":            clips,
+            })
+        return entries
+
+    def fault_log_prune(self, days: int = METRICS_RETENTION_DAYS):
+        """Delete chain fault log entries older than `days` days."""
+        cutoff = time.time() - days * 86400
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                self._conn.execute(
+                    "DELETE FROM chain_fault_log WHERE ts_start<?", (cutoff,)
+                )
+                self._conn.commit()
+        except Exception as e:
+            print(f"[MetricsDB] fault_log_prune error: {e}")
+            self._conn = None
 
     def write(self, rows: list):
         """Insert a list of (stream, metric, ts, value) tuples."""
@@ -2132,6 +2257,9 @@ class MetricsDB:
                     self._conn = self._connect()
                 self._conn.execute(
                     "DELETE FROM metric_history WHERE ts<?", (cutoff,)
+                )
+                self._conn.execute(
+                    "DELETE FROM chain_fault_log WHERE ts_start<?", (cutoff,)
                 )
                 self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                 self._conn.commit()
@@ -7309,13 +7437,14 @@ class HubServer:
         self._chain_flapping: dict = {}
         # Maintenance bypass — cid → {"site|stream": expiry_ts}
         self._chain_maintenance: dict = {}
-        # Fault log ring buffer — cid → list of fault dicts (max 25)
+        # Fault log — cid → list of fault dicts (max 25 in memory; persisted to DB)
         self._chain_fault_log: dict = {}
         # Predictive trend cache — stream_key → {"trend": str, "slope": float, "ts": float}
         self._chain_node_trend: dict = {}
         # SLA metric write tracker — cid → last write ts
         self._chain_sla_last_write: dict = {}
-        self._load_state()   # restore across restarts
+        self._load_state()            # restore hub sites across restarts
+        self._load_fault_log_from_db()  # restore chain fault history from SQLite
 
     def set_secret(self, secret: str):
         self._secret = secret
@@ -7383,6 +7512,25 @@ class HubServer:
                          daemon=True, name="HubSave").start()
 
     # ── Persistence ──────────────────────────────────────────────────────────
+    def _load_fault_log_from_db(self):
+        """Restore chain fault history from SQLite into _chain_fault_log on startup."""
+        try:
+            cfg = monitor.app_cfg if monitor else None
+            chains = cfg.signal_chains if cfg else []
+            loaded = 0
+            for chain in chains:
+                cid = chain.get("id", "")
+                if not cid:
+                    continue
+                entries = metrics_db.fault_log_load(cid, limit=25)
+                if entries:
+                    self._chain_fault_log[cid] = entries
+                    loaded += len(entries)
+            if loaded:
+                print(f"[HubServer] Restored {loaded} chain fault log entry/entries from DB")
+        except Exception as e:
+            print(f"[HubServer] Could not load fault log from DB: {e}")
+
     def _load_state(self):
         """Load previously seen sites from disk so hub survives restarts."""
         try:
@@ -7925,17 +8073,25 @@ class HubServer:
                                 flap_evts = self._chain_flap_events.setdefault(cid, [])
                                 flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
                                 flap_evts.append(now)
-                                # Update fault log ring buffer
+                                # Update fault log ring buffer + DB
                                 fn_info = result.get("fault_node") or {}
+                                _entry_id = str(uuid.uuid4())
+                                _new_entry = {
+                                    "id":               _entry_id,
+                                    "chain_id":         cid,
+                                    "ts_start":         now,
+                                    "fault_node_label": fn_info.get("label", "?"),
+                                    "fault_site":       fn_info.get("site", "?"),
+                                    "fault_stream":     fn_info.get("stream", "?"),
+                                    "rtp_loss_pct":     fn_info.get("rtp_loss_pct"),
+                                    "ts_recovered":     None,
+                                    "clips":            [],
+                                }
                                 flog = self._chain_fault_log.setdefault(cid, [])
-                                flog.append({"ts_start": now,
-                                             "fault_node_label": fn_info.get("label", "?"),
-                                             "fault_site": fn_info.get("site", "?"),
-                                             "fault_stream": fn_info.get("stream", "?"),
-                                             "rtp_loss_pct": fn_info.get("rtp_loss_pct"),
-                                             "ts_recovered": None})
+                                flog.append(_new_entry)
                                 if len(flog) > 25:
                                     flog.pop(0)
+                                metrics_db.fault_log_insert(_new_entry)
                                 if len(flap_evts) >= CHAIN_FLAP_COUNT and not self._chain_flapping.get(cid):
                                     # Flapping detected — suppress normal fault alert, fire CHAIN_FLAPPING
                                     self._chain_flapping[cid] = True
@@ -7964,17 +8120,25 @@ class HubServer:
                                 flap_evts = self._chain_flap_events.setdefault(cid, [])
                                 flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
                                 flap_evts.append(now)
-                                # Update fault log ring buffer
+                                # Update fault log ring buffer + DB
                                 fn_info = result.get("fault_node") or {}
+                                _entry_id = str(uuid.uuid4())
+                                _new_entry = {
+                                    "id":               _entry_id,
+                                    "chain_id":         cid,
+                                    "ts_start":         now,
+                                    "fault_node_label": fn_info.get("label", "?"),
+                                    "fault_site":       fn_info.get("site", "?"),
+                                    "fault_stream":     fn_info.get("stream", "?"),
+                                    "rtp_loss_pct":     fn_info.get("rtp_loss_pct"),
+                                    "ts_recovered":     None,
+                                    "clips":            [],
+                                }
                                 flog = self._chain_fault_log.setdefault(cid, [])
-                                flog.append({"ts_start": now,
-                                             "fault_node_label": fn_info.get("label", "?"),
-                                             "fault_site": fn_info.get("site", "?"),
-                                             "fault_stream": fn_info.get("stream", "?"),
-                                             "rtp_loss_pct": fn_info.get("rtp_loss_pct"),
-                                             "ts_recovered": None})
+                                flog.append(_new_entry)
                                 if len(flog) > 25:
                                     flog.pop(0)
+                                metrics_db.fault_log_insert(_new_entry)
                                 if len(flap_evts) >= CHAIN_FLAP_COUNT and not self._chain_flapping.get(cid):
                                     self._chain_flapping[cid] = True
                                     self._fire_chain_flapping(result, chain, cfg, sender, now)
@@ -7986,10 +8150,12 @@ class HubServer:
                     # ── Recovery detection ───────────────────────────────────
                     elif curr == "ok":
                         if prev == "alerted":
-                            # Record recovery in fault log
+                            # Record recovery in fault log + DB
                             flog = self._chain_fault_log.setdefault(cid, [])
                             if flog and flog[-1].get("ts_recovered") is None:
                                 flog[-1]["ts_recovered"] = now
+                                metrics_db.fault_log_set_recovered(
+                                    flog[-1].get("id", ""), now)
                             # Check if chain was in flapping state — if so send flapping resolved
                             if self._chain_flapping.get(cid):
                                 self._chain_flapping.pop(cid, None)
@@ -8179,6 +8345,46 @@ class HubServer:
                                f"node with signal before the fault at '{pos_label_str}'.")
                     _add_history(lc, "CHAIN_FAULT", lg_msg, clip_path=lg_clip or "")
 
+        # ── Back-patch local clip filenames into the fault log entry + DB ───────
+        cid = chain.get("id", "")
+        _flog = self._chain_fault_log.get(cid, [])
+        if _flog:
+            _entry_clips = _flog[-1].setdefault("clips", [])
+            if fault_clip:
+                _entry_clips.append({
+                    "key":   _safe_name(fn.get("stream", "")),
+                    "fname": os.path.basename(fault_clip),
+                    "label": "fault",
+                })
+            # last-good clip (lg_clip) set only if idx>0 and local last-good node found
+            if idx > 0:
+                lg_pos2 = nodes[idx - 1]
+                _lg_subs = (lg_pos2.get("nodes", []) if lg_pos2.get("type") == "stack"
+                            else [lg_pos2])
+                for _lgs in _lg_subs:
+                    if _lgs.get("site") == "local":
+                        _lc2 = next((i for i in cfg.inputs
+                                     if i.name == _lgs.get("stream", "") and i.enabled), None)
+                        if _lc2:
+                            _lg_dir = _safe_name(_lcs := _lgs.get("stream", ""))
+                            # find the newest file in alert_snippets/<stream> matching last_good
+                            _lg_dir_path = os.path.join(
+                                BASE_DIR, "alert_snippets", _safe_name(_lcs))
+                            if os.path.isdir(_lg_dir_path):
+                                _cands = sorted(
+                                    [f for f in os.listdir(_lg_dir_path)
+                                     if "last_good" in f and f.endswith(".wav")],
+                                    reverse=True,
+                                )
+                                if _cands:
+                                    _entry_clips.append({
+                                        "key":   _safe_name(_lcs),
+                                        "fname": _cands[0],
+                                        "label": "last_good",
+                                    })
+            # Persist updated clips list to DB
+            metrics_db.fault_log_update_clips(_flog[-1].get("id", ""), _entry_clips)
+
         # ── Push save_clip commands to remote sites (fault + last-good positions) ──
         for _pi, _pnode in enumerate(nodes):
             _subs = _pnode.get("nodes", []) if _pnode.get("type") == "stack" else [_pnode]
@@ -8198,6 +8404,7 @@ class HubServer:
                         "stream":     _sn.get("stream", ""),
                         "label":      _clbl,
                         "chain_name": chain_label,
+                        "chain_id":   chain.get("id", ""),
                     },
                 })
 
@@ -13490,6 +13697,7 @@ def hub_clip_upload():
     stream     = str(data.get("stream",     "unknown")).strip()
     label      = str(data.get("label",      "clip")).strip()
     chain_name = str(data.get("chain_name", "")).strip()
+    chain_id   = str(data.get("chain_id",   "")).strip()
     data_b64   = data.get("data_b64", "")
 
     if not data_b64:
@@ -13526,6 +13734,15 @@ def hub_clip_upload():
         "ptp_jitter_us": 0,
         "ptp_gm":        "",
     })
+    # Link clip back to the most recent fault log entry for this chain
+    if chain_id:
+        _clip_label = "last_good" if "last_good" in label else "fault"
+        flog = hub_server._chain_fault_log.get(chain_id, [])
+        if flog:
+            clips = flog[-1].setdefault("clips", [])
+            clips.append({"key": safe_key, "fname": fname, "label": _clip_label})
+            metrics_db.fault_log_update_clips(flog[-1].get("id", ""), clips)
+
     monitor.log(f"[Hub] Clip upload received: {site}/{stream}/{label} "
                 f"({len(wav_bytes) // 1024}KB → {fname})")
     return jsonify({"ok": True, "saved": fname})
@@ -15154,7 +15371,8 @@ document.getElementById('chains_list').addEventListener('click', function(e){
         var entries=d.entries||[];
         if(!entries.length){body.innerHTML='<div class="flog-empty">No faults recorded yet.</div>';return;}
         var hasRtp=entries.some(function(ev){return ev.rtp_loss_pct!=null;});
-        var html='<table class="flog-table"><thead><tr><th>Date/Time</th><th>Fault Point</th><th>Site</th>'+(hasRtp?'<th>RTP Loss</th>':'')+'<th>Duration</th></tr></thead><tbody>';
+        var hasClips=entries.some(function(ev){return ev.clips&&ev.clips.length;});
+        var html='<table class="flog-table"><thead><tr><th>Date/Time</th><th>Fault Point</th><th>Site</th>'+(hasRtp?'<th>RTP Loss</th>':'')+(hasClips?'<th>Clips</th>':'')+'<th>Duration</th></tr></thead><tbody>';
         entries.forEach(function(ev){
           var dt=new Date(ev.ts_start*1000).toLocaleString();
           var dur=ev.ts_recovered?_fmtDur(ev.ts_recovered-ev.ts_start):'<span style="color:var(--al)">Ongoing</span>';
@@ -15165,7 +15383,17 @@ document.getElementById('chains_list').addEventListener('click', function(e){
               rtpCell='<td style="color:'+rc+'">'+ev.rtp_loss_pct.toFixed(1)+'%</td>';
             } else { rtpCell='<td style="color:var(--mu)">—</td>'; }
           }
-          html+='<tr><td>'+dt+'</td><td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td>'+rtpCell+'<td>'+dur+'</td></tr>';
+          var clipsCell='';
+          if(hasClips){
+            var clips=ev.clips||[];
+            if(clips.length){
+              clipsCell='<td>'+clips.map(function(c){
+                var lbl=c.label==='last_good'?'⬇ Last Good':'⬇ Fault';
+                return '<a href="/api/chains/clip/'+encodeURIComponent(c.key)+'/'+encodeURIComponent(c.fname)+'" download style="font-size:10px;padding:1px 5px;border:1px solid var(--bor);border-radius:3px;color:var(--ok);text-decoration:none;white-space:nowrap;display:inline-block;margin:1px">'+lbl+'</a>';
+              }).join(' ')+'</td>';
+            } else { clipsCell='<td style="color:var(--mu)">—</td>'; }
+          }
+          html+='<tr><td>'+dt+'</td><td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td>'+rtpCell+clipsCell+'<td>'+dur+'</td></tr>';
         });
         html+='</tbody></table>';
         body.innerHTML=html;
@@ -15573,11 +15801,22 @@ def api_chains_status():
 @app.get("/api/chains/<cid>/fault_log")
 @login_required
 def api_chains_fault_log(cid: str):
-    """Return the in-memory fault log for a chain (up to 25 most recent faults)."""
-    if not hub_server:
-        return jsonify({"entries": []})
-    log = hub_server._chain_fault_log.get(cid, [])
-    return jsonify({"entries": list(reversed(log))})  # newest first
+    """Return the fault log for a chain from the SQLite DB (up to 100 most recent faults)."""
+    entries = metrics_db.fault_log_load(cid, limit=100)
+    return jsonify({"entries": list(reversed(entries))})  # newest first
+
+
+@app.get("/api/chains/clip/<clip_key>/<fname>")
+@login_required
+def api_chains_clip_download(clip_key: str, fname: str):
+    """Serve a chain fault audio clip for download."""
+    # Reject any path traversal attempts
+    if ".." in clip_key or ".." in fname or "/" in fname or "\\" in fname:
+        return "Bad request", 400
+    clip_dir = os.path.join(BASE_DIR, "alert_snippets", clip_key)
+    if not os.path.isdir(clip_dir):
+        return "Not found", 404
+    return send_from_directory(clip_dir, fname, as_attachment=True)
 
 
 @app.post("/api/chains/<cid>/maintenance")
@@ -15726,17 +15965,23 @@ def hub_reports():
     sites = hub_server.get_sites()
 
     # Build stream→chain lookup from hub chain config
+    # A stream may appear in multiple chains, so map to a list then join for display.
     chain_cfg = cfg.signal_chains if cfg.hub.mode in ("hub","both") else []
-    stream_to_chain: dict = {}
+    stream_to_chains: dict = {}   # stream_name → [chain_name, ...]
     chain_names_list: list = []
     for ch in chain_cfg:
         cname = ch.get("name","")
         if cname and cname not in chain_names_list:
             chain_names_list.append(cname)
         for node in ch.get("nodes", []):
-            sname = node.get("stream","")
-            if sname:
-                stream_to_chain[sname] = cname
+            # Expand stack nodes to their sub-nodes
+            subs = node.get("nodes", []) if node.get("type") == "stack" else [node]
+            for sub in subs:
+                sname = sub.get("stream","")
+                if sname:
+                    stream_to_chains.setdefault(sname, [])
+                    if cname not in stream_to_chains[sname]:
+                        stream_to_chains[sname].append(cname)
 
     # Merge all sites' recent_alerts, tagging each with site name and chain membership
     all_events = []
@@ -15753,7 +15998,7 @@ def hub_reports():
             if merged.get("type") == "CHAIN_FAULT":
                 merged["_chain"] = ev_stream
             else:
-                merged["_chain"] = stream_to_chain.get(ev_stream, "")
+                merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
             all_events.append(merged)
 
     # Sort newest first
