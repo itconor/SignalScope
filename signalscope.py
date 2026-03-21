@@ -933,7 +933,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.31"
+BUILD                  = "SignalScope-3.2.32"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -12252,8 +12252,26 @@ def input_edit(idx):
     inps=monitor.app_cfg.inputs
     if idx<0 or idx>=len(inps): flash("Invalid."); return redirect(url_for("inputs_list"))
     if request.method=="POST":
-        inp=_inp_from_form(request.form); inps[idx]=inp; save_config(monitor.app_cfg)
-        flash(f"Updated '{inp.name}'."); return redirect(url_for("inputs_list"))
+        new_inp  = _inp_from_form(request.form)
+        old_inp  = inps[idx]
+        old_name = old_inp.name
+        # Update config fields in-place on the existing object so that monitor
+        # threads (which hold a direct reference to old_inp) keep working and
+        # all runtime state (_last_level_dbfs, _audio_buffer, _ai_status, …)
+        # is preserved — replacing the object makes the stream look dead until
+        # the monitor is restarted.
+        import dataclasses as _dc
+        for _f in _dc.fields(new_inp):
+            if _f.init:   # only config fields (init=False fields are runtime state)
+                setattr(old_inp, _f.name, getattr(new_inp, _f.name))
+        # If the stream name changed, keep _stream_ais keyed correctly
+        if monitor.is_running() and old_name != old_inp.name:
+            with monitor._lock:
+                _ai = monitor._stream_ais.pop(old_name, None)
+                if _ai:
+                    monitor._stream_ais[old_inp.name] = _ai
+        save_config(monitor.app_cfg)
+        flash(f"Updated '{old_inp.name}'."); return redirect(url_for("inputs_list"))
     return render_template_string(INPUT_FORM_TPL, cmp_search=int(COMPARE_SEARCH_SECS),title="Edit Input",
         sdr_devices=monitor.app_cfg.sdr_devices,
         inp=inps[idx],all_names=[i.name for i in inps])
