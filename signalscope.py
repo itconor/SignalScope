@@ -933,7 +933,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.32"
+BUILD                  = "SignalScope-3.2.33"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -8352,8 +8352,12 @@ class HubServer:
           "pending" — fault detected; confirmation window not yet elapsed
           "alerted" — fault confirmed and notification already sent
         """
-        _warmed_up = False   # first pass: populate state without firing alerts
+        _warmed_up  = False   # first pass: populate state without firing alerts
         _trend_last = 0.0    # last time node trends were computed
+        # chain_state metric values written to metrics_history every ~10 s:
+        #   1.0 = ok   0.5 = pending / adbreak   0.0 = alerted
+        # History view reads these directly for accurate display_status reconstruction.
+        _STATE_VAL = {"alerted": 0.0, "pending": 0.5, "ok": 1.0}
         while not stop_evt.is_set():
             try:
                 now    = time.time()
@@ -8401,6 +8405,8 @@ class HubServer:
                                     self._chain_node_trend[db_key] = {"trend": trend, "slope": round(slope, 3), "ts": now}
                     except Exception as _te:
                         monitor.log(f"[Chain] Trend compute error: {_te}")
+
+                _state_rows: list = []   # batched chain_state metric writes for this pass
 
                 for chain in cfg.signal_chains:
                     cid = chain.get("id", "")
@@ -8649,13 +8655,30 @@ class HubServer:
                         except Exception:
                             pass
 
+                    # ── chain_state metric (every pass, ~10 s) ────────────────
+                    # Written on every evaluation cycle so the history view can
+                    # reconstruct the exact alert state machine state at any
+                    # point in time without having to guess from level_dbfs data.
+                    if _warmed_up:
+                        _state_rows.append((
+                            f"chain/{cid}", "chain_state", now,
+                            _STATE_VAL.get(self._chain_fault_state.get(cid, "ok"), 1.0),
+                        ))
+
+                # ── Batch-write chain_state rows for all chains ───────────────
+                if _state_rows:
+                    try:
+                        metrics_db.write(_state_rows)
+                    except Exception:
+                        pass
+
             except Exception as e:
                 try:
                     monitor.log(f"[Chain] Monitor loop error: {e}")
                 except Exception:
                     pass
             _warmed_up = True
-            stop_evt.wait(30)
+            stop_evt.wait(10)   # state machine runs every 10 s; trend gate stays at 30 s
 
     def _fire_chain_flapping(self, result: dict, chain: dict, cfg, sender, now: float):
         """Fire CHAIN_FLAPPING alert when a chain is fault-cycling rapidly."""
@@ -16456,14 +16479,53 @@ def api_chains_history():
         fault_idx = next((i for i, n in enumerate(nodes_out) if n["status"] == "down"), None)
         chain_status = "fault" if fault_idx is not None else ("ok" if nodes_out else "unknown")
 
-        # Reconstruct pending / adbreak display state from metric history
-        min_fault_secs = float(chain.get("min_fault_seconds") or 0)
-        mixin_idx      = chain.get("mixin_node_idx")
+        min_fault_secs    = float(chain.get("min_fault_seconds") or 0)
+        mixin_idx         = chain.get("mixin_node_idx")
         adbreak_candidate = False
         display_status    = chain_status
         adbreak_remaining = None
 
-        if fault_idx is not None and min_fault_secs > 0:
+        # ── Reconstruct alert state machine state at time `ts` ───────────────
+        #
+        # Primary path: query the persisted `chain_state` metric written every
+        # ~10 s by the monitor loop.  Values: 1.0=ok, 0.5=pending/adbreak, 0.0=alerted.
+        # This gives the exact state machine decision with no timing ambiguity.
+        #
+        # Fallback path (for data written before 3.2.33): reconstruct from
+        # level_dbfs history using `_fault_duration_at` — less precise (±60 s)
+        # because metrics are written at 1-minute intervals.
+        _cid = chain.get("id", "")
+        _chain_state_val = None
+        try:
+            import sqlite3 as _sq
+            with _sq.connect(METRICS_DB_PATH) as _hconn:
+                _hr = _hconn.execute(
+                    "SELECT value FROM metric_history WHERE stream=? AND metric='chain_state'"
+                    " AND ts<=? AND ts>=? ORDER BY ts DESC LIMIT 1",
+                    (f"chain/{_cid}", ts, ts - 300),   # 5-min lookback (30 × 10 s samples)
+                ).fetchone()
+            if _hr is not None:
+                _chain_state_val = _hr[0]
+        except Exception:
+            pass
+
+        if _chain_state_val is not None:
+            # ── Primary path: use persisted state ────────────────────────────
+            if chain_status == "fault":
+                if _chain_state_val >= 0.4:   # 0.5 → still inside confirmation window
+                    # Determine adbreak vs plain pending using node layout
+                    if (mixin_idx is not None
+                            and fault_idx is not None
+                            and fault_idx < int(mixin_idx)
+                            and nodes_out[int(mixin_idx)]["status"] not in ("down", "unknown")):
+                        adbreak_candidate = True
+                        display_status    = "adbreak"
+                    else:
+                        display_status    = "pending"
+                # else _chain_state_val ≈ 0.0 → alerted; display_status stays "fault"
+
+        elif fault_idx is not None and min_fault_secs > 0:
+            # ── Fallback path: reconstruct from level_dbfs history ────────────
             # Is the fault before the mixin node (mixin still up)? → adbreak candidate
             if (mixin_idx is not None
                     and fault_idx < int(mixin_idx)
