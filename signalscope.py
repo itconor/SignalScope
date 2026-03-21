@@ -42,8 +42,70 @@ function st(id){
   var p=document.getElementById('p-'+id),b=document.getElementById('b-'+id);
   if(p)p.classList.add('on');if(b)b.classList.add('on');
   history.replaceState(null,'','#'+id);
+  if(id==='mobile') loadMobileApiStatus();
 }
 
+async function loadMobileApiStatus(){
+  var s=document.getElementById('mobile-api-status');
+  var tok=document.getElementById('mobile-api-token');
+  var meta=document.getElementById('mobile-api-meta');
+  if(!s||!tok||!meta) return;
+  s.textContent='Loading…';
+  try{
+    var r=await _csrfFetch('/api/mobile/token/status',{headers:{'Accept':'application/json'}});
+    var j=await r.json();
+    if(!r.ok){ throw new Error((j&&j.error)||('HTTP '+r.status)); }
+    var enabled=!!j.enabled;
+    s.textContent=enabled?'Enabled':'Disabled';
+    s.style.color=enabled?'var(--ok)':'var(--mu)';
+    tok.value=j.token||'';
+    meta.textContent=(j.token_present?'Token ready for the iPhone app. ':'No token is active. ')+(j.updated_at?('Last changed: '+j.updated_at):'');
+  }catch(e){
+    s.textContent='Error';
+    s.style.color='var(--al)';
+    meta.textContent=e.message||'Failed to load mobile API token status.';
+  }
+}
+
+async function rotateMobileApiToken(){
+  var meta=document.getElementById('mobile-api-meta');
+  if(meta) meta.textContent='Rotating token…';
+  try{
+    var r=await _csrfFetch('/api/mobile/token/rotate',{method:'POST',headers:{'Accept':'application/json'}});
+    var j=await r.json();
+    if(!r.ok){ throw new Error((j&&j.error)||('HTTP '+r.status)); }
+    await loadMobileApiStatus();
+    if(j.token){
+      try{ await navigator.clipboard.writeText(j.token); if(meta) meta.textContent='New token created and copied to clipboard.'; }
+      catch(_e){ if(meta) meta.textContent='New token created. Copy it into the iPhone app settings.'; }
+    }
+  }catch(e){
+    if(meta) meta.textContent=e.message||'Failed to rotate token.';
+  }
+}
+
+async function disableMobileApiToken(){
+  var meta=document.getElementById('mobile-api-meta');
+  if(!confirm('Disable the current mobile API token? The iPhone app will stop connecting until you rotate a new one.')) return;
+  if(meta) meta.textContent='Disabling token…';
+  try{
+    var r=await _csrfFetch('/api/mobile/token/disable',{method:'POST',headers:{'Accept':'application/json'}});
+    var j=await r.json();
+    if(!r.ok){ throw new Error((j&&j.error)||('HTTP '+r.status)); }
+    await loadMobileApiStatus();
+    if(meta) meta.textContent='Mobile API token disabled.';
+  }catch(e){
+    if(meta) meta.textContent=e.message||'Failed to disable token.';
+  }
+}
+
+async function copyMobileApiToken(){
+  var tok=document.getElementById('mobile-api-token');
+  var meta=document.getElementById('mobile-api-meta');
+  if(!tok||!tok.value){ if(meta) meta.textContent='No token to copy yet.'; return; }
+  try{ await navigator.clipboard.writeText(tok.value); if(meta) meta.textContent='Token copied to clipboard.'; }
+  catch(e){ tok.select(); tok.setSelectionRange(0,99999); if(meta) meta.textContent='Clipboard copy failed — token selected so you can copy it manually.'; }
+}
 
 var lastAlertState={};
 function playAlertSound(){
@@ -82,6 +144,7 @@ document.addEventListener('DOMContentLoaded',function(){
   <button class="tb" id="b-sec"   onclick="st('sec')"  >🔐 Security</button>
   <button class="tb" id="b-gen"   onclick="st('gen')"  >⚙ General</button>
   <button class="tb" id="b-maint" onclick="st('maint')">🗂 Maintenance</button>
+  <button class="tb" id="b-mobile" onclick="st('mobile')">📱 Mobile API</button>
   <button class="tb" id="b-sdr"   onclick="st('sdr')"  >📻 SDR Devices</button>
 </nav>
 <div class="ct">
@@ -684,6 +747,39 @@ document.addEventListener('DOMContentLoaded',function(){
   <p style="font-size:11px;color:var(--mu);margin-top:6px">Only files from a SignalScope backup ZIP are restored — all other zip contents are ignored.</p>
   <div id="restore-status" style="font-size:12px;margin-top:8px"></div>
 </div>
+<div class="pn" id="p-mobile">
+  <div class="sec">📱 Mobile API</div>
+  <p class="help">Create and manage the read-only token used by the SignalScope iPhone app. Paste this token into the app Settings screen.</p>
+
+  <div style="margin-top:14px;padding:14px;border:1px solid var(--bor);border-radius:10px;background:#112a52">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;font-weight:700">Status</div>
+        <div id="mobile-api-status" style="font-size:18px;font-weight:700;margin-top:4px">Loading…</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn bp" onclick="rotateMobileApiToken()">🔄 Rotate / Create Token</button>
+        <button type="button" class="btn bg" onclick="copyMobileApiToken()">📋 Copy Token</button>
+        <button type="button" class="btn bw" onclick="disableMobileApiToken()">⛔ Disable Token</button>
+      </div>
+    </div>
+
+    <label style="margin-top:14px">Current Token
+      <input id="mobile-api-token" type="text" value="" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:.02em">
+    </label>
+    <p id="mobile-api-meta" class="help">Open this panel to load token status.</p>
+  </div>
+
+  <div class="sec">📲 iPhone App Setup</div>
+  <ol style="margin:10px 0 0 18px;color:var(--tx);line-height:1.7">
+    <li>Tap <strong>Rotate / Create Token</strong>.</li>
+    <li>Tap <strong>Copy Token</strong> and paste it into the iPhone app <strong>Settings</strong> screen.</li>
+    <li>Set the app base URL to this hub, for example <code style="background:#0b1d3b;padding:2px 6px;border-radius:6px">https://your-hub.example.com</code>.</li>
+    <li>Tap <strong>Test Connection</strong> in the app.</li>
+  </ol>
+  <p class="help" style="margin-top:10px">Rotating the token immediately invalidates the previous one.</p>
+</div>
+
 <div class="pn" id="p-sdr">
   <div class="sec">📻 SDR Devices</div>
   <p class="help" style="margin-bottom:10px">Register RTL-SDR dongles by serial number so inputs can reference them reliably regardless of USB port order. Program a serial once with <code style="background:#173a69;padding:1px 6px;border-radius:3px">rtl_eeprom -d 0 -s "MY_DONGLE"</code>, then unplug and replug.</p>
@@ -933,7 +1029,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.33"
+BUILD                  = "SignalScope-3.2.34"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -1156,6 +1252,12 @@ class AuthConfig:
 
 
 @dataclass
+class MobileApiConfig:
+    enabled: bool = False
+    token:   str  = ""
+
+
+@dataclass
 class EmailConfig:
     enabled: bool = False
     smtp_host: str = ""
@@ -1265,6 +1367,7 @@ class AppConfig:
     network: NetworkConfig = field(default_factory=NetworkConfig)
     hub: HubConfig = field(default_factory=HubConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
+    mobile_api: MobileApiConfig = field(default_factory=MobileApiConfig)
     sla_target_pct:      float = 99.9
     nowplaying_country:  str   = "GB"
     alert_wav_duration:  float = 5.0
@@ -1363,7 +1466,7 @@ def load_config() -> AppConfig:
             expected_fm_rds_ps=item.get("expected_fm_rds_ps", ""),
             expected_dab_service=item.get("expected_dab_service", ""),
         ))
-    e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {})
+    e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
     return AppConfig(
         inputs=inputs,
         sdr_devices=sdr_devices,
@@ -1407,6 +1510,10 @@ def load_config() -> AppConfig:
         auth=AuthConfig(
             enabled=au.get("enabled",False), username=au.get("username","admin"),
             password_hash=au.get("password_hash",""), first_login=au.get("first_login",True),
+        ),
+        mobile_api=MobileApiConfig(
+            enabled=bool(ma.get("enabled", False)),
+            token=str(ma.get("token", "")),
         ),
         sla_target_pct=raw.get("sla_target_pct", 99.9),
         nowplaying_country=raw.get("nowplaying_country","GB"),
@@ -1520,6 +1627,10 @@ def save_config(cfg: AppConfig):
         "auth": {
             "enabled": cfg.auth.enabled, "username": cfg.auth.username,
             "password_hash": cfg.auth.password_hash, "first_login": cfg.auth.first_login,
+        },
+        "mobile_api": {
+            "enabled": bool(getattr(cfg, "mobile_api", MobileApiConfig()).enabled),
+            "token": getattr(getattr(cfg, "mobile_api", MobileApiConfig()), "token", ""),
         },
         "sla_target_pct": cfg.sla_target_pct,
         "nowplaying_country": cfg.nowplaying_country,
@@ -1795,6 +1906,49 @@ def login_required(f):
             session.clear()
             flash(f"Session expired after {timeout_hrs}h. Please log in again.")
             return redirect(url_for("login", next=request.path))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def _mobile_api_token() -> str:
+    try:
+        return str(getattr(getattr(monitor.app_cfg, "mobile_api", None), "token", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _mobile_api_enabled() -> bool:
+    try:
+        return bool(getattr(getattr(monitor.app_cfg, "mobile_api", None), "enabled", False))
+    except Exception:
+        return False
+
+
+def _make_mobile_api_token() -> str:
+    return uuid.uuid4().hex + uuid.uuid4().hex
+
+
+def mobile_api_required(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if not _mobile_api_enabled():
+            return jsonify({"ok": False, "error": "mobile api disabled"}), 403
+
+        expected = _mobile_api_token()
+        if not expected:
+            return jsonify({"ok": False, "error": "mobile api token not configured"}), 403
+
+        supplied = ""
+        authz = request.headers.get("Authorization", "").strip()
+        if authz.lower().startswith("bearer "):
+            supplied = authz[7:].strip()
+        if not supplied:
+            supplied = request.headers.get("X-API-Key", "").strip()
+        if not supplied:
+            supplied = request.args.get("api_key", "").strip()
+
+        if not supplied or not _hmac.compare_digest(expected, supplied):
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -8247,8 +8401,12 @@ class HubServer:
                 return {"label": label, "site": site, "stream": sname, "machine": machine,
                         "status": "offline", "level": None, "rtp_loss_pct": None}
             if not site_data["online"]:
+                offline_grace = HUB_HEARTBEAT_INTERVAL * 2
+                offline_age_s = float(site_data.get("age_s", HUB_SITE_TIMEOUT) or HUB_SITE_TIMEOUT)
                 return {"label": label, "site": site, "stream": sname, "machine": machine,
-                        "status": "offline", "level": None, "rtp_loss_pct": None}
+                        "status": "offline", "level": None, "rtp_loss_pct": None,
+                        "offline_age_s": offline_age_s,
+                        "offline_grace_active": offline_age_s < (HUB_SITE_TIMEOUT + offline_grace)}
             sd = next((s for s in site_data["streams"] if s.get("name") == sname), None)
             if sd is None:
                 return {"label": label, "site": site, "stream": sname, "machine": machine,
@@ -8265,6 +8423,53 @@ class HubServer:
                     "level": round(lev, 1),
                     "rtp_loss_pct": round(float(rtp_loss), 2) if is_rtp and rtp_loss is not None else None}
 
+    def _pending_fault_meta(self, chain_id: str) -> dict:
+        """Return pending-state metadata for a chain.
+
+        Historically ``_chain_fault_index[cid]`` stored only an integer fault index.
+        Newer code stores a dict so we can persist extra state such as whether the
+        current confirmation window started as an ad-break candidate.
+        """
+        raw = self._chain_fault_index.get(chain_id)
+        if isinstance(raw, dict):
+            return {
+                "fault_index": raw.get("fault_index"),
+                "adbreak_candidate": bool(raw.get("adbreak_candidate", False)),
+            }
+        return {
+            "fault_index": raw,
+            "adbreak_candidate": False,
+        }
+
+    def _set_pending_fault_meta(self, chain_id: str, fault_index, adbreak_candidate: bool = False):
+        self._chain_fault_index[chain_id] = {
+            "fault_index": fault_index,
+            "adbreak_candidate": bool(adbreak_candidate),
+        }
+
+    def _create_fault_log_entry(self, chain_id: str, now: float, result: dict) -> dict:
+        fn_info = result.get("fault_node") or {}
+        return {
+            "id":               str(uuid.uuid4()),
+            "chain_id":         chain_id,
+            "ts_start":         now,
+            "fault_node_label": fn_info.get("label", "?"),
+            "fault_site":       fn_info.get("site", "?"),
+            "fault_stream":     fn_info.get("stream", "?"),
+            "rtp_loss_pct":     fn_info.get("rtp_loss_pct"),
+            "ts_recovered":     None,
+            "clips":            [],
+        }
+
+    def _append_fault_log_entry(self, chain_id: str, now: float, result: dict):
+        new_entry = self._create_fault_log_entry(chain_id, now, result)
+        flog = self._chain_fault_log.setdefault(chain_id, [])
+        flog.append(new_entry)
+        if len(flog) > 25:
+            flog.pop(0)
+        metrics_db.fault_log_insert(new_entry)
+        return new_entry
+
     def eval_chain(self, chain: dict, maintenance: "dict | None" = None) -> dict:
         """Evaluate a single chain and return its status dict.
         Nodes can be regular node dicts or stack dicts (type=='stack').
@@ -8275,6 +8480,7 @@ class HubServer:
             sites_snap = {
                 sname: {
                     "online": (now - data.get("_received", 0)) < HUB_SITE_TIMEOUT,
+                    "age_s": max(0.0, now - float(data.get("_received", 0) or 0)),
                     "streams": data.get("streams", []),
                 }
                 for sname, data in self._sites.items()
@@ -8287,9 +8493,17 @@ class HubServer:
                 sub_eval = [self._eval_one_node(n, cfg, sites_snap, maintenance) for n in node.get("nodes", [])]
                 if sub_eval:
                     if mode == "any":
-                        is_down = any(n["status"] in ("down", "offline") for n in sub_eval)
+                        is_down = any(
+                            n.get("status") == "down"
+                            or (n.get("status") == "offline" and not n.get("offline_grace_active", False))
+                            for n in sub_eval
+                        )
                     else:  # "all" — position only faults when every sub-node is down
-                        is_down = all(n["status"] in ("down", "offline") for n in sub_eval)
+                        is_down = all(
+                            n.get("status") == "down"
+                            or (n.get("status") == "offline" and not n.get("offline_grace_active", False))
+                            for n in sub_eval
+                        )
                 else:
                     is_down = False
                 # Best level = highest (most healthy) sub-node level
@@ -8306,9 +8520,18 @@ class HubServer:
             else:
                 nodes_out.append(self._eval_one_node(node, cfg, sites_snap, maintenance))
 
-        # maintenance nodes are skipped in fault detection — they count as ok
-        fault_idx = next((i for i, n in enumerate(nodes_out)
-                          if n["status"] in ("down", "offline")), None)
+        # maintenance nodes are skipped in fault detection — they count as ok.
+        # Brief remote-site heartbeat loss is also softened: an offline node within
+        # a short grace period does not yet count as a chain fault.
+        def _node_faults(_n: dict) -> bool:
+            st = _n.get("status")
+            if st == "down":
+                return True
+            if st == "offline":
+                return not _n.get("offline_grace_active", False)
+            return False
+
+        fault_idx = next((i for i, n in enumerate(nodes_out) if _node_faults(n)), None)
         chain_status = "fault" if fault_idx is not None else ("ok" if nodes_out else "unknown")
         has_maintenance = any(
             (n.get("status") == "maintenance" or
@@ -8449,13 +8672,13 @@ class HubServer:
                             # Adbreak candidate — start a fresh confirmation window
                             self._chain_fault_state[cid] = "pending"
                             self._chain_fault_since[cid] = now
-                            self._chain_fault_index[cid] = result.get("fault_index")
+                            self._set_pending_fault_meta(cid, result.get("fault_index"), result.get("adbreak_candidate", False))
                         elif curr == "fault" and min_fault_secs > 0:
                             # Confirmation delay configured — show amber on startup,
                             # fire alert on first real eval if still faulted.
                             self._chain_fault_state[cid] = "pending"
                             self._chain_fault_since[cid] = now - min_fault_secs
-                            self._chain_fault_index[cid] = result.get("fault_index")
+                            self._set_pending_fault_meta(cid, result.get("fault_index"), result.get("adbreak_candidate", False))
                         elif curr == "fault":
                             # No confirmation delay — suppress duplicate alert.
                             self._chain_fault_state[cid] = "alerted"
@@ -8481,24 +8704,7 @@ class HubServer:
                                 flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
                                 flap_evts.append(now)
                                 # Update fault log ring buffer + DB
-                                fn_info = result.get("fault_node") or {}
-                                _entry_id = str(uuid.uuid4())
-                                _new_entry = {
-                                    "id":               _entry_id,
-                                    "chain_id":         cid,
-                                    "ts_start":         now,
-                                    "fault_node_label": fn_info.get("label", "?"),
-                                    "fault_site":       fn_info.get("site", "?"),
-                                    "fault_stream":     fn_info.get("stream", "?"),
-                                    "rtp_loss_pct":     fn_info.get("rtp_loss_pct"),
-                                    "ts_recovered":     None,
-                                    "clips":            [],
-                                }
-                                flog = self._chain_fault_log.setdefault(cid, [])
-                                flog.append(_new_entry)
-                                if len(flog) > 25:
-                                    flog.pop(0)
-                                metrics_db.fault_log_insert(_new_entry)
+                                self._append_fault_log_entry(cid, now, result)
                                 if len(flap_evts) >= CHAIN_FLAP_COUNT and not self._chain_flapping.get(cid):
                                     # Flapping detected — suppress normal fault alert, fire CHAIN_FLAPPING
                                     self._chain_flapping[cid] = True
@@ -8509,7 +8715,7 @@ class HubServer:
                                 # Start confirmation window
                                 self._chain_fault_state[cid] = "pending"
                                 self._chain_fault_since[cid] = now
-                                self._chain_fault_index[cid] = result.get("fault_index")
+                                self._set_pending_fault_meta(cid, result.get("fault_index"), result.get("adbreak_candidate", False))
                                 monitor.log(
                                     f"[Chain] '{result['name']}' entered fault state — "
                                     f"waiting {min_fault_secs}s confirmation before alerting.")
@@ -8521,7 +8727,8 @@ class HubServer:
                             # gets its own full timer rather than inheriting the
                             # elapsed time from the previous position.
                             current_fault_idx = result.get("fault_index")
-                            stored_fault_idx  = self._chain_fault_index.get(cid)
+                            pending_meta = self._pending_fault_meta(cid)
+                            stored_fault_idx  = pending_meta.get("fault_index")
                             if (current_fault_idx is not None
                                     and current_fault_idx != stored_fault_idx):
                                 # Fault position shifted — e.g. studio came back after
@@ -8532,16 +8739,18 @@ class HubServer:
                                 # the new position still fires promptly.
                                 _grace = HUB_HEARTBEAT_INTERVAL * 2  # ~10 s
                                 self._chain_fault_since[cid] = now - max(0.0, min_fault_secs - _grace)
-                                self._chain_fault_index[cid] = current_fault_idx
+                                self._set_pending_fault_meta(cid, current_fault_idx, pending_meta.get("adbreak_candidate", False))
                                 monitor.log(
                                     f"[Chain] '{result['name']}' fault position shifted "
                                     f"(pos {stored_fault_idx} → {current_fault_idx}) — "
                                     f"applying {round(_grace)}s grace window.")
                             elapsed = now - self._chain_fault_since.get(cid, now)
-                            if elapsed >= min_fault_secs or mixin_is_down:
+                            pending_adbreak = bool(pending_meta.get("adbreak_candidate", False))
+                            effective_mixin_is_down = mixin_is_down and not pending_adbreak
+                            if elapsed >= min_fault_secs or effective_mixin_is_down:
                                 # Confirmation window elapsed, or mix-in just went silent
                                 reason = ("mix-in point also silent"
-                                          if mixin_is_down and elapsed < min_fault_secs
+                                          if effective_mixin_is_down and elapsed < min_fault_secs
                                           else f"{round(elapsed)}s elapsed")
                                 monitor.log(
                                     f"[Chain] '{result['name']}' fault confirmed ({reason}).")
@@ -8553,24 +8762,7 @@ class HubServer:
                                 flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
                                 flap_evts.append(now)
                                 # Update fault log ring buffer + DB
-                                fn_info = result.get("fault_node") or {}
-                                _entry_id = str(uuid.uuid4())
-                                _new_entry = {
-                                    "id":               _entry_id,
-                                    "chain_id":         cid,
-                                    "ts_start":         now,
-                                    "fault_node_label": fn_info.get("label", "?"),
-                                    "fault_site":       fn_info.get("site", "?"),
-                                    "fault_stream":     fn_info.get("stream", "?"),
-                                    "rtp_loss_pct":     fn_info.get("rtp_loss_pct"),
-                                    "ts_recovered":     None,
-                                    "clips":            [],
-                                }
-                                flog = self._chain_fault_log.setdefault(cid, [])
-                                flog.append(_new_entry)
-                                if len(flog) > 25:
-                                    flog.pop(0)
-                                metrics_db.fault_log_insert(_new_entry)
+                                self._append_fault_log_entry(cid, now, result)
                                 if len(flap_evts) >= CHAIN_FLAP_COUNT and not self._chain_flapping.get(cid):
                                     self._chain_flapping[cid] = True
                                     self._fire_chain_flapping(result, chain, cfg, sender, now)
@@ -8679,6 +8871,33 @@ class HubServer:
                     pass
             _warmed_up = True
             stop_evt.wait(10)   # state machine runs every 10 s; trend gate stays at 30 s
+
+    def _append_fault_log_entry(self, cid: str, now: float, result: dict) -> dict:
+        """Create, append, and DB-insert a fault log entry. Returns the entry dict.
+
+        Extracted from the two identical blocks that previously existed in
+        _chains_monitor_loop (prev=='ok' immediate-alert path and prev=='pending'
+        confirmation-elapsed path).
+        """
+        fn_info  = result.get("fault_node") or {}
+        entry_id = str(uuid.uuid4())
+        entry = {
+            "id":               entry_id,
+            "chain_id":         cid,
+            "ts_start":         now,
+            "fault_node_label": fn_info.get("label", "?"),
+            "fault_site":       fn_info.get("site", "?"),
+            "fault_stream":     fn_info.get("stream", "?"),
+            "rtp_loss_pct":     fn_info.get("rtp_loss_pct"),
+            "ts_recovered":     None,
+            "clips":            [],
+        }
+        flog = self._chain_fault_log.setdefault(cid, [])
+        flog.append(entry)
+        if len(flog) > 25:
+            flog.pop(0)
+        metrics_db.fault_log_insert(entry)
+        return entry
 
     def _fire_chain_flapping(self, result: dict, chain: dict, cfg, sender, now: float):
         """Fire CHAIN_FLAPPING alert when a chain is fault-cycling rapidly."""
@@ -16757,6 +16976,131 @@ def api_chains_status():
         r["shared_fault_chains"] = list(dict.fromkeys(shared))  # dedup, preserve order
 
     return jsonify({"results": results})
+
+
+def _mobile_chain_summary(result: dict, now: float | None = None) -> dict:
+    now = time.time() if now is None else now
+    fault_node = result.get("fault_node") or {}
+    fault_at = (
+        fault_node.get("label")
+        or fault_node.get("stream")
+        or fault_node.get("site")
+        or None
+    )
+    maintenance = result.get("maintenance") or {}
+    updated_at = result.get("updated_at")
+    if updated_at is None:
+        updated_at = now
+    try:
+        updated_at = float(updated_at)
+    except Exception:
+        updated_at = now
+
+    return {
+        "id": result.get("id", ""),
+        "name": result.get("name", ""),
+        "status": result.get("status", "unknown"),
+        "display_status": result.get("display_status", result.get("status", "unknown")),
+        "fault_index": result.get("fault_index"),
+        "fault_at": fault_at,
+        "fault_reason": result.get("fault_reason") or fault_node.get("reason") or "",
+        "pending": result.get("display_status") in ("pending", "adbreak"),
+        "adbreak": result.get("display_status") == "adbreak",
+        "adbreak_remaining": result.get("adbreak_remaining"),
+        "maintenance": bool(maintenance),
+        "maintenance_nodes": list(maintenance.keys()),
+        "flapping": bool(result.get("flapping")),
+        "shared_fault_chains": result.get("shared_fault_chains", []),
+        "sla_pct": result.get("sla_pct"),
+        "updated_at": updated_at,
+        "age_secs": max(0, int(round(now - updated_at))),
+    }
+
+
+@app.get("/api/mobile/chains")
+@mobile_api_required
+def api_mobile_chains():
+    base_resp = api_chains_status.__wrapped__()
+    payload = base_resp.get_json(silent=True) or {}
+    now = time.time()
+    results = payload.get("results", []) or []
+    return jsonify({
+        "ok": True,
+        "results": [_mobile_chain_summary(r, now=now) for r in results],
+        "generated_at": now,
+    })
+
+
+@app.get("/api/mobile/chains/<cid>")
+@mobile_api_required
+def api_mobile_chain(cid: str):
+    base_resp = api_chains_status.__wrapped__()
+    payload = base_resp.get_json(silent=True) or {}
+    now = time.time()
+    for item in (payload.get("results", []) or []):
+        if item.get("id") == cid:
+            return jsonify({"ok": True, "chain": _mobile_chain_summary(item, now=now)})
+    return jsonify({"ok": False, "error": "not found"}), 404
+
+
+@app.get("/api/mobile/active_faults")
+@mobile_api_required
+def api_mobile_active_faults():
+    base_resp = api_chains_status.__wrapped__()
+    payload = base_resp.get_json(silent=True) or {}
+    now = time.time()
+    active = []
+    for item in (payload.get("results", []) or []):
+        status = item.get("display_status", item.get("status", "unknown"))
+        if status in ("fault", "pending", "adbreak"):
+            active.append(_mobile_chain_summary(item, now=now))
+    return jsonify({
+        "ok": True,
+        "results": active,
+        "count": len(active),
+        "generated_at": now,
+    })
+
+
+@app.post("/api/mobile/token/rotate")
+@login_required
+@csrf_protect
+def api_mobile_token_rotate():
+    cfg = monitor.app_cfg
+    if not getattr(cfg, "mobile_api", None):
+        cfg.mobile_api = MobileApiConfig()
+    cfg.mobile_api.enabled = True
+    cfg.mobile_api.token = _make_mobile_api_token()
+    save_config(cfg)
+    return jsonify({"ok": True, "enabled": True, "token": cfg.mobile_api.token})
+
+
+@app.post("/api/mobile/token/disable")
+@login_required
+@csrf_protect
+def api_mobile_token_disable():
+    cfg = monitor.app_cfg
+    if not getattr(cfg, "mobile_api", None):
+        cfg.mobile_api = MobileApiConfig()
+    cfg.mobile_api.enabled = False
+    save_config(cfg)
+    return jsonify({"ok": True, "enabled": False})
+
+
+@app.get("/api/mobile/token/status")
+@login_required
+def api_mobile_token_status():
+    cfg = monitor.app_cfg
+    mac = getattr(cfg, "mobile_api", None) or MobileApiConfig()
+    token = mac.token or ""
+    masked = (token[:6] + "…" + token[-4:]) if len(token) >= 12 else ("set" if token else "")
+    return jsonify({
+        "ok": True,
+        "enabled": bool(mac.enabled),
+        "token": token,
+        "token_masked": masked,
+        "token_present": bool(token),
+    })
 
 
 @app.get("/api/chains/<cid>/fault_log")
