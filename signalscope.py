@@ -918,6 +918,12 @@ from flask import Flask, jsonify, request, render_template_string, redirect, url
 
 # ─── Optional deps — checked at runtime ───────────────────────────────────────
 
+try:
+    import psutil as _psutil
+    _psutil.cpu_percent(interval=None)   # prime CPU measurement
+except Exception:
+    _psutil = None
+
 def _try_import(name):
     try:
         import importlib
@@ -927,7 +933,15 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.18"
+BUILD                  = "SignalScope-3.2.25"
+# CHANGELOG
+# 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
+#   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
+#   to /hub/backup_upload; hub stores latest per-site and exposes download link.
+#   Network Path Test: hub "🔍 Ping" button opens inline form; pushes ping_test command
+#   to client; client runs subprocess ping -c 4 and POSTs RTT output to /hub/ping_result;
+#   dashboard polls result and shows pass/fail badge + full output in modal.
+_PROCESS_START         = time.time()
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -3958,13 +3972,32 @@ class MonitorManager:
         with self._lock: return self._running
 
     def start_hub_client(self):
-        """Start the hub heartbeat client immediately at app startup, independent of monitoring."""
+        """Start (or restart) the hub heartbeat client, independent of the monitor loop.
+
+        Safe to call multiple times — if the client is already running and the
+        hub URL/mode haven't changed it is a no-op.  If the URL or mode changed
+        (e.g. user just saved settings) the old client is stopped and a new one
+        started with the current configuration.
+        """
         cfg = self.app_cfg
-        if cfg.hub.mode in ("client","both") and cfg.hub.hub_url:
-            if self._hub_client is None:
-                self._hub_client = HubClient(lambda: self.app_cfg, self)
-                self._hub_client.start()
-                self.log(f"[Hub] Client started → {cfg.hub.hub_url}")
+        if cfg.hub.mode in ("client", "both") and cfg.hub.hub_url:
+            # Check if the running client is already pointing at the right URL
+            if self._hub_client is not None:
+                if getattr(self._hub_client, '_hub_url_at_start', None) == cfg.hub.hub_url:
+                    return  # already running for this URL — nothing to do
+                # URL or mode changed — stop the old client and start fresh
+                self.log(f"[Hub] Hub URL changed — restarting client → {cfg.hub.hub_url}")
+                self._hub_client.stop()
+                self._hub_client = None
+            self._hub_client = HubClient(lambda: self.app_cfg, self)
+            self._hub_client._hub_url_at_start = cfg.hub.hub_url
+            self._hub_client.start()
+            self.log(f"[Hub] Client started → {cfg.hub.hub_url}")
+        elif self._hub_client is not None:
+            # Mode changed to non-client — stop the hub client
+            self.log("[Hub] Hub client mode disabled — stopping client")
+            self._hub_client.stop()
+            self._hub_client = None
 
     def start_monitoring(self):
         with self._lock:
@@ -6903,6 +6936,219 @@ class HubClient:
         except Exception as e:
             monitor.log(f"[Hub] Clip upload failed for '{stream}': {e}")
 
+    def _cmd_self_update(self, payload: dict):
+        """Hub command: download the hub's current signalscope.py and restart."""
+        hub_version = payload.get("hub_version", "?")
+        monitor.log(f"[Hub] Self-update requested — hub is {hub_version}, we are {BUILD}")
+        cfg_obj  = self._cfg_fn()
+        hub_url  = cfg_obj.hub.hub_url.rstrip("/")
+        secret   = cfg_obj.hub.secret_key
+        threading.Thread(target=self._run_self_update,
+                         args=(hub_url, secret, hub_version),
+                         daemon=True, name="SelfUpdate").start()
+
+    def _run_self_update(self, hub_url: str, secret: str, hub_version: str):
+        """Download new signalscope.py from hub and perform an in-place restart."""
+        import py_compile, tempfile
+        script_path = os.path.abspath(__file__)
+        script_dir  = os.path.dirname(script_path)
+        monitor.log(f"[Update] Downloading update from {hub_url}/hub/update/download …")
+        try:
+            ts    = time.time()
+            nonce = hashlib.md5(os.urandom(8)).hexdigest()[:16]
+            sig   = hub_sign_payload(secret, b"", ts) if secret else ""
+            headers = {
+                "X-Hub-Sig":   sig,
+                "X-Hub-Ts":    str(ts),
+                "X-Hub-Nonce": nonce,
+            }
+            req = urllib.request.Request(
+                f"{hub_url}/hub/update/download", headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=60) as r:
+                new_code = r.read()
+            monitor.log(f"[Update] Downloaded {len(new_code)//1024}KB")
+
+            # Write to temp file and validate it's valid Python
+            fd, tmp_path = tempfile.mkstemp(suffix=".py", dir=script_dir)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(new_code)
+                py_compile.compile(tmp_path, doraise=True)
+                monitor.log("[Update] Syntax check passed — replacing script and restarting …")
+                os.replace(tmp_path, script_path)
+            except Exception as e:
+                monitor.log(f"[Update] Validation failed — aborting update: {e}")
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                return
+
+            # Restart: exec a fresh Python process with the same arguments
+            monitor.log("[Update] Restarting process …")
+            time.sleep(0.5)   # brief pause so the log line is flushed
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        except Exception as e:
+            monitor.log(f"[Update] Self-update failed: {e}")
+
+    def _cmd_restart(self, payload: dict):
+        monitor.log("[Hub] Remote restart command received — restarting process in 1s …")
+        def _do_restart():
+            time.sleep(1.0)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        threading.Thread(target=_do_restart, daemon=True, name="RemoteRestart").start()
+
+    def _cmd_retrain_stream(self, payload: dict):
+        stream = str(payload.get("stream", "")).strip()
+        if stream:
+            monitor.request_retrain(stream)
+            monitor.log(f"[Hub] Remote retrain requested for '{stream}'")
+
+    def _cmd_calibrate_silence(self, payload: dict):
+        stream = str(payload.get("stream", "")).strip()
+        headroom = float(payload.get("headroom_db", 6.0))
+        cfg_obj = self._cfg_fn()
+        inp = next((i for i in cfg_obj.inputs if i.name == stream and i.enabled), None)
+        if inp is None:
+            monitor.log(f"[Hub] calibrate_silence: stream '{stream}' not found")
+            return
+        new_thresh = round(inp._last_level_dbfs - headroom, 1)
+        new_thresh = max(-80.0, min(-20.0, new_thresh))
+        inp.silence_threshold_dbfs = new_thresh
+        save_config(cfg_obj)
+        monitor.log(f"[Hub] calibrate_silence: '{stream}' threshold set to {new_thresh} dBFS "
+                    f"(level was {inp._last_level_dbfs:.1f}, headroom {headroom} dB)")
+
+    def _cmd_backup(self, payload: dict):
+        """Hub command: generate a full backup ZIP and upload it to the hub."""
+        monitor.log("[Hub] Backup command received — generating ZIP …")
+        threading.Thread(target=self._run_backup, daemon=True, name="BackupUpload").start()
+
+    def _run_backup(self):
+        """Build a backup ZIP and POST it to /hub/backup_upload on the hub."""
+        import io as _io
+        import zipfile as _zf
+        import tempfile as _tf
+        import sqlite3 as _sq3
+        import shutil as _sh
+        try:
+            buf = _io.BytesIO()
+            with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
+                if os.path.isfile(CONFIG_PATH):
+                    zf.write(CONFIG_PATH, "lwai_config.json")
+                if os.path.isdir(MODELS_DIR):
+                    for root, _dirs, files in os.walk(MODELS_DIR):
+                        for fname in files:
+                            full = os.path.join(root, fname)
+                            zf.write(full, os.path.relpath(full, BASE_DIR))
+                if os.path.isfile(METRICS_DB_PATH):
+                    tmp = None
+                    try:
+                        tmp_f = _tf.NamedTemporaryFile(suffix=".db", delete=False)
+                        tmp_f.close()
+                        tmp = tmp_f.name
+                        src = _sq3.connect(METRICS_DB_PATH)
+                        dst = _sq3.connect(tmp)
+                        src.backup(dst)
+                        dst.close()
+                        src.close()
+                        zf.write(tmp, "metrics_history.db")
+                    except Exception:
+                        zf.write(METRICS_DB_PATH, "metrics_history.db")
+                    finally:
+                        if tmp:
+                            try:
+                                os.unlink(tmp)
+                            except Exception:
+                                pass
+                for path, name in [
+                    (SLA_PATH,       "sla_data.json"),
+                    (ALERT_LOG_PATH, "alert_log.json"),
+                    (HUB_STATE_PATH, "hub_state.json"),
+                ]:
+                    if os.path.isfile(path):
+                        zf.write(path, name)
+            data = buf.getvalue()
+            self._upload_backup(data)
+        except Exception as e:
+            monitor.log(f"[Hub] Backup generation failed: {e}")
+
+    def _upload_backup(self, data: bytes):
+        """POST backup ZIP to /hub/backup_upload on the hub."""
+        try:
+            cfg_obj = self._cfg_fn()
+            hub_url = cfg_obj.hub.hub_url.rstrip("/")
+            secret  = cfg_obj.hub.secret_key
+            site    = cfg_obj.hub.site_name or socket.gethostname()
+            payload_bytes = data
+            ts  = time.time()
+            sig = hub_sign_payload(secret, payload_bytes, ts) if secret else ""
+            headers = {
+                "X-Hub-Sig":  sig,
+                "X-Hub-Ts":   str(ts),
+                "X-Hub-Site": site,
+                "Content-Type": "application/octet-stream",
+            }
+            req = urllib.request.Request(
+                f"{hub_url}/hub/backup_upload", data=payload_bytes,
+                headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=120) as r:
+                monitor.log(f"[Hub] Backup uploaded OK: {len(data)} bytes → HTTP {r.status}")
+        except Exception as e:
+            monitor.log(f"[Hub] Backup upload failed: {e}")
+
+    def _cmd_ping_test(self, payload: dict):
+        """Hub command: run a ping test to a target and report results back to the hub."""
+        target = str(payload.get("target", "")).strip()
+        if not target:
+            monitor.log("[Hub] ping_test: no target specified — ignored")
+            return
+        threading.Thread(
+            target=self._run_ping_test, args=(target,),
+            daemon=True, name="PingTest",
+        ).start()
+
+    def _run_ping_test(self, target: str):
+        """Run subprocess ping to target and POST result to /hub/ping_result."""
+        import subprocess as _sp
+        try:
+            if sys.platform == "win32":
+                args = ["ping", "-n", "4", target]
+            else:
+                args = ["ping", "-c", "4", "-W", "2", target]
+            result = _sp.run(args, capture_output=True, text=True, timeout=15)
+            output  = (result.stdout + result.stderr)[:2000]
+            success = result.returncode == 0
+        except Exception as e:
+            output = str(e); success = False
+        try:
+            cfg_obj = self._cfg_fn()
+            hub_url = cfg_obj.hub.hub_url.rstrip("/")
+            secret  = cfg_obj.hub.secret_key
+            site    = cfg_obj.hub.site_name or socket.gethostname()
+            result_dict = {
+                "site": site, "target": target,
+                "output": output, "success": success, "ts": time.time(),
+            }
+            payload_bytes = json.dumps(result_dict).encode()
+            ts  = time.time()
+            sig = hub_sign_payload(secret, payload_bytes, ts) if secret else ""
+            headers: dict = {"X-Hub-Sig": sig, "X-Hub-Ts": str(ts)}
+            if secret:
+                body = hub_encrypt_payload(secret, payload_bytes)
+                headers["Content-Type"] = "application/octet-stream"
+            else:
+                body = payload_bytes
+                headers["Content-Type"] = "application/json"
+            req = urllib.request.Request(
+                f"{hub_url}/hub/ping_result", data=body,
+                headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                monitor.log(f"[Hub] Ping result uploaded: target={target} success={success} HTTP {r.status}")
+        except Exception as e:
+            monitor.log(f"[Hub] Ping result upload failed: {e}")
+
     def _restart_if_running(self):
         """Restart monitoring if it is currently active (to apply config changes)."""
         if monitor.is_running():
@@ -6918,6 +7164,34 @@ class HubClient:
     def stop(self):
         self._stop.set()
         self.state = self.STATE_DISCONNECTED
+
+    def _build_system_health(self) -> dict:
+        """Return a dict of system resource metrics for the heartbeat payload."""
+        import shutil as _sh
+        du = _sh.disk_usage(BASE_DIR)
+        info = {
+            "disk_total_gb": round(du.total / 1073741824, 2),
+            "disk_used_gb":  round(du.used  / 1073741824, 2),
+            "disk_free_gb":  round(du.free  / 1073741824, 2),
+            "disk_pct":      round(du.used  / max(du.total, 1) * 100, 1),
+            "proc_uptime_s": round(time.time() - _PROCESS_START),
+            "cpu_pct":       None,
+            "ram_total_gb":  None,
+            "ram_used_gb":   None,
+            "ram_pct":       None,
+            "os_uptime_s":   None,
+        }
+        if _psutil is not None:
+            try:
+                info["cpu_pct"] = _psutil.cpu_percent(interval=None)
+                vm = _psutil.virtual_memory()
+                info["ram_total_gb"] = round(vm.total / 1073741824, 2)
+                info["ram_used_gb"]  = round(vm.used  / 1073741824, 2)
+                info["ram_pct"]      = round(vm.percent, 1)
+                info["os_uptime_s"]  = round(time.time() - _psutil.boot_time())
+            except Exception:
+                pass
+        return info
 
     def _build_payload(self) -> dict:
         cfg  = self._cfg_fn()
@@ -7041,6 +7315,8 @@ class HubClient:
                 "last_sync": ptp.last_sync if ptp else 0,
             } if mon.is_running() else {"state":"idle","status":"Not running","offset_us":0,"drift_us":0,"jitter_us":0,"gm_id":"","domain":0,"last_sync":0},
             "dab_scan_result": self._pop_dab_scan_result(),
+            "system":          self._build_system_health(),
+            "app_log":         [str(l)[:200] for l in list(self._monitor._log)[-30:]],
         }
 
     def _handle_listen_requests(self, cfg, listen_requests: list):
@@ -7400,6 +7676,18 @@ class HubClient:
                         self._cmd_set_expected_name(cmd_payload)
                     elif cmd_type == "save_clip":
                         self._cmd_save_clip(cmd_payload)
+                    elif cmd_type == "self_update":
+                        self._cmd_self_update(cmd_payload)
+                    elif cmd_type == "restart":
+                        self._cmd_restart(cmd_payload)
+                    elif cmd_type == "retrain_stream":
+                        self._cmd_retrain_stream(cmd_payload)
+                    elif cmd_type == "calibrate_silence":
+                        self._cmd_calibrate_silence(cmd_payload)
+                    elif cmd_type == "backup":
+                        self._cmd_backup(cmd_payload)
+                    elif cmd_type == "ping_test":
+                        self._cmd_ping_test(cmd_payload)
             else:
                 self.fail_total += 1
                 self._backoff    = min(self._backoff + 1, 10)
@@ -7431,6 +7719,10 @@ class HubServer:
         self._chain_fault_state: dict = {}
         # When a chain entered "pending" state (epoch seconds)
         self._chain_fault_since: dict = {}
+        # fault_index recorded when "pending" state was entered — used to detect
+        # fault-position shifts during the confirmation window (e.g. ad-break
+        # recovery where Node A comes back but Node B has a reporting lag)
+        self._chain_fault_index: dict = {}
         # Flap detection — cid → list of recent fault timestamps
         self._chain_flap_events: dict = {}
         # cid → True while chain is in flapping state
@@ -7443,6 +7735,10 @@ class HubServer:
         self._chain_node_trend: dict = {}
         # SLA metric write tracker — cid → last write ts
         self._chain_sla_last_write: dict = {}
+        # Remote backup storage — site_name → {"data": bytes, "ts": float, "size": int}
+        self._site_backups: Dict[str, dict] = {}
+        # Ping/connectivity test results — site_name → {"target": str, "output": str, "success": bool, "ts": float}
+        self._ping_results: Dict[str, dict] = {}
         self._load_state()            # restore hub sites across restarts
         self._load_fault_log_from_db()  # restore chain fault history from SQLite
 
@@ -8043,14 +8339,34 @@ class HubServer:
 
                     if not _warmed_up:
                         # Seed state silently so pre-existing faults don't re-fire.
-                        # If the fault looks like an ad break (pre-mixin, mixin still up),
-                        # seed as "pending" so the yellow adbreak UI shows correctly on
-                        # startup rather than jumping straight to red.
-                        # Real faults (or mixin-down) go to "alerted" to suppress duplicates.
-                        if curr == "fault" and result.get("adbreak_candidate"):
+                        #
+                        # Chains WITH a confirmation delay (min_fault_secs > 0) are
+                        # seeded as "pending" so the UI shows amber (not red) during
+                        # startup.  We backdate 'since' so the confirmation window is
+                        # already expired on the very first real evaluation, ensuring
+                        # the alert fires promptly if the fault persists — rather than
+                        # having to wait a full extra min_fault_secs window.
+                        #
+                        # Adbreak candidates always get a fresh window (since = now)
+                        # because the silence might be a legitimate ad-break that
+                        # started just before restart; we don't want to trigger
+                        # spurious alerts.
+                        #
+                        # Chains with NO confirmation delay go straight to "alerted"
+                        # (as before) to suppress duplicate notifications.
+                        if curr == "fault" and result.get("adbreak_candidate") and min_fault_secs > 0:
+                            # Adbreak candidate — start a fresh confirmation window
                             self._chain_fault_state[cid] = "pending"
                             self._chain_fault_since[cid] = now
+                            self._chain_fault_index[cid] = result.get("fault_index")
+                        elif curr == "fault" and min_fault_secs > 0:
+                            # Confirmation delay configured — show amber on startup,
+                            # fire alert on first real eval if still faulted.
+                            self._chain_fault_state[cid] = "pending"
+                            self._chain_fault_since[cid] = now - min_fault_secs
+                            self._chain_fault_index[cid] = result.get("fault_index")
                         elif curr == "fault":
+                            # No confirmation delay — suppress duplicate alert.
                             self._chain_fault_state[cid] = "alerted"
                         else:
                             self._chain_fault_state[cid] = "ok"
@@ -8102,10 +8418,34 @@ class HubServer:
                                 # Start confirmation window
                                 self._chain_fault_state[cid] = "pending"
                                 self._chain_fault_since[cid] = now
+                                self._chain_fault_index[cid] = result.get("fault_index")
                                 monitor.log(
                                     f"[Chain] '{result['name']}' entered fault state — "
                                     f"waiting {min_fault_secs}s confirmation before alerting.")
                         elif prev == "pending":
+                            # If the fault position has shifted since we entered
+                            # pending (e.g. Node A recovered from ad break but
+                            # Node B hasn't reported back yet due to heartbeat lag),
+                            # reset the confirmation window so the new fault node
+                            # gets its own full timer rather than inheriting the
+                            # elapsed time from the previous position.
+                            current_fault_idx = result.get("fault_index")
+                            stored_fault_idx  = self._chain_fault_index.get(cid)
+                            if (current_fault_idx is not None
+                                    and current_fault_idx != stored_fault_idx):
+                                # Fault position shifted — e.g. studio came back after
+                                # an ad break but the downstream node hasn't reported yet
+                                # (heartbeat lag of ~1 heartbeat cycle).  Give the new
+                                # position a short fixed grace window (2 heartbeat cycles)
+                                # rather than a full timer reset, so a genuine fault at
+                                # the new position still fires promptly.
+                                _grace = HUB_HEARTBEAT_INTERVAL * 2  # ~10 s
+                                self._chain_fault_since[cid] = now - max(0.0, min_fault_secs - _grace)
+                                self._chain_fault_index[cid] = current_fault_idx
+                                monitor.log(
+                                    f"[Chain] '{result['name']}' fault position shifted "
+                                    f"(pos {stored_fault_idx} → {current_fault_idx}) — "
+                                    f"applying {round(_grace)}s grace window.")
                             elapsed = now - self._chain_fault_since.get(cid, now)
                             if elapsed >= min_fault_secs or mixin_is_down:
                                 # Confirmation window elapsed, or mix-in just went silent
@@ -8116,6 +8456,7 @@ class HubServer:
                                     f"[Chain] '{result['name']}' fault confirmed ({reason}).")
                                 self._chain_fault_state[cid] = "alerted"
                                 self._chain_fault_since.pop(cid, None)
+                                self._chain_fault_index.pop(cid, None)
                                 # Track flap events
                                 flap_evts = self._chain_flap_events.setdefault(cid, [])
                                 flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
@@ -8209,6 +8550,7 @@ class HubServer:
                                 f"window ({elapsed}s) — no alert sent (likely ad break).")
                             self._chain_fault_state[cid] = "ok"
                             self._chain_fault_since.pop(cid, None)
+                            self._chain_fault_index.pop(cid, None)
                         # prev == "ok": already ok, nothing to do
 
                     # ── SLA metric write (every 60 s) ─────────────────────────
@@ -8408,36 +8750,22 @@ class HubServer:
                     },
                 })
 
-        # ── Check for shared fault across other chains ─────────────────────────
-        # Priority: machine tag > site > local stream name
+        # ── Check for shared fault across other chains (machine tag only) ─────
+        # Only nodes with an explicit machine tag participate in cross-chain
+        # shared-fault detection.  Site name is no longer used as a fallback.
         fault_machine = (fn.get("machine") or "").strip()
-        fault_site    = fn.get("site", "")
-        fault_stream  = fn.get("stream", "")
-        if fault_site or fault_machine:
+        if fault_machine:
             shared_names = []
             for _oc in (monitor.app_cfg.signal_chains or []):
                 if _oc.get("id") == chain.get("id"):
                     continue
                 for _on in _oc.get("nodes", []):
                     subs = _on.get("nodes", []) if _on.get("type") == "stack" else [_on]
-                    if fault_machine:
-                        match = any((s.get("machine") or "").strip() == fault_machine for s in subs)
-                    elif fault_site == "local":
-                        match = any(s.get("site") == "local" and s.get("stream") == fault_stream
-                                    for s in subs)
-                    else:
-                        match = any(s.get("site") == fault_site for s in subs)
-                    if match:
+                    if any((s.get("machine") or "").strip() == fault_machine for s in subs):
                         shared_names.append(_oc.get("name", "?"))
                         break
             if shared_names:
-                if fault_machine:
-                    desc = f"hardware '{fault_machine}'"
-                elif fault_site != "local":
-                    desc = f"site '{fault_site}'"
-                else:
-                    desc = f"stream '{fault_stream}'"
-                msg += (f" NOTE: other chains share {desc}: "
+                msg += (f" NOTE: other chains share hardware '{fault_machine}': "
                         f"{', '.join(shared_names)} — those chains may also be affected.")
 
         # ── Write to alert log (always — even for hub-only chains with no local nodes) ──
@@ -11987,7 +12315,12 @@ def settings():
         try: cfg.clip_max_per_stream = max(0, int(f.get("clip_max_per_stream", 200)))
         except: pass
         cfg.suppress_local_notifications = bool(f.get("hub_suppress_local"))
-        save_config(cfg); flash("Settings saved."); return redirect(url_for("settings"))
+        save_config(cfg)
+        # If hub client mode and URL are now set, start the hub heartbeat client
+        # immediately without requiring the monitor loop to be running first.
+        # start_hub_client() is a no-op if the client is already running.
+        monitor.start_hub_client()
+        flash("Settings saved."); return redirect(url_for("settings"))
     _hub_sites = hub_server.get_sites() if hub_server else []
     return render_template_string(SETTINGS_TPL, cfg=cfg,
         hub_sites=_hub_sites,
@@ -13748,6 +14081,156 @@ def hub_clip_upload():
     return jsonify({"ok": True, "saved": fname})
 
 
+@app.post("/hub/backup_upload")
+def hub_backup_upload():
+    """Receive a full backup ZIP uploaded from a client site.
+
+    The client POSTs raw ZIP bytes with X-Hub-Sig / X-Hub-Ts HMAC headers.
+    The site name is identified via the X-Hub-Site header (or falls back to the
+    'site' field in the payload, but since this is binary ZIP we use the header).
+    The hub stores the latest backup in memory and exposes it via
+    GET /api/hub/site/<name>/backup for download.
+    """
+    cfg    = monitor.app_cfg
+    secret = cfg.hub.secret_key
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 404
+
+    raw_body = request.get_data()
+    site_name = request.headers.get("X-Hub-Site", "").strip()
+
+    if secret:
+        sig  = request.headers.get("X-Hub-Sig", "")
+        ts_h = request.headers.get("X-Hub-Ts", "0")
+        try:
+            ts = float(ts_h)
+        except ValueError:
+            return jsonify({"error": "invalid timestamp"}), 403
+        ok, reason = hub_verify_signature(secret, raw_body, sig, ts)
+        if not ok:
+            return jsonify({"error": "forbidden", "reason": reason}), 403
+
+    if not site_name:
+        return jsonify({"error": "missing X-Hub-Site header"}), 400
+
+    # Cap per-site backup at 200 MB
+    MAX_BACKUP_BYTES = 200 * 1024 * 1024
+    if len(raw_body) > MAX_BACKUP_BYTES:
+        return jsonify({"error": "backup too large (>200 MB)"}), 413
+
+    hub_server.set_secret(secret)
+    with hub_server._lock:
+        hub_server._site_backups[site_name] = {
+            "data": raw_body,
+            "ts":   time.time(),
+            "size": len(raw_body),
+        }
+    monitor.log(f"[Hub] Backup received from '{site_name}': {len(raw_body) // 1024} KB")
+    return jsonify({"ok": True})
+
+
+@app.post("/hub/ping_result")
+def hub_ping_result():
+    """Receive a ping/connectivity test result uploaded from a client site."""
+    cfg    = monitor.app_cfg
+    secret = cfg.hub.secret_key
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 404
+
+    raw_body = request.get_data()
+    if secret:
+        sig  = request.headers.get("X-Hub-Sig", "")
+        ts_h = request.headers.get("X-Hub-Ts", "0")
+        try:
+            ts = float(ts_h)
+        except ValueError:
+            return jsonify({"error": "invalid timestamp"}), 403
+        ct = request.content_type or ""
+        if "octet-stream" in ct:
+            try:
+                raw_body = hub_decrypt_payload(secret, raw_body)
+            except Exception as e:
+                return jsonify({"error": f"decryption failed: {e}"}), 403
+        ok, reason = hub_verify_signature(secret, raw_body, sig, ts)
+        if not ok:
+            return jsonify({"error": "forbidden", "reason": reason}), 403
+
+    try:
+        data = json.loads(raw_body)
+    except Exception:
+        return jsonify({"error": "bad json"}), 400
+
+    site_name = str(data.get("site", "")).strip()
+    if not site_name:
+        site_name = request.headers.get("X-Hub-Site", "unknown").strip()
+
+    hub_server.set_secret(secret)
+    with hub_server._lock:
+        hub_server._ping_results[site_name] = {
+            "target":  str(data.get("target",  "")).strip(),
+            "output":  str(data.get("output",  ""))[:2000],
+            "success": bool(data.get("success", False)),
+            "ts":      float(data.get("ts", time.time())),
+        }
+    monitor.log(f"[Hub] Ping result from '{site_name}': target={data.get('target','')} "
+                f"success={data.get('success',False)}")
+    return jsonify({"ok": True})
+
+
+@app.get("/hub/update/download")
+def hub_update_download():
+    """Serve the hub's own signalscope.py to authenticated clients for self-update.
+
+    The request must carry valid HMAC headers (same scheme as heartbeats) so only
+    clients with the correct shared secret can download the file.  No login cookie
+    is required — the client daemon uses HMAC, not a browser session.
+    """
+    cfg    = monitor.app_cfg
+    secret = cfg.hub.secret_key
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 404
+
+    # Auth — HMAC over an empty body for this GET request
+    if secret:
+        sig   = request.headers.get("X-Hub-Sig",   "")
+        ts_h  = request.headers.get("X-Hub-Ts",    "0")
+        nonce = request.headers.get("X-Hub-Nonce", "")
+        try:
+            ts = float(ts_h)
+        except ValueError:
+            return jsonify({"error": "invalid timestamp"}), 403
+        if not hub_nonce_store.check_and_store(nonce):
+            return jsonify({"error": "replay detected"}), 403
+        ok, reason = hub_verify_signature(secret, b"", sig, ts)
+        if not ok:
+            return jsonify({"error": "forbidden", "reason": reason}), 403
+
+    script_path = os.path.abspath(__file__)
+    return send_from_directory(
+        os.path.dirname(script_path),
+        os.path.basename(script_path),
+        as_attachment=True,
+        download_name="signalscope.py",
+        mimetype="text/plain",
+    )
+
+
+@app.post("/api/hub/site/<site_name>/update")
+@login_required
+@csrf_protect
+def hub_trigger_update(site_name):
+    """Push a self_update command to a remote site."""
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 403
+    hub_server.push_pending_command(site_name, {
+        "type":    "self_update",
+        "payload": {"hub_version": BUILD},
+    })
+    monitor.log(f"[Hub] Update command pushed to site '{site_name}'")
+    return jsonify({"ok": True})
+
+
 @app.post("/api/hub/site/<site_name>/relay_bitrate")
 @login_required
 @csrf_protect
@@ -13928,6 +14411,138 @@ def hub_dab_scan_result(site_name):
     return jsonify({"ready": True, **result})
 
 
+@app.get("/api/hub/site/<path:site_name>/log")
+@login_required
+def hub_site_log(site_name):
+    """Hub admin: return the last 30 log lines sent by a client site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    with hub_server._lock:
+        lines = list(hub_server._sites.get(site_name, {}).get("app_log", []))
+    return jsonify({"lines": lines})
+
+
+@app.post("/api/hub/site/<path:site_name>/restart")
+@login_required
+@csrf_protect
+def hub_site_restart(site_name):
+    """Hub admin: push a restart command to a remote client site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    hub_server.push_pending_command(site_name, {"type": "restart"})
+    monitor.log(f"[Hub] Restart command pushed to site '{site_name}'")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/hub/site/<path:site_name>/retrain")
+@login_required
+@csrf_protect
+def hub_site_retrain(site_name):
+    """Hub admin: push a retrain_stream command to a remote client site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data = request.get_json(silent=True) or {}
+    stream = str(data.get("stream", "")).strip()
+    if not stream:
+        return jsonify({"error": "stream name required"}), 400
+    hub_server.push_pending_command(site_name, {"type": "retrain_stream", "payload": {"stream": stream}})
+    monitor.log(f"[Hub] Retrain command pushed to site '{site_name}' for stream '{stream}'")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/hub/site/<path:site_name>/calibrate_silence")
+@login_required
+@csrf_protect
+def hub_site_calibrate_silence(site_name):
+    """Hub admin: push a calibrate_silence command to a remote client site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data = request.get_json(silent=True) or {}
+    stream = str(data.get("stream", "")).strip()
+    if not stream:
+        return jsonify({"error": "stream name required"}), 400
+    try:
+        headroom_db = float(data.get("headroom_db", 6.0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid headroom_db"}), 400
+    hub_server.push_pending_command(site_name, {
+        "type": "calibrate_silence",
+        "payload": {"stream": stream, "headroom_db": headroom_db},
+    })
+    monitor.log(f"[Hub] Calibrate silence command pushed to site '{site_name}' for stream '{stream}' headroom={headroom_db}dB")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/hub/site/<path:site_name>/backup")
+@login_required
+@csrf_protect
+def hub_site_backup_trigger(site_name):
+    """Hub admin: push a backup command to a remote client site.
+
+    POST: triggers the client to generate a ZIP and upload it to /hub/backup_upload.
+    """
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    hub_server.push_pending_command(site_name, {"type": "backup"})
+    monitor.log(f"[Hub] Backup command pushed to site '{site_name}'")
+    return jsonify({"ok": True, "note": "backup queued for next heartbeat"})
+
+
+@app.get("/api/hub/site/<path:site_name>/backup")
+@login_required
+def hub_site_backup_download(site_name):
+    """Hub admin: download the latest backup ZIP for a site (if available)."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    with hub_server._lock:
+        entry = hub_server._site_backups.get(site_name)
+    if not entry:
+        return jsonify({"error": "no backup available for this site"}), 404
+    ts_str = time.strftime("%Y%m%d_%H%M%S", time.localtime(entry["ts"]))
+    safe   = _safe_name(site_name)
+    fname  = f"signalscope_backup_{safe}_{ts_str}.zip"
+    return Response(
+        entry["data"],
+        mimetype="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@app.post("/api/hub/site/<path:site_name>/ping")
+@login_required
+@csrf_protect
+def hub_site_ping_trigger(site_name):
+    """Hub admin: push a ping_test command to a remote client site.
+
+    POST body: {"target": "10.0.0.1"}
+    """
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data   = request.get_json(silent=True) or {}
+    target = str(data.get("target", "")).strip()
+    if not target:
+        return jsonify({"error": "target is required"}), 400
+    hub_server.push_pending_command(site_name, {
+        "type":    "ping_test",
+        "payload": {"target": target},
+    })
+    monitor.log(f"[Hub] Ping test command pushed to site '{site_name}' for target '{target}'")
+    return jsonify({"ok": True, "note": "ping_test queued for next heartbeat"})
+
+
+@app.get("/api/hub/site/<path:site_name>/ping")
+@login_required
+def hub_site_ping_result(site_name):
+    """Hub admin: get the latest ping result for a site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    with hub_server._lock:
+        result = hub_server._ping_results.get(site_name)
+    if not result:
+        return jsonify({"ready": False})
+    return jsonify({"ready": True, **result})
+
+
 @app.get("/hub")
 @login_required
 def hub_dashboard():
@@ -13974,6 +14589,17 @@ def hub_dashboard():
         s.setdefault("comparators", [])
         s.setdefault("ptp", {"state": "—", "offset_us": 0, "drift_us": 0,
                               "jitter_us": 0, "gm_id": "—", "last_sync": None})
+    # Annotate each site with backup availability info
+    with hub_server._lock:
+        _backups_snap  = dict(hub_server._site_backups)
+        _ping_snap     = dict(hub_server._ping_results)
+    for s in sites:
+        bk = _backups_snap.get(s.get("site", ""))
+        s["_backup_ts"]   = bk["ts"]   if bk else None
+        s["_backup_size"] = bk["size"] if bk else None
+        pr = _ping_snap.get(s.get("site", ""))
+        s["_ping_result"] = pr if pr else None
+
     if problems_only:
         # Always show pending sites — they always need attention
         sites = [s for s in sites if not s.get("_approved", True) or (not s.get("online")) or s.get("problem_count", 0) > 0]
@@ -15769,21 +16395,24 @@ def api_chains_status():
     # Priority: 1) explicit machine tag (most precise — set by the user in the builder)
     #           2) hub site name (same server likely has common failure mode)
     #           3) local stream exact name
-    def _fault_key(node: dict) -> str:
+    def _fault_key(node: dict) -> "str | None":
+        """Return a grouping key for shared-fault detection.
+        Only nodes with an explicit machine tag are grouped — site name is
+        no longer used as a fallback so nodes without a tag never produce
+        spurious cross-chain shared-fault badges."""
         machine = (node.get("machine") or "").strip()
-        if machine:
-            return f"machine|{machine}"
-        site = node.get("site", "")
-        return site if site and site != "local" else f"local|{node.get('stream','')}"
+        return f"machine|{machine}" if machine else None
 
-    fault_site_map: dict = {}   # fault_key → [chain_name, ...]
+    fault_site_map: dict = {}   # machine-key → [chain_name, ...]
     for r in results:
         fn = r.get("fault_node")
         if fn:
             subs = fn.get("nodes", []) if fn.get("type") == "stack" else [fn]
             for s in subs:
                 if s.get("status") in ("down", "offline"):
-                    fault_site_map.setdefault(_fault_key(s), []).append(r["name"])
+                    key = _fault_key(s)
+                    if key:  # only group nodes that have a machine tag
+                        fault_site_map.setdefault(key, []).append(r["name"])
     for r in results:
         fn = r.get("fault_node")
         shared: list = []
@@ -15791,8 +16420,10 @@ def api_chains_status():
             subs = fn.get("nodes", []) if fn.get("type") == "stack" else [fn]
             for s in subs:
                 if s.get("status") in ("down", "offline"):
-                    shared += [n for n in fault_site_map.get(_fault_key(s), [])
-                               if n != r["name"]]
+                    key = _fault_key(s)
+                    if key:
+                        shared += [n for n in fault_site_map.get(key, [])
+                                   if n != r["name"]]
         r["shared_fault_chains"] = list(dict.fromkeys(shared))  # dedup, preserve order
 
     return jsonify({"results": results})
@@ -16376,8 +17007,30 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="start" style="background:#1e3a1e;color:#86efac;font-size:11px;padding:2px 10px">▶ Start</button>
       {% endif %}
       <button class="btn" data-action="hub-mgr-toggle" data-site="{{site.site|e}}" style="background:#1a3050;color:var(--acc);font-size:11px;padding:2px 10px">⚙ Sources</button>
+      <button class="btn site-log-btn" data-site="{{site.site|e}}" style="background:#1a2a3a;color:#93c5fd;font-size:11px;padding:2px 10px">📋 Log</button>
+      {% if site.running %}
+      <button class="btn site-restart-btn" data-site="{{site.site|e}}" style="background:#2a1e3a;color:#c4b5fd;font-size:11px;padding:2px 10px">🔄 Restart</button>
       {% endif %}
-      {% if site.build %}<span class="badge">{{site.build}}</span>{% endif %}
+      <button class="btn site-backup-btn" data-site="{{site.site|e}}" style="background:#1a2e1a;color:#86efac;font-size:11px;padding:2px 10px" title="Request a full config+data backup from this site">📥 Backup</button>
+      {% if site._backup_ts %}
+      <a class="btn" href="/api/hub/site/{{site.site|urlencode}}/backup" style="background:#142514;color:#4ade80;font-size:11px;padding:2px 10px;text-decoration:none" title="Download backup ({{(site._backup_size // 1024) if site._backup_size else '?'}} KB, {{fmt(site._backup_ts)}})">⬇ Download Backup</a>
+      {% endif %}
+      <button class="btn site-ping-btn" data-site="{{site.site|e}}" style="background:#1a2040;color:#93c5fd;font-size:11px;padding:2px 10px" title="Run a network ping test from this site">🔍 Ping</button>
+      {% if site._ping_result %}
+      <span class="badge" style="background:{{'#163a1a' if site._ping_result.success else '#3a1616'}};color:{{'#86efac' if site._ping_result.success else '#fca5a5'}};font-size:10px" title="{{site._ping_result.target}} at {{fmt(site._ping_result.ts)}}">{{ '✓' if site._ping_result.success else '✗' }} {{site._ping_result.target}}</span>
+      {% endif %}
+      {% endif %}
+      {% if site.build %}
+      {% set _build_match = (site.build == build) %}
+      <span class="badge site-version-badge"
+            style="background:{{'#1e2433' if _build_match else '#3a2a0f'}};color:{{'var(--mu)' if _build_match else '#fbbf24'}}"
+            title="{{'Version match' if _build_match else 'Version mismatch — hub is '+build}}">{{site.build}}</span>
+      {% if site.online and not _build_match %}
+      <button class="btn site-update-btn" data-site="{{site.site|e}}"
+              style="background:#3a2a0f;color:#fbbf24;border:1px solid #b45309;font-size:11px;padding:2px 10px"
+              title="Push update to this site">⬆ Update</button>
+      {% endif %}
+      {% endif %}
       <span class="site-meta">Last seen: {{ago(site.age_s)}}</span>
       {% if site.latency_ms is not none %}<span class="site-meta">Latency: {{site.latency_ms}} ms</span>{% endif %}
       {% if site.health_pct is defined %}<span class="site-meta" style="color:{{'var(--ok)' if site.health_pct>=99 else ('var(--wn)' if site.health_pct>=95 else 'var(--al)')}}">⚡ {{site.health_pct}}%</span>{% endif %}
@@ -16387,6 +17040,15 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       <span class="sum-pill" style="color:var(--al)">🚨 {{site.alert_count}} alert</span>
       <span class="sum-pill" style="color:var(--wn)">⚠ {{site.warn_count}} warn</span>
       <span class="sum-pill" style="color:var(--ok)">✅ {{site.ok_count}} ok</span>
+      {% set _sys = site.get('system') or {} %}
+      {% if _sys %}
+      {% set _dpct = _sys.get('disk_pct', 0)|float %}
+      <span class="sum-pill" style="color:{{'#ef4444' if _dpct>=90 else ('#f59e0b' if _dpct>=70 else 'var(--ok)')}}">💾 {{_sys.get('disk_free_gb','?')}}GB free</span>
+      {% if _sys.get('cpu_pct') is not none %}<span class="sum-pill" style="color:var(--mu)">CPU: {{_sys.get('cpu_pct')}}%</span>{% endif %}
+      {% if _sys.get('ram_pct') is not none %}<span class="sum-pill" style="color:var(--mu)">RAM: {{_sys.get('ram_pct')}}%</span>{% endif %}
+      {% set _upt = _sys.get('proc_uptime_s', 0)|int %}
+      <span class="sum-pill" style="color:var(--mu)">⏱ {{(_upt//3600)}}h {{((_upt%3600)//60)}}m</span>
+      {% endif %}
       <span class="sum-pill" style="margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--mu)">
         📡 Relay
         <select data-site="{{site.site}}" onchange="setRelayBitrate(this)"
@@ -16623,6 +17285,10 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           <button class="btn" data-action="hub-enable-input" data-site="{{site.site|e}}" data-name="{{s.name|e}}"
                   style="font-size:10px;padding:2px 8px;background:#2a2a10;color:#fde68a">▶ Enable</button>
           {% endif %}
+          <button class="btn hub-retrain-btn" data-site="{{site.site|e}}" data-stream="{{s.name|e}}"
+                  style="font-size:10px;padding:2px 8px;background:#1a2a3a;color:#93c5fd">🔄 Retrain AI</button>
+          <button class="btn hub-calibrate-btn" data-site="{{site.site|e}}" data-stream="{{s.name|e}}"
+                  style="font-size:10px;padding:2px 8px;background:#2a1a3a;color:#d8b4fe">🎚 Calibrate Silence</button>
         </div>
         {% endif %}
       </div>
@@ -16755,6 +17421,33 @@ main{padding:18px;max-width:1500px;margin:0 auto}
     {% endif %}
   </div>
 </main>
+
+<!-- ── Ping modal ─────────────────────────────────────────────────────────── -->
+<div id="hub-ping-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9001;align-items:center;justify-content:center">
+  <div style="background:#0d1117;border:1px solid var(--bor);border-radius:10px;width:min(640px,95vw);max-height:80vh;display:flex;flex-direction:column;padding:16px;gap:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <span id="hub-ping-modal-title" style="font-weight:700;color:var(--acc);font-size:14px">🔍 Ping Test</span>
+      <button id="hub-ping-modal-close" style="background:none;border:none;color:var(--mu);font-size:20px;cursor:pointer;line-height:1">✕</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <input id="hub-ping-target" type="text" placeholder="IP or hostname (e.g. 10.0.0.1)" style="flex:1;background:#0a1020;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;padding:5px 8px">
+      <button id="hub-ping-send-btn" style="background:#1a3050;color:var(--acc);border:1px solid var(--bor);border-radius:5px;font-size:12px;padding:5px 12px;cursor:pointer">Send</button>
+    </div>
+    <pre id="hub-ping-modal-body" style="overflow-y:auto;flex:1;min-height:120px;font-size:11px;color:#d1fae5;font-family:monospace;white-space:pre-wrap;word-break:break-all;background:#060c18;border:1px solid var(--bor);border-radius:6px;padding:10px;margin:0">(enter a target and press Send)</pre>
+  </div>
+</div>
+
+<!-- ── Remote log modal ───────────────────────────────────────────────────── -->
+<div id="hub-log-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9000;align-items:center;justify-content:center">
+  <div style="background:#0d1117;border:1px solid var(--bor);border-radius:10px;width:min(860px,95vw);max-height:80vh;display:flex;flex-direction:column;padding:16px;gap:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <span id="hub-log-modal-title" style="font-weight:700;color:var(--acc);font-size:14px">📋 Remote Log</span>
+      <button id="hub-log-modal-close" style="background:none;border:none;color:var(--mu);font-size:20px;cursor:pointer;line-height:1">✕</button>
+    </div>
+    <pre id="hub-log-modal-body" style="overflow-y:auto;flex:1;font-size:11px;color:#d1fae5;font-family:monospace;white-space:pre-wrap;word-break:break-all;background:#060c18;border:1px solid var(--bor);border-radius:6px;padding:10px;margin:0"></pre>
+  </div>
+</div>
+
 <script nonce="{{csp_nonce()}}">
 // ── Remote start/stop command ─────────────────────────────────────────────────
 function sendSiteCommand(site, command, btn){
@@ -16786,6 +17479,18 @@ document.addEventListener('click', function(e){
   var site = btn.getAttribute('data-site');
   var cmd  = btn.getAttribute('data-cmd');
   if(site && cmd) sendSiteCommand(site, cmd, btn);
+});
+document.addEventListener('click', function(e){
+  var btn = e.target.closest('.site-update-btn');
+  if(!btn) return;
+  var site = btn.getAttribute('data-site');
+  if(!site) return;
+  if(!confirm('Push software update to "'+site+'"?\n\nThe remote site will download the hub\'s current software and restart automatically. Monitoring will be interrupted briefly.')) return;
+  btn.disabled=true; btn.textContent='⏳ Sending\u2026';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/update',{}).then(function(d){
+    if(d.ok){btn.textContent='\u2713 Sent';btn.style.color='var(--ok)';btn.style.borderColor='var(--ok)';}
+    else{btn.disabled=false;btn.textContent='\u2B06 Update';alert('Update failed: '+(d.error||'unknown error'));}
+  }).catch(function(err){btn.disabled=false;btn.textContent='\u2B06 Update';alert('Update error: '+(err.message||err));});
 });
 
 // ── Source management ─────────────────────────────────────────────────────────
@@ -16938,6 +17643,147 @@ document.addEventListener('click',function(e){
   .catch(function(){btn.disabled=false;});
 });
 
+// ── Log button ────────────────────────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.site-log-btn');if(!btn)return;
+  var site=btn.dataset.site;
+  var modal=document.getElementById('hub-log-modal');
+  var body=document.getElementById('hub-log-modal-body');
+  var title=document.getElementById('hub-log-modal-title');
+  if(!modal)return;
+  title.textContent='📋 Log — '+site;
+  body.textContent='Loading…';
+  modal.style.display='flex';
+  fetch('/api/hub/site/'+encodeURIComponent(site)+'/log')
+  .then(function(r){return r.json();})
+  .then(function(d){body.textContent=(d.lines||[]).slice().reverse().join('\n')||'(no log lines)'})
+  .catch(function(err){body.textContent='Error: '+(err.message||err);});
+});
+document.getElementById('hub-log-modal-close').addEventListener('click',function(){
+  document.getElementById('hub-log-modal').style.display='none';
+});
+document.getElementById('hub-log-modal').addEventListener('click',function(e){
+  if(e.target===this)this.style.display='none';
+});
+
+// ── Restart button ────────────────────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.site-restart-btn');if(!btn)return;
+  var site=btn.dataset.site;
+  if(!confirm('Send restart command to "'+site+'"?\n\nThe remote process will restart in ~1 second. Monitoring will be interrupted briefly.'))return;
+  btn.disabled=true;btn.textContent='⏳';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/restart',{})
+  .then(function(d){
+    if(d.ok){btn.textContent='✓ Restarting…';btn.style.color='var(--ok)';}
+    else{btn.disabled=false;btn.textContent='🔄 Restart';alert('Restart failed: '+(d.error||'unknown'));}
+  }).catch(function(err){btn.disabled=false;btn.textContent='🔄 Restart';alert('Error: '+(err.message||err));});
+});
+
+// ── Backup button ─────────────────────────────────────────────────────────────
+document.addEventListener('click', function(e){
+  var btn=e.target.closest('.site-backup-btn');if(!btn)return;
+  var site=btn.dataset.site;
+  if(!confirm('Request a full backup from "'+site+'"?\n\nThe remote site will generate a ZIP and upload it here. This may take up to 60 seconds.'))return;
+  btn.disabled=true;btn.textContent='\u23F3 Requesting\u2026';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/backup',{}).then(function(d){
+    if(d.ok){
+      btn.textContent='\u2713 Requested';btn.style.color='var(--ok)';
+      setTimeout(function(){btn.disabled=false;btn.textContent='\uD83D\uDCE5 Backup';btn.style.color='';},8000);
+    }else{btn.disabled=false;btn.textContent='\uD83D\uDCE5 Backup';alert('Backup request failed: '+(d.error||'unknown'));}
+  }).catch(function(err){btn.disabled=false;btn.textContent='\uD83D\uDCE5 Backup';alert('Error: '+(err.message||err));});
+});
+
+// ── Ping button / modal ───────────────────────────────────────────────────────
+(function(){
+  var _pingSite='';
+  var modal=document.getElementById('hub-ping-modal');
+  var body=document.getElementById('hub-ping-modal-body');
+  var title=document.getElementById('hub-ping-modal-title');
+  var input=document.getElementById('hub-ping-target');
+  var sendBtn=document.getElementById('hub-ping-send-btn');
+  var closeBtn=document.getElementById('hub-ping-modal-close');
+  var _pollTimer=null;
+
+  function openModal(site){
+    _pingSite=site;
+    title.textContent='\uD83D\uDD0D Ping Test \u2014 '+site;
+    input.value='';
+    body.textContent='(enter a target and press Send)';
+    modal.style.display='flex';
+    input.focus();
+  }
+  function closeModal(){
+    modal.style.display='none';
+    if(_pollTimer){clearTimeout(_pollTimer);_pollTimer=null;}
+  }
+
+  document.addEventListener('click',function(e){
+    var btn=e.target.closest('.site-ping-btn');if(!btn)return;
+    openModal(btn.dataset.site);
+  });
+  if(closeBtn)closeBtn.addEventListener('click',closeModal);
+  if(modal)modal.addEventListener('click',function(e){if(e.target===modal)closeModal();});
+
+  function doPing(){
+    var target=(input.value||'').trim();
+    if(!target){alert('Enter a target IP or hostname first.');return;}
+    if(_pollTimer){clearTimeout(_pollTimer);_pollTimer=null;}
+    body.textContent='Sending ping command to '+_pingSite+'\u2026';
+    sendBtn.disabled=true;sendBtn.textContent='Sending\u2026';
+    hubPost('/api/hub/site/'+encodeURIComponent(_pingSite)+'/ping',{target:target}).then(function(d){
+      if(!d.ok){body.textContent='Command failed: '+(d.error||'unknown');sendBtn.disabled=false;sendBtn.textContent='Send';return;}
+      body.textContent='Command queued. Waiting for result\u2026';
+      var polls=0,max=40;
+      function poll(){
+        fetch('/api/hub/site/'+encodeURIComponent(_pingSite)+'/ping')
+        .then(function(r){return r.json();})
+        .then(function(r){
+          if(r.ready&&r.target===target){
+            sendBtn.disabled=false;sendBtn.textContent='Send';
+            var ts=r.ts?new Date(r.ts*1000).toLocaleTimeString():'?';
+            body.textContent=(r.success?'\u2713 Success':'\u2717 Failed')+' \u2014 '+r.target+' at '+ts+'\n\n'+r.output;
+          }else if(polls++<max){
+            _pollTimer=setTimeout(poll,1500);
+          }else{
+            sendBtn.disabled=false;sendBtn.textContent='Send';
+            body.textContent='Timed out waiting for result.';
+          }
+        }).catch(function(){if(polls++<max)_pollTimer=setTimeout(poll,1500);});
+      }
+      setTimeout(poll,2000);
+    }).catch(function(err){body.textContent='Request error: '+(err.message||err);sendBtn.disabled=false;sendBtn.textContent='Send';});
+  }
+
+  if(sendBtn)sendBtn.addEventListener('click',doPing);
+  if(input)input.addEventListener('keydown',function(e){if(e.key==='Enter')doPing();});
+})();
+
+// ── Retrain AI button ─────────────────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.hub-retrain-btn');if(!btn)return;
+  var site=btn.dataset.site,stream=btn.dataset.stream;
+  btn.disabled=true;btn.textContent='⏳';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/retrain',{stream:stream})
+  .then(function(d){
+    if(d.ok){btn.textContent='✓ Queued';btn.style.color='var(--ok)';}
+    else{btn.disabled=false;btn.textContent='🔄 Retrain AI';alert('Failed: '+(d.error||'unknown'));}
+  }).catch(function(err){btn.disabled=false;btn.textContent='🔄 Retrain AI';alert('Error: '+(err.message||err));});
+});
+
+// ── Calibrate Silence button ──────────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.hub-calibrate-btn');if(!btn)return;
+  var site=btn.dataset.site,stream=btn.dataset.stream;
+  var hd=parseFloat(prompt('Headroom (dB) above current level for silence threshold (default 6):','6'));
+  if(isNaN(hd))return;
+  btn.disabled=true;btn.textContent='⏳';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/calibrate_silence',{stream:stream,headroom_db:hd})
+  .then(function(d){
+    if(d.ok){btn.textContent='✓ Queued';btn.style.color='var(--ok)';}
+    else{btn.disabled=false;btn.textContent='🎚 Calibrate Silence';alert('Failed: '+(d.error||'unknown'));}
+  }).catch(function(err){btn.disabled=false;btn.textContent='🎚 Calibrate Silence';alert('Error: '+(err.message||err));});
+});
+
 // ── Per-site relay bitrate control ───────────────────────────────────────────
 function setRelayBitrate(sel){
   var site    = sel.getAttribute('data-site');
@@ -16990,11 +17836,13 @@ document.addEventListener('change', function(ev){
     if(countdown <= 0){
       var anyPlaying = false;
       document.querySelectorAll('audio').forEach(function(a){ if(!a.paused) anyPlaying = true; });
-      // Pause if a source management panel is open
+      // Pause if a source management panel or modal is open
       var panelOpen = false;
       document.querySelectorAll('[id^="hub-mgr-"]').forEach(function(p){
         if(p.style.display && p.style.display !== 'none') panelOpen = true;
       });
+      var pingModal=document.getElementById('hub-ping-modal');
+      if(pingModal && pingModal.style.display && pingModal.style.display !== 'none') panelOpen=true;
       // Pause if the user has typed something into a management input
       var inputDirty = false;
       document.querySelectorAll('.hub-mgr-name,.hub-mgr-dev,.hub-mgr-fm-freq,.hub-mgr-dab-serial').forEach(function(i){
@@ -17584,12 +18432,25 @@ function hubRefresh(){
       if(meta) meta.textContent = 'Last seen: ' + agoJS(site.age_s);
       var latency = card.querySelector('.site-meta-latency');
       if(latency && site.latency_ms != null) latency.textContent = 'Latency: ' + site.latency_ms + ' ms';
-      // Update version badge colour against hub build
+      // Update version badge colour and update button against hub build
       var vbadge = card.querySelector('.site-version-badge');
       if(vbadge && site.build){
         var match = (site.build === data.hub_build);
         vbadge.style.background = match ? '#1e2433' : '#3a2a0f';
+        vbadge.style.color = match ? 'var(--mu)' : '#fbbf24';
         vbadge.title = match ? 'Version match' : 'Version mismatch — hub is '+data.hub_build;
+        var ubtn = card.querySelector('.site-update-btn');
+        if(!match && site.online && !ubtn){
+          ubtn = document.createElement('button');
+          ubtn.className='btn site-update-btn';
+          ubtn.dataset.site = site.site;
+          ubtn.style.cssText='background:#3a2a0f;color:#fbbf24;border:1px solid #b45309;font-size:11px;padding:2px 10px';
+          ubtn.title='Push update to this site';
+          ubtn.textContent='⬆ Update';
+          vbadge.insertAdjacentElement('afterend', ubtn);
+        } else if(match && ubtn){
+          ubtn.remove();
+        }
       }
       (site.streams||[]).forEach(function(s, i){
         var sc = card.querySelector('.sc[data-idx="'+i+'"]');
