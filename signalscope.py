@@ -1029,7 +1029,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.36"
+BUILD                  = "SignalScope-3.2.37"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -1944,6 +1944,8 @@ def mobile_api_required(f):
             supplied = authz[7:].strip()
         if not supplied:
             supplied = request.headers.get("X-API-Key", "").strip()
+        if not supplied:
+            supplied = request.args.get("token", "").strip()
         if not supplied:
             supplied = request.args.get("api_key", "").strip()
 
