@@ -1029,7 +1029,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.35"
+BUILD                  = "SignalScope-3.2.36"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -16978,6 +16978,38 @@ def api_chains_status():
     return jsonify({"results": results})
 
 
+def _mobile_live_url_from_node(node: dict) -> str:
+    """Return the mobile-token protected live URL for a node."""
+    raw = (node.get("live_url") or "").strip()
+    if raw:
+        if raw.startswith("/hub/site/"):
+            return "/api/mobile" + raw
+        if raw.startswith("/stream/"):
+            return "/api/mobile" + raw
+        return raw
+
+    site = node.get("site", "")
+    stream = node.get("stream", "")
+    if not stream:
+        return ""
+
+    try:
+        cfg = monitor.app_cfg
+        local_idx = {inp.name: idx for idx, inp in enumerate(cfg.inputs)}
+        hub_idx = {}
+        if hub_server:
+            with hub_server._lock:
+                for sname, data in hub_server._sites.items():
+                    hub_idx[sname] = {s.get("name", ""): i for i, s in enumerate(data.get("streams", []))}
+        if site == "local":
+            idx = local_idx.get(stream)
+            return f"/api/mobile/stream/{idx}/live" if idx is not None else ""
+        sidx = hub_idx.get(site, {}).get(stream)
+        return f"/api/mobile/hub/site/{site}/stream/{sidx}/live" if sidx is not None else ""
+    except Exception:
+        return ""
+
+
 def _mobile_node_summary(node: dict) -> dict:
     out = {
         "type": node.get("type", "node"),
@@ -16987,7 +17019,7 @@ def _mobile_node_summary(node: dict) -> dict:
         "status": node.get("status", "unknown"),
         "reason": node.get("reason", ""),
         "machine": node.get("machine", ""),
-        "live_url": node.get("live_url", ""),
+        "live_url": _mobile_live_url_from_node(node),
         "level_dbfs": node.get("level_dbfs"),
         "ts": node.get("ts"),
     }
@@ -17079,6 +17111,18 @@ def api_mobile_active_faults():
         "count": len(active),
         "generated_at": now,
     })
+
+
+@app.get("/api/mobile/stream/<int:idx>/live")
+@mobile_api_required
+def api_mobile_stream_live(idx: int):
+    return stream_live.__wrapped__(idx)
+
+
+@app.get("/api/mobile/hub/site/<path:site_name>/stream/<int:sidx>/live")
+@mobile_api_required
+def api_mobile_hub_proxy_live(site_name: str, sidx: int):
+    return hub_proxy_live.__wrapped__(site_name, sidx)
 
 
 @app.post("/api/mobile/token/rotate")
