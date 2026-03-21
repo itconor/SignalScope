@@ -927,7 +927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.13"
+BUILD                  = "SignalScope-3.2.15"
 _GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
@@ -6722,6 +6722,59 @@ class HubClient:
         save_config(cfg)
         monitor.log(f"[Hub] set_expected_name: '{stream}'.{field} = '{value}'")
 
+    def _cmd_save_clip(self, payload: dict):
+        """Hub command: save an alert clip for the named local stream and upload it to the hub."""
+        cfg_obj    = self._cfg_fn()
+        stream     = str(payload.get("stream",     "")).strip()
+        label      = str(payload.get("label",      "chain_fault")).strip()
+        chain_name = str(payload.get("chain_name", "")).strip()
+        inp = next((i for i in cfg_obj.inputs if i.name == stream and i.enabled), None)
+        if inp is None:
+            monitor.log(f"[Hub] save_clip: stream '{stream}' not found or disabled — ignored")
+            return
+        msg = (f"Audio clip captured at '{stream}' during chain fault"
+               f"{(' in ' + repr(chain_name)) if chain_name else ''}.")
+        clip_path = _save_alert_wav(inp, label, cfg_obj.alert_wav_duration)
+        _add_history(inp, "CHAIN_FAULT", msg, clip_path=clip_path or "")
+        monitor.log(f"[Hub] save_clip: saved '{label}' for '{stream}'"
+                    + (f" ({os.path.basename(clip_path)})" if clip_path else " (no clip data)"))
+        if clip_path:
+            hub_url = cfg_obj.hub.hub_url.rstrip("/")
+            secret  = cfg_obj.hub.secret_key
+            site    = cfg_obj.hub.site_name or socket.gethostname()
+            threading.Thread(
+                target=self._upload_clip,
+                args=(hub_url, secret, site, stream, label, chain_name, clip_path),
+                daemon=True, name="ClipUpload",
+            ).start()
+
+    def _upload_clip(self, hub_url: str, secret: str, site: str,
+                     stream: str, label: str, chain_name: str, clip_path: str):
+        """Upload a saved clip WAV to the hub's /hub/clip_upload endpoint."""
+        try:
+            with open(clip_path, "rb") as f:
+                data_b64 = base64.b64encode(f.read()).decode()
+            payload_dict = {
+                "site": site, "stream": stream, "label": label,
+                "chain_name": chain_name, "ts": time.time(), "data_b64": data_b64,
+            }
+            payload_bytes = json.dumps(payload_dict).encode()
+            ts  = time.time()
+            sig = hub_sign_payload(secret, payload_bytes, ts) if secret else ""
+            headers = {"X-Hub-Sig": sig, "X-Hub-Ts": str(ts)}
+            if secret:
+                body = hub_encrypt_payload(secret, payload_bytes)
+                headers["Content-Type"] = "application/octet-stream"
+            else:
+                body = payload_bytes
+                headers["Content-Type"] = "application/json"
+            req = urllib.request.Request(
+                f"{hub_url}/hub/clip_upload", data=body, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=30) as r:
+                monitor.log(f"[Hub] Clip uploaded OK: {site}/{stream}/{label} → HTTP {r.status}")
+        except Exception as e:
+            monitor.log(f"[Hub] Clip upload failed for '{stream}': {e}")
+
     def _restart_if_running(self):
         """Restart monitoring if it is currently active (to apply config changes)."""
         if monitor.is_running():
@@ -7217,6 +7270,8 @@ class HubClient:
                         self._cmd_dab_scan(cmd_payload)
                     elif cmd_type == "set_expected_name":
                         self._cmd_set_expected_name(cmd_payload)
+                    elif cmd_type == "save_clip":
+                        self._cmd_save_clip(cmd_payload)
             else:
                 self.fail_total += 1
                 self._backoff    = min(self._backoff + 1, 10)
@@ -7957,6 +8012,22 @@ class HubServer:
                                                            if i.name == n.get("stream", "") and i.enabled), None)
                                             if rc_cfg:
                                                 _add_history(rc_cfg, "CHAIN_FAULT", rec_msg)
+                                _alert_log_append({
+                                    "id":            str(uuid.uuid4()),
+                                    "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    "stream":        result["name"],
+                                    "type":          "CHAIN_FAULT",
+                                    "message":       rec_msg,
+                                    "level_dbfs":    None,
+                                    "rtp_loss_pct":  None,
+                                    "rtp_jitter_ms": None,
+                                    "clip":          "",
+                                    "ptp_state":     "",
+                                    "ptp_offset_us": 0,
+                                    "ptp_drift_us":  0,
+                                    "ptp_jitter_us": 0,
+                                    "ptp_gm":        "",
+                                })
                                 try:
                                     sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
                                                 alert_type="CHAIN_FAULT", stream=result["name"])
@@ -8108,6 +8179,28 @@ class HubServer:
                                f"node with signal before the fault at '{pos_label_str}'.")
                     _add_history(lc, "CHAIN_FAULT", lg_msg, clip_path=lg_clip or "")
 
+        # ── Push save_clip commands to remote sites (fault + last-good positions) ──
+        for _pi, _pnode in enumerate(nodes):
+            _subs = _pnode.get("nodes", []) if _pnode.get("type") == "stack" else [_pnode]
+            for _sn in _subs:
+                _site = _sn.get("site", "")
+                if not _site or _site == "local":
+                    continue
+                if _pi == idx:
+                    _clbl = f"chain_{_safe_name(chain_label)}_fault"
+                elif _pi == idx - 1:
+                    _clbl = f"chain_{_safe_name(chain_label)}_last_good"
+                else:
+                    continue
+                self.push_pending_command(_site, {
+                    "type": "save_clip",
+                    "payload": {
+                        "stream":     _sn.get("stream", ""),
+                        "label":      _clbl,
+                        "chain_name": chain_label,
+                    },
+                })
+
         # ── Check for shared fault across other chains ─────────────────────────
         # Priority: machine tag > site > local stream name
         fault_machine = (fn.get("machine") or "").strip()
@@ -8139,6 +8232,24 @@ class HubServer:
                     desc = f"stream '{fault_stream}'"
                 msg += (f" NOTE: other chains share {desc}: "
                         f"{', '.join(shared_names)} — those chains may also be affected.")
+
+        # ── Write to alert log (always — even for hub-only chains with no local nodes) ──
+        _alert_log_append({
+            "id":            str(uuid.uuid4()),
+            "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
+            "stream":        chain_label,
+            "type":          "CHAIN_FAULT",
+            "message":       msg,
+            "level_dbfs":    fn.get("level"),
+            "rtp_loss_pct":  fn.get("rtp_loss_pct"),
+            "rtp_jitter_ms": None,
+            "clip":          os.path.basename(fault_clip) if fault_clip else "",
+            "ptp_state":     "",
+            "ptp_offset_us": 0,
+            "ptp_drift_us":  0,
+            "ptp_jitter_us": 0,
+            "ptp_gm":        "",
+        })
 
         # ── Send notification ─────────────────────────────────────────────────
         try:
@@ -13339,6 +13450,86 @@ def hub_heartbeat():
         enc = hub_encrypt_payload(secret, ack_bytes)
         return Response(enc, content_type="application/octet-stream")
     return jsonify(ack)
+
+@app.post("/hub/clip_upload")
+def hub_clip_upload():
+    """Receive a WAV clip (base64) uploaded from a client after a chain fault.
+
+    The clip is saved into alert_snippets/<site>_<stream>/ on the hub so it
+    appears in the hub's Reports page alongside the chain fault event.
+    """
+    cfg    = monitor.app_cfg
+    secret = cfg.hub.secret_key
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 404
+
+    raw_body = request.get_data()
+    if secret:
+        sig  = request.headers.get("X-Hub-Sig", "")
+        ts_h = request.headers.get("X-Hub-Ts", "0")
+        try:
+            ts = float(ts_h)
+        except ValueError:
+            return jsonify({"error": "invalid timestamp"}), 403
+        ct = request.content_type or ""
+        if "octet-stream" in ct:
+            try:
+                raw_body = hub_decrypt_payload(secret, raw_body)
+            except Exception as e:
+                return jsonify({"error": f"decryption failed: {e}"}), 403
+        ok, reason = hub_verify_signature(secret, raw_body, sig, ts)
+        if not ok:
+            return jsonify({"error": "forbidden", "reason": reason}), 403
+
+    try:
+        data = json.loads(raw_body)
+    except Exception:
+        return jsonify({"error": "bad json"}), 400
+
+    site       = str(data.get("site",       "unknown")).strip()
+    stream     = str(data.get("stream",     "unknown")).strip()
+    label      = str(data.get("label",      "clip")).strip()
+    chain_name = str(data.get("chain_name", "")).strip()
+    data_b64   = data.get("data_b64", "")
+
+    if not data_b64:
+        return jsonify({"error": "no clip data"}), 400
+    try:
+        wav_bytes = base64.b64decode(data_b64)
+    except Exception:
+        return jsonify({"error": "bad base64"}), 400
+
+    # Save under alert_snippets/<site>_<stream>/ on the hub
+    safe_key = f"{_safe_name(site)}_{_safe_name(stream)}"
+    out_dir  = os.path.join(BASE_DIR, "alert_snippets", safe_key)
+    os.makedirs(out_dir, exist_ok=True)
+    fname = f"{label}_{int(time.time())}.wav"
+    fpath = os.path.join(out_dir, fname)
+    with open(fpath, "wb") as f:
+        f.write(wav_bytes)
+
+    # Write to hub alert log so it appears on the Reports page
+    _alert_log_append({
+        "id":            str(uuid.uuid4()),
+        "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
+        "stream":        f"{site} / {stream}",
+        "type":          "CHAIN_FAULT",
+        "message":       (f"Remote clip from '{site}' — '{stream}'"
+                          + (f" (chain: {chain_name})" if chain_name else "") + "."),
+        "level_dbfs":    None,
+        "rtp_loss_pct":  None,
+        "rtp_jitter_ms": None,
+        "clip":          fname,
+        "ptp_state":     "",
+        "ptp_offset_us": 0,
+        "ptp_drift_us":  0,
+        "ptp_jitter_us": 0,
+        "ptp_gm":        "",
+    })
+    monitor.log(f"[Hub] Clip upload received: {site}/{stream}/{label} "
+                f"({len(wav_bytes) // 1024}KB → {fname})")
+    return jsonify({"ok": True, "saved": fname})
+
 
 @app.post("/api/hub/site/<site_name>/relay_bitrate")
 @login_required
