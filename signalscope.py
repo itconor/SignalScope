@@ -1029,7 +1029,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.34"
+BUILD                  = "SignalScope-3.2.35"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -16978,6 +16978,24 @@ def api_chains_status():
     return jsonify({"results": results})
 
 
+def _mobile_node_summary(node: dict) -> dict:
+    out = {
+        "type": node.get("type", "node"),
+        "label": node.get("label") or node.get("stream") or node.get("site") or "Node",
+        "stream": node.get("stream", ""),
+        "site": node.get("site", ""),
+        "status": node.get("status", "unknown"),
+        "reason": node.get("reason", ""),
+        "machine": node.get("machine", ""),
+        "live_url": node.get("live_url", ""),
+        "level_dbfs": node.get("level_dbfs"),
+        "ts": node.get("ts"),
+    }
+    if node.get("type") == "stack":
+        out["mode"] = node.get("mode", "any")
+        out["nodes"] = [_mobile_node_summary(n) for n in (node.get("nodes", []) or [])]
+    return out
+
 def _mobile_chain_summary(result: dict, now: float | None = None) -> dict:
     now = time.time() if now is None else now
     fault_node = result.get("fault_node") or {}
@@ -17014,6 +17032,7 @@ def _mobile_chain_summary(result: dict, now: float | None = None) -> dict:
         "sla_pct": result.get("sla_pct"),
         "updated_at": updated_at,
         "age_secs": max(0, int(round(now - updated_at))),
+        "nodes": [_mobile_node_summary(n) for n in (result.get("nodes", []) or [])],
     }
 
 
