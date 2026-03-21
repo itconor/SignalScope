@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
     @Published var chains: [ChainSummary] = []
     @Published var activeFaults: [ChainSummary] = []
     @Published var isLoading: Bool = false
+    @Published var isInitialLoad: Bool = true
     @Published var errorMessage: String?
 
     let api = APIClient()
@@ -75,6 +76,7 @@ final class AppModel: ObservableObject {
     func fetchChains() async {
         guard api.baseURL != nil else {
             errorMessage = "Enter your SignalScope Hub URL in Settings."
+            isInitialLoad = false
             return
         }
 
@@ -89,6 +91,7 @@ final class AppModel: ObservableObject {
             chains = newChains
             activeFaults = fetchedFaults
             errorMessage = nil
+            isInitialLoad = false
         } catch {
             do {
                 let newChains = try await api.fetchChains()
@@ -96,8 +99,10 @@ final class AppModel: ObservableObject {
                 chains = newChains
                 activeFaults = newChains.filter { $0.displayStatus == .fault }
                 errorMessage = nil
+                isInitialLoad = false
             } catch {
                 errorMessage = error.localizedDescription
+                isInitialLoad = false
             }
         }
     }

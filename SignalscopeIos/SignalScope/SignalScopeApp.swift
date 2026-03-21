@@ -3,13 +3,16 @@ import AVFoundation
 
 @main
 struct SignalScopeApp: App {
+    @StateObject private var appModel = AppModel()
+
     init() {
         configureAudioSession()
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environmentObject(appModel)
                 .preferredColorScheme(.dark)
         }
     }
