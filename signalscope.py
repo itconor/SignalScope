@@ -933,7 +933,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.28"
+BUILD                  = "SignalScope-3.2.31"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -1584,7 +1584,8 @@ def _stats_path(name: str) -> str:
 ALERT_LOG_PATH  = os.path.join(BASE_DIR, "alert_log.json")
 ALERT_ACKS_PATH = os.path.join(BASE_DIR, "alert_acks.json")
 HUB_STATE_PATH  = os.path.join(BASE_DIR, "hub_state.json")  # persists site data across hub restarts
-METRICS_DB_PATH = os.path.join(BASE_DIR, "metrics_history.db")
+METRICS_DB_PATH  = os.path.join(BASE_DIR, "metrics_history.db")
+HUB_BACKUP_DIR   = os.path.join(BASE_DIR, "hub_backups")   # one sub-dir per site
 _alert_log_lock = threading.Lock()
 _alert_acks: Dict[str, dict] = {}
 _alert_acks_lock = threading.Lock()
@@ -7735,12 +7736,17 @@ class HubServer:
         self._chain_node_trend: dict = {}
         # SLA metric write tracker — cid → last write ts
         self._chain_sla_last_write: dict = {}
-        # Remote backup storage — site_name → {"data": bytes, "ts": float, "size": int}
+        # Remote backup metadata — site_name → {"ts": float, "size": int}
+        # Actual ZIP data lives on disk under HUB_BACKUP_DIR/<safe_name>/backup.zip
         self._site_backups: Dict[str, dict] = {}
         # Ping/connectivity test results — site_name → {"target": str, "output": str, "success": bool, "ts": float}
         self._ping_results: Dict[str, dict] = {}
         self._load_state()            # restore hub sites across restarts
         self._load_fault_log_from_db()  # restore chain fault history from SQLite
+        self._load_backup_index()       # load backup metadata from disk
+        # Start auto-daily backup thread
+        threading.Thread(target=self._daily_backup_loop, daemon=True,
+                         name="HubDailyBackup").start()
 
     def set_secret(self, secret: str):
         self._secret = secret
@@ -7808,6 +7814,85 @@ class HubServer:
                          daemon=True, name="HubSave").start()
 
     # ── Persistence ──────────────────────────────────────────────────────────
+    # ── Auto-daily backup ────────────────────────────────────────────────────
+
+    def _safe_backup_dir(self, site_name: str) -> str:
+        """Return the on-disk directory for a site's backup, creating it if needed."""
+        safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", site_name)
+        d = os.path.join(HUB_BACKUP_DIR, safe)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _load_backup_index(self):
+        """Scan HUB_BACKUP_DIR on startup and reload backup metadata into _site_backups."""
+        if not os.path.isdir(HUB_BACKUP_DIR):
+            return
+        for entry in os.listdir(HUB_BACKUP_DIR):
+            meta_path = os.path.join(HUB_BACKUP_DIR, entry, "backup_meta.json")
+            zip_path  = os.path.join(HUB_BACKUP_DIR, entry, "backup.zip")
+            if not (os.path.exists(meta_path) and os.path.exists(zip_path)):
+                continue
+            try:
+                with open(meta_path) as f:
+                    meta = json.load(f)
+                site_name = meta.get("site") or entry
+                with self._lock:
+                    self._site_backups[site_name] = {
+                        "ts":   float(meta["ts"]),
+                        "size": int(meta["size"]),
+                    }
+            except Exception as e:
+                print(f"[HubBackup] Could not load backup index for '{entry}': {e}")
+
+    def save_backup_to_disk(self, site_name: str, data: bytes) -> None:
+        """Write backup ZIP and metadata to disk; update in-memory index."""
+        try:
+            d = self._safe_backup_dir(site_name)
+            zip_path  = os.path.join(d, "backup.zip")
+            meta_path = os.path.join(d, "backup_meta.json")
+            ts = time.time()
+            with open(zip_path, "wb") as f:
+                f.write(data)
+            with open(meta_path, "w") as f:
+                json.dump({"site": site_name, "ts": ts, "size": len(data)}, f)
+            with self._lock:
+                self._site_backups[site_name] = {"ts": ts, "size": len(data)}
+            monitor.log(f"[Hub] Backup saved for '{site_name}': {len(data) // 1024} KB")
+        except Exception as e:
+            monitor.log(f"[Hub] Failed to save backup for '{site_name}': {e}")
+
+    def get_backup_zip_path(self, site_name: str) -> "str | None":
+        """Return the path to the latest backup ZIP for a site, or None if absent."""
+        safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", site_name)
+        p = os.path.join(HUB_BACKUP_DIR, safe, "backup.zip")
+        return p if os.path.exists(p) else None
+
+    def _daily_backup_loop(self):
+        """Background thread: trigger backup for any online site whose last backup
+        is more than 23 hours old.  Checks hourly so the first pass fires within
+        an hour of startup for sites that have never been backed up."""
+        while True:
+            try:
+                time.sleep(3600)   # check every hour
+                now = time.time()
+                with self._lock:
+                    sites_snap = [
+                        (name, dict(data))
+                        for name, data in self._sites.items()
+                        if data.get("online")
+                    ]
+                for site_name, _ in sites_snap:
+                    bk = self._site_backups.get(site_name)
+                    last_ts = bk["ts"] if bk else 0.0
+                    if now - last_ts >= 23 * 3600:
+                        self.push_pending_command(site_name, {"type": "backup"})
+                        monitor.log(
+                            f"[Hub] Auto-daily backup triggered for '{site_name}' "
+                            f"(last backup: "
+                            f"{'never' if last_ts == 0 else time.strftime('%Y-%m-%d %H:%M', time.localtime(last_ts))})")
+            except Exception as e:
+                print(f"[HubDailyBackup] Error: {e}")
+
     def _load_fault_log_from_db(self):
         """Restore chain fault history from SQLite into _chain_fault_log on startup."""
         try:
@@ -14113,8 +14198,8 @@ def hub_backup_upload():
     The client POSTs raw ZIP bytes with X-Hub-Sig / X-Hub-Ts HMAC headers.
     The site name is identified via the X-Hub-Site header (or falls back to the
     'site' field in the payload, but since this is binary ZIP we use the header).
-    The hub stores the latest backup in memory and exposes it via
-    GET /api/hub/site/<name>/backup for download.
+    The hub writes the latest backup to HUB_BACKUP_DIR/<site>/backup.zip and
+    exposes it via GET /api/hub/site/<name>/backup for download.
     """
     cfg    = monitor.app_cfg
     secret = cfg.hub.secret_key
@@ -14144,13 +14229,7 @@ def hub_backup_upload():
         return jsonify({"error": "backup too large (>200 MB)"}), 413
 
     hub_server.set_secret(secret)
-    with hub_server._lock:
-        hub_server._site_backups[site_name] = {
-            "data": raw_body,
-            "ts":   time.time(),
-            "size": len(raw_body),
-        }
-    monitor.log(f"[Hub] Backup received from '{site_name}': {len(raw_body) // 1024} KB")
+    hub_server.save_backup_to_disk(site_name, raw_body)
     return jsonify({"ok": True})
 
 
@@ -14516,21 +14595,21 @@ def hub_site_backup_trigger(site_name):
 @app.get("/api/hub/site/<path:site_name>/backup")
 @login_required
 def hub_site_backup_download(site_name):
-    """Hub admin: download the latest backup ZIP for a site (if available)."""
+    """Hub admin: download the latest backup ZIP for a site (served from disk)."""
     _, err = _hub_site_guard(site_name)
     if err: return err
+    zip_path = hub_server.get_backup_zip_path(site_name)
+    if not zip_path:
+        return jsonify({"error": "no backup available for this site — awaiting first auto-backup"}), 404
     with hub_server._lock:
-        entry = hub_server._site_backups.get(site_name)
-    if not entry:
-        return jsonify({"error": "no backup available for this site"}), 404
-    ts_str = time.strftime("%Y%m%d_%H%M%S", time.localtime(entry["ts"]))
+        entry = hub_server._site_backups.get(site_name, {})
+    ts     = entry.get("ts", os.path.getmtime(zip_path))
+    ts_str = time.strftime("%Y%m%d_%H%M%S", time.localtime(ts))
     safe   = _safe_name(site_name)
     fname  = f"signalscope_backup_{safe}_{ts_str}.zip"
-    return Response(
-        entry["data"],
-        mimetype="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-    )
+    from flask import send_file as _sf
+    return _sf(zip_path, as_attachment=True, download_name=fname,
+               mimetype="application/zip")
 
 
 @app.post("/api/hub/site/<path:site_name>/ping")
@@ -14622,6 +14701,7 @@ def hub_dashboard():
         bk = _backups_snap.get(s.get("site", ""))
         s["_backup_ts"]   = bk["ts"]   if bk else None
         s["_backup_size"] = bk["size"] if bk else None
+        s["_backup_age_s"] = round(time.time() - bk["ts"]) if bk else None
         pr = _ping_snap.get(s.get("site", ""))
         s["_ping_result"] = pr if pr else None
 
@@ -15954,9 +16034,16 @@ function refreshStatus(){
         if(pct===null||pct===undefined){
           cv.textContent=(comp.status==='no_data'||comp.status==='no_overlap')?'No data yet':'—';
           el.className='corr-chip';
+          el.title=el.title.replace(/\s*\(.*\)$/,'');
         } else {
           cv.textContent=pct.toFixed(1)+'%';
           el.className='corr-chip '+(pct>=80?'corr-ok':pct>=50?'corr-warn':'corr-poor');
+          // Tooltip breakdown: silence agreement + dynamics correlation
+          var tip='Confidence: '+pct.toFixed(1)+'%';
+          if(comp.silence_pct!=null) tip+=' | Silence agreement: '+comp.silence_pct.toFixed(1)+'%';
+          if(comp.r!=null)           tip+=' | Dynamics r: '+comp.r.toFixed(2);
+          tip+=' ('+( comp.samples||'?')+' min samples)';
+          el.title=tip;
         }
       });
     });
@@ -16124,19 +16211,37 @@ def api_chains_streams():
 
 
 def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 10) -> dict:
-    """Compute level-based Pearson correlation between two chain nodes using metrics history.
-    Works for local (plain stream name) and remote (Site/Stream) nodes alike."""
+    """Compute stream-agreement confidence between two chain nodes using metrics history.
+
+    Primary metric: silence/activity agreement (processing-invariant).
+    Compressors and limiters change absolute levels but cannot manufacture audio
+    from silence — so timing agreement on silent vs active periods is a reliable
+    indicator that both nodes carry the same source, regardless of how much
+    processing sits between them.
+
+    Secondary metric: first-difference Pearson on periods when both streams are
+    active.  Uses level *changes* rather than absolute levels, which removes the
+    DC-offset bias introduced by limiters/AGC while still detecting dynamics
+    divergence.  Can add up to +20 pp to the base score but cannot lower it.
+    """
     def _key(n):
         site   = n.get("site", "")
         stream = n.get("stream", "")
         return stream if site == "local" else f"{site}/{stream}"
 
+    def _thresh(n):
+        if n.get("site") == "local":
+            inp = next((i for i in monitor.app_cfg.inputs
+                        if i.name == n.get("stream", "")), None)
+            return inp.silence_threshold_dbfs if inp else -55.0
+        return -55.0
+
     ka, kb = _key(node_a), _key(node_b)
+    ta, tb = _thresh(node_a), _thresh(node_b)
     try:
         import sqlite3 as _sq
         cutoff = time.time() - minutes * 60
         with _sq.connect(METRICS_DB_PATH) as conn:
-            # Bucket by minute for consistent alignment between streams
             a_rows = conn.execute(
                 "SELECT CAST(ts/60 AS INT)*60 AS t, AVG(value) FROM metric_history "
                 "WHERE stream=? AND metric='level_dbfs' AND ts>? GROUP BY t ORDER BY t",
@@ -16148,26 +16253,58 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 10) -> dic
                 (kb, cutoff)
             ).fetchall()
         if len(a_rows) < 5 or len(b_rows) < 5:
-            return {"status": "no_data", "r": None, "pct": None,
+            return {"status": "no_data", "r": None, "pct": None, "silence_pct": None,
                     "samples": min(len(a_rows), len(b_rows))}
         a_d = {r[0]: r[1] for r in a_rows}
         b_d = {r[0]: r[1] for r in b_rows}
         common = sorted(set(a_d) & set(b_d))
         if len(common) < 5:
-            return {"status": "no_overlap", "r": None, "pct": None, "samples": len(common)}
+            return {"status": "no_overlap", "r": None, "pct": None, "silence_pct": None,
+                    "samples": len(common)}
         av = [a_d[t] for t in common]
         bv = [b_d[t] for t in common]
         n  = len(av)
-        ma, mb = sum(av) / n, sum(bv) / n
-        num = sum((av[i] - ma) * (bv[i] - mb) for i in range(n))
-        da  = sum((v - ma) ** 2 for v in av) ** 0.5
-        db  = sum((v - mb) ** 2 for v in bv) ** 0.5
-        if da * db == 0:
-            return {"status": "no_variance", "r": None, "pct": None, "samples": n}
-        r = max(-1.0, min(1.0, num / (da * db)))
-        return {"status": "ok", "r": round(r, 3), "pct": round(abs(r) * 100, 1), "samples": n}
+
+        # ── Primary: silence/activity agreement ───────────────────────────────
+        a_act = [v > ta for v in av]
+        b_act = [v > tb for v in bv]
+        silence_pct = sum(1 for i in range(n) if a_act[i] == b_act[i]) / n  # 0..1
+
+        # ── Secondary: first-difference Pearson on mutually-active periods ────
+        # Only considers samples where both streams are carrying audio, so a
+        # limiter making one stream flat never poisons the result.
+        delta_r = None
+        ap = [i for i in range(n - 1)
+              if a_act[i] and b_act[i] and a_act[i + 1] and b_act[i + 1]]
+        if len(ap) >= 5:
+            da_v = [av[i + 1] - av[i] for i in ap]
+            db_v = [bv[i + 1] - bv[i] for i in ap]
+            m    = len(da_v)
+            ma   = sum(da_v) / m
+            mb   = sum(db_v) / m
+            num  = sum((da_v[i] - ma) * (db_v[i] - mb) for i in range(m))
+            sa   = sum((v - ma) ** 2 for v in da_v) ** 0.5
+            sb   = sum((v - mb) ** 2 for v in db_v) ** 0.5
+            if sa > 0 and sb > 0:
+                delta_r = max(-1.0, min(1.0, num / (sa * sb)))
+
+        # ── Combined confidence ───────────────────────────────────────────────
+        # Base = silence agreement %.  Delta-r provides a bonus of up to +20 pp
+        # (r=1.0 → +20 pp) but cannot drag the score below the base.
+        pct = silence_pct * 100.0
+        if delta_r is not None:
+            pct = min(100.0, pct + abs(delta_r) * 20.0)
+
+        return {
+            "status":      "ok",
+            "r":           round(delta_r, 3) if delta_r is not None else None,
+            "pct":         round(pct, 1),
+            "silence_pct": round(silence_pct * 100.0, 1),
+            "samples":     n,
+        }
     except Exception as e:
-        return {"status": "error", "error": str(e), "r": None, "pct": None, "samples": 0}
+        return {"status": "error", "error": str(e), "r": None, "pct": None,
+                "silence_pct": None, "samples": 0}
 
 
 @app.get("/api/chains/history")
@@ -17124,9 +17261,10 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% if site.running %}
       <button class="btn site-restart-btn" data-site="{{site.site|e}}" style="background:#2a1e3a;color:#c4b5fd;font-size:11px;padding:2px 10px">🔄 Restart</button>
       {% endif %}
-      <button class="btn site-backup-btn" data-site="{{site.site|e}}" style="background:#1a2e1a;color:#86efac;font-size:11px;padding:2px 10px" title="Request a full config+data backup from this site">📥 Backup</button>
       {% if site._backup_ts %}
-      <a class="btn" href="/api/hub/site/{{site.site|urlencode}}/backup" style="background:#142514;color:#4ade80;font-size:11px;padding:2px 10px;text-decoration:none" title="Download backup ({{(site._backup_size // 1024) if site._backup_size else '?'}} KB, {{fmt(site._backup_ts)}})">⬇ Download Backup</a>
+      <a class="btn" href="/api/hub/site/{{site.site|urlencode}}/backup" style="background:#142514;color:#4ade80;font-size:11px;padding:2px 10px;text-decoration:none" title="Download backup — {{(site._backup_size // 1024) if site._backup_size else '?'}} KB, taken {{fmt(site._backup_ts)}}">⬇ Backup <span style="opacity:.7;font-size:10px">({{ago(site._backup_age_s)}})</span></a>
+      {% else %}
+      <span class="badge" style="background:#1a2e1a;color:#86efac;font-size:10px" title="Auto-backup runs daily — first backup arrives within 24 hours">📥 Backup pending</span>
       {% endif %}
       <button class="btn site-ping-btn" data-site="{{site.site|e}}" style="background:#1a2040;color:#93c5fd;font-size:11px;padding:2px 10px" title="Run a network ping test from this site">🔍 Ping</button>
       {% if site._ping_result %}
@@ -17598,12 +17736,36 @@ document.addEventListener('click', function(e){
   if(!btn) return;
   var site = btn.getAttribute('data-site');
   if(!site) return;
-  if(!confirm('Push software update to "'+site+'"?\n\nThe remote site will download the hub\'s current software and restart automatically. Monitoring will be interrupted briefly.')) return;
-  btn.disabled=true; btn.textContent='⏳ Sending\u2026';
-  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/update',{}).then(function(d){
-    if(d.ok){btn.textContent='\u2713 Sent';btn.style.color='var(--ok)';btn.style.borderColor='var(--ok)';}
-    else{btn.disabled=false;btn.textContent='\u2B06 Update';alert('Update failed: '+(d.error||'unknown error'));}
-  }).catch(function(err){btn.disabled=false;btn.textContent='\u2B06 Update';alert('Update error: '+(err.message||err));});
+  // Inline confirmation — avoid confirm() which is blocked on LAN HTTP origins
+  var anchor = btn.closest('.site-header') || btn.parentElement;
+  var existingConf = anchor.querySelector('.site-update-confirm');
+  if(existingConf){ existingConf.remove(); return; }
+  var bar = document.createElement('div');
+  bar.className = 'site-update-confirm';
+  bar.style.cssText = 'padding:8px 16px;background:#2a1e08;border-top:1px solid #b45309;display:flex;align-items:center;gap:10px;font-size:13px;color:#fbbf24;flex-wrap:wrap';
+  bar.innerHTML = 'Push update to <strong>'+site+'</strong>? Site will restart briefly. '
+    +'<button class="btn bs" style="background:#166534;color:#fff;margin-left:auto" data-confirm-update="1">⬆ Yes, Update</button>'
+    +'<button class="btn bg bs" data-confirm-cancel="1">Cancel</button>';
+  bar.querySelector('[data-confirm-cancel]').addEventListener('click', function(){ bar.remove(); });
+  bar.querySelector('[data-confirm-update]').addEventListener('click', function(){
+    bar.innerHTML = '<span>⏳ Sending update command…</span>';
+    hubPost('/api/hub/site/'+encodeURIComponent(site)+'/update',{})
+      .then(function(d){
+        if(d.ok){
+          bar.innerHTML='<span style="color:#86efac">✓ Update command sent — site will restart shortly</span>';
+          setTimeout(function(){ bar.remove(); btn.textContent='\u2713 Sent'; btn.style.color='var(--ok)'; btn.style.borderColor='var(--ok)'; btn.disabled=true; }, 2000);
+        } else {
+          bar.innerHTML='<span style="color:#fca5a5">\u2717 Failed: '+(d.error||'unknown error')+'</span>'
+            +'<button class="btn bg bs" style="margin-left:auto" data-confirm-cancel="1">Dismiss</button>';
+          bar.querySelector('[data-confirm-cancel]').addEventListener('click', function(){ bar.remove(); });
+        }
+      }).catch(function(err){
+        bar.innerHTML='<span style="color:#fca5a5">\u2717 Error: '+(err.message||err)+'</span>'
+          +'<button class="btn bg bs" style="margin-left:auto" data-confirm-cancel="1">Dismiss</button>';
+        bar.querySelector('[data-confirm-cancel]').addEventListener('click', function(){ bar.remove(); });
+      });
+  });
+  anchor.insertAdjacentElement('afterend', bar);
 });
 
 // ── Source management ─────────────────────────────────────────────────────────
@@ -17792,19 +17954,7 @@ document.addEventListener('click',function(e){
   }).catch(function(err){btn.disabled=false;btn.textContent='🔄 Restart';alert('Error: '+(err.message||err));});
 });
 
-// ── Backup button ─────────────────────────────────────────────────────────────
-document.addEventListener('click', function(e){
-  var btn=e.target.closest('.site-backup-btn');if(!btn)return;
-  var site=btn.dataset.site;
-  if(!confirm('Request a full backup from "'+site+'"?\n\nThe remote site will generate a ZIP and upload it here. This may take up to 60 seconds.'))return;
-  btn.disabled=true;btn.textContent='\u23F3 Requesting\u2026';
-  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/backup',{}).then(function(d){
-    if(d.ok){
-      btn.textContent='\u2713 Requested';btn.style.color='var(--ok)';
-      setTimeout(function(){btn.disabled=false;btn.textContent='\uD83D\uDCE5 Backup';btn.style.color='';},8000);
-    }else{btn.disabled=false;btn.textContent='\uD83D\uDCE5 Backup';alert('Backup request failed: '+(d.error||'unknown'));}
-  }).catch(function(err){btn.disabled=false;btn.textContent='\uD83D\uDCE5 Backup';alert('Error: '+(err.message||err));});
-});
+// Backup is now a direct download link — no JS handler needed.
 
 // ── Ping button / modal ───────────────────────────────────────────────────────
 (function(){
@@ -18731,6 +18881,46 @@ document.addEventListener('click', function(e){
   var site = btn.getAttribute('data-site');
   var cmd  = btn.getAttribute('data-cmd');
   if(site && cmd) sendSiteCommand(site, cmd, btn);
+});
+function pushSiteUpdate(siteName, btn){
+  // Inline confirmation — confirm() is blocked on LAN HTTP origins in modern browsers
+  var card = btn.closest('.site-card');
+  if(!card) return;
+  var existingConf = card.querySelector('.site-update-confirm');
+  if(existingConf){ existingConf.remove(); return; }
+  var bar = document.createElement('div');
+  bar.className = 'site-update-confirm';
+  bar.style.cssText = 'padding:8px 16px;background:#2a1e08;border-top:1px solid #b45309;display:flex;align-items:center;gap:10px;font-size:13px;color:#fbbf24';
+  bar.innerHTML = 'Push update to <strong>'+siteName+'</strong>? Site will restart briefly. '
+    +'<button class="btn bs" style="background:#166534;color:#fff;margin-left:auto" data-confirm-update="1">⬆ Yes, Update</button>'
+    +'<button class="btn bg bs" data-confirm-cancel="1">Cancel</button>';
+  bar.querySelector('[data-confirm-cancel]').addEventListener('click', function(){ bar.remove(); });
+  bar.querySelector('[data-confirm-update]').addEventListener('click', function(){
+    bar.innerHTML = '<span>⏳ Sending update command…</span>';
+    _csrfFetch('/api/hub/site/'+encodeURIComponent(siteName)+'/update', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+    }).then(function(r){return r.json();})
+      .then(function(d){
+        if(d.ok){
+          bar.innerHTML = '<span style="color:#86efac">✓ Update command sent — site will restart shortly</span>';
+          setTimeout(function(){ bar.remove(); btn.textContent='✓ Sent'; btn.style.color='var(--ok)'; btn.style.borderColor='var(--ok)'; btn.disabled=true; }, 2000);
+        } else {
+          bar.innerHTML = '<span style="color:#fca5a5">✗ Failed: '+(d.error||'unknown error')+'</span>'
+            +'<button class="btn bg bs" style="margin-left:auto" data-confirm-cancel="1">Dismiss</button>';
+          bar.querySelector('[data-confirm-cancel]').addEventListener('click', function(){ bar.remove(); });
+        }
+      }).catch(function(err){
+        bar.innerHTML = '<span style="color:#fca5a5">✗ Error: '+(err.message||err)+'</span>'
+          +'<button class="btn bg bs" style="margin-left:auto" data-confirm-cancel="1">Dismiss</button>';
+        bar.querySelector('[data-confirm-cancel]').addEventListener('click', function(){ bar.remove(); });
+      });
+  });
+  card.insertBefore(bar, card.firstChild);
+}
+document.addEventListener('click', function(e){
+  var btn = e.target.closest('.site-update-btn');
+  if(!btn) return;
+  pushSiteUpdate(btn.getAttribute('data-site'), btn);
 });
 function removeSite(siteName, btn){
   // Inline confirmation — confirm() is blocked on LAN HTTP origins in modern browsers
