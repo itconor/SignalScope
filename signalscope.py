@@ -1002,7 +1002,7 @@ Models are saved as .onnx files and persist across restarts.
 Author: Built on core from ITConor / JPDesignsNI
 """
 
-import os, sys, json, math, time, wave, socket, struct, threading, io, hashlib, functools, queue
+import os, sys, json, math, time, wave, socket, struct, threading, io, hashlib, functools, queue, base64
 import selectors
 import collections, urllib.request, urllib.error, urllib.parse, datetime, base64
 from dataclasses import dataclass, field
@@ -1029,7 +1029,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.39"
+BUILD                  = "SignalScope-3.2.40"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -17201,6 +17201,281 @@ def api_mobile_token_status():
         "token_present": bool(token),
     })
 
+# ─── Mobile reports / clips API ──────────────────────────────────────────────
+
+def _mobile_reports_stream_to_chains(chain_cfg) -> dict:
+    stream_to_chains = {}
+    for ch in (chain_cfg or []):
+        cname = (ch or {}).get("name", "")
+        for node in ((ch or {}).get("nodes", []) or []):
+            subs = node.get("nodes", []) if node.get("type") == "stack" else [node]
+            for sub in (subs or []):
+                sname = (sub or {}).get("stream", "")
+                if sname:
+                    stream_to_chains.setdefault(sname, [])
+                    if cname and cname not in stream_to_chains[sname]:
+                        stream_to_chains[sname].append(cname)
+    return stream_to_chains
+
+
+def _mobile_reports_clip_id_encode(payload: dict) -> str:
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _mobile_reports_clip_id_decode(clip_id: str) -> dict | None:
+    try:
+        padded = clip_id + ("=" * (-len(clip_id) % 4))
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _mobile_reports_normalize_ts(value):
+    if value is None:
+        return None, 0.0
+    if isinstance(value, (int, float)):
+        try:
+            v = float(value)
+            return v, v
+        except Exception:
+            return value, 0.0
+    s = str(value).strip()
+    if not s:
+        return value, 0.0
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y%m%d-%H%M%S", "%d %b %Y %H:%M:%S"):
+        try:
+            ts = time.mktime(time.strptime(s, fmt))
+            return ts, ts
+        except Exception:
+            pass
+    try:
+        v = float(s)
+        return v, v
+    except Exception:
+        return s, 0.0
+
+
+def _mobile_reports_event_from_local(ev: dict, site_name: str, stream_to_chains: dict) -> dict:
+    ts_value, sort_ts = _mobile_reports_normalize_ts(ev.get("ts"))
+    clip_name = ev.get("clip") or ""
+    stream_name = ev.get("stream", "")
+    chain_names = []
+    if ev.get("type") == "CHAIN_FAULT":
+        chain_value = stream_name
+    else:
+        chain_names = stream_to_chains.get(stream_name, [])
+        chain_value = ", ".join(chain_names)
+    clip_id = None
+    clip_url = None
+    if clip_name and stream_name:
+        clip_id = _mobile_reports_clip_id_encode({
+            "mode": "local",
+            "stream": stream_name,
+            "filename": clip_name,
+        })
+        clip_url = f"/api/mobile/reports/clip/{clip_id}"
+    return {
+        "id": ev.get("id") or f"local:{stream_name}:{clip_name}:{sort_ts}",
+        "ts": ts_value,
+        "sort_ts": sort_ts,
+        "site": site_name,
+        "chain": chain_value,
+        "stream": stream_name,
+        "type": ev.get("type", ""),
+        "message": ev.get("message", ""),
+        "level_dbfs": ev.get("level_dbfs", ev.get("level")),
+        "rtp_loss_pct": ev.get("rtp_loss_pct"),
+        "rtp_jitter_ms": ev.get("rtp_jitter_ms"),
+        "ptp_state": ev.get("ptp_state"),
+        "ptp_offset_us": ev.get("ptp_offset_us"),
+        "ptp_drift_us": ev.get("ptp_drift_us"),
+        "ptp_jitter_us": ev.get("ptp_jitter_us"),
+        "ptp_gm": ev.get("ptp_gm"),
+        "clip": bool(clip_name),
+        "clip_name": clip_name or None,
+        "clip_id": clip_id,
+        "clip_url": clip_url,
+        "online": True,
+        "source": "local",
+    }
+
+
+def _mobile_reports_event_from_hub(ev: dict) -> dict:
+    ts_value, sort_ts = _mobile_reports_normalize_ts(ev.get("ts"))
+    clip_name = ev.get("clip") or ""
+    stream_name = ev.get("stream", "")
+    site_name = ev.get("_site", "?")
+    clip_id = None
+    clip_url = None
+    if clip_name and stream_name and site_name:
+        clip_id = _mobile_reports_clip_id_encode({
+            "mode": "hub",
+            "site": site_name,
+            "stream": stream_name,
+            "filename": clip_name,
+        })
+        clip_url = f"/api/mobile/reports/clip/{clip_id}"
+    return {
+        "id": ev.get("id") or f"hub:{site_name}:{stream_name}:{clip_name}:{sort_ts}",
+        "ts": ts_value,
+        "sort_ts": sort_ts,
+        "site": site_name,
+        "chain": ev.get("_chain", ""),
+        "stream": stream_name,
+        "type": ev.get("type", ""),
+        "message": ev.get("message", ""),
+        "level_dbfs": ev.get("level_dbfs", ev.get("level")),
+        "rtp_loss_pct": ev.get("rtp_loss_pct"),
+        "rtp_jitter_ms": ev.get("rtp_jitter_ms"),
+        "ptp_state": ev.get("ptp_state"),
+        "ptp_offset_us": ev.get("ptp_offset_us"),
+        "ptp_drift_us": ev.get("ptp_drift_us"),
+        "ptp_jitter_us": ev.get("ptp_jitter_us"),
+        "ptp_gm": ev.get("ptp_gm"),
+        "clip": bool(clip_name),
+        "clip_name": clip_name or None,
+        "clip_id": clip_id,
+        "clip_url": clip_url,
+        "online": bool(ev.get("_online", False)),
+        "source": "hub",
+    }
+
+
+def _mobile_reports_events(limit: int = 100, site: str = "", stream: str = "", etype: str = "", chain: str = "", before=None):
+    cfg = monitor.app_cfg
+    results = []
+    before_value = None
+    if before not in (None, ""):
+        try:
+            before_value = float(before)
+        except Exception:
+            before_value, _ = _mobile_reports_normalize_ts(before)
+            if not isinstance(before_value, (int, float, float)):
+                before_value = None
+
+    if cfg.hub.mode in ("hub", "both") and hub_server:
+        hub_server.set_secret(cfg.hub.secret_key)
+        sites = hub_server.get_sites()
+        stream_to_chains = _mobile_reports_stream_to_chains(cfg.signal_chains if cfg.hub.mode in ("hub", "both") else [])
+        for s in sites:
+            site_name = s.get("site", "?")
+            if site and site != site_name:
+                continue
+            for ev in (s.get("recent_alerts", []) or []):
+                merged = dict(ev)
+                merged["_site"] = site_name
+                merged["_client_addr"] = s.get("_client_addr", "")
+                merged["_online"] = s.get("online", False)
+                ev_stream = merged.get("stream", "")
+                if merged.get("type") == "CHAIN_FAULT":
+                    merged["_chain"] = ev_stream
+                else:
+                    merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
+                item = _mobile_reports_event_from_hub(merged)
+                if stream and item["stream"] != stream:
+                    continue
+                if etype and item["type"] != etype:
+                    continue
+                if chain and item.get("chain", "") != chain:
+                    continue
+                if before_value is not None and (item.get("sort_ts") or 0) >= before_value:
+                    continue
+                results.append(item)
+    else:
+        site_name = cfg.hub.site_name or socket.gethostname()
+        stream_to_chains = _mobile_reports_stream_to_chains(cfg.signal_chains)
+        for ev in _alert_log_load(max(limit * 5, 500)):
+            item = _mobile_reports_event_from_local(ev, site_name, stream_to_chains)
+            if site and item["site"] != site:
+                continue
+            if stream and item["stream"] != stream:
+                continue
+            if etype and item["type"] != etype:
+                continue
+            if chain and item.get("chain", "") != chain:
+                continue
+            if before_value is not None and (item.get("sort_ts") or 0) >= before_value:
+                continue
+            results.append(item)
+
+    results.sort(key=lambda e: e.get("sort_ts", 0) or 0, reverse=True)
+    return results[:max(1, min(int(limit or 100), 500))]
+
+
+@app.get("/api/mobile/reports/events")
+@mobile_api_required
+def api_mobile_reports_events():
+    limit = request.args.get("limit", default=100, type=int)
+    site = (request.args.get("site", "") or "").strip()
+    stream = (request.args.get("stream", "") or "").strip()
+    etype = (request.args.get("type", "") or "").strip()
+    chain = (request.args.get("chain", "") or "").strip()
+    before = request.args.get("before")
+
+    events = _mobile_reports_events(limit=limit, site=site, stream=stream, etype=etype, chain=chain, before=before)
+    return jsonify({
+        "ok": True,
+        "results": events,
+        "count": len(events),
+        "generated_at": time.time(),
+    })
+
+
+@app.get("/api/mobile/reports/summary")
+@mobile_api_required
+def api_mobile_reports_summary():
+    site = (request.args.get("site", "") or "").strip()
+    stream = (request.args.get("stream", "") or "").strip()
+    etype = (request.args.get("type", "") or "").strip()
+    chain = (request.args.get("chain", "") or "").strip()
+
+    events = _mobile_reports_events(limit=500, site=site, stream=stream, etype=etype, chain=chain)
+    counts = {}
+    site_counts = {}
+    with_clips = 0
+    for e in events:
+        t = e.get("type", "") or "UNKNOWN"
+        counts[t] = counts.get(t, 0) + 1
+        s = e.get("site", "") or "?"
+        site_counts[s] = site_counts.get(s, 0) + 1
+        if e.get("clip"):
+            with_clips += 1
+
+    return jsonify({
+        "ok": True,
+        "total": len(events),
+        "with_clips": with_clips,
+        "counts": counts,
+        "sites": [
+            {"site": name, "count": count} for name, count in sorted(site_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ],
+        "generated_at": time.time(),
+    })
+
+
+@app.get("/api/mobile/reports/clip/<clip_id>")
+@mobile_api_required
+def api_mobile_reports_clip(clip_id: str):
+    payload = _mobile_reports_clip_id_decode(clip_id) or {}
+    mode = (payload.get("mode") or "").strip()
+    stream_name = (payload.get("stream") or "").strip()
+    filename = os.path.basename((payload.get("filename") or "").strip())
+    if not stream_name or not filename:
+        return jsonify({"ok": False, "error": "invalid clip id"}), 400
+
+    if mode == "hub":
+        site_name = (payload.get("site") or "").strip()
+        if not site_name:
+            return jsonify({"ok": False, "error": "invalid clip id"}), 400
+        return hub_proxy_alert_clip.__wrapped__(site_name, stream_name, filename)
+
+    if mode == "local":
+        return clips_serve.__wrapped__(stream_name, filename)
+
+    return jsonify({"ok": False, "error": "invalid clip mode"}), 400
 
 @app.get("/api/chains/<cid>/fault_log")
 @login_required
