@@ -675,7 +675,9 @@ document.addEventListener('DOMContentLoaded',function(){
   <div class="sec">🔐 Web UI Authentication</div>
           <div class="cr"><input type="checkbox" name="auth_enabled" value="1" {{'checked' if cfg.auth.enabled}}><label style="margin:0;text-transform:none">Require login to access dashboard</label></div>
           <label>Username<input type="text" name="auth_username" value="{{cfg.auth.username}}"></label>
-          <label>New Password (leave blank to keep current)<input type="password" name="auth_password" placeholder="Minimum 8 characters"></label>
+          <label>New Password (leave blank to keep current)<input type="password" name="auth_password" id="auth_password" placeholder="Minimum 8 characters" oninput="chkPwMatch()"></label>
+          <label>Confirm Password<input type="password" name="auth_password_confirm" id="auth_password_confirm" placeholder="Re-enter new password" oninput="chkPwMatch()"></label>
+          <p id="pw-match-msg" style="font-size:12px;margin-top:4px;display:none"></p>
           <p class="help">Password is stored as a salted PBKDF2-SHA256 hash (260,000 rounds). After enabling auth, reload the page and you will be prompted to log in.</p>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px">
             <label>Max login attempts
@@ -804,7 +806,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
 
   <label class="cb" style="margin-top:10px">
     <input type="checkbox" name="apns_sandbox" {{'checked' if cfg.mobile_api.apns_sandbox}}>
-    Use sandbox / development APNs endpoint <span style="color:var(--mu);font-size:11px">(tick for Xcode / TestFlight builds; untick for App Store)</span>
+    Use sandbox APNs endpoint <span style="color:var(--mu);font-size:11px">(only tick when testing with a direct Xcode debug build — TestFlight and App Store always use production; routing is automatic per device)</span>
   </label>
 
   {% set apns_ok = cfg.mobile_api.apns_key_id and cfg.mobile_api.apns_team_id and cfg.mobile_api.apns_bundle_id and cfg.mobile_api.apns_key_pem %}
@@ -1005,6 +1007,31 @@ document.addEventListener('click', function(e){
 // Wire up the update check button
 document.getElementById('upd-check-btn').addEventListener('click', checkForUpdates);
 
+// Password confirm validation
+function chkPwMatch(){
+  var pw=document.getElementById('auth_password');
+  var cf=document.getElementById('auth_password_confirm');
+  var msg=document.getElementById('pw-match-msg');
+  if(!pw||!cf||!msg) return;
+  if(!pw.value && !cf.value){ msg.style.display='none'; return; }
+  msg.style.display='block';
+  if(pw.value===cf.value){
+    msg.style.color='var(--ok)'; msg.textContent='✓ Passwords match';
+  } else {
+    msg.style.color='var(--al)'; msg.textContent='✗ Passwords do not match';
+  }
+}
+// Block form submit if passwords are filled but don't match
+document.querySelector('form[method=post]').addEventListener('submit', function(e){
+  var pw=document.getElementById('auth_password');
+  var cf=document.getElementById('auth_password_confirm');
+  if(pw && cf && pw.value && pw.value!==cf.value){
+    e.preventDefault();
+    chkPwMatch();
+    cf.focus();
+  }
+});
+
 // Restore upload via fetch — avoids nested-form HTML issues
 document.getElementById('restore-upload-btn').addEventListener('click', function(){
   var fi=document.getElementById('restore-file-input');
@@ -1068,8 +1095,12 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.41"
+BUILD                  = "SignalScope-3.2.61"
 # CHANGELOG
+# 3.2.43 (2026-03-22) — APNs per-token environment routing: device tokens now stored with
+#   sandbox flag (True=development/Xcode, False=production/TestFlight+AppStore); server
+#   routes each push to the correct APNs endpoint so both Xcode and TestFlight devices
+#   receive notifications. Test chain alert endpoint (POST /api/chains/test_alert) added.
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
 #   to /hub/backup_upload; hub stores latest per-site and exposes download link.
@@ -1115,10 +1146,17 @@ LEARN_DURATION_SECONDS = 86400.0      # 24 hours
 AI_ANALYSIS_INTERVAL   = 5.0
 AI_FEATURE_DIM         = 14           # stable content-agnostic features (reduced from 20)
 AI_HIDDEN_DIM          = 7
-ANOMALY_WARN_THRESHOLD = 3.2          # z-score → WARN (raised to reduce music/speech false positives)
-ANOMALY_ALERT_THRESHOLD= 5.5          # z-score → ALERT
-AI_CONFIRM_WINDOWS     = 3            # consecutive high-z windows required before alerting
-MIN_TRAINING_SAMPLES   = 60
+ANOMALY_WARN_THRESHOLD  = 3.2          # z-score → WARN (raised to reduce music/speech false positives)
+ANOMALY_ALERT_THRESHOLD = 5.5          # z-score → ALERT
+AI_CONFIRM_WINDOWS      = 3            # consecutive high-z windows required before alerting
+MIN_TRAINING_SAMPLES    = 60
+AI_FEEDBACK_BIAS_STEP   = 0.35         # σ rise per confirmed false-alarm label (temporary, until retrain)
+AI_FEEDBACK_MAX_BIAS    = 5.0          # maximum per-stream threshold shift (σ)
+AI_CLEAN_BUFFER_MAX     = 8000         # max clean feature vectors kept for retraining
+AI_CLEAN_BUFFER_FLUSH   = 250          # flush clean buffer to disk every N new samples
+AI_RETRAIN_FEEDBACK_N   = 5            # retrain after this many new false-alarm labels
+AI_RETRAIN_MIN_SAMPLES  = 500          # minimum clean samples before retraining is allowed
+AI_INITIAL_SAMPLES_MAX  = 200_000      # cap on persisted 24h initial samples (~11 MB/stream)
 
 # ─── RTP / comparison / report constants ─────────────────────────────────────
 
@@ -1750,8 +1788,26 @@ def _model_path(name: str) -> str:
 def _stats_path(name: str) -> str:
     return os.path.join(MODELS_DIR, f"{_safe_name(name)}_stats.json")
 
-ALERT_LOG_PATH  = os.path.join(BASE_DIR, "alert_log.json")
-ALERT_ACKS_PATH = os.path.join(BASE_DIR, "alert_acks.json")
+def _feedback_path(name: str) -> str:
+    """Per-stream AI feedback state: threshold bias + feedback counts."""
+    return os.path.join(MODELS_DIR, f"{_safe_name(name)}_feedback.json")
+
+def _clean_buffer_path(name: str) -> str:
+    """Rolling numpy array of confirmed-clean feature vectors used for retraining."""
+    return os.path.join(MODELS_DIR, f"{_safe_name(name)}_clean.npy")
+
+def _initial_samples_path(name: str) -> str:
+    """Permanent record of the original 24 h training corpus.
+    Written once after the first successful training phase and never overwritten.
+    Every future feedback-triggered retrain loads this alongside the clean buffer
+    so the model always trains on its full knowledge base, not just recent windows.
+    """
+    return os.path.join(MODELS_DIR, f"{_safe_name(name)}_initial.npy")
+
+ALERT_LOG_PATH      = os.path.join(BASE_DIR, "alert_log.json")
+ALERT_ACKS_PATH     = os.path.join(BASE_DIR, "alert_acks.json")
+ALERT_FEEDBACK_PATH = os.path.join(BASE_DIR, "alert_feedback.json")
+_alert_feedback_lock = threading.Lock()
 HUB_STATE_PATH  = os.path.join(BASE_DIR, "hub_state.json")  # persists site data across hub restarts
 METRICS_DB_PATH  = os.path.join(BASE_DIR, "metrics_history.db")
 HUB_BACKUP_DIR   = os.path.join(BASE_DIR, "hub_backups")   # one sub-dir per site
@@ -1827,6 +1883,7 @@ def _add_history(cfg: InputConfig, kind: str, msg: str, clip_path: str = ""):
         "ptp_drift_us":  round(ptp.drift_us,  1)  if ptp else 0,
         "ptp_jitter_us": round(ptp.jitter_us, 1)  if ptp else 0,
         "ptp_gm":        ptp.gm_id       if ptp else "",
+        "feedback":      None,   # user label: "normal" (false alarm) | "abnormal" | None
     }
     cfg._history.append(event)
     if len(cfg._history) > 300:
@@ -1859,6 +1916,205 @@ def _save_ack(alert_id: str, ack_by: str) -> dict:
     except Exception:
         pass
     return record
+
+# ─── Alert feedback helpers ───────────────────────────────────────────────────
+
+def _load_alert_feedback() -> dict:
+    """Return dict of alert_id → {feedback, by, ts}."""
+    if not os.path.exists(ALERT_FEEDBACK_PATH):
+        return {}
+    try:
+        with _alert_feedback_lock:
+            with open(ALERT_FEEDBACK_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_alert_feedback_map(fb_map: dict):
+    """Persist the full feedback map to disk (thread-safe)."""
+    with _alert_feedback_lock:
+        with open(ALERT_FEEDBACK_PATH, "w", encoding="utf-8") as f:
+            json.dump(fb_map, f)
+
+
+def _alert_log_load_with_feedback(limit: int = 2000) -> List[dict]:
+    """Load alert events and merge in any stored user feedback labels."""
+    events = _alert_log_load(limit)
+    try:
+        fb_map = _load_alert_feedback()
+        if fb_map:
+            for e in events:
+                aid = e.get("id", "")
+                if aid and aid in fb_map:
+                    e["feedback"] = fb_map[aid]["feedback"]
+    except Exception:
+        pass
+    return events
+
+
+def _apply_feedback_label(alert_id: str, stream: str, feedback: str,
+                           by: str = "admin") -> dict:
+    """Record a user feedback label and adapt the per-stream AI threshold bias.
+
+    feedback: "normal"   → false alarm, raise threshold so it doesn't repeat
+              "abnormal" → confirmed real fault, nudge threshold back down
+    Returns the updated per-stream feedback dict.
+    """
+    # 1. Persist label in alert_feedback.json (keyed by alert UUID)
+    fb_map = _load_alert_feedback()
+    fb_map[alert_id] = {
+        "feedback": feedback,
+        "by":       by,
+        "ts":       time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    try:
+        _save_alert_feedback_map(fb_map)
+    except Exception:
+        pass
+
+    # 2. Update per-stream AI feedback file
+    fp = _feedback_path(stream)
+    try:
+        with open(fp) as f:
+            fb_data = json.load(f)
+    except Exception:
+        fb_data = {}
+
+    fb_data.setdefault("threshold_bias",              0.0)
+    fb_data.setdefault("normal_count",                0)
+    fb_data.setdefault("abnormal_count",              0)
+    fb_data.setdefault("false_alarms_since_retrain",  0)
+
+    if feedback == "normal":
+        fb_data["normal_count"] += 1
+        # Each false-alarm label lifts the effective threshold by BIAS_STEP, capped at MAX.
+        fb_data["threshold_bias"] = min(
+            fb_data["threshold_bias"] + AI_FEEDBACK_BIAS_STEP,
+            AI_FEEDBACK_MAX_BIAS,
+        )
+    elif feedback == "abnormal":
+        fb_data["abnormal_count"] += 1
+        # Confirmed real fault → small downward nudge (never below 0).
+        fb_data["threshold_bias"] = max(fb_data["threshold_bias"] - 0.10, 0.0)
+
+    # 3. For false-alarm labels: extract feature vectors from the clip audio,
+    #    add them to the clean buffer so the retrain gets this audio as "normal".
+    #    Also count false alarms since the last retrain and trigger one when
+    #    AI_RETRAIN_FEEDBACK_N threshold is reached.
+    if feedback == "normal" and monitor:
+        fb_data.setdefault("false_alarms_since_retrain", 0)
+        fb_data["false_alarms_since_retrain"] += 1
+        # Locate the clip for this alert (keyed on stream/alert_id via snippet dir)
+        _snip_dir = os.path.join(BASE_DIR, "alert_snippets", _safe_name(stream))
+        _clip_feats: List[np.ndarray] = []
+        try:
+            if os.path.isdir(_snip_dir):
+                # All wav files sorted by mtime — we pick the most recent as a
+                # best-effort match (the alert just fired, so its clip is newest)
+                _wavs = sorted(
+                    [w for w in os.listdir(_snip_dir) if w.endswith(".wav")],
+                    key=lambda n: os.path.getmtime(os.path.join(_snip_dir, n))
+                )
+                if _wavs:
+                    import wave as _wave, array as _array
+                    _wpath = os.path.join(_snip_dir, _wavs[-1])
+                    with _wave.open(_wpath, "rb") as _wf:
+                        _frames = _wf.readframes(_wf.getnframes())
+                        _ch = _wf.getnchannels(); _sw = _wf.getsampwidth()
+                    _fmt  = {1: "b", 2: "h", 4: "i"}.get(_sw, "h")
+                    _raw  = _array.array(_fmt, _frames)
+                    _aud  = np.array(_raw, dtype=np.float32) / (2 ** (_sw * 8 - 1))
+                    if _ch > 1: _aud = _aud[::_ch]
+                    # Chop clip into 0.5 s windows (same as live inference windows)
+                    _wsz = int(SAMPLE_RATE * 0.5)
+                    for _i in range(0, len(_aud) - _wsz + 1, _wsz):
+                        _clip_feats.append(extract_features(_aud[_i:_i + _wsz]))
+        except Exception:
+            pass
+
+        # Append the labeled clip's feature windows directly to the on-disk
+        # clean buffer so the next retrain treats this audio as normal.
+        if _clip_feats:
+            _cbp = _clean_buffer_path(stream)
+            try:
+                _existing = np.load(_cbp) if os.path.exists(_cbp) else np.empty(
+                    (0, AI_FEATURE_DIM), dtype=np.float32)
+                _combined = np.vstack([_existing,
+                                       np.array(_clip_feats, dtype=np.float32)])
+                # Trim to max buffer size
+                if len(_combined) > AI_CLEAN_BUFFER_MAX:
+                    _combined = _combined[-AI_CLEAN_BUFFER_MAX:]
+                np.save(_cbp, _combined)
+                # Also inject into the live in-memory clean buf
+                for _inp in (monitor.app_cfg.inputs if monitor else []):
+                    if _inp.name == stream:
+                        if not hasattr(_inp, '_ai_clean_buf'): _inp._ai_clean_buf = []
+                        _inp._ai_clean_buf.extend(_clip_feats)
+                        if len(_inp._ai_clean_buf) > AI_CLEAN_BUFFER_MAX:
+                            _inp._ai_clean_buf = _inp._ai_clean_buf[-AI_CLEAN_BUFFER_MAX:]
+                        break
+            except Exception:
+                pass
+
+        # Check if we have enough material to actually retrain the model
+        _cbp = _clean_buffer_path(stream)
+        _n_clean = 0
+        try:
+            if os.path.exists(_cbp):
+                _n_clean = np.load(_cbp).shape[0]
+        except Exception:
+            pass
+        # Also check in-memory buffer
+        if monitor:
+            for _inp in monitor.app_cfg.inputs:
+                if _inp.name == stream:
+                    _n_clean = max(_n_clean, len(getattr(_inp, '_ai_clean_buf', [])))
+                    break
+
+        _should_retrain = (
+            fb_data["false_alarms_since_retrain"] >= AI_RETRAIN_FEEDBACK_N
+            and _n_clean >= AI_RETRAIN_MIN_SAMPLES
+        )
+        if _should_retrain:
+            # Gather the full clean sample set (prefer in-memory, fall back to disk)
+            _all_clean: Optional[np.ndarray] = None
+            if monitor:
+                for _inp in monitor.app_cfg.inputs:
+                    if _inp.name == stream and hasattr(_inp, '_ai_clean_buf') and _inp._ai_clean_buf:
+                        _all_clean = np.array(_inp._ai_clean_buf, dtype=np.float32)
+                        break
+            if _all_clean is None or len(_all_clean) < AI_RETRAIN_MIN_SAMPLES:
+                try:
+                    if os.path.exists(_cbp):
+                        _all_clean = np.load(_cbp)
+                except Exception:
+                    pass
+            if _all_clean is not None and len(_all_clean) >= AI_RETRAIN_MIN_SAMPLES:
+                threading.Thread(
+                    target=_retrain_model,
+                    args=(stream, _all_clean),
+                    daemon=True,
+                    name=f"AIRetrain-{stream}",
+                ).start()
+
+    # 4. Persist updated per-stream feedback state
+    try:
+        os.makedirs(MODELS_DIR, exist_ok=True)
+        with open(fp, "w") as f:
+            json.dump(fb_data, f)
+    except Exception:
+        pass
+
+    # 5. Update in-memory InputConfig immediately so next window uses new bias
+    if monitor:
+        for _inp in monitor.app_cfg.inputs:
+            if _inp.name == stream:
+                _inp._ai_threshold_bias = fb_data["threshold_bias"]
+                break
+
+    return fb_data
+
 
 # ─── Auth helpers ─────────────────────────────────────────────────────────────
 
@@ -2024,6 +2280,9 @@ except ImportError:
 # Cache the JWT so we don't regenerate it on every push (valid 55 min)
 _apns_jwt_cache: dict = {"token": "", "generated_at": 0.0}
 
+# Lock to serialise concurrent token-list mutations across push threads
+_apns_tokens_lock = threading.Lock()
+
 def _apns_make_jwt(key_id: str, team_id: str, key_pem: str) -> str:
     """Generate an ES256 JWT suitable for APNs provider authentication."""
     import base64, json as _json
@@ -2044,36 +2303,65 @@ def _apns_make_jwt(key_id: str, team_id: str, key_pem: str) -> str:
 
 
 def _get_apns_jwt(ma) -> str:
-    """Return a cached JWT, regenerating if older than 55 minutes."""
+    """Return a cached JWT, regenerating if older than 55 minutes or if credentials changed."""
     now = time.time()
-    if now - _apns_jwt_cache["generated_at"] > 55 * 60 or not _apns_jwt_cache["token"]:
+    cache_key = f"{ma.apns_key_id}:{ma.apns_team_id}"
+    if (now - _apns_jwt_cache["generated_at"] > 55 * 60
+            or not _apns_jwt_cache["token"]
+            or _apns_jwt_cache.get("cache_key") != cache_key):
         _apns_jwt_cache["token"] = _apns_make_jwt(ma.apns_key_id, ma.apns_team_id, ma.apns_key_pem)
         _apns_jwt_cache["generated_at"] = now
+        _apns_jwt_cache["cache_key"] = cache_key
     return _apns_jwt_cache["token"]
+
+
+def _apns_token_str(entry) -> str:
+    """Return the raw hex token string regardless of whether entry is a str or dict."""
+    return entry if isinstance(entry, str) else entry.get("token", "")
+
+
+def _apns_token_is_sandbox(entry) -> bool:
+    """Return True if this token entry targets the APNs sandbox (development) environment."""
+    if isinstance(entry, str):
+        # Legacy plain-string tokens — assume sandbox (old behaviour)
+        return True
+    return bool(entry.get("sandbox", True))
 
 
 def _send_apns_push(title: str, body: str, data: "dict|None" = None, badge: "int|None" = None):
     """Send an APNs push notification to all registered device tokens.
 
+    Each token entry can be a plain string (legacy, treated as sandbox) or a dict
+    ``{"token": "<hex>", "sandbox": bool}``.  Tokens are routed to the correct
+    APNs endpoint (sandbox vs production) based on the per-token flag so that both
+    Xcode debug builds (sandbox) and TestFlight/App Store builds (production) receive
+    notifications.
+
     Requires ``httpx[http2]`` (``pip install httpx[http2]``) to be installed.
     Silent no-op if APNs is not configured or the library is missing.
     """
+    monitor.log(f"[APNs] _send_apns_push called: title='{title}'")
     ma = getattr(monitor.app_cfg, "mobile_api", None)
     if not ma:
+        monitor.log("[APNs] Early exit: mobile_api config not found")
         return
-    tokens = list(getattr(ma, "apns_device_tokens", []))
+    with _apns_tokens_lock:
+        tokens = list(getattr(ma, "apns_device_tokens", []))
     if not tokens:
+        monitor.log("[APNs] Early exit: no device tokens registered")
         return
     key_id   = getattr(ma, "apns_key_id", "").strip()
     team_id  = getattr(ma, "apns_team_id", "").strip()
     bundle   = getattr(ma, "apns_bundle_id", "").strip()
     key_pem  = getattr(ma, "apns_key_pem", "").strip()
     if not (key_id and team_id and bundle and key_pem):
+        monitor.log(f"[APNs] Early exit: incomplete config — key_id={bool(key_id)} team_id={bool(team_id)} bundle={bool(bundle)} key_pem={bool(key_pem)}")
         return
     if not _HTTPX_HTTP2:
         monitor.log("[APNs] httpx[http2] not installed — push notifications unavailable. "
                     "Run: pip install 'httpx[http2]'")
         return
+    monitor.log(f"[APNs] Config OK — {len(tokens)} token(s), bundle={bundle}, spawning push thread")
 
     payload: dict = {"aps": {"alert": {"title": title, "body": body}, "sound": "default"}}
     if badge is not None:
@@ -2081,42 +2369,105 @@ def _send_apns_push(title: str, body: str, data: "dict|None" = None, badge: "int
     if data:
         payload.update(data)
 
-    host = "api.sandbox.push.apple.com" if getattr(ma, "apns_sandbox", True) else "api.push.apple.com"
-    jwt  = _get_apns_jwt(ma)
+    jwt_sandbox    = _get_apns_jwt(ma)   # JWT is the same for both environments
+    jwt_production = jwt_sandbox
 
     def _push_thread():
         import json as _json
         to_remove = []
+        monitor.log(f"[APNs] Sending push to {len(tokens)} token(s): title='{title}'")
+        to_flip = []   # list of (entry, correct_sandbox_bool) — env auto-corrected
         try:
             with _httpx.Client(http2=True, timeout=10.0) as client:
-                for token in tokens:
+                def _post(host, tok, jwt):
+                    return client.post(
+                        f"https://{host}/3/device/{tok}",
+                        headers={
+                            "authorization":   f"bearer {jwt}",
+                            "apns-topic":      bundle,
+                            "apns-priority":   "10",
+                            "apns-push-type":  "alert",
+                            "apns-expiration": str(int(time.time()) + 3600),
+                            "apns-thread-id":  (data.get("chain_id", "") if data else ""),
+                            "content-type":    "application/json",
+                        },
+                        content=_json.dumps(payload).encode(),
+                    )
+                for entry in tokens:
+                    token = _apns_token_str(entry)
+                    if not token:
+                        continue
+                    is_sb = _apns_token_is_sandbox(entry)
+                    host  = ("api.sandbox.push.apple.com" if is_sb else "api.push.apple.com")
+                    env   = "sandbox" if is_sb else "production"
+                    monitor.log(f"[APNs] → token {token[:12]}… env={env} host={host}")
                     try:
-                        resp = client.post(
-                            f"https://{host}/3/device/{token}",
-                            headers={
-                                "authorization": f"bearer {jwt}",
-                                "apns-topic":    bundle,
-                                "apns-priority": "10",
-                                "apns-push-type": "alert",
-                                "content-type":  "application/json",
-                            },
-                            content=_json.dumps(payload).encode(),
-                        )
-                        if resp.status_code == 410:   # device token no longer valid
-                            monitor.log(f"[APNs] Token {token[:12]}… expired/unregistered — removing")
-                            to_remove.append(token)
-                        elif resp.status_code not in (200, 400):
-                            monitor.log(f"[APNs] Push {resp.status_code} for {token[:12]}…: {resp.text[:120]}")
+                        resp = _post(host, token, jwt_sandbox)
+                        if resp.status_code == 200:
+                            monitor.log(f"[APNs] ✔ Delivered to {token[:12]}… ({env})")
+                        elif resp.status_code == 410:
+                            monitor.log(f"[APNs] Token {token[:12]}… expired/unregistered (410) — removing")
+                            to_remove.append(entry)
+                        elif resp.status_code == 403:
+                            try:
+                                reason = resp.json().get("reason", "")
+                            except Exception:
+                                reason = resp.text[:80]
+                            if reason == "BadEnvironmentKeyInToken":
+                                # Token is for the opposite environment — flip and retry
+                                flip_sb   = not is_sb
+                                flip_host = ("api.sandbox.push.apple.com" if flip_sb else "api.push.apple.com")
+                                flip_env  = "sandbox" if flip_sb else "production"
+                                monitor.log(f"[APNs] BadEnvironmentKeyInToken for {token[:12]}… — retrying as {flip_env}")
+                                try:
+                                    resp2 = _post(flip_host, token, jwt_sandbox)
+                                    if resp2.status_code == 200:
+                                        monitor.log(f"[APNs] ✔ Delivered to {token[:12]}… ({flip_env}) — correcting stored environment")
+                                        to_flip.append((entry, flip_sb))
+                                    elif resp2.status_code == 410:
+                                        monitor.log(f"[APNs] Token {token[:12]}… unregistered (410) on retry — removing")
+                                        to_remove.append(entry)
+                                    else:
+                                        try:
+                                            r2 = resp2.json().get("reason", "")
+                                        except Exception:
+                                            r2 = resp2.text[:80]
+                                        if r2 == "BadDeviceToken":
+                                            # Token failed on both endpoints — it is genuinely dead.
+                                            # Remove it so the device re-registers a fresh token on
+                                            # next app launch.
+                                            monitor.log(f"[APNs] Token {token[:12]}… dead on both endpoints (BadDeviceToken) — removing")
+                                            to_remove.append(entry)
+                                        else:
+                                            monitor.log(f"[APNs] ✘ Retry {resp2.status_code} for {token[:12]}… ({flip_env}): {r2 or resp2.text[:200]}")
+                                except Exception as e2:
+                                    monitor.log(f"[APNs] Retry error for {token[:12]}…: {e2}")
+                            else:
+                                monitor.log(f"[APNs] ✘ Push 403 for {token[:12]}… ({env}): {reason or resp.text[:200]}")
+                        else:
+                            monitor.log(f"[APNs] ✘ Push {resp.status_code} for {token[:12]}… ({env}): {resp.text[:200]}")
                     except Exception as e:
-                        monitor.log(f"[APNs] Push error for {token[:12]}…: {e}")
+                        monitor.log(f"[APNs] Push error for {token[:12]}… ({env}): {e}")
         except Exception as e:
             monitor.log(f"[APNs] HTTP client error: {e}")
-        if to_remove:
-            for t in to_remove:
-                try:
-                    ma.apns_device_tokens.remove(t)
-                except ValueError:
-                    pass
+        changed = False
+        with _apns_tokens_lock:
+            if to_remove:
+                for entry in to_remove:
+                    try:
+                        ma.apns_device_tokens.remove(entry)
+                        changed = True
+                    except ValueError:
+                        pass
+            if to_flip:
+                for entry, correct_sb in to_flip:
+                    tok = _apns_token_str(entry)
+                    ma.apns_device_tokens = [
+                        {"token": tok, "sandbox": correct_sb} if _apns_token_str(e) == tok else e
+                        for e in ma.apns_device_tokens
+                    ]
+                    changed = True
+        if changed:
             save_config(monitor.app_cfg)
 
     threading.Thread(target=_push_thread, daemon=True).start()
@@ -2837,7 +3188,8 @@ def _ensure_alert_buffer_capacity(cfg: InputConfig, seconds: Optional[float] = N
         cfg._audio_buffer = collections.deque(list(cur)[-maxlen:], maxlen=maxlen)
 
 
-def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0) -> Optional[str]:
+def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
+                    _skip_hub_queue: bool = False) -> Optional[str]:
     # Prune old clips before saving a new one
     threading.Thread(target=_clip_cleanup, args=(cfg.name,), daemon=True).start()
     out = os.path.join(BASE_DIR, "alert_snippets", _safe_name(cfg.name))
@@ -2855,10 +3207,20 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0) -> Opti
         with wave.open(path, "wb") as wf:
             wf.setnchannels(1); wf.setsampwidth(2)
             wf.setframerate(SAMPLE_RATE); wf.writeframes(pcm.tobytes())
-        return path
     except Exception as e:
         print(f"[WARN] Could not save alert WAV: {e}")
         return None
+    # Auto-queue for hub upload unless the caller (e.g. _cmd_save_clip) will
+    # handle the upload itself to avoid sending the same clip twice.
+    if not _skip_hub_queue:
+        try:
+            _hub_cfg = getattr(getattr(monitor, "app_cfg", None), "hub", None)
+            if _hub_cfg and getattr(_hub_cfg, "hub_url", ""):
+                monitor._hub_clip_queue.put_nowait(
+                    (cfg.name, label, path, round(cfg._last_level_dbfs, 1)))
+        except Exception:
+            pass
+    return path
 
 # ─── Feature extraction ───────────────────────────────────────────────────────
 
@@ -3038,6 +3400,115 @@ def _classify(feats: np.ndarray, recon: np.ndarray) -> str:
     if diff[2] > 0.25:                          return "dynamic range anomaly"
     return "audio characteristic change"       # vague by design — not "anomaly"
 
+
+def _flush_clean_buffer(stream_name: str, samples: list):
+    """Save the rolling clean-sample buffer to disk as a numpy array.
+    Called in a daemon thread — never blocks the inference path.
+    """
+    try:
+        arr = np.array(samples[-AI_CLEAN_BUFFER_MAX:], dtype=np.float32)
+        np.save(_clean_buffer_path(stream_name), arr)
+    except Exception:
+        pass
+
+
+def _retrain_model(stream_name: str, clean_samples: np.ndarray):
+    """Retrain the autoencoder on the full knowledge base.
+
+    Training corpus = original 24 h samples (preserved on disk) PLUS the
+    updated rolling clean buffer (which now includes labeled false-alarm clips).
+    This ensures the model never forgets what it learned during the initial
+    24 h phase — feedback only *adds* knowledge, never replaces it.
+
+    Called in a daemon thread after sufficient user feedback has accumulated.
+    On success:
+      - Overwrites ai_models/<stream>.onnx and <stream>_stats.json with new weights
+      - Hot-swaps the live InferenceSession in the running InputConfig
+      - Resets the threshold bias to 0 (model now knows this audio is normal)
+      - Logs progress through monitor.log if available
+    """
+    def _log(m):
+        if monitor:
+            try: monitor.log(m)
+            except Exception: print(m)
+        else:
+            print(m)
+
+    # ── Combine initial 24 h corpus + new clean/labeled samples ───────────────
+    _initial_path = _initial_samples_path(stream_name)
+    _initial: np.ndarray = np.empty((0, AI_FEATURE_DIM), dtype=np.float32)
+    if os.path.exists(_initial_path):
+        try:
+            _initial = np.load(_initial_path)
+            _log(f"[AI:{stream_name}] Loaded {len(_initial)} original training samples from disk")
+        except Exception as _e:
+            _log(f"[AI:{stream_name}] Warning: could not load initial corpus ({_e}) — "
+                 f"retraining on clean buffer only")
+
+    if len(_initial) > 0:
+        all_samples = np.vstack([_initial, clean_samples])
+    else:
+        all_samples = clean_samples
+
+    # Shuffle so the Adam optimiser doesn't see old vs new samples in blocks
+    rng = np.random.default_rng()
+    rng.shuffle(all_samples)
+
+    _log(f"[AI:{stream_name}] ▶ Retraining on {len(all_samples)} samples total "
+         f"({len(_initial)} original + {len(clean_samples)} new clean/labeled)…")
+    try:
+        W1, b1, W2, b2 = _train_autoencoder(all_samples, _log)
+        onnx_bytes = _build_onnx(W1, b1, W2, b2)
+        mp = _model_path(stream_name)
+        with open(mp, "wb") as f:
+            f.write(onnx_bytes)
+        ort  = _try_import("onnxruntime")
+        sess = ort.InferenceSession(mp)
+        # Compute baseline stats from the full combined corpus so the z-score
+        # distribution correctly reflects everything the model was trained on.
+        errs = [_recon_error(sess, s) for s in all_samples]
+        mean_e = float(np.mean(errs))
+        std_e  = max(float(np.std(errs)), 1e-6)
+        with open(_stats_path(stream_name), "w") as f:
+            json.dump({"mean": mean_e, "std": std_e, "n": len(all_samples)}, f)
+
+        # Hot-swap live session and stats
+        if monitor:
+            for inp in monitor.app_cfg.inputs:
+                if inp.name == stream_name:
+                    inp._ai_session    = sess
+                    inp._ai_error_mean = mean_e
+                    inp._ai_error_std  = std_e
+                    if hasattr(inp, '_ai_error_var'):
+                        inp._ai_error_var = std_e ** 2
+                    # Model now knows this audio is normal — threshold bias resets to 0
+                    inp._ai_threshold_bias = 0.0
+                    inp._ai_status = (f"Retrained ({len(all_samples)} samples) — monitoring"
+                                      f" · baseline {mean_e:.5f} ± {std_e:.5f}")
+                    break
+
+        # Persist updated feedback state: bias reset, retrain count bumped
+        fp = _feedback_path(stream_name)
+        try:
+            with open(fp) as f: fb = json.load(f)
+        except Exception:
+            fb = {}
+        fb["threshold_bias"]           = 0.0
+        fb["false_alarms_since_retrain"] = 0
+        fb["last_retrain"]             = time.time()
+        fb["retrain_sample_count"]     = len(all_samples)
+        fb["retrain_count"]            = fb.get("retrain_count", 0) + 1
+        try:
+            with open(fp, "w") as f: json.dump(fb, f)
+        except Exception:
+            pass
+
+        _log(f"[AI:{stream_name}] ✓ Retrain complete. New baseline {mean_e:.5f} ± {std_e:.5f}  "
+             f"(retrain #{fb['retrain_count']})")
+    except Exception as e:
+        _log(f"[AI:{stream_name}] Retrain failed: {e}")
+
+
 # ─── Per-stream AI lifecycle ──────────────────────────────────────────────────
 
 class StreamAI:
@@ -3053,8 +3524,15 @@ class StreamAI:
             self.cfg._ai_session = ort.InferenceSession(mp)
             with open(sp) as f: st=json.load(f)
             self.cfg._ai_error_mean=st["mean"]; self.cfg._ai_error_std=st["std"]
+            # Load per-stream feedback bias so it persists across restarts
+            fp = _feedback_path(self.cfg.name)
+            try:
+                with open(fp) as f: fb=json.load(f)
+                self.cfg._ai_threshold_bias = float(fb.get("threshold_bias", 0.0))
+            except Exception:
+                self.cfg._ai_threshold_bias = 0.0
             self.cfg._ai_phase="ready"; self.cfg._ai_status="Model loaded — monitoring"
-            self.log(f"[AI:{self.cfg.name}] Loaded existing model.")
+            self.log(f"[AI:{self.cfg.name}] Loaded existing model. Threshold bias={self.cfg._ai_threshold_bias:+.2f}σ")
             return True
         except Exception as e:
             self.log(f"[AI:{self.cfg.name}] Load failed: {e}"); return False
@@ -3111,6 +3589,26 @@ class StreamAI:
             self.cfg._ai_error_std=std_e; self.cfg._ai_phase="ready"
             self.cfg._ai_status="Model trained — monitoring"
             self.log(f"[AI:{self.cfg.name}] Ready. Baseline {mean_e:.5f} ± {std_e:.5f}")
+
+            # ── Persist the full 24 h corpus so future feedback-retrains can
+            # build on top of it rather than starting from a tiny clean buffer.
+            # Written in a background thread so it never delays model activation.
+            _isp = _initial_samples_path(self.cfg.name)
+            if not os.path.exists(_isp):
+                # Only write once — if the file already exists (e.g. after a
+                # manual retrain triggered a new learning phase) keep the
+                # original so history is never lost.
+                _save_samples = samples[:AI_INITIAL_SAMPLES_MAX]
+                _name_snap    = self.cfg.name
+                def _persist():
+                    try:
+                        np.save(_isp, _save_samples)
+                        self.log(f"[AI:{_name_snap}] Initial corpus saved "
+                                 f"({len(_save_samples)} samples → {os.path.basename(_isp)})")
+                    except Exception as _e:
+                        self.log(f"[AI:{_name_snap}] Warning: could not save initial corpus: {_e}")
+                threading.Thread(target=_persist, daemon=True,
+                                 name=f"AIInitSave-{self.cfg.name}").start()
         except Exception as e:
             self.cfg._ai_status=f"Training failed: {e}"
             self.log(f"[AI:{self.cfg.name}] Training error: {e}")
@@ -3128,10 +3626,16 @@ class StreamAI:
         if not hasattr(cfg, '_ai_consec_warn'):  cfg._ai_consec_warn  = 0
         if not hasattr(cfg, '_ai_consec_alert'): cfg._ai_consec_alert = 0
 
-        if z >= ANOMALY_ALERT_THRESHOLD:
+        # Per-stream sensitivity bias: raised when user labels alerts as false alarms,
+        # lowered slightly when confirmed as real faults.
+        _bias = getattr(cfg, '_ai_threshold_bias', 0.0)
+        _eff_warn  = ANOMALY_WARN_THRESHOLD  + _bias
+        _eff_alert = ANOMALY_ALERT_THRESHOLD + _bias
+
+        if z >= _eff_alert:
             cfg._ai_consec_alert += 1
             cfg._ai_consec_warn  += 1
-        elif z >= ANOMALY_WARN_THRESHOLD:
+        elif z >= _eff_warn:
             cfg._ai_consec_alert  = 0
             cfg._ai_consec_warn  += 1
         else:
@@ -3147,7 +3651,8 @@ class StreamAI:
         else:
             status = "OK"; reason = ""
 
-        cfg._ai_status = f"[{status}] z={z:.1f}{' — '+reason if reason else ''}"
+        _bias_tag = f" bias={_bias:+.2f}σ" if _bias else ""
+        cfg._ai_status = f"[{status}] z={z:.1f}{_bias_tag}{' — '+reason if reason else ''}"
 
         if status in ("ALERT", "WARN"):
             # Only fire once per sustained event, not every window
@@ -3173,6 +3678,26 @@ class StreamAI:
             if not hasattr(cfg, '_ai_error_var'): cfg._ai_error_var = cfg._ai_error_std**2
             cfg._ai_error_var = (1-alpha) * cfg._ai_error_var + alpha * (err - cfg._ai_error_mean)**2
             cfg._ai_error_std = max(float(np.sqrt(cfg._ai_error_var)), 1e-6)
+
+            # ── Accumulate clean-window features for future retraining ───────
+            # Only collect windows that are confidently normal (z < 1.0) so
+            # edge-case near-threshold audio never pollutes the clean buffer.
+            if z < 1.0:
+                if not hasattr(cfg, '_ai_clean_buf'):     cfg._ai_clean_buf     = []
+                if not hasattr(cfg, '_ai_clean_buf_new'): cfg._ai_clean_buf_new = 0
+                cfg._ai_clean_buf.append(feats)
+                cfg._ai_clean_buf_new += 1
+                # Trim in-memory buffer to max size (keep newest)
+                if len(cfg._ai_clean_buf) > AI_CLEAN_BUFFER_MAX:
+                    cfg._ai_clean_buf = cfg._ai_clean_buf[-AI_CLEAN_BUFFER_MAX:]
+                # Flush to disk periodically (daemon thread, no impact on timing)
+                if cfg._ai_clean_buf_new >= AI_CLEAN_BUFFER_FLUSH:
+                    cfg._ai_clean_buf_new = 0
+                    threading.Thread(
+                        target=_flush_clean_buffer,
+                        args=(cfg.name, list(cfg._ai_clean_buf)),
+                        daemon=True, name="CleanBufFlush",
+                    ).start()
 
 # ─── Alerting ─────────────────────────────────────────────────────────────────
 
@@ -4309,6 +4834,10 @@ class MonitorManager:
         self._hub_client: Optional[HubClient]=None
         self._dab_sessions: Dict[tuple, DabSharedSession]={}
         self._dab_sessions_lock=threading.Lock()
+        # Queue of (stream_name, label, clip_path, level_dbfs) tuples waiting
+        # to be uploaded to the hub.  Drained by HubClient._loop() after each
+        # successful heartbeat so clips reach the hub within one heartbeat cycle.
+        self._hub_clip_queue: queue.Queue = queue.Queue(maxsize=500)
 
     def log(self,msg):
         line=f"[{time.strftime('%H:%M:%S')}] {msg}"
@@ -4418,6 +4947,13 @@ class MonitorManager:
             self._threads.clear(); self._stop_flags.clear()
             self._comparators.clear()
             self._running=False; self.log("[Monitor] Stopped.")
+            # Reset per-input metrics so the hub heartbeat immediately reports
+            # silence/down for all streams rather than keeping stale healthy levels.
+            for _inp in self.app_cfg.inputs:
+                _inp._last_level_dbfs = -120.0
+                _inp._silence_secs    = 0.0
+                _inp._dab_ok          = False
+                _inp._rtp_loss_pct    = 0.0
 
     def request_retrain(self, name: str):
         for inp in self.app_cfg.inputs:
@@ -7242,7 +7778,7 @@ class HubClient:
             return
         msg = (f"Audio clip captured at '{stream}' during chain fault"
                f"{(' in ' + repr(chain_name)) if chain_name else ''}.")
-        clip_path = _save_alert_wav(inp, label, inp.alert_wav_duration)
+        clip_path = _save_alert_wav(inp, label, inp.alert_wav_duration, _skip_hub_queue=True)
         _add_history(inp, "CHAIN_FAULT", msg, clip_path=clip_path or "")
         monitor.log(f"[Hub] save_clip: saved '{label}' for '{stream}'"
                     + (f" ({os.path.basename(clip_path)})" if clip_path else " (no clip data)"))
@@ -7257,7 +7793,8 @@ class HubClient:
             ).start()
 
     def _upload_clip(self, hub_url: str, secret: str, site: str,
-                     stream: str, label: str, chain_name: str, clip_path: str):
+                     stream: str, label: str, chain_name: str, clip_path: str,
+                     level_dbfs: float = -120.0):
         """Upload a saved clip WAV to the hub's /hub/clip_upload endpoint."""
         try:
             with open(clip_path, "rb") as f:
@@ -7265,6 +7802,7 @@ class HubClient:
             payload_dict = {
                 "site": site, "stream": stream, "label": label,
                 "chain_name": chain_name, "ts": time.time(), "data_b64": data_b64,
+                "level_dbfs": level_dbfs,
             }
             payload_bytes = json.dumps(payload_dict).encode()
             ts  = time.time()
@@ -7345,6 +7883,22 @@ class HubClient:
             time.sleep(1.0)
             os.execv(sys.executable, [sys.executable] + sys.argv)
         threading.Thread(target=_do_restart, daemon=True, name="RemoteRestart").start()
+
+    def _cmd_ai_feedback(self, payload: dict):
+        """Apply an AI feedback label pushed from the hub.
+
+        The hub collected the user's 👍/👎 vote and forwards it here so the
+        local model can learn from it — identical to clicking the button on the
+        client's own reports page.
+        """
+        alert_id = str(payload.get("alert_id", "")).strip()
+        stream   = str(payload.get("stream",   "")).strip()
+        feedback = str(payload.get("feedback", "")).strip()
+        if not (alert_id and stream and feedback in ("normal", "abnormal")):
+            monitor.log(f"[Hub] ai_feedback: invalid payload {payload}")
+            return
+        monitor.log(f"[Hub] AI feedback '{feedback}' for alert {alert_id[:8]}… on '{stream}'")
+        _apply_feedback_label(alert_id, stream, feedback, by="hub")
 
     def _cmd_retrain_stream(self, payload: dict):
         stream = str(payload.get("stream", "")).strip()
@@ -8027,6 +8581,8 @@ class HubClient:
                         self._cmd_self_update(cmd_payload)
                     elif cmd_type == "restart":
                         self._cmd_restart(cmd_payload)
+                    elif cmd_type == "ai_feedback":
+                        self._cmd_ai_feedback(cmd_payload)
                     elif cmd_type == "retrain_stream":
                         self._cmd_retrain_stream(cmd_payload)
                     elif cmd_type == "calibrate_silence":
@@ -8035,6 +8591,25 @@ class HubClient:
                         self._cmd_backup(cmd_payload)
                     elif cmd_type == "ping_test":
                         self._cmd_ping_test(cmd_payload)
+                # Drain auto-clip-upload queue — any clips saved since the last
+                # heartbeat are uploaded to the hub now so they can be played
+                # locally from the hub's reports page without streaming.
+                _cq = getattr(monitor, "_hub_clip_queue", None)
+                if _cq and cfg.hub.hub_url:
+                    _hub_url_str = cfg.hub.hub_url.rstrip("/")
+                    _secret      = cfg.hub.secret_key
+                    _site        = (cfg.hub.site_name or socket.gethostname()).strip()
+                    while True:
+                        try:
+                            _sn, _lbl, _cpath, _lev = _cq.get_nowait()
+                            threading.Thread(
+                                target=self._upload_clip,
+                                args=(_hub_url_str, _secret, _site, _sn, _lbl, "", _cpath),
+                                kwargs={"level_dbfs": _lev},
+                                daemon=True, name="AutoClipUpload",
+                            ).start()
+                        except queue.Empty:
+                            break
             else:
                 self.fail_total += 1
                 self._backoff    = min(self._backoff + 1, 10)
@@ -8832,16 +9407,40 @@ class HubServer:
                     curr   = result["status"]   # "ok" | "fault" | "unknown"
                     min_fault_secs = max(0, int(chain.get("min_fault_seconds", 0) or 0))
 
-                    # Check whether the configured ad mix-in point is also silent.
-                    # If it is, we know this can't be an ad break (ads would keep it
-                    # alive) — skip the confirmation timer and alert immediately.
+                    # Work out whether the confirmation window should apply.
+                    #
+                    # The delay only makes sense for nodes BEFORE the mix-in point
+                    # (where silence could legitimately be an ad break). Faults AT or
+                    # AFTER the mixin point mean the processed/TX output is silent —
+                    # that is always a real fault and must alert immediately.
+                    #
+                    # Additionally bypass if the mixin node itself is down (no ads
+                    # can fill silence if the mixin feed is also dead).
                     mixin_idx = chain.get("mixin_node_idx")
+                    fault_idx  = result.get("fault_index")
                     mixin_is_down = False
+                    fault_is_post_mixin = False
+                    any_post_mixin_fault = False   # True if ANY node >= mixin_idx is faulted
                     if mixin_idx is not None:
                         _eval_nodes = result.get("nodes", [])
                         if 0 <= int(mixin_idx) < len(_eval_nodes):
                             mixin_is_down = _eval_nodes[int(mixin_idx)].get("status") in (
                                 "down", "offline")
+                        if fault_idx is not None and int(fault_idx) >= int(mixin_idx):
+                            fault_is_post_mixin = True
+                        # Scan ALL nodes at or after the mix-in point for a fault.
+                        # The primary fault_idx may still point to a pre-mixin node when
+                        # both a pre-mixin and a post-mixin node are faulted simultaneously
+                        # (eval_chain returns the *first* fault).  A post-mixin fault must
+                        # always bypass the confirmation window regardless.
+                        for _pi, _pn in enumerate(_eval_nodes):
+                            if _pi >= int(mixin_idx):
+                                _ps = _pn.get("status")
+                                if _ps == "down" or (
+                                        _ps == "offline"
+                                        and not _pn.get("offline_grace_active", False)):
+                                    any_post_mixin_fault = True
+                                    break
 
                     if not _warmed_up:
                         # Seed state silently so pre-existing faults don't re-fire.
@@ -8865,9 +9464,9 @@ class HubServer:
                             self._chain_fault_state[cid] = "pending"
                             self._chain_fault_since[cid] = now
                             self._set_pending_fault_meta(cid, result.get("fault_index"), result.get("adbreak_candidate", False))
-                        elif curr == "fault" and min_fault_secs > 0:
-                            # Confirmation delay configured — show amber on startup,
-                            # fire alert on first real eval if still faulted.
+                        elif curr == "fault" and min_fault_secs > 0 and not fault_is_post_mixin:
+                            # Confirmation delay applies (pre-mixin fault only) — show
+                            # amber on startup, fire on first real eval if still faulted.
                             self._chain_fault_state[cid] = "pending"
                             self._chain_fault_since[cid] = now - min_fault_secs
                             self._set_pending_fault_meta(cid, result.get("fault_index"), result.get("adbreak_candidate", False))
@@ -8883,12 +9482,21 @@ class HubServer:
                     # ── Fault detection ──────────────────────────────────────
                     if curr == "fault":
                         if prev == "ok":
-                            if min_fault_secs == 0 or mixin_is_down:
-                                # Alert immediately — no delay, or mix-in is also down
-                                if mixin_is_down and min_fault_secs > 0:
+                            if min_fault_secs == 0 or mixin_is_down or fault_is_post_mixin or any_post_mixin_fault:
+                                # Alert immediately:
+                                #  - no confirmation delay configured, OR
+                                #  - mix-in point itself is also silent (can't be an ad break), OR
+                                #  - fault is at/after the mix-in point, OR
+                                #  - any node at/after the mix-in point is faulted (even if
+                                #    the primary fault_idx is pre-mixin)
+                                if min_fault_secs > 0 and mixin_is_down:
                                     monitor.log(
                                         f"[Chain] '{result['name']}' — mix-in point also silent, "
                                         f"bypassing {min_fault_secs}s confirmation window.")
+                                elif min_fault_secs > 0 and (fault_is_post_mixin or any_post_mixin_fault):
+                                    monitor.log(
+                                        f"[Chain] '{result['name']}' — post mix-in node faulted "
+                                        f"(node {fault_idx}), bypassing {min_fault_secs}s confirmation window.")
                                 self._chain_fault_state[cid] = "alerted"
                                 self._chain_fault_since.pop(cid, None)
                                 # Track flap events
@@ -8938,11 +9546,20 @@ class HubServer:
                                     f"applying {round(_grace)}s grace window.")
                             elapsed = now - self._chain_fault_since.get(cid, now)
                             pending_adbreak = bool(pending_meta.get("adbreak_candidate", False))
-                            effective_mixin_is_down = mixin_is_down and not pending_adbreak
-                            if elapsed >= min_fault_secs or effective_mixin_is_down:
-                                # Confirmation window elapsed, or mix-in just went silent
+                            # mixin_is_down and post-mixin faults always bypass regardless of
+                            # whether the pending window started as an adbreak candidate —
+                            # a post-mixin fault is never an ad break, and if the mix-in
+                            # node itself is silent there can be no ad fill.
+                            effective_mixin_is_down = mixin_is_down
+                            effective_post_mixin = fault_is_post_mixin or any_post_mixin_fault
+                            if elapsed >= min_fault_secs or effective_mixin_is_down or effective_post_mixin:
+                                # Confirmation window elapsed, or a bypass condition is met
                                 reason = ("mix-in point also silent"
                                           if effective_mixin_is_down and elapsed < min_fault_secs
+                                          else "post mix-in node faulted during ad break window"
+                                          if effective_post_mixin and pending_adbreak and elapsed < min_fault_secs
+                                          else "fault shifted to post mix-in node"
+                                          if effective_post_mixin and elapsed < min_fault_secs
                                           else f"{round(elapsed)}s elapsed")
                                 monitor.log(
                                     f"[Chain] '{result['name']}' fault confirmed ({reason}).")
@@ -9016,6 +9633,11 @@ class HubServer:
                                     monitor.log(f"[Chain] {rec_msg}")
                                 except Exception as e:
                                     monitor.log(f"[Chain] Recovery notification error: {e}")
+                                _send_apns_push(
+                                    title=f"✅ Recovered: {result['name']}",
+                                    body=rec_msg[:180],
+                                    data={"chain_id": cid, "event": "recovered"},
+                                )
                             self._chain_fault_state[cid] = "ok"
                         elif prev == "pending":
                             # Fault resolved within confirmation window (e.g. ad break ended)
@@ -10969,6 +11591,13 @@ tr:hover td{background:#123764}
 audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 .clip-btn{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:5px;background:#1e3a5f;color:var(--acc);font-size:11px;cursor:pointer;border:none}
 .no-data{text-align:center;padding:48px;color:var(--mu)}
+.fb-wrap{display:flex;gap:4px;align-items:center;margin-top:5px;flex-wrap:wrap}
+.fb-btn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:5px;font-size:13px;cursor:pointer;border:1px solid var(--bor);background:var(--sur);transition:background .12s,border-color .12s;line-height:1;padding:0}
+.fb-btn:hover{filter:brightness(1.3)}
+.fb-btn.fb-ok{background:#14532d;border-color:#22c55e}
+.fb-btn.fb-bad{background:#450a0a;border-color:#ef4444}
+.fb-lbl{font-size:10px;color:var(--mu)}
+.fb-lbl.fb-lbl-ok{color:var(--ok)}.fb-lbl.fb-lbl-bad{color:var(--al)}
 .page-info{color:var(--mu);font-size:12px;margin-left:auto}
 .tab-bar{display:flex;gap:0;margin:0 0 0 0}
 .tab-btn{padding:6px 16px;border-radius:8px 8px 0 0;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;background:transparent;color:var(--mu);transition:background .12s,color .12s}
@@ -11043,7 +11672,7 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
     {% set tl = e.type.lower() %}
     {% set tc = 't-silence' if tl=='silence' else ('t-clip' if tl=='clip' else ('t-hiss' if tl=='hiss' else ('t-rtp' if 'rtp' in tl else ('t-ai_alert' if tl=='ai_alert' else ('t-ai_warn' if tl=='ai_warn' else ('t-ptp' if 'ptp' in tl else ('t-cmp' if 'cmp' in tl else 't-other'))))))) %}
     {% set _is_log = e.type in ('DAB_AVAILABLE','DAB_UNAVAILABLE') %}
-    <tr data-stream="{{e.stream}}" data-type="{{e.type}}" data-ts="{{e.ts}}" data-clip="{{e.clip}}" data-category="{{'log' if _is_log else 'alert'}}">
+    <tr data-id="{{e.id}}" data-stream="{{e.stream}}" data-type="{{e.type}}" data-ts="{{e.ts}}" data-clip="{{e.clip}}" data-category="{{'log' if _is_log else 'alert'}}">
       <td style="color:var(--mu);font-size:12px;white-space:nowrap">{{e.ts}}</td>
       <td><strong>{{e.stream}}</strong></td>
       <td><span class="type-badge {{tc}}">{{e.type}}</span></td>
@@ -11074,6 +11703,15 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
         {% if e.clip %}
         <audio controls preload="none" src="/clips/{{e.stream}}/{{e.clip}}"></audio>
         {% else %}<span style="color:var(--mu);font-size:11px">—</span>{% endif %}
+        {% if e.type in ('AI_ALERT','AI_WARN') %}
+        <div class="fb-wrap">
+          <button class="fb-btn{{' fb-ok' if e.feedback=='normal' else ''}}" data-fb-id="{{e.id}}" data-fb-stream="{{e.stream}}" data-fb-val="normal" title="False alarm — normal audio, raise sensitivity threshold">👍</button>
+          <button class="fb-btn{{' fb-bad' if e.feedback=='abnormal' else ''}}" data-fb-id="{{e.id}}" data-fb-stream="{{e.stream}}" data-fb-val="abnormal" title="Confirmed real fault — keeps threshold as-is">👎</button>
+          {% if e.feedback == 'normal' %}<span class="fb-lbl fb-lbl-ok">False alarm</span>
+          {% elif e.feedback == 'abnormal' %}<span class="fb-lbl fb-lbl-bad">Confirmed</span>
+          {% else %}<span class="fb-lbl">AI feedback</span>{% endif %}
+        </div>
+        {% endif %}
       </td>
     </tr>
     {% else %}
@@ -11169,8 +11807,20 @@ function rowHTML(e){
   if(e.clip){
     clip='<audio controls preload="none" src="/clips/'+encodeURIComponent(e.stream)+'/'+e.clip+'" style="height:28px;width:200px;accent-color:var(--acc);vertical-align:middle"></audio>';
   }
+  // AI feedback thumbs — only shown on AI_ALERT / AI_WARN rows
+  var fbHtml='';
+  if(tl==='ai_alert'||tl==='ai_warn'){
+    var fbNorm=e.feedback==='normal', fbBad=e.feedback==='abnormal';
+    var fbLbl=fbNorm?'<span class="fb-lbl fb-lbl-ok">False alarm</span>':
+              fbBad?'<span class="fb-lbl fb-lbl-bad">Confirmed</span>':
+              '<span class="fb-lbl">AI feedback</span>';
+    fbHtml='<div class="fb-wrap">'
+      +'<button class="fb-btn'+(fbNorm?' fb-ok':'')+'" data-fb-id="'+escAttr(e.id||'')+'" data-fb-stream="'+escAttr(e.stream||'')+'" data-fb-val="normal" title="False alarm — normal audio, raise sensitivity threshold">👍</button>'
+      +'<button class="fb-btn'+(fbBad?' fb-bad':'')+'" data-fb-id="'+escAttr(e.id||'')+'" data-fb-stream="'+escAttr(e.stream||'')+'" data-fb-val="abnormal" title="Confirmed real fault — keeps threshold as-is">👎</button>'
+      +fbLbl+'</div>';
+  }
   var cat=LOG_TYPES[e.type||'']?'log':'alert';
-  return '<tr data-stream="'+escAttr(e.stream)+'" data-type="'+escAttr(e.type)+'" data-ts="'+escAttr(e.ts||'')+'" data-clip="'+escAttr(e.clip||'')+'" data-category="'+cat+'">'
+  return '<tr data-id="'+escAttr(e.id||'')+'" data-stream="'+escAttr(e.stream)+'" data-type="'+escAttr(e.type)+'" data-ts="'+escAttr(e.ts||'')+'" data-clip="'+escAttr(e.clip||'')+'" data-category="'+cat+'">'
     +'<td style="color:var(--mu);font-size:12px;white-space:nowrap">'+escHTML(e.ts||'')+'</td>'
     +'<td><strong>'+escHTML(e.stream||'')+'</strong></td>'
     +'<td><span class="type-badge '+tc+'">'+escHTML(e.type||'')+'</span></td>'
@@ -11178,11 +11828,51 @@ function rowHTML(e){
     +'<td>'+lvl+'</td>'
     +'<td>'+rtp+'</td>'
     +'<td>'+ptp+'</td>'
-    +'<td>'+clip+'</td>'
+    +'<td>'+clip+fbHtml+'</td>'
     +'</tr>';
 }
 function escHTML(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function escAttr(s){return String(s).replace(/"/g,'&quot;');}
+
+// ── AI feedback ────────────────────────────────────────────────────────────
+function sendFeedback(btn){
+  var id=btn.dataset.fbId, stream=btn.dataset.fbStream, val=btn.dataset.fbVal;
+  if(!id||!stream||!val) return;
+  var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  btn.disabled=true;
+  fetch('/api/alerts/'+encodeURIComponent(id)+'/feedback',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},
+    body:JSON.stringify({feedback:val,stream:stream})
+  }).then(function(r){return r.json();}).then(function(d){
+    btn.disabled=false;
+    if(!d.ok) return;
+    var wrap=btn.closest('.fb-wrap');
+    if(!wrap) return;
+    // Update button highlights
+    wrap.querySelectorAll('.fb-btn').forEach(function(b){
+      b.classList.remove('fb-ok','fb-bad');
+    });
+    btn.classList.add(val==='normal'?'fb-ok':'fb-bad');
+    // Update label
+    var lbl=wrap.querySelector('.fb-lbl');
+    if(!lbl){lbl=document.createElement('span');lbl.className='fb-lbl';wrap.appendChild(lbl);}
+    if(val==='normal'){lbl.textContent='False alarm';lbl.className='fb-lbl fb-lbl-ok';}
+    else{lbl.textContent='Confirmed';lbl.className='fb-lbl fb-lbl-bad';}
+    // Show updated bias as a small tooltip on the row's type badge if bias changed
+    if(d.threshold_bias){
+      var row=btn.closest('tr');
+      if(row){
+        var badge=row.querySelector('.type-badge');
+        if(badge) badge.title='Threshold bias: '+d.threshold_bias.toFixed(2)+'\u03c3 | Normal labels: '+d.normal_count+' | Fault labels: '+d.abnormal_count;
+      }
+    }
+  }).catch(function(){btn.disabled=false;});
+}
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.fb-btn[data-fb-id]');
+  if(btn) sendFeedback(btn);
+});
 
 function refreshReports(){
   fetch('/reports/data').then(function(r){return r.json();}).then(function(d){
@@ -11205,12 +11895,13 @@ function refreshReports(){
     var body=document.getElementById('evt_body');
     if(!body) return;
     var existing=new Set();
-    body.querySelectorAll('tr[data-stream]').forEach(function(r){
-      existing.add((r.dataset.ts||'')+'|'+(r.dataset.stream||'')+'|'+(r.dataset.type||''));
+    body.querySelectorAll('tr[data-id]').forEach(function(r){
+      if(r.dataset.id) existing.add(r.dataset.id);
+      else existing.add((r.dataset.ts||'')+'|'+(r.dataset.stream||'')+'|'+(r.dataset.type||''));
     });
     var newRows=[];
     (d.events||[]).forEach(function(e){
-      var key=(e.ts||'')+'|'+(e.stream||'')+'|'+(e.type||'');
+      var key=e.id||(e.ts||'')+'|'+(e.stream||'')+'|'+(e.type||'');
       if(!existing.has(key)) newRows.push(e);
     });
     if(newRows.length===0) return;  // nothing changed — don't touch the DOM at all
@@ -11432,6 +12123,9 @@ code{background:#173a69;padding:1px 7px;border-radius:4px;font-family:monospace;
 <div class="pn" id="pn-1">
   <h2>Dependencies</h2>
   <div class="sub-h">Checking what's installed. Core dependencies are required; SDR and HTTPS tools are optional.</div>
+  <div class="ok-box" style="margin-bottom:16px">
+    ✅ <b>Used the install script?</b> All core dependencies were installed automatically — this step is for verification only. You can proceed straight to Next.
+  </div>
 
   <div id="dep-list">
     <div class="check-row"><span class="check-icon">⏳</span><div class="check-label"><div class="check-name">Checking…</div></div></div>
@@ -11658,7 +12352,7 @@ kill %1<button class="copy-btn" onclick="copyCmd(this)">Copy</button></div>
   <form method="post" action="/setup/complete">
     <input type="hidden" name="_csrf_token" value="{{csrf_token()}}">
     <div class="act">
-      <button class="btn bp" type="submit" style="font-size:15px;padding:10px 24px">Go to Dashboard →</button>
+      <button class="btn bp" type="submit" style="font-size:15px;padding:10px 24px">Set Password &amp; Finish →</button>
     </div>
   </form>
 </div>
@@ -12612,6 +13306,80 @@ def alert_ack(alert_id: str):
     return jsonify({"ok": True, "ack": ack})
 
 
+@app.post("/hub/api/alerts/<alert_id>/feedback")
+@login_required
+@csrf_protect
+def hub_alert_feedback_ep(alert_id: str):
+    """Hub-side feedback endpoint.
+
+    Stores the label locally (so the hub reports page shows it immediately) and
+    forwards it to the client as an 'ai_feedback' command so the actual model
+    on that client gets retrained.
+
+    Body JSON: {"feedback": "normal"|"abnormal", "stream": "...", "site": "..."}
+    """
+    from flask import session as _session
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"ok": False, "error": "not a hub"}), 403
+
+    user     = _session.get("user", "admin")
+    data     = request.json or {}
+    fb       = data.get("feedback", "")
+    stream   = data.get("stream", "")
+    site     = data.get("site", "")
+    if fb not in ("normal", "abnormal"):
+        return jsonify({"ok": False, "error": "feedback must be 'normal' or 'abnormal'"}), 400
+
+    # 1. Store locally on hub so the hub reports page reflects it immediately
+    fb_map = _load_alert_feedback()
+    fb_map[alert_id] = {"feedback": fb, "by": f"hub:{user}", "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
+    try:
+        _save_alert_feedback_map(fb_map)
+    except Exception:
+        pass
+
+    # 2. Push the command to the relevant client so its model actually retrains
+    if site and hub_server:
+        try:
+            hub_server.push_pending_command(site, {
+                "type":    "ai_feedback",
+                "payload": {"alert_id": alert_id, "stream": stream, "feedback": fb},
+            })
+        except Exception as _e:
+            return jsonify({"ok": True, "warning": f"Label saved but could not queue command: {_e}",
+                            "feedback": fb})
+
+    return jsonify({"ok": True, "feedback": fb, "site": site, "stream": stream})
+
+
+@app.post("/api/alerts/<alert_id>/feedback")
+@login_required
+@csrf_protect
+def alert_feedback_ep(alert_id: str):
+    """Record user feedback on an AI alert and adapt per-stream sensitivity.
+
+    Body JSON: {"feedback": "normal"|"abnormal", "stream": "<stream name>"}
+    "normal"   = false alarm — threshold is raised so similar audio won't re-trigger.
+    "abnormal" = confirmed real fault — small threshold nudge back down.
+    """
+    from flask import session as _session
+    user  = _session.get("user", "admin")
+    data  = request.json or {}
+    fb    = data.get("feedback", "")
+    stream = data.get("stream", "")
+    if fb not in ("normal", "abnormal"):
+        return jsonify({"ok": False, "error": "feedback must be 'normal' or 'abnormal'"}), 400
+    result = _apply_feedback_label(alert_id, stream, fb, user)
+    return jsonify({
+        "ok":             True,
+        "feedback":       fb,
+        "threshold_bias": round(result.get("threshold_bias", 0.0), 2),
+        "normal_count":   result.get("normal_count",   0),
+        "abnormal_count": result.get("abnormal_count", 0),
+    })
+
+
 @app.get("/inputs")
 @login_required
 def inputs_list():
@@ -12838,13 +13606,18 @@ def settings():
         # Auth
         cfg.auth.enabled  = bool(f.get("auth_enabled"))
         cfg.auth.username = f.get("auth_username","admin").strip() or "admin"
-        new_pw = f.get("auth_password","").strip()
+        new_pw         = f.get("auth_password","").strip()
+        new_pw_confirm = f.get("auth_password_confirm","").strip()
         if new_pw:
-            if len(new_pw) < 8:
+            if new_pw != new_pw_confirm:
+                flash("Passwords do not match — password not changed.")
+                new_pw = ""
+            elif len(new_pw) < 8:
                 flash("Password must be at least 8 characters — not saved.")
-            else:
-                cfg.auth.password_hash = _hash_password(new_pw)
-                cfg.auth.first_login   = False
+                new_pw = ""
+        if new_pw:
+            cfg.auth.password_hash = _hash_password(new_pw)
+            cfg.auth.first_login   = False
         # SDR devices
         serials = f.getlist("sdr_serial")
         roles   = f.getlist("sdr_role")
@@ -12900,6 +13673,8 @@ def settings():
             cfg.mobile_api.apns_key_pem = _apns_pem
         cfg.mobile_api.apns_sandbox = bool(f.get("apns_sandbox"))
         save_config(cfg)
+        # Invalidate the JWT cache so the new credentials are used immediately
+        _apns_jwt_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
         # If hub client mode and URL are now set, start the hub heartbeat client
         # immediately without requiring the monitor loop to be running first.
         # start_hub_client() is a no-op if the client is already running.
@@ -13830,12 +14605,12 @@ def setup_wizard():
 @login_required
 @csrf_protect
 def setup_complete():
-    """Mark wizard as done and redirect to dashboard."""
+    """Mark wizard as done and redirect to the Security settings tab."""
     cfg = monitor.app_cfg
     cfg.wizard_done = True
     save_config(cfg)
-    flash("Setup complete. Welcome to SignalScope!")
-    return redirect(url_for("index"))
+    flash("Setup complete — set your login password below.")
+    return redirect("/settings#sec")
 
 
 @app.get("/api/setup/deps")
@@ -14426,7 +15201,7 @@ def api_trend(stream_name):
 @app.get("/reports")
 @login_required
 def reports():
-    events = _alert_log_load(2000)
+    events = _alert_log_load_with_feedback(2000)
     # Summary counts
     counts = {}
     for e in events:
@@ -14442,7 +15217,7 @@ def reports():
 @login_required
 def reports_data():
     """JSON endpoint for the reports page live refresh — returns events + summary counts."""
-    events = _alert_log_load(2000)
+    events = _alert_log_load_with_feedback(2000)
     counts = {}
     for e in events:
         counts[e.get("type","")] = counts.get(e.get("type",""), 0) + 1
@@ -14577,10 +15352,11 @@ def hub_heartbeat():
 
 @app.post("/hub/clip_upload")
 def hub_clip_upload():
-    """Receive a WAV clip (base64) uploaded from a client after a chain fault.
+    """Receive a WAV clip (base64) uploaded from a client.
 
-    The clip is saved into alert_snippets/<site>_<stream>/ on the hub so it
-    appears in the hub's Reports page alongside the chain fault event.
+    Clips from any alert type (silence, clipping, hiss, RTP loss, chain fault,
+    etc.) are saved into alert_snippets/<site>_<stream>/ on the hub so they can
+    be played back locally from the hub's Reports page without streaming.
     """
     cfg    = monitor.app_cfg
     secret = cfg.hub.secret_key
@@ -14616,6 +15392,8 @@ def hub_clip_upload():
     chain_name = str(data.get("chain_name", "")).strip()
     chain_id   = str(data.get("chain_id",   "")).strip()
     data_b64   = data.get("data_b64", "")
+    level_dbfs = data.get("level_dbfs", None)
+    clip_ts    = data.get("ts", time.time())   # use sender's timestamp for filename
 
     if not data_b64:
         return jsonify({"error": "no clip data"}), 400
@@ -14624,24 +15402,47 @@ def hub_clip_upload():
     except Exception:
         return jsonify({"error": "bad base64"}), 400
 
-    # Save under alert_snippets/<site>_<stream>/ on the hub
+    # Derive a human-readable alert type from the label
+    _lbl_lower = label.lower()
+    if "silence" in _lbl_lower:
+        _alert_type = "SILENCE"
+    elif "clip" in _lbl_lower and "chain" not in _lbl_lower:
+        _alert_type = "CLIP_DISTORTION"
+    elif "hiss" in _lbl_lower:
+        _alert_type = "HISS"
+    elif "rtp_loss" in _lbl_lower:
+        _alert_type = "RTP_LOSS"
+    elif "lufs_tp" in _lbl_lower:
+        _alert_type = "LUFS_TP_EXCEEDED"
+    elif "lufs_i" in _lbl_lower:
+        _alert_type = "LUFS_INTEGRATED_EXCEEDED"
+    elif "ai_" in _lbl_lower:
+        _alert_type = "AI_ANOMALY"
+    elif "compare" in _lbl_lower:
+        _alert_type = "COMPARATOR"
+    else:
+        _alert_type = "CHAIN_FAULT"
+
+    # Save under alert_snippets/<site>_<stream>/ on the hub.
+    # Use the sender's timestamp so the filename is stable across retries.
     safe_key = f"{_safe_name(site)}_{_safe_name(stream)}"
     out_dir  = os.path.join(BASE_DIR, "alert_snippets", safe_key)
     os.makedirs(out_dir, exist_ok=True)
-    fname = f"{label}_{int(time.time())}.wav"
+    fname = f"{label}_{int(clip_ts)}.wav"
     fpath = os.path.join(out_dir, fname)
-    with open(fpath, "wb") as f:
-        f.write(wav_bytes)
+    if not os.path.exists(fpath):   # idempotent — don't overwrite on retry
+        with open(fpath, "wb") as f:
+            f.write(wav_bytes)
 
     # Write to hub alert log so it appears on the Reports page
     _alert_log_append({
         "id":            str(uuid.uuid4()),
-        "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
+        "ts":            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(clip_ts)),
         "stream":        f"{site} / {stream}",
-        "type":          "CHAIN_FAULT",
+        "type":          _alert_type,
         "message":       (f"Remote clip from '{site}' — '{stream}'"
                           + (f" (chain: {chain_name})" if chain_name else "") + "."),
-        "level_dbfs":    None,
+        "level_dbfs":    level_dbfs,
         "rtp_loss_pct":  None,
         "rtp_jitter_ms": None,
         "clip":          fname,
@@ -15645,7 +16446,20 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
 
     wav_data: bytes = b""
 
-    if client_addr and not _hub_client_addr_is_private(client_addr):
+    # 0. Check local cache first — auto-downloaded clips are stored here and
+    #    can be served directly without any streaming or relay overhead.
+    _safe_key   = f"{_safe_name(site_name)}_{_safe_name(stream_name)}"
+    _local_path = os.path.realpath(
+        os.path.join(BASE_DIR, "alert_snippets", _safe_key, os.path.basename(filename)))
+    _snip_root  = os.path.realpath(os.path.join(BASE_DIR, "alert_snippets"))
+    if _local_path.startswith(_snip_root + os.sep) and os.path.isfile(_local_path):
+        try:
+            with open(_local_path, "rb") as _lf:
+                wav_data = _lf.read()
+        except Exception as _e:
+            print(f"[HubProxy] Local clip read failed, falling back: {_e}")
+
+    if not wav_data and client_addr and not _hub_client_addr_is_private(client_addr):
         url = f"{client_addr}/clips/{urllib.parse.quote(stream_name)}/{urllib.parse.quote(filename)}"
         try:
             with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as resp:
@@ -15813,8 +16627,12 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 <main>
 <div class="page-title">
   <h1>⛓ Broadcast Chains</h1>
-  <button class="btn bp" id="btn_new_chain">+ New Chain</button>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="btn bg bs" id="btn_test_alert" title="Send a clearly-labelled TEST alert through all notification channels (email, webhook, Pushover, APNs) — will not create a real fault log entry">🧪 Test Alert</button>
+    <button class="btn bp" id="btn_new_chain">+ New Chain</button>
+  </div>
 </div>
+<div id="test_alert_result" style="display:none;margin:0 0 12px 0;padding:10px 14px;border-radius:8px;font-size:13px"></div>
 
 <!-- History time-travel bar -->
 <div class="hist-bar">
@@ -16170,6 +16988,41 @@ function showBuilder(chain){
   b.style.display='';b.scrollIntoView({behavior:'smooth',block:'start'});
 }
 document.getElementById('btn_new_chain').addEventListener('click',function(){showBuilder(null);});
+
+document.getElementById('btn_test_alert').addEventListener('click', function() {
+  var btn = this;
+  var banner = document.getElementById('test_alert_result');
+  btn.disabled = true;
+  btn.textContent = '⏳ Sending…';
+  banner.style.display = 'none';
+  _csrfFetch('/api/chains/test_alert', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      btn.disabled = false;
+      btn.textContent = '🧪 Test Alert';
+      banner.style.display = 'block';
+      if (d.ok) {
+        banner.style.background = 'rgba(24,228,113,.12)';
+        banner.style.border = '1px solid rgba(24,228,113,.4)';
+        banner.style.color = '#18e471';
+        banner.textContent = '✔ Test alert sent via all configured channels. Check your email, webhook, and phone.';
+      } else {
+        banner.style.background = 'rgba(255,79,79,.12)';
+        banner.style.border = '1px solid rgba(255,79,79,.4)';
+        banner.style.color = '#ff4f4f';
+        banner.textContent = '✖ ' + (d.error || 'Unknown error');
+      }
+    })
+    .catch(function(e){
+      btn.disabled = false;
+      btn.textContent = '🧪 Test Alert';
+      banner.style.display = 'block';
+      banner.style.background = 'rgba(255,79,79,.12)';
+      banner.style.border = '1px solid rgba(255,79,79,.4)';
+      banner.style.color = '#ff4f4f';
+      banner.textContent = '✖ Request failed: ' + e;
+    });
+});
 document.getElementById('btn_cancel_builder').addEventListener('click',function(){document.getElementById('builder').style.display='none';});
 document.getElementById('btn_add_node').addEventListener('click',function(){addPosition(null);});
 
@@ -17093,6 +17946,13 @@ def api_chains_status():
             else:
                 result["display_status"] = chain_status
                 result["adbreak_remaining"] = None
+            # Expose fault onset timestamp for mobile Live Activity duration timer
+            if internal_state == "alerted" and since is not None:
+                result["fault_since_ts"] = since
+            elif internal_state == "pending" and since is not None:
+                result["fault_since_ts"] = since
+            else:
+                result["fault_since_ts"] = None
             # Stamp live_url onto every node so the UI can wire up click-to-listen
             _annotate_nodes(result.get("nodes", []))
             # Compute correlation for each configured comparator pair
@@ -17287,6 +18147,7 @@ def _mobile_chain_summary(result: dict, now: float | None = None) -> dict:
         "updated_at": updated_at,
         "age_secs": max(0, int(round(now - updated_at))),
         "nodes": [_mobile_node_summary(n) for n in (result.get("nodes", []) or [])],
+        "fault_since_ts": result.get("fault_since_ts"),
     }
 
 
@@ -17403,20 +18264,35 @@ def api_mobile_device_token():
     if ma is None:
         return jsonify({"ok": False, "error": "mobile api not configured"}), 500
 
-    if not hasattr(ma, "apns_device_tokens") or ma.apns_device_tokens is None:
-        ma.apns_device_tokens = []
+    with _apns_tokens_lock:
+        if not hasattr(ma, "apns_device_tokens") or ma.apns_device_tokens is None:
+            ma.apns_device_tokens = []
 
-    action = str(data.get("action", "register")).lower()
-    if action == "unregister":
-        if token in ma.apns_device_tokens:
-            ma.apns_device_tokens.remove(token)
+        # sandbox flag sent by iOS client: True for debug/Xcode, False for TestFlight/App Store
+        sandbox = bool(data.get("sandbox", True))
+        new_entry = {"token": token, "sandbox": sandbox}
+
+        action = str(data.get("action", "register")).lower()
+        if action == "unregister":
+            # Remove any entry (dict or legacy string) matching this token
+            ma.apns_device_tokens = [
+                e for e in ma.apns_device_tokens if _apns_token_str(e) != token
+            ]
             save_config(monitor.app_cfg)
-        return jsonify({"ok": True, "action": "unregistered", "count": len(ma.apns_device_tokens)})
-    else:
-        if token not in ma.apns_device_tokens:
-            ma.apns_device_tokens.append(token)
+            return jsonify({"ok": True, "action": "unregistered", "count": len(ma.apns_device_tokens)})
+        else:
+            # Replace any existing entry for this token (handles environment change)
+            existing_tokens = [_apns_token_str(e) for e in ma.apns_device_tokens]
+            if token in existing_tokens:
+                # Update the existing entry in-place (e.g. if sandbox flag changed)
+                ma.apns_device_tokens = [
+                    new_entry if _apns_token_str(e) == token else e
+                    for e in ma.apns_device_tokens
+                ]
+            else:
+                ma.apns_device_tokens.append(new_entry)
             save_config(monitor.app_cfg)
-        return jsonify({"ok": True, "action": "registered", "count": len(ma.apns_device_tokens)})
+            return jsonify({"ok": True, "action": "registered", "count": len(ma.apns_device_tokens)})
 
 
 # ─── Mobile reports / clips API ──────────────────────────────────────────────
@@ -17744,6 +18620,118 @@ def api_chain_maintenance(cid: str):
     return jsonify({"ok": True, "expiry": maint.get(mkey, 0)})
 
 
+@app.post("/api/chains/test_alert")
+@login_required
+@csrf_protect
+def api_chains_test_alert():
+    """Send a clearly-labelled [TEST] chain fault alert through all configured channels.
+
+    Does NOT create a real fault log entry, modify chain state, or affect SLA tracking.
+    Useful for verifying that email / webhook / Pushover / APNs notifications are working.
+    """
+    cfg = monitor.app_cfg
+    chains = cfg.signal_chains or []
+
+    # Pick a chain to reference in the test message — first one if any exist
+    if chains:
+        ref_chain = chains[0]
+        chain_name = ref_chain.get("name", "Test Chain")
+        chain_id   = ref_chain.get("id", "test")
+    else:
+        chain_name = "Test Chain"
+        chain_id   = "test"
+
+    title = f"[TEST] CHAIN FAULT — {chain_name}"
+    msg   = (f"[TEST ALERT] This is a test notification sent from the SignalScope "
+             f"Broadcast Chains page. If you received this, your alert channels are "
+             f"working correctly. Chain: '{chain_name}'.")
+
+    # Fire everything on a background thread so the HTTP response returns immediately
+    # (email/SMTP can block for several seconds if the server is slow to respond)
+    def _do_send():
+        try:
+            sender = AlertSender(cfg, monitor.log)
+            sender.send(title, msg, None, alert_type="CHAIN_FAULT", stream=chain_name)
+        except Exception as e:
+            monitor.log(f"[Chain] Test alert send error: {e}")
+        try:
+            _send_apns_push(
+                title=title,
+                body=msg[:180],
+                data={"chain_id": chain_id, "test": True},
+            )
+        except Exception as e:
+            monitor.log(f"[APNs] Test alert push error: {e}")
+
+    threading.Thread(target=_do_send, daemon=True).start()
+    monitor.log(f"[Chain] Test alert dispatched — chain='{chain_name}'")
+    return jsonify({"ok": True})
+
+
+@app.get("/api/chains/apns_status")
+@login_required
+def api_chains_apns_status():
+    """Return APNs configuration and registered token diagnostic info."""
+    ma = getattr(monitor.app_cfg, "mobile_api", None)
+    tokens = []
+    configured = False
+    if ma:
+        configured = bool(
+            getattr(ma, "apns_key_id", "") and getattr(ma, "apns_team_id", "") and
+            getattr(ma, "apns_bundle_id", "") and getattr(ma, "apns_key_pem", "")
+        )
+        for entry in getattr(ma, "apns_device_tokens", []):
+            tok = _apns_token_str(entry)
+            tokens.append({
+                "token_prefix": tok[:12] + "…" if tok else "",
+                "env": "sandbox" if _apns_token_is_sandbox(entry) else "production",
+                "format": "dict" if isinstance(entry, dict) else "legacy_string",
+            })
+    # Probe both APNs endpoints with a dummy token to check key authorisation.
+    # BadDeviceToken → key IS accepted by that endpoint (token is bad, but key is fine).
+    # BadEnvironmentKeyInToken / InvalidProviderToken / Forbidden → key is NOT authorised.
+    key_probe = {"sandbox": "not_tested", "production": "not_tested"}
+    if configured and _HTTPX_HTTP2:
+        try:
+            import json as _j
+            import httpx as _hx
+            ma2 = getattr(monitor.app_cfg, "mobile_api", None)
+            jwt = _get_apns_jwt(ma2)
+            bundle = getattr(ma2, "apns_bundle_id", "").strip()
+            dummy = "00" * 32   # 64-char hex dummy token
+            hdrs = lambda: {
+                "authorization": f"bearer {jwt}",
+                "apns-topic": bundle,
+                "apns-priority": "10",
+                "apns-push-type": "alert",
+                "content-type": "application/json",
+            }
+            payload = _j.dumps({"aps": {"alert": {"title": "probe", "body": "probe"}}}).encode()
+            with _hx.Client(http2=True, timeout=8.0) as cl:
+                for env_name, host in [("sandbox", "api.sandbox.push.apple.com"),
+                                       ("production", "api.push.apple.com")]:
+                    try:
+                        r = cl.post(f"https://{host}/3/device/{dummy}",
+                                    headers=hdrs(), content=payload)
+                        try:
+                            reason = r.json().get("reason", r.text[:60])
+                        except Exception:
+                            reason = r.text[:60]
+                        key_probe[env_name] = f"HTTP {r.status_code} — {reason}"
+                    except Exception as pe:
+                        key_probe[env_name] = f"error: {pe}"
+        except Exception as ex:
+            key_probe = {"error": str(ex)}
+
+    return jsonify({
+        "httpx_http2": _HTTPX_HTTP2,
+        "apns_configured": configured,
+        "token_count": len(tokens),
+        "tokens": tokens,
+        "key_probe": key_probe,
+    })
+
+
 @app.post("/api/chains")
 @login_required
 @csrf_protect
@@ -17901,6 +18889,17 @@ def hub_reports():
     # Sort newest first
     all_events.sort(key=lambda e: e.get("ts",""), reverse=True)
 
+    # Merge in any hub-stored feedback labels so buttons show current state
+    try:
+        _hub_fb = _load_alert_feedback()
+        if _hub_fb:
+            for _ev in all_events:
+                _aid = _ev.get("id","")
+                if _aid and _aid in _hub_fb:
+                    _ev["feedback"] = _hub_fb[_aid]["feedback"]
+    except Exception:
+        pass
+
     # Filter params
     f_site   = request.args.get("site","")
     f_stream = request.args.get("stream","")
@@ -17981,6 +18980,13 @@ tr:hover td{background:#123764}
 audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 .no-data{text-align:center;padding:48px;color:var(--mu)}
 .page-info{color:var(--mu);font-size:12px;margin-left:auto}
+.fb-wrap{display:flex;gap:4px;align-items:center;margin-top:5px;flex-wrap:wrap}
+.fb-btn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:5px;font-size:13px;cursor:pointer;border:1px solid var(--bor);background:var(--sur);transition:background .12s,border-color .12s;line-height:1;padding:0}
+.fb-btn:hover{filter:brightness(1.3)}
+.fb-btn.fb-ok{background:#14532d;border-color:#22c55e}
+.fb-btn.fb-bad{background:#450a0a;border-color:#ef4444}
+.fb-lbl{font-size:10px;color:var(--mu)}
+.fb-lbl.fb-lbl-ok{color:var(--ok)}.fb-lbl.fb-lbl-bad{color:var(--al)}
 </style>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("hub_reports") }}
@@ -18059,7 +19065,7 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
     {% set tl = e.type.lower() if e.type else '' %}
     {% set tc = 'chain_fault' if tl=='chain_fault' else ('t-silence' if tl=='silence' else ('t-clip' if tl=='clip' else ('t-hiss' if tl=='hiss' else ('t-rtp' if 'rtp' in tl else ('t-ai_alert' if tl=='ai_alert' else ('t-ai_warn' if tl=='ai_warn' else ('t-ptp' if 'ptp' in tl else ('t-cmp' if 'cmp' in tl else 't-other')))))))) %}
     {% set is_chain_row = tl == 'chain_fault' %}
-    <tr data-site="{{e._site}}" data-stream="{{e.stream or ''}}" data-type="{{e.type or ''}}" data-ts="{{e.ts or ''}}" data-clip="{{e.clip or ''}}" data-chain="{{e._chain or ''}}" class="{{'chain-row ' if is_chain_row else ''}}{{'offline-site' if not e._online else ''}}">
+    <tr data-id="{{e.id or ''}}" data-site="{{e._site}}" data-stream="{{e.stream or ''}}" data-type="{{e.type or ''}}" data-ts="{{e.ts or ''}}" data-clip="{{e.clip or ''}}" data-chain="{{e._chain or ''}}" class="{{'chain-row ' if is_chain_row else ''}}{{'offline-site' if not e._online else ''}}">
       <td style="color:var(--mu);font-size:12px;white-space:nowrap">{{e.ts or ''}}</td>
       <td><span class="site-badge">{{e._site}}</span></td>
       <td><strong>{{e.stream or ''}}</strong></td>
@@ -18088,6 +19094,15 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
         {% elif e.clip %}
         <span style="color:var(--mu);font-size:11px">clip on site (offline)</span>
         {% else %}<span style="color:var(--mu);font-size:11px">—</span>{% endif %}
+        {% if e.type in ('AI_ALERT','AI_WARN') and e.id %}
+        <div class="fb-wrap">
+          <button class="fb-btn{{' fb-ok' if e.feedback=='normal' else ''}}" data-fb-id="{{e.id}}" data-fb-site="{{e._site}}" data-fb-stream="{{e.stream or ''}}" data-fb-val="normal" title="False alarm — normal audio">👍</button>
+          <button class="fb-btn{{' fb-bad' if e.feedback=='abnormal' else ''}}" data-fb-id="{{e.id}}" data-fb-site="{{e._site}}" data-fb-stream="{{e.stream or ''}}" data-fb-val="abnormal" title="Confirmed real fault">👎</button>
+          {% if e.feedback == 'normal' %}<span class="fb-lbl fb-lbl-ok">False alarm</span>
+          {% elif e.feedback == 'abnormal' %}<span class="fb-lbl fb-lbl-bad">Confirmed</span>
+          {% else %}<span class="fb-lbl">AI feedback</span>{% endif %}
+        </div>
+        {% endif %}
       </td>
     </tr>
     {% else %}
@@ -18172,6 +19187,45 @@ window.addEventListener('DOMContentLoaded', function(){
       _statTypes=[]; _statClips=false;
     });
   });
+});
+
+// ── AI feedback from hub ────────────────────────────────────────────────────
+function sendHubFeedback(btn){
+  var id=btn.dataset.fbId, site=btn.dataset.fbSite,
+      stream=btn.dataset.fbStream, val=btn.dataset.fbVal;
+  if(!id||!site||!stream||!val) return;
+  var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  btn.disabled=true;
+  fetch('/hub/api/alerts/'+encodeURIComponent(id)+'/feedback',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},
+    body:JSON.stringify({feedback:val,stream:stream,site:site})
+  }).then(function(r){return r.json();}).then(function(d){
+    btn.disabled=false;
+    if(!d.ok) return;
+    var wrap=btn.closest('.fb-wrap');
+    if(!wrap) return;
+    wrap.querySelectorAll('.fb-btn').forEach(function(b){b.classList.remove('fb-ok','fb-bad');});
+    btn.classList.add(val==='normal'?'fb-ok':'fb-bad');
+    var lbl=wrap.querySelector('.fb-lbl');
+    if(!lbl){lbl=document.createElement('span');lbl.className='fb-lbl';wrap.appendChild(lbl);}
+    if(val==='normal'){lbl.textContent='False alarm';lbl.className='fb-lbl fb-lbl-ok';}
+    else{lbl.textContent='Confirmed';lbl.className='fb-lbl fb-lbl-bad';}
+    // Show queued status briefly
+    var row=btn.closest('tr');
+    if(row){
+      var siteBadge=row.querySelector('.site-badge');
+      if(siteBadge){
+        var orig=siteBadge.textContent;
+        siteBadge.textContent=orig+' ✓';
+        setTimeout(function(){siteBadge.textContent=orig;},2500);
+      }
+    }
+  }).catch(function(){btn.disabled=false;});
+}
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.fb-btn[data-fb-id]');
+  if(btn) sendHubFeedback(btn);
 });
 </script>
 </body></html>"""

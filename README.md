@@ -57,7 +57,7 @@ A PowerShell installer (`install_signalscope_windows.ps1`) is included for Windo
 | **Rule alerts** | Silence, clipping, hiss, LUFS true peak, LUFS integrated loudness |
 | **Composite fault alerts** | STUDIO_FAULT, STL_FAULT, TX_DOWN (FM); DAB_AUDIO_FAULT, DAB_SERVICE_MISSING (DAB); RTP_FAULT (Livewire/AES67) |
 | **Name mismatch alerts** | FM_RDS_MISMATCH, DAB_SERVICE_MISMATCH |
-| **AI anomaly detection** | Per-stream ONNX autoencoder with 24-hour learning phase |
+| **AI anomaly detection** | Per-stream ONNX autoencoder, 24 h learning phase, adaptive baseline, feedback-driven retraining (👍/👎 in Reports or Hub Reports) |
 | **Broadcast Chains** | Visual signal path builder with fault location, node stacking, ad break handling, maintenance bypass, flap detection, chain SLA, fault history, predictive level trend, shared fault detection, historical time-travel view |
 | **Stream comparator** | Cross-correlate pre/post processing pairs; detect processor failure, gain drift, dropout |
 | **Metric history** | SQLite time-series, 90-day retention, signal history charts (15+ metrics), availability timeline, trend analysis |
@@ -380,8 +380,9 @@ Hub Reports shows a consolidated alert timeline across all sites, with:
 
 - Summary cards for each alert type with click-to-filter
 - Chain column showing which broadcast chain each event belongs to
-- Audio clip playback and download for all alert snippets
+- Audio clip playback and download for all alert snippets (clips are auto-downloaded from clients as they are created and served locally by the hub — no dependency on the client being online at playback time)
 - SLA data per stream
+- 👍 / 👎 AI feedback buttons on every `AI_ALERT` / `AI_WARN` row — labels are forwarded to the originating client so its model retrains without requiring direct access to that node
 
 ### Architecture
 
@@ -484,8 +485,20 @@ Trend data is available via the API at `/api/trend/<stream>`.
 Each stream has its own ONNX autoencoder model trained on 14 audio features extracted from the 48 kHz / 24k-sample chunks:
 
 - **Learning phase** — the model trains continuously for 24 hours after a stream is added. During this period the stream card shows a **Learning** badge and no anomaly alerts are raised.
-- **Detection** — after the learning phase, the autoencoder reconstruction error is compared to a learned threshold. Significant deviations trigger an `AI_ANOMALY` alert.
+- **Detection** — after the learning phase, the autoencoder reconstruction error is compared to a learned baseline. Scores that consistently exceed the learned threshold (3 consecutive 5-second windows) trigger an `AI_ALERT` or `AI_WARN`.
+- **Adaptive baseline** — on clean (non-anomalous) windows, the reconstruction error mean and standard deviation are updated continuously using an exponential moving average, so the model naturally tracks slow long-term changes in a stream's normal characteristics without needing manual retraining.
 - **Models are stored** in `ai_models/` and persist across restarts. They are included in the backup ZIP.
+
+### Feedback-Driven Retraining
+
+After the 24 h learning phase, you can teach the model directly from real alert events:
+
+- In **Reports**, each `AI_ALERT` and `AI_WARN` row shows a 👍 / 👎 button
+  - 👍 **False alarm** — the flagged audio was actually normal (e.g. jingles, sweepers, silence fills). The clip's audio features are extracted and added to the stream's clean buffer. The alert threshold is temporarily raised so the same content no longer triggers until the model is retrained.
+  - 👎 **Confirmed fault** — the alert was correct. No feature injection; threshold nudged slightly lower.
+- After **5 false-alarm labels**, a background retrain is triggered automatically. The retrain uses the **full original 24 h training corpus** (saved to `ai_models/<stream>_initial.npy` after the initial phase) combined with all clean buffer samples and labeled clips. The model is trained from scratch on the complete dataset — no knowledge is lost.
+- After retraining, the temporary threshold bias resets to zero because the corrected understanding is now baked into the model weights.
+- **From the Hub**: the Hub Reports page shows the same 👍/👎 buttons on every AI event row. Clicking sends the label to the hub, which stores it locally and forwards it to the relevant client as a command delivered on the next heartbeat (≈ 5 s). The retrain happens on the client where the audio data lives. If the client is offline, the command is queued and delivered on reconnect.
 
 AI analysis runs every 5 seconds on each stream, independently of the rule-based alert checks.
 
@@ -565,7 +578,7 @@ One-click backup is available in **Settings → Maintenance → Backup & Restore
 | File | Contents |
 |---|---|
 | `lwai_config.json` | All configuration and stream settings |
-| `ai_models/` | All trained ONNX autoencoder model files |
+| `ai_models/` | Trained ONNX autoencoder models, baseline stats, feedback state, and preserved 24 h training corpora (`_initial.npy`) used for retraining |
 | `metrics_history.db` | Signal history database (90 days of per-stream metrics) |
 | `sla_data.json` | SLA uptime records |
 | `alert_log.json` | Full alert event history |

@@ -2,6 +2,74 @@
 
 ---
 
+## [3.2.61] - 2026-03-22
+
+### Changed
+- **AI retraining now genuinely builds on the original 24 h corpus** — previous behaviour was a full reset from random weights using only the recent rolling clean buffer (~8,000 windows), meaning feedback-triggered retrains discarded everything the model learned during the initial training phase. The 24 h training corpus is now saved to `ai_models/<stream>_initial.npy` once after the initial learning phase completes (written in a background thread, never overwritten). Every subsequent feedback-triggered retrain loads this file and combines it with the clean buffer (rolling live windows + labeled false-alarm clip features) before calling the Adam optimiser. Baseline reconstruction-error stats are also recomputed from the full combined dataset so z-score thresholds remain correctly calibrated. The threshold bias resets to 0 after retraining because the corrected knowledge is now baked into the model weights rather than applied as a post-hoc offset.
+
+---
+
+## [3.2.60] - 2026-03-22
+
+### Added
+- **AI feedback from Hub Reports** — the Hub Reports page now shows 👍 (false alarm) / 👎 (confirmed fault) buttons on every `AI_ALERT` and `AI_WARN` row, matching the buttons already present on the client's own reports page. Clicking a button from the hub:
+  1. Stores the label immediately in the hub's `alert_feedback.json` so the button state persists on reload
+  2. Queues an `ai_feedback` command for the relevant client — delivered on the next heartbeat (≈ 5 s)
+  3. The client's `_cmd_ai_feedback` handler calls `_apply_feedback_label()`, which injects the clip features into the clean buffer and triggers a model retrain when the threshold is reached — identical to clicking the button locally
+  - If the client is offline when the label is saved, the command remains queued in `hub_state.json` and is delivered on reconnect
+  - The site badge briefly shows a ✓ tick to confirm the command was accepted
+- **New hub endpoint** `POST /hub/api/alerts/<alert_id>/feedback` (login + CSRF required) — hub-side counterpart to the existing client `POST /api/alerts/<id>/feedback`
+- **Hub feedback shown in reports** — `hub_reports()` now merges hub-stored feedback labels into events before rendering, so 👍/👎 states are reflected on page load
+
+---
+
+## [3.2.57] - 2026-03-22
+
+### Fixed
+- **Password change has no server-side confirmation check** — the Security settings form now validates `auth_password_confirm` server-side before hashing and storing. If the two fields do not match, a flash message is shown and the password is not updated. The existing client-side `chkPwMatch()` JS guard remains as the first line of defence; the server check is a belt-and-braces fallback.
+
+---
+
+## [3.2.56] - 2026-03-22
+
+### Added
+- **Hub auto-downloads alert clips from clients** — instead of the previous on-demand streaming proxy (which was unreliable when the client was under load or briefly offline), the hub now proactively downloads every alert clip as it is created on the client. A new `_hub_clip_queue` on `MonitorManager` is populated by `_save_alert_wav()` whenever a clip is saved and the node is running as a hub client. The queue is drained after each successful heartbeat, uploading clips to the hub via `POST /hub/clip_upload`. The hub stores clips in `alert_snippets/<site>_<stream>/` using a stable filename derived from the alert timestamp (idempotent — retries never overwrite). `hub_proxy_alert_clip()` checks local storage first and falls back to the live proxy only for older clips from before this release. Chain fault clips (saved via `_cmd_save_clip`) continue to upload directly and skip the queue to avoid double-upload.
+- **Setup wizard improvements**:
+  - Step 1 (Dependencies) now shows an info box for users who installed via the install script: *"Used the install script? All core dependencies were installed automatically — you can proceed straight to Next."*
+  - The final wizard step button is now labelled **Set Password & Finish →** and redirects to `/settings#sec` (Security tab) so users land directly on the password field after completing the wizard
+- **Confirm password field in Security settings** — the Security tab now shows a second *Confirm Password* input alongside the new-password field. A live `chkPwMatch()` function shows a green ✓ / red ✗ indicator as the user types, and the form's submit handler blocks submission if the fields do not match
+
+---
+
+## [3.2.55] - 2026-03-22
+
+### Fixed
+- **Stale audio levels persist on hub after client stops monitoring** — `stop_monitoring()` now resets `_last_level_dbfs = -120.0`, `_silence_secs = 0.0`, `_dab_ok = False`, and `_rtp_loss_pct = 0.0` for all inputs immediately after stopping the monitor loop. The hub heartbeat continues running independently of the monitor loop and was reporting stale healthy levels, preventing the hub from marking the streams as silent/down.
+
+---
+
+## [3.2.54] - 2026-03-22
+
+### Fixed
+- **Post-mixin node fault during ad break countdown did not alert immediately** — two bugs combined to suppress the bypass:
+  1. `fault_idx` always points to the *first* faulting node. When a pre-mixin node is already silent (triggering the ad break countdown) and a post-mixin node then also faults, `fault_idx` still points to the pre-mixin node so `fault_is_post_mixin` was `False`. Fixed by scanning all nodes from `mixin_idx` onwards and setting a new `any_post_mixin_fault` flag when any node at or after the mix-in point is down.
+  2. The `effective_post_mixin` calculation included `and not pending_adbreak`, which blocked the bypass in the very state where it is most needed. Fixed by removing the `not pending_adbreak` guard from both the `ok → alerted` and `pending → alerted` transition paths. Added a dedicated log reason: *"post mix-in node faulted during ad break window"*.
+
+---
+
+## [3.2.53] - 2026-03-22
+
+### Fixed
+- **APNs JWT cache not invalidated when credentials change in Settings** — `_get_apns_jwt()` was keyed only on token age (55-minute TTL). Saving new APNs credentials (key ID, team ID, or PEM) in Settings left the old JWT in the cache for up to 55 minutes, causing `InvalidProviderToken` rejections until the TTL naturally expired or the server was restarted. Fixed by adding a `cache_key = f"{key_id}:{team_id}"` comparison — any credential change forces immediate JWT regeneration. The settings save handler also explicitly clears the cache so the new credentials are used on the very next push attempt.
+
+---
+
+## [3.2.42] - 2026-03-22
+
+### Fixed
+- **Confirmation delay incorrectly applied to post-mixin faults**: `min_fault_seconds` is intended to absorb ad-break silence, which can only occur at nodes *before* the mix-in point (where ads are inserted). Faults at or after the mixin point (e.g. silence on the processed output or transmitter feed) are always real faults — ads cannot cause silence there. The confirmation window now bypasses immediately when `fault_index >= mixin_node_idx`, logging `"fault is post mix-in (node N), bypassing Xs confirmation window"`. This applies to both the initial `ok → pending` transition and to faults that shift position while already in the pending state. The warmup seeding path is also corrected so a post-mixin fault at startup is seeded as `alerted` rather than `pending`.
+
+---
 
 ## [3.2.41] - 2026-03-22
 
