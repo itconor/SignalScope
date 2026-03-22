@@ -1095,7 +1095,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.61"
+BUILD                  = "SignalScope-3.2.67"
 # CHANGELOG
 # 3.2.43 (2026-03-22) — APNs per-token environment routing: device tokens now stored with
 #   sandbox flag (True=development/Xcode, False=production/TestFlight+AppStore); server
@@ -1120,7 +1120,7 @@ _HUB_DEFAULT_FORWARD_TYPES = [
     "SILENCE", "STUDIO_FAULT", "STL_FAULT", "TX_DOWN",
     "CLIP", "AI_ALERT", "RTP_LOSS", "RTP_FAULT",
     "DAB_SERVICE_MISSING", "DAB_AUDIO_FAULT",
-    "LUFS_TP", "ESCALATION", "CHAIN_FAULT", "CHAIN_FLAPPING",
+    "LUFS_TP", "ESCALATION", "CHAIN_FAULT", "CHAIN_RECOVERED", "CHAIN_FLAPPING",
     "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
 ]
 # All alert type identifiers (shown as checkboxes in hub site rules UI)
@@ -1131,7 +1131,8 @@ _ALL_ALERT_TYPES = [
     "DAB_SERVICE_MISSING", "DAB_AUDIO_FAULT",
     "LUFS_TP", "LUFS_I", "ESCALATION",
     "PTP_OFFSET", "PTP_JITTER", "PTP_LOST", "PTP_GM_CHANGE",
-    "CHAIN_FAULT", "CHAIN_FLAPPING", "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
+    "CHAIN_FAULT", "CHAIN_RECOVERED", "CHAIN_FLAPPING",
+    "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
 ]
 # Chain monitoring constants
 CHAIN_FLAP_WINDOW  = 600    # seconds — window for flap detection
@@ -1807,6 +1808,8 @@ def _initial_samples_path(name: str) -> str:
 ALERT_LOG_PATH      = os.path.join(BASE_DIR, "alert_log.json")
 ALERT_ACKS_PATH     = os.path.join(BASE_DIR, "alert_acks.json")
 ALERT_FEEDBACK_PATH = os.path.join(BASE_DIR, "alert_feedback.json")
+CHAIN_NOTES_PATH    = os.path.join(BASE_DIR, "chain_notes.json")
+_chain_notes_lock   = threading.Lock()
 _alert_feedback_lock = threading.Lock()
 HUB_STATE_PATH  = os.path.join(BASE_DIR, "hub_state.json")  # persists site data across hub restarts
 METRICS_DB_PATH  = os.path.join(BASE_DIR, "metrics_history.db")
@@ -1936,6 +1939,41 @@ def _save_alert_feedback_map(fb_map: dict):
     with _alert_feedback_lock:
         with open(ALERT_FEEDBACK_PATH, "w", encoding="utf-8") as f:
             json.dump(fb_map, f)
+
+
+def _load_chain_notes() -> dict:
+    """Return the full chain-notes map {fault_log_id: {text, by, ts, edited_at}}."""
+    with _chain_notes_lock:
+        if not os.path.exists(CHAIN_NOTES_PATH):
+            return {}
+        try:
+            with open(CHAIN_NOTES_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+
+def _save_chain_note(fault_log_id: str, text: str, by: str = "admin") -> dict:
+    """Write or update one note entry; returns the saved record."""
+    with _chain_notes_lock:
+        try:
+            with open(CHAIN_NOTES_PATH, "r", encoding="utf-8") as f:
+                notes = json.load(f)
+        except Exception:
+            notes = {}
+        existing = notes.get(fault_log_id)
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        if existing:
+            existing["text"]      = text
+            existing["by"]        = by
+            existing["edited_at"] = now_str
+            record = existing
+        else:
+            record = {"text": text, "by": by, "ts": now_str, "edited_at": None}
+        notes[fault_log_id] = record
+        with open(CHAIN_NOTES_PATH, "w", encoding="utf-8") as f:
+            json.dump(notes, f)
+        return record
 
 
 def _alert_log_load_with_feedback(limit: int = 2000) -> List[dict]:
@@ -7772,12 +7810,19 @@ class HubClient:
         stream     = str(payload.get("stream",     "")).strip()
         label      = str(payload.get("label",      "chain_fault")).strip()
         chain_name = str(payload.get("chain_name", "")).strip()
+        chain_id   = str(payload.get("chain_id",   "")).strip()
+        entry_id   = str(payload.get("entry_id",   "")).strip()
+        node_label = str(payload.get("node_label", "")).strip()
+        pos        = payload.get("pos", None)
+        status     = str(payload.get("status",     "")).strip()
         inp = next((i for i in cfg_obj.inputs if i.name == stream and i.enabled), None)
         if inp is None:
             monitor.log(f"[Hub] save_clip: stream '{stream}' not found or disabled — ignored")
             return
-        msg = (f"Audio clip captured at '{stream}' during chain fault"
-               f"{(' in ' + repr(chain_name)) if chain_name else ''}.")
+        msg = (f"Audio clip captured at '{stream}'"
+               + (f" ('{node_label}')" if node_label else "")
+               + f" during chain fault"
+               + (f" in {repr(chain_name)}" if chain_name else "") + ".")
         clip_path = _save_alert_wav(inp, label, inp.alert_wav_duration, _skip_hub_queue=True)
         _add_history(inp, "CHAIN_FAULT", msg, clip_path=clip_path or "")
         monitor.log(f"[Hub] save_clip: saved '{label}' for '{stream}'"
@@ -7788,20 +7833,26 @@ class HubClient:
             site    = cfg_obj.hub.site_name or socket.gethostname()
             threading.Thread(
                 target=self._upload_clip,
-                args=(hub_url, secret, site, stream, label, chain_name, clip_path),
+                args=(hub_url, secret, site, stream, label, chain_name, chain_id,
+                      entry_id, clip_path, node_label, pos, status),
                 daemon=True, name="ClipUpload",
             ).start()
 
     def _upload_clip(self, hub_url: str, secret: str, site: str,
-                     stream: str, label: str, chain_name: str, clip_path: str,
-                     level_dbfs: float = -120.0):
+                     stream: str, label: str, chain_name: str, chain_id: str,
+                     entry_id: str = "", clip_path: str = "",
+                     node_label: str = "", pos=None,
+                     status: str = "", level_dbfs: float = -120.0):
         """Upload a saved clip WAV to the hub's /hub/clip_upload endpoint."""
         try:
             with open(clip_path, "rb") as f:
                 data_b64 = base64.b64encode(f.read()).decode()
             payload_dict = {
                 "site": site, "stream": stream, "label": label,
-                "chain_name": chain_name, "ts": time.time(), "data_b64": data_b64,
+                "chain_name": chain_name, "chain_id": chain_id,
+                "entry_id": entry_id,
+                "node_label": node_label, "pos": pos, "status": status,
+                "ts": time.time(), "data_b64": data_b64,
                 "level_dbfs": level_dbfs,
             }
             payload_bytes = json.dumps(payload_dict).encode()
@@ -7883,6 +7934,21 @@ class HubClient:
             time.sleep(1.0)
             os.execv(sys.executable, [sys.executable] + sys.argv)
         threading.Thread(target=_do_restart, daemon=True, name="RemoteRestart").start()
+
+    def _cmd_chain_note(self, payload: dict):
+        """Apply an engineer note pushed from the hub.
+
+        Saves the note locally on this client so it appears in the client's
+        own fault history view and mobile app responses.
+        """
+        fault_log_id = str(payload.get("fault_log_id", "")).strip()
+        text         = str(payload.get("text", "")).strip()[:2000]
+        by           = str(payload.get("by", "hub")).strip()
+        if not (fault_log_id and text):
+            monitor.log(f"[Hub] chain_note: invalid payload (missing fault_log_id or text)")
+            return
+        _save_chain_note(fault_log_id, text, by=by)
+        monitor.log(f"[Hub] Engineer note saved for fault {fault_log_id[:8]}… (by {by!r})")
 
     def _cmd_ai_feedback(self, payload: dict):
         """Apply an AI feedback label pushed from the hub.
@@ -8110,6 +8176,7 @@ class HubClient:
                 "enabled":           inp.enabled,
                 "device_index":      inp.device_index,
                 "level_dbfs":        round(inp._last_level_dbfs, 1),
+                "silence_threshold_dbfs": inp.silence_threshold_dbfs,
                 "ai_status":         inp._ai_status,
                 "ai_phase":          inp._ai_phase,
                 "ai_monitor":        inp.ai_monitor,
@@ -8581,6 +8648,8 @@ class HubClient:
                         self._cmd_self_update(cmd_payload)
                     elif cmd_type == "restart":
                         self._cmd_restart(cmd_payload)
+                    elif cmd_type == "chain_note":
+                        self._cmd_chain_note(cmd_payload)
                     elif cmd_type == "ai_feedback":
                         self._cmd_ai_feedback(cmd_payload)
                     elif cmd_type == "retrain_stream":
@@ -8657,6 +8726,12 @@ class HubServer:
         self._chain_node_trend: dict = {}
         # SLA metric write tracker — cid → last write ts
         self._chain_sla_last_write: dict = {}
+        # API-layer pre-pending fault onset — cid → epoch seconds
+        # Tracks when api_chains_status first saw a fault BEFORE the monitor loop
+        # had a chance to set _chain_fault_state to "pending".  Used so the
+        # adbreak/pending countdown starts counting down immediately on the UI
+        # rather than staying frozen at the full window until the next 10s loop tick.
+        self._chain_api_pre_pending_since: dict = {}
         # Remote backup metadata — site_name → {"ts": float, "size": int}
         # Actual ZIP data lives on disk under HUB_BACKUP_DIR/<safe_name>/backup.zip
         self._site_backups: Dict[str, dict] = {}
@@ -9180,7 +9255,12 @@ class HubServer:
                         "status": "unknown", "level": None, "rtp_loss_pct": None}
             lev  = float(sd.get("level_dbfs", -120.0))
             dev  = str(sd.get("device_index", "")).strip().lower()
-            down = lev <= -55.0
+            # Use the remote stream's own configured silence threshold if the
+            # client sent it in the heartbeat payload; fall back to -55.0 dBFS
+            # for older clients that don't include it yet.
+            remote_threshold = sd.get("silence_threshold_dbfs")
+            _silence_thresh  = float(remote_threshold) if remote_threshold is not None else -55.0
+            down = lev <= _silence_thresh
             if dev.startswith("dab://") and not sd.get("dab_ok", True):
                 down = True
             is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
@@ -9504,13 +9584,14 @@ class HubServer:
                                 flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
                                 flap_evts.append(now)
                                 # Update fault log ring buffer + DB
-                                self._append_fault_log_entry(cid, now, result)
+                                _flog_entry = self._append_fault_log_entry(cid, now, result)
                                 if len(flap_evts) >= CHAIN_FLAP_COUNT and not self._chain_flapping.get(cid):
                                     # Flapping detected — suppress normal fault alert, fire CHAIN_FLAPPING
                                     self._chain_flapping[cid] = True
                                     self._fire_chain_flapping(result, chain, cfg, sender, now)
                                 else:
-                                    self._fire_chain_fault(result, chain, cfg, sender, now)
+                                    self._fire_chain_fault(result, chain, cfg, sender, now,
+                                                           entry_id=_flog_entry.get("id", ""))
                             else:
                                 # Start confirmation window
                                 self._chain_fault_state[cid] = "pending"
@@ -9571,12 +9652,13 @@ class HubServer:
                                 flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
                                 flap_evts.append(now)
                                 # Update fault log ring buffer + DB
-                                self._append_fault_log_entry(cid, now, result)
+                                _flog_entry = self._append_fault_log_entry(cid, now, result)
                                 if len(flap_evts) >= CHAIN_FLAP_COUNT and not self._chain_flapping.get(cid):
                                     self._chain_flapping[cid] = True
                                     self._fire_chain_flapping(result, chain, cfg, sender, now)
                                 else:
-                                    self._fire_chain_fault(result, chain, cfg, sender, now)
+                                    self._fire_chain_fault(result, chain, cfg, sender, now,
+                                                           entry_id=_flog_entry.get("id", ""))
                             # else: still waiting — do nothing
                         # prev == "alerted": already notified, nothing to do
 
@@ -9615,7 +9697,7 @@ class HubServer:
                                     "id":            str(uuid.uuid4()),
                                     "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
                                     "stream":        result["name"],
-                                    "type":          "CHAIN_FAULT",
+                                    "type":          "CHAIN_RECOVERED",
                                     "message":       rec_msg,
                                     "level_dbfs":    None,
                                     "rtp_loss_pct":  None,
@@ -9629,7 +9711,7 @@ class HubServer:
                                 })
                                 try:
                                     sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
-                                                alert_type="CHAIN_FAULT", stream=result["name"])
+                                                alert_type="CHAIN_RECOVERED", stream=result["name"])
                                     monitor.log(f"[Chain] {rec_msg}")
                                 except Exception as e:
                                     monitor.log(f"[Chain] Recovery notification error: {e}")
@@ -9729,7 +9811,8 @@ class HubServer:
         except Exception as e:
             monitor.log(f"[Chain] Flap alert error: {e}")
 
-    def _fire_chain_fault(self, result: dict, chain: dict, cfg, sender, now: float):
+    def _fire_chain_fault(self, result: dict, chain: dict, cfg, sender, now: float,
+                          entry_id: str = ""):
         """Send CHAIN_FAULT alert, save audio clips, and log to alert history.
 
         Handles both regular nodes and stack nodes (type=='stack').  For stacks
@@ -9780,116 +9863,87 @@ class HubServer:
                    f"stream: {fn.get('stream', '?')}). "
                    f"This is the first failed point in the chain.{ds_note}")
 
-        # ── Clip and log the fault position ───────────────────────────────────
-        fault_clip = None
-        if fn.get("type") == "stack":
-            # Clip every down local sub-node; use the first clip for the notification
-            for sub in fn.get("nodes", []):
-                if sub.get("status") not in ("down", "offline"):
-                    continue
-                if sub.get("site") == "local":
-                    sc = next((i for i in cfg.inputs
-                               if i.name == sub.get("stream", "") and i.enabled), None)
-                    if sc:
-                        clip = _save_alert_wav(sc, f"chain_{chain_label}_fault")
-                        _add_history(sc, "CHAIN_FAULT", msg, clip_path=clip or "")
-                        if fault_clip is None:
-                            fault_clip = clip  # first clip attached to notification
-        else:
-            if fn.get("site") == "local":
-                fc = next((i for i in cfg.inputs
-                           if i.name == fn.get("stream", "") and i.enabled), None)
-                if fc:
-                    fault_clip = _save_alert_wav(fc, f"chain_{chain_label}_fault")
-                    _add_history(fc, "CHAIN_FAULT", msg, clip_path=fault_clip or "")
+        # ── Save clips from every node in the chain ────────────────────────────
+        # Walk all positions; for local nodes save directly and collect into
+        # _entry_clips; for remote nodes push save_clip commands.  The fault
+        # position's first clip is used as the notification attachment.
+        fault_clip   = None   # first local clip from the fault position
+        _entry_clips = []     # built inline — no filesystem search needed
 
-        # ── Clip the last-good position (node just before fault) ──────────────
-        if idx > 0:
-            lg_pos = nodes[idx - 1]
-            pos_label_str = fn.get("label") or f"position {idx + 1}"
-            if lg_pos.get("type") == "stack":
-                # Clip each OK local sub-node in the last-good stack
-                for sub in lg_pos.get("nodes", []):
-                    if sub.get("site") == "local":
-                        lc = next((i for i in cfg.inputs
-                                   if i.name == sub.get("stream", "") and i.enabled), None)
-                        if lc:
-                            lg_clip = _save_alert_wav(lc, f"chain_{chain_label}_last_good")
-                            lg_msg  = (f"Chain '{chain_label}' — '{lc.name}' was still "
-                                       f"active in the last-good position before the fault "
-                                       f"at '{pos_label_str}'.")
-                            _add_history(lc, "CHAIN_FAULT", lg_msg, clip_path=lg_clip or "")
-            elif lg_pos.get("site") == "local":
-                lc = next((i for i in cfg.inputs
-                           if i.name == lg_pos.get("stream", "") and i.enabled), None)
-                if lc:
-                    lg_clip = _save_alert_wav(lc, f"chain_{chain_label}_last_good")
-                    lg_msg  = (f"Chain '{chain_label}' — '{lc.name}' was the last "
-                               f"node with signal before the fault at '{pos_label_str}'.")
-                    _add_history(lc, "CHAIN_FAULT", lg_msg, clip_path=lg_clip or "")
+        _cname_safe = _safe_name(chain_label)
+        for _ci, _cnode in enumerate(nodes):
+            # Determine label suffix and human-readable status for this position
+            if _ci == idx:
+                _pos_label  = "fault"
+                _pos_status = "fault"
+            elif _ci == idx - 1:
+                _pos_label  = "last_good"
+                _pos_status = "last_good"
+            else:
+                _pos_label  = f"pos{_ci}"
+                _pos_status = (_cnode.get("status") or "ok").lower()
 
-        # ── Back-patch local clip filenames into the fault log entry + DB ───────
+            _node_label = (_cnode.get("label") or f"position {_ci + 1}")
+
+            # Walk sub-nodes for stacks, or treat the node itself as the only sub
+            _subs = _cnode.get("nodes", []) if _cnode.get("type") == "stack" else [_cnode]
+            for _sn in _subs:
+                _site   = _sn.get("site", "")
+                _stream = _sn.get("stream", "")
+                _clbl   = f"chain_{_cname_safe}_{_pos_label}"
+
+                if not _site or _site == "local":
+                    # ── Local stream: save WAV and collect the clip path ───
+                    _lc = next(
+                        (i for i in cfg.inputs if i.name == _stream and i.enabled),
+                        None,
+                    )
+                    if _lc:
+                        _clip = _save_alert_wav(_lc, _clbl, _skip_hub_queue=True)
+                        _lc_msg = (
+                            f"Chain '{chain_label}' — '{_node_label}' "
+                            f"({_pos_label.replace('_', ' ')}) clip."
+                        )
+                        _add_history(_lc, "CHAIN_FAULT", _lc_msg, clip_path=_clip or "")
+                        if _clip:
+                            if _ci == idx and fault_clip is None:
+                                fault_clip = _clip  # attach to notification
+                            _entry_clips.append({
+                                "key":        _safe_name(_stream),
+                                "fname":      os.path.basename(_clip),
+                                "label":      _pos_label,
+                                "node_label": _node_label,
+                                "pos":        _ci,
+                                "status":     _pos_status,
+                            })
+                else:
+                    # ── Remote stream: ask the client to save and upload ───
+                    self.push_pending_command(_site, {
+                        "type": "save_clip",
+                        "payload": {
+                            "stream":     _stream,
+                            "label":      _clbl,
+                            "chain_name": chain_label,
+                            "chain_id":   chain.get("id", ""),
+                            "entry_id":   entry_id,   # so the hub back-patch targets the right entry
+                            "node_label": _node_label,
+                            "pos":        _ci,
+                            "status":     _pos_status,
+                        },
+                    })
+
+        # ── Back-patch local clips into the fault log entry + DB ─────────────
+        # Use the known entry_id to find the exact entry rather than [-1],
+        # which can be wrong if the chain recovered and re-faulted.
         cid = chain.get("id", "")
         _flog = self._chain_fault_log.get(cid, [])
-        if _flog:
-            _entry_clips = _flog[-1].setdefault("clips", [])
-            if fault_clip:
-                _entry_clips.append({
-                    "key":   _safe_name(fn.get("stream", "")),
-                    "fname": os.path.basename(fault_clip),
-                    "label": "fault",
-                })
-            # last-good clip (lg_clip) set only if idx>0 and local last-good node found
-            if idx > 0:
-                lg_pos2 = nodes[idx - 1]
-                _lg_subs = (lg_pos2.get("nodes", []) if lg_pos2.get("type") == "stack"
-                            else [lg_pos2])
-                for _lgs in _lg_subs:
-                    if _lgs.get("site") == "local":
-                        _lc2 = next((i for i in cfg.inputs
-                                     if i.name == _lgs.get("stream", "") and i.enabled), None)
-                        if _lc2:
-                            _lg_dir = _safe_name(_lcs := _lgs.get("stream", ""))
-                            # find the newest file in alert_snippets/<stream> matching last_good
-                            _lg_dir_path = os.path.join(
-                                BASE_DIR, "alert_snippets", _safe_name(_lcs))
-                            if os.path.isdir(_lg_dir_path):
-                                _cands = sorted(
-                                    [f for f in os.listdir(_lg_dir_path)
-                                     if "last_good" in f and f.endswith(".wav")],
-                                    reverse=True,
-                                )
-                                if _cands:
-                                    _entry_clips.append({
-                                        "key":   _safe_name(_lcs),
-                                        "fname": _cands[0],
-                                        "label": "last_good",
-                                    })
-            # Persist updated clips list to DB
-            metrics_db.fault_log_update_clips(_flog[-1].get("id", ""), _entry_clips)
-
-        # ── Push save_clip commands to remote sites (fault + last-good positions) ──
-        for _pi, _pnode in enumerate(nodes):
-            _subs = _pnode.get("nodes", []) if _pnode.get("type") == "stack" else [_pnode]
-            for _sn in _subs:
-                _site = _sn.get("site", "")
-                if not _site or _site == "local":
-                    continue
-                if _pi == idx:
-                    _clbl = f"chain_{_safe_name(chain_label)}_fault"
-                elif _pi == idx - 1:
-                    _clbl = f"chain_{_safe_name(chain_label)}_last_good"
-                else:
-                    continue
-                self.push_pending_command(_site, {
-                    "type": "save_clip",
-                    "payload": {
-                        "stream":     _sn.get("stream", ""),
-                        "label":      _clbl,
-                        "chain_name": chain_label,
-                        "chain_id":   chain.get("id", ""),
-                    },
-                })
+        if _flog and _entry_clips:
+            _target = (next((e for e in reversed(_flog) if e.get("id") == entry_id), None)
+                       if entry_id else _flog[-1])
+            if _target:
+                existing = _target.setdefault("clips", [])
+                existing.extend(_entry_clips)
+                metrics_db.fault_log_update_clips(_target.get("id", ""), existing)
 
         # ── Check for shared fault across other chains (machine tag only) ─────
         # Only nodes with an explicit machine tag participate in cross-chain
@@ -13306,6 +13360,49 @@ def alert_ack(alert_id: str):
     return jsonify({"ok": True, "ack": ack})
 
 
+@app.post("/hub/api/chain_notes/<fault_log_id>")
+@login_required
+@csrf_protect
+def hub_chain_note_ep(fault_log_id: str):
+    """Hub-side chain note endpoint.
+
+    Stores the note on the hub (so the hub's own fault log view shows it) and
+    forwards it to the originating client as a 'chain_note' command delivered
+    on the next heartbeat.
+
+    Body JSON: {"text": "...", "site": "..."}
+    """
+    from flask import session as _sess
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"ok": False, "error": "not a hub"}), 403
+    fault_log_id = fault_log_id.strip()
+    if not fault_log_id:
+        return jsonify({"ok": False, "error": "missing fault_log_id"}), 400
+    data  = request.json or {}
+    text  = str(data.get("text", "")).strip()[:2000]
+    site  = str(data.get("site", "")).strip()
+    by    = f"hub:{_sess.get('user', 'admin')}"
+    if not text:
+        return jsonify({"ok": False, "error": "note text cannot be empty"}), 400
+
+    # 1. Store on hub
+    record = _save_chain_note(fault_log_id, text, by=by)
+
+    # 2. Forward to client so it appears on the client too
+    if site and hub_server:
+        try:
+            hub_server.push_pending_command(site, {
+                "type":    "chain_note",
+                "payload": {"fault_log_id": fault_log_id, "text": text, "by": by},
+            })
+        except Exception as _e:
+            return jsonify({"ok": True, "record": record,
+                            "warning": f"Note saved but could not queue command: {_e}"})
+
+    return jsonify({"ok": True, "fault_log_id": fault_log_id, "record": record, "site": site})
+
+
 @app.post("/hub/api/alerts/<alert_id>/feedback")
 @login_required
 @csrf_protect
@@ -15391,6 +15488,10 @@ def hub_clip_upload():
     label      = str(data.get("label",      "clip")).strip()
     chain_name = str(data.get("chain_name", "")).strip()
     chain_id   = str(data.get("chain_id",   "")).strip()
+    entry_id   = str(data.get("entry_id",   "")).strip()
+    node_label = str(data.get("node_label", "")).strip()
+    clip_pos   = data.get("pos", None)
+    clip_status= str(data.get("status",     "")).strip()
     data_b64   = data.get("data_b64", "")
     level_dbfs = data.get("level_dbfs", None)
     clip_ts    = data.get("ts", time.time())   # use sender's timestamp for filename
@@ -15452,14 +15553,37 @@ def hub_clip_upload():
         "ptp_jitter_us": 0,
         "ptp_gm":        "",
     })
-    # Link clip back to the most recent fault log entry for this chain
+    # Link clip back to the correct fault log entry for this chain.
+    # entry_id is the UUID assigned when the fault fired — use it to find the
+    # right entry directly.  If the client is older and didn't send entry_id,
+    # fall back to flog[-1] as before.
     if chain_id:
-        _clip_label = "last_good" if "last_good" in label else "fault"
+        # Derive a consistent label
+        if clip_status in ("fault", "last_good"):
+            _clip_label = clip_status
+        elif "last_good" in label:
+            _clip_label = "last_good"
+        elif "fault" in label:
+            _clip_label = "fault"
+        else:
+            _clip_label = label  # e.g. "pos0", "pos2"
         flog = hub_server._chain_fault_log.get(chain_id, [])
         if flog:
-            clips = flog[-1].setdefault("clips", [])
-            clips.append({"key": safe_key, "fname": fname, "label": _clip_label})
-            metrics_db.fault_log_update_clips(flog[-1].get("id", ""), clips)
+            if entry_id:
+                _target = next((e for e in reversed(flog) if e.get("id") == entry_id), None)
+            else:
+                _target = flog[-1]   # legacy fallback
+            if _target:
+                clips = _target.setdefault("clips", [])
+                clips.append({
+                    "key":        safe_key,
+                    "fname":      fname,
+                    "label":      _clip_label,
+                    "node_label": node_label or stream,
+                    "pos":        clip_pos,
+                    "status":     clip_status or _clip_label,
+                })
+                metrics_db.fault_log_update_clips(_target.get("id", ""), clips)
 
     monitor.log(f"[Hub] Clip upload received: {site}/{stream}/{label} "
                 f"({len(wav_bytes) // 1024}KB → {fname})")
@@ -16607,6 +16731,31 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .flog-view-hint{font-size:10px;opacity:.45;transition:opacity .12s}
 .flog-row:hover .flog-view-hint{opacity:1}
 .flog-empty{color:var(--mu);font-size:11px;padding:8px 0}
+/* Chain health score badge */
+.health-badge{font-size:11px;font-weight:700;padding:2px 8px;border:1px solid;border-radius:999px;white-space:nowrap;letter-spacing:.02em}
+/* Fault replay timeline */
+.replay-wrap{margin-top:6px;padding:10px 12px;background:rgba(0,0,0,.28);border-radius:8px;border:1px solid var(--bor)}
+.replay-timeline{display:flex;align-items:flex-start;gap:0;overflow-x:auto;padding-bottom:6px;margin-bottom:10px}
+.replay-tnode{display:flex;flex-direction:column;align-items:center;min-width:76px;max-width:110px}
+.replay-tbar{width:68px;padding:4px 5px;border-radius:5px;border:2px solid;font-size:9px;font-weight:700;text-align:center;cursor:pointer;transition:transform .12s,box-shadow .12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.replay-tbar:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.4)}
+.replay-tbar.ractive{transform:translateY(-2px);box-shadow:0 0 0 2px var(--acc),0 4px 12px rgba(0,0,0,.4)}
+.replay-tlabel{font-size:9px;color:var(--mu);margin-top:3px;text-align:center;max-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.replay-tarrow{align-self:center;color:var(--mu);font-size:13px;padding:0 3px;margin-bottom:14px}
+.replay-controls{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.replay-play-all{font-size:11px;padding:3px 11px;background:var(--acc);color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:600}
+.replay-play-all:hover{opacity:.85}
+.replay-now-playing{font-size:10px;color:var(--mu);font-style:italic}
+.replay-players{display:flex;flex-direction:column;gap:0}
+.replay-clip-row{padding:5px 6px;border-radius:5px;transition:background .12s}
+.replay-clip-row.rplaying{background:rgba(23,168,255,.1)}
+.replay-clip-header{display:flex;align-items:center;gap:5px;margin-bottom:3px}
+.replay-clip-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.replay-clip-label{font-size:10px;color:var(--tx);font-weight:500}
+.replay-clip-status{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px}
+.flog-note-cell{vertical-align:top;min-width:160px}
+.flog-note-text{font-size:11px;color:#b7d0f3;font-style:italic;line-height:1.4;white-space:pre-wrap;word-break:break-word;max-width:280px}
+.flog-note-editor{display:flex;flex-direction:column;gap:4px}
 /* Maintenance button */
 .maint-btn{font-size:10px;padding:1px 6px;border-radius:6px;background:#1e3a5f;border:1px solid #1d4ed8;color:#93c5fd;cursor:pointer;white-space:nowrap}
 .maint-btn:hover{background:#1d4ed8;color:#fff}
@@ -16713,6 +16862,7 @@ var _chainData={
     <span class="chain-name">{{c.name|e}}</span>
     <span class="badge badge-unknown" id="badge_{{c.id|e}}">…</span>
     <span class="sla-badge" id="sla_{{c.id|e}}" style="display:none"></span>
+    <span class="health-badge" id="health_{{c.id|e}}" style="display:none"></span>
     {% if c.min_fault_seconds %}
     <span style="font-size:11px;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:2px 8px" title="Fault confirmation delay — alert fires only after fault persists this long">⏱ {{c.min_fault_seconds}}s delay</span>
     {% endif %}
@@ -17194,6 +17344,16 @@ function refreshStatus(){
         slaBadge.className='sla-badge '+(chain.sla_pct>=99.5?'sla-ok':'sla-warn');
         slaBadge.style.display='';
       }
+      // Health score badge
+      var healthBadge=document.getElementById('health_'+chain.id);
+      if(healthBadge&&chain.health_score!=null){
+        healthBadge.textContent=chain.health_score+' — '+(chain.health_label||'');
+        healthBadge.style.color=chain.health_color||'var(--mu)';
+        healthBadge.style.borderColor=chain.health_color||'var(--mu)';
+        healthBadge.style.background=(chain.health_color||'#8aa4c8')+'18';
+        healthBadge.title='Chain health score: '+chain.health_score+'/100 ('+chain.health_label+')\nBased on 30-day SLA, fault frequency, stability and level trends.';
+        healthBadge.style.display='';
+      }
       // Flapping override badge
       if(chain.flapping&&badge){
         badge.textContent='FLAPPING';badge.className='badge badge-flap';
@@ -17440,8 +17600,10 @@ document.getElementById('chains_list').addEventListener('click', function(e){
         var entries=d.entries||[];
         if(!entries.length){body.innerHTML='<div class="flog-empty">No faults recorded yet.</div>';return;}
         var hasRtp=entries.some(function(ev){return ev.rtp_loss_pct!=null;});
-        var hasClips=entries.some(function(ev){return ev.clips&&ev.clips.length;});
-        var html='<table class="flog-table"><thead><tr><th>Date/Time</th><th>Fault Point</th><th>Site</th>'+(hasRtp?'<th>RTP Loss</th>':'')+(hasClips?'<th>Clips</th>':'')+'<th>Duration</th></tr></thead><tbody>';
+        // Always show the Clips column — hide per-row when empty rather than
+        // hiding the whole column (otherwise the column never appears until the
+        // page is reloaded after the first clip-bearing fault fires).
+        var html='<table class="flog-table"><thead><tr><th>Date/Time</th><th>Fault Point</th><th>Site</th>'+(hasRtp?'<th>RTP Loss</th>':'')+'<th>Clips</th><th>Duration</th><th style="min-width:180px">Engineer Note</th></tr></thead><tbody>';
         entries.forEach(function(ev){
           var dt=new Date(ev.ts_start*1000).toLocaleString();
           var dur=ev.ts_recovered?_fmtDur(ev.ts_recovered-ev.ts_start):'<span style="color:var(--al)">Ongoing</span>';
@@ -17453,21 +17615,32 @@ document.getElementById('chains_list').addEventListener('click', function(e){
             } else { rtpCell='<td style="color:var(--mu)">—</td>'; }
           }
           var clipsCell='';
-          if(hasClips){
-            var clips=ev.clips||[];
-            if(clips.length){
-              clipsCell='<td>'+clips.map(function(c){
-                var lbl=c.label==='last_good'?'⬇ Last Good':'⬇ Fault';
-                return '<a href="/api/chains/clip/'+encodeURIComponent(c.key)+'/'+encodeURIComponent(c.fname)+'" download style="font-size:10px;padding:1px 5px;border:1px solid var(--bor);border-radius:3px;color:var(--ok);text-decoration:none;white-space:nowrap;display:inline-block;margin:1px">'+lbl+'</a>';
-              }).join(' ')+'</td>';
-            } else { clipsCell='<td style="color:var(--mu)">—</td>'; }
+          var clips=ev.clips||[];
+          var fid=ev.id||('flog_'+Math.random().toString(36).slice(2));
+          if(clips.length){
+            // Store clips JSON on the button; panel is built lazily on first click
+            clipsCell='<td><button class="btn bg bs replay-open-btn" style="font-size:10px;white-space:nowrap" '
+              +'data-fid="'+_esc(fid)+'" data-clips="'+_esc(JSON.stringify(clips))+'">'
+              +'🎬 Replay ('+clips.length+')</button></td>';
+          } else {
+            clipsCell='<td style="color:var(--mu);font-size:10px">No clips</td>';
           }
+          // Engineer note cell — shows existing note or an add-note button
+          var noteCell='<td class="flog-note-cell" data-fid="'+_esc(fid)+'">';
+          if(ev.note){
+            var editedTip=ev.note_edited?' (edited '+ev.note_edited+')':'';
+            noteCell+='<div class="flog-note-text" title="By '+_esc(ev.note_by||'')+''+editedTip+'">'+_esc(ev.note)+'</div>'
+                      +'<button class="flog-note-edit-btn btn bg bs" style="margin-top:3px;font-size:10px" data-fid="'+_esc(fid)+'">✏ Edit</button>';
+          } else {
+            noteCell+='<button class="flog-note-add-btn btn bg bs" style="font-size:10px" data-fid="'+_esc(fid)+'">📝 Add Note</button>';
+          }
+          noteCell+='</td>';
           // data-ts enables click-to-replay: clicking the row jumps the history
           // time-travel view to the fault's start time
-          html+='<tr class="flog-row" data-ts="'+ev.ts_start+'" title="Click to view all chains at this moment">'
+          html+='<tr class="flog-row" data-fid="'+_esc(fid)+'" data-ts="'+ev.ts_start+'" title="Click to view all chains at this moment">'
                +'<td><span class="flog-dt">'+dt+'</span> <span class="flog-view-hint">🕐</span></td>'
                +'<td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td>'
-               +rtpCell+clipsCell+'<td>'+dur+'</td></tr>';
+               +rtpCell+clipsCell+'<td>'+dur+'</td>'+noteCell+'</tr>';
         });
         html+='</tbody></table>';
         body.innerHTML=html;
@@ -17490,6 +17663,178 @@ document.getElementById('chains_list').addEventListener('click',function(e){
   // Scroll the history banner into view so the user sees the time-travel controls
   var banner=document.getElementById('hist_banner');
   if(banner)banner.scrollIntoView({behavior:'smooth',block:'nearest'});
+});
+
+// ── Fault Replay Timeline ────────────────────────────────────────────────────
+function _replayClipColor(c){
+  if(c.status==='fault'||c.label==='fault')return'#ef4444';
+  if(c.status==='last_good'||c.label==='last_good')return'#22c55e';
+  return'#8aa4c8';
+}
+function _replayClipDispLabel(c){
+  var posL=c.label==='fault'?'FAULT POINT':c.label==='last_good'?'LAST GOOD':(c.label||'').replace(/_/g,' ').toUpperCase();
+  return(c.node_label||c.key||'')+(posL?' — '+posL:'');
+}
+function _buildReplayPanel(clips,rid){
+  var sorted=clips.slice().sort(function(a,b){return(a.pos==null?999:a.pos)-(b.pos==null?999:b.pos);});
+  // Timeline
+  var tl='<div class="replay-timeline">';
+  sorted.forEach(function(c,i){
+    if(i>0)tl+='<div class="replay-tarrow">→</div>';
+    var col=_replayClipColor(c);
+    var shortName=(c.node_label||c.key||'Node '+(i+1));
+    if(shortName.length>14)shortName=shortName.slice(0,13)+'…';
+    var posLbl=c.label==='fault'?'fault':c.label==='last_good'?'last good':(c.label||'pos '+i).replace(/_/g,' ');
+    tl+='<div class="replay-tnode">'
+      +'<div class="replay-tbar" style="color:'+col+';border-color:'+col+';background:'+col+'22" data-replay-idx="'+i+'" title="'+_esc(_replayClipDispLabel(c))+'">'
+      +_esc(shortName)+'</div>'
+      +'<div class="replay-tlabel">'+_esc(posLbl)+'</div>'
+      +'</div>';
+  });
+  tl+='</div>';
+  // Controls
+  var ctrl='<div class="replay-controls">'
+    +'<button class="replay-play-all" data-replay-id="'+_esc(rid)+'">▶ Play All</button>'
+    +'<span class="replay-now-playing" id="rnp_'+_esc(rid)+'"></span>'
+    +'</div>';
+  // Players
+  var players='<div class="replay-players" id="rplayers_'+_esc(rid)+'">';
+  sorted.forEach(function(c,i){
+    var col=_replayClipColor(c);
+    var lbl=_replayClipDispLabel(c);
+    var inlineUrl='/api/chains/clip/'+encodeURIComponent(c.key)+'/'+encodeURIComponent(c.fname);
+    var dlUrl='/api/chains/clip/'+encodeURIComponent(c.key)+'/'+encodeURIComponent(c.fname)+'?dl=1';
+    players+='<div class="replay-clip-row" id="rclip_'+_esc(rid)+'_'+i+'">'
+      +'<div class="replay-clip-header">'
+      +'<span class="replay-clip-dot" style="background:'+col+'"></span>'
+      +'<span class="replay-clip-label">'+_esc(lbl)+'</span>'
+      +'<a href="'+dlUrl+'" style="font-size:10px;color:var(--mu);margin-left:4px;text-decoration:none" title="Download">⬇</a>'
+      +'</div>'
+      +'<audio id="raudio_'+_esc(rid)+'_'+i+'" controls preload="none" src="'+inlineUrl+'" style="height:24px;width:100%;max-width:360px;margin-top:2px"></audio>'
+      +'</div>';
+  });
+  players+='</div>';
+  return'<div class="replay-wrap">'+tl+ctrl+players+'</div>';
+}
+// Open/close replay panel when Replay button clicked
+document.getElementById('chains_list').addEventListener('click',function(e){
+  var btn=e.target.closest('.replay-open-btn');
+  if(!btn)return;
+  e.stopPropagation();
+  var fid=btn.dataset.fid;
+  var panelRowId='rrow_'+fid;
+  var existing=document.getElementById(panelRowId);
+  if(existing){existing.style.display=existing.style.display==='none'?'':'none';return;}
+  var clipsJson=btn.dataset.clips||'[]';
+  var clips;try{clips=JSON.parse(clipsJson);}catch(_){clips=[];}
+  var parentRow=btn.closest('tr');
+  if(!parentRow)return;
+  var colSpan=parentRow.querySelectorAll('td,th').length||8;
+  var newRow=document.createElement('tr');
+  newRow.id=panelRowId;
+  var td=document.createElement('td');
+  td.colSpan=colSpan;
+  td.style.padding='0 6px 8px';
+  td.innerHTML=_buildReplayPanel(clips,fid);
+  newRow.appendChild(td);
+  parentRow.parentNode.insertBefore(newRow,parentRow.nextSibling);
+  // Wire up timeline node clicks → scroll to + highlight the matching player row
+  td.querySelectorAll('.replay-tbar').forEach(function(bar){
+    bar.addEventListener('click',function(){
+      var idx=parseInt(bar.dataset.replayIdx)||0;
+      var clipRow=document.getElementById('rclip_'+fid+'_'+idx);
+      if(clipRow){clipRow.scrollIntoView({behavior:'smooth',block:'nearest'});
+        clipRow.classList.add('rplaying');
+        setTimeout(function(){clipRow.classList.remove('rplaying');},1200);}
+    });
+  });
+});
+// Play All handler
+document.getElementById('chains_list').addEventListener('click',function(e){
+  var btn=e.target.closest('.replay-play-all');
+  if(!btn)return;
+  e.stopPropagation();
+  var rid=btn.dataset.replayId;
+  var players=document.getElementById('rplayers_'+rid);
+  var np=document.getElementById('rnp_'+rid);
+  if(!players)return;
+  var audios=Array.from(players.querySelectorAll('audio'));
+  var rows=Array.from(players.querySelectorAll('.replay-clip-row'));
+  var tlBars=document.querySelectorAll('[data-replay-idx]');
+  // Stop any currently playing audio
+  audios.forEach(function(a){a.pause();a.currentTime=0;});
+  rows.forEach(function(r){r.classList.remove('rplaying');});
+  tlBars.forEach(function(b){b.classList.remove('ractive');});
+  var idx=0;
+  function playNext(){
+    if(idx>=audios.length){
+      rows.forEach(function(r){r.classList.remove('rplaying');});
+      tlBars.forEach(function(b){b.classList.remove('ractive');});
+      if(np)np.textContent='Done ✓';
+      return;
+    }
+    rows.forEach(function(r,i){r.classList.toggle('rplaying',i===idx);});
+    tlBars.forEach(function(b){b.classList.toggle('ractive',parseInt(b.dataset.replayIdx)===idx);});
+    var audio=audios[idx];
+    if(np)np.textContent='Playing '+(idx+1)+' / '+audios.length+'…';
+    audio.currentTime=0;
+    audio.play().catch(function(){idx++;playNext();});
+    audio.onended=function(){idx++;playNext();};
+  }
+  playNext();
+});
+
+// ── Engineer notes inline editor ────────────────────────────────────────────
+function _openNoteEditor(fid, cell){
+  if(cell.querySelector('.flog-note-editor')) return; // already open
+  var existing=cell.querySelector('.flog-note-text');
+  var currentText=existing?existing.textContent.trim():'';
+  // Hide existing note text and add/edit buttons while editor is open
+  Array.from(cell.children).forEach(function(ch){ch.style.display='none';});
+  var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var wrap=document.createElement('div');
+  wrap.className='flog-note-editor';
+  wrap.innerHTML='<textarea maxlength="2000" placeholder="Enter engineer note…" style="width:100%;min-height:60px;background:#0d2346;border:1px solid var(--acc);border-radius:5px;color:var(--tx);padding:5px;font-size:11px;resize:vertical;box-sizing:border-box"></textarea>'
+                +'<div style="display:flex;gap:4px;margin-top:4px">'
+                +'<button class="btn bp bs flog-note-save" style="font-size:11px">💾 Save</button>'
+                +'<button class="btn bg bs flog-note-cancel" style="font-size:11px">Cancel</button>'
+                +'<span class="flog-note-saving" style="display:none;font-size:11px;color:var(--mu);align-self:center">Saving…</span>'
+                +'</div>';
+  cell.appendChild(wrap);
+  var ta=wrap.querySelector('textarea');
+  ta.value=currentText; ta.focus();
+  wrap.querySelector('.flog-note-cancel').addEventListener('click',function(){
+    wrap.remove();
+    Array.from(cell.children).forEach(function(ch){ch.style.display='';});
+  });
+  wrap.querySelector('.flog-note-save').addEventListener('click',function(){
+    var text=ta.value.trim();
+    if(!text) return;
+    wrap.querySelector('.flog-note-saving').style.display='';
+    fetch('/api/chains/notes/'+encodeURIComponent(fid),{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-CSRFToken':csrf},
+      body:JSON.stringify({text:text})
+    }).then(function(r){return r.json();}).then(function(d){
+      if(!d.ok){wrap.querySelector('.flog-note-saving').style.display='none';return;}
+      // Update the cell in-place
+      wrap.remove();
+      cell.innerHTML='<div class="flog-note-text" title="By '+_esc(d.record.by||'')+'">'+_esc(text)+'</div>'
+                    +'<button class="flog-note-edit-btn btn bg bs" style="margin-top:3px;font-size:10px" data-fid="'+_esc(fid)+'">✏ Edit</button>';
+    }).catch(function(){
+      wrap.querySelector('.flog-note-saving').style.display='none';
+    });
+  });
+}
+// Delegated handler for add/edit note buttons inside fault log tables
+document.getElementById('chains_list').addEventListener('click',function(e){
+  var btn=e.target.closest('.flog-note-add-btn,.flog-note-edit-btn');
+  if(!btn) return;
+  e.stopPropagation();
+  var fid=btn.dataset.fid;
+  var cell=btn.closest('.flog-note-cell');
+  if(!fid||!cell) return;
+  _openNoteEditor(fid, cell);
 });
 
 function _fmtDur(secs){
@@ -17925,27 +18270,36 @@ def api_chains_status():
 
             if internal_state == "pending" and adbreak_candidate and since is not None:
                 # Monitor loop has confirmed the pending/adbreak state — show countdown
+                hub_server._chain_api_pre_pending_since.pop(cid, None)
                 result["display_status"] = "adbreak"
                 remaining = max(0.0, min_fault_secs - (now - since))
                 result["adbreak_remaining"] = round(remaining)
             elif internal_state == "pending" and since is not None:
                 # Pending but not an adbreak candidate
+                hub_server._chain_api_pre_pending_since.pop(cid, None)
                 result["display_status"] = "pending"
                 remaining = max(0.0, min_fault_secs - (now - since))
                 result["adbreak_remaining"] = round(remaining)
             elif internal_state in (None, "ok") and chain_status == "fault" and min_fault_secs > 0:
-                # API is polled faster than the 30s monitor loop.  The eval already
+                # API is polled faster than the 10s monitor loop.  The eval already
                 # shows a fault but the loop hasn't had a chance to set "pending" yet.
                 # Jump straight to amber so the UI never flashes red first.
-                # (Covers both startup/pre-warmup and normal mid-run new faults.)
+                # Track when we FIRST saw this fault at the API layer so the countdown
+                # starts immediately rather than staying frozen at the full window.
+                pre_since = hub_server._chain_api_pre_pending_since.get(cid)
+                if pre_since is None:
+                    hub_server._chain_api_pre_pending_since[cid] = now
+                    pre_since = now
                 if adbreak_candidate:
                     result["display_status"] = "adbreak"
                 else:
                     result["display_status"] = "pending"
-                result["adbreak_remaining"] = min_fault_secs  # full window; since not known yet
+                result["adbreak_remaining"] = round(max(0.0, min_fault_secs - (now - pre_since)))
             else:
                 result["display_status"] = chain_status
                 result["adbreak_remaining"] = None
+                # Clear pre-pending tracker when fault resolves or monitor loop takes over
+                hub_server._chain_api_pre_pending_since.pop(cid, None)
             # Expose fault onset timestamp for mobile Live Activity duration timer
             if internal_state == "alerted" and since is not None:
                 result["fault_since_ts"] = since
@@ -18005,6 +18359,52 @@ def api_chains_status():
 
             # ── Flapping state ─────────────────────────────────────────────
             result["flapping"] = hub_server._chain_flapping.get(cid, False)
+
+            # ── Chain Health Score (0–100) ──────────────────────────────────
+            # Composite of SLA, recent fault frequency, stability, and trends.
+            # Designed so a perfectly healthy chain converges toward 100 over
+            # time as SLA approaches 100 % and fault history clears.
+            try:
+                _sla          = result.get("sla_pct")
+                _is_flapping  = result.get("flapping", False)
+                # Component 1: SLA (0–70 pts)  — primary long-run health driver
+                _sla_pts      = min(70.0, float(_sla) * 0.70) if _sla is not None else 35.0
+                # Component 2: Fault frequency last 7 d (0–20 pts)
+                _7d_cutoff    = now - 7 * 86400
+                _flog_entries = hub_server._chain_fault_log.get(cid, [])
+                _faults_7d    = sum(1 for e in _flog_entries
+                                    if e.get("ts_start", 0) > _7d_cutoff)
+                _freq_pts     = max(0.0, 20.0 - _faults_7d * 4.0)
+                # Component 3: Stability (0–10 pts) — flapping wipes this out
+                _stab_pts     = 0.0 if _is_flapping else 10.0
+                # Component 4: Trending-down node penalty (−5 per node, max −15)
+                def _count_down_trends(nl):
+                    t = 0
+                    for nd in nl:
+                        if nd.get("type") == "stack":
+                            t += _count_down_trends(nd.get("nodes", []))
+                        elif nd.get("trend") == "down":
+                            t += 1
+                    return t
+                _down_nodes  = _count_down_trends(result.get("nodes", []))
+                _trend_pen   = min(15.0, _down_nodes * 5.0)
+                _hscore      = round(max(0, min(100,
+                    _sla_pts + _freq_pts + _stab_pts - _trend_pen)))
+                if _hscore >= 90:
+                    _hlabel, _hcolor = "Healthy",  "#22c55e"
+                elif _hscore >= 75:
+                    _hlabel, _hcolor = "Watch",    "#f59e0b"
+                elif _hscore >= 50:
+                    _hlabel, _hcolor = "Degraded", "#f97316"
+                else:
+                    _hlabel, _hcolor = "Poor",     "#ef4444"
+                result["health_score"] = _hscore
+                result["health_label"] = _hlabel
+                result["health_color"] = _hcolor
+            except Exception:
+                result["health_score"] = None
+                result["health_label"] = "Unknown"
+                result["health_color"] = "#8aa4c8"
 
             results.append(result)
         except Exception as e:
@@ -18151,6 +18551,121 @@ def _mobile_chain_summary(result: dict, now: float | None = None) -> dict:
     }
 
 
+@app.get("/api/mobile/hub/overview")
+@mobile_api_required
+def api_mobile_hub_overview():
+    """Aggregated hub state for the iOS Sites overview tab.
+
+    Returns every connected site with per-site summary counts and a slim
+    stream list (name, level, format, SLA, AI state).  Does NOT require
+    the caller to be running in hub mode — if the server is a standalone
+    node the response will have an empty sites list and mode='local'.
+    """
+    cfg = monitor.app_cfg
+    now = time.time()
+    mode = cfg.hub.mode if cfg.hub else "local"
+
+    if mode not in ("hub", "both"):
+        return jsonify({
+            "ok": True, "generated_at": now,
+            "mode": mode,
+            "summary": {"total_sites": 0, "online_sites": 0, "offline_sites": 0,
+                        "total_alert": 0, "total_warn": 0, "total_ok": 0,
+                        "total_streams": 0},
+            "sites": [],
+        })
+
+    raw_sites = hub_server.get_sites()
+    total_alert = total_warn = total_ok = total_online = total_offline = 0
+    result_sites = []
+
+    for s in raw_sites:
+        streams = s.get("streams") or []
+        online  = s.get("online", False)
+
+        if not online:
+            site_status = "offline"
+            total_offline += 1
+        elif any("ALERT" in (st.get("ai_status") or "") for st in streams):
+            site_status = "alert"
+            total_online += 1
+        elif any("WARN" in (st.get("ai_status") or "") for st in streams):
+            site_status = "warn"
+            total_online += 1
+        else:
+            site_status = "ok"
+            total_online += 1
+
+        s_alert = sum(1 for st in streams if "ALERT" in (st.get("ai_status") or ""))
+        s_warn  = sum(1 for st in streams if "WARN"  in (st.get("ai_status") or ""))
+        s_ok    = max(0, len(streams) - s_alert - s_warn)
+        total_alert += s_alert
+        total_warn  += s_warn
+        total_ok    += s_ok
+
+        mobile_streams = []
+        for st in sorted(streams, key=lambda x: (
+            0 if "ALERT" in (x.get("ai_status") or "") else
+            1 if "WARN"  in (x.get("ai_status") or "") else 2,
+            (x.get("name") or "").lower()
+        )):
+            if not st.get("enabled", True):
+                continue
+            ai_raw = (st.get("ai_status") or "").upper()
+            if "ALERT"    in ai_raw: ai_state = "alert"
+            elif "WARN"   in ai_raw: ai_state = "warn"
+            elif "LEARNING" in ai_raw: ai_state = "learning"
+            else:                    ai_state = "ok"
+            mobile_streams.append({
+                "name":      st.get("name", ""),
+                "format":    st.get("format", ""),
+                "level_dbfs": st.get("level_dbfs"),
+                "sla_pct":   st.get("sla_pct"),
+                "ai_status": ai_state,
+                "ai_phase":  st.get("ai_phase", ""),
+            })
+
+        result_sites.append({
+            "site":         s.get("site", ""),
+            "online":       online,
+            "running":      s.get("running", False),
+            "site_status":  site_status,
+            "age_s":        s.get("age_s"),
+            "latency_ms":   s.get("latency_ms"),
+            "build":        s.get("build", ""),
+            "health_pct":   s.get("health_pct"),
+            "alert_count":  s_alert,
+            "warn_count":   s_warn,
+            "ok_count":     s_ok,
+            "stream_count": len(streams),
+            "streams":      mobile_streams,
+        })
+
+    # Sort: alert → warn → ok → offline, then alphabetically
+    result_sites.sort(key=lambda x: (
+        0 if x["site_status"] == "alert"   else
+        1 if x["site_status"] == "warn"    else
+        2 if x["site_status"] == "ok"      else 3,
+        x["site"].lower()
+    ))
+
+    return jsonify({
+        "ok":           True,
+        "generated_at": now,
+        "mode":         mode,
+        "summary": {
+            "total_sites":   len(result_sites),
+            "online_sites":  total_online,
+            "offline_sites": total_offline,
+            "total_alert":   total_alert,
+            "total_warn":    total_warn,
+            "total_ok":      total_ok,
+            "total_streams": total_alert + total_warn + total_ok,
+        },
+        "sites": result_sites,
+    })
+
+
 @app.get("/api/mobile/chains")
 @mobile_api_required
 def api_mobile_chains():
@@ -18175,6 +18690,92 @@ def api_mobile_chain(cid: str):
         if item.get("id") == cid:
             return jsonify({"ok": True, "chain": _mobile_chain_summary(item, now=now)})
     return jsonify({"ok": False, "error": "not found"}), 404
+
+
+@app.get("/api/mobile/chains/<cid>/fault_log")
+@mobile_api_required
+def api_mobile_chain_fault_log(cid: str):
+    """Return the fault log for a chain with engineer notes merged in.
+    Used by the iPhone app to show fault history with notes per event.
+    """
+    entries = metrics_db.fault_log_load(cid, limit=50)
+    notes = _load_chain_notes()
+    result = []
+    for entry in reversed(entries):  # newest first
+        # Build mobile-friendly clip list with playback URL included
+        raw_clips = entry.get("clips") or []
+        mobile_clips = []
+        for c in raw_clips:
+            key   = c.get("key", "")
+            fname = c.get("fname", "")
+            if not fname:
+                continue
+            mobile_clips.append({
+                "key":        key,
+                "fname":      fname,
+                "label":      c.get("label", ""),
+                "node_label": c.get("node_label", key),
+                "pos":        c.get("pos"),
+                "status":     c.get("status", ""),
+                # Relative URL the app appends to baseURL; uses mobile token auth
+                "url":        f"/api/mobile/clip/{key}/{fname}",
+            })
+        row = {
+            "id":               entry.get("id", ""),
+            "chain_id":         entry.get("chain_id", ""),
+            "ts_start":         entry.get("ts_start"),
+            "ts_recovered":     entry.get("ts_recovered"),
+            "fault_node_label": entry.get("fault_node_label", ""),
+            "fault_site":       entry.get("fault_site", ""),
+            "fault_stream":     entry.get("fault_stream", ""),
+            "rtp_loss_pct":     entry.get("rtp_loss_pct"),
+            "clips":            mobile_clips,
+            "note":             None,
+            "note_by":          None,
+            "note_ts":          None,
+        }
+        fid = row["id"]
+        if fid and fid in notes:
+            row["note"]    = notes[fid]["text"]
+            row["note_by"] = notes[fid]["by"]
+            row["note_ts"] = notes[fid]["ts"]
+        result.append(row)
+    return jsonify({"ok": True, "chain_id": cid, "entries": result, "count": len(result)})
+
+
+@app.post("/api/mobile/chain_notes/<fault_log_id>")
+@mobile_api_required
+def api_mobile_chain_note_save(fault_log_id: str):
+    """Add or update an engineer note from the mobile app.
+
+    Body JSON: {"text": "...", "site": "<site_name_if_hub>"}
+    - When this node is a hub, the optional "site" field causes the note to
+      also be forwarded to the originating client as a chain_note command.
+    - The note is always stored locally (on the hub or on the standalone client).
+    """
+    fault_log_id = fault_log_id.strip()
+    if not fault_log_id:
+        return jsonify({"ok": False, "error": "missing fault_log_id"}), 400
+    data = request.json or {}
+    text = str(data.get("text", "")).strip()[:2000]
+    site = str(data.get("site", "")).strip()
+    if not text:
+        return jsonify({"ok": False, "error": "note text cannot be empty"}), 400
+
+    record = _save_chain_note(fault_log_id, text, by="app")
+
+    # If this is a hub and the caller specified which client site, forward it
+    cfg = monitor.app_cfg
+    if site and hub_server and cfg.hub.mode in ("hub", "both"):
+        try:
+            hub_server.push_pending_command(site, {
+                "type":    "chain_note",
+                "payload": {"fault_log_id": fault_log_id, "text": text, "by": "app"},
+            })
+        except Exception:
+            pass
+
+    return jsonify({"ok": True, "fault_log_id": fault_log_id, "record": record})
 
 
 @app.get("/api/mobile/active_faults")
@@ -18574,22 +19175,78 @@ def api_mobile_reports_clip(clip_id: str):
 @app.get("/api/chains/<cid>/fault_log")
 @login_required
 def api_chains_fault_log(cid: str):
-    """Return the fault log for a chain from the SQLite DB (up to 100 most recent faults)."""
+    """Return the fault log for a chain from the SQLite DB (up to 100 most recent faults).
+    Engineer notes are merged into each entry that has one."""
     entries = metrics_db.fault_log_load(cid, limit=100)
+    notes = _load_chain_notes()
+    if notes:
+        for entry in entries:
+            fid = entry.get("id", "")
+            if fid and fid in notes:
+                entry["note"]      = notes[fid]["text"]
+                entry["note_by"]   = notes[fid]["by"]
+                entry["note_ts"]   = notes[fid]["ts"]
+                entry["note_edited"] = notes[fid].get("edited_at")
     return jsonify({"entries": list(reversed(entries))})  # newest first
+
+
+@app.post("/api/chains/notes/<fault_log_id>")
+@login_required
+@csrf_protect
+def api_chain_note_save(fault_log_id: str):
+    """Add or update an engineer note on a chain fault log entry.
+
+    Body JSON: {"text": "...", "chain_id": "..."}
+    Accepts up to 2000 characters. The chain_id is stored for future filtering but
+    the primary key is always the fault_log_id (UUID).
+    """
+    from flask import session as _sess
+    fault_log_id = fault_log_id.strip()
+    if not fault_log_id:
+        return jsonify({"ok": False, "error": "missing fault_log_id"}), 400
+    data  = request.json or {}
+    text  = str(data.get("text", "")).strip()[:2000]
+    by    = _sess.get("user", "admin")
+    if not text:
+        return jsonify({"ok": False, "error": "note text cannot be empty"}), 400
+    record = _save_chain_note(fault_log_id, text, by)
+    return jsonify({"ok": True, "fault_log_id": fault_log_id, "record": record})
 
 
 @app.get("/api/chains/clip/<clip_key>/<fname>")
 @login_required
 def api_chains_clip_download(clip_key: str, fname: str):
-    """Serve a chain fault audio clip for download."""
+    """Serve a chain fault audio clip.
+
+    Pass ?dl=1 to force a download (Content-Disposition: attachment).
+    Default (no query param) serves inline so <audio> elements can play it
+    directly in the browser without a separate download step.
+    """
     # Reject any path traversal attempts
     if ".." in clip_key or ".." in fname or "/" in fname or "\\" in fname:
         return "Bad request", 400
     clip_dir = os.path.join(BASE_DIR, "alert_snippets", clip_key)
     if not os.path.isdir(clip_dir):
         return "Not found", 404
-    return send_from_directory(clip_dir, fname, as_attachment=True)
+    force_download = request.args.get("dl") == "1"
+    return send_from_directory(clip_dir, fname, as_attachment=force_download)
+
+
+@app.get("/api/mobile/clip/<clip_key>/<fname>")
+@mobile_api_required
+def api_mobile_clip_download(clip_key: str, fname: str):
+    """Serve a chain fault audio clip for the mobile app.
+
+    Uses mobile token auth (Bearer / X-API-Key / ?token=) so the iOS
+    app can stream or download the clip directly with AVPlayer.
+    """
+    if ".." in clip_key or ".." in fname or "/" in fname or "\\" in fname:
+        return "Bad request", 400
+    clip_dir = os.path.join(BASE_DIR, "alert_snippets", clip_key)
+    if not os.path.isdir(clip_dir):
+        return "Not found", 404
+    # Stream inline (not as attachment) so AVPlayer can handle it
+    return send_from_directory(clip_dir, fname, as_attachment=False)
 
 
 @app.post("/api/chains/<cid>/maintenance")
@@ -20592,7 +21249,7 @@ function pollChains(){
   }).catch(function(){});
 }
 pollChains();
-setInterval(pollChains,15000);
+setInterval(pollChains,5000);
 
 // ── Page refresh every 60s to pick up new streams/sites ────────────
 setTimeout(function(){location.reload();},60000);
