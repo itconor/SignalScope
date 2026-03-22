@@ -1029,7 +1029,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.37"
+BUILD                  = "SignalScope-3.2.38"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -17013,6 +17013,14 @@ def _mobile_live_url_from_node(node: dict) -> str:
 
 
 def _mobile_node_summary(node: dict) -> dict:
+    # eval_chain() populates node audio level under "level", while some other
+    # code paths may already expose "level_dbfs". Prefer the explicit mobile
+    # field when present, but fall back to the runtime chain-eval key so the
+    # iPhone app always gets usable level data.
+    level_dbfs = node.get("level_dbfs")
+    if level_dbfs is None:
+        level_dbfs = node.get("level")
+
     out = {
         "type": node.get("type", "node"),
         "label": node.get("label") or node.get("stream") or node.get("site") or "Node",
@@ -17022,7 +17030,7 @@ def _mobile_node_summary(node: dict) -> dict:
         "reason": node.get("reason", ""),
         "machine": node.get("machine", ""),
         "live_url": _mobile_live_url_from_node(node),
-        "level_dbfs": node.get("level_dbfs"),
+        "level_dbfs": level_dbfs,
         "ts": node.get("ts"),
     }
     if node.get("type") == "stack":
