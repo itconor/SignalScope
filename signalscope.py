@@ -778,6 +778,45 @@ document.addEventListener('DOMContentLoaded',function(){
     <li>Tap <strong>Test Connection</strong> in the app.</li>
   </ol>
   <p class="help" style="margin-top:10px">Rotating the token immediately invalidates the previous one.</p>
+
+  <div class="sec" style="margin-top:24px">🔔 APNs Push Notifications</div>
+  <p class="help">Fill these in to send real push notifications to the iPhone app when a chain fault fires. Leave blank to skip. Requires <code style="background:#0b1d3b;padding:1px 5px;border-radius:4px">httpx[http2]</code> installed on the server.</p>
+  <p class="help" style="margin-top:6px">Get credentials at <strong>developer.apple.com → Keys</strong>. Create a key with <strong>Apple Push Notifications service (APNs)</strong> enabled, then download the <code>.p8</code> file.</p>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
+    <label>Key ID <span style="color:var(--mu);font-size:11px">(10 chars)</span>
+      <input type="text" name="apns_key_id" value="{{cfg.mobile_api.apns_key_id}}" placeholder="ABC1234DEF" maxlength="10" style="font-family:monospace">
+    </label>
+    <label>Team ID <span style="color:var(--mu);font-size:11px">(10 chars — top-right of developer.apple.com)</span>
+      <input type="text" name="apns_team_id" value="{{cfg.mobile_api.apns_team_id}}" placeholder="XYZ9876543" maxlength="10" style="font-family:monospace">
+    </label>
+    <label style="grid-column:1/-1">Bundle ID <span style="color:var(--mu);font-size:11px">(must match Xcode project)</span>
+      <input type="text" name="apns_bundle_id" value="{{cfg.mobile_api.apns_bundle_id}}" placeholder="com.example.SignalScope">
+    </label>
+  </div>
+
+  <label style="margin-top:10px">.p8 Private Key <span style="color:var(--mu);font-size:11px">(paste full file contents — starts with -----BEGIN PRIVATE KEY-----)</span>
+    <textarea name="apns_key_pem" rows="6" placeholder="-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
+-----END PRIVATE KEY-----" style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;resize:vertical">{{cfg.mobile_api.apns_key_pem}}</textarea>
+    <span class="help">Leave blank to keep the existing key.</span>
+  </label>
+
+  <label class="cb" style="margin-top:10px">
+    <input type="checkbox" name="apns_sandbox" {{'checked' if cfg.mobile_api.apns_sandbox}}>
+    Use sandbox / development APNs endpoint <span style="color:var(--mu);font-size:11px">(tick for Xcode / TestFlight builds; untick for App Store)</span>
+  </label>
+
+  {% set apns_ok = cfg.mobile_api.apns_key_id and cfg.mobile_api.apns_team_id and cfg.mobile_api.apns_bundle_id and cfg.mobile_api.apns_key_pem %}
+  {% set token_count = cfg.mobile_api.apns_device_tokens | length %}
+  <div style="margin-top:12px;padding:10px 14px;border:1px solid var(--bor);border-radius:8px;background:#0c1f40;font-size:13px">
+    {% if apns_ok %}
+      <span style="color:#18e471">✔ APNs configured</span>
+      — <strong>{{token_count}}</strong> device token{{'' if token_count == 1 else 's'}} registered
+    {% else %}
+      <span style="color:var(--mu)">APNs not configured — push notifications disabled</span>
+    {% endif %}
+  </div>
 </div>
 
 <div class="pn" id="p-sdr">
@@ -1029,7 +1068,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.40"
+BUILD                  = "SignalScope-3.2.41"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -1255,6 +1294,13 @@ class AuthConfig:
 class MobileApiConfig:
     enabled: bool = False
     token:   str  = ""
+    # APNs push notification config (requires httpx[http2] installed)
+    apns_key_id:       str  = ""    # 10-char key ID from Apple Developer portal
+    apns_team_id:      str  = ""    # 10-char Team ID from Apple Developer account
+    apns_bundle_id:    str  = ""    # e.g. com.example.SignalScope
+    apns_key_pem:      str  = ""    # full contents of the .p8 private key file
+    apns_sandbox:      bool = True  # True = development APNs, False = production
+    apns_device_tokens: list = field(default_factory=list)
 
 
 @dataclass
@@ -1514,6 +1560,12 @@ def load_config() -> AppConfig:
         mobile_api=MobileApiConfig(
             enabled=bool(ma.get("enabled", False)),
             token=str(ma.get("token", "")),
+            apns_key_id=str(ma.get("apns_key_id", "")),
+            apns_team_id=str(ma.get("apns_team_id", "")),
+            apns_bundle_id=str(ma.get("apns_bundle_id", "")),
+            apns_key_pem=str(ma.get("apns_key_pem", "")),
+            apns_sandbox=bool(ma.get("apns_sandbox", True)),
+            apns_device_tokens=list(ma.get("apns_device_tokens", [])),
         ),
         sla_target_pct=raw.get("sla_target_pct", 99.9),
         nowplaying_country=raw.get("nowplaying_country","GB"),
@@ -1629,8 +1681,14 @@ def save_config(cfg: AppConfig):
             "password_hash": cfg.auth.password_hash, "first_login": cfg.auth.first_login,
         },
         "mobile_api": {
-            "enabled": bool(getattr(cfg, "mobile_api", MobileApiConfig()).enabled),
-            "token": getattr(getattr(cfg, "mobile_api", MobileApiConfig()), "token", ""),
+            "enabled":            bool(getattr(cfg.mobile_api, "enabled", False)),
+            "token":              str(getattr(cfg.mobile_api, "token", "")),
+            "apns_key_id":        str(getattr(cfg.mobile_api, "apns_key_id", "")),
+            "apns_team_id":       str(getattr(cfg.mobile_api, "apns_team_id", "")),
+            "apns_bundle_id":     str(getattr(cfg.mobile_api, "apns_bundle_id", "")),
+            "apns_key_pem":       str(getattr(cfg.mobile_api, "apns_key_pem", "")),
+            "apns_sandbox":       bool(getattr(cfg.mobile_api, "apns_sandbox", True)),
+            "apns_device_tokens": list(getattr(cfg.mobile_api, "apns_device_tokens", [])),
         },
         "sla_target_pct": cfg.sla_target_pct,
         "nowplaying_country": cfg.nowplaying_country,
@@ -1953,6 +2011,115 @@ def mobile_api_required(f):
             return jsonify({"ok": False, "error": "unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
+
+
+# ── APNs push notifications ───────────────────────────────────────────────────
+try:
+    import httpx as _httpx
+    _HTTPX_HTTP2 = True
+except ImportError:
+    _httpx = None
+    _HTTPX_HTTP2 = False
+
+# Cache the JWT so we don't regenerate it on every push (valid 55 min)
+_apns_jwt_cache: dict = {"token": "", "generated_at": 0.0}
+
+def _apns_make_jwt(key_id: str, team_id: str, key_pem: str) -> str:
+    """Generate an ES256 JWT suitable for APNs provider authentication."""
+    import base64, json as _json
+    from cryptography.hazmat.primitives import hashes as _ch, serialization as _cs
+    from cryptography.hazmat.primitives.asymmetric import ec as _ec
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature as _dds
+
+    hdr = base64.urlsafe_b64encode(_json.dumps({"alg": "ES256", "kid": key_id}).encode()).rstrip(b"=").decode()
+    pay = base64.urlsafe_b64encode(_json.dumps({"iss": team_id, "iat": int(time.time())}).encode()).rstrip(b"=").decode()
+    msg = f"{hdr}.{pay}".encode()
+
+    priv = _cs.load_pem_private_key(key_pem.encode(), password=None)
+    sig_der = priv.sign(msg, _ec.ECDSA(_ch.SHA256()))
+    r, s = _dds(sig_der)
+    raw_sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+    sig = base64.urlsafe_b64encode(raw_sig).rstrip(b"=").decode()
+    return f"{hdr}.{pay}.{sig}"
+
+
+def _get_apns_jwt(ma) -> str:
+    """Return a cached JWT, regenerating if older than 55 minutes."""
+    now = time.time()
+    if now - _apns_jwt_cache["generated_at"] > 55 * 60 or not _apns_jwt_cache["token"]:
+        _apns_jwt_cache["token"] = _apns_make_jwt(ma.apns_key_id, ma.apns_team_id, ma.apns_key_pem)
+        _apns_jwt_cache["generated_at"] = now
+    return _apns_jwt_cache["token"]
+
+
+def _send_apns_push(title: str, body: str, data: "dict|None" = None, badge: "int|None" = None):
+    """Send an APNs push notification to all registered device tokens.
+
+    Requires ``httpx[http2]`` (``pip install httpx[http2]``) to be installed.
+    Silent no-op if APNs is not configured or the library is missing.
+    """
+    ma = getattr(monitor.app_cfg, "mobile_api", None)
+    if not ma:
+        return
+    tokens = list(getattr(ma, "apns_device_tokens", []))
+    if not tokens:
+        return
+    key_id   = getattr(ma, "apns_key_id", "").strip()
+    team_id  = getattr(ma, "apns_team_id", "").strip()
+    bundle   = getattr(ma, "apns_bundle_id", "").strip()
+    key_pem  = getattr(ma, "apns_key_pem", "").strip()
+    if not (key_id and team_id and bundle and key_pem):
+        return
+    if not _HTTPX_HTTP2:
+        monitor.log("[APNs] httpx[http2] not installed — push notifications unavailable. "
+                    "Run: pip install 'httpx[http2]'")
+        return
+
+    payload: dict = {"aps": {"alert": {"title": title, "body": body}, "sound": "default"}}
+    if badge is not None:
+        payload["aps"]["badge"] = badge
+    if data:
+        payload.update(data)
+
+    host = "api.sandbox.push.apple.com" if getattr(ma, "apns_sandbox", True) else "api.push.apple.com"
+    jwt  = _get_apns_jwt(ma)
+
+    def _push_thread():
+        import json as _json
+        to_remove = []
+        try:
+            with _httpx.Client(http2=True, timeout=10.0) as client:
+                for token in tokens:
+                    try:
+                        resp = client.post(
+                            f"https://{host}/3/device/{token}",
+                            headers={
+                                "authorization": f"bearer {jwt}",
+                                "apns-topic":    bundle,
+                                "apns-priority": "10",
+                                "apns-push-type": "alert",
+                                "content-type":  "application/json",
+                            },
+                            content=_json.dumps(payload).encode(),
+                        )
+                        if resp.status_code == 410:   # device token no longer valid
+                            monitor.log(f"[APNs] Token {token[:12]}… expired/unregistered — removing")
+                            to_remove.append(token)
+                        elif resp.status_code not in (200, 400):
+                            monitor.log(f"[APNs] Push {resp.status_code} for {token[:12]}…: {resp.text[:120]}")
+                    except Exception as e:
+                        monitor.log(f"[APNs] Push error for {token[:12]}…: {e}")
+        except Exception as e:
+            monitor.log(f"[APNs] HTTP client error: {e}")
+        if to_remove:
+            for t in to_remove:
+                try:
+                    ma.apns_device_tokens.remove(t)
+                except ValueError:
+                    pass
+            save_config(monitor.app_cfg)
+
+    threading.Thread(target=_push_thread, daemon=True).start()
 
 
 # ── Per-request CSP nonce ────────────────────────────────────────────────────
@@ -9146,6 +9313,17 @@ class HubServer:
         except Exception as e:
             monitor.log(f"[Chain] Alert send error: {e}")
 
+        # ── APNs push to mobile app ───────────────────────────────────────────
+        try:
+            cid = chain.get("id", "")
+            _send_apns_push(
+                title=f"Fault: {chain_label}",
+                body=msg[:180],
+                data={"chain_id": cid},
+            )
+        except Exception as e:
+            monitor.log(f"[APNs] Push error in _fire_chain_fault: {e}")
+
     # ── Query ─────────────────────────────────────────────────────────────────
     def get_sites(self) -> List[dict]:
         now = time.time()
@@ -12713,6 +12891,14 @@ def settings():
         try: cfg.clip_max_per_stream = max(0, int(f.get("clip_max_per_stream", 200)))
         except: pass
         cfg.suppress_local_notifications = bool(f.get("hub_suppress_local"))
+        # APNs push notification config
+        cfg.mobile_api.apns_key_id    = f.get("apns_key_id",    "").strip()
+        cfg.mobile_api.apns_team_id   = f.get("apns_team_id",   "").strip()
+        cfg.mobile_api.apns_bundle_id = f.get("apns_bundle_id", "").strip()
+        _apns_pem = f.get("apns_key_pem", "").strip()
+        if _apns_pem:                       # only overwrite if something was pasted
+            cfg.mobile_api.apns_key_pem = _apns_pem
+        cfg.mobile_api.apns_sandbox = bool(f.get("apns_sandbox"))
         save_config(cfg)
         # If hub client mode and URL are now set, start the hub heartbeat client
         # immediately without requiring the monitor loop to be running first.
@@ -17200,6 +17386,38 @@ def api_mobile_token_status():
         "token_masked": masked,
         "token_present": bool(token),
     })
+
+@app.route("/api/mobile/device_token", methods=["POST"])
+@mobile_api_required
+def api_mobile_device_token():
+    """Register or unregister an APNs device token for push notifications.
+
+    POST body: {"token": "<hex token>", "action": "register"|"unregister"}
+    """
+    data  = request.get_json(force=True, silent=True) or {}
+    token = str(data.get("token", "")).strip()
+    if not token:
+        return jsonify({"ok": False, "error": "token required"}), 400
+
+    ma = getattr(monitor.app_cfg, "mobile_api", None)
+    if ma is None:
+        return jsonify({"ok": False, "error": "mobile api not configured"}), 500
+
+    if not hasattr(ma, "apns_device_tokens") or ma.apns_device_tokens is None:
+        ma.apns_device_tokens = []
+
+    action = str(data.get("action", "register")).lower()
+    if action == "unregister":
+        if token in ma.apns_device_tokens:
+            ma.apns_device_tokens.remove(token)
+            save_config(monitor.app_cfg)
+        return jsonify({"ok": True, "action": "unregistered", "count": len(ma.apns_device_tokens)})
+    else:
+        if token not in ma.apns_device_tokens:
+            ma.apns_device_tokens.append(token)
+            save_config(monitor.app_cfg)
+        return jsonify({"ok": True, "action": "registered", "count": len(ma.apns_device_tokens)})
+
 
 # ─── Mobile reports / clips API ──────────────────────────────────────────────
 
