@@ -2,6 +2,48 @@
 
 ---
 
+## [3.2.67] - 2026-03-22
+
+### Added
+- **Chain Health Score** — every chain card now shows a live composite health score (0–100) alongside the SLA badge. The score combines four weighted components: 30-day SLA (0–70 pts, primary driver), fault frequency over the last 7 days (0–20 pts, −4 per fault), stability (0–10 pts, zeroed out while flapping), and a penalty for any chain nodes with a falling level trend (−5 per trending-down node, max −15). Colour-coded and labelled: **Healthy** (≥ 90, green) · **Watch** (75–89, amber) · **Degraded** (50–74, orange) · **Poor** (< 50, red). Hovering the badge shows a tooltip explaining each component. New chains with insufficient SLA data start around 65 and improve as history accumulates.
+- **Fault Replay Timeline** — chain fault log entries that include audio clips now show a **🎬 Replay** button (replacing the old stacked chip list). Clicking expands an inline panel with:
+  - A visual timeline of all captured node clips laid out left-to-right in signal-path order, coloured by status (fault = red, last good = green, others = muted), matching the chain diagram layout. Click any node to scroll to its audio player.
+  - **▶ Play All** — plays all clips sequentially in chain order. The active node is highlighted in the timeline and the active player row is highlighted as playback moves through the chain.
+  - Per-clip audio players with individual download (⬇) links. The panel can be collapsed by clicking the Replay button again.
+- **Clip endpoint now serves inline by default** — `/api/chains/clip/<key>/<fname>` no longer sends `Content-Disposition: attachment`, allowing `<audio>` elements to stream directly in the browser. Append `?dl=1` to force a file download (the ⬇ links in the replay panel use this).
+
+---
+
+## [3.2.66] - 2026-03-22
+
+### Fixed
+- **Ad break countdown frozen until monitor loop tick** — when both stacked inputs went silent, the API detected the fault live via `eval_chain()` but `adbreak_remaining` was stuck at the full configured window (e.g. "90s") until the 10-second chain monitor loop ran and set the `"pending"` state. The UI displayed a frozen amber badge that appeared not to be counting down. Fixed by tracking a `_chain_api_pre_pending_since` timestamp on `HubServer` the moment the API first sees a fault; the countdown now starts immediately from that onset regardless of the monitor loop phase. The pre-pending timestamp is cleared automatically when the monitor loop takes over or the fault resolves.
+- **Chain widget on hub overview page refreshing every 15 s** — the mini chain diagram on the hub overview page (`/hub`) was polling `/api/chains/status` every 15 seconds while everything else on the page refreshed every 5 seconds, causing the chain status boxes to appear noticeably stale. Reduced to 5 s to match the hub page refresh cadence.
+
+---
+
+## [3.2.65] - 2026-03-22
+
+### Added
+- **iOS Sites tab** — new **Sites** tab (tab 0) in the iOS app shows a live hub overview: a summary bar with counts for Online, Offline, Alerts, Warnings, and Streams; expandable site cards showing each site's status, last-seen time, and latency; per-site stream rows with level bar, format badge, SLA%, and AI status badge. Pull-to-refresh and loading/error/empty states. Backed by the new `/api/mobile/hub/overview` endpoint which aggregates hub `_sites` into a structured summary with per-site, per-stream data. Tab ordering updated to Sites → Faults → Chains → Reports → Settings.
+- **Chain fault audio clips in iOS fault log** — the fault history panel on each chain's detail view now shows all audio clips captured at fault time. Each clip is listed with its node label, position status (fault/last good/ok), and an inline AVPlayer with play/pause controls. Token-authenticated playback via the new `/api/mobile/clip/<key>/<fname>` endpoint.
+
+### Fixed
+- **Web fault log Clips column always hidden** — the column header was gated on `hasClips`, a flag that was `false` for existing fault entries that pre-dated clip capture. The `hasClips` gate is removed; the column is always shown and individual rows display "No clips" when a fault entry has none.
+
+---
+
+## [3.2.62] - 2026-03-22
+
+### Added
+- **All-nodes audio clip capture on chain fault** — when a chain fault fires, SignalScope now saves audio clips from **every node** in the chain (not just the fault point and last-good node). Each clip is tagged with the node label, chain position index, and a status label (`fault`, `last_good`, or `posN`). Remote node clips are requested via the existing `save_clip` hub command and back-patched into the fault log entry by UUID once received — eliminating the previous race condition where clips were matched against `_flog[-1]` which could be stale if a second fault fired during upload.
+
+### Fixed
+- **Remote silence threshold hardcoded at −55 dBFS for chain evaluation** — `_eval_one_node()` used a hardcoded −55.0 dBFS silence floor when evaluating remote (hub client) streams, regardless of how the stream's silence threshold was configured on the client. The client's `silence_threshold_dbfs` is now sent in every heartbeat payload, and `_eval_one_node()` uses it with a −55.0 fallback for older clients that do not include it. Previously, streams with a silence threshold configured above or below −55 dBFS (e.g. −45 dBFS for a low-level feed) would be evaluated incorrectly by the chain engine.
+- **`CHAIN_RECOVERED` alert fired with type `CHAIN_FAULT`** — the recovery notification was sending `alert_type="CHAIN_FAULT"` and writing `"type": "CHAIN_FAULT"` to the alert log, making recovery events indistinguishable from fault events in Reports and on the hub. Both the alert log entry and the `AlertSender.send()` call now correctly use `"CHAIN_RECOVERED"`. `CHAIN_RECOVERED` has also been added to `_ALL_ALERT_TYPES` and `_HUB_DEFAULT_FORWARD_TYPES` so it participates in hub forwarding and filtering.
+
+---
+
 ## [3.2.61] - 2026-03-22
 
 ### Changed

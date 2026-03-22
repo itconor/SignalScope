@@ -58,7 +58,7 @@ A PowerShell installer (`install_signalscope_windows.ps1`) is included for Windo
 | **Composite fault alerts** | STUDIO_FAULT, STL_FAULT, TX_DOWN (FM); DAB_AUDIO_FAULT, DAB_SERVICE_MISSING (DAB); RTP_FAULT (Livewire/AES67) |
 | **Name mismatch alerts** | FM_RDS_MISMATCH, DAB_SERVICE_MISMATCH |
 | **AI anomaly detection** | Per-stream ONNX autoencoder, 24 h learning phase, adaptive baseline, feedback-driven retraining (👍/👎 in Reports or Hub Reports) |
-| **Broadcast Chains** | Visual signal path builder with fault location, node stacking, ad break handling, maintenance bypass, flap detection, chain SLA, fault history, predictive level trend, shared fault detection, historical time-travel view |
+| **Broadcast Chains** | Visual signal path builder with fault location, node stacking, ad break handling, maintenance bypass, flap detection, chain health score, chain SLA, fault history with audio replay timeline, all-node clip capture, predictive level trend, shared fault detection, historical time-travel view |
 | **Stream comparator** | Cross-correlate pre/post processing pairs; detect processor failure, gain drift, dropout |
 | **Metric history** | SQLite time-series, 90-day retention, signal history charts (15+ metrics), availability timeline, trend analysis |
 | **Notifications** | Email (SMTP), MS Teams Adaptive Cards, Pushover, plain text webhooks, alert escalation |
@@ -275,13 +275,26 @@ If a chain faults and recovers 3 or more times within a 10-minute window, Signal
 
 Mark any node as **In Maintenance** to exclude it from fault detection without removing it from the chain. A maintenance period is set in minutes; the node displays a maintenance badge and is skipped during chain evaluation until the timer expires. Useful when planned work on a single point would otherwise trigger false chain alerts.
 
+### Chain Health Score
+
+Each chain card displays a live **health score from 0 to 100**, calculated from four components:
+
+| Component | Weight | Detail |
+|---|---|---|
+| 30-day SLA | 0–70 pts | Primary long-run driver; 100 % SLA = 70 pts |
+| Fault frequency (last 7 d) | 0–20 pts | Starts at 20; −4 pts per fault this week |
+| Stability | 0–10 pts | Full 10 pts when not flapping; 0 when flapping |
+| Trending-down nodes | −5 per node | Max −15 penalty for nodes with falling levels |
+
+Colour-coded labels: **Healthy** (≥ 90) · **Watch** (75–89) · **Degraded** (50–74) · **Poor** (< 50). Hover the badge for a tooltip showing the score breakdown. A newly-created chain starts around 65 and improves as SLA history accumulates.
+
 ### Chain SLA
 
 Each chain accumulates an uptime percentage based on how long it has been in a confirmed-fault state versus monitored time. The SLA is displayed on the chain status view and updated once per minute. Ad break countdown periods and maintenance bypass periods are excluded from downtime — only confirmed faults count against the SLA.
 
 ### Fault History Log
 
-Each chain maintains a rolling fault event log showing the last 50 fault/recovery transitions with timestamps, fault node details and duration. View it via the chain status API at `/api/chains/<id>/fault_log`.
+Each chain maintains a rolling fault event log showing the last 50 fault/recovery transitions with timestamps, fault node details, duration, and captured audio clips. View it by expanding the **📋 Fault History** panel on the Broadcast Chains page.
 
 ### Predictive Level Trend Warning
 
@@ -331,7 +344,9 @@ When a chain is flapping (repeated fault/recovery), a single `CHAIN_FLAPPING` al
 
 When a stream is part of a chain, the CHAIN_FAULT notification takes priority: individual stream silence alerts are still logged to alert history but push notifications for those streams are suppressed, preventing alert storms.
 
-Audio evidence clips are saved for faulted nodes (and the last-good node) in the stream's `alert_snippets/` folder, and appear in Hub Reports with playback and download links.
+Audio evidence clips are saved for **every node** in the chain at the moment of fault — not just the fault point and last-good node. Each clip is tagged with the node label and chain position. Remote node clips are automatically uploaded to the hub and back-patched into the fault log entry.
+
+In the **Fault History** panel, any fault entry with captured clips shows a **🎬 Replay** button. Clicking it opens an inline replay timeline: node clips are laid out left-to-right in signal-path order (matching the chain diagram), colour-coded by fault status. **▶ Play All** plays through all clips sequentially with the active node highlighted. Individual ⬇ download links are provided per clip.
 
 ---
 
