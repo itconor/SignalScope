@@ -2,6 +2,48 @@
 
 ---
 
+
+## [3.2.34] - 2026-03-22
+
+### Added
+- **Mobile API for iPhone app / widgets / Live Activity**:
+  - `GET /api/mobile/chains` — token-protected snapshot of all broadcast chains using `results` as the list key
+  - `GET /api/mobile/chains/<cid>` — token-protected single-chain detail using `chain` as the object key
+  - `GET /api/mobile/active_faults` — token-protected active-fault view with the same chain summary shape used by the iPhone app fault list
+  - Mobile chain payload now includes the UI-facing fields required by the app: `display_status`, `fault_reason`, `fault_at`, `pending`, `adbreak`, `adbreak_remaining`, `maintenance`, `maintenance_nodes`, `flapping`, `shared_fault_chains`, `sla_pct`, `updated_at`, `age_secs`, and nested `nodes`
+  - Node payload supports both regular nodes and stack nodes with nested `nodes`, including `type`, `label`, `stream`, `site`, `status`, `reason`, `machine`, `live_url`, `level_dbfs`, `ts`, and stack `mode`
+
+- **Mobile token management endpoints** (web-session protected, for provisioning the app):
+  - `GET /api/mobile/token/status` — returns whether mobile access is enabled plus the full token and masked token
+  - `POST /api/mobile/token/rotate` — rotates the mobile token
+  - `POST /api/mobile/token/disable` — disables mobile token access
+
+- **Mobile-token protected audio relay endpoints**:
+  - `GET /api/mobile/stream/<idx>/live`
+  - `GET /api/mobile/hub/site/<site>/stream/<sidx>/live`
+  - These mirror the existing browser listen/relay endpoints but authenticate via the mobile token rather than `login_required`, allowing the iPhone app to monitor live audio directly from the hub relay path
+
+- **Query-token support for mobile audio playback**:
+  - Mobile token auth now also accepts `?token=...` in addition to `Authorization: Bearer ...` and `X-API-Key`
+  - Added specifically so iPhone `AVPlayer` can play hub relay audio reliably on physical devices without depending on custom request headers
+
+- **Mobile Reports API**:
+  - `GET /api/mobile/reports/events` — token-protected reports/event feed suitable for recreating the hub Reports page in the iPhone app
+  - `GET /api/mobile/reports/summary` — token-protected aggregate counts for top summary cards in the app
+  - `GET /api/mobile/reports/clip/<clip_id>` — token-protected clip playback/download endpoint for report events with audio evidence
+  - Reports events support mobile-friendly filtering via `site`, `stream`, `type`, `chain`, `before`, and `limit`
+
+### Changed
+- **Mobile `live_url` generation now returns mobile-safe relay URLs** — the mobile API no longer hands the app the browser/session-protected listen endpoints. `live_url` in mobile payloads now points at the mobile-token protected relay routes so the phone can fetch audio from one central hub origin.
+- **Hub reports/clip access exposed cleanly to mobile clients** — the iPhone app can now mirror the existing reports workflow without weakening the existing logged-in web UI routes.
+
+### Fixed
+- **`level_dbfs` missing in mobile payloads** — some chain/node dictionaries were carrying live levels under `level` rather than `level_dbfs`, causing the iPhone app to receive `null` and show dead meters. Mobile serialization now uses `level_dbfs` when present and falls back to `level`, so real dBFS values propagate correctly to the app.
+- **Metadata works but iPhone live audio fails** — root cause was an auth mismatch: the mobile JSON endpoints used mobile-token auth but the original listen routes were still web-session protected. Fixed by adding mobile-token protected relay endpoints and updating mobile `live_url` generation to use them.
+- **Physical iPhone audio playback unreliable while Simulator worked** — supporting query-string tokens for mobile audio endpoints resolves the `AVPlayer` custom-header reliability issue seen on real devices.
+- **Reports page not reproducible on mobile from the existing snapshot API alone** — added dedicated mobile reports endpoints plus clip access so the iPhone app can now mirror the hub reports experience instead of only approximating it from current chain state.
+
+---
 ## [3.2.33] - 2026-03-21
 
 ### Changed
