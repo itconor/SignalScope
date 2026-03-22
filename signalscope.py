@@ -1029,7 +1029,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.38"
+BUILD                  = "SignalScope-3.2.39"
 # CHANGELOG
 # 3.2.23 (2026-03-21) — Remote Config Backup: hub "📥 Backup" button per site; client
 #   generates ZIP (config, AI models, metrics DB, SLA/alert/hub-state JSON) and POSTs
@@ -1069,7 +1069,7 @@ CHAIN_FLAP_COUNT   = 3      # fault transitions in window = flapping
 CHAIN_TREND_WINDOW = 60     # minutes of level history used for predictive trend
 CHAIN_TREND_THRESH = -0.3   # dBFS/min — slope steeper than this triggers amber warning
 STREAM_BUFFER_SECONDS  = 20.0
-ALERT_BUFFER_SECONDS   = 8.0
+ALERT_BUFFER_SECONDS   = 10.0
 LIVE_PLAYOUT_BUFFER_SECS = 1.5  # extra browser listen jitter buffer on Linux/VMs
 
 LEARN_DURATION_SECONDS = 86400.0      # 24 hours
@@ -2649,11 +2649,34 @@ def _clip_cleanup(stream_name: str):
     except Exception:
         pass
 
+def _alert_buffer_chunk_count(seconds: float) -> int:
+    """Return deque length needed to retain at least `seconds` of chunked audio."""
+    try:
+        secs = max(1.0, float(seconds))
+    except Exception:
+        secs = ALERT_BUFFER_SECONDS
+    return max(3, int(math.ceil((SAMPLE_RATE * secs) / CHUNK_SIZE)) + 2)
+
+
+def _ensure_alert_buffer_capacity(cfg: InputConfig, seconds: Optional[float] = None) -> None:
+    """Grow/shrink a stream's alert buffer to match the configured clip length."""
+    target_secs = seconds if seconds is not None else getattr(cfg, "alert_wav_duration", ALERT_BUFFER_SECONDS)
+    maxlen = _alert_buffer_chunk_count(target_secs)
+    cur = getattr(cfg, "_audio_buffer", None)
+    if cur is None:
+        cfg._audio_buffer = collections.deque(maxlen=maxlen)
+        return
+    if getattr(cur, "maxlen", None) != maxlen:
+        cfg._audio_buffer = collections.deque(list(cur)[-maxlen:], maxlen=maxlen)
+
+
 def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0) -> Optional[str]:
     # Prune old clips before saving a new one
     threading.Thread(target=_clip_cleanup, args=(cfg.name,), daemon=True).start()
     out = os.path.join(BASE_DIR, "alert_snippets", _safe_name(cfg.name))
     os.makedirs(out, exist_ok=True)
+    duration = max(1.0, float(duration or getattr(cfg, "alert_wav_duration", ALERT_BUFFER_SECONDS)))
+    _ensure_alert_buffer_capacity(cfg, duration)
     if not cfg._audio_buffer: return None
     chunks = list(cfg._audio_buffer)
     if not chunks: return None
@@ -4165,7 +4188,7 @@ class MonitorManager:
             udp_inputs=[]
             for cfg in self.app_cfg.inputs:
                 if not cfg.enabled: continue
-                cfg._audio_buffer =collections.deque(maxlen=int(SAMPLE_RATE*ALERT_BUFFER_SECONDS /CHUNK_SIZE)+2)
+                _ensure_alert_buffer_capacity(cfg)
                 cfg._stream_buffer=collections.deque(maxlen=int(SAMPLE_RATE*STREAM_BUFFER_SECONDS/CHUNK_SIZE)+2)
                 cfg._baseline_learning_remaining=5.0; cfg._hf_baseline=None
                 cfg._silence_secs=0.0; cfg._hiss_secs=0.0
@@ -7052,7 +7075,7 @@ class HubClient:
             return
         msg = (f"Audio clip captured at '{stream}' during chain fault"
                f"{(' in ' + repr(chain_name)) if chain_name else ''}.")
-        clip_path = _save_alert_wav(inp, label, cfg_obj.alert_wav_duration)
+        clip_path = _save_alert_wav(inp, label, inp.alert_wav_duration)
         _add_history(inp, "CHAIN_FAULT", msg, clip_path=clip_path or "")
         monitor.log(f"[Hub] save_clip: saved '{label}' for '{stream}'"
                     + (f" ({os.path.basename(clip_path)})" if clip_path else " (no clip data)"))
@@ -12505,9 +12528,12 @@ def input_edit(idx):
         # is preserved — replacing the object makes the stream look dead until
         # the monitor is restarted.
         import dataclasses as _dc
+        _old_alert_wav_duration = getattr(old_inp, "alert_wav_duration", ALERT_BUFFER_SECONDS)
         for _f in _dc.fields(new_inp):
             if _f.init:   # only config fields (init=False fields are runtime state)
                 setattr(old_inp, _f.name, getattr(new_inp, _f.name))
+        if float(getattr(old_inp, "alert_wav_duration", ALERT_BUFFER_SECONDS)) != float(_old_alert_wav_duration):
+            _ensure_alert_buffer_capacity(old_inp)
         # If the stream name changed, keep _stream_ais keyed correctly
         if monitor.is_running() and old_name != old_inp.name:
             with monitor._lock:
