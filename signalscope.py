@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.4"
+BUILD                  = "SignalScope-3.3.5"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8679,8 +8679,8 @@ class HubClient:
 
     def _push_scanner_audio(self, cfg, req: dict, slot_id: str, chunk_url: str):
         """Stream live FM audio from a remote SDR to a scanner relay slot.
-        Runs rtl_fm at the requested frequency, resamples via ffmpeg, and POSTs
-        MP3 chunks to the hub until the slot expires."""
+        Runs rtl_fm (capture 171 kHz, output 48 kHz via -r 48000), encodes to
+        MP3 via ffmpeg, and POSTs chunks to the hub until the slot expires."""
         import subprocess as _sp
         _ALLOWED_BITRATES = {"48k", "64k", "96k", "128k", "192k", "256k"}
         freq_mhz = float(req.get("freq_mhz", 96.5) or 96.5)
@@ -8714,17 +8714,19 @@ class HubClient:
 
         rtl_cmd = [
             "rtl_fm", "-f", str(freq_hz), "-M", "fm",
-            "-s", "171000", "-l", "0", "-A", "fast", "-F", "9",
+            "-s", "171000", "-r", "48000",
+            "-l", "0", "-A", "fast", "-F", "9",
             "-d", str(device_idx), "-g", str(gain),
         ]
         if ppm:
             rtl_cmd += ["-p", str(ppm)]
         rtl_cmd += ["-"]
 
+        # rtl_fm outputs S16LE at 48000 Hz (resampled internally via -r 48000).
+        # No ffmpeg resampling filter needed — matches the normal live stream pipeline.
         ff_cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-f", "s16le", "-ar", "171000", "-ac", "1", "-i", "pipe:0",
-            "-af", "aresample=48000",
+            "-f", "s16le", "-ar", "48000", "-ac", "1", "-i", "pipe:0",
             "-f", "mp3", "-b:a", bitrate, "-reservoir", "0", "pipe:1",
         ]
         # Chunk size: ~500 ms worth of audio at the chosen bitrate.
