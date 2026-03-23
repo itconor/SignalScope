@@ -2,6 +2,41 @@
 
 ---
 
+## [3.3.10] - 2026-03-23
+
+### Fixed
+- **DAB dongle getting `usb_claim_interface error -6` even on the correct device index** — `rtl_test -t` (the scan tool restored in 3.3.6) enables the Elonics E4000 tuner benchmark, which causes rtl_test to **open every connected RTL-SDR dongle in turn** (open device 0, close, open device 1, close, …) before settling on device 0 for the sample loop. On a 2-dongle setup this briefly claims device 1 (the DAB dongle). If welle-cli started during that window it got `LIBUSB_ERROR_BUSY`, triggering the USB backoff loop and never successfully attaching. The monitor appeared to correctly resolve the serial to device 1 (`-F rtl_sdr,1`), but the device was repeatedly busy. Fix: reverted to plain `rtl_test` (no `-t`). The "Found N device(s):" list is printed to stderr *before* any device is opened (it only enumerates USB descriptors), so the 8-second timeout + `TimeoutExpired` partial-output handler still returns the full device list while no dongle other than device 0 is ever opened.
+
+---
+
+## [3.3.9] - 2026-03-23
+
+### Fixed
+- **DAB and FM audio broken — `scan(force=True)` opening the device before welle-cli/rtl_fm could claim it** — `_run_dab` and `_run_fm` both called `sdr_manager.scan(force=True)` at startup to ensure a fresh device index. The fix for the scan bug (3.3.6) restored `rtl_test -t` as the scan tool, which actually *opens* every connected RTL-SDR device to enumerate it. At startup, the target dongle is not yet held by anything — so `rtl_test -t` successfully grabbed it, streamed samples for up to 8 seconds (until killed by the subprocess timeout), then released it. welle-cli/rtl_fm then tried to open the same device immediately after the SIGKILL. The kernel does not guarantee instant USB interface release after SIGKILL, so welle-cli got a device in a partially-released state, causing welle-cli to remove its MP3 sender within seconds of becoming ready. No audio ever reached the monitor. Fix: removed both `scan(force=True)` calls. `resolve_index()` already calls `scan()` naturally when the 10-second cache is empty (always the case on a fresh start), so device indices are still resolved correctly without pre-opening the hardware.
+
+---
+
+## [3.3.8] - 2026-03-23
+
+### Fixed
+- **Additional welle-cli log noise suppressed** — added `SyncOnEndNull failed` (OFDM null-symbol timing miss, same category as SyncOnPhase) and `Removing mp3 sender` (welle-cli housekeeping when a service's HTTP audio sender is torn down during signal dropout) to the noise-suppression list in the stderr reader.
+
+---
+
+## [3.3.7] - 2026-03-23
+
+### Fixed
+- **welle-cli log spam making DAB look broken** — the welle-cli stderr filter `"failed" in lower` was matching two high-frequency noise messages: `ofdm-processor: SyncOnPhase failed` (fires several times per second on a marginal signal — normal OFDM carrier-phase jitter, doesn't affect audio) and `Failed to send audio for <service_id>` (welle-cli's HTTP push firing when no active client is consuming that service URL). Both were flooding the log, creating the appearance of a broken stream when the mux and audio endpoint were actually healthy. Fix: suppress these two specific patterns before the general error/failed filter so they are silently discarded; all other welle-cli error lines continue to log normally.
+
+---
+
+## [3.3.6] - 2026-03-23
+
+### Fixed
+- **SDR scan returned no devices** — a previous fix intended to stop `rtl_test -t` from hanging when dongles were busy accidentally changed `[tool, "-t"]` to `[tool]` in both branches of a conditional, so `rtl_test` was always run with **no arguments**. Unlike `rtl_test -t` (which opens the dongle, quickly determines it is not an E4000, and exits), plain `rtl_test` loops reading samples indefinitely. It always hit the 8-second subprocess timeout, the `TimeoutExpired` exception was swallowed by the bare `except Exception`, and the scan returned an empty device list every time. Fix: restore `rtl_test -t` for the enumeration command. Also added explicit `TimeoutExpired` handling that recovers the partial stderr (the "Found N device(s):" list is always written before any open attempt) so the device list is returned even in the unlikely event of a genuine hang.
+
+---
+
 ## [3.3.5] - 2026-03-23
 
 ### Fixed

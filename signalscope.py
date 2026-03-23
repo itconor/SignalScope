@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.9"
+BUILD                  = "SignalScope-3.3.10"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -10658,18 +10658,29 @@ class SdrDeviceManager:
             return devices
 
         tool = "rtl_test" if _find_binary("rtl_test") else "rtl_eeprom"
-        # rtl_test -t: opens each dongle, runs a quick E4000 tuner benchmark
-        # (fast-exits on R820T/R828D), then exits.  When a dongle is already
-        # claimed (rtl_fm/welle-cli running), libusb returns LIBUSB_ERROR_BUSY
-        # immediately — no hang.  The "Found N device(s):" list is always
-        # written to stderr BEFORE any open attempt, so we get the full list
-        # even if the subsequent open fails.
-        # Plain "rtl_test" (no -t) loops reading samples until killed, which
-        # always hits the timeout and returns nothing — DO NOT use it.
-        cmd = [tool, "-t"] if tool == "rtl_test" else [tool]
+        # Use plain "rtl_test" (no flags) for enumeration.
+        #
+        # WHY NOT "rtl_test -t":
+        #   The -t flag enables the Elonics E4000 benchmark, which causes
+        #   rtl_test to iterate and OPEN ALL connected dongles (open device 0,
+        #   close, open device 1, close, …) before running the sample loop on
+        #   device 0.  On a 2-dongle system this briefly claims device 1, so if
+        #   welle-cli tries to open device 1 during that window it gets
+        #   LIBUSB_ERROR_BUSY (-6) — exactly the persistent usb_claim_interface
+        #   errors seen in the logs.
+        #
+        # WHY plain "rtl_test" IS safe despite hanging:
+        #   librtlsdr prints "Found N device(s):" + the full device list to
+        #   stderr BEFORE opening any device (the list comes from
+        #   rtlsdr_get_device_count/rtlsdr_get_device_usb_strings which only
+        #   enumerate USB descriptors).  We time-out after 8 s and read the
+        #   partial stderr via TimeoutExpired.exc.stderr — the device list is
+        #   always there.  Only device 0 is ever opened by rtl_test, so all
+        #   other dongles remain free.
+        cmd = [tool] if tool == "rtl_test" else [tool]
         output = ""
         try:
-            result = _sp.run(cmd, capture_output=True, text=True, timeout=8)
+            result = _sp.run(cmd, capture_output=True, text=True, timeout=2)
             output = result.stderr + result.stdout
         except _sp.TimeoutExpired as exc:
             # Partial output captured before the kill still contains the device
