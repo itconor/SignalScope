@@ -2,6 +2,37 @@
 
 ---
 
+## [3.3.5] - 2026-03-23
+
+### Fixed
+- **FM Scanner audio sounded sped up** — the scanner used `rtl_fm -s 171000` piped into `ffmpeg -ar 171000 -af aresample=48000`. The mismatch between the 171 kHz capture rate and ffmpeg's internal MP3 frame timing caused the browser to receive audio that played back at the wrong speed. Fixed by adding `-r 48000` to the rtl_fm command so it performs its own internal resample and outputs S16LE at 48 kHz — the same rate the normal live stream pipeline uses. The ffmpeg command now matches `stream_live`: `-f s16le -ar 48000 -ac 1 -i pipe:0 -f mp3 -b:a <bitrate>`, with no resampling filter needed.
+
+---
+
+## [3.3.0] - 2026-03-23
+
+### Added
+- **RMS / Peak level toggle on hub and client stream cards** — click the "RMS" label on any stream's level bar to switch to instantaneous sample peak dBFS, click again to switch back. Preference is stored in `localStorage` (`ss_level_mode`) and applies to all cards simultaneously. Peak is computed every 0.5 s chunk alongside RMS and included in the AJAX payload (`peak_dbfs`). Label is accent-coloured to show it's interactive.
+
+---
+
+## [3.2.99] - 2026-03-23
+
+### Fixed
+- **DAB serial silently dropped on re-save when dongle role is wrong** — same bug as the FM serial fix in 3.2.97. The DAB "Dongle" `<select>` filters by role (`dab`/`none`). If the saved serial's role was set to `fm`, the restore code (`dab_serial.value = serial`) silently failed and the dropdown stayed on "Any available". Re-saving then stripped the serial from `device_index`, causing all DAB streams to default to device index 0 and conflict with the FM dongle. Fixed: same temporary `⚠ not in registry / wrong role` option technique applied to the DAB serial select.
+
+---
+
+## [3.2.98] - 2026-03-23
+
+### Added
+- **FM Scanner quality selector** — a Quality dropdown in the scanner setup bar lets you choose the MP3 bitrate before connecting: Low (48k), 64k, Medium (96k), High (128k, default), Very High (192k), Best (256k). Lower bitrates reduce relay bandwidth and typically eliminate glitching on slow or congested links at the cost of audio fidelity. The quality is locked while a session is active (along with the Site and SDR selectors) and takes effect on the next Connect. The selected bitrate is passed through the full relay chain — hub API → `ListenSlot` → client heartbeat ACK → `_push_scanner_audio` ffmpeg `-b:a` argument — so the choice is always honoured end-to-end.
+
+### Improved
+- **Scanner relay chunk size now adapts to bitrate** — the ffmpeg stdout read size is calculated as ½ second of audio at the chosen bitrate (e.g. 8000 bytes at 128k, previously hardcoded 4096). Larger, more consistent chunks reduce the number of HTTP round-trips in the relay loop and smooth out buffering gaps that caused the audio to glitch.
+
+---
+
 ## [3.2.97] - 2026-03-23
 
 ### Fixed
