@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.17"
+BUILD                  = "SignalScope-3.3.18"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8743,9 +8743,13 @@ class HubClient:
             "-f", "s16le", "-ar", "48000", "-ac", "1", "-i", "pipe:0",
             "-f", "mp3", "-b:a", bitrate, "-reservoir", "0", "pipe:1",
         ]
-        # Chunk size: ~500 ms worth of audio at the chosen bitrate.
+        # Chunk size: ~100 ms worth of audio at the chosen bitrate.
+        # Smaller chunks mean more frequent POSTs, which keeps the hub queue
+        # topped up and prevents the relay's slot.get() from timing out and
+        # causing audio dropouts.  100 ms is a good balance between POST
+        # overhead and dropout resilience.
         _bitrate_kbps = int(bitrate.rstrip("k"))
-        _chunk_size   = max(4096, _bitrate_kbps * 1000 // 8 // 2)  # ½ second of MP3
+        _chunk_size   = max(1024, _bitrate_kbps * 1000 // 8 // 10)  # 100 ms of MP3
 
         try:
             rtl_proc = _sp.Popen(rtl_cmd, stdout=_sp.PIPE, stderr=_sp.DEVNULL, bufsize=0)
@@ -17047,22 +17051,31 @@ def _hub_stream_relay_response(slot: ListenSlot, startup_timeout: float = 20.0):
     def generate_relay():
         deadline = time.time() + startup_timeout
         started  = False
-        _next    = time.monotonic()   # pacing clock for scanner slots
+        # _next is None until the first chunk arrives.  Initialising it at
+        # generator-start causes it to be perpetually behind (client startup
+        # takes 1-3 s), so _slack is always negative and pacing never fires.
+        _next: "float | None" = None
         try:
             while True:
                 try:
-                    chunk = slot.get(timeout=2.0)
+                    chunk = slot.get(timeout=0.5)
                     started = True
                     if _bps > 0:
-                        # Advance the clock by the real-time duration of this chunk,
-                        # then sleep the remaining slack so the browser receives data
-                        # at exactly 1× speed regardless of how fast the client pushed.
-                        _next += len(chunk) / _bps
-                        _slack = _next - time.monotonic()
-                        if _slack > 0.005:          # only sleep if meaningfully ahead
-                            time.sleep(_slack)
-                        elif _slack < -10.0:        # reset if > 10 s behind (stall recovery)
-                            _next = time.monotonic()
+                        if _next is None:
+                            # First chunk: yield immediately to minimise latency,
+                            # then set the clock to "now + this chunk's duration"
+                            # so subsequent chunks are paced from this moment.
+                            _next = time.monotonic() + len(chunk) / _bps
+                        else:
+                            # Advance the clock and sleep the remaining slack so
+                            # the browser receives data at exactly 1× bitrate speed
+                            # regardless of how fast the client produced the chunks.
+                            _next += len(chunk) / _bps
+                            _slack = _next - time.monotonic()
+                            if _slack > 0.005:          # only sleep if meaningfully ahead
+                                time.sleep(_slack)
+                            elif _slack < -5.0:         # reset after >5 s stall
+                                _next = time.monotonic() + len(chunk) / _bps
                     yield chunk
                 except queue.Empty:
                     if slot.closed:
