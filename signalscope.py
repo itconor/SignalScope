@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.16"
+BUILD                  = "SignalScope-3.3.17"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8747,23 +8747,17 @@ class HubClient:
         _bitrate_kbps = int(bitrate.rstrip("k"))
         _chunk_size   = max(4096, _bitrate_kbps * 1000 // 8 // 2)  # ½ second of MP3
 
-        # PCM pacing constants — mirrors stream_live's writer thread approach.
-        # We do NOT pipe rtl_proc.stdout directly into ffmpeg stdin; instead a
-        # dedicated thread reads PCM from rtl_fm and paces it into ffmpeg's stdin
-        # at exactly the 48 kHz sample rate.  This means ffmpeg can only produce
-        # MP3 as fast as samples arrive in real-time, so its stdout naturally
-        # emerges at the correct bitrate with no backpressure on rtl_fm.
-        _PCM_BYTES_PER_SEC = 48000 * 2          # S16LE mono @ 48 kHz
-        _PCM_FRAME         = _PCM_BYTES_PER_SEC // 20  # 50 ms of PCM per write
-
         try:
             rtl_proc = _sp.Popen(rtl_cmd, stdout=_sp.PIPE, stderr=_sp.DEVNULL, bufsize=0)
         except Exception as e:
             monitor.log(f"[Scanner] rtl_fm start failed: {e}")
             return
         try:
-            # stdin=PIPE — the PCM piper thread feeds ffmpeg, not rtl_proc directly.
-            ff_proc = _sp.Popen(ff_cmd, stdin=_sp.PIPE, stdout=_sp.PIPE,
+            # Direct OS pipe: rtl_fm stdout → ffmpeg stdin (no Python thread in between).
+            # Pacing is handled on the hub relay side — the relay generator delivers
+            # chunks to the browser at the real-time bitrate regardless of how quickly
+            # the client produces them.
+            ff_proc = _sp.Popen(ff_cmd, stdin=rtl_proc.stdout, stdout=_sp.PIPE,
                                 stderr=_sp.DEVNULL, bufsize=0)
         except Exception as e:
             monitor.log(f"[Scanner] ffmpeg start failed: {e}")
@@ -8771,62 +8765,39 @@ class HubClient:
             except: pass
             return
 
-        import threading as _thr
-
-        def _pcm_piper():
-            """Read PCM from rtl_fm stdout, pace at real-time, write to ffmpeg stdin.
-            Identical pacing logic to stream_live's writer thread (next_send clock).
-            No backpressure on rtl_fm — we read as fast as it produces and sleep
-            before each write to ffmpeg, so ffmpeg's output is naturally real-time."""
-            _next = time.monotonic()
-            try:
-                while True:
-                    pcm = rtl_proc.stdout.read(_PCM_FRAME)
-                    if not pcm:
-                        break
-                    _next += len(pcm) / _PCM_BYTES_PER_SEC
-                    _slack = _next - time.monotonic()
-                    if _slack > 0:
-                        time.sleep(_slack)
-                    elif _slack < -0.3:
-                        # More than 300 ms behind real-time (e.g. USB start-up burst)
-                        # — reset the clock rather than flushing stale samples fast.
-                        _next = time.monotonic()
-                    ff_proc.stdin.write(pcm)
-            except Exception:
-                pass
-            finally:
-                try: ff_proc.stdin.close()
-                except: pass
-
-        _piper = _thr.Thread(target=_pcm_piper, daemon=True)
-        _piper.start()
-
         fails = 0
+        _buf  = bytearray()
         try:
             while True:
-                data = ff_proc.stdout.read(_chunk_size)
+                # Read in small increments so we never stall; assemble complete
+                # _chunk_size chunks before posting to reduce HTTP overhead.
+                data = ff_proc.stdout.read(4096)
                 if not data:
                     break
-                try:
-                    body = self._post_relay_chunk(cfg, chunk_url, data)
-                    if body.get("error") == "slot not found or expired":
-                        monitor.log(f"[Scanner] Slot {slot_id[:6]} expired — stopping")
-                        break
-                    fails = 0
-                except Exception as e:
-                    fails += 1
-                    if fails >= 5:
-                        monitor.log(f"[Scanner] Push failed: {e}")
-                        break
+                _buf.extend(data)
+                while len(_buf) >= _chunk_size:
+                    chunk = bytes(_buf[:_chunk_size])
+                    del _buf[:_chunk_size]
+                    try:
+                        body = self._post_relay_chunk(cfg, chunk_url, chunk)
+                        if body.get("error") == "slot not found or expired":
+                            monitor.log(f"[Scanner] Slot {slot_id[:6]} expired — stopping")
+                            raise StopIteration
+                        fails = 0
+                    except StopIteration:
+                        raise
+                    except Exception as e:
+                        fails += 1
+                        if fails >= 5:
+                            monitor.log(f"[Scanner] Push failed: {e}")
+                            raise StopIteration
+        except StopIteration:
+            pass
         finally:
             monitor.log(f"[Scanner] Stopped {freq_mhz:.2f} MHz (slot {slot_id[:6]})")
-            # Kill rtl_proc first — its stdout EOF unblocks the piper thread's read(),
-            # which then closes ffmpeg stdin cleanly, which makes ffmpeg exit.
-            for p in (rtl_proc, ff_proc):
+            for p in (ff_proc, rtl_proc):
                 try: p.kill(); p.wait(timeout=2)
                 except: pass
-            _piper.join(timeout=2)
             with self._lock:
                 self._active_slots.discard(slot_id)
             print(f"[HubRelay] Push complete for slot {slot_id[:6]} ({kind})")
@@ -17055,15 +17026,43 @@ def _hub_stream_relay_response(slot: ListenSlot, startup_timeout: float = 20.0):
     """
     Stream bytes arriving on a relay slot back to the browser.
     Used for live MP3 and NAT-safe WAV fetches.
+
+    For scanner slots the generator paces delivery at the real-time audio bitrate.
+    The client (rtl_fm → ffmpeg) may produce and POST chunks faster than real-time
+    (startup USB buffer, CPU encoding headroom).  Without pacing the hub blasts
+    those queued chunks to the browser instantly; Chrome's <audio> element sees a
+    large buffer and accelerates playback to drain it, causing the "super fast"
+    audio artefact.  Pacing on the relay side is the cleanest fix — the client
+    can push as fast as it likes, but the browser only receives data at 1× speed.
     """
+    # For scanner slots, compute bytes-per-second from the stored bitrate so we
+    # can pace delivery chunk-by-chunk.  Other slot kinds are unaffected.
+    _bps = 0.0
+    if slot.kind == "scanner":
+        try:
+            _bps = int(slot.bitrate.rstrip("k")) * 1000 / 8   # bytes per second
+        except Exception:
+            _bps = 16000.0   # safe fallback: 128 kbps
+
     def generate_relay():
         deadline = time.time() + startup_timeout
         started  = False
+        _next    = time.monotonic()   # pacing clock for scanner slots
         try:
             while True:
                 try:
                     chunk = slot.get(timeout=2.0)
                     started = True
+                    if _bps > 0:
+                        # Advance the clock by the real-time duration of this chunk,
+                        # then sleep the remaining slack so the browser receives data
+                        # at exactly 1× speed regardless of how fast the client pushed.
+                        _next += len(chunk) / _bps
+                        _slack = _next - time.monotonic()
+                        if _slack > 0.005:          # only sleep if meaningfully ahead
+                            time.sleep(_slack)
+                        elif _slack < -10.0:        # reset if > 10 s behind (stall recovery)
+                            _next = time.monotonic()
                     yield chunk
                 except queue.Empty:
                     if slot.closed:

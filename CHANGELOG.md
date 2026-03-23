@@ -2,6 +2,47 @@
 
 ---
 
+## [3.3.17] - 2026-03-23
+
+### Fixed
+- **FM Scanner audio super fast and glitchy** — the root cause was never in the client pipeline (rtl_fm → ffmpeg → POST). The hub relay generator (`_hub_stream_relay_response`) yields chunks from the slot queue as fast as they arrive, with zero pacing. The client can produce and POST chunks faster than real-time (USB startup buffer, CPU encoding headroom, network jitter), so the hub queue fills ahead of schedule and the browser receives audio data significantly faster than 1×. Chrome's `<audio>` element detects the large buffer and accelerates playback to drain it — audio sounds "fast". Fix: for scanner slots the relay generator now maintains a `next_send` pacing clock seeded from `slot.bitrate`. After getting each chunk from the queue it advances the clock by `len(chunk) / bytes_per_second`, then sleeps any positive slack before yielding — exactly the same mechanism `stream_live` uses for local streams. The client push loop is reverted to the simple direct-pipe (rtl_fm → ffmpeg with no Python thread between them) plus a small byte-accumulator that assembles complete 500 ms chunks before POSTing. All other relay slot kinds (live, WAV) are unaffected.
+
+## [3.3.16] - 2026-03-23
+
+### Fixed
+- **FM Scanner audio glitching** — superseded by 3.3.17. The PCM piper thread approach caused different issues.
+
+## [3.3.15] - 2026-03-23
+
+### Fixed
+- **FM Scanner audio sped up** — superseded by 3.3.17. Sleeping between reads caused backpressure.
+
+---
+
+## [3.3.14] - 2026-03-23
+
+### Changed
+- **FM and DAB inputs now require an explicit dongle serial** — the "Any available" option has been removed from both the FM and DAB dongle dropdowns. A specific registered RTL-SDR dongle must be selected before the input can be saved. The form blocks submission with an inline error if no dongle is chosen. On the backend, `_run_fm` and `_run_dab` now hard-fail with a clear log message ("no dongle configured") rather than silently falling back to device index 0, which was the root cause of cross-stream dongle conflicts when multiple dongles are present. Existing inputs saved without a serial will show "FM (no dongle configured)" / "DAB (no dongle configured)" as their status until edited and a dongle is assigned.
+
+---
+
+## [3.3.13] - 2026-03-23
+
+### Changed
+- **Reverted 3.3.12 sysfs scan** — the Linux sysfs dongle enumeration and expanded stale-process kill (fuser + multi-tool search) introduced in 3.3.12 have been rolled back. The persistent `usb_claim_interface error -6` reports that motivated those changes were caused by a device serial-to-role misconfiguration in the user's setup, not a code bug. The 3.3.11 `rtl_test`-based `scan()` (with `_scan_lock`, double-check cache, `TimeoutExpired` partial-output handler, and 0.3 s settle) is restored. The stale welle-cli kill (welle-cli only, matching `rtl_sdr,N` driver tag) introduced in 3.3.11 is retained.
+
+---
+
+## [3.3.12] - 2026-03-23
+
+### Fixed
+- **SDR scan no longer opens any dongle** — replaced `rtl_test` subprocess enumeration with a direct Linux sysfs read (`/sys/bus/usb/devices/*/idVendor|idProduct|serial|manufacturer|product`). Sysfs only reads USB descriptors already cached by the kernel — no device is opened, no USB interface is claimed, and the result is instant. `rtl_test` is kept as a fallback for non-Linux systems. This eliminates every class of `usb_claim_interface error` that was caused by scan racing with welle-cli or rtl_fm at startup. The `_scan_lock` and lock-inside-lock double-check are retained for the fallback path.
+- **Stale process kill now catches everything** — the kill code before each welle-cli launch previously only checked for stale `welle-cli` processes matching the driver tag. Expanded to also check `rtl_fm`, `rtl_test`, and `rtl_eeprom` by both `rtl_sdr,N` driver tag and `-d N` argument. Added `fuser /dev/bus/usb/XXX/YYY` (Linux) to catch any other process holding the raw USB device node regardless of tool name — covers system services, orphaned processes, etc. USB device path is resolved from sysfs busnum/devnum. Kill settle sleep increased to 1.0 s when any process was actually killed.
+
+*Note: rolled back in 3.3.13 — root cause was device misconfiguration, not a code bug.*
+
+---
+
 ## [3.3.11] - 2026-03-23
 
 ### Fixed
