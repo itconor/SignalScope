@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.97"
+BUILD                  = "SignalScope-3.3.3"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -1366,6 +1366,7 @@ class InputConfig:
     _clip_window_start: float = field(default=0.0,    init=False, repr=False)
     _last_alerts:       Dict[str,float] = field(default_factory=dict, init=False, repr=False)
     _last_level_dbfs:   float = field(default=-120.0, init=False, repr=False)
+    _last_peak_dbfs:    float = field(default=-120.0, init=False, repr=False)
     _history:           List[Dict] = field(default_factory=list, init=False, repr=False)
     _audio_buffer:      Optional[object] = field(default=None, init=False, repr=False)
     _stream_buffer:     Optional[object] = field(default=None, init=False, repr=False)
@@ -4194,6 +4195,7 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
     if not data.size: return
     rms=float(np.sqrt(np.mean(data**2))); lev=dbfs(rms)
     cfg._last_level_dbfs=lev
+    cfg._last_peak_dbfs=dbfs(float(np.max(np.abs(data))))
     if not cfg.enabled: return
     in_alert = lev <= cfg.silence_threshold_dbfs
     _sla_update(cfg, elapsed, in_alert)
@@ -5146,6 +5148,7 @@ class MonitorManager:
         import socket as _sock
         import subprocess
         import urllib.request as _ur
+        import os as _os
 
         name = owner_name
         with _sock.socket() as _s:
@@ -5153,6 +5156,28 @@ class MonitorManager:
             session.dab_port = _s.getsockname()[1]
 
         _wb = _find_binary("welle-cli") or "welle-cli"
+
+        # Kill any stale welle-cli processes that still hold the USB device from a
+        # previous monitor run.  The USB kernel interface isn't released until the
+        # process fully exits; without this, the new launch gets LIBUSB_ERROR_BUSY
+        # (-6 / usb_claim_interface error) if the monitor is restarted quickly.
+        try:
+            import subprocess as _sp2, signal as _sig
+            result = _sp2.run(["pgrep", "-a", "welle-cli"], capture_output=True, text=True)
+            _driver_tag = f"rtl_sdr,{int(session.device_idx)}"
+            for line in result.stdout.splitlines():
+                if _driver_tag in line:
+                    pid = int(line.split()[0])
+                    self.log(f"[DAB {session.channel}] Killing stale welle-cli PID {pid} (device {session.device_idx})")
+                    try:
+                        _os.kill(pid, _sig.SIGKILL)
+                    except Exception:
+                        pass
+            if result.stdout.strip():
+                time.sleep(0.5)   # let USB stack release the interface
+        except Exception:
+            pass
+
         # Always pin the device index so two dongles on the same machine don't
         # conflict.  "rtl_sdr,0" is identical to "rtl_sdr" for a single dongle
         # but is essential when a second dongle (e.g. an FM rtl_fm stream) is
@@ -5309,6 +5334,11 @@ class MonitorManager:
                     p.kill()
                 except Exception:
                     pass
+        # Give the USB stack a moment to fully release the device interface.
+        # Without this, a monitor restart can hit LIBUSB_ERROR_BUSY (-6) on the
+        # very next welle-cli launch because the kernel hasn't yet released the
+        # USB claim even though the process has exited.
+        time.sleep(0.5)
         # Release the SDR device claim so FM/scanner streams can use it again
         try:
             sdr_manager.release_dab_device(session.device_idx)
@@ -5368,6 +5398,9 @@ class MonitorManager:
             cfg._dab_ok = False
             return
 
+        # Force a fresh device scan — never use a cached index from a previous
+        # run where USB re-enumeration may have reordered dongles.
+        sdr_manager.scan(force=True)
         device_idx = 0
         if serial:
             try:
@@ -5774,7 +5807,9 @@ class MonitorManager:
                 if dev.serial == serial:
                     ppm = dev.ppm; break
 
-        # Claim the dongle
+        # Claim the dongle — force a fresh scan so we never use a cached index
+        # from a previous run where USB re-enumeration may have reordered devices.
+        sdr_manager.scan(force=True)
         device_idx = 0
         lease      = None
         if serial:
@@ -6701,12 +6736,25 @@ class MonitorManager:
             proc = subprocess.Popen(
                 rtl_cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 bufsize=0,
             )
         except Exception as e:
             self.log(f"[{name}] FM: failed to launch rtl_fm: {e}")
             return
+
+        # Drain rtl_fm stderr in a background thread so it doesn't block and
+        # we can log anything useful (device errors, USB failures, etc.)
+        def _log_rtlsdr_stderr():
+            try:
+                for raw in proc.stderr:
+                    line = raw.decode(errors="ignore").strip()
+                    if line:
+                        self.log(f"[{name}] FM rtl_fm: {line}")
+            except Exception:
+                pass
+        threading.Thread(target=_log_rtlsdr_stderr, daemon=True,
+                         name=f"rtlfm-stderr-{name}").start()
 
         redsea_proc = None
         redsea_thread = None
@@ -6869,6 +6917,9 @@ class MonitorManager:
             while not stop_evt.is_set():
                 chunk = proc.stdout.read(READ_BYTES)
                 if not chunk:
+                    if proc.poll() is not None:
+                        self.log(f"[{name}] FM: rtl_fm process exited (rc={proc.returncode})")
+                        break
                     time.sleep(0.05)
                     continue
 
@@ -8295,6 +8346,7 @@ class HubClient:
                 "enabled":           inp.enabled,
                 "device_index":      inp.device_index,
                 "level_dbfs":        round(inp._last_level_dbfs, 1),
+                "peak_dbfs":         round(inp._last_peak_dbfs, 1),
                 "silence_threshold_dbfs": inp.silence_threshold_dbfs,
                 "ai_status":         inp._ai_status,
                 "ai_phase":          inp._ai_phase,
@@ -8611,11 +8663,15 @@ class HubClient:
         Runs rtl_fm at the requested frequency, resamples via ffmpeg, and POSTs
         MP3 chunks to the hub until the slot expires."""
         import subprocess as _sp
+        _ALLOWED_BITRATES = {"48k", "64k", "96k", "128k", "192k", "256k"}
         freq_mhz = float(req.get("freq_mhz", 96.5) or 96.5)
         serial   = str(req.get("sdr_serial", "") or "").strip()
         ppm      = int(req.get("ppm", 0) or 0)
         gain_raw = req.get("gain")
         gain     = float(gain_raw) if gain_raw is not None else 38.0
+        bitrate  = str(req.get("bitrate", "128k") or "128k").strip().lower()
+        if bitrate not in _ALLOWED_BITRATES:
+            bitrate = "128k"
 
         if not _find_binary("rtl_fm") or not _find_binary("ffmpeg"):
             monitor.log("[Scanner] rtl_fm or ffmpeg not found — cannot start scanner")
@@ -8650,8 +8706,12 @@ class HubClient:
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-f", "s16le", "-ar", "171000", "-ac", "1", "-i", "pipe:0",
             "-af", "aresample=48000",
-            "-f", "mp3", "-b:a", "128k", "-reservoir", "0", "pipe:1",
+            "-f", "mp3", "-b:a", bitrate, "-reservoir", "0", "pipe:1",
         ]
+        # Chunk size: ~500 ms worth of audio at the chosen bitrate.
+        # Larger chunks reduce relay round-trips and smooth out buffering glitches.
+        _bitrate_kbps = int(bitrate.rstrip("k"))
+        _chunk_size   = max(4096, _bitrate_kbps * 1000 // 8 // 2)  # ½ second
 
         try:
             rtl_proc = _sp.Popen(rtl_cmd, stdout=_sp.PIPE, stderr=_sp.DEVNULL, bufsize=0)
@@ -8670,7 +8730,7 @@ class HubClient:
         fails = 0
         try:
             while True:
-                data = ff_proc.stdout.read(4096)
+                data = ff_proc.stdout.read(_chunk_size)
                 if not data:
                     break
                 try:
@@ -10364,7 +10424,8 @@ class ListenSlot:
                  stream_name: str = "", filename: str = "",
                  mimetype: str = "audio/mpeg",
                  freq_mhz: float = 0.0, sdr_serial: str = "",
-                 ppm: int = 0, gain: "float | None" = None):
+                 ppm: int = 0, gain: "float | None" = None,
+                 bitrate: str = "128k"):
         self.slot_id     = slot_id
         self.site        = site
         self.stream_idx  = stream_idx
@@ -10382,6 +10443,7 @@ class ListenSlot:
         self.sdr_serial = str(sdr_serial or "")
         self.ppm        = int(ppm or 0)
         self.gain       = gain  # None → auto
+        self.bitrate    = str(bitrate or "128k")  # ffmpeg -b:a value, e.g. "64k","128k","192k"
 
     def put(self, data: bytes):
         self.last_chunk = time.time()
@@ -10415,11 +10477,13 @@ class ListenSlotRegistry:
                seconds: float = 10.0, stream_name: str = "",
                filename: str = "", mimetype: str = "audio/mpeg",
                freq_mhz: float = 0.0, sdr_serial: str = "",
-               ppm: int = 0, gain: "float | None" = None) -> ListenSlot:
+               ppm: int = 0, gain: "float | None" = None,
+               bitrate: str = "128k") -> ListenSlot:
         slot_id = hashlib.md5(f"{site}{stream_idx}{kind}{filename}{freq_mhz}{time.time()}".encode()).hexdigest()[:12]
         slot = ListenSlot(slot_id, site, stream_idx, kind=kind, seconds=seconds,
                           stream_name=stream_name, filename=filename, mimetype=mimetype,
-                          freq_mhz=freq_mhz, sdr_serial=sdr_serial, ppm=ppm, gain=gain)
+                          freq_mhz=freq_mhz, sdr_serial=sdr_serial, ppm=ppm, gain=gain,
+                          bitrate=bitrate)
         with self._lock:
             self._slots[slot_id] = slot
         return slot
@@ -10452,6 +10516,7 @@ class ListenSlotRegistry:
                     d["freq_mhz"]   = s.freq_mhz
                     d["sdr_serial"] = s.sdr_serial
                     d["ppm"]        = s.ppm
+                    d["bitrate"]    = s.bitrate
                     if s.gain is not None:
                         d["gain"] = s.gain
                 out.append(d)
@@ -10565,8 +10630,10 @@ class SdrDeviceManager:
 
         tool = "rtl_test" if _find_binary("rtl_test") else "rtl_eeprom"
         try:
-            # rtl_test -t lists devices then exits quickly
-            result = _sp.run([tool, "-t"] if tool == "rtl_test" else [tool],
+            # Use rtl_test without -t so it only lists devices without opening
+            # them.  rtl_test -t opens and tests each dongle which can hang for
+            # the full timeout if a device is already in use by rtl_fm/welle-cli.
+            result = _sp.run([tool] if tool == "rtl_test" else [tool],
                              capture_output=True, text=True, timeout=8)
             output = result.stderr + result.stdout
             # Parse lines like:
@@ -11167,7 +11234,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 
       {# ── Level bar ── #}
       <div class="lbar-wrap">
-        <span style="font-size:11px;color:var(--mu);width:32px">Lvl</span>
+        <span class="lbar-mode-label" style="font-size:11px;color:var(--acc);width:32px;cursor:pointer;user-select:none" title="Click to toggle RMS / Peak">RMS</span>
         <div class="lbar-track">
           <div class="lbar-fill" id="lbar_{{idx}}" style="width:{{lpct}}%;background:{{lcol}}"></div>
         </div>
@@ -11540,6 +11607,15 @@ function aiClass(ai){
   return 'aib aid';
 }
 
+var _clientLevelMode=localStorage.getItem('ss_level_mode')||'rms';
+(function(){document.querySelectorAll('.lbar-mode-label').forEach(function(el){el.textContent=_clientLevelMode==='peak'?'Peak':'RMS';});})();
+document.addEventListener('click',function(e){
+  if(!e.target.classList.contains('lbar-mode-label'))return;
+  _clientLevelMode=_clientLevelMode==='rms'?'peak':'rms';
+  localStorage.setItem('ss_level_mode',_clientLevelMode);
+  document.querySelectorAll('.lbar-mode-label').forEach(function(el){el.textContent=_clientLevelMode==='peak'?'Peak':'RMS';});
+});
+
 var HIST_COLORS={'SILENCE':'#f87171','AI_ALERT':'#f87171','RTP_LOSS':'#f87171',
   'CLIP':'#fb923c','HISS':'#fbbf24','AI_WARN':'#fcd34d','RTP_LOSS_WARN':'#fbbf24',
   'LUFS_TP':'#f97316','LUFS_I':'#fb923c','ESCALATION':'#e879f9',
@@ -11551,8 +11627,10 @@ function updateCards(inputs){
     var dot=document.getElementById('dot_'+idx);
     if(dot) dot.className=dotClass(inp);
 
-    // Level bar
-    var db=inp.level_dbfs, col=levelColor(db);
+    // Level bar (RMS or Peak based on user toggle)
+    var rmsVal=inp.level_dbfs, pkVal=inp.peak_dbfs!==undefined?inp.peak_dbfs:rmsVal;
+    var db=(_clientLevelMode==='peak')?pkVal:rmsVal;
+    var col=levelColor(db);
     var pct=Math.min(Math.max((db+80)/80*100,0),100);
     setStyle('lbar_'+idx,'width',pct.toFixed(1)+'%');
     setStyle('lbar_'+idx,'background',col);
@@ -13172,7 +13250,21 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       }
       // Extract serial if present
       var sm = v.match(/serial=([^&?]+)/);
-      if(sm) document.getElementById("dab_serial").value = sm[1];
+      if(sm){
+        var dabSerSel = document.getElementById("dab_serial");
+        // Try to select the stored serial. If it isn't in the dropdown (e.g. its role is
+        // currently set to "fm"), add a temporary option so it isn't silently discarded
+        // when the user re-saves — they can fix the role or pick the correct dongle.
+        dabSerSel.value = decodeURIComponent(sm[1]);
+        if(dabSerSel.value !== decodeURIComponent(sm[1])){
+          var dabTmpOpt = document.createElement("option");
+          dabTmpOpt.value = decodeURIComponent(sm[1]);
+          dabTmpOpt.textContent = decodeURIComponent(sm[1]) + " (⚠ not in registry / wrong role)";
+          dabTmpOpt.selected = true;
+          dabSerSel.insertBefore(dabTmpOpt, dabSerSel.firstChild);
+          dabSerSel.value = dabTmpOpt.value;
+        }
+      }
     } else if(v.toLowerCase().startsWith("fm://")){
       sel.value = "fm";
       var freq = v.slice(5).split("?")[0].trim();
@@ -17126,12 +17218,16 @@ def hub_scanner_start():
     """Create a scanner session for a site: start streaming FM audio from its SDR."""
     if not hub_server:
         return jsonify({"ok": False, "error": "no hub"}), 400
+    _ALLOWED_BITRATES = {"48k", "64k", "96k", "128k", "192k", "256k"}
     data       = request.get_json(silent=True) or {}
     site       = str(data.get("site", "")).strip()
     sdr_serial = str(data.get("sdr_serial", "") or "").strip()
     freq_mhz   = float(data.get("freq_mhz", 96.5) or 96.5)
     ppm        = int(data.get("ppm", 0) or 0)
     gain       = data.get("gain")
+    bitrate    = str(data.get("bitrate", "128k") or "128k").strip().lower()
+    if bitrate not in _ALLOWED_BITRATES:
+        bitrate = "128k"
     if not site:
         return jsonify({"ok": False, "error": "site required"}), 400
 
@@ -17144,12 +17240,13 @@ def hub_scanner_start():
 
     slot = listen_registry.create(
         site, 0, kind="scanner", mimetype="audio/mpeg",
-        freq_mhz=freq_mhz, sdr_serial=sdr_serial, ppm=ppm, gain=gain,
+        freq_mhz=freq_mhz, sdr_serial=sdr_serial, ppm=ppm, gain=gain, bitrate=bitrate,
     )
     hub_server._scanner_sessions[site] = {
         "slot_id":    slot.slot_id,
         "freq_mhz":   freq_mhz,
         "sdr_serial": sdr_serial,
+        "bitrate":    bitrate,
         "started":    time.time(),
     }
     monitor.log(f"[Scanner] Session started for site '{site}' at {freq_mhz:.2f} MHz "
@@ -17180,13 +17277,14 @@ def hub_scanner_tune():
     if old_slot:
         old_slot.closed = True
 
-    # Create a fresh slot at the new frequency with the same SDR serial
+    # Create a fresh slot at the new frequency — preserve serial, ppm, gain, bitrate from session
     slot = listen_registry.create(
         site, 0, kind="scanner", mimetype="audio/mpeg",
         freq_mhz=freq_mhz,
         sdr_serial=sess.get("sdr_serial", ""),
         ppm=int(sess.get("ppm", 0)),
         gain=sess.get("gain"),
+        bitrate=sess.get("bitrate", "128k"),
     )
     sess["slot_id"]  = slot.slot_id
     sess["freq_mhz"] = freq_mhz
@@ -22228,6 +22326,7 @@ input:focus,select:focus{border-color:var(--bl)}
 .audio-row{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid var(--bor)}
 .audio-row label{font-size:12px;color:var(--mu)}
 .audio-row input[type=range]{width:110px;accent-color:var(--bl)}
+.quality-note{font-size:11px;color:var(--mu);text-align:center;margin-top:6px}
 </style>
 </head>
 <body>
@@ -22250,6 +22349,15 @@ input:focus,select:focus{border-color:var(--bl)}
   <label>Start freq</label>
   <input type="number" id="start-freq" value="96.5" step="0.1" min="76" max="108" style="width:86px">
   <span style="font-size:12px;color:var(--mu)">MHz</span>
+  <label>Quality</label>
+  <select id="quality-sel">
+    <option value="48k">Low (48k) — best for slow links</option>
+    <option value="64k">64k</option>
+    <option value="96k">Medium (96k)</option>
+    <option value="128k" selected>High (128k)</option>
+    <option value="192k">Very High (192k)</option>
+    <option value="256k">Best (256k)</option>
+  </select>
   <button class="btn-connect" id="connect-btn">Connect</button>
 </div>
 
@@ -22290,6 +22398,7 @@ input:focus,select:focus{border-color:var(--bl)}
       <input type="range" id="vol" min="0" max="1" step="0.05" value="0.85">
       <audio id="audio" autoplay style="display:none"></audio>
     </div>
+    <div class="quality-note" id="quality-note">&nbsp;</div>
   </div>
 </div>
 
@@ -22298,20 +22407,31 @@ input:focus,select:focus{border-color:var(--bl)}
 'use strict';
 var _csrf=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
 function _f(url,o){o=o||{};o.headers=Object.assign({'X-CSRFToken':_csrf,'Content-Type':'application/json'},o.headers||{});return fetch(url,o);}
-var siteSel   = document.getElementById('site-sel');
-var sdrSel    = document.getElementById('sdr-sel');
-var startFreq = document.getElementById('start-freq');
-var connBtn   = document.getElementById('connect-btn');
-var freqDisp  = document.getElementById('freq-display');
-var freqSub   = document.getElementById('freq-sub');
-var statusDot = document.getElementById('status-dot');
-var statusTxt = document.getElementById('status-txt');
-var manFreq   = document.getElementById('manual-freq');
-var manBtn    = document.getElementById('manual-btn');
-var audio     = document.getElementById('audio');
-var volSlider = document.getElementById('vol');
+var siteSel    = document.getElementById('site-sel');
+var sdrSel     = document.getElementById('sdr-sel');
+var startFreq  = document.getElementById('start-freq');
+var qualitySel = document.getElementById('quality-sel');
+var connBtn    = document.getElementById('connect-btn');
+var freqDisp   = document.getElementById('freq-display');
+var freqSub    = document.getElementById('freq-sub');
+var statusDot  = document.getElementById('status-dot');
+var statusTxt  = document.getElementById('status-txt');
+var manFreq    = document.getElementById('manual-freq');
+var manBtn     = document.getElementById('manual-btn');
+var audio      = document.getElementById('audio');
+var volSlider  = document.getElementById('vol');
+var qualNote   = document.getElementById('quality-note');
 
 var _freq = 96.5, _step = 0.2, _state = 'idle', _slotId = '', _poll = null;
+
+function updateQualityNote(){
+  var q = qualitySel.value;
+  var on = (_state === 'streaming' || _state === 'connecting');
+  var labels = {'48k':'Low — less glitching on slow links','64k':'64 kbps','96k':'Medium','128k':'High (default)','192k':'Very High','256k':'Best quality'};
+  qualNote.textContent = on ? ('Streaming at ' + (labels[q] || q)) : (labels[q] || q);
+}
+qualitySel.addEventListener('change', updateQualityNote);
+updateQualityNote();
 
 function fmt(f){ return f.toFixed(2); }
 function clamp(f){ return Math.max(76, Math.min(108, parseFloat(f.toFixed(2)))); }
@@ -22323,8 +22443,13 @@ function setStatus(state, msg){
   var on = (state === 'streaming' || state === 'connecting');
   document.querySelectorAll('.tune-btn').forEach(function(b){ b.disabled = !on; });
   manBtn.disabled = !on;
+  // Lock quality/site/SDR selectors while connected — they only take effect on next Connect
+  qualitySel.disabled = on;
+  siteSel.disabled    = on;
+  sdrSel.disabled     = on;
   connBtn.textContent = on ? 'Disconnect' : 'Connect';
   connBtn.classList.toggle('active', on);
+  updateQualityNote();
 }
 
 function updateFreq(f){
@@ -22365,7 +22490,7 @@ function doStart(freq){
   updateFreq(freq);
   _f('/api/hub/scanner/start', {
     method:'POST',
-    body: JSON.stringify({site: siteSel.value, sdr_serial: sdrSel.value, freq_mhz: freq})
+    body: JSON.stringify({site: siteSel.value, sdr_serial: sdrSel.value, freq_mhz: freq, bitrate: qualitySel.value})
   }).then(function(r){ return r.json(); }).then(function(d){
     if(d.ok){
       _slotId = d.slot_id;
@@ -22863,6 +22988,14 @@ function ago(s){if(s<5)return'just now';if(s<60)return s+'s ago';return Math.rou
 function toggleHist(id){const el=document.getElementById(id);el.classList.toggle('open');}
 var lastAlertState={};
 function playAlertSound(){try{new Audio('/static/alert.wav').play();}catch(e){}}
+var _levelMode=localStorage.getItem('ss_level_mode')||'rms';
+(function(){document.querySelectorAll('.sc-lbar-label').forEach(function(el){el.textContent=_levelMode==='peak'?'Peak':'RMS';});})();
+document.addEventListener('click',function(e){
+  if(!e.target.classList.contains('sc-lbar-label'))return;
+  _levelMode=_levelMode==='rms'?'peak':'rms';
+  localStorage.setItem('ss_level_mode',_levelMode);
+  document.querySelectorAll('.sc-lbar-label').forEach(function(el){el.textContent=_levelMode==='peak'?'Peak':'RMS';});
+});
 var _hmpActive = null; // currently active Live button
 function _closeHubMiniPlayer(){
   var mp=document.getElementById('hub-mini-player');
@@ -22954,7 +23087,11 @@ function hubRefresh(){
         var ph = s.ai_phase  || '';
         var sdot = sc.querySelector('.dot');
         if(sdot){ var dc='did'; if(ai.includes('[ALERT]'))dc='dal'; else if(ai.includes('[WARN]'))dc='dwn'; else if(ph==='learning')dc='dlr'; else if(s.enabled)dc='dok'; sdot.className='dot '+dc; }
-        var lev = s.level_dbfs;
+        var rmsLev = s.level_dbfs;
+        var pkLev  = s.peak_dbfs !== undefined ? s.peak_dbfs : rmsLev;
+        var lbwrap = sc.querySelector('.lbar-wrap');
+        if(lbwrap){ lbwrap.dataset.rms=rmsLev; lbwrap.dataset.peak=pkLev; }
+        var lev = (_levelMode==='peak') ? pkLev : rmsLev;
         var lpct = Math.min(Math.max((lev+80)/80*100,0),100);
         var lcol = lev<=-55?'var(--al)':lev<=-20?'var(--wn)':'var(--ok)';
         var lbar = sc.querySelector('.sc-lbar'); if(lbar){lbar.style.width=lpct+'%';lbar.style.background=lcol;}
@@ -23571,8 +23708,8 @@ setInterval(_loadTrends, 300000);
       </div>
 
       {# Level bar #}
-      <div class="lbar-wrap" style="padding:4px 10px">
-        <span style="font-size:11px;color:var(--mu);width:28px">Lvl</span>
+      <div class="lbar-wrap" style="padding:4px 10px" data-rms="{{lev}}" data-peak="{{s.get('peak_dbfs', lev)}}">
+        <span class="sc-lbar-label" style="font-size:11px;color:var(--acc);width:28px;cursor:pointer;user-select:none" title="Click to toggle RMS / Peak">RMS</span>
         <div class="lbar-track"><div class="lbar-fill sc-lbar" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
         <span class="sc-level lbar-val" style="color:{{lcol}}">{{lev}} dB</span>
       </div>
