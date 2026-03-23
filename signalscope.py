@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.11"
+BUILD                  = "SignalScope-3.3.15"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -5422,19 +5422,21 @@ class MonitorManager:
             cfg._dab_ok = False
             return
 
+        if not serial:
+            self.log(f"[{name}] DAB: no dongle serial configured — edit this input and assign a dedicated RTL-SDR dongle.")
+            cfg._livewire_mode = "DAB (no dongle configured)"
+            cfg._dab_ok = False
+            return
+
         device_idx = 0
-        if serial:
-            try:
-                device_idx = int(sdr_manager.resolve_index(serial))
-                self.log(f"[{name}] DAB: resolved serial {serial!r} → device {device_idx}")
-            except SdrNotFoundError as e:
-                self.log(f"[{name}] DAB: {e}")
-                cfg._livewire_mode = "DAB (dongle not found)"
-                cfg._dab_ok = False
-                return
-        else:
-            self.log(f"[{name}] DAB: no serial configured — defaulting to device index 0. "
-                     "If multiple RTL-SDR dongles are present, assign a serial to avoid conflicts.")
+        try:
+            device_idx = int(sdr_manager.resolve_index(serial))
+            self.log(f"[{name}] DAB: resolved serial {serial!r} → device {device_idx}")
+        except SdrNotFoundError as e:
+            self.log(f"[{name}] DAB: {e}")
+            cfg._livewire_mode = "DAB (dongle not found)"
+            cfg._dab_ok = False
+            return
 
         # Early conflict check: refuse to start if an FM stream already holds this device index.
         # (The full bidirectional lock is enforced again inside _start_dab_session via
@@ -5837,21 +5839,25 @@ class MonitorManager:
                 if dev.serial == serial:
                     ppm = dev.ppm; break
 
-        device_idx = 0
+        if not serial:
+            self.log(f"[{name}] FM: no dongle serial configured — edit this input and assign a dedicated RTL-SDR dongle.")
+            cfg._livewire_mode = "FM (no dongle configured)"
+            return
+
         lease      = None
-        if serial:
-            try:
-                lease = sdr_manager.claim(serial, owner=f"FM:{name}")
-                device_idx = lease.index
-                self.log(f"[{name}] FM: claimed dongle {serial!r} → index {device_idx}")
-            except SdrNotFoundError as e:
-                self.log(f"[{name}] FM: {e}")
-                cfg._livewire_mode = "FM (dongle not found)"
-                return
-            except SdrBusyError as e:
-                self.log(f"[{name}] FM: {e}")
-                cfg._livewire_mode = "FM (dongle in use)"
-                return
+        device_idx = 0
+        try:
+            lease = sdr_manager.claim(serial, owner=f"FM:{name}")
+            device_idx = lease.index
+            self.log(f"[{name}] FM: claimed dongle {serial!r} → index {device_idx}")
+        except SdrNotFoundError as e:
+            self.log(f"[{name}] FM: {e}")
+            cfg._livewire_mode = "FM (dongle not found)"
+            return
+        except SdrBusyError as e:
+            self.log(f"[{name}] FM: {e}")
+            cfg._livewire_mode = "FM (dongle in use)"
+            return
 
         try:
             if backend == "rtl_fm":
@@ -8739,8 +8745,9 @@ class HubClient:
         ]
         # Chunk size: ~500 ms worth of audio at the chosen bitrate.
         # Larger chunks reduce relay round-trips and smooth out buffering glitches.
-        _bitrate_kbps = int(bitrate.rstrip("k"))
-        _chunk_size   = max(4096, _bitrate_kbps * 1000 // 8 // 2)  # ½ second
+        _bitrate_kbps  = int(bitrate.rstrip("k"))
+        _chunk_size    = max(4096, _bitrate_kbps * 1000 // 8 // 2)  # ½ second
+        _chunk_duration = _chunk_size / (_bitrate_kbps * 1000 / 8)   # seconds per chunk
 
         try:
             rtl_proc = _sp.Popen(rtl_cmd, stdout=_sp.PIPE, stderr=_sp.DEVNULL, bufsize=0)
@@ -8757,6 +8764,12 @@ class HubClient:
             return
 
         fails = 0
+        # Real-time pacing clock — same pattern as stream_live's writer thread.
+        # ffmpeg + rtl_fm can produce MP3 data faster than real-time; without
+        # rate-limiting the hub queue fills ahead of schedule, the browser
+        # receives audio faster than it should play, and the stream sounds
+        # slightly sped up then eventually dies as the queue overflows.
+        _next_send = time.monotonic()
         try:
             while True:
                 data = ff_proc.stdout.read(_chunk_size)
@@ -8773,6 +8786,16 @@ class HubClient:
                     if fails >= 5:
                         monitor.log(f"[Scanner] Push failed: {e}")
                         break
+                # Pace pushes to real-time so the hub queue never runs ahead of
+                # the browser's playback position.
+                _next_send += _chunk_duration
+                _slack = _next_send - time.monotonic()
+                if _slack > 0:
+                    time.sleep(_slack)
+                elif _slack < -_chunk_duration:
+                    # We're more than one chunk behind (slow network / POST latency)
+                    # — reset the clock instead of trying to burst-catch up.
+                    _next_send = time.monotonic()
         finally:
             monitor.log(f"[Scanner] Stopped {freq_mhz:.2f} MHz (slot {slot_id[:6]})")
             for p in (ff_proc, rtl_proc):
@@ -10643,23 +10666,20 @@ class SdrDeviceManager:
 
     def scan(self, force: bool = False) -> List[Dict]:
         """
-        Scan for connected RTL-SDR dongles using rtl_test.
+        Scan for connected RTL-SDR dongles.
         Returns list of dicts: {index, serial, name, manufacturer}
         Results are cached for 10 seconds unless force=True.
+
+        Uses plain "rtl_test" (no -t flag) so only device 0 is ever opened.
+        The "Found N device(s):" list is printed to stderr before any device
+        is opened, so partial output captured from TimeoutExpired is sufficient.
         """
-        import shutil, subprocess as _sp
+        import subprocess as _sp
         now = time.time()
         if not force and hasattr(self, '_scan_cache') and now - self._cache_ts < 10:
             return self._scan_cache
 
-        # Only one rtl_test process at a time.  Without this lock, FM and DAB
-        # threads starting simultaneously both see a cold cache and both spawn
-        # rtl_test.  When the first process holds device 0, some rtl_test
-        # builds fall back to device 1 — briefly claiming it — so welle-cli
-        # racing to open device 1 at the same instant gets LIBUSB_ERROR_BUSY.
         with self._scan_lock:
-            # Re-check cache inside the lock — a waiting thread should reuse
-            # the result from the thread that just finished scanning.
             now = time.time()
             if not force and hasattr(self, '_scan_cache') and now - self._cache_ts < 10:
                 return self._scan_cache
@@ -10671,53 +10691,27 @@ class SdrDeviceManager:
                 return devices
 
             tool = "rtl_test" if _find_binary("rtl_test") else "rtl_eeprom"
-            # Use plain "rtl_test" (no flags) for enumeration.
-            #
-            # WHY NOT "rtl_test -t":
-            #   The -t flag enables the Elonics E4000 benchmark, which causes
-            #   rtl_test to iterate and OPEN ALL connected dongles (open device 0,
-            #   close, open device 1, close, …) before running the sample loop on
-            #   device 0.  On a 2-dongle system this briefly claims device 1, so if
-            #   welle-cli tries to open device 1 during that window it gets
-            #   LIBUSB_ERROR_BUSY (-6) — exactly the persistent usb_claim_interface
-            #   errors seen in the logs.
-            #
-            # WHY plain "rtl_test" IS safe despite hanging:
-            #   librtlsdr prints "Found N device(s):" + the full device list to
-            #   stderr BEFORE opening any device (the list comes from
-            #   rtlsdr_get_device_count/rtlsdr_get_device_usb_strings which only
-            #   enumerate USB descriptors).  We time-out after 2 s and read the
-            #   partial stderr via TimeoutExpired.exc.stderr — the device list is
-            #   always there.  Only device 0 is ever opened by rtl_test, so all
-            #   other dongles remain free.
-            cmd = [tool] if tool == "rtl_test" else [tool]
+            cmd  = [tool] if tool == "rtl_test" else [tool]
             output = ""
             timed_out = False
             try:
                 result = _sp.run(cmd, capture_output=True, text=True, timeout=2)
                 output = result.stderr + result.stdout
             except _sp.TimeoutExpired as exc:
-                # Partial output captured before the kill still contains the device
-                # list which was written to stderr before any open attempt.
                 timed_out = True
                 out_b = exc.stdout or b""
                 err_b = exc.stderr or b""
-                if isinstance(out_b, str):
-                    output = err_b + out_b          # text=True gave str
-                else:
-                    output = err_b.decode(errors="ignore") + out_b.decode(errors="ignore")
+                output = (
+                    (err_b if isinstance(err_b, str) else err_b.decode(errors="ignore")) +
+                    (out_b if isinstance(out_b, str) else out_b.decode(errors="ignore"))
+                )
             except Exception as e:
                 print(f"[SdrMgr] Scan error: {e}")
 
             if timed_out:
-                # Give the USB stack a moment to fully release device 0 before
-                # any caller tries to open a dongle.
-                time.sleep(0.3)
+                time.sleep(0.3)   # let device 0 fully release before callers open it
 
             import re as _re
-            # Parse lines like:
-            #   0:  Realtek, RTL2838UHIDIR, SN: 00000001
-            #   Found 2 device(s):
             for m in _re.finditer(
                     r'(\d+):\s+([^,]+),\s+([^,]+),\s+SN:\s*(\S*)', output):
                 idx, mfr, name, serial = m.groups()
@@ -13195,7 +13189,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       </label>
       <label>Dongle (serial)
         <select id="dab_serial" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
-          <option value="">Any available</option>
+          <option value="" disabled>— Select dongle —</option>
           {% for dev in sdr_devices %}
           {% if dev.role in ("dab","none") %}
           <option value="{{dev.serial}}">{{dev.label or dev.serial}} ({{dev.role}})</option>
@@ -13252,7 +13246,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       </label>
       <label>Dongle (serial)
         <select id="fm_serial" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
-          <option value="">Any available</option>
+          <option value="" disabled>— Select dongle —</option>
           {% for dev in sdr_devices %}
           {% if dev.role in ("fm","none") %}
           <option value="{{dev.serial}}">{{dev.label or dev.serial}} ({{dev.role}})</option>
@@ -13723,6 +13717,42 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       });
     }).catch(function(){});
   })();
+
+  // Require an explicit dongle serial for FM and DAB — "any available" is no longer accepted.
+  document.querySelector('form[method="post"]').addEventListener('submit', function(e){
+    var t = document.getElementById("src_type").value;
+    if(t === "fm"){
+      var fmSer = document.getElementById("fm_serial").value.trim();
+      if(!fmSer){
+        e.preventDefault();
+        var err = document.getElementById("fm_serial_err");
+        if(!err){
+          err = document.createElement("span");
+          err.id = "fm_serial_err";
+          err.style.cssText = "color:var(--al);font-size:12px;display:block;margin-top:4px";
+          document.getElementById("fm_serial").insertAdjacentElement("afterend", err);
+        }
+        err.textContent = "⚠ Select a dongle — register dongles in Settings → SDR Devices.";
+        document.getElementById("fm_serial").focus();
+        return;
+      }
+    } else if(t === "dab"){
+      var dabSer = document.getElementById("dab_serial").value.trim();
+      if(!dabSer){
+        e.preventDefault();
+        var err2 = document.getElementById("dab_serial_err");
+        if(!err2){
+          err2 = document.createElement("span");
+          err2.id = "dab_serial_err";
+          err2.style.cssText = "color:var(--al);font-size:12px;display:block;margin-top:4px";
+          document.getElementById("dab_serial").insertAdjacentElement("afterend", err2);
+        }
+        err2.textContent = "⚠ Select a dongle — register dongles in Settings → SDR Devices.";
+        document.getElementById("dab_serial").focus();
+        return;
+      }
+    }
+  });
   </script>
 
   </div>{# /non_dab_fields #}
