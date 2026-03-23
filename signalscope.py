@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.15"
+BUILD                  = "SignalScope-3.3.16"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8744,10 +8744,17 @@ class HubClient:
             "-f", "mp3", "-b:a", bitrate, "-reservoir", "0", "pipe:1",
         ]
         # Chunk size: ~500 ms worth of audio at the chosen bitrate.
-        # Larger chunks reduce relay round-trips and smooth out buffering glitches.
-        _bitrate_kbps  = int(bitrate.rstrip("k"))
-        _chunk_size    = max(4096, _bitrate_kbps * 1000 // 8 // 2)  # ½ second
-        _chunk_duration = _chunk_size / (_bitrate_kbps * 1000 / 8)   # seconds per chunk
+        _bitrate_kbps = int(bitrate.rstrip("k"))
+        _chunk_size   = max(4096, _bitrate_kbps * 1000 // 8 // 2)  # ½ second of MP3
+
+        # PCM pacing constants — mirrors stream_live's writer thread approach.
+        # We do NOT pipe rtl_proc.stdout directly into ffmpeg stdin; instead a
+        # dedicated thread reads PCM from rtl_fm and paces it into ffmpeg's stdin
+        # at exactly the 48 kHz sample rate.  This means ffmpeg can only produce
+        # MP3 as fast as samples arrive in real-time, so its stdout naturally
+        # emerges at the correct bitrate with no backpressure on rtl_fm.
+        _PCM_BYTES_PER_SEC = 48000 * 2          # S16LE mono @ 48 kHz
+        _PCM_FRAME         = _PCM_BYTES_PER_SEC // 20  # 50 ms of PCM per write
 
         try:
             rtl_proc = _sp.Popen(rtl_cmd, stdout=_sp.PIPE, stderr=_sp.DEVNULL, bufsize=0)
@@ -8755,7 +8762,8 @@ class HubClient:
             monitor.log(f"[Scanner] rtl_fm start failed: {e}")
             return
         try:
-            ff_proc = _sp.Popen(ff_cmd, stdin=rtl_proc.stdout, stdout=_sp.PIPE,
+            # stdin=PIPE — the PCM piper thread feeds ffmpeg, not rtl_proc directly.
+            ff_proc = _sp.Popen(ff_cmd, stdin=_sp.PIPE, stdout=_sp.PIPE,
                                 stderr=_sp.DEVNULL, bufsize=0)
         except Exception as e:
             monitor.log(f"[Scanner] ffmpeg start failed: {e}")
@@ -8763,13 +8771,38 @@ class HubClient:
             except: pass
             return
 
+        import threading as _thr
+
+        def _pcm_piper():
+            """Read PCM from rtl_fm stdout, pace at real-time, write to ffmpeg stdin.
+            Identical pacing logic to stream_live's writer thread (next_send clock).
+            No backpressure on rtl_fm — we read as fast as it produces and sleep
+            before each write to ffmpeg, so ffmpeg's output is naturally real-time."""
+            _next = time.monotonic()
+            try:
+                while True:
+                    pcm = rtl_proc.stdout.read(_PCM_FRAME)
+                    if not pcm:
+                        break
+                    _next += len(pcm) / _PCM_BYTES_PER_SEC
+                    _slack = _next - time.monotonic()
+                    if _slack > 0:
+                        time.sleep(_slack)
+                    elif _slack < -0.3:
+                        # More than 300 ms behind real-time (e.g. USB start-up burst)
+                        # — reset the clock rather than flushing stale samples fast.
+                        _next = time.monotonic()
+                    ff_proc.stdin.write(pcm)
+            except Exception:
+                pass
+            finally:
+                try: ff_proc.stdin.close()
+                except: pass
+
+        _piper = _thr.Thread(target=_pcm_piper, daemon=True)
+        _piper.start()
+
         fails = 0
-        # Real-time pacing clock — same pattern as stream_live's writer thread.
-        # ffmpeg + rtl_fm can produce MP3 data faster than real-time; without
-        # rate-limiting the hub queue fills ahead of schedule, the browser
-        # receives audio faster than it should play, and the stream sounds
-        # slightly sped up then eventually dies as the queue overflows.
-        _next_send = time.monotonic()
         try:
             while True:
                 data = ff_proc.stdout.read(_chunk_size)
@@ -8786,21 +8819,14 @@ class HubClient:
                     if fails >= 5:
                         monitor.log(f"[Scanner] Push failed: {e}")
                         break
-                # Pace pushes to real-time so the hub queue never runs ahead of
-                # the browser's playback position.
-                _next_send += _chunk_duration
-                _slack = _next_send - time.monotonic()
-                if _slack > 0:
-                    time.sleep(_slack)
-                elif _slack < -_chunk_duration:
-                    # We're more than one chunk behind (slow network / POST latency)
-                    # — reset the clock instead of trying to burst-catch up.
-                    _next_send = time.monotonic()
         finally:
             monitor.log(f"[Scanner] Stopped {freq_mhz:.2f} MHz (slot {slot_id[:6]})")
-            for p in (ff_proc, rtl_proc):
+            # Kill rtl_proc first — its stdout EOF unblocks the piper thread's read(),
+            # which then closes ffmpeg stdin cleanly, which makes ffmpeg exit.
+            for p in (rtl_proc, ff_proc):
                 try: p.kill(); p.wait(timeout=2)
                 except: pass
+            _piper.join(timeout=2)
             with self._lock:
                 self._active_slots.discard(slot_id)
             print(f"[HubRelay] Push complete for slot {slot_id[:6]} ({kind})")
