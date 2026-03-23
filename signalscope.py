@@ -1096,8 +1096,39 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.78"
+BUILD                  = "SignalScope-3.2.83"
 # CHANGELOG
+# 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
+#                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
+#                        chain JSON as node.label, surfaced in the chain diagram above the sub-nodes,
+#                        used in the live fault line ("fault at Primary Sources (Quant A1 silent)"),
+#                        shown in the fault log Fault Point column, and reflected in the iOS app's
+#                        chain detail node list.  Existing stacks without a label are unaffected.
+# 3.2.82 (2026-03-23) — Fix: Broadcast Chains fault replay "Play All" immediately showed "Done ✓"
+#                        without playing any clips.  Root cause: clips were stored in a
+#                        data-clips="..." HTML attribute using _esc() which encodes < > & but NOT
+#                        " (double-quote), so the JSON string broke out of the attribute on the
+#                        first key. JSON.parse then received a truncated string, threw, and fell
+#                        back to [] — giving zero <audio> elements and an instant "Done ✓".
+#                        Fix: clips are now stored in window._flogClipStore[fid] (a JS-side map)
+#                        populated during fault log rendering; the button carries only data-fid.
+# 3.2.81 (2026-03-23) — iOS metric history endpoint: GET /api/mobile/metrics/history returns
+#                        time-series data from metrics_history.db.  Accepts stream, site (hub
+#                        remote streams keyed as site/stream), metric, and hours (1/6/24).
+#                        Allowlisted metrics: level_dbfs, lufs_m, lufs_s, rtp_loss_pct,
+#                        rtp_jitter_ms, fm_signal_dbm, fm_snr_db, dab_snr, dab_sig, dab_bitrate.
+#                        Drives signal history charts in the iOS app.
+# 3.2.80 (2026-03-23) — Chain health score: RTP packet loss now contributes a penalty of up to
+#                        −10 pts (linear from 0 at 0 % loss → −10 at ≥ 10 % loss, capped).
+#                        The peak loss across all RTP-capable nodes in the chain is used.
+#                        Non-RTP nodes (FM, DAB, HTTP, local sound) are ignored.  Tooltip
+#                        updated to show the RTP loss value used in the score.
+# 3.2.79 (2026-03-23) — Chain health score: adbreak-overshoot faults (where a "fault-if-ALL-
+#                        silent" confirmation window times out during a genuinely long ad break)
+#                        are now tagged and excluded from both the health-score fault-frequency
+#                        component and the chain SLA downtime counter.  Prevents repeated long
+#                        ad breaks from permanently degrading the health score and SLA of chains
+#                        that are otherwise operating correctly.
 # 3.2.78 (2026-03-23) — Mobile API settings: added missing Save button to the APNs/Mobile
 #                        API panel so Key ID, Team ID, Bundle ID, .p8 key and sandbox flag
 #                        are persisted on submit.
@@ -8784,6 +8815,11 @@ class HubServer:
         self._chain_node_trend: dict = {}
         # SLA metric write tracker — cid → last write ts
         self._chain_sla_last_write: dict = {}
+        # Tracks whether the current "alerted" fault for each chain was triggered
+        # by an adbreak-candidate confirmation window timing out (long ad break
+        # rather than a genuine fault).  Used to exclude these events from the
+        # health-score fault-frequency count and from SLA downtime writes.
+        self._chain_fault_adbreak: dict = {}
         # API-layer pre-pending fault onset — cid → epoch seconds
         # Tracks when api_chains_status first saw a fault BEFORE the monitor loop
         # had a chance to set _chain_fault_state to "pending".  Used so the
@@ -9768,6 +9804,14 @@ class HubServer:
                                 flap_evts.append(now)
                                 # Update fault log ring buffer + DB
                                 _flog_entry = self._append_fault_log_entry(cid, now, result)
+                                # Tag faults that fired because an adbreak-candidate window
+                                # timed out — these are long ad breaks, not genuine faults,
+                                # and should not count against health score or SLA.
+                                if pending_adbreak:
+                                    _flog_entry["adbreak_overshoot"] = True
+                                    self._chain_fault_adbreak[cid] = True
+                                else:
+                                    self._chain_fault_adbreak.pop(cid, None)
                                 if len(flap_evts) >= CHAIN_FLAP_COUNT and not self._chain_flapping.get(cid):
                                     self._chain_flapping[cid] = True
                                     self._fire_chain_flapping(result, chain, cfg, sender, now)
@@ -9786,6 +9830,8 @@ class HubServer:
                                 flog[-1]["ts_recovered"] = now
                                 metrics_db.fault_log_set_recovered(
                                     flog[-1].get("id", ""), now)
+                            # Clear adbreak-overshoot flag now that the chain is ok
+                            self._chain_fault_adbreak.pop(cid, None)
                             # Check if chain was in flapping state — if so send flapping resolved
                             if self._chain_flapping.get(cid):
                                 self._chain_flapping.pop(cid, None)
@@ -9851,8 +9897,12 @@ class HubServer:
                     last_sla = self._chain_sla_last_write.get(cid, 0)
                     if _warmed_up and now - last_sla >= 60:
                         self._chain_sla_last_write[cid] = now
-                        # Only count as downtime when an alert has actually fired
-                        sla_val = 0.0 if self._chain_fault_state.get(cid) == "alerted" else 1.0
+                        # Only count as downtime when an alert has actually fired,
+                        # and the fault is NOT an adbreak-overshoot (long ad break
+                        # that exceeded the confirmation window — genuine faults only).
+                        _is_real_fault = (self._chain_fault_state.get(cid) == "alerted"
+                                          and not self._chain_fault_adbreak.get(cid, False))
+                        sla_val = 0.0 if _is_real_fault else 1.0
                         try:
                             metrics_db.write([(f"chain/{cid}", "chain_status", now, sla_val)])
                         except Exception:
@@ -16849,7 +16899,7 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .chain-node[data-live-url]{cursor:pointer}.chain-node[data-live-url]:hover{filter:brightness(1.12)}
 @keyframes listen-pulse{0%,100%{box-shadow:0 0 0 3px rgba(59,130,246,.5),0 0 14px rgba(59,130,246,.2)}50%{box-shadow:0 0 0 5px rgba(59,130,246,.2),0 0 22px rgba(59,130,246,.1)}}
 .listen-icon{position:absolute;top:4px;right:5px;font-size:11px;opacity:.6;pointer-events:none;user-select:none}.chain-node.listening .listen-icon{opacity:1;animation:icon-pulse 1.4s ease-in-out infinite}
-@keyframes icon-pulse{0%,100%{opacity:.8}50%{opacity:.4}}.chain-stack{display:flex;flex-direction:column;align-items:stretch;gap:0;position:relative}.chain-stack .chain-node{border-radius:6px;min-width:120px;max-width:180px}.chain-stack-sep{display:flex;justify-content:center;color:var(--mu);font-size:13px;line-height:1;padding:1px 0}.chain-stack-mode{font-size:10px;text-align:center;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:1px 7px;margin:3px auto 0;display:table}
+@keyframes icon-pulse{0%,100%{opacity:.8}50%{opacity:.4}}.chain-stack{display:flex;flex-direction:column;align-items:stretch;gap:0;position:relative}.chain-stack .chain-node{border-radius:6px;min-width:120px;max-width:180px}.chain-stack-sep{display:flex;justify-content:center;color:var(--mu);font-size:13px;line-height:1;padding:1px 0}.chain-stack-mode{font-size:10px;text-align:center;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:1px 7px;margin:3px auto 0;display:table}.chain-stack-label{font-size:10px;font-weight:700;text-align:center;color:var(--acc);letter-spacing:.03em;padding:2px 6px;margin:0 auto 4px;background:rgba(23,168,255,.1);border:1px solid rgba(23,168,255,.25);border-radius:4px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .node-label{font-weight:700;font-size:12px;word-break:break-word}.node-sub{font-size:10px;color:var(--mu);margin-top:3px;word-break:break-word}.node-level{font-size:11px;margin-top:5px;font-variant-numeric:tabular-nums}
 .fault-marker{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;white-space:nowrap}
 .node-pill{font-size:9px;font-weight:700;border-radius:3px;padding:1px 5px;text-align:center;display:block;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -17042,6 +17092,9 @@ var _chainData={
     {% if not loop.first %}<div class="chain-arrow">→</div>{% endif %}
     {% if node.get('type') == 'stack' %}
     <div class="chain-stack" data-pos="{{loop.index0}}">
+      {% if node.get('label') and node.get('label') != 'Stack' %}
+      <div class="chain-stack-label">{{node.label|e}}</div>
+      {% endif %}
       {% for sub in node.nodes %}
       {% if not loop.first %}<div class="chain-stack-sep">│</div>{% endif %}
       <div class="chain-node unknown" data-sub="{{loop.index0}}">
@@ -17226,17 +17279,30 @@ function _updateGroupControls(group){
   var rows=group.querySelectorAll('.node-row');
   var footer=group.querySelector('.pos-footer');
   if(!footer)return;
+  var isStack=rows.length>1;
   var modeSel=footer.querySelector('.stack-mode-sel');
-  if(modeSel){modeSel.style.display=rows.length>1?'':'none';}
+  if(modeSel){modeSel.style.display=isStack?'':'none';}
+  // Show stack label input only when this position has multiple nodes
+  var stackLblWrap=group.querySelector('.stack-lbl-wrap');
+  if(stackLblWrap){stackLblWrap.style.display=isStack?'':'none';}
   // Update remove-row button visibility: only show if >1 row
   group.querySelectorAll('.node-row button').forEach(function(btn){
-    btn.style.display=rows.length>1?'':'none';
+    btn.style.display=isStack?'':'none';
   });
 }
 
 function _mkPosGroup(){
   var grp=document.createElement('div');grp.className='pos-group';
   grp.style.cssText='display:flex;flex-direction:column;border:1px solid var(--bor);border-radius:8px;padding:8px 10px;background:#0a1e42;margin-bottom:2px;position:relative';
+  // Stack label — only visible when group has >1 node (i.e. it becomes a stack)
+  var stackLblWrap=document.createElement('div');stackLblWrap.className='stack-lbl-wrap';
+  stackLblWrap.style.cssText='display:none;margin-bottom:6px';
+  var stackLblIn=document.createElement('input');stackLblIn.type='text';stackLblIn.className='stack-label-in';
+  stackLblIn.placeholder='Stack label (e.g. Primary Sources, STL feeds…)';
+  stackLblIn.title='A short name for this stack shown in the chain diagram, fault log and alerts';
+  stackLblIn.style.cssText='width:100%;box-sizing:border-box;font-size:12px';
+  stackLblWrap.appendChild(stackLblIn);
+  grp.appendChild(stackLblWrap);
   // Footer controls
   var footer=document.createElement('div');footer.className='pos-footer';
   footer.style.cssText='display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap';
@@ -17262,7 +17328,9 @@ function addPosition(nd){
   var container=document.getElementById('builder_nodes');
   var grp=_mkPosGroup();
   if(nd&&nd.type==='stack'){
-    // Restore a saved stack
+    // Restore stack label
+    var stackLblIn=grp.querySelector('.stack-label-in');
+    if(stackLblIn&&nd.label&&nd.label!=='Stack')stackLblIn.value=nd.label;
     var ms=grp.querySelector('.stack-mode-sel');if(ms)ms.value=nd.mode||'all';
     (nd.nodes||[nd]).forEach(function(sub){_addNodeRowToGroup(grp,sub);});
   } else {
@@ -17364,7 +17432,11 @@ function saveChain(){
     if(subNodes.length===1){
       nodes.push(subNodes[0]);  // single node — save as plain node (backward compatible)
     } else if(subNodes.length>1){
-      nodes.push({type:'stack',mode:mode,nodes:subNodes});
+      var stackLblIn=grp.querySelector('.stack-label-in');
+      var stackLabel=stackLblIn?stackLblIn.value.trim():'';
+      var stackNode={type:'stack',mode:mode,nodes:subNodes};
+      if(stackLabel)stackNode.label=stackLabel;
+      nodes.push(stackNode);
     }
   });
   if(!nodes.length){st.style.color='var(--al)';st.textContent='Add at least one node.';return;}
@@ -17516,7 +17588,9 @@ function refreshStatus(){
         healthBadge.style.color=chain.health_color||'var(--mu)';
         healthBadge.style.borderColor=chain.health_color||'var(--mu)';
         healthBadge.style.background=(chain.health_color||'#8aa4c8')+'18';
-        healthBadge.title='Chain health score: '+chain.health_score+'/100 ('+chain.health_label+')\nBased on 30-day SLA, fault frequency, stability and level trends.';
+        var _rtpLoss=chain.health_rtp_loss!=null?chain.health_rtp_loss:0;
+        var _rtpLine=_rtpLoss>0?'\nRTP loss: '+_rtpLoss+'% (−'+Math.min(10,Math.round(_rtpLoss))+' pts)':'';
+        healthBadge.title='Chain health score: '+chain.health_score+'/100 ('+chain.health_label+')\nBased on 30-day SLA, fault frequency, stability, level trends and RTP loss.'+_rtpLine;
         healthBadge.style.display='';
       }
       // Flapping override badge
@@ -17805,6 +17879,11 @@ document.getElementById('chains_list').addEventListener('click', function(e){
         var entries=d.entries||[];
         if(!entries.length){body.innerHTML='<div class="flog-empty">No faults recorded yet.</div>';return;}
         var hasRtp=entries.some(function(ev){return ev.rtp_loss_pct!=null;});
+        // Clips are stored in a JS-side map (not in HTML data-* attributes) to
+        // avoid the double-quote encoding problem: _esc() encodes < > & but NOT
+        // ", so JSON embedded in data-clips="..." breaks the attribute and
+        // JSON.parse returns [] → Play All shows "Done ✓" with no audio.
+        if(!window._flogClipStore)window._flogClipStore={};
         // Always show the Clips column — hide per-row when empty rather than
         // hiding the whole column (otherwise the column never appears until the
         // page is reloaded after the first clip-bearing fault fires).
@@ -17823,9 +17902,10 @@ document.getElementById('chains_list').addEventListener('click', function(e){
           var clips=ev.clips||[];
           var fid=ev.id||('flog_'+Math.random().toString(36).slice(2));
           if(clips.length){
-            // Store clips JSON on the button; panel is built lazily on first click
+            // Store clips in JS map — avoids JSON-in-HTML-attribute encoding issues
+            window._flogClipStore[fid]=clips;
             clipsCell='<td><button class="btn bg bs replay-open-btn" style="font-size:10px;white-space:nowrap" '
-              +'data-fid="'+_esc(fid)+'" data-clips="'+_esc(JSON.stringify(clips))+'">'
+              +'data-fid="'+_esc(fid)+'">'
               +'🎬 Replay ('+clips.length+')</button></td>';
           } else {
             clipsCell='<td style="color:var(--mu);font-size:10px">No clips</td>';
@@ -17929,8 +18009,8 @@ document.getElementById('chains_list').addEventListener('click',function(e){
   var panelRowId='rrow_'+fid;
   var existing=document.getElementById(panelRowId);
   if(existing){existing.style.display=existing.style.display==='none'?'':'none';return;}
-  var clipsJson=btn.dataset.clips||'[]';
-  var clips;try{clips=JSON.parse(clipsJson);}catch(_){clips=[];}
+  // Clips are stored in the JS-side map populated during fault log rendering
+  var clips=(window._flogClipStore&&window._flogClipStore[fid])||[];
   var parentRow=btn.closest('tr');
   if(!parentRow)return;
   var colSpan=parentRow.querySelectorAll('td,th').length||8;
@@ -18601,8 +18681,11 @@ def api_chains_status():
                 # Component 2: Fault frequency last 7 d (0–20 pts)
                 _7d_cutoff    = now - 7 * 86400
                 _flog_entries = hub_server._chain_fault_log.get(cid, [])
+                # Exclude adbreak-overshoot entries — these are long ad breaks that
+                # exceeded the confirmation window, not genuine signal faults.
                 _faults_7d    = sum(1 for e in _flog_entries
-                                    if e.get("ts_start", 0) > _7d_cutoff)
+                                    if e.get("ts_start", 0) > _7d_cutoff
+                                    and not e.get("adbreak_overshoot", False))
                 _freq_pts     = max(0.0, 20.0 - _faults_7d * 4.0)
                 # Component 3: Stability (0–10 pts) — flapping wipes this out
                 _stab_pts     = 0.0 if _is_flapping else 10.0
@@ -18617,8 +18700,24 @@ def api_chains_status():
                     return t
                 _down_nodes  = _count_down_trends(result.get("nodes", []))
                 _trend_pen   = min(15.0, _down_nodes * 5.0)
+                # Component 5: RTP packet loss penalty (0 → −10 pts)
+                # Peak loss across all RTP-capable nodes (sub-nodes in stacks included).
+                # Non-RTP streams (FM, DAB, HTTP, local sound) report rtp_loss_pct=None
+                # and are excluded.  Scale: 0 % loss = 0 pts; 10 % loss = −10 pts (capped).
+                def _peak_rtp_loss(nl):
+                    peak = 0.0
+                    for nd in nl:
+                        if nd.get("type") == "stack":
+                            peak = max(peak, _peak_rtp_loss(nd.get("nodes", [])))
+                        else:
+                            loss = nd.get("rtp_loss_pct")
+                            if loss is not None:
+                                peak = max(peak, float(loss))
+                    return peak
+                _max_rtp     = _peak_rtp_loss(result.get("nodes", []))
+                _rtp_pen     = min(10.0, _max_rtp * 1.0)   # 1 pt per 1 % loss, capped at 10
                 _hscore      = round(max(0, min(100,
-                    _sla_pts + _freq_pts + _stab_pts - _trend_pen)))
+                    _sla_pts + _freq_pts + _stab_pts - _trend_pen - _rtp_pen)))
                 if _hscore >= 90:
                     _hlabel, _hcolor = "Healthy",  "#22c55e"
                 elif _hscore >= 75:
@@ -18627,9 +18726,10 @@ def api_chains_status():
                     _hlabel, _hcolor = "Degraded", "#f97316"
                 else:
                     _hlabel, _hcolor = "Poor",     "#ef4444"
-                result["health_score"] = _hscore
-                result["health_label"] = _hlabel
-                result["health_color"] = _hcolor
+                result["health_score"]   = _hscore
+                result["health_label"]   = _hlabel
+                result["health_color"]   = _hcolor
+                result["health_rtp_loss"] = round(_max_rtp, 1)  # peak RTP loss used in score
             except Exception:
                 result["health_score"] = None
                 result["health_label"] = "Unknown"
@@ -19400,6 +19500,68 @@ def api_mobile_reports_clip(clip_id: str):
         return clips_serve.__wrapped__(stream_name, filename)
 
     return jsonify({"ok": False, "error": "invalid clip mode"}), 400
+
+
+@app.get("/api/mobile/metrics/history")
+@mobile_api_required
+def api_mobile_metrics_history():
+    """Return time-series metric data for one stream from metrics_history.db.
+
+    Query parameters
+    ----------------
+    stream  : stream display name (required)
+    site    : hub site name — when provided the DB key is '{site}/{stream}',
+              which matches how _flush_site_metrics() stores remote streams.
+              Omit for local streams (stored under the stream name alone).
+    metric  : one of the allowlisted metric names (default: level_dbfs)
+    hours   : history window in hours — 1, 6, or 24 (default: 6, clamped)
+    """
+    _ALLOWED_METRICS = {
+        "level_dbfs", "lufs_m", "lufs_s", "lufs_i",
+        "rtp_loss_pct", "rtp_jitter_ms",
+        "fm_signal_dbm", "fm_snr_db",
+        "dab_snr", "dab_sig", "dab_bitrate",
+        "silence_flag",
+    }
+    stream = (request.args.get("stream", "") or "").strip()
+    site   = (request.args.get("site",   "") or "").strip()
+    metric = (request.args.get("metric", "level_dbfs") or "level_dbfs").strip()
+    try:
+        hours = max(1, min(24, int(request.args.get("hours", 6) or 6)))
+    except (ValueError, TypeError):
+        hours = 6
+
+    if not stream:
+        return jsonify({"ok": False, "error": "stream is required"}), 400
+    if metric not in _ALLOWED_METRICS:
+        return jsonify({"ok": False, "error": f"metric must be one of: {', '.join(sorted(_ALLOWED_METRICS))}"}), 400
+
+    # Remote streams are stored as "{site}/{stream}"; local streams as "{stream}".
+    db_key = f"{site}/{stream}" if site else stream
+
+    cutoff = time.time() - hours * 3600
+    try:
+        import sqlite3 as _sq_h
+        with _sq_h.connect(METRICS_DB_PATH) as _conn:
+            rows = _conn.execute(
+                "SELECT ts, value FROM metric_history "
+                "WHERE stream=? AND metric=? AND ts>=? "
+                "ORDER BY ts ASC",
+                (db_key, metric, cutoff)
+            ).fetchall()
+        points = [{"ts": r[0], "value": r[1]} for r in rows]
+        return jsonify({
+            "ok":     True,
+            "stream": stream,
+            "site":   site,
+            "metric": metric,
+            "hours":  hours,
+            "points": points,
+            "count":  len(points),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
 
 @app.get("/api/chains/<cid>/fault_log")
 @login_required

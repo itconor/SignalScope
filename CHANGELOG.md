@@ -2,6 +2,60 @@
 
 ---
 
+## [3.2.83] - 2026-03-23
+
+### Added
+- **Named stacks in Broadcast Chains builder** — each stack position in the chain builder now has an optional **Stack label** field (e.g. `Primary Sources`, `STL Feeds`, `TX Monitors`). The input appears automatically when a position has two or more streams. Labels are saved with the chain and used throughout the UI: fault messages, the live fault status line, the chain diagram, and the fault history log now all show the label instead of the generic `Stack → Stack` text. Restoring a saved chain restores the label into the builder.
+
+---
+
+## [3.2.82] - 2026-03-23
+
+### Fixed
+- **Broadcast Chains fault replay "Play All" showed "Done ✓" immediately** — clicking **▶ Play All** on the Replay timeline closed immediately without playing any audio. Root cause: audio clip data was stored in a `data-clips` HTML attribute as JSON via `_esc()`, which encodes `&`, `<`, and `>` but does NOT encode double-quotes (`"`). JSON strings containing `"` (all stream names, labels, etc.) broke the attribute value at the first quote, so `btn.dataset.clips` returned a truncated fragment, `JSON.parse` threw, the clips array fell back to `[]`, no `<audio>` elements were created, and `playNext()` immediately showed "Done ✓". Fixed by storing clip data in a JS-side map (`window._flogClipStore[fid]`) keyed by fault ID at render time; the Replay button carries only `data-fid` and the click handler reads from the map. The audio playback path in Hub Reports was unaffected.
+
+---
+
+## [3.2.81] - 2026-03-23
+
+### Added
+- **Mobile API: metric history endpoint** — new `GET /api/mobile/metrics/history` endpoint returns time-series data for any stream metric. Query parameters: `stream` (required), `metric` (default `level_dbfs`), `hours` (1/6/24, default 6), `site` (hub mode, optional). Returns `{ ok, stream, site, metric, hours, points: [{ts, value}, …] }`. Backed by `metrics_history.db`; the same 90-day retention as the web app signal history charts. Used by the iOS app signal history view.
+
+### iOS App
+- **Signal history charts** — tapping any stream row in the Hub Overview now navigates to a full-screen signal history view. Select a time range (1 h / 6 h / 24 h) and a metric (Level dBFS, LUFS Momentary, LUFS Integrated, RTP Loss %, RTP Jitter ms, FM Signal dBm, FM SNR dB, DAB SNR) from a picker. A Swift Charts line graph renders the selected metric with catmull-rom interpolation; axis labels match the selected range. Min / Avg / Max stats and point count shown below the chart.
+- **RDS/DAB station name and now-playing in hub stream rows** — hub stream rows in the Sites list now show the RDS PS name or DAB service name in brand-blue below the stream name, and the now-playing / DLS text in muted grey when available. A chevron hint on the stream name row indicates the row is tappable.
+- **Reports pagination (Load More)** — the Reports page now fetches up to 100 events per page. A **Load more events** button appears at the bottom of the unfiltered list when more events are available. Tapping uses cursor-based pagination (the timestamp of the last loaded event as the `before=` cursor) and appends new events without replacing the existing list.
+
+---
+
+## [3.2.80] - 2026-03-23
+
+### Added
+- **Chain health score: RTP packet loss component** — a fifth component is now included in the chain health score. The peak RTP packet loss across all RTP-capable nodes in the chain (sub-nodes inside stacks included) contributes a penalty of 0–10 pts: 0 pts at 0% loss, scaling linearly to −10 pts at ≥ 10% loss. FM, DAB, HTTP, and local sound device nodes report no RTP loss and are excluded. The health score tooltip now shows the RTP loss value when it is non-zero.
+
+  Updated scoring summary:
+
+  | Component | Range |
+  |---|---|
+  | 30-day SLA | 0–70 pts |
+  | Fault frequency (7 d) | 0–20 pts |
+  | Stability (flapping) | 0–10 pts |
+  | Trending-down node penalty | −5 per node, max −15 |
+  | **RTP packet loss penalty** | **0 to −10 pts** |
+
+---
+
+## [3.2.79] - 2026-03-23
+
+### Fixed
+- **Chain health score and SLA degrading due to long ad breaks** — when a "fault-if-ALL-silent" confirmation window timed out during a genuinely long ad break, `CHAIN_FAULT` fired correctly (audio was silent longer than the configured delay) but the event was counted against both the health score fault-frequency component (−4 pts per occurrence) and the SLA downtime counter. Faults that originate from an adbreak-candidate window timing out are now tagged as `adbreak_overshoot` and:
+  - **Excluded from the 7-day fault-frequency count** — no −4 pt penalty per event; repeated long ad breaks no longer collapse the health score.
+  - **Excluded from SLA downtime** — `chain_status = 1.0` (ok) is written to metric history while the chain is in this adbreak-confirmed state, so the 30-day SLA does not accumulate downtime from ad break periods.
+
+  Genuine faults (real signal loss, post mix-in node failures, mix-in point itself going silent) are unaffected. The `CHAIN_FAULT` notification still fires so operators are aware of unusually long breaks.
+
+---
+
 ## [3.2.78] - 2026-03-23
 
 ### Fixed

@@ -252,6 +252,8 @@ Click **+ Stack** within a position to add a second stream. Each stack has a **f
 - **Fault if ALL silent** — the position only faults when every stream in the stack is silent. Use this for redundant receivers: one surviving receiver means the transmitter is still on air.
 - **ANY down = fault** — the position faults if any single stream in the stack goes silent. Use this for stricter monitoring where every path is required.
 
+Each stack position also has an optional **Stack label** field that appears once two or more streams are added. Enter a descriptive name (e.g. `Primary Sources`, `STL Feeds`, `TX Monitors`). The label is used in fault alert messages, the live fault status line, the chain diagram, and the fault history log — replacing the generic "Stack" placeholder with a meaningful location name.
+
 ### Ad Break Handling
 
 If upstream nodes legitimately go silent during ad breaks (because ad audio enters from a separate feed), mark the injection point as the **Ad mix-in point** in the chain builder. While that node carries audio, SignalScope treats upstream silence as an ad break and holds the fault alert.
@@ -265,7 +267,11 @@ During the confirmation window:
 - The mix-in point node shows a **🔀 Mix-in — playing** marker
 - Nodes downstream of the mix-in remain green
 
-If the mix-in point itself goes silent mid-countdown, the confirmation timer is bypassed and the alert fires immediately. Ad break countdown time is not counted as downtime in chain SLA calculations — only confirmed faults count.
+If the mix-in point itself goes silent mid-countdown, the confirmation timer is bypassed and the alert fires immediately.
+
+Ad break handling also applies to **"fault if ALL silent" stacks** without a mix-in node: if every stream in the stack goes silent simultaneously, the position is treated as an ad break candidate and gets the same confirmation window and AD BREAK badge behaviour.
+
+**SLA and health score**: ad break confirmation-window periods are never counted as downtime. If an ad break exceeds the configured delay and a `CHAIN_FAULT` notification fires, that event is tagged as an adbreak overshoot and is also excluded from both the SLA downtime counter and the chain health score's fault-frequency component — so repeated long ad breaks cannot degrade a chain's health score or uptime percentage.
 
 ### Flap Detection
 
@@ -277,16 +283,19 @@ Mark any node as **In Maintenance** to exclude it from fault detection without r
 
 ### Chain Health Score
 
-Each chain card displays a live **health score from 0 to 100**, calculated from four components:
+Each chain card displays a live **health score from 0 to 100**, calculated from five components:
 
 | Component | Weight | Detail |
 |---|---|---|
 | 30-day SLA | 0–70 pts | Primary long-run driver; 100 % SLA = 70 pts |
-| Fault frequency (last 7 d) | 0–20 pts | Starts at 20; −4 pts per fault this week |
+| Fault frequency (last 7 d) | 0–20 pts | Starts at 20; −4 pts per genuine fault this week |
 | Stability | 0–10 pts | Full 10 pts when not flapping; 0 when flapping |
 | Trending-down nodes | −5 per node | Max −15 penalty for nodes with falling levels |
+| RTP packet loss | 0 to −10 pts | Peak loss across all RTP nodes; −1 pt per 1% loss, capped at −10 |
 
-Colour-coded labels: **Healthy** (≥ 90) · **Watch** (75–89) · **Degraded** (50–74) · **Poor** (< 50). Hover the badge for a tooltip showing the score breakdown. A newly-created chain starts around 65 and improves as SLA history accumulates.
+Non-RTP streams (FM, DAB, HTTP, local sound) are excluded from the RTP component. Ad-break overshoot faults (confirmation window timed out during a long ad break) are excluded from the fault-frequency count and do not accumulate SLA downtime.
+
+Colour-coded labels: **Healthy** (≥ 90) · **Watch** (75–89) · **Degraded** (50–74) · **Poor** (< 50). Hover the badge for a tooltip showing the score breakdown, including the RTP loss figure when non-zero. A newly-created chain starts around 65 and improves as SLA history accumulates.
 
 ### Chain SLA
 
@@ -440,6 +449,26 @@ SignalScope includes a mobile API (`/api/mobile/*`) for companion iOS app integr
 ### Authentication
 
 All mobile API endpoints require a Bearer token (or `X-API-Key` header / `?token=` query parameter). Generate or rotate the token in **Settings → Mobile API**.
+
+### Key Mobile API Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/mobile/status` | GET | All monitored streams with live metrics and AI status |
+| `/api/mobile/faults` | GET | Active fault chains |
+| `/api/mobile/reports/events` | GET | Alert event history; supports `limit=` and `before=` (Unix timestamp cursor) for pagination |
+| `/api/mobile/metrics/history` | GET | Time-series metric data for a stream; params: `stream` (required), `metric` (default `level_dbfs`), `hours` (1/6/24, default 6), `site` (hub mode) |
+| `/api/mobile/hub/overview` | GET | Hub sites summary with per-site stream list, alert counts, and latency |
+| `/api/mobile/register_token` | POST | Register an APNs device token for push notifications |
+
+### iOS App Features
+
+- **Dashboard** — live stream cards with level bars, LUFS, AI status, and alert badges; pull-to-refresh; push notifications for active faults
+- **Active Faults** — list of active fault chains with age, SLA, and acknowledgement; deep-link from push notification taps
+- **Reports** — paginated alert event history with search, site/type filters, clips-only toggle, and **Load More** cursor-based pagination (100 events per page)
+- **Hub Overview** — sites list with expandable stream rows showing RDS PS name / DAB service name in brand-blue, now-playing / DLS text, format badge, SLA, and RTP loss label; tap any stream row to open its **Signal History** chart
+- **Signal History** — full-screen chart (Swift Charts) for any stream; select time range (1 h / 6 h / 24 h) and metric (Level dBFS, LUFS Momentary, LUFS Integrated, RTP Loss %, RTP Jitter ms, FM Signal dBm, FM SNR dB, DAB SNR); min / avg / max stats shown below the chart
+- **Audio playback** — AVPlayer for both live streams and fault audio clips; clip playback with preparing / loading state
 
 ### Push Notifications (APNs)
 
