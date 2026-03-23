@@ -34,6 +34,7 @@ ENABLE_SDR=""
 ENABLE_SERVICE=""
 ENABLE_NGINX=""
 ENABLE_LIVEWIRE=""
+FORCE_RETUNE=0
 NGINX_FQDN=""
 NGINX_FQDN_DEFAULT=""   # pre-filled from a broken/existing config during repair
 NGINX_HTTPS=""
@@ -83,6 +84,7 @@ Options:
   --no-sdr                  Skip SDR support
   --livewire                Apply Livewire/AES67 UDP kernel tuning (2× standard buffer sizes)
   --no-livewire             Apply standard UDP tuning only
+  --retune                  Re-apply kernel network tuning even on an update (combine with --livewire)
   --nginx                   Install and configure nginx reverse proxy
   --no-nginx                Skip nginx setup
   --fqdn <hostname>         Fully-qualified domain name for nginx vhost and TLS cert
@@ -239,6 +241,7 @@ parse_args() {
       --force) FORCE_OVERWRITE=1; shift ;;
       --livewire) ENABLE_LIVEWIRE=1; shift ;;
       --no-livewire) ENABLE_LIVEWIRE=0; shift ;;
+      --retune) FORCE_RETUNE=1; shift ;;
       --pi-overclock) ENABLE_OVERCLOCK=1; shift ;;
       --no-pi-overclock) ENABLE_OVERCLOCK=0; shift ;;
       --install-dir)
@@ -1008,7 +1011,19 @@ main() {
   info "Install SDR: $([[ "${ENABLE_SDR}" == "1" ]] && echo yes || echo no)"
   info "Install nginx: $([[ "${ENABLE_NGINX}" == "1" ]] && echo yes || echo no)"
   if [[ "${IS_UPDATE}" -ne 1 ]]; then
-    info "UDP tuning: $([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo "Livewire/AES67 (2× buffers)" || echo "standard")"
+    info "UDP tuning: $([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo "Livewire/AES67 (4× buffers, 2 GB)" || echo "standard")"
+  else
+    # On updates the tuning block is skipped — report what is currently live on disk.
+    _sysctl_conf="/etc/sysctl.d/99-signalscope-network.conf"
+    if [[ -f "${_sysctl_conf}" ]]; then
+      if grep -q "Livewire" "${_sysctl_conf}" 2>/dev/null; then
+        info "UDP tuning: Livewire/AES67 profile already applied (re-run with --livewire --retune to upgrade to 4× buffers)"
+      else
+        info "UDP tuning: standard profile already applied (re-run with --livewire --retune to switch to Livewire/AES67 4× buffers)"
+      fi
+    else
+      info "UDP tuning: not yet applied (run a fresh install or use --livewire --force)"
+    fi
   fi
   [[ -n "${PI_MODEL_STR}" ]] && info "Pi model: ${PI_MODEL_STR}"
   [[ -n "${PI_MODEL_STR}" && "${PI_GEN}" -ne 5 ]] && info "Pi overclock: $([[ "${ENABLE_OVERCLOCK}" == "1" ]] && echo yes || echo no)"
@@ -1182,22 +1197,24 @@ PYEOF
     install_redsea
   fi
 
-  # ── System tuning — only on fresh install ────────────────────────────────────
-  if [[ "${IS_UPDATE}" -ne 1 ]]; then
+  # ── System tuning — fresh install, or forced retune via --retune ─────────────
+  if [[ "${IS_UPDATE}" -ne 1 || "${FORCE_RETUNE}" -eq 1 ]]; then
     step "Applying network tuning"
     # Standard values — sufficient for HTTP/RTP unicast workloads.
-    # Livewire/AES67 multicast doubles every buffer to handle the high-rate
-    # 1 ms packet bursts without kernel-side drops.
+    # Livewire/AES67 multicast uses 4× standard buffers to handle the high-rate
+    # 1 ms packet bursts across many simultaneous streams without kernel-side drops.
+    # Values are just per-socket maximums — the kernel lazy-allocates; no RAM is
+    # consumed until a socket actually fills its buffer.
     if [[ "${ENABLE_LIVEWIRE}" == "1" ]]; then
-      _rmem_max=1073741824   # 1 GB  (2 × 512 MB)
-      _rmem_def=1073741824
-      _wmem_max=1073741824
-      _wmem_def=1073741824
-      _udp_rmin=2097152      # 2 MB  (2 × 1 MB)
-      _udp_wmin=2097152
-      _backlog=1500000       # 2 × 750000
-      _optmem=131072         # 2 × 65536
-      ok "Livewire/AES67 mode: applying 2× UDP buffer sizes"
+      _rmem_max=2147483648   # 2 GB  (4 × 512 MB)
+      _rmem_def=2147483648
+      _wmem_max=2147483648
+      _wmem_def=2147483648
+      _udp_rmin=4194304      # 4 MB  (4 × 1 MB)
+      _udp_wmin=4194304
+      _backlog=3000000       # 4 × 750000
+      _optmem=262144         # 4 × 65536
+      ok "Livewire/AES67 mode: applying 4× UDP buffer sizes (2 GB socket buffers)"
     else
       _rmem_max=536870912    # 512 MB
       _rmem_def=536870912
@@ -1207,11 +1224,11 @@ PYEOF
       _udp_wmin=1048576
       _backlog=750000
       _optmem=65536
-      ok "Standard UDP tuning (re-run installer with --livewire for Livewire/AES67 optimisation)"
+      ok "Standard UDP tuning (re-run with --livewire --retune for Livewire/AES67 optimisation)"
     fi
 
     ${SUDO} tee /etc/sysctl.d/99-signalscope-network.conf > /dev/null <<EOF
-# SignalScope network tuning$([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo " — Livewire/AES67 profile (2× buffers)" || echo " — standard profile")
+# SignalScope network tuning$([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo " — Livewire/AES67 profile (4× buffers)" || echo " — standard profile")
 net.core.rmem_max=${_rmem_max}
 net.core.rmem_default=${_rmem_def}
 net.core.wmem_max=${_wmem_max}
@@ -1222,6 +1239,7 @@ net.core.netdev_max_backlog=${_backlog}
 net.core.optmem_max=${_optmem}
 EOF
     ${SUDO} sysctl --system >/dev/null || true
+    ok "Network tuning applied live (no reboot needed)"
 
     DEFAULT_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
     if [[ -n "${DEFAULT_IFACE:-}" ]]; then
