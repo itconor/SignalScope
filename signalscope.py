@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.90"
+BUILD                  = "SignalScope-3.2.93"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -5153,7 +5153,12 @@ class MonitorManager:
             session.dab_port = _s.getsockname()[1]
 
         _wb = _find_binary("welle-cli") or "welle-cli"
-        driver = f"rtl_sdr,{session.device_idx}" if session.device_idx and str(session.device_idx) != "0" else "rtl_sdr"
+        # Always pin the device index so two dongles on the same machine don't
+        # conflict.  "rtl_sdr,0" is identical to "rtl_sdr" for a single dongle
+        # but is essential when a second dongle (e.g. an FM rtl_fm stream) is
+        # also running — previously index 0 was omitted, causing welle-cli to
+        # open "first available" and race with rtl_fm for the same device.
+        driver = f"rtl_sdr,{int(session.device_idx)}"
         cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel, "-C", "1", "-g", "-1", "-F", driver]
         if session.ppm:
             self.log(f"[{name}] DAB: ignoring ppm={session.ppm} for welle-cli startup (not passing it as gain)")
@@ -8567,9 +8572,98 @@ class HubClient:
                     except Exception:
                         pass
 
+            elif kind == "scanner":
+                self._push_scanner_audio(cfg, req, slot_id, chunk_url)
+
             else:
                 print(f"[HubRelay] Unknown relay kind '{kind}' for slot {slot_id[:6]}")
         finally:
+            with self._lock:
+                self._active_slots.discard(slot_id)
+
+    def _push_scanner_audio(self, cfg, req: dict, slot_id: str, chunk_url: str):
+        """Stream live FM audio from a remote SDR to a scanner relay slot.
+        Runs rtl_fm at the requested frequency, resamples via ffmpeg, and POSTs
+        MP3 chunks to the hub until the slot expires."""
+        import subprocess as _sp
+        freq_mhz = float(req.get("freq_mhz", 96.5) or 96.5)
+        serial   = str(req.get("sdr_serial", "") or "").strip()
+        ppm      = int(req.get("ppm", 0) or 0)
+        gain_raw = req.get("gain")
+        gain     = float(gain_raw) if gain_raw is not None else 38.0
+
+        if not _find_binary("rtl_fm") or not _find_binary("ffmpeg"):
+            monitor.log("[Scanner] rtl_fm or ffmpeg not found — cannot start scanner")
+            return
+
+        if serial:
+            try:
+                device_idx = sdr_manager.resolve_index(serial)
+            except Exception as e:
+                monitor.log(f"[Scanner] SDR serial {serial!r} not available: {e}")
+                return
+        else:
+            devs = sdr_manager.scan()
+            if not devs:
+                monitor.log("[Scanner] No SDR devices found")
+                return
+            device_idx = devs[0]["index"]
+
+        freq_hz = int(freq_mhz * 1_000_000)
+        monitor.log(f"[Scanner] {freq_mhz:.2f} MHz device={device_idx} slot={slot_id[:6]}")
+
+        rtl_cmd = [
+            "rtl_fm", "-f", str(freq_hz), "-M", "fm",
+            "-s", "171000", "-l", "0", "-A", "fast", "-F", "9",
+            "-d", str(device_idx), "-g", str(gain),
+        ]
+        if ppm:
+            rtl_cmd += ["-p", str(ppm)]
+        rtl_cmd += ["-"]
+
+        ff_cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "s16le", "-ar", "171000", "-ac", "1", "-i", "pipe:0",
+            "-af", "aresample=48000",
+            "-f", "mp3", "-b:a", "128k", "-reservoir", "0", "pipe:1",
+        ]
+
+        try:
+            rtl_proc = _sp.Popen(rtl_cmd, stdout=_sp.PIPE, stderr=_sp.DEVNULL, bufsize=0)
+        except Exception as e:
+            monitor.log(f"[Scanner] rtl_fm start failed: {e}")
+            return
+        try:
+            ff_proc = _sp.Popen(ff_cmd, stdin=rtl_proc.stdout, stdout=_sp.PIPE,
+                                stderr=_sp.DEVNULL, bufsize=0)
+        except Exception as e:
+            monitor.log(f"[Scanner] ffmpeg start failed: {e}")
+            try: rtl_proc.kill()
+            except: pass
+            return
+
+        fails = 0
+        try:
+            while True:
+                data = ff_proc.stdout.read(4096)
+                if not data:
+                    break
+                try:
+                    body = self._post_relay_chunk(cfg, chunk_url, data)
+                    if body.get("error") == "slot not found or expired":
+                        monitor.log(f"[Scanner] Slot {slot_id[:6]} expired — stopping")
+                        break
+                    fails = 0
+                except Exception as e:
+                    fails += 1
+                    if fails >= 5:
+                        monitor.log(f"[Scanner] Push failed: {e}")
+                        break
+        finally:
+            monitor.log(f"[Scanner] Stopped {freq_mhz:.2f} MHz (slot {slot_id[:6]})")
+            for p in (ff_proc, rtl_proc):
+                try: p.kill(); p.wait(timeout=2)
+                except: pass
             with self._lock:
                 self._active_slots.discard(slot_id)
             print(f"[HubRelay] Push complete for slot {slot_id[:6]} ({kind})")
@@ -8817,6 +8911,11 @@ class HubServer:
         self._chain_flapping: dict = {}
         # Maintenance bypass — cid → {"site|stream": expiry_ts}
         self._chain_maintenance: dict = {}
+        # Sites that have had a self_update command pushed, awaiting comeback
+        # site_name → pushed_at timestamp
+        self._pending_updates: dict = {}
+        # Active scanner sessions — site_name → {slot_id, freq_mhz, sdr_serial, started}
+        self._scanner_sessions: dict = {}
         # Fault log — cid → list of fault dicts (max 25 in memory; persisted to DB)
         self._chain_fault_log: dict = {}
         # Predictive trend cache — stream_key → {"trend": str, "slope": float, "ts": float}
@@ -10238,7 +10337,9 @@ class ListenSlot:
     def __init__(self, slot_id: str, site: str, stream_idx: int,
                  kind: str = "live", seconds: float = 10.0,
                  stream_name: str = "", filename: str = "",
-                 mimetype: str = "audio/mpeg"):
+                 mimetype: str = "audio/mpeg",
+                 freq_mhz: float = 0.0, sdr_serial: str = "",
+                 ppm: int = 0, gain: "float | None" = None):
         self.slot_id     = slot_id
         self.site        = site
         self.stream_idx  = stream_idx
@@ -10251,6 +10352,11 @@ class ListenSlot:
         self.last_chunk  = time.time()
         self.q: queue.Queue = queue.Queue(maxsize=200)
         self.closed      = False
+        # Scanner-specific fields (kind == "scanner")
+        self.freq_mhz   = float(freq_mhz or 0.0)
+        self.sdr_serial = str(sdr_serial or "")
+        self.ppm        = int(ppm or 0)
+        self.gain       = gain  # None → auto
 
     def put(self, data: bytes):
         self.last_chunk = time.time()
@@ -10282,10 +10388,13 @@ class ListenSlotRegistry:
 
     def create(self, site: str, stream_idx: int, kind: str = "live",
                seconds: float = 10.0, stream_name: str = "",
-               filename: str = "", mimetype: str = "audio/mpeg") -> ListenSlot:
-        slot_id = hashlib.md5(f"{site}{stream_idx}{kind}{filename}{time.time()}".encode()).hexdigest()[:12]
+               filename: str = "", mimetype: str = "audio/mpeg",
+               freq_mhz: float = 0.0, sdr_serial: str = "",
+               ppm: int = 0, gain: "float | None" = None) -> ListenSlot:
+        slot_id = hashlib.md5(f"{site}{stream_idx}{kind}{filename}{freq_mhz}{time.time()}".encode()).hexdigest()[:12]
         slot = ListenSlot(slot_id, site, stream_idx, kind=kind, seconds=seconds,
-                          stream_name=stream_name, filename=filename, mimetype=mimetype)
+                          stream_name=stream_name, filename=filename, mimetype=mimetype,
+                          freq_mhz=freq_mhz, sdr_serial=sdr_serial, ppm=ppm, gain=gain)
         with self._lock:
             self._slots[slot_id] = slot
         return slot
@@ -10300,20 +10409,28 @@ class ListenSlotRegistry:
 
     def pending_for_site(self, site: str) -> List[dict]:
         """Return pending listen requests for a site awaiting a client push."""
+        out = []
         with self._lock:
-            return [
-                {
-                    "slot_id": s.slot_id,
+            for s in self._slots.values():
+                if s.site != site or s.closed or s.stale:
+                    continue
+                d: dict = {
+                    "slot_id":    s.slot_id,
                     "stream_idx": s.stream_idx,
-                    "kind": s.kind,
-                    "seconds": s.seconds,
+                    "kind":       s.kind,
+                    "seconds":    s.seconds,
                     "stream_name": s.stream_name,
-                    "filename": s.filename,
-                    "mimetype": s.mimetype,
+                    "filename":   s.filename,
+                    "mimetype":   s.mimetype,
                 }
-                for s in self._slots.values()
-                if s.site == site and not s.closed and not s.stale
-            ]
+                if s.kind == "scanner":
+                    d["freq_mhz"]   = s.freq_mhz
+                    d["sdr_serial"] = s.sdr_serial
+                    d["ppm"]        = s.ppm
+                    if s.gain is not None:
+                        d["gain"] = s.gain
+                out.append(d)
+        return out
 
     def _reap(self):
         while True:
@@ -15624,6 +15741,36 @@ def hub_heartbeat():
 
     site_name = payload.get("site","")
 
+    # ── Post-update comeback detection ────────────────────────────────────────
+    # If we pushed a self_update to this site, watch for its first heartbeat
+    # after the restart.  When detected: push a 'start' command so monitoring
+    # resumes, then wait 60 seconds for audio levels to settle before clearing
+    # the auto-maintenance entries that were set when the update was triggered.
+    if hub_server and site_name and site_name in hub_server._pending_updates:
+        pushed_at  = hub_server._pending_updates[site_name]
+        site_data  = hub_server._sites.get(site_name, {})
+        came_back  = (
+            site_data.get("online")
+            and float(site_data.get("_received", 0)) > pushed_at
+        )
+        if came_back:
+            del hub_server._pending_updates[site_name]
+            # Push start so monitoring resumes immediately after the restart
+            hub_server.push_pending_command(site_name, {"type": "start"})
+            monitor.log(
+                f"[Hub] Site '{site_name}' back online after update — "
+                f"'start' command queued; maintenance clears in 60 s"
+            )
+            def _clear_maint_after_cooldown(sn: str = site_name) -> None:
+                time.sleep(60)
+                _set_site_chain_maintenance(sn, duration=0)
+                monitor.log(f"[Hub] Auto-maintenance cleared for site '{sn}' (60-second post-update cooldown elapsed)")
+            threading.Thread(
+                target=_clear_maint_after_cooldown,
+                daemon=True,
+                name=f"UpdateMaintClear-{site_name}",
+            ).start()
+
     # Pending approval — acknowledge receipt but send no commands
     if ingest_status == "pending":
         ack = {"ok": True, "status": "pending_approval",
@@ -15981,19 +16128,68 @@ def hub_update_download():
     )
 
 
+def _iter_chain_leaf_nodes(chain: dict):
+    """Yield every leaf node dict (has site+stream) in a chain, expanding stacks."""
+    for node in chain.get("nodes", []):
+        if node.get("type") == "stack":
+            yield from node.get("nodes", [])
+        else:
+            yield node
+
+
+def _set_site_chain_maintenance(site_name: str, duration: int) -> None:
+    """Set (duration > 0) or clear (duration = 0) maintenance on every chain
+    node that belongs to *site_name*.  Thread-safe: reads chains from
+    monitor.app_cfg and writes to hub_server._chain_maintenance."""
+    if not hub_server:
+        return
+    chains = (monitor.app_cfg.signal_chains or []) if monitor.app_cfg else []
+    expiry = time.time() + duration if duration > 0 else 0
+    for chain in chains:
+        cid = chain.get("id", "")
+        if not cid:
+            continue
+        maint = hub_server._chain_maintenance.setdefault(cid, {})
+        for node in _iter_chain_leaf_nodes(chain):
+            if node.get("site", "") == site_name:
+                mkey = f"{site_name}|{node.get('stream', '')}"
+                if duration > 0:
+                    maint[mkey] = expiry
+                    monitor.log(f"[Chain] Auto-maintenance SET for {mkey} in chain {cid!r} (update in progress)")
+                else:
+                    maint.pop(mkey, None)
+                    monitor.log(f"[Chain] Auto-maintenance CLEARED for {mkey} in chain {cid!r} (update complete)")
+
+
 @app.post("/api/hub/site/<site_name>/update")
 @login_required
 @csrf_protect
 def hub_trigger_update(site_name):
-    """Push a self_update command to a remote site."""
+    """Push a self_update command to a remote site.
+
+    Automatically puts every chain node for that site into maintenance mode
+    for up to 15 minutes so that the update download, restart, and 60-second
+    audio-level settle time do not generate false fault alerts.  The hub
+    detects the first heartbeat after the restart and:
+      1. Pushes a 'start' command so monitoring resumes immediately.
+      2. Starts a 60-second cooldown timer; when it expires all chain nodes
+         for this site are taken back out of maintenance automatically.
+    """
     cfg = monitor.app_cfg
     if cfg.hub.mode not in ("hub", "both"):
         return jsonify({"error": "not a hub"}), 403
+
+    # Put all chain nodes for this site into maintenance (15-minute window
+    # covers download + restart + 60-second post-restart settle cooldown).
+    if hub_server:
+        _set_site_chain_maintenance(site_name, duration=900)
+        hub_server._pending_updates[site_name] = time.time()
+
     hub_server.push_pending_command(site_name, {
         "type":    "self_update",
         "payload": {"hub_version": BUILD},
     })
-    monitor.log(f"[Hub] Update command pushed to site '{site_name}'")
+    monitor.log(f"[Hub] Update command pushed to site '{site_name}' — chain nodes now in auto-maintenance")
     return jsonify({"ok": True})
 
 
@@ -16812,6 +17008,180 @@ def hub_proxy_clip(site_name, sidx):
                                   seconds=secs_f, mimetype="audio/wav")
     print(f"[HubProxy] Relay WAV slot {slot.slot_id} created for {site_name}/stream/{sidx}")
     return _hub_stream_relay_response(slot, startup_timeout=20.0)
+
+# ─── Scanner mode ─────────────────────────────────────────────────────────────
+
+@app.get("/hub/scanner")
+@login_required
+def hub_scanner_page():
+    """FM Scanner page — tune a remote site's SDR dongle in real time."""
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub", "both"):
+        return redirect("/")
+    sites = []
+    if hub_server:
+        with hub_server._lock:
+            for sname, sdata in sorted(hub_server._sites.items()):
+                if sdata.get("approved", True) and not sdata.get("blocked"):
+                    sites.append({"name": sname, "online": bool(sdata.get("online"))})
+    return render_template_string(HUB_SCANNER_TPL, sites=sites,
+                                  build=BUILD, csp_nonce=g.csp_nonce)
+
+
+@app.get("/api/hub/scanner/devices/<path:site_name>")
+@login_required
+def hub_scanner_devices(site_name):
+    """Return known SDR serial numbers for a site, parsed from its stream configs."""
+    if not hub_server:
+        return jsonify({"ok": False, "error": "no hub"}), 400
+    site_data = hub_server._sites.get(site_name, {})
+    serials = []
+    seen = set()
+    for st in site_data.get("streams", []):
+        dev = str(st.get("device_index", "") or "").strip().lower()
+        # Parse serial from fm://freq?serial=XXXX or dab://...?serial=XXXX
+        if "serial=" in dev:
+            for part in dev.split("?", 1)[-1].split("&"):
+                if part.startswith("serial="):
+                    s = part.split("=", 1)[1].strip()
+                    if s and s not in seen:
+                        seen.add(s)
+                        serials.append(s)
+    return jsonify({"ok": True, "serials": serials})
+
+
+@app.post("/api/hub/scanner/start")
+@login_required
+@csrf_protect
+def hub_scanner_start():
+    """Create a scanner session for a site: start streaming FM audio from its SDR."""
+    if not hub_server:
+        return jsonify({"ok": False, "error": "no hub"}), 400
+    data       = request.get_json(silent=True) or {}
+    site       = str(data.get("site", "")).strip()
+    sdr_serial = str(data.get("sdr_serial", "") or "").strip()
+    freq_mhz   = float(data.get("freq_mhz", 96.5) or 96.5)
+    ppm        = int(data.get("ppm", 0) or 0)
+    gain       = data.get("gain")
+    if not site:
+        return jsonify({"ok": False, "error": "site required"}), 400
+
+    # Close any existing scanner session for this site
+    old = hub_server._scanner_sessions.pop(site, None)
+    if old:
+        old_slot = listen_registry.get(old["slot_id"])
+        if old_slot:
+            old_slot.closed = True
+
+    slot = listen_registry.create(
+        site, 0, kind="scanner", mimetype="audio/mpeg",
+        freq_mhz=freq_mhz, sdr_serial=sdr_serial, ppm=ppm, gain=gain,
+    )
+    hub_server._scanner_sessions[site] = {
+        "slot_id":    slot.slot_id,
+        "freq_mhz":   freq_mhz,
+        "sdr_serial": sdr_serial,
+        "started":    time.time(),
+    }
+    monitor.log(f"[Scanner] Session started for site '{site}' at {freq_mhz:.2f} MHz "
+                f"(slot {slot.slot_id[:6]})")
+    stream_url = f"/hub/scanner/stream/{slot.slot_id}"
+    return jsonify({"ok": True, "slot_id": slot.slot_id, "stream_url": stream_url})
+
+
+@app.post("/api/hub/scanner/tune")
+@login_required
+@csrf_protect
+def hub_scanner_tune():
+    """Retune an active scanner session to a new frequency."""
+    if not hub_server:
+        return jsonify({"ok": False, "error": "no hub"}), 400
+    data     = request.get_json(silent=True) or {}
+    site     = str(data.get("site", "")).strip()
+    freq_mhz = float(data.get("freq_mhz", 96.5) or 96.5)
+    if not site:
+        return jsonify({"ok": False, "error": "site required"}), 400
+
+    sess = hub_server._scanner_sessions.get(site)
+    if not sess:
+        return jsonify({"ok": False, "error": "no active scanner session for this site"}), 404
+
+    # Expire the old slot so the client's push loop stops
+    old_slot = listen_registry.get(sess["slot_id"])
+    if old_slot:
+        old_slot.closed = True
+
+    # Create a fresh slot at the new frequency with the same SDR serial
+    slot = listen_registry.create(
+        site, 0, kind="scanner", mimetype="audio/mpeg",
+        freq_mhz=freq_mhz,
+        sdr_serial=sess.get("sdr_serial", ""),
+        ppm=int(sess.get("ppm", 0)),
+        gain=sess.get("gain"),
+    )
+    sess["slot_id"]  = slot.slot_id
+    sess["freq_mhz"] = freq_mhz
+    monitor.log(f"[Scanner] Retuned site '{site}' → {freq_mhz:.2f} MHz (slot {slot.slot_id[:6]})")
+    stream_url = f"/hub/scanner/stream/{slot.slot_id}"
+    return jsonify({"ok": True, "slot_id": slot.slot_id, "stream_url": stream_url,
+                    "freq_mhz": freq_mhz})
+
+
+@app.post("/api/hub/scanner/stop")
+@login_required
+@csrf_protect
+def hub_scanner_stop():
+    """Stop and close an active scanner session."""
+    if not hub_server:
+        return jsonify({"ok": False, "error": "no hub"}), 400
+    data = request.get_json(silent=True) or {}
+    site = str(data.get("site", "")).strip()
+    sess = hub_server._scanner_sessions.pop(site, None)
+    if sess:
+        slot = listen_registry.get(sess["slot_id"])
+        if slot:
+            slot.closed = True
+        monitor.log(f"[Scanner] Session stopped for site '{site}'")
+    return jsonify({"ok": True})
+
+
+@app.get("/api/hub/scanner/status/<path:site_name>")
+@login_required
+def hub_scanner_status(site_name):
+    """Return the current scanner session state for a site."""
+    if not hub_server:
+        return jsonify({"ok": True, "active": False})
+    sess = hub_server._scanner_sessions.get(site_name)
+    if not sess:
+        return jsonify({"ok": True, "active": False})
+    slot = listen_registry.get(sess["slot_id"])
+    streaming = bool(slot and not slot.closed and not slot.stale)
+    if not streaming:
+        # Slot gone — clean up
+        hub_server._scanner_sessions.pop(site_name, None)
+        return jsonify({"ok": True, "active": False})
+    stream_url = f"/hub/scanner/stream/{sess['slot_id']}"
+    return jsonify({
+        "ok":        True,
+        "active":    True,
+        "slot_id":   sess["slot_id"],
+        "freq_mhz":  sess["freq_mhz"],
+        "stream_url": stream_url,
+        "streaming": slot.last_chunk > slot.created,
+    })
+
+
+@app.get("/hub/scanner/stream/<slot_id>")
+@login_required
+def hub_scanner_stream(slot_id):
+    """Proxy live scanner audio from the client to the browser."""
+    slot = listen_registry.get(slot_id)
+    if not slot or slot.kind != "scanner":
+        return "Stream not found or expired", 404
+    return _hub_stream_relay_response(slot, startup_timeout=20.0)
+
+
+# ─── End scanner mode ──────────────────────────────────────────────────────────
 
 @app.get("/hub/site/<path:site_name>/alerts/clip/<stream_name>/<filename>")
 @login_required
@@ -21734,6 +22104,307 @@ setTimeout(_tlLoadAll, 600);
 <footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build}} • Broadcast Signal Intelligence</footer>
 </body></html>"""
 
+HUB_SCANNER_TPL = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FM Scanner — SignalScope</title>
+<style>
+:root{--bg:#080d18;--card:#0d1526;--bor:#1e3050;--tx:#c8d8f0;--mu:#4a6a8a;--ok:#22c55e;--al:#ef4444;--bl:#3b82f6;--lcd:#00e5ff;--lcd-dim:#004060}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column}
+a{color:var(--bl);text-decoration:none}
+input,select,button{font-family:inherit;font-size:14px;background:var(--card);color:var(--tx);border:1px solid var(--bor);border-radius:6px;outline:none}
+input:focus,select:focus{border-color:var(--bl)}
+.hdr{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--bor)}
+.hdr-logo{font-size:15px;font-weight:700;color:var(--bl);letter-spacing:.5px}
+.hdr-title{font-size:14px;color:var(--mu)}
+.hdr-back{margin-left:auto;padding:5px 14px;border-radius:6px;background:#0a1428;border:1px solid var(--bor);color:var(--mu);font-size:13px;cursor:pointer}
+.hdr-back:hover{color:var(--tx);border-color:#3b5a90}
+.setup-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 20px;background:#080d18;border-bottom:1px solid var(--bor)}
+.setup-bar label{font-size:12px;color:var(--mu);white-space:nowrap}
+.setup-bar select,.setup-bar input[type=number]{padding:6px 10px;font-size:13px}
+.btn-connect{padding:7px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;border:1px solid #3b82f6;background:#1e3a8a;color:#bfdbfe;transition:background .15s}
+.btn-connect:hover{background:#2046ae}
+.btn-connect.active{background:#1a4028;border-color:#22c55e;color:#86efac}
+.tuner-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:30px 16px}
+.tuner{background:var(--card);border:1px solid var(--bor);border-radius:16px;padding:28px 32px;width:100%;max-width:500px;box-shadow:0 4px 32px rgba(0,0,0,.6)}
+.status-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:20px;font-size:13px;color:var(--mu)}
+.dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;transition:background .3s,box-shadow .3s}
+.dot.idle{background:#2a3a4a}
+.dot.connecting{background:#facc15;box-shadow:0 0 8px rgba(250,204,21,.7)}
+.dot.streaming{background:var(--ok);box-shadow:0 0 8px rgba(34,197,94,.6)}
+.dot.error{background:var(--al);box-shadow:0 0 8px rgba(239,68,68,.6)}
+.freq-wrap{text-align:center;margin-bottom:26px}
+.freq-display{display:inline-block;font-family:'Courier New',monospace;font-size:62px;font-weight:700;letter-spacing:3px;color:var(--lcd);text-shadow:0 0 14px rgba(0,229,255,.65),0 0 32px rgba(0,229,255,.2);background:#030a12;border:2px solid #0c2440;border-radius:10px;padding:12px 24px;min-width:290px;line-height:1.1;transition:color .2s}
+.freq-unit{font-size:18px;color:var(--lcd-dim);letter-spacing:2px;margin-top:5px;font-family:'Courier New',monospace}
+.freq-sub{font-size:12px;color:var(--mu);margin-top:6px;min-height:16px}
+.tune-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:14px}
+.tune-btn{background:#0a1428;border:1px solid #1e3558;color:#5090d0;font-size:13px;font-weight:600;padding:9px 14px;border-radius:8px;cursor:pointer;min-width:58px;text-align:center;transition:background .1s;user-select:none}
+.tune-btn:hover{background:#142040;border-color:#2a4a78;color:#80b4f0}
+.tune-btn:active{background:#1a2a50}
+.tune-btn:disabled{opacity:.3;cursor:not-allowed}
+.step-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:18px;flex-wrap:wrap}
+.step-lbl{font-size:11px;color:var(--mu)}
+.step-btn{font-size:11px;padding:4px 11px;border-radius:20px;background:#0a1020;border:1px solid #1a2840;color:var(--mu);cursor:pointer;transition:all .15s}
+.step-btn.sel{background:#1e3a8a;border-color:#3b82f6;color:#bfdbfe}
+.step-btn:hover:not(.sel){border-color:#2a4060;color:var(--tx)}
+.manual-row{display:flex;align-items:center;justify-content:center;gap:8px}
+.manual-row input[type=number]{width:100px;padding:6px 10px;font-size:14px;text-align:center}
+.btn-sm{padding:6px 14px;font-size:13px;background:#0a1428;border:1px solid #1e3558;color:#5090d0;border-radius:6px;cursor:pointer;transition:background .1s}
+.btn-sm:hover{background:#142040}
+.btn-sm:disabled{opacity:.3;cursor:not-allowed}
+.kb-row{text-align:center;margin-top:16px;font-size:11px;color:#2a4260}
+.audio-row{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid var(--bor)}
+.audio-row label{font-size:12px;color:var(--mu)}
+.audio-row input[type=range]{width:110px;accent-color:var(--bl)}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <span class="hdr-logo">📻 SignalScope</span>
+  <span class="hdr-title">FM Scanner</span>
+  <a class="hdr-back" href="/hub">← Hub</a>
+</div>
+
+<div class="setup-bar">
+  <label>Site</label>
+  <select id="site-sel">
+    {% for s in sites %}
+    <option value="{{s.name|e}}"{% if not s.online %} disabled{% endif %}>{{s.name|e}}{% if not s.online %} (offline){% endif %}</option>
+    {% endfor %}
+    {% if not sites %}<option disabled>No sites connected</option>{% endif %}
+  </select>
+  <label>SDR</label>
+  <select id="sdr-sel"><option value="">Auto</option></select>
+  <label>Start freq</label>
+  <input type="number" id="start-freq" value="96.5" step="0.1" min="76" max="108" style="width:86px">
+  <span style="font-size:12px;color:var(--mu)">MHz</span>
+  <button class="btn-connect" id="connect-btn">Connect</button>
+</div>
+
+<div class="tuner-wrap">
+  <div class="tuner">
+    <div class="status-row">
+      <span class="dot idle" id="status-dot"></span>
+      <span id="status-txt">Idle — pick a site and connect</span>
+    </div>
+    <div class="freq-wrap">
+      <div class="freq-display" id="freq-display">---.--</div>
+      <div class="freq-unit">MHz FM</div>
+      <div class="freq-sub" id="freq-sub">&nbsp;</div>
+    </div>
+    <div class="tune-row">
+      <button class="tune-btn" data-step="-1.0" disabled>−1.0</button>
+      <button class="tune-btn" id="btn-dn" data-step="-0.1" disabled>−0.1</button>
+      <button class="tune-btn" id="btn-up" data-step="+0.1" disabled>+0.1</button>
+      <button class="tune-btn" data-step="+1.0" disabled>+1.0</button>
+    </div>
+    <div class="step-row">
+      <span class="step-lbl">Step:</span>
+      <button class="step-btn" data-step="0.05">0.05</button>
+      <button class="step-btn" data-step="0.1">0.1</button>
+      <button class="step-btn sel" data-step="0.2">0.2</button>
+      <button class="step-btn" data-step="0.5">0.5</button>
+      <button class="step-btn" data-step="1.0">1.0</button>
+      <span class="step-lbl">MHz</span>
+    </div>
+    <div class="manual-row">
+      <input type="number" id="manual-freq" placeholder="97.3" min="76" max="108" step="0.1">
+      <span style="font-size:12px;color:var(--mu)">MHz</span>
+      <button class="btn-sm" id="manual-btn" disabled>Tune</button>
+    </div>
+    <div class="kb-row">← → tune &nbsp;·&nbsp; Shift+←→ ×5 &nbsp;·&nbsp; ↑↓ ±1 MHz &nbsp;·&nbsp; Enter: manual tune</div>
+    <div class="audio-row">
+      <label>🔊</label>
+      <input type="range" id="vol" min="0" max="1" step="0.05" value="0.85">
+      <audio id="audio" autoplay style="display:none"></audio>
+    </div>
+  </div>
+</div>
+
+<script nonce="{{csp_nonce}}">
+(function(){
+'use strict';
+var siteSel   = document.getElementById('site-sel');
+var sdrSel    = document.getElementById('sdr-sel');
+var startFreq = document.getElementById('start-freq');
+var connBtn   = document.getElementById('connect-btn');
+var freqDisp  = document.getElementById('freq-display');
+var freqSub   = document.getElementById('freq-sub');
+var statusDot = document.getElementById('status-dot');
+var statusTxt = document.getElementById('status-txt');
+var manFreq   = document.getElementById('manual-freq');
+var manBtn    = document.getElementById('manual-btn');
+var audio     = document.getElementById('audio');
+var volSlider = document.getElementById('vol');
+
+var _freq = 96.5, _step = 0.2, _state = 'idle', _slotId = '', _poll = null;
+
+function fmt(f){ return f.toFixed(2); }
+function clamp(f){ return Math.max(76, Math.min(108, parseFloat(f.toFixed(2)))); }
+
+function setStatus(state, msg){
+  _state = state;
+  statusDot.className = 'dot ' + state;
+  statusTxt.textContent = msg;
+  var on = (state === 'streaming' || state === 'connecting');
+  document.querySelectorAll('.tune-btn').forEach(function(b){ b.disabled = !on; });
+  manBtn.disabled = !on;
+  connBtn.textContent = on ? 'Disconnect' : 'Connect';
+  connBtn.classList.toggle('active', on);
+}
+
+function updateFreq(f){
+  _freq = f;
+  freqDisp.textContent = fmt(f);
+}
+
+// ── Load SDR devices for site ────────────────────────────────
+function loadDevices(){
+  var site = siteSel.value;
+  if(!site) return;
+  fetch('/api/hub/scanner/devices/' + encodeURIComponent(site))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      sdrSel.innerHTML = '<option value="">Auto</option>';
+      (d.serials || []).forEach(function(s){
+        var o = document.createElement('option');
+        o.value = s; o.textContent = s; sdrSel.appendChild(o);
+      });
+    }).catch(function(){});
+}
+siteSel.addEventListener('change', loadDevices);
+loadDevices();
+
+// ── Volume ───────────────────────────────────────────────────
+audio.volume = parseFloat(volSlider.value);
+volSlider.addEventListener('input', function(){ audio.volume = parseFloat(this.value); });
+
+// ── Connect / Disconnect ─────────────────────────────────────
+connBtn.addEventListener('click', function(){
+  if(_state === 'streaming' || _state === 'connecting'){ doStop(); }
+  else { _freq = parseFloat(startFreq.value) || 96.5; doStart(_freq); }
+});
+
+function doStart(freq){
+  freq = clamp(freq);
+  setStatus('connecting', 'Connecting…');
+  updateFreq(freq);
+  fetch('/api/hub/scanner/start', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({site: siteSel.value, sdr_serial: sdrSel.value, freq_mhz: freq})
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(d.ok){
+      _slotId = d.slot_id;
+      connectAudio(d.stream_url);
+      setStatus('connecting', 'Waiting for stream at ' + fmt(freq) + ' MHz…');
+      startPoll();
+    } else { setStatus('error', 'Error: ' + (d.error || '?')); }
+  }).catch(function(e){ setStatus('error', 'Network error'); });
+}
+
+function doTune(freq){
+  if(_state !== 'streaming' && _state !== 'connecting') return;
+  freq = clamp(freq);
+  updateFreq(freq);
+  freqSub.textContent = 'Retuning…';
+  freqDisp.style.color = 'var(--lcd-dim)';
+  fetch('/api/hub/scanner/tune', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({site: siteSel.value, freq_mhz: freq})
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(d.ok){
+      _slotId = d.slot_id;
+      connectAudio(d.stream_url);
+      freqSub.textContent = '\u00a0';
+      setStatus('connecting', 'Waiting for ' + fmt(freq) + ' MHz…');
+    } else { freqSub.textContent = 'Tune failed'; }
+  }).catch(function(){ freqSub.textContent = 'Network error'; });
+}
+
+function doStop(){
+  stopPoll();
+  fetch('/api/hub/scanner/stop', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({site: siteSel.value})
+  }).catch(function(){});
+  audio.pause(); audio.src = ''; audio.load();
+  _slotId = '';
+  freqDisp.textContent = '---.--';
+  freqDisp.style.color = '';
+  freqSub.textContent = '\u00a0';
+  setStatus('idle', 'Idle — pick a site and connect');
+}
+
+function connectAudio(url){
+  audio.pause();
+  audio.src = url;
+  audio.load();
+  audio.play().catch(function(){});
+}
+
+// ── Status poll (2 s) ────────────────────────────────────────
+function startPoll(){ stopPoll(); _poll = setInterval(checkStatus, 2000); }
+function stopPoll(){ clearInterval(_poll); _poll = null; }
+
+function checkStatus(){
+  var site = siteSel.value; if(!site) return;
+  fetch('/api/hub/scanner/status/' + encodeURIComponent(site))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(!d.active){ stopPoll(); return; }
+      if(d.slot_id && d.slot_id !== _slotId){
+        _slotId = d.slot_id; connectAudio(d.stream_url);
+      }
+    }).catch(function(){});
+}
+
+audio.addEventListener('playing', function(){
+  freqDisp.style.color = '';
+  freqSub.textContent = '\u00a0';
+  setStatus('streaming', '\u25cf Live — ' + fmt(_freq) + ' MHz');
+});
+audio.addEventListener('error', function(){
+  if(_state !== 'idle'){ setStatus('error', 'Stream error — try reconnecting'); stopPoll(); }
+});
+
+// ── Tune buttons + step ──────────────────────────────────────
+document.addEventListener('click', function(e){
+  var tb = e.target.closest('.tune-btn');
+  if(tb && !tb.disabled){ doTune(_freq + parseFloat(tb.dataset.step || 0)); return; }
+  var sb = e.target.closest('.step-btn');
+  if(sb){
+    _step = parseFloat(sb.dataset.step);
+    document.querySelectorAll('.step-btn').forEach(function(b){ b.classList.remove('sel'); });
+    sb.classList.add('sel');
+    document.getElementById('btn-dn').textContent = '\u2212' + _step.toFixed(2);
+    document.getElementById('btn-dn').dataset.step = (-_step).toString();
+    document.getElementById('btn-up').textContent = '+' + _step.toFixed(2);
+    document.getElementById('btn-up').dataset.step = _step.toString();
+  }
+});
+manBtn.addEventListener('click', function(){
+  var f = parseFloat(manFreq.value); if(!isNaN(f)) doTune(f);
+});
+manFreq.addEventListener('keydown', function(e){
+  if(e.key === 'Enter'){ var f = parseFloat(manFreq.value); if(!isNaN(f)) doTune(f); }
+});
+
+// ── Keyboard shortcuts ───────────────────────────────────────
+document.addEventListener('keydown', function(e){
+  if(e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if(_state !== 'streaming' && _state !== 'connecting') return;
+  var m = e.shiftKey ? 5 : 1;
+  if(e.key === 'ArrowRight'){ e.preventDefault(); doTune(_freq + _step * m); }
+  else if(e.key === 'ArrowLeft'){ e.preventDefault(); doTune(_freq - _step * m); }
+  else if(e.key === 'ArrowUp'){ e.preventDefault(); doTune(_freq + 1.0 * m); }
+  else if(e.key === 'ArrowDown'){ e.preventDefault(); doTune(_freq - 1.0 * m); }
+});
+})();
+</script>
+</body></html>"""
+
 HUB_WALL_TPL = r"""<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>SignalScope Wall</title>
@@ -22706,6 +23377,7 @@ setInterval(_loadTrends, 300000);
     <button type="button" class="btn bg bs" onclick="toggleFullscreen()">⛶ Fullscreen</button>
     <a href="/hub?{% if wall_mode %}wall=1&{% endif %}problems={{'0' if problems_only else '1'}}" class="btn bg bs">{{'Show all sites' if problems_only else 'Show only problem sites'}}</a>
     <a href="/hub/reports" class="btn bp bs">📋 Hub Reports</a>
+    <a href="/hub/scanner" class="btn bg bs">📻 FM Scanner</a>
   </div>
 </div>
 <main>
