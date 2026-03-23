@@ -5731,6 +5731,7 @@ class MonitorManager:
         """
         import shutil
         name = cfg.name
+        self.log(f"[{name}] FM: starting — device_index={cfg.device_index!r}")
         spec = cfg.device_index.strip()[5:]   # strip "fm://"
         freq_str = spec.split("?")[0].strip()
 
@@ -13176,7 +13177,21 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       var freq = v.slice(5).split("?")[0].trim();
       document.getElementById("fm_freq").value = freq;
       var sm2 = v.match(/serial=([^&?]+)/);
-      if(sm2) document.getElementById("fm_serial").value = sm2[1];
+      if(sm2){
+        var fmSerSel = document.getElementById("fm_serial");
+        // Try to select the stored serial. If it isn't in the dropdown (e.g. its role is
+        // currently set to "dab"), add a temporary option so it isn't silently discarded
+        // when the user re-saves — they can then fix the role or pick a different dongle.
+        fmSerSel.value = decodeURIComponent(sm2[1]);
+        if(fmSerSel.value !== decodeURIComponent(sm2[1])){
+          var tmpOpt = document.createElement("option");
+          tmpOpt.value = decodeURIComponent(sm2[1]);
+          tmpOpt.textContent = decodeURIComponent(sm2[1]) + " (⚠ not in registry / wrong role)";
+          tmpOpt.selected = true;
+          fmSerSel.insertBefore(tmpOpt, fmSerSel.firstChild);
+          fmSerSel.value = tmpOpt.value;
+        }
+      }
       var gm2 = v.match(/gain=([^&?]+)/);
       if(gm2) document.getElementById("fm_gain").value = decodeURIComponent(gm2[1]);
       var bm2 = v.match(/backend=([^&?]+)/);
