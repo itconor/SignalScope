@@ -2,7 +2,7 @@
 
 ---
 
-## [3.2.96] - 2026-03-23
+## [3.2.97] - 2026-03-23
 
 ### Fixed
 - **FM + DAB dual-dongle conflict (part 2)** — even with 3.2.93 always passing the device index to welle-cli, the underlying race still existed when the two dongles resolved to the same device index (e.g. DAB configured with "Any available" defaulting to index 0, and the FM dongle also at index 0). Root cause: `SdrDeviceManager` had no cross-type visibility — DAB sessions registered nothing in `_owners`, so `claim()` couldn't detect them, and `_run_dab` had no visibility into active FM claims.
@@ -12,6 +12,9 @@
   - `_stop_dab_session` calls `sdr_manager.release_dab_device(idx)` after stopping welle-cli.
   - `claim()` (used by FM/scanner) now checks `_dab_owners` before granting a lease; raises `SdrBusyError` with an actionable message if DAB already holds that device.
   - `_run_dab` performs an early FM-conflict check before the retry loop, setting `_livewire_mode = "DAB (device conflict — see logs)"` and logging which FM stream holds the conflicting device index. Also logs a warning when no serial is configured (defaulting to index 0) so multi-dongle users know to assign serials.
+  - Added raw `device_index=` log line at startup of both `_run_fm` and `_run_dab` so the exact URL (including serial param) is always visible in logs for diagnostics.
+
+- **FM stream serial silently dropped on re-save when dongle role is wrong** — the FM "Dongle" dropdown filters by role (`fm`/`none`). If a stream was saved with a serial whose dongle later had its role changed to `dab`, the restore code (`fm_serial.value = serial`) would silently fail (no matching `<option>`), leaving the dropdown on "Any available". Re-saving then stripped the serial from `device_index`, causing the next start to default to device 0. Fixed: if the restored serial isn't present in the dropdown, a temporary `⚠ not in registry / wrong role` option is inserted so the value is preserved. The user sees the warning label and can fix the role or pick the correct dongle.
 
 ---
 

@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.96"
+BUILD                  = "SignalScope-3.2.97"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -5339,6 +5339,7 @@ class MonitorManager:
         import subprocess as _sp
 
         name = cfg.name
+        self.log(f"[{name}] DAB: starting — device_index={cfg.device_index!r}")
         import urllib.parse as _urlparse
         spec = cfg.device_index.strip()[6:]
         service = _urlparse.unquote(spec.split("?", 1)[0].strip())
