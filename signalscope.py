@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.5"
+BUILD                  = "SignalScope-3.3.6"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -10650,30 +10650,46 @@ class SdrDeviceManager:
             return devices
 
         tool = "rtl_test" if _find_binary("rtl_test") else "rtl_eeprom"
+        # rtl_test -t: opens each dongle, runs a quick E4000 tuner benchmark
+        # (fast-exits on R820T/R828D), then exits.  When a dongle is already
+        # claimed (rtl_fm/welle-cli running), libusb returns LIBUSB_ERROR_BUSY
+        # immediately — no hang.  The "Found N device(s):" list is always
+        # written to stderr BEFORE any open attempt, so we get the full list
+        # even if the subsequent open fails.
+        # Plain "rtl_test" (no -t) loops reading samples until killed, which
+        # always hits the timeout and returns nothing — DO NOT use it.
+        cmd = [tool, "-t"] if tool == "rtl_test" else [tool]
+        output = ""
         try:
-            # Use rtl_test without -t so it only lists devices without opening
-            # them.  rtl_test -t opens and tests each dongle which can hang for
-            # the full timeout if a device is already in use by rtl_fm/welle-cli.
-            result = _sp.run([tool] if tool == "rtl_test" else [tool],
-                             capture_output=True, text=True, timeout=8)
+            result = _sp.run(cmd, capture_output=True, text=True, timeout=8)
             output = result.stderr + result.stdout
-            # Parse lines like:
-            #   0:  Realtek, RTL2838UHIDIR, SN: 00000001
-            #   Found 2 device(s):
-            import re as _re
-            for m in _re.finditer(
-                    r'(\d+):\s+([^,]+),\s+([^,]+),\s+SN:\s*(\S*)', output):
-                idx, mfr, name, serial = m.groups()
-                serial = serial.strip() or f"unknown_{idx}"
-                devices.append({
-                    "index":        int(idx),
-                    "serial":       serial,
-                    "name":         name.strip(),
-                    "manufacturer": mfr.strip(),
-                })
-                self._index_cache[serial] = int(idx)
+        except _sp.TimeoutExpired as exc:
+            # Partial output captured before the kill still contains the device
+            # list which was written to stderr before any open attempt.
+            out_b = exc.stdout or b""
+            err_b = exc.stderr or b""
+            if isinstance(out_b, str):
+                output = err_b + out_b          # text=True gave str
+            else:
+                output = err_b.decode(errors="ignore") + out_b.decode(errors="ignore")
         except Exception as e:
             print(f"[SdrMgr] Scan error: {e}")
+
+        import re as _re
+        # Parse lines like:
+        #   0:  Realtek, RTL2838UHIDIR, SN: 00000001
+        #   Found 2 device(s):
+        for m in _re.finditer(
+                r'(\d+):\s+([^,]+),\s+([^,]+),\s+SN:\s*(\S*)', output):
+            idx, mfr, name, serial = m.groups()
+            serial = serial.strip() or f"unknown_{idx}"
+            devices.append({
+                "index":        int(idx),
+                "serial":       serial,
+                "name":         name.strip(),
+                "manufacturer": mfr.strip(),
+            })
+            self._index_cache[serial] = int(idx)
 
         self._scan_cache = devices
         self._cache_ts   = now
