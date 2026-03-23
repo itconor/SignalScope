@@ -1011,7 +1011,7 @@ main() {
   info "Install SDR: $([[ "${ENABLE_SDR}" == "1" ]] && echo yes || echo no)"
   info "Install nginx: $([[ "${ENABLE_NGINX}" == "1" ]] && echo yes || echo no)"
   if [[ "${IS_UPDATE}" -ne 1 ]]; then
-    info "UDP tuning: $([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo "Livewire/AES67 (1.5 GB socket buffers)" || echo "standard")"
+    info "UDP tuning: $([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo "Livewire/AES67 (1.5 GB default, ~2 GB burst)" || echo "standard")"
   else
     # On updates the tuning block is skipped — report what is currently live on disk.
     _sysctl_conf="/etc/sysctl.d/99-signalscope-network.conf"
@@ -1208,15 +1208,15 @@ PYEOF
     # Kernel stores rmem/wmem as signed int — hard ceiling is INT_MAX (2^31-1 = 2147483647).
     # net.ipv4.udp_rmem_min / udp_wmem_min were added in kernel 4.15; skip gracefully on older kernels.
     if [[ "${ENABLE_LIVEWIRE}" == "1" ]]; then
-      _rmem_max=1610612736   # 1.5 GB  (safe headroom below INT_MAX)
-      _rmem_def=1610612736
-      _wmem_max=1610612736
+      _rmem_max=2147483647   # INT_MAX ~2 GB — burst ceiling (highest the kernel accepts as signed int)
+      _rmem_def=1610612736   # 1.5 GB = 3× 512 MB — default per socket
+      _wmem_max=2147483647
       _wmem_def=1610612736
-      _udp_rmin=4194304      # 4 MB
-      _udp_wmin=4194304
-      _backlog=3000000
-      _optmem=262144
-      ok "Livewire/AES67 mode: applying large UDP buffer sizes (1.5 GB socket buffers)"
+      _udp_rmin=3145728      # 3 MB = 3× 1 MB
+      _udp_wmin=3145728
+      _backlog=2250000       # 3× 750000
+      _optmem=196608         # 3× 65536
+      ok "Livewire/AES67 mode: 3× default buffers (1.5 GB), burst ceiling INT_MAX (~2 GB)"
     else
       _rmem_max=536870912    # 512 MB
       _rmem_def=536870912
