@@ -2,6 +2,59 @@
 
 ---
 
+## [3.2.90] - 2026-03-23
+
+### Fixed
+- **Chain fault clips for local streams always 5 seconds regardless of configured clip length** — `_save_alert_wav` has a hardcoded default of `duration=5.0`. The local-stream chain clip save at fault time was called without a `duration` argument, so it always captured exactly 5 seconds no matter what "Alert clip length" was set to in the stream's settings. Remote node clips were already correct (`_cmd_save_clip` has always passed `inp.alert_wav_duration`). Fixed by passing `_lc.alert_wav_duration` to the local chain clip save, making both paths consistent.
+
+---
+
+## [3.2.89] - 2026-03-23
+
+### Fixed
+- **Maintenance popover never appeared when clicking 🔧 button** — `_openMaintPop()` was setting `style.display=''` to "show" the popover, which clears the inline style and falls back to the CSS rule `#maint-popover { display: none }`, keeping it permanently hidden. Changed to `style.display='block'` so the popover actually appears.
+
+---
+
+## [3.2.88] - 2026-03-23
+
+### Added
+- **Per-node silence threshold override in chain builder** — each stream row in the chain builder now has a "Silence dBFS override" numeric field. When set, this value replaces the stream's own configured silence threshold when evaluating that specific node within that chain. This allows the same physical stream (e.g. LONCTAXMQ05) to be treated as silent at −28 dBFS in a Downtown chain (where −28 dBFS is noise floor) while still being considered active at the same level in a separate Cool FM chain (where −28 dBFS represents real audio). The override is saved into the chain definition JSON and applied exclusively in `_eval_one_node`; the stream's original threshold is unchanged everywhere else. Works for both remote (hub) streams and local inputs.
+
+---
+
+## [3.2.87] - 2026-03-23
+
+### Fixed
+- **Reports page: remote clip audio players always show 404 / won't play** — The alert log stores remote clips with `stream = "site / stream"` (e.g., `"london / CoolFM - LONCTAXZC03"`). `clips_serve` applied `_safe_name()` to the full combined string, which strips spaces and `/` to produce `londonCoolFM-LONCTAXZC03`. But `hub_clip_upload` stored the file at `alert_snippets/{_safe_name(site)}_{_safe_name(stream)}/` = `london_CoolFM-LONCTAXZC03/` (note the underscore separator). These never matched → 404 → silent audio element failure. Fixed: `clips_serve` now splits on ` / ` before safe-naming, producing the same underscore-joined key. Also added `Accept-Ranges: bytes` and `Content-Length` headers so Chrome and Safari can play WAV files inline in `<audio>` elements.
+- **Chain fault: only 1 clip captured instead of all chain nodes** — `pop_pending_command` delivered one `save_clip` command per 5-second heartbeat. For a 7-node chain this meant all clips arrived over 35 seconds. In practice users saw "No clips" or just 1 clip depending on when they looked. Root cause: the heartbeat ACK was designed for single commands. Fixed by replacing `pop_pending_command` with `pop_all_pending_commands` which atomically drains the entire command queue in one call. The ACK now sends `"commands": [...]` (full list) alongside the legacy `"command": <first>` for older client builds. The client dispatch loop now processes the full list in a single heartbeat cycle — all `save_clip` commands for a fault arrive and execute immediately on the next heartbeat.
+
+---
+
+## [3.2.86] - 2026-03-23
+
+### Fixed
+- **Chain node levels out of sync between stacks / second chain appearing stuck** — `eval_chain()` is called sequentially per chain in the `/api/chains/status` endpoint; each call takes its own `sites_snap` under the lock, but by the time the second chain evaluates, the first chain's SQLite SLA query has already consumed some milliseconds, meaning sub-nodes in the second chain's stacks could reflect slightly different points in time from those in the first chain. Over a 5-second poll interval this compounded into visible staleness.
+
+### Added
+- **Real-time chain node levels (2-second refresh)** — new lightweight `GET /api/chains/levels` endpoint takes a single atomic snapshot of `_sites` (one lock acquisition, no SQLite, no chain evaluation) and returns `{ site → { stream → { level, silence } } }` for every known stream including local inputs. The chains page now runs a separate 2-second `_refreshLevels()` poll that updates `.node-level` text on every chain-node using the `data-site` / `data-stream` attributes. Because all nodes read from the same snapshot, stacks and chains are always consistent with each other. The existing 5-second `/api/chains/status` poll continues to own border colours, fault detection, badge state, and trend arrows. Level refresh is automatically skipped during history time-travel mode.
+
+---
+
+## [3.2.85] - 2026-03-23
+
+### Added
+- **Maintenance mode UI for chain nodes** — each node in the live chain diagram now shows a 🔧 button (visible on hover; stays lit while in maintenance). Clicking it opens a popover with duration presets — **30 min / 1 h / 2 h / 4 h** — and a **✕ Clear** option. The selection POSTs to the existing `POST /api/chains/<cid>/maintenance` endpoint; the node turns blue immediately and shows a "🔧 Maint until HH:MM" badge, suppressing fault alerts for the chosen window. Works on both single-stream nodes and nodes inside stacks. Implemented using `data-chain-id` / `data-site` / `data-stream` attributes and a delegated `click` listener to comply with the CSP no-inline-handlers rule.
+
+---
+
+## [3.2.84] - 2026-03-23
+
+### Fixed
+- **Remote node audio clips lost across hub restarts** — `push_pending_command` stored `save_clip` commands (and all other hub→client commands) only in memory, inside `_sites[site]["_pending_commands"]`. A `hub_state.json` snapshot was only written when the *next client heartbeat arrived*. If the hub restarted between a chain fault firing and the next heartbeat (e.g. during a planned restart after a late-night incident), all queued `save_clip` commands were lost. Clients never received them, never captured audio, and the fault log entry permanently showed "No clips". Fixed: `push_pending_command` now takes a copy of `_sites` inside the lock and triggers an async `_save_snapshot` save immediately after appending each command — the same pattern used by `approve_site` and `ingest`. Clips that had already been uploaded before the restart were unaffected (WAV files and DB records both persist); only clips that were queued but not yet delivered were lost.
+
+---
+
 ## [3.2.83] - 2026-03-23
 
 ### Added

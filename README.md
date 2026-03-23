@@ -279,7 +279,15 @@ If a chain faults and recovers 3 or more times within a 10-minute window, Signal
 
 ### Node Maintenance Bypass
 
-Mark any node as **In Maintenance** to exclude it from fault detection without removing it from the chain. A maintenance period is set in minutes; the node displays a maintenance badge and is skipped during chain evaluation until the timer expires. Useful when planned work on a single point would otherwise trigger false chain alerts.
+Mark any node as **In Maintenance** to exclude it from fault detection without removing it from the chain. The node displays a maintenance badge and is skipped during chain evaluation until the timer expires. Useful when planned work on a single point would otherwise trigger false chain alerts.
+
+To set maintenance mode, click the 🔧 button that appears on any chain node. A popover offers duration presets — **30 min / 1 h / 2 h / 4 h** — and a **✕ Clear** option to cancel early. The node immediately turns blue and shows a **🔧 Maint until HH:MM** badge while active. Works on both single-stream nodes and nodes inside stacks.
+
+### Per-Node Silence Threshold Override
+
+The chain builder includes a **Silence dBFS override** field on each stream row. When set, this value replaces the stream's own configured silence threshold when evaluating that specific node — within that chain only.
+
+This is useful when the same physical stream appears in multiple chains that have different expectations. For example, a transmitter monitor at −28 dBFS might be considered audio-present in a transmitter chain (carrier is active) but should trigger a silence fault in a downstream distribution chain (where −28 dBFS is noise floor). Set the override in the distribution chain's node row to e.g. `−35`; the stream's original threshold is unchanged everywhere else.
 
 ### Chain Health Score
 

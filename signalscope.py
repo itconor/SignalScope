@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.83"
+BUILD                  = "SignalScope-3.2.90"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8705,9 +8705,17 @@ class HubClient:
                 hub_br = last_body.get("relay_bitrate")
                 if isinstance(hub_br, int) and hub_br > 0:
                     self._hub_relay_bitrate = hub_br
-                # Execute hub-issued remote command (structured dict or legacy string)
-                hub_cmd = last_body.get("command")
-                if hub_cmd:
+                # Execute hub-issued remote commands.
+                # New hubs send a "commands" list (all queued cmds at once).
+                # Legacy hubs send a single "command" dict — wrap in a list.
+                _hub_cmd_list = last_body.get("commands")
+                if _hub_cmd_list is None:
+                    _single = last_body.get("command")
+                    _hub_cmd_list = [_single] if _single else []
+                for hub_cmd in _hub_cmd_list:
+                  if not hub_cmd:
+                    continue
+                  if True:  # indent block to preserve existing structure
                     if isinstance(hub_cmd, str):
                         cmd_type, cmd_payload = hub_cmd.strip().lower(), {}
                     else:
@@ -8845,7 +8853,14 @@ class HubServer:
     _CMD_QUEUE_MAX = 8   # maximum queued commands per site
 
     def push_pending_command(self, site_name: str, cmd: dict):
-        """Append a structured command dict to the site's command queue (max _CMD_QUEUE_MAX)."""
+        """Append a structured command dict to the site's command queue (max _CMD_QUEUE_MAX).
+
+        Immediately persists hub_state.json after enqueueing so that save_clip (and other
+        commands) survive a hub restart that occurs before the next client heartbeat.
+        Without this, any commands queued between a fault firing and the next heartbeat
+        are lost on restart and remote nodes never capture or upload their audio clips.
+        """
+        snapshot = None
         with self._lock:
             if site_name not in self._sites:
                 monitor.log(f"[Hub] push_pending_command: site {site_name!r} not found in "
@@ -8856,6 +8871,11 @@ class HubServer:
                 q.append(cmd)
                 monitor.log(f"[Hub] Queued {cmd.get('type','?')} command for site {site_name!r} "
                             f"(queue depth now {len(q)})")
+                snapshot = dict(self._sites)   # capture for persistence outside lock
+        # Persist outside the lock so _save_snapshot can safely re-read _sites
+        if snapshot:
+            threading.Thread(target=self._save_snapshot, args=(snapshot,),
+                             daemon=True, name="HubSave").start()
 
     def set_pending_command(self, site_name: str, command: str):
         """Backward-compat: queue a simple start/stop command."""
@@ -8873,6 +8893,24 @@ class HubServer:
             cmd = q.pop(0)
             site["_pending_commands"] = q
             return cmd
+
+    def pop_all_pending_commands(self, site_name: str) -> list:
+        """Return AND remove every queued command dict for this site at once.
+
+        Replaces the old pop_pending_command-per-heartbeat pattern so that
+        all save_clip commands for a multi-node chain fault arrive at the
+        client in the very next heartbeat ACK rather than trickling in one
+        per 5-second cycle.
+        """
+        with self._lock:
+            site = self._sites.get(site_name)
+            if not site:
+                return []
+            q = site.get("_pending_commands", [])
+            if not q:
+                return []
+            site["_pending_commands"] = []
+            return list(q)
 
     # ── Per-site DAB scan results (client → hub, transient) ──────────────────
     def store_dab_scan_result(self, site_name: str, result: dict):
@@ -9337,7 +9375,9 @@ class HubServer:
                 return {"label": label, "site": site, "stream": sname, "machine": machine,
                         "status": "unknown", "level": None, "rtp_loss_pct": None}
             dev  = (inp.device_index or "").strip().lower()
-            down = inp._last_level_dbfs <= inp.silence_threshold_dbfs
+            node_override_local = node.get("silence_threshold_dbfs")
+            _local_thresh = float(node_override_local) if node_override_local is not None else inp.silence_threshold_dbfs
+            down = inp._last_level_dbfs <= _local_thresh
             if dev.startswith("dab://") and not inp._dab_ok:
                 down = True
             is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
@@ -9363,11 +9403,15 @@ class HubServer:
                         "status": "unknown", "level": None, "rtp_loss_pct": None}
             lev  = float(sd.get("level_dbfs", -120.0))
             dev  = str(sd.get("device_index", "")).strip().lower()
-            # Use the remote stream's own configured silence threshold if the
-            # client sent it in the heartbeat payload; fall back to -55.0 dBFS
-            # for older clients that don't include it yet.
-            remote_threshold = sd.get("silence_threshold_dbfs")
-            _silence_thresh  = float(remote_threshold) if remote_threshold is not None else -55.0
+            # Per-node chain override takes priority; otherwise use the remote
+            # stream's own configured threshold from the heartbeat payload;
+            # fall back to -55.0 dBFS for older clients that omit it.
+            node_override = node.get("silence_threshold_dbfs")
+            if node_override is not None:
+                _silence_thresh = float(node_override)
+            else:
+                remote_threshold = sd.get("silence_threshold_dbfs")
+                _silence_thresh  = float(remote_threshold) if remote_threshold is not None else -55.0
             down = lev <= _silence_thresh
             if dev.startswith("dab://") and not sd.get("dab_ok", True):
                 down = True
@@ -10037,7 +10081,7 @@ class HubServer:
                         None,
                     )
                     if _lc:
-                        _clip = _save_alert_wav(_lc, _clbl, _skip_hub_queue=True)
+                        _clip = _save_alert_wav(_lc, _clbl, _lc.alert_wav_duration, _skip_hub_queue=True)
                         _lc_msg = (
                             f"Chain '{chain_label}' — '{_node_label}' "
                             f"({_pos_label.replace('_', ' ')}) clip."
@@ -14330,10 +14374,21 @@ def clips_list(stream_name):
 @app.get("/clips/<path:stream_name>/<filename>")
 @login_required
 def clips_serve(stream_name, filename):
-    """Serve a saved alert clip WAV file."""
+    """Serve a saved alert clip WAV file.
+
+    Remote clips uploaded from hub clients are stored as
+    alert_snippets/<_safe_name(site)>_<_safe_name(stream)>/.
+    The alert log records stream as "site / stream" — we must split and
+    re-join exactly as hub_clip_upload does, rather than safe-naming the
+    full combined string (which collapses the joining underscore to nothing).
+    """
     snip_dir = os.path.join(BASE_DIR, "alert_snippets")
-    safe_stream = _safe_name(stream_name)
-    safe_file   = os.path.basename(filename)
+    if " / " in stream_name:
+        _sp, _st = stream_name.split(" / ", 1)
+        safe_stream = f"{_safe_name(_sp)}_{_safe_name(_st)}"
+    else:
+        safe_stream = _safe_name(stream_name)
+    safe_file = os.path.basename(filename)
     path = os.path.join(snip_dir, safe_stream, safe_file)
     # Security: must stay within snip_dir
     if not os.path.abspath(path).startswith(os.path.abspath(snip_dir) + os.sep):
@@ -14344,7 +14399,11 @@ def clips_serve(stream_name, filename):
         data = f.read()
     safe_cd = safe_file.replace('"', '').replace('\r', '').replace('\n', '')
     return Response(data, mimetype="audio/wav",
-        headers={"Content-Disposition": f'inline; filename="{safe_cd}"'})
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_cd}"',
+            "Accept-Ranges":  "bytes",
+            "Content-Length": str(len(data)),
+        })
 
 @app.delete("/clips/<path:stream_name>/<filename>")
 @login_required
@@ -15578,10 +15637,13 @@ def hub_heartbeat():
     # ── Build ACK — encrypt if secret is set ─────────────────────────────────
     listen_reqs   = listen_registry.pending_for_site(site_name)
     relay_bitrate = hub_server.get_relay_bitrate(site_name)
-    pending_cmd   = hub_server.pop_pending_command(site_name)   # dict or None
+    pending_cmds  = hub_server.pop_all_pending_commands(site_name)  # flush whole queue at once
     ack = {"ok": True, "listen_requests": listen_reqs, "relay_bitrate": relay_bitrate}
-    if pending_cmd:
-        ack["command"] = pending_cmd  # structured dict: {"type": ..., "payload": {...}}
+    if pending_cmds:
+        # "commands" list — client processes all in one heartbeat cycle
+        ack["commands"] = pending_cmds
+        # "command" (singular) kept for backwards compat with older client builds
+        ack["command"] = pending_cmds[0]
     ack_bytes = json.dumps(ack).encode()
 
     if secret:
@@ -16892,7 +16954,7 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .chain-actions{margin-left:auto;display:flex;gap:6px;flex-shrink:0}
 .chain-visual{display:flex;align-items:center;flex-wrap:wrap;gap:0;padding:14px 16px;overflow-x:auto}
 .chain-arrow{display:flex;align-items:center;color:var(--mu);font-size:22px;padding:0 8px;flex-shrink:0}
-.chain-node{border:2px solid var(--bor);border-radius:10px;padding:10px 14px;min-width:120px;max-width:180px;text-align:center;position:relative;transition:border-color .3s,background .3s;background:var(--bg)}
+.chain-node{border:2px solid var(--bor);border-radius:10px;padding:26px 14px 10px 14px;min-width:120px;max-width:180px;text-align:center;position:relative;transition:border-color .3s,background .3s;background:var(--bg)}
 .chain-node.ok{border-color:var(--ok);background:rgba(34,197,94,.07)}.chain-node.down{border-color:var(--al);background:rgba(239,68,68,.09)}
 .chain-node.offline{border-color:#374151;opacity:.6}.chain-node.unknown{border-color:var(--bor)}.chain-node.downstream{border-color:#1e3a5f;opacity:.5}.chain-node.adbreak{border-color:#b45309;background:rgba(251,191,36,.08)}
 .chain-node.listening{cursor:pointer;box-shadow:0 0 0 3px rgba(59,130,246,.5),0 0 14px rgba(59,130,246,.25);animation:listen-pulse 1.4s ease-in-out infinite}
@@ -16964,6 +17026,16 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 /* Maintenance button */
 .maint-btn{font-size:10px;padding:1px 6px;border-radius:6px;background:#1e3a5f;border:1px solid #1d4ed8;color:#93c5fd;cursor:pointer;white-space:nowrap}
 .maint-btn:hover{background:#1d4ed8;color:#fff}
+/* Per-node maintenance toggle button — always visible */
+.node-maint-btn{position:absolute;top:4px;left:5px;font-size:11px;padding:2px 6px;line-height:1.5;border-radius:5px;background:#1e3a8a;border:1px solid #3b82f6;color:#bfdbfe;cursor:pointer;opacity:1;pointer-events:auto;z-index:2}
+.node-maint-btn:hover{background:#1d4ed8;color:#fff;border-color:#60a5fa}
+.chain-node.maintenance .node-maint-btn{background:#1d4ed8;color:#fff;border-color:#93c5fd}
+/* Maintenance popover */
+#maint-popover{display:none;position:fixed;z-index:9100;background:#0d1e3a;border:1px solid #1d4ed8;border-radius:10px;padding:12px 14px;box-shadow:0 8px 28px rgba(0,0,0,.55);min-width:210px}
+.maint-dur-btn{font-size:11px;padding:4px 11px;border-radius:6px;background:#1e3a5f;border:1px solid #1d4ed8;color:#93c5fd;cursor:pointer;white-space:nowrap}
+.maint-dur-btn:hover{background:#1d4ed8;color:#fff}
+.maint-clr-btn{background:#12212e;border-color:#6b7280;color:#9ca3af}
+.maint-clr-btn:hover{background:#374151;color:#fff;border-color:#9ca3af}
 /* History bar */
 .hist-bar{display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--sur);border:1px solid var(--bor);border-radius:10px;margin-bottom:14px;flex-wrap:wrap}
 input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:var(--tx);border-radius:8px;padding:5px 8px;font-size:12px;color-scheme:dark}
@@ -17097,7 +17169,8 @@ var _chainData={
       {% endif %}
       {% for sub in node.nodes %}
       {% if not loop.first %}<div class="chain-stack-sep">│</div>{% endif %}
-      <div class="chain-node unknown" data-sub="{{loop.index0}}">
+      <div class="chain-node unknown" data-sub="{{loop.index0}}" data-chain-id="{{c.id|e}}" data-site="{{sub.site|e}}" data-stream="{{sub.stream|e}}">
+        <button class="node-maint-btn" title="Set maintenance mode for this node">🔧</button>
         <div class="node-label">{{(sub.label or sub.stream)|e}}</div>
         <div class="node-sub">{{sub.site|e}}</div>
         {% if sub.get('machine') %}<div class="node-sub" style="color:#60a5fa;font-size:9px" title="Hardware tag">🖥 {{sub.machine|e}}</div>{% endif %}
@@ -17109,7 +17182,8 @@ var _chainData={
       {% if c.mixin_node_idx is not none and loop.index0 == c.mixin_node_idx %}<span class="mixin-badge" style="display:block;text-align:center;margin-top:3px" title="Ad mix-in point">🔀</span>{% endif %}
     </div>
     {% else %}
-    <div class="chain-node unknown" data-pos="{{loop.index0}}">
+    <div class="chain-node unknown" data-pos="{{loop.index0}}" data-chain-id="{{c.id|e}}" data-site="{{node.site|e}}" data-stream="{{node.stream|e}}">
+      <button class="node-maint-btn" title="Set maintenance mode for this node">🔧</button>
       <div class="node-label">{{(node.label or node.stream)|e}}</div>
       <div class="node-sub">{{node.site|e}}</div>
       {% if node.get('machine') %}<div class="node-sub" style="color:#60a5fa;font-size:9px" title="Hardware tag">🖥 {{node.machine|e}}</div>{% endif %}
@@ -17150,6 +17224,20 @@ var _chainData={
 </div>
 {% endfor %}
 </div>
+
+<!-- Maintenance mode popover -->
+<div id="maint-popover" role="dialog" aria-modal="true" aria-label="Set maintenance mode">
+  <div style="font-size:11px;color:var(--mu);margin-bottom:8px">🔧 Maintenance — <strong id="maint-pop-name" style="color:var(--tx)"></strong></div>
+  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+    <button class="maint-dur-btn" data-dur="1800">30 min</button>
+    <button class="maint-dur-btn" data-dur="3600">1 h</button>
+    <button class="maint-dur-btn" data-dur="7200">2 h</button>
+    <button class="maint-dur-btn" data-dur="14400">4 h</button>
+    <button class="maint-dur-btn maint-clr-btn" data-dur="0">✕ Clear</button>
+  </div>
+  <div id="maint-pop-msg" style="font-size:11px;min-height:14px;color:var(--mu)"></div>
+</div>
+
 </main>
 <footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope • Broadcast Signal Intelligence</footer>
 
@@ -17247,6 +17335,10 @@ function _addNodeRowToGroup(group, nd){
   var machineIn=document.createElement('input');machineIn.type='text';machineIn.className='nm';
   machineIn.placeholder='Machine tag (optional)';machineIn.style.cssText='flex:1;min-width:110px;max-width:180px';
   machineIn.title='Hardware tag — nodes with the same tag across chains are treated as being on the same physical machine for shared-fault detection (e.g. LONCTAXZC03)';
+  var threshIn=document.createElement('input');threshIn.type='number';threshIn.className='nth';
+  threshIn.placeholder='Silence dBFS override';threshIn.style.cssText='flex:0 0 130px;min-width:100px;max-width:150px';
+  threshIn.title='Override silence threshold (dBFS) for this node in this chain only. Leave blank to use the stream\'s own configured threshold.';
+  threshIn.step='0.5';threshIn.min='-120';threshIn.max='0';
   var rmRow=document.createElement('button');rmRow.type='button';rmRow.textContent='−';rmRow.className='btn bd bs';rmRow.title='Remove this stream';
   rmRow.style.cssText='padding:3px 8px;font-size:14px';
   rmRow.onclick=function(){
@@ -17265,8 +17357,9 @@ function _addNodeRowToGroup(group, nd){
     if(nd.stream)streamSel.value=nd.stream;
     if(nd.label)labelIn.value=nd.label;
     if(nd.machine)machineIn.value=nd.machine;
+    if(nd.silence_threshold_dbfs!==undefined&&nd.silence_threshold_dbfs!==null)threshIn.value=nd.silence_threshold_dbfs;
   } else { fillStreams(); }
-  row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(machineIn);row.appendChild(rmRow);
+  row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(machineIn);row.appendChild(threshIn);row.appendChild(rmRow);
   // Insert before the controls footer of the group
   var footer=group.querySelector('.pos-footer');
   if(footer){group.insertBefore(row,footer);}else{group.appendChild(row);}
@@ -17422,10 +17515,12 @@ function saveChain(){
     var mode=modeSel?modeSel.value:'all';
     var subNodes=[];
     rows.forEach(function(row){
-      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl'),m=row.querySelector('.nm');
+      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl'),m=row.querySelector('.nm'),nth=row.querySelector('.nth');
       if(s&&st2&&st2.value){
         var nd2={site:s.value,stream:st2.value,label:(l?l.value.trim():'')};
         var mval=m?m.value.trim():'';if(mval)nd2.machine=mval;
+        var tval=nth&&nth.value.trim()!==''?parseFloat(nth.value):null;
+        if(tval!==null&&!isNaN(tval))nd2.silence_threshold_dbfs=tval;
         subNodes.push(nd2);
       }
     });
@@ -17479,6 +17574,59 @@ document.addEventListener('click',function(e){
   }
   var db=e.target.closest('.chain-delete-btn');
   if(db){deleteChain(db.dataset.id,db.dataset.name);return;}
+});
+
+// ── Maintenance popover ───────────────────────────────────────────────────────
+var _maintPop=document.getElementById('maint-popover');
+var _maintCtx=null;  // {cid, site, stream}
+
+function _openMaintPop(btn){
+  var node=btn.closest('.chain-node');
+  if(!node)return;
+  _maintCtx={cid:node.dataset.chainId,site:node.dataset.site,stream:node.dataset.stream};
+  document.getElementById('maint-pop-name').textContent=
+    (node.querySelector('.node-label')||{}).textContent||node.dataset.stream||'?';
+  document.getElementById('maint-pop-msg').textContent='';
+  // Position below the button, clamped to viewport
+  var r=btn.getBoundingClientRect();
+  var pw=218,ph=100;
+  var left=Math.min(r.left,window.innerWidth-pw-10);
+  var top=r.bottom+6;
+  if(top+ph>window.innerHeight-10){top=r.top-ph-6;}
+  _maintPop.style.left=left+'px';
+  _maintPop.style.top=top+'px';
+  _maintPop.style.display='block';
+}
+
+document.addEventListener('click',function(e){
+  // Open popover via 🔧 button
+  var mb=e.target.closest('.node-maint-btn');
+  if(mb){e.stopPropagation();_openMaintPop(mb);return;}
+  // Duration selection inside popover
+  var db=e.target.closest('.maint-dur-btn');
+  if(db&&_maintCtx){
+    var dur=parseInt(db.dataset.dur,10)||0;
+    var msg=document.getElementById('maint-pop-msg');
+    msg.textContent='Saving…';msg.style.color='var(--mu)';
+    _f('/api/chains/'+encodeURIComponent(_maintCtx.cid)+'/maintenance',{
+      method:'POST',
+      body:JSON.stringify({site:_maintCtx.site,stream:_maintCtx.stream,duration:dur})
+    }).then(function(r){return r.json();}).then(function(d){
+      if(d.ok){
+        msg.textContent=dur>0?'Set ✓':'Cleared ✓';msg.style.color='var(--ok)';
+        setTimeout(function(){_maintPop.style.display='none';_maintCtx=null;},700);
+      }else{
+        msg.textContent='Error: '+(d.error||'?');msg.style.color='var(--al)';
+      }
+    }).catch(function(){
+      msg.textContent='Network error';msg.style.color='var(--al)';
+    });
+    return;
+  }
+  // Click outside popover — close it
+  if(_maintPop.style.display!=='none'&&!_maintPop.contains(e.target)){
+    _maintPop.style.display='none';_maintCtx=null;
+  }
 });
 
 // ── History time-travel controls ──────────────────────────────────────────────
@@ -18133,6 +18281,45 @@ function _esc(s){var d=document.createElement('div');d.textContent=s||'';return 
 (function(){var d=new Date();var pad=function(n){return String(n).padStart(2,'0');};document.getElementById('hist_dt').value=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());})();
 
 refreshStatus();_liveTimer=setInterval(refreshStatus,5000);
+
+// ── Real-time level overlay (2 s, independent of chain fault-eval cycle) ─────
+// Polls /api/chains/levels which takes ONE atomic _sites snapshot under the
+// lock — so every node in every chain on the page gets data from the exact
+// same instant.  This fixes the 'stacks not in sync' visual where nodes in
+// the second chain showed levels from a slightly different point in time than
+// the first chain because eval_chain() is called sequentially per chain.
+function _refreshLevels(){
+  // Skip during history playback — we don't want live levels overwriting
+  // the historical snapshot the user is inspecting.
+  if(_histTs)return;
+  _f('/api/chains/levels').then(function(r){return r.json();}).then(function(d){
+    if(!d.ok||!d.levels)return;
+    var lv=d.levels;
+    document.querySelectorAll('.chain-node[data-site][data-stream]').forEach(function(el){
+      var site=el.dataset.site,stream=el.dataset.stream;
+      // Leave maintenance nodes alone — they show the badge, not a level
+      if(el.classList.contains('maintenance'))return;
+      var siteData=lv[site];
+      if(!siteData||siteData._offline)return;
+      var st=siteData[stream];
+      if(!st)return;
+      var lvlEl=el.querySelector('.node-level');
+      if(!lvlEl)return;
+      // Don't clobber a maint badge that may have just been set
+      if(lvlEl.querySelector('.maint-badge'))return;
+      var lvText=st.level.toFixed(1)+' dBFS';
+      // Preserve any trend arrow the status poll may have appended
+      var trendSpan=lvlEl.querySelector('.trend-down');
+      lvlEl.textContent=lvText;
+      if(trendSpan)lvlEl.appendChild(trendSpan);
+      // Keep level colour in sync with silence state
+      // (status colour on the border/background is owned by the 5 s poll)
+      lvlEl.style.color=st.silence?'var(--al)':'var(--ok)';
+    });
+  }).catch(function(){});
+}
+setInterval(_refreshLevels,2000);
+_refreshLevels();
 </script>
 <div id="chain-mini-player">
   <div id="cmp-icon">🎧</div>
@@ -19686,6 +19873,65 @@ def api_chain_maintenance(cid: str):
         maint[mkey] = expiry
         monitor.log(f"[Chain] Maintenance set for {mkey} in chain {cid} — expires in {duration}s")
     return jsonify({"ok": True, "expiry": maint.get(mkey, 0)})
+
+
+@app.get("/api/chains/levels")
+@login_required
+def api_chains_levels():
+    """Lightweight endpoint: return raw live level_dbfs for every known stream.
+
+    Intentionally avoids eval_chain(), SQLite, and any fault-detection logic.
+    Takes a single atomic snapshot of _sites under the lock so every node in
+    every chain on the page sees data from the same instant — preventing the
+    'stacks not in sync' visual artefact that occurs when the 5-second status
+    poll evaluates chains sequentially.
+
+    Response: { ok: true, levels: { site: { stream: { level, silence } } } }
+    'local' site uses monitor.app_cfg.inputs directly.
+    Offline remote sites appear as { site: { _offline: true } }.
+    """
+    cfg = monitor.app_cfg
+    now = time.time()
+    result: dict = {}
+
+    # Local streams — read directly from the monitor input objects
+    local: dict = {}
+    for inp in cfg.inputs:
+        if inp.enabled:
+            lev = inp._last_level_dbfs
+            local[inp.name] = {
+                "level":   round(lev, 1),
+                "silence": lev <= inp.silence_threshold_dbfs,
+            }
+    if local:
+        result["local"] = local
+
+    # Remote streams — one lock acquisition, single consistent snapshot
+    if hub_server:
+        with hub_server._lock:
+            for sname, data in hub_server._sites.items():
+                age    = now - data.get("_received", 0)
+                online = age < HUB_SITE_TIMEOUT
+                if not online:
+                    result[sname] = {"_offline": True}
+                    continue
+                streams_out: dict = {}
+                for st in data.get("streams", []):
+                    name = st.get("name", "")
+                    if not name:
+                        continue
+                    lev    = float(st.get("level_dbfs", -120.0))
+                    thresh = st.get("silence_threshold_dbfs")
+                    _thr   = float(thresh) if thresh is not None else -55.0
+                    streams_out[name] = {
+                        "level":   round(lev, 1),
+                        "silence": lev <= _thr,
+                    }
+                result[sname] = streams_out
+
+    resp = jsonify({"ok": True, "levels": result})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.post("/api/chains/test_alert")
