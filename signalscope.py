@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.10"
+BUILD                  = "SignalScope-3.3.11"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -10632,7 +10632,8 @@ class SdrDeviceManager:
     """
 
     def __init__(self):
-        self._lock    = threading.Lock()
+        self._lock      = threading.Lock()
+        self._scan_lock = threading.Lock()      # serialises rtl_test calls — only one at a time
         self._owners: Dict[str, str] = {}       # serial → owner label  (FM/scanner exclusive claims)
         self._dab_owners: Dict[int, str] = {}   # device index → owner label (DAB session claims)
         self._index_cache: Dict[str, int] = {}  # serial → last known index
@@ -10651,68 +10652,87 @@ class SdrDeviceManager:
         if not force and hasattr(self, '_scan_cache') and now - self._cache_ts < 10:
             return self._scan_cache
 
-        devices = []
-        if not _find_binary("rtl_test") and not _find_binary("rtl_eeprom"):
+        # Only one rtl_test process at a time.  Without this lock, FM and DAB
+        # threads starting simultaneously both see a cold cache and both spawn
+        # rtl_test.  When the first process holds device 0, some rtl_test
+        # builds fall back to device 1 — briefly claiming it — so welle-cli
+        # racing to open device 1 at the same instant gets LIBUSB_ERROR_BUSY.
+        with self._scan_lock:
+            # Re-check cache inside the lock — a waiting thread should reuse
+            # the result from the thread that just finished scanning.
+            now = time.time()
+            if not force and hasattr(self, '_scan_cache') and now - self._cache_ts < 10:
+                return self._scan_cache
+
+            devices = []
+            if not _find_binary("rtl_test") and not _find_binary("rtl_eeprom"):
+                self._scan_cache = devices
+                self._cache_ts   = now
+                return devices
+
+            tool = "rtl_test" if _find_binary("rtl_test") else "rtl_eeprom"
+            # Use plain "rtl_test" (no flags) for enumeration.
+            #
+            # WHY NOT "rtl_test -t":
+            #   The -t flag enables the Elonics E4000 benchmark, which causes
+            #   rtl_test to iterate and OPEN ALL connected dongles (open device 0,
+            #   close, open device 1, close, …) before running the sample loop on
+            #   device 0.  On a 2-dongle system this briefly claims device 1, so if
+            #   welle-cli tries to open device 1 during that window it gets
+            #   LIBUSB_ERROR_BUSY (-6) — exactly the persistent usb_claim_interface
+            #   errors seen in the logs.
+            #
+            # WHY plain "rtl_test" IS safe despite hanging:
+            #   librtlsdr prints "Found N device(s):" + the full device list to
+            #   stderr BEFORE opening any device (the list comes from
+            #   rtlsdr_get_device_count/rtlsdr_get_device_usb_strings which only
+            #   enumerate USB descriptors).  We time-out after 2 s and read the
+            #   partial stderr via TimeoutExpired.exc.stderr — the device list is
+            #   always there.  Only device 0 is ever opened by rtl_test, so all
+            #   other dongles remain free.
+            cmd = [tool] if tool == "rtl_test" else [tool]
+            output = ""
+            timed_out = False
+            try:
+                result = _sp.run(cmd, capture_output=True, text=True, timeout=2)
+                output = result.stderr + result.stdout
+            except _sp.TimeoutExpired as exc:
+                # Partial output captured before the kill still contains the device
+                # list which was written to stderr before any open attempt.
+                timed_out = True
+                out_b = exc.stdout or b""
+                err_b = exc.stderr or b""
+                if isinstance(out_b, str):
+                    output = err_b + out_b          # text=True gave str
+                else:
+                    output = err_b.decode(errors="ignore") + out_b.decode(errors="ignore")
+            except Exception as e:
+                print(f"[SdrMgr] Scan error: {e}")
+
+            if timed_out:
+                # Give the USB stack a moment to fully release device 0 before
+                # any caller tries to open a dongle.
+                time.sleep(0.3)
+
+            import re as _re
+            # Parse lines like:
+            #   0:  Realtek, RTL2838UHIDIR, SN: 00000001
+            #   Found 2 device(s):
+            for m in _re.finditer(
+                    r'(\d+):\s+([^,]+),\s+([^,]+),\s+SN:\s*(\S*)', output):
+                idx, mfr, name, serial = m.groups()
+                serial = serial.strip() or f"unknown_{idx}"
+                devices.append({
+                    "index":        int(idx),
+                    "serial":       serial,
+                    "name":         name.strip(),
+                    "manufacturer": mfr.strip(),
+                })
+                self._index_cache[serial] = int(idx)
+
             self._scan_cache = devices
             self._cache_ts   = now
             return devices
-
-        tool = "rtl_test" if _find_binary("rtl_test") else "rtl_eeprom"
-        # Use plain "rtl_test" (no flags) for enumeration.
-        #
-        # WHY NOT "rtl_test -t":
-        #   The -t flag enables the Elonics E4000 benchmark, which causes
-        #   rtl_test to iterate and OPEN ALL connected dongles (open device 0,
-        #   close, open device 1, close, …) before running the sample loop on
-        #   device 0.  On a 2-dongle system this briefly claims device 1, so if
-        #   welle-cli tries to open device 1 during that window it gets
-        #   LIBUSB_ERROR_BUSY (-6) — exactly the persistent usb_claim_interface
-        #   errors seen in the logs.
-        #
-        # WHY plain "rtl_test" IS safe despite hanging:
-        #   librtlsdr prints "Found N device(s):" + the full device list to
-        #   stderr BEFORE opening any device (the list comes from
-        #   rtlsdr_get_device_count/rtlsdr_get_device_usb_strings which only
-        #   enumerate USB descriptors).  We time-out after 8 s and read the
-        #   partial stderr via TimeoutExpired.exc.stderr — the device list is
-        #   always there.  Only device 0 is ever opened by rtl_test, so all
-        #   other dongles remain free.
-        cmd = [tool] if tool == "rtl_test" else [tool]
-        output = ""
-        try:
-            result = _sp.run(cmd, capture_output=True, text=True, timeout=2)
-            output = result.stderr + result.stdout
-        except _sp.TimeoutExpired as exc:
-            # Partial output captured before the kill still contains the device
-            # list which was written to stderr before any open attempt.
-            out_b = exc.stdout or b""
-            err_b = exc.stderr or b""
-            if isinstance(out_b, str):
-                output = err_b + out_b          # text=True gave str
-            else:
-                output = err_b.decode(errors="ignore") + out_b.decode(errors="ignore")
-        except Exception as e:
-            print(f"[SdrMgr] Scan error: {e}")
-
-        import re as _re
-        # Parse lines like:
-        #   0:  Realtek, RTL2838UHIDIR, SN: 00000001
-        #   Found 2 device(s):
-        for m in _re.finditer(
-                r'(\d+):\s+([^,]+),\s+([^,]+),\s+SN:\s*(\S*)', output):
-            idx, mfr, name, serial = m.groups()
-            serial = serial.strip() or f"unknown_{idx}"
-            devices.append({
-                "index":        int(idx),
-                "serial":       serial,
-                "name":         name.strip(),
-                "manufacturer": mfr.strip(),
-            })
-            self._index_cache[serial] = int(idx)
-
-        self._scan_cache = devices
-        self._cache_ts   = now
-        return devices
 
     def resolve_index(self, serial: str) -> int:
         """

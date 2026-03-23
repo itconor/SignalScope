@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.11] - 2026-03-23
+
+### Fixed
+- **DAB still getting `usb_claim_interface error -6` with two dongles** — FM and DAB threads start simultaneously on monitor launch. Both called `scan()` at the same instant with a cold cache, spawning two parallel `rtl_test` processes. When the first process claimed device 0, some `rtl_test` builds fall back to the next available device (device 1) if device 0 is busy — briefly holding it. welle-cli trying to open device 1 at the exact same moment the 2-second timeout killed that second `rtl_test` hit the kernel's USB release window and got `LIBUSB_ERROR_BUSY`. Fix: added `_scan_lock` (a second `threading.Lock`) that serialises all `rtl_test` invocations — only one ever runs at a time. A thread that was waiting for the lock re-checks the cache on entry so it reuses the result rather than running a redundant scan. Added a 0.3 s settle after a timeout kill to ensure device 0 is fully released before any caller opens a dongle.
+
+---
+
 ## [3.3.10] - 2026-03-23
 
 ### Fixed
