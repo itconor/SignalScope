@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.3"
+BUILD                  = "SignalScope-3.3.4"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -4953,6 +4953,10 @@ class MonitorManager:
         self._hub_client: Optional[HubClient]=None
         self._dab_sessions: Dict[tuple, DabSharedSession]={}
         self._dab_sessions_lock=threading.Lock()
+        # Per-device USB backoff: when usb_claim_interface error is seen, all
+        # streams for that device index wait until this timestamp before retrying.
+        # Prevents rapid-fire welle-cli crash loops from locking up the USB bus.
+        self._dab_usb_backoffs: Dict[int, float] = {}
         # Queue of (stream_name, label, clip_path, level_dbfs) tuples waiting
         # to be uploaded to the hub.  Drained by HubClient._loop() after each
         # successful heartbeat so clips reach the hub within one heartbeat cycle.
@@ -5224,6 +5228,12 @@ class MonitorManager:
                     if "error" in lower or "failed" in lower or "pll not locked" in lower:
                         self.log(f"[DAB {session.channel}] {line}")
                     if any(marker in lower for marker in fatal_markers):
+                        if "usb_claim_interface error" in lower:
+                            # Set a shared backoff so all streams for this
+                            # device index wait 3 s before the next attempt,
+                            # preventing rapid-fire crash loops that lock up
+                            # the USB bus entirely.
+                            self._dab_usb_backoffs[session.device_idx] = time.time() + 3.0
                         session.failed = True
                         session.ready.set()
                         try:
@@ -5468,6 +5478,15 @@ class MonitorManager:
                 if attempt > 1:
                     self.log(f"[{name}] DAB: retrying shared mux attach (attempt {attempt})")
                     time.sleep(1.0)
+                # Honour the shared USB backoff — if another stream already hit
+                # usb_claim_interface error for this device, wait together rather
+                # than hammering the USB bus with independent rapid retries.
+                backoff_until = self._dab_usb_backoffs.get(device_idx, 0)
+                if backoff_until > time.time():
+                    wait_s = backoff_until - time.time()
+                    self.log(f"[{name}] DAB: USB busy backoff — waiting {wait_s:.1f}s before retry")
+                    if stop_evt.wait(timeout=wait_s):
+                        return
                 try:
                     session = self._get_or_create_dab_session(serial, device_idx, channel, ppm, name)
                 except SdrNotFoundError as e:
