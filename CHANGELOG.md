@@ -2,6 +2,55 @@
 
 ---
 
+## [3.2.96] - 2026-03-23
+
+### Fixed
+- **FM + DAB dual-dongle conflict (part 2)** — even with 3.2.93 always passing the device index to welle-cli, the underlying race still existed when the two dongles resolved to the same device index (e.g. DAB configured with "Any available" defaulting to index 0, and the FM dongle also at index 0). Root cause: `SdrDeviceManager` had no cross-type visibility — DAB sessions registered nothing in `_owners`, so `claim()` couldn't detect them, and `_run_dab` had no visibility into active FM claims.
+
+  Fix: added `_dab_owners: Dict[int, str]` to `SdrDeviceManager` (keyed by device index) alongside the existing serial-keyed `_owners` map.
+  - `_start_dab_session` now calls `sdr_manager.claim_dab_device(idx, owner)` before launching welle-cli; raises `SdrBusyError` if an FM stream already holds that index.
+  - `_stop_dab_session` calls `sdr_manager.release_dab_device(idx)` after stopping welle-cli.
+  - `claim()` (used by FM/scanner) now checks `_dab_owners` before granting a lease; raises `SdrBusyError` with an actionable message if DAB already holds that device.
+  - `_run_dab` performs an early FM-conflict check before the retry loop, setting `_livewire_mode = "DAB (device conflict — see logs)"` and logging which FM stream holds the conflicting device index. Also logs a warning when no serial is configured (defaulting to index 0) so multi-dongle users know to assign serials.
+
+---
+
+## [3.2.95] - 2026-03-23
+
+### Fixed
+- **FM Scanner: CSRF validation failed on Connect/Tune/Stop** — scanner JS used raw `fetch()` without the `X-CSRFToken` header, and the page was missing the `<meta name="csrf-token">` tag. Fixed by adding the meta tag and a local `_f()` helper (identical to the one used by all other hub pages) that automatically injects `X-CSRFToken` into every request.
+- **FM Scanner: all sites shown as offline** — the scanner route read `sdata.get("online")` directly from the raw `_sites` dict, but `online` is not stored there — it is computed dynamically from `_received` timestamp vs `HUB_SITE_TIMEOUT`. Fixed by computing `online = (now - sdata.get("_received", 0)) < HUB_SITE_TIMEOUT` in the route, matching the same logic used by the hub main page.
+
+---
+
+## [3.2.94] - 2026-03-23
+
+### Fixed
+- **FM Scanner page returns 500** — two bugs introduced with the scanner template: (1) the route passed `csp_nonce=g.csp_nonce` but `g` has no `csp_nonce` attribute — the nonce is stored at `g._csp_nonce` and exposed as a Jinja2 context-processor function `csp_nonce()`, so no manual passing is needed at all; (2) the template used `{{csp_nonce}}` (variable) instead of `{{csp_nonce()}}` (function call). Fixed by removing the explicit kwarg from `render_template_string` and correcting both `<style>` and `<script>` nonce attributes to use `{{csp_nonce()}}`.
+
+---
+
+## [3.2.93] - 2026-03-23
+
+### Fixed
+- **FM stream fails to start when used alongside a DAB stream on the same machine** — `_start_dab_session` built the welle-cli `-F` driver string with the condition `if session.device_idx and str(session.device_idx) != "0"`, which silently skipped the device index whenever the resolved index was `0`. This caused welle-cli to receive `-F rtl_sdr` (no index = "grab first available") instead of `-F rtl_sdr,0`. With two dongles plugged in, welle-cli would race `rtl_fm` for device 0 — whichever process started second would get `usb_claim_interface error` and fail. Fixed by always passing the explicit index: `-F rtl_sdr,{idx}`. With a single dongle, `rtl_sdr,0` behaves identically to `rtl_sdr`; with multiple dongles it pins welle-cli to the correct device and leaves the other index free for rtl_fm.
+
+---
+
+## [3.2.92] - 2026-03-23
+
+### Added
+- **Scanner Mode** — new `📻 FM Scanner` page accessible from the hub dashboard. Pick any connected site and its SDR dongle, enter a starting frequency, and click Connect. The hub creates a relay slot, the client starts `rtl_fm` at the requested frequency and pipes audio through `ffmpeg` (resampled to 48 kHz MP3 128 kbps), and the hub streams it live to the browser's audio player. Controls: **−1.0 / −step / +step / +1.0 MHz** buttons, configurable step size (0.05 / 0.1 / 0.2 / 0.5 / 1.0 MHz), direct frequency entry, and keyboard shortcuts (← → tune, ↑ ↓ ±1 MHz, Shift×5). Each tune creates a fresh relay slot so audio reconnects seamlessly. SDR serial numbers are auto-populated from the site's configured FM streams. Uses the existing signed `listen_registry` relay infrastructure — all encryption, signing and slot cleanup is inherited automatically.
+
+---
+
+## [3.2.91] - 2026-03-23
+
+### Added
+- **Auto-maintenance on hub-pushed update** — when the hub pushes a `self_update` command to a client site, every chain node belonging to that site is automatically placed into maintenance mode for up to 15 minutes. This suppresses false `CHAIN_FAULT` alerts during the update download, syntax validation, process restart, and audio-level settle time. The hub watches for the client's first heartbeat after the restart, immediately queues a `start` command so monitoring resumes without manual intervention, then starts a **60-second cooldown timer**. When the timer expires, maintenance mode is cleared on all of that site's chain nodes automatically. If the update fails (client never comes back), maintenance expires naturally after 15 minutes — no permanent suppression.
+
+---
+
 ## [3.2.90] - 2026-03-23
 
 ### Fixed

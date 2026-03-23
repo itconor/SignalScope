@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.94"
+BUILD                  = "SignalScope-3.2.96"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -5159,6 +5159,9 @@ class MonitorManager:
         # also running — previously index 0 was omitted, causing welle-cli to
         # open "first available" and race with rtl_fm for the same device.
         driver = f"rtl_sdr,{int(session.device_idx)}"
+        # Register the DAB device claim so FM streams can detect the conflict.
+        # Raises SdrBusyError if an FM stream already holds this device index.
+        sdr_manager.claim_dab_device(session.device_idx, owner_name)
         cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel, "-C", "1", "-g", "-1", "-F", driver]
         if session.ppm:
             self.log(f"[{name}] DAB: ignoring ppm={session.ppm} for welle-cli startup (not passing it as gain)")
@@ -5306,6 +5309,11 @@ class MonitorManager:
                     p.kill()
                 except Exception:
                     pass
+        # Release the SDR device claim so FM/scanner streams can use it again
+        try:
+            sdr_manager.release_dab_device(session.device_idx)
+        except Exception:
+            pass
 
     def _release_dab_session(self, session, owner_name):
         stop_now = False
@@ -5369,9 +5377,24 @@ class MonitorManager:
                 cfg._livewire_mode = "DAB (dongle not found)"
                 cfg._dab_ok = False
                 return
-            except SdrBusyError:
-                # Another input may already own a shared session for this mux; continue.
-                pass
+        else:
+            self.log(f"[{name}] DAB: no serial configured — defaulting to device index 0. "
+                     "If multiple RTL-SDR dongles are present, assign a serial to avoid conflicts.")
+
+        # Early conflict check: refuse to start if an FM stream already holds this device index.
+        # (The full bidirectional lock is enforced again inside _start_dab_session via
+        #  sdr_manager.claim_dab_device, but an early bail-out here gives a clearer log message.)
+        with sdr_manager._lock:
+            for _fm_serial, _fm_owner in sdr_manager._owners.items():
+                if sdr_manager._index_cache.get(_fm_serial) == device_idx:
+                    self.log(
+                        f"[{name}] DAB: device index {device_idx} (serial {_fm_serial!r}) is already "
+                        f"in use by FM stream '{_fm_owner}'. Assign a dedicated dongle serial to each "
+                        "stream to avoid conflicts."
+                    )
+                    cfg._livewire_mode = "DAB (device conflict — see logs)"
+                    cfg._dab_ok = False
+                    return
 
         if not ppm and serial:
             for dev in self.app_cfg.sdr_devices:
@@ -10514,7 +10537,8 @@ class SdrDeviceManager:
 
     def __init__(self):
         self._lock    = threading.Lock()
-        self._owners: Dict[str, str] = {}   # serial → owner label
+        self._owners: Dict[str, str] = {}       # serial → owner label  (FM/scanner exclusive claims)
+        self._dab_owners: Dict[int, str] = {}   # device index → owner label (DAB session claims)
         self._index_cache: Dict[str, int] = {}  # serial → last known index
         self._cache_ts: float = 0.0
 
@@ -10599,6 +10623,13 @@ class SdrDeviceManager:
                     f"Dongle '{serial}' is already in use by '{existing}'."
                 )
             idx = self.resolve_index(serial)
+            # Check whether a DAB session (welle-cli) is already holding this device
+            existing_dab = self._dab_owners.get(idx)
+            if existing_dab:
+                raise SdrBusyError(
+                    f"Dongle at index {idx} (serial '{serial}') is already in use by DAB stream "
+                    f"'{existing_dab}'. Assign a dedicated dongle serial to each stream."
+                )
             self._owners[serial] = owner or serial
         return SdrLease(self, serial, idx)
 
@@ -10606,6 +10637,27 @@ class SdrDeviceManager:
         """Release a previously claimed dongle."""
         with self._lock:
             self._owners.pop(serial, None)
+
+    def claim_dab_device(self, idx: int, owner: str = "") -> None:
+        """
+        Register that a DAB (welle-cli) session is exclusively holding device index *idx*.
+        Raises SdrBusyError if an FM stream already has that index claimed via claim().
+        Safe to call again for the same index once already registered (idempotent update).
+        """
+        with self._lock:
+            # Check if any FM stream already holds this index (via _index_cache populated by resolve_index)
+            for serial, fm_owner in self._owners.items():
+                if self._index_cache.get(serial) == idx:
+                    raise SdrBusyError(
+                        f"Device index {idx} (serial '{serial}') is already in use by FM stream "
+                        f"'{fm_owner}'. Assign a dedicated dongle serial to each stream to avoid conflicts."
+                    )
+            self._dab_owners[idx] = owner or f"dab@{idx}"
+
+    def release_dab_device(self, idx: int) -> None:
+        """Release a DAB device claim by device index."""
+        with self._lock:
+            self._dab_owners.pop(idx, None)
 
     def status(self) -> Dict[str, str]:
         """Return dict of serial → current owner for all claimed dongles."""
@@ -17020,10 +17072,12 @@ def hub_scanner_page():
         return redirect("/")
     sites = []
     if hub_server:
+        now = time.time()
         with hub_server._lock:
             for sname, sdata in sorted(hub_server._sites.items()):
                 if sdata.get("approved", True) and not sdata.get("blocked"):
-                    sites.append({"name": sname, "online": bool(sdata.get("online"))})
+                    online = (now - sdata.get("_received", 0)) < HUB_SITE_TIMEOUT
+                    sites.append({"name": sname, "online": online})
     return render_template_string(HUB_SCANNER_TPL, sites=sites, build=BUILD)
 
 
@@ -22108,6 +22162,7 @@ HUB_SCANNER_TPL = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FM Scanner — SignalScope</title>
+<meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
 :root{--bg:#080d18;--card:#0d1526;--bor:#1e3050;--tx:#c8d8f0;--mu:#4a6a8a;--ok:#22c55e;--al:#ef4444;--bl:#3b82f6;--lcd:#00e5ff;--lcd-dim:#004060}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -22225,6 +22280,8 @@ input:focus,select:focus{border-color:var(--bl)}
 <script nonce="{{csp_nonce()}}">
 (function(){
 'use strict';
+var _csrf=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+function _f(url,o){o=o||{};o.headers=Object.assign({'X-CSRFToken':_csrf,'Content-Type':'application/json'},o.headers||{});return fetch(url,o);}
 var siteSel   = document.getElementById('site-sel');
 var sdrSel    = document.getElementById('sdr-sel');
 var startFreq = document.getElementById('start-freq');
@@ -22263,7 +22320,7 @@ function updateFreq(f){
 function loadDevices(){
   var site = siteSel.value;
   if(!site) return;
-  fetch('/api/hub/scanner/devices/' + encodeURIComponent(site))
+  _f('/api/hub/scanner/devices/' + encodeURIComponent(site))
     .then(function(r){ return r.json(); })
     .then(function(d){
       sdrSel.innerHTML = '<option value="">Auto</option>';
@@ -22290,8 +22347,8 @@ function doStart(freq){
   freq = clamp(freq);
   setStatus('connecting', 'Connecting…');
   updateFreq(freq);
-  fetch('/api/hub/scanner/start', {
-    method:'POST', headers:{'Content-Type':'application/json'},
+  _f('/api/hub/scanner/start', {
+    method:'POST',
     body: JSON.stringify({site: siteSel.value, sdr_serial: sdrSel.value, freq_mhz: freq})
   }).then(function(r){ return r.json(); }).then(function(d){
     if(d.ok){
@@ -22309,8 +22366,8 @@ function doTune(freq){
   updateFreq(freq);
   freqSub.textContent = 'Retuning…';
   freqDisp.style.color = 'var(--lcd-dim)';
-  fetch('/api/hub/scanner/tune', {
-    method:'POST', headers:{'Content-Type':'application/json'},
+  _f('/api/hub/scanner/tune', {
+    method:'POST',
     body: JSON.stringify({site: siteSel.value, freq_mhz: freq})
   }).then(function(r){ return r.json(); }).then(function(d){
     if(d.ok){
@@ -22324,8 +22381,8 @@ function doTune(freq){
 
 function doStop(){
   stopPoll();
-  fetch('/api/hub/scanner/stop', {
-    method:'POST', headers:{'Content-Type':'application/json'},
+  _f('/api/hub/scanner/stop', {
+    method:'POST',
     body: JSON.stringify({site: siteSel.value})
   }).catch(function(){});
   audio.pause(); audio.src = ''; audio.load();
@@ -22349,7 +22406,7 @@ function stopPoll(){ clearInterval(_poll); _poll = null; }
 
 function checkStatus(){
   var site = siteSel.value; if(!site) return;
-  fetch('/api/hub/scanner/status/' + encodeURIComponent(site))
+  _f('/api/hub/scanner/status/' + encodeURIComponent(site))
     .then(function(r){ return r.json(); })
     .then(function(d){
       if(!d.active){ stopPoll(); return; }
