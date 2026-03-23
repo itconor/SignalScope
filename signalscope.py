@@ -819,6 +819,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
       <span style="color:var(--mu)">APNs not configured — push notifications disabled</span>
     {% endif %}
   </div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 
 <div class="pn" id="p-sdr">
@@ -1095,8 +1096,47 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.67"
+BUILD                  = "SignalScope-3.2.78"
 # CHANGELOG
+# 3.2.78 (2026-03-23) — Mobile API settings: added missing Save button to the APNs/Mobile
+#                        API panel so Key ID, Team ID, Bundle ID, .p8 key and sandbox flag
+#                        are persisted on submit.
+# 3.2.77 (2026-03-23) — Chain page mini-player: clicking a live-enabled chain node now
+#                        opens the same sticky bottom mini-player used on Hub and Reports
+#                        pages (stream name, site · chain name, native audio controls,
+#                        ⏹ Stop & close). The node keeps its blue pulsing ring while
+#                        audio is playing. Clicking the same node again, or pressing
+#                        Stop & close, stops playback and hides the bar.
+# 3.2.76 (2026-03-23) — Chain ad-break detection: "fault-if-ALL-silent" stacks without a
+#                        mixin node are now treated as adbreak_candidate when all downstream
+#                        nodes remain healthy.  Fixes two problems:
+#                        (1) Restart during ad break: warmup previously backdated the
+#                            confirmation window, firing CHAIN_FAULT immediately.  Now gets
+#                            a fresh window so the ad break can resolve without an alert.
+#                        (2) Display: badge now shows "AD BREAK" (with countdown) instead of
+#                            the alarming "CHECKING…" during the confirmation window.
+#                        Note: if min_fault_seconds < longest ad break, the fault still fires
+#                        after the delay expires — increase the chain's delay to cover the
+#                        longest expected break if false positives continue.
+# 3.2.75 (2026-03-23) — Hub page Live button: replaced inline audio element with the same
+#                        sticky mini-player bar used on Reports. Clicking ▶ Live opens the
+#                        bar at the bottom showing stream name, site, native audio controls,
+#                        and an ⏹ Stop & close button. Tapping the same Live button again
+#                        also stops playback. Pulsing 🔴 LIVE badge in the bar.
+# 3.2.74 (2026-03-23) — AI clip duration: all analyse_chunk call sites now use per-input
+#                        cfg.alert_wav_duration instead of the global app_cfg.alert_wav_duration,
+#                        so AI-triggered clips honour the per-stream clip length setting.
+# 3.2.73 (2026-03-23) — Hub Reports mini-player: replaced the in-table audio player with
+#   a compact "▶ Play" button; clicking it opens a sticky mini-player bar fixed at the
+#   bottom of the viewport (stream name, timestamp, native audio controls, ⬇ Download,
+#   ✕ close). Table column shrinks from 220px to 90px, eliminating the overflow issue.
+# 3.2.72 (2026-03-23) — Chain clip diagnostics: comprehensive logging added throughout the
+#   remote-clip upload path (push_pending_command, _cmd_save_clip, _upload_clip,
+#   hub_clip_upload) so every failure is visible in the hub log. Fix: duplicate
+#   _append_fault_log_entry method at line ~9806 removed — the active (last-defined)
+#   version lacked the stack-aware label/site/stream logic from _create_fault_log_entry.
+#   Now a single _append_fault_log_entry delegates to _create_fault_log_entry correctly.
+#   Also: better fallback in hub_clip_upload when flog is empty after hub restart.
 # 3.2.43 (2026-03-22) — APNs per-token environment routing: device tokens now stored with
 #   sandbox flag (True=development/Xcode, False=production/TestFlight+AppStore); server
 #   routes each push to the correct APNs endpoint so both Xcode and TestFlight devices
@@ -2808,6 +2848,14 @@ class MetricsDB:
                         ON chain_fault_log(chain_id, ts_start);
                 """)
                 conn.commit()
+                # Migration: add clips column to chain_fault_log if absent
+                # (DBs created before clips support was added won't have it)
+                try:
+                    conn.execute("ALTER TABLE chain_fault_log ADD COLUMN clips TEXT")
+                    conn.commit()
+                    print("[MetricsDB] Migrated chain_fault_log: added clips column")
+                except _sqlite3.OperationalError:
+                    pass  # column already exists — normal path
                 self._conn = conn
         except Exception as e:
             print(f"[MetricsDB] Init error: {e}")
@@ -5496,7 +5544,7 @@ class MonitorManager:
                             analyse_chunk(cfg, sender,
                                           lambda m, n=name: self.log(f"[{n}] {m}"),
                                           samp, CHUNK_DURATION,
-                                          self.app_cfg.alert_wav_duration,
+                                          cfg.alert_wav_duration,
                                           self.app_cfg.inputs)
                         if int(time.time()) % 10 == 0:
                             mux = session.mux or {}
@@ -6075,7 +6123,7 @@ class MonitorManager:
                         analyse_chunk(cfg, sender,
                                       lambda m, n=name: self.log(f"[{n}] {m}"),
                                       chunk, CHUNK_DURATION,
-                                      self.app_cfg.alert_wav_duration,
+                                      cfg.alert_wav_duration,
                                       self.app_cfg.inputs)
 
         except Exception as e:
@@ -6799,7 +6847,7 @@ class MonitorManager:
                             cfg, sender,
                             lambda m, n=name: self.log(f"[{n}] {m}"),
                             frame, CHUNK_DURATION,
-                            self.app_cfg.alert_wav_duration,
+                            cfg.alert_wav_duration,
                             self.app_cfg.inputs,
                         )
         except Exception as e:
@@ -6884,7 +6932,7 @@ class MonitorManager:
                         analyse_chunk(cfg, sender,
                                       lambda m, n=name: self.log(f"[{n}] {m}"),
                                       samp, CHUNK_DURATION,
-                                      self.app_cfg.alert_wav_duration,
+                                      cfg.alert_wav_duration,
                                       self.app_cfg.inputs)
 
             except Exception as e:
@@ -7027,7 +7075,7 @@ class MonitorManager:
                 cfg._audio_buffer.append(samp.copy())
                 cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
                 analyse_chunk(cfg, sender, lambda m, n=name: self.log(f"[{n}] {m}"),
-                              samp, CHUNK_DURATION, self.app_cfg.alert_wav_duration, self.app_cfg.inputs)
+                              samp, CHUNK_DURATION, cfg.alert_wav_duration, self.app_cfg.inputs)
 
         # Drain contiguous packets in sequence order.
         while st['expected_seq'] in reorder:
@@ -7248,7 +7296,6 @@ class MonitorManager:
 
         self.log(f"[{name}] Opening sound device: {device!r} at {SAMPLE_RATE} Hz")
         inputs = self.app_cfg.inputs
-        alert_wav_duration = getattr(self.app_cfg, 'alert_wav_duration', 10)
         q = collections.deque(maxlen=8)
 
         def _cb(indata, frames, time_info, status):
@@ -7263,7 +7310,7 @@ class MonitorManager:
                     if q:
                         chunk = q.popleft()
                         analyse_chunk(cfg, sender, self.log, chunk, CHUNK_DURATION,
-                                      alert_wav_duration, inputs)
+                                      cfg.alert_wav_duration, inputs)
                     else:
                         time.sleep(0.05)
         except Exception as e:
@@ -7381,7 +7428,7 @@ class MonitorManager:
                 cfg._stream_buffer.append(samp.copy()); cfg._audio_buffer.append(samp.copy())
                 cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
                 analyse_chunk(cfg,sender,lambda m,n=name:self.log(f"[{n}] {m}"),
-                              samp,CHUNK_DURATION,self.app_cfg.alert_wav_duration,self.app_cfg.inputs)
+                              samp,CHUNK_DURATION,cfg.alert_wav_duration,self.app_cfg.inputs)
         try: sock.close()
         except: pass
         self.log(f"[{name}] Thread stopped.")
@@ -7815,9 +7862,12 @@ class HubClient:
         node_label = str(payload.get("node_label", "")).strip()
         pos        = payload.get("pos", None)
         status     = str(payload.get("status",     "")).strip()
+        monitor.log(f"[Hub] save_clip received: stream={stream!r} chain_id={chain_id!r} "
+                    f"entry_id={entry_id!r} label={label!r}")
         inp = next((i for i in cfg_obj.inputs if i.name == stream and i.enabled), None)
         if inp is None:
-            monitor.log(f"[Hub] save_clip: stream '{stream}' not found or disabled — ignored")
+            monitor.log(f"[Hub] save_clip: stream '{stream}' not found or disabled — ignored. "
+                        f"Available inputs: {[i.name for i in cfg_obj.inputs if i.enabled]}")
             return
         msg = (f"Audio clip captured at '{stream}'"
                + (f" ('{node_label}')" if node_label else "")
@@ -7825,8 +7875,11 @@ class HubClient:
                + (f" in {repr(chain_name)}" if chain_name else "") + ".")
         clip_path = _save_alert_wav(inp, label, inp.alert_wav_duration, _skip_hub_queue=True)
         _add_history(inp, "CHAIN_FAULT", msg, clip_path=clip_path or "")
-        monitor.log(f"[Hub] save_clip: saved '{label}' for '{stream}'"
-                    + (f" ({os.path.basename(clip_path)})" if clip_path else " (no clip data)"))
+        if clip_path:
+            monitor.log(f"[Hub] save_clip: saved '{label}' for '{stream}' → {os.path.basename(clip_path)}")
+        else:
+            monitor.log(f"[Hub] save_clip: no audio data for '{stream}' (buffer empty?). "
+                        f"Buffer length: {len(inp._audio_buffer) if hasattr(inp,'_audio_buffer') else 'N/A'}")
         if clip_path:
             hub_url = cfg_obj.hub.hub_url.rstrip("/")
             secret  = cfg_obj.hub.secret_key
@@ -7868,9 +7921,14 @@ class HubClient:
             req = urllib.request.Request(
                 f"{hub_url}/hub/clip_upload", data=body, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=30) as r:
-                monitor.log(f"[Hub] Clip uploaded OK: {site}/{stream}/{label} → HTTP {r.status}")
+                resp_body = r.read().decode("utf-8", errors="replace")
+                monitor.log(f"[Hub] Clip uploaded OK: {site}/{stream}/{label} → "
+                            f"HTTP {r.status} {resp_body[:120]}")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+            monitor.log(f"[Hub] Clip upload HTTP {e.code} for '{stream}': {e.reason} — {err_body[:200]}")
         except Exception as e:
-            monitor.log(f"[Hub] Clip upload failed for '{stream}': {e}")
+            monitor.log(f"[Hub] Clip upload failed for '{stream}': {type(e).__name__}: {e}")
 
     def _cmd_self_update(self, payload: dict):
         """Hub command: download the hub's current signalscope.py and restart."""
@@ -8754,10 +8812,14 @@ class HubServer:
         """Append a structured command dict to the site's command queue (max _CMD_QUEUE_MAX)."""
         with self._lock:
             if site_name not in self._sites:
+                monitor.log(f"[Hub] push_pending_command: site {site_name!r} not found in "
+                            f"_sites ({list(self._sites.keys())}) — command dropped: {cmd.get('type','?')}")
                 return
             q = self._sites[site_name].setdefault("_pending_commands", [])
             if len(q) < self._CMD_QUEUE_MAX:
                 q.append(cmd)
+                monitor.log(f"[Hub] Queued {cmd.get('type','?')} command for site {site_name!r} "
+                            f"(queue depth now {len(q)})")
 
     def set_pending_command(self, site_name: str, command: str):
         """Backward-compat: queue a simple start/stop command."""
@@ -8890,10 +8952,20 @@ class HubServer:
                 print(f"[HubDailyBackup] Error: {e}")
 
     def _load_fault_log_from_db(self):
-        """Restore chain fault history from SQLite into _chain_fault_log on startup."""
+        """Restore chain fault history from SQLite into _chain_fault_log on startup.
+
+        Called twice: once from __init__ (monitor may not exist yet — silently
+        returns) and again after monitor is initialised so the full history is
+        always available when the chains monitor loop starts.
+        """
         try:
-            cfg = monitor.app_cfg if monitor else None
-            chains = cfg.signal_chains if cfg else []
+            cfg = monitor.app_cfg  # noqa: F821 — may raise NameError before monitor is set
+        except NameError:
+            return   # monitor not ready yet; will be called again after it is set
+        if not cfg:
+            return
+        try:
+            chains = cfg.signal_chains or []
             loaded = 0
             for chain in chains:
                 cid = chain.get("id", "")
@@ -9296,13 +9368,30 @@ class HubServer:
 
     def _create_fault_log_entry(self, chain_id: str, now: float, result: dict) -> dict:
         fn_info = result.get("fault_node") or {}
+        if fn_info.get("type") == "stack":
+            # Stack node — synthesise label/site/stream from the silent sub-nodes
+            sub_nodes  = fn_info.get("nodes", [])
+            down_subs  = [n for n in sub_nodes
+                          if n.get("status") in ("down", "offline")] or sub_nodes
+            pos_num    = (result.get("fault_index") or 0) + 1
+            _label     = fn_info.get("label") or f"Stack (position {pos_num})"
+            _site      = ", ".join(dict.fromkeys(
+                             n.get("site", "") for n in down_subs if n.get("site")
+                         )) or "?"
+            _stream    = ", ".join(
+                             n.get("stream", "") for n in down_subs if n.get("stream")
+                         ) or "?"
+        else:
+            _label     = fn_info.get("label", "?")
+            _site      = fn_info.get("site", "?")
+            _stream    = fn_info.get("stream", "?")
         return {
             "id":               str(uuid.uuid4()),
             "chain_id":         chain_id,
             "ts_start":         now,
-            "fault_node_label": fn_info.get("label", "?"),
-            "fault_site":       fn_info.get("site", "?"),
-            "fault_stream":     fn_info.get("stream", "?"),
+            "fault_node_label": _label,
+            "fault_site":       _site,
+            "fault_stream":     _stream,
             "rtp_loss_pct":     fn_info.get("rtp_loss_pct"),
             "ts_recovered":     None,
             "clips":            [],
@@ -9387,13 +9476,39 @@ class HubServer:
         )
         mixin_idx = chain.get("mixin_node_idx")
         min_fault_secs = max(0, int(chain.get("min_fault_seconds", 0) or 0))
-        # Determine whether this looks like an ad break (fault is pre-mixin and mixin is still up)
+        # Determine whether this looks like an ad break.
+        #
+        # Primary path: fault is pre-mixin and the mixin (ad-insert) node is still up.
         adbreak_candidate = False
         if (chain_status == "fault" and mixin_idx is not None and min_fault_secs > 0
                 and fault_idx is not None and fault_idx < int(mixin_idx)):
             mixin_node = nodes_out[int(mixin_idx)] if int(mixin_idx) < len(nodes_out) else None
             if mixin_node and mixin_node.get("status") not in ("down", "offline"):
                 adbreak_candidate = True
+        # Secondary path: no mixin node, but the faulted position is a "fault-if-ALL-silent"
+        # stack and all downstream nodes are healthy.  When both studio feeds (redundant
+        # sources) go silent together while the router/TX chain is still carrying audio
+        # (from an ad-insert or automation), it almost certainly means an ad break —
+        # NOT a transmission failure.  Marking it as an adbreak_candidate has two effects:
+        #   1. The UI badge shows "AD BREAK" instead of the alarming "CHECKING…"
+        #   2. On service restart the warmup gives this chain a FRESH confirmation window
+        #      instead of the backdated one used for genuine faults, preventing spurious
+        #      CHAIN_FAULT alerts when SignalScope restarts mid-break.
+        if (not adbreak_candidate and chain_status == "fault" and min_fault_secs > 0
+                and fault_idx is not None and mixin_idx is None):
+            _fn = nodes_out[fault_idx]
+            if _fn.get("type") == "stack" and _fn.get("mode", "all") == "all":
+                # Only if no downstream node is also faulted — if the whole chain is
+                # dark it is a cascading failure, not an ad break.
+                _post = nodes_out[fault_idx + 1:]
+                _any_post_down = any(
+                    n.get("status") == "down"
+                    or (n.get("status") == "offline"
+                        and not n.get("offline_grace_active", False))
+                    for n in _post
+                )
+                if not _any_post_down:
+                    adbreak_candidate = True
         return {
             "id":               chain.get("id", ""),
             "name":             chain.get("name", ""),
@@ -9767,33 +9882,6 @@ class HubServer:
                     pass
             _warmed_up = True
             stop_evt.wait(10)   # state machine runs every 10 s; trend gate stays at 30 s
-
-    def _append_fault_log_entry(self, cid: str, now: float, result: dict) -> dict:
-        """Create, append, and DB-insert a fault log entry. Returns the entry dict.
-
-        Extracted from the two identical blocks that previously existed in
-        _chains_monitor_loop (prev=='ok' immediate-alert path and prev=='pending'
-        confirmation-elapsed path).
-        """
-        fn_info  = result.get("fault_node") or {}
-        entry_id = str(uuid.uuid4())
-        entry = {
-            "id":               entry_id,
-            "chain_id":         cid,
-            "ts_start":         now,
-            "fault_node_label": fn_info.get("label", "?"),
-            "fault_site":       fn_info.get("site", "?"),
-            "fault_stream":     fn_info.get("stream", "?"),
-            "rtp_loss_pct":     fn_info.get("rtp_loss_pct"),
-            "ts_recovered":     None,
-            "clips":            [],
-        }
-        flog = self._chain_fault_log.setdefault(cid, [])
-        flog.append(entry)
-        if len(flog) > 25:
-            flog.pop(0)
-        metrics_db.fault_log_insert(entry)
-        return entry
 
     def _fire_chain_flapping(self, result: dict, chain: dict, cfg, sender, now: float):
         """Fire CHAIN_FLAPPING alert when a chain is fault-cycling rapidly."""
@@ -10573,6 +10661,10 @@ try:
 except Exception:
     pass
 monitor=MonitorManager()
+# Deferred fault-log restore: monitor (and its app_cfg) is now available so the
+# _chain_fault_log ring-buffer can be fully populated from the SQLite DB.
+# The call in HubServer.__init__ silently skipped because monitor wasn't ready.
+hub_server._load_fault_log_from_db()
 _load_acks()
 threading.Thread(target=_version_check_loop, daemon=True, name="VersionCheck").start()
 
@@ -15568,11 +15660,23 @@ def hub_clip_upload():
         else:
             _clip_label = label  # e.g. "pos0", "pos2"
         flog = hub_server._chain_fault_log.get(chain_id, [])
+        monitor.log(f"[Hub] Clip back-patch: chain_id={chain_id!r} entry_id={entry_id!r} "
+                    f"flog_len={len(flog)} known_chains={list(hub_server._chain_fault_log.keys())}")
         if flog:
             if entry_id:
                 _target = next((e for e in reversed(flog) if e.get("id") == entry_id), None)
+                if _target is None:
+                    # entry_id not matched — older hub may have re-created the list;
+                    # fall back to most recent entry as a best-effort
+                    flog_ids = [e.get("id","?") for e in flog]
+                    monitor.log(f"[Hub] Clip back-patch: entry_id {entry_id!r} not found in "
+                                f"flog[{len(flog)}] ids={flog_ids} — falling back to flog[-1]")
+                    _target = flog[-1]
+                else:
+                    monitor.log(f"[Hub] Clip back-patch: matched entry_id {entry_id!r} directly")
             else:
-                _target = flog[-1]   # legacy fallback
+                _target = flog[-1]   # legacy fallback (older client, no entry_id)
+                monitor.log(f"[Hub] Clip back-patch: no entry_id — using flog[-1] id={_target.get('id','?')!r}")
             if _target:
                 clips = _target.setdefault("clips", [])
                 clips.append({
@@ -15584,6 +15688,53 @@ def hub_clip_upload():
                     "status":     clip_status or _clip_label,
                 })
                 metrics_db.fault_log_update_clips(_target.get("id", ""), clips)
+                monitor.log(f"[Hub] Clip back-patched to fault log entry {_target.get('id', '?')!r} "
+                            f"for chain {chain_id!r} ({safe_key}/{fname}) — entry now has {len(clips)} clip(s)")
+        else:
+            monitor.log(f"[Hub] Clip back-patch: flog EMPTY for chain {chain_id!r} — "
+                        f"attempting DB fallback (entry_id={entry_id!r})")
+            # flog is empty (e.g. hub restarted after fault) — write clip directly to DB
+            # by locating the entry in the DB and updating its clips column.
+            _db_entries = metrics_db.fault_log_load(chain_id, limit=10)
+            monitor.log(f"[Hub] Clip back-patch DB fallback: found {len(_db_entries)} DB entries for chain {chain_id!r}")
+            if _db_entries:
+                if entry_id:
+                    _db_target = next((e for e in reversed(_db_entries) if e.get("id") == entry_id), None)
+                    if _db_target is None:
+                        monitor.log(f"[Hub] Clip back-patch DB: entry_id {entry_id!r} not found in DB "
+                                    f"— falling back to most recent DB entry")
+                        _db_target = _db_entries[-1]
+                    else:
+                        monitor.log(f"[Hub] Clip back-patch DB: matched entry_id {entry_id!r}")
+                else:
+                    _db_target = _db_entries[-1]
+                    monitor.log(f"[Hub] Clip back-patch DB: no entry_id — using most recent DB entry "
+                                f"id={_db_target.get('id','?')!r}")
+                if _db_target:
+                    _db_clips = list(_db_target.get("clips") or [])
+                    _db_clips.append({
+                        "key":        safe_key,
+                        "fname":      fname,
+                        "label":      _clip_label,
+                        "node_label": node_label or stream,
+                        "pos":        clip_pos,
+                        "status":     clip_status or _clip_label,
+                    })
+                    metrics_db.fault_log_update_clips(_db_target.get("id", ""), _db_clips)
+                    monitor.log(f"[Hub] Clip written directly to DB for entry "
+                                f"{_db_target.get('id', '?')!r} (chain {chain_id!r}) "
+                                f"— entry now has {len(_db_clips)} clip(s)")
+                    # Also restore into in-memory flog so in-memory overlay works immediately
+                    _new_flog = metrics_db.fault_log_load(chain_id, limit=25)
+                    if _new_flog:
+                        hub_server._chain_fault_log[chain_id] = _new_flog
+                        monitor.log(f"[Hub] Restored {len(_new_flog)} entries to in-memory flog for chain {chain_id!r}")
+            else:
+                monitor.log(f"[Hub] Clip back-patch FAILED: no DB entries for chain {chain_id!r} — "
+                            f"clip saved to disk only ({safe_key}/{fname})")
+    else:
+        monitor.log(f"[Hub] Clip received without chain_id — saved to Reports only "
+                    f"({safe_key}/{fname}). This clip will NOT appear in fault history.")
 
     monitor.log(f"[Hub] Clip upload received: {site}/{stream}/{label} "
                 f"({len(wav_bytes) // 1024}KB → {fname})")
@@ -16621,8 +16772,12 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
 
     # Serve with proper headers so browser audio players work.
     # Handle Range requests (required by Safari).
-    total      = len(wav_data)
-    safe_name  = os.path.basename(filename)
+    # Pass ?dl=1 to force a file download instead of inline playback.
+    total         = len(wav_data)
+    safe_name     = os.path.basename(filename)
+    force_dl      = request.args.get("dl") == "1"
+    disposition   = (f'attachment; filename="{safe_name}"' if force_dl
+                     else f'inline; filename="{safe_name}"')
     range_hdr  = request.headers.get("Range", "")
     if range_hdr:
         import re as _re
@@ -16637,21 +16792,21 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
                 status=206,
                 mimetype="audio/wav",
                 headers={
-                    "Content-Range":  f"bytes {start}-{end}/{total}",
-                    "Accept-Ranges":  "bytes",
-                    "Content-Length": str(length),
-                    "Cache-Control":  "public, max-age=3600",
-                    "Content-Disposition": f'inline; filename="{safe_name}"',
+                    "Content-Range":       f"bytes {start}-{end}/{total}",
+                    "Accept-Ranges":       "bytes",
+                    "Content-Length":      str(length),
+                    "Cache-Control":       "public, max-age=3600",
+                    "Content-Disposition": disposition,
                 },
             )
     return Response(
         wav_data,
         mimetype="audio/wav",
         headers={
-            "Accept-Ranges":  "bytes",
-            "Content-Length": str(total),
-            "Cache-Control":  "public, max-age=3600",
-            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "Accept-Ranges":       "bytes",
+            "Content-Length":      str(total),
+            "Cache-Control":       "public, max-age=3600",
+            "Content-Disposition": disposition,
         },
     )
 
@@ -16771,6 +16926,16 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 .comp-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
 .comp-node-sel{background:#12305c;border:1px solid var(--bor);color:var(--tx);border-radius:8px;padding:5px 8px;font-size:12px;width:160px}
 .empty{text-align:center;padding:56px 0;color:var(--mu);font-size:15px}
+/* Chain live mini-player */
+#chain-mini-player{position:fixed;bottom:0;left:0;right:0;z-index:9999;background:linear-gradient(180deg,#0d2346 0%,#070f24 100%);border-top:2px solid #3b82f6;padding:10px 18px;display:none;align-items:center;gap:14px;box-shadow:0 -6px 28px rgba(0,0,0,.5);flex-wrap:wrap}
+#cmp-icon{font-size:20px;flex-shrink:0;animation:cmpPulse 1.4s ease-in-out infinite}
+@keyframes cmpPulse{0%,100%{opacity:1}50%{opacity:.45}}
+#cmp-info{min-width:0;flex:0 1 220px}
+#cmp-title{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--tx)}
+#cmp-sub{font-size:11px;color:var(--mu);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#cmp-audio{flex:1;min-width:200px;height:32px;accent-color:#3b82f6}
+#cmp-close{background:none;border:1px solid var(--bor);border-radius:6px;color:var(--mu);font-size:13px;cursor:pointer;padding:5px 12px;line-height:1;flex-shrink:0;white-space:nowrap}
+#cmp-close:hover{border-color:var(--al);color:var(--al)}
 </style></head><body>
 {{topnav('chains')|safe}}
 <main>
@@ -17364,8 +17529,22 @@ function refreshStatus(){
           fl.textContent='↳ Likely ad break — '+secs+' before fault alert';
         } else if(isPending){
           fl.textContent='↳ Fault detected — confirming ('+( remaining||'…')+'s remaining)';
+        } else if(chain.fault_node){
+          var fn=chain.fault_node;
+          if(fn.type==='stack'){
+            // Stack fault — label comes from the stack label or position number;
+            // site is derived from the silent sub-nodes (no top-level site field)
+            var stackLbl=fn.label&&fn.label!=='Stack'?fn.label
+              :('position '+((chain.fault_index!=null?chain.fault_index:0)+1));
+            var downSubs=(fn.nodes||[]).filter(function(s){
+              return s.status==='down'||s.status==='offline';});
+            var subNames=downSubs.map(function(s){return s.label||s.stream||'?';}).join(', ');
+            fl.textContent='↳ fault at '+stackLbl+(subNames?' ('+subNames+' silent)':'');
+          } else {
+            fl.textContent='↳ fault at '+fn.label+' ('+fn.site+')';
+          }
         } else {
-          fl.textContent=chain.fault_node?('↳ fault at '+chain.fault_node.label+' ('+chain.fault_node.site+')'):'';
+          fl.textContent='';
         }
       }
       if(visual){
@@ -17538,14 +17717,16 @@ function refreshStatus(){
 }
 // ── Click-to-listen ───────────────────────────────────────────────────────────
 // One hidden <audio> element shared across all nodes. Clicking a node bubble
-// starts/stops live audio — no visible player, just a pulsing blue ring.
-var _chainAudio = new Audio();
-_chainAudio.preload = 'none';
+// starts/stops live audio — routes through the bottom mini-player bar;
+// the clicked node keeps its pulsing blue ring while audio is playing.
 window._chainAudioEl = null;   // the .chain-node DOM element currently active
 
 function _stopListen(){
-  _chainAudio.pause();
-  _chainAudio.src = '';
+  var cmpAudio = document.getElementById('cmp-audio');
+  if(cmpAudio){ cmpAudio.pause(); cmpAudio.src = ''; }
+  var mp = document.getElementById('chain-mini-player');
+  if(mp) mp.style.display = 'none';
+  document.body.style.paddingBottom = '';
   if(window._chainAudioEl){
     window._chainAudioEl.classList.remove('listening');
     window._chainAudioEl = null;
@@ -17554,18 +17735,42 @@ function _stopListen(){
 
 function _startListen(nodeEl, url){
   _stopListen();
+  var mp     = document.getElementById('chain-mini-player');
+  var audio  = document.getElementById('cmp-audio');
+  var title  = document.getElementById('cmp-title');
+  var sub    = document.getElementById('cmp-sub');
+  if(!mp || !audio) return;
+  // Stream name from node label; site from node sub-label; chain from header
+  var streamName = (nodeEl.querySelector('.node-label')||{}).textContent || 'Live';
+  var siteName   = (nodeEl.querySelector('.node-sub')||{}).textContent   || '';
+  var chainCard  = nodeEl.closest('.chain-card');
+  var chainName  = chainCard ? (chainCard.querySelector('.chain-name')||{}).textContent || '' : '';
+  title.textContent = streamName;
+  sub.textContent   = (siteName ? siteName + (chainName ? ' · ' + chainName : '') : chainName);
+  audio.src  = url;
+  audio.type = 'audio/mpeg';
+  audio.load();
+  audio.play().catch(function(){ _stopListen(); });
+  mp.style.display = 'flex';
+  document.body.style.paddingBottom = '72px';
   window._chainAudioEl = nodeEl;
   nodeEl.classList.add('listening');
-  _chainAudio.src = url;
-  _chainAudio.play().catch(function(){
-    // Autoplay blocked — browser may require a prior user gesture;
-    // the click itself is a user gesture so this should rarely fire
-    _stopListen();
-  });
 }
 
-_chainAudio.addEventListener('ended', _stopListen);
-_chainAudio.addEventListener('error', _stopListen);
+// Wire ended/error on the DOM element (cannot do this until DOM is ready;
+// use event delegation via the document instead)
+document.addEventListener('DOMContentLoaded', function(){
+  var cmpAudio = document.getElementById('cmp-audio');
+  if(cmpAudio){
+    cmpAudio.addEventListener('ended', _stopListen);
+    cmpAudio.addEventListener('error', _stopListen);
+  }
+});
+
+// Close the chain mini-player from its own button
+document.addEventListener('click', function(e){
+  if(e.target.closest('#cmp-close')){ _stopListen(); }
+});
 
 // Delegated click handler — fires for any .chain-node with data-live-url
 document.getElementById('chains_list').addEventListener('click', function(e){
@@ -17593,10 +17798,10 @@ document.getElementById('chains_list').addEventListener('click', function(e){
   if(body.style.display==='none'){
     body.style.display='';
     if(arrow)arrow.innerHTML='&#9660;';
-    if(!body.dataset.loaded){
-      body.dataset.loaded='1';
-      body.innerHTML='<div style="color:var(--mu);font-size:11px;padding:4px 0">Loading\u2026</div>';
-      _f('/api/chains/'+encodeURIComponent(cid)+'/fault_log').then(function(r){return r.json();}).then(function(d){
+    // Always fetch fresh — clips are back-patched asynchronously after the
+    // fault fires, so a cached panel would show "No clips" until page reload.
+    body.innerHTML='<div style="color:var(--mu);font-size:11px;padding:4px 0">Loading\u2026</div>';
+    _f('/api/chains/'+encodeURIComponent(cid)+'/fault_log').then(function(r){return r.json();}).then(function(d){
         var entries=d.entries||[];
         if(!entries.length){body.innerHTML='<div class="flog-empty">No faults recorded yet.</div>';return;}
         var hasRtp=entries.some(function(ev){return ev.rtp_loss_pct!=null;});
@@ -17645,7 +17850,6 @@ document.getElementById('chains_list').addEventListener('click', function(e){
         html+='</tbody></table>';
         body.innerHTML=html;
       }).catch(function(){body.innerHTML='<div class="flog-empty">Error loading fault log.</div>';});
-    }
   } else {
     body.style.display='none';
     if(arrow)arrow.innerHTML='&#9658;';
@@ -17850,6 +18054,15 @@ function _esc(s){var d=document.createElement('div');d.textContent=s||'';return 
 
 refreshStatus();_liveTimer=setInterval(refreshStatus,5000);
 </script>
+<div id="chain-mini-player">
+  <div id="cmp-icon">🎧</div>
+  <div id="cmp-info">
+    <div id="cmp-title">—</div>
+    <div id="cmp-sub"></div>
+  </div>
+  <audio id="cmp-audio" controls preload="none"></audio>
+  <button id="cmp-close">⏹ Stop &amp; close</button>
+</div>
 </body></html>"""
 
 
@@ -18140,6 +18353,15 @@ def api_chains_history():
         except Exception:
             pass
 
+        def _hist_is_adbreak_stack(fi, nout):
+            """Return True if the faulted node is an all-silent stack with healthy downstream."""
+            if fi is None:
+                return False
+            _fn = nout[fi] if fi < len(nout) else None
+            if not (_fn and _fn.get("type") == "stack" and _fn.get("mode", "all") == "all"):
+                return False
+            return not any(n.get("status") == "down" for n in nout[fi + 1:])
+
         if _chain_state_val is not None:
             # ── Primary path: use persisted state ────────────────────────────
             if chain_status == "fault":
@@ -18149,6 +18371,10 @@ def api_chains_history():
                             and fault_idx is not None
                             and fault_idx < int(mixin_idx)
                             and nodes_out[int(mixin_idx)]["status"] not in ("down", "unknown")):
+                        adbreak_candidate = True
+                        display_status    = "adbreak"
+                    elif _hist_is_adbreak_stack(fault_idx, nodes_out):
+                        # "fault-if-ALL-silent" stack — treat as ad break candidate
                         adbreak_candidate = True
                         display_status    = "adbreak"
                     else:
@@ -18161,6 +18387,9 @@ def api_chains_history():
             if (mixin_idx is not None
                     and fault_idx < int(mixin_idx)
                     and nodes_out[int(mixin_idx)]["status"] not in ("down",)):
+                adbreak_candidate = True
+            # Secondary: fault-if-ALL-silent stack with healthy downstream
+            if not adbreak_candidate and _hist_is_adbreak_stack(fault_idx, nodes_out):
                 adbreak_candidate = True
 
             # Find which node is at fault to query its metric history
@@ -19175,17 +19404,37 @@ def api_mobile_reports_clip(clip_id: str):
 @app.get("/api/chains/<cid>/fault_log")
 @login_required
 def api_chains_fault_log(cid: str):
-    """Return the fault log for a chain from the SQLite DB (up to 100 most recent faults).
-    Engineer notes are merged into each entry that has one."""
+    """Return the fault log for a chain (up to 100 most recent faults).
+
+    Reads from the SQLite DB then overlays the in-memory _chain_fault_log for
+    any entries that are still in the recent window.  In-memory entries are
+    always fresher — clips are back-patched into them synchronously, whereas
+    the DB write may have a brief delay or may have failed transiently.
+    """
     entries = metrics_db.fault_log_load(cid, limit=100)
+
+    # Overlay in-memory entries so clips (and any other live state) are
+    # reflected immediately without waiting for the next DB flush.
+    if hub_server:
+        mem_entries = hub_server._chain_fault_log.get(cid, [])
+        if mem_entries:
+            mem_by_id = {e["id"]: e for e in mem_entries if e.get("id")}
+            for entry in entries:
+                fid = entry.get("id", "")
+                if fid and fid in mem_by_id:
+                    # Replace DB clips with the in-memory clips — these are
+                    # always at least as fresh and may have remote clips that
+                    # arrived after the last DB write.
+                    entry["clips"] = mem_by_id[fid].get("clips", entry.get("clips", []))
+
     notes = _load_chain_notes()
     if notes:
         for entry in entries:
             fid = entry.get("id", "")
             if fid and fid in notes:
-                entry["note"]      = notes[fid]["text"]
-                entry["note_by"]   = notes[fid]["by"]
-                entry["note_ts"]   = notes[fid]["ts"]
+                entry["note"]        = notes[fid]["text"]
+                entry["note_by"]     = notes[fid]["by"]
+                entry["note_ts"]     = notes[fid]["ts"]
                 entry["note_edited"] = notes[fid].get("edited_at")
     return jsonify({"entries": list(reversed(entries))})  # newest first
 
@@ -19634,7 +19883,18 @@ tr:hover td{background:#123764}
 .chain-row td{border-left:3px solid var(--al)}
 .level-bar{display:inline-block;width:60px;height:6px;background:var(--bor);border-radius:3px;vertical-align:middle;margin-left:4px}
 .level-fill{height:6px;border-radius:3px}
-audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
+/* Mini-player */
+#mini-player{position:fixed;bottom:0;left:0;right:0;z-index:9999;background:linear-gradient(180deg,#0d2346 0%,#070f24 100%);border-top:2px solid var(--acc);padding:10px 18px;display:none;align-items:center;gap:14px;box-shadow:0 -6px 28px rgba(0,0,0,.5);flex-wrap:wrap}
+#mp-info{min-width:0;flex:0 1 200px}
+#mp-title{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--tx)}
+#mp-sub{font-size:11px;color:var(--mu);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#mp-audio{flex:1;min-width:200px;height:32px;accent-color:var(--acc)}
+#mp-dl{color:var(--acc);font-size:12px;white-space:nowrap;text-decoration:none;background:#1e3a5f;border:1px solid var(--bor);border-radius:6px;padding:5px 12px;display:inline-flex;align-items:center;gap:4px}
+#mp-close{background:none;border:1px solid var(--bor);border-radius:6px;color:var(--mu);font-size:16px;cursor:pointer;padding:4px 9px;line-height:1;flex-shrink:0}
+#mp-close:hover{border-color:var(--al);color:var(--al)}
+.play-clip-btn{display:inline-flex;align-items:center;gap:5px;background:#17345f;border:1px solid var(--acc);border-radius:6px;color:var(--acc);font-size:11px;font-weight:600;cursor:pointer;padding:3px 9px;white-space:nowrap;line-height:1.4;transition:background .12s}
+.play-clip-btn:hover{background:#1e4a80}
+.play-clip-btn.mp-active{background:var(--acc);color:#fff;border-color:var(--acc)}
 .no-data{text-align:center;padding:48px;color:var(--mu)}
 .page-info{color:var(--mu);font-size:12px;margin-left:auto}
 .fb-wrap{display:flex;gap:4px;align-items:center;margin-top:5px;flex-wrap:wrap}
@@ -19714,7 +19974,7 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
         <th>Detail</th>
         <th style="width:75px">Level</th>
         <th style="width:70px">RTP Loss</th>
-        <th style="width:220px">Clip</th>
+        <th style="width:90px">Clip</th>
       </tr>
     </thead>
     <tbody id="evt_body">
@@ -19741,15 +20001,17 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
         {% else %}—{% endif %}
       </td>
       <td>
-        {% if e.clip and e._client_addr %}
+        {% if e.clip %}
         {% set clip_url = "/hub/site/" + (e._site|urlencode) + "/alerts/clip/" + (e.stream|urlencode) + "/" + e.clip %}
-        <div style="display:flex;align-items:center;gap:6px">
-          <audio controls preload="none" src="{{clip_url}}" style="height:28px;width:180px"></audio>
-          <a href="{{clip_url}}" download="{{e.clip}}" title="Download clip"
-             style="color:var(--acc);font-size:16px;line-height:1;text-decoration:none" aria-label="Download">⬇</a>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <button class="play-clip-btn"
+                  data-url="{{clip_url}}"
+                  data-title="{{e.stream or e._site}}"
+                  data-sub="{{e._site}} · {{e.ts}}"
+                  data-fname="{{e.clip}}">▶ Play</button>
+          <a href="{{clip_url}}?dl=1" download="{{e.clip}}" title="Download clip"
+             style="color:var(--mu);font-size:14px;text-decoration:none;line-height:1" aria-label="Download">⬇</a>
         </div>
-        {% elif e.clip %}
-        <span style="color:var(--mu);font-size:11px">clip on site (offline)</span>
         {% else %}<span style="color:var(--mu);font-size:11px">—</span>{% endif %}
         {% if e.type in ('AI_ALERT','AI_WARN') and e.id %}
         <div class="fb-wrap">
@@ -19884,7 +20146,77 @@ document.addEventListener('click',function(e){
   var btn=e.target.closest('.fb-btn[data-fb-id]');
   if(btn) sendHubFeedback(btn);
 });
+
+// ── Mini audio player ────────────────────────────────────────────────────────
+var _mpAudio   = null;
+var _mpActive  = null;   // currently highlighted play button
+
+function _closeMiniPlayer(){
+  var mp=document.getElementById('mini-player');
+  if(mp) mp.style.display='none';
+  if(_mpAudio){ _mpAudio.pause(); _mpAudio.src=''; }
+  if(_mpActive){ _mpActive.classList.remove('mp-active'); _mpActive=null; }
+  document.body.style.paddingBottom='';
+}
+
+document.addEventListener('click',function(e){
+  // Play button
+  var pb=e.target.closest('.play-clip-btn');
+  if(pb){
+    var mp=document.getElementById('mini-player');
+    if(!mp) return;
+    var url=pb.dataset.url||'';
+    var title=pb.dataset.title||'Clip';
+    var sub=pb.dataset.sub||'';
+    var fname=pb.dataset.fname||'clip.wav';
+    // Update info labels
+    document.getElementById('mp-title').textContent=title;
+    document.getElementById('mp-sub').textContent=sub;
+    // Set audio src
+    _mpAudio=document.getElementById('mp-audio');
+    _mpAudio.src=url;
+    // Update download link
+    var dl=document.getElementById('mp-dl');
+    dl.href=url+'?dl=1';
+    dl.download=fname;
+    // Show player
+    mp.style.display='flex';
+    document.body.style.paddingBottom='72px';
+    // Highlight active button
+    if(_mpActive) _mpActive.classList.remove('mp-active');
+    _mpActive=pb;
+    pb.classList.add('mp-active');
+    // Auto-play
+    _mpAudio.play().catch(function(){});
+    return;
+  }
+  // Close button
+  var cb=e.target.closest('#mp-close');
+  if(cb){ _closeMiniPlayer(); return; }
+});
+
+// When audio ends, remove active highlight from play button
+document.addEventListener('DOMContentLoaded',function(){
+  var audio=document.getElementById('mp-audio');
+  if(audio){
+    _mpAudio=audio;
+    audio.addEventListener('ended',function(){
+      if(_mpActive){ _mpActive.classList.remove('mp-active'); _mpActive=null; }
+    });
+  }
+});
 </script>
+
+<!-- Mini audio player — fixed bottom bar -->
+<div id="mini-player">
+  <div id="mp-info">
+    <div id="mp-title">—</div>
+    <div id="mp-sub"></div>
+  </div>
+  <audio id="mp-audio" controls preload="none"></audio>
+  <a id="mp-dl" href="#" download>⬇ Download</a>
+  <button id="mp-close" title="Close player">✕</button>
+</div>
 </body></html>"""
 
 # ─── Hub dashboard template ───────────────────────────────────────────────────
@@ -21354,6 +21686,16 @@ body.wall-mode .sc{min-height:260px}
 .rds-rt-scroll{display:inline-flex;align-items:center;white-space:nowrap;min-width:max-content;animation:rds-rt-marquee 14s linear infinite}
 .rds-rt-scroll span{display:inline-block;padding-right:2.5rem}
 @keyframes rds-rt-marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+/* Hub live mini-player */
+#hub-mini-player{position:fixed;bottom:0;left:0;right:0;z-index:9999;background:linear-gradient(180deg,#0d2346 0%,#070f24 100%);border-top:2px solid var(--acc);padding:10px 18px;display:none;align-items:center;gap:14px;box-shadow:0 -6px 28px rgba(0,0,0,.5);flex-wrap:wrap}
+#hmp-badge{background:#ef4444;color:#fff;font-size:10px;font-weight:800;letter-spacing:.06em;padding:3px 7px;border-radius:999px;flex-shrink:0;animation:livePulse 1.4s ease-in-out infinite}
+@keyframes livePulse{0%,100%{opacity:1}50%{opacity:.55}}
+#hmp-info{min-width:0;flex:0 1 200px}
+#hmp-title{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--tx)}
+#hmp-sub{font-size:11px;color:var(--mu);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#hmp-audio{flex:1;min-width:200px;height:32px;accent-color:var(--acc)}
+#hmp-close{background:none;border:1px solid var(--bor);border-radius:6px;color:var(--mu);font-size:13px;cursor:pointer;padding:5px 12px;line-height:1;flex-shrink:0;white-space:nowrap}
+#hmp-close:hover{border-color:var(--al);color:var(--al)}
 </style>
 <script nonce="{{csp_nonce()}}">
 function aiClass(s){return s.includes('ALERT')?'ai-al':s.includes('WARN')?'ai-wn':'ai-ok';}
@@ -21370,28 +21712,33 @@ function ago(s){if(s<5)return'just now';if(s<60)return s+'s ago';return Math.rou
 function toggleHist(id){const el=document.getElementById(id);el.classList.toggle('open');}
 var lastAlertState={};
 function playAlertSound(){try{new Audio('/static/alert.wav').play();}catch(e){}}
-let liveAudio={};
+var _hmpActive = null; // currently active Live button
+function _closeHubMiniPlayer(){
+  var mp=document.getElementById('hub-mini-player');
+  if(mp) mp.style.display='none';
+  var audio=document.getElementById('hmp-audio');
+  if(audio){audio.pause();audio.src='';}
+  if(_hmpActive){_hmpActive.textContent='▶ Live';_hmpActive.className='btn bp bs';_hmpActive=null;}
+  document.body.style.paddingBottom='';
+}
 function toggleLive(siteIdx,streamIdx,btn){
-  const key=siteIdx+'-'+streamIdx;
-  const audioId='audio-'+key;
-  let el=document.getElementById(audioId);
-  if(liveAudio[key]){
-    liveAudio[key]=false;
-    if(el){el.pause();el.src='';el.remove();}
-    btn.textContent='▶ Live';btn.className='btn bp';
-    return;
-  }
-  liveAudio[key]=true;
-  btn.textContent='⏹ Stop';btn.className='btn bg';
-  const url=btn.dataset.url;
-  if(!el){el=document.createElement('audio');el.id=audioId;el.controls=true;
-    el.autoplay=true;el.style.cssText='height:24px;flex:1;min-width:0;margin-top:4px';
-    btn.parentNode.appendChild(el);}
-  // Set type so browser knows codec before data arrives
-  el.type='audio/mpeg';
-  el.src=url;
-  el.load();
-  el.play().catch(()=>{});
+  // Tapping the active button again stops playback
+  if(_hmpActive===btn){_closeHubMiniPlayer();return;}
+  // Stop any previous stream
+  if(_hmpActive){_hmpActive.textContent='▶ Live';_hmpActive.className='btn bp bs';}
+  var mp=document.getElementById('hub-mini-player');
+  var audio=document.getElementById('hmp-audio');
+  if(!mp||!audio) return;
+  var url=btn.dataset.url;
+  var name=btn.dataset.name||('Stream '+streamIdx);
+  var site=btn.dataset.siteName||'';
+  document.getElementById('hmp-title').textContent=name;
+  document.getElementById('hmp-sub').textContent=site;
+  audio.src=url;audio.type='audio/mpeg';audio.load();audio.play().catch(function(){});
+  mp.style.display='flex';
+  document.body.style.paddingBottom='72px';
+  btn.textContent='⏹ Stop';btn.className='btn bd bs';
+  _hmpActive=btn;
 }// ── Hub AJAX refresh ──────────────────────────────────────────
 var _hubTimer = null;
 var _hubLastReload = 0; // epoch ms — guard against reload loops
@@ -21702,8 +22049,9 @@ function tickClock(){
   el.textContent=d.toLocaleTimeString();
 }
 
-// CSP-safe button wiring for hub listen buttons
+// CSP-safe button wiring for hub listen buttons + mini-player close
 document.addEventListener('click', function(e){
+  if(e.target.closest('#hmp-close')){ _closeHubMiniPlayer(); return; }
   var btn = e.target.closest('[data-action]');
   if(!btn) return;
   if(btn.dataset.action !== 'live') return;
@@ -22235,8 +22583,8 @@ setInterval(_loadTrends, 300000);
         {% set ci = s._client_idx if s._client_idx is not none else i %}
         <a class="btn bg bs" href="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/clip?seconds=10" download>⬇ Clip</a>
         <button class="btn bp bs" data-sidx="{{loop.index0}}" data-site="{{ci}}" data-action="live"
-          data-url="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/live">▶ Live</button>
-        <audio id="hlive_{{loop.index0}}_{{i}}" style="display:none;flex:1;min-width:0;height:24px" controls></audio>
+          data-url="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/live"
+          data-name="{{s.name}}" data-site-name="{{site.site}}">▶ Live</button>
       </div>
 
       {# Clip count badge #}
@@ -22370,6 +22718,15 @@ setInterval(_loadTrends, 300000);
 {% endfor %}
 </div>
 {% endif %}
+<div id="hub-mini-player">
+  <div id="hmp-badge">🔴 LIVE</div>
+  <div id="hmp-info">
+    <div id="hmp-title">—</div>
+    <div id="hmp-sub"></div>
+  </div>
+  <audio id="hmp-audio" controls preload="none"></audio>
+  <button id="hmp-close">⏹ Stop &amp; close</button>
+</div>
 </main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
 
 # ─── Error handlers ──────────────────────────────────────────────────────────

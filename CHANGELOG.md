@@ -2,6 +2,69 @@
 
 ---
 
+## [3.2.78] - 2026-03-23
+
+### Fixed
+- **Mobile API settings Save button missing** — the APNs / Mobile API settings panel had no Save button, so changes to APNs Key ID, Team ID, Bundle ID, `.p8` private key, and the sandbox toggle were never persisted. Save button added to the panel footer, matching the style used by all other settings panels.
+
+---
+
+## [3.2.77] - 2026-03-23
+
+### Added
+- **Broadcast Chains click-to-listen mini-player** — clicking a live-enabled node on the Broadcast Chains page now opens a sticky mini-player bar fixed at the bottom of the viewport (stream name, site · chain name label, native audio controls, ⏹ Stop & close button). The active node displays a pulsing blue ring while audio is playing. Clicking the same node again or pressing Stop & close stops playback and hides the bar. Consistent with the mini-player introduced on the Hub and Hub Reports pages.
+
+---
+
+## [3.2.76] - 2026-03-23
+
+### Fixed
+- **Chain false faults and incorrect badge during ad breaks (no mixin node)** — two compounding bugs affected chains using a "fault if ALL silent" stack without a configured mix-in node:
+  1. **Warmup backdating** — on service restart, the fault confirmation window was immediately backdated (`since = now − min_fault_secs`), so CHAIN_FAULT fired on the very first evaluation during an ongoing ad break. The "fault-if-ALL-silent" stack with healthy downstream nodes is now treated as `adbreak_candidate`, giving it a fresh window instead.
+  2. **Badge showed "CHECKING…" instead of "AD BREAK"** — same root cause: `adbreak_candidate = False` meant the display status was `"pending"` not `"adbreak"`, so the informative countdown badge never appeared. Both paths (live eval and historical reconstruction) are fixed.
+
+---
+
+## [3.2.75] - 2026-03-23
+
+### Added
+- **Hub page Live button mini-player** — replaced the inline `<audio>` element that was appended next to each ▶ Live button (causing layout overflow) with the same sticky mini-player bar used on Hub Reports. Clicking ▶ Live opens a fixed bottom bar showing stream name, site, a pulsing 🔴 LIVE badge, native audio controls, and an ⏹ Stop & close button. Tapping the same Live button again also stops playback. Switching to a second stream stops the first automatically.
+
+---
+
+## [3.2.74] - 2026-03-23
+
+### Fixed
+- **AI-triggered clips saved at global duration (5 s) instead of per-input configured duration** — all six `analyse_chunk` call sites were passing `self.app_cfg.alert_wav_duration` (the global AppConfig default, 5.0 s) rather than `cfg.alert_wav_duration` (the per-input InputConfig value, user-configurable). Silence clips were unaffected as they used the per-input value directly. All call sites corrected; the local cached variable in the sound-device handler that also shadowed the per-input value has been removed.
+
+---
+
+## [3.2.73] - 2026-03-23
+
+### Added
+- **Hub Reports mini-player** — replaced the wide in-table audio player with a compact ▶ Play button. Clicking opens a sticky mini-player bar fixed at the bottom of the page (stream name, timestamp, native audio controls, ⬇ Download, ✕ close). The Clips table column shrinks from 220 px to 90 px, eliminating horizontal overflow on narrower screens.
+
+---
+
+## [3.2.72] - 2026-03-23
+
+### Fixed
+- **Remote node clips silently dropped on hub restart** — comprehensive logging added throughout the clip upload path (`push_pending_command`, `_cmd_save_clip`, `_upload_clip`, `hub_clip_upload`) so all failures are visible in the hub log. Root cause: a duplicate `_append_fault_log_entry` method (defined twice in the class) meant Python used only the last definition, which lacked the stack-aware label/site/stream logic from `_create_fault_log_entry`. The duplicate has been removed; the single remaining method delegates correctly. Also: improved fallback in `hub_clip_upload` when `flog` is empty after a hub restart.
+
+---
+
+## [3.2.71] - 2026-03-22
+
+### Fixed
+- **Chain fault history "No clips" for remote node clips** — three bugs combined to prevent audio clips uploaded by remote client sites from appearing in the chain fault history panel:
+  1. `HubServer._load_fault_log_from_db()` is called from `__init__` before `monitor` (MonitorManager) is initialised, causing a silent `NameError` that left `_chain_fault_log` empty after every restart. A second deferred call is now made immediately after `monitor` is created so the in-memory fault log is always fully restored from SQLite.
+  2. SQLite databases created before the `clips` column was added to `chain_fault_log` would silently fail all clip insert/update/read operations. `MetricsDB._init_db()` now runs an `ALTER TABLE … ADD COLUMN clips TEXT` migration on startup; the `OperationalError` raised when the column already exists is caught and ignored.
+  3. If the hub restarted between a fault firing and a remote clip arriving, `_chain_fault_log` was empty even for the faulted chain, so the clip back-patch was silently skipped. The back-patch code now falls back to a direct DB read/update in this case so clips are always recorded regardless of in-memory state.
+- **Clip back-patch fallback when entry_id not matched** — if an older client site sends a clip upload without a matching `entry_id` (e.g. the hub's ring-buffer evicted the entry), the code now logs a warning and falls back to the most recent fault log entry rather than silently dropping the clip.
+- Added detailed server-log messages for all clip back-patch paths (success, fallback, skip) to aid future debugging.
+
+---
+
 ## [3.2.67] - 2026-03-22
 
 ### Added

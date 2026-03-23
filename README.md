@@ -100,7 +100,7 @@ The dashboard shows a card for each monitored stream. Each card displays:
 - Trend badge when level is notably above or below the expected range
 - 24-hour availability timeline bar
 - Alert/warning status strip on the card border
-- Listen button for live audio in the browser
+- Listen button for live audio in the browser — opens a sticky mini-player bar at the bottom of the page
 
 Cards are drag-to-reorder. Alert cards sort to the top automatically.
 
@@ -332,7 +332,7 @@ Add correlation comparators between any two positions to measure how well the si
 
 ### Click-to-Listen
 
-Click any node bubble on the Broadcast Chains page to start live audio monitoring from that point. A pulsing blue ring indicates the active node. Click again to stop, or click a different node to switch. Stack sub-nodes each have their own listen URL.
+Click any node bubble on the Broadcast Chains page to start live audio monitoring from that point. A sticky mini-player bar appears at the bottom of the viewport showing the stream name, site, chain name, native audio controls, and an ⏹ Stop & close button. A pulsing blue ring on the node indicates the active stream. Click the same node again, click a different node (switching streams automatically), or press Stop & close to end playback. Stack sub-nodes each have their own listen URL.
 
 ### Chain Fault Alerts
 
@@ -395,7 +395,7 @@ Hub Reports shows a consolidated alert timeline across all sites, with:
 
 - Summary cards for each alert type with click-to-filter
 - Chain column showing which broadcast chain each event belongs to
-- Audio clip playback and download for all alert snippets (clips are auto-downloaded from clients as they are created and served locally by the hub — no dependency on the client being online at playback time)
+- Audio clip playback via a sticky mini-player bar (stream name, timestamp, native audio controls, ⬇ Download, ✕ close) — clips are auto-downloaded from clients as they are created and served locally by the hub, so playback has no dependency on the client being online
 - SLA data per stream
 - 👍 / 👎 AI feedback buttons on every `AI_ALERT` / `AI_WARN` row — labels are forwarded to the originating client so its model retrains without requiring direct access to that node
 
@@ -430,6 +430,30 @@ flowchart LR
 Each client monitors local RF or IP audio sources and reports status, metadata, and alert data to the hub via HMAC-signed, AES-256-GCM encrypted heartbeats. The hub issues commands back to clients on heartbeat ACKs.
 
 In hub mode, the hub accumulates metric history for all remote sites from heartbeat data — a hub-only machine with no local streams still builds full signal history charts for all connected sites.
+
+---
+
+## Mobile API & iOS App
+
+SignalScope includes a mobile API (`/api/mobile/*`) for companion iOS app integration.
+
+### Authentication
+
+All mobile API endpoints require a Bearer token (or `X-API-Key` header / `?token=` query parameter). Generate or rotate the token in **Settings → Mobile API**.
+
+### Push Notifications (APNs)
+
+Configure push notifications in **Settings → Mobile API → Push Notifications**:
+
+| Field | Description |
+|---|---|
+| **APNs Key ID** | 10-character key ID from your Apple Developer account |
+| **Team ID** | 10-character Apple Developer Team ID |
+| **Bundle ID** | App bundle identifier (e.g. `com.example.SignalScope`) |
+| **APNs `.p8` Private Key** | Full contents of the downloaded `.p8` key file |
+| **Sandbox mode** | Enable for development/Xcode builds; disable for TestFlight and App Store |
+
+Device tokens are registered automatically by the iOS app on first launch. Multiple tokens are stored with their environment flag (sandbox/production) so each device receives pushes from the correct APNs endpoint. Push notifications are sent for `CHAIN_FAULT`, `SILENCE`, and other configured alert types.
 
 ---
 
