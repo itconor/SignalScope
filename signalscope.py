@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.2.93"
+BUILD                  = "SignalScope-3.2.94"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -17024,8 +17024,7 @@ def hub_scanner_page():
             for sname, sdata in sorted(hub_server._sites.items()):
                 if sdata.get("approved", True) and not sdata.get("blocked"):
                     sites.append({"name": sname, "online": bool(sdata.get("online"))})
-    return render_template_string(HUB_SCANNER_TPL, sites=sites,
-                                  build=BUILD, csp_nonce=g.csp_nonce)
+    return render_template_string(HUB_SCANNER_TPL, sites=sites, build=BUILD)
 
 
 @app.get("/api/hub/scanner/devices/<path:site_name>")
@@ -22109,7 +22108,7 @@ HUB_SCANNER_TPL = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FM Scanner — SignalScope</title>
-<style>
+<style nonce="{{csp_nonce()}}">
 :root{--bg:#080d18;--card:#0d1526;--bor:#1e3050;--tx:#c8d8f0;--mu:#4a6a8a;--ok:#22c55e;--al:#ef4444;--bl:#3b82f6;--lcd:#00e5ff;--lcd-dim:#004060}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column}
@@ -22223,7 +22222,7 @@ input:focus,select:focus{border-color:var(--bl)}
   </div>
 </div>
 
-<script nonce="{{csp_nonce}}">
+<script nonce="{{csp_nonce()}}">
 (function(){
 'use strict';
 var siteSel   = document.getElementById('site-sel');
