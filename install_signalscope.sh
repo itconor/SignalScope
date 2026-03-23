@@ -1011,15 +1011,15 @@ main() {
   info "Install SDR: $([[ "${ENABLE_SDR}" == "1" ]] && echo yes || echo no)"
   info "Install nginx: $([[ "${ENABLE_NGINX}" == "1" ]] && echo yes || echo no)"
   if [[ "${IS_UPDATE}" -ne 1 ]]; then
-    info "UDP tuning: $([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo "Livewire/AES67 (4× buffers, 2 GB)" || echo "standard")"
+    info "UDP tuning: $([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo "Livewire/AES67 (1.5 GB socket buffers)" || echo "standard")"
   else
     # On updates the tuning block is skipped — report what is currently live on disk.
     _sysctl_conf="/etc/sysctl.d/99-signalscope-network.conf"
     if [[ -f "${_sysctl_conf}" ]]; then
       if grep -q "Livewire" "${_sysctl_conf}" 2>/dev/null; then
-        info "UDP tuning: Livewire/AES67 profile already applied (re-run with --livewire --retune to upgrade to 4× buffers)"
+        info "UDP tuning: Livewire/AES67 profile already applied (re-run with --livewire --retune to reapply)"
       else
-        info "UDP tuning: standard profile already applied (re-run with --livewire --retune to switch to Livewire/AES67 4× buffers)"
+        info "UDP tuning: standard profile already applied (re-run with --livewire --retune to switch to Livewire/AES67)"
       fi
     else
       info "UDP tuning: not yet applied (run a fresh install or use --livewire --force)"
@@ -1205,16 +1205,18 @@ PYEOF
     # 1 ms packet bursts across many simultaneous streams without kernel-side drops.
     # Values are just per-socket maximums — the kernel lazy-allocates; no RAM is
     # consumed until a socket actually fills its buffer.
+    # Kernel stores rmem/wmem as signed int — hard ceiling is INT_MAX (2^31-1 = 2147483647).
+    # net.ipv4.udp_rmem_min / udp_wmem_min were added in kernel 4.15; skip gracefully on older kernels.
     if [[ "${ENABLE_LIVEWIRE}" == "1" ]]; then
-      _rmem_max=2147483648   # 2 GB  (4 × 512 MB)
-      _rmem_def=2147483648
-      _wmem_max=2147483648
-      _wmem_def=2147483648
-      _udp_rmin=4194304      # 4 MB  (4 × 1 MB)
+      _rmem_max=1610612736   # 1.5 GB  (safe headroom below INT_MAX)
+      _rmem_def=1610612736
+      _wmem_max=1610612736
+      _wmem_def=1610612736
+      _udp_rmin=4194304      # 4 MB
       _udp_wmin=4194304
-      _backlog=3000000       # 4 × 750000
-      _optmem=262144         # 4 × 65536
-      ok "Livewire/AES67 mode: applying 4× UDP buffer sizes (2 GB socket buffers)"
+      _backlog=3000000
+      _optmem=262144
+      ok "Livewire/AES67 mode: applying large UDP buffer sizes (1.5 GB socket buffers)"
     else
       _rmem_max=536870912    # 512 MB
       _rmem_def=536870912
@@ -1228,16 +1230,21 @@ PYEOF
     fi
 
     ${SUDO} tee /etc/sysctl.d/99-signalscope-network.conf > /dev/null <<EOF
-# SignalScope network tuning$([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo " — Livewire/AES67 profile (4× buffers)" || echo " — standard profile")
+# SignalScope network tuning$([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo " — Livewire/AES67 profile" || echo " — standard profile")
 net.core.rmem_max=${_rmem_max}
 net.core.rmem_default=${_rmem_def}
 net.core.wmem_max=${_wmem_max}
 net.core.wmem_default=${_wmem_def}
-net.ipv4.udp_rmem_min=${_udp_rmin}
-net.ipv4.udp_wmem_min=${_udp_wmin}
 net.core.netdev_max_backlog=${_backlog}
 net.core.optmem_max=${_optmem}
 EOF
+    # udp_rmem_min / udp_wmem_min only exist on kernel ≥ 4.15 — apply individually and ignore EINVAL
+    ${SUDO} sysctl -w net.ipv4.udp_rmem_min="${_udp_rmin}" 2>/dev/null \
+      && echo "net.ipv4.udp_rmem_min=${_udp_rmin}" | ${SUDO} tee -a /etc/sysctl.d/99-signalscope-network.conf >/dev/null \
+      || warn "net.ipv4.udp_rmem_min not supported on this kernel — skipping"
+    ${SUDO} sysctl -w net.ipv4.udp_wmem_min="${_udp_wmin}" 2>/dev/null \
+      && echo "net.ipv4.udp_wmem_min=${_udp_wmin}" | ${SUDO} tee -a /etc/sysctl.d/99-signalscope-network.conf >/dev/null \
+      || warn "net.ipv4.udp_wmem_min not supported on this kernel — skipping"
     ${SUDO} sysctl --system >/dev/null || true
     ok "Network tuning applied live (no reboot needed)"
 
