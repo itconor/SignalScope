@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.6"
+BUILD                  = "SignalScope-3.3.9"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -5225,6 +5225,20 @@ class MonitorManager:
                     if not line:
                         continue
                     lower = line.lower()
+                    # Suppress high-frequency welle-cli noise that appears on
+                    # every OFDM sync cycle under marginal signal conditions.
+                    # These are normal and do not indicate a broken stream:
+                    #  SyncOnPhase failed    — OFDM carrier-phase jitter
+                    #  SyncOnEndNull failed  — null-symbol timing missed
+                    #  Failed to send audio for — HTTP push when no consumer
+                    #  Removing mp3 sender   — welle-cli housekeeping on drop
+                    if (
+                        "synconphase failed"    in lower or
+                        "syncOnEndNull failed".lower() in lower or
+                        "failed to send audio for" in lower or
+                        "removing mp3 sender"   in lower
+                    ):
+                        continue
                     if "error" in lower or "failed" in lower or "pll not locked" in lower:
                         self.log(f"[DAB {session.channel}] {line}")
                     if any(marker in lower for marker in fatal_markers):
@@ -5408,9 +5422,6 @@ class MonitorManager:
             cfg._dab_ok = False
             return
 
-        # Force a fresh device scan — never use a cached index from a previous
-        # run where USB re-enumeration may have reordered dongles.
-        sdr_manager.scan(force=True)
         device_idx = 0
         if serial:
             try:
@@ -5826,9 +5837,6 @@ class MonitorManager:
                 if dev.serial == serial:
                     ppm = dev.ppm; break
 
-        # Claim the dongle — force a fresh scan so we never use a cached index
-        # from a previous run where USB re-enumeration may have reordered devices.
-        sdr_manager.scan(force=True)
         device_idx = 0
         lease      = None
         if serial:
