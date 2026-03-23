@@ -52,6 +52,7 @@ A PowerShell installer (`install_signalscope_windows.ps1`) is included for Windo
 | Category | What SignalScope does |
 |---|---|
 | **Inputs** | FM via RTL-SDR, DAB via RTL-SDR, Livewire/AES67 (RTP multicast), HTTP/HTTPS audio streams, local ALSA/PulseAudio devices |
+| **FM Scanner** ⚠ | On-demand FM frequency tuning via RTL-SDR with live browser audio; hub scanner page (`/hub/scanner`); **early-stage feature** — audio streaming reliability is under active development |
 | **Level & loudness** | dBFS level, LUFS Momentary/Short-term/Integrated (EBU R128), true peak |
 | **Metadata** | RDS PS name, RDS RadioText, DAB service name, DAB DLS now-playing text, DAB ensemble/mode/bitrate/SNR |
 | **Rule alerts** | Silence, clipping, hiss, LUFS true peak, LUFS integrated loudness |
@@ -120,12 +121,24 @@ Cards are drag-to-reorder. Alert cards sort to the top automatically.
 | HTTP/HTTPS audio stream | Full URL | `http://relay.example.com:8000/stream` |
 | Local sound device | `sound://<device_index>` | `sound://2` |
 
+### SDR Dongle Assignment
+
+FM and DAB inputs require an **explicitly assigned RTL-SDR dongle serial**. Before adding an FM or DAB input:
+
+1. Connect your RTL-SDR dongle(s) and go to **Settings → SDR Devices**
+2. Click **Scan** — detected dongles are listed with their serial numbers
+3. Assign a **Role** to each dongle (`fm`, `dab`, or `none` for general use)
+4. Save
+
+When adding an FM or DAB input, the dongle dropdown only shows devices assigned a compatible role. If no dongle is selected, the form will not submit. Inputs that are missing a dongle assignment will log "no dongle configured" and will not start monitoring until edited and a dongle is assigned.
+
 ### Adding FM Sources
 
 1. In the Add Input form, select **FM**
 2. Enter the frequency in MHz as the device address
-3. Optionally specify a dongle serial number (if you have multiple RTL-SDR dongles) and PPM calibration offset
-4. Save — SignalScope starts the RTL-SDR receiver and will begin reporting level, carrier strength, and RDS data
+3. Select the RTL-SDR dongle to use from the **Dongle** dropdown (register dongles in Settings → SDR Devices first)
+4. Optionally set a PPM calibration offset
+5. Save — SignalScope starts the RTL-SDR receiver and will begin reporting level, carrier strength, and RDS data
 
 ### Adding DAB Sources
 
@@ -143,6 +156,29 @@ Enter the multicast RTP address and port as the device address. SignalScope join
 ### Adding Local Sound Devices
 
 Select **Local Sound Device** — a drop-down is populated from the OS device list via `/api/sound_devices`. Select a device (microphone, line-in, USB audio, loopback) and save. The device index is stored as `sound://<index>`.
+
+---
+
+## FM Scanner ⚠ Early Stage
+
+The FM Scanner (`/hub/scanner`) lets you tune any FM frequency on demand using an RTL-SDR dongle and listen to live audio in the browser — without permanently adding the frequency as a monitored input. It is useful for quick spot-checks of a frequency or for confirming RF coverage before adding a full monitored input.
+
+> **⚠ Experimental**: The FM Scanner audio streaming pipeline is at an early stage of development. Audio quality and reliability are under active improvement. The pipeline routes `rtl_fm → ffmpeg → hub relay → browser` and involves timing-sensitive inter-process pipe synchronisation that may produce artefacts, drop-outs, or speed variations on some hardware or network configurations.
+
+### Using the FM Scanner
+
+1. On the Hub page, click **🔍 Scanner**
+2. Enter an FM frequency in MHz
+3. Click **Tune** — audio begins streaming to the browser mini-player after a 1–3 second start-up delay
+
+The scanner releases the RTL-SDR dongle automatically when the session ends or the page is closed.
+
+### Known Limitations (Early Stage)
+
+- Audio may stutter, drop out, or run at slightly incorrect speed depending on hardware and system load
+- End-to-end latency is typically 1–3 seconds from RF to browser
+- Only one active scanner session per dongle; attempting to open a second session on the same dongle will fail silently
+- The RTL-SDR dongle used for scanning must be registered in **Settings → SDR Devices** with a role of `fm` or `none`
 
 ---
 

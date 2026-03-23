@@ -2,20 +2,28 @@
 
 ---
 
+## [3.3.18] - 2026-03-23
+
+### Fixed
+- **FM Scanner pacing clock was never firing** — 3.3.17 initialised `_next = time.monotonic()` when the relay generator was created. The client (rtl_fm startup + ffmpeg init) typically takes 1-3 s to produce the first chunk. By then `_next` was 1-3 s in the past, `_slack` was permanently negative, and `time.sleep()` was never called — pacing was completely bypassed. Fix: lazy-init `_next` on the first chunk only (`_next = time.monotonic() + chunk_duration`), yield the first chunk immediately to minimise latency, then pace all subsequent chunks from that baseline.
+- **FM Scanner audio dropout ("drops for a while then comes back")** — the relay generator called `slot.get(timeout=2.0)`, so any gap in client POSTs longer than 2 s caused a `queue.Empty` that the browser experienced as silence. 500 ms chunks posted every 500 ms left no tolerance for any POST latency spike. Fixed by reducing the client chunk size from 500 ms to 100 ms (`_bitrate_kbps * 1000 // 8 // 10`), giving 10 POSTs per second. The relay `slot.get()` timeout is reduced to 0.5 s to match.
+
+> **Note**: The FM Scanner (`/hub/scanner`) is at an early stage of development as of this release. The real-time audio pipeline (`rtl_fm → ffmpeg → hub relay → browser`) has had several pacing and buffering fixes applied through 3.3.15–3.3.18. Further stability improvements may be needed. See README for known limitations.
+
 ## [3.3.17] - 2026-03-23
 
 ### Fixed
-- **FM Scanner audio super fast and glitchy** — the root cause was never in the client pipeline (rtl_fm → ffmpeg → POST). The hub relay generator (`_hub_stream_relay_response`) yields chunks from the slot queue as fast as they arrive, with zero pacing. The client can produce and POST chunks faster than real-time (USB startup buffer, CPU encoding headroom, network jitter), so the hub queue fills ahead of schedule and the browser receives audio data significantly faster than 1×. Chrome's `<audio>` element detects the large buffer and accelerates playback to drain it — audio sounds "fast". Fix: for scanner slots the relay generator now maintains a `next_send` pacing clock seeded from `slot.bitrate`. After getting each chunk from the queue it advances the clock by `len(chunk) / bytes_per_second`, then sleeps any positive slack before yielding — exactly the same mechanism `stream_live` uses for local streams. The client push loop is reverted to the simple direct-pipe (rtl_fm → ffmpeg with no Python thread between them) plus a small byte-accumulator that assembles complete 500 ms chunks before POSTing. All other relay slot kinds (live, WAV) are unaffected.
+- **FM Scanner audio running super fast** — identified root cause as lazy-clock initialisation bug in hub relay pacing (corrected in 3.3.18). Client pipeline reverted to direct OS pipe (`rtl_fm → ffmpeg`) in this version; PCM piper thread from 3.3.16 removed as it worsened the problem. Hub relay pacing added here but initialised incorrectly.
 
 ## [3.3.16] - 2026-03-23
 
 ### Fixed
-- **FM Scanner audio glitching** — superseded by 3.3.17. The PCM piper thread approach caused different issues.
+- **FM Scanner audio glitching** *(superseded by 3.3.17/3.3.18)* — attempted to pace audio at the PCM input side by interposing a Python thread between `rtl_fm` stdout and `ffmpeg` stdin. Caused bursty output and worsened glitching; approach abandoned.
 
 ## [3.3.15] - 2026-03-23
 
 ### Fixed
-- **FM Scanner audio sped up** — superseded by 3.3.17. Sleeping between reads caused backpressure.
+- **FM Scanner audio sped up and eventually dies** *(superseded by 3.3.17/3.3.18)* — attempted to add a `time.sleep()` between `ff_proc.stdout.read()` calls to pace output. This stalled ffmpeg's output pipe, which stalled ffmpeg reading from `rtl_fm`, which caused rtl_fm to drop USB samples. Root cause was on the hub relay side, not the push loop.
 
 ---
 
