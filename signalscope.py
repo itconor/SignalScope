@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.46"
+BUILD                  = "SignalScope-3.3.47"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -22959,18 +22959,7 @@ function connectAudio(url){
       _reader = resp.body.getReader();
       (function pump(){
         _reader.read().then(function(r){
-          if(!_reader) return;          // disconnected intentionally
-          if(r.done){
-            // Stream ended — if we're still supposed to be playing, reconnect.
-            // Safari is more aggressive than Chrome at closing idle chunked
-            // streams; the status poll will supply a fresh stream_url.
-            if(_state === 'streaming' || _state === 'connecting'){
-              _reader = null;
-              _slotId = '';             // force connectAudio on next poll
-              checkStatus();
-            }
-            return;
-          }
+          if(r.done || !_reader) return;
           _feedPCM(r.value);
           pump();
         }).catch(function(){
