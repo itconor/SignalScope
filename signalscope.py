@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.68"
+BUILD                  = "SignalScope-3.3.69"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8980,6 +8980,10 @@ class HubClient:
         # Separate queue for redsea stdin so blocking pipe writes never stall
         # the audio pipeline.  Maxsize=5 (≈0.5 s) — drop oldest on overflow.
         rds_feed_q: queue.Queue = queue.Queue(maxsize=5)
+        # Level computation queue: pipeline drops latest block here; a dedicated
+        # thread does the numpy RMS off the hot audio path.  maxsize=1 so that
+        # if the level thread falls behind, old blocks are simply skipped.
+        level_q: queue.Queue = queue.Queue(maxsize=1)
 
         # Pre-warm scipy/numpy so the first resample_poly call in _pipeline
         # has no JIT/import overhead (avoids a 200-500 ms gap that could cause
@@ -9064,19 +9068,11 @@ class HubClient:
                                 aud_out = rs.clip(-32768, 32767).astype('<i2').tobytes()
                             else:
                                 aud_out = blk
-                        # Compute RMS signal level from audio block (every ~1s = 10 blocks)
+                        # Feed level computer thread every ~1 s (10 blocks).
+                        # Drop-if-full so the pipeline is never blocked.
                         if count % 10 == 0:
-                            try:
-                                import numpy as _npl
-                                import math as _math
-                                _s = _npl.frombuffer(aud_out, dtype='<i2').astype(_npl.float32)
-                                _rms = float(_npl.sqrt(_npl.mean(_s ** 2)))
-                                _lvl = round(20 * _math.log10(_rms / 32768) if _rms > 0.5 else -96.0, 1)
-                                _cur = self._get_scanner_rds()
-                                _cur["_level"] = _lvl
-                                self._set_scanner_rds(_cur)
-                            except Exception:
-                                pass
+                            try: level_q.put_nowait(aud_out)
+                            except queue.Full: pass
                         try:
                             pcm_queue.put(aud_out, timeout=1.0)
                         except queue.Full:
@@ -9086,6 +9082,31 @@ class HubClient:
 
         threading.Thread(target=_pipeline, daemon=True,
                          name=f"ScanPipe-{slot_id[:6]}").start()
+
+        def _level_computer():
+            """Drain level_q, compute RMS dBFS, write to scanner RDS dict.
+
+            Runs off the pipeline thread so numpy work never stalls audio delivery.
+            """
+            import numpy as _nplc
+            import math  as _mathc
+            while not stop_flag.is_set():
+                try:
+                    blk = level_q.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                try:
+                    _s   = _nplc.frombuffer(blk, dtype='<i2').astype(_nplc.float32)
+                    _rms = float(_nplc.sqrt(_nplc.mean(_s ** 2)))
+                    _lvl = round(20 * _mathc.log10(_rms / 32768) if _rms > 0.5 else -96.0, 1)
+                    _cur = self._get_scanner_rds()
+                    _cur["_level"] = _lvl
+                    self._set_scanner_rds(_cur)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_level_computer, daemon=True,
+                         name=f"ScanLvl-{slot_id[:6]}").start()
 
         def _rds_reader():
             """Parse redsea JSON lines and update scanner RDS state.
@@ -9128,9 +9149,12 @@ class HubClient:
                     if ct:  upd["ct"]  = ct
                     if isinstance(af, list) and af:
                         upd["af"] = [round(float(f), 2) for f in af[:20]]
+                    # Read current RDS state once — used for PS/RT guards and final update
+                    if ps or rt or upd:
+                        cur = self._get_scanner_rds()
                     # ── Stabilise PS ──────────────────────────────────────────────
                     if ps:
-                        cur_ps = (self._get_scanner_rds().get("ps") or "").strip()
+                        cur_ps = (cur.get("ps") or "").strip()
                         # Don't let a shorter partial overwrite a confirmed longer name
                         if not (cur_ps and len(ps) < len(cur_ps)):
                             _ps_hist.append(ps)
@@ -9140,7 +9164,7 @@ class HubClient:
                                 upd["ps"] = stable_ps
                     # ── Stabilise RadioText ───────────────────────────────────────
                     if rt:
-                        cur_rt = (self._get_scanner_rds().get("rt") or "").strip()
+                        cur_rt = (cur.get("rt") or "").strip()
                         if not (cur_rt and len(rt) < max(8, len(cur_rt) // 2)):
                             _rt_hist.append(rt)
                             _rt_hist[:] = _rt_hist[-10:]
@@ -9148,7 +9172,6 @@ class HubClient:
                             if cnt >= 2 or len(stable_rt) >= 12:
                                 upd["rt"] = stable_rt
                     if upd:
-                        cur = self._get_scanner_rds()
                         cur.update(upd)
                         self._set_scanner_rds(cur)
                 except Exception:
@@ -9161,7 +9184,12 @@ class HubClient:
         # Main loop: dequeue blocks and POST at real-time rate.
         # The queue fills at hardware rate (~0.1 s/block); the deadline clock
         # absorbs POST network latency without risking any burst reaching the hub.
-        out_deadline = time.monotonic()
+        # out_deadline is initialised to None and set on the FIRST dequeue so that
+        # the _SKIP=15 silence blocks flushed during pipeline warm-up (~1.5 s) do
+        # not push the deadline 1.5 s into the past, which would cause a burst of
+        # 15 blocks being sent immediately and schedule 1.5 s of audio ahead in
+        # the browser (perceived as "slow" / high-latency audio).
+        out_deadline: float | None = None
         fails = 0
         try:
             while True:
@@ -9171,6 +9199,8 @@ class HubClient:
                     if stop_flag.is_set():
                         break
                     continue
+                if out_deadline is None:
+                    out_deadline = time.monotonic()
                 slack = out_deadline - time.monotonic()
                 if slack > 0.001:
                     time.sleep(slack)

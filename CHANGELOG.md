@@ -2,6 +2,14 @@
 
 ---
 
+## [3.3.69] - 2026-03-24
+
+### Fixed
+- **FM Scanner — audio slow / glitchy every ~0.5 s** — three causes fixed:
+  1. **`out_deadline` burst on startup** — the relay deadline clock was initialised to `time.monotonic()` before the loop started, but the pipeline discards the first 15 blocks (~1.5 s of silence) before putting real audio into the queue. When the first real block arrived, the deadline was already 1.5 s in the past, causing 15 blocks to be sent in a rapid burst. The browser then scheduled 1.5 s of audio in advance, creating persistently high latency. Fixed by deferring `out_deadline` initialisation to the moment the first block is actually dequeued.
+  2. **Numpy RMS on the pipeline thread** — signal level was computed inline in `_pipeline` (numpy `frombuffer` + `mean` + `sqrt` + two `_scanner_rds_lock` acquisitions) every 10 blocks. This work on the hot audio path introduced intermittent stalls. Moved to a dedicated `_level_computer` daemon thread that drains a `level_q` (maxsize=1, drops if behind) so the pipeline thread is never blocked.
+  3. **Triple lock acquisition in `_rds_reader`** — the RDS reader was calling `_get_scanner_rds()` (which acquires `_scanner_rds_lock`) separately for the PS guard, the RT guard, and the final update — three lock acquisitions per redsea JSON line when both PS and RT were present. Replaced with a single `_get_scanner_rds()` call at the start of each line's processing; the cached dict is reused for both guards and the final `_set_scanner_rds` call.
+
 ## [3.3.68] - 2026-03-24
 
 ### Fixed
