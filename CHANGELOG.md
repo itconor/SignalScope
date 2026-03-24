@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.51] - 2026-03-24
+
+### Added
+- **DAB — "Scan all channels" button in input configuration** — new 📡 *Scan all channels* button scans every Band III channel (5A–12D, 32 total) and shows a live list of receivable muxes. Each found mux appears as a clickable chip showing the channel, ensemble name, estimated SNR, and service count. Clicking a chip automatically sets the channel dropdown and triggers the existing service scan, so setup on a new site no longer requires guessing which channel to try. A progress bar and ⏹ Stop button are shown during the scan (typically 4–6 minutes for a full sweep; found muxes appear immediately as each channel returns a result). The scan uses the same dongle serial and gain/PPM settings as the mux scan.
+
 ## [3.3.50] - 2026-03-24
 
 ### Fixed / Added

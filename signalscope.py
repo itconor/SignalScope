@@ -1099,7 +1099,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.50"
+BUILD                  = "SignalScope-3.3.51"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -13431,9 +13431,23 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
         </select>
       </label>
     </div>
-    <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+    <div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <button type="button" class="btn bp" id="dab_scan_btn" onclick="dabScan()">🔍 Scan multiplex</button>
+      <button type="button" class="btn bg" id="dab_ch_scan_btn" onclick="dabChannelScanStart()" title="Scan all Band III channels and show which muxes are receivable">📡 Scan all channels</button>
+      <button type="button" class="btn bw" id="dab_ch_scan_stop_btn" style="display:none" onclick="dabChannelScanStop()">⏹ Stop</button>
       <span id="dab_scan_status" style="font-size:12px;color:var(--mu)"></span>
+    </div>
+    <!-- Channel scan results panel -->
+    <div id="dab_ch_scan_panel" style="display:none;margin-top:12px;padding:10px 12px;background:var(--sur);border:1px solid var(--bor);border-radius:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:12px;font-weight:600;color:var(--mu)" id="dab_ch_scan_title">Scanning Band III…</span>
+        <div style="height:4px;flex:1;margin:0 12px;background:var(--bor);border-radius:2px;overflow:hidden">
+          <div id="dab_ch_scan_bar" style="height:100%;background:var(--acc);width:0%;transition:width .3s"></div>
+        </div>
+        <span id="dab_ch_scan_pct" style="font-size:11px;color:var(--mu);white-space:nowrap">0 / 32</span>
+      </div>
+      <div id="dab_ch_scan_found" style="font-size:12px;color:var(--mu);margin-bottom:4px">No muxes found yet…</div>
+      <div id="dab_ch_scan_list" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div>
     </div>
     {% if title == "Add Input" %}
     {# ── Add mode: multi-select checklist ── #}
@@ -13808,6 +13822,127 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
         : "✗ Request failed: " + e;
     });
   }
+
+  // ── Channel-scan (scan all Band III muxes) ────────────────────────────────
+  var _chScanTimer = null;
+
+  function dabChannelScanStart(){
+    var ser = document.getElementById("dab_serial").value.trim();
+    var panel   = document.getElementById("dab_ch_scan_panel");
+    var found   = document.getElementById("dab_ch_scan_found");
+    var list    = document.getElementById("dab_ch_scan_list");
+    var bar     = document.getElementById("dab_ch_scan_bar");
+    var pct     = document.getElementById("dab_ch_scan_pct");
+    var title   = document.getElementById("dab_ch_scan_title");
+    var startBtn= document.getElementById("dab_ch_scan_btn");
+    var stopBtn = document.getElementById("dab_ch_scan_stop_btn");
+
+    // Reset panel
+    panel.style.display = "";
+    list.innerHTML      = "";
+    found.textContent   = "No muxes found yet…";
+    bar.style.width     = "0%";
+    pct.textContent     = "0 / 32";
+    title.textContent   = "Scanning Band III…";
+    startBtn.disabled   = true;
+    stopBtn.style.display = "";
+
+    _csrfFetch("/api/dab/channel_scan/start", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({serial: ser})
+    }).then(function(r){ return r.json(); }).then(function(d){
+      if(d.error){
+        found.style.color = "var(--al)";
+        found.textContent = "✗ " + d.error;
+        startBtn.disabled = false;
+        stopBtn.style.display = "none";
+        return;
+      }
+      // Start polling
+      if(_chScanTimer) clearInterval(_chScanTimer);
+      _chScanTimer = setInterval(dabChannelScanPoll, 2000);
+    }).catch(function(e){
+      found.style.color = "var(--al)";
+      found.textContent = "✗ " + e;
+      startBtn.disabled = false;
+      stopBtn.style.display = "none";
+    });
+  }
+
+  function dabChannelScanPoll(){
+    _csrfFetch("/api/dab/channel_scan/status").then(function(r){ return r.json(); }).then(function(d){
+      var bar   = document.getElementById("dab_ch_scan_bar");
+      var pct   = document.getElementById("dab_ch_scan_pct");
+      var title = document.getElementById("dab_ch_scan_title");
+      var found = document.getElementById("dab_ch_scan_found");
+      var list  = document.getElementById("dab_ch_scan_list");
+
+      var prog = d.progress || 0, total = d.total || 32;
+      bar.style.width = Math.round(prog / total * 100) + "%";
+      pct.textContent = prog + " / " + total;
+
+      if(d.running && d.current)
+        title.textContent = "Scanning " + d.current + "…";
+
+      // Re-render found muxes (cheap — usually < 10 results)
+      list.innerHTML = "";
+      if(d.results && d.results.length){
+        found.style.color = "var(--ok)";
+        found.textContent = d.results.length + " mux" + (d.results.length > 1 ? "es" : "") + " found:";
+        d.results.forEach(function(r){
+          var btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "btn bg";
+          btn.style.cssText = "font-size:12px;padding:4px 10px;border-radius:20px";
+          btn.title = r.ensemble + " — SNR " + r.snr + " dB — " + r.services + " service" + (r.services>1?"s":"");
+          btn.textContent = r.channel + " · " + r.ensemble + " (" + r.services + ")";
+          btn.addEventListener("click", function(){
+            // Select this channel and auto-scan its services
+            var sel = document.getElementById("dab_channel");
+            if(sel){
+              for(var i=0;i<sel.options.length;i++){
+                if(sel.options[i].value === r.channel){ sel.selectedIndex = i; break; }
+              }
+            }
+            dabScan();
+          });
+          list.appendChild(btn);
+        });
+      } else if(d.done) {
+        found.style.color = "var(--wn)";
+        found.textContent = "No muxes found on any Band III channel.";
+      }
+
+      if(d.done || !d.running){
+        clearInterval(_chScanTimer);
+        _chScanTimer = null;
+        var startBtn = document.getElementById("dab_ch_scan_btn");
+        var stopBtn  = document.getElementById("dab_ch_scan_stop_btn");
+        startBtn.disabled = false;
+        stopBtn.style.display = "none";
+        bar.style.width = "100%";
+        if(d.done && !d.error)
+          title.textContent = "Scan complete — " + (d.results ? d.results.length : 0) + " mux" + (d.results&&d.results.length===1?"":"es") + " found";
+        if(d.error){
+          found.style.color = "var(--al)";
+          found.textContent = "✗ " + d.error;
+        }
+      }
+    }).catch(function(){});
+  }
+
+  function dabChannelScanStop(){
+    _csrfFetch("/api/dab/channel_scan/stop", {method:"POST"}).catch(function(){});
+    if(_chScanTimer){ clearInterval(_chScanTimer); _chScanTimer = null; }
+    var startBtn = document.getElementById("dab_ch_scan_btn");
+    var stopBtn  = document.getElementById("dab_ch_scan_stop_btn");
+    startBtn.disabled = false;
+    stopBtn.style.display = "none";
+    var title = document.getElementById("dab_ch_scan_title");
+    title.textContent = "Scan stopped";
+  }
+  // ── end channel-scan ──────────────────────────────────────────────────────
 
   function dabUpdateAddBtn(){
     var rows = document.querySelectorAll(".dab-svc-row");
@@ -15293,6 +15428,164 @@ def _dab_scan_mux(channel: str, device_idx: str = "0", ppm: int = 0, gain: int =
             except: pass
             try: proc.wait(timeout=3)
             except: proc.kill()
+
+
+# ── DAB Band III channel list (name → freq kHz) ───────────────────────────────
+_DAB_BAND3 = [
+    ("5A",174928),("5B",177008),("5C",178352),("5D",179200),
+    ("6A",183648),("6B",185360),("6C",187072),("6D",188928),
+    ("7A",194064),("7B",195776),("7C",197648),("7D",199360),
+    ("8A",202928),("8B",204640),("8C",206352),("8D",208064),
+    ("9A",211280),("9B",213360),("9C",214928),("9D",216928),
+    ("10A",220352),("10B",222064),("10C",223936),("10D",225648),
+    ("11A",229072),("11B",230784),("11C",232496),("11D",234208),
+    ("12A",237488),("12B",239200),("12C",240912),("12D",242624),
+]
+# One channel-scan task at a time (module-level state, protected by lock)
+_ch_scan_state: dict = {"running": False, "done": True, "results": [],
+                         "progress": 0, "total": len(_DAB_BAND3),
+                         "current": "", "error": None}
+_ch_scan_lock = threading.Lock()
+
+
+def _dab_quick_probe(channel: str, driver: str, gain: int, ppm: int,
+                     port: int, timeout: float = 10.0):
+    """Probe a single DAB channel and return a summary dict or None.
+
+    Unlike _dab_scan_mux / api_dab_scan (which wait for service-list
+    stability), this just needs to confirm that an ensemble exists and
+    at least one audio service is visible — good enough for channel
+    discovery. Returns quickly on first success or after `timeout` seconds.
+    """
+    import subprocess as _qsp, urllib.request as _qur
+    wb = _find_binary("welle-cli")
+    if not wb:
+        return None
+    cmd = [wb, "-w", str(port), "-c", channel, "-g", str(gain), "-F", driver]
+    if ppm:
+        cmd += ["-p", str(ppm)]
+    proc = None
+    try:
+        proc = _qsp.Popen(cmd, stdout=_qsp.PIPE, stderr=_qsp.PIPE)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break
+            time.sleep(1.0)
+            for url in [f"http://localhost:{port}/mux.json",
+                        f"http://localhost:{port}/api/mux.json"]:
+                try:
+                    with _qur.urlopen(url, timeout=1) as r:
+                        data = json.loads(r.read())
+                    ens  = data.get("ensemble", {})
+                    lbl  = ens.get("label", {})
+                    name = (lbl.get("label") or lbl.get("shortlabel") or "").strip()
+                    snr  = round(float(data.get("demodulator", {}).get("snr", 0)), 1)
+                    if not name:
+                        break  # not locked yet — try next second
+                    n_svc = 0
+                    for svc in data.get("services", []):
+                        slbl = svc.get("label", {})
+                        sn   = (slbl.get("label") or slbl.get("shortlabel") or "").strip()
+                        if not sn:
+                            continue
+                        for c in svc.get("components", []):
+                            if c.get("transportmode") == "audio":
+                                n_svc += 1; break
+                    if n_svc > 0:
+                        return {"channel": channel, "ensemble": name,
+                                "snr": snr, "services": n_svc}
+                    break  # ensemble seen but no services yet — keep polling
+                except Exception:
+                    break
+        return None
+    finally:
+        if proc:
+            try: proc.terminate()
+            except: pass
+            try: proc.wait(timeout=2)
+            except: proc.kill()
+
+
+@app.post("/api/dab/channel_scan/start")
+@login_required
+def api_dab_channel_scan_start():
+    """Start a background scan across all Band III channels and return immediately.
+    Poll /api/dab/channel_scan/status for progress and results.
+    Body JSON: {serial, gain, ppm}
+    """
+    global _ch_scan_state
+    data   = request.get_json(silent=True) or {}
+    serial = str(data.get("serial", "")).strip()
+    try:   gain = int(data.get("gain", -1))
+    except: gain = -1
+    try:   ppm = int(data.get("ppm", 0))
+    except: ppm = 0
+
+    with _ch_scan_lock:
+        if _ch_scan_state.get("running"):
+            return jsonify({"error": "Channel scan already running"}), 409
+        _ch_scan_state = {"running": True, "done": False, "results": [],
+                          "progress": 0, "total": len(_DAB_BAND3),
+                          "current": "", "error": None}
+
+    # Resolve device
+    device_idx = "0"
+    if serial:
+        try:
+            device_idx = str(sdr_manager.resolve_index(serial))
+        except Exception as e:
+            with _ch_scan_lock:
+                _ch_scan_state.update({"running": False, "done": True, "error": str(e)})
+            return jsonify({"error": str(e)}), 400
+        # Pull PPM/gain from dongle registry when not explicitly given
+        for dev in monitor.app_cfg.sdr_devices:
+            if dev.serial == serial:
+                if not ppm:
+                    ppm  = getattr(dev, "ppm",  0)
+                if gain == -1:
+                    gain = getattr(dev, "gain", -1)
+                break
+
+    driver = f"rtl_sdr,{device_idx}"
+    CH_SCAN_PORT = 7981   # dedicated port — avoids clashing with mux scan (7979)
+
+    def _scan():
+        global _ch_scan_state
+        for i, (ch, _freq) in enumerate(_DAB_BAND3):
+            with _ch_scan_lock:
+                if not _ch_scan_state.get("running"):
+                    break
+                _ch_scan_state["current"]  = ch
+                _ch_scan_state["progress"] = i
+            result = _dab_quick_probe(ch, driver, gain, ppm, CH_SCAN_PORT)
+            with _ch_scan_lock:
+                if result:
+                    _ch_scan_state["results"].append(result)
+        with _ch_scan_lock:
+            _ch_scan_state.update({"running": False, "done": True,
+                                   "current": "",
+                                   "progress": _ch_scan_state["total"]})
+
+    threading.Thread(target=_scan, daemon=True, name="DabChScan").start()
+    return jsonify({"ok": True, "total": len(_DAB_BAND3)})
+
+
+@app.get("/api/dab/channel_scan/status")
+@login_required
+def api_dab_channel_scan_status():
+    """Return current channel-scan progress and any results found so far."""
+    with _ch_scan_lock:
+        return jsonify(dict(_ch_scan_state))
+
+
+@app.post("/api/dab/channel_scan/stop")
+@login_required
+def api_dab_channel_scan_stop():
+    """Abort an in-progress channel scan."""
+    with _ch_scan_lock:
+        _ch_scan_state["running"] = False
+    return jsonify({"ok": True})
 
 
 @app.get("/api/dab/scan")
