@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.53] - 2026-03-24
+
+### Fixed
+- **DAB channel scan leaves dongle claimed after scan completes** — `_dab_quick_probe` called `proc.kill()` but never called `proc.wait()` afterward, leaving the USB device held by libusb. Any subsequent DAB session or scan would fail to open the dongle. Fix: wait up to 4s for clean SIGTERM exit, fall back to SIGKILL + `proc.wait()` to ensure the OS fully reaps the process, then add an 0.8s USB stack settle delay before returning. Whether the race triggered depended on USB controller speed, explaining why it affected some machines and not others.
+
 ## [3.3.52] - 2026-03-24
 
 ### Fixed

@@ -1099,7 +1099,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.52"
+BUILD                  = "SignalScope-3.3.53"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -15503,10 +15503,30 @@ def _dab_quick_probe(channel: str, driver: str, gain: int, ppm: int,
         return None
     finally:
         if proc:
-            try: proc.terminate()
-            except: pass
-            try: proc.wait(timeout=2)
-            except: proc.kill()
+            # Step 1: polite SIGTERM and wait up to 4 s for clean exit.
+            # Giving welle-cli time to close the USB device cleanly avoids
+            # libusb leaving the dongle claimed for the next probe.
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=4)
+            except Exception:
+                # Still alive — SIGKILL it, but we MUST still wait for the
+                # OS to reap the process before the next probe opens the device.
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=3)
+                except Exception:
+                    pass
+            # Step 2: give the USB stack a moment to fully release the device.
+            # libusb holds a kernel reference until the file descriptor is
+            # closed, which happens asynchronously after process exit.
+            time.sleep(0.8)
 
 
 @app.post("/api/dab/channel_scan/start")
