@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.59"
+BUILD                  = "SignalScope-3.3.60"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8336,6 +8336,40 @@ class HubClient:
         except Exception as e:
             monitor.log(f"[Hub] Backup upload failed: {e}")
 
+    def _cmd_push_log(self, payload: dict):
+        """Hub command: collect the recent application log and POST it back to the hub."""
+        threading.Thread(
+            target=self._run_push_log,
+            daemon=True, name="PushLog",
+        ).start()
+
+    def _run_push_log(self):
+        """Gather last 200 log lines and POST them to the hub's /hub/log_data endpoint."""
+        try:
+            cfg_obj  = self._cfg_fn()
+            hub_url  = cfg_obj.hub.hub_url.rstrip("/")
+            secret   = cfg_obj.hub.secret_key
+            site     = cfg_obj.hub.site_name or socket.gethostname()
+            lines    = [str(l) for l in monitor.get_logs(200)]
+            result_dict = {"site": site, "lines": lines, "ts": time.time()}
+            payload_bytes = json.dumps(result_dict).encode()
+            ts  = time.time()
+            sig = hub_sign_payload(secret, payload_bytes, ts) if secret else ""
+            headers: dict = {"X-Hub-Sig": sig, "X-Hub-Ts": str(ts)}
+            if secret:
+                body = hub_encrypt_payload(secret, payload_bytes)
+                headers["Content-Type"] = "application/octet-stream"
+            else:
+                body = payload_bytes
+                headers["Content-Type"] = "application/json"
+            req = urllib.request.Request(
+                f"{hub_url}/hub/log_data", data=body,
+                headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                monitor.log(f"[Hub] Log dump uploaded: {len(lines)} lines HTTP {r.status}")
+        except Exception as e:
+            monitor.log(f"[Hub] Log dump upload failed: {e}")
+
     def _cmd_ping_test(self, payload: dict):
         """Hub command: run a ping test to a target and report results back to the hub."""
         target = str(payload.get("target", "")).strip()
@@ -9221,6 +9255,8 @@ class HubClient:
                         self._cmd_backup(cmd_payload)
                     elif cmd_type == "ping_test":
                         self._cmd_ping_test(cmd_payload)
+                    elif cmd_type == "push_log":
+                        self._cmd_push_log(cmd_payload)
                 # Drain auto-clip-upload queue — any clips saved since the last
                 # heartbeat are uploaded to the hub now so they can be played
                 # locally from the hub's reports page without streaming.
@@ -9323,6 +9359,8 @@ class HubServer:
         self._site_backups: Dict[str, dict] = {}
         # Ping/connectivity test results — site_name → {"target": str, "output": str, "success": bool, "ts": float}
         self._ping_results: Dict[str, dict] = {}
+        # On-demand log dumps — site_name → {"lines": [...], "ts": float}
+        self._log_dumps: Dict[str, dict] = {}
         self._load_state()            # restore hub sites across restarts
         self._load_fault_log_from_db()  # restore chain fault history from SQLite
         self._load_backup_index()       # load backup metadata from disk
@@ -17098,6 +17136,51 @@ def hub_ping_result():
     return jsonify({"ok": True})
 
 
+@app.post("/hub/log_data")
+def hub_log_data():
+    """Receive an on-demand log dump uploaded from a client site."""
+    cfg    = monitor.app_cfg
+    secret = cfg.hub.secret_key
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 404
+
+    raw_body = request.get_data()
+    if secret:
+        sig  = request.headers.get("X-Hub-Sig", "")
+        ts_h = request.headers.get("X-Hub-Ts", "0")
+        try:
+            ts = float(ts_h)
+        except ValueError:
+            return jsonify({"error": "invalid timestamp"}), 403
+        ct = request.content_type or ""
+        if "octet-stream" in ct:
+            try:
+                raw_body = hub_decrypt_payload(secret, raw_body)
+            except Exception as e:
+                return jsonify({"error": f"decryption failed: {e}"}), 403
+        ok, reason = hub_verify_signature(secret, raw_body, sig, ts)
+        if not ok:
+            return jsonify({"error": "forbidden", "reason": reason}), 403
+
+    try:
+        data = json.loads(raw_body)
+    except Exception:
+        return jsonify({"error": "bad json"}), 400
+
+    site_name = str(data.get("site", "")).strip()
+    if not site_name:
+        site_name = request.headers.get("X-Hub-Site", "unknown").strip()
+
+    hub_server.set_secret(secret)
+    with hub_server._lock:
+        hub_server._log_dumps[site_name] = {
+            "lines": [str(l)[:300] for l in data.get("lines", [])][-200:],
+            "ts":    float(data.get("ts", time.time())),
+        }
+    monitor.log(f"[Hub] Log dump received from '{site_name}': {len(data.get('lines',[]))} lines")
+    return jsonify({"ok": True})
+
+
 @app.get("/hub/update/download")
 def hub_update_download():
     """Serve the hub's own signalscope.py to authenticated clients for self-update.
@@ -17389,12 +17472,34 @@ def hub_dab_scan_result(site_name):
 @app.get("/api/hub/site/<path:site_name>/log")
 @login_required
 def hub_site_log(site_name):
-    """Hub admin: return the last 30 log lines sent by a client site."""
+    """Hub admin: return log lines for a client site.
+
+    If a fresh on-demand dump exists (pushed via pull_log command, <120s old)
+    return that (up to 200 lines). Otherwise fall back to the last 30 lines
+    from the heartbeat cache.
+    """
     _, err = _hub_site_guard(site_name)
     if err: return err
     with hub_server._lock:
-        lines = list(hub_server._sites.get(site_name, {}).get("app_log", []))
-    return jsonify({"lines": lines})
+        dump = hub_server._log_dumps.get(site_name)
+        hb_lines = list(hub_server._sites.get(site_name, {}).get("app_log", []))
+    if dump and (time.time() - dump["ts"]) < 120:
+        return jsonify({"lines": dump["lines"], "fresh": True, "ts": dump["ts"]})
+    return jsonify({"lines": hb_lines, "fresh": False})
+
+
+@app.post("/api/hub/site/<path:site_name>/pull_log")
+@login_required
+@csrf_protect
+def hub_site_pull_log(site_name):
+    """Hub admin: ask the remote client to push its full application log."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    # Invalidate any stale dump so the UI knows to wait for the fresh one
+    with hub_server._lock:
+        hub_server._log_dumps.pop(site_name, None)
+    hub_server.push_pending_command(site_name, {"type": "push_log"})
+    return jsonify({"ok": True})
 
 
 @app.post("/api/hub/site/<path:site_name>/restart")
@@ -22642,9 +22747,13 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 <!-- ── Remote log modal ───────────────────────────────────────────────────── -->
 <div id="hub-log-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9000;align-items:center;justify-content:center">
   <div style="background:#0d1117;border:1px solid var(--bor);border-radius:10px;width:min(860px,95vw);max-height:80vh;display:flex;flex-direction:column;padding:16px;gap:10px">
-    <div style="display:flex;align-items:center;justify-content:space-between">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <span id="hub-log-modal-title" style="font-weight:700;color:var(--acc);font-size:14px">📋 Remote Log</span>
-      <button id="hub-log-modal-close" style="background:none;border:none;color:var(--mu);font-size:20px;cursor:pointer;line-height:1">✕</button>
+      <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
+        <span id="hub-log-modal-meta" style="font-size:10px;color:var(--mu)"></span>
+        <button id="hub-log-modal-pull" style="background:#1a2a3a;color:#93c5fd;border:1px solid var(--bor);border-radius:6px;font-size:11px;padding:3px 10px;cursor:pointer">↻ Pull fresh log</button>
+        <button id="hub-log-modal-close" style="background:none;border:none;color:var(--mu);font-size:20px;cursor:pointer;line-height:1">✕</button>
+      </div>
     </div>
     <pre id="hub-log-modal-body" style="overflow-y:auto;flex:1;font-size:11px;color:#d1fae5;font-family:monospace;white-space:pre-wrap;word-break:break-all;background:#060c18;border:1px solid var(--bor);border-radius:6px;padding:10px;margin:0"></pre>
   </div>
@@ -22870,20 +22979,65 @@ document.addEventListener('click',function(e){
 });
 
 // ── Log button ────────────────────────────────────────────────────────────────
-document.addEventListener('click',function(e){
-  var btn=e.target.closest('.site-log-btn');if(!btn)return;
-  var site=btn.dataset.site;
+var _logModalSite='';
+function _showLog(site,pull){
   var modal=document.getElementById('hub-log-modal');
   var body=document.getElementById('hub-log-modal-body');
   var title=document.getElementById('hub-log-modal-title');
+  var meta=document.getElementById('hub-log-modal-meta');
+  var pullBtn=document.getElementById('hub-log-modal-pull');
   if(!modal)return;
+  _logModalSite=site;
   title.textContent='📋 Log — '+site;
-  body.textContent='Loading…';
+  if(pull){
+    body.textContent='Requesting fresh log from client…';
+    meta.textContent='';
+    if(pullBtn){pullBtn.disabled=true;pullBtn.textContent='Pulling…';}
+    hubPost('/api/hub/site/'+encodeURIComponent(site)+'/pull_log',{})
+    .catch(function(){})
+    .finally(function(){
+      // Poll for the fresh dump (client has up to ~10s to respond via heartbeat)
+      var polls=0;
+      function waitForFresh(){
+        fetch('/api/hub/site/'+encodeURIComponent(site)+'/log')
+        .then(function(r){return r.json();})
+        .then(function(d){
+          if(d.fresh || polls>=6){
+            var ts=d.ts?new Date(d.ts*1000).toLocaleTimeString():'';
+            meta.textContent=d.fresh?('Fresh — '+ts):'Heartbeat cache';
+            body.textContent=(d.lines||[]).slice().reverse().join('\n')||'(no log lines)';
+            if(pullBtn){pullBtn.disabled=false;pullBtn.textContent='↻ Pull fresh log';}
+          } else {
+            polls++;
+            setTimeout(waitForFresh,2000);
+          }
+        })
+        .catch(function(){
+          if(pullBtn){pullBtn.disabled=false;pullBtn.textContent='↻ Pull fresh log';}
+        });
+      }
+      setTimeout(waitForFresh,2000);
+    });
+  } else {
+    body.textContent='Loading…';
+    meta.textContent='';
+    fetch('/api/hub/site/'+encodeURIComponent(site)+'/log')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var ts=d.ts?new Date(d.ts*1000).toLocaleTimeString():'';
+      meta.textContent=d.fresh?('Fresh — '+ts):'Heartbeat cache (30 lines) — use ↻ to pull full log';
+      body.textContent=(d.lines||[]).slice().reverse().join('\n')||'(no log lines)';
+    })
+    .catch(function(err){body.textContent='Error: '+(err.message||err);});
+  }
   modal.style.display='flex';
-  fetch('/api/hub/site/'+encodeURIComponent(site)+'/log')
-  .then(function(r){return r.json();})
-  .then(function(d){body.textContent=(d.lines||[]).slice().reverse().join('\n')||'(no log lines)'})
-  .catch(function(err){body.textContent='Error: '+(err.message||err);});
+}
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.site-log-btn');if(!btn)return;
+  _showLog(btn.dataset.site,false);
+});
+document.getElementById('hub-log-modal-pull').addEventListener('click',function(){
+  if(_logModalSite)_showLog(_logModalSite,true);
 });
 document.getElementById('hub-log-modal-close').addEventListener('click',function(){
   document.getElementById('hub-log-modal').style.display='none';

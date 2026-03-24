@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.60] - 2026-03-24
+
+### Added
+- **Hub dashboard / replica page — on-demand remote log pull** — the 📋 Log button now shows the last 30 lines from the heartbeat cache instantly, with a **↻ Pull fresh log** button that sends a `push_log` hub command to the client. The client gathers its last 200 log lines and posts them back to the hub via `/hub/log_data`; the modal polls for the result (up to ~12 seconds, one heartbeat cycle). The dump is shown newest-first with a timestamp; the modal distinguishes between fresh pulled data and cached heartbeat data. No continuous data flow — only transmits when the button is clicked.
+
 ## [3.3.59] - 2026-03-24
 
 ### Fixed
