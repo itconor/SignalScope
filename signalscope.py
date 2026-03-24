@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.72"
+BUILD                  = "SignalScope-3.3.73"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -18632,12 +18632,17 @@ def hub_scanner_band_scan():
         return jsonify({"ok": False, "error": "site required"}), 400
     sess = hub_server._scanner_sessions.get(site, {})
     hub_server._scanner_scan_results.pop(site, None)   # clear stale result
+    # SDR params: prefer explicit values from the request body (sent by the UI
+    # when scanning offline), fall back to the active session values, then defaults.
+    sdr_serial = str(data.get("sdr_serial") or sess.get("sdr_serial") or "").strip()
+    ppm        = int(data.get("ppm")  if data.get("ppm")  is not None else sess.get("ppm",  0))
+    gain       = float(data.get("gain") if data.get("gain") is not None else sess.get("gain", 38.0))
     hub_server.push_pending_command(site, {
         "type": "scanner_band_scan",
         "payload": {
-            "sdr_serial": sess.get("sdr_serial", ""),
-            "ppm":        sess.get("ppm", 0),
-            "gain":       sess.get("gain", 38.0),
+            "sdr_serial": sdr_serial,
+            "ppm":        ppm,
+            "gain":       gain,
             "start_mhz":  float(data.get("start_mhz", 76.0)),
             "end_mhz":    float(data.get("end_mhz",  108.0)),
             "step_khz":   int(data.get("step_khz", 100)),
@@ -24226,7 +24231,7 @@ function setStatus(state, msg){
   manBtn.disabled       = !on;
   rec30Btn.disabled     = !on;
   rec60Btn.disabled     = !on;
-  scanBtn.disabled      = !on || _scanPending;
+  scanBtn.disabled      = _scanPending || !siteSel.value;
   presetSaveBtn.disabled = !on;
   siteSel.disabled = on;
   sdrSel.disabled  = on;
@@ -24611,17 +24616,27 @@ function stopScanPoll(){ clearInterval(_scanPoll); _scanPoll = null; _scanPendin
 scanBtn.addEventListener('click', function(){
   if(_scanPending) return;
   var site = siteSel.value; if(!site) return;
+  // If streaming, stop first — rtl_power and rtl_fm cannot share the dongle.
+  if(_state === 'streaming' || _state === 'connecting') doStop();
   _scanPending = true;
   scanBtn.disabled = true;
   document.getElementById('scan-status').style.display = 'block';
+  document.getElementById('scan-status').textContent = 'Scanning\u2026';
   document.getElementById('scan-peaks').innerHTML = '';
+  // Pass SDR params from the form so an offline scan uses the right device.
+  var body = {
+    site: site,
+    sdr_serial: sdrSel ? sdrSel.value : '',
+    ppm:  ppmInp  ? parseInt(ppmInp.value  || '0', 10) : 0,
+    gain: gainInp ? parseFloat(gainInp.value || '38')  : 38.0,
+  };
   _f('/api/hub/scanner/band_scan', {
     method: 'POST',
-    body: JSON.stringify({site: site})
+    body: JSON.stringify(body)
   }).then(function(r){ return r.json(); }).then(function(d){
     if(!d.ok){
       stopScanPoll();
-      if(_state === 'streaming' || _state === 'connecting') scanBtn.disabled = false;
+      scanBtn.disabled = _scanPending || !siteSel.value;
       document.getElementById('scan-status').style.display = 'none';
       alert('Band scan failed: ' + (d.error || '?'));
       return;
@@ -24630,7 +24645,7 @@ scanBtn.addEventListener('click', function(){
     setTimeout(function(){ _pollScan(site); }, 1000);
   }).catch(function(){
     stopScanPoll();
-    if(_state === 'streaming' || _state === 'connecting') scanBtn.disabled = false;
+    scanBtn.disabled = _scanPending || !siteSel.value;
     document.getElementById('scan-status').style.display = 'none';
   });
 });
@@ -24640,7 +24655,7 @@ function _pollScan(site){
     .then(function(d){
       if(d.ready){
         stopScanPoll();
-        if(_state === 'streaming' || _state === 'connecting') scanBtn.disabled = false;
+        scanBtn.disabled = false;
         document.getElementById('scan-status').style.display = 'none';
         _renderScanResults(d);
       }

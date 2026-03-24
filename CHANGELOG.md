@@ -2,6 +2,16 @@
 
 ---
 
+## [3.3.73] - 2026-03-24
+
+### Fixed
+- **FM Scanner — band scan unavailable when not streaming**
+  The scan button was gated behind `!on` (only enabled during an active stream). Scan now works whenever a site is selected, regardless of streaming state.
+- **FM Scanner — band scan returns no results when triggered while streaming**
+  `rtl_power` and `rtl_fm` cannot share the same RTL-SDR dongle. Previously triggering a scan while connected always failed silently because the device was claimed. Now the UI automatically disconnects the active stream before pushing the scan command, freeing the dongle for `rtl_power`.
+- **FM Scanner — offline scan used wrong SDR device**
+  When scanning while disconnected, the band scan command fell back to default SDR params instead of the device/gain/PPM selected in the connect form. The UI now passes `sdr_serial`, `ppm`, and `gain` in the scan request body; the hub prefers those explicit values, falling back to the active session and then to defaults.
+
 ## [3.3.72] - 2026-03-24
 
 ### Fixed
