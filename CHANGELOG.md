@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.41] - 2026-03-24
+
+### Fixed
+- **FM Scanner — no audio on Safari (streaming WAV rejected)** — Safari's AVFoundation immediately closes HTTP connections whose `Content-Type: audio/wav` response has no `Content-Length` and uses chunked transfer encoding. This caused `generate_relay()`'s `finally` block to fire within milliseconds, removing the slot and causing all subsequent client POSTs to return 404. Fix: completely replaced the `<audio>`-element + WAV-streaming approach with **Web Audio API + `fetch()` streaming** using raw S16LE PCM (`application/octet-stream`). The browser JS reads the fetch `ReadableStream`, decodes 4800-sample S16LE blocks, and schedules them via `AudioContext.createBufferSource()`. This works identically on Chrome, Firefox, and Safari.
+- **FM Scanner — nginx proxy_read_timeout on hub → browser stream** — the hub's `generate_relay()` previously waited silently for the first client POST before yielding anything. If the client took longer than nginx's `proxy_read_timeout` the upstream connection was closed, removing the slot. Fix: new `_hub_scanner_relay_response()` immediately yields a silence block on connection, then continues sending paced silence at 0.1 s intervals until the first real PCM chunk arrives from the client. nginx never sees an idle upstream.
+- **FM Scanner — WAV header removed from client pipeline** — the client (`_push_scanner_audio`) no longer constructs or sends a WAV header. The hub owns all stream framing; the client sends raw S16LE PCM only.
+
 ## [3.3.40] - 2026-03-24
 
 ### Fixed

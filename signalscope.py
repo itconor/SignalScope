@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.40"
+BUILD                  = "SignalScope-3.3.41"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8694,22 +8694,21 @@ class HubClient:
     def _push_scanner_audio(self, cfg, req: dict, slot_id: str, chunk_url: str):
         """Stream live FM audio from a remote SDR to a scanner relay slot.
 
-        Audio path (WAV streaming — no encoder):
+        Audio path (raw PCM — no encoder, no WAV header):
             rtl_fm  -s 171000 -r 48000  →  48 kHz S16LE mono raw PCM
             → pipeline thread:
                   reads _BLOCK (9600 bytes = 0.1 s) at a time
-                  discards first _SKIP blocks to flush USB startup burst
-                  puts steady-state blocks into pcm_queue
+                  replaces first _SKIP blocks with silence (flush USB burst)
+                  puts raw PCM blocks into pcm_queue
             → main thread:
-                  sends a streaming WAV header as the very first chunk
-                  dequeues PCM blocks and POSTs directly to hub
+                  dequeues PCM blocks and POSTs raw bytes to hub
                   absolute-deadline clock absorbs POST network latency
 
-        No ffmpeg, no codec buffer, no encoding artefacts.
-        Hardware rate naturally paces the queue; deadline clock prevents
-        any queued burst from reaching the hub faster than real-time.
+        The WAV header and startup silence are generated on the hub side so
+        that the browser's streaming connection is never stalled.  The client
+        sends raw S16LE PCM only — the hub owns the stream framing.
         """
-        import subprocess, struct
+        import subprocess
 
         freq_mhz = float(req.get("freq_mhz", 96.5) or 96.5)
         serial   = str(req.get("sdr_serial", "") or "").strip()
@@ -8761,35 +8760,22 @@ class HubClient:
             monitor.log(f"[Scanner] rtl_fm start failed: {e}")
             return
 
-        # Streaming WAV header — RIFF and data chunk sizes set to 0x7FFFFFFF
-        # (the standard "unknown/streaming length" sentinel for WAV streaming).
-        # Browsers reject size=0 as "empty audio" and immediately close the
-        # connection; 0x7FFFFFFF tells them to play until the stream ends.
-        _ch, _bits  = 1, 16
-        _byte_rate  = _OUT_RATE * _ch * _bits // 8   # 96000
-        _blk_align  = _ch * _bits // 8               # 2
-        wav_header  = struct.pack(
-            "<4sI4s4sIHHIIHH4sI",
-            b"RIFF", 0x7FFFFFFF, b"WAVE",
-            b"fmt ", 16, 1, _ch, _OUT_RATE, _byte_rate, _blk_align, _bits,
-            b"data", 0x7FFFFFFF,
-        )
+        # No WAV header — the hub generates it immediately when the browser
+        # connects so the streaming connection is never stalled.
 
         stop_flag = threading.Event()
         pcm_queue = queue.Queue(maxsize=100)   # ~10 s safety buffer
 
         def _pipeline():
-            """Read rtl_fm, replace burst blocks with silence, queue real PCM after.
+            """Read rtl_fm, replace USB startup burst with silence, queue raw PCM.
 
-            Sending silence during the burst (rather than discarding) keeps the
-            HTTP stream flowing so the browser never sees a stall after the WAV
-            header and fires an error event.  The WAV header is prepended to the
-            very first silent block so the browser can parse the stream format
-            before any real audio arrives.
+            The first _SKIP blocks are replaced with zeros because librtlsdr
+            pre-fills its async buffer before the first real sample arrives.
+            After that we send real S16LE PCM.  No WAV header is prepended here —
+            the hub side handles stream framing.
             """
-            mux          = b""
-            count        = 0
-            header_added = False
+            mux   = b""
+            count = 0
             try:
                 while not stop_flag.is_set():
                     raw = rtl_proc.stdout.read(_BLOCK)
@@ -8801,16 +8787,12 @@ class HubClient:
                         mux   = mux[_BLOCK:]
                         count += 1
                         if count <= _SKIP:
-                            # Replace burst data with silence; keeps stream alive
-                            out = b"\x00" * _BLOCK
-                            if not header_added:
-                                out = wav_header + out   # prepend WAV header once
-                                header_added = True
+                            out = b"\x00" * _BLOCK   # silence during USB burst
                         else:
                             if count == _SKIP + 1:
                                 monitor.log(
                                     f"[Scanner] Burst flushed ({_SKIP} blk), "
-                                    f"streaming WAV PCM"
+                                    f"streaming raw PCM"
                                 )
                             out = blk
                         try:
@@ -17403,7 +17385,7 @@ def hub_scanner_start():
             old_slot.closed = True
 
     slot = listen_registry.create(
-        site, 0, kind="scanner", mimetype="audio/wav",
+        site, 0, kind="scanner", mimetype="application/octet-stream",
         freq_mhz=freq_mhz, sdr_serial=sdr_serial, ppm=ppm, gain=gain,
     )
     hub_server._scanner_sessions[site] = {
@@ -17443,7 +17425,7 @@ def hub_scanner_tune():
 
     # Create a fresh slot at the new frequency — preserve serial, ppm, gain, bitrate from session
     slot = listen_registry.create(
-        site, 0, kind="scanner", mimetype="audio/wav",
+        site, 0, kind="scanner", mimetype="application/octet-stream",
         freq_mhz=freq_mhz,
         sdr_serial=sess.get("sdr_serial", ""),
         ppm=int(sess.get("ppm", 0)),
@@ -17501,6 +17483,80 @@ def hub_scanner_status(site_name):
     })
 
 
+def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0):
+    """
+    Stream raw S16LE PCM for scanner relay slots.
+
+    Unlike the generic relay, this generator yields silence immediately on
+    connection so that nginx's proxy_read_timeout never fires and the browser's
+    fetch() keeps the connection open while the remote SDR is starting up.
+    Once the client starts POSTing PCM the generator switches to transparent
+    relay mode.
+
+    The browser-side Web Audio API decodes the raw S16LE stream directly —
+    no WAV header is needed and none is sent.  The format is fixed:
+        48 000 Hz · mono · 16-bit signed little-endian
+    """
+    _SAMPLE_RATE  = 48000
+    _BLOCK        = _SAMPLE_RATE * 2 // 10     # 9600 bytes = 0.1 s
+    _BLK_DUR      = 0.10
+    _SILENCE      = b"\x00" * _BLOCK
+
+    def generate_scanner():
+        deadline   = time.time() + startup_timeout
+        started    = False
+        next_sil_t = time.monotonic() + _BLK_DUR
+        try:
+            # Yield one silence block immediately so the HTTP connection has
+            # data right away — prevents nginx proxy_read_timeout and stops
+            # the browser's fetch() from being rejected before we can relay.
+            yield _SILENCE
+
+            # Keep the stream alive with paced silence while waiting for the
+            # first real PCM chunk from the remote client.
+            while True:
+                try:
+                    chunk = slot.get(timeout=0.05)
+                    started = True
+                    yield chunk
+                    break          # first client chunk received → relay mode
+                except queue.Empty:
+                    if slot.closed:
+                        return
+                    if time.time() > deadline:
+                        print(f"[HubProxy] Scanner slot {slot.slot_id} startup timed out")
+                        return
+                    now = time.monotonic()
+                    if now >= next_sil_t:
+                        yield _SILENCE
+                        next_sil_t += _BLK_DUR
+
+            # Relay mode: forward PCM chunks from client to browser as-is.
+            while True:
+                try:
+                    chunk = slot.get(timeout=1.0)
+                    yield chunk
+                except queue.Empty:
+                    if slot.closed:
+                        break
+                    if started and slot.stale:
+                        break
+        finally:
+            slot.closed = True
+            listen_registry.remove(slot.slot_id)
+            print(f"[HubProxy] Scanner relay slot {slot.slot_id} closed")
+
+    return Response(
+        generate_scanner(),
+        mimetype=slot.mimetype,
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "X-Accel-Buffering": "no",
+        },
+        direct_passthrough=True,
+    )
+
+
 @app.get("/hub/scanner/stream/<slot_id>")
 @login_required
 def hub_scanner_stream(slot_id):
@@ -17508,7 +17564,7 @@ def hub_scanner_stream(slot_id):
     slot = listen_registry.get(slot_id)
     if not slot or slot.kind != "scanner":
         return "Stream not found or expired", 404
-    return _hub_stream_relay_response(slot, startup_timeout=20.0)
+    return _hub_scanner_relay_response(slot, startup_timeout=20.0)
 
 
 # ─── End scanner mode ──────────────────────────────────────────────────────────
@@ -22549,7 +22605,6 @@ input:focus,select:focus{border-color:var(--bl)}
     <div class="audio-row">
       <label>🔊</label>
       <input type="range" id="vol" min="0" max="1" step="0.05" value="0.85">
-      <audio id="audio" autoplay style="display:none"></audio>
     </div>
   </div>
 </div>
@@ -22569,9 +22624,22 @@ var statusDot  = document.getElementById('status-dot');
 var statusTxt  = document.getElementById('status-txt');
 var manFreq    = document.getElementById('manual-freq');
 var manBtn     = document.getElementById('manual-btn');
-var audio      = document.getElementById('audio');
 var volSlider  = document.getElementById('vol');
 var _freq = 96.5, _step = 0.2, _state = 'idle', _slotId = '', _poll = null;
+
+// ── Web Audio API state ───────────────────────────────────────
+// Raw S16LE PCM is fetched from the hub and decoded here instead of
+// using an <audio> element.  This works on Chrome, Firefox, and Safari.
+var _audioCtx  = null;    // created on first user gesture
+var _gainNode  = null;
+var _reader    = null;    // ReadableStreamDefaultReader for current fetch
+var _nextTime  = 0;       // next AudioContext schedule time
+var _pcmBuf    = new Uint8Array(0);  // accumulate partial blocks
+var _SR        = 48000;   // sample rate (fixed for scanner)
+var _BLK_S     = 4800;    // samples per 0.1 s block
+var _BLK_B     = _BLK_S * 2;        // bytes  (S16LE, mono)
+var _PRE       = 0.3;     // seconds to buffer before playback begins
+var _sched     = 0;       // blocks scheduled so far (for status update)
 
 function fmt(f){ return f.toFixed(2); }
 function clamp(f){ return Math.max(76, Math.min(108, parseFloat(f.toFixed(2)))); }
@@ -22613,8 +22681,9 @@ siteSel.addEventListener('change', loadDevices);
 loadDevices();
 
 // ── Volume ───────────────────────────────────────────────────
-audio.volume = parseFloat(volSlider.value);
-volSlider.addEventListener('input', function(){ audio.volume = parseFloat(this.value); });
+volSlider.addEventListener('input', function(){
+  if(_gainNode) _gainNode.gain.value = parseFloat(this.value);
+});
 
 // ── Connect / Disconnect ─────────────────────────────────────
 connBtn.addEventListener('click', function(){
@@ -22664,7 +22733,7 @@ function doStop(){
     method:'POST',
     body: JSON.stringify({site: siteSel.value})
   }).catch(function(){});
-  audio.pause(); audio.src = ''; audio.load();
+  disconnectAudio();
   _slotId = '';
   freqDisp.textContent = '---.--';
   freqDisp.style.color = '';
@@ -22672,11 +22741,78 @@ function doStop(){
   setStatus('idle', 'Idle — pick a site and connect');
 }
 
+// ── Web Audio API helpers ─────────────────────────────────────
+function _initAudio(){
+  if(_audioCtx) return;
+  _audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: _SR});
+  _gainNode = _audioCtx.createGain();
+  _gainNode.gain.value = parseFloat(volSlider.value);
+  _gainNode.connect(_audioCtx.destination);
+}
+
+function disconnectAudio(){
+  if(_reader){ try{ _reader.cancel(); }catch(e){} _reader = null; }
+  _pcmBuf = new Uint8Array(0);
+  _sched  = 0;
+}
+
 function connectAudio(url){
-  audio.pause();
-  audio.src = url;
-  audio.load();
-  audio.play().catch(function(){});
+  disconnectAudio();
+  _initAudio();
+  if(_audioCtx.state === 'suspended') _audioCtx.resume();
+  _nextTime = _audioCtx.currentTime + _PRE;
+  _pcmBuf   = new Uint8Array(0);
+  _sched    = 0;
+  fetch(url, {credentials: 'same-origin'})
+    .then(function(resp){
+      if(!resp.ok || !resp.body){
+        if(_state !== 'idle') setStatus('error', 'Stream error — try reconnecting');
+        return;
+      }
+      _reader = resp.body.getReader();
+      (function pump(){
+        _reader.read().then(function(r){
+          if(r.done || !_reader) return;
+          _feedPCM(r.value);
+          pump();
+        }).catch(function(){
+          if(_state !== 'idle'){ setStatus('error', 'Stream error — try reconnecting'); stopPoll(); }
+        });
+      })();
+    })
+    .catch(function(){
+      if(_state !== 'idle'){ setStatus('error', 'Network error — try reconnecting'); stopPoll(); }
+    });
+}
+
+function _feedPCM(chunk){
+  var tmp = new Uint8Array(_pcmBuf.length + chunk.length);
+  tmp.set(_pcmBuf); tmp.set(chunk, _pcmBuf.length);
+  _pcmBuf = tmp;
+  while(_pcmBuf.length >= _BLK_B){
+    _scheduleBlock(_pcmBuf.slice(0, _BLK_B));
+    _pcmBuf = _pcmBuf.slice(_BLK_B);
+  }
+}
+
+function _scheduleBlock(bytes){
+  var buf = _audioCtx.createBuffer(1, _BLK_S, _SR);
+  var ch  = buf.getChannelData(0);
+  var dv  = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for(var i = 0; i < _BLK_S; i++) ch[i] = dv.getInt16(i * 2, true) / 32768.0;
+  var src = _audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(_gainNode);
+  var t = Math.max(_nextTime, _audioCtx.currentTime + 0.05);
+  src.start(t);
+  _nextTime = t + buf.duration;
+  _sched++;
+  // Switch to 'streaming' state once the pre-buffer is full and audio is playing
+  if(_state === 'connecting' && _sched > Math.ceil(_PRE / 0.1) + 1){
+    freqDisp.style.color = '';
+    freqSub.textContent  = '\u00a0';
+    setStatus('streaming', '\u25cf Live \u2014 ' + fmt(_freq) + ' MHz');
+  }
 }
 
 // ── Status poll (2 s) ────────────────────────────────────────
@@ -22694,15 +22830,6 @@ function checkStatus(){
       }
     }).catch(function(){});
 }
-
-audio.addEventListener('playing', function(){
-  freqDisp.style.color = '';
-  freqSub.textContent = '\u00a0';
-  setStatus('streaming', '\u25cf Live — ' + fmt(_freq) + ' MHz');
-});
-audio.addEventListener('error', function(){
-  if(_state !== 'idle'){ setStatus('error', 'Stream error — try reconnecting'); stopPoll(); }
-});
 
 // ── Tune buttons + step ──────────────────────────────────────
 document.addEventListener('click', function(e){
