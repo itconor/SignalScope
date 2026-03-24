@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.56] - 2026-03-24
+
+### Fixed
+- **DAB service audio endpoint probe deadline too short after channel scan** — After a channel scan ran through a monitored channel (e.g. 12D), the residual USB initialisation state caused the last service endpoint(s) to take longer than usual to start serving audio. The 15-second audio-endpoint probe deadline was insufficient; the service would be found in the mux listing but its `/mp3/` endpoint missed the window. Increased probe deadline from 15s→35s. Also increased the startup stale-welle-cli USB settle delay from 0.5s→1.2s to give the USB stack more time to fully release the interface before the monitoring welle-cli opens it.
+
 ## [3.3.55] - 2026-03-24
 
 ### Fixed

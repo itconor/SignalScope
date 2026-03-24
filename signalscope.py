@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.55"
+BUILD                  = "SignalScope-3.3.56"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -5221,7 +5221,7 @@ class MonitorManager:
                     except Exception:
                         pass
             if result.stdout.strip():
-                time.sleep(0.5)   # let USB stack release the interface
+                time.sleep(1.2)   # let USB stack fully release the interface
         except Exception:
             pass
 
@@ -5612,8 +5612,13 @@ class MonitorManager:
                 return
 
             # ── Initial probe: wait for the audio endpoint to serve data ────────
+            # 35s deadline: welle-cli initialises individual service endpoints
+            # after the mux is declared ready, and slower/heavier services (e.g.
+            # Absolute 80s) can take 20-25s after mux ready before their /mp3/
+            # endpoint serves enough bytes.  The 3.3.55 stability-poll change
+            # caused mux ready to fire ~3s earlier, which compounded this.
             stream_ready = False
-            ready_deadline = time.time() + 15
+            ready_deadline = time.time() + 35
             while time.time() < ready_deadline and not stop_evt.is_set():
                 if session.proc.poll() is not None:
                     self.log(f"[{name}] DAB: welle-cli exited before audio stream became ready")
