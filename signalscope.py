@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.43"
+BUILD                  = "SignalScope-3.3.44"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8749,7 +8749,8 @@ class HubClient:
                 return
             device_idx = devs[0]["index"]
 
-        _has_redsea = bool(_find_binary("redsea"))
+        _redsea_bin = _find_binary("redsea")
+        _has_redsea = bool(_redsea_bin)
 
         freq_hz  = int(freq_mhz * 1_000_000)
         rds_tag  = " +RDS" if _has_redsea else ""
@@ -8785,7 +8786,7 @@ class HubClient:
         if _has_redsea:
             try:
                 rds_proc = subprocess.Popen(
-                    ["redsea", "-j"],
+                    [_redsea_bin, "-r", "171000", "-o", "json", "-p"],
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL, bufsize=0,
                 )
@@ -8885,17 +8886,24 @@ class HubClient:
                          name=f"ScanPipe-{slot_id[:6]}").start()
 
         def _rds_reader():
-            """Parse redsea JSON lines and update scanner RDS state."""
+            """Parse redsea JSON lines and update scanner RDS state.
+
+            redsea -o json outputs fields: ps, radiotext (not rt), pi, group.
+            We normalise to {ps, rt, pi} for the hub heartbeat / browser.
+            """
             if not rds_proc:
                 return
-            for raw_line in rds_proc.stdout:
+            for raw_line in iter(rds_proc.stdout.readline, b""):
                 if stop_flag.is_set():
                     break
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
                 try:
-                    d  = json.loads(raw_line.decode("utf-8", errors="replace").strip())
-                    ps = str(d.get("ps", "")).strip()
-                    rt = str(d.get("rt", "")).strip()
-                    pi = str(d.get("pi", ""))
+                    d  = json.loads(line)
+                    ps = str(d.get("ps") or d.get("partial_ps") or "").strip()
+                    rt = str(d.get("radiotext") or d.get("partial_radiotext") or "").strip()
+                    pi = str(d.get("pi") or "").strip()
                     upd: dict = {}
                     if pi:  upd["pi"] = pi
                     if ps:  upd["ps"] = ps
@@ -17651,16 +17659,26 @@ def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0)
                         yield _SILENCE
                         next_sil_t += _BLK_DUR
 
-            # Relay mode: forward PCM chunks from client to browser as-is.
+            # Relay mode: forward PCM chunks from client to browser.
+            # We also pace silence keepalives (every _BLK_DUR) so that Safari
+            # (which is more aggressive about closing idle chunked streams) does
+            # not drop the connection during the first scipy/numpy JIT warm-up
+            # or any momentary network stall.
+            next_kp_t = time.monotonic() + _BLK_DUR
             while True:
                 try:
-                    chunk = slot.get(timeout=1.0)
+                    chunk = slot.get(timeout=0.05)
+                    next_kp_t = time.monotonic() + _BLK_DUR
                     yield chunk
                 except queue.Empty:
                     if slot.closed:
                         break
                     if started and slot.stale:
                         break
+                    now = time.monotonic()
+                    if now >= next_kp_t:
+                        yield _SILENCE
+                        next_kp_t += _BLK_DUR
         finally:
             slot.closed = True
             listen_registry.remove(slot.slot_id)
