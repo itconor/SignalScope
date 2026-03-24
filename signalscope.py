@@ -737,6 +737,14 @@ document.addEventListener('DOMContentLoaded',function(){
   </div>
   <div id="upd-result" style="margin-top:12px;font-size:13px;display:none"></div>
 
+  <div class="sec" style="margin-top:24px">⚡ Process Control</div>
+  <p class="help" style="margin-bottom:12px">Restart the SignalScope process (all active streams will disconnect briefly) or free a stuck SDR dongle left claimed after a scan.</p>
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <button type="button" class="btn bw" onclick="adminRestart()" style="font-size:13px">🔄 Restart SignalScope</button>
+    <button type="button" class="btn bw" onclick="killDabOrphans()" style="font-size:13px">🔌 Kill orphan DAB processes</button>
+    <span id="proc-ctrl-status" style="font-size:12px;color:var(--mu)"></span>
+  </div>
+
   <div class="sec" style="margin-top:24px">⬇ Backup &amp; Restore</div>
   <p class="help" style="margin-bottom:12px">Download a ZIP archive containing your configuration, AI models, signal history database, SLA data, alert log and hub state. Use this to back up your setup or migrate to a new server.</p>
   <a href="/settings/backup" class="btn bp" style="font-size:13px">⬇ Download Backup (config + AI models + DB)</a>
@@ -1053,6 +1061,35 @@ document.getElementById('restore-upload-btn').addEventListener('click', function
     })
     .catch(function(e){ st.style.color='var(--al)'; st.textContent='Request failed: '+e.message; });
 });
+
+function killDabOrphans(){
+  var st=document.getElementById('proc-ctrl-status');
+  if(st){st.style.color='var(--mu)';st.textContent='Killing orphan processes…';}
+  fetch('/api/dab/kill_orphans',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'}})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var msg=d.message||(d.error?'Error: '+d.error:'Done');
+      if(st){st.style.color=d.error?'#f87171':'#86efac';st.textContent=msg;}
+      setTimeout(function(){if(st){st.style.color='';st.textContent='';}},6000);
+    })
+    .catch(function(e){if(st){st.style.color='#f87171';st.textContent='Request failed: '+e;}});
+}
+
+function adminRestart(){
+  if(!confirm('Restart SignalScope now?\n\nAll active streams will disconnect briefly.')) return;
+  var st=document.getElementById('proc-ctrl-status');
+  if(st){st.style.color='var(--mu)';st.textContent='Restarting…';}
+  fetch('/api/admin/restart',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'}})
+    .then(function(){
+      if(st){st.style.color='#86efac';st.textContent='Restarting — page will reload in 6 s…';}
+      setTimeout(function(){window.location.reload();},6000);
+    })
+    .catch(function(){
+      // Normal — server went away mid-restart
+      if(st){st.style.color='#86efac';st.textContent='Restarting — page will reload in 6 s…';}
+      setTimeout(function(){window.location.reload();},6000);
+    });
+}
 </script>
 </form>
 
@@ -1099,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.53"
+BUILD                  = "SignalScope-3.3.54"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -13435,6 +13472,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
       <button type="button" class="btn bp" id="dab_scan_btn" onclick="dabScan()">🔍 Scan multiplex</button>
       <button type="button" class="btn bg" id="dab_ch_scan_btn" onclick="dabChannelScanStart()" title="Scan all Band III channels (5A–12D) and show which muxes are receivable. ~8 min for full sweep; found muxes appear immediately.">📡 Scan all channels</button>
       <button type="button" class="btn bw" id="dab_ch_scan_stop_btn" style="display:none" onclick="dabChannelScanStop()">⏹ Stop</button>
+      <button type="button" class="btn bw" onclick="killDabOrphans()" title="Kill any stray welle-cli processes left over from a scan — frees a dongle that can no longer be opened without restarting">🔌 Free dongle</button>
       <span id="dab_scan_status" style="font-size:12px;color:var(--mu)"></span>
     </div>
     <!-- Channel scan results panel -->
@@ -13943,6 +13981,39 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
     title.textContent = "Scan stopped";
   }
   // ── end channel-scan ──────────────────────────────────────────────────────
+
+  function killDabOrphans(){
+    var st = document.getElementById("dab_scan_status") ||
+             document.getElementById("proc-ctrl-status");
+    if(st) st.textContent = "Killing orphan processes…";
+    _csrfFetch("/api/dab/kill_orphans", {method:"POST"})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var msg = d.message || (d.error ? "Error: "+d.error : "Done");
+        if(st) { st.style.color = d.error ? "#f87171" : "#86efac"; st.textContent = msg; }
+        setTimeout(function(){ if(st) { st.style.color = ""; st.textContent = ""; } }, 6000);
+      })
+      .catch(function(e){
+        if(st) { st.style.color="#f87171"; st.textContent="Request failed: "+e; }
+      });
+  }
+
+  function adminRestart(){
+    if(!confirm("Restart SignalScope now?\n\nAll active streams will disconnect briefly.")) return;
+    var st = document.getElementById("proc-ctrl-status");
+    if(st){ st.style.color = "var(--mu)"; st.textContent = "Restarting…"; }
+    _csrfFetch("/api/admin/restart", {method:"POST"})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(st){ st.style.color="#86efac"; st.textContent = "Restarting — page will reload in 6 s…"; }
+        setTimeout(function(){ window.location.reload(); }, 6000);
+      })
+      .catch(function(){
+        // Normal — server went away mid-restart
+        if(st){ st.style.color="#86efac"; st.textContent = "Restarting — page will reload in 6 s…"; }
+        setTimeout(function(){ window.location.reload(); }, 6000);
+      });
+  }
 
   function dabUpdateAddBtn(){
     var rows = document.querySelectorAll(".dab-svc-row");
@@ -15608,6 +15679,73 @@ def api_dab_channel_scan_stop():
     with _ch_scan_lock:
         _ch_scan_state["running"] = False
     return jsonify({"ok": True})
+
+
+@app.post("/api/dab/kill_orphans")
+@login_required
+@csrf_protect
+def api_dab_kill_orphans():
+    """Kill any orphaned welle-cli processes that may be holding the SDR dongle.
+
+    Safe to call at any time — running welle-cli instances started by an
+    active DAB session will reconnect automatically.  Call this if a channel
+    scan or mux scan left the dongle claimed and it can no longer be opened.
+    """
+    import subprocess as _ksp, signal as _ksig
+    killed = []
+    errors = []
+    try:
+        result = _ksp.run(["pgrep", "-x", "welle-cli"],
+                          capture_output=True, text=True)
+        pids = [int(p.strip()) for p in result.stdout.splitlines() if p.strip().isdigit()]
+    except Exception as e:
+        # pgrep not available (Windows?) — fall back to psutil if installed
+        try:
+            import psutil as _psu
+            pids = [p.pid for p in _psu.process_iter(["name"])
+                    if (p.info["name"] or "").lower() in ("welle-cli", "welle-cli.exe")]
+        except Exception:
+            return jsonify({"error": f"Cannot enumerate processes: {e}"}), 500
+
+    for pid in pids:
+        try:
+            os.kill(pid, _ksig.SIGKILL)
+            killed.append(pid)
+        except ProcessLookupError:
+            pass  # already gone
+        except Exception as ex:
+            errors.append(f"pid {pid}: {ex}")
+
+    # Brief settle so libusb releases the USB device before the caller retries
+    if killed:
+        time.sleep(1.0)
+
+    msg = f"Killed {len(killed)} welle-cli process(es)."
+    if errors:
+        msg += f" Errors: {'; '.join(errors)}"
+    monitor.log(f"[DAB] kill_orphans: {msg}")
+    return jsonify({"ok": True, "killed": killed, "errors": errors, "message": msg})
+
+
+@app.post("/api/admin/restart")
+@login_required
+@csrf_protect
+def api_admin_restart():
+    """Gracefully restart the SignalScope process.
+
+    Replaces the running process with a fresh copy of itself using os.execv.
+    Any systemd / supervisor watchdog will see the restart.  All active
+    streams will be interrupted momentarily.
+    """
+    import sys as _sys, threading as _thr
+    monitor.log("[Admin] Restart requested via web UI.")
+
+    def _do_restart():
+        time.sleep(1.5)   # let the HTTP response reach the browser first
+        os.execv(_sys.executable, [_sys.executable] + _sys.argv)
+
+    _thr.Thread(target=_do_restart, daemon=True, name="AdminRestart").start()
+    return jsonify({"ok": True, "note": "Restarting in ~1.5 s…"})
 
 
 @app.get("/api/dab/scan")

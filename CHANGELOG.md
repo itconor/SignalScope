@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.54] - 2026-03-24
+
+### Added
+- **Process control UI** — Settings → Maintenance now has a **Restart SignalScope** button (`/api/admin/restart`) and a **Kill orphan DAB processes** button (`/api/dab/kill_orphans`). Restart uses `os.execv` to re-exec the process in place; kill orphans sends SIGKILL to any running `welle-cli` processes and waits 1s for USB stack to settle. Both are accessible from any machine's settings page (hub or client) without shell access.
+- **Kill orphan DAB processes** button also added inline in the DAB input configuration panel as **🔌 Free dongle** — available at the point of use when a channel/mux scan leaves the dongle claimed.
+
 ## [3.3.53] - 2026-03-24
 
 ### Fixed
