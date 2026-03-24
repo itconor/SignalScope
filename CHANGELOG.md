@@ -2,6 +2,15 @@
 
 ---
 
+## [3.3.48] - 2026-03-24
+
+### Fixed
+- **Hub client — stops retrying after hub downtime** — three issues combined to make clients appear to "give up" permanently when the hub went offline:
+  1. **Silent retry loop**: `_prev_err` deduplication logged the `<urlopen error timed out>` message only once, then went completely silent even though retries were still happening. Operators had no way to confirm the client was still active. Fixed: periodic retry log now prints on the first failure and every 5th consecutive failure, showing the backoff level and next retry interval.
+  2. **No reconnect confirmation**: when the hub came back online, reconnection happened silently. Fixed: a `[HubClient] Reconnected to hub after N failure(s)` message now prints when the first successful send follows a run of failures.
+  3. **No crash recovery**: if any uncaught exception escaped the inner try/except blocks in `_loop` (e.g. from `_cfg_fn()`, `_normalise_url()`, or any command handler), the daemon thread would die silently and never restart. Fixed: top-level `try/except` wraps the entire while-loop body; any unexpected exception is logged with a full traceback and the loop retries after `BASE_WAIT`.
+- **Hub client — slow failure detection**: `urlopen` timeout reduced from 10 s to 5 s. At maximum backoff (10 consecutive failures) the retry interval drops from 70 s to 65 s, and the ramp to max backoff is faster — reaching steady-state in roughly 50 s of hub downtime rather than 100 s.
+
 ## [3.3.42] - 2026-03-24
 
 ### Changed

@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.47"
+BUILD                  = "SignalScope-3.3.48"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -9010,7 +9010,7 @@ class HubClient:
                 "X-Hub-Version":   HUB_API_VERSION,
             }, method="POST")
         try:
-            resp_obj = urllib.request.urlopen(req, timeout=10)
+            resp_obj = urllib.request.urlopen(req, timeout=5)
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 raise RateLimitError("Hub rate limited (429) — backing off")
@@ -9032,6 +9032,7 @@ class HubClient:
         MAX_BACKOFF = 60.0        # cap backoff at 60s
 
         while not self._stop.is_set():
+          try:
             cfg = self._cfg_fn()
             if not cfg.hub.hub_url:
                 self._stop.wait(BASE_WAIT)
@@ -9087,6 +9088,8 @@ class HubClient:
 
             # Update state and backoff
             if success:
+                if self._backoff:
+                    print(f"[HubClient] Reconnected to hub after {self._backoff} consecutive failure(s)")
                 self.last_ack   = time.time()
                 self.sent_total += flushed
                 self._backoff    = 0
@@ -9178,9 +9181,24 @@ class HubClient:
                 age = time.time() - self.last_ack if self.last_ack else 999
                 self.state = (self.STATE_DEGRADED if age < HUB_SITE_TIMEOUT
                               else self.STATE_DISCONNECTED)
+                # Periodic retry log — first failure + every 5th after — so
+                # operators can confirm the client is still actively retrying
+                # rather than silently "giving up".
+                if self._backoff == 1 or (self.fail_total % 5 == 0):
+                    next_wait = min(BASE_WAIT * (1.5 ** self._backoff), MAX_BACKOFF)
+                    print(f"[HubClient] Hub unreachable — retrying in {next_wait:.0f}s "
+                          f"(consecutive: {self._backoff}/10, "
+                          f"error: {self.last_error})")
 
             wait = min(BASE_WAIT * (1.5 ** self._backoff), MAX_BACKOFF) if self._backoff else BASE_WAIT
             self._stop.wait(wait)
+          except Exception as _top_e:
+            # Safety net: prevent any uncaught exception from silently killing
+            # the heartbeat thread.  Log it and keep retrying.
+            print(f"[HubClient] Unexpected error in heartbeat loop "
+                  f"(will retry in {BASE_WAIT}s): {_top_e}")
+            import traceback as _tb; _tb.print_exc()
+            self._stop.wait(BASE_WAIT)
 
 
 # ─── Hub server — aggregates heartbeats from all clients ──────────────────────
