@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.48"
+BUILD                  = "SignalScope-3.3.49"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -10431,38 +10431,71 @@ class HubServer:
 
         # ── Build the fault description ────────────────────────────────────────
         if fn.get("type") == "stack":
-            # Stack fault — describe each sub-node's individual state
-            sub_nodes = fn.get("nodes", [])
-            mode      = fn.get("mode", "all")
-            n_total   = len(sub_nodes)
-            down_subs = [n for n in sub_nodes if n.get("status") in ("down", "offline")]
-            ok_subs   = [n for n in sub_nodes if n.get("status") not in ("down", "offline")]
-            n_down    = len(down_subs)
-            pos_label = fn.get("label") or f"position {idx + 1}"
+            # Stack fault — describe each sub-node's individual state,
+            # distinguishing between silent streams and offline sites.
+            sub_nodes    = fn.get("nodes", [])
+            mode         = fn.get("mode", "all")
+            n_total      = len(sub_nodes)
+            silent_subs  = [n for n in sub_nodes if n.get("status") == "down"]
+            offline_subs = [n for n in sub_nodes if n.get("status") == "offline"]
+            faulted_subs = silent_subs + offline_subs
+            ok_subs      = [n for n in sub_nodes if n.get("status") not in ("down", "offline")]
+            n_down       = len(faulted_subs)
+            pos_label    = fn.get("label") or f"position {idx + 1}"
 
-            down_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in down_subs)
-            ok_names   = ", ".join(n.get("label") or n.get("stream") or "?" for n in ok_subs)
+            ok_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in ok_subs)
 
             if n_down == n_total:
-                # Every stream at this position is silent
-                detail = (f"all {n_total} stream(s) at '{pos_label}' are silent "
-                          f"({down_names})")
+                # Every stream at this position is faulted
+                if offline_subs and not silent_subs:
+                    # All offline — site(s) not reporting
+                    off_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in offline_subs)
+                    detail = (f"all {n_total} node(s) at '{pos_label}' are offline "
+                              f"({off_names})")
+                elif offline_subs and silent_subs:
+                    # Mixed — some offline, some silent
+                    off_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in offline_subs)
+                    sil_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in silent_subs)
+                    detail = (f"all {n_total} stream(s) at '{pos_label}' are faulted "
+                              f"({off_names} offline; {sil_names} silent)")
+                else:
+                    # All silent
+                    sil_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in silent_subs)
+                    detail = (f"all {n_total} stream(s) at '{pos_label}' are silent "
+                              f"({sil_names})")
             else:
                 # Partial failure — some streams still OK
+                parts = []
+                if offline_subs:
+                    off_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in offline_subs)
+                    parts.append(f"{off_names} offline")
+                if silent_subs:
+                    sil_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in silent_subs)
+                    parts.append(f"{sil_names} silent")
+                faulted_desc = "; ".join(parts)
                 detail = (f"{n_down} of {n_total} stream(s) at '{pos_label}' "
-                          f"{'is' if n_down == 1 else 'are'} silent "
-                          f"({down_names} silent; {ok_names} OK)")
+                          f"{'is' if n_down == 1 else 'are'} faulted "
+                          f"({faulted_desc}; {ok_names} OK)")
                 if mode == "any":
                     detail += " — stack mode is ANY, so this triggers a fault"
 
             msg = (f"Chain fault in '{chain_label}' — {detail}. "
                    f"This is the first failed position in the chain.{ds_note}")
         else:
-            # Regular single node
-            msg = (f"Chain fault in '{chain_label}' — signal lost at "
-                   f"'{fn.get('label', '?')}' (site: {fn.get('site', '?')}, "
-                   f"stream: {fn.get('stream', '?')}). "
-                   f"This is the first failed point in the chain.{ds_note}")
+            # Regular single node — distinguish offline site from audio silence
+            node_status = fn.get("status", "down")
+            if node_status == "offline":
+                offline_age = fn.get("offline_age_s")
+                age_note = f", last seen {round(offline_age)}s ago" if offline_age else ""
+                msg = (f"Chain fault in '{chain_label}' — node offline: "
+                       f"'{fn.get('label', '?')}' (site: {fn.get('site', '?')}, "
+                       f"stream: {fn.get('stream', '?')}) is not reporting{age_note}. "
+                       f"This is the first failed point in the chain.{ds_note}")
+            else:
+                msg = (f"Chain fault in '{chain_label}' — signal lost at "
+                       f"'{fn.get('label', '?')}' (site: {fn.get('site', '?')}, "
+                       f"stream: {fn.get('stream', '?')}). "
+                       f"This is the first failed point in the chain.{ds_note}")
 
         # ── Save clips from every node in the chain ────────────────────────────
         # Walk all positions; for local nodes save directly and collect into

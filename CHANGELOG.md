@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.49] - 2026-03-24
+
+### Changed
+- **Broadcast Chains — offline-site faults now say "node offline" not "signal lost"** — when a chain fault is caused by a remote site going offline (hub has not received a heartbeat from that site), the CHAIN_FAULT alert message now explicitly says the node is offline and includes how long ago it was last seen, rather than generically saying "signal lost". This makes it immediately clear whether the chain failure is a transmission/audio issue or a connectivity/monitoring issue.
+  - Single-node faults: message changes from *"signal lost at 'TX1' (site: london, stream: …)"* to *"node offline: 'TX1' (site: london, stream: …) is not reporting, last seen 42s ago"*.
+  - Stack-node faults: offline sub-nodes are now listed separately from silent sub-nodes (e.g. *"node_a offline; node_b silent"*) so the alert text reflects the true mix of failure modes.
+
 ## [3.3.48] - 2026-03-24
 
 ### Fixed
