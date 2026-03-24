@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.58"
+BUILD                  = "SignalScope-3.3.59"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -7511,6 +7511,9 @@ class MonitorManager:
                         chunk = q.popleft()
                         analyse_chunk(cfg, sender, self.log, chunk, CHUNK_DURATION,
                                       cfg.alert_wav_duration, inputs)
+                        if cfg._stream_buffer is not None:
+                            cfg._stream_buffer.append(chunk.copy())
+                            cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
                     else:
                         time.sleep(0.05)
         except Exception as e:

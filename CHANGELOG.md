@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.59] - 2026-03-24
+
+### Fixed
+- **Local audio input (sound://) — no audio in web player** — `_run_sound` fed PCM to `analyse_chunk` for monitoring but never wrote chunks into `cfg._stream_buffer` / `cfg._live_chunk_seq`. Every other input type does this after `analyse_chunk`; the sound device path was simply missing those two lines. Levels showed correctly but the live player had nothing to stream.
+
 ## [3.3.58] - 2026-03-24
 
 ### Fixed
