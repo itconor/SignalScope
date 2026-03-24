@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.56"
+BUILD                  = "SignalScope-3.3.57"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -13939,9 +13939,17 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
           var btn = document.createElement("button");
           btn.type = "button";
           btn.className = "btn bg";
-          btn.style.cssText = "font-size:12px;padding:4px 10px;border-radius:20px";
+          btn.style.cssText = "font-size:12px;padding:4px 10px;border-radius:20px;display:inline-flex;align-items:center;gap:6px";
           btn.title = r.ensemble + " — SNR " + r.snr + " dB — " + r.services + " service" + (r.services>1?"s":"");
-          btn.textContent = r.channel + " · " + r.ensemble + " (" + r.services + ")";
+          // SNR colour: ≥15 dB = good (green), 8–15 = marginal (amber), <8 = weak (red)
+          var snrCol = r.snr >= 15 ? "#86efac" : r.snr >= 8 ? "#fde68a" : "#f87171";
+          var snrLabel = document.createElement("span");
+          snrLabel.style.cssText = "font-size:11px;font-weight:700;color:" + snrCol + ";white-space:nowrap";
+          snrLabel.textContent = r.snr.toFixed(1) + " dB";
+          var txt = document.createElement("span");
+          txt.textContent = r.channel + " · " + r.ensemble + " (" + r.services + ")";
+          btn.appendChild(txt);
+          btn.appendChild(snrLabel);
           btn.addEventListener("click", function(){
             // Select this channel and auto-scan its services
             var sel = document.getElementById("dab_channel");

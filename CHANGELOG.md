@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.57] - 2026-03-24
+
+### Added
+- **DAB channel scan — SNR badge on result cards** — each found mux now shows a colour-coded SNR badge alongside the channel/ensemble name: green (≥15 dB, good), amber (8–15 dB, marginal), red (<8 dB, weak). SNR was already measured during the probe but only visible on hover.
+
 ## [3.3.56] - 2026-03-24
 
 ### Fixed
