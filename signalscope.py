@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.44"
+BUILD                  = "SignalScope-3.3.45"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8802,6 +8802,17 @@ class HubClient:
         # Separate queue for redsea stdin so blocking pipe writes never stall
         # the audio pipeline.  Maxsize=5 (≈0.5 s) — drop oldest on overflow.
         rds_feed_q: queue.Queue = queue.Queue(maxsize=5)
+
+        # Pre-warm scipy/numpy so the first resample_poly call in _pipeline
+        # has no JIT/import overhead (avoids a 200-500 ms gap that could cause
+        # Safari to drop the streaming connection).
+        if _has_redsea:
+            try:
+                import numpy as _np_pre
+                from scipy.signal import resample_poly as _rp_pre
+                _rp_pre(_np_pre.zeros(17100, dtype=_np_pre.float32), 16, 57)
+            except Exception:
+                pass
 
         def _rds_feeder():
             """Drain rds_feed_q and write blocks to redsea's stdin.
@@ -17660,15 +17671,17 @@ def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0)
                         next_sil_t += _BLK_DUR
 
             # Relay mode: forward PCM chunks from client to browser.
-            # We also pace silence keepalives (every _BLK_DUR) so that Safari
-            # (which is more aggressive about closing idle chunked streams) does
-            # not drop the connection during the first scipy/numpy JIT warm-up
-            # or any momentary network stall.
-            next_kp_t = time.monotonic() + _BLK_DUR
+            # poll=0.12 s gives enough margin for the 0.1 s chunk interval
+            # so real audio chunks are never missed and silence is not inserted
+            # between them.  The keepalive threshold (0.5 s) is intentionally
+            # much longer — it only fires during a genuine gap (e.g. retune
+            # or an unexpected network stall) to keep Safari's connection open.
+            _KP_THRESHOLD = 0.5          # send silence after this many s idle
+            next_kp_t = time.monotonic() + _KP_THRESHOLD
             while True:
                 try:
-                    chunk = slot.get(timeout=0.05)
-                    next_kp_t = time.monotonic() + _BLK_DUR
+                    chunk = slot.get(timeout=0.12)
+                    next_kp_t = time.monotonic() + _KP_THRESHOLD
                     yield chunk
                 except queue.Empty:
                     if slot.closed:
@@ -17678,7 +17691,7 @@ def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0)
                     now = time.monotonic()
                     if now >= next_kp_t:
                         yield _SILENCE
-                        next_kp_t += _BLK_DUR
+                        next_kp_t = now + _KP_THRESHOLD
         finally:
             slot.closed = True
             listen_registry.remove(slot.slot_id)
