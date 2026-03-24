@@ -2,6 +2,19 @@
 
 ---
 
+## [3.3.66] - 2026-03-24
+
+### Added / Changed
+- **FM Scanner — comprehensive UI and backend overhaul**
+  - **Gain & PPM controls** added to the setup bar; both values are forwarded to `rtl_fm` on connect.
+  - **Signal level bar** — shows live RMS dBFS (computed from the PCM stream every 10 blocks) with colour-coded fill: green (> −20 dBFS), amber, red (< −40 dBFS).
+  - **Extended RDS panel** — now displays PTY genre badge, STEREO/MONO indicator, TP (Traffic Programme) and TA (Traffic Announcement) flags, PI code, clock-time (CT), and a hoverable AF (Alternative Frequency) count badge in addition to PS name and RadioText.
+  - **Frequency history** — last 10 tuned frequencies are persisted to `localStorage` and shown as a clickable panel; updated automatically with the RDS PS name as soon as it arrives.
+  - **Presets** — save named station bookmarks to `localStorage` with one click (or Enter); recall or delete from the panel; presets survive page reloads and browser restarts.
+  - **Record button (30 s / 60 s)** — triggers a WAV download built from the hub's rolling 60-second PCM ring buffer (`GET /api/hub/scanner/record/<site>?secs=N`).
+  - **Band scan panel** — "Scan" button triggers `rtl_power` 76–108 MHz sweep on the remote SDR; results poll automatically and appear as clickable frequency/dB cards that retune the scanner in one click.
+  - Tuner card widened to 700 px max-width to accommodate the new panels.
+
 ## [3.3.65] - 2026-03-24
 
 ### Changed

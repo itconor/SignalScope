@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.65"
+BUILD                  = "SignalScope-3.3.66"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8262,6 +8262,81 @@ class HubClient:
         monitor.log(f"[Hub] calibrate_silence: '{stream}' threshold set to {new_thresh} dBFS "
                     f"(level was {inp._last_level_dbfs:.1f}, headroom {headroom} dB)")
 
+    def _cmd_scanner_band_scan(self, payload: dict):
+        """Hub command: run an FM band scan with rtl_power and post results back."""
+        threading.Thread(
+            target=self._run_scanner_band_scan, args=(payload,),
+            daemon=True, name="ScannerBandScan",
+        ).start()
+
+    def _run_scanner_band_scan(self, payload: dict):
+        """Run rtl_power over the FM band and POST a list of peaks to the hub."""
+        import subprocess, math as _math
+        try:
+            cfg_obj  = self._cfg_fn()
+            hub_url  = cfg_obj.hub.hub_url.rstrip("/")
+            secret   = cfg_obj.hub.secret_key
+            site     = cfg_obj.hub.site_name or socket.gethostname()
+            serial   = str(payload.get("sdr_serial", "") or "").strip()
+            ppm      = int(payload.get("ppm", 0) or 0)
+            gain     = float(payload.get("gain", 38.0) or 38.0)
+            start_mhz = float(payload.get("start_mhz", 76.0))
+            end_mhz   = float(payload.get("end_mhz", 108.0))
+            step_khz  = int(payload.get("step_khz", 100))
+
+            rtlp = _find_binary("rtl_power")
+            if not rtlp:
+                monitor.log("[Scanner] rtl_power not found — band scan unavailable")
+                return
+
+            device_arg = []
+            if serial:
+                try:
+                    idx = sdr_manager.resolve_index(serial)
+                    device_arg = ["-d", str(idx)]
+                except Exception:
+                    pass
+
+            cmd = [rtlp,
+                   "-f", f"{int(start_mhz*1e6)}:{int(end_mhz*1e6)}:{step_khz*1000}",
+                   "-i", "2", "-1", "-g", str(gain)]
+            if ppm:
+                cmd += ["-p", str(ppm)]
+            cmd += device_arg
+            monitor.log(f"[Scanner] Band scan {start_mhz}–{end_mhz} MHz step {step_khz} kHz")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            # Parse rtl_power CSV: date, time, Hz_low, Hz_high, step, samples, dB, dB, ...
+            peaks = []   # list of {freq_mhz, power_db}
+            for line in result.stdout.splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 7:
+                    continue
+                try:
+                    hz_low  = float(parts[2])
+                    hz_step = float(parts[4])
+                    dbs     = [float(x) for x in parts[6:] if x]
+                    for i, db in enumerate(dbs):
+                        f_mhz = round((hz_low + hz_step * i) / 1e6, 3)
+                        peaks.append({"freq_mhz": f_mhz, "power_db": round(db, 1)})
+                except (ValueError, IndexError):
+                    continue
+            # Send results to hub
+            result_dict = {"site": site, "peaks": peaks, "ts": time.time(),
+                           "start_mhz": start_mhz, "end_mhz": end_mhz, "step_khz": step_khz}
+            payload_bytes = json.dumps(result_dict).encode()
+            ts  = time.time()
+            sig = hub_sign_payload(secret, payload_bytes, ts) if secret else ""
+            headers: dict = {"X-Hub-Sig": sig, "X-Hub-Ts": str(ts), "X-Hub-Site": site,
+                             "Content-Type": "application/json"}
+            req = urllib.request.Request(
+                f"{hub_url}/hub/scanner_scan_result", data=payload_bytes,
+                headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=30):
+                pass
+            monitor.log(f"[Scanner] Band scan complete — {len(peaks)} data points posted")
+        except Exception as e:
+            monitor.log(f"[Scanner] Band scan failed: {e}")
+
     def _cmd_backup(self, payload: dict):
         """Hub command: generate a full backup ZIP and upload it to the hub."""
         monitor.log("[Hub] Backup command received — generating ZIP …")
@@ -8989,6 +9064,19 @@ class HubClient:
                                 aud_out = rs.clip(-32768, 32767).astype('<i2').tobytes()
                             else:
                                 aud_out = blk
+                        # Compute RMS signal level from audio block (every ~1s = 10 blocks)
+                        if count % 10 == 0:
+                            try:
+                                import numpy as _npl
+                                import math as _math
+                                _s = _npl.frombuffer(aud_out, dtype='<i2').astype(_npl.float32)
+                                _rms = float(_npl.sqrt(_npl.mean(_s ** 2)))
+                                _lvl = round(20 * _math.log10(_rms / 32768) if _rms > 0.5 else -96.0, 1)
+                                _cur = self._get_scanner_rds()
+                                _cur["_level"] = _lvl
+                                self._set_scanner_rds(_cur)
+                            except Exception:
+                                pass
                         try:
                             pcm_queue.put(aud_out, timeout=1.0)
                         except queue.Full:
@@ -9002,8 +9090,8 @@ class HubClient:
         def _rds_reader():
             """Parse redsea JSON lines and update scanner RDS state.
 
-            redsea -o json outputs fields: ps, radiotext (not rt), pi, group.
-            We normalise to {ps, rt, pi} for the hub heartbeat / browser.
+            redsea -o json outputs: ps, radiotext, pi, pty, tp, ta, stereo, ct, af, group.
+            We normalise all useful fields for the hub heartbeat / browser.
             """
             if not rds_proc:
                 return
@@ -9014,14 +9102,25 @@ class HubClient:
                 if not line:
                     continue
                 try:
-                    d  = json.loads(line)
-                    ps = str(d.get("ps") or d.get("partial_ps") or "").strip()
-                    rt = str(d.get("radiotext") or d.get("partial_radiotext") or "").strip()
-                    pi = str(d.get("pi") or "").strip()
+                    d   = json.loads(line)
                     upd: dict = {}
-                    if pi:  upd["pi"] = pi
-                    if ps:  upd["ps"] = ps
-                    if rt:  upd["rt"] = rt
+                    ps  = str(d.get("ps") or d.get("partial_ps") or "").strip()
+                    rt  = str(d.get("radiotext") or d.get("partial_radiotext") or "").strip()
+                    pi  = str(d.get("pi") or "").strip()
+                    pty = str(d.get("pty") or "").strip()
+                    ct  = str(d.get("ct") or "").strip()     # clock time string
+                    af  = d.get("af")                         # list of float MHz or None
+                    # Boolean flags — only update when explicitly present in the JSON
+                    for key in ("tp", "ta", "stereo"):
+                        if key in d:
+                            upd[key] = bool(d[key])
+                    if pi:  upd["pi"]  = pi
+                    if ps:  upd["ps"]  = ps
+                    if rt:  upd["rt"]  = rt
+                    if pty: upd["pty"] = pty
+                    if ct:  upd["ct"]  = ct
+                    if isinstance(af, list) and af:
+                        upd["af"] = [round(float(f), 2) for f in af[:20]]
                     if upd:
                         cur = self._get_scanner_rds()
                         cur.update(upd)
@@ -9261,6 +9360,8 @@ class HubClient:
                         self._cmd_ping_test(cmd_payload)
                     elif cmd_type == "push_log":
                         self._cmd_push_log(cmd_payload)
+                    elif cmd_type == "scanner_band_scan":
+                        self._cmd_scanner_band_scan(cmd_payload)
                 # Drain auto-clip-upload queue — any clips saved since the last
                 # heartbeat are uploaded to the hub now so they can be played
                 # locally from the hub's reports page without streaming.
@@ -9341,6 +9442,10 @@ class HubServer:
         self._pending_updates: dict = {}
         # Active scanner sessions — site_name → {slot_id, freq_mhz, sdr_serial, started}
         self._scanner_sessions: dict = {}
+        # Band scan results — site → {peaks, ts, start_mhz, end_mhz}
+        self._scanner_scan_results: dict = {}
+        # Rolling PCM buffer for recording — site → deque of raw bytes (max 600 × 0.1s = 60s)
+        self._scanner_pcm: dict = {}
         # Fault log — cid → list of fault dicts (max 25 in memory; persisted to DB)
         self._chain_fault_log: dict = {}
         # Predictive trend cache — stream_key → {"trend": str, "slope": float, "ts": float}
@@ -18405,6 +18510,122 @@ def hub_scanner_status(site_name):
     })
 
 
+@app.post("/api/hub/scanner/band_scan")
+@login_required
+@csrf_protect
+def hub_scanner_band_scan():
+    """Push a band scan command to a remote site's client."""
+    if not hub_server:
+        return jsonify({"ok": False, "error": "no hub"}), 400
+    data      = request.get_json(silent=True) or {}
+    site      = str(data.get("site", "")).strip()
+    if not site:
+        return jsonify({"ok": False, "error": "site required"}), 400
+    sess = hub_server._scanner_sessions.get(site, {})
+    hub_server._scanner_scan_results.pop(site, None)   # clear stale result
+    hub_server.push_pending_command(site, {
+        "type": "scanner_band_scan",
+        "payload": {
+            "sdr_serial": sess.get("sdr_serial", ""),
+            "ppm":        sess.get("ppm", 0),
+            "gain":       sess.get("gain", 38.0),
+            "start_mhz":  float(data.get("start_mhz", 76.0)),
+            "end_mhz":    float(data.get("end_mhz",  108.0)),
+            "step_khz":   int(data.get("step_khz", 100)),
+        },
+    })
+    monitor.log(f"[Scanner] Band scan command pushed to site '{site}'")
+    return jsonify({"ok": True})
+
+
+@app.post("/hub/scanner_scan_result")
+def hub_scanner_scan_result():
+    """Receive band scan results from a client site."""
+    cfg    = monitor.app_cfg
+    secret = cfg.hub.secret_key
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 404
+    raw_body  = request.get_data()
+    site_name = request.headers.get("X-Hub-Site", "").strip()
+    if secret:
+        sig  = request.headers.get("X-Hub-Sig", "")
+        ts_h = request.headers.get("X-Hub-Ts", "0")
+        try:
+            ts = float(ts_h)
+        except ValueError:
+            return jsonify({"error": "invalid timestamp"}), 403
+        ok, reason = hub_verify_signature(secret, raw_body, sig, ts)
+        if not ok:
+            return jsonify({"error": "forbidden", "reason": reason}), 403
+    try:
+        data = json.loads(raw_body)
+    except Exception:
+        return jsonify({"error": "bad json"}), 400
+    site_name = site_name or str(data.get("site", "")).strip()
+    if not site_name:
+        return jsonify({"error": "missing site"}), 400
+    if hub_server:
+        hub_server._scanner_scan_results[site_name] = {
+            "peaks":     data.get("peaks", []),
+            "ts":        data.get("ts", time.time()),
+            "start_mhz": data.get("start_mhz", 76.0),
+            "end_mhz":   data.get("end_mhz", 108.0),
+            "step_khz":  data.get("step_khz", 100),
+        }
+        monitor.log(f"[Scanner] Band scan result received from '{site_name}': "
+                    f"{len(data.get('peaks',[]))} points")
+    return jsonify({"ok": True})
+
+
+@app.get("/api/hub/scanner/scan_result/<path:site_name>")
+@login_required
+def hub_scanner_scan_result_get(site_name):
+    """Return the latest band scan result for a site."""
+    if not hub_server:
+        return jsonify({"ok": True, "ready": False})
+    result = hub_server._scanner_scan_results.get(site_name)
+    if not result:
+        return jsonify({"ok": True, "ready": False})
+    return jsonify({"ok": True, "ready": True, **result})
+
+
+@app.get("/api/hub/scanner/record/<path:site_name>")
+@login_required
+def hub_scanner_record(site_name):
+    """Return a WAV file built from the last N seconds of buffered scanner PCM."""
+    import struct, io as _io
+    secs = min(int(request.args.get("secs", 30)), 60)
+    if not hub_server:
+        return jsonify({"error": "no hub"}), 400
+    buf = hub_server._scanner_pcm.get(site_name)
+    if not buf:
+        return jsonify({"error": "no buffered audio — stream must be active"}), 404
+    blocks_needed = secs * 10   # 10 blocks per second
+    pcm_bytes = b"".join(list(buf)[-blocks_needed:])
+    if not pcm_bytes:
+        return jsonify({"error": "buffer empty"}), 404
+    # Build WAV: 48000 Hz, mono, 16-bit PCM
+    SR, CH, BPS = 48000, 1, 16
+    num_samples = len(pcm_bytes) // (BPS // 8)
+    wav_io = _io.BytesIO()
+    data_size  = len(pcm_bytes)
+    chunk_size = 36 + data_size
+    wav_io.write(b"RIFF")
+    wav_io.write(struct.pack("<I", chunk_size))
+    wav_io.write(b"WAVE")
+    wav_io.write(b"fmt ")
+    wav_io.write(struct.pack("<IHHIIHH", 16, 1, CH, SR,
+                             SR * CH * BPS // 8, CH * BPS // 8, BPS))
+    wav_io.write(b"data")
+    wav_io.write(struct.pack("<I", data_size))
+    wav_io.write(pcm_bytes)
+    wav_io.seek(0)
+    ts_str  = time.strftime("%Y%m%d_%H%M%S")
+    fname   = f"scanner_{_safe_name(site_name)}_{ts_str}.wav"
+    from flask import send_file as _sf
+    return _sf(wav_io, mimetype="audio/wav", as_attachment=True, download_name=fname)
+
+
 def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0):
     """
     Stream raw S16LE PCM for scanner relay slots.
@@ -18454,19 +18675,25 @@ def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0)
                         next_sil_t += _BLK_DUR
 
             # Relay mode: forward PCM chunks from client to browser.
-            # poll=0.12 s gives enough margin for the 0.1 s chunk interval
-            # so real audio chunks are never missed and no silence is inserted
-            # between them during normal streaming.
-            # _KP_THRESHOLD=0.25 s: Safari closes idle chunked HTTP connections
-            # sooner than Chrome; 0.25 s is safely above the 0.1 s chunk interval
-            # but fast enough to prevent Safari dropping the stream during any
-            # momentary gap (retune, network jitter, etc.).
+            # Also maintain a rolling 60-second PCM buffer for on-demand recording.
             _KP_THRESHOLD = 0.25
             next_kp_t = time.monotonic() + _KP_THRESHOLD
+            # Find which site owns this slot so we can write to its PCM buffer
+            _pcm_site = None
+            if hub_server:
+                for _sn, _sess in hub_server._scanner_sessions.items():
+                    if _sess.get("slot_id") == slot.slot_id:
+                        _pcm_site = _sn
+                        from collections import deque as _deque
+                        if _pcm_site not in hub_server._scanner_pcm:
+                            hub_server._scanner_pcm[_pcm_site] = _deque(maxlen=600)
+                        break
             while True:
                 try:
                     chunk = slot.get(timeout=0.12)
                     next_kp_t = time.monotonic() + _KP_THRESHOLD
+                    if _pcm_site and hub_server and len(chunk) > 0:
+                        hub_server._scanner_pcm[_pcm_site].append(chunk)
                     yield chunk
                 except queue.Empty:
                     if slot.closed:
@@ -23623,52 +23850,89 @@ header h1{font-size:17px;font-weight:700}
 .badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
 nav a{color:var(--tx);font-size:13px;padding:5px 10px;border-radius:6px;background:var(--bor);text-decoration:none;transition:background .15s}
 nav a:hover{background:#254880;color:#fff}
-.setup-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 20px;background:rgba(10,20,48,.7);border-bottom:1px solid var(--bor)}
+.setup-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 20px;background:rgba(10,20,48,.7);border-bottom:1px solid var(--bor)}
 .setup-bar label{font-size:12px;color:var(--mu);white-space:nowrap}
 .setup-bar select,.setup-bar input[type=number]{padding:6px 10px;font-size:13px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);outline:none}
 .setup-bar select:focus,.setup-bar input[type=number]:focus{border-color:var(--acc)}
 .btn-connect{padding:7px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;border:1px solid var(--acc);background:#0e2a5a;color:#bfdbfe;transition:background .15s;font-family:inherit}
 .btn-connect:hover{background:#143a80}
 .btn-connect.active{background:#1a4028;border-color:var(--ok);color:#86efac}
-main{flex:1;display:flex;align-items:flex-start;justify-content:center;padding:28px 16px}
-.tuner{background:var(--sur);border:1px solid var(--bor);border-radius:14px;padding:26px 28px;width:100%;max-width:520px;box-shadow:0 6px 24px rgba(0,0,0,.4)}
-.status-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:18px;font-size:13px;color:var(--mu)}
+main{flex:1;display:flex;align-items:flex-start;justify-content:center;padding:24px 16px}
+.page-col{display:flex;flex-direction:column;gap:12px;width:100%;max-width:700px}
+.tuner{background:var(--sur);border:1px solid var(--bor);border-radius:14px;padding:22px 24px;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+.status-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:16px;font-size:13px;color:var(--mu)}
 .sdot{width:9px;height:9px;border-radius:50%;flex-shrink:0;transition:background .3s,box-shadow .3s}
 .sdot.idle{background:#2a3a4a}
 .sdot.connecting{background:var(--wn);box-shadow:0 0 8px rgba(245,158,11,.7)}
 .sdot.streaming{background:var(--ok);box-shadow:0 0 8px rgba(34,197,94,.6)}
 .sdot.error{background:var(--al);box-shadow:0 0 8px rgba(239,68,68,.6)}
-.freq-wrap{text-align:center;margin-bottom:18px}
+.freq-wrap{text-align:center;margin-bottom:14px}
 .freq-disp{display:inline-block;font-family:'Courier New',monospace;font-size:58px;font-weight:700;letter-spacing:3px;color:var(--lcd);text-shadow:0 0 14px rgba(0,229,255,.6),0 0 28px rgba(0,229,255,.18);background:#030a12;border:2px solid #0c2440;border-radius:10px;padding:10px 22px;min-width:278px;line-height:1.1;transition:color .2s}
 .freq-unit{font-size:18px;color:var(--lcd-dim);letter-spacing:2px;margin-top:4px;font-family:'Courier New',monospace}
 .freq-sub{font-size:12px;color:var(--mu);margin-top:5px;min-height:16px}
-.rds-wrap{background:#040c1a;border:1px solid #0f2248;border-radius:8px;padding:10px 14px;margin-bottom:16px}
+.level-wrap{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:8px}
+.level-label{font-size:10px;color:var(--mu);width:60px;text-align:right;font-family:'Courier New',monospace;flex-shrink:0}
+.level-track{flex:1;max-width:240px;height:6px;background:#0a1628;border-radius:3px;overflow:hidden;border:1px solid var(--bor)}
+.level-fill{height:100%;border-radius:3px;transition:width .5s,background .4s;background:var(--al);width:0%}
+.rds-wrap{background:#040c1a;border:1px solid #0f2248;border-radius:8px;padding:10px 14px;margin-bottom:14px}
 .rds-ps{display:block;font-family:'Courier New',monospace;font-size:22px;font-weight:700;letter-spacing:4px;color:var(--lcd);text-align:center;text-shadow:0 0 10px rgba(0,229,255,.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px}
 .rds-rt-outer{overflow:hidden;white-space:nowrap;margin-top:5px;text-align:center}
 .rds-rt-static{font-size:12px;color:var(--mu)}
 .rds-rt-scroll{display:inline-flex;white-space:nowrap;animation:rds-marquee 16s linear infinite;font-size:12px;color:var(--mu)}
 .rds-rt-scroll span{display:inline-block;padding-right:3rem}
 @keyframes rds-marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-.tune-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:12px}
+.rds-meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;justify-content:center;align-items:center}
+.rds-badge{font-size:10px;padding:2px 7px;border-radius:4px;font-weight:700;letter-spacing:.3px;background:#0a1628;border:1px solid var(--bor);color:var(--mu)}
+.rds-badge.on{background:rgba(23,168,255,.12);border-color:rgba(23,168,255,.4);color:var(--acc)}
+.rds-badge.stereo-on{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.4);color:var(--ok)}
+.rds-badge.pty-on{background:rgba(168,85,247,.15);border-color:rgba(168,85,247,.4);color:#c084fc}
+.rds-pi{font-size:9px;color:#4a6a8a;font-family:'Courier New',monospace;padding:2px 4px}
+.tune-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:10px}
 .tune-btn{background:#0a1a3a;border:1px solid var(--bor);color:var(--acc);font-size:13px;font-weight:600;padding:9px 14px;border-radius:8px;cursor:pointer;min-width:58px;text-align:center;transition:background .1s;user-select:none;font-family:inherit}
 .tune-btn:hover{background:#142040;border-color:#2a5a90;color:#80c4ff}
 .tune-btn:active{background:#1a2a50}
 .tune-btn:disabled{opacity:.3;cursor:not-allowed}
-.step-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+.step-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:14px;flex-wrap:wrap}
 .step-lbl{font-size:11px;color:var(--mu)}
 .step-btn{font-size:11px;padding:4px 11px;border-radius:20px;background:#08122a;border:1px solid var(--bor);color:var(--mu);cursor:pointer;transition:all .15s;font-family:inherit}
 .step-btn.sel{background:#0e2a5a;border-color:var(--acc);color:var(--acc)}
 .step-btn:hover:not(.sel){border-color:#2a4060;color:var(--tx)}
-.manual-row{display:flex;align-items:center;justify-content:center;gap:8px}
+.manual-row{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
 .manual-row input[type=number]{width:100px;padding:6px 10px;font-size:14px;text-align:center;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);outline:none}
 .manual-row input[type=number]:focus{border-color:var(--acc)}
 .btn-sm{padding:6px 14px;font-size:13px;background:#0a1a3a;border:1px solid var(--bor);color:var(--acc);border-radius:6px;cursor:pointer;transition:background .1s;font-family:inherit}
 .btn-sm:hover{background:#142040}
 .btn-sm:disabled{opacity:.3;cursor:not-allowed}
-.kb-row{text-align:center;margin-top:14px;font-size:11px;color:#3a5270}
-.vol-row{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid var(--bor)}
+.btn-rec{padding:6px 13px;font-size:12px;background:#160a28;border:1px solid rgba(168,85,247,.4);color:#c084fc;border-radius:6px;cursor:pointer;transition:all .15s;font-family:inherit}
+.btn-rec:hover{background:#220a38;border-color:#c084fc}
+.btn-rec:disabled{opacity:.3;cursor:not-allowed}
+.kb-row{text-align:center;margin-top:12px;font-size:11px;color:#3a5270}
+.vol-row{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid var(--bor)}
 .vol-row label{font-size:12px;color:var(--mu)}
 .vol-row input[type=range]{width:110px;accent-color:var(--acc)}
+.panels-row{display:flex;gap:10px;flex-wrap:wrap}
+.side-panel{background:var(--sur);border:1px solid var(--bor);border-radius:12px;padding:14px;flex:1;min-width:200px;box-shadow:0 2px 10px rgba(0,0,0,.3)}
+.panel-hdr{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--mu);margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
+.hist-item,.preset-item{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;cursor:pointer;transition:background .12s;border:1px solid transparent}
+.hist-item:hover,.preset-item:hover{background:rgba(23,168,255,.08);border-color:rgba(23,168,255,.2)}
+.hist-freq,.preset-freq{font-family:'Courier New',monospace;font-size:13px;font-weight:700;color:var(--lcd);min-width:54px;flex-shrink:0}
+.hist-ps,.preset-lbl{font-size:11px;color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.preset-del{font-size:11px;padding:1px 5px;border-radius:3px;background:none;border:none;color:#3a5270;cursor:pointer;font-family:inherit;transition:color .12s;flex-shrink:0}
+.preset-del:hover{color:var(--al)}
+.preset-save-row{display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--bor)}
+.preset-save-row input{flex:1;min-width:0;padding:5px 8px;font-size:12px;background:#0d1e40;border:1px solid var(--bor);border-radius:5px;color:var(--tx);outline:none}
+.preset-save-row input:focus{border-color:var(--acc)}
+.preset-save-row .btn-sm{padding:5px 12px;font-size:12px;flex-shrink:0}
+.empty-note{font-size:11px;color:#3a5270;text-align:center;padding:8px 0}
+.scan-panel{background:var(--sur);border:1px solid var(--bor);border-radius:12px;padding:14px;box-shadow:0 2px 10px rgba(0,0,0,.3)}
+.btn-scan{padding:4px 14px;font-size:12px;background:#0a1e3a;border:1px solid rgba(23,168,255,.4);color:var(--acc);border-radius:6px;cursor:pointer;transition:background .12s;font-family:inherit}
+.btn-scan:hover{background:#112a50}
+.btn-scan:disabled{opacity:.4;cursor:not-allowed}
+.scan-status{font-size:12px;color:var(--wn);margin:8px 0 2px}
+.scan-peaks{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.peak-btn{font-family:'Courier New',monospace;font-size:12px;padding:5px 10px;border-radius:6px;background:#0a1628;border:1px solid var(--bor);color:var(--acc);cursor:pointer;transition:all .12s;text-align:center;font-family:inherit}
+.peak-btn:hover{background:#112040;border-color:var(--acc)}
+.peak-db{font-size:9px;color:var(--mu);display:block;margin-top:1px}
 footer{padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)}
 </style>
 </head>
@@ -23692,52 +23956,94 @@ footer{padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border
   </select>
   <label>SDR</label>
   <select id="sdr-sel"><option value="">Auto</option></select>
-  <label>Start freq</label>
-  <input type="number" id="start-freq" value="96.5" step="0.1" min="76" max="108" style="width:86px">
+  <label>Start</label>
+  <input type="number" id="start-freq" value="96.5" step="0.1" min="76" max="108" style="width:82px">
   <span style="font-size:12px;color:var(--mu)">MHz</span>
+  <label>Gain</label>
+  <input type="number" id="gain-inp" value="40" min="0" max="50" step="1" style="width:60px" title="SDR gain (dB)">
+  <label>PPM</label>
+  <input type="number" id="ppm-inp" value="0" min="-100" max="100" step="1" style="width:60px" title="PPM frequency correction">
   <button class="btn-connect" id="connect-btn">Connect</button>
 </div>
 
 <main>
-  <div class="tuner">
-    <div class="status-row">
-      <span class="sdot idle" id="status-dot"></span>
-      <span id="status-txt">Idle — pick a site and connect</span>
+  <div class="page-col">
+
+    <!-- Tuner card -->
+    <div class="tuner">
+      <div class="status-row">
+        <span class="sdot idle" id="status-dot"></span>
+        <span id="status-txt">Idle — pick a site and connect</span>
+      </div>
+      <div class="freq-wrap">
+        <div class="freq-disp" id="freq-display">---.--</div>
+        <div class="freq-unit">MHz FM</div>
+        <div class="freq-sub" id="freq-sub">&nbsp;</div>
+        <div class="level-wrap" id="level-wrap" style="display:none">
+          <span class="level-label" id="level-val">-- dBFS</span>
+          <div class="level-track"><div class="level-fill" id="level-fill"></div></div>
+        </div>
+      </div>
+      <div class="rds-wrap" id="rds-wrap" style="display:none">
+        <span class="rds-ps" id="rds-ps">&nbsp;</span>
+        <div class="rds-rt-outer" id="rds-rt-outer"></div>
+        <div class="rds-meta" id="rds-meta"></div>
+      </div>
+      <div class="tune-row">
+        <button class="tune-btn" data-step="-1.0" disabled>&minus;1.0</button>
+        <button class="tune-btn" id="btn-dn" data-step="-0.1" disabled>&minus;0.1</button>
+        <button class="tune-btn" id="btn-up" data-step="+0.1" disabled>+0.1</button>
+        <button class="tune-btn" data-step="+1.0" disabled>+1.0</button>
+      </div>
+      <div class="step-row">
+        <span class="step-lbl">Step:</span>
+        <button class="step-btn" data-step="0.05">0.05</button>
+        <button class="step-btn" data-step="0.1">0.1</button>
+        <button class="step-btn sel" data-step="0.2">0.2</button>
+        <button class="step-btn" data-step="0.5">0.5</button>
+        <button class="step-btn" data-step="1.0">1.0</button>
+        <span class="step-lbl">MHz</span>
+      </div>
+      <div class="manual-row">
+        <input type="number" id="manual-freq" placeholder="97.3" min="76" max="108" step="0.1">
+        <span style="font-size:12px;color:var(--mu)">MHz</span>
+        <button class="btn-sm" id="manual-btn" disabled>Tune</button>
+        <button class="btn-rec" id="rec30-btn" disabled title="Record 30 s WAV">&#9679; 30s</button>
+        <button class="btn-rec" id="rec60-btn" disabled title="Record 60 s WAV">&#9679; 60s</button>
+      </div>
+      <div class="kb-row">&#8592;&#8594; tune &nbsp;&middot;&nbsp; Shift+&#8592;&#8594; &times;5 &nbsp;&middot;&nbsp; &#8593;&#8595; &plusmn;1 MHz &nbsp;&middot;&nbsp; Enter: manual</div>
+      <div class="vol-row">
+        <label>&#128266;</label>
+        <input type="range" id="vol" min="0" max="1" step="0.05" value="0.85">
+      </div>
     </div>
-    <div class="freq-wrap">
-      <div class="freq-disp" id="freq-display">---.--</div>
-      <div class="freq-unit">MHz FM</div>
-      <div class="freq-sub" id="freq-sub">&nbsp;</div>
+
+    <!-- History + Presets -->
+    <div class="panels-row">
+      <div class="side-panel">
+        <div class="panel-hdr">Recent Stations</div>
+        <div id="hist-list"><p class="empty-note">Tune to build history</p></div>
+      </div>
+      <div class="side-panel">
+        <div class="panel-hdr">Presets</div>
+        <div id="preset-list"><p class="empty-note">No presets saved</p></div>
+        <div class="preset-save-row">
+          <input id="preset-name-inp" placeholder="Station name&hellip;" maxlength="32">
+          <button class="btn-sm" id="preset-save-btn" disabled>Save</button>
+        </div>
+      </div>
     </div>
-    <div class="rds-wrap" id="rds-wrap" style="display:none">
-      <span class="rds-ps" id="rds-ps">&nbsp;</span>
-      <div class="rds-rt-outer" id="rds-rt-outer"></div>
+
+    <!-- Band Scan -->
+    <div class="scan-panel">
+      <div class="panel-hdr">
+        Band Scan &mdash; FM 76&ndash;108 MHz
+        <button class="btn-scan" id="scan-btn" disabled>&#128269; Scan</button>
+      </div>
+      <div class="scan-status" id="scan-status" style="display:none">&#9203; Scanning&hellip; takes 30&ndash;60 s</div>
+      <div class="scan-peaks" id="scan-peaks"></div>
     </div>
-    <div class="tune-row">
-      <button class="tune-btn" data-step="-1.0" disabled>&minus;1.0</button>
-      <button class="tune-btn" id="btn-dn" data-step="-0.1" disabled>&minus;0.1</button>
-      <button class="tune-btn" id="btn-up" data-step="+0.1" disabled>+0.1</button>
-      <button class="tune-btn" data-step="+1.0" disabled>+1.0</button>
-    </div>
-    <div class="step-row">
-      <span class="step-lbl">Step:</span>
-      <button class="step-btn" data-step="0.05">0.05</button>
-      <button class="step-btn" data-step="0.1">0.1</button>
-      <button class="step-btn sel" data-step="0.2">0.2</button>
-      <button class="step-btn" data-step="0.5">0.5</button>
-      <button class="step-btn" data-step="1.0">1.0</button>
-      <span class="step-lbl">MHz</span>
-    </div>
-    <div class="manual-row">
-      <input type="number" id="manual-freq" placeholder="97.3" min="76" max="108" step="0.1">
-      <span style="font-size:12px;color:var(--mu)">MHz</span>
-      <button class="btn-sm" id="manual-btn" disabled>Tune</button>
-    </div>
-    <div class="kb-row">&#8592; &#8594; tune &nbsp;&middot;&nbsp; Shift+&#8592;&#8594; &times;5 &nbsp;&middot;&nbsp; &#8593;&#8595; &plusmn;1 MHz &nbsp;&middot;&nbsp; Enter: manual tune</div>
-    <div class="vol-row">
-      <label>&#128266;</label>
-      <input type="range" id="vol" min="0" max="1" step="0.05" value="0.85">
-    </div>
+
   </div>
 </main>
 
@@ -23749,18 +24055,26 @@ footer{padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border
 var _csrf=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
 function _f(url,o){o=o||{};o.headers=Object.assign({'X-CSRFToken':_csrf,'Content-Type':'application/json'},o.headers||{});return fetch(url,o);}
 function _esc(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-var siteSel   = document.getElementById('site-sel');
-var sdrSel    = document.getElementById('sdr-sel');
-var startFreq = document.getElementById('start-freq');
-var connBtn   = document.getElementById('connect-btn');
-var freqDisp  = document.getElementById('freq-display');
-var freqSub   = document.getElementById('freq-sub');
-var statusDot = document.getElementById('status-dot');
-var statusTxt = document.getElementById('status-txt');
-var manFreq   = document.getElementById('manual-freq');
-var manBtn    = document.getElementById('manual-btn');
-var volSlider = document.getElementById('vol');
+var siteSel       = document.getElementById('site-sel');
+var sdrSel        = document.getElementById('sdr-sel');
+var startFreq     = document.getElementById('start-freq');
+var gainInp       = document.getElementById('gain-inp');
+var ppmInp        = document.getElementById('ppm-inp');
+var connBtn       = document.getElementById('connect-btn');
+var freqDisp      = document.getElementById('freq-display');
+var freqSub       = document.getElementById('freq-sub');
+var statusDot     = document.getElementById('status-dot');
+var statusTxt     = document.getElementById('status-txt');
+var manFreq       = document.getElementById('manual-freq');
+var manBtn        = document.getElementById('manual-btn');
+var volSlider     = document.getElementById('vol');
+var rec30Btn      = document.getElementById('rec30-btn');
+var rec60Btn      = document.getElementById('rec60-btn');
+var scanBtn       = document.getElementById('scan-btn');
+var presetSaveBtn = document.getElementById('preset-save-btn');
+var presetNameInp = document.getElementById('preset-name-inp');
 var _freq = 96.5, _step = 0.2, _state = 'idle', _slotId = '', _poll = null;
+var _scanPoll = null, _scanPending = false;
 
 // ── Web Audio API state ───────────────────────────────────────
 var _audioCtx = null;
@@ -23783,26 +24097,51 @@ function setStatus(state, msg){
   statusTxt.textContent = msg;
   var on = (state === 'streaming' || state === 'connecting');
   document.querySelectorAll('.tune-btn').forEach(function(b){ b.disabled = !on; });
-  manBtn.disabled = !on;
+  manBtn.disabled       = !on;
+  rec30Btn.disabled     = !on;
+  rec60Btn.disabled     = !on;
+  scanBtn.disabled      = !on || _scanPending;
+  presetSaveBtn.disabled = !on;
   siteSel.disabled = on;
   sdrSel.disabled  = on;
+  gainInp.disabled = on;
+  ppmInp.disabled  = on;
   connBtn.textContent = on ? 'Disconnect' : 'Connect';
   connBtn.classList.toggle('active', on);
+  if(!on){ document.getElementById('level-wrap').style.display = 'none'; }
 }
 
-function updateFreq(f){
-  _freq = f;
-  freqDisp.textContent = fmt(f);
+function updateFreq(f){ _freq = f; freqDisp.textContent = fmt(f); }
+
+// ── Signal level bar ──────────────────────────────────────────
+function _updateLevel(lvl){
+  var wrap = document.getElementById('level-wrap');
+  var fill = document.getElementById('level-fill');
+  var val  = document.getElementById('level-val');
+  if(lvl === undefined || lvl === null){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  val.textContent = lvl + ' dBFS';
+  var pct = Math.max(0, Math.min(100, (lvl + 96) / 96 * 100));
+  fill.style.width = pct + '%';
+  fill.style.background = lvl > -20 ? 'var(--ok)' : lvl > -40 ? 'var(--wn)' : 'var(--al)';
 }
 
-// ── RDS display ───────────────────────────────────────────────
+// ── Extended RDS display ──────────────────────────────────────
 function _updateRDS(rds){
-  var wrap  = document.getElementById('rds-wrap');
-  var psEl  = document.getElementById('rds-ps');
-  var rtOut = document.getElementById('rds-rt-outer');
-  var ps = ((rds && rds.ps) || '').trim();
-  var rt = ((rds && rds.rt) || '').trim();
-  if(!ps && !rt){ wrap.style.display = 'none'; return; }
+  var wrap   = document.getElementById('rds-wrap');
+  var psEl   = document.getElementById('rds-ps');
+  var rtOut  = document.getElementById('rds-rt-outer');
+  var metaEl = document.getElementById('rds-meta');
+  var ps     = ((rds && rds.ps) || '').trim();
+  var rt     = ((rds && rds.rt) || '').trim();
+  var pty    = (rds && rds.pty)    || '';
+  var pi     = (rds && rds.pi)     || '';
+  var ct     = (rds && rds.ct)     || '';
+  var stereo = !!(rds && rds.stereo);
+  var tp     = !!(rds && rds.tp);
+  var ta     = !!(rds && rds.ta);
+  var af     = (rds && Array.isArray(rds.af)) ? rds.af : [];
+  if(!ps && !rt && !pty){ wrap.style.display = 'none'; return; }
   wrap.style.display = 'block';
   psEl.textContent = ps || '\u00a0';
   if(rt.length > 28){
@@ -23810,6 +24149,15 @@ function _updateRDS(rds){
   } else {
     rtOut.innerHTML = rt ? '<span class="rds-rt-static">'+_esc(rt)+'</span>' : '';
   }
+  var b = [];
+  b.push(stereo ? '<span class="rds-badge stereo-on">STEREO</span>' : '<span class="rds-badge">MONO</span>');
+  if(pty) b.push('<span class="rds-badge pty-on">'+_esc(pty)+'</span>');
+  if(tp)  b.push('<span class="rds-badge on">TP</span>');
+  if(ta)  b.push('<span class="rds-badge on">TA</span>');
+  if(pi)  b.push('<span class="rds-pi">PI:'+_esc(pi)+'</span>');
+  if(ct)  b.push('<span class="rds-badge">'+_esc(ct.slice(0,16))+'</span>');
+  if(af.length) b.push('<span class="rds-badge" title="'+af.map(function(f){return f+' MHz';}).join(', ')+'">AF:'+af.length+'</span>');
+  metaEl.innerHTML = b.join('');
 }
 
 // ── Load SDR devices ──────────────────────────────────────────
@@ -23844,8 +24192,14 @@ function doStart(freq){
   setStatus('connecting', 'Connecting\u2026');
   updateFreq(freq);
   _f('/api/hub/scanner/start', {
-    method:'POST',
-    body: JSON.stringify({site: siteSel.value, sdr_serial: sdrSel.value, freq_mhz: freq})
+    method: 'POST',
+    body: JSON.stringify({
+      site:       siteSel.value,
+      sdr_serial: sdrSel.value,
+      freq_mhz:   freq,
+      gain:       parseFloat(gainInp.value) || 40,
+      ppm:        parseInt(ppmInp.value)    || 0
+    })
   }).then(function(r){ return r.json(); }).then(function(d){
     if(d.ok){
       _slotId = d.slot_id;
@@ -23864,7 +24218,7 @@ function doTune(freq){
   freqDisp.style.color = 'var(--lcd-dim)';
   _updateRDS({});
   _f('/api/hub/scanner/tune', {
-    method:'POST',
+    method: 'POST',
     body: JSON.stringify({site: siteSel.value, freq_mhz: freq})
   }).then(function(r){ return r.json(); }).then(function(d){
     if(d.ok){
@@ -23872,18 +24226,21 @@ function doTune(freq){
       connectAudio(d.stream_url);
       freqSub.textContent = '\u00a0';
       setStatus('connecting', 'Waiting for ' + fmt(freq) + ' MHz\u2026');
+      _saveHistory(freq, '');
     } else { freqSub.textContent = 'Tune failed'; }
   }).catch(function(){ freqSub.textContent = 'Network error'; });
 }
 
 function doStop(){
   stopPoll();
+  stopScanPoll();
   _f('/api/hub/scanner/stop', {
-    method:'POST',
+    method: 'POST',
     body: JSON.stringify({site: siteSel.value})
   }).catch(function(){});
   disconnectAudio();
   _updateRDS({});
+  _updateLevel(null);
   _slotId = '';
   freqDisp.textContent = '---.--';
   freqDisp.style.color = '';
@@ -23961,6 +24318,7 @@ function _scheduleBlock(bytes){
     freqDisp.style.color = '';
     freqSub.textContent  = '\u00a0';
     setStatus('streaming', '\u25cf Live \u2014 ' + fmt(_freq) + ' MHz');
+    _saveHistory(_freq, '');
   }
 }
 
@@ -23974,10 +24332,11 @@ function checkStatus(){
     .then(function(r){ return r.json(); })
     .then(function(d){
       if(!d.active){ stopPoll(); return; }
-      if(d.slot_id && d.slot_id !== _slotId){
-        _slotId = d.slot_id; connectAudio(d.stream_url);
-      }
-      _updateRDS(d.rds || {});
+      if(d.slot_id && d.slot_id !== _slotId){ _slotId = d.slot_id; connectAudio(d.stream_url); }
+      var rds = d.rds || {};
+      _updateRDS(rds);
+      _updateLevel(rds._level !== undefined ? rds._level : null);
+      if(rds.ps && rds.ps.trim()) _saveHistory(_freq, rds.ps.trim());
     }).catch(function(){});
 }
 
@@ -24012,6 +24371,144 @@ document.addEventListener('keydown', function(e){
   else if(e.key === 'ArrowLeft'){ e.preventDefault(); doTune(_freq - _step * m); }
   else if(e.key === 'ArrowUp'){ e.preventDefault(); doTune(_freq + 1.0 * m); }
   else if(e.key === 'ArrowDown'){ e.preventDefault(); doTune(_freq - 1.0 * m); }
+});
+
+// ── Record ────────────────────────────────────────────────────
+function doRecord(secs){
+  var site = siteSel.value; if(!site) return;
+  var a = document.createElement('a');
+  a.href = '/api/hub/scanner/record/' + encodeURIComponent(site) + '?secs=' + secs;
+  a.download = '';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+rec30Btn.addEventListener('click', function(){ doRecord(30); });
+rec60Btn.addEventListener('click', function(){ doRecord(60); });
+
+// ── Frequency history (localStorage) ─────────────────────────
+var _HIST_KEY = 'ss_hist';
+var _HIST_MAX = 10;
+function _loadHistory(){ try{ return JSON.parse(localStorage.getItem(_HIST_KEY)||'[]'); }catch(e){ return []; } }
+function _saveHistory(freq, ps){
+  var list = _loadHistory().filter(function(h){ return Math.abs(h.f - freq) > 0.04; });
+  list.unshift({f: parseFloat(freq.toFixed(2)), ps: ps || ''});
+  if(list.length > _HIST_MAX) list.length = _HIST_MAX;
+  try{ localStorage.setItem(_HIST_KEY, JSON.stringify(list)); }catch(e){}
+  _renderHistory();
+}
+function _renderHistory(){
+  var el = document.getElementById('hist-list');
+  var list = _loadHistory();
+  if(!list.length){ el.innerHTML = '<p class="empty-note">Tune to build history</p>'; return; }
+  el.innerHTML = list.map(function(h){
+    return '<div class="hist-item" data-freq="'+h.f+'">'
+      +'<span class="hist-freq">'+h.f.toFixed(2)+'</span>'
+      +'<span class="hist-ps">'+_esc(h.ps || 'FM')+'</span>'
+      +'</div>';
+  }).join('');
+}
+document.addEventListener('click', function(e){
+  var hi = e.target.closest('.hist-item');
+  if(hi && (_state==='streaming'||_state==='connecting')){ doTune(parseFloat(hi.dataset.freq)); }
+});
+_renderHistory();
+
+// ── Presets (localStorage) ────────────────────────────────────
+var _PSET_KEY = 'ss_presets';
+function _loadPresets(){ try{ return JSON.parse(localStorage.getItem(_PSET_KEY)||'[]'); }catch(e){ return []; } }
+function _savePreset(name, freq){
+  var list = _loadPresets().filter(function(p){ return p.name !== name; });
+  list.unshift({name: name, f: parseFloat(freq.toFixed(2))});
+  try{ localStorage.setItem(_PSET_KEY, JSON.stringify(list)); }catch(e){}
+  _renderPresets();
+}
+function _deletePreset(name){
+  var list = _loadPresets().filter(function(p){ return p.name !== name; });
+  try{ localStorage.setItem(_PSET_KEY, JSON.stringify(list)); }catch(e){}
+  _renderPresets();
+}
+function _renderPresets(){
+  var el = document.getElementById('preset-list');
+  var list = _loadPresets();
+  if(!list.length){ el.innerHTML = '<p class="empty-note">No presets saved</p>'; return; }
+  el.innerHTML = list.map(function(p){
+    return '<div class="preset-item" data-freq="'+p.f+'">'
+      +'<span class="preset-freq">'+p.f.toFixed(2)+'</span>'
+      +'<span class="preset-lbl">'+_esc(p.name)+'</span>'
+      +'<button class="preset-del" data-preset-name="'+_esc(p.name)+'" title="Delete">\u2715</button>'
+      +'</div>';
+  }).join('');
+}
+document.addEventListener('click', function(e){
+  var del = e.target.closest('.preset-del');
+  if(del){ e.stopPropagation(); _deletePreset(del.dataset.presetName); return; }
+  var pi = e.target.closest('.preset-item');
+  if(pi && (_state==='streaming'||_state==='connecting')){ doTune(parseFloat(pi.dataset.freq)); }
+});
+presetSaveBtn.addEventListener('click', function(){
+  var name = presetNameInp.value.trim(); if(!name) return;
+  _savePreset(name, _freq); presetNameInp.value = '';
+});
+presetNameInp.addEventListener('keydown', function(e){
+  if(e.key === 'Enter'){ var n = this.value.trim(); if(n){ _savePreset(n, _freq); this.value = ''; } }
+});
+_renderPresets();
+
+// ── Band scan ─────────────────────────────────────────────────
+function stopScanPoll(){ clearInterval(_scanPoll); _scanPoll = null; _scanPending = false; }
+scanBtn.addEventListener('click', function(){
+  if(_scanPending) return;
+  var site = siteSel.value; if(!site) return;
+  _scanPending = true;
+  scanBtn.disabled = true;
+  document.getElementById('scan-status').style.display = 'block';
+  document.getElementById('scan-peaks').innerHTML = '';
+  _f('/api/hub/scanner/band_scan', {
+    method: 'POST',
+    body: JSON.stringify({site: site})
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(!d.ok){
+      stopScanPoll();
+      if(_state === 'streaming' || _state === 'connecting') scanBtn.disabled = false;
+      document.getElementById('scan-status').style.display = 'none';
+      alert('Band scan failed: ' + (d.error || '?'));
+      return;
+    }
+    _scanPoll = setInterval(function(){ _pollScan(site); }, 3000);
+    setTimeout(function(){ _pollScan(site); }, 1000);
+  }).catch(function(){
+    stopScanPoll();
+    if(_state === 'streaming' || _state === 'connecting') scanBtn.disabled = false;
+    document.getElementById('scan-status').style.display = 'none';
+  });
+});
+function _pollScan(site){
+  _f('/api/hub/scanner/scan_result/' + encodeURIComponent(site))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(d.ready){
+        stopScanPoll();
+        if(_state === 'streaming' || _state === 'connecting') scanBtn.disabled = false;
+        document.getElementById('scan-status').style.display = 'none';
+        _renderScanResults(d);
+      }
+    }).catch(function(){});
+}
+function _renderScanResults(d){
+  var peaks = d.peaks || [];
+  if(!peaks.length){
+    document.getElementById('scan-peaks').innerHTML = '<span style="font-size:12px;color:var(--mu)">No strong stations found</span>';
+    return;
+  }
+  var sorted = peaks.slice().sort(function(a,b){ return (b.power_db||0)-(a.power_db||0); }).slice(0,24);
+  document.getElementById('scan-peaks').innerHTML = sorted.map(function(p){
+    var f  = parseFloat(p.freq_mhz||0).toFixed(2);
+    var db = (p.power_db||0).toFixed(1);
+    return '<button class="peak-btn" data-freq="'+f+'">'+f+' MHz<span class="peak-db">'+db+' dB</span></button>';
+  }).join('');
+}
+document.addEventListener('click', function(e){
+  var pb = e.target.closest('.peak-btn');
+  if(pb && (_state==='streaming'||_state==='connecting')){ doTune(parseFloat(pb.dataset.freq)); }
 });
 })();
 </script>
