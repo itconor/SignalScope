@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.57"
+BUILD                  = "SignalScope-3.3.58"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -9231,8 +9231,8 @@ class HubClient:
                             _sn, _lbl, _cpath, _lev = _cq.get_nowait()
                             threading.Thread(
                                 target=self._upload_clip,
-                                args=(_hub_url_str, _secret, _site, _sn, _lbl, "", _cpath),
-                                kwargs={"level_dbfs": _lev},
+                                args=(_hub_url_str, _secret, _site, _sn, _lbl, "", ""),
+                                kwargs={"clip_path": _cpath, "level_dbfs": _lev},
                                 daemon=True, name="AutoClipUpload",
                             ).start()
                         except queue.Empty:

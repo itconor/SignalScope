@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.58] - 2026-03-24
+
+### Fixed
+- **Hub clip upload always fails with `FileNotFoundError: [Errno 2] No such file or directory: ''`** — In the heartbeat loop's auto-clip-upload drain, `_cpath` was passed as the 7th positional argument to `_upload_clip`, which maps to `chain_id`. The `clip_path` keyword argument therefore defaulted to `""`, causing `open("", "rb")` to fail on every clip. Fixed by passing `clip_path=_cpath` as a keyword argument.
+
 ## [3.3.57] - 2026-03-24
 
 ### Added
