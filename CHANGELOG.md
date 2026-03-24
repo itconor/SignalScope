@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.74] - 2026-03-24
+
+### Fixed
+- **FM Scanner — clicking history, presets, or scan results does nothing when idle**
+  All three click handlers were gated behind `_state === 'streaming'`, so they silently did nothing when no stream was active. Added `doTuneOrStart(freq)`: if already streaming it calls `doTune` (fast retune); if idle with a site selected it calls `doStart` to connect at that frequency directly.
+
 ## [3.3.73] - 2026-03-24
 
 ### Fixed

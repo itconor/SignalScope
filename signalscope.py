@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.73"
+BUILD                  = "SignalScope-3.3.74"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -24341,6 +24341,11 @@ function doStart(freq){
   }).catch(function(){ setStatus('error', 'Network error'); });
 }
 
+function doTuneOrStart(freq){
+  if(_state === 'streaming' || _state === 'connecting') doTune(freq);
+  else if(siteSel.value) doStart(freq);
+}
+
 function doTune(freq){
   if(_state !== 'streaming' && _state !== 'connecting') return;
   freq = clamp(freq);
@@ -24566,7 +24571,7 @@ function _renderHistory(list){
 }
 document.addEventListener('click', function(e){
   var hi = e.target.closest('.hist-item');
-  if(hi && (_state==='streaming'||_state==='connecting')){ doTune(parseFloat(hi.dataset.freq)); }
+  if(hi){ doTuneOrStart(parseFloat(hi.dataset.freq)); }
 });
 _renderHistory();
 
@@ -24600,7 +24605,7 @@ document.addEventListener('click', function(e){
   var del = e.target.closest('.preset-del');
   if(del){ e.stopPropagation(); _deletePreset(del.dataset.presetName); return; }
   var pi = e.target.closest('.preset-item');
-  if(pi && (_state==='streaming'||_state==='connecting')){ doTune(parseFloat(pi.dataset.freq)); }
+  if(pi){ doTuneOrStart(parseFloat(pi.dataset.freq)); }
 });
 presetSaveBtn.addEventListener('click', function(){
   var name = presetNameInp.value.trim(); if(!name) return;
@@ -24676,7 +24681,7 @@ function _renderScanResults(d){
 }
 document.addEventListener('click', function(e){
   var pb = e.target.closest('.peak-btn');
-  if(pb && (_state==='streaming'||_state==='connecting')){ doTune(parseFloat(pb.dataset.freq)); }
+  if(pb){ doTuneOrStart(parseFloat(pb.dataset.freq)); }
 });
 })();
 </script>
