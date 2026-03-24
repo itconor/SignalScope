@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.64"
+BUILD                  = "SignalScope-3.3.65"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -24052,25 +24052,48 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
 .site-pill .sdot{width:8px;height:8px;border-radius:50%;background:currentColor;flex-shrink:0}
 .site-pill .sc-cnt{font-size:10px;opacity:.7;margin-left:2px}
 /* ── Broadcast Chains ────────────────────────────────────── */
-.chains-grid{display:flex;flex-direction:column;gap:8px}
-.chain-row{display:flex;align-items:center;gap:0;background:var(--bg2);border:1px solid var(--bor);border-radius:10px;padding:9px 14px;overflow-x:auto}
-.chain-row-name{font-size:11px;font-weight:800;color:var(--mu);white-space:nowrap;min-width:120px;max-width:160px;margin-right:12px;letter-spacing:.5px;overflow:hidden;text-overflow:ellipsis}
-.chain-nodes{display:flex;align-items:center;flex-wrap:nowrap;gap:0}
-.cnode{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:90px;max-width:130px;padding:6px 9px;border-radius:8px;border:2px solid;position:relative;text-align:center;transition:border-color .4s,background .4s}
-.cnode.ok{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.45);color:var(--ok)}
-.cnode.down{background:rgba(239,68,68,.13);border-color:var(--al);color:var(--al)}
-.cnode.offline{background:rgba(107,114,128,.08);border-color:var(--bor);color:var(--mu)}
-.cnode.unknown{background:rgba(59,130,246,.07);border-color:rgba(59,130,246,.3);color:#93c5fd}
-.cnode.downstream{background:rgba(30,58,95,.15);border-color:#1e3048;color:#4b7bb5}
-.cnode-lbl{font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:118px}
-.cnode-sub{font-size:10px;opacity:.65;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:118px}
-.cnode-lev{font-size:10px;margin-top:2px;font-variant-numeric:tabular-nums}
-.cnode-fault{position:absolute;top:-8px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;white-space:nowrap}
-.c-arrow{color:var(--bor);font-size:20px;font-weight:300;padding:0 5px;flex-shrink:0;line-height:1;user-select:none}
-.chain-badge{margin-left:12px;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:800;white-space:nowrap;flex-shrink:0;letter-spacing:.5px}
-.chain-badge.ok{background:rgba(34,197,94,.18);color:var(--ok)}
-.chain-badge.fault{background:rgba(239,68,68,.2);color:var(--al)}
-.chain-badge.unknown{background:rgba(107,114,128,.13);color:var(--mu)}
+.chains-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
+.chain-card{background:var(--bg2);border:2px solid var(--bor);border-radius:12px;overflow:hidden;transition:border-color .5s,box-shadow .5s}
+.chain-card.ok{border-color:rgba(34,197,94,.35)}
+.chain-card.fault{border-color:rgba(239,68,68,.7);box-shadow:0 0 22px rgba(239,68,68,.14)}
+.chain-card.adbreak{border-color:rgba(245,158,11,.45)}
+.chain-card.maintenance{border-color:rgba(59,130,246,.4)}
+.chain-card-hdr{display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(0,0,0,.25);border-bottom:1px solid var(--bor)}
+.chain-card-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.chain-card-dot.ok{background:var(--ok)}.chain-card-dot.fault{background:var(--al);animation:dotPulse 1.2s infinite}
+.chain-card-dot.adbreak{background:var(--wn)}.chain-card-dot.unknown,.chain-card-dot.maintenance{background:#3b82f6}
+.chain-card-name{font-size:13px;font-weight:800;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chain-card-badge{padding:3px 10px;border-radius:8px;font-size:10px;font-weight:800;letter-spacing:.5px;white-space:nowrap;flex-shrink:0}
+.chain-card-badge.ok{background:rgba(34,197,94,.18);color:var(--ok)}
+.chain-card-badge.fault{background:rgba(239,68,68,.22);color:var(--al)}
+.chain-card-badge.adbreak{background:rgba(245,158,11,.18);color:var(--wn)}
+.chain-card-badge.unknown,.chain-card-badge.maintenance{background:rgba(59,130,246,.15);color:#93c5fd}
+/* Node flow inside card */
+.chain-flow{display:flex;align-items:center;flex-wrap:wrap;gap:2px;padding:10px 12px 12px;min-height:88px}
+.wc-arrow{color:var(--bor);font-size:18px;padding:0 3px;flex-shrink:0;line-height:1;user-select:none;align-self:center}
+/* Individual node */
+.wc-node{display:flex;flex-direction:column;align-items:center;padding:6px 8px;border-radius:8px;border:1.5px solid;min-width:78px;max-width:115px;text-align:center;transition:all .4s;position:relative;flex-shrink:0}
+.wc-node.ok{background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.4);color:var(--ok)}
+.wc-node.down{background:rgba(239,68,68,.12);border-color:var(--al);color:var(--al);animation:nodePulse 1.4s infinite}
+.wc-node.offline{background:rgba(107,114,128,.07);border-color:var(--bor);color:var(--mu)}
+.wc-node.unknown{background:rgba(59,130,246,.07);border-color:rgba(59,130,246,.25);color:#93c5fd}
+.wc-node.maintenance{background:rgba(29,78,216,.1);border-color:rgba(59,130,246,.45);color:#93c5fd}
+.wc-node.downstream{opacity:.35;border-color:var(--bor);background:transparent;color:var(--mu);animation:none}
+.wc-node-lbl{font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:105px;line-height:1.2}
+.wc-node-site{font-size:9px;opacity:.6;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:105px}
+.wc-node-bar{width:100%;height:3px;background:rgba(255,255,255,.08);border-radius:2px;margin-top:5px;overflow:hidden}
+.wc-node-fill{height:100%;border-radius:2px;transition:width .9s}
+.wc-node-lev{font-size:9px;margin-top:2px;font-variant-numeric:tabular-nums;opacity:.85}
+.wc-fault-tag{position:absolute;top:-9px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;font-size:8px;font-weight:800;padding:1px 5px;border-radius:3px;white-space:nowrap;letter-spacing:.3px}
+/* Stack group */
+.wc-stack{display:flex;flex-direction:column;gap:4px;border:1.5px solid;border-radius:9px;padding:5px 6px;position:relative;flex-shrink:0}
+.wc-stack.ok{border-color:rgba(34,197,94,.3)}.wc-stack.down{border-color:rgba(239,68,68,.6);animation:nodePulse 1.4s infinite}
+.wc-stack.offline{border-color:var(--bor)}.wc-stack.unknown{border-color:rgba(59,130,246,.25)}
+.wc-stack-mode{font-size:8px;text-align:center;color:var(--mu);margin-top:3px;letter-spacing:.3px;opacity:.7}
+.wc-stack .wc-node{max-width:105px;min-width:70px}
+/* Animations */
+@keyframes nodePulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0)}50%{box-shadow:0 0 12px 3px rgba(239,68,68,.3)}}
+@keyframes dotPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
 /* ── Stream grid ─────────────────────────────────────────── */
 .streams-wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
 .sw-card{background:var(--bg2);border-radius:10px;border:2px solid;padding:10px 12px;display:flex;flex-direction:column;gap:5px}
@@ -24149,19 +24172,43 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
   <div class="wall-section-hdr">Broadcast Chains</div>
   <div class="chains-grid">
     {% for chain in chains %}
-    <div class="chain-row">
-      <div class="chain-row-name" title="{{chain.name|e}}">{{chain.name|e}}</div>
-      <div class="chain-nodes" id="wc_nodes_{{chain.id|e}}">
-        {% for node in chain.nodes %}
-        {% if not loop.first %}<div class="c-arrow">→</div>{% endif %}
-        <div class="cnode unknown" id="wc_node_{{chain.id|e}}_{{loop.index0}}">
-          <div class="cnode-lbl" title="{{(node.label or node.stream)|e}}">{{(node.label or node.stream)|e}}</div>
-          <div class="cnode-sub">{{node.site|e}}</div>
-          <div class="cnode-lev">…</div>
+    {% set cs = 'ok' if chain.status=='ok' else ('fault' if chain.status=='fault' else 'unknown') %}
+    <div class="chain-card {{cs}}" id="wc_card_{{chain.id|e}}">
+      <div class="chain-card-hdr">
+        <div class="chain-card-dot {{cs}}" id="wc_dot_{{chain.id|e}}"></div>
+        <div class="chain-card-name" title="{{chain.name|e}}">{{chain.name|e}}</div>
+        {% if chain.has_maintenance %}<span style="font-size:10px;color:#93c5fd;flex-shrink:0">🔧</span>{% endif %}
+        <div class="chain-card-badge {{cs}}" id="wc_badge_{{chain.id|e}}">
+          {{'ALL OK' if chain.status=='ok' else ('FAULT' if chain.status=='fault' else '…')}}
         </div>
+      </div>
+      <div class="chain-flow" id="wc_flow_{{chain.id|e}}">
+        {% for node in chain.nodes %}
+        {% set ni = loop.index0 %}
+        {% if not loop.first %}<div class="wc-arrow">→</div>{% endif %}
+        {% if node.get('type') == 'stack' %}
+        <div class="wc-stack unknown" id="wc_node_{{chain.id|e}}_{{ni}}">
+          {% for sub in node.nodes %}
+          {% set si = loop.index0 %}
+          <div class="wc-node unknown" id="wc_sub_{{chain.id|e}}_{{ni}}_{{si}}">
+            <div class="wc-node-lbl" title="{{(sub.get('label') or sub.get('stream',''))|e}}">{{(sub.get('label') or sub.get('stream',''))|e}}</div>
+            <div class="wc-node-site">{{sub.get('site','')|e}}</div>
+            <div class="wc-node-bar"><div class="wc-node-fill" style="width:0%;background:var(--ok)"></div></div>
+            <div class="wc-node-lev">…</div>
+          </div>
+          {% endfor %}
+          <div class="wc-stack-mode">{{(node.get('mode') or 'all')|upper}} silent = fault</div>
+        </div>
+        {% else %}
+        <div class="wc-node unknown" id="wc_node_{{chain.id|e}}_{{ni}}">
+          <div class="wc-node-lbl" title="{{(node.get('label') or node.get('stream',''))|e}}">{{(node.get('label') or node.get('stream',''))|e}}</div>
+          <div class="wc-node-site">{{node.get('site','')|e}}</div>
+          <div class="wc-node-bar"><div class="wc-node-fill" style="width:0%;background:var(--ok)"></div></div>
+          <div class="wc-node-lev">…</div>
+        </div>
+        {% endif %}
         {% endfor %}
       </div>
-      <div class="chain-badge unknown" id="wc_badge_{{chain.id|e}}">…</div>
     </div>
     {% endfor %}
   </div>
@@ -24234,38 +24281,101 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
 })();
 
 // ── Chain status polling ───────────────────────────────────────────
-var _CSTYLE={
-  ok:    {bg:'rgba(34,197,94,.1)',  bc:'rgba(34,197,94,.45)', cl:'var(--ok)'},
-  down:  {bg:'rgba(239,68,68,.13)',bc:'var(--al)',            cl:'var(--al)'},
-  offline:{bg:'rgba(107,114,128,.08)',bc:'var(--bor)',        cl:'var(--mu)'},
-  unknown:{bg:'rgba(59,130,246,.07)',bc:'rgba(59,130,246,.3)',cl:'#93c5fd'},
-  downstream:{bg:'rgba(30,58,95,.15)',bc:'#1e3048',          cl:'#4b7bb5'}
-};
-function _applyNodeStyle(el,st){
-  var s=_CSTYLE[st]||_CSTYLE.unknown;
-  el.style.background=s.bg;el.style.borderColor=s.bc;el.style.color=s.cl;
-  el.className='cnode '+st;
+var _wcFaultSince={};  // chain id -> epoch ms when fault first seen client-side
+
+function _fmtDur(ms){
+  var s=Math.floor(ms/1000);
+  if(s<60)return s+'s';
+  var m=Math.floor(s/60),rs=s%60;
+  return m+'m'+(rs?(' '+rs+'s'):'');
 }
+
+function _applyWcNode(el,st,level,isFaultPt,isStack){
+  var cls=isStack?'wc-stack':'wc-node';
+  el.className=cls+' '+st;
+  // level bar + value (nodes only, not stack containers)
+  if(!isStack){
+    var fill=el.querySelector('.wc-node-fill');
+    var lev=el.querySelector('.wc-node-lev');
+    if(level!==null&&level!==undefined){
+      var pct=Math.max(0,Math.min(100,Math.round((level+80)/80*100)));
+      var col=st==='ok'?'var(--ok)':st==='down'?'var(--al)':'var(--mu)';
+      if(fill){fill.style.width=pct+'%';fill.style.background=col;}
+      if(lev)lev.textContent=level+' dB';
+    } else {
+      if(fill)fill.style.width='0%';
+      if(lev)lev.textContent=st==='offline'?'Offline':'—';
+    }
+  }
+  // fault point tag
+  var old=el.querySelector('.wc-fault-tag');if(old)old.remove();
+  if(isFaultPt&&!isStack){
+    var tag=document.createElement('div');tag.className='wc-fault-tag';tag.textContent='FAULT';
+    el.appendChild(tag);
+  }
+}
+
 function pollChains(){
   fetch('/api/chains/status').then(function(r){return r.json();}).then(function(data){
+    var now=Date.now();
     (data.results||[]).forEach(function(chain){
-      var badge=document.getElementById('wc_badge_'+chain.id);
-      if(badge){
-        badge.textContent=chain.status==='ok'?'ALL OK':chain.status==='fault'?'FAULT':'…';
-        badge.className='chain-badge '+(chain.status==='ok'?'ok':chain.status==='fault'?'fault':'unknown');
+      var cid=chain.id;
+      var fi=chain.fault_index;
+      var ds=chain.display_status||chain.status;
+      var isAdbreak=(ds==='adbreak'||ds==='pending');
+      var cardCls=isAdbreak?'adbreak':(chain.status==='ok'?'ok':(chain.status==='fault'?'fault':'unknown'));
+      if(chain.has_maintenance)cardCls='maintenance';
+
+      // Track fault duration client-side
+      if(chain.status==='fault'){
+        if(!_wcFaultSince[cid])_wcFaultSince[cid]=now;
+      } else {
+        _wcFaultSince[cid]=null;
       }
+
+      // Card border class
+      var card=document.getElementById('wc_card_'+cid);
+      if(card)card.className='chain-card '+cardCls;
+
+      // Dot
+      var dot=document.getElementById('wc_dot_'+cid);
+      if(dot)dot.className='chain-card-dot '+cardCls;
+
+      // Badge text
+      var badge=document.getElementById('wc_badge_'+cid);
+      if(badge){
+        var txt='…';
+        if(isAdbreak){txt='AD BREAK';}
+        else if(chain.status==='ok'){txt='ALL OK';}
+        else if(chain.status==='fault'){
+          txt='FAULT';
+          if(_wcFaultSince[cid])txt+=' '+_fmtDur(now-_wcFaultSince[cid]);
+        }
+        badge.textContent=txt;
+        badge.className='chain-card-badge '+cardCls;
+      }
+
+      // Nodes
       (chain.nodes||[]).forEach(function(node,idx){
-        var el=document.getElementById('wc_node_'+chain.id+'_'+idx);
-        if(!el)return;
-        var fi=chain.fault_index;
-        var st=(fi!==null&&fi!==undefined&&idx>fi)?'downstream':node.status;
-        _applyNodeStyle(el,st);
-        var lv=el.querySelector('.cnode-lev');
-        if(lv)lv.textContent=(node.level!==null&&node.level!==undefined)?(node.level+' dB'):'—';
-        var oldfb=el.querySelector('.cnode-fault');if(oldfb)oldfb.remove();
-        if(fi!==null&&fi!==undefined&&idx===fi){
-          var fb=document.createElement('div');fb.className='cnode-fault';fb.textContent='FAULT POINT';
-          el.appendChild(fb);
+        var isDown=(fi!==null&&fi!==undefined&&idx===fi);
+        var isDnstr=(fi!==null&&fi!==undefined&&idx>fi);
+        if(node.type==='stack'){
+          // Update stack container
+          var stackEl=document.getElementById('wc_node_'+cid+'_'+idx);
+          var stackSt=isDnstr?'downstream':(node.status||'unknown');
+          if(stackEl)stackEl.className='wc-stack '+stackSt;
+          // Update each sub-node
+          (node.nodes||[]).forEach(function(sub,si){
+            var subEl=document.getElementById('wc_sub_'+cid+'_'+idx+'_'+si);
+            if(!subEl)return;
+            var subSt=isDnstr?'downstream':(sub.status||'unknown');
+            _applyWcNode(subEl,subSt,sub.level,false,false);
+          });
+        } else {
+          var el=document.getElementById('wc_node_'+cid+'_'+idx);
+          if(!el)return;
+          var st=isDnstr?'downstream':(node.status||'unknown');
+          _applyWcNode(el,st,node.level,isDown,false);
         }
       });
     });

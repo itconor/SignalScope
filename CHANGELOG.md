@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.65] - 2026-03-24
+
+### Changed
+- **Wall page — broadcast chains redesigned** — chains now render as a responsive card grid (auto-fill, min 360 px) instead of full-width horizontal rows. Each card has a coloured border and dot indicator that reflects chain status (green OK, red FAULT, amber AD BREAK, blue maintenance). Stack nodes (redundant pairs) are now rendered as a grouped bordered box showing each sub-node individually. All nodes show a live audio level bar and dB value. Fault-point nodes pulse with a red glow animation and display a FAULT tag. Downstream nodes from the fault point are visually dimmed. The badge shows fault duration (e.g. "FAULT 2m 15s") tracked client-side. AD BREAK / CHECKING states are reflected on the badge and card border.
+
 ## [3.3.64] - 2026-03-24
 
 ### Added
