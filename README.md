@@ -264,7 +264,7 @@ Broadcast Chains are configured and viewed on the hub under **Hub → Broadcast 
    - **Site** — choose `This node (local)` for streams on the hub machine, or any connected remote site
    - **Stream** — populated from the selected site's available streams
    - **Label** — optional friendly name (e.g. `Manchester TX`); defaults to the stream name
-   - **Machine tag** — optional server/hardware identifier (e.g. `LONCTAXZC03`); used for cross-chain shared fault correlation
+   - **Machine tag** — optional server/hardware identifier (e.g. `TX-SERVER-01`); used for cross-chain shared fault correlation
 3. Click **💾 Save Chain**
 
 Example chain layouts:
@@ -357,7 +357,7 @@ SignalScope monitors the level trend for each node over the last 60 minutes. If 
 
 When a chain fault fires, SignalScope checks whether the faulted node's hardware appears in any other chain and includes a note in the alert message:
 
-> `NOTE: other chains share hardware 'LONCTAXZC03': Cool FM Distribution, Absolute Radio Chain`
+> `NOTE: other chains share hardware 'TX-SERVER-01': Cool FM Distribution, Absolute Radio Chain`
 
 This helps engineers immediately understand whether a fault is isolated to one chain or affects multiple services sharing the same server or hardware. Correlation priority:
 
