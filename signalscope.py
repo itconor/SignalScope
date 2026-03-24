@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.41"
+BUILD                  = "SignalScope-3.3.42"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -7879,6 +7879,9 @@ class HubClient:
         # Pending DAB scan result to include in next heartbeat (set by background scan thread)
         self._dab_scan_result: Optional[dict] = None
         self._dab_scan_lock = threading.Lock()
+        # Latest RDS data from the scanner (populated when redsea is running)
+        self._scanner_rds: dict = {}
+        self._scanner_rds_lock = threading.Lock()
 
     @staticmethod
     def _normalise_url(url: str) -> str:
@@ -8363,6 +8366,18 @@ class HubClient:
                 pass
         return info
 
+    def _get_scanner_rds(self) -> dict:
+        with self._scanner_rds_lock:
+            return dict(self._scanner_rds)
+
+    def _set_scanner_rds(self, data: dict):
+        with self._scanner_rds_lock:
+            self._scanner_rds = dict(data)
+
+    def _clear_scanner_rds(self):
+        with self._scanner_rds_lock:
+            self._scanner_rds = {}
+
     def _build_payload(self) -> dict:
         cfg  = self._cfg_fn()
         mon  = self._monitor
@@ -8489,6 +8504,7 @@ class HubClient:
             "dab_scan_result": self._pop_dab_scan_result(),
             "system":          self._build_system_health(),
             "app_log":         [str(l)[:200] for l in list(self._monitor._log)[-30:]],
+            "scanner_rds": self._get_scanner_rds(),
         }
 
     def _handle_listen_requests(self, cfg, listen_requests: list):
@@ -8733,14 +8749,18 @@ class HubClient:
                 return
             device_idx = devs[0]["index"]
 
+        _has_redsea = bool(_find_binary("redsea"))
+
         freq_hz  = int(freq_mhz * 1_000_000)
-        monitor.log(f"[Scanner] {freq_mhz:.2f} MHz device={device_idx} slot={slot_id[:6]} (WAV)")
+        rds_tag  = " +RDS" if _has_redsea else ""
+        monitor.log(f"[Scanner] {freq_mhz:.2f} MHz device={device_idx} slot={slot_id[:6]}{rds_tag}")
 
         _SDR_RATE = 171000
-        _OUT_RATE = 48000
-        _BLOCK    = _OUT_RATE * 2 // 10   # 9600 bytes = 4800 samples = 0.1 s
+        _OUT_RATE = 171000 if _has_redsea else 48000   # 171k needed for RDS subcarrier
+        _BLOCK    = _OUT_RATE * 2 // 10                # bytes per 0.1 s block
         _BLK_DUR  = 0.1
-        _SKIP     = 15                    # discard 1.5 s USB startup burst (burst ≈ 14 blk)
+        _SKIP     = 15                                  # discard 1.5 s USB startup burst
+        _AUD_BLOCK = 48000 * 2 // 10                   # 9600 bytes — 0.1 s at 48 kHz (audio)
 
         rtl_cmd = [
             "rtl_fm", "-f", str(freq_hz), "-M", "fm",
@@ -8760,6 +8780,19 @@ class HubClient:
             monitor.log(f"[Scanner] rtl_fm start failed: {e}")
             return
 
+        # ── Optional redsea subprocess for RDS ────────────────────────────────
+        rds_proc = None
+        if _has_redsea:
+            try:
+                rds_proc = subprocess.Popen(
+                    ["redsea", "-j"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, bufsize=0,
+                )
+            except Exception as _e:
+                monitor.log(f"[Scanner] redsea start failed: {_e}")
+                rds_proc = None
+
         # No WAV header — the hub generates it immediately when the browser
         # connects so the streaming connection is never stalled.
 
@@ -8769,10 +8802,10 @@ class HubClient:
         def _pipeline():
             """Read rtl_fm, replace USB startup burst with silence, queue raw PCM.
 
-            The first _SKIP blocks are replaced with zeros because librtlsdr
-            pre-fills its async buffer before the first real sample arrives.
-            After that we send real S16LE PCM.  No WAV header is prepended here —
-            the hub side handles stream framing.
+            When redsea is available the output rate is 171 kHz.  This thread
+            resamples each block to 48 kHz (resample_poly 16/57) for audio and
+            simultaneously feeds the raw 171 kHz stream to redsea for RDS.
+            Without redsea the output rate is 48 kHz and no resampling is done.
             """
             mux   = b""
             count = 0
@@ -8786,24 +8819,68 @@ class HubClient:
                         blk   = mux[:_BLOCK]
                         mux   = mux[_BLOCK:]
                         count += 1
-                        if count <= _SKIP:
-                            out = b"\x00" * _BLOCK   # silence during USB burst
+                        burst = (count <= _SKIP)
+                        if burst:
+                            raw_out  = b"\x00" * _BLOCK
+                            aud_out  = b"\x00" * _AUD_BLOCK
                         else:
                             if count == _SKIP + 1:
                                 monitor.log(
                                     f"[Scanner] Burst flushed ({_SKIP} blk), "
                                     f"streaming raw PCM"
                                 )
-                            out = blk
+                            raw_out = blk
+                            if _has_redsea:
+                                # Resample 171 kHz → 48 kHz for audio
+                                import numpy as _np
+                                from scipy.signal import resample_poly as _rp
+                                samp = _np.frombuffer(blk, dtype='<i2').astype(_np.float32)
+                                rs   = _rp(samp, 16, 57)
+                                aud_out = rs.clip(-32768, 32767).astype('<i2').tobytes()
+                            else:
+                                aud_out = blk
+                        # Feed raw 171 kHz to redsea (non-blocking write)
+                        if rds_proc and not burst:
+                            try:
+                                rds_proc.stdin.write(raw_out)
+                            except Exception:
+                                pass
                         try:
-                            pcm_queue.put(out, timeout=1.0)
+                            pcm_queue.put(aud_out, timeout=1.0)
                         except queue.Full:
-                            pass   # consumer stalled — drop rather than block rtl_fm
+                            pass
             except Exception as e:
                 monitor.log(f"[Scanner] Pipeline error: {e}")
 
         threading.Thread(target=_pipeline, daemon=True,
                          name=f"ScanPipe-{slot_id[:6]}").start()
+
+        def _rds_reader():
+            """Parse redsea JSON lines and update scanner RDS state."""
+            if not rds_proc:
+                return
+            for raw_line in rds_proc.stdout:
+                if stop_flag.is_set():
+                    break
+                try:
+                    d  = json.loads(raw_line.decode("utf-8", errors="replace").strip())
+                    ps = str(d.get("ps", "")).strip()
+                    rt = str(d.get("rt", "")).strip()
+                    pi = str(d.get("pi", ""))
+                    upd: dict = {}
+                    if pi:  upd["pi"] = pi
+                    if ps:  upd["ps"] = ps
+                    if rt:  upd["rt"] = rt
+                    if upd:
+                        cur = self._get_scanner_rds()
+                        cur.update(upd)
+                        self._set_scanner_rds(cur)
+                except Exception:
+                    pass
+
+        if rds_proc:
+            threading.Thread(target=_rds_reader, daemon=True,
+                             name=f"ScanRDS-{slot_id[:6]}").start()
 
         # Main loop: dequeue blocks and POST at real-time rate.
         # The queue fills at hardware rate (~0.1 s/block); the deadline clock
@@ -8840,6 +8917,10 @@ class HubClient:
             except: pass
             with self._lock:
                 self._active_slots.discard(slot_id)
+            self._clear_scanner_rds()
+            if rds_proc:
+                try: rds_proc.kill(); rds_proc.wait(timeout=2)
+                except: pass
 
     def _send_one(self, url: str, payload_bytes: bytes, secret: str = "") -> dict:
         """Sign, encrypt and send a payload. Returns full ACK body.
@@ -16043,6 +16124,13 @@ def hub_heartbeat():
 
     site_name = payload.get("site","")
 
+    # ── Scanner RDS — client piggybacks RDS data on the heartbeat ────────────
+    _scanner_rds = payload.get("scanner_rds")
+    if isinstance(_scanner_rds, dict) and site_name and hub_server:
+        _sess = hub_server._scanner_sessions.get(site_name)
+        if _sess and (_scanner_rds.get("ps") or _scanner_rds.get("rt")):
+            _sess["rds"] = _scanner_rds
+
     # ── Post-update comeback detection ────────────────────────────────────────
     # If we pushed a self_update to this site, watch for its first heartbeat
     # after the restart.  When detected: push a 'start' command so monitoring
@@ -17394,6 +17482,7 @@ def hub_scanner_start():
         "sdr_serial": sdr_serial,
         "bitrate":    bitrate,
         "started":    time.time(),
+        "rds":        {},
     }
     monitor.log(f"[Scanner] Session started for site '{site}' at {freq_mhz:.2f} MHz "
                 f"(slot {slot.slot_id[:6]})")
@@ -17433,6 +17522,7 @@ def hub_scanner_tune():
     )
     sess["slot_id"]  = slot.slot_id
     sess["freq_mhz"] = freq_mhz
+    sess["rds"] = {}   # clear RDS when retuning — new frequency = new station
     monitor.log(f"[Scanner] Retuned site '{site}' → {freq_mhz:.2f} MHz (slot {slot.slot_id[:6]})")
     stream_url = f"/hub/scanner/stream/{slot.slot_id}"
     return jsonify({"ok": True, "slot_id": slot.slot_id, "stream_url": stream_url,
@@ -17480,6 +17570,7 @@ def hub_scanner_status(site_name):
         "freq_mhz":  sess["freq_mhz"],
         "stream_url": stream_url,
         "streaming": slot.last_chunk > slot.created,
+        "rds":       sess.get("rds", {}),
     })
 
 
@@ -22490,69 +22581,81 @@ setTimeout(_tlLoadAll, 600);
 <footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build}} • Broadcast Signal Intelligence</footer>
 </body></html>"""
 
-HUB_SCANNER_TPL = r"""<!DOCTYPE html>
+HUB_SCANNER_TPL = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FM Scanner — SignalScope</title>
+<link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#080d18;--card:#0d1526;--bor:#1e3050;--tx:#c8d8f0;--mu:#4a6a8a;--ok:#22c55e;--al:#ef4444;--bl:#3b82f6;--lcd:#00e5ff;--lcd-dim:#004060}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8;--lcd:#00e5ff;--lcd-dim:#004a60}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column}
-a{color:var(--bl);text-decoration:none}
-input,select,button{font-family:inherit;font-size:14px;background:var(--card);color:var(--tx);border:1px solid var(--bor);border-radius:6px;outline:none}
-input:focus,select:focus{border-color:var(--bl)}
-.hdr{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--bor)}
-.hdr-logo{font-size:15px;font-weight:700;color:var(--bl);letter-spacing:.5px}
-.hdr-title{font-size:14px;color:var(--mu)}
-.hdr-back{margin-left:auto;padding:5px 14px;border-radius:6px;background:#0a1428;border:1px solid var(--bor);color:var(--mu);font-size:13px;cursor:pointer}
-.hdr-back:hover{color:var(--tx);border-color:#3b5a90}
-.setup-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 20px;background:#080d18;border-bottom:1px solid var(--bor)}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);min-height:100vh;display:flex;flex-direction:column}
+a{color:var(--acc);text-decoration:none}
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;box-shadow:0 6px 18px rgba(0,0,0,.18)}
+header h1{font-size:17px;font-weight:700}
+.badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
+nav a{color:var(--tx);font-size:13px;padding:5px 10px;border-radius:6px;background:var(--bor);text-decoration:none;transition:background .15s}
+nav a:hover{background:#254880;color:#fff}
+.setup-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 20px;background:rgba(10,20,48,.7);border-bottom:1px solid var(--bor)}
 .setup-bar label{font-size:12px;color:var(--mu);white-space:nowrap}
-.setup-bar select,.setup-bar input[type=number]{padding:6px 10px;font-size:13px}
-.btn-connect{padding:7px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;border:1px solid #3b82f6;background:#1e3a8a;color:#bfdbfe;transition:background .15s}
-.btn-connect:hover{background:#2046ae}
-.btn-connect.active{background:#1a4028;border-color:#22c55e;color:#86efac}
-.tuner-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:30px 16px}
-.tuner{background:var(--card);border:1px solid var(--bor);border-radius:16px;padding:28px 32px;width:100%;max-width:500px;box-shadow:0 4px 32px rgba(0,0,0,.6)}
-.status-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:20px;font-size:13px;color:var(--mu)}
-.dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;transition:background .3s,box-shadow .3s}
-.dot.idle{background:#2a3a4a}
-.dot.connecting{background:#facc15;box-shadow:0 0 8px rgba(250,204,21,.7)}
-.dot.streaming{background:var(--ok);box-shadow:0 0 8px rgba(34,197,94,.6)}
-.dot.error{background:var(--al);box-shadow:0 0 8px rgba(239,68,68,.6)}
-.freq-wrap{text-align:center;margin-bottom:26px}
-.freq-display{display:inline-block;font-family:'Courier New',monospace;font-size:62px;font-weight:700;letter-spacing:3px;color:var(--lcd);text-shadow:0 0 14px rgba(0,229,255,.65),0 0 32px rgba(0,229,255,.2);background:#030a12;border:2px solid #0c2440;border-radius:10px;padding:12px 24px;min-width:290px;line-height:1.1;transition:color .2s}
-.freq-unit{font-size:18px;color:var(--lcd-dim);letter-spacing:2px;margin-top:5px;font-family:'Courier New',monospace}
-.freq-sub{font-size:12px;color:var(--mu);margin-top:6px;min-height:16px}
-.tune-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:14px}
-.tune-btn{background:#0a1428;border:1px solid #1e3558;color:#5090d0;font-size:13px;font-weight:600;padding:9px 14px;border-radius:8px;cursor:pointer;min-width:58px;text-align:center;transition:background .1s;user-select:none}
-.tune-btn:hover{background:#142040;border-color:#2a4a78;color:#80b4f0}
+.setup-bar select,.setup-bar input[type=number]{padding:6px 10px;font-size:13px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);outline:none}
+.setup-bar select:focus,.setup-bar input[type=number]:focus{border-color:var(--acc)}
+.btn-connect{padding:7px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;border:1px solid var(--acc);background:#0e2a5a;color:#bfdbfe;transition:background .15s;font-family:inherit}
+.btn-connect:hover{background:#143a80}
+.btn-connect.active{background:#1a4028;border-color:var(--ok);color:#86efac}
+main{flex:1;display:flex;align-items:flex-start;justify-content:center;padding:28px 16px}
+.tuner{background:var(--sur);border:1px solid var(--bor);border-radius:14px;padding:26px 28px;width:100%;max-width:520px;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+.status-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:18px;font-size:13px;color:var(--mu)}
+.sdot{width:9px;height:9px;border-radius:50%;flex-shrink:0;transition:background .3s,box-shadow .3s}
+.sdot.idle{background:#2a3a4a}
+.sdot.connecting{background:var(--wn);box-shadow:0 0 8px rgba(245,158,11,.7)}
+.sdot.streaming{background:var(--ok);box-shadow:0 0 8px rgba(34,197,94,.6)}
+.sdot.error{background:var(--al);box-shadow:0 0 8px rgba(239,68,68,.6)}
+.freq-wrap{text-align:center;margin-bottom:18px}
+.freq-disp{display:inline-block;font-family:'Courier New',monospace;font-size:58px;font-weight:700;letter-spacing:3px;color:var(--lcd);text-shadow:0 0 14px rgba(0,229,255,.6),0 0 28px rgba(0,229,255,.18);background:#030a12;border:2px solid #0c2440;border-radius:10px;padding:10px 22px;min-width:278px;line-height:1.1;transition:color .2s}
+.freq-unit{font-size:18px;color:var(--lcd-dim);letter-spacing:2px;margin-top:4px;font-family:'Courier New',monospace}
+.freq-sub{font-size:12px;color:var(--mu);margin-top:5px;min-height:16px}
+.rds-wrap{background:#040c1a;border:1px solid #0f2248;border-radius:8px;padding:10px 14px;margin-bottom:16px}
+.rds-ps{display:block;font-family:'Courier New',monospace;font-size:22px;font-weight:700;letter-spacing:4px;color:var(--lcd);text-align:center;text-shadow:0 0 10px rgba(0,229,255,.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px}
+.rds-rt-outer{overflow:hidden;white-space:nowrap;margin-top:5px;text-align:center}
+.rds-rt-static{font-size:12px;color:var(--mu)}
+.rds-rt-scroll{display:inline-flex;white-space:nowrap;animation:rds-marquee 16s linear infinite;font-size:12px;color:var(--mu)}
+.rds-rt-scroll span{display:inline-block;padding-right:3rem}
+@keyframes rds-marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+.tune-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:12px}
+.tune-btn{background:#0a1a3a;border:1px solid var(--bor);color:var(--acc);font-size:13px;font-weight:600;padding:9px 14px;border-radius:8px;cursor:pointer;min-width:58px;text-align:center;transition:background .1s;user-select:none;font-family:inherit}
+.tune-btn:hover{background:#142040;border-color:#2a5a90;color:#80c4ff}
 .tune-btn:active{background:#1a2a50}
 .tune-btn:disabled{opacity:.3;cursor:not-allowed}
-.step-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:18px;flex-wrap:wrap}
+.step-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:16px;flex-wrap:wrap}
 .step-lbl{font-size:11px;color:var(--mu)}
-.step-btn{font-size:11px;padding:4px 11px;border-radius:20px;background:#0a1020;border:1px solid #1a2840;color:var(--mu);cursor:pointer;transition:all .15s}
-.step-btn.sel{background:#1e3a8a;border-color:#3b82f6;color:#bfdbfe}
+.step-btn{font-size:11px;padding:4px 11px;border-radius:20px;background:#08122a;border:1px solid var(--bor);color:var(--mu);cursor:pointer;transition:all .15s;font-family:inherit}
+.step-btn.sel{background:#0e2a5a;border-color:var(--acc);color:var(--acc)}
 .step-btn:hover:not(.sel){border-color:#2a4060;color:var(--tx)}
 .manual-row{display:flex;align-items:center;justify-content:center;gap:8px}
-.manual-row input[type=number]{width:100px;padding:6px 10px;font-size:14px;text-align:center}
-.btn-sm{padding:6px 14px;font-size:13px;background:#0a1428;border:1px solid #1e3558;color:#5090d0;border-radius:6px;cursor:pointer;transition:background .1s}
+.manual-row input[type=number]{width:100px;padding:6px 10px;font-size:14px;text-align:center;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);outline:none}
+.manual-row input[type=number]:focus{border-color:var(--acc)}
+.btn-sm{padding:6px 14px;font-size:13px;background:#0a1a3a;border:1px solid var(--bor);color:var(--acc);border-radius:6px;cursor:pointer;transition:background .1s;font-family:inherit}
 .btn-sm:hover{background:#142040}
 .btn-sm:disabled{opacity:.3;cursor:not-allowed}
-.kb-row{text-align:center;margin-top:16px;font-size:11px;color:#2a4260}
-.audio-row{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid var(--bor)}
-.audio-row label{font-size:12px;color:var(--mu)}
-.audio-row input[type=range]{width:110px;accent-color:var(--bl)}
+.kb-row{text-align:center;margin-top:14px;font-size:11px;color:#3a5270}
+.vol-row{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid var(--bor)}
+.vol-row label{font-size:12px;color:var(--mu)}
+.vol-row input[type=range]{width:110px;accent-color:var(--acc)}
+footer{padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)}
 </style>
 </head>
 <body>
-<div class="hdr">
-  <span class="hdr-logo">📻 SignalScope</span>
-  <span class="hdr-title">FM Scanner</span>
-  <a class="hdr-back" href="/hub">← Hub</a>
-</div>
+<header>
+  <img src="/static/signalscope_icon.png" style="width:28px;height:28px;opacity:.85;flex-shrink:0">
+  <h1>SignalScope</h1>
+  <span class="badge">FM Scanner</span>
+  <nav style="margin-left:auto;display:flex;gap:8px">
+    <a href="/hub">← Hub Dashboard</a>
+  </nav>
+</header>
 
 <div class="setup-bar">
   <label>Site</label>
@@ -22570,20 +22673,24 @@ input:focus,select:focus{border-color:var(--bl)}
   <button class="btn-connect" id="connect-btn">Connect</button>
 </div>
 
-<div class="tuner-wrap">
+<main>
   <div class="tuner">
     <div class="status-row">
-      <span class="dot idle" id="status-dot"></span>
+      <span class="sdot idle" id="status-dot"></span>
       <span id="status-txt">Idle — pick a site and connect</span>
     </div>
     <div class="freq-wrap">
-      <div class="freq-display" id="freq-display">---.--</div>
+      <div class="freq-disp" id="freq-display">---.--</div>
       <div class="freq-unit">MHz FM</div>
       <div class="freq-sub" id="freq-sub">&nbsp;</div>
     </div>
+    <div class="rds-wrap" id="rds-wrap" style="display:none">
+      <span class="rds-ps" id="rds-ps">&nbsp;</span>
+      <div class="rds-rt-outer" id="rds-rt-outer"></div>
+    </div>
     <div class="tune-row">
-      <button class="tune-btn" data-step="-1.0" disabled>−1.0</button>
-      <button class="tune-btn" id="btn-dn" data-step="-0.1" disabled>−0.1</button>
+      <button class="tune-btn" data-step="-1.0" disabled>&minus;1.0</button>
+      <button class="tune-btn" id="btn-dn" data-step="-0.1" disabled>&minus;0.1</button>
       <button class="tune-btn" id="btn-up" data-step="+0.1" disabled>+0.1</button>
       <button class="tune-btn" data-step="+1.0" disabled>+1.0</button>
     </div>
@@ -22601,59 +22708,59 @@ input:focus,select:focus{border-color:var(--bl)}
       <span style="font-size:12px;color:var(--mu)">MHz</span>
       <button class="btn-sm" id="manual-btn" disabled>Tune</button>
     </div>
-    <div class="kb-row">← → tune &nbsp;·&nbsp; Shift+←→ ×5 &nbsp;·&nbsp; ↑↓ ±1 MHz &nbsp;·&nbsp; Enter: manual tune</div>
-    <div class="audio-row">
-      <label>🔊</label>
+    <div class="kb-row">&#8592; &#8594; tune &nbsp;&middot;&nbsp; Shift+&#8592;&#8594; &times;5 &nbsp;&middot;&nbsp; &#8593;&#8595; &plusmn;1 MHz &nbsp;&middot;&nbsp; Enter: manual tune</div>
+    <div class="vol-row">
+      <label>&#128266;</label>
       <input type="range" id="vol" min="0" max="1" step="0.05" value="0.85">
     </div>
   </div>
-</div>
+</main>
+
+<footer>SignalScope {{build}} &nbsp;&middot;&nbsp; Broadcast Signal Intelligence</footer>
 
 <script nonce="{{csp_nonce()}}">
 (function(){
 'use strict';
 var _csrf=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
 function _f(url,o){o=o||{};o.headers=Object.assign({'X-CSRFToken':_csrf,'Content-Type':'application/json'},o.headers||{});return fetch(url,o);}
-var siteSel    = document.getElementById('site-sel');
-var sdrSel     = document.getElementById('sdr-sel');
-var startFreq  = document.getElementById('start-freq');
-var connBtn    = document.getElementById('connect-btn');
-var freqDisp   = document.getElementById('freq-display');
-var freqSub    = document.getElementById('freq-sub');
-var statusDot  = document.getElementById('status-dot');
-var statusTxt  = document.getElementById('status-txt');
-var manFreq    = document.getElementById('manual-freq');
-var manBtn     = document.getElementById('manual-btn');
-var volSlider  = document.getElementById('vol');
+function _esc(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+var siteSel   = document.getElementById('site-sel');
+var sdrSel    = document.getElementById('sdr-sel');
+var startFreq = document.getElementById('start-freq');
+var connBtn   = document.getElementById('connect-btn');
+var freqDisp  = document.getElementById('freq-display');
+var freqSub   = document.getElementById('freq-sub');
+var statusDot = document.getElementById('status-dot');
+var statusTxt = document.getElementById('status-txt');
+var manFreq   = document.getElementById('manual-freq');
+var manBtn    = document.getElementById('manual-btn');
+var volSlider = document.getElementById('vol');
 var _freq = 96.5, _step = 0.2, _state = 'idle', _slotId = '', _poll = null;
 
 // ── Web Audio API state ───────────────────────────────────────
-// Raw S16LE PCM is fetched from the hub and decoded here instead of
-// using an <audio> element.  This works on Chrome, Firefox, and Safari.
-var _audioCtx  = null;    // created on first user gesture
-var _gainNode  = null;
-var _reader    = null;    // ReadableStreamDefaultReader for current fetch
-var _nextTime  = 0;       // next AudioContext schedule time
-var _pcmBuf    = new Uint8Array(0);  // accumulate partial blocks
-var _SR        = 48000;   // sample rate (fixed for scanner)
-var _BLK_S     = 4800;    // samples per 0.1 s block
-var _BLK_B     = _BLK_S * 2;        // bytes  (S16LE, mono)
-var _PRE       = 0.3;     // seconds to buffer before playback begins
-var _sched     = 0;       // blocks scheduled so far (for status update)
+var _audioCtx = null;
+var _gainNode = null;
+var _reader   = null;
+var _nextTime = 0;
+var _pcmBuf   = new Uint8Array(0);
+var _SR       = 48000;
+var _BLK_S    = 4800;
+var _BLK_B    = _BLK_S * 2;
+var _PRE      = 0.3;
+var _sched    = 0;
 
 function fmt(f){ return f.toFixed(2); }
 function clamp(f){ return Math.max(76, Math.min(108, parseFloat(f.toFixed(2)))); }
 
 function setStatus(state, msg){
   _state = state;
-  statusDot.className = 'dot ' + state;
+  statusDot.className = 'sdot ' + state;
   statusTxt.textContent = msg;
   var on = (state === 'streaming' || state === 'connecting');
   document.querySelectorAll('.tune-btn').forEach(function(b){ b.disabled = !on; });
   manBtn.disabled = !on;
-  // Lock site/SDR selectors while connected — they only take effect on next Connect
-  siteSel.disabled    = on;
-  sdrSel.disabled     = on;
+  siteSel.disabled = on;
+  sdrSel.disabled  = on;
   connBtn.textContent = on ? 'Disconnect' : 'Connect';
   connBtn.classList.toggle('active', on);
 }
@@ -22663,10 +22770,26 @@ function updateFreq(f){
   freqDisp.textContent = fmt(f);
 }
 
-// ── Load SDR devices for site ────────────────────────────────
+// ── RDS display ───────────────────────────────────────────────
+function _updateRDS(rds){
+  var wrap  = document.getElementById('rds-wrap');
+  var psEl  = document.getElementById('rds-ps');
+  var rtOut = document.getElementById('rds-rt-outer');
+  var ps = ((rds && rds.ps) || '').trim();
+  var rt = ((rds && rds.rt) || '').trim();
+  if(!ps && !rt){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  psEl.textContent = ps || '\u00a0';
+  if(rt.length > 28){
+    rtOut.innerHTML = '<span class="rds-rt-scroll"><span>'+_esc(rt)+'&nbsp;&nbsp;&nbsp;&nbsp;</span><span>'+_esc(rt)+'&nbsp;&nbsp;&nbsp;&nbsp;</span></span>';
+  } else {
+    rtOut.innerHTML = rt ? '<span class="rds-rt-static">'+_esc(rt)+'</span>' : '';
+  }
+}
+
+// ── Load SDR devices ──────────────────────────────────────────
 function loadDevices(){
-  var site = siteSel.value;
-  if(!site) return;
+  var site = siteSel.value; if(!site) return;
   _f('/api/hub/scanner/devices/' + encodeURIComponent(site))
     .then(function(r){ return r.json(); })
     .then(function(d){
@@ -22680,12 +22803,12 @@ function loadDevices(){
 siteSel.addEventListener('change', loadDevices);
 loadDevices();
 
-// ── Volume ───────────────────────────────────────────────────
+// ── Volume ────────────────────────────────────────────────────
 volSlider.addEventListener('input', function(){
   if(_gainNode) _gainNode.gain.value = parseFloat(this.value);
 });
 
-// ── Connect / Disconnect ─────────────────────────────────────
+// ── Connect / Disconnect ──────────────────────────────────────
 connBtn.addEventListener('click', function(){
   if(_state === 'streaming' || _state === 'connecting'){ doStop(); }
   else { _freq = parseFloat(startFreq.value) || 96.5; doStart(_freq); }
@@ -22693,7 +22816,7 @@ connBtn.addEventListener('click', function(){
 
 function doStart(freq){
   freq = clamp(freq);
-  setStatus('connecting', 'Connecting…');
+  setStatus('connecting', 'Connecting\u2026');
   updateFreq(freq);
   _f('/api/hub/scanner/start', {
     method:'POST',
@@ -22702,18 +22825,19 @@ function doStart(freq){
     if(d.ok){
       _slotId = d.slot_id;
       connectAudio(d.stream_url);
-      setStatus('connecting', 'Waiting for stream at ' + fmt(freq) + ' MHz…');
+      setStatus('connecting', 'Waiting for stream at ' + fmt(freq) + ' MHz\u2026');
       startPoll();
     } else { setStatus('error', 'Error: ' + (d.error || '?')); }
-  }).catch(function(e){ setStatus('error', 'Network error'); });
+  }).catch(function(){ setStatus('error', 'Network error'); });
 }
 
 function doTune(freq){
   if(_state !== 'streaming' && _state !== 'connecting') return;
   freq = clamp(freq);
   updateFreq(freq);
-  freqSub.textContent = 'Retuning…';
+  freqSub.textContent = 'Retuning\u2026';
   freqDisp.style.color = 'var(--lcd-dim)';
+  _updateRDS({});
   _f('/api/hub/scanner/tune', {
     method:'POST',
     body: JSON.stringify({site: siteSel.value, freq_mhz: freq})
@@ -22722,7 +22846,7 @@ function doTune(freq){
       _slotId = d.slot_id;
       connectAudio(d.stream_url);
       freqSub.textContent = '\u00a0';
-      setStatus('connecting', 'Waiting for ' + fmt(freq) + ' MHz…');
+      setStatus('connecting', 'Waiting for ' + fmt(freq) + ' MHz\u2026');
     } else { freqSub.textContent = 'Tune failed'; }
   }).catch(function(){ freqSub.textContent = 'Network error'; });
 }
@@ -22734,11 +22858,12 @@ function doStop(){
     body: JSON.stringify({site: siteSel.value})
   }).catch(function(){});
   disconnectAudio();
+  _updateRDS({});
   _slotId = '';
   freqDisp.textContent = '---.--';
   freqDisp.style.color = '';
   freqSub.textContent = '\u00a0';
-  setStatus('idle', 'Idle — pick a site and connect');
+  setStatus('idle', 'Idle \u2014 pick a site and connect');
 }
 
 // ── Web Audio API helpers ─────────────────────────────────────
@@ -22766,7 +22891,7 @@ function connectAudio(url){
   fetch(url, {credentials: 'same-origin'})
     .then(function(resp){
       if(!resp.ok || !resp.body){
-        if(_state !== 'idle') setStatus('error', 'Stream error — try reconnecting');
+        if(_state !== 'idle') setStatus('error', 'Stream error \u2014 try reconnecting');
         return;
       }
       _reader = resp.body.getReader();
@@ -22776,12 +22901,12 @@ function connectAudio(url){
           _feedPCM(r.value);
           pump();
         }).catch(function(){
-          if(_state !== 'idle'){ setStatus('error', 'Stream error — try reconnecting'); stopPoll(); }
+          if(_state !== 'idle'){ setStatus('error', 'Stream error \u2014 try reconnecting'); stopPoll(); }
         });
       })();
     })
     .catch(function(){
-      if(_state !== 'idle'){ setStatus('error', 'Network error — try reconnecting'); stopPoll(); }
+      if(_state !== 'idle'){ setStatus('error', 'Network error \u2014 try reconnecting'); stopPoll(); }
     });
 }
 
@@ -22807,7 +22932,6 @@ function _scheduleBlock(bytes){
   src.start(t);
   _nextTime = t + buf.duration;
   _sched++;
-  // Switch to 'streaming' state once the pre-buffer is full and audio is playing
   if(_state === 'connecting' && _sched > Math.ceil(_PRE / 0.1) + 1){
     freqDisp.style.color = '';
     freqSub.textContent  = '\u00a0';
@@ -22815,7 +22939,7 @@ function _scheduleBlock(bytes){
   }
 }
 
-// ── Status poll (2 s) ────────────────────────────────────────
+// ── Status poll (2 s) ─────────────────────────────────────────
 function startPoll(){ stopPoll(); _poll = setInterval(checkStatus, 2000); }
 function stopPoll(){ clearInterval(_poll); _poll = null; }
 
@@ -22828,10 +22952,11 @@ function checkStatus(){
       if(d.slot_id && d.slot_id !== _slotId){
         _slotId = d.slot_id; connectAudio(d.stream_url);
       }
+      _updateRDS(d.rds || {});
     }).catch(function(){});
 }
 
-// ── Tune buttons + step ──────────────────────────────────────
+// ── Tune buttons + step ───────────────────────────────────────
 document.addEventListener('click', function(e){
   var tb = e.target.closest('.tune-btn');
   if(tb && !tb.disabled){ doTune(_freq + parseFloat(tb.dataset.step || 0)); return; }
@@ -22853,7 +22978,7 @@ manFreq.addEventListener('keydown', function(e){
   if(e.key === 'Enter'){ var f = parseFloat(manFreq.value); if(!isNaN(f)) doTune(f); }
 });
 
-// ── Keyboard shortcuts ───────────────────────────────────────
+// ── Keyboard shortcuts ────────────────────────────────────────
 document.addEventListener('keydown', function(e){
   if(e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if(_state !== 'streaming' && _state !== 'connecting') return;

@@ -1,0 +1,54 @@
+# ── Runtime / generated ──────────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+lwai_config.json
+alert_log.json
+sla_data.json
+hub_state.json
+hub_state.json.bak
+alert_snippets/
+ai_models/
+metrics_history.db
+ptpscope_metrics.db
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+.flask_secret
+*.key
+*.pem
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+env/
+
+# ── iOS app (tracked separately) ─────────────────────────────────────────────
+Signalscopeiosapp/
+
+# ── macOS junk ────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Loose scratch files ───────────────────────────────────────────────────────
+*.jpeg
+*.jpg
+Screenshot*.png
+SignalScope_3_0_plan.txt
+
+# ── Claude / AI tooling ───────────────────────────────────────────────────────
+static/.claude/
+.claude/
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo

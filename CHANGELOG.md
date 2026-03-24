@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.42] - 2026-03-24
+
+### Changed
+- **FM Scanner — style updated to match hub dashboard** — replaced isolated CSS variables and custom header with the hub's colour palette (`--bg:#07142b`, `--sur:#0d2346`, `--acc:#17a8ff`, etc.), radial gradient body, gradient header, hub-style card (`.tuner`), matching nav back-link, and consistent footer. All button/input styles updated to match hub interactive elements.
+- **FM Scanner — RDS display** — when `redsea` is installed, the scanner pipeline switches to 171 kHz output and pipes the FM-demodulated stream through `redsea -j`. PS name (station name) and RadioText are parsed from the JSON output, piggybacked on the heartbeat payload, stored in the hub scanner session, and returned by `/api/hub/scanner/status`. The scanner UI displays them in an LCD-style RDS panel below the frequency readout; RadioText scrolls as a marquee when longer than 28 characters. The panel is hidden when no RDS is available. If `redsea` is not installed, the scanner falls back to 48 kHz audio-only mode with no change in audio quality or latency.
+
 ## [3.3.41] - 2026-03-24
 
 ### Fixed
