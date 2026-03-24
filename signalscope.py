@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.71"
+BUILD                  = "SignalScope-3.3.72"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -9188,16 +9188,55 @@ class HubClient:
             threading.Thread(target=_rds_reader, daemon=True,
                              name=f"ScanRDS-{slot_id[:6]}").start()
 
-        # Main loop: dequeue blocks and POST at real-time rate.
-        # The queue fills at hardware rate (~0.1 s/block); the deadline clock
-        # absorbs POST network latency without risking any burst reaching the hub.
-        # out_deadline is initialised to None and set on the FIRST dequeue so that
-        # the _SKIP=15 silence blocks flushed during pipeline warm-up (~1.5 s) do
-        # not push the deadline 1.5 s into the past, which would cause a burst of
-        # 15 blocks being sent immediately and schedule 1.5 s of audio ahead in
-        # the browser (perceived as "slow" / high-latency audio).
+        # Two-thread delivery: pacing thread + POST thread.
+        #
+        # Problem with a single sequential loop: when RTT > _BLK_DUR (0.1 s),
+        # each iteration takes RTT seconds but the deadline only advances 0.1 s,
+        # so the hub receives blocks at 0.1s/RTT of real-time rate.  At 200 ms
+        # RTT that is 0.5x — the browser depletes its pre-buffer in ~2 s.
+        #
+        # Fix: the pacing loop enqueues blocks into post_q at real-time rate
+        # (one per _BLK_DUR) without blocking on the POST.  The POST worker
+        # drains post_q, batching any accumulated blocks into a single request
+        # so the hub always receives real-time audio regardless of RTT.
+        post_q:  queue.Queue = queue.Queue(maxsize=200)
+        post_err: list       = [0]   # mutable counter shared with POST thread
+
+        def _post_worker():
+            while not stop_flag.is_set():
+                try:
+                    blk = post_q.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                # Drain any additional blocks that accumulated while the
+                # previous POST was in flight (RTT > _BLK_DUR case).
+                batch = bytearray(blk)
+                while True:
+                    try:
+                        batch += post_q.get_nowait()
+                    except queue.Empty:
+                        break
+                try:
+                    body = self._post_relay_chunk(cfg, chunk_url, bytes(batch))
+                    if body.get("error") == "slot not found or expired":
+                        monitor.log(f"[Scanner] Slot {slot_id[:6]} expired — stopping")
+                        stop_flag.set()
+                        return
+                    post_err[0] = 0
+                except Exception as e:
+                    post_err[0] += 1
+                    if post_err[0] >= 5:
+                        monitor.log(f"[Scanner] Push failed: {e}")
+                        stop_flag.set()
+                        return
+
+        threading.Thread(target=_post_worker, daemon=True,
+                         name=f"ScanPost-{slot_id[:6]}").start()
+
+        # Pacing loop: enqueue blocks at _BLK_DUR intervals.
+        # out_deadline is initialised on the FIRST real block so that the
+        # _SKIP=15 warm-up silence blocks don't pre-advance the clock 1.5 s.
         out_deadline: float | None = None
-        fails = 0
         try:
             while True:
                 try:
@@ -9206,22 +9245,17 @@ class HubClient:
                     if stop_flag.is_set():
                         break
                     continue
+                if stop_flag.is_set():
+                    break
                 if out_deadline is None:
                     out_deadline = time.monotonic()
                 slack = out_deadline - time.monotonic()
                 if slack > 0.001:
                     time.sleep(slack)
                 try:
-                    body = self._post_relay_chunk(cfg, chunk_url, blk)
-                    if body.get("error") == "slot not found or expired":
-                        monitor.log(f"[Scanner] Slot {slot_id[:6]} expired — stopping")
-                        break
-                    fails = 0
-                except Exception as e:
-                    fails += 1
-                    if fails >= 5:
-                        monitor.log(f"[Scanner] Push failed: {e}")
-                        break
+                    post_q.put_nowait(blk)
+                except queue.Full:
+                    pass   # hub unreachable; POST thread will detect and stop
                 out_deadline += _BLK_DUR
         finally:
             stop_flag.set()
@@ -18572,6 +18606,7 @@ def hub_scanner_status(site_name):
         hub_server._scanner_sessions.pop(site_name, None)
         return jsonify({"ok": True, "active": False})
     stream_url = f"/hub/scanner/stream/{sess['slot_id']}"
+    rtt_ms = round(slot.rtt_ema * 1000) if slot.rtt_ema else None
     return jsonify({
         "ok":        True,
         "active":    True,
@@ -18580,6 +18615,7 @@ def hub_scanner_status(site_name):
         "stream_url": stream_url,
         "streaming": slot.last_chunk > slot.created,
         "rds":       sess.get("rds", {}),
+        "rtt_ms":    rtt_ms,
     })
 
 
@@ -23950,6 +23986,7 @@ main{flex:1;display:flex;align-items:flex-start;justify-content:center;padding:2
 .tuner{background:var(--sur);border:1px solid var(--bor);border-radius:14px;padding:22px 24px;box-shadow:0 6px 24px rgba(0,0,0,.4)}
 .status-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:16px;font-size:13px;color:var(--mu)}
 .sdot{width:9px;height:9px;border-radius:50%;flex-shrink:0;transition:background .3s,box-shadow .3s}
+.delay-badge{margin-left:auto;font-size:.7rem;font-family:monospace;color:var(--dim);background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;padding:1px 5px;white-space:nowrap}
 .sdot.idle{background:#2a3a4a}
 .sdot.connecting{background:var(--wn);box-shadow:0 0 8px rgba(245,158,11,.7)}
 .sdot.streaming{background:var(--ok);box-shadow:0 0 8px rgba(34,197,94,.6)}
@@ -24062,6 +24099,7 @@ footer{padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border
       <div class="status-row">
         <span class="sdot idle" id="status-dot"></span>
         <span id="status-txt">Idle — pick a site and connect</span>
+        <span class="delay-badge" id="delay-badge" style="display:none" title="Buffer ahead / RTT"></span>
       </div>
       <div class="freq-wrap">
         <div class="freq-disp" id="freq-display">---.--</div>
@@ -24350,6 +24388,8 @@ function disconnectAudio(){
   if(_reader){ try{ _reader.cancel(); }catch(e){} _reader = null; }
   _pcmBuf = new Uint8Array(0);
   _sched  = 0;
+  _rttMs  = null;
+  _delayBadge.style.display = 'none';
 }
 
 function connectAudio(url){
@@ -24403,6 +24443,7 @@ function _scheduleBlock(bytes){
   src.start(t);
   _nextTime = t + buf.duration;
   _sched++;
+  _updateDelayBadge();
   if(_state === 'connecting' && _sched > Math.ceil(_PRE / 0.1) + 1){
     freqDisp.style.color = '';
     freqSub.textContent  = '\u00a0';
@@ -24416,6 +24457,18 @@ function stopPoll(){ clearInterval(_poll); _poll = null; }
 
 var _lastHistPs = '';
 var _lastHistFreq = 0;
+var _rttMs = null;
+var _delayBadge = document.getElementById('delay-badge');
+
+function _updateDelayBadge(){
+  if(!_audioCtx || _state === 'idle'){ _delayBadge.style.display = 'none'; return; }
+  var bufMs = Math.round(Math.max(0, _nextTime - _audioCtx.currentTime) * 1000);
+  var txt = 'buf\u00a0' + bufMs + '\u202fms';
+  if(_rttMs !== null) txt += '\u2002rtt\u00a0' + _rttMs + '\u202fms';
+  _delayBadge.textContent = txt;
+  _delayBadge.style.display = '';
+}
+
 function checkStatus(){
   var site = siteSel.value; if(!site) return;
   _f('/api/hub/scanner/status/' + encodeURIComponent(site))
@@ -24426,6 +24479,8 @@ function checkStatus(){
       var rds = d.rds || {};
       _updateRDS(rds);
       _updateLevel(rds._level !== undefined ? rds._level : null);
+      if(d.rtt_ms !== undefined && d.rtt_ms !== null) _rttMs = d.rtt_ms;
+      _updateDelayBadge();
       // Only persist history when PS name or frequency actually changes — avoid
       // synchronous localStorage writes on every poll tick (every 2 s) which
       // can stall the JS event loop and cause audio pump callback delays.

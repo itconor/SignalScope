@@ -2,6 +2,19 @@
 
 ---
 
+## [3.3.72] - 2026-03-24
+
+### Fixed
+- **FM Scanner — recurring underruns when RTT > 100 ms (root cause fix)**
+  Previous releases raised the relay keepalive threshold but didn't fix the underlying bottleneck: the client POST loop was sequential — each iteration blocked for a full RTT before advancing the deadline clock only 100 ms. When RTT > 100 ms (typical WAN), blocks arrived at the hub at `0.1 s / RTT` of real-time rate, depleting the browser pre-buffer in `_PRE / (1 - 0.1/RTT)` seconds (≈ 2 s at 200 ms RTT).
+
+  Fixed with a two-thread delivery model:
+  - **Pacing loop** (existing thread): dequeues PCM blocks from the audio pipeline and enqueues them into a `post_q` at exact `_BLK_DUR` intervals. Never blocks on network I/O.
+  - **POST worker thread** (new daemon `ScanPost-*`): drains `post_q`, batching any blocks that accumulated while the previous POST was in-flight into a single request. This means if RTT = 300 ms and 3 blocks queued, one POST sends 0.3 s of audio in 300 ms — exactly real-time throughput regardless of RTT.
+
+### Added
+- **Delay indicator in FM Scanner UI**: a small badge in the status bar shows live buffer depth (`buf NNN ms`) and the round-trip time to the SDR client (`rtt NNN ms`). Buffer depth is updated on every audio block (~10×/s); RTT is refreshed from the status poll every 2 s. Badge is hidden when not streaming.
+
 ## [3.3.71] - 2026-03-24
 
 ### Fixed
