@@ -1099,7 +1099,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.51"
+BUILD                  = "SignalScope-3.3.52"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -13433,7 +13433,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
     </div>
     <div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <button type="button" class="btn bp" id="dab_scan_btn" onclick="dabScan()">🔍 Scan multiplex</button>
-      <button type="button" class="btn bg" id="dab_ch_scan_btn" onclick="dabChannelScanStart()" title="Scan all Band III channels and show which muxes are receivable">📡 Scan all channels</button>
+      <button type="button" class="btn bg" id="dab_ch_scan_btn" onclick="dabChannelScanStart()" title="Scan all Band III channels (5A–12D) and show which muxes are receivable. ~8 min for full sweep; found muxes appear immediately.">📡 Scan all channels</button>
       <button type="button" class="btn bw" id="dab_ch_scan_stop_btn" style="display:none" onclick="dabChannelScanStop()">⏹ Stop</button>
       <span id="dab_scan_status" style="font-size:12px;color:var(--mu)"></span>
     </div>
@@ -13746,7 +13746,7 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
     var wrap= document.getElementById("dab_service_wrap");
     btn.disabled = true;
     st.style.color = "var(--mu)";
-    st.textContent = "Scanning " + ch + "… (up to 60s, waiting for sync)";
+    st.textContent = "Scanning " + ch + "… (up to 75s, waiting for sync)";
     var url = "/api/dab/scan?channel=" + encodeURIComponent(ch);
     if(ser) url += "&serial=" + encodeURIComponent(ser);
     var controller = new AbortController();
@@ -15449,13 +15449,15 @@ _ch_scan_lock = threading.Lock()
 
 
 def _dab_quick_probe(channel: str, driver: str, gain: int, ppm: int,
-                     port: int, timeout: float = 10.0):
+                     port: int, timeout: float = 15.0):
     """Probe a single DAB channel and return a summary dict or None.
 
     Unlike _dab_scan_mux / api_dab_scan (which wait for service-list
     stability), this just needs to confirm that an ensemble exists and
     at least one audio service is visible — good enough for channel
     discovery. Returns quickly on first success or after `timeout` seconds.
+    15s default gives weak-signal sites time to acquire DAB sync
+    (marginal signals can take 12-15s vs 2-4s on strong signals).
     """
     import subprocess as _qsp, urllib.request as _qur
     wb = _find_binary("welle-cli")

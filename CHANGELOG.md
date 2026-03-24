@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.52] - 2026-03-24
+
+### Fixed
+- **DAB channel scan — probe timeout too short for weak signals** — `_dab_quick_probe` used a 10-second per-channel timeout. DAB sync on a marginal signal can take 12–15 seconds, so weak-signal sites were timing out on every channel and returning no results even when a mux was present. Increased default probe timeout from 10s to 15s (full sweep ~8 min vs ~5 min previously).
+
 ## [3.3.51] - 2026-03-24
 
 ### Added
