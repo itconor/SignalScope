@@ -2,6 +2,14 @@
 
 ---
 
+## [3.3.61] - 2026-03-24
+
+### Fixed / Added
+- **Chain fault clips — nodes with recording disabled produced empty clips** — `_fire_chain_fault` was using each node's own `alert_wav_duration` (which can be 0 if "record on silence" is off) as the clip duration. With `alert_wav_duration=0` the audio buffer is only 2 chunks (42ms). Now uses `max(alert_wav_duration, CHAIN_CLIP_MIN_SECS=10s)` for all chain nodes, overriding the individual setting.
+- **Chain fault clips — only 1-2 clips appearing in fault timeline** — remote `save_clip` commands now include a `duration` field; `_cmd_save_clip` on the client uses it instead of the local stream's own duration.
+- **Chain fault timeline — late-arriving remote clips not shown** — fault log timeline now auto-refreshes once after 15 seconds so clips uploaded asynchronously from remote clients appear without a manual page reload.
+- **Chain fault recording — full event capture (fault start → recovery + tail)** — added `_schedule_chain_recovery_clips`: at chain recovery, a daemon thread waits `fault_tail_secs` seconds then saves a clip from every chain node with duration `min(fault_duration + tail + 10s, 300s)`. This captures the entire event arc. Configurable via new chain settings `fault_tail_secs` (default 20s) and `record_all_nodes` (default true).
+
 ## [3.3.60] - 2026-03-24
 
 ### Added

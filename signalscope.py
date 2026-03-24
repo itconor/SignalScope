@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.60"
+BUILD                  = "SignalScope-3.3.61"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -1252,6 +1252,8 @@ CHAIN_TREND_WINDOW = 60     # minutes of level history used for predictive trend
 CHAIN_TREND_THRESH = -0.3   # dBFS/min — slope steeper than this triggers amber warning
 STREAM_BUFFER_SECONDS  = 20.0
 ALERT_BUFFER_SECONDS   = 10.0
+CHAIN_CLIP_MIN_SECS    = 10.0  # minimum clip duration for chain fault recordings
+CHAIN_CLIP_MAX_SECS    = 300.0 # cap — don't try to save more than 5 min
 LIVE_PLAYOUT_BUFFER_SECS = 1.5  # extra browser listen jitter buffer on Linux/VMs
 
 LEARN_DURATION_SECONDS = 86400.0      # 24 hours
@@ -8075,6 +8077,7 @@ class HubClient:
         node_label = str(payload.get("node_label", "")).strip()
         pos        = payload.get("pos", None)
         status     = str(payload.get("status",     "")).strip()
+        duration   = float(payload.get("duration", 0)) or 0.0
         monitor.log(f"[Hub] save_clip received: stream={stream!r} chain_id={chain_id!r} "
                     f"entry_id={entry_id!r} label={label!r}")
         inp = next((i for i in cfg_obj.inputs if i.name == stream and i.enabled), None)
@@ -8086,7 +8089,8 @@ class HubClient:
                + (f" ('{node_label}')" if node_label else "")
                + f" during chain fault"
                + (f" in {repr(chain_name)}" if chain_name else "") + ".")
-        clip_path = _save_alert_wav(inp, label, inp.alert_wav_duration, _skip_hub_queue=True)
+        _clip_dur = max(float(inp.alert_wav_duration or 0), duration, CHAIN_CLIP_MIN_SECS) if duration else max(float(inp.alert_wav_duration or 0), CHAIN_CLIP_MIN_SECS)
+        clip_path = _save_alert_wav(inp, label, _clip_dur, _skip_hub_queue=True)
         _add_history(inp, "CHAIN_FAULT", msg, clip_path=clip_path or "")
         if clip_path:
             monitor.log(f"[Hub] save_clip: saved '{label}' for '{stream}' → {os.path.basename(clip_path)}")
@@ -10396,6 +10400,10 @@ class HubServer:
                                 flog[-1]["ts_recovered"] = now
                                 metrics_db.fault_log_set_recovered(
                                     flog[-1].get("id", ""), now)
+                                tail_secs = float(chain.get("fault_tail_secs", 20.0))
+                                if chain.get("record_all_nodes", True) and tail_secs >= 0:
+                                    flog[-1]["ts_recovered"] = now  # already set above, just ensure
+                                    self._schedule_chain_recovery_clips(chain, flog[-1], cfg, tail_secs)
                             # Clear adbreak-overshoot flag now that the chain is ok
                             self._chain_fault_adbreak.pop(cid, None)
                             # Check if chain was in flapping state — if so send flapping resolved
@@ -10498,6 +10506,71 @@ class HubServer:
                     pass
             _warmed_up = True
             stop_evt.wait(10)   # state machine runs every 10 s; trend gate stays at 30 s
+
+    def _schedule_chain_recovery_clips(self, chain: dict, fault_entry: dict,
+                                        cfg, tail_secs: float = 20.0):
+        """After `tail_secs` seconds post-recovery, save a clip from every chain node
+        capturing the full fault event (fault_duration + tail) up to CHAIN_CLIP_MAX_SECS."""
+        def _do():
+            time.sleep(tail_secs)
+            ts_start    = float(fault_entry.get("ts_start") or time.time())
+            ts_recovered = float(fault_entry.get("ts_recovered") or time.time())
+            fault_dur   = max(0.0, ts_recovered - ts_start)
+            clip_dur    = min(fault_dur + tail_secs + 10.0, CHAIN_CLIP_MAX_SECS)
+            clip_dur    = max(clip_dur, CHAIN_CLIP_MIN_SECS)
+            nodes       = chain.get("nodes", [])
+            chain_label = chain.get("name", "")
+            chain_id    = chain.get("id", "")
+            entry_id    = fault_entry.get("id", "")
+            cname_safe  = _safe_name(chain_label)
+            new_clips   = []
+            for _ci, _cnode in enumerate(nodes):
+                _subs = _cnode.get("nodes", []) if _cnode.get("type") == "stack" else [_cnode]
+                for _sn in _subs:
+                    _site   = _sn.get("site", "")
+                    _stream = _sn.get("stream", "")
+                    _nlbl   = _sn.get("label", "") or f"pos{_ci+1}"
+                    _clbl   = f"chain_{cname_safe}_recovery_pos{_ci}"
+                    if not _site or _site == "local":
+                        _lc = next((i for i in cfg.inputs if i.name == _stream and i.enabled), None)
+                        if _lc:
+                            _ensure_alert_buffer_capacity(_lc, clip_dur)
+                            _clip = _save_alert_wav(_lc, _clbl, clip_dur, _skip_hub_queue=True)
+                            if _clip:
+                                new_clips.append({
+                                    "key":        _safe_name(_stream),
+                                    "fname":      os.path.basename(_clip),
+                                    "label":      f"recovery_pos{_ci}",
+                                    "node_label": _nlbl,
+                                    "pos":        _ci,
+                                    "status":     "recovery",
+                                })
+                    else:
+                        self.push_pending_command(_site, {
+                            "type": "save_clip",
+                            "payload": {
+                                "stream":     _stream,
+                                "label":      _clbl,
+                                "chain_name": chain_label,
+                                "chain_id":   chain_id,
+                                "entry_id":   entry_id,
+                                "node_label": _nlbl,
+                                "pos":        _ci,
+                                "status":     "recovery",
+                                "duration":   clip_dur,
+                            },
+                        })
+            if new_clips:
+                flog = self._chain_fault_log.get(chain_id, [])
+                _target = next((e for e in reversed(flog) if e.get("id") == entry_id), None)
+                if _target:
+                    existing = _target.setdefault("clips", [])
+                    existing.extend(new_clips)
+                    metrics_db.fault_log_update_clips(entry_id, existing)
+                    monitor.log(f"[Chain] Recovery clips saved for '{chain_label}' "
+                                f"({len(new_clips)} local, {tail_secs}s post-recovery) "
+                                f"fault_dur={fault_dur:.0f}s clip_dur={clip_dur:.0f}s")
+        threading.Thread(target=_do, daemon=True, name="ChainRecoveryClip").start()
 
     def _fire_chain_flapping(self, result: dict, chain: dict, cfg, sender, now: float):
         """Fire CHAIN_FLAPPING alert when a chain is fault-cycling rapidly."""
@@ -10636,7 +10709,8 @@ class HubServer:
                         None,
                     )
                     if _lc:
-                        _clip = _save_alert_wav(_lc, _clbl, _lc.alert_wav_duration, _skip_hub_queue=True)
+                        _chain_clip_secs = max(float(_lc.alert_wav_duration or 0), CHAIN_CLIP_MIN_SECS)
+                        _clip = _save_alert_wav(_lc, _clbl, _chain_clip_secs, _skip_hub_queue=True)
                         _lc_msg = (
                             f"Chain '{chain_label}' — '{_node_label}' "
                             f"({_pos_label.replace('_', ' ')}) clip."
@@ -10666,6 +10740,7 @@ class HubServer:
                             "node_label": _node_label,
                             "pos":        _ci,
                             "status":     _pos_status,
+                            "duration":   CHAIN_CLIP_MIN_SECS,
                         },
                     })
 
@@ -19597,6 +19672,72 @@ document.getElementById('chains_list').addEventListener('click', function(e){
   }
 });
 
+// Fault log loader — extracted so the toggle handler and the one-shot
+// 15-second auto-refresh can both call it.
+function loadFaultLog(cid, body, arrow){
+  if(!body) body=document.getElementById('flog_body_'+cid);
+  if(!arrow) arrow=document.getElementById('flog_arrow_'+cid);
+  if(!body) return;
+  // Always fetch fresh — clips are back-patched asynchronously after the
+  // fault fires, so a cached panel would show "No clips" until page reload.
+  _f('/api/chains/'+encodeURIComponent(cid)+'/fault_log').then(function(r){return r.json();}).then(function(d){
+      var entries=d.entries||[];
+      if(!entries.length){body.innerHTML='<div class="flog-empty">No faults recorded yet.</div>';return;}
+      var hasRtp=entries.some(function(ev){return ev.rtp_loss_pct!=null;});
+      // Clips are stored in a JS-side map (not in HTML data-* attributes) to
+      // avoid the double-quote encoding problem: _esc() encodes < > & but NOT
+      // ", so JSON embedded in data-clips="..." breaks the attribute and
+      // JSON.parse returns [] → Play All shows "Done ✓" with no audio.
+      if(!window._flogClipStore)window._flogClipStore={};
+      // Always show the Clips column — hide per-row when empty rather than
+      // hiding the whole column (otherwise the column never appears until the
+      // page is reloaded after the first clip-bearing fault fires).
+      var html='<table class="flog-table"><thead><tr><th>Date/Time</th><th>Fault Point</th><th>Site</th>'+(hasRtp?'<th>RTP Loss</th>':'')+'<th>Clips</th><th>Duration</th><th style="min-width:180px">Engineer Note</th></tr></thead><tbody>';
+      entries.forEach(function(ev){
+        var dt=new Date(ev.ts_start*1000).toLocaleString();
+        var dur=ev.ts_recovered?_fmtDur(ev.ts_recovered-ev.ts_start):'<span style="color:var(--al)">Ongoing</span>';
+        var rtpCell='';
+        if(hasRtp){
+          if(ev.rtp_loss_pct!=null){
+            var rc=ev.rtp_loss_pct>5?'var(--al)':ev.rtp_loss_pct>0.5?'var(--wn)':'var(--mu)';
+            rtpCell='<td style="color:'+rc+'">'+ev.rtp_loss_pct.toFixed(1)+'%</td>';
+          } else { rtpCell='<td style="color:var(--mu)">—</td>'; }
+        }
+        var clipsCell='';
+        var clips=ev.clips||[];
+        var fid=ev.id||('flog_'+Math.random().toString(36).slice(2));
+        if(clips.length){
+          // Store clips in JS map — avoids JSON-in-HTML-attribute encoding issues
+          window._flogClipStore[fid]=clips;
+          clipsCell='<td><button class="btn bg bs replay-open-btn" style="font-size:10px;white-space:nowrap" '
+            +'data-fid="'+_esc(fid)+'">'
+            +'🎬 Replay ('+clips.length+')</button></td>';
+        } else {
+          clipsCell='<td style="color:var(--mu);font-size:10px">No clips</td>';
+        }
+        // Engineer note cell — shows existing note or an add-note button
+        var noteCell='<td class="flog-note-cell" data-fid="'+_esc(fid)+'">';
+        if(ev.note){
+          var editedTip=ev.note_edited?' (edited '+ev.note_edited+')':'';
+          noteCell+='<div class="flog-note-text" title="By '+_esc(ev.note_by||'')+''+editedTip+'">'+_esc(ev.note)+'</div>'
+                    +'<button class="flog-note-edit-btn btn bg bs" style="margin-top:3px;font-size:10px" data-fid="'+_esc(fid)+'">✏ Edit</button>';
+        } else {
+          noteCell+='<button class="flog-note-add-btn btn bg bs" style="font-size:10px" data-fid="'+_esc(fid)+'">📝 Add Note</button>';
+        }
+        noteCell+='</td>';
+        // data-ts enables click-to-replay: clicking the row jumps the history
+        // time-travel view to the fault's start time
+        html+='<tr class="flog-row" data-fid="'+_esc(fid)+'" data-ts="'+ev.ts_start+'" title="Click to view all chains at this moment">'
+             +'<td><span class="flog-dt">'+dt+'</span> <span class="flog-view-hint">🕐</span></td>'
+             +'<td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td>'
+             +rtpCell+clipsCell+'<td>'+dur+'</td>'+noteCell+'</tr>';
+      });
+      html+='</tbody></table>';
+      body.innerHTML=html;
+      // One-shot 15-second refresh to pick up late-arriving remote clips
+      setTimeout(function(){ if(document.body.contains(body)) loadFaultLog(cid, body, arrow); }, 15000);
+    }).catch(function(){body.innerHTML='<div class="flog-empty">Error loading fault log.</div>';});
+}
 // Fault log toggle handler
 document.getElementById('chains_list').addEventListener('click', function(e){
   var tog=e.target.closest('.flog-toggle');
@@ -19609,64 +19750,8 @@ document.getElementById('chains_list').addEventListener('click', function(e){
   if(body.style.display==='none'){
     body.style.display='';
     if(arrow)arrow.innerHTML='&#9660;';
-    // Always fetch fresh — clips are back-patched asynchronously after the
-    // fault fires, so a cached panel would show "No clips" until page reload.
     body.innerHTML='<div style="color:var(--mu);font-size:11px;padding:4px 0">Loading\u2026</div>';
-    _f('/api/chains/'+encodeURIComponent(cid)+'/fault_log').then(function(r){return r.json();}).then(function(d){
-        var entries=d.entries||[];
-        if(!entries.length){body.innerHTML='<div class="flog-empty">No faults recorded yet.</div>';return;}
-        var hasRtp=entries.some(function(ev){return ev.rtp_loss_pct!=null;});
-        // Clips are stored in a JS-side map (not in HTML data-* attributes) to
-        // avoid the double-quote encoding problem: _esc() encodes < > & but NOT
-        // ", so JSON embedded in data-clips="..." breaks the attribute and
-        // JSON.parse returns [] → Play All shows "Done ✓" with no audio.
-        if(!window._flogClipStore)window._flogClipStore={};
-        // Always show the Clips column — hide per-row when empty rather than
-        // hiding the whole column (otherwise the column never appears until the
-        // page is reloaded after the first clip-bearing fault fires).
-        var html='<table class="flog-table"><thead><tr><th>Date/Time</th><th>Fault Point</th><th>Site</th>'+(hasRtp?'<th>RTP Loss</th>':'')+'<th>Clips</th><th>Duration</th><th style="min-width:180px">Engineer Note</th></tr></thead><tbody>';
-        entries.forEach(function(ev){
-          var dt=new Date(ev.ts_start*1000).toLocaleString();
-          var dur=ev.ts_recovered?_fmtDur(ev.ts_recovered-ev.ts_start):'<span style="color:var(--al)">Ongoing</span>';
-          var rtpCell='';
-          if(hasRtp){
-            if(ev.rtp_loss_pct!=null){
-              var rc=ev.rtp_loss_pct>5?'var(--al)':ev.rtp_loss_pct>0.5?'var(--wn)':'var(--mu)';
-              rtpCell='<td style="color:'+rc+'">'+ev.rtp_loss_pct.toFixed(1)+'%</td>';
-            } else { rtpCell='<td style="color:var(--mu)">—</td>'; }
-          }
-          var clipsCell='';
-          var clips=ev.clips||[];
-          var fid=ev.id||('flog_'+Math.random().toString(36).slice(2));
-          if(clips.length){
-            // Store clips in JS map — avoids JSON-in-HTML-attribute encoding issues
-            window._flogClipStore[fid]=clips;
-            clipsCell='<td><button class="btn bg bs replay-open-btn" style="font-size:10px;white-space:nowrap" '
-              +'data-fid="'+_esc(fid)+'">'
-              +'🎬 Replay ('+clips.length+')</button></td>';
-          } else {
-            clipsCell='<td style="color:var(--mu);font-size:10px">No clips</td>';
-          }
-          // Engineer note cell — shows existing note or an add-note button
-          var noteCell='<td class="flog-note-cell" data-fid="'+_esc(fid)+'">';
-          if(ev.note){
-            var editedTip=ev.note_edited?' (edited '+ev.note_edited+')':'';
-            noteCell+='<div class="flog-note-text" title="By '+_esc(ev.note_by||'')+''+editedTip+'">'+_esc(ev.note)+'</div>'
-                      +'<button class="flog-note-edit-btn btn bg bs" style="margin-top:3px;font-size:10px" data-fid="'+_esc(fid)+'">✏ Edit</button>';
-          } else {
-            noteCell+='<button class="flog-note-add-btn btn bg bs" style="font-size:10px" data-fid="'+_esc(fid)+'">📝 Add Note</button>';
-          }
-          noteCell+='</td>';
-          // data-ts enables click-to-replay: clicking the row jumps the history
-          // time-travel view to the fault's start time
-          html+='<tr class="flog-row" data-fid="'+_esc(fid)+'" data-ts="'+ev.ts_start+'" title="Click to view all chains at this moment">'
-               +'<td><span class="flog-dt">'+dt+'</span> <span class="flog-view-hint">🕐</span></td>'
-               +'<td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td>'
-               +rtpCell+clipsCell+'<td>'+dur+'</td>'+noteCell+'</tr>';
-        });
-        html+='</tbody></table>';
-        body.innerHTML=html;
-      }).catch(function(){body.innerHTML='<div class="flog-empty">Error loading fault log.</div>';});
+    loadFaultLog(cid, body, arrow);
   } else {
     body.style.display='none';
     if(arrow)arrow.innerHTML='&#9658;';
@@ -21707,10 +21792,21 @@ def api_chains_save():
             mixin_node_idx = None
     else:
         mixin_node_idx = None
+    # fault_tail_secs: post-recovery tail before saving recovery clips (default 20.0)
+    try:
+        fault_tail_secs = float(data.get("fault_tail_secs", 20.0))
+        if fault_tail_secs < 0:
+            fault_tail_secs = 0.0
+    except (TypeError, ValueError):
+        fault_tail_secs = 20.0
+    # record_all_nodes: save clips from every chain node on fault/recovery (default True)
+    record_all_nodes = bool(data.get("record_all_nodes", True))
     chain_dict = {"id": cid if cid else "", "name": name,
                   "nodes": clean_nodes, "comparators": clean_comps,
                   "min_fault_seconds": min_fault_seconds,
-                  "mixin_node_idx": mixin_node_idx}
+                  "mixin_node_idx": mixin_node_idx,
+                  "fault_tail_secs": fault_tail_secs,
+                  "record_all_nodes": record_all_nodes}
     if cid:
         # Update existing
         for i, c in enumerate(chains):
