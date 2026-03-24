@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.66"
+BUILD                  = "SignalScope-3.3.67"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -24226,6 +24226,7 @@ function doTune(freq){
       connectAudio(d.stream_url);
       freqSub.textContent = '\u00a0';
       setStatus('connecting', 'Waiting for ' + fmt(freq) + ' MHz\u2026');
+      _lastHistPs = ''; _lastHistFreq = freq;  // reset so next PS name triggers a save
       _saveHistory(freq, '');
     } else { freqSub.textContent = 'Tune failed'; }
   }).catch(function(){ freqSub.textContent = 'Network error'; });
@@ -24318,7 +24319,6 @@ function _scheduleBlock(bytes){
     freqDisp.style.color = '';
     freqSub.textContent  = '\u00a0';
     setStatus('streaming', '\u25cf Live \u2014 ' + fmt(_freq) + ' MHz');
-    _saveHistory(_freq, '');
   }
 }
 
@@ -24326,6 +24326,8 @@ function _scheduleBlock(bytes){
 function startPoll(){ stopPoll(); _poll = setInterval(checkStatus, 2000); }
 function stopPoll(){ clearInterval(_poll); _poll = null; }
 
+var _lastHistPs = '';
+var _lastHistFreq = 0;
 function checkStatus(){
   var site = siteSel.value; if(!site) return;
   _f('/api/hub/scanner/status/' + encodeURIComponent(site))
@@ -24336,7 +24338,15 @@ function checkStatus(){
       var rds = d.rds || {};
       _updateRDS(rds);
       _updateLevel(rds._level !== undefined ? rds._level : null);
-      if(rds.ps && rds.ps.trim()) _saveHistory(_freq, rds.ps.trim());
+      // Only persist history when PS name or frequency actually changes — avoid
+      // synchronous localStorage writes on every poll tick (every 2 s) which
+      // can stall the JS event loop and cause audio pump callback delays.
+      var ps = (rds.ps || '').trim();
+      if(ps && (ps !== _lastHistPs || Math.abs(_freq - _lastHistFreq) > 0.04)){
+        _lastHistPs = ps;
+        _lastHistFreq = _freq;
+        _saveHistory(_freq, ps);
+      }
     }).catch(function(){});
 }
 
@@ -24393,11 +24403,11 @@ function _saveHistory(freq, ps){
   list.unshift({f: parseFloat(freq.toFixed(2)), ps: ps || ''});
   if(list.length > _HIST_MAX) list.length = _HIST_MAX;
   try{ localStorage.setItem(_HIST_KEY, JSON.stringify(list)); }catch(e){}
-  _renderHistory();
+  _renderHistory(list);  // pass list directly — no redundant re-read
 }
-function _renderHistory(){
+function _renderHistory(list){
+  if(!list) list = _loadHistory();
   var el = document.getElementById('hist-list');
-  var list = _loadHistory();
   if(!list.length){ el.innerHTML = '<p class="empty-note">Tune to build history</p>'; return; }
   el.innerHTML = list.map(function(h){
     return '<div class="hist-item" data-freq="'+h.f+'">'

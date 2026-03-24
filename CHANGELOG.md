@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.67] - 2026-03-24
+
+### Fixed
+- **FM Scanner — audio slow / dropping bits after 3.3.66** — `_saveHistory` was called on every 2-second status poll tick whenever a PS (station name) RDS field was present. Each call did a synchronous `localStorage.getItem` + `JSON.parse` + array operations + `localStorage.setItem` + a full `innerHTML` DOM rebuild. `localStorage` writes are synchronous and can stall the JS event loop for 10–50 ms, delaying the PCM fetch-pump callbacks long enough to cause audio scheduling drift and glitches. Fixed by: (1) caching the last-seen PS name and frequency — history is only written when they actually change (typically once per station tune, not every 2 s); (2) passing the freshly-built list directly to `_renderHistory` to avoid a redundant second `localStorage.getItem`; (3) removing the spurious `_saveHistory` call that was inside `_scheduleBlock` (the connection-to-streaming state transition), which ran on every audio block until streaming state was confirmed.
+
 ## [3.3.66] - 2026-03-24
 
 ### Added / Changed
