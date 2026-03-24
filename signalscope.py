@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.61"
+BUILD                  = "SignalScope-3.3.64"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -9527,11 +9527,15 @@ class HubServer:
 
     def _daily_backup_loop(self):
         """Background thread: trigger backup for any online site whose last backup
-        is more than 23 hours old.  Checks hourly so the first pass fires within
-        an hour of startup for sites that have never been backed up."""
+        is more than 23 hours old.  Checks immediately on startup so sites that
+        have never been backed up get their first backup within one heartbeat cycle,
+        then rechecks every hour."""
+        first = True
         while True:
             try:
-                time.sleep(3600)   # check every hour
+                if not first:
+                    time.sleep(3600)   # check every hour after the first pass
+                first = False
                 now = time.time()
                 with self._lock:
                     sites_snap = [
@@ -15405,8 +15409,13 @@ input[type=text],input[type=password]{width:100%;margin-top:4px;padding:9px 11px
 <div class="box" style="box-shadow:0 20px 60px rgba(0,0,0,.28)">
   <div style="text-align:center;margin-bottom:14px"><img src="/static/signalscope_logo.png" alt="SignalScope" style="max-width:380px;width:100%;height:auto;display:block;margin:0 auto;filter:drop-shadow(0 8px 22px rgba(23,168,255,.20))"></div>
   <h1 style="display:none">SignalScope</h1>
-  <div class="sub" style="margin-bottom:8px">Broadcast Signal Intelligence</div>
-  <div class="sub">{{build}}</div>
+  <div class="sub" style="margin-bottom:4px">Broadcast Signal Intelligence</div>
+  <div style="text-align:center;margin-bottom:16px">
+    <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mu)">
+      <span style="width:7px;height:7px;border-radius:50%;background:#22c55e;display:inline-block;box-shadow:0 0 6px #22c55e99"></span>
+      System online &mdash; {{site_name}}
+    </span>
+  </div>
   {% if locked %}
   <div class="warn">🔒 Too many failed attempts.<br>Access locked — try again in {{locked_mins}} minute{{'' if locked_mins==1 else 's'}}.</div>
   {% else %}
@@ -15422,7 +15431,9 @@ input[type=text],input[type=password]{width:100%;margin-top:4px;padding:9px 11px
     <button class="btn" type="submit">{% if first_login %}Set Password & Sign In{% else %}Sign In{% endif %}</button>
   </form>
   {% endif %}
-  <div style="margin-top:18px;text-align:center;font-size:11px;color:var(--mu)">SignalScope {{build}} • Broadcast Signal Intelligence</div>
+  <div style="margin-top:18px;text-align:center;font-size:11px;color:var(--mu)">
+    <a href="https://github.com/itconor/SignalScope" target="_blank" rel="noopener noreferrer" style="color:var(--mu);text-decoration:none" title="SignalScope on GitHub">⎇ GitHub</a>
+  </div>
 </div></body></html>"""
 
 @app.get("/api/sdr/scan")
@@ -16361,9 +16372,10 @@ def login():
     locked_secs = login_limiter.is_locked(ip)
     if locked_secs > 0:
         mins = int(locked_secs // 60) + 1
+        _site = (cfg.hub.site_name or socket.gethostname()) if cfg.hub else socket.gethostname()
         return render_template_string(LOGIN_TPL, locked=True, locked_mins=mins,
                                       first_login=False, username="", build=BUILD,
-                                      error=None), 429
+                                      error=None, site_name=_site), 429
 
     if request.method == "POST":
         f = request.form
@@ -16412,9 +16424,11 @@ def login():
                 session["login_ts"]  = time.time()
                 return redirect(_safe_next())
 
+    _site = (cfg.hub.site_name or socket.gethostname()) if cfg.hub else socket.gethostname()
     return render_template_string(LOGIN_TPL, error=error, first_login=first,
                                   username=request.form.get("username",""),
-                                  locked=False, locked_mins=0, build=BUILD)
+                                  locked=False, locked_mins=0, build=BUILD,
+                                  site_name=_site)
 
 
 @app.route("/logout", methods=["GET","POST"])
@@ -17643,6 +17657,20 @@ def hub_site_backup_trigger(site_name):
     return jsonify({"ok": True, "note": "backup queued for next heartbeat"})
 
 
+@app.get("/api/hub/site/<path:site_name>/backup_status")
+@login_required
+def hub_site_backup_status(site_name):
+    """Return backup availability metadata for a site (used for JS polling)."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    with hub_server._lock:
+        bk = hub_server._site_backups.get(site_name)
+    if bk:
+        return jsonify({"ts": bk["ts"], "size": bk["size"],
+                        "age_s": round(time.time() - bk["ts"])})
+    return jsonify({"ts": None})
+
+
 @app.get("/api/hub/site/<path:site_name>/backup")
 @login_required
 def hub_site_backup_download(site_name):
@@ -18814,11 +18842,13 @@ var _chainData={
     <span class="badge badge-unknown" id="badge_{{c.id|e}}">…</span>
     <span class="sla-badge" id="sla_{{c.id|e}}" style="display:none"></span>
     <span class="health-badge" id="health_{{c.id|e}}" style="display:none"></span>
+    <span class="chain-maint-badge" id="chain_maint_{{c.id|e}}" style="display:none;font-size:11px;background:#1d4ed8;color:#bfdbfe;border-radius:999px;padding:2px 8px;border:1px solid #3b82f6" title="Entire chain is in maintenance mode">🔧 Maintenance</span>
     {% if c.min_fault_seconds %}
     <span style="font-size:11px;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:2px 8px" title="Fault confirmation delay — alert fires only after fault persists this long">⏱ {{c.min_fault_seconds}}s delay</span>
     {% endif %}
     <span style="font-size:12px;color:var(--al)" id="fault_label_{{c.id|e}}"></span>
     <div class="chain-actions">
+      <button class="btn bs chain-maint-btn" data-chain-id="{{c.id|e}}" data-chain-name="{{c.name|e}}" style="background:#1e3a8a;border-color:#3b82f6;color:#bfdbfe" title="Set maintenance mode for the entire chain">🔧 Maint</button>
       <button class="btn bg bs chain-edit-btn" data-chain-id="{{c.id|e}}">✎ Edit</button>
       <button class="btn bd bs chain-delete-btn" data-id="{{c.id|e}}" data-name="{{c.name|e}}">✕ Delete</button>
     </div>
@@ -18892,6 +18922,7 @@ var _chainData={
 <!-- Maintenance mode popover -->
 <div id="maint-popover" role="dialog" aria-modal="true" aria-label="Set maintenance mode">
   <div style="font-size:11px;color:var(--mu);margin-bottom:8px">🔧 Maintenance — <strong id="maint-pop-name" style="color:var(--tx)"></strong></div>
+  <div id="maint-pop-scope" style="font-size:10px;color:#93c5fd;margin-bottom:6px;display:none"></div>
   <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
     <button class="maint-dur-btn" data-dur="1800">30 min</button>
     <button class="maint-dur-btn" data-dur="3600">1 h</button>
@@ -19242,18 +19273,11 @@ document.addEventListener('click',function(e){
 
 // ── Maintenance popover ───────────────────────────────────────────────────────
 var _maintPop=document.getElementById('maint-popover');
-var _maintCtx=null;  // {cid, site, stream}
+var _maintCtx=null;  // {cid, site, stream} or {cid, chainName, chainMode:true}
 
-function _openMaintPop(btn){
-  var node=btn.closest('.chain-node');
-  if(!node)return;
-  _maintCtx={cid:node.dataset.chainId,site:node.dataset.site,stream:node.dataset.stream};
-  document.getElementById('maint-pop-name').textContent=
-    (node.querySelector('.node-label')||{}).textContent||node.dataset.stream||'?';
-  document.getElementById('maint-pop-msg').textContent='';
-  // Position below the button, clamped to viewport
+function _positionPop(btn){
   var r=btn.getBoundingClientRect();
-  var pw=218,ph=100;
+  var pw=218,ph=120;
   var left=Math.min(r.left,window.innerWidth-pw-10);
   var top=r.bottom+6;
   if(top+ph>window.innerHeight-10){top=r.top-ph-6;}
@@ -19262,20 +19286,53 @@ function _openMaintPop(btn){
   _maintPop.style.display='block';
 }
 
+function _openMaintPop(btn){
+  var node=btn.closest('.chain-node');
+  if(!node)return;
+  _maintCtx={cid:node.dataset.chainId,site:node.dataset.site,stream:node.dataset.stream,chainMode:false};
+  document.getElementById('maint-pop-name').textContent=
+    (node.querySelector('.node-label')||{}).textContent||node.dataset.stream||'?';
+  document.getElementById('maint-pop-msg').textContent='';
+  var scope=document.getElementById('maint-pop-scope');
+  scope.style.display='none';scope.textContent='';
+  _positionPop(btn);
+}
+
+function _openChainMaintPop(btn){
+  var cid=btn.dataset.chainId;
+  var name=btn.dataset.chainName||cid;
+  _maintCtx={cid:cid,chainMode:true};
+  document.getElementById('maint-pop-name').textContent=name;
+  document.getElementById('maint-pop-msg').textContent='';
+  var scope=document.getElementById('maint-pop-scope');
+  scope.textContent='Applies to all nodes in this chain';
+  scope.style.display='block';
+  _positionPop(btn);
+}
+
 document.addEventListener('click',function(e){
-  // Open popover via 🔧 button
+  // Open popover via node 🔧 button
   var mb=e.target.closest('.node-maint-btn');
   if(mb){e.stopPropagation();_openMaintPop(mb);return;}
+  // Open popover via chain-level 🔧 Maint button
+  var cb=e.target.closest('.chain-maint-btn');
+  if(cb){e.stopPropagation();_openChainMaintPop(cb);return;}
   // Duration selection inside popover
   var db=e.target.closest('.maint-dur-btn');
   if(db&&_maintCtx){
     var dur=parseInt(db.dataset.dur,10)||0;
     var msg=document.getElementById('maint-pop-msg');
     msg.textContent='Saving…';msg.style.color='var(--mu)';
-    _f('/api/chains/'+encodeURIComponent(_maintCtx.cid)+'/maintenance',{
-      method:'POST',
-      body:JSON.stringify({site:_maintCtx.site,stream:_maintCtx.stream,duration:dur})
-    }).then(function(r){return r.json();}).then(function(d){
+    var url,body;
+    if(_maintCtx.chainMode){
+      url='/api/chains/'+encodeURIComponent(_maintCtx.cid)+'/maintenance_all';
+      body=JSON.stringify({duration:dur});
+    }else{
+      url='/api/chains/'+encodeURIComponent(_maintCtx.cid)+'/maintenance';
+      body=JSON.stringify({site:_maintCtx.site,stream:_maintCtx.stream,duration:dur});
+    }
+    _f(url,{method:'POST',body:body})
+    .then(function(r){return r.json();}).then(function(d){
       if(d.ok){
         msg.textContent=dur>0?'Set ✓':'Cleared ✓';msg.style.color='var(--ok)';
         setTimeout(function(){_maintPop.style.display='none';_maintCtx=null;},700);
@@ -19405,6 +19462,9 @@ function refreshStatus(){
         healthBadge.title='Chain health score: '+chain.health_score+'/100 ('+chain.health_label+')\nBased on 30-day SLA, fault frequency, stability, level trends and RTP loss.'+_rtpLine;
         healthBadge.style.display='';
       }
+      // Chain-level maintenance badge
+      var cmBadge=document.getElementById('chain_maint_'+chain.id);
+      if(cmBadge){cmBadge.style.display=chain.has_maintenance?'':'none';}
       // Flapping override badge
       if(chain.flapping&&badge){
         badge.textContent='FLAPPING';badge.className='badge badge-flap';
@@ -21521,6 +21581,41 @@ def api_mobile_clip_download(clip_key: str, fname: str):
     return send_from_directory(clip_dir, fname, as_attachment=False)
 
 
+@app.post("/api/chains/<cid>/maintenance_all")
+@login_required
+@csrf_protect
+def api_chain_maintenance_all(cid: str):
+    """Set or clear maintenance mode for ALL nodes in a chain at once.
+    POST body: {"duration": <seconds>}  — duration=0 clears.
+    """
+    if not hub_server:
+        return jsonify({"ok": False, "error": "No hub server"}), 400
+    data     = request.get_json(silent=True) or {}
+    duration = int(data.get("duration", 0))
+    cfg      = monitor.app_cfg
+    chains   = cfg.signal_chains or [] if cfg else []
+    chain    = next((c for c in chains if c.get("id") == cid), None)
+    if not chain:
+        return jsonify({"ok": False, "error": "chain not found"}), 404
+    maint  = hub_server._chain_maintenance.setdefault(cid, {})
+    expiry = time.time() + duration if duration > 0 else 0
+    count  = 0
+    for node in _iter_chain_leaf_nodes(chain):
+        site   = node.get("site", "")
+        stream = node.get("stream", "")
+        if not site or not stream:
+            continue
+        mkey = f"{site}|{stream}"
+        if duration <= 0:
+            maint.pop(mkey, None)
+        else:
+            maint[mkey] = expiry
+        count += 1
+    action = f"set ({duration}s)" if duration > 0 else "cleared"
+    monitor.log(f"[Chain] Maintenance {action} for all {count} node(s) in chain {cid!r}")
+    return jsonify({"ok": True, "nodes": count, "expiry": expiry})
+
+
 @app.post("/api/chains/<cid>/maintenance")
 @login_required
 @csrf_protect
@@ -22415,8 +22510,9 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% endif %}
       {% if site._backup_ts %}
       <a class="btn" href="/api/hub/site/{{site.site|urlencode}}/backup" style="background:#142514;color:#4ade80;font-size:11px;padding:2px 10px;text-decoration:none" title="Download backup — {{(site._backup_size // 1024) if site._backup_size else '?'}} KB, taken {{fmt(site._backup_ts)}}">⬇ Backup <span style="opacity:.7;font-size:10px">({{ago(site._backup_age_s)}})</span></a>
+      <button class="btn site-backup-btn" data-site="{{site.site|e}}" style="background:#1a2e1a;color:#86efac;font-size:11px;padding:2px 10px" title="Request a fresh backup from this site now">↻ Backup Now</button>
       {% else %}
-      <span class="badge" style="background:#1a2e1a;color:#86efac;font-size:10px" title="Auto-backup runs daily — first backup arrives within 24 hours">📥 Backup pending</span>
+      <button class="btn site-backup-btn" data-site="{{site.site|e}}" style="background:#1a2e1a;color:#86efac;font-size:11px;padding:2px 10px" title="Request backup from this site">📥 Backup Now</button>
       {% endif %}
       <button class="btn site-ping-btn" data-site="{{site.site|e}}" style="background:#1a2040;color:#93c5fd;font-size:11px;padding:2px 10px" title="Run a network ping test from this site">🔍 Ping</button>
       {% if site._ping_result %}
@@ -23140,6 +23236,48 @@ document.getElementById('hub-log-modal-close').addEventListener('click',function
 });
 document.getElementById('hub-log-modal').addEventListener('click',function(e){
   if(e.target===this)this.style.display='none';
+});
+
+// ── Backup Now button ─────────────────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.site-backup-btn');if(!btn)return;
+  var site=btn.dataset.site;
+  var origText=btn.textContent;
+  btn.disabled=true;btn.textContent='Requesting…';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/backup',{})
+  .then(function(){
+    // Poll backup_status until a fresh backup arrives (up to ~30s)
+    var polls=0;var prevTs=null;
+    // capture any existing backup ts so we know when a NEW one lands
+    fetch('/api/hub/site/'+encodeURIComponent(site)+'/backup_status')
+    .then(function(r){return r.json();})
+    .then(function(d){prevTs=d.ts||null;})
+    .catch(function(){})
+    .finally(function(){
+      function waitForBackup(){
+        fetch('/api/hub/site/'+encodeURIComponent(site)+'/backup_status')
+        .then(function(r){return r.json();})
+        .then(function(d){
+          var arrived=(d.ts&&(!prevTs||d.ts>prevTs));
+          if(arrived||polls>=10){
+            if(arrived){
+              btn.textContent='✓ Backed up';btn.style.color='var(--ok)';
+              setTimeout(function(){location.reload();},1500);
+            } else {
+              btn.disabled=false;btn.textContent=origText;
+              alert('Backup request sent — the site will upload its backup at the next heartbeat (every 30s). Reload the page in a minute to see the download link.');
+            }
+          } else {
+            polls++;
+            setTimeout(waitForBackup,3000);
+          }
+        })
+        .catch(function(){btn.disabled=false;btn.textContent=origText;});
+      }
+      setTimeout(waitForBackup,3000);
+    });
+  })
+  .catch(function(){btn.disabled=false;btn.textContent=origText;});
 });
 
 // ── Restart button ────────────────────────────────────────────────────────────

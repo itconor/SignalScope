@@ -2,6 +2,21 @@
 
 ---
 
+## [3.3.64] - 2026-03-24
+
+### Added
+- **Signal chains — chain-level maintenance mode** — added a **🔧 Maint** button to the chain header that puts every node in the chain into maintenance at once. Uses the same duration popover as per-node maintenance (30 min / 1 h / 2 h / 4 h / ✕ Clear) with a note "Applies to all nodes in this chain". A **🔧 Maintenance** badge appears in the chain header whenever any node is in maintenance. New `POST /api/chains/<cid>/maintenance_all` endpoint handles the bulk set/clear.
+
+## [3.3.63] - 2026-03-24
+
+### Changed
+- **Login page — security & UX improvements** — removed software version number from the login page (no need to advertise the build to unauthenticated visitors). Added a pulsing green "● System online — `<hostname>`" indicator so operators know which system they're signing into (uses configured `hub.site_name` if set, otherwise the machine hostname). Replaced the redundant footer text with a clean GitHub link. Version number is still shown inside the app after login.
+
+## [3.3.62] - 2026-03-24
+
+### Fixed / Added
+- **Hub remote backup — always showed "Backup pending", never completed** — Three fixes: (1) `_daily_backup_loop` was sleeping 3600s *before* its first check, meaning new sites could wait up to 24h for their first auto-backup. The loop now runs immediately on startup, triggering backup for any online site with no backup or last backup ≥23h ago. (2) Added a **↻ Backup Now** / **📥 Backup Now** button to each site card on the hub dashboard, replacing the static "Backup pending" badge. Clicking sends a `backup` hub command via `/api/hub/site/<site>/backup`, then polls `/api/hub/site/<site>/backup_status` every 3 seconds for up to 30 seconds and reloads the page when the backup arrives. (3) Added `GET /api/hub/site/<site>/backup_status` API endpoint returning `{ts, size, age_s}` for JS polling.
+
 ## [3.3.61] - 2026-03-24
 
 ### Fixed / Added
