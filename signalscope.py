@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.70"
+BUILD                  = "SignalScope-3.3.71"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8714,20 +8714,27 @@ class HubClient:
             t.start()
 
     def _post_relay_chunk(self, cfg, chunk_url: str, data: bytes) -> dict:
-        ts_c   = time.time()
-        nonce_c= hashlib.md5(os.urandom(8)).hexdigest()[:16]
-        sig_c  = hub_sign_payload(cfg.hub.secret_key, data, ts_c) if cfg.hub.secret_key else ""
-        req = urllib.request.Request(
-            chunk_url, data=data,
-            headers={
-                "Content-Type":  "application/octet-stream",
-                "X-Hub-Sig":     sig_c,
-                "X-Hub-Ts":      f"{ts_c:.0f}",
-                "X-Hub-Nonce":   nonce_c,
-            },
-            method="POST"
-        )
+        # Track per-URL RTT so the hub can auto-tune its keepalive threshold.
+        # We send the RTT of the *previous* request (known only after it completes).
+        if not hasattr(self, "_chunk_rtt"):
+            self._chunk_rtt: dict = {}
+        last_rtt = self._chunk_rtt.get(chunk_url, 0.0)
+
+        ts_c    = time.time()
+        t0      = time.monotonic()
+        nonce_c = hashlib.md5(os.urandom(8)).hexdigest()[:16]
+        sig_c   = hub_sign_payload(cfg.hub.secret_key, data, ts_c) if cfg.hub.secret_key else ""
+        headers = {
+            "Content-Type":  "application/octet-stream",
+            "X-Hub-Sig":     sig_c,
+            "X-Hub-Ts":      f"{ts_c:.0f}",
+            "X-Hub-Nonce":   nonce_c,
+        }
+        if last_rtt:
+            headers["X-Client-Rtt"] = f"{last_rtt:.4f}"
+        req = urllib.request.Request(chunk_url, data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=5) as resp:
+            self._chunk_rtt[chunk_url] = time.monotonic() - t0
             return json.loads(resp.read())
 
     def _push_audio_request(self, cfg, req: dict):
@@ -11049,6 +11056,7 @@ class ListenSlot:
         self.last_chunk  = time.time()
         self.q: queue.Queue = queue.Queue(maxsize=200)
         self.closed      = False
+        self.rtt_ema: float = 0.0   # EMA of client POST RTT (s); 0 = unknown
         # Scanner-specific fields (kind == "scanner")
         self.freq_mhz   = float(freq_mhz or 0.0)
         self.sdr_serial = str(sdr_serial or "")
@@ -18044,6 +18052,15 @@ def hub_audio_chunk(slot_id):
         return jsonify({"error": "slot not found or expired"}), 404
     if data:
         slot.put(data)
+        # Update RTT EMA so the relay generator can auto-tune keepalive threshold.
+        rtt_hdr = request.headers.get("X-Client-Rtt", "")
+        if rtt_hdr:
+            try:
+                rtt = float(rtt_hdr)
+                if 0.01 <= rtt <= 10.0:
+                    slot.rtt_ema = (0.2 * rtt + 0.8 * slot.rtt_ema) if slot.rtt_ema else rtt
+            except ValueError:
+                pass
     else:
         # Empty body = EOF signal from client — close the slot immediately so the
         # relay generator ends right away instead of waiting for the 30-second
@@ -18733,15 +18750,18 @@ def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0)
             # Relay mode: forward PCM chunks from client to browser.
             # Also maintain a rolling 60-second PCM buffer for on-demand recording.
             #
-            # Keepalive tuning for WAN-hosted hubs:
-            #   _KP_THRESHOLD = 1.0 s — the remote SDR client may be several hundred
-            #   milliseconds away over the internet; raising the silence-injection
-            #   threshold from 0.25 s to 1.0 s avoids injecting silence blocks every
-            #   time normal WAN jitter pushes a chunk past the old 0.25 s window.
-            #   The browser-side pre-buffer (_PRE) is set to match (1.0 s), so the
-            #   browser can sustain 1.0 s without new data before underrunning.
-            _KP_THRESHOLD = 1.0
-            next_kp_t = time.monotonic() + _KP_THRESHOLD
+            # Adaptive keepalive: _kp_threshold and _get_to are tuned dynamically
+            # from slot.rtt_ema (EMA of client POST round-trip time, updated by
+            # hub_audio_chunk from the X-Client-Rtt request header).
+            #   _kp_threshold = max(0.3, min(0.8, 0.1 + rtt_ema * 3))
+            #   _get_to       = max(0.15, min(0.5, rtt_ema * 2))
+            # Starts at 1.0 s / 0.30 s (conservative WAN defaults) until first
+            # RTT sample arrives (typically within the first few chunks).
+            # The browser pre-buffer (_PRE = 1.0 s) is always ≥ _kp_threshold so
+            # silence injected at the relay threshold never causes a browser underrun.
+            _kp_threshold: float = 1.0
+            _get_to:       float = 0.30
+            next_kp_t = time.monotonic() + _kp_threshold
             # Find which site owns this slot so we can write to its PCM buffer
             _pcm_site = None
             if hub_server:
@@ -18754,8 +18774,12 @@ def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0)
                         break
             while True:
                 try:
-                    chunk = slot.get(timeout=0.30)
-                    next_kp_t = time.monotonic() + _KP_THRESHOLD
+                    chunk = slot.get(timeout=_get_to)
+                    # Auto-tune from client RTT EMA (updated by hub_audio_chunk).
+                    if slot.rtt_ema:
+                        _kp_threshold = max(0.3, min(0.8, 0.1 + slot.rtt_ema * 3))
+                        _get_to       = max(0.15, min(0.5, slot.rtt_ema * 2))
+                    next_kp_t = time.monotonic() + _kp_threshold
                     if _pcm_site and hub_server and len(chunk) > 0:
                         hub_server._scanner_pcm[_pcm_site].append(chunk)
                     yield chunk
@@ -18767,7 +18791,7 @@ def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0)
                     now = time.monotonic()
                     if now >= next_kp_t:
                         yield _SILENCE
-                        next_kp_t = now + _KP_THRESHOLD
+                        next_kp_t = now + _kp_threshold
         finally:
             slot.closed = True
             listen_registry.remove(slot.slot_id)

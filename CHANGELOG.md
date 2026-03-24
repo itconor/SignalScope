@@ -2,6 +2,16 @@
 
 ---
 
+## [3.3.71] - 2026-03-24
+
+### Fixed
+- **FM Scanner — adaptive relay keepalive to prevent recurring underruns on variable WAN links**
+  The fixed 1.0 s keepalive threshold in 3.3.70 worked for typical WAN conditions but could still cause underruns on links with variable latency (cellular, congested ISP paths, etc.). The relay now auto-tunes its keepalive threshold and poll interval from the measured round-trip time of each chunk POST:
+  - `_kp_threshold = max(0.3 s, min(0.8 s, 0.1 + rtt_ema × 3))` — silence is only injected when no chunk has arrived for long enough to be truly abnormal at the measured RTT, not just a momentary jitter spike.
+  - `get_timeout = max(0.15 s, min(0.5 s, rtt_ema × 2))` — relay polls the slot queue at a rate matched to the connection speed rather than a fixed 300 ms.
+  - The SDR client now measures the RTT of every chunk POST and includes it in the `X-Client-Rtt` header; the hub updates a per-slot EMA (α=0.2) on each received chunk so the relay always operates with a recent estimate.
+  - Browser pre-buffer (`_PRE = 1.0 s`) remains ≥ the adaptive threshold ceiling (0.8 s), so silence injected at the relay never causes a browser underrun.
+
 ## [3.3.70] - 2026-03-24
 
 ### Fixed
