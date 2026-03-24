@@ -2,6 +2,16 @@
 
 ---
 
+## [3.3.70] - 2026-03-24
+
+### Fixed
+- **FM Scanner — choppy audio when hub is hosted remotely from the SDR client (WAN)**
+  The relay generator in `generate_scanner()` was injecting keepalive silence blocks whenever no PCM chunk arrived within 0.25 s (`_KP_THRESHOLD`). When the hub and the SDR client are separated by a WAN link, normal internet round-trip jitter easily exceeds 250 ms, causing silence to be injected on almost every block. The browser received a stream of real-audio / silence / real-audio / silence alternations, heard as rapid choppy dropouts even though no audio data was actually lost.
+  Three values tuned together:
+  1. **`_KP_THRESHOLD` 0.25 s → 1.0 s** — relay no longer injects silence unless a full second passes with no data, accommodating typical WAN latency without treating it as a gap.
+  2. **`slot.get(timeout=)` 0.12 s → 0.30 s** — relay polling loop sleeps up to 300 ms per iteration before declaring a timeout, reducing the number of empty-queue wakeups when WAN blocks arrive in 150–250 ms.
+  3. **`_PRE` (browser pre-buffer) 0.3 s → 1.0 s** — on connect the browser schedules audio 1.0 s ahead of `currentTime` instead of 0.3 s, giving the relay enough runway to absorb the raised keepalive threshold without the audio clock catching up to the buffer edge.
+
 ## [3.3.69] - 2026-03-24
 
 ### Fixed

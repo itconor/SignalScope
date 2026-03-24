@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.69"
+BUILD                  = "SignalScope-3.3.70"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -18732,7 +18732,15 @@ def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0)
 
             # Relay mode: forward PCM chunks from client to browser.
             # Also maintain a rolling 60-second PCM buffer for on-demand recording.
-            _KP_THRESHOLD = 0.25
+            #
+            # Keepalive tuning for WAN-hosted hubs:
+            #   _KP_THRESHOLD = 1.0 s — the remote SDR client may be several hundred
+            #   milliseconds away over the internet; raising the silence-injection
+            #   threshold from 0.25 s to 1.0 s avoids injecting silence blocks every
+            #   time normal WAN jitter pushes a chunk past the old 0.25 s window.
+            #   The browser-side pre-buffer (_PRE) is set to match (1.0 s), so the
+            #   browser can sustain 1.0 s without new data before underrunning.
+            _KP_THRESHOLD = 1.0
             next_kp_t = time.monotonic() + _KP_THRESHOLD
             # Find which site owns this slot so we can write to its PCM buffer
             _pcm_site = None
@@ -18746,7 +18754,7 @@ def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0)
                         break
             while True:
                 try:
-                    chunk = slot.get(timeout=0.12)
+                    chunk = slot.get(timeout=0.30)
                     next_kp_t = time.monotonic() + _KP_THRESHOLD
                     if _pcm_site and hub_server and len(chunk) > 0:
                         hub_server._scanner_pcm[_pcm_site].append(chunk)
@@ -24141,7 +24149,7 @@ var _pcmBuf   = new Uint8Array(0);
 var _SR       = 48000;
 var _BLK_S    = 4800;
 var _BLK_B    = _BLK_S * 2;
-var _PRE      = 0.3;
+var _PRE      = 1.0;
 var _sched    = 0;
 
 function fmt(f){ return f.toFixed(2); }
