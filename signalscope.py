@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.18"
+BUILD                  = "SignalScope-3.3.40"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8693,21 +8693,32 @@ class HubClient:
 
     def _push_scanner_audio(self, cfg, req: dict, slot_id: str, chunk_url: str):
         """Stream live FM audio from a remote SDR to a scanner relay slot.
-        Runs rtl_fm (capture 171 kHz, output 48 kHz via -r 48000), encodes to
-        MP3 via ffmpeg, and POSTs chunks to the hub until the slot expires."""
-        import subprocess as _sp
-        _ALLOWED_BITRATES = {"48k", "64k", "96k", "128k", "192k", "256k"}
+
+        Audio path (WAV streaming — no encoder):
+            rtl_fm  -s 171000 -r 48000  →  48 kHz S16LE mono raw PCM
+            → pipeline thread:
+                  reads _BLOCK (9600 bytes = 0.1 s) at a time
+                  discards first _SKIP blocks to flush USB startup burst
+                  puts steady-state blocks into pcm_queue
+            → main thread:
+                  sends a streaming WAV header as the very first chunk
+                  dequeues PCM blocks and POSTs directly to hub
+                  absolute-deadline clock absorbs POST network latency
+
+        No ffmpeg, no codec buffer, no encoding artefacts.
+        Hardware rate naturally paces the queue; deadline clock prevents
+        any queued burst from reaching the hub faster than real-time.
+        """
+        import subprocess, struct
+
         freq_mhz = float(req.get("freq_mhz", 96.5) or 96.5)
         serial   = str(req.get("sdr_serial", "") or "").strip()
         ppm      = int(req.get("ppm", 0) or 0)
         gain_raw = req.get("gain")
         gain     = float(gain_raw) if gain_raw is not None else 38.0
-        bitrate  = str(req.get("bitrate", "128k") or "128k").strip().lower()
-        if bitrate not in _ALLOWED_BITRATES:
-            bitrate = "128k"
 
-        if not _find_binary("rtl_fm") or not _find_binary("ffmpeg"):
-            monitor.log("[Scanner] rtl_fm or ffmpeg not found — cannot start scanner")
+        if not _find_binary("rtl_fm"):
+            monitor.log("[Scanner] rtl_fm not found — cannot start scanner")
             return
 
         if serial:
@@ -8723,88 +8734,130 @@ class HubClient:
                 return
             device_idx = devs[0]["index"]
 
-        freq_hz = int(freq_mhz * 1_000_000)
-        monitor.log(f"[Scanner] {freq_mhz:.2f} MHz device={device_idx} slot={slot_id[:6]}")
+        freq_hz  = int(freq_mhz * 1_000_000)
+        monitor.log(f"[Scanner] {freq_mhz:.2f} MHz device={device_idx} slot={slot_id[:6]} (WAV)")
+
+        _SDR_RATE = 171000
+        _OUT_RATE = 48000
+        _BLOCK    = _OUT_RATE * 2 // 10   # 9600 bytes = 4800 samples = 0.1 s
+        _BLK_DUR  = 0.1
+        _SKIP     = 15                    # discard 1.5 s USB startup burst (burst ≈ 14 blk)
 
         rtl_cmd = [
             "rtl_fm", "-f", str(freq_hz), "-M", "fm",
-            "-s", "171000", "-r", "48000",
-            "-l", "0", "-A", "fast", "-F", "9",
-            "-d", str(device_idx), "-g", str(gain),
+            "-l", "0", "-A", "std",
+            "-s", str(_SDR_RATE), "-r", str(_OUT_RATE), "-F", "9",
+            "-d", str(device_idx), "-",
         ]
         if ppm:
             rtl_cmd += ["-p", str(ppm)]
-        rtl_cmd += ["-"]
-
-        # rtl_fm outputs S16LE at 48000 Hz (resampled internally via -r 48000).
-        # No ffmpeg resampling filter needed — matches the normal live stream pipeline.
-        ff_cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-f", "s16le", "-ar", "48000", "-ac", "1", "-i", "pipe:0",
-            "-f", "mp3", "-b:a", bitrate, "-reservoir", "0", "pipe:1",
-        ]
-        # Chunk size: ~100 ms worth of audio at the chosen bitrate.
-        # Smaller chunks mean more frequent POSTs, which keeps the hub queue
-        # topped up and prevents the relay's slot.get() from timing out and
-        # causing audio dropouts.  100 ms is a good balance between POST
-        # overhead and dropout resilience.
-        _bitrate_kbps = int(bitrate.rstrip("k"))
-        _chunk_size   = max(1024, _bitrate_kbps * 1000 // 8 // 10)  # 100 ms of MP3
+        rtl_cmd += ["-g", str(gain)]
 
         try:
-            rtl_proc = _sp.Popen(rtl_cmd, stdout=_sp.PIPE, stderr=_sp.DEVNULL, bufsize=0)
+            rtl_proc = subprocess.Popen(
+                rtl_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
+            )
         except Exception as e:
             monitor.log(f"[Scanner] rtl_fm start failed: {e}")
             return
-        try:
-            # Direct OS pipe: rtl_fm stdout → ffmpeg stdin (no Python thread in between).
-            # Pacing is handled on the hub relay side — the relay generator delivers
-            # chunks to the browser at the real-time bitrate regardless of how quickly
-            # the client produces them.
-            ff_proc = _sp.Popen(ff_cmd, stdin=rtl_proc.stdout, stdout=_sp.PIPE,
-                                stderr=_sp.DEVNULL, bufsize=0)
-        except Exception as e:
-            monitor.log(f"[Scanner] ffmpeg start failed: {e}")
-            try: rtl_proc.kill()
-            except: pass
-            return
 
+        # Streaming WAV header — RIFF and data chunk sizes set to 0x7FFFFFFF
+        # (the standard "unknown/streaming length" sentinel for WAV streaming).
+        # Browsers reject size=0 as "empty audio" and immediately close the
+        # connection; 0x7FFFFFFF tells them to play until the stream ends.
+        _ch, _bits  = 1, 16
+        _byte_rate  = _OUT_RATE * _ch * _bits // 8   # 96000
+        _blk_align  = _ch * _bits // 8               # 2
+        wav_header  = struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF", 0x7FFFFFFF, b"WAVE",
+            b"fmt ", 16, 1, _ch, _OUT_RATE, _byte_rate, _blk_align, _bits,
+            b"data", 0x7FFFFFFF,
+        )
+
+        stop_flag = threading.Event()
+        pcm_queue = queue.Queue(maxsize=100)   # ~10 s safety buffer
+
+        def _pipeline():
+            """Read rtl_fm, replace burst blocks with silence, queue real PCM after.
+
+            Sending silence during the burst (rather than discarding) keeps the
+            HTTP stream flowing so the browser never sees a stall after the WAV
+            header and fires an error event.  The WAV header is prepended to the
+            very first silent block so the browser can parse the stream format
+            before any real audio arrives.
+            """
+            mux          = b""
+            count        = 0
+            header_added = False
+            try:
+                while not stop_flag.is_set():
+                    raw = rtl_proc.stdout.read(_BLOCK)
+                    if not raw:
+                        break
+                    mux += raw
+                    while len(mux) >= _BLOCK:
+                        blk   = mux[:_BLOCK]
+                        mux   = mux[_BLOCK:]
+                        count += 1
+                        if count <= _SKIP:
+                            # Replace burst data with silence; keeps stream alive
+                            out = b"\x00" * _BLOCK
+                            if not header_added:
+                                out = wav_header + out   # prepend WAV header once
+                                header_added = True
+                        else:
+                            if count == _SKIP + 1:
+                                monitor.log(
+                                    f"[Scanner] Burst flushed ({_SKIP} blk), "
+                                    f"streaming WAV PCM"
+                                )
+                            out = blk
+                        try:
+                            pcm_queue.put(out, timeout=1.0)
+                        except queue.Full:
+                            pass   # consumer stalled — drop rather than block rtl_fm
+            except Exception as e:
+                monitor.log(f"[Scanner] Pipeline error: {e}")
+
+        threading.Thread(target=_pipeline, daemon=True,
+                         name=f"ScanPipe-{slot_id[:6]}").start()
+
+        # Main loop: dequeue blocks and POST at real-time rate.
+        # The queue fills at hardware rate (~0.1 s/block); the deadline clock
+        # absorbs POST network latency without risking any burst reaching the hub.
+        out_deadline = time.monotonic()
         fails = 0
-        _buf  = bytearray()
         try:
             while True:
-                # Read in small increments so we never stall; assemble complete
-                # _chunk_size chunks before posting to reduce HTTP overhead.
-                data = ff_proc.stdout.read(4096)
-                if not data:
-                    break
-                _buf.extend(data)
-                while len(_buf) >= _chunk_size:
-                    chunk = bytes(_buf[:_chunk_size])
-                    del _buf[:_chunk_size]
-                    try:
-                        body = self._post_relay_chunk(cfg, chunk_url, chunk)
-                        if body.get("error") == "slot not found or expired":
-                            monitor.log(f"[Scanner] Slot {slot_id[:6]} expired — stopping")
-                            raise StopIteration
-                        fails = 0
-                    except StopIteration:
-                        raise
-                    except Exception as e:
-                        fails += 1
-                        if fails >= 5:
-                            monitor.log(f"[Scanner] Push failed: {e}")
-                            raise StopIteration
-        except StopIteration:
-            pass
+                try:
+                    blk = pcm_queue.get(timeout=2.0)
+                except queue.Empty:
+                    if stop_flag.is_set():
+                        break
+                    continue
+                slack = out_deadline - time.monotonic()
+                if slack > 0.001:
+                    time.sleep(slack)
+                try:
+                    body = self._post_relay_chunk(cfg, chunk_url, blk)
+                    if body.get("error") == "slot not found or expired":
+                        monitor.log(f"[Scanner] Slot {slot_id[:6]} expired — stopping")
+                        break
+                    fails = 0
+                except Exception as e:
+                    fails += 1
+                    if fails >= 5:
+                        monitor.log(f"[Scanner] Push failed: {e}")
+                        break
+                out_deadline += _BLK_DUR
         finally:
+            stop_flag.set()
             monitor.log(f"[Scanner] Stopped {freq_mhz:.2f} MHz (slot {slot_id[:6]})")
-            for p in (ff_proc, rtl_proc):
-                try: p.kill(); p.wait(timeout=2)
-                except: pass
+            try: rtl_proc.kill(); rtl_proc.wait(timeout=2)
+            except: pass
             with self._lock:
                 self._active_slots.discard(slot_id)
-            print(f"[HubRelay] Push complete for slot {slot_id[:6]} ({kind})")
 
     def _send_one(self, url: str, payload_bytes: bytes, secret: str = "") -> dict:
         """Sign, encrypt and send a payload. Returns full ACK body.
@@ -17031,51 +17084,18 @@ def _hub_stream_relay_response(slot: ListenSlot, startup_timeout: float = 20.0):
     Stream bytes arriving on a relay slot back to the browser.
     Used for live MP3 and NAT-safe WAV fetches.
 
-    For scanner slots the generator paces delivery at the real-time audio bitrate.
-    The client (rtl_fm → ffmpeg) may produce and POST chunks faster than real-time
-    (startup USB buffer, CPU encoding headroom).  Without pacing the hub blasts
-    those queued chunks to the browser instantly; Chrome's <audio> element sees a
-    large buffer and accelerates playback to drain it, causing the "super fast"
-    audio artefact.  Pacing on the relay side is the cleanest fix — the client
-    can push as fast as it likes, but the browser only receives data at 1× speed.
+    For scanner slots the client discards the USB startup burst before posting,
+    so data arrives at the hub at real-time bitrate and no hub-side pacing is
+    required.  The generator simply passes chunks through as fast as they arrive.
     """
-    # For scanner slots, compute bytes-per-second from the stored bitrate so we
-    # can pace delivery chunk-by-chunk.  Other slot kinds are unaffected.
-    _bps = 0.0
-    if slot.kind == "scanner":
-        try:
-            _bps = int(slot.bitrate.rstrip("k")) * 1000 / 8   # bytes per second
-        except Exception:
-            _bps = 16000.0   # safe fallback: 128 kbps
-
     def generate_relay():
         deadline = time.time() + startup_timeout
         started  = False
-        # _next is None until the first chunk arrives.  Initialising it at
-        # generator-start causes it to be perpetually behind (client startup
-        # takes 1-3 s), so _slack is always negative and pacing never fires.
-        _next: "float | None" = None
         try:
             while True:
                 try:
-                    chunk = slot.get(timeout=0.5)
+                    chunk = slot.get(timeout=1.0)
                     started = True
-                    if _bps > 0:
-                        if _next is None:
-                            # First chunk: yield immediately to minimise latency,
-                            # then set the clock to "now + this chunk's duration"
-                            # so subsequent chunks are paced from this moment.
-                            _next = time.monotonic() + len(chunk) / _bps
-                        else:
-                            # Advance the clock and sleep the remaining slack so
-                            # the browser receives data at exactly 1× bitrate speed
-                            # regardless of how fast the client produced the chunks.
-                            _next += len(chunk) / _bps
-                            _slack = _next - time.monotonic()
-                            if _slack > 0.005:          # only sleep if meaningfully ahead
-                                time.sleep(_slack)
-                            elif _slack < -5.0:         # reset after >5 s stall
-                                _next = time.monotonic() + len(chunk) / _bps
                     yield chunk
                 except queue.Empty:
                     if slot.closed:
@@ -17383,8 +17403,8 @@ def hub_scanner_start():
             old_slot.closed = True
 
     slot = listen_registry.create(
-        site, 0, kind="scanner", mimetype="audio/mpeg",
-        freq_mhz=freq_mhz, sdr_serial=sdr_serial, ppm=ppm, gain=gain, bitrate=bitrate,
+        site, 0, kind="scanner", mimetype="audio/wav",
+        freq_mhz=freq_mhz, sdr_serial=sdr_serial, ppm=ppm, gain=gain,
     )
     hub_server._scanner_sessions[site] = {
         "slot_id":    slot.slot_id,
@@ -17423,12 +17443,11 @@ def hub_scanner_tune():
 
     # Create a fresh slot at the new frequency — preserve serial, ppm, gain, bitrate from session
     slot = listen_registry.create(
-        site, 0, kind="scanner", mimetype="audio/mpeg",
+        site, 0, kind="scanner", mimetype="audio/wav",
         freq_mhz=freq_mhz,
         sdr_serial=sess.get("sdr_serial", ""),
         ppm=int(sess.get("ppm", 0)),
         gain=sess.get("gain"),
-        bitrate=sess.get("bitrate", "128k"),
     )
     sess["slot_id"]  = slot.slot_id
     sess["freq_mhz"] = freq_mhz
@@ -22470,7 +22489,6 @@ input:focus,select:focus{border-color:var(--bl)}
 .audio-row{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid var(--bor)}
 .audio-row label{font-size:12px;color:var(--mu)}
 .audio-row input[type=range]{width:110px;accent-color:var(--bl)}
-.quality-note{font-size:11px;color:var(--mu);text-align:center;margin-top:6px}
 </style>
 </head>
 <body>
@@ -22493,15 +22511,6 @@ input:focus,select:focus{border-color:var(--bl)}
   <label>Start freq</label>
   <input type="number" id="start-freq" value="96.5" step="0.1" min="76" max="108" style="width:86px">
   <span style="font-size:12px;color:var(--mu)">MHz</span>
-  <label>Quality</label>
-  <select id="quality-sel">
-    <option value="48k">Low (48k) — best for slow links</option>
-    <option value="64k">64k</option>
-    <option value="96k">Medium (96k)</option>
-    <option value="128k" selected>High (128k)</option>
-    <option value="192k">Very High (192k)</option>
-    <option value="256k">Best (256k)</option>
-  </select>
   <button class="btn-connect" id="connect-btn">Connect</button>
 </div>
 
@@ -22542,7 +22551,6 @@ input:focus,select:focus{border-color:var(--bl)}
       <input type="range" id="vol" min="0" max="1" step="0.05" value="0.85">
       <audio id="audio" autoplay style="display:none"></audio>
     </div>
-    <div class="quality-note" id="quality-note">&nbsp;</div>
   </div>
 </div>
 
@@ -22554,7 +22562,6 @@ function _f(url,o){o=o||{};o.headers=Object.assign({'X-CSRFToken':_csrf,'Content
 var siteSel    = document.getElementById('site-sel');
 var sdrSel     = document.getElementById('sdr-sel');
 var startFreq  = document.getElementById('start-freq');
-var qualitySel = document.getElementById('quality-sel');
 var connBtn    = document.getElementById('connect-btn');
 var freqDisp   = document.getElementById('freq-display');
 var freqSub    = document.getElementById('freq-sub');
@@ -22564,18 +22571,7 @@ var manFreq    = document.getElementById('manual-freq');
 var manBtn     = document.getElementById('manual-btn');
 var audio      = document.getElementById('audio');
 var volSlider  = document.getElementById('vol');
-var qualNote   = document.getElementById('quality-note');
-
 var _freq = 96.5, _step = 0.2, _state = 'idle', _slotId = '', _poll = null;
-
-function updateQualityNote(){
-  var q = qualitySel.value;
-  var on = (_state === 'streaming' || _state === 'connecting');
-  var labels = {'48k':'Low — less glitching on slow links','64k':'64 kbps','96k':'Medium','128k':'High (default)','192k':'Very High','256k':'Best quality'};
-  qualNote.textContent = on ? ('Streaming at ' + (labels[q] || q)) : (labels[q] || q);
-}
-qualitySel.addEventListener('change', updateQualityNote);
-updateQualityNote();
 
 function fmt(f){ return f.toFixed(2); }
 function clamp(f){ return Math.max(76, Math.min(108, parseFloat(f.toFixed(2)))); }
@@ -22587,13 +22583,11 @@ function setStatus(state, msg){
   var on = (state === 'streaming' || state === 'connecting');
   document.querySelectorAll('.tune-btn').forEach(function(b){ b.disabled = !on; });
   manBtn.disabled = !on;
-  // Lock quality/site/SDR selectors while connected — they only take effect on next Connect
-  qualitySel.disabled = on;
+  // Lock site/SDR selectors while connected — they only take effect on next Connect
   siteSel.disabled    = on;
   sdrSel.disabled     = on;
   connBtn.textContent = on ? 'Disconnect' : 'Connect';
   connBtn.classList.toggle('active', on);
-  updateQualityNote();
 }
 
 function updateFreq(f){
@@ -22634,7 +22628,7 @@ function doStart(freq){
   updateFreq(freq);
   _f('/api/hub/scanner/start', {
     method:'POST',
-    body: JSON.stringify({site: siteSel.value, sdr_serial: sdrSel.value, freq_mhz: freq, bitrate: qualitySel.value})
+    body: JSON.stringify({site: siteSel.value, sdr_serial: sdrSel.value, freq_mhz: freq})
   }).then(function(r){ return r.json(); }).then(function(d){
     if(d.ok){
       _slotId = d.slot_id;

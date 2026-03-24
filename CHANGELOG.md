@@ -2,6 +2,122 @@
 
 ---
 
+## [3.3.40] - 2026-03-24
+
+### Fixed
+- **FM Scanner — HTTP 404 on every audio_chunk POST (slot removed before first chunk)** — the WAV header used `RIFF` chunk size = 0 and `data` chunk size = 0. Browsers interpret `data` size = 0 as "zero bytes of audio data" and immediately close the HTTP connection with an error event. This caused `generate_relay()`'s `finally` block to fire and remove the slot from the registry within milliseconds of the first chunk being yielded — before the client's next POST could reach the hub. Fix: set both sizes to `0x7FFFFFFF`, the standard sentinel for "unknown/streaming length" used by streaming WAV servers (Icecast, rtl_fm_streamer, etc.). Browsers correctly treat this as a live stream and keep the connection open until it closes naturally.
+
+## [3.3.39] - 2026-03-24
+
+### Fixed
+- **FM Scanner WAV stream error — silence during burst skip** — 3.3.38 sent the 44-byte WAV header as a separate first POST, then the stream went silent for 3 seconds while the USB startup burst was discarded. Browsers fire an error event on an audio stream that stalls immediately after the header. Fix: the pipeline now replaces burst blocks with silent PCM (`0x00` bytes) instead of discarding them, and prepends the WAV header to the very first silent block. The stream flows continuously from the first chunk; the browser hears ~1.5 s of silence then clean FM audio without ever seeing a gap.
+- **FM Scanner — reduced burst skip from 30 to 15 blocks** — the measured USB burst is ~14 blocks; 15 gives a one-block margin while halving the initial silence from 3 s to 1.5 s.
+- **FM Scanner UI — removed Quality/bitrate selector** — WAV streaming is uncompressed so the bitrate setting had no effect; removed the selector and all related JavaScript to avoid confusion.
+
+## [3.3.38] - 2026-03-24
+
+### Changed
+- **FM Scanner — replaced MP3/ffmpeg pipeline with direct WAV streaming** — after multiple attempts to tame the codec buffer timing issues (3.3.25–3.3.37), the entire ffmpeg pipeline has been scrapped in favour of raw PCM streaming, matching the architecture of rtl_fm_streamer. The new path: `rtl_fm -r 48000` → pipeline thread reads 9600-byte blocks (0.1 s at 48 kHz), discards 30-block USB startup burst, enqueues raw S16LE PCM → main thread sends a 44-byte streaming WAV header as the first hub chunk, then dequeues and POSTs PCM blocks with an absolute-deadline clock that absorbs network RTT without risking bursts. Hub slot mimetype changed from `audio/mpeg` to `audio/wav`. No ffmpeg dependency, no codec buffer, no MP3 frame ordering issues. Audio timing is governed by the RTL-SDR hardware clock and the Web Audio API in the browser — the two layers that were always designed for this job.
+
+## [3.3.37] - 2026-03-24
+
+### Fixed
+- **FM Scanner out-of-order audio — output clock deadline order** — 3.3.36's output clock slept *before* the POST, so each loop iteration consumed `sleep + POST_time` of wall time. In steady state (no burst) the POST network RTT meant the hub received audio fractionally slower than real-time, the browser's buffer ran dry, and the audio stuttered/skipped. Fix: switched to an absolute-deadline clock — sleep to the deadline, POST, *then* advance the deadline by `chunk_dur`. Both the POST time and the `read()` time are absorbed into the same `chunk_dur` budget, so the hub receives data at exactly the declared bitrate regardless of network round-trip time.
+
+## [3.3.36] - 2026-03-24
+
+### Fixed
+- **FM Scanner fast audio — output-side bitrate clock** — the input clock correctly paced writes to ffmpeg stdin at 0.1 s/block, but ffmpeg has an internal codec buffer that can release a burst of MP3 frames to stdout at startup. Without any pacing on the read side, the main thread posted that burst to the hub in rapid succession; the hub queued all chunks immediately; the browser drained the queue faster than real-time and the audio played fast. Fix: a drift-free output clock computes each chunk's duration as `len(data)*8/bitrate_bps` and sleeps until the next target time before POSTing to the hub, ensuring the hub always receives audio at exactly the declared bitrate regardless of ffmpeg's internal buffering.
+
+## [3.3.35] - 2026-03-24
+
+### Fixed
+- **FM Scanner — scanner never starts (regression introduced in 3.3.33/3.3.34)** — the duplicate-instance guard added `slot_id` to `_active_slots` and then checked it on entry to `_push_scanner_audio`. But the CALLER (`_push_audio_request` dispatch loop) **already** adds the slot to `_active_slots` before launching the thread — so the entry check inside `_push_scanner_audio` was always true, always returned immediately, and the scanner never ran. The caller's check at `if not slot_id or slot_id in active: continue` is the correct guard against duplicate threads; the redundant inner check has been removed entirely.
+
+## [3.3.34] - 2026-03-24
+
+### Fixed
+- **FM Scanner — slot locked forever on any startup failure** — 3.3.33 added `_active_slots` duplicate prevention but several early-return paths (serial resolve error, no SDR devices found, rtl_fm Popen failed, ffmpeg Popen failed) returned without calling `_active_slots.discard(slot_id)`. This permanently locked the slot ID so every subsequent heartbeat delivery was rejected as "already active" and the scanner never actually started. Fix: introduced a `_discard()` helper and called it before every early return that follows the initial `_active_slots.add()`.
+
+## [3.3.33] - 2026-03-24
+
+### Fixed
+- **FM Scanner fast audio — clock threshold 0.002 → 0.0005 s** — the drift-free clock in `_pipeline` used `if slack > 0.002: time.sleep(slack)` to guard against sleeping on tiny slacks. Because RTL-SDR hardware delivers blocks very slightly faster than nominal, the computed slack was routinely 1–2 ms — silently skipped every block. Over 100 blocks this accumulated to ~2% total drift, confirmed by rate-check diagnostics showing `avg interval 0.0980 s` vs target `0.1000 s`. Lowering the threshold to `0.0005 s` (0.5 ms) ensures these small slacks are no longer skipped and the clock tracks real-time correctly.
+- **FM Scanner out-of-order audio — duplicate instance prevention** — the hub heartbeat may deliver the same scanner slot request more than once before the first `_push_scanner_audio` instance has started POSTing data. With no guard, two concurrent threads would write to the same hub slot producing interleaved, out-of-order MP3 chunks at the browser. Fix: `slot_id` is now added to `self._active_slots` at the very start of `_push_scanner_audio` (under `self._lock`) and checked on entry — duplicate invocations for the same slot return immediately.
+
+## [3.3.28] - 2026-03-24
+
+### Fixed
+- **FM Scanner fast audio — mirrors the monitor's read/resample loop** — previous byte-drain approach (3.3.27) was worse because handing the raw pipe mid-stream to ffmpeg caused desync/garble. 3.3.28 uses a pipeline thread that is a direct copy of `_run_fm_rtlsdr`'s read loop: reads 0.1 s blocks of S16LE from rtl_fm, silently discards the first 25 blocks (2.5 s) to flush the librtlsdr USB async buffers (~480 KB ≈ 1.4 s), then resamples each block 171 kHz → 48 kHz with `resample_poly(x, 16, 57)` and writes 48 kHz PCM to ffmpeg stdin. ffmpeg encodes only — no libswresample resampling needed. Main thread does plain blocking `read(4096)` on ffmpeg stdout and POSTs with zero pacing code. After the burst blocks are discarded, `rtl_proc.stdout.read(_BLOCK)` in the pipeline thread naturally blocks at hardware rate, which paces ffmpeg stdin, which paces ffmpeg stdout, which paces the POST loop. Hardware IS the clock.
+
+## [3.3.27] - 2026-03-24
+
+### Fixed
+- **FM Scanner fast audio — root cause finally identified and fixed by mirroring the live relay architecture exactly** — the working live relay (kind="live") feeds ffmpeg from `_stream_buffer` gated by `_live_chunk_seq`, so `proc.stdout.read(4096)` blocks naturally at hardware rate — **no pacing code of any kind**. The scanner couldn't do this because it has no `_stream_buffer`; it starts a fresh rtl_fm instead. The fundamental problem is the **USB startup burst**: librtlsdr pre-fills ~15 async buffers (~480 KB ≈ 1.4 s at 171 kHz) before the first real-time data arrives. All previous attempts (reader thread + output clock, throttle thread, direct pipe) failed because they received this burst and either delivered it too fast or deadlocked trying to slow it down. Fix: Python reads and discards 2 seconds of raw S16LE from rtl_fm stdout BEFORE handing the pipe file descriptor to ffmpeg. After the drain, rtl_fm's output is real-time hardware data only. The OS pipe then naturally rate-limits ffmpeg stdin to hardware rate, ffmpeg stdout produces at the same rate, and a plain `proc.stdout.read(4096)` loop (identical to the live relay) paces the POST to hub correctly. No reader thread, no drift-free clock, no queue, no `time.sleep()`.
+
+## [3.3.26] - 2026-03-24
+
+### Fixed
+- **FM Scanner fast audio — reader thread + output-side pacing** — 3.3.25's throttle thread controlled the INPUT to ffmpeg but ffmpeg's internal codec buffers could still produce output in bursts, and reading ffmpeg stdout in the main thread (then sleeping before the next read) caused pipe backpressure that made ffmpeg's encode loop irregular. Root fix: split responsibilities cleanly — a **reader thread** drains ffmpeg stdout into an unbounded queue continuously (never sleeps, pipe is always clear), while the **main thread** dequeues chunks and POSTs to the hub paced by a drift-free clock (`next_post += len(data)*8/bitrate_bps`). Sleeping in the main thread is now safe because the reader thread decouples ffmpeg stdout from all main-thread sleeps. The hub therefore receives data at exactly real-time rate regardless of codec or USB startup burst behaviour. rtl_fm → ffmpeg path remains a direct OS pipe (no Python in the signal path). Sample rate stays at 171 000 Hz, identical to the FM monitor.
+
+## [3.3.25] - 2026-03-24
+
+### Fixed
+- **FM Scanner fast audio — root cause identified: missing rate controller** — the fundamental difference between the FM monitor (works) and the scanner (fast) is that the monitor loop's blocking reads from rtl_fm ARE the rate controller: `_stream_buffer` only fills at real-time hardware rate, and `stream_live`'s writer reads from that already-paced buffer. The scanner had no equivalent — direct piping from rtl_fm to ffmpeg (3.3.23/3.3.24) meant the rtl_fm USB startup burst flooded ffmpeg faster than real-time, and Chrome sped up playback to prevent its buffer from growing indefinitely. Fix: re-introduce a **throttle thread** that reads raw 171 kHz S16LE blocks from rtl_fm and writes them to ffmpeg stdin paced by a drift-free clock (`next_write += 0.1 s`). Crucially, Python does **not** touch the audio content — no resampling, no float conversion — only the delivery rate is controlled. ffmpeg handles the 171 → 48 kHz resample via libswresample. The throttle thread is structurally identical to `stream_live`'s writer.
+
+## [3.3.24] - 2026-03-24
+
+### Fixed
+- **FM Scanner still fast — wrong rtl_fm sample rate (240 kHz → 171 kHz)** — 3.3.23 used `-s 240000` hoping for a clean 5:1 integer ratio in ffmpeg. But RTL-SDR hardware's internal clock divider may not achieve exactly 240 000 Hz; if it snaps to the nearest achievable rate (e.g. 240 384 Hz) while ffmpeg is told "input is 240 000 Hz", every block plays at 240 384/240 000 = 1.0016 fast — perceptible as "slightly fast" audio. Fix: use **171 000 Hz** (the exact rate `_run_fm_rtlsdr` uses for the FM monitor, proven correct on this hardware). The rtl_fm command now mirrors `_run_fm_rtlsdr` flag-for-flag. ffmpeg's libswresample handles the 171 000 → 48 000 Hz (57:16) rational ratio with polyphase quality equivalent to scipy's `resample_poly`.
+
+## [3.3.23] - 2026-03-24
+
+### Changed
+- **FM Scanner — remove Python from the audio path entirely** — all previous versions (3.3.15–3.3.22) put Python between rtl_fm and ffmpeg, either resampling PCM, maintaining a mux_buf, or running a drift-free clock. Every attempt introduced its own timing artefacts (running fast, stopping/starting, glitching) because Python's threading and `time.sleep()` cannot pace an audio pipe reliably. New approach:
+  - `rtl_fm -s 240000` (FM discriminator, 240 kHz S16LE) pipes directly into `ffmpeg` via the OS pipe — `stdin=rtl_proc.stdout` with `rtl_proc.stdout.close()` on the Python side
+  - **No Python in the signal path** — the OS pipe and ffmpeg's own real-time encoding loop handle timing, exactly as they do for all other rtl_fm uses in the codebase
+  - ffmpeg resamples 240 kHz → 48 kHz with a clean **5:1 integer ratio** via libswresample (`-ar 240000` input, `-ar 48000` output) — no fractional ratio artefacts
+  - 240 kHz is a native RTL-SDR hardware rate (≥ 225 kHz minimum), so no extra software decimation inside rtl_fm
+  - Main thread reads 4096-byte chunks from ffmpeg stdout and POSTs to hub — `read(4096)` naturally blocks ~256 ms at 128 kbps, making ffmpeg's own encode pace the rate limiter
+  - No pipeline thread, no drift-free clock, no scipy/resample_poly, no mux_buf
+
+## [3.3.22] - 2026-03-24
+
+### Fixed
+- **FM Scanner "slightly fast" audio — pipeline clock initialised one block ahead** — 3.3.21's drift-free clock initialised `next_write = time.monotonic()` on the first block, meaning block 1 was always written to ffmpeg stdin with zero sleep. During the rtl_fm USB startup burst, this caused ffmpeg to receive audio slightly faster than real-time (by one block = 100ms) before the clock kicked in. Fix: initialise `next_write = time.monotonic() + _BLK_DUR` so every block including the first must wait its full 100ms, preventing the browser from ever receiving audio faster than real-time.
+
+### Reverted
+- **Output-side POST pacing removed** — an intermediate attempt (3.3.22 alpha) added a drift-free clock on the main thread's POST loop. This caused a pipe deadlock: sleeping before reading from ffmpeg stdout stalled the stdout pipe, which caused ffmpeg to stall encoding, which backed up into the pipeline thread's stdin writes. The result was audio that stopped and started in a loop. Rate control must live entirely on the pipeline thread (stdin side); the main thread must read from ffmpeg stdout as fast as data arrives.
+
+## [3.3.21] - 2026-03-24
+
+### Fixed
+- **FM Scanner audio — single pipeline thread, drift-free clock** — previous 3.3.20 approach used a separate reader thread and writer thread sharing a deque. A silent bug killed the writer: if rtl_fm's USB startup burst filled the deque to ≥ 2 items before the writer's first prefill loop iteration ran, `now < None` (`TypeError`) was silently caught by `except Exception: pass`, leaving the writer dead and ffmpeg stdin orphaned. Replaced the entire reader/writer/deque architecture with a single `_pipeline` thread:
+  - Reads raw 171 kHz S16LE from rtl_fm, assembles 100 ms blocks (34200 bytes), resamples with `resample_poly(x, 16, 57)` → 48 kHz float32 → S16LE
+  - Paces writes to ffmpeg stdin with a **drift-free clock**: `next_write += 0.1` (100 ms per block). On startup burst, the accumulated USB buffer drains while the clock holds real-time; no reset on underflow
+  - Main thread reads raw ffmpeg MP3 output in 4096-byte reads and POSTs directly to hub — exactly mirroring `_push_audio_request` kind="live", which is the proven-working live listen path
+  - No deque, no prefill, no shared state between threads except the ffmpeg pipe and a `threading.Event` stop flag
+- **Root cause of 3.3.20 failure** — the writer thread's `next_send = None` initialisation combined with a deque prefill guard (`if len(q) < _PREFILL`) caused a `TypeError` on first iteration during USB burst, silently killing the writer. The single-thread design eliminates all shared mutable state between reader and writer.
+
+## [3.3.20] - 2026-03-24
+
+### Fixed
+- **FM Scanner rewrite — mirror working FM monitor pipeline exactly** — `_push_scanner_audio` now uses the identical audio path as `_run_fm_rtlsdr` + `stream_live`, which is the only FM audio path proven to work correctly:
+  - `rtl_fm -s 171000` (no `-r` flag) — raw 171 kHz MPX output, same as the FM monitor
+  - **Reader thread**: reads raw 171 kHz S16LE from rtl_fm, resamples with `scipy.signal.resample_poly(x, 16, 57)` (exact 171000→48000 polyphase filter, same call used by `_run_fm_rtlsdr`) → 48 kHz float32 chunks → deque
+  - **Writer thread**: drains deque into ffmpeg stdin paced at `next_send += CHUNK_DURATION` (0.5 s per chunk) — identical to the `stream_live` writer that already works correctly for FM listen
+  - **ffmpeg**: reads 48 kHz S16LE from the paced writer, encodes to MP3
+  - **Main thread**: reads MP3 from ffmpeg, assembles 100 ms chunks, POSTs to hub relay slot
+  - Hub relay remains simple pass-through (no hub-side pacing)
+- **Root cause of "running fast"** — previous attempts used `rtl_fm -r 48000` (rtl_fm's own resampler, 57:16 non-integer ratio, imprecise) or `ffmpeg -ar 240000 → -ar 48000` (3.3.19). The FM monitor has always used scipy's polyphase resampler for this ratio. The scanner now does the same.
+
+## [3.3.19] - 2026-03-24
+
+### Fixed
+- **FM Scanner audio running fast — root cause identified and fixed** — the real cause of the "slightly sped up" audio was not missing pacing but a sample-rate mismatch in `rtl_fm`. The previous command used `-s 171000 -r 48000` (ratio 57:16, a non-integer fraction). `rtl_fm`'s internal resampler is not precise for non-integer ratios and produced PCM at a slightly incorrect rate. Since the MP3 header claimed 48000 Hz, the browser played that slightly-off audio at 48000 Hz, making it sound fast regardless of any relay pacing applied. Fix: changed capture rate to `-s 240000` (exact integer multiple: 240000 = 5 × 48000) with no `-r` flag, and added `-ar 48000` to the ffmpeg command so libswresample (high-quality resampler) performs the 5:1 downsample. All hub-side and client-side pacing code removed.
+- **FM Scanner glitching caused by relay pacing** — all `time.sleep()` pacing in `_hub_stream_relay_response` for scanner slots has been removed. The pacing attempts (3.3.15–3.3.18) were addressing a symptom rather than the root cause and introduced their own timing irregularities that caused audio glitches. The relay now passes chunks through as fast as they arrive.
+- **Startup burst (USB buffer causing initial speed-up)** — `rtl_fm` accumulates a USB ring-buffer of audio before the first chunk reaches Python. Processing and posting this burst faster than real-time caused the browser to buffer ahead briefly. Fix: the client-side push loop now discards the first 2.5 seconds of ffmpeg output (by wall clock from when data first arrives) to flush the USB startup buffer. After the discard window the pipeline is in steady-state real-time mode. The `slot.get()` timeout on the relay side is increased to 1.0 s to give the client's 2.5 s discard period comfortable margin.
+
 ## [3.3.18] - 2026-03-23
 
 ### Fixed
