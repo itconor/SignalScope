@@ -834,6 +834,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
       <th style="padding:4px 8px;text-align:left">Serial</th>
       <th style="padding:4px 8px;text-align:left">Role</th>
       <th style="padding:4px 8px;text-align:left">PPM</th>
+      <th style="padding:4px 8px;text-align:left" title="RTL-SDR tuner gain in tenths of dB. -1 = hardware AGC (default). Use 486 or 496 for weak signals.">Gain</th>
       <th style="padding:4px 8px;text-align:left">Label</th>
       <th style="padding:4px 8px"></th>
     </tr></thead>
@@ -849,6 +850,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
         </select>
       </td>
       <td style="padding:6px 8px"><input type="number" name="sdr_ppm" value="{{dev.ppm}}" style="width:70px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-150" max="150"></td>
+      <td style="padding:6px 8px"><input type="number" name="sdr_gain" value="{{dev.gain}}" title="-1 = hardware AGC. Tenths of dB e.g. 496 = 49.6 dB max gain. Try 486–496 for weak signals." style="width:60px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-1" max="496"></td>
       <td style="padding:6px 8px"><input type="text" name="sdr_label" value="{{dev.label}}" placeholder="e.g. Studio 1 DAB" style="width:160px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px"></td>
       <td style="padding:6px 8px"><button type="button" class="btn bw bs" onclick="this.closest('tr').remove()">✕</button></td>
     </tr>
@@ -856,11 +858,11 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
     </tbody>
   </table>
   <button type="button" class="btn bg bs" style="margin-top:8px" onclick="sdrAddRow()">+ Add device</button>
-  <p class="help" style="margin-top:6px">PPM = frequency correction for your specific dongle. Run <code style="background:#173a69;padding:1px 5px;border-radius:3px">rtl_test -p</code> for ~5 minutes to measure it.</p>
+  <p class="help" style="margin-top:6px">PPM = frequency correction for your specific dongle. Run <code style="background:#173a69;padding:1px 5px;border-radius:3px">rtl_test -p</code> for ~5 minutes to measure it. &nbsp;Gain = RTL-SDR tuner gain in tenths of dB (<code style="background:#173a69;padding:1px 5px;border-radius:3px">-1</code> = hardware AGC, default). For weak signal areas try <code style="background:#173a69;padding:1px 5px;border-radius:3px">486</code> (48.6 dB) or <code style="background:#173a69;padding:1px 5px;border-radius:3px">496</code> (49.6 dB max).</p>
   <div id="sdr-warnings" style="margin-top:8px"></div>
   <script nonce="{{csp_nonce()}}">
-  function sdrAddRow(serial, role, ppm, label){
-    serial=serial||''; role=role||'none'; ppm=ppm||0; label=label||'';
+  function sdrAddRow(serial, role, ppm, gain, label){
+    serial=serial||''; role=role||'none'; ppm=ppm||0; gain=(gain!=null?gain:-1); label=label||'';
     var tr=document.createElement('tr');
     tr.style.borderTop='1px solid var(--bor)';
     tr.innerHTML='<td style="padding:6px 8px"><input type="text" name="sdr_serial" value="'+serial+'" style="width:160px;font-family:monospace;font-size:12px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx)"></td>'
@@ -870,6 +872,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
       +'<option value="fm"'+(role==="fm"?" selected":"")+'">FM</option>'
       +'</select></td>'
       +'<td style="padding:6px 8px"><input type="number" name="sdr_ppm" value="'+ppm+'" style="width:70px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-150" max="150"></td>'
+      +'<td style="padding:6px 8px"><input type="number" name="sdr_gain" value="'+gain+'" title="-1 = hardware AGC. Tenths of dB e.g. 496 = 49.6 dB max gain. Try 486-496 for weak signals." style="width:60px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-1" max="496"></td>'
       +'<td style="padding:6px 8px"><input type="text" name="sdr_label" value="'+label+'" placeholder="e.g. Studio 1 DAB" style="width:160px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px"></td>'
       +'<td style="padding:6px 8px"><button type="button" class="btn bw bs" onclick="this.closest(&quot;tr&quot;).remove()">✕</button></td>';
     document.getElementById('sdr-rows').appendChild(tr);
@@ -1096,7 +1099,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.49"
+BUILD                  = "SignalScope-3.3.50"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -1512,6 +1515,7 @@ class SdrDevice:
     role:     str  = "none"    # "dab" | "fm" | "none"
     ppm:      int  = 0         # frequency correction in parts-per-million
     label:    str  = ""        # friendly name shown in UI
+    gain:     int  = -1        # RTL-SDR gain in tenths of dB; -1 = hardware AGC
 
 
 @dataclass
@@ -1588,6 +1592,7 @@ def load_config() -> AppConfig:
             role=d.get("role","none"),
             ppm=int(d.get("ppm",0)),
             label=d.get("label",""),
+            gain=int(d.get("gain",-1)),
         ))
 
     inputs = []
@@ -1723,7 +1728,7 @@ def save_config(cfg: AppConfig):
         "login_lockout_mins": cfg.login_lockout_mins,
         "session_timeout_hrs": cfg.session_timeout_hrs,
         "sdr_devices": [
-            {"serial": d.serial, "role": d.role, "ppm": d.ppm, "label": d.label}
+            {"serial": d.serial, "role": d.role, "ppm": d.ppm, "label": d.label, "gain": d.gain}
             for d in cfg.sdr_devices
         ],
         "inputs": [{
@@ -4925,6 +4930,7 @@ class DabSharedSession:
     channel: str
     dab_port: int
     ppm: int = 0
+    gain: int = -1             # RTL-SDR gain in tenths of dB; -1 = hardware AGC
     proc: Any = None
     lease: Any = None
     ready: threading.Event = field(default_factory=threading.Event)
@@ -5191,9 +5197,10 @@ class MonitorManager:
         # Register the DAB device claim so FM streams can detect the conflict.
         # Raises SdrBusyError if an FM stream already holds this device index.
         sdr_manager.claim_dab_device(session.device_idx, owner_name)
-        cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel, "-C", "1", "-g", "-1", "-F", driver]
+        _gain_val = str(getattr(session, "gain", -1))
+        cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel, "-C", "1", "-g", _gain_val, "-F", driver]
         if session.ppm:
-            self.log(f"[{name}] DAB: ignoring ppm={session.ppm} for welle-cli startup (not passing it as gain)")
+            cmd += ["-p", str(session.ppm)]
         self.log(f"[{name}] DAB shared: launching {' '.join(cmd)}")
 
         try:
@@ -5317,7 +5324,7 @@ class MonitorManager:
         session.poll_thread = threading.Thread(target=_poll_mux, daemon=True)
         session.poll_thread.start()
 
-    def _get_or_create_dab_session(self, serial, device_idx, channel, ppm, owner_name):
+    def _get_or_create_dab_session(self, serial, device_idx, channel, ppm, owner_name, gain: int = -1):
         key = self._dab_session_key(serial, device_idx, channel)
         with self._dab_sessions_lock:
             session = self._dab_sessions.get(key)
@@ -5329,7 +5336,8 @@ class MonitorManager:
             # Important: do not claim/open the SDR in Python for DAB.
             # welle-cli must open the dongle itself.
             session = DabSharedSession(key=key, serial=serial, device_idx=int(device_idx),
-                                       channel=str(channel).upper(), dab_port=0, ppm=int(ppm or 0))
+                                       channel=str(channel).upper(), dab_port=0,
+                                       ppm=int(ppm or 0), gain=int(gain))
             self._dab_sessions[key] = session
             session.refcount = 1
             session.consumers.add(owner_name)
@@ -5453,10 +5461,13 @@ class MonitorManager:
                     cfg._dab_ok = False
                     return
 
-        if not ppm and serial:
+        gain = -1
+        if serial:
             for dev in self.app_cfg.sdr_devices:
                 if dev.serial == serial:
-                    ppm = dev.ppm
+                    if not ppm:
+                        ppm = dev.ppm
+                    gain = getattr(dev, "gain", -1)
                     break
 
         _FREQ_TO_CHANNEL = {
@@ -5501,7 +5512,7 @@ class MonitorManager:
                     if stop_evt.wait(timeout=wait_s):
                         return
                 try:
-                    session = self._get_or_create_dab_session(serial, device_idx, channel, ppm, name)
+                    session = self._get_or_create_dab_session(serial, device_idx, channel, ppm, name, gain=gain)
                 except SdrNotFoundError as e:
                     self.log(f"[{name}] DAB: {e}")
                     cfg._livewire_mode = "DAB (dongle not found)"
@@ -7957,22 +7968,29 @@ class HubClient:
         channel = str(payload.get("channel", "")).strip().upper()
         ppm     = int(payload.get("ppm", 0))
         serial  = str(payload.get("serial", "")).strip()
+        gain    = int(payload.get("gain", -1))
         if not channel:
             monitor.log("[Hub] dab_scan: no channel specified — ignored"); return
-        monitor.log(f"[Hub] Remote DAB scan: channel={channel} ppm={ppm}")
+        monitor.log(f"[Hub] Remote DAB scan: channel={channel} ppm={ppm} gain={gain}")
         def _run():
             try:
                 device_idx = "0"
+                _ppm  = ppm
+                _gain = gain
                 if serial:
                     try: device_idx = str(sdr_manager.resolve_index(serial))
                     except Exception: pass
-                elif not serial:
-                    # Resolve PPM from registry if not explicitly provided
-                    cfg = self._cfg_fn()
-                    for dev in cfg.sdr_devices:
-                        if hasattr(dev, "ppm") and not ppm:
-                            break
-                result = _dab_scan_mux(channel, device_idx, ppm)
+                # Resolve PPM and gain from registry if not explicitly provided
+                cfg = self._cfg_fn()
+                for dev in cfg.sdr_devices:
+                    if serial and dev.serial != serial:
+                        continue
+                    if not _ppm:
+                        _ppm = getattr(dev, "ppm", 0)
+                    if _gain == -1:
+                        _gain = getattr(dev, "gain", -1)
+                    break
+                result = _dab_scan_mux(channel, device_idx, _ppm, gain=_gain)
                 with self._dab_scan_lock:
                     self._dab_scan_result = result
                 monitor.log(f"[Hub] DAB scan complete: {len(result.get('services',[]))} services on {channel}")
@@ -14505,15 +14523,22 @@ def settings():
         roles   = f.getlist("sdr_role")
         ppms    = f.getlist("sdr_ppm")
         labels  = f.getlist("sdr_label")
+        gains   = f.getlist("sdr_gain")
+        # Pad gains list if a legacy form omits it
+        while len(gains) < len(serials):
+            gains.append("-1")
         cfg.sdr_devices = []
-        for serial, role, ppm, label in zip(serials, roles, ppms, labels):
+        for serial, role, ppm, label, gain in zip(serials, roles, ppms, labels, gains):
             serial = serial.strip()
             if serial:  # skip blank rows
                 try: ppm_int = int(ppm)
                 except: ppm_int = 0
+                try: gain_int = int(gain)
+                except: gain_int = -1
                 cfg.sdr_devices.append(SdrDevice(
                     serial=serial, role=role,
-                    ppm=ppm_int, label=label.strip()))
+                    ppm=ppm_int, label=label.strip(),
+                    gain=gain_int))
         # PTP thresholds
         try: cfg.ptp_offset_warn_us  = max(100, int(f.get("ptp_offset_warn_us",  5000)))
         except: pass
@@ -15178,7 +15203,7 @@ def api_dab_test():
                         "help": help_out.split("\n")})
 
 
-def _dab_scan_mux(channel: str, device_idx: str = "0", ppm: int = 0) -> dict:
+def _dab_scan_mux(channel: str, device_idx: str = "0", ppm: int = 0, gain: int = -1) -> dict:
     """Core DAB mux scan logic. Returns the same dict as api_dab_scan on success,
     or raises RuntimeError on failure. Callable from both Flask routes and background threads."""
     import shutil as _sh, subprocess as _sp, urllib.request as _ur
@@ -15186,7 +15211,7 @@ def _dab_scan_mux(channel: str, device_idx: str = "0", ppm: int = 0) -> dict:
     welle_bin   = _find_binary("welle-cli")
     if not welle_bin:
         raise RuntimeError("welle-cli not found")
-    cmd = [welle_bin, "-w", str(WELLE_PORT), "-c", channel, "-g", "-1"]
+    cmd = [welle_bin, "-w", str(WELLE_PORT), "-c", channel, "-g", str(gain)]
     if device_idx and device_idx != "0":
         cmd += ["-F", f"rtl_sdr,{device_idx}"]
     else:
@@ -15303,12 +15328,21 @@ def api_dab_scan():
         except SdrBusyError as e:
             return jsonify({"error": str(e)}), 409
 
-    # Resolve PPM from registry if not explicitly given
-    if not ppm and serial:
+    # Resolve PPM and gain from registry if not explicitly given
+    gain = request.args.get("gain", "").strip()
+    if serial:
         for dev in monitor.app_cfg.sdr_devices:
             if dev.serial == serial:
-                ppm = str(dev.ppm)
+                if not ppm:
+                    ppm = str(dev.ppm)
+                if not gain:
+                    gain = str(getattr(dev, "gain", -1))
                 break
+    gain_int = -1
+    try:
+        gain_int = int(gain) if gain else -1
+    except (ValueError, TypeError):
+        pass
 
     # Welle-cli scan port — use a fixed high port
     WELLE_PORT = 7979
@@ -15321,7 +15355,7 @@ def api_dab_scan():
     welle_bin = _find_binary("welle-cli")
     if not welle_bin:
         return jsonify({"error": "welle-cli not found on system PATH or /usr/bin"}), 503
-    cmd = [welle_bin, "-w", str(WELLE_PORT), "-c", channel, "-g", "-1"]
+    cmd = [welle_bin, "-w", str(WELLE_PORT), "-c", channel, "-g", str(gain_int)]
     if device_idx and device_idx != "0":
         cmd += ["-F", f"rtl_sdr,{device_idx}"]
     else:
@@ -16840,10 +16874,15 @@ def hub_dab_scan(site_name):
         if not (-1000 <= ppm <= 1000): raise ValueError
     except (ValueError, TypeError):
         return jsonify({"error": "ppm must be integer ±1000"}), 400
+    try:
+        gain = int(data.get("gain", -1))
+        if not (-1 <= gain <= 496): raise ValueError
+    except (ValueError, TypeError):
+        return jsonify({"error": "gain must be integer -1..496"}), 400
     serial = str(data.get("serial", "")).strip()
     hub_server.push_pending_command(site_name, {
         "type": "dab_scan",
-        "payload": {"channel": channel, "ppm": ppm, "serial": serial},
+        "payload": {"channel": channel, "ppm": ppm, "serial": serial, "gain": gain},
     })
     # Clear any stale previous scan result for this site
     hub_server.pop_dab_scan_result(site_name)

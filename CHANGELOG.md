@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.50] - 2026-03-24
+
+### Fixed / Added
+- **DAB — configurable RTL-SDR gain for weak signal areas** — previously welle-cli was always launched with `-g -1` (hardware AGC) and there was no way to override it. Hardware AGC is fine for strong signals but can fail to decode weak muxes that a GUI tool like welle.io can pick up because it uses software gain control. Fix: added a **Gain** field to the SDR Devices table in Settings. Default is `-1` (hardware AGC, same as before). For weak-signal sites set it to `486` (48.6 dB) or `496` (49.6 dB max) to match the maximum manual gain. The gain is applied to: continuous DAB monitoring sessions, local mux scans, and remote hub-triggered scans.
+- **DAB monitoring — PPM correction was silently ignored** — `_start_dab_session` set `session.ppm` from the dongle registry but then logged *"ignoring ppm"* and never passed `-p <ppm>` to welle-cli. Fixed: PPM is now correctly appended as `-p <ppm>` when non-zero.
+
 ## [3.3.49] - 2026-03-24
 
 ### Changed
