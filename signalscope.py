@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.67"
+BUILD                  = "SignalScope-3.3.68"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -9092,9 +9092,18 @@ class HubClient:
 
             redsea -o json outputs: ps, radiotext, pi, pty, tp, ta, stereo, ct, af, group.
             We normalise all useful fields for the hub heartbeat / browser.
+
+            PS and RadioText are stabilised with the same rolling-history / majority-vote
+            algorithm used by the client FM monitor:
+              • PS:  require the same candidate ≥ 3 times in the last 12 observations,
+                     and never replace a longer confirmed name with a shorter partial.
+              • RT:  require ≥ 2 occurrences in the last 10, or length ≥ 12 chars.
             """
+            from collections import Counter as _Counter
             if not rds_proc:
                 return
+            _ps_hist: list = []
+            _rt_hist: list = []
             for raw_line in iter(rds_proc.stdout.readline, b""):
                 if stop_flag.is_set():
                     break
@@ -9108,19 +9117,36 @@ class HubClient:
                     rt  = str(d.get("radiotext") or d.get("partial_radiotext") or "").strip()
                     pi  = str(d.get("pi") or "").strip()
                     pty = str(d.get("pty") or "").strip()
-                    ct  = str(d.get("ct") or "").strip()     # clock time string
-                    af  = d.get("af")                         # list of float MHz or None
+                    ct  = str(d.get("ct") or "").strip()
+                    af  = d.get("af")
                     # Boolean flags — only update when explicitly present in the JSON
                     for key in ("tp", "ta", "stereo"):
                         if key in d:
                             upd[key] = bool(d[key])
                     if pi:  upd["pi"]  = pi
-                    if ps:  upd["ps"]  = ps
-                    if rt:  upd["rt"]  = rt
                     if pty: upd["pty"] = pty
                     if ct:  upd["ct"]  = ct
                     if isinstance(af, list) and af:
                         upd["af"] = [round(float(f), 2) for f in af[:20]]
+                    # ── Stabilise PS ──────────────────────────────────────────────
+                    if ps:
+                        cur_ps = (self._get_scanner_rds().get("ps") or "").strip()
+                        # Don't let a shorter partial overwrite a confirmed longer name
+                        if not (cur_ps and len(ps) < len(cur_ps)):
+                            _ps_hist.append(ps)
+                            _ps_hist[:] = _ps_hist[-12:]
+                            stable_ps, cnt = _Counter(_ps_hist).most_common(1)[0]
+                            if cnt >= 3 and len(stable_ps) >= max(6, len(cur_ps)):
+                                upd["ps"] = stable_ps
+                    # ── Stabilise RadioText ───────────────────────────────────────
+                    if rt:
+                        cur_rt = (self._get_scanner_rds().get("rt") or "").strip()
+                        if not (cur_rt and len(rt) < max(8, len(cur_rt) // 2)):
+                            _rt_hist.append(rt)
+                            _rt_hist[:] = _rt_hist[-10:]
+                            stable_rt, cnt = _Counter(_rt_hist).most_common(1)[0]
+                            if cnt >= 2 or len(stable_rt) >= 12:
+                                upd["rt"] = stable_rt
                     if upd:
                         cur = self._get_scanner_rds()
                         cur.update(upd)

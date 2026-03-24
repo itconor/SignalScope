@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.68] - 2026-03-24
+
+### Fixed
+- **FM Scanner — unstable RDS PS / RadioText names** — the scanner's `_rds_reader` was forwarding every raw PS string from redsea directly to the browser as soon as it arrived. redsea emits partial PS names as it assembles each 8-character block (one segment at a time), so the display was flickering between partial names, garbled fragments, and the correct name. Applied the same majority-vote stabilisation used by the client FM monitor: PS candidates are accumulated in a rolling 12-entry history and only promoted when the same candidate appears ≥ 3 times **and** is at least as long as the current confirmed name. A shorter candidate can never overwrite a confirmed longer name, preventing partials from clearing a locked name on retune. RadioText uses the same approach with a 10-entry history requiring ≥ 2 matches (or length ≥ 12 for long texts that may naturally vary slightly).
+
 ## [3.3.67] - 2026-03-24
 
 ### Fixed
