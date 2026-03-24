@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.45"
+BUILD                  = "SignalScope-3.3.46"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -17672,11 +17672,13 @@ def _hub_scanner_relay_response(slot: ListenSlot, startup_timeout: float = 20.0)
 
             # Relay mode: forward PCM chunks from client to browser.
             # poll=0.12 s gives enough margin for the 0.1 s chunk interval
-            # so real audio chunks are never missed and silence is not inserted
-            # between them.  The keepalive threshold (0.5 s) is intentionally
-            # much longer — it only fires during a genuine gap (e.g. retune
-            # or an unexpected network stall) to keep Safari's connection open.
-            _KP_THRESHOLD = 0.5          # send silence after this many s idle
+            # so real audio chunks are never missed and no silence is inserted
+            # between them during normal streaming.
+            # _KP_THRESHOLD=0.25 s: Safari closes idle chunked HTTP connections
+            # sooner than Chrome; 0.25 s is safely above the 0.1 s chunk interval
+            # but fast enough to prevent Safari dropping the stream during any
+            # momentary gap (retune, network jitter, etc.).
+            _KP_THRESHOLD = 0.25
             next_kp_t = time.monotonic() + _KP_THRESHOLD
             while True:
                 try:
@@ -22957,7 +22959,18 @@ function connectAudio(url){
       _reader = resp.body.getReader();
       (function pump(){
         _reader.read().then(function(r){
-          if(r.done || !_reader) return;
+          if(!_reader) return;          // disconnected intentionally
+          if(r.done){
+            // Stream ended — if we're still supposed to be playing, reconnect.
+            // Safari is more aggressive than Chrome at closing idle chunked
+            // streams; the status poll will supply a fresh stream_url.
+            if(_state === 'streaming' || _state === 'connecting'){
+              _reader = null;
+              _slotId = '';             // force connectAudio on next poll
+              checkStatus();
+            }
+            return;
+          }
           _feedPCM(r.value);
           pump();
         }).catch(function(){
