@@ -1096,7 +1096,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.42"
+BUILD                  = "SignalScope-3.3.43"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8798,13 +8798,41 @@ class HubClient:
 
         stop_flag = threading.Event()
         pcm_queue = queue.Queue(maxsize=100)   # ~10 s safety buffer
+        # Separate queue for redsea stdin so blocking pipe writes never stall
+        # the audio pipeline.  Maxsize=5 (≈0.5 s) — drop oldest on overflow.
+        rds_feed_q: queue.Queue = queue.Queue(maxsize=5)
+
+        def _rds_feeder():
+            """Drain rds_feed_q and write blocks to redsea's stdin.
+
+            Running in its own thread so that a full OS pipe buffer never
+            blocks the audio pipeline thread.  Blocks that can't be sent
+            within 0.5 s are silently dropped (RDS frames are regenerated
+            continuously so occasional drops are harmless).
+            """
+            if not rds_proc:
+                return
+            while not stop_flag.is_set():
+                try:
+                    blk = rds_feed_q.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                try:
+                    rds_proc.stdin.write(blk)
+                except Exception:
+                    break  # redsea died — stop feeding
+
+        if rds_proc:
+            threading.Thread(target=_rds_feeder, daemon=True,
+                             name=f"ScanRDSFeed-{slot_id[:6]}").start()
 
         def _pipeline():
             """Read rtl_fm, replace USB startup burst with silence, queue raw PCM.
 
             When redsea is available the output rate is 171 kHz.  This thread
             resamples each block to 48 kHz (resample_poly 16/57) for audio and
-            simultaneously feeds the raw 171 kHz stream to redsea for RDS.
+            enqueues the raw 171 kHz block for the _rds_feeder thread (never
+            writes to the pipe directly).
             Without redsea the output rate is 48 kHz and no resampling is done.
             """
             mux   = b""
@@ -8821,16 +8849,23 @@ class HubClient:
                         count += 1
                         burst = (count <= _SKIP)
                         if burst:
-                            raw_out  = b"\x00" * _BLOCK
-                            aud_out  = b"\x00" * _AUD_BLOCK
+                            aud_out = b"\x00" * _AUD_BLOCK
                         else:
                             if count == _SKIP + 1:
                                 monitor.log(
                                     f"[Scanner] Burst flushed ({_SKIP} blk), "
                                     f"streaming raw PCM"
                                 )
-                            raw_out = blk
                             if _has_redsea:
+                                # Enqueue raw 171 kHz block for redsea feeder
+                                # (drop if feeder is behind — RDS is best-effort)
+                                try:
+                                    rds_feed_q.put_nowait(blk)
+                                except queue.Full:
+                                    try: rds_feed_q.get_nowait()
+                                    except queue.Empty: pass
+                                    try: rds_feed_q.put_nowait(blk)
+                                    except queue.Full: pass
                                 # Resample 171 kHz → 48 kHz for audio
                                 import numpy as _np
                                 from scipy.signal import resample_poly as _rp
@@ -8839,12 +8874,6 @@ class HubClient:
                                 aud_out = rs.clip(-32768, 32767).astype('<i2').tobytes()
                             else:
                                 aud_out = blk
-                        # Feed raw 171 kHz to redsea (non-blocking write)
-                        if rds_proc and not burst:
-                            try:
-                                rds_proc.stdin.write(raw_out)
-                            except Exception:
-                                pass
                         try:
                             pcm_queue.put(aud_out, timeout=1.0)
                         except queue.Full:
