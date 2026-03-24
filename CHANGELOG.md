@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.55] - 2026-03-24
+
+### Fixed
+- **DAB shared mux session never becomes ready on marginal-signal sites** — The `_poll_mux` stability check required two consecutive service-count polls with a 5-second inter-poll sleep. On weak signals the mux can take 8–10s to first appear, so the minimum ready time was 8–10s + 5s + 1s = 14–16s — past the 12-second consumer wait cap. All streams then timed out, released the session, and retried until the 30-second startup window expired. Fix: raised consumer ready wait cap 12s→25s, reduced stability inter-poll sleep 5s→2s (minimum ready time now ~12–13s on weak signals), and raised startup deadline 30s→120s to allow genuine retries on poor sites without exhausting the window.
+- **Restart via web UI orphans welle-cli processes** — `api_admin_restart` used `os.execv` to replace the process, leaving all child welle-cli instances running and holding the SDR dongle. The new process then couldn't open the device. Fix: kill all welle-cli processes (+ 0.8s USB settle) before exec'ing.
+
 ## [3.3.54] - 2026-03-24
 
 ### Added

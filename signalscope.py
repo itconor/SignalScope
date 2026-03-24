@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.54"
+BUILD                  = "SignalScope-3.3.55"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -5328,6 +5328,8 @@ class MonitorManager:
                         if not session.ready.is_set():
                             # Wait for the service count to stabilise across two consecutive polls
                             # before announcing ready — ensures the full ensemble is enumerated.
+                            # Inter-poll sleep is 2s (not 5s) so ready fires before the 25s
+                            # consumer timeout on marginal-signal sites.
                             prev_count = getattr(session, "_prev_svc_count", None)
                             cur_count  = len(services)
                             if prev_count is None:
@@ -5341,7 +5343,7 @@ class MonitorManager:
                             else:
                                 # Count still changing — update and wait another cycle
                                 session._prev_svc_count = cur_count
-                        time.sleep(5)
+                        time.sleep(2)
                         continue
                     if time.time() >= deadline and not announced:
                         session.failed = True
@@ -5529,7 +5531,7 @@ class MonitorManager:
         try:
             # DAB inputs can start at the same time. Be patient and retry so a
             # consumer can attach to the mux session that eventually wins.
-            startup_deadline = time.time() + 30
+            startup_deadline = time.time() + 120
             sid = None
             svc_name = None
             audio_url = None
@@ -5561,7 +5563,7 @@ class MonitorManager:
                     cfg._dab_ok = False
                     return
 
-                if not session.ready.wait(timeout=min(12, max(1, int(startup_deadline - time.time())))) or session.failed:
+                if not session.ready.wait(timeout=min(25, max(1, int(startup_deadline - time.time())))) or session.failed:
                     self.log(f"[{name}] DAB: shared mux session did not become ready")
                     try:
                         self._release_dab_session(session, name)
@@ -15742,6 +15744,20 @@ def api_admin_restart():
 
     def _do_restart():
         time.sleep(1.5)   # let the HTTP response reach the browser first
+        # Kill any welle-cli children before exec so they don't outlive the
+        # old process and hold the dongle when the new process starts.
+        try:
+            import subprocess as _rsp, signal as _rsig
+            _r = _rsp.run(["pgrep", "-x", "welle-cli"], capture_output=True, text=True)
+            for _pid_str in _r.stdout.splitlines():
+                try:
+                    os.kill(int(_pid_str.strip()), _rsig.SIGKILL)
+                except Exception:
+                    pass
+            if _r.stdout.strip():
+                time.sleep(0.8)   # USB settle
+        except Exception:
+            pass
         os.execv(_sys.executable, [_sys.executable] + _sys.argv)
 
     _thr.Thread(target=_do_restart, daemon=True, name="AdminRestart").start()
