@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.23",
+    "version":  "1.0.24",
 }
 
 import hashlib
@@ -373,7 +373,7 @@ footer{padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border
 </main>
 
 <!-- Hidden audio element for MP3 streaming -->
-<audio id="dab-audio" preload="none"></audio>
+<audio id="dab-audio" preload="none" type="audio/mpeg"></audio>
 
 <footer>{{build}} &nbsp;&middot;&nbsp; DAB Scanner Plugin</footer>
 
@@ -1390,8 +1390,23 @@ def _client_poller(monitor):
         time.sleep(3)
 
 
+def _lookup_device(cfg, sdr_serial):
+    """Return (gain, ppm) for the given serial from cfg.sdr_devices."""
+    for d in (cfg.sdr_devices or []):
+        if d.serial == sdr_serial:
+            return d.gain, d.ppm
+    # Fallback: first device in the list
+    if cfg.sdr_devices:
+        d = cfg.sdr_devices[0]
+        return d.gain, d.ppm
+    return -1, 0
+
+
 def _dispatch_client_cmd(cmd, hub_url, site, cfg, monitor):
-    action = cmd.get("action", "")
+    action     = cmd.get("action", "")
+    sdr_serial = cmd.get("sdr_serial", "")
+    gain, ppm  = _lookup_device(cfg, sdr_serial)
+
     if action == "start":
         _stop_stream()
         _start_stream(
@@ -1399,7 +1414,9 @@ def _dispatch_client_cmd(cmd, hub_url, site, cfg, monitor):
             channel    = cmd.get("channel", ""),
             service    = cmd.get("service", ""),
             bitrate    = int(cmd.get("bitrate", 128) or 128),
-            sdr_serial = cmd.get("sdr_serial", ""),
+            sdr_serial = sdr_serial,
+            gain       = gain,
+            ppm        = ppm,
             hub_url    = hub_url,
             site       = site,
             secret     = cfg.hub.secret_key or "",
@@ -1424,21 +1441,22 @@ def _dispatch_client_cmd(cmd, hub_url, site, cfg, monitor):
         channels = cmd.get("channels") or list(_DAB_CHANNELS.keys())
         t = threading.Thread(
             target=_do_scan,
-            args=(site, cmd.get("sdr_serial", ""), hub_url, channels, monitor),
+            args=(site, sdr_serial, hub_url, channels, monitor),
+            kwargs={"gain": gain, "ppm": ppm},
             daemon=True,
             name="DABScanner",
         )
         t.start()
 
 
-def _start_stream(slot_id, channel, service, bitrate, sdr_serial, hub_url, site, secret,
-                  monitor=None):
+def _start_stream(slot_id, channel, service, bitrate, sdr_serial, gain, ppm,
+                  hub_url, site, secret, monitor=None):
     _stop_stream()
     stop = threading.Event()
     t = threading.Thread(
         target=_stream_worker,
-        args=(slot_id, channel, service, bitrate, sdr_serial, hub_url, site, secret, stop,
-              monitor),
+        args=(slot_id, channel, service, bitrate, sdr_serial, gain, ppm,
+              hub_url, site, secret, stop, monitor),
         daemon=True,
         name="DABWorker",
     )
@@ -1486,8 +1504,8 @@ def _stop_stream():
 # Client-side: DAB audio streaming worker
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site, secret, stop,
-                   monitor=None):
+def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, gain, ppm,
+                   hub_url, site, secret, stop, monitor=None):
     """
     Run welle-cli in HTTP server mode (-w PORT), poll mux.json to find the
     service SID, then stream /mp3/{SID} directly to the hub relay.
@@ -1511,11 +1529,15 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
     chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
 
     # welle-cli HTTP server mode — no -A flag, no -s flag
-    welle_cmd = [welle_bin, "-w", str(_WELLE_STREAM_PORT), "-c", channel]
+    welle_cmd = [welle_bin, "-w", str(_WELLE_STREAM_PORT), "-c", channel,
+                 "-g", str(gain if gain is not None else -1)]
+    if ppm:
+        welle_cmd += ["-p", str(ppm)]
     if sdr_serial:
         welle_cmd += ["-D", f"driver=rtlsdr,serial={sdr_serial}"]
 
-    _log(f"[DAB] Starting stream: ch={channel} service='{service}' serial={sdr_serial or 'auto'}")
+    _log(f"[DAB] Starting stream: ch={channel} service='{service}' "
+         f"serial={sdr_serial or 'auto'} gain={gain} ppm={ppm}")
     _log(f"[DAB] welle-cli cmd: {' '.join(welle_cmd)}")
 
     proc_welle = None
@@ -1795,7 +1817,7 @@ def _usb_reset_rtlsdr(serial=None):
 # Client-side: DAB band scan
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
+def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None, gain=-1, ppm=0):
     """
     Scan all Band III DAB channels with welle-cli (HTTP API mode).
 
@@ -1809,8 +1831,6 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
     Progress is visible in real time in the browser scan panel.
     Final service list is pushed to hub.
     """
-    import json as _json
-
     def _log(msg):
         if monitor:
             monitor.log(msg)
@@ -1873,7 +1893,10 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
             break
 
         # ── Build welle-cli web-server command ────────────────────────────
-        cmd = [welle_bin, "-w", str(_WELLE_PORT), "-c", ch]
+        cmd = [welle_bin, "-w", str(_WELLE_PORT), "-c", ch,
+               "-g", str(gain if gain is not None else -1)]
+        if ppm:
+            cmd += ["-p", str(ppm)]
         if sdr_serial:
             cmd += ["-D", f"driver=rtlsdr,serial={sdr_serial}"]
 
