@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.106] - 2026-03-25
+
+### Fixed
+- **DAB stream times out before welle-cli produces audio** (`dab.py` v1.0.15) — welle-cli with `-A stdout` must acquire DAB sync (up to 15s on marginal signals) before producing any PCM output. Hub's first-chunk deadline was 20s — too tight. Increased to 35s.
+- **DAB dongle not appearing in SDR dropdown** (`dab.py` v1.0.15) — `loadDevices()` was calling `/api/hub/scanner/devices/{site}` which only returns `role="scanner"` serials. Added new `/api/hub/dab/devices/{site}` endpoint returning both `dab_serials` and `scanner_serials` (scanner dongles work fine with welle-cli). If only one serial is available it is auto-selected. `signalscope.py` heartbeat now also reports `dab_serials` for `role="dab"` dongles.
+- **Chunk POST failures completely silent** (`dab.py` v1.0.15) — exceptions from `urllib.request.urlopen` in the chunk POST loop were swallowed with bare `except: pass`. Now logs the first failure and every 20th subsequent failure via `monitor.log()`. Also logs when welle-cli exits early (service not found / signal lost) and when the first MP3 chunk is ready.
+
 ## [3.3.105] - 2026-03-25
 
 ### Fixed

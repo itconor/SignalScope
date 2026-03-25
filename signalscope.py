@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.105"
+BUILD                  = "SignalScope-3.3.106"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8911,6 +8911,9 @@ class HubClient:
             # the hub FM Scanner page to show only sites with a scanner dongle
             # and to populate the SDR dropdown with only scanner-role serials.
             "scanner_serials": [d.serial for d in cfg.sdr_devices if d.role == "scanner"],
+            # Dongles with role="dab" — used by the DAB Scanner plugin to
+            # populate its SDR dropdown with DAB-capable serials.
+            "dab_serials":     [d.serial for d in cfg.sdr_devices if d.role == "dab"],
         }
 
     def _handle_listen_requests(self, cfg, listen_requests: list):

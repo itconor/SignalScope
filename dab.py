@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.14",
+    "version":  "1.0.15",
 }
 
 import hashlib
@@ -465,15 +465,18 @@ _applyVol(vol.value);
 // ── SDR device list ───────────────────────────────────────────
 function loadDevices(){
   var site = siteSel.value; if(!site){ return; }
-  _f('/api/hub/scanner/devices/' + encodeURIComponent(site))
+  _f('/api/hub/dab/devices/' + encodeURIComponent(site))
     .then(function(r){ return r.json(); })
     .then(function(d){
+      var serials = d.serials || [];
       sdrSel.innerHTML = '<option value="">Auto</option>';
-      (d.serials || []).forEach(function(s){
+      serials.forEach(function(s){
         var o = document.createElement('option');
         o.value = s; o.textContent = s;
         sdrSel.appendChild(o);
       });
+      // Auto-select the only dongle — no reason to stay on Auto
+      if(serials.length === 1){ sdrSel.value = serials[0]; }
     }).catch(function(){});
   loadServices(site);
 }
@@ -946,6 +949,24 @@ def register(app, ctx):
         return render_template_string(DAB_TPL, sites=sites, build=BUILD,
                                       regions=_SCAN_REGIONS)
 
+    # ── Hub: DAB dongle list for a site ───────────────────────────────────────
+    # Returns serials of DAB-capable dongles for a site.
+    # Includes role="dab" dongles first, then role="scanner" dongles (scanner
+    # dongles are also RTL-SDR and work fine with welle-cli for DAB decoding).
+
+    @app.get("/api/hub/dab/devices/<path:site_name>")
+    @login_required
+    def dab_devices(site_name):
+        serials = []
+        if hub_server:
+            sdata = hub_server._sites.get(site_name, {})
+            seen  = set()
+            for s in sdata.get("dab_serials", []) + sdata.get("scanner_serials", []):
+                if s not in seen:
+                    seen.add(s)
+                    serials.append(s)
+        return jsonify({"serials": serials})
+
     # ── Hub: start DAB stream ──────────────────────────────────────────────────
 
     @app.post("/api/hub/dab/start")
@@ -1258,7 +1279,9 @@ def register(app, ctx):
             return "Stream not found or expired", 404
 
         def generate():
-            deadline = time.time() + 20.0
+            # 35s — welle-cli can take 15s+ to acquire DAB sync on marginal
+            # signals before outputting any PCM for ffmpeg to encode.
+            deadline = time.time() + 35.0
             try:
                 while True:
                     try:
@@ -1542,16 +1565,22 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
 
         # Read MP3 from ffmpeg and POST chunks to hub
         _CHUNK = 8192  # ~0.5 s at 128 kbps
-        out_deadline = None
+        out_deadline  = None
+        chunks_sent   = 0
+        post_err_count = 0
 
         while not stop.is_set():
             chunk = proc_ffmpeg.stdout.read(_CHUNK)
             if not chunk:
+                if proc_welle and proc_welle.poll() is not None:
+                    _log(f"[DAB] welle-cli exited (rc={proc_welle.returncode}) "
+                         f"after {chunks_sent} chunks — service not found or signal lost")
                 break
 
             # Pace output: don't send faster than real-time
             if out_deadline is None:
                 out_deadline = time.monotonic()
+                _log(f"[DAB] First MP3 chunk ready — streaming to hub")
             wait = out_deadline - time.monotonic()
             if wait > 0:
                 time.sleep(min(wait, 0.2))
@@ -1574,8 +1603,12 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
             )
             try:
                 urllib.request.urlopen(req, timeout=5).close()
-            except Exception:
-                pass
+                chunks_sent   += 1
+                post_err_count = 0
+            except Exception as e:
+                post_err_count += 1
+                if post_err_count == 1 or post_err_count % 20 == 0:
+                    _log(f"[DAB] Chunk POST failed ({post_err_count}x): {e}")
 
     except Exception as e:
         _log(f"[DAB] Stream worker error: {e}")
