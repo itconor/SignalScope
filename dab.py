@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.24",
+    "version":  "1.0.25",
 }
 
 import hashlib
@@ -68,7 +68,7 @@ _SCAN_REGIONS = {
             "id": "uk", "label": "United Kingdom", "icon": "🇬🇧",
             "channels": ["10B","10C","11A","11B","11C","11D","12A","12B","12C","12D"],
             "children": [
-                {"id":"uk_ni",        "label":"Northern Ireland",    "icon":"", "channels":["11D","12A","12B","11C"],            "children":[]},
+                {"id":"uk_ni",        "label":"Northern Ireland",    "icon":"", "channels":["11D","11A","12B","12D","9A","9C"],  "children":[]},
                 {"id":"uk_scotland",  "label":"Scotland",            "icon":"", "channels":["11D","11B","11C","12B","12C"],      "children":[]},
                 {"id":"uk_wales",     "label":"Wales",               "icon":"", "channels":["11D","11A","12B","12C"],            "children":[]},
                 {"id":"uk_national",  "label":"England — National",  "icon":"", "channels":["11D","12B","10B"],                  "children":[]},
@@ -484,6 +484,80 @@ function loadDevices(){
 siteSel.addEventListener('change', loadDevices);
 loadDevices();
 
+// ── MSE audio streaming (works in Chrome + Safari) ────────────
+// Safari's <audio src="..."> doesn't handle infinite chunked streams reliably.
+// MSE (MediaSource Extensions) feeds chunks directly — supported in all
+// modern browsers including Safari 13+.
+var _mse = null, _sb = null, _mseQ = [], _mseReader = null;
+
+function _mseAppend(){
+  if(!_sb || _sb.updating || !_mseQ.length) return;
+  try{ _sb.appendBuffer(_mseQ.shift()); } catch(e){}
+}
+
+function _teardownAudio(){
+  if(_mseReader){ try{_mseReader.cancel();}catch(e){} _mseReader=null; }
+  audioElem.pause();
+  if(_mse){
+    var oldSrc = audioElem.src;
+    audioElem.removeAttribute('src');
+    audioElem.load();
+    try{ URL.revokeObjectURL(oldSrc); }catch(e){}
+    _mse = null; _sb = null;
+  } else {
+    audioElem.src = '';
+  }
+  _mseQ = [];
+}
+
+function connectAudioStream(url){
+  _teardownAudio();
+  if(window.MediaSource && MediaSource.isTypeSupported('audio/mpeg')){
+    _mse = new MediaSource();
+    audioElem.src = URL.createObjectURL(_mse);
+    _mse.addEventListener('sourceopen', function(){
+      try{
+        _sb = _mse.addSourceBuffer('audio/mpeg');
+        _sb.mode = 'sequence';
+        _sb.addEventListener('updateend', function(){
+          // Trim old buffered data to avoid unbounded memory growth
+          if(_sb && !_sb.updating && _sb.buffered.length){
+            var end = _sb.buffered.end(_sb.buffered.length-1);
+            var start = _sb.buffered.start(0);
+            if(end - start > 30){
+              try{ _sb.remove(start, end - 20); }catch(e){}
+              return;
+            }
+          }
+          _mseAppend();
+        });
+      } catch(e){
+        // MSE setup failed — fall back to plain src
+        _mse = null; _sb = null;
+        audioElem.src = url; audioElem.load();
+        audioElem.play().catch(function(){});
+        return;
+      }
+      fetch(url, {credentials:'same-origin'}).then(function(r){
+        _mseReader = r.body.getReader();
+        (function pump(){
+          _mseReader.read().then(function(d){
+            if(d.done || !_mseReader) return;
+            _mseQ.push(d.value);
+            _mseAppend();
+            pump();
+          }).catch(function(){});
+        })();
+      }).catch(function(){});
+    });
+    audioElem.play().catch(function(){});
+  } else {
+    // Fallback for browsers without MSE
+    audioElem.src = url; audioElem.load();
+    audioElem.play().catch(function(){});
+  }
+}
+
 // ── Connect / Disconnect ──────────────────────────────────────
 connBtn.addEventListener('click', function(){
   if(_state === 'streaming' || _state === 'connecting'){
@@ -519,11 +593,7 @@ function doConnect(service, channel, ensemble){
   .then(function(d){
     if(d.ok){
       _slotId = d.slot_id;
-      // Set audio src and attempt play (user gesture context should still be active)
-      audioElem.src = d.stream_url;
-      audioElem.load();
-      var prom = audioElem.play();
-      if(prom !== undefined){ prom.catch(function(){}); }
+      connectAudioStream(d.stream_url);
       startStatusPoll();
       _saveHistory(service, channel, ensemble);
     } else {
@@ -540,8 +610,7 @@ function doStop(){
     method: 'POST',
     body: JSON.stringify({site: siteSel.value})
   }).catch(function(){});
-  audioElem.pause();
-  audioElem.src = '';
+  _teardownAudio();
   _updateDls('');
   _slotId = '';
   setStatus('idle', 'Idle \u2014 select a service');
@@ -560,9 +629,7 @@ function _checkStatus(){
       if(!d.active){ stopStatusPoll(); setStatus('idle', 'Stream ended'); return; }
       if(d.slot_id && d.slot_id !== _slotId){
         _slotId = d.slot_id;
-        audioElem.src = d.stream_url;
-        audioElem.load();
-        var p = audioElem.play(); if(p) p.catch(function(){});
+        connectAudioStream(d.stream_url);
       }
       if(d.dls !== undefined) _updateDls(d.dls);
       if(_state === 'connecting' && d.streaming){
