@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.25",
+    "version":  "1.0.26",
 }
 
 import hashlib
@@ -1631,11 +1631,11 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, gain, ppm,
                 pass
         threading.Thread(target=_drain_stdout, daemon=True, name="DABWelleStdout").start()
 
-        # DLS/log reader thread (reads welle-cli stderr for status + DLS text)
+        # Stderr log reader — drains welle-cli stderr for log visibility
         threading.Thread(
             target=_dls_reader,
-            args=(proc_welle.stderr, site, hub_url, stop, monitor),
-            daemon=True, name="DABDlsReader",
+            args=(proc_welle.stderr, stop, monitor),
+            daemon=True, name="DABWelleLog",
         ).start()
 
         # ── Phase 1: poll mux.json to find the SID for the requested service ──
@@ -1660,6 +1660,13 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, gain, ppm,
                         break
                 if sid:
                     _log(f"[DAB] Found SID={sid} for '{service}'")
+                    # Start DLS poller now that SID is known
+                    threading.Thread(
+                        target=_dls_poller,
+                        args=(_WELLE_STREAM_PORT, sid, service, site,
+                              hub_url, stop, monitor),
+                        daemon=True, name="DABDlsPoller",
+                    ).start()
                     break
                 else:
                     # mux.json replied but service not listed yet — log once
@@ -1745,16 +1752,11 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, gain, ppm,
         _log(f"[DAB] Stream worker exited: ch={channel} service='{service}'")
 
 
-def _dls_reader(stderr_stream, site, hub_url, stop, monitor=None):
+def _dls_reader(stderr_stream, stop, monitor=None):
     """
-    Read DLS text from welle-cli stderr and push updates to hub.
-    Also logs ALL welle-cli stderr to monitor.log() — this is the only way
-    to see welle-cli startup errors (bad backend, device busy, etc.).
+    Drain welle-cli stderr and log every line.
+    DLS is extracted from mux.json by _dls_poller, not from stderr.
     """
-    dls_url   = f"{hub_url}/api/hub/dab/dls/{urllib.parse.quote(site, safe='')}"
-    last_dls  = ""
-    line_count = 0
-
     try:
         for raw_line in stderr_stream:
             if stop.is_set():
@@ -1763,45 +1765,60 @@ def _dls_reader(stderr_stream, site, hub_url, stop, monitor=None):
                 line = raw_line.decode("utf-8", errors="replace").strip()
             except Exception:
                 continue
-            if not line:
-                continue
-
-            # Log ALL welle-cli stderr — no line limit, no keyword filter.
-            # Every line is visible in the client log window so we can see
-            # exactly what happens after sync: service selection, audio
-            # start, errors, etc.
-            line_count += 1
-            if monitor:
+            if line and monitor:
                 monitor.log(f"[DAB welle] {line}")
-
-            # Match common welle-cli DLS output patterns
-            m = re.search(r"DLS[:\s]+(.+)", line, re.IGNORECASE)
-            if not m:
-                m = re.search(r"label[:\s]+(.+)", line, re.IGNORECASE)
-            if not m:
-                continue
-
-            dls = m.group(1).strip().strip('"\'')
-            if dls == last_dls or not dls:
-                continue
-            last_dls = dls
-
-            try:
-                data = _json.dumps({"text": dls}).encode()
-                req  = urllib.request.Request(
-                    dls_url,
-                    data=data,
-                    method="POST",
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-Dab-Site":   site,
-                    },
-                )
-                urllib.request.urlopen(req, timeout=3).close()
-            except Exception:
-                pass
     except Exception:
         pass
+
+
+def _dls_poller(welle_port, sid, service, site, hub_url, stop, monitor=None):
+    """
+    Poll welle-cli mux.json every 5 s and push dynamicLabel to hub.
+    In HTTP server mode, DLS is in mux.json svc['dynamicLabel'], not stderr.
+    Mirrors signalscope.py line 5393: svc.get('dynamicLabel') or svc.get('dls').
+    """
+    dls_url  = f"{hub_url}/api/hub/dab/dls/{urllib.parse.quote(site, safe='')}"
+    mux_url  = f"http://localhost:{welle_port}/mux.json"
+    last_dls = ""
+    service_l = service.strip().lower()
+
+    def _log(msg):
+        if monitor:
+            monitor.log(msg)
+
+    while not stop.is_set():
+        try:
+            with urllib.request.urlopen(mux_url, timeout=3) as r:
+                mux_data = _json.loads(r.read())
+            for svc in mux_data.get("services", []):
+                svc_sid = str(svc.get("sid", ""))
+                lbl     = svc.get("label", {})
+                name    = (lbl.get("label", "") or lbl.get("shortlabel", "")).strip()
+                if svc_sid != sid and name.lower() != service_l:
+                    continue
+                # DLS field — may be a plain string or a dict with 'label'/'text' key
+                raw_dls = svc.get("dynamicLabel", "") or svc.get("dls", "")
+                if isinstance(raw_dls, dict):
+                    raw_dls = raw_dls.get("label", "") or raw_dls.get("text", "") or ""
+                dls = str(raw_dls).strip()
+                if dls and dls != last_dls:
+                    last_dls = dls
+                    _log(f"[DAB] DLS: {dls}")
+                    try:
+                        req = urllib.request.Request(
+                            dls_url,
+                            data=_json.dumps({"text": dls}).encode(),
+                            method="POST",
+                            headers={"Content-Type": "application/json",
+                                     "X-Dab-Site": site},
+                        )
+                        urllib.request.urlopen(req, timeout=3).close()
+                    except Exception as e:
+                        _log(f"[DAB] DLS push failed: {e}")
+                break
+        except Exception:
+            pass
+        stop.wait(5.0)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
