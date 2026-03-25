@@ -2,6 +2,17 @@
 
 ---
 
+## [3.3.129] - 2026-03-25
+
+### Added
+- **FCM push notifications for Android** (`signalscope.py`) — full Firebase Cloud Messaging HTTP v1 API support alongside existing APNs. Chain fault alerts and watched-node silence alerts are now delivered to both iOS (APNs) and Android (FCM) devices simultaneously.
+- **`fcm_project_id` + `fcm_service_account_json` config fields** — stored in `MobileApiConfig`, saved/loaded from `config.json`.
+- **`_send_fcm_push` / `_send_fcm_push_targeted`** — parallel to APNs equivalents; use OAuth2 JWT (RS256) from service account JSON to obtain a 55-min cached access token, then POST to FCM HTTP v1 API. Invalid/unregistered tokens are automatically pruned.
+- **Android platform routing in `POST /api/mobile/device_token`** — requests with `"platform": "android"` are stored in `fcm_device_tokens` (separate from APNs tokens) with the same `watched_nodes` + `update_nodes` action support.
+- **FCM Settings UI** — new section in Settings → Mobile API below APNs: Project ID field, service account JSON textarea, and a status indicator showing configured state and registered Android token count.
+
+---
+
 ## [3.3.128] - 2026-03-25
 
 ### Added

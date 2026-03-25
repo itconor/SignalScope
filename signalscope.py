@@ -824,9 +824,33 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
   <div style="margin-top:12px;padding:10px 14px;border:1px solid var(--bor);border-radius:8px;background:#0c1f40;font-size:13px">
     {% if apns_ok %}
       <span style="color:#18e471">✔ APNs configured</span>
-      — <strong>{{token_count}}</strong> device token{{'' if token_count == 1 else 's'}} registered
+      — <strong>{{token_count}}</strong> iOS device token{{'' if token_count == 1 else 's'}} registered
     {% else %}
-      <span style="color:var(--mu)">APNs not configured — push notifications disabled</span>
+      <span style="color:var(--mu)">APNs not configured — iOS push disabled</span>
+    {% endif %}
+  </div>
+
+  <div class="sec" style="margin-top:28px">🤖 FCM Push Notifications (Android)</div>
+  <p class="help">Fill these in to send push notifications to the Android app when a chain fault fires. Requires a Firebase project with Cloud Messaging enabled.</p>
+  <p class="help" style="margin-top:6px">Get credentials at <strong>console.firebase.google.com → Project settings → Service accounts → Generate new private key</strong>. Paste the downloaded JSON below.</p>
+
+  <label style="margin-top:14px">Firebase Project ID <span style="color:var(--mu);font-size:11px">(from google-services.json or Firebase console URL)</span>
+    <input type="text" name="fcm_project_id" value="{{cfg.mobile_api.fcm_project_id}}" placeholder="my-project-12345" style="font-family:monospace">
+  </label>
+
+  <label style="margin-top:10px">Service Account JSON <span style="color:var(--mu);font-size:11px">(paste full contents of the downloaded .json file — leave blank to keep existing)</span>
+    <textarea name="fcm_service_account_json" rows="6" placeholder='{&#10;  "type": "service_account",&#10;  "project_id": "...",&#10;  "private_key_id": "...",&#10;  ...&#10;}' style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;resize:vertical"></textarea>
+    <span class="help">Leave blank to keep the existing key. Current key: {{cfg.mobile_api.fcm_service_account_json[:40] + '…' if cfg.mobile_api.fcm_service_account_json else 'not set'}}</span>
+  </label>
+
+  {% set fcm_ok = cfg.mobile_api.fcm_project_id and cfg.mobile_api.fcm_service_account_json %}
+  {% set fcm_count = cfg.mobile_api.fcm_device_tokens | length %}
+  <div style="margin-top:12px;padding:10px 14px;border:1px solid var(--bor);border-radius:8px;background:#0c1f40;font-size:13px">
+    {% if fcm_ok %}
+      <span style="color:#18e471">✔ FCM configured</span>
+      — <strong>{{fcm_count}}</strong> Android device token{{'' if fcm_count == 1 else 's'}} registered
+    {% else %}
+      <span style="color:var(--mu)">FCM not configured — Android push disabled</span>
     {% endif %}
   </div>
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
@@ -1360,7 +1384,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.128"
+BUILD                  = "SignalScope-3.3.129"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -1671,13 +1695,17 @@ class AuthConfig:
 class MobileApiConfig:
     enabled: bool = False
     token:   str  = ""
-    # APNs push notification config (requires httpx[http2] installed)
+    # APNs push notification config — iOS (requires httpx[http2] installed)
     apns_key_id:       str  = ""    # 10-char key ID from Apple Developer portal
     apns_team_id:      str  = ""    # 10-char Team ID from Apple Developer account
     apns_bundle_id:    str  = ""    # e.g. com.example.SignalScope
     apns_key_pem:      str  = ""    # full contents of the .p8 private key file
     apns_sandbox:      bool = True  # True = development APNs, False = production
     apns_device_tokens: list = field(default_factory=list)
+    # FCM push notification config — Android (uses FCM HTTP v1 API)
+    fcm_project_id:          str  = ""   # Firebase project ID (from google-services.json)
+    fcm_service_account_json: str = ""   # Full contents of the service account .json file
+    fcm_device_tokens:       list = field(default_factory=list)  # [{token, watched_nodes}]
 
 
 @dataclass
@@ -1945,6 +1973,9 @@ def load_config() -> AppConfig:
             apns_key_pem=str(ma.get("apns_key_pem", "")),
             apns_sandbox=bool(ma.get("apns_sandbox", True)),
             apns_device_tokens=list(ma.get("apns_device_tokens", [])),
+            fcm_project_id=str(ma.get("fcm_project_id", "")),
+            fcm_service_account_json=str(ma.get("fcm_service_account_json", "")),
+            fcm_device_tokens=list(ma.get("fcm_device_tokens", [])),
         ),
         sla_target_pct=raw.get("sla_target_pct", 99.9),
         nowplaying_country=raw.get("nowplaying_country","GB"),
@@ -2068,6 +2099,9 @@ def save_config(cfg: AppConfig):
             "apns_key_pem":       str(getattr(cfg.mobile_api, "apns_key_pem", "")),
             "apns_sandbox":       bool(getattr(cfg.mobile_api, "apns_sandbox", True)),
             "apns_device_tokens": list(getattr(cfg.mobile_api, "apns_device_tokens", [])),
+            "fcm_project_id":          str(getattr(cfg.mobile_api, "fcm_project_id", "")),
+            "fcm_service_account_json": str(getattr(cfg.mobile_api, "fcm_service_account_json", "")),
+            "fcm_device_tokens":       list(getattr(cfg.mobile_api, "fcm_device_tokens", [])),
         },
         "sla_target_pct": cfg.sla_target_pct,
         "nowplaying_country": cfg.nowplaying_country,
@@ -2661,6 +2695,10 @@ _apns_jwt_cache: dict = {"token": "", "generated_at": 0.0}
 # Lock to serialise concurrent token-list mutations across push threads
 _apns_tokens_lock = threading.Lock()
 
+# FCM OAuth2 access-token cache (tokens last 60 min; refresh at 55 min)
+_fcm_token_cache: dict = {"token": "", "generated_at": 0.0, "cache_key": ""}
+_fcm_tokens_lock = threading.Lock()
+
 def _apns_make_jwt(key_id: str, team_id: str, key_pem: str) -> str:
     """Generate an ES256 JWT suitable for APNs provider authentication."""
     import base64, json as _json
@@ -2909,6 +2947,137 @@ def _send_apns_push_targeted(entries: list, title: str, body: str, data: "dict|N
                         monitor.log(f"[APNs] Targeted push error for {token[:12]}…: {e}")
         except Exception as e:
             monitor.log(f"[APNs] Targeted push client error: {e}")
+
+    threading.Thread(target=_push_thread, daemon=True).start()
+
+
+# ── FCM push (Android) ───────────────────────────────────────────────────────
+
+def _fcm_make_jwt(client_email: str, private_key_pem: str) -> str:
+    """Create a signed RS256 JWT for Google OAuth2 token exchange."""
+    import json as _json, base64 as _b64, time as _t
+    header  = {"alg": "RS256", "typ": "JWT"}
+    now     = int(_t.time())
+    payload = {
+        "iss":   client_email,
+        "scope": "https://www.googleapis.com/auth/firebase.messaging",
+        "aud":   "https://oauth2.googleapis.com/token",
+        "iat":   now,
+        "exp":   now + 3600,
+    }
+    def _b64url(d):
+        return _b64.urlsafe_b64encode(
+            _json.dumps(d, separators=(",", ":")).encode()
+        ).rstrip(b"=").decode()
+    unsigned = f"{_b64url(header)}.{_b64url(payload)}".encode()
+    from cryptography.hazmat.primitives import serialization as _sl, hashes as _h
+    from cryptography.hazmat.primitives.asymmetric import padding as _pad
+    key = _sl.load_pem_private_key(private_key_pem.encode(), password=None)
+    sig = key.sign(unsigned, _pad.PKCS1v15(), _h.SHA256())
+    return f"{unsigned.decode()}.{_b64.urlsafe_b64encode(sig).rstrip(b'=').decode()}"
+
+
+def _get_fcm_access_token(ma) -> str:
+    """Return a cached (55-min) OAuth2 access token for FCM HTTP v1 API."""
+    import json as _json, urllib.request as _ur, urllib.parse as _up, time as _t
+    sa_json_str = getattr(ma, "fcm_service_account_json", "").strip()
+    if not sa_json_str:
+        raise ValueError("fcm_service_account_json not configured")
+    sa = _json.loads(sa_json_str)
+    client_email = sa.get("client_email", "")
+    private_key  = sa.get("private_key",  "")
+    cache_key = client_email
+    now = _t.time()
+    if (_fcm_token_cache.get("token")
+            and _fcm_token_cache.get("cache_key") == cache_key
+            and now - _fcm_token_cache.get("generated_at", 0) < 55 * 60):
+        return _fcm_token_cache["token"]
+    jwt_str = _fcm_make_jwt(client_email, private_key)
+    data = _up.urlencode({
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion":  jwt_str,
+    }).encode()
+    req  = _ur.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
+    resp = _ur.urlopen(req, timeout=15)
+    tok  = _json.loads(resp.read()).get("access_token", "")
+    _fcm_token_cache.update({"token": tok, "generated_at": now, "cache_key": cache_key})
+    return tok
+
+
+def _send_fcm_push(title: str, body: str, data: "dict|None" = None):
+    """Send an FCM push to every registered Android device token."""
+    ma = getattr(monitor.app_cfg, "mobile_api", None)
+    if not ma:
+        return
+    with _fcm_tokens_lock:
+        tokens = list(getattr(ma, "fcm_device_tokens", []))
+    if not tokens:
+        return
+    project_id = getattr(ma, "fcm_project_id", "").strip()
+    sa_json    = getattr(ma, "fcm_service_account_json", "").strip()
+    if not (project_id and sa_json):
+        monitor.log("[FCM] Not configured — skipping push")
+        return
+    _send_fcm_push_targeted(tokens, title, body, data)
+
+
+def _send_fcm_push_targeted(entries: list, title: str, body: str, data: "dict|None" = None):
+    """Send FCM push to a specific subset of Android device token entries."""
+    if not entries:
+        return
+    ma = getattr(monitor.app_cfg, "mobile_api", None)
+    if not ma:
+        return
+    project_id = getattr(ma, "fcm_project_id", "").strip()
+    sa_json    = getattr(ma, "fcm_service_account_json", "").strip()
+    if not (project_id and sa_json):
+        return
+    target_entries = list(entries)
+
+    def _push_thread():
+        import json as _json, urllib.request as _ur
+        try:
+            access_token = _get_fcm_access_token(ma)
+        except Exception as e:
+            monitor.log(f"[FCM] Failed to get access token: {e}")
+            return
+        url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
+        to_remove = []
+        for entry in target_entries:
+            token = entry.get("token", "") if isinstance(entry, dict) else str(entry)
+            if not token:
+                continue
+            payload = _json.dumps({
+                "message": {
+                    "token": token,
+                    "notification": {"title": title, "body": body},
+                    "data": {k: str(v) for k, v in (data or {}).items()},
+                    "android": {"priority": "high",
+                                "notification": {"channel_id": "faults"}},
+                }
+            }).encode()
+            req = _ur.Request(url, data=payload, method="POST", headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type":  "application/json",
+            })
+            try:
+                resp = _ur.urlopen(req, timeout=10)
+                monitor.log(f"[FCM] ✔ Push to {token[:12]}…: {title!r}")
+            except _ur.HTTPError as e:
+                err_body = e.read().decode(errors="replace")[:200]
+                monitor.log(f"[FCM] ✘ Push {e.code} for {token[:12]}…: {err_body}")
+                if e.code in (400, 404):     # UNREGISTERED or INVALID_ARGUMENT
+                    to_remove.append(entry)
+            except Exception as e:
+                monitor.log(f"[FCM] Push error for {token[:12]}…: {e}")
+        if to_remove:
+            with _fcm_tokens_lock:
+                for entry in to_remove:
+                    try:
+                        ma.fcm_device_tokens.remove(entry)
+                    except ValueError:
+                        pass
+            save_config(monitor.app_cfg)
 
     threading.Thread(target=_push_thread, daemon=True).start()
 
@@ -11324,6 +11493,16 @@ class HubServer:
         except Exception as e:
             monitor.log(f"[APNs] Push error in _fire_chain_fault: {e}")
 
+        # ── FCM push to Android devices ───────────────────────────────────────
+        try:
+            _send_fcm_push(
+                title=f"Fault: {chain_label}",
+                body=msg[:180],
+                data={"type": "chain_fault", "chain_id": cid},
+            )
+        except Exception as e:
+            monitor.log(f"[FCM] Push error in _fire_chain_fault: {e}")
+
     def _check_watched_nodes(self, cid: str, result: dict, now: float):
         """Fire targeted APNs push for nodes that have just gone down (fault→ok
         transition reversed: ok→fault) for any device that has subscribed to
@@ -11373,13 +11552,26 @@ class HubServer:
                                 if label in (e.get("watched_nodes") or [])
                                 if isinstance(e, dict)]
                     if targeted:
-                        monitor.log(f"[APNs] Node down '{label}' — pushing to {len(targeted)} device(s)")
+                        monitor.log(f"[APNs] Node down '{label}' — pushing to {len(targeted)} iOS device(s)")
                         _send_apns_push_targeted(
                             targeted, title, body,
                             data={"type": "silence", "node": label},
                         )
+
+                    # FCM — find Android tokens watching this node
+                    with _fcm_tokens_lock:
+                        fcm_all = list(getattr(ma, "fcm_device_tokens", []))
+                    fcm_targeted = [e for e in fcm_all
+                                    if label in (e.get("watched_nodes") or [])
+                                    if isinstance(e, dict)]
+                    if fcm_targeted:
+                        monitor.log(f"[FCM] Node down '{label}' — pushing to {len(fcm_targeted)} Android device(s)")
+                        _send_fcm_push_targeted(
+                            fcm_targeted, title, body,
+                            data={"type": "silence", "node": label},
+                        )
         except Exception as e:
-            monitor.log(f"[APNs] _check_watched_nodes error: {e}")
+            monitor.log(f"[APNs/FCM] _check_watched_nodes error: {e}")
 
     # ── Query ─────────────────────────────────────────────────────────────────
     def get_sites(self) -> List[dict]:
@@ -15638,9 +15830,17 @@ def settings():
         if _apns_pem:                       # only overwrite if something was pasted
             cfg.mobile_api.apns_key_pem = _apns_pem
         cfg.mobile_api.apns_sandbox = bool(f.get("apns_sandbox"))
+        # FCM push notification config
+        _fcm_pid = f.get("fcm_project_id", "").strip()
+        if _fcm_pid:
+            cfg.mobile_api.fcm_project_id = _fcm_pid
+        _fcm_sa = f.get("fcm_service_account_json", "").strip()
+        if _fcm_sa:
+            cfg.mobile_api.fcm_service_account_json = _fcm_sa
         save_config(cfg)
-        # Invalidate the JWT cache so the new credentials are used immediately
+        # Invalidate both JWT caches so new credentials are used immediately
         _apns_jwt_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
+        _fcm_token_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
         # If hub client mode and URL are now set, start the hub heartbeat client
         # immediately without requiring the monitor loop to be running first.
         # start_hub_client() is a no-op if the client is already running.
@@ -22186,19 +22386,71 @@ def api_mobile_token_status():
 @app.route("/api/mobile/device_token", methods=["POST"])
 @mobile_api_required
 def api_mobile_device_token():
-    """Register or unregister an APNs device token for push notifications.
+    """Register or unregister a device push token (APNs for iOS, FCM for Android).
 
-    POST body: {"token": "<hex token>", "action": "register"|"unregister"}
+    POST body: {
+        "token":         "<hex/FCM token>",
+        "action":        "register" | "unregister" | "update_nodes",
+        "platform":      "ios" | "android"   (default: "ios"),
+        "sandbox":       true | false         (iOS only),
+        "watched_nodes": ["Node A", ...]      (optional)
+    }
     """
     data  = request.get_json(force=True, silent=True) or {}
     token = str(data.get("token", "")).strip()
     if not token:
         return jsonify({"ok": False, "error": "token required"}), 400
 
+    platform = str(data.get("platform", "ios")).lower()
+
     ma = getattr(monitor.app_cfg, "mobile_api", None)
     if ma is None:
         return jsonify({"ok": False, "error": "mobile api not configured"}), 500
 
+    # ── Android FCM path ─────────────────────────────────────────────────────
+    if platform == "android":
+        with _fcm_tokens_lock:
+            if not hasattr(ma, "fcm_device_tokens") or ma.fcm_device_tokens is None:
+                ma.fcm_device_tokens = []
+            raw_nodes    = data.get("watched_nodes")
+            watched_nodes = [str(n) for n in raw_nodes] if isinstance(raw_nodes, list) else None
+            action = str(data.get("action", "register")).lower()
+            if action == "unregister":
+                ma.fcm_device_tokens = [e for e in ma.fcm_device_tokens
+                                        if (e.get("token") if isinstance(e, dict) else e) != token]
+                save_config(monitor.app_cfg)
+                return jsonify({"ok": True, "action": "unregistered",
+                                "count": len(ma.fcm_device_tokens)})
+            elif action == "update_nodes":
+                updated = False
+                for e in ma.fcm_device_tokens:
+                    if isinstance(e, dict) and e.get("token") == token:
+                        e["watched_nodes"] = watched_nodes or []
+                        updated = True
+                        break
+                if not updated:
+                    ma.fcm_device_tokens.append({"token": token,
+                                                  "watched_nodes": watched_nodes or []})
+                save_config(monitor.app_cfg)
+                return jsonify({"ok": True, "action": "nodes_updated",
+                                "count": len(ma.fcm_device_tokens)})
+            else:
+                # register / re-register
+                existing = [e for e in ma.fcm_device_tokens
+                            if (e.get("token") if isinstance(e, dict) else e) == token]
+                new_entry: dict = {"token": token}
+                if watched_nodes is not None:
+                    new_entry["watched_nodes"] = watched_nodes
+                elif existing and isinstance(existing[0], dict) and "watched_nodes" in existing[0]:
+                    new_entry["watched_nodes"] = existing[0]["watched_nodes"]
+                ma.fcm_device_tokens = [e for e in ma.fcm_device_tokens
+                                        if (e.get("token") if isinstance(e, dict) else e) != token]
+                ma.fcm_device_tokens.append(new_entry)
+                save_config(monitor.app_cfg)
+                return jsonify({"ok": True, "action": "registered",
+                                "count": len(ma.fcm_device_tokens)})
+
+    # ── iOS APNs path (existing logic) ───────────────────────────────────────
     with _apns_tokens_lock:
         if not hasattr(ma, "apns_device_tokens") or ma.apns_device_tokens is None:
             ma.apns_device_tokens = []
