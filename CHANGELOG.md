@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.75] - 2026-03-25
+
+### Added
+- **Plugin system** — drop any `*.py` file next to `signalscope.py` that exports `SIGNALSCOPE_PLUGIN` and it is auto-loaded at startup. Plugins register Flask routes via a `register(app, ctx)` call and get a nav bar item injected automatically between hub links and Settings. Zero footprint when no plugin files are present.
+
 ## [3.3.74] - 2026-03-24
 
 ### Fixed

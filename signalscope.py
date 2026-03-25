@@ -1136,7 +1136,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.74"
+BUILD                  = "SignalScope-3.3.75"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -11190,6 +11190,79 @@ listen_registry = ListenSlotRegistry()
 
 # ─── Flask + templates ────────────────────────────────────────────────────────
 
+# ─── Plugin registry ──────────────────────────────────────────────────────────
+# Populated at startup by _load_plugins().  Each entry is a dict with at least:
+#   id      – unique slug used as the nav active-page key
+#   label   – text shown in the nav bar
+#   url     – href for the nav link
+#   icon    – (optional) emoji / short prefix  e.g. "📡"
+_plugins: list[dict] = []
+
+def _load_plugins():
+    """Scan the app directory for *.py files that export SIGNALSCOPE_PLUGIN.
+
+    A plugin file just needs two things:
+
+        SIGNALSCOPE_PLUGIN = {
+            "id":    "websdr",       # unique slug
+            "label": "Web SDR",      # nav label
+            "url":   "/hub/sdr",     # nav href
+            "icon":  "📡",           # optional
+        }
+
+        def register(app, ctx):
+            # ctx keys: app, monitor, hub_server, listen_registry,
+            #           login_required, csrf_protect, BUILD
+            @app.route("/hub/sdr")
+            @ctx["login_required"]
+            def sdr_page():
+                return "<h1>Web SDR</h1>"
+
+    Files are discovered by scanning the directory that contains signalscope.py.
+    Any *.py file (except signalscope.py itself) that contains the string
+    'SIGNALSCOPE_PLUGIN' is imported and registered.
+    """
+    import importlib.util, pathlib
+    _app_dir = pathlib.Path(__file__).parent
+    _self    = pathlib.Path(__file__).name
+    ctx = {
+        "app":              app,
+        "monitor":          monitor,
+        "hub_server":       hub_server,
+        "listen_registry":  listen_registry,
+        "login_required":   login_required,
+        "csrf_protect":     csrf_protect,
+        "BUILD":            BUILD,
+    }
+    for py in sorted(_app_dir.glob("*.py")):
+        if py.name == _self:
+            continue
+        # Pre-flight: only import files that declare the plugin marker
+        try:
+            src = py.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "SIGNALSCOPE_PLUGIN" not in src:
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(py.stem, py)
+            mod  = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)                          # type: ignore[union-attr]
+            info = getattr(mod, "SIGNALSCOPE_PLUGIN", None)
+            if not isinstance(info, dict) or not info.get("label") or not info.get("url"):
+                monitor.log(f"[Plugin] {py.name}: SIGNALSCOPE_PLUGIN missing 'label'/'url' — skipped")
+                continue
+            info = dict(info)                    # don't mutate the module's dict
+            info.setdefault("id",   py.stem)
+            info.setdefault("icon", "")
+            if hasattr(mod, "register"):
+                mod.register(app, ctx)
+            _plugins.append(info)
+            monitor.log(f"[Plugin] Loaded '{info['label']}' from {py.name}")
+            print(f"[Plugin] {info['label']} loaded from {py.name}")
+        except Exception as e:
+            monitor.log(f"[Plugin] Failed to load {py.name}: {e}")
+            print(f"[Plugin] WARNING: failed to load {py.name}: {e}")
 
 # ─── Login brute-force protection ─────────────────────────────────────────────
 
@@ -11601,6 +11674,12 @@ def _inject_nav():
         home_href = "/hub" if hub_only else "/"
         local_links = "" if hub_only else (_a("dashboard", "Dashboard", "/") + _a("inputs", "Inputs", "/inputs") + _a("reports", "Reports", "/reports") + _a("sla", "SLA", "/sla"))
         hub_link = (_a("hub", "Hub", "/hub") + _a("hub_reports", "Hub Reports", "/hub/reports") + _a("chains", "Broadcast Chains", "/chains")) if show_hub else ""
+        plugin_links = "".join(
+            _a(p.get("id", "plugin"),
+               ((p["icon"] + " ") if p.get("icon") else "") + p["label"],
+               p["url"])
+            for p in _plugins
+        )
         # ── Update-available banner ───────────────────────────────────────────
         nonce       = _csp_nonce()
         current_ver = build_.split("-")[-1]
@@ -11640,6 +11719,7 @@ def _inject_nav():
             + start_stop
             + local_links
             + hub_link
+            + plugin_links
             + _a("settings",  "Settings",  "/settings")
             + f'<form method="post" action="/logout" style="margin:0"><input type="hidden" name="_csrf_token" value="{csrf}"><button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
             + '</nav></header>'
@@ -26235,6 +26315,9 @@ def _err_500(e):
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 if __name__=="__main__":
+    # Load any plugin files found alongside signalscope.py
+    _load_plugins()
+
     ort=_try_import("onnxruntime")
     if ort is None:
         print("[!] onnxruntime not found — AI disabled.  pip install onnxruntime")
