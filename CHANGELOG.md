@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.83] - 2026-03-25
+
+### Added
+- **Plugin update from GitHub** — in **Settings → Plugins → Check GitHub for plugins**, installed plugins now show an **⟳ Update** button instead of a static "Installed" badge. Clicking it re-downloads the plugin file from the official repository and overwrites the local copy. A restart is required to apply the update. Uses the same validated `/api/plugins/install` endpoint as the initial install.
+
 ## [3.3.82] - 2026-03-25
 
 ### Fixed

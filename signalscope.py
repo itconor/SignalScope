@@ -1199,8 +1199,9 @@ window.pluginFetchAvail = function(){
           + (p.requirements ? '<div style="font-size:11px;color:var(--mu);margin-top:3px">Requires: <code style="background:#173a69;padding:1px 5px;border-radius:3px">pip install '+_esc(p.requirements)+'</code></div>' : '')
           + '</div>'
           + (installed
-             ? '<span style="padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;'
-               + 'background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3);flex-shrink:0">Installed</span>'
+             ? '<button class="btn bg bs plugin-update-btn" style="flex-shrink:0" '
+               + 'data-id='+JSON.stringify(p.id)+' data-url='+JSON.stringify(p.url)+' data-file='+JSON.stringify(p.file)+'>'
+               + '⟳ Update</button>'
              : '<button class="btn bp bs plugin-install-btn" style="flex-shrink:0" '
                + 'data-id='+JSON.stringify(p.id)+' data-url='+JSON.stringify(p.url)+' data-file='+JSON.stringify(p.file)+'>'
                + '⬇ Install</button>')
@@ -1230,6 +1231,25 @@ window.pluginInstall = function(id, url, file){
     .catch(function(){ if(btn){btn.disabled=false;btn.textContent='⬇ Install';} alert('Network error'); });
 };
 
+window.pluginUpdate = function(id, url, file){
+  if(!confirm('Update plugin "'+id+'" from GitHub?\n\nThe local file will be overwritten. A restart is required to apply the update.')) return;
+  var lst = document.getElementById('avail-list');
+  var btn = lst.querySelector('[data-id='+JSON.stringify(id)+'].plugin-update-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Updating…'; }
+  _csrfPost('/api/plugins/install', {id:id, url:url, file:file})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){
+        if(btn){ btn.disabled=false; btn.textContent='✓ Updated — restart to apply';
+                 btn.style.color='var(--ok)'; }
+      } else {
+        if(btn){ btn.disabled=false; btn.textContent='⟳ Update'; }
+        alert('Update failed: ' + (d.error||'?'));
+      }
+    })
+    .catch(function(){ if(btn){btn.disabled=false;btn.textContent='⟳ Update';} alert('Network error'); });
+};
+
 window.pluginRemove = function(file){
   if(!confirm('Remove plugin file "'+file+'"?\n\nA restart is required to fully unload it.')) return;
   _csrfPost('/api/plugins/remove', {file:file})
@@ -1243,12 +1263,14 @@ window.pluginRemove = function(file){
 
 function _esc(s){ var d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
 
-// Event delegation — handles plugin-rm-btn and plugin-install-btn without per-element onclick
+// Event delegation — handles plugin-rm-btn, plugin-install-btn, plugin-update-btn
 document.getElementById('p-plugins').addEventListener('click', function(e){
   var rm = e.target.closest('.plugin-rm-btn');
   if(rm){ pluginRemove(rm.dataset.file); return; }
   var inst = e.target.closest('.plugin-install-btn');
-  if(inst){ pluginInstall(inst.dataset.id, inst.dataset.url, inst.dataset.file); }
+  if(inst){ pluginInstall(inst.dataset.id, inst.dataset.url, inst.dataset.file); return; }
+  var upd = e.target.closest('.plugin-update-btn');
+  if(upd){ pluginUpdate(upd.dataset.id, upd.dataset.url, upd.dataset.file); }
 });
 })();
 </script>
@@ -1296,7 +1318,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.82"
+BUILD                  = "SignalScope-3.3.83"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
