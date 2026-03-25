@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.4",
+    "version":  "1.0.5",
 }
 
 import hashlib
@@ -1127,7 +1127,13 @@ def register(app, ctx):
         if not site:
             return jsonify({}), 400
         sdata = hub_server._sites.get(site, {})
-        if not sdata.get("_approved"):
+        # Accept either _approved (explicitly approved via hub admin) or the
+        # looser approved/default-True check used everywhere else in the plugin.
+        # A site that appears in the DAB Scanner dropdown should be able to poll
+        # for commands — using _approved alone locked out sites that hadn't gone
+        # through the formal approval flow even though they were heartbeating fine.
+        is_approved = sdata.get("_approved") or sdata.get("approved", True)
+        if not is_approved or sdata.get("blocked"):
             return jsonify({}), 403
         with _state_lock:
             cmd = _hub_pending.pop(site, None)
@@ -1140,7 +1146,7 @@ def register(app, ctx):
         if not hub_server:
             return "", 204
         sdata = hub_server._sites.get(site_name, {})
-        if not sdata.get("_approved"):
+        if not (sdata.get("_approved") or sdata.get("approved", True)) or sdata.get("blocked"):
             return "", 403
         d = request.get_json(silent=True) or {}
         text = str(d.get("text", "")).strip()
@@ -1154,7 +1160,7 @@ def register(app, ctx):
         if not hub_server:
             return jsonify({"ok": True, "stop": False})
         sdata = hub_server._sites.get(site_name, {})
-        if not sdata.get("_approved"):
+        if not (sdata.get("_approved") or sdata.get("approved", True)) or sdata.get("blocked"):
             return jsonify({"ok": False}), 403
         d = request.get_json(silent=True) or {}
         should_stop = False
@@ -1186,7 +1192,7 @@ def register(app, ctx):
         if not hub_server:
             return "", 204
         sdata = hub_server._sites.get(site_name, {})
-        if not sdata.get("_approved"):
+        if not (sdata.get("_approved") or sdata.get("approved", True)) or sdata.get("blocked"):
             return "", 403
         d = request.get_json(silent=True) or {}
         services   = d.get("services", [])
@@ -1272,6 +1278,8 @@ def register(app, ctx):
 def _client_poller(monitor):
     """Poll hub every 3 s for pending DAB commands."""
     import json as _json
+    _consecutive_errors = 0
+    print("[DAB] Client poller running")
     while True:
         try:
             cfg     = monitor.app_cfg
@@ -1283,12 +1291,28 @@ def _client_poller(monitor):
                     headers={"X-Dab-Site": site},
                 )
                 with urllib.request.urlopen(req, timeout=5) as resp:
-                    d = _json.loads(resp.read())
-                cmd = d.get("cmd")
-                if cmd:
-                    _dispatch_client_cmd(cmd, hub_url, site, cfg)
-        except Exception:
-            pass
+                    status = resp.status
+                    body   = resp.read()
+                if status == 403:
+                    if _consecutive_errors % 20 == 0:
+                        print(f"[DAB] Command poll: 403 Forbidden "
+                              f"(site '{site}' not approved on hub?)")
+                    _consecutive_errors += 1
+                else:
+                    _consecutive_errors = 0
+                    d   = _json.loads(body)
+                    cmd = d.get("cmd")
+                    if cmd:
+                        print(f"[DAB] Received command: {cmd.get('action')}")
+                        _dispatch_client_cmd(cmd, hub_url, site, cfg)
+        except urllib.error.HTTPError as e:
+            if _consecutive_errors % 20 == 0:
+                print(f"[DAB] Command poll HTTP error: {e.code} {e.reason}")
+            _consecutive_errors += 1
+        except Exception as e:
+            if _consecutive_errors % 20 == 0:
+                print(f"[DAB] Command poll error: {e}")
+            _consecutive_errors += 1
         time.sleep(3)
 
 

@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.96] - 2026-03-25
+
+### Fixed
+- **DAB Scanner scan stuck at 0 — command never reached client** (`dab.py` v1.0.5) — the `/api/hub/dab/cmd` poll endpoint (and all three client→hub push endpoints) checked `sdata.get("_approved")` which is only set `True` when a site has been explicitly approved via the hub admin panel. Sites that heartbeat fine and appear in the DAB Scanner dropdown (which uses `approved` defaulting True) were still returning 403 to the client command poller, so the scan command was never dispatched and `_do_scan()` never ran. Fix: all four client-facing endpoints now accept `_approved OR approved (default True) AND NOT blocked` — consistent with the dropdown's own site filter. The client command poller now logs errors instead of silently swallowing them: 403 responses, HTTP errors, and general exceptions are printed every 20 occurrences; received commands log their action name; startup prints `[DAB] Client poller running`.
+
 ## [3.3.95] - 2026-03-25
 
 ### Fixed
