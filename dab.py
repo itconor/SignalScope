@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.22",
+    "version":  "1.0.23",
 }
 
 import hashlib
@@ -140,7 +140,7 @@ _services_file  = None  # pathlib.Path to dab_services.json, set in register()
 def _sign_chunk(secret: str, data: bytes, ts: float) -> str:
     """HMAC-SHA256 matching hub_sign_payload() in signalscope.py."""
     key = hashlib.sha256(f"{secret}:signing".encode()).digest()
-    msg = f"{ts:.0f}:".encode() + data
+    msg = f"{int(ts)}:".encode() + data
     return _hmac.new(key, msg, hashlib.sha256).hexdigest()
 
 
