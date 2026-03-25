@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.107] - 2026-03-25
+
+### Diagnostic
+- **DAB stream worker: log welle-cli stderr and exact command** (`dab.py` v1.0.16) — welle-cli startup errors (bad audio backend, device busy, service not found) were silently discarded by `_dls_reader` since it only processed DLS-pattern lines. Now logs all welle-cli stderr to `monitor.log()` via `[DAB welle]` prefix: first 30 lines unconditionally, then any line containing error/fail/service/audio/sync keywords. Also logs the full welle-cli command at stream start so it can be run manually to test.
+
 ## [3.3.106] - 2026-03-25
 
 ### Fixed

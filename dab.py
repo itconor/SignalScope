@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.15",
+    "version":  "1.0.16",
 }
 
 import hashlib
@@ -1527,6 +1527,7 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
 
     _log(f"[DAB] Starting stream: ch={channel} service='{service}' "
          f"bitrate={bitrate}k serial={sdr_serial or 'auto'}")
+    _log(f"[DAB] welle-cli cmd: {' '.join(welle_cmd)}")
 
     proc_welle  = None
     proc_ffmpeg = None
@@ -1557,7 +1558,7 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
         # DLS reader thread (reads welle-cli stderr)
         dls_thread = threading.Thread(
             target=_dls_reader,
-            args=(proc_welle.stderr, site, hub_url, stop),
+            args=(proc_welle.stderr, site, hub_url, stop, monitor),
             daemon=True,
             name="DABDlsReader",
         )
@@ -1622,16 +1623,15 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
         _log(f"[DAB] Stream worker exited: ch={channel} service='{service}'")
 
 
-def _dls_reader(stderr_stream, site, hub_url, stop):
+def _dls_reader(stderr_stream, site, hub_url, stop, monitor=None):
     """
     Read DLS text from welle-cli stderr and push updates to hub.
-
-    welle-cli typically emits:
-        DLS: <text>
-    or variations like:  DLS update: <text>
+    Also logs ALL welle-cli stderr to monitor.log() — this is the only way
+    to see welle-cli startup errors (bad backend, device busy, etc.).
     """
-    dls_url  = f"{hub_url}/api/hub/dab/dls/{urllib.parse.quote(site, safe='')}"
-    last_dls = ""
+    dls_url   = f"{hub_url}/api/hub/dab/dls/{urllib.parse.quote(site, safe='')}"
+    last_dls  = ""
+    line_count = 0
 
     try:
         for raw_line in stderr_stream:
@@ -1641,6 +1641,19 @@ def _dls_reader(stderr_stream, site, hub_url, stop):
                 line = raw_line.decode("utf-8", errors="replace").strip()
             except Exception:
                 continue
+            if not line:
+                continue
+
+            # Log ALL welle-cli stderr so startup errors are visible in the
+            # in-app log window — log first 30 lines unconditionally, then
+            # only lines that look like errors or status.
+            line_count += 1
+            if monitor and (line_count <= 30
+                            or any(k in line.lower() for k in
+                                   ("error", "fail", "cannot", "unable",
+                                    "dls", "service", "ensemble", "tuned",
+                                    "sync", "audio"))):
+                monitor.log(f"[DAB welle] {line}")
 
             # Match common welle-cli DLS output patterns
             m = re.search(r"DLS[:\s]+(.+)", line, re.IGNORECASE)
