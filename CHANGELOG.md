@@ -2,6 +2,23 @@
 
 ---
 
+## [3.3.123] - 2026-03-25
+
+### Fixed
+- **iOS FM Scanner — no audio despite RDS working** (`signalscope.py`) — `AVPlayer` cannot play raw `application/octet-stream` PCM streams. Added `/api/mobile/hub/scanner/stream_wav/<slot_id>` endpoint that wraps the existing PCM relay with a streaming WAV header (RIFF/WAVE, 16-bit LE mono 48 kHz, `0xFFFFFFFF` size markers). All `mobile_stream_url` responses from start/tune/status now point to `stream_wav` so iOS receives a proper `audio/wav` stream it can decode natively.
+
+---
+
+## [3.3.122] - 2026-03-25
+
+### Added
+- **Mobile API — FM Scanner**: new endpoints `/api/mobile/scanner/sites`, `start`, `tune`, `stop`, `status` so the iOS app can stream FM radio from any hub-connected RTL-SDR dongle (requires FM Scanner plugin)
+- **Mobile API — DAB Scanner**: new endpoints `/api/mobile/dab/sites`, `start`, `stop`, `status`, `services`, `scan` for DAB digital radio streaming (requires DAB Scanner plugin)
+- **Mobile API — Maintenance toggle**: `POST /api/mobile/chains/<cid>/maintenance` to enable/clear chain maintenance mode from the iOS app (no CSRF required, token auth)
+- **Hub overview enriched**: mobile overview response now includes `rtp_loss_pct`, `rtp_jitter_ms`, `fm_rds_ps`, `fm_rds_rt`, `dab_service`, `dab_dls`, `dab_ensemble`, and `live_url` per stream
+
+---
+
 ## [3.3.121] - 2026-03-25
 
 ### Fixed

@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.122"
+BUILD                  = "SignalScope-3.3.123"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -21591,7 +21591,7 @@ def api_mobile_scanner_start():
     }
     _safe_site = urllib.parse.quote(site, safe="")
     stream_url = f"/hub/scanner/stream/{slot.slot_id}"
-    mobile_stream_url = f"/api/mobile/hub/scanner/stream/{slot.slot_id}"
+    mobile_stream_url = f"/api/mobile/hub/scanner/stream_wav/{slot.slot_id}"
     monitor.log(f"[Scanner/Mobile] Session started site='{site}' {freq_mhz:.2f} MHz slot={slot.slot_id[:6]}")
     return jsonify({"ok": True, "slot_id": slot.slot_id, "stream_url": stream_url,
                     "mobile_stream_url": mobile_stream_url, "freq_mhz": freq_mhz})
@@ -21624,7 +21624,7 @@ def api_mobile_scanner_tune():
     sess["freq_mhz"] = freq_mhz
     sess["rds"]      = {}
     stream_url = f"/hub/scanner/stream/{slot.slot_id}"
-    mobile_stream_url = f"/api/mobile/hub/scanner/stream/{slot.slot_id}"
+    mobile_stream_url = f"/api/mobile/hub/scanner/stream_wav/{slot.slot_id}"
     monitor.log(f"[Scanner/Mobile] Retuned site='{site}' → {freq_mhz:.2f} MHz slot={slot.slot_id[:6]}")
     return jsonify({"ok": True, "slot_id": slot.slot_id, "stream_url": stream_url,
                     "mobile_stream_url": mobile_stream_url, "freq_mhz": freq_mhz})
@@ -21672,19 +21672,96 @@ def api_mobile_scanner_status(site_name: str):
         "stereo":    bool(rds.get("stereo")),
         "pi":        rds.get("pi", ""),
         "stream_url": f"/hub/scanner/stream/{sess['slot_id']}",
-        "mobile_stream_url": f"/api/mobile/hub/scanner/stream/{sess['slot_id']}",
+        "mobile_stream_url": f"/api/mobile/hub/scanner/stream_wav/{sess['slot_id']}",
     })
 
 
 @app.get("/api/mobile/hub/scanner/stream/<slot_id>")
 @mobile_api_required
 def api_mobile_hub_scanner_stream(slot_id: str):
-    """Proxy scanner PCM stream for mobile clients."""
+    """Proxy scanner PCM stream for mobile clients (raw PCM, kept for compatibility)."""
     vf = current_app.view_functions.get("hub_scanner_stream")
     if vf:
         return vf(slot_id)
-    # Fallback: route through generic slot stream if scanner plugin missing
     return jsonify({"error": "scanner plugin not installed"}), 503
+
+
+@app.get("/api/mobile/hub/scanner/stream_wav/<slot_id>")
+@mobile_api_required
+def api_mobile_hub_scanner_stream_wav(slot_id: str):
+    """Stream scanner audio as WAV for iOS AVPlayer (prepends streaming WAV header).
+
+    AVPlayer cannot play raw application/octet-stream PCM. This endpoint
+    wraps the existing PCM relay with a standard streaming WAV header
+    (RIFF/WAVE with 0xFFFFFFFF sizes) so iOS can decode it natively.
+    Format: 16-bit signed LE, mono, 48 kHz — matches the scanner relay output.
+    """
+    import struct as _struct
+    import queue  as _queue
+
+    slot = listen_registry.get(slot_id)
+    if not slot or slot.kind not in ("scanner",):
+        return "Stream not found or expired", 404
+
+    SR, CH, BPS   = 48000, 1, 16
+    BLOCK         = SR * CH * BPS // 8 // 10   # 9600 bytes = 0.1 s
+    SILENCE       = b"\x00" * BLOCK
+    byte_rate     = SR * CH * BPS // 8          # 96000
+    block_align   = CH * BPS // 8               # 2
+
+    # Streaming WAV header — 0xFFFFFFFF signals unknown/infinite length
+    wav_hdr = (
+        b"RIFF" + _struct.pack("<I", 0xFFFFFFFF)
+        + b"WAVE"
+        + b"fmt " + _struct.pack("<IHHIIHH", 16, 1, CH, SR, byte_rate, block_align, BPS)
+        + b"data" + _struct.pack("<I", 0xFFFFFFFF)
+    )
+
+    def generate():
+        yield wav_hdr
+
+        # Wait for first real chunk (startup timeout 20 s, fill with silence)
+        startup_deadline = time.time() + 20.0
+        _BLK_DUR   = 0.10
+        next_sil_t = time.monotonic() + _BLK_DUR
+        while True:
+            try:
+                chunk = slot.get(timeout=0.05)
+                yield chunk
+                break
+            except _queue.Empty:
+                if slot.closed or time.time() > startup_deadline:
+                    return
+                now = time.monotonic()
+                if now >= next_sil_t:
+                    yield SILENCE
+                    next_sil_t += _BLK_DUR
+
+        # Main relay loop — inject silence if gap > 1 s (WAN-friendly)
+        _kp_threshold = 1.0
+        next_kp_t = time.monotonic() + _kp_threshold
+        while True:
+            try:
+                chunk = slot.get(timeout=0.30)
+                next_kp_t = time.monotonic() + _kp_threshold
+                yield chunk
+            except _queue.Empty:
+                if slot.closed or slot.stale:
+                    return
+                now = time.monotonic()
+                if now >= next_kp_t:
+                    yield SILENCE
+                    next_kp_t += _kp_threshold
+
+    return Response(
+        generate(),
+        mimetype="audio/wav",
+        headers={
+            "Cache-Control":     "no-cache, no-store",
+            "X-Accel-Buffering": "no",
+            "Content-Disposition": "inline",
+        },
+    )
 
 
 # ─── Mobile: DAB Scanner wrapper endpoints ────────────────────────────────────
