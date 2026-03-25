@@ -26,12 +26,12 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.21",
+    "version":  "1.0.22",
 }
 
 import hashlib
 import hmac as _hmac
-import json
+import json as _json
 import os
 import pathlib
 import queue
@@ -154,7 +154,7 @@ def _load_services() -> dict:
     if not _services_file or not _services_file.exists():
         return {}
     try:
-        return json.loads(_services_file.read_text(encoding="utf-8"))
+        return _json.loads(_services_file.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -162,7 +162,7 @@ def _load_services() -> dict:
 def _save_services(data: dict) -> None:
     if _services_file:
         try:
-            _services_file.write_text(json.dumps(data, indent=2, ensure_ascii=False),
+            _services_file.write_text(_json.dumps(data, indent=2, ensure_ascii=False),
                                       encoding="utf-8")
         except Exception as e:
             print(f"[DAB] Failed to save services: {e}")
@@ -1698,7 +1698,7 @@ def _dls_reader(stderr_stream, site, hub_url, stop, monitor=None):
             last_dls = dls
 
             try:
-                data = json.dumps({"text": dls}).encode()
+                data = _json.dumps({"text": dls}).encode()
                 req  = urllib.request.Request(
                     dls_url,
                     data=data,
