@@ -1341,7 +1341,7 @@ from typing import Optional, List, Dict, Tuple, Any
 
 import uuid
 import numpy as np
-from flask import Flask, jsonify, request, render_template_string, redirect, url_for, flash, Response, send_from_directory, make_response
+from flask import Flask, jsonify, request, render_template_string, redirect, url_for, flash, Response, send_from_directory, make_response, current_app
 
 # ─── Optional deps — checked at runtime ───────────────────────────────────────
 
@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.121"
+BUILD                  = "SignalScope-3.3.122"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -21322,11 +21322,12 @@ def api_mobile_hub_overview():
         total_ok    += s_ok
 
         mobile_streams = []
-        for st in sorted(streams, key=lambda x: (
+        _sorted_streams = sorted(streams, key=lambda x: (
             0 if "ALERT" in (x.get("ai_status") or "") else
             1 if "WARN"  in (x.get("ai_status") or "") else 2,
             (x.get("name") or "").lower()
-        )):
+        ))
+        for _stream_idx, st in enumerate(_sorted_streams):
             if not st.get("enabled", True):
                 continue
             ai_raw = (st.get("ai_status") or "").upper()
@@ -21334,13 +21335,23 @@ def api_mobile_hub_overview():
             elif "WARN"   in ai_raw: ai_state = "warn"
             elif "LEARNING" in ai_raw: ai_state = "learning"
             else:                    ai_state = "ok"
+            _site_name_raw = s.get("site", "")
+            _safe_site = urllib.parse.quote(_site_name_raw, safe="")
             mobile_streams.append({
-                "name":      st.get("name", ""),
-                "format":    st.get("format", ""),
-                "level_dbfs": st.get("level_dbfs"),
-                "sla_pct":   st.get("sla_pct"),
-                "ai_status": ai_state,
-                "ai_phase":  st.get("ai_phase", ""),
+                "name":        st.get("name", ""),
+                "format":      st.get("format", ""),
+                "level_dbfs":  st.get("level_dbfs"),
+                "sla_pct":     st.get("sla_pct"),
+                "ai_status":   ai_state,
+                "ai_phase":    st.get("ai_phase", ""),
+                "rtp_loss_pct":   st.get("rtp_loss_pct"),
+                "rtp_jitter_ms":  st.get("rtp_jitter_ms"),
+                "fm_rds_ps":   st.get("fm_rds_ps"),
+                "fm_rds_rt":   st.get("fm_rds_rt"),
+                "dab_service": st.get("dab_service"),
+                "dab_dls":     st.get("dab_dls"),
+                "dab_ensemble": st.get("dab_ensemble"),
+                "live_url":    f"/api/mobile/hub/site/{_safe_site}/stream/{_stream_idx}/live",
             })
 
         result_sites.append({
@@ -21525,6 +21536,292 @@ def api_mobile_stream_live(idx: int):
 @mobile_api_required
 def api_mobile_hub_proxy_live(site_name: str, sidx: int):
     return hub_proxy_live.__wrapped__(site_name, sidx)
+
+
+# ─── Mobile: FM Scanner wrapper endpoints ────────────────────────────────────
+
+@app.get("/api/mobile/scanner/sites")
+@mobile_api_required
+def api_mobile_scanner_sites():
+    """List sites that have scanner dongles available."""
+    if not hub_server:
+        return jsonify({"ok": True, "sites": []})
+    sites = []
+    for name, data in hub_server._sites.items():
+        serials = data.get("scanner_serials", [])
+        if serials:
+            sites.append({"site": name, "serials": serials})
+    sites.sort(key=lambda x: x["site"].lower())
+    return jsonify({"ok": True, "sites": sites})
+
+
+@app.post("/api/mobile/scanner/start")
+@mobile_api_required
+def api_mobile_scanner_start():
+    """Start an FM scanner session. Body: {site, freq_mhz, sdr_serial}."""
+    if not hub_server:
+        return jsonify({"ok": False, "error": "no hub"}), 400
+    # Check if scanner plugin is loaded by looking for the route
+    if "hub_scanner_start" not in current_app.view_functions:
+        return jsonify({"ok": False, "error": "scanner plugin not installed"}), 503
+    data       = request.get_json(silent=True) or {}
+    site       = str(data.get("site", "")).strip()
+    freq_mhz   = float(data.get("freq_mhz", 96.5) or 96.5)
+    sdr_serial = str(data.get("sdr_serial", "") or "").strip()
+    if not site:
+        return jsonify({"ok": False, "error": "site required"}), 400
+
+    old = hub_server._scanner_sessions.pop(site, None)
+    if old:
+        old_slot = listen_registry.get(old["slot_id"])
+        if old_slot:
+            old_slot.closed = True
+
+    slot = listen_registry.create(
+        site, 0, kind="scanner", mimetype="application/octet-stream",
+        freq_mhz=freq_mhz, sdr_serial=sdr_serial,
+    )
+    hub_server._scanner_sessions[site] = {
+        "slot_id":    slot.slot_id,
+        "freq_mhz":   freq_mhz,
+        "sdr_serial": sdr_serial,
+        "bitrate":    "128k",
+        "started":    time.time(),
+        "rds":        {},
+    }
+    _safe_site = urllib.parse.quote(site, safe="")
+    stream_url = f"/hub/scanner/stream/{slot.slot_id}"
+    mobile_stream_url = f"/api/mobile/hub/scanner/stream/{slot.slot_id}"
+    monitor.log(f"[Scanner/Mobile] Session started site='{site}' {freq_mhz:.2f} MHz slot={slot.slot_id[:6]}")
+    return jsonify({"ok": True, "slot_id": slot.slot_id, "stream_url": stream_url,
+                    "mobile_stream_url": mobile_stream_url, "freq_mhz": freq_mhz})
+
+
+@app.post("/api/mobile/scanner/tune")
+@mobile_api_required
+def api_mobile_scanner_tune():
+    """Retune an active scanner session. Body: {site, freq_mhz}."""
+    if not hub_server:
+        return jsonify({"ok": False, "error": "no hub"}), 400
+    data     = request.get_json(silent=True) or {}
+    site     = str(data.get("site", "")).strip()
+    freq_mhz = float(data.get("freq_mhz", 96.5) or 96.5)
+    if not site:
+        return jsonify({"ok": False, "error": "site required"}), 400
+    sess = hub_server._scanner_sessions.get(site)
+    if not sess:
+        return jsonify({"ok": False, "error": "no active session"}), 404
+
+    old_slot = listen_registry.get(sess["slot_id"])
+    if old_slot:
+        old_slot.closed = True
+
+    slot = listen_registry.create(
+        site, 0, kind="scanner", mimetype="application/octet-stream",
+        freq_mhz=freq_mhz, sdr_serial=sess.get("sdr_serial", ""),
+    )
+    sess["slot_id"]  = slot.slot_id
+    sess["freq_mhz"] = freq_mhz
+    sess["rds"]      = {}
+    stream_url = f"/hub/scanner/stream/{slot.slot_id}"
+    mobile_stream_url = f"/api/mobile/hub/scanner/stream/{slot.slot_id}"
+    monitor.log(f"[Scanner/Mobile] Retuned site='{site}' → {freq_mhz:.2f} MHz slot={slot.slot_id[:6]}")
+    return jsonify({"ok": True, "slot_id": slot.slot_id, "stream_url": stream_url,
+                    "mobile_stream_url": mobile_stream_url, "freq_mhz": freq_mhz})
+
+
+@app.post("/api/mobile/scanner/stop")
+@mobile_api_required
+def api_mobile_scanner_stop():
+    """Stop the active scanner session for a site. Body: {site}."""
+    if not hub_server:
+        return jsonify({"ok": True})
+    data = request.get_json(silent=True) or {}
+    site = str(data.get("site", "")).strip()
+    sess = hub_server._scanner_sessions.pop(site, None)
+    if sess:
+        slot = listen_registry.get(sess["slot_id"])
+        if slot:
+            slot.closed = True
+        monitor.log(f"[Scanner/Mobile] Session stopped site='{site}'")
+    return jsonify({"ok": True})
+
+
+@app.get("/api/mobile/scanner/status/<path:site_name>")
+@mobile_api_required
+def api_mobile_scanner_status(site_name: str):
+    """Get scanner session status for a site."""
+    if not hub_server:
+        return jsonify({"ok": True, "active": False})
+    sess = hub_server._scanner_sessions.get(site_name)
+    if not sess:
+        return jsonify({"ok": True, "active": False})
+    slot = listen_registry.get(sess["slot_id"])
+    streaming = bool(slot and not slot.closed and not slot.stale)
+    if not streaming:
+        hub_server._scanner_sessions.pop(site_name, None)
+        return jsonify({"ok": True, "active": False})
+    rds = sess.get("rds", {})
+    return jsonify({
+        "ok":        True,
+        "active":    True,
+        "freq_mhz":  sess["freq_mhz"],
+        "streaming": slot.last_chunk > slot.created,
+        "ps":        rds.get("ps", ""),
+        "rt":        rds.get("rt", ""),
+        "stereo":    bool(rds.get("stereo")),
+        "pi":        rds.get("pi", ""),
+        "stream_url": f"/hub/scanner/stream/{sess['slot_id']}",
+        "mobile_stream_url": f"/api/mobile/hub/scanner/stream/{sess['slot_id']}",
+    })
+
+
+@app.get("/api/mobile/hub/scanner/stream/<slot_id>")
+@mobile_api_required
+def api_mobile_hub_scanner_stream(slot_id: str):
+    """Proxy scanner PCM stream for mobile clients."""
+    vf = current_app.view_functions.get("hub_scanner_stream")
+    if vf:
+        return vf(slot_id)
+    # Fallback: route through generic slot stream if scanner plugin missing
+    return jsonify({"error": "scanner plugin not installed"}), 503
+
+
+# ─── Mobile: DAB Scanner wrapper endpoints ────────────────────────────────────
+
+@app.get("/api/mobile/dab/sites")
+@mobile_api_required
+def api_mobile_dab_sites():
+    """List sites that have DAB/scanner dongles available."""
+    if not hub_server:
+        return jsonify({"ok": True, "sites": []})
+    sites = []
+    for name, data in hub_server._sites.items():
+        serials = list(dict.fromkeys(
+            data.get("dab_serials", []) + data.get("scanner_serials", [])
+        ))
+        if serials:
+            sites.append({"site": name, "serials": serials})
+    sites.sort(key=lambda x: x["site"].lower())
+    return jsonify({"ok": True, "sites": sites})
+
+
+@app.post("/api/mobile/dab/start")
+@mobile_api_required
+def api_mobile_dab_start():
+    """Start a DAB stream. Body: {site, service, channel, sdr_serial}."""
+    vf = current_app.view_functions.get("dab_start")
+    if not vf:
+        return jsonify({"ok": False, "error": "dab plugin not installed"}), 503
+    # Call the real dab_start handler without CSRF requirement
+    resp = vf()
+    # Patch stream_url to use mobile path
+    try:
+        body = resp.get_json(silent=True) or {}
+        if body.get("ok") and body.get("slot_id"):
+            slot_id = body["slot_id"]
+            body["mobile_stream_url"] = f"/api/mobile/hub/dab/stream/{slot_id}"
+            return jsonify(body), resp.status_code
+    except Exception:
+        pass
+    return resp
+
+
+@app.post("/api/mobile/dab/stop")
+@mobile_api_required
+def api_mobile_dab_stop():
+    """Stop DAB stream. Body: {site}."""
+    vf = current_app.view_functions.get("dab_stop")
+    if not vf:
+        return jsonify({"ok": False, "error": "dab plugin not installed"}), 503
+    return vf()
+
+
+@app.get("/api/mobile/dab/status/<path:site_name>")
+@mobile_api_required
+def api_mobile_dab_status(site_name: str):
+    """Get DAB session status for a site."""
+    vf = current_app.view_functions.get("dab_status")
+    if not vf:
+        return jsonify({"ok": True, "active": False})
+    resp = vf(site_name)
+    try:
+        body = resp.get_json(silent=True) or {}
+        if body.get("ok") and body.get("slot_id"):
+            slot_id = body["slot_id"]
+            body["mobile_stream_url"] = f"/api/mobile/hub/dab/stream/{slot_id}"
+            return jsonify(body), resp.status_code
+    except Exception:
+        pass
+    return resp
+
+
+@app.get("/api/mobile/dab/services/<path:site_name>")
+@mobile_api_required
+def api_mobile_dab_services(site_name: str):
+    """List scanned DAB services for a site."""
+    vf = current_app.view_functions.get("dab_services")
+    if not vf:
+        return jsonify({"ok": True, "services": []})
+    return vf(site_name)
+
+
+@app.post("/api/mobile/dab/scan")
+@mobile_api_required
+def api_mobile_dab_scan():
+    """Trigger DAB band scan. Body: {site, sdr_serial, channels?}."""
+    vf = current_app.view_functions.get("dab_scan")
+    if not vf:
+        return jsonify({"ok": False, "error": "dab plugin not installed"}), 503
+    return vf()
+
+
+@app.get("/api/mobile/hub/dab/stream/<slot_id>")
+@mobile_api_required
+def api_mobile_hub_dab_stream(slot_id: str):
+    """Proxy DAB MP3 stream for mobile clients."""
+    vf = current_app.view_functions.get("hub_dab_stream")
+    if vf:
+        return vf(slot_id)
+    return jsonify({"error": "dab plugin not installed"}), 503
+
+
+# ─── Mobile: chain maintenance endpoint ──────────────────────────────────────
+
+@app.post("/api/mobile/chains/<cid>/maintenance")
+@mobile_api_required
+def api_mobile_chain_maintenance(cid: str):
+    """Set or clear maintenance mode for all nodes in a chain.
+    Body: {"duration": <seconds>}  — duration=0 clears.
+    No CSRF required (mobile token auth).
+    """
+    if not hub_server:
+        return jsonify({"ok": False, "error": "no hub server"}), 400
+    data     = request.get_json(silent=True) or {}
+    duration = int(data.get("duration", 0))
+    cfg      = monitor.app_cfg
+    chains   = cfg.signal_chains or [] if cfg else []
+    chain    = next((c for c in chains if c.get("id") == cid), None)
+    if not chain:
+        return jsonify({"ok": False, "error": "chain not found"}), 404
+    maint  = hub_server._chain_maintenance.setdefault(cid, {})
+    expiry = time.time() + duration if duration > 0 else 0
+    count  = 0
+    for node in _iter_chain_leaf_nodes(chain):
+        site   = node.get("site", "")
+        stream = node.get("stream", "")
+        if not site or not stream:
+            continue
+        mkey = f"{site}|{stream}"
+        if duration <= 0:
+            maint.pop(mkey, None)
+        else:
+            maint[mkey] = expiry
+        count += 1
+    is_on  = duration > 0
+    action = f"set ({duration}s)" if is_on else "cleared"
+    monitor.log(f"[Chain/Mobile] Maintenance {action} for {count} node(s) in chain {cid!r}")
+    return jsonify({"ok": True, "maintenance": is_on, "nodes": count})
 
 
 @app.post("/api/mobile/token/rotate")
