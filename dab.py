@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.7",
+    "version":  "1.0.8",
 }
 
 import hashlib
@@ -1297,7 +1297,7 @@ def register(app, ctx):
     t = threading.Thread(target=_client_poller, args=(monitor,),
                           daemon=True, name="DABCmdPoller")
     t.start()
-    print("[DAB] Client command poller thread started")
+    monitor.log("[DAB] Client command poller started")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1309,7 +1309,6 @@ def _client_poller(monitor):
     import json as _json
     _consecutive_errors = 0
     _idles = 0
-    print("[DAB] Client poller running")
     while True:
         try:
             cfg     = monitor.app_cfg
@@ -1317,21 +1316,18 @@ def _client_poller(monitor):
             hub_url = (cfg.hub.hub_url or "").rstrip("/")
             site    = (cfg.hub.site_name or "").strip()
             if mode not in ("client", "both"):
-                # Hub-only machine — no RTL-SDR here, nothing to do
                 _idles += 1
                 if _idles == 1:
-                    print(f"[DAB] Poller idle: mode='{mode}' (not client/both)")
+                    monitor.log(f"[DAB] Poller idle: mode='{mode}' — hub-only machine, no scan")
                 time.sleep(3)
                 continue
             if not hub_url or not site:
                 _idles += 1
                 if _idles % 20 == 0:
-                    print(f"[DAB] Poller waiting: hub_url={hub_url!r} site={site!r}")
+                    monitor.log(f"[DAB] Poller waiting for config: hub_url={hub_url!r} site={site!r}")
                 time.sleep(3)
                 continue
             _idles = 0
-            # POST — same pattern as heartbeat/audio chunks, works through
-            # reverse proxies that strip custom GET headers.
             payload = _json.dumps({"site": site}).encode()
             req = urllib.request.Request(
                 f"{hub_url}/api/hub/dab/cmd",
@@ -1345,28 +1341,27 @@ def _client_poller(monitor):
                 body   = resp.read()
             if status == 403:
                 if _consecutive_errors % 20 == 0:
-                    print(f"[DAB] Command poll: 403 Forbidden — "
-                          f"site '{site}' not approved on hub")
+                    monitor.log(f"[DAB] Command poll 403: site '{site}' not approved on hub")
                 _consecutive_errors += 1
             else:
                 _consecutive_errors = 0
                 d   = _json.loads(body)
                 cmd = d.get("cmd")
                 if cmd:
-                    print(f"[DAB] Received command: {cmd.get('action')}")
-                    _dispatch_client_cmd(cmd, hub_url, site, cfg)
+                    monitor.log(f"[DAB] Received command: {cmd.get('action')}")
+                    _dispatch_client_cmd(cmd, hub_url, site, cfg, monitor)
         except urllib.error.HTTPError as e:
             if _consecutive_errors % 20 == 0:
-                print(f"[DAB] Command poll HTTP error: {e.code} {e.reason}")
+                monitor.log(f"[DAB] Command poll HTTP error: {e.code} {e.reason}")
             _consecutive_errors += 1
         except Exception as e:
             if _consecutive_errors % 20 == 0:
-                print(f"[DAB] Command poll error: {e}")
+                monitor.log(f"[DAB] Command poll error: {e}")
             _consecutive_errors += 1
         time.sleep(3)
 
 
-def _dispatch_client_cmd(cmd, hub_url, site, cfg):
+def _dispatch_client_cmd(cmd, hub_url, site, cfg, monitor):
     action = cmd.get("action", "")
     if action == "start":
         _stop_stream()
@@ -1383,7 +1378,6 @@ def _dispatch_client_cmd(cmd, hub_url, site, cfg):
     elif action == "stop":
         _stop_stream()
     elif action == "scan_stop":
-        # Kill the current scan process immediately (SIGKILL)
         global _scan_proc
         p = _scan_proc
         if p:
@@ -1391,12 +1385,12 @@ def _dispatch_client_cmd(cmd, hub_url, site, cfg):
                 p.kill()
             except Exception:
                 pass
-        print(f"[DAB] Scan aborted by hub command (scan_stop)")
+        monitor.log("[DAB] Scan stopped by hub command")
     elif action == "scan":
         channels = cmd.get("channels") or list(_DAB_CHANNELS.keys())
         t = threading.Thread(
             target=_do_scan,
-            args=(site, cmd.get("sdr_serial", ""), hub_url, channels),
+            args=(site, cmd.get("sdr_serial", ""), hub_url, channels, monitor),
             daemon=True,
             name="DABScanner",
         )
@@ -1711,7 +1705,7 @@ def _usb_reset_rtlsdr(serial=None):
 # Client-side: DAB band scan
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
+def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
     """
     Scan all Band III DAB channels with welle-cli.
 
@@ -1725,9 +1719,14 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
     """
     import json as _json
 
+    def _log(msg):
+        if monitor:
+            monitor.log(msg)
+        print(msg, flush=True)
+
     welle_bin = shutil.which("welle-cli")
     if not welle_bin:
-        print("[DAB] Scan aborted: welle-cli not found in PATH")
+        _log("[DAB] Scan aborted: welle-cli not found in PATH")
         return
 
     progress_url = f"{hub_url}/api/hub/dab/scan_progress/{site}"
@@ -1737,7 +1736,7 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
     channels     = channels_to_scan if channels_to_scan else list(_DAB_CHANNELS.keys())
     total        = len(channels)
 
-    print(f"[DAB] Band scan started for site '{site}': {total} channels")
+    _log(f"[DAB] Band scan started: site='{site}' channels={total} welle={welle_bin}")
 
     for idx, ch in enumerate(channels):
         # ── Build scan command ─────────────────────────────────────────────
@@ -1767,7 +1766,7 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
             pass
 
         if should_stop:
-            print(f"[DAB] Scan stopped by user at channel {ch} ({idx}/{total})")
+            _log(f"[DAB] Scan stopped by user at channel {ch} ({idx}/{total})")
             break
 
         # ── Run welle-cli, collect output ─────────────────────────────────
@@ -1800,7 +1799,7 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                print(f"[DAB] welle-cli hung on {ch}, sending SIGKILL")
+                _log(f"[DAB] welle-cli hung on {ch}, sending SIGKILL")
                 proc.kill()
                 try:
                     proc.wait(timeout=2)
@@ -1820,7 +1819,7 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
             _scan_proc = None
         except Exception as e:
             _scan_proc = None
-            print(f"[DAB] Scan error on {ch}: {e}")
+            _log(f"[DAB] Scan error on {ch}: {e}")
             continue
 
         # Let the USB device settle before next channel
@@ -1870,7 +1869,7 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
 
         # ── If mux found, push a progress update with the mux chip data ───
         if found_in_channel:
-            print(f"[DAB] {ch}: {len(found_in_channel)} services ({ensemble_name or ch})")
+            _log(f"[DAB] {ch}: {len(found_in_channel)} services ({ensemble_name or ch})")
             try:
                 mux_payload = _json.dumps({
                     "channel":  ch,
@@ -1890,7 +1889,7 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
                 with urllib.request.urlopen(req, timeout=3) as resp:
                     resp_data = _json.loads(resp.read())
                 if resp_data.get("stop"):
-                    print(f"[DAB] Scan stopped by user after finding mux on {ch}")
+                    _log(f"[DAB] Scan stopped by user after finding mux on {ch}")
                     break
             except Exception:
                 pass
@@ -1906,6 +1905,6 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
             headers={"Content-Type": "application/json", "X-Dab-Site": site},
         )
         urllib.request.urlopen(req, timeout=5).close()
-        print(f"[DAB] Scan complete: {len(all_services)} services across {total} channels")
+        _log(f"[DAB] Scan complete: {len(all_services)} services across {total} channels")
     except Exception as e:
-        print(f"[DAB] Failed to push scan results: {e}")
+        _log(f"[DAB] Failed to push scan results: {e}")

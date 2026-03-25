@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.99] - 2026-03-25
+
+### Fixed
+- **DAB Scanner client log now visible in in-app log window** (`dab.py` v1.0.8) — all client-side `print()` calls in `_client_poller`, `_dispatch_client_cmd`, and `_do_scan` were going to stdout (terminal only) and were invisible in the Settings → Logs tab. Switched all key diagnostic messages to `monitor.log()` by threading `monitor` through to `_dispatch_client_cmd(monitor)` and `_do_scan(..., monitor)`. A `_log()` helper inside `_do_scan` calls both `monitor.log()` and `print()` so nothing is lost. After this update the client's log window will show: `[DAB] Client command poller started`, `[DAB] Received command: scan`, `[DAB] Band scan started: site='...' channels=N welle=/path/to/welle-cli` (or `[DAB] Scan aborted: welle-cli not found in PATH` if welle-cli is missing from the service PATH).
+
 ## [3.3.98] - 2026-03-25
 
 ### Fixed / Diagnostic
