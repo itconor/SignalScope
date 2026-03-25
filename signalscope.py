@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.124"
+BUILD                  = "SignalScope-3.3.125"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -21679,11 +21679,63 @@ def api_mobile_scanner_status(site_name: str):
 @app.get("/api/mobile/hub/scanner/stream/<slot_id>")
 @mobile_api_required
 def api_mobile_hub_scanner_stream(slot_id: str):
-    """Proxy scanner PCM stream for mobile clients (raw PCM, kept for compatibility)."""
-    vf = current_app.view_functions.get("hub_scanner_stream")
-    if vf:
-        return vf(slot_id)
-    return jsonify({"error": "scanner plugin not installed"}), 503
+    """Stream raw 16-bit LE PCM scanner audio for mobile clients.
+
+    Accesses the listen slot directly (bypassing @login_required on the plugin
+    view function) — the mobile token already authenticated the request.
+    Format: raw 16-bit signed LE, mono, 48 kHz — matches PCMStreamPlayer.
+    """
+    import queue as _queue
+
+    slot = listen_registry.get(slot_id)
+    if not slot or slot.kind not in ("scanner",):
+        return "Stream not found or expired", 404
+
+    BLOCK     = 9600          # 0.1 s at 48 kHz, 16-bit mono
+    SILENCE   = b"\x00" * BLOCK
+    _BLK_DUR  = 0.10
+
+    def generate():
+        # Wait for first real chunk (startup timeout 20 s, fill with silence)
+        startup_deadline = time.time() + 20.0
+        next_sil_t = time.monotonic() + _BLK_DUR
+        while True:
+            try:
+                chunk = slot.get(timeout=0.05)
+                yield chunk
+                break
+            except _queue.Empty:
+                if slot.closed or time.time() > startup_deadline:
+                    return
+                now = time.monotonic()
+                if now >= next_sil_t:
+                    yield SILENCE
+                    next_sil_t += _BLK_DUR
+
+        # Main relay loop — inject silence if gap > 1 s (WAN-friendly)
+        _kp_threshold = 1.0
+        next_kp_t = time.monotonic() + _kp_threshold
+        while True:
+            try:
+                chunk = slot.get(timeout=0.30)
+                next_kp_t = time.monotonic() + _kp_threshold
+                yield chunk
+            except _queue.Empty:
+                if slot.closed or slot.stale:
+                    return
+                now = time.monotonic()
+                if now >= next_kp_t:
+                    yield SILENCE
+                    next_kp_t += _kp_threshold
+
+    return Response(
+        generate(),
+        mimetype="application/octet-stream",
+        headers={
+            "Cache-Control":     "no-cache, no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/mobile/hub/scanner/stream_wav/<slot_id>")
@@ -21863,11 +21915,63 @@ def api_mobile_dab_scan():
 @app.get("/api/mobile/hub/dab/stream/<slot_id>")
 @mobile_api_required
 def api_mobile_hub_dab_stream(slot_id: str):
-    """Proxy DAB MP3 stream for mobile clients (MP3, played directly by AVPlayer)."""
-    fn = _dab_vf("hub_dab_stream")
-    if fn:
-        return fn(slot_id)
-    return jsonify({"error": "dab plugin not installed"}), 503
+    """Stream DAB MP3 audio for mobile clients — accesses slot directly.
+
+    DAB streams are MP3 (no PCM silence injection needed).  AVPlayer can
+    play audio/mpeg directly so no special wrapper is required.
+    """
+    import queue as _queue
+
+    slot = listen_registry.get(slot_id)
+    if not slot or slot.kind != "dab":
+        return "Stream not found or expired", 404
+
+    def generate():
+        # welle-cli can take 15-35 s to acquire DAB sync before any output
+        deadline = time.time() + 35.0
+        try:
+            while True:
+                try:
+                    chunk = slot.get(timeout=0.5)
+                    yield chunk
+                    break
+                except _queue.Empty:
+                    if slot.closed or time.time() > deadline:
+                        return
+            while True:
+                try:
+                    chunk = slot.get(timeout=1.0)
+                    yield chunk
+                except _queue.Empty:
+                    if slot.closed or slot.stale:
+                        break
+        finally:
+            slot.closed = True
+            listen_registry.remove(slot.slot_id)
+
+    return Response(
+        generate(),
+        mimetype="audio/mpeg",
+        headers={
+            "Cache-Control":     "no-cache, no-store",
+            "X-Accel-Buffering": "no",
+            "Accept-Ranges":     "none",
+        },
+        direct_passthrough=True,
+    )
+
+
+@app.get("/api/mobile/dab/scan_status/<path:site_name>")
+@mobile_api_required
+def api_mobile_dab_scan_status(site_name: str):
+    """Poll DAB band-scan progress.  Returns {ok, status, progress, total, found}.
+    status: 'idle' | 'scanning' | 'done'
+    Mobile clients poll this until status == 'done', then fetch /dab/services.
+    """
+    fn = _dab_vf("dab_scan_status")
+    if not fn:
+        return jsonify({"ok": True, "status": "idle", "progress": 0, "total": 0, "found": 0})
+    return fn(site_name)
 
 
 # ─── Mobile: chain maintenance endpoint ──────────────────────────────────────

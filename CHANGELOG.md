@@ -2,6 +2,15 @@
 
 ---
 
+## [3.3.125] - 2026-03-25
+
+### Fixed
+- **iOS FM Scanner — immediate disconnect on play** (`signalscope.py`) — `api_mobile_hub_scanner_stream` was calling `vf(slot_id)` (the fully decorated `hub_scanner_stream` plugin view), which triggered `@login_required` and redirected to `/login`, causing `URLSession` to complete immediately with no audio. Fixed by accessing `listen_registry.get(slot_id)` directly and inlining the same raw-PCM relay generator (startup silence, 1 s keepalive threshold) — same pattern as the WAV endpoint. `PCMStreamPlayer` on iOS now receives a continuous `application/octet-stream` 16-bit LE PCM feed as expected.
+- **iOS DAB Scanner — stream endpoint calls decorated view function** (`signalscope.py`) — `api_mobile_hub_dab_stream` was using `_dab_vf("hub_dab_stream")` to call the unwrapped plugin function. Replaced with direct `listen_registry.get(slot_id)` access and an inlined MP3 relay generator, consistent with the FM stream fix. No decorator unwrapping needed — the slot is accessible from the core signalscope context.
+- **iOS DAB Scanner — services never populated after scan** (`signalscope.py`, iOS) — the scan action waited a fixed 30 seconds then fetched services, but a full 38-channel DAB band scan takes 5–15 minutes. Added `/api/mobile/dab/scan_status/<site>` endpoint (delegates to `dab_scan_status`) and updated the iOS `scanAction()` to poll every 5 seconds until `status == "done"`, showing live progress percentage and current channel. Services are loaded immediately after the scan completes.
+
+---
+
 ## [3.3.124] - 2026-03-25
 
 ### Fixed
