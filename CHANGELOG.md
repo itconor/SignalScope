@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.101] - 2026-03-25
+
+### Diagnostic
+- **DAB Scanner raw output logging** (`dab.py` v1.0.10) — temporary diagnostic: when a channel produces output but no service names are parsed, the first 800 bytes of raw welle-cli output are logged via `monitor.log()` so the exact output format can be seen in the client's log window. Used to fix the service name regex patterns.
+
 ## [3.3.100] - 2026-03-25
 
 ### Fixed

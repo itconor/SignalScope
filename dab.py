@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.9",
+    "version":  "1.0.10",
 }
 
 import hashlib
@@ -1831,6 +1831,11 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
             continue
 
         text = b"".join(output_lines).decode("utf-8", errors="replace")
+
+        # ── Debug: log raw output for the first active channel ────────────
+        # Remove after confirming service name parsing is correct.
+        if not all_services and text.strip():
+            _log(f"[DAB] Raw output sample ({ch}):\n" + text[:800])
 
         # ── Extract ensemble name ──────────────────────────────────────────
         ensemble_name = ""
