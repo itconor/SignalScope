@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.20",
+    "version":  "1.0.21",
 }
 
 import hashlib
@@ -1456,7 +1456,7 @@ def _stop_stream():
     if old.get("stop"):
         old["stop"].set()
     killed_rtlsdr = False
-    for key in ("proc_welle", "proc_ffmpeg"):
+    for key in ("proc_welle",):
         proc = old.get(key)
         if proc:
             try:
@@ -1490,29 +1490,23 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
                    monitor=None):
     """
     Run welle-cli in HTTP server mode (-w PORT), poll mux.json to find the
-    service SID, then run ffmpeg reading from http://localhost:PORT/mp3/{SID}
-    and POST MP3 chunks to the hub relay.
+    service SID, then stream /mp3/{SID} directly to the hub relay.
 
-    This mirrors the proven approach in signalscope.py _decode_dab_stream.
+    welle-cli already serves MP3 from /mp3/{SID} — no ffmpeg transcoding needed.
     """
     def _log(msg):
         if monitor:
             monitor.log(msg)
         print(msg, flush=True)
 
-    welle_bin  = shutil.which("welle-cli")
-    ffmpeg_bin = shutil.which("ffmpeg")
-
+    welle_bin = shutil.which("welle-cli")
     if not welle_bin:
         _log("[DAB] ERROR: welle-cli not found in PATH")
-        return
-    if not ffmpeg_bin:
-        _log("[DAB] ERROR: ffmpeg not found in PATH")
         return
 
     # Dedicated port for stream worker (separate from scan's 7979)
     _WELLE_STREAM_PORT = 7980
-    _CHUNK = 8192   # ~0.5 s at 128 kbps
+    _CHUNK = 8192   # bytes per read/POST (~0.5 s at 128 kbps)
 
     chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
 
@@ -1521,12 +1515,10 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
     if sdr_serial:
         welle_cmd += ["-D", f"driver=rtlsdr,serial={sdr_serial}"]
 
-    _log(f"[DAB] Starting stream: ch={channel} service='{service}' "
-         f"bitrate={bitrate}k serial={sdr_serial or 'auto'}")
+    _log(f"[DAB] Starting stream: ch={channel} service='{service}' serial={sdr_serial or 'auto'}")
     _log(f"[DAB] welle-cli cmd: {' '.join(welle_cmd)}")
 
-    proc_welle  = None
-    proc_ffmpeg = None
+    proc_welle = None
 
     try:
         proc_welle = subprocess.Popen(
@@ -1551,18 +1543,16 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
         threading.Thread(target=_drain_stdout, daemon=True, name="DABWelleStdout").start()
 
         # DLS/log reader thread (reads welle-cli stderr for status + DLS text)
-        dls_thread = threading.Thread(
+        threading.Thread(
             target=_dls_reader,
             args=(proc_welle.stderr, site, hub_url, stop, monitor),
-            daemon=True,
-            name="DABDlsReader",
-        )
-        dls_thread.start()
+            daemon=True, name="DABDlsReader",
+        ).start()
 
         # ── Phase 1: poll mux.json to find the SID for the requested service ──
         sid      = None
         deadline = time.time() + 30.0
-        _log(f"[DAB] Waiting for mux.json / SID lookup (service='{service}')...")
+        _log(f"[DAB] Waiting for SID (service='{service}')...")
 
         while not stop.is_set() and time.time() < deadline:
             if proc_welle.poll() is not None:
@@ -1580,150 +1570,89 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
                         sid = str(svc.get("sid", ""))
                         break
                 if sid:
-                    _log(f"[DAB] Found SID={sid} for service '{service}'")
+                    _log(f"[DAB] Found SID={sid} for '{service}'")
                     break
-            except Exception:
-                pass
+                else:
+                    # mux.json replied but service not listed yet — log once
+                    svcs = [((s.get("label",{}).get("label","") or s.get("label",{}).get("shortlabel","")).strip())
+                            for s in mux_data.get("services", [])]
+                    _log(f"[DAB] mux.json has {len(svcs)} services: {svcs[:8]}")
+            except Exception as e:
+                _log(f"[DAB] mux.json poll: {e}")
             time.sleep(1.0)
 
         if stop.is_set():
             return
         if not sid:
-            _log(f"[DAB] Service '{service}' not found in mux.json after 30 s — giving up")
+            _log(f"[DAB] Service '{service}' not found in mux after 30 s")
             return
 
-        # ── Phase 2: probe /mp3/{SID} until it serves audio (up to 35 s) ─────
-        # signalscope.py uses 35s here — some services take 20-25s after mux
-        # ready before their /mp3/ endpoint serves enough bytes.
+        # ── Phase 2 + 3: open /mp3/{SID} and stream directly to hub ───────────
+        # welle-cli already serves MP3 — no ffmpeg transcoding needed.
+        # We open the stream, wait up to 35s for the first bytes, then relay.
         audio_url = f"http://localhost:{_WELLE_STREAM_PORT}/mp3/{sid}"
-        _log(f"[DAB] Probing audio endpoint: {audio_url}")
+        _log(f"[DAB] Opening audio stream: {audio_url}")
 
-        stream_ready   = False
-        probe_deadline = time.time() + 35.0
-        while not stop.is_set() and time.time() < probe_deadline:
-            if proc_welle.poll() is not None:
-                _log(f"[DAB] welle-cli exited during probe (rc={proc_welle.returncode})")
-                return
-            try:
-                with urllib.request.urlopen(audio_url, timeout=3) as r:
-                    probe = r.read(32768)
-                    if probe and len(probe) >= 4096:
-                        _log(f"[DAB] Audio endpoint ready ({len(probe)} bytes)")
-                        stream_ready = True
-                        break
-            except Exception as e:
-                _log(f"[DAB] Waiting for audio endpoint: {e}")
-            time.sleep(0.5)
-
-        if stop.is_set():
-            return
-        if not stream_ready:
-            _log(f"[DAB] Audio endpoint not ready after 35 s — giving up")
-            return
-
-        # ── Phase 3: ffmpeg reads from welle-cli HTTP → MP3 ──────────────────
-        ffmpeg_cmd = [
-            ffmpeg_bin,
-            "-loglevel", "warning",
-            "-i", audio_url,
-            "-c:a", "libmp3lame",
-            "-b:a", f"{bitrate}k",
-            "-f", "mp3", "pipe:1",
-        ]
-        _log(f"[DAB] ffmpeg cmd: {' '.join(ffmpeg_cmd)}")
-
-        proc_ffmpeg = subprocess.Popen(
-            ffmpeg_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,   # capture stderr so we can log it
-            bufsize=0,
-        )
-
-        # Register ffmpeg process so _stop_stream() can terminate it too
-        with _state_lock:
-            if _client_sess.get("slot_id") == slot_id:
-                _client_sess["proc_ffmpeg"] = proc_ffmpeg
-
-        # Log ffmpeg stderr in a background thread
-        def _log_ffmpeg_stderr():
-            try:
-                for raw in proc_ffmpeg.stderr:
-                    line = raw.decode("utf-8", errors="replace").strip()
-                    if line:
-                        _log(f"[DAB ffmpeg] {line}")
-            except Exception:
-                pass
-        threading.Thread(target=_log_ffmpeg_stderr, daemon=True,
-                         name="DABFfmpegStderr").start()
-
-        import select as _select
-        out_deadline   = None
         chunks_sent    = 0
         post_err_count = 0
+        stream_opened  = False
+        open_deadline  = time.time() + 35.0
 
         while not stop.is_set():
-            # Non-blocking wait: up to 2 s for ffmpeg to produce output
-            rlist, _, _ = _select.select([proc_ffmpeg.stdout], [], [], 2.0)
-            if not rlist:
-                if stop.is_set():
-                    break
-                if proc_welle and proc_welle.poll() is not None:
-                    _log(f"[DAB] welle-cli exited (rc={proc_welle.returncode}) "
-                         f"after {chunks_sent} chunks")
-                    break
-                if proc_ffmpeg and proc_ffmpeg.poll() is not None:
-                    rc = proc_ffmpeg.returncode
-                    _log(f"[DAB] ffmpeg exited (rc={rc}) after {chunks_sent} chunks")
-                    break
-                continue
-
-            chunk = proc_ffmpeg.stdout.read(_CHUNK)
-            if not chunk:
-                _log(f"[DAB] ffmpeg EOF after {chunks_sent} chunks")
-                break
-
-            # Pace output: don't send faster than real-time
-            if out_deadline is None:
-                out_deadline = time.monotonic()
-                _log(f"[DAB] First MP3 chunk ready — streaming to hub")
-            wait = out_deadline - time.monotonic()
-            if wait > 0:
-                time.sleep(min(wait, 0.2))
-
-            dur = len(chunk) * 8 / (bitrate * 1000)
-            out_deadline += dur
-
-            ts  = time.time()
-            sig = _sign_chunk(secret, chunk, ts) if secret else ""
-            req = urllib.request.Request(
-                chunk_url,
-                data=chunk,
-                method="POST",
-                headers={
-                    "Content-Type":  "application/octet-stream",
-                    "X-Hub-Sig":     sig,
-                    "X-Hub-Ts":      str(int(ts)),
-                    "X-Hub-Nonce":   hashlib.md5(os.urandom(8)).hexdigest()[:16],
-                },
-            )
+            if proc_welle.poll() is not None:
+                _log(f"[DAB] welle-cli exited (rc={proc_welle.returncode}) after {chunks_sent} chunks")
+                return
             try:
-                urllib.request.urlopen(req, timeout=5).close()
-                chunks_sent   += 1
-                post_err_count = 0
+                with urllib.request.urlopen(audio_url, timeout=10) as audio_r:
+                    _log(f"[DAB] Audio stream connected — relaying to hub")
+                    stream_opened = True
+                    while not stop.is_set():
+                        if proc_welle.poll() is not None:
+                            _log(f"[DAB] welle-cli exited during stream after {chunks_sent} chunks")
+                            return
+                        chunk = audio_r.read(_CHUNK)
+                        if not chunk:
+                            _log(f"[DAB] Audio stream ended after {chunks_sent} chunks")
+                            return
+                        ts  = time.time()
+                        sig = _sign_chunk(secret, chunk, ts) if secret else ""
+                        req = urllib.request.Request(
+                            chunk_url, data=chunk, method="POST",
+                            headers={
+                                "Content-Type": "application/octet-stream",
+                                "X-Hub-Sig":    sig,
+                                "X-Hub-Ts":     str(int(ts)),
+                                "X-Hub-Nonce":  hashlib.md5(os.urandom(8)).hexdigest()[:16],
+                            },
+                        )
+                        try:
+                            urllib.request.urlopen(req, timeout=5).close()
+                            if chunks_sent == 0:
+                                _log(f"[DAB] First MP3 chunk sent to hub")
+                            chunks_sent   += 1
+                            post_err_count = 0
+                        except Exception as e:
+                            post_err_count += 1
+                            if post_err_count == 1 or post_err_count % 20 == 0:
+                                _log(f"[DAB] Chunk POST failed ({post_err_count}x): {e}")
             except Exception as e:
-                post_err_count += 1
-                if post_err_count == 1 or post_err_count % 20 == 0:
-                    _log(f"[DAB] Chunk POST failed ({post_err_count}x): {e}")
+                if stream_opened:
+                    _log(f"[DAB] Audio stream error after {chunks_sent} chunks: {e}")
+                    return
+                if time.time() > open_deadline:
+                    _log(f"[DAB] Audio endpoint not ready after 35 s: {e}")
+                    return
+                _log(f"[DAB] Waiting for audio stream: {e}")
+                time.sleep(0.5)
 
     except Exception as e:
         _log(f"[DAB] Stream worker error: {e}")
     finally:
-        for p in (proc_ffmpeg, proc_welle):
-            if p:
-                try:
-                    p.terminate()
-                except Exception:
-                    pass
+        if proc_welle:
+            try:
+                proc_welle.terminate()
+            except Exception:
+                pass
         _log(f"[DAB] Stream worker exited: ch={channel} service='{service}'")
 
 
