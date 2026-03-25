@@ -126,6 +126,11 @@ def register(app, ctx):
         if not re.match(r"^[\w\-]+\.mp3$", filename):
             abort(400)
         path = _app_dir / _REC_DIR / _safe(stream_slug) / date / filename
+        # Confirm resolved path stays within the recordings root
+        try:
+            _assert_within_rec_root(path)
+        except ValueError:
+            abort(400)
         if not path.exists():
             abort(404)
         return _serve_ranged(path, "audio/mpeg")
@@ -168,21 +173,35 @@ def _save_config():
     except Exception as e:
         _log(f"[Logger] Config save failed: {e}")
 
+_ALLOWED_BITRATES = {"32k", "48k", "64k", "96k", "128k", "192k", "256k", "320k"}
+
 def _stream_cfg(stream_name):
     with _cfg_lock:
         s = _cfg.get("streams", {}).get(stream_name, {})
+    hq = s.get("hq_bitrate", _DEFAULT_HQ)
+    lq = s.get("lq_bitrate", _DEFAULT_LQ)
     return {
         "enabled":       bool(s.get("enabled", False)),
-        "hq_bitrate":    s.get("hq_bitrate", _DEFAULT_HQ),
-        "lq_bitrate":    s.get("lq_bitrate", _DEFAULT_LQ),
+        "hq_bitrate":    hq if hq in _ALLOWED_BITRATES else _DEFAULT_HQ,
+        "lq_bitrate":    lq if lq in _ALLOWED_BITRATES else _DEFAULT_LQ,
         "lq_after_days": int(s.get("lq_after_days", _DEFAULT_LQ_AFTER)),
         "retain_days":   int(s.get("retain_days", _DEFAULT_RETAIN)),
     }
 
+_SAFE_URL_SCHEMES = ("http://", "https://", "rtp://", "rtsp://", "rtmp://",
+                     "udp://", "tcp://", "sound://", "fm://", "dab://")
+
+def _is_safe_url(url):
+    """Accept URLs with known schemes or local device paths; reject anything else."""
+    if not url:
+        return False
+    low = url.lower()
+    return any(low.startswith(s) for s in _SAFE_URL_SCHEMES)
+
 def _available_streams():
     cfg = _monitor.app_cfg
     return [{"name": inp.name, "url": inp.device_index, "slug": _slug(inp.name)}
-            for inp in cfg.inputs if inp.enabled]
+            for inp in cfg.inputs if inp.enabled and _is_safe_url(inp.device_index)]
 
 def _slug_to_name(slug):
     for s in _available_streams():
@@ -434,7 +453,12 @@ def _run_maintenance():
             retain = scfg["retain_days"]
             lq_after = scfg["lq_after_days"]
             if retain > 0 and age >= retain:
-                _log(f"[Logger] Pruning {day_dir}")
+                try:
+                    _assert_within_rec_root(day_dir)
+                except ValueError:
+                    _log(f"[Logger] Refusing to prune path outside rec root: {day_dir}")
+                    continue
+                _log(f"[Logger] Pruning {day_dir.name} ({stream_dir.name})")
                 shutil.rmtree(day_dir, ignore_errors=True)
             elif lq_after > 0 and age >= lq_after:
                 for mp3 in day_dir.glob("*.mp3"):
@@ -476,17 +500,40 @@ def _maybe_downgrade(path, slug, date, lq_br, ffmpeg):
 #  CLIP EXPORT
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _assert_within_rec_root(path: Path):
+    """Raise ValueError if path escapes the recordings root directory."""
+    rec_root = (_app_dir / _REC_DIR).resolve()
+    try:
+        path.resolve().relative_to(rec_root)
+    except ValueError:
+        raise ValueError(f"Path escapes recordings root: {path}")
+
+def _ffmpeg_concat_escape(p: Path) -> str:
+    """Escape a path for use in an ffmpeg concat list file."""
+    # ffmpeg concat format: single-quote the path, escape internal single quotes
+    return str(p).replace("\\", "\\\\").replace("'", "\\'")
+
 def _export_clip(slug, date, start_s, end_s):
     day_dir = _app_dir / _REC_DIR / slug / date
     if not day_dir.exists():
         return jsonify({"error": "no recordings"}), 404
     ffmpeg  = shutil.which("ffmpeg") or "ffmpeg"
     segs    = _get_segments(slug, date)
-    relevant = [(seg["start_s"], day_dir / seg["filename"])
-                for seg in segs
-                if seg["start_s"] + _SEG_SECS > start_s
-                and seg["start_s"] < end_s
-                and (day_dir / seg["filename"]).exists()]
+
+    # Build list of relevant segments, validating each path stays within rec root
+    relevant = []
+    for seg in segs:
+        if not (seg["start_s"] + _SEG_SECS > start_s and seg["start_s"] < end_s):
+            continue
+        seg_path = day_dir / seg["filename"]
+        if not seg_path.exists():
+            continue
+        try:
+            _assert_within_rec_root(seg_path)
+        except ValueError:
+            continue
+        relevant.append((seg["start_s"], seg_path))
+
     if not relevant:
         return jsonify({"error": "no segments in range"}), 404
 
@@ -500,13 +547,19 @@ def _export_clip(slug, date, start_s, end_s):
                    "-t", f"{end_s - start_s:.3f}",
                    "-c", "copy", "-f", "mp3", "pipe:1"]
         else:
+            # Write concat list; use -safe 1 (relative paths not required when
+            # paths are escaped correctly and don't use protocol prefixes).
+            # We keep -safe 0 only because paths are absolute, but we validate
+            # every path is within the recordings root above.
             tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
-            for _, p in relevant:
-                tf.write(f"file '{p}'\n")
-            tf.close()
-            tf_name   = tf.name
-            first_ss  = relevant[0][0]
-            ss        = max(0.0, start_s - first_ss)
+            tf_name = tf.name          # capture before close so finally can clean up
+            try:
+                for _, p in relevant:
+                    tf.write(f"file '{_ffmpeg_concat_escape(p)}'\n")
+            finally:
+                tf.close()
+            first_ss = relevant[0][0]
+            ss       = max(0.0, start_s - first_ss)
             cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
                    "-f", "concat", "-safe", "0", "-i", tf_name,
                    "-ss", f"{ss:.3f}", "-t", f"{end_s - start_s:.3f}",
