@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.119"
+BUILD                  = "SignalScope-3.3.120"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -12017,7 +12017,7 @@ def _inject_nav():
         else:
             plugin_links = ""
         return (
-            '<header style="background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);box-shadow:0 10px 24px rgba(0,0,0,.18)">'
+            '<header style="background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);box-shadow:0 10px 24px rgba(0,0,0,.18);position:relative;z-index:200">'
             f'<a href="{home_href}" style="text-decoration:none;display:flex;align-items:center;gap:12px;min-width:0">'
             '<img src="/static/signalscope_icon.png" alt="SignalScope" style="height:46px;width:46px;display:block;object-fit:contain;flex-shrink:0;filter:drop-shadow(0 4px 12px rgba(23,168,255,.28))">'
             '<div style="display:flex;flex-direction:column;line-height:1.05;min-width:0">'
