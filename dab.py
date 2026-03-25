@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.1",
+    "version":  "1.0.2",
 }
 
 import hashlib
@@ -53,6 +53,72 @@ _DAB_CHANNELS = {
     "12A": 223936, "12B": 225648, "12C": 227360, "12D": 229072,
     "13A": 230784, "13B": 232496, "13C": 234208, "13D": 235776,
     "13E": 237488, "13F": 239200,
+}
+
+# ── Scan region hierarchy ──────────────────────────────────────────────────────
+# Each node: {id, label, icon, channels: [ch, ...], children: [...]}
+# The browser renders a collapsible tree; any node can trigger a scan of its channels.
+_SCAN_REGIONS = {
+    "id": "europe", "label": "All Europe — Band III", "icon": "🌍",
+    "channels": list(_DAB_CHANNELS.keys()),
+    "children": [
+        {
+            "id": "uk", "label": "United Kingdom", "icon": "🇬🇧",
+            "channels": ["10B","10C","11A","11B","11C","11D","12A","12B","12C","12D"],
+            "children": [
+                {"id":"uk_ni",        "label":"Northern Ireland",    "icon":"", "channels":["11D","12A","12B","11C"],            "children":[]},
+                {"id":"uk_scotland",  "label":"Scotland",            "icon":"", "channels":["11D","11B","11C","12B","12C"],      "children":[]},
+                {"id":"uk_wales",     "label":"Wales",               "icon":"", "channels":["11D","11A","12B","12C"],            "children":[]},
+                {"id":"uk_national",  "label":"England — National",  "icon":"", "channels":["11D","12B","10B"],                  "children":[]},
+                {"id":"uk_london",    "label":"London",              "icon":"", "channels":["11D","12B","10B","10C","11C","12D"],"children":[]},
+                {"id":"uk_northwest", "label":"North West England",  "icon":"", "channels":["11D","12B","10B","11A","11C"],      "children":[]},
+                {"id":"uk_northeast", "label":"North East England",  "icon":"", "channels":["11D","12B","10B","11B"],            "children":[]},
+                {"id":"uk_yorkshire", "label":"Yorkshire",           "icon":"", "channels":["11D","12B","10B","11B","12A"],      "children":[]},
+                {"id":"uk_midlands",  "label":"Midlands",            "icon":"", "channels":["11D","12B","10B","11A"],            "children":[]},
+                {"id":"uk_south",     "label":"South England",       "icon":"", "channels":["11D","12B","10B","11C","12C"],      "children":[]},
+            ],
+        },
+        {
+            "id": "ireland", "label": "Republic of Ireland", "icon": "🇮🇪",
+            "channels": ["9D","11B","11D"],
+            "children": [],
+        },
+        {
+            "id": "germany", "label": "Germany", "icon": "🇩🇪",
+            "channels": ["5A","5C","7A","7B","7C","7D","8A","8D","9A","9D","10D"],
+            "children": [],
+        },
+        {
+            "id": "netherlands", "label": "Netherlands", "icon": "🇳🇱",
+            "channels": ["7C","8A","8B","9B","10A","11A"],
+            "children": [],
+        },
+        {
+            "id": "france", "label": "France", "icon": "🇫🇷",
+            "channels": ["10A","10B","10C","10D","11A","11B"],
+            "children": [],
+        },
+        {
+            "id": "norway", "label": "Norway", "icon": "🇳🇴",
+            "channels": ["7B","9D","10A","10B","11D","12A"],
+            "children": [],
+        },
+        {
+            "id": "denmark", "label": "Denmark", "icon": "🇩🇰",
+            "channels": ["10B","10C","10D","11A","11B","11C"],
+            "children": [],
+        },
+        {
+            "id": "belgium", "label": "Belgium", "icon": "🇧🇪",
+            "channels": ["7B","8A","10B","11D"],
+            "children": [],
+        },
+        {
+            "id": "switzerland", "label": "Switzerland", "icon": "🇨🇭",
+            "channels": ["7A","7B","7C","8A","12D"],
+            "children": [],
+        },
+    ],
 }
 
 # ── Module-level state ──────────────────────────────────────────────────────────
@@ -173,16 +239,23 @@ main{flex:1;display:flex;align-items:flex-start;justify-content:center;padding:2
 .svc-name{font-size:13px;font-weight:500;color:var(--tx);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .svc-badge{font-size:10px;padding:1px 5px;border-radius:3px;background:#0a1628;border:1px solid var(--bor);color:var(--mu)}
 .scan-panel{background:var(--sur);border:1px solid var(--bor);border-radius:12px;padding:14px;box-shadow:0 2px 10px rgba(0,0,0,.3)}
-.scan-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.btn-scan{padding:5px 14px;font-size:12px;background:#0a1e3a;border:1px solid rgba(23,168,255,.4);color:var(--acc);border-radius:6px;cursor:pointer;transition:background .12s;font-family:inherit}
-.btn-scan:hover{background:#112a50}
-.btn-scan:disabled{opacity:.4;cursor:not-allowed}
-.btn-scan-stop{padding:5px 14px;font-size:12px;background:#1a0808;border:1px solid rgba(239,68,68,.4);color:var(--al);border-radius:6px;cursor:pointer;transition:background .12s;font-family:inherit}
+.region-tree{display:flex;flex-direction:column;gap:1px;margin-bottom:4px}
+.region-children{margin-left:14px;border-left:1px solid #17345f;padding-left:6px;display:flex;flex-direction:column;gap:1px}
+.region-row{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;transition:background .1s}
+.region-row:hover{background:rgba(23,168,255,.05)}
+.region-toggle{width:18px;height:18px;background:none;border:none;color:var(--mu);cursor:pointer;font-size:9px;padding:0;flex-shrink:0;text-align:center;font-family:inherit;transition:color .1s;line-height:18px}
+.region-toggle:hover{color:var(--acc)}
+.region-toggle.leaf{visibility:hidden}
+.region-label{font-size:13px;color:var(--tx);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.region-ch{font-size:11px;color:var(--mu);font-family:'Courier New',monospace;white-space:nowrap;margin-right:2px}
+.region-scan{padding:3px 10px;font-size:11px;background:#0a1e3a;border:1px solid rgba(23,168,255,.35);color:var(--acc);border-radius:4px;cursor:pointer;font-family:inherit;white-space:nowrap;flex-shrink:0;transition:background .1s}
+.region-scan:hover{background:#112a50}
+.region-scan:disabled{opacity:.4;cursor:not-allowed}
+.btn-scan-stop{padding:4px 12px;font-size:11px;background:#1a0808;border:1px solid rgba(239,68,68,.4);color:var(--al);border-radius:4px;cursor:pointer;transition:background .12s;font-family:inherit}
 .btn-scan-stop:hover{background:#280a0a}
-.scan-hint{font-size:11px;color:var(--mu)}
-.scan-prog{margin-top:12px;padding:10px 12px;background:rgba(0,0,0,.25);border:1px solid var(--bor);border-radius:8px}
+.scan-prog{margin-top:10px;padding:10px 12px;background:rgba(0,0,0,.25);border:1px solid var(--bor);border-radius:8px}
 .scan-prog-hdr{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-.scan-prog-title{font-size:12px;font-weight:600;color:var(--mu);min-width:120px}
+.scan-prog-title{font-size:12px;font-weight:600;color:var(--mu);min-width:130px}
 .scan-prog-track{flex:1;height:4px;background:#0a1828;border-radius:2px;overflow:hidden;border:1px solid var(--bor)}
 .scan-prog-fill{height:100%;background:var(--acc);border-radius:2px;transition:width .4s}
 .scan-prog-pct{font-size:11px;color:var(--mu);white-space:nowrap;min-width:42px;text-align:right}
@@ -276,18 +349,17 @@ footer{padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border
 
   <!-- Scan panel -->
   <div class="scan-panel">
-    <div class="panel-hdr">Band Scan</div>
-    <div class="scan-row">
-      <button class="btn-scan" id="scan-btn" disabled>&#128268; Scan All Channels</button>
+    <div class="panel-hdr">
+      <span>Band Scan</span>
       <button class="btn-scan-stop" id="scan-stop-btn" style="display:none">&#9632; Stop</button>
-      <span class="scan-hint">Scans all 36 Band III channels &mdash; active stream will be stopped. Takes ~5&ndash;10 min.</span>
     </div>
+    <div class="region-tree" id="region-tree"></div>
     <!-- Progress panel (shown during and after scan) -->
     <div class="scan-prog" id="scan-prog" style="display:none">
       <div class="scan-prog-hdr">
         <span class="scan-prog-title" id="scan-prog-title">Scanning&hellip;</span>
         <div class="scan-prog-track"><div class="scan-prog-fill" id="scan-prog-fill" style="width:0%"></div></div>
-        <span class="scan-prog-pct" id="scan-prog-pct">0 / 36</span>
+        <span class="scan-prog-pct" id="scan-prog-pct">0 / ?</span>
       </div>
       <div class="scan-found" id="scan-found" style="color:var(--mu)">No muxes found yet&hellip;</div>
       <div class="mux-chips" id="mux-chips"></div>
@@ -322,7 +394,6 @@ var histList  = document.getElementById('hist-list');
 var presetList    = document.getElementById('preset-list');
 var presetNameInp = document.getElementById('preset-name-inp');
 var presetSaveBtn = document.getElementById('preset-save-btn');
-var scanBtn       = document.getElementById('scan-btn');
 var audioElem     = document.getElementById('dab-audio');
 
 var _state   = 'idle';   // idle | connecting | streaming
@@ -403,7 +474,6 @@ function loadDevices(){
       });
     }).catch(function(){});
   loadServices(site);
-  scanBtn.disabled = false;
 }
 siteSel.addEventListener('change', loadDevices);
 loadDevices();
@@ -636,7 +706,7 @@ presetNameInp.addEventListener('keydown', function(e){
 });
 _renderPresets();
 
-// ── Band scan ──────────────────────────────────────────────────
+// ── Band scan — region tree ────────────────────────────────────
 var scanStopBtn  = document.getElementById('scan-stop-btn');
 var scanProg     = document.getElementById('scan-prog');
 var scanProgFill = document.getElementById('scan-prog-fill');
@@ -644,43 +714,109 @@ var scanProgPct  = document.getElementById('scan-prog-pct');
 var scanProgTitle= document.getElementById('scan-prog-title');
 var scanFound    = document.getElementById('scan-found');
 var muxChips     = document.getElementById('mux-chips');
+var regionTreeEl = document.getElementById('region-tree');
+
+// Region data injected from server
+var _REGIONS = {{regions | tojson}};
+
+// Render the region hierarchy as a collapsible tree
+function _buildRegionTree(node, container, depth, autoExpand){
+  var hasChildren = node.children && node.children.length > 0;
+
+  var row = document.createElement('div');
+  row.className = 'region-row';
+
+  // Toggle button
+  var tog = document.createElement('button');
+  tog.className = 'region-toggle' + (hasChildren ? '' : ' leaf');
+  tog.textContent = autoExpand ? '\u25bc' : (hasChildren ? '\u25b6' : '');
+
+  // Label
+  var lbl = document.createElement('span');
+  lbl.className = 'region-label';
+  lbl.textContent = (node.icon ? node.icon + '\u00a0' : '') + node.label;
+
+  // Channel count
+  var cnt = document.createElement('span');
+  cnt.className = 'region-ch';
+  cnt.textContent = node.channels.length + ' ch';
+
+  // Scan button
+  var sb = document.createElement('button');
+  sb.className = 'region-scan';
+  sb.textContent = 'Scan';
+  sb.addEventListener('click', function(e){
+    e.stopPropagation();
+    if(_scanPending) return;
+    var site = siteSel.value; if(!site) return;
+    _startScan(site, node.channels, (node.icon ? node.icon+'\u00a0' : '') + node.label);
+  });
+
+  row.appendChild(tog);
+  row.appendChild(lbl);
+  row.appendChild(cnt);
+  row.appendChild(sb);
+  container.appendChild(row);
+
+  if(hasChildren){
+    var childDiv = document.createElement('div');
+    childDiv.className = 'region-children';
+    childDiv.style.display = autoExpand ? '' : 'none';
+    container.appendChild(childDiv);
+
+    // Toggle expand/collapse
+    tog.addEventListener('click', function(e){
+      e.stopPropagation();
+      var open = childDiv.style.display !== 'none';
+      childDiv.style.display = open ? 'none' : '';
+      tog.textContent = open ? '\u25b6' : '\u25bc';
+    });
+
+    node.children.forEach(function(child){
+      // Auto-expand Europe root and UK by default
+      var expand = (child.id === 'uk');
+      _buildRegionTree(child, childDiv, depth + 1, expand);
+    });
+  }
+}
+
+_buildRegionTree(_REGIONS, regionTreeEl, 0, true);
+
+// Disable/enable all scan buttons during scanning
+function _setScanBtns(disabled){
+  regionTreeEl.querySelectorAll('.region-scan').forEach(function(b){ b.disabled = disabled; });
+}
 
 function stopScanPoll(){
   if(_scanPoll){ clearInterval(_scanPoll); _scanPoll = null; }
   _scanPending = false;
 }
 
-function _setScanUI(running){
-  scanBtn.style.display     = running ? 'none' : '';
-  scanStopBtn.style.display = running ? ''     : 'none';
-  scanBtn.disabled          = !siteSel.value;
-}
-
-scanBtn.addEventListener('click', function(){
-  if(_scanPending) return;
-  var site = siteSel.value; if(!site) return;
+function _startScan(site, channels, regionLabel){
   if(_state === 'streaming' || _state === 'connecting') doStop();
   _scanPending = true;
-  _setScanUI(true);
-  // Reset progress panel
-  scanProg.style.display = '';
+  _setScanBtns(true);
+  scanStopBtn.style.display = '';
+  // Reset + show progress panel
+  scanProg.style.display   = '';
   scanProgFill.style.width = '0%';
-  scanProgPct.textContent  = '0 / 36';
-  scanProgTitle.textContent = 'Starting scan\u2026';
+  scanProgPct.textContent  = '0 / ' + channels.length;
+  scanProgTitle.textContent = regionLabel + '\u2026';
   scanFound.textContent    = 'No muxes found yet\u2026';
   scanFound.style.color    = 'var(--mu)';
   muxChips.innerHTML       = '';
 
   _f('/api/hub/dab/scan', {
     method: 'POST',
-    body: JSON.stringify({site: site, sdr_serial: sdrSel.value})
+    body: JSON.stringify({site: site, sdr_serial: sdrSel.value, channels: channels})
   })
   .then(function(r){ return r.json(); })
   .then(function(d){
     if(!d.ok){
       stopScanPoll();
-      _setScanUI(false);
-      scanProg.style.display = 'none';
+      _setScanBtns(false);
+      scanStopBtn.style.display = 'none';
+      scanProg.style.display    = 'none';
       alert('Scan failed: ' + (d.error || '?'));
       return;
     }
@@ -689,10 +825,11 @@ scanBtn.addEventListener('click', function(){
   })
   .catch(function(){
     stopScanPoll();
-    _setScanUI(false);
-    scanProg.style.display = 'none';
+    _setScanBtns(false);
+    scanStopBtn.style.display = 'none';
+    scanProg.style.display    = 'none';
   });
-});
+}
 
 scanStopBtn.addEventListener('click', function(){
   var site = siteSel.value; if(!site) return;
@@ -701,7 +838,8 @@ scanStopBtn.addEventListener('click', function(){
     body: JSON.stringify({site: site})
   }).catch(function(){});
   stopScanPoll();
-  _setScanUI(false);
+  _setScanBtns(false);
+  scanStopBtn.style.display = 'none';
   scanProgTitle.textContent = 'Stopping\u2026';
 });
 
@@ -709,28 +847,21 @@ function _pollScan(site){
   _f('/api/hub/dab/scan_status/' + encodeURIComponent(site))
     .then(function(r){ return r.json(); })
     .then(function(d){
-      var total    = d.total    || 36;
+      var total    = d.total    || 1;
       var progress = d.progress || 0;
       var muxes    = d.muxes    || [];
 
-      // Progress bar + counter
       scanProgFill.style.width = Math.round(progress / total * 100) + '%';
       scanProgPct.textContent  = progress + ' / ' + total;
 
-      // Title
-      if(d.status === 'scanning'){
-        scanProgTitle.textContent = d.channel
-          ? 'Scanning ' + d.channel + '\u2026'
-          : 'Scanning\u2026';
-      }
+      if(d.status === 'scanning' && d.channel)
+        scanProgTitle.textContent = 'Scanning ' + d.channel + '\u2026';
 
-      // Live mux chips
       if(muxes.length){
         scanFound.textContent = muxes.length + ' mux' + (muxes.length !== 1 ? 'es' : '') + ' found:';
         scanFound.style.color = 'var(--ok)';
         muxChips.innerHTML = muxes.map(function(m){
-          var svcTxt = m.services ? ' (' + m.services + ' svc)' : '';
-          return '<span class="mux-chip" title="'+_esc(m.ensemble || m.channel)+svcTxt+'">'
+          return '<span class="mux-chip">'
             + '<b>'+_esc(m.channel)+'</b>'
             + (m.ensemble && m.ensemble !== m.channel ? ' \u00b7 '+_esc(m.ensemble) : '')
             + (m.services ? ' <span style="color:var(--mu)">'+m.services+'</span>' : '')
@@ -738,18 +869,18 @@ function _pollScan(site){
         }).join('');
       }
 
-      // Scan finished
       if(d.status === 'done' || d.status === 'idle'){
         stopScanPoll();
-        _setScanUI(false);
-        scanProgFill.style.width = '100%';
-        scanProgPct.textContent  = total + ' / ' + total;
+        _setScanBtns(false);
+        scanStopBtn.style.display = 'none';
+        scanProgFill.style.width  = '100%';
+        scanProgPct.textContent   = total + ' / ' + total;
         if(d.status === 'done'){
           scanProgTitle.textContent = muxes.length
             ? 'Scan complete \u2014 ' + muxes.length + ' mux' + (muxes.length !== 1 ? 'es' : '') + ' found'
             : 'Scan complete \u2014 no muxes found';
           if(!muxes.length){
-            scanFound.textContent = 'No DAB muxes found on any channel.';
+            scanFound.textContent = 'No DAB muxes found on the scanned channels.';
             scanFound.style.color = 'var(--wn)';
           }
         }
@@ -758,7 +889,6 @@ function _pollScan(site){
     }).catch(function(){});
 }
 
-// Initial enable state
 connBtn.disabled = !siteSel.value;
 
 })();
@@ -803,7 +933,8 @@ def register(app, ctx):
                         online = (now - sdata.get("_received", 0)) < 30.0
                         sites.append({"name": sname, "online": online,
                                       "scanner_serials": scanner_serials})
-        return render_template_string(DAB_TPL, sites=sites, build=BUILD)
+        return render_template_string(DAB_TPL, sites=sites, build=BUILD,
+                                      regions=_SCAN_REGIONS)
 
     # ── Hub: start DAB stream ──────────────────────────────────────────────────
 
@@ -925,6 +1056,16 @@ def register(app, ctx):
         data       = request.get_json(silent=True) or {}
         site       = str(data.get("site", "")).strip()
         sdr_serial = str(data.get("sdr_serial", "") or "").strip()
+        # Optional channel list from region selector; fall back to all channels
+        req_channels = data.get("channels")
+        if isinstance(req_channels, list):
+            valid = set(_DAB_CHANNELS.keys())
+            channels = [str(c).strip().upper() for c in req_channels
+                        if str(c).strip().upper() in valid]
+        else:
+            channels = list(_DAB_CHANNELS.keys())
+        if not channels:
+            channels = list(_DAB_CHANNELS.keys())
         if not site:
             return jsonify({"ok": False, "error": "site required"}), 400
         with _state_lock:
@@ -932,7 +1073,7 @@ def register(app, ctx):
                 "status":   "scanning",
                 "channel":  "",
                 "progress": 0,
-                "total":    len(_DAB_CHANNELS),
+                "total":    len(channels),
                 "found":    0,
                 "muxes":    [],
                 "ts":       time.time(),
@@ -941,8 +1082,9 @@ def register(app, ctx):
             _hub_pending[site] = {
                 "action":     "scan",
                 "sdr_serial": sdr_serial,
+                "channels":   channels,
             }
-        monitor.log(f"[DAB] Band scan triggered for site '{site}'")
+        monitor.log(f"[DAB] Band scan triggered for site '{site}' ({len(channels)} channels)")
         return jsonify({"ok": True})
 
     # ── Hub: scan status (browser polls during scan) ───────────────────────────
@@ -1162,9 +1304,10 @@ def _dispatch_client_cmd(cmd, hub_url, site, cfg):
     elif action == "stop":
         _stop_stream()
     elif action == "scan":
+        channels = cmd.get("channels") or list(_DAB_CHANNELS.keys())
         t = threading.Thread(
             target=_do_scan,
-            args=(site, cmd.get("sdr_serial", ""), hub_url),
+            args=(site, cmd.get("sdr_serial", ""), hub_url, channels),
             daemon=True,
             name="DABScanner",
         )
@@ -1386,7 +1529,7 @@ def _dls_reader(stderr_stream, site, hub_url, stop):
 # Client-side: DAB band scan
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _do_scan(site, sdr_serial, hub_url):
+def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
     """
     Scan all Band III DAB channels with welle-cli.
 
@@ -1409,7 +1552,7 @@ def _do_scan(site, sdr_serial, hub_url):
     result_url   = f"{hub_url}/api/hub/dab/scan_result/{site}"
 
     all_services = []
-    channels     = list(_DAB_CHANNELS.keys())
+    channels     = channels_to_scan if channels_to_scan else list(_DAB_CHANNELS.keys())
     total        = len(channels)
 
     print(f"[DAB] Band scan started for site '{site}': {total} channels")

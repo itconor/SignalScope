@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.93] - 2026-03-25
+
+### Added
+- **DAB Scanner region-aware scan tree** (`dab.py` v1.0.2) — Band Scan panel now shows a collapsible region hierarchy instead of a single "Scan All" button. Regions: All Europe (36 ch), United Kingdom (10 ch) with sub-regions (Northern Ireland, Scotland, Wales, England National, London, North West, North East, Yorkshire, Midlands, South), Republic of Ireland, Germany, Netherlands, France, Norway, Denmark, Belgium, Switzerland. Any node can be clicked to scan only its specific channel set. Tree auto-expands Europe and UK on load. The browser passes the selected channel list to `/api/hub/dab/scan`; the hub validates channels against `_DAB_CHANNELS` and passes them to the client `_do_scan()` worker, so the progress bar total reflects the actual channel count being scanned (e.g. 4 for Northern Ireland, not 36).
+
 ## [3.3.92] - 2026-03-25
 
 ### Added / Changed
