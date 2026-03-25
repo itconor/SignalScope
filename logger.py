@@ -583,194 +583,227 @@ _TPL = """<!DOCTYPE html>
 <meta name="csrf-token" content="{{ csrf_token() }}">
 <title>Logger — SignalScope</title>
 <style nonce="{{ csp_nonce() }}">
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:100vh}
-a{color:#58a6ff;text-decoration:none}
-.hdr{display:flex;align-items:center;gap:16px;padding:12px 20px;background:#161b22;border-bottom:1px solid #30363d}
-.hdr-title{font-size:18px;font-weight:700;color:#e6edf3}
-.hdr-sub{color:#8b949e;font-size:13px}
-.hdr a{color:#8b949e;font-size:13px}
-.hdr a:hover{color:#e6edf3}
-.layout{display:grid;grid-template-columns:260px 1fr;height:calc(100vh - 91px)}
-.sidebar{background:#161b22;border-right:1px solid #30363d;padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:16px}
-.main{display:flex;flex-direction:column;overflow:hidden}
-.sec-label{font-size:11px;font-weight:600;color:#8b949e;letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px}
-select,input[type=text],input[type=number]{width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:6px 10px;border-radius:6px;font-size:13px;outline:none}
-select:focus,input:focus{border-color:#58a6ff}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:500;transition:opacity .15s}
-.btn:hover{opacity:.85}
-.btn:disabled{opacity:.4;cursor:not-allowed}
-.btn-blue{background:#1f6feb;color:#fff}
-.btn-green{background:#238636;color:#fff}
-.btn-ghost{background:transparent;border:1px solid #30363d;color:#8b949e}
-.btn-ghost:hover{color:#e6edf3;border-color:#8b949e}
-.date-nav{display:flex;align-items:center;gap:8px}
-.date-nav .date-lbl{flex:1;text-align:center;font-weight:600;font-size:14px}
-.date-nav button{background:#21262d;border:1px solid #30363d;color:#8b949e;width:30px;height:30px;border-radius:6px;cursor:pointer;font-size:16px}
-.date-nav button:hover{color:#e6edf3}
-.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
-.badge-rec{background:rgba(218,54,51,.2);color:#f85149}
-.badge-idle{background:rgba(139,148,158,.15);color:#8b949e}
-.tl-wrap{flex:1;overflow-y:auto;padding:16px 20px}
-.tl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.tl-title{font-size:16px;font-weight:600}
-.tl-legend{display:flex;gap:12px;font-size:11px;color:#8b949e}
+body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-family:system-ui,sans-serif;font-size:14px;min-height:100vh}
+a{color:var(--acc);text-decoration:none}
+/* Header */
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:10px 18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
+header h1{font-size:16px;font-weight:700;color:var(--tx)}
+header .sub{font-size:12px;color:var(--mu)}
+.hdr-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+/* Sidebar + layout */
+.app-wrap{display:flex;height:calc(100vh - 46px)}
+.sb{width:200px;flex-shrink:0;background:var(--sur);border-right:1px solid var(--bor);padding:10px 0;overflow-y:auto}
+.tb{display:flex;align-items:center;gap:8px;width:100%;padding:9px 15px;background:none;border:none;border-left:3px solid transparent;color:var(--mu);font-size:13px;cursor:pointer;text-align:left;transition:background .12s,color .12s}
+.tb:hover{background:rgba(255,255,255,.04);color:var(--tx)}
+.tb.on{background:rgba(255,255,255,.05);color:var(--tx);border-left-color:var(--acc);font-weight:600}
+.tb-sep{height:1px;background:var(--bor);margin:8px 12px}
+/* Content panels */
+.content{flex:1;overflow:hidden;display:flex;flex-direction:column}
+/* Sidebar stream/date controls */
+.ctrl-panel{padding:12px 14px;border-bottom:1px solid var(--bor);display:flex;flex-direction:column;gap:12px}
+.slbl{font-size:10px;font-weight:700;color:var(--mu);letter-spacing:.7px;text-transform:uppercase;margin-bottom:4px}
+select,input[type=number]{width:100%;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:7px 9px;border-radius:6px;font-size:13px;outline:none;appearance:auto}
+select:focus,input:focus{border-color:var(--acc)}
+/* Date nav */
+.date-nav{display:flex;align-items:center;gap:6px}
+.date-nav .date-lbl{flex:1;text-align:center;font-weight:600;font-size:13px;color:var(--tx)}
+.date-nav button{background:var(--sur);border:1px solid var(--bor);color:var(--mu);width:28px;height:28px;border-radius:5px;cursor:pointer;font-size:15px;flex-shrink:0}
+.date-nav button:hover{color:var(--tx);border-color:var(--acc)}
+/* Day list */
+.day-list{padding:8px 10px;display:flex;flex-direction:column;gap:3px;overflow-y:auto;max-height:180px}
+.day-btn{background:none;border:none;color:var(--mu);font-size:12px;text-align:left;padding:4px 6px;border-radius:4px;cursor:pointer;width:100%}
+.day-btn:hover{background:rgba(23,168,255,.1);color:var(--acc)}
+.day-btn.active{color:var(--acc);font-weight:600}
+/* Seg info */
+.seg-info{margin:8px 12px;padding:10px 12px;background:var(--bg);border:1px solid var(--bor);border-radius:8px;font-size:12px;color:var(--mu);display:none}
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;font-weight:600;transition:filter .14s}
+.btn:hover{filter:brightness(1.08)}
+.btn:disabled{opacity:.4;cursor:not-allowed;filter:none}
+.bp{background:var(--acc);color:#fff}
+.bg{background:var(--bor);color:var(--tx)}
+.bs{padding:3px 9px;font-size:12px}
+/* Badge */
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
+.b-rec{background:rgba(239,68,68,.2);color:#f87171}
+.b-idle{background:#1e3a5f;color:var(--mu)}
+/* Timeline */
+.tl-wrap{flex:1;overflow-y:auto;padding:14px 18px}
+.tl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+.tl-title{font-size:15px;font-weight:700;color:var(--tx)}
+.tl-legend{display:flex;gap:10px;font-size:11px;color:var(--mu)}
 .tl-legend span{display:flex;align-items:center;gap:4px}
-.tl-legend i{width:12px;height:12px;border-radius:2px;display:inline-block}
-.tl-grid{display:grid;grid-template-columns:40px 1fr;gap:4px;align-items:center}
-.tl-hour-lbl{text-align:right;font-size:11px;color:#8b949e;padding-right:8px;line-height:1}
+.tl-legend i{width:11px;height:11px;border-radius:2px;display:inline-block}
+.tl-grid{display:grid;grid-template-columns:38px 1fr;gap:3px;align-items:center}
+.tl-hour-lbl{text-align:right;font-size:10px;color:var(--mu);padding-right:7px;line-height:1}
 .tl-row{display:grid;grid-template-columns:repeat(12,1fr);gap:2px}
-.tl-block{height:24px;border-radius:3px;cursor:pointer;transition:opacity .1s,outline .1s;position:relative}
-.tl-block:hover{opacity:.8;outline:2px solid #58a6ff}
+.tl-block{height:22px;border-radius:3px;cursor:pointer;transition:opacity .1s,outline .1s;position:relative}
+.tl-block:hover{opacity:.75;outline:2px solid var(--acc)}
 .tl-block.selected{outline:2px solid #fff}
-.tl-block.playing{outline:2px solid #3fb950}
-.tl-block[data-status="none"]{background:#21262d}
-.tl-block[data-status="ok"]{background:#238636}
-.tl-block[data-status="warn"]{background:#9e6a03}
-.tl-block[data-status="silent"]{background:#b62324}
-.tl-block[data-status="future"]{background:#161b22}
-.tl-block::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1c2128;border:1px solid #30363d;padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;color:#e6edf3;pointer-events:none;opacity:0;transition:opacity .15s;z-index:10}
+.tl-block.playing{outline:2px solid var(--ok)}
+.tl-block[data-status="none"]{background:#0e2040}
+.tl-block[data-status="ok"]{background:#166534}
+.tl-block[data-status="warn"]{background:#78350f}
+.tl-block[data-status="silent"]{background:#7f1d1d}
+.tl-block[data-status="future"]{background:#0a1828}
+.tl-block::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 5px);left:50%;transform:translateX(-50%);background:#0d2346;border:1px solid var(--bor);padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;color:var(--tx);pointer-events:none;opacity:0;transition:opacity .12s;z-index:10}
 .tl-block:hover::after{opacity:1}
-.player{background:#161b22;border-top:1px solid #30363d;padding:12px 20px;display:flex;flex-direction:column;gap:8px}
-.player-top{display:flex;align-items:center;gap:12px}
+/* Notice */
+.notice{background:rgba(23,168,255,.08);border:1px solid rgba(23,168,255,.25);border-radius:8px;padding:11px 14px;font-size:13px;color:var(--mu);margin-bottom:12px}
+.notice b{color:var(--acc)}
+.notice-link{color:var(--acc);cursor:pointer;text-decoration:underline}
+/* Player */
+.player{background:linear-gradient(180deg,#143766,#102b54);border-top:1px solid var(--bor);padding:11px 18px;display:flex;flex-direction:column;gap:8px}
+.player-top{display:flex;align-items:center;gap:10px}
 .player-info{flex:1;min-width:0}
-.player-info .p-title{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.player-info .p-sub{font-size:11px;color:#8b949e}
-.play-btn{width:36px;height:36px;border-radius:50%;background:#238636;border:none;color:#fff;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center}
-.play-btn:hover{background:#2ea043}
-.time-lbl{font-size:12px;color:#8b949e;font-variant-numeric:tabular-nums;min-width:80px;text-align:center}
-.scrub-wrap{position:relative;height:24px;display:flex;align-items:center;cursor:pointer}
-.scrub-track{width:100%;height:4px;background:#21262d;border-radius:2px;position:relative;overflow:visible}
-.scrub-fill{height:100%;background:#238636;border-radius:2px;pointer-events:none}
-.scrub-thumb{position:absolute;top:50%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;background:#3fb950;pointer-events:none}
-.scrub-in,.scrub-out{position:absolute;top:0;bottom:0;width:2px;background:#58a6ff;pointer-events:none;z-index:2}
-.export-bar{display:flex;align-items:center;gap:8px;font-size:12px;color:#8b949e}
-.inout-lbl{color:#58a6ff;font-weight:600}
-.settings-wrap{padding:20px;max-width:760px;overflow-y:auto;height:calc(100vh - 91px)}
-.settings-wrap h2{font-size:16px;font-weight:600;margin-bottom:4px}
-.settings-wrap .sub{color:#8b949e;font-size:13px;margin-bottom:20px}
-.stream-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:10px}
-.stream-card-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
-.stream-card-hdr .name{font-weight:600;font-size:14px}
-.stream-card-hdr .url{color:#8b949e;font-size:11px;margin-top:2px;word-break:break-all}
-.stream-fields{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;align-items:end}
-.stream-fields label{font-size:11px;color:#8b949e;display:block;margin-bottom:4px}
-.toggle-wrap{display:flex;align-items:center;gap:8px}
-.toggle{position:relative;width:40px;height:22px;flex-shrink:0}
-.toggle input{opacity:0;width:0;height:0}
-.toggle-slider{position:absolute;inset:0;background:#30363d;border-radius:22px;cursor:pointer;transition:.2s}
-.toggle-slider:before{content:'';position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
-.toggle input:checked + .toggle-slider{background:#238636}
-.toggle input:checked + .toggle-slider:before{transform:translateX(18px)}
-.disk-info{margin-top:16px;padding:12px;background:#161b22;border-radius:8px;font-size:13px;color:#8b949e;border:1px solid #30363d}
-.notice{background:rgba(31,111,235,.1);border:1px solid rgba(31,111,235,.3);border-radius:8px;padding:12px 16px;font-size:13px;color:#8b949e;margin-bottom:12px}
-.notice b{color:#58a6ff}
+.p-title{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--tx)}
+.p-sub{font-size:11px;color:var(--mu)}
+.play-btn{width:34px;height:34px;border-radius:50%;background:var(--ok);border:none;color:#fff;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.play-btn:hover{filter:brightness(1.1)}
+.time-lbl{font-size:12px;color:var(--mu);font-variant-numeric:tabular-nums;min-width:78px;text-align:center}
+/* Scrub */
+.scrub-wrap{position:relative;height:22px;display:flex;align-items:center;cursor:pointer}
+.scrub-track{width:100%;height:4px;background:#0e2040;border-radius:2px;position:relative;overflow:visible;border:1px solid var(--bor)}
+.scrub-fill{height:4px;background:var(--ok);border-radius:2px;pointer-events:none}
+.scrub-thumb{position:absolute;top:50%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;background:var(--ok);pointer-events:none;box-shadow:0 0 4px rgba(34,197,94,.5)}
+.scrub-in,.scrub-out{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--acc);pointer-events:none;z-index:2}
+/* Export bar */
+.export-bar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mu)}
+.inout-lbl{color:var(--acc);font-weight:600;font-size:12px}
+/* Settings */
+.settings-content{flex:1;overflow-y:auto;padding:18px 22px;max-width:780px}
+.settings-content h2{font-size:16px;font-weight:700;color:var(--tx);margin-bottom:4px}
+.settings-content .sub{color:var(--mu);font-size:13px;margin-bottom:18px}
+/* Stream card in settings */
+.scard{background:var(--sur);border:1px solid var(--bor);border-radius:10px;overflow:hidden;margin-bottom:10px}
+.scard-hdr{background:linear-gradient(180deg,#143766,#102b54);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--bor)}
+.scard-hdr .name{font-weight:700;font-size:14px;color:var(--tx)}
+.scard-hdr .url{font-size:11px;color:var(--mu);margin-top:2px;word-break:break-all}
+.scard-body{padding:14px}
+.scard-fields{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.scard-fields label{font-size:11px;color:var(--mu);display:block;margin-bottom:5px;font-weight:600;letter-spacing:.03em;text-transform:uppercase}
+/* Toggle switch */
+.tog-wrap{display:flex;align-items:center;gap:8px}
+.tog{position:relative;width:38px;height:20px;flex-shrink:0}
+.tog input{opacity:0;width:0;height:0;position:absolute}
+.tog-sl{position:absolute;inset:0;background:var(--bor);border-radius:20px;cursor:pointer;transition:.2s}
+.tog-sl:before{content:'';position:absolute;height:14px;width:14px;left:3px;bottom:3px;background:var(--mu);border-radius:50%;transition:.2s}
+.tog input:checked + .tog-sl{background:var(--ok)}
+.tog input:checked + .tog-sl:before{transform:translateX(18px);background:#fff}
+.tog-lbl{font-size:12px;color:var(--mu)}
+.tog-lbl.on{color:var(--ok);font-weight:600}
+/* Disk info */
+.disk-card{margin-top:14px;padding:11px 14px;background:var(--sur);border:1px solid var(--bor);border-radius:8px;font-size:13px;color:var(--mu)}
 .hidden{display:none}
-.tab-bar{display:flex;gap:4px;padding:10px 20px 0;border-bottom:1px solid #30363d;background:#0d1117}
-.tab{padding:8px 16px;border-radius:6px 6px 0 0;border:1px solid transparent;cursor:pointer;font-size:13px;color:#8b949e;background:transparent;user-select:none}
-.tab.active{background:#161b22;border-color:#30363d #30363d #161b22;color:#e6edf3}
 </style>
 </head>
 <body>
-<div class="hdr">
+<header>
+  <span style="font-size:20px">🎙</span>
   <div>
-    <div class="hdr-title">🎙 Logger</div>
-    <div class="hdr-sub">Compliance recording &amp; playback</div>
+    <h1>Logger</h1>
+    <div class="sub">Compliance recording &amp; playback</div>
   </div>
-  <div style="margin-left:auto;display:flex;gap:12px;align-items:center">
-    <span id="rec-status" class="badge badge-idle">Idle</span>
-    <a href="/">← SignalScope</a>
+  <div class="hdr-right">
+    <span id="rec-status" class="badge b-idle">Idle</span>
+    <a href="/" class="btn bg bs">← SignalScope</a>
   </div>
-</div>
+</header>
 
-<div class="tab-bar" id="tab-bar">
-  <div class="tab active" id="tab-timeline" data-tab="timeline">Timeline</div>
-  <div class="tab" id="tab-settings" data-tab="settings">Settings</div>
-</div>
+<div class="app-wrap">
+  <!-- Left sidebar nav -->
+  <nav class="sb" id="sidebar">
+    <button class="tb on" id="tab-timeline" data-tab="timeline">📅 Timeline</button>
+    <button class="tb" id="tab-settings" data-tab="settings">⚙ Settings</button>
+    <div class="tb-sep"></div>
 
-<!-- TIMELINE TAB -->
-<div id="view-timeline" class="layout">
-  <div class="sidebar">
-    <div>
-      <div class="sec-label">Stream</div>
-      <select id="stream-sel">
-        <option value="">— select stream —</option>
-      </select>
-    </div>
-    <div>
-      <div class="sec-label">Date</div>
-      <div class="date-nav">
-        <button id="btn-prev-day">‹</button>
-        <div class="date-lbl" id="date-lbl">—</div>
-        <button id="btn-next-day">›</button>
+    <!-- Stream + date controls (shown in timeline mode) -->
+    <div class="ctrl-panel" id="ctrl-panel">
+      <div>
+        <div class="slbl">Stream</div>
+        <select id="stream-sel">
+          <option value="">— select —</option>
+        </select>
       </div>
-    </div>
-    <div>
-      <div class="sec-label">Days with recordings</div>
-      <div id="day-list" style="display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto"></div>
-    </div>
-    <div id="seg-info" style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;font-size:12px;color:#8b949e;display:none">
-      <div id="seg-info-text"></div>
-    </div>
-  </div>
-
-  <div class="main">
-    <div class="tl-wrap" id="tl-wrap">
-      <div class="tl-head">
-        <div class="tl-title" id="tl-title">Select a stream</div>
-        <div class="tl-legend">
-          <span><i style="background:#238636"></i> OK</span>
-          <span><i style="background:#9e6a03"></i> Partial silence</span>
-          <span><i style="background:#b62324"></i> Silence</span>
-          <span><i style="background:#21262d"></i> No recording</span>
+      <div>
+        <div class="slbl">Date</div>
+        <div class="date-nav">
+          <button id="btn-prev-day">‹</button>
+          <div class="date-lbl" id="date-lbl">—</div>
+          <button id="btn-next-day">›</button>
         </div>
       </div>
-      <div id="tl-notice" class="notice hidden">
-        <b>No streams are enabled for recording.</b> Go to the <span id="notice-settings-link" style="color:#58a6ff;cursor:pointer;text-decoration:underline">Settings tab</span> to choose which streams to log.
-      </div>
-      <div id="tl-grid" class="tl-grid"></div>
     </div>
 
-    <div class="player">
-      <audio id="audio-el" preload="none"></audio>
-      <div class="player-top">
-        <button class="play-btn" id="play-btn">▶</button>
-        <div class="player-info">
-          <div class="p-title" id="p-title">No segment selected</div>
-          <div class="p-sub" id="p-sub">Click a block on the timeline to play</div>
+    <div class="day-list" id="day-list"></div>
+    <div class="seg-info" id="seg-info"><div id="seg-info-text"></div></div>
+  </nav>
+
+  <!-- Main content area -->
+  <div class="content">
+
+    <!-- TIMELINE VIEW -->
+    <div id="view-timeline" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+      <div class="tl-wrap" id="tl-wrap">
+        <div class="tl-head">
+          <div class="tl-title" id="tl-title">Select a stream</div>
+          <div class="tl-legend">
+            <span><i style="background:#166534"></i> OK</span>
+            <span><i style="background:#78350f"></i> Some silence</span>
+            <span><i style="background:#7f1d1d"></i> Silence</span>
+            <span><i style="background:#0e2040"></i> No recording</span>
+          </div>
         </div>
-        <span class="time-lbl" id="time-lbl">0:00 / 0:00</span>
-      </div>
-      <div class="scrub-wrap" id="scrub">
-        <div class="scrub-track">
-          <div class="scrub-fill" id="scrub-fill" style="width:0%"></div>
-          <div class="scrub-thumb" id="scrub-thumb" style="left:0%"></div>
-          <div class="scrub-in hidden" id="scrub-in"></div>
-          <div class="scrub-out hidden" id="scrub-out"></div>
+        <div id="tl-notice" class="notice hidden">
+          <b>No streams enabled for recording.</b> Open <span class="notice-link" id="notice-settings-link">Settings</span> to choose which streams to log.
         </div>
+        <div id="tl-grid" class="tl-grid"></div>
       </div>
-      <div class="export-bar">
-        <button class="btn btn-ghost" id="mark-in-btn">⬥ Mark In</button>
-        <button class="btn btn-ghost" id="mark-out-btn">⬥ Mark Out</button>
-        <span class="inout-lbl" id="inout-lbl"></span>
-        <div style="flex:1"></div>
-        <button class="btn btn-blue" id="export-btn" disabled>⬇ Export Clip</button>
+
+      <div class="player">
+        <audio id="audio-el" preload="none"></audio>
+        <div class="player-top">
+          <button class="play-btn" id="play-btn">▶</button>
+          <div class="player-info">
+            <div class="p-title" id="p-title">No segment selected</div>
+            <div class="p-sub" id="p-sub">Click a block on the timeline to play</div>
+          </div>
+          <span class="time-lbl" id="time-lbl">0:00 / 0:00</span>
+        </div>
+        <div class="scrub-wrap" id="scrub">
+          <div class="scrub-track">
+            <div class="scrub-fill" id="scrub-fill" style="width:0%"></div>
+            <div class="scrub-thumb" id="scrub-thumb" style="left:0%"></div>
+            <div class="scrub-in hidden" id="scrub-in"></div>
+            <div class="scrub-out hidden" id="scrub-out"></div>
+          </div>
+        </div>
+        <div class="export-bar">
+          <button class="btn bg bs" id="mark-in-btn">⬥ Mark In</button>
+          <button class="btn bg bs" id="mark-out-btn">⬥ Mark Out</button>
+          <span class="inout-lbl" id="inout-lbl"></span>
+          <div style="flex:1"></div>
+          <button class="btn bp bs" id="export-btn" disabled>⬇ Export Clip</button>
+        </div>
       </div>
     </div>
-  </div>
-</div>
 
-<!-- SETTINGS TAB -->
-<div id="view-settings" class="settings-wrap hidden">
-  <h2>Recording Settings</h2>
-  <p class="sub">Enable recording per stream. Changes take effect immediately after saving.</p>
-  <div id="settings-rows"></div>
-  <div style="margin-top:16px;display:flex;gap:8px;align-items:center">
-    <button class="btn btn-green" id="save-settings-btn">💾 Save Settings</button>
-    <span id="save-msg" style="color:#3fb950;font-size:13px;display:none">Saved!</span>
-  </div>
-  <div class="disk-info" id="disk-info">Calculating disk usage…</div>
-</div>
+    <!-- SETTINGS VIEW -->
+    <div id="view-settings" class="settings-content hidden">
+      <h2>Recording Settings</h2>
+      <p class="sub">Enable recording per stream. Changes take effect immediately after saving.</p>
+      <div id="settings-rows"></div>
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+        <button class="btn bp" id="save-settings-btn">💾 Save Settings</button>
+        <span id="save-msg" style="color:var(--ok);font-size:13px;display:none">✓ Saved</span>
+      </div>
+      <div class="disk-card" id="disk-info">Calculating disk usage…</div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /app-wrap -->
 
 <script nonce="{{ csp_nonce() }}">
 (function(){
@@ -800,14 +833,18 @@ var _cfg         = {streams:{}};
 
 // ── Tab switching ─────────────────────────────────────────────────────────
 function showTab(tab){
-  document.getElementById('view-timeline').classList.toggle('hidden', tab!=='timeline');
-  document.getElementById('view-settings').classList.toggle('hidden', tab!=='settings');
-  document.getElementById('tab-timeline').classList.toggle('active', tab==='timeline');
-  document.getElementById('tab-settings').classList.toggle('active', tab==='settings');
-  if(tab==='settings') loadSettingsPanel();
+  var isTimeline = tab==='timeline';
+  document.getElementById('view-timeline').style.display = isTimeline ? 'flex' : 'none';
+  document.getElementById('view-settings').classList.toggle('hidden', isTimeline);
+  document.getElementById('ctrl-panel').style.display = isTimeline ? '' : 'none';
+  document.getElementById('day-list').style.display   = isTimeline ? '' : 'none';
+  document.getElementById('seg-info').style.display   = (_selSeg && isTimeline) ? 'block' : 'none';
+  document.getElementById('tab-timeline').classList.toggle('on', isTimeline);
+  document.getElementById('tab-settings').classList.toggle('on', !isTimeline);
+  if(!isTimeline) loadSettingsPanel();
 }
 
-document.getElementById('tab-bar').addEventListener('click', function(e){
+document.getElementById('sidebar').addEventListener('click', function(e){
   var t = e.target.closest('[data-tab]');
   if(t) showTab(t.dataset.tab);
 });
@@ -876,13 +913,18 @@ function loadDays(){
   _get('/api/logger/days/'+_currentSlug).then(function(days){
     var el = document.getElementById('day-list');
     el.innerHTML = '';
-    if(!days.length){ el.innerHTML='<span style="color:#8b949e;font-size:12px">No recordings yet</span>'; }
-    days.slice(0,14).forEach(function(d){
+    if(!days.length){ el.innerHTML='<span style="color:var(--mu);font-size:12px;padding:4px 6px">No recordings yet</span>'; }
+    days.slice(0,20).forEach(function(d){
       var btn = document.createElement('button');
-      btn.className = 'btn btn-ghost';
-      btn.style.cssText = 'width:100%;justify-content:flex-start;padding:5px 10px;font-size:12px';
+      btn.className = 'day-btn' + (d===_currentDate?' active':'');
       btn.textContent = d;
-      btn.addEventListener('click', function(){ _currentDate=d; document.getElementById('date-lbl').textContent=d; loadSegments(); });
+      btn.addEventListener('click', function(){
+        _currentDate=d;
+        document.getElementById('date-lbl').textContent=d;
+        el.querySelectorAll('.day-btn').forEach(function(b){ b.classList.remove('active'); });
+        btn.classList.add('active');
+        loadSegments();
+      });
       el.appendChild(btn);
     });
     loadSegments();
@@ -1066,7 +1108,7 @@ function loadStatus(){
     var recs   = data.recorders||{};
     var active = Object.values(recs).filter(function(r){ return r.running; });
     var badge  = document.getElementById('rec-status');
-    badge.className = active.length ? 'badge badge-rec' : 'badge badge-idle';
+    badge.className = active.length ? 'badge b-rec' : 'badge b-idle';
     badge.textContent = active.length ? '● REC ('+active.length+')' : 'Idle';
     var di = document.getElementById('disk-info');
     if(di) di.textContent = 'Disk usage: '+_fmtBytes(data.disk_bytes||0)
@@ -1089,35 +1131,37 @@ function renderSettingsRows(){
   var el=document.getElementById('settings-rows');
   el.innerHTML='';
   if(!_streams.length){
-    el.innerHTML='<p style="color:#8b949e">No input streams configured in SignalScope.</p>';
+    el.innerHTML='<p style="color:var(--mu)">No input streams configured in SignalScope.</p>';
     return;
   }
   _streams.forEach(function(s){
     var sc=(_cfg.streams||{})[s.name]||{};
-    var card=document.createElement('div'); card.className='stream-card';
-    var enabled = sc.enabled ? ' checked' : '';
+    var card=document.createElement('div'); card.className='scard';
+    var chkd = sc.enabled ? ' checked' : '';
+    var eid  = 'lbl-en-'+s.name.replace(/[^a-z0-9]/gi,'_');
     card.innerHTML =
-      '<div class="stream-card-hdr">'
+      '<div class="scard-hdr">'
       +'<div><div class="name">'+_esc(s.name)+'</div><div class="url">'+_esc(s.url||'')+'</div></div>'
-      +'<div class="toggle-wrap">'
-      +'<label class="toggle"><input type="checkbox" data-stream="'+_esc(s.name)+'" data-key="enabled"'+enabled+'>'
-      +'<span class="toggle-slider"></span></label>'
-      +'<span style="font-size:12px;color:#8b949e" id="lbl-en-'+_esc(s.name)+'">'+(sc.enabled?'Recording':'Disabled')+'</span>'
+      +'<div class="tog-wrap">'
+      +'<label class="tog"><input type="checkbox" data-stream="'+_esc(s.name)+'" data-key="enabled"'+chkd+'>'
+      +'<span class="tog-sl"></span></label>'
+      +'<span class="tog-lbl'+(sc.enabled?' on':'')+'" id="'+eid+'">'+(sc.enabled?'Recording':'Off')+'</span>'
       +'</div></div>'
-      +'<div class="stream-fields">'
+      +'<div class="scard-body"><div class="scard-fields">'
       +'<div><label>HQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="hq_bitrate">'
       +['64k','96k','128k','192k','256k','320k'].map(function(b){ return '<option'+(( sc.hq_bitrate||'128k')===b?' selected':'')+'>'+b+'</option>'; }).join('')
       +'</select></div>'
       +'<div><label>LQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="lq_bitrate">'
       +['32k','48k','64k','96k'].map(function(b){ return '<option'+((sc.lq_bitrate||'48k')===b?' selected':'')+'>'+b+'</option>'; }).join('')
       +'</select></div>'
-      +'<div><label>Switch to LQ after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="lq_after_days" value="'+(sc.lq_after_days||30)+'"></div>'
+      +'<div><label>LQ after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="lq_after_days" value="'+(sc.lq_after_days||30)+'"></div>'
       +'<div><label>Delete after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="retain_days" value="'+(sc.retain_days||90)+'"></div>'
-      +'</div>';
-    // Live toggle label update
+      +'</div></div>';
     var chk = card.querySelector('input[type=checkbox]');
     chk.addEventListener('change', function(){
-      document.getElementById('lbl-en-'+s.name).textContent = this.checked ? 'Recording' : 'Disabled';
+      var lbl=document.getElementById(eid);
+      lbl.textContent = this.checked ? 'Recording' : 'Off';
+      lbl.className   = 'tog-lbl'+(this.checked?' on':'');
     });
     el.appendChild(card);
   });
