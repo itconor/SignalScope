@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.102] - 2026-03-25
+
+### Fixed
+- **DAB Scanner service name parsing** (`dab.py` v1.0.11) — welle-cli 2.x outputs device-backend init messages (RTL_SDR: gain values, Airspy: errors, InputFactory: lines) before any DAB content. These lines were being matched by the service-name regexes, producing garbage results like "30 services" consisting of hex SIDs and init text. Fix: strip all device-init prefixed lines before parsing (RTL_SDR:, Airspy:, SoapySDR:, InputFactory:, etc.) and also reject any captured name that is purely hex/numeric. Added four targeted service-name patterns covering welle-cli 2.x's observed formats: `'Quoted name'`, `Service name: NAME`, `0xSID NAME`, and `NAME (SId 0x...)`. Ensemble name parser now rejects raw hex IDs like "c181". The debug raw-output logger now dumps the cleaned (post-filter) text so the remaining DAB content is visible.
+
 ## [3.3.101] - 2026-03-25
 
 ### Diagnostic

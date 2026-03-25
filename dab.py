@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.10",
+    "version":  "1.0.11",
 }
 
 import hashlib
@@ -1832,38 +1832,77 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
 
         text = b"".join(output_lines).decode("utf-8", errors="replace")
 
-        # ── Debug: log raw output for the first active channel ────────────
-        # Remove after confirming service name parsing is correct.
-        if not all_services and text.strip():
-            _log(f"[DAB] Raw output sample ({ch}):\n" + text[:800])
+        # ── Strip device-init noise before parsing ────────────────────────
+        # welle-cli emits device backend messages (RTL_SDR:/Airspy:/gain
+        # values) before any DAB content. These confuse the service name
+        # regexes. Drop every line that looks like device init output.
+        _init_prefixes = (
+            "rtl_sdr:", "airspy:", "soapy:", "hackrf:", "limesdr:",
+            "inputfactory:", "input device", "welle-cli ",
+            "found ", "uses the first", "detected ", "opening ",
+            "supported gain", "gain ", "set freq", "set sample",
+        )
+        clean_lines = []
+        for line in text.splitlines():
+            low = line.strip().lower()
+            if any(low.startswith(p) for p in _init_prefixes):
+                continue
+            # Also skip bare numeric/hex-only lines from init
+            if re.match(r"^\s*[\d\.]+\s*$", line):
+                continue
+            clean_lines.append(line)
+        dab_text = "\n".join(clean_lines)
+
+        # ── Debug: log cleaned DAB text for the first active channel ──────
+        if not all_services and dab_text.strip():
+            raw = dab_text.strip()
+            for i in range(0, min(len(raw), 3200), 800):
+                _log(f"[DAB] Parsed ({ch}) [{i}:{i+800}]:\n" + raw[i:i+800])
 
         # ── Extract ensemble name ──────────────────────────────────────────
+        # welle-cli 2.x outputs: "ensemble name: BBC NI" or "name id: CE15"
         ensemble_name = ""
         for pat in [
+            r'ensemble\s+name[:\s"]+([^\n"]{2,60})',
             r'ensemble[:\s"]+([^\n"]{2,60})',
             r'label[:\s"]+([^\n"]{2,60})',
-            r'mux[:\s"]+([^\n"]{2,60})',
         ]:
-            em = re.search(pat, text, re.IGNORECASE)
+            em = re.search(pat, dab_text, re.IGNORECASE)
             if em:
                 name = em.group(1).strip().strip('"\'').strip()
-                if name and len(name) > 1:
+                # Reject raw hex IDs like "0xCE15" or "c181"
+                if name and len(name) > 1 and not re.match(r'^[0-9a-fA-Fx]+$', name):
                     ensemble_name = name
                     break
 
         # ── Extract service names ──────────────────────────────────────────
+        # welle-cli 2.x service line formats observed:
+        #   Service 'BBC Radio Ulster' SId 0xC221 ...
+        #   Service name: BBC Radio Ulster
+        #   0xC221 BBC Radio Ulster
         found_in_channel = set()
-        patterns = [
-            r"[Ss]ervice[:\s]+['\"]?([^'\"\n\r\t,]{2,64})['\"]?",
-            r"([A-Za-z][A-Za-z0-9 &+\-\.]{2,40})\s+\(SID",
-            r"'([A-Za-z][A-Za-z0-9 &+\-\.]{2,40})'",
+        svc_patterns = [
+            # 'Quoted name' anywhere on a line
+            r"'([A-Za-z][A-Za-z0-9 &+\-\.()!]{2,50})'",
+            # Service name: NAME  or  Service: NAME
+            r"[Ss]ervice\s+name[:\s]+([A-Za-z][A-Za-z0-9 &+\-\.()!]{2,50})",
+            # 0xSID NAME  (SID then name on same line, no quotes)
+            r"0x[0-9a-fA-F]+\s+([A-Za-z][A-Za-z0-9 &+\-\.()!]{2,50})",
+            # NAME (SId 0x...)
+            r"([A-Za-z][A-Za-z0-9 &+\-\.()!]{2,50})\s+\([Ss][Ii][Dd]",
         ]
-        _noise = {"using", "found", "error", "trying", "waiting", "opening",
-                  "tuned", "synced", "scanning", "reading", "loading"}
-        for pat in patterns:
-            for m in re.finditer(pat, text):
-                name = m.group(1).strip()
-                if (name and 2 <= len(name) <= 64
+        _noise = {
+            "using", "found", "error", "trying", "waiting", "opening",
+            "tuned", "synced", "scanning", "reading", "loading",
+            "component", "subch", "bitrate", "subchannel", "service",
+            "ensemble", "tuning", "starting", "stopping",
+        }
+        for pat in svc_patterns:
+            for m in re.finditer(pat, dab_text):
+                name = m.group(1).strip().rstrip(".")
+                # Reject hex-only strings, pure numbers, known noise words
+                if (name and 2 <= len(name) <= 50
+                        and not re.match(r'^[0-9a-fA-Fx\s]+$', name)
                         and name.lower().split()[0] not in _noise):
                     found_in_channel.add(name)
 
