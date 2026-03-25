@@ -14,7 +14,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/scanner",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.1",
+    "version":  "1.0.2",
 }
 
 import hashlib
@@ -303,16 +303,17 @@ var _freq = 96.5, _step = 0.2, _state = 'idle', _slotId = '', _poll = null;
 var _scanPoll = null, _scanPending = false;
 
 // ── Web Audio API state ───────────────────────────────────────
-var _audioCtx = null;
-var _gainNode = null;
-var _reader   = null;
-var _nextTime = 0;
-var _pcmBuf   = new Uint8Array(0);
-var _SR       = 48000;
-var _BLK_S    = 4800;
-var _BLK_B    = _BLK_S * 2;
-var _PRE      = 1.0;
-var _sched    = 0;
+var _audioCtx  = null;
+var _gainNode  = null;
+var _reader    = null;
+var _xhrStream = null;   // XHR fallback for Safari
+var _nextTime  = 0;
+var _pcmBuf    = new Uint8Array(0);
+var _SR        = 48000;
+var _BLK_S     = 4800;
+var _BLK_B     = _BLK_S * 2;
+var _PRE       = 1.0;
+var _sched     = 0;
 
 function fmt(f){ return f.toFixed(2); }
 function clamp(f){ return Math.max(76, Math.min(108, parseFloat(f.toFixed(2)))); }
@@ -489,10 +490,25 @@ function doStop(){
 // ── Web Audio API helpers ─────────────────────────────────────
 function _initAudio(){
   if(_audioCtx) return;
-  _audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: _SR});
+  // Safari <14.1 uses webkitAudioContext which may throw on the options object.
+  // Fall back to a no-options constructor so we still get an AudioContext.
+  try {
+    _audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: _SR});
+  } catch(e) {
+    try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e2) { return; }
+  }
   _gainNode = _audioCtx.createGain();
   _gainNode.gain.value = parseFloat(volSlider.value);
   _gainNode.connect(_audioCtx.destination);
+  // Safari may suspend the context while data is in-flight.  When it wakes
+  // up reset _nextTime so audio starts immediately rather than playing a
+  // burst of stale, pre-queued blocks.
+  _audioCtx.onstatechange = function(){
+    if(_audioCtx && _audioCtx.state === 'running' && _reader){
+      _nextTime = _audioCtx.currentTime + _PRE;
+      _sched = 0;
+    }
+  };
 }
 
 function _unlockAudio(){
@@ -511,6 +527,7 @@ function _unlockAudio(){
 
 function disconnectAudio(){
   if(_reader){ try{ _reader.cancel(); }catch(e){} _reader = null; }
+  if(_xhrStream){ try{ _xhrStream.abort(); }catch(e){} _xhrStream = null; }
   _pcmBuf = new Uint8Array(0);
   _sched  = 0;
   _rttMs  = null;
@@ -520,14 +537,26 @@ function disconnectAudio(){
 function connectAudio(url){
   disconnectAudio();
   _initAudio();
+  if(!_audioCtx) return;
   _audioCtx.resume();
   _nextTime = _audioCtx.currentTime + _PRE;
   _pcmBuf   = new Uint8Array(0);
   _sched    = 0;
+  // Use fetch + ReadableStream where available (Chrome, Firefox, Safari 14.1+).
+  // Fall back to XHR binary streaming for older / more restrictive Safari builds.
+  if(!window.fetch || !window.ReadableStream){
+    _connectAudioXHR(url);
+    return;
+  }
   fetch(url, {credentials: 'same-origin'})
     .then(function(resp){
-      if(!resp.ok || !resp.body){
+      if(!resp.ok){
         if(_state !== 'idle') setStatus('error', 'Stream error \u2014 try reconnecting');
+        return;
+      }
+      if(!resp.body || typeof resp.body.getReader !== 'function'){
+        // Safari didn't expose a streaming body — use XHR fallback.
+        _connectAudioXHR(url);
         return;
       }
       _reader = resp.body.getReader();
@@ -544,6 +573,35 @@ function connectAudio(url){
     .catch(function(){
       if(_state !== 'idle'){ setStatus('error', 'Network error \u2014 try reconnecting'); stopPoll(); }
     });
+}
+
+// XHR-based binary streaming — works in all Safari versions including iOS.
+// Uses the classic "charset=x-user-defined" trick so that each response byte
+// is preserved as-is in responseText (mask with 0xff to extract the byte value).
+function _connectAudioXHR(url){
+  if(_xhrStream){ try{ _xhrStream.abort(); }catch(e){} _xhrStream = null; }
+  var xhr = new XMLHttpRequest();
+  _xhrStream = xhr;
+  xhr.open('GET', url, true);
+  xhr.withCredentials = true;
+  try{ xhr.overrideMimeType('text/plain; charset=x-user-defined'); }catch(e){}
+  var offset = 0;
+  xhr.onprogress = function(){
+    var text = xhr.responseText;
+    var len  = text.length - offset;
+    if(len <= 0) return;
+    var chunk = new Uint8Array(len);
+    for(var i = 0; i < len; i++) chunk[i] = text.charCodeAt(offset + i) & 0xff;
+    offset = text.length;
+    _feedPCM(chunk);
+  };
+  xhr.onerror = function(){
+    if(_state !== 'idle') setStatus('error', 'Stream error \u2014 try reconnecting');
+  };
+  xhr.onabort = function(){};  // intentional abort — not an error
+  xhr.send();
+  // Expose cancel() so disconnectAudio() can abort it via _reader.cancel()
+  _reader = { cancel: function(){ if(_xhrStream){ _xhrStream.abort(); _xhrStream = null; } } };
 }
 
 function _feedPCM(chunk){

@@ -5,7 +5,7 @@
     "file": "scanner.py",
     "icon": "📻",
     "description": "Live FM radio receiver with RDS display, frequency history, presets, and band scan. Streams audio from a remote site's RTL-SDR dongle (role=scanner) to the browser in real time.",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/scanner.py"
   },
