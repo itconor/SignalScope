@@ -1158,13 +1158,20 @@ function adminRestart(){
 
 <script nonce="{{csp_nonce()}}">
 (function(){
-var _csrf = (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
 var _installed = {{_installed_plugins | tojson}};
 var _installedFiles = new Set(_installed.map(function(p){return p.file;}));
 
+function _getCsrf(){
+  // Prefer the meta tag (rendered server-side with the correct session token).
+  // Fall back to the cookie for pages that don't include the meta tag.
+  return (document.querySelector('meta[name="csrf-token"]')||{}).content
+      || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]
+      || '';
+}
+
 function _csrfPost(url, body){
   return fetch(url, {method:'POST', credentials:'same-origin',
-    headers:{'Content-Type':'application/json','X-CSRFToken':_csrf},
+    headers:{'Content-Type':'application/json','X-CSRFToken':_getCsrf()},
     body: JSON.stringify(body)});
 }
 
@@ -1289,7 +1296,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.80"
+BUILD                  = "SignalScope-3.3.81"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the

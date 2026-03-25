@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.81] - 2026-03-25
+
+### Fixed
+- **Plugin Install/Remove CSRF fails on HTTPS hub** — the plugins panel captured the CSRF token once at IIFE execution time from the cookie (`var _csrf = document.cookie.match(...)`). On hubs behind an SSL proxy the `csrf_token` cookie is set with `Secure=True; SameSite=Strict`; under certain browser/proxy combinations the cookie read could return a stale or empty value. Replaced the captured variable with `_getCsrf()` — called fresh on every POST — which prefers the `<meta name="csrf-token">` tag (rendered server-side with the exact session token) and falls back to the cookie. This matches the pattern already used by `_csrfFetch` everywhere else in the settings page.
+
 ## [3.3.80] - 2026-03-25
 
 ### Fixed

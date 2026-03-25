@@ -266,6 +266,23 @@ document.getElementById('p-plugins').addEventListener('click', function(e){
 ```
 **Rule**: Never add `onclick=` to elements whose handler strings contain runtime-variable content or Jinja2 expressions. Use `data-*` + event delegation instead.
 
+### Plugin Install CSRF fails on HTTPS hub (fixed 3.3.81)
+The plugins panel IIFE captured the CSRF token once at page-load time from the cookie:
+```javascript
+var _csrf = (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+```
+On hubs behind an SSL proxy the cookie has `Secure=True; SameSite=Strict` and the captured value could be stale or empty, causing every `_csrfPost()` call to send an empty `X-CSRFToken` header.
+
+Fix: replace with `_getCsrf()` called fresh on every POST — reads the `<meta name="csrf-token">` tag first (server-rendered, always correct), falls back to the cookie:
+```javascript
+function _getCsrf(){
+  return (document.querySelector('meta[name="csrf-token"]')||{}).content
+      || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]
+      || '';
+}
+```
+**Rule**: Never capture the CSRF token in a variable at IIFE time. Always call `_getCsrf()` (or equivalent) at the point of use so the value is always fresh and the meta tag fallback is available.
+
 ### FM Scanner stereo always MONO (fixed 3.3.77)
 At heartbeat ingestion (`/api/v1/heartbeat`), `sess["rds"]` was only updated when `ps` or `rt` was present. Fields like `stereo`, `tp`, `ta`, `pi` arrive from redsea *before* PS/RT and were silently dropped.
 ```python
