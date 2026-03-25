@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.118"
+BUILD                  = "SignalScope-3.3.119"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -12001,7 +12001,7 @@ def _inject_nav():
             plugin_links = (
                 f'<style nonce="{nonce}">'
                 f'.ss-pg{{position:relative;display:inline-block}}'
-                f'.ss-pdrop{{display:none;position:absolute;top:calc(100% + 5px);right:0;'
+                f'.ss-pdrop{{display:none;position:absolute;top:calc(100% + 5px);left:0;'
                 f'min-width:175px;background:var(--sur,#0d2346);border:1px solid var(--bor,#17345f);'
                 f'border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.5);padding:4px;'
                 f'z-index:1000;flex-direction:column;gap:2px}}'
@@ -12009,8 +12009,8 @@ def _inject_nav():
                 f'.ss-pdrop .btn{{display:block;text-align:left;width:100%;'
                 f'box-sizing:border-box;white-space:nowrap}}'
                 f'</style>'
-                f'<div class="ss-pg">'
-                f'<button class="{_trigger_cls}" style="pointer-events:none">Plugins\u202f\u25be</button>'
+                f'<div class="ss-pg" tabindex="0">'
+                f'<span class="{_trigger_cls}" style="cursor:default;user-select:none">Plugins\u202f\u25be</span>'
                 f'<div class="ss-pdrop">{_items}</div>'
                 f'</div>'
             )
