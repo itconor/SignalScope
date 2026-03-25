@@ -586,17 +586,14 @@ _TPL = """<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:100vh}
 a{color:#58a6ff;text-decoration:none}
-/* Header */
 .hdr{display:flex;align-items:center;gap:16px;padding:12px 20px;background:#161b22;border-bottom:1px solid #30363d}
 .hdr-title{font-size:18px;font-weight:700;color:#e6edf3}
 .hdr-sub{color:#8b949e;font-size:13px}
 .hdr a{color:#8b949e;font-size:13px}
 .hdr a:hover{color:#e6edf3}
-/* Layout */
-.layout{display:grid;grid-template-columns:260px 1fr;height:calc(100vh - 49px)}
+.layout{display:grid;grid-template-columns:260px 1fr;height:calc(100vh - 91px)}
 .sidebar{background:#161b22;border-right:1px solid #30363d;padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:16px}
 .main{display:flex;flex-direction:column;overflow:hidden}
-/* Sidebar */
 .sec-label{font-size:11px;font-weight:600;color:#8b949e;letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px}
 select,input[type=text],input[type=number]{width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:6px 10px;border-radius:6px;font-size:13px;outline:none}
 select:focus,input:focus{border-color:#58a6ff}
@@ -605,20 +602,15 @@ select:focus,input:focus{border-color:#58a6ff}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn-blue{background:#1f6feb;color:#fff}
 .btn-green{background:#238636;color:#fff}
-.btn-red{background:#da3633;color:#fff}
 .btn-ghost{background:transparent;border:1px solid #30363d;color:#8b949e}
 .btn-ghost:hover{color:#e6edf3;border-color:#8b949e}
-/* Date nav */
 .date-nav{display:flex;align-items:center;gap:8px}
 .date-nav .date-lbl{flex:1;text-align:center;font-weight:600;font-size:14px}
 .date-nav button{background:#21262d;border:1px solid #30363d;color:#8b949e;width:30px;height:30px;border-radius:6px;cursor:pointer;font-size:16px}
 .date-nav button:hover{color:#e6edf3}
-/* Status badge */
 .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
 .badge-rec{background:rgba(218,54,51,.2);color:#f85149}
 .badge-idle{background:rgba(139,148,158,.15);color:#8b949e}
-.badge-lq{background:rgba(210,153,34,.2);color:#d2a213}
-/* Timeline */
 .tl-wrap{flex:1;overflow-y:auto;padding:16px 20px}
 .tl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
 .tl-title{font-size:16px;font-weight:600}
@@ -637,39 +629,45 @@ select:focus,input:focus{border-color:#58a6ff}
 .tl-block[data-status="warn"]{background:#9e6a03}
 .tl-block[data-status="silent"]{background:#b62324}
 .tl-block[data-status="future"]{background:#161b22}
-/* Tooltip */
 .tl-block::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1c2128;border:1px solid #30363d;padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;color:#e6edf3;pointer-events:none;opacity:0;transition:opacity .15s;z-index:10}
 .tl-block:hover::after{opacity:1}
-/* Player bar */
 .player{background:#161b22;border-top:1px solid #30363d;padding:12px 20px;display:flex;flex-direction:column;gap:8px}
 .player-top{display:flex;align-items:center;gap:12px}
 .player-info{flex:1;min-width:0}
 .player-info .p-title{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .player-info .p-sub{font-size:11px;color:#8b949e}
-.player-controls{display:flex;align-items:center;gap:8px}
 .play-btn{width:36px;height:36px;border-radius:50%;background:#238636;border:none;color:#fff;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center}
 .play-btn:hover{background:#2ea043}
 .time-lbl{font-size:12px;color:#8b949e;font-variant-numeric:tabular-nums;min-width:80px;text-align:center}
-/* Scrub bar */
 .scrub-wrap{position:relative;height:24px;display:flex;align-items:center;cursor:pointer}
 .scrub-track{width:100%;height:4px;background:#21262d;border-radius:2px;position:relative;overflow:visible}
 .scrub-fill{height:100%;background:#238636;border-radius:2px;pointer-events:none}
 .scrub-thumb{position:absolute;top:50%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;background:#3fb950;pointer-events:none}
 .scrub-in,.scrub-out{position:absolute;top:0;bottom:0;width:2px;background:#58a6ff;pointer-events:none;z-index:2}
-/* Export */
 .export-bar{display:flex;align-items:center;gap:8px;font-size:12px;color:#8b949e}
-.export-bar .in-out-lbl{color:#58a6ff;font-weight:600}
-/* Settings panel */
-.settings-wrap{padding:20px;max-width:700px;overflow-y:auto;height:100%}
-.settings-wrap h2{font-size:16px;font-weight:600;margin-bottom:16px}
-.stream-row{display:grid;grid-template-columns:1fr 90px 90px 90px 90px 50px;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #21262d;font-size:13px}
-.stream-row.hdr-row{font-size:11px;color:#8b949e;font-weight:600;padding-bottom:6px;border-bottom:2px solid #30363d}
-.stream-row input[type=number]{width:100%}
-input[type=checkbox]{width:18px;height:18px;accent-color:#1f6feb;cursor:pointer}
-.disk-info{margin-top:16px;padding:12px;background:#161b22;border-radius:8px;font-size:13px;color:#8b949e}
+.inout-lbl{color:#58a6ff;font-weight:600}
+.settings-wrap{padding:20px;max-width:760px;overflow-y:auto;height:calc(100vh - 91px)}
+.settings-wrap h2{font-size:16px;font-weight:600;margin-bottom:4px}
+.settings-wrap .sub{color:#8b949e;font-size:13px;margin-bottom:20px}
+.stream-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:10px}
+.stream-card-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.stream-card-hdr .name{font-weight:600;font-size:14px}
+.stream-card-hdr .url{color:#8b949e;font-size:11px;margin-top:2px;word-break:break-all}
+.stream-fields{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;align-items:end}
+.stream-fields label{font-size:11px;color:#8b949e;display:block;margin-bottom:4px}
+.toggle-wrap{display:flex;align-items:center;gap:8px}
+.toggle{position:relative;width:40px;height:22px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;inset:0;background:#30363d;border-radius:22px;cursor:pointer;transition:.2s}
+.toggle-slider:before{content:'';position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
+.toggle input:checked + .toggle-slider{background:#238636}
+.toggle input:checked + .toggle-slider:before{transform:translateX(18px)}
+.disk-info{margin-top:16px;padding:12px;background:#161b22;border-radius:8px;font-size:13px;color:#8b949e;border:1px solid #30363d}
+.notice{background:rgba(31,111,235,.1);border:1px solid rgba(31,111,235,.3);border-radius:8px;padding:12px 16px;font-size:13px;color:#8b949e;margin-bottom:12px}
+.notice b{color:#58a6ff}
 .hidden{display:none}
-.tab-bar{display:flex;gap:4px;padding:12px 20px 0;border-bottom:1px solid #30363d;background:#0d1117}
-.tab{padding:8px 16px;border-radius:6px 6px 0 0;border:1px solid transparent;cursor:pointer;font-size:13px;color:#8b949e;background:transparent}
+.tab-bar{display:flex;gap:4px;padding:10px 20px 0;border-bottom:1px solid #30363d;background:#0d1117}
+.tab{padding:8px 16px;border-radius:6px 6px 0 0;border:1px solid transparent;cursor:pointer;font-size:13px;color:#8b949e;background:transparent;user-select:none}
 .tab.active{background:#161b22;border-color:#30363d #30363d #161b22;color:#e6edf3}
 </style>
 </head>
@@ -685,9 +683,9 @@ input[type=checkbox]{width:18px;height:18px;accent-color:#1f6feb;cursor:pointer}
   </div>
 </div>
 
-<div class="tab-bar">
-  <div class="tab active" onclick="showTab('timeline')" id="tab-timeline">Timeline</div>
-  <div class="tab" onclick="showTab('settings')" id="tab-settings">Settings</div>
+<div class="tab-bar" id="tab-bar">
+  <div class="tab active" id="tab-timeline" data-tab="timeline">Timeline</div>
+  <div class="tab" id="tab-settings" data-tab="settings">Settings</div>
 </div>
 
 <!-- TIMELINE TAB -->
@@ -695,23 +693,23 @@ input[type=checkbox]{width:18px;height:18px;accent-color:#1f6feb;cursor:pointer}
   <div class="sidebar">
     <div>
       <div class="sec-label">Stream</div>
-      <select id="stream-sel" onchange="onStreamChange()">
+      <select id="stream-sel">
         <option value="">— select stream —</option>
       </select>
     </div>
     <div>
       <div class="sec-label">Date</div>
       <div class="date-nav">
-        <button onclick="shiftDay(-1)">‹</button>
+        <button id="btn-prev-day">‹</button>
         <div class="date-lbl" id="date-lbl">—</div>
-        <button onclick="shiftDay(1)">›</button>
+        <button id="btn-next-day">›</button>
       </div>
     </div>
-    <div id="day-list-wrap">
+    <div>
       <div class="sec-label">Days with recordings</div>
       <div id="day-list" style="display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto"></div>
     </div>
-    <div id="seg-info" style="background:#161b22;border-radius:8px;padding:12px;font-size:12px;color:#8b949e;display:none">
+    <div id="seg-info" style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;font-size:12px;color:#8b949e;display:none">
       <div id="seg-info-text"></div>
     </div>
   </div>
@@ -727,22 +725,23 @@ input[type=checkbox]{width:18px;height:18px;accent-color:#1f6feb;cursor:pointer}
           <span><i style="background:#21262d"></i> No recording</span>
         </div>
       </div>
+      <div id="tl-notice" class="notice hidden">
+        <b>No streams are enabled for recording.</b> Go to the <span id="notice-settings-link" style="color:#58a6ff;cursor:pointer;text-decoration:underline">Settings tab</span> to choose which streams to log.
+      </div>
       <div id="tl-grid" class="tl-grid"></div>
     </div>
 
-    <div class="player" id="player">
+    <div class="player">
       <audio id="audio-el" preload="none"></audio>
       <div class="player-top">
-        <button class="play-btn" id="play-btn" onclick="togglePlay()">▶</button>
+        <button class="play-btn" id="play-btn">▶</button>
         <div class="player-info">
           <div class="p-title" id="p-title">No segment selected</div>
-          <div class="p-sub" id="p-sub">Click a segment on the timeline to play</div>
+          <div class="p-sub" id="p-sub">Click a block on the timeline to play</div>
         </div>
-        <div class="player-controls">
-          <span class="time-lbl" id="time-lbl">0:00 / 0:00</span>
-        </div>
+        <span class="time-lbl" id="time-lbl">0:00 / 0:00</span>
       </div>
-      <div class="scrub-wrap" id="scrub" onclick="scrubClick(event)" onmousedown="scrubStart(event)">
+      <div class="scrub-wrap" id="scrub">
         <div class="scrub-track">
           <div class="scrub-fill" id="scrub-fill" style="width:0%"></div>
           <div class="scrub-thumb" id="scrub-thumb" style="left:0%"></div>
@@ -751,11 +750,11 @@ input[type=checkbox]{width:18px;height:18px;accent-color:#1f6feb;cursor:pointer}
         </div>
       </div>
       <div class="export-bar">
-        <button class="btn btn-ghost" id="mark-in-btn" onclick="markIn()">⬥ Mark In</button>
-        <button class="btn btn-ghost" id="mark-out-btn" onclick="markOut()">⬥ Mark Out</button>
-        <span class="in-out-lbl" id="inout-lbl"></span>
+        <button class="btn btn-ghost" id="mark-in-btn">⬥ Mark In</button>
+        <button class="btn btn-ghost" id="mark-out-btn">⬥ Mark Out</button>
+        <span class="inout-lbl" id="inout-lbl"></span>
         <div style="flex:1"></div>
-        <button class="btn btn-blue" id="export-btn" onclick="exportClip()" disabled>⬇ Export Clip</button>
+        <button class="btn btn-blue" id="export-btn" disabled>⬇ Export Clip</button>
       </div>
     </div>
   </div>
@@ -764,54 +763,42 @@ input[type=checkbox]{width:18px;height:18px;accent-color:#1f6feb;cursor:pointer}
 <!-- SETTINGS TAB -->
 <div id="view-settings" class="settings-wrap hidden">
   <h2>Recording Settings</h2>
-  <div class="stream-row hdr-row">
-    <div>Stream</div>
-    <div>HQ bitrate</div>
-    <div>LQ bitrate</div>
-    <div>LQ after (days)</div>
-    <div>Keep (days)</div>
-    <div>Record</div>
-  </div>
+  <p class="sub">Enable recording per stream. Changes take effect immediately after saving.</p>
   <div id="settings-rows"></div>
-  <div style="margin-top:16px;display:flex;gap:8px">
-    <button class="btn btn-green" onclick="saveSettings()">💾 Save Settings</button>
-    <span id="save-msg" style="color:#3fb950;font-size:13px;line-height:36px;display:none">Saved!</span>
+  <div style="margin-top:16px;display:flex;gap:8px;align-items:center">
+    <button class="btn btn-green" id="save-settings-btn">💾 Save Settings</button>
+    <span id="save-msg" style="color:#3fb950;font-size:13px;display:none">Saved!</span>
   </div>
   <div class="disk-info" id="disk-info">Calculating disk usage…</div>
 </div>
 
 <script nonce="{{ csp_nonce() }}">
-// ── State ─────────────────────────────────────────────────────────────────
-var _streams      = [];
-var _days         = [];
-var _segments     = [];
-var _currentSlug  = '';
-var _currentDate  = '';
-var _selSeg       = null;   // currently selected segment object
-var _markIn       = null;   // absolute seconds since midnight
-var _markOut      = null;
-var _scrubDragging = false;
-var _cfg          = {streams:{}};
-
+(function(){
+// ── Helpers ───────────────────────────────────────────────────────────────
 function _csrf(){ return (document.querySelector('meta[name="csrf-token"]')||{}).content||''; }
-function _get(url){ return fetch(url,{credentials:'same-origin'}).then(r=>r.json()); }
-function _post(url,body){
-  return fetch(url,{method:'POST',credentials:'same-origin',
+function _get(u){ return fetch(u,{credentials:'same-origin'}).then(function(r){ return r.json(); }); }
+function _post(u,b){
+  return fetch(u,{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
-    body:JSON.stringify(body)}).then(r=>r.json());
+    body:JSON.stringify(b)}).then(function(r){ return r.json(); });
 }
+function _esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function _fmt(s){ s=isNaN(s)?0:s; var m=Math.floor(s/60),ss=Math.floor(s%60); return m+':'+(ss<10?'0':'')+ss; }
+function _fmtAbs(s){ var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=Math.floor(s%60); return (h>0?h+':':'')+(m<10&&h>0?'0':'')+m+':'+(sc<10?'0':'')+sc; }
+function _fmtBytes(b){ if(b<1048576) return (b/1024).toFixed(1)+'KB'; if(b<1073741824) return (b/1048576).toFixed(1)+'MB'; return (b/1073741824).toFixed(2)+'GB'; }
 
-// ── Init ──────────────────────────────────────────────────────────────────
-window.addEventListener('load', function(){
-  var today = new Date();
-  _currentDate = today.toISOString().slice(0,10);
-  updateDateLabel();
-  loadStreams();
-  loadStatus();
-  setInterval(loadStatus, 10000);
-  setupAudio();
-});
+// ── State ─────────────────────────────────────────────────────────────────
+var _SEG_SECS    = 300;
+var _streams     = [];
+var _currentSlug = '';
+var _currentDate = '';
+var _selSeg      = null;
+var _markIn      = null;
+var _markOut     = null;
+var _scrubDrag   = false;
+var _cfg         = {streams:{}};
 
+// ── Tab switching ─────────────────────────────────────────────────────────
 function showTab(tab){
   document.getElementById('view-timeline').classList.toggle('hidden', tab!=='timeline');
   document.getElementById('view-settings').classList.toggle('hidden', tab!=='settings');
@@ -820,7 +807,32 @@ function showTab(tab){
   if(tab==='settings') loadSettingsPanel();
 }
 
-// ── Streams ───────────────────────────────────────────────────────────────
+document.getElementById('tab-bar').addEventListener('click', function(e){
+  var t = e.target.closest('[data-tab]');
+  if(t) showTab(t.dataset.tab);
+});
+
+document.getElementById('notice-settings-link').addEventListener('click', function(){ showTab('settings'); });
+
+// ── Init ──────────────────────────────────────────────────────────────────
+var today = new Date();
+_currentDate = today.toISOString().slice(0,10);
+document.getElementById('date-lbl').textContent = _currentDate;
+
+loadStreams();
+loadStatus();
+setInterval(loadStatus, 10000);
+setupAudio();
+
+// ── Stream selector ───────────────────────────────────────────────────────
+document.getElementById('stream-sel').addEventListener('change', function(){
+  _currentSlug = this.value;
+  _selSeg = null; _markIn = _markOut = null;
+  updateInOutLabel();
+  if(_currentSlug) loadDays();
+  else buildTimeline([]);
+});
+
 function loadStreams(){
   _get('/api/logger/streams').then(function(data){
     _streams = data;
@@ -828,62 +840,60 @@ function loadStreams(){
     sel.innerHTML = '<option value="">— select stream —</option>';
     data.forEach(function(s){
       var o = document.createElement('option');
-      o.value = s.slug; o.textContent = s.name;
-      sel.appendChild(o);
+      o.value = s.slug; o.textContent = s.name; sel.appendChild(o);
     });
-    if(_streams.length > 0){
-      sel.value = _streams[0].slug;
-      onStreamChange();
-    }
+    _get('/api/logger/config').then(function(cfg){
+      _cfg = cfg;
+      // Auto-select first enabled stream, or first stream
+      var enabled = data.filter(function(s){ return (cfg.streams||{})[s.name] && cfg.streams[s.name].enabled; });
+      var pick = enabled.length ? enabled[0] : (data.length ? data[0] : null);
+      if(pick){
+        sel.value = pick.slug;
+        _currentSlug = pick.slug;
+        loadDays();
+      }
+      // Show notice if nothing enabled
+      var anyEnabled = Object.values(cfg.streams||{}).some(function(s){ return s.enabled; });
+      document.getElementById('tl-notice').classList.toggle('hidden', anyEnabled || data.length===0);
+    });
   });
 }
 
-function onStreamChange(){
-  _currentSlug = document.getElementById('stream-sel').value;
-  _selSeg = null;
-  _markIn = _markOut = null;
-  updateInOutLabel();
-  if(_currentSlug) loadDays();
-}
-
-// ── Days ──────────────────────────────────────────────────────────────────
-function loadDays(){
-  if(!_currentSlug) return;
-  _get('/api/logger/days/'+_currentSlug).then(function(days){
-    _days = days;
-    var el = document.getElementById('day-list');
-    el.innerHTML = '';
-    days.slice(0,14).forEach(function(d){
-      var btn = document.createElement('button');
-      btn.className = 'btn btn-ghost';
-      btn.style = 'width:100%;justify-content:flex-start;padding:5px 10px';
-      btn.textContent = d;
-      btn.onclick = function(){ _currentDate=d; updateDateLabel(); loadSegments(); };
-      el.appendChild(btn);
-    });
-    loadSegments();
-  });
-}
+// ── Date nav ──────────────────────────────────────────────────────────────
+document.getElementById('btn-prev-day').addEventListener('click', function(){ shiftDay(-1); });
+document.getElementById('btn-next-day').addEventListener('click', function(){ shiftDay(1); });
 
 function shiftDay(delta){
   if(!_currentDate) return;
   var d = new Date(_currentDate+'T00:00:00Z');
   d.setUTCDate(d.getUTCDate()+delta);
   _currentDate = d.toISOString().slice(0,10);
-  updateDateLabel();
+  document.getElementById('date-lbl').textContent = _currentDate;
   loadSegments();
 }
 
-function updateDateLabel(){
-  document.getElementById('date-lbl').textContent = _currentDate || '—';
+function loadDays(){
+  _get('/api/logger/days/'+_currentSlug).then(function(days){
+    var el = document.getElementById('day-list');
+    el.innerHTML = '';
+    if(!days.length){ el.innerHTML='<span style="color:#8b949e;font-size:12px">No recordings yet</span>'; }
+    days.slice(0,14).forEach(function(d){
+      var btn = document.createElement('button');
+      btn.className = 'btn btn-ghost';
+      btn.style.cssText = 'width:100%;justify-content:flex-start;padding:5px 10px;font-size:12px';
+      btn.textContent = d;
+      btn.addEventListener('click', function(){ _currentDate=d; document.getElementById('date-lbl').textContent=d; loadSegments(); });
+      el.appendChild(btn);
+    });
+    loadSegments();
+  });
 }
 
-// ── Segments & Timeline ───────────────────────────────────────────────────
+// ── Timeline ──────────────────────────────────────────────────────────────
 function loadSegments(){
-  if(!_currentSlug || !_currentDate){ buildTimeline([]); return; }
+  if(!_currentSlug||!_currentDate){ buildTimeline([]); return; }
   document.getElementById('tl-title').textContent = _currentDate;
   _get('/api/logger/segments/'+_currentSlug+'/'+_currentDate).then(function(segs){
-    _segments = segs;
     buildTimeline(segs);
   });
 }
@@ -891,22 +901,17 @@ function loadSegments(){
 function buildTimeline(segs){
   var grid = document.getElementById('tl-grid');
   grid.innerHTML = '';
-  // Build lookup: start_s → seg
   var lookup = {};
   segs.forEach(function(s){ lookup[s.start_s] = s; });
-
   var now = new Date();
   var todayStr = now.toISOString().slice(0,10);
   var nowSecs  = now.getUTCHours()*3600 + now.getUTCMinutes()*60;
 
   for(var h=0; h<24; h++){
-    // Hour label
     var lbl = document.createElement('div');
     lbl.className = 'tl-hour-lbl';
     lbl.textContent = String(h).padStart(2,'0')+':00';
     grid.appendChild(lbl);
-
-    // Row of 12 five-minute blocks
     var row = document.createElement('div');
     row.className = 'tl-row';
     for(var m=0; m<60; m+=5){
@@ -914,21 +919,19 @@ function buildTimeline(segs){
       var blk = document.createElement('div');
       blk.className = 'tl-block';
       var seg = lookup[ss];
-      var isFuture = _currentDate === todayStr && ss > nowSecs;
-      if(isFuture){
-        blk.dataset.status = 'future';
-        blk.dataset.tip = String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+' — future';
+      var future = (_currentDate===todayStr && ss>nowSecs);
+      if(future){
+        blk.dataset.status='future';
+        blk.dataset.tip=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+' — future';
       } else if(seg){
-        var spct = seg.silence_pct || 0;
-        blk.dataset.status = spct > 80 ? 'silent' : spct > 10 ? 'warn' : 'ok';
+        var sp = seg.silence_pct||0;
+        blk.dataset.status = sp>80?'silent':sp>10?'warn':'ok';
         blk.dataset.tip = String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')
-          +' · '+seg.quality+' · silence '+spct.toFixed(0)+'%';
-        blk.dataset.ss = ss;
-        blk.dataset.fname = seg.filename;
-        (function(s){ blk.onclick = function(){ playSeg(s, blk); }; })(seg);
+          +' · '+seg.quality+' · '+sp.toFixed(0)+'% silence';
+        (function(s,b){ b.addEventListener('click', function(){ playSeg(s,b); }); })(seg,blk);
       } else {
-        blk.dataset.status = 'none';
-        blk.dataset.tip = String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+' — no recording';
+        blk.dataset.status='none';
+        blk.dataset.tip=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+' — no recording';
       }
       row.appendChild(blk);
     }
@@ -937,241 +940,190 @@ function buildTimeline(segs){
 }
 
 function playSeg(seg, blkEl){
-  // Deselect previous
-  document.querySelectorAll('.tl-block.selected').forEach(function(b){ b.classList.remove('selected'); });
-  if(blkEl) blkEl.classList.add('selected','playing');
+  document.querySelectorAll('.tl-block.selected,.tl-block.playing').forEach(function(b){ b.classList.remove('selected','playing'); });
+  blkEl.classList.add('selected','playing');
   _selSeg = seg;
-
-  // Show info
-  var info = document.getElementById('seg-info');
   var spct = (seg.silence_pct||0).toFixed(1);
+  var info = document.getElementById('seg-info');
   document.getElementById('seg-info-text').innerHTML =
-    '<b>'+seg.filename+'</b><br>Silence: '+spct+'% · '+seg.quality+' quality'
+    '<b>'+_esc(seg.filename)+'</b><br>Silence: '+spct+'% · '+seg.quality+' quality'
     +(seg.silence_ranges&&seg.silence_ranges.length?' · '+seg.silence_ranges.length+' gap(s)':'');
   info.style.display='block';
-
-  // Load audio
-  var url = '/api/logger/audio/'+_currentSlug+'/'+_currentDate+'/'+seg.filename;
   var audio = document.getElementById('audio-el');
-  audio.src = url;
+  audio.src = '/api/logger/audio/'+_currentSlug+'/'+_currentDate+'/'+seg.filename;
   audio.load();
   audio.play().catch(function(){});
   document.getElementById('p-title').textContent = seg.filename;
-  document.getElementById('p-sub').textContent = _currentDate+' · '+_currentSlug;
+  document.getElementById('p-sub').textContent   = _currentDate+' · '+_currentSlug;
   document.getElementById('play-btn').textContent = '⏸';
-
-  // Reset marks relative to this segment for scrub display
   _markIn = _markOut = null;
   updateInOutLabel();
-  resetScrubMarkers();
-}
-
-// ── Audio Player ──────────────────────────────────────────────────────────
-function setupAudio(){
-  var audio = document.getElementById('audio-el');
-  audio.addEventListener('timeupdate', onTimeUpdate);
-  audio.addEventListener('ended', onEnded);
-  audio.addEventListener('pause', function(){ document.getElementById('play-btn').textContent='▶'; });
-  audio.addEventListener('play',  function(){ document.getElementById('play-btn').textContent='⏸'; });
-}
-
-function togglePlay(){
-  var audio = document.getElementById('audio-el');
-  if(!audio.src || audio.src.endsWith('#')) return;
-  if(audio.paused) audio.play(); else audio.pause();
-}
-
-function onTimeUpdate(){
-  var audio = document.getElementById('audio-el');
-  var cur = audio.currentTime, dur = audio.duration||0;
-  document.getElementById('time-lbl').textContent = _fmt(cur)+' / '+_fmt(dur);
-  var pct = dur>0 ? cur/dur*100 : 0;
-  document.getElementById('scrub-fill').style.width = pct+'%';
-  document.getElementById('scrub-thumb').style.left  = pct+'%';
-  updateScrubMarkers();
-}
-
-function onEnded(){
-  document.getElementById('play-btn').textContent = '▶';
-  document.querySelectorAll('.tl-block.playing').forEach(function(b){ b.classList.remove('playing'); });
-}
-
-function _fmt(s){
-  s = isNaN(s)?0:s;
-  var m=Math.floor(s/60), ss=Math.floor(s%60);
-  return m+':'+(ss<10?'0':'')+ss;
-}
-
-// ── Scrub ─────────────────────────────────────────────────────────────────
-function scrubClick(e){
-  if(_scrubDragging) return;
-  seekTo(e);
-}
-
-function scrubStart(e){
-  if(e.button!==0) return;
-  _scrubDragging = true;
-  seekTo(e);
-  function onMove(ev){ if(_scrubDragging) seekTo(ev); }
-  function onUp(){ _scrubDragging=false; document.removeEventListener('mousemove',onMove); document.removeEventListener('mouseup',onUp); }
-  document.addEventListener('mousemove',onMove);
-  document.addEventListener('mouseup',onUp);
-  e.preventDefault();
-}
-
-function seekTo(e){
-  var track = document.querySelector('.scrub-track');
-  var rect  = track.getBoundingClientRect();
-  var pct   = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  var audio = document.getElementById('audio-el');
-  if(audio.duration) audio.currentTime = pct * audio.duration;
-}
-
-// ── Mark In / Out ─────────────────────────────────────────────────────────
-function markIn(){
-  if(!_selSeg) return;
-  var audio = document.getElementById('audio-el');
-  _markIn = _selSeg.start_s + audio.currentTime;
-  if(_markOut !== null && _markOut <= _markIn) _markOut = null;
-  updateInOutLabel();
-  updateScrubMarkers();
-  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null);
-}
-
-function markOut(){
-  if(!_selSeg) return;
-  var audio = document.getElementById('audio-el');
-  _markOut = _selSeg.start_s + audio.currentTime;
-  if(_markIn !== null && _markOut <= _markIn) _markIn = null;
-  updateInOutLabel();
-  updateScrubMarkers();
-  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null);
-}
-
-function updateInOutLabel(){
-  var lbl = document.getElementById('inout-lbl');
-  if(_markIn===null && _markOut===null){ lbl.textContent=''; return; }
-  var parts = [];
-  if(_markIn!==null)  parts.push('In: '+_fmtAbs(_markIn));
-  if(_markOut!==null) parts.push('Out: '+_fmtAbs(_markOut));
-  if(_markIn!==null && _markOut!==null) parts.push('Dur: '+_fmt(_markOut-_markIn));
-  lbl.textContent = parts.join('  ·  ');
-}
-
-function _fmtAbs(secs){
-  var h=Math.floor(secs/3600), m=Math.floor((secs%3600)/60), s=Math.floor(secs%60);
-  return (h>0?h+':':'')+(m<10&&h>0?'0':'')+m+':'+(s<10?'0':'')+s;
-}
-
-function updateScrubMarkers(){
-  if(!_selSeg) return;
-  var audio = document.getElementById('audio-el');
-  var dur   = audio.duration || _SEG_SECS;
-  var segS  = _selSeg.start_s;
-  var inEl  = document.getElementById('scrub-in');
-  var outEl = document.getElementById('scrub-out');
-  if(_markIn!==null && _markIn>=segS && _markIn<segS+dur){
-    var pct = (_markIn-segS)/dur*100;
-    inEl.style.left=pct+'%'; inEl.classList.remove('hidden');
-  } else { inEl.classList.add('hidden'); }
-  if(_markOut!==null && _markOut>=segS && _markOut<=segS+dur){
-    var pct = (_markOut-segS)/dur*100;
-    outEl.style.left=pct+'%'; outEl.classList.remove('hidden');
-  } else { outEl.classList.add('hidden'); }
-}
-
-function resetScrubMarkers(){
   document.getElementById('scrub-in').classList.add('hidden');
   document.getElementById('scrub-out').classList.add('hidden');
 }
 
-// ── Export ────────────────────────────────────────────────────────────────
-var _SEG_SECS = 300;
-
-function exportClip(){
-  if(_markIn===null||_markOut===null||!_currentSlug||!_currentDate) return;
-  var btn = document.getElementById('export-btn');
-  btn.disabled=true; btn.textContent='⏳ Exporting…';
-  fetch('/api/logger/export',{
-    method:'POST', credentials:'same-origin',
-    headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
-    body: JSON.stringify({stream:_currentSlug,date:_currentDate,start_s:_markIn,end_s:_markOut})
-  }).then(function(r){
-    if(!r.ok){ r.json().then(function(d){ alert('Export failed: '+(d.error||r.status)); }); }
-    else{
-      return r.blob().then(function(blob){
-        var a=document.createElement('a');
-        a.href=URL.createObjectURL(blob);
-        a.download=_currentSlug+'_'+_currentDate+'_clip.mp3';
-        a.click();
-      });
-    }
-  }).finally(function(){ btn.disabled=false; btn.textContent='⬇ Export Clip'; });
+// ── Player ────────────────────────────────────────────────────────────────
+function setupAudio(){
+  var a = document.getElementById('audio-el');
+  a.addEventListener('timeupdate', function(){
+    var cur=a.currentTime, dur=a.duration||0;
+    document.getElementById('time-lbl').textContent = _fmt(cur)+' / '+_fmt(dur);
+    var pct = dur>0 ? cur/dur*100 : 0;
+    document.getElementById('scrub-fill').style.width = pct+'%';
+    document.getElementById('scrub-thumb').style.left  = pct+'%';
+    updateScrubMarkers();
+  });
+  a.addEventListener('ended', function(){
+    document.getElementById('play-btn').textContent='▶';
+    document.querySelectorAll('.tl-block.playing').forEach(function(b){ b.classList.remove('playing'); });
+  });
+  a.addEventListener('pause', function(){ document.getElementById('play-btn').textContent='▶'; });
+  a.addEventListener('play',  function(){ document.getElementById('play-btn').textContent='⏸'; });
 }
+
+document.getElementById('play-btn').addEventListener('click', function(){
+  var a=document.getElementById('audio-el');
+  if(!a.src||a.src===location.href) return;
+  if(a.paused) a.play(); else a.pause();
+});
+
+// ── Scrub ─────────────────────────────────────────────────────────────────
+var scrubEl = document.getElementById('scrub');
+scrubEl.addEventListener('click', function(e){ if(!_scrubDrag) seekTo(e); });
+scrubEl.addEventListener('mousedown', function(e){
+  if(e.button!==0) return;
+  _scrubDrag=true; seekTo(e);
+  function mv(ev){ if(_scrubDrag) seekTo(ev); }
+  function up(){ _scrubDrag=false; document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); }
+  document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
+  e.preventDefault();
+});
+
+function seekTo(e){
+  var rect = document.querySelector('.scrub-track').getBoundingClientRect();
+  var pct  = Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
+  var a    = document.getElementById('audio-el');
+  if(a.duration) a.currentTime = pct*a.duration;
+}
+
+// ── Mark in/out ───────────────────────────────────────────────────────────
+document.getElementById('mark-in-btn').addEventListener('click', function(){
+  if(!_selSeg) return;
+  var a=document.getElementById('audio-el');
+  _markIn = _selSeg.start_s + a.currentTime;
+  if(_markOut!==null && _markOut<=_markIn) _markOut=null;
+  updateInOutLabel(); updateScrubMarkers();
+  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null);
+});
+
+document.getElementById('mark-out-btn').addEventListener('click', function(){
+  if(!_selSeg) return;
+  var a=document.getElementById('audio-el');
+  _markOut = _selSeg.start_s + a.currentTime;
+  if(_markIn!==null && _markOut<=_markIn) _markIn=null;
+  updateInOutLabel(); updateScrubMarkers();
+  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null);
+});
+
+function updateInOutLabel(){
+  var parts=[];
+  if(_markIn!==null)  parts.push('In: '+_fmtAbs(_markIn));
+  if(_markOut!==null) parts.push('Out: '+_fmtAbs(_markOut));
+  if(_markIn!==null&&_markOut!==null) parts.push('Dur: '+_fmt(_markOut-_markIn));
+  document.getElementById('inout-lbl').textContent = parts.join('  ·  ');
+}
+
+function updateScrubMarkers(){
+  if(!_selSeg) return;
+  var dur=document.getElementById('audio-el').duration||_SEG_SECS;
+  var ss=_selSeg.start_s;
+  var iE=document.getElementById('scrub-in'), oE=document.getElementById('scrub-out');
+  if(_markIn!==null&&_markIn>=ss&&_markIn<ss+dur){ iE.style.left=((_markIn-ss)/dur*100)+'%'; iE.classList.remove('hidden'); } else { iE.classList.add('hidden'); }
+  if(_markOut!==null&&_markOut>=ss&&_markOut<=ss+dur){ oE.style.left=((_markOut-ss)/dur*100)+'%'; oE.classList.remove('hidden'); } else { oE.classList.add('hidden'); }
+}
+
+// ── Export ────────────────────────────────────────────────────────────────
+document.getElementById('export-btn').addEventListener('click', function(){
+  if(_markIn===null||_markOut===null||!_currentSlug||!_currentDate) return;
+  var btn=this; btn.disabled=true; btn.textContent='⏳ Exporting…';
+  fetch('/api/logger/export',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
+    body:JSON.stringify({stream:_currentSlug,date:_currentDate,start_s:_markIn,end_s:_markOut})
+  }).then(function(r){
+    if(!r.ok){ return r.json().then(function(d){ alert('Export failed: '+(d.error||r.status)); }); }
+    return r.blob().then(function(blob){
+      var a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download=_currentSlug+'_'+_currentDate+'_clip.mp3';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    });
+  }).finally(function(){ btn.disabled=false; btn.textContent='⬇ Export Clip'; });
+});
 
 // ── Status ────────────────────────────────────────────────────────────────
 function loadStatus(){
   _get('/api/logger/status').then(function(data){
-    var recs = data.recorders||{};
+    var recs   = data.recorders||{};
     var active = Object.values(recs).filter(function(r){ return r.running; });
-    var badge = document.getElementById('rec-status');
-    if(active.length>0){
-      badge.className='badge badge-rec';
-      badge.textContent='● REC ('+active.length+')';
-    } else {
-      badge.className='badge badge-idle';
-      badge.textContent='Idle';
-    }
+    var badge  = document.getElementById('rec-status');
+    badge.className = active.length ? 'badge badge-rec' : 'badge badge-idle';
+    badge.textContent = active.length ? '● REC ('+active.length+')' : 'Idle';
     var di = document.getElementById('disk-info');
-    if(di) di.textContent='Disk usage: '+_fmtBytes(data.disk_bytes||0)
-      +(active.length?' · '+active.length+' stream(s) recording':'');
+    if(di) di.textContent = 'Disk usage: '+_fmtBytes(data.disk_bytes||0)
+      +(active.length ? ' · '+active.length+' stream(s) recording' : ' · no active recordings');
   });
-}
-
-function _fmtBytes(b){
-  if(b<1024) return b+'B';
-  if(b<1048576) return (b/1024).toFixed(1)+'KB';
-  if(b<1073741824) return (b/1048576).toFixed(1)+'MB';
-  return (b/1073741824).toFixed(2)+'GB';
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────
 function loadSettingsPanel(){
   Promise.all([_get('/api/logger/streams'), _get('/api/logger/config'), _get('/api/logger/status')])
-  .then(function(results){
-    _streams = results[0];
-    _cfg     = results[1];
-    var status = results[2];
+  .then(function(res){
+    _streams=res[0]; _cfg=res[1];
     renderSettingsRows();
-    var di = document.getElementById('disk-info');
-    di.textContent='Disk usage: '+_fmtBytes(status.disk_bytes||0);
+    document.getElementById('disk-info').textContent =
+      'Disk usage: '+_fmtBytes((res[2].disk_bytes)||0);
   });
 }
 
 function renderSettingsRows(){
-  var el = document.getElementById('settings-rows');
+  var el=document.getElementById('settings-rows');
   el.innerHTML='';
+  if(!_streams.length){
+    el.innerHTML='<p style="color:#8b949e">No input streams configured in SignalScope.</p>';
+    return;
+  }
   _streams.forEach(function(s){
-    var sc = (_cfg.streams||{})[s.name]||{};
-    var row=document.createElement('div'); row.className='stream-row';
-    row.innerHTML=
-      '<div style="font-weight:500">'+_esc(s.name)+'<br><span style="color:#8b949e;font-size:11px">'+_esc(s.url||'')+'</span></div>'
-      +'<div><select data-stream="'+_esc(s.name)+'" data-key="hq_bitrate">'
-      +['64k','96k','128k','192k','256k','320k'].map(function(b){
-        return '<option'+(( sc.hq_bitrate||'128k')===b?' selected':'')+'>'+b+'</option>';}).join('')+'</select></div>'
-      +'<div><select data-stream="'+_esc(s.name)+'" data-key="lq_bitrate">'
-      +['32k','48k','64k','96k'].map(function(b){
-        return '<option'+((sc.lq_bitrate||'48k')===b?' selected':'')+'>'+b+'</option>';}).join('')+'</select></div>'
-      +'<div><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="lq_after_days" value="'+(sc.lq_after_days||30)+'" style="width:70px"></div>'
-      +'<div><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="retain_days"   value="'+(sc.retain_days||90)+'"  style="width:70px"></div>'
-      +'<div><input type="checkbox" data-stream="'+_esc(s.name)+'" data-key="enabled"'+(sc.enabled?' checked':'')+'></div>';
-    el.appendChild(row);
+    var sc=(_cfg.streams||{})[s.name]||{};
+    var card=document.createElement('div'); card.className='stream-card';
+    var enabled = sc.enabled ? ' checked' : '';
+    card.innerHTML =
+      '<div class="stream-card-hdr">'
+      +'<div><div class="name">'+_esc(s.name)+'</div><div class="url">'+_esc(s.url||'')+'</div></div>'
+      +'<div class="toggle-wrap">'
+      +'<label class="toggle"><input type="checkbox" data-stream="'+_esc(s.name)+'" data-key="enabled"'+enabled+'>'
+      +'<span class="toggle-slider"></span></label>'
+      +'<span style="font-size:12px;color:#8b949e" id="lbl-en-'+_esc(s.name)+'">'+(sc.enabled?'Recording':'Disabled')+'</span>'
+      +'</div></div>'
+      +'<div class="stream-fields">'
+      +'<div><label>HQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="hq_bitrate">'
+      +['64k','96k','128k','192k','256k','320k'].map(function(b){ return '<option'+(( sc.hq_bitrate||'128k')===b?' selected':'')+'>'+b+'</option>'; }).join('')
+      +'</select></div>'
+      +'<div><label>LQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="lq_bitrate">'
+      +['32k','48k','64k','96k'].map(function(b){ return '<option'+((sc.lq_bitrate||'48k')===b?' selected':'')+'>'+b+'</option>'; }).join('')
+      +'</select></div>'
+      +'<div><label>Switch to LQ after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="lq_after_days" value="'+(sc.lq_after_days||30)+'"></div>'
+      +'<div><label>Delete after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="retain_days" value="'+(sc.retain_days||90)+'"></div>'
+      +'</div>';
+    // Live toggle label update
+    var chk = card.querySelector('input[type=checkbox]');
+    chk.addEventListener('change', function(){
+      document.getElementById('lbl-en-'+s.name).textContent = this.checked ? 'Recording' : 'Disabled';
+    });
+    el.appendChild(card);
   });
 }
 
-function _esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
-
-function saveSettings(){
+document.getElementById('save-settings-btn').addEventListener('click', function(){
   var streams={};
   document.querySelectorAll('[data-stream]').forEach(function(el){
     var name=el.dataset.stream, key=el.dataset.key;
@@ -1182,12 +1134,17 @@ function saveSettings(){
   });
   _post('/api/logger/config',{streams:streams}).then(function(r){
     if(r.ok){
+      _cfg.streams=streams;
       var msg=document.getElementById('save-msg');
       msg.style.display='inline'; setTimeout(function(){ msg.style.display='none'; },3000);
-      _cfg.streams=streams;
+      // Refresh notice on timeline
+      var anyEnabled=Object.values(streams).some(function(s){ return s.enabled; });
+      document.getElementById('tl-notice').classList.toggle('hidden', anyEnabled);
     } else { alert('Save failed'); }
   });
-}
+});
+
+})();
 </script>
 </body>
 </html>"""
