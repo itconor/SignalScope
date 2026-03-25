@@ -1296,7 +1296,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.81"
+BUILD                  = "SignalScope-3.3.82"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -11419,6 +11419,7 @@ def _load_plugins():
             info = dict(info)                    # don't mutate the module's dict
             info.setdefault("id",   py.stem)
             info.setdefault("icon", "")
+            info["_src"] = py.name              # source filename — used by _scan_installed_plugins
             if hasattr(mod, "register"):
                 mod.register(app, ctx)
             _plugins.append(info)
@@ -11455,11 +11456,13 @@ def _scan_installed_plugins() -> list:
             continue
         if "SIGNALSCOPE_PLUGIN" not in src:
             continue
-        # Use the active (already-imported) plugin's full info when available
-        active = next((p for p in _plugins if p.get("id") == py.stem), None)
+        # Match by source filename (_src key set at load time) so that
+        # plugins whose SIGNALSCOPE_PLUGIN id differs from their filename
+        # (e.g. sdr.py with id="websdr") are still recognised as active.
+        active = next((p for p in _plugins if p.get("_src") == py.name), None)
         info: dict = dict(active) if active else {"id": py.stem}
         info["file"]   = py.name
-        info["active"] = py.stem in active_ids
+        info["active"] = active is not None
         info.setdefault("name",        py.stem)
         info.setdefault("icon",        "🔌")
         info.setdefault("description", "")
@@ -11881,6 +11884,7 @@ def _inject_nav():
                ((p["icon"] + " ") if p.get("icon") else "") + p["label"],
                p["url"])
             for p in _plugins
+            if not p.get("hub_only") or show_hub
         )
         # ── Update-available banner ───────────────────────────────────────────
         nonce       = _csp_nonce()

@@ -15,10 +15,11 @@ Architecture (Option A — server-side demodulation):
 """
 
 SIGNALSCOPE_PLUGIN = {
-    "id":    "websdr",
-    "label": "Web SDR",
-    "url":   "/hub/sdr",
-    "icon":  "📡",
+    "id":       "websdr",
+    "label":    "Web SDR",
+    "url":      "/hub/sdr",
+    "icon":     "📡",
+    "hub_only": True,   # only inject nav item in hub / both mode
 }
 
 import hashlib
@@ -73,16 +74,29 @@ def register(app, ctx):
     @login_required
     def websdr_page():
         sites = []
+        cfg = monitor.app_cfg
+        # Include the hub machine itself when running in hub/both mode
+        # (it won't appear in hub_server._sites which only contains remote clients)
+        local_mode = cfg.hub.mode  # "client" | "hub" | "both"
+        if local_mode in ("hub", "both"):
+            local_serials = [d.serial for d in cfg.sdr_devices
+                             if d.role == "scanner"]
+            if local_serials:
+                local_name = cfg.hub.site_name or "local"
+                sites.append({"name": local_name, "online": True,
+                               "serials": local_serials, "local": True})
         if hub_server:
             now = time.time()
             with hub_server._lock:
                 for sname, sdata in sorted(hub_server._sites.items()):
                     if sdata.get("_approved") and not sdata.get("blocked"):
                         serials = sdata.get("scanner_serials", [])
-                        if serials:
-                            online = (now - sdata.get("_received", 0)) < 120
-                            sites.append({"name": sname, "online": online,
-                                          "serials": serials})
+                        online  = (now - sdata.get("_received", 0)) < 120
+                        # Show all connected sites; sites without scanner dongles
+                        # are shown disabled so the user knows they are seen but
+                        # need a dongle configured with role=Scanner on the client.
+                        sites.append({"name": sname, "online": online,
+                                      "serials": serials, "local": False})
         return render_template_string(WEBSDR_TPL, sites=sites,
                                       build=ctx["BUILD"])
 
@@ -580,11 +594,15 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
   <label>Site</label>
   <select id="site-sel">
     {% for s in sites %}
-    <option value="{{s.name|e}}"{% if not s.online %} disabled{% endif %}>
-      {{s.name|e}}{% if not s.online %} (offline){% endif %}
+    {% set no_dongle = not s.serials %}
+    {% set unavail = not s.online or no_dongle %}
+    <option value="{{s.name|e}}"
+            data-serials="{{s.serials | join(',') | e}}"
+            {% if unavail %} disabled{% endif %}>
+      {{s.name|e}}{% if not s.online %} (offline){% elif no_dongle %} (no Scanner dongle){% endif %}
     </option>
     {% endfor %}
-    {% if not sites %}<option disabled>No sites with Scanner dongle</option>{% endif %}
+    {% if not sites %}<option disabled>No connected sites — check hub connections</option>{% endif %}
   </select>
 
   <label>SDR</label>
@@ -796,15 +814,13 @@ function doStop(){
 // ── SDR selector ───────────────────────────────────────────────────────────
 siteSel.addEventListener('change', function(){
   sdrSel.innerHTML = '<option value="">Auto</option>';
-  var site = siteSel.value; if(!site) return;
-  _f('/api/hub/scanner/devices/' + encodeURIComponent(site))
-    .then(function(r){return r.json();})
-    .then(function(d){
-      (d.serials||[]).forEach(function(s){
-        var o=document.createElement('option');
-        o.value=s; o.textContent=s; sdrSel.appendChild(o);
-      });
-    }).catch(function(){});
+  var opt = siteSel.options[siteSel.selectedIndex];
+  if(!opt) return;
+  var serials = (opt.dataset.serials || '').split(',').filter(Boolean);
+  serials.forEach(function(s){
+    var o=document.createElement('option');
+    o.value=s; o.textContent=s; sdrSel.appendChild(o);
+  });
 });
 if(siteSel.value) siteSel.dispatchEvent(new Event('change'));
 

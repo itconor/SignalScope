@@ -2,6 +2,14 @@
 
 ---
 
+## [3.3.82] - 2026-03-25
+
+### Fixed
+- **Web SDR "No sites with Scanner dongle"** — the site selector was filtered to only show sites with `scanner_serials`, so any connected site whose dongle wasn't yet set to Scanner role was silently hidden. Now all connected, approved sites are shown; sites without a Scanner dongle are listed as disabled with a `(no Scanner dongle)` label so the user can see them and know what to configure. Also added support for the hub machine's own Scanner dongles in hub/both mode (the hub itself was invisible in its own site list).
+- **Web SDR site selector serial lookup** — the SDR serial dropdown now reads serials from the `data-serials` attribute embedded in the site `<option>` at render time instead of making a separate `GET /api/hub/scanner/devices/<site>` API call.
+- **Plugin shows "Restart needed" even after restart** — `_scan_installed_plugins()` matched plugins by `py.stem` (e.g. `"sdr"`) against `active_ids` built from the loaded plugin's `id` field (e.g. `"websdr"`). Since `sdr.py` declares `id = "websdr"` the match always failed. Fixed by storing `_src = py.name` on each entry in `_plugins` at load time and matching by source filename in `_scan_installed_plugins()`.
+- **Web SDR nav item shown in client mode** — `topnav()` injected all loaded plugins unconditionally. Plugins can now declare `"hub_only": True` in their `SIGNALSCOPE_PLUGIN` manifest; these are suppressed from the nav when the node is in client-only mode. `sdr.py` sets this flag.
+
 ## [3.3.81] - 2026-03-25
 
 ### Fixed

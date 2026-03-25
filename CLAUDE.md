@@ -266,6 +266,24 @@ document.getElementById('p-plugins').addEventListener('click', function(e){
 ```
 **Rule**: Never add `onclick=` to elements whose handler strings contain runtime-variable content or Jinja2 expressions. Use `data-*` + event delegation instead.
 
+### Plugin active detection mismatch (fixed 3.3.82)
+`_scan_installed_plugins()` checked `py.stem in active_ids` where `active_ids` came from `p.get("id")` on loaded plugins. If a plugin's declared `id` differs from its filename stem (e.g. `sdr.py` with `id="websdr"`), the check always returned False — showing "Restart needed" even when the plugin was running.
+
+Fix: `_load_plugins()` now stores `info["_src"] = py.name` on every entry in `_plugins`. `_scan_installed_plugins()` matches by `p.get("_src") == py.name` and sets `active = matched_entry is not None`.
+
+**Rule**: When storing identity for loaded plugins always include `_src = py.name` so that plugins whose `id` doesn't match their filename can be correctly identified as active.
+
+### Hub-only nav items (added 3.3.82)
+Plugins that only make sense in hub/both mode can set `"hub_only": True` in their `SIGNALSCOPE_PLUGIN` dict. `topnav()` filters these out when the node is in client-only mode.
+
+```python
+SIGNALSCOPE_PLUGIN = {
+    "id":       "myplugin",
+    "hub_only": True,   # suppress nav item in client-only mode
+    ...
+}
+```
+
 ### Plugin Install CSRF fails on HTTPS hub (fixed 3.3.81)
 The plugins panel IIFE captured the CSRF token once at page-load time from the cookie:
 ```javascript
