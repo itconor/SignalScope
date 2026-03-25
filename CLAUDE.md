@@ -239,6 +239,33 @@ Users will see it in **Settings → Plugins → Check GitHub for plugins** and c
 
 ## Known Bugs Fixed (don't reintroduce)
 
+### Plugin Install/Remove buttons blocked by CSP (fixed 3.3.80)
+`_compute_csp_hashes()` pre-hashes every `onclick=` value found in `*_TPL` strings at startup.
+Two patterns silently blocked by CSP `script-src-attr 'unsafe-hashes'`:
+1. Jinja2-rendered onclick values — hash is computed for the literal `{{p.file}}` source text, not the rendered value (e.g. `pluginRemove('sdr.py')`).
+2. onclick strings built dynamically in JS at runtime — values depend on the GitHub API response and can never be known at startup.
+
+Fix: Replace all dynamic `onclick=` in the plugins panel with `data-*` attributes and a single delegated listener inside the `<script nonce="{{csp_nonce()}}">` block (covered by the CSP nonce, not subject to hash requirement):
+```html
+<!-- Remove button — was onclick="pluginRemove('{{p.file}}')" -->
+<button class="btn bw bs plugin-rm-btn" data-file="{{p.file|e}}">Remove</button>
+
+<!-- Install button (built in JS) — was onclick="pluginInstall(...)" -->
+'<button class="btn bp bs plugin-install-btn" '
++ 'data-id='+JSON.stringify(p.id)+' data-url='+JSON.stringify(p.url)+' data-file='+JSON.stringify(p.file)+'>'
++ '⬇ Install</button>'
+```
+```javascript
+// Inside <script nonce="{{csp_nonce()}}">:
+document.getElementById('p-plugins').addEventListener('click', function(e){
+  var rm = e.target.closest('.plugin-rm-btn');
+  if(rm){ pluginRemove(rm.dataset.file); return; }
+  var inst = e.target.closest('.plugin-install-btn');
+  if(inst){ pluginInstall(inst.dataset.id, inst.dataset.url, inst.dataset.file); }
+});
+```
+**Rule**: Never add `onclick=` to elements whose handler strings contain runtime-variable content or Jinja2 expressions. Use `data-*` + event delegation instead.
+
 ### FM Scanner stereo always MONO (fixed 3.3.77)
 At heartbeat ingestion (`/api/v1/heartbeat`), `sess["rds"]` was only updated when `ps` or `rt` was present. Fields like `stereo`, `tp`, `ta`, `pi` arrive from redsea *before* PS/RT and were silently dropped.
 ```python

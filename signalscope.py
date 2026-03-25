@@ -1136,7 +1136,7 @@ function adminRestart(){
         {% endif %}
       </td>
       <td style="padding:8px 8px">
-        <button class="btn bw bs" onclick="pluginRemove('{{p.file}}')">Remove</button>
+        <button class="btn bw bs plugin-rm-btn" data-file="{{p.file|e}}">Remove</button>
       </td>
     </tr>
     {% endfor %}
@@ -1194,8 +1194,8 @@ window.pluginFetchAvail = function(){
           + (installed
              ? '<span style="padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;'
                + 'background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3);flex-shrink:0">Installed</span>'
-             : '<button class="btn bp bs" style="flex-shrink:0" '
-               + 'onclick="pluginInstall('+JSON.stringify(p.id)+','+JSON.stringify(p.url)+','+JSON.stringify(p.file)+')">'
+             : '<button class="btn bp bs plugin-install-btn" style="flex-shrink:0" '
+               + 'data-id='+JSON.stringify(p.id)+' data-url='+JSON.stringify(p.url)+' data-file='+JSON.stringify(p.file)+'>'
                + '⬇ Install</button>')
           + '</div>';
       }).join('');
@@ -1206,7 +1206,7 @@ window.pluginFetchAvail = function(){
 window.pluginInstall = function(id, url, file){
   if(!confirm('Install plugin "'+id+'" from GitHub?\n\nThe file will be saved to the SignalScope directory. A restart is required to activate it.')) return;
   var lst = document.getElementById('avail-list');
-  var btn = lst.querySelector('[onclick*="'+id+'"]');
+  var btn = lst.querySelector('[data-id='+JSON.stringify(id)+']');
   if(btn){ btn.disabled=true; btn.textContent='Installing…'; }
   _csrfPost('/api/plugins/install', {id:id, url:url, file:file})
     .then(function(r){return r.json();})
@@ -1235,6 +1235,14 @@ window.pluginRemove = function(file){
 };
 
 function _esc(s){ var d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
+
+// Event delegation — handles plugin-rm-btn and plugin-install-btn without per-element onclick
+document.getElementById('p-plugins').addEventListener('click', function(e){
+  var rm = e.target.closest('.plugin-rm-btn');
+  if(rm){ pluginRemove(rm.dataset.file); return; }
+  var inst = e.target.closest('.plugin-install-btn');
+  if(inst){ pluginInstall(inst.dataset.id, inst.dataset.url, inst.dataset.file); }
+});
 })();
 </script>
 
@@ -1281,7 +1289,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.79"
+BUILD                  = "SignalScope-3.3.80"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the

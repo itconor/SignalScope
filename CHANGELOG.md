@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.80] - 2026-03-25
+
+### Fixed
+- **Plugin Install/Remove buttons did nothing** — root cause was CSP `script-src-attr 'unsafe-hashes'`. The Remove button used a Jinja2-rendered `onclick="pluginRemove('{{p.file}}')"` whose hash was computed at startup against the literal template source, not the rendered value, causing a hash mismatch. The Install button was generated dynamically in JS at runtime and could never be pre-hashed. Fix: removed all per-element `onclick=` attributes from the plugins panel. Remove buttons now carry `class="plugin-rm-btn" data-file="..."` and Install buttons carry `class="plugin-install-btn" data-id="..." data-url="..." data-file="..."`. A single delegated `click` listener inside the nonce-covered `<script>` block routes clicks to `pluginRemove()` / `pluginInstall()` via `closest()`.
+
 ## [3.3.79] - 2026-03-25
 
 ### Added
