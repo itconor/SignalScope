@@ -2,6 +2,15 @@
 
 ---
 
+## [3.3.128] - 2026-03-25
+
+### Added
+- **Server-side push notifications for watched nodes** (`signalscope.py`) — the monitor loop now detects per-node `ok→fault` transitions every evaluation cycle. When a node goes silent/offline, an APNs push notification is sent only to devices that have subscribed to that node label (`"Silence detected: NodeName"`). Uses a new `_send_apns_push_targeted()` helper that sends to a specific subset of token entries rather than all registered devices.
+- **Per-device watched-node list** (`signalscope.py`) — `POST /api/mobile/device_token` now accepts a `watched_nodes` field (list of node label strings) stored per token entry. New `action: "update_nodes"` updates just the node list for an already-registered token without changing the sandbox/environment flag. Existing `watched_nodes` are preserved when re-registering a token without supplying them.
+- **iOS — sync watched nodes to server** (iOS app) — `APIClient.updateWatchedNodes(_:deviceToken:)` posts node subscription changes immediately when the user toggles a node in Settings → Silence Monitoring. Also synced on every app launch after APNs token registration so the server is always up to date.
+
+---
+
 ## [3.3.126] - 2026-03-25
 
 ### Added

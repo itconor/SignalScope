@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.127"
+BUILD                  = "SignalScope-3.3.128"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -2847,6 +2847,68 @@ def _send_apns_push(title: str, body: str, data: "dict|None" = None, badge: "int
                     changed = True
         if changed:
             save_config(monitor.app_cfg)
+
+    threading.Thread(target=_push_thread, daemon=True).start()
+
+
+def _send_apns_push_targeted(entries: list, title: str, body: str, data: "dict|None" = None):
+    """Send an APNs push notification to a specific list of token entries.
+
+    Same as ``_send_apns_push`` but only delivers to the supplied ``entries``
+    list rather than every registered token.  Used for per-node silence/down
+    alerts that should only go to devices that have subscribed to that node.
+    """
+    if not entries:
+        return
+    ma = getattr(monitor.app_cfg, "mobile_api", None)
+    if not ma:
+        return
+    key_id  = getattr(ma, "apns_key_id", "").strip()
+    team_id = getattr(ma, "apns_team_id", "").strip()
+    bundle  = getattr(ma, "apns_bundle_id", "").strip()
+    key_pem = getattr(ma, "apns_key_pem", "").strip()
+    if not (key_id and team_id and bundle and key_pem):
+        return
+    if not _HTTPX_HTTP2:
+        return
+
+    payload: dict = {"aps": {"alert": {"title": title, "body": body}, "sound": "default"}}
+    if data:
+        payload.update(data)
+
+    jwt_token = _get_apns_jwt(ma)
+    # Take a snapshot of only the targeted entries
+    target_entries = list(entries)
+
+    def _push_thread():
+        import json as _json
+        try:
+            import httpx
+            sandbox_host    = "https://api.sandbox.push.apple.com"
+            production_host = "https://api.push.apple.com"
+            headers_base = {
+                "apns-topic":    bundle,
+                "apns-push-type": "alert",
+                "authorization":  f"bearer {jwt_token}",
+            }
+            payload_bytes = _json.dumps(payload).encode()
+            with httpx.Client(http2=True, timeout=10) as client:
+                for entry in target_entries:
+                    token = _apns_token_str(entry)
+                    is_sb = _apns_token_is_sandbox(entry)
+                    host  = sandbox_host if is_sb else production_host
+                    env   = "sandbox" if is_sb else "production"
+                    url   = f"{host}/3/device/{token}"
+                    try:
+                        resp = client.post(url, content=payload_bytes, headers=headers_base)
+                        if resp.status_code == 200:
+                            monitor.log(f"[APNs] ✔ Targeted push to {token[:12]}… ({env}): {title!r}")
+                        else:
+                            monitor.log(f"[APNs] ✘ Targeted push {resp.status_code} for {token[:12]}… ({env}): {resp.text[:200]}")
+                    except Exception as e:
+                        monitor.log(f"[APNs] Targeted push error for {token[:12]}…: {e}")
+        except Exception as e:
+            monitor.log(f"[APNs] Targeted push client error: {e}")
 
     threading.Thread(target=_push_thread, daemon=True).start()
 
@@ -9788,6 +9850,8 @@ class HubServer:
         self._chain_fault_log: dict = {}
         # Predictive trend cache — stream_key → {"trend": str, "slope": float, "ts": float}
         self._chain_node_trend: dict = {}
+        # Previous node status cache for watched-node push notifications — "cid/label" → "ok"|"fault"
+        self._node_prev_state: dict = {}
         # SLA metric write tracker — cid → last write ts
         self._chain_sla_last_write: dict = {}
         # Tracks whether the current "alerted" fault for each chain was triggered
@@ -10652,6 +10716,7 @@ class HubServer:
                         continue
                     maint = self._chain_maintenance.get(cid, {})
                     result = self.eval_chain(chain, maintenance=maint)
+                    self._check_watched_nodes(cid, result, now)
                     curr   = result["status"]   # "ok" | "fault" | "unknown"
                     min_fault_secs = max(0, int(chain.get("min_fault_seconds", 0) or 0))
 
@@ -11258,6 +11323,63 @@ class HubServer:
             )
         except Exception as e:
             monitor.log(f"[APNs] Push error in _fire_chain_fault: {e}")
+
+    def _check_watched_nodes(self, cid: str, result: dict, now: float):
+        """Fire targeted APNs push for nodes that have just gone down (fault→ok
+        transition reversed: ok→fault) for any device that has subscribed to
+        that node label via ``watched_nodes``.
+
+        Called every monitor loop iteration after ``eval_chain``.
+        """
+        try:
+            nodes = result.get("nodes") or []
+            chain_name = result.get("name", cid)
+
+            # Flatten stack nodes to leaf sub-nodes for comparison
+            def _iter_nodes(nodes_list):
+                for n in nodes_list:
+                    if n.get("type") == "stack":
+                        for sn in n.get("nodes", []):
+                            yield sn
+                    else:
+                        yield n
+
+            ma = getattr(monitor.app_cfg, "mobile_api", None)
+            if not ma:
+                return
+            with _apns_tokens_lock:
+                all_entries = list(getattr(ma, "apns_device_tokens", []))
+
+            for node in _iter_nodes(nodes):
+                label  = (node.get("label") or "").strip()
+                status = (node.get("status") or "ok").lower()
+                if not label:
+                    continue
+                key = f"{cid}/{label}"
+                prev = self._node_prev_state.get(key, "ok")
+                self._node_prev_state[key] = status
+
+                # Only fire on a fresh down-transition
+                if prev == "ok" and status == "fault":
+                    level   = node.get("level")
+                    site    = (node.get("site") or "").strip()
+                    level_str = f"{level:.0f} dBFS" if isinstance(level, (int, float)) else "below threshold"
+                    site_str  = f" · {site}" if site else ""
+                    title = f"Silence detected: {label}"
+                    body  = f"{chain_name}{site_str} — {level_str}"
+
+                    # Find all device token entries that are watching this node label
+                    targeted = [e for e in all_entries
+                                if label in (e.get("watched_nodes") or [])
+                                if isinstance(e, dict)]
+                    if targeted:
+                        monitor.log(f"[APNs] Node down '{label}' — pushing to {len(targeted)} device(s)")
+                        _send_apns_push_targeted(
+                            targeted, title, body,
+                            data={"type": "silence", "node": label},
+                        )
+        except Exception as e:
+            monitor.log(f"[APNs] _check_watched_nodes error: {e}")
 
     # ── Query ─────────────────────────────────────────────────────────────────
     def get_sites(self) -> List[dict]:
@@ -22083,7 +22205,12 @@ def api_mobile_device_token():
 
         # sandbox flag sent by iOS client: True for debug/Xcode, False for TestFlight/App Store
         sandbox = bool(data.get("sandbox", True))
-        new_entry = {"token": token, "sandbox": sandbox}
+        # watched_nodes: list of node labels this device wants silence/down alerts for
+        raw_nodes = data.get("watched_nodes")
+        watched_nodes = [str(n) for n in raw_nodes] if isinstance(raw_nodes, list) else None
+        new_entry: dict = {"token": token, "sandbox": sandbox}
+        if watched_nodes is not None:
+            new_entry["watched_nodes"] = watched_nodes
 
         action = str(data.get("action", "register")).lower()
         if action == "unregister":
@@ -22093,15 +22220,34 @@ def api_mobile_device_token():
             ]
             save_config(monitor.app_cfg)
             return jsonify({"ok": True, "action": "unregistered", "count": len(ma.apns_device_tokens)})
+        elif action == "update_nodes":
+            # Update only the watched_nodes list for an already-registered token
+            updated = False
+            for e in ma.apns_device_tokens:
+                if isinstance(e, dict) and _apns_token_str(e) == token:
+                    e["watched_nodes"] = watched_nodes or []
+                    updated = True
+                    break
+            if not updated:
+                # Token not yet registered — register it now
+                ma.apns_device_tokens.append(new_entry)
+            save_config(monitor.app_cfg)
+            return jsonify({"ok": True, "action": "nodes_updated", "count": len(ma.apns_device_tokens)})
         else:
             # Replace any existing entry for this token (handles environment change)
             existing_tokens = [_apns_token_str(e) for e in ma.apns_device_tokens]
             if token in existing_tokens:
-                # Update the existing entry in-place (e.g. if sandbox flag changed)
-                ma.apns_device_tokens = [
-                    new_entry if _apns_token_str(e) == token else e
-                    for e in ma.apns_device_tokens
-                ]
+                # Merge: preserve existing watched_nodes if the new registration omits them
+                merged = []
+                for e in ma.apns_device_tokens:
+                    if _apns_token_str(e) == token:
+                        entry = dict(new_entry)
+                        if watched_nodes is None and isinstance(e, dict) and "watched_nodes" in e:
+                            entry["watched_nodes"] = e["watched_nodes"]
+                        merged.append(entry)
+                    else:
+                        merged.append(e)
+                ma.apns_device_tokens = merged
             else:
                 ma.apns_device_tokens.append(new_entry)
             save_config(monitor.app_cfg)
