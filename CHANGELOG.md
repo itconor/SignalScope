@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.92] - 2026-03-25
+
+### Added / Changed
+- **DAB Scanner scan progress UI** (`dab.py` v1.0.1) — Band Scan panel now shows a real-time progress bar (animated width), channel counter ("14 / 36"), current-channel title ("Scanning 11D…"), and live mux chips that appear as each ensemble is found (channel + ensemble name + service count). A **⏹ Stop** button replaces the Scan button during scanning; clicking it signals the client to abort after the current channel finishes. Client-side `_do_scan()` now reads a `stop` flag in the HTTP response from each progress push, breaks immediately, and pushes the partial results. Hub-side: `_hub_scan` state tracks `progress`, `total`, and `muxes` list; new `/api/hub/dab/scan_stop` endpoint; progress push endpoint returns JSON `{"stop": bool}` instead of 204.
+
 ## [3.3.91] - 2026-03-25
 
 ### Fixed

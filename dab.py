@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.0",
+    "version":  "1.0.1",
 }
 
 import hashlib
@@ -59,7 +59,8 @@ _DAB_CHANNELS = {
 _hub_sessions   = {}   # site → {slot_id, channel, service, bitrate, sdr_serial, ts}
 _hub_pending    = {}   # site → command dict for client poller
 _hub_dls        = {}   # site → {text, ts}
-_hub_scan       = {}   # site → {status, channel, services, ts}
+_hub_scan       = {}   # site → {status, channel, progress, total, found, muxes, ts}
+_hub_scan_stop  = set()  # sites that have requested scan abort
 _state_lock     = threading.Lock()
 _client_sess    = {}   # {stop, thread, proc_welle, proc_ffmpeg, slot_id}
 _services_file  = None  # pathlib.Path to dab_services.json, set in register()
@@ -176,7 +177,18 @@ main{flex:1;display:flex;align-items:flex-start;justify-content:center;padding:2
 .btn-scan{padding:5px 14px;font-size:12px;background:#0a1e3a;border:1px solid rgba(23,168,255,.4);color:var(--acc);border-radius:6px;cursor:pointer;transition:background .12s;font-family:inherit}
 .btn-scan:hover{background:#112a50}
 .btn-scan:disabled{opacity:.4;cursor:not-allowed}
-.scan-status{font-size:12px;color:var(--wn)}
+.btn-scan-stop{padding:5px 14px;font-size:12px;background:#1a0808;border:1px solid rgba(239,68,68,.4);color:var(--al);border-radius:6px;cursor:pointer;transition:background .12s;font-family:inherit}
+.btn-scan-stop:hover{background:#280a0a}
+.scan-hint{font-size:11px;color:var(--mu)}
+.scan-prog{margin-top:12px;padding:10px 12px;background:rgba(0,0,0,.25);border:1px solid var(--bor);border-radius:8px}
+.scan-prog-hdr{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.scan-prog-title{font-size:12px;font-weight:600;color:var(--mu);min-width:120px}
+.scan-prog-track{flex:1;height:4px;background:#0a1828;border-radius:2px;overflow:hidden;border:1px solid var(--bor)}
+.scan-prog-fill{height:100%;background:var(--acc);border-radius:2px;transition:width .4s}
+.scan-prog-pct{font-size:11px;color:var(--mu);white-space:nowrap;min-width:42px;text-align:right}
+.scan-found{font-size:12px;margin-bottom:6px}
+.mux-chips{display:flex;flex-wrap:wrap;gap:6px}
+.mux-chip{font-size:11px;padding:3px 10px;border-radius:12px;background:#0d2040;border:1px solid var(--bor);color:var(--tx);white-space:nowrap}
 footer{padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)}
 </style>
 </head>
@@ -267,12 +279,19 @@ footer{padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border
     <div class="panel-hdr">Band Scan</div>
     <div class="scan-row">
       <button class="btn-scan" id="scan-btn" disabled>&#128268; Scan All Channels</button>
-      <span class="scan-status" id="scan-status" style="display:none"></span>
+      <button class="btn-scan-stop" id="scan-stop-btn" style="display:none">&#9632; Stop</button>
+      <span class="scan-hint">Scans all 36 Band III channels &mdash; active stream will be stopped. Takes ~5&ndash;10 min.</span>
     </div>
-    <p style="font-size:11px;color:var(--mu);margin-top:8px">
-      Scans all Band III DAB channels and builds the service list.
-      Active stream will be stopped. Takes ~5–10 minutes.
-    </p>
+    <!-- Progress panel (shown during and after scan) -->
+    <div class="scan-prog" id="scan-prog" style="display:none">
+      <div class="scan-prog-hdr">
+        <span class="scan-prog-title" id="scan-prog-title">Scanning&hellip;</span>
+        <div class="scan-prog-track"><div class="scan-prog-fill" id="scan-prog-fill" style="width:0%"></div></div>
+        <span class="scan-prog-pct" id="scan-prog-pct">0 / 36</span>
+      </div>
+      <div class="scan-found" id="scan-found" style="color:var(--mu)">No muxes found yet&hellip;</div>
+      <div class="mux-chips" id="mux-chips"></div>
+    </div>
   </div>
 
 </div>
@@ -304,7 +323,6 @@ var presetList    = document.getElementById('preset-list');
 var presetNameInp = document.getElementById('preset-name-inp');
 var presetSaveBtn = document.getElementById('preset-save-btn');
 var scanBtn       = document.getElementById('scan-btn');
-var scanStatus    = document.getElementById('scan-status');
 var audioElem     = document.getElementById('dab-audio');
 
 var _state   = 'idle';   // idle | connecting | streaming
@@ -619,16 +637,39 @@ presetNameInp.addEventListener('keydown', function(e){
 _renderPresets();
 
 // ── Band scan ──────────────────────────────────────────────────
-function stopScanPoll(){ if(_scanPoll){ clearInterval(_scanPoll); _scanPoll = null; } _scanPending = false; }
+var scanStopBtn  = document.getElementById('scan-stop-btn');
+var scanProg     = document.getElementById('scan-prog');
+var scanProgFill = document.getElementById('scan-prog-fill');
+var scanProgPct  = document.getElementById('scan-prog-pct');
+var scanProgTitle= document.getElementById('scan-prog-title');
+var scanFound    = document.getElementById('scan-found');
+var muxChips     = document.getElementById('mux-chips');
+
+function stopScanPoll(){
+  if(_scanPoll){ clearInterval(_scanPoll); _scanPoll = null; }
+  _scanPending = false;
+}
+
+function _setScanUI(running){
+  scanBtn.style.display     = running ? 'none' : '';
+  scanStopBtn.style.display = running ? ''     : 'none';
+  scanBtn.disabled          = !siteSel.value;
+}
 
 scanBtn.addEventListener('click', function(){
   if(_scanPending) return;
   var site = siteSel.value; if(!site) return;
   if(_state === 'streaming' || _state === 'connecting') doStop();
   _scanPending = true;
-  scanBtn.disabled = true;
-  scanStatus.style.display = '';
-  scanStatus.textContent = 'Starting scan\u2026';
+  _setScanUI(true);
+  // Reset progress panel
+  scanProg.style.display = '';
+  scanProgFill.style.width = '0%';
+  scanProgPct.textContent  = '0 / 36';
+  scanProgTitle.textContent = 'Starting scan\u2026';
+  scanFound.textContent    = 'No muxes found yet\u2026';
+  scanFound.style.color    = 'var(--mu)';
+  muxChips.innerHTML       = '';
 
   _f('/api/hub/dab/scan', {
     method: 'POST',
@@ -638,31 +679,80 @@ scanBtn.addEventListener('click', function(){
   .then(function(d){
     if(!d.ok){
       stopScanPoll();
-      scanBtn.disabled = false;
-      scanStatus.style.display = 'none';
+      _setScanUI(false);
+      scanProg.style.display = 'none';
       alert('Scan failed: ' + (d.error || '?'));
       return;
     }
-    _scanPoll = setInterval(function(){ _pollScan(site); }, 4000);
-    setTimeout(function(){ _pollScan(site); }, 2000);
+    _scanPoll = setInterval(function(){ _pollScan(site); }, 3000);
+    setTimeout(function(){ _pollScan(site); }, 1500);
   })
   .catch(function(){
     stopScanPoll();
-    scanBtn.disabled = false;
-    scanStatus.style.display = 'none';
+    _setScanUI(false);
+    scanProg.style.display = 'none';
   });
+});
+
+scanStopBtn.addEventListener('click', function(){
+  var site = siteSel.value; if(!site) return;
+  _f('/api/hub/dab/scan_stop', {
+    method: 'POST',
+    body: JSON.stringify({site: site})
+  }).catch(function(){});
+  stopScanPoll();
+  _setScanUI(false);
+  scanProgTitle.textContent = 'Stopping\u2026';
 });
 
 function _pollScan(site){
   _f('/api/hub/dab/scan_status/' + encodeURIComponent(site))
     .then(function(r){ return r.json(); })
     .then(function(d){
+      var total    = d.total    || 36;
+      var progress = d.progress || 0;
+      var muxes    = d.muxes    || [];
+
+      // Progress bar + counter
+      scanProgFill.style.width = Math.round(progress / total * 100) + '%';
+      scanProgPct.textContent  = progress + ' / ' + total;
+
+      // Title
       if(d.status === 'scanning'){
-        scanStatus.textContent = 'Scanning ' + (d.channel || '\u2026') + ' (' + (d.found || 0) + ' found so far)';
-      } else if(d.status === 'done' || d.status === 'idle'){
+        scanProgTitle.textContent = d.channel
+          ? 'Scanning ' + d.channel + '\u2026'
+          : 'Scanning\u2026';
+      }
+
+      // Live mux chips
+      if(muxes.length){
+        scanFound.textContent = muxes.length + ' mux' + (muxes.length !== 1 ? 'es' : '') + ' found:';
+        scanFound.style.color = 'var(--ok)';
+        muxChips.innerHTML = muxes.map(function(m){
+          var svcTxt = m.services ? ' (' + m.services + ' svc)' : '';
+          return '<span class="mux-chip" title="'+_esc(m.ensemble || m.channel)+svcTxt+'">'
+            + '<b>'+_esc(m.channel)+'</b>'
+            + (m.ensemble && m.ensemble !== m.channel ? ' \u00b7 '+_esc(m.ensemble) : '')
+            + (m.services ? ' <span style="color:var(--mu)">'+m.services+'</span>' : '')
+            + '</span>';
+        }).join('');
+      }
+
+      // Scan finished
+      if(d.status === 'done' || d.status === 'idle'){
         stopScanPoll();
-        scanBtn.disabled = false;
-        scanStatus.style.display = 'none';
+        _setScanUI(false);
+        scanProgFill.style.width = '100%';
+        scanProgPct.textContent  = total + ' / ' + total;
+        if(d.status === 'done'){
+          scanProgTitle.textContent = muxes.length
+            ? 'Scan complete \u2014 ' + muxes.length + ' mux' + (muxes.length !== 1 ? 'es' : '') + ' found'
+            : 'Scan complete \u2014 no muxes found';
+          if(!muxes.length){
+            scanFound.textContent = 'No DAB muxes found on any channel.';
+            scanFound.style.color = 'var(--wn)';
+          }
+        }
         loadServices(site);
       }
     }).catch(function(){});
@@ -838,7 +928,16 @@ def register(app, ctx):
         if not site:
             return jsonify({"ok": False, "error": "site required"}), 400
         with _state_lock:
-            _hub_scan[site] = {"status": "scanning", "channel": "", "found": 0, "ts": time.time()}
+            _hub_scan[site] = {
+                "status":   "scanning",
+                "channel":  "",
+                "progress": 0,
+                "total":    len(_DAB_CHANNELS),
+                "found":    0,
+                "muxes":    [],
+                "ts":       time.time(),
+            }
+            _hub_scan_stop.discard(site)
             _hub_pending[site] = {
                 "action":     "scan",
                 "sdr_serial": sdr_serial,
@@ -853,6 +952,22 @@ def register(app, ctx):
     def dab_scan_status(site_name):
         entry = _hub_scan.get(site_name, {"status": "idle"})
         return jsonify({"ok": True, **entry})
+
+    # ── Hub: stop an in-progress band scan ────────────────────────────────────
+
+    @app.post("/api/hub/dab/scan_stop")
+    @login_required
+    @csrf_protect
+    def dab_scan_stop():
+        data = request.get_json(silent=True) or {}
+        site = str(data.get("site", "")).strip()
+        if site:
+            with _state_lock:
+                _hub_scan_stop.add(site)
+                entry = _hub_scan.get(site)
+                if entry:
+                    entry["status"] = "idle"
+        return jsonify({"ok": True})
 
     # ── Hub: client polls for commands ─────────────────────────────────────────
     # No login_required — authenticated by site being approved in hub_server._sites
@@ -890,17 +1005,32 @@ def register(app, ctx):
     @app.post("/api/hub/dab/scan_progress/<path:site_name>")
     def dab_scan_progress_push(site_name):
         if not hub_server:
-            return "", 204
+            return jsonify({"ok": True, "stop": False})
         sdata = hub_server._sites.get(site_name, {})
         if not sdata.get("_approved"):
-            return "", 403
+            return jsonify({"ok": False}), 403
         d = request.get_json(silent=True) or {}
+        should_stop = False
         with _state_lock:
-            entry = _hub_scan.setdefault(site_name, {"status": "scanning", "found": 0, "ts": time.time()})
-            entry["status"]  = "scanning"
-            entry["channel"] = str(d.get("channel", ""))
-            entry["found"]   = int(d.get("found", entry.get("found", 0)))
-        return "", 204
+            should_stop = site_name in _hub_scan_stop
+            if should_stop:
+                _hub_scan_stop.discard(site_name)
+            entry = _hub_scan.setdefault(site_name, {
+                "status": "scanning", "channel": "", "progress": 0,
+                "total": len(_DAB_CHANNELS), "found": 0, "muxes": [], "ts": time.time(),
+            })
+            entry["status"]   = "scanning"
+            entry["channel"]  = str(d.get("channel", ""))
+            entry["progress"] = int(d.get("progress", entry.get("progress", 0)))
+            entry["total"]    = int(d.get("total",    entry.get("total",    len(_DAB_CHANNELS))))
+            entry["found"]    = int(d.get("found",    entry.get("found",    0)))
+            # Append new mux if the client found one on this channel
+            mux = d.get("mux")
+            if mux and isinstance(mux, dict):
+                existing = [m["channel"] for m in entry.get("muxes", [])]
+                if mux.get("channel") not in existing:
+                    entry.setdefault("muxes", []).append(mux)
+        return jsonify({"ok": True, "stop": should_stop})
 
     # ── Client → Hub: push final scan results ─────────────────────────────────
 
@@ -918,7 +1048,16 @@ def register(app, ctx):
         db[site_name] = {"services": services, "scanned_at": scanned_at}
         _save_services(db)
         with _state_lock:
-            _hub_scan[site_name] = {"status": "done", "found": len(services), "ts": time.time()}
+            existing = _hub_scan.get(site_name, {})
+            _hub_scan[site_name] = {
+                "status":   "done",
+                "found":    len(services),
+                "progress": existing.get("total", len(_DAB_CHANNELS)),
+                "total":    existing.get("total", len(_DAB_CHANNELS)),
+                "muxes":    existing.get("muxes", []),
+                "channel":  "",
+                "ts":       time.time(),
+            }
         monitor.log(f"[DAB] Scan complete for site '{site_name}': {len(services)} services")
         return "", 204
 
@@ -1249,11 +1388,15 @@ def _dls_reader(stderr_stream, site, hub_url, stop):
 
 def _do_scan(site, sdr_serial, hub_url):
     """
-    Scan all Band III DAB channels with welle-cli, collect service names,
-    and push the complete service list to the hub.
+    Scan all Band III DAB channels with welle-cli.
 
-    welle-cli is run for each channel for up to 12 seconds.
-    Services are identified by parsing the combined stdout/stderr output.
+    For each channel:
+      - Reports progress to hub (channel index, mux found if any)
+      - Checks hub response for a stop signal (user clicked Stop)
+      - Parses welle-cli output for ensemble name and service names
+
+    Progress is visible in real time in the browser scan panel.
+    Final service list is pushed to hub and saved to dab_services.json.
     """
     import json as _json
 
@@ -1266,38 +1409,53 @@ def _do_scan(site, sdr_serial, hub_url):
     result_url   = f"{hub_url}/api/hub/dab/scan_result/{site}"
 
     all_services = []
-    channels = list(_DAB_CHANNELS.keys())
+    channels     = list(_DAB_CHANNELS.keys())
+    total        = len(channels)
 
-    print(f"[DAB] Band scan started for site '{site}': {len(channels)} channels")
+    print(f"[DAB] Band scan started for site '{site}': {total} channels")
 
-    for ch in channels:
-        # Build scan command (no -s = no service, no -A = no audio)
+    for idx, ch in enumerate(channels):
+        # ── Build scan command ─────────────────────────────────────────────
         cmd = [welle_bin, "-c", ch]
         if sdr_serial:
             cmd[1:1] = ["-D", f"driver=rtlsdr,serial={sdr_serial}"]
 
-        # Report progress
+        # ── Push progress (before scanning this channel) ──────────────────
+        # Response may carry stop=True if the user clicked Stop in the browser
+        should_stop = False
         try:
-            d = _json.dumps({"channel": ch, "found": len(all_services)}).encode()
+            payload = _json.dumps({
+                "channel":  ch,
+                "progress": idx,
+                "total":    total,
+                "found":    len(all_services),
+            }).encode()
             req = urllib.request.Request(
-                progress_url, data=d, method="POST",
+                progress_url, data=payload, method="POST",
                 headers={"Content-Type": "application/json", "X-Dab-Site": site},
             )
-            urllib.request.urlopen(req, timeout=3).close()
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                resp_data = _json.loads(resp.read())
+            if resp_data.get("stop"):
+                should_stop = True
         except Exception:
             pass
 
-        # Run welle-cli, collect output with a timeout
-        output_lines = []
-        done_evt = threading.Event()
+        if should_stop:
+            print(f"[DAB] Scan stopped by user at channel {ch} ({idx}/{total})")
+            break
 
-        def _reader(proc):
+        # ── Run welle-cli, collect output ─────────────────────────────────
+        output_lines = []
+        done_evt     = threading.Event()
+
+        def _reader(proc, lines=output_lines, evt=done_evt):
             try:
                 for line in proc.stdout:
-                    output_lines.append(line)
+                    lines.append(line)
             except Exception:
                 pass
-            done_evt.set()
+            evt.set()
 
         try:
             proc = subprocess.Popen(
@@ -1323,12 +1481,12 @@ def _do_scan(site, sdr_serial, hub_url):
 
         text = b"".join(output_lines).decode("utf-8", errors="replace")
 
-        # Try to extract ensemble name
-        ensemble_name = ch  # default to channel name
+        # ── Extract ensemble name ──────────────────────────────────────────
+        ensemble_name = ""
         for pat in [
-            r'ensemble[:\s"]+([^\n"]+)',
-            r'label[:\s"]+([^\n"]+)',
-            r'mux[:\s"]+([^\n"]+)',
+            r'ensemble[:\s"]+([^\n"]{2,60})',
+            r'label[:\s"]+([^\n"]{2,60})',
+            r'mux[:\s"]+([^\n"]{2,60})',
         ]:
             em = re.search(pat, text, re.IGNORECASE)
             if em:
@@ -1337,38 +1495,57 @@ def _do_scan(site, sdr_serial, hub_url):
                     ensemble_name = name
                     break
 
-        # Extract service names using multiple patterns
+        # ── Extract service names ──────────────────────────────────────────
         found_in_channel = set()
         patterns = [
-            # "Service: NAME" or "Service NAME"
-            r"[Ss]ervice[:\s]+['\"]?([^'\"\n\r\t,]+)['\"]?",
-            # NAME (SID: 0xXXXX)
+            r"[Ss]ervice[:\s]+['\"]?([^'\"\n\r\t,]{2,64})['\"]?",
             r"([A-Za-z][A-Za-z0-9 &+\-\.]{2,40})\s+\(SID",
-            # Quoted service names
             r"'([A-Za-z][A-Za-z0-9 &+\-\.]{2,40})'",
         ]
+        _noise = {"using", "found", "error", "trying", "waiting", "opening",
+                  "tuned", "synced", "scanning", "reading", "loading"}
         for pat in patterns:
             for m in re.finditer(pat, text):
                 name = m.group(1).strip()
-                if (name and len(name) >= 2 and len(name) <= 64
-                        and name not in found_in_channel
-                        and not name.lower().startswith("using")
-                        and not name.lower().startswith("found")
-                        and not name.lower().startswith("error")
-                        and not name.lower().startswith("trying")):
+                if (name and 2 <= len(name) <= 64
+                        and name.lower().split()[0] not in _noise):
                     found_in_channel.add(name)
 
         for svc_name in sorted(found_in_channel):
             all_services.append({
                 "name":     svc_name,
                 "channel":  ch,
-                "ensemble": ensemble_name,
+                "ensemble": ensemble_name or ch,
             })
 
+        # ── If mux found, push a progress update with the mux chip data ───
         if found_in_channel:
-            print(f"[DAB] {ch}: {len(found_in_channel)} services ({ensemble_name})")
+            print(f"[DAB] {ch}: {len(found_in_channel)} services ({ensemble_name or ch})")
+            try:
+                mux_payload = _json.dumps({
+                    "channel":  ch,
+                    "progress": idx + 1,
+                    "total":    total,
+                    "found":    len(all_services),
+                    "mux": {
+                        "channel":  ch,
+                        "ensemble": ensemble_name or ch,
+                        "services": len(found_in_channel),
+                    },
+                }).encode()
+                req = urllib.request.Request(
+                    progress_url, data=mux_payload, method="POST",
+                    headers={"Content-Type": "application/json", "X-Dab-Site": site},
+                )
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    resp_data = _json.loads(resp.read())
+                if resp_data.get("stop"):
+                    print(f"[DAB] Scan stopped by user after finding mux on {ch}")
+                    break
+            except Exception:
+                pass
 
-    # Push final results to hub
+    # ── Push final results ─────────────────────────────────────────────────
     try:
         d = _json.dumps({
             "services":   all_services,
@@ -1379,6 +1556,6 @@ def _do_scan(site, sdr_serial, hub_url):
             headers={"Content-Type": "application/json", "X-Dab-Site": site},
         )
         urllib.request.urlopen(req, timeout=5).close()
-        print(f"[DAB] Scan complete: {len(all_services)} services found across {len(channels)} channels")
+        print(f"[DAB] Scan complete: {len(all_services)} services across {total} channels")
     except Exception as e:
         print(f"[DAB] Failed to push scan results: {e}")
