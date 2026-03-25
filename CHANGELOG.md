@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.95] - 2026-03-25
+
+### Fixed
+- **DAB Scanner USB dongle recovery after welle-cli hard-kill** (`dab.py` v1.0.4) — when welle-cli is SIGKILL'd during a channel probe it can leave the RTL2832U firmware in a stuck state that survives even a system reboot (only a physical unplug/replug fixes it). Added `_usb_reset_rtlsdr(serial)`: issues the Linux `USBDEVFS_RESET` ioctl (`0x5514`) to the dongle's `/dev/bus/usb/BUS/DEV` node — the kernel's software equivalent of power-cycling the USB device. Called automatically after any SIGKILL of `proc_welle` in both `_do_scan()` and `_stop_stream()`. The dongle's device node is located by walking `/sys/bus/usb/devices`, matching Realtek vendor `0x0bda` with RTL2832U product IDs and optionally the configured serial number. After the ioctl a 1.5 s settle delay allows the firmware to reinitialise before the next channel is probed. Silent no-op on macOS/Windows or if `fcntl` is unavailable. If the process lacks permission, prints a clear message with the udev rule needed to grant access without running as root.
+
 ## [3.3.94] - 2026-03-25
 
 ### Fixed

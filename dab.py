@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.3",
+    "version":  "1.0.4",
 }
 
 import hashlib
@@ -1341,7 +1341,8 @@ def _start_stream(slot_id, channel, service, bitrate, sdr_serial, hub_url, site,
     t.start()
     with _state_lock:
         _client_sess.clear()
-        _client_sess.update({"stop": stop, "thread": t, "slot_id": slot_id})
+        _client_sess.update({"stop": stop, "thread": t, "slot_id": slot_id,
+                             "sdr_serial": sdr_serial})
 
 
 def _stop_stream():
@@ -1350,6 +1351,7 @@ def _stop_stream():
         _client_sess.clear()
     if old.get("stop"):
         old["stop"].set()
+    killed_rtlsdr = False
     for key in ("proc_welle", "proc_ffmpeg"):
         proc = old.get(key)
         if proc:
@@ -1365,8 +1367,13 @@ def _stop_stream():
                     proc.wait(timeout=2)
                 except Exception:
                     pass
+                # welle-cli hard-killed — RTL2832 firmware may be stuck
+                if key == "proc_welle":
+                    killed_rtlsdr = True
             except Exception:
                 pass
+    if killed_rtlsdr:
+        _usb_reset_rtlsdr(old.get("sdr_serial") or None)
     if old.get("thread"):
         old["thread"].join(timeout=3.0)
 
@@ -1551,6 +1558,82 @@ def _dls_reader(stderr_stream, site, hub_url, stop):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# USB reset helper (Linux only)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _usb_reset_rtlsdr(serial=None):
+    """
+    Issue USBDEVFS_RESET ioctl to the RTL-SDR dongle — equivalent to an
+    unplug/replug in software.  Recovers the RTL2832 firmware from the stuck
+    state that welle-cli leaves it in when hard-killed.
+
+    Linux-only (needs /sys/bus/usb and /dev/bus/usb).  Silent no-op on
+    macOS/Windows or if the device can't be found.
+
+    If *serial* is provided only the matching dongle is reset; otherwise the
+    first RTL2832U device found is reset.
+    """
+    try:
+        import fcntl as _fcntl
+    except ImportError:
+        return  # not Linux
+
+    import os as _os
+
+    # RTL2832U uses Realtek vendor 0x0bda with various product IDs
+    _RTL_VID  = "0bda"
+    _RTL_PIDS = {"2832", "2838", "2831", "2837"}
+
+    SYS_USB = "/sys/bus/usb/devices"
+    if not _os.path.isdir(SYS_USB):
+        return
+
+    target = None
+    for dev_name in sorted(_os.listdir(SYS_USB)):
+        dp = _os.path.join(SYS_USB, dev_name)
+        try:
+            vid = open(_os.path.join(dp, "idVendor")).read().strip()
+            pid = open(_os.path.join(dp, "idProduct")).read().strip()
+        except Exception:
+            continue
+        if vid != _RTL_VID or pid not in _RTL_PIDS:
+            continue
+        # Serial check (optional)
+        if serial:
+            try:
+                dev_serial = open(_os.path.join(dp, "serial")).read().strip()
+                if dev_serial != serial:
+                    continue
+            except Exception:
+                pass  # no serial attr — still try
+        try:
+            bus    = int(open(_os.path.join(dp, "busnum")).read().strip())
+            devnum = int(open(_os.path.join(dp, "devnum")).read().strip())
+            target = f"/dev/bus/usb/{bus:03d}/{devnum:03d}"
+            break
+        except Exception:
+            continue
+
+    if not target:
+        print("[DAB] USB reset: RTL-SDR device not found in sysfs")
+        return
+
+    # USBDEVFS_RESET = _IO('U', 20) = 0x5514
+    USBDEVFS_RESET = 0x5514
+    try:
+        with open(target, "wb") as fh:
+            _fcntl.ioctl(fh, USBDEVFS_RESET, 0)
+        print(f"[DAB] USB reset issued to {target} — waiting for dongle to reinitialise")
+        time.sleep(1.5)
+    except PermissionError:
+        print(f"[DAB] USB reset: permission denied for {target} "
+              "(run as root or add udev rule: SUBSYSTEM==\"usb\", "
+              "ATTR{{idVendor}}==\"0bda\", MODE=\"0666\")")
+    except Exception as e:
+        print(f"[DAB] USB reset failed ({target}): {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Client-side: DAB band scan
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1649,6 +1732,10 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
                     proc.wait(timeout=2)
                 except Exception:
                     pass
+                # Attempt USB reset — welle-cli left the RTL2832 in a bad
+                # firmware state; USBDEVFS_RESET is the software equivalent
+                # of an unplug/replug and avoids needing a physical replug.
+                _usb_reset_rtlsdr(sdr_serial or None)
             except Exception:
                 pass
             # Drain stdout so the pipe buffer doesn't hold the process alive
