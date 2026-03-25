@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.103] - 2026-03-25
+
+### Fixed
+- **DAB Scanner band scan service names** (`dab.py` v1.0.12) — rewrote `_do_scan()` to use welle-cli's built-in HTTP API mode (`-w PORT`) instead of parsing text output. For each channel welle-cli is now launched as `welle-cli -w 7979 -c CH`, and the scanner polls `http://localhost:7979/mux.json` for structured JSON service data — exactly the same approach used by signalscope.py's `_dab_scan_mux()`. Service names come from `svc["label"]["label"]` in clean JSON; no text parsing, no regex, no device-init noise to strip. This correctly handles all welle-cli 2.x backends (RTL-SDR, Airspy, SoapySDR) regardless of what init messages they emit to stdout/stderr.
+
 ## [3.3.102] - 2026-03-25
 
 ### Fixed

@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.11",
+    "version":  "1.0.12",
 }
 
 import hashlib
@@ -1708,15 +1708,17 @@ def _usb_reset_rtlsdr(serial=None):
 
 def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
     """
-    Scan all Band III DAB channels with welle-cli.
+    Scan all Band III DAB channels with welle-cli (HTTP API mode).
 
     For each channel:
-      - Reports progress to hub (channel index, mux found if any)
+      - Launches welle-cli -w PORT -c CH (web server mode)
+      - Polls http://localhost:PORT/mux.json for clean JSON service data
+        (same approach as signalscope.py _dab_scan_mux — no text parsing)
+      - Reports progress to hub in real time
       - Checks hub response for a stop signal (user clicked Stop)
-      - Parses welle-cli output for ensemble name and service names
 
     Progress is visible in real time in the browser scan panel.
-    Final service list is pushed to hub and saved to dab_services.json.
+    Final service list is pushed to hub.
     """
     import json as _json
 
@@ -1740,14 +1742,23 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
 
     _log(f"[DAB] Band scan started: site='{site}' channels={total} welle={welle_bin}")
 
-    for idx, ch in enumerate(channels):
-        # ── Build scan command ─────────────────────────────────────────────
-        cmd = [welle_bin, "-c", ch]
-        if sdr_serial:
-            cmd[1:1] = ["-D", f"driver=rtlsdr,serial={sdr_serial}"]
+    # Use welle-cli's built-in HTTP server — avoids all text-parsing fragility
+    _WELLE_PORT  = 7979
+    # Per-channel timeouts (seconds): give each mux time to sync
+    _STARTUP     = 2.0   # seconds before first mux.json poll
+    _MAX_WAIT    = 20.0  # max seconds polling per channel
+    _MIN_WAIT    = 8.0   # minimum seconds before accepting stable result
+    _STABLE_NEED = 3     # consecutive identical service counts required
 
+    def _drain(pipe):
+        try:
+            for _ in pipe:
+                pass
+        except Exception:
+            pass
+
+    for idx, ch in enumerate(channels):
         # ── Push progress (before scanning this channel) ──────────────────
-        # Response may carry stop=True if the user clicked Stop in the browser
         should_stop = False
         try:
             payload = _json.dumps({
@@ -1771,151 +1782,126 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
             _log(f"[DAB] Scan stopped by user at channel {ch} ({idx}/{total})")
             break
 
-        # ── Run welle-cli, collect output ─────────────────────────────────
-        output_lines = []
-        done_evt     = threading.Event()
+        # ── Build welle-cli web-server command ────────────────────────────
+        cmd = [welle_bin, "-w", str(_WELLE_PORT), "-c", ch]
+        if sdr_serial:
+            cmd += ["-D", f"driver=rtlsdr,serial={sdr_serial}"]
 
-        def _reader(proc, lines=output_lines, evt=done_evt):
-            try:
-                for line in proc.stdout:
-                    lines.append(line)
-            except Exception:
-                pass
-            evt.set()
+        # ── Launch and poll HTTP API for service list ─────────────────────
+        proc = None
+        found_services = []
+        ensemble_name  = ch
 
         try:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=0,
+                stderr=subprocess.PIPE,
             )
-            # Store at module level so stop handler can SIGKILL immediately
             global _scan_proc
             _scan_proc = proc
-            t = threading.Thread(target=_reader, args=(proc,), daemon=True)
-            t.start()
-            done_evt.wait(timeout=12)
-            # Graceful terminate → SIGKILL fallback → drain pipe
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                _log(f"[DAB] welle-cli hung on {ch}, sending SIGKILL")
-                proc.kill()
+
+            # Drain stdout/stderr so pipes never fill and block welle-cli
+            threading.Thread(target=_drain, args=(proc.stdout,), daemon=True).start()
+            threading.Thread(target=_drain, args=(proc.stderr,), daemon=True).start()
+
+            # Wait for welle-cli to open the device and begin decoding
+            time.sleep(_STARTUP)
+
+            if proc.poll() is not None:
+                _log(f"[DAB] {ch}: welle-cli exited early (device busy or no signal)")
+            else:
+                stable_count = 0
+                scan_start   = time.time()
+                deadline     = scan_start + _MAX_WAIT
+
+                while time.time() < deadline:
+                    time.sleep(1.0)
+                    if proc.poll() is not None:
+                        break
+
+                    mux_data = None
+                    for url in [
+                        f"http://localhost:{_WELLE_PORT}/mux.json",
+                        f"http://localhost:{_WELLE_PORT}/api/mux.json",
+                    ]:
+                        try:
+                            with urllib.request.urlopen(url, timeout=2) as r:
+                                mux_data = _json.loads(r.read())
+                                break
+                        except Exception:
+                            continue
+
+                    if not mux_data:
+                        stable_count = 0
+                        continue
+
+                    # Extract ensemble label
+                    ens_obj = mux_data.get("ensemble", {})
+                    ens_lbl = ens_obj.get("label", {})
+                    _ens    = (ens_lbl.get("label", "") or ens_lbl.get("shortlabel", "")).strip()
+                    if _ens:
+                        ensemble_name = _ens
+
+                    # Extract audio service names from the structured JSON —
+                    # no text parsing, no regex, no device-init noise to strip
+                    candidate = []
+                    for svc in mux_data.get("services", []):
+                        lbl  = svc.get("label", {})
+                        name = (lbl.get("label", "") or lbl.get("shortlabel", "")).strip()
+                        if not name:
+                            continue
+                        # Skip data-only services
+                        is_audio = False
+                        for c in svc.get("components", []):
+                            if c.get("transportmode") == "audio":
+                                is_audio = True
+                                break
+                        if not is_audio and svc.get("components"):
+                            continue
+                        candidate.append({
+                            "name":     name,
+                            "channel":  ch,
+                            "ensemble": _ens or ch,
+                            "sid":      svc.get("sid", ""),
+                        })
+
+                    if len(candidate) == len(found_services) and candidate:
+                        stable_count += 1
+                    else:
+                        stable_count  = 0
+                        found_services = candidate
+
+                    elapsed = time.time() - scan_start
+                    if candidate and elapsed >= _MIN_WAIT and stable_count >= _STABLE_NEED:
+                        found_services = candidate
+                        break
+
+        except Exception as e:
+            _log(f"[DAB] Scan error on {ch}: {e}")
+        finally:
+            if proc is not None:
+                proc.terminate()
                 try:
-                    proc.wait(timeout=2)
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    _log(f"[DAB] welle-cli hung on {ch}, sending SIGKILL")
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
+                    _usb_reset_rtlsdr(sdr_serial or None)
                 except Exception:
                     pass
-                # Attempt USB reset — welle-cli left the RTL2832 in a bad
-                # firmware state; USBDEVFS_RESET is the software equivalent
-                # of an unplug/replug and avoids needing a physical replug.
-                _usb_reset_rtlsdr(sdr_serial or None)
-            except Exception:
-                pass
-            # Drain stdout so the pipe buffer doesn't hold the process alive
-            try:
-                proc.stdout.read()
-            except Exception:
-                pass
             _scan_proc = None
-        except Exception as e:
-            _scan_proc = None
-            _log(f"[DAB] Scan error on {ch}: {e}")
-            continue
 
-        # Let the USB device settle before next channel
+        # Let USB device settle before next channel
         time.sleep(0.5)
 
-        if not output_lines:
-            continue
-
-        text = b"".join(output_lines).decode("utf-8", errors="replace")
-
-        # ── Strip device-init noise before parsing ────────────────────────
-        # welle-cli emits device backend messages (RTL_SDR:/Airspy:/gain
-        # values) before any DAB content. These confuse the service name
-        # regexes. Drop every line that looks like device init output.
-        _init_prefixes = (
-            "rtl_sdr:", "airspy:", "soapy:", "hackrf:", "limesdr:",
-            "inputfactory:", "input device", "welle-cli ",
-            "found ", "uses the first", "detected ", "opening ",
-            "supported gain", "gain ", "set freq", "set sample",
-        )
-        clean_lines = []
-        for line in text.splitlines():
-            low = line.strip().lower()
-            if any(low.startswith(p) for p in _init_prefixes):
-                continue
-            # Also skip bare numeric/hex-only lines from init
-            if re.match(r"^\s*[\d\.]+\s*$", line):
-                continue
-            clean_lines.append(line)
-        dab_text = "\n".join(clean_lines)
-
-        # ── Debug: log cleaned DAB text for the first active channel ──────
-        if not all_services and dab_text.strip():
-            raw = dab_text.strip()
-            for i in range(0, min(len(raw), 3200), 800):
-                _log(f"[DAB] Parsed ({ch}) [{i}:{i+800}]:\n" + raw[i:i+800])
-
-        # ── Extract ensemble name ──────────────────────────────────────────
-        # welle-cli 2.x outputs: "ensemble name: BBC NI" or "name id: CE15"
-        ensemble_name = ""
-        for pat in [
-            r'ensemble\s+name[:\s"]+([^\n"]{2,60})',
-            r'ensemble[:\s"]+([^\n"]{2,60})',
-            r'label[:\s"]+([^\n"]{2,60})',
-        ]:
-            em = re.search(pat, dab_text, re.IGNORECASE)
-            if em:
-                name = em.group(1).strip().strip('"\'').strip()
-                # Reject raw hex IDs like "0xCE15" or "c181"
-                if name and len(name) > 1 and not re.match(r'^[0-9a-fA-Fx]+$', name):
-                    ensemble_name = name
-                    break
-
-        # ── Extract service names ──────────────────────────────────────────
-        # welle-cli 2.x service line formats observed:
-        #   Service 'BBC Radio Ulster' SId 0xC221 ...
-        #   Service name: BBC Radio Ulster
-        #   0xC221 BBC Radio Ulster
-        found_in_channel = set()
-        svc_patterns = [
-            # 'Quoted name' anywhere on a line
-            r"'([A-Za-z][A-Za-z0-9 &+\-\.()!]{2,50})'",
-            # Service name: NAME  or  Service: NAME
-            r"[Ss]ervice\s+name[:\s]+([A-Za-z][A-Za-z0-9 &+\-\.()!]{2,50})",
-            # 0xSID NAME  (SID then name on same line, no quotes)
-            r"0x[0-9a-fA-F]+\s+([A-Za-z][A-Za-z0-9 &+\-\.()!]{2,50})",
-            # NAME (SId 0x...)
-            r"([A-Za-z][A-Za-z0-9 &+\-\.()!]{2,50})\s+\([Ss][Ii][Dd]",
-        ]
-        _noise = {
-            "using", "found", "error", "trying", "waiting", "opening",
-            "tuned", "synced", "scanning", "reading", "loading",
-            "component", "subch", "bitrate", "subchannel", "service",
-            "ensemble", "tuning", "starting", "stopping",
-        }
-        for pat in svc_patterns:
-            for m in re.finditer(pat, dab_text):
-                name = m.group(1).strip().rstrip(".")
-                # Reject hex-only strings, pure numbers, known noise words
-                if (name and 2 <= len(name) <= 50
-                        and not re.match(r'^[0-9a-fA-Fx\s]+$', name)
-                        and name.lower().split()[0] not in _noise):
-                    found_in_channel.add(name)
-
-        for svc_name in sorted(found_in_channel):
-            all_services.append({
-                "name":     svc_name,
-                "channel":  ch,
-                "ensemble": ensemble_name or ch,
-            })
-
-        # ── If mux found, push a progress update with the mux chip data ───
-        if found_in_channel:
-            _log(f"[DAB] {ch}: {len(found_in_channel)} services ({ensemble_name or ch})")
+        if found_services:
+            _log(f"[DAB] {ch}: {len(found_services)} services ({ensemble_name})")
+            all_services.extend(found_services)
             try:
                 mux_payload = _json.dumps({
                     "channel":  ch,
@@ -1924,8 +1910,8 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
                     "found":    len(all_services),
                     "mux": {
                         "channel":  ch,
-                        "ensemble": ensemble_name or ch,
-                        "services": len(found_in_channel),
+                        "ensemble": ensemble_name,
+                        "services": len(found_services),
                     },
                 }).encode()
                 req = urllib.request.Request(
