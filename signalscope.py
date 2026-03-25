@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.104"
+BUILD                  = "SignalScope-3.3.105"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8924,11 +8924,21 @@ class HubClient:
                 self._active_slots = set()
             active = self._active_slots
 
+        # Kinds handled by this relay infrastructure.
+        # Plugin-managed slots (e.g. kind="dab") post audio chunks directly
+        # to /api/v1/audio_chunk/<slot_id> from their own client-side worker
+        # and must NOT be intercepted here — doing so would launch an FM
+        # stream that steals the RTL-SDR dongle.
+        _HANDLED_KINDS = {"live", "scanner", "clip"}
+
         for req in listen_requests:
             slot_id    = req.get("slot_id","")
             stream_idx = int(req.get("stream_idx", 0) or 0)
             kind       = req.get("kind", "live")
             if not slot_id or slot_id in active:
+                continue
+            if kind not in _HANDLED_KINDS:
+                # Plugin manages this slot itself — do not spawn a relay thread
                 continue
             with self._lock:
                 self._active_slots.add(slot_id)

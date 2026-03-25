@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.13",
+    "version":  "1.0.14",
 }
 
 import hashlib
@@ -972,9 +972,13 @@ def register(app, ctx):
             if old_slot:
                 old_slot.closed = True
 
+        # Use kind="dab" — NOT "scanner". The main relay handler
+        # (_push_audio_request in signalscope.py) intercepts kind="scanner"
+        # and launches an FM stream via rtl_fm, stealing the RTL-SDR dongle.
+        # kind="dab" is plugin-managed: the DAB client's _stream_worker posts
+        # audio chunks directly to /api/v1/audio_chunk/<slot_id>.
         slot = listen_registry.create(
-            site, 0, kind="scanner", mimetype="audio/mpeg",
-            freq_mhz=0,
+            site, 0, kind="dab", mimetype="audio/mpeg",
         )
         with _state_lock:
             _hub_sessions[site] = {
@@ -1250,7 +1254,7 @@ def register(app, ctx):
     @login_required
     def dab_stream(slot_id):
         slot = listen_registry.get(slot_id)
-        if not slot or slot.kind != "scanner":
+        if not slot or slot.kind != "dab":
             return "Stream not found or expired", 404
 
         def generate():

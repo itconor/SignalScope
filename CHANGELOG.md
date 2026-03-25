@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.105] - 2026-03-25
+
+### Fixed
+- **DAB audio broken — FM Scanner stealing the RTL-SDR dongle** (`dab.py` v1.0.14, `signalscope.py` 3.3.105) — root cause: DAB relay slots were created with `kind="scanner"`. `pending_for_site()` includes all non-stale slots in every heartbeat ACK. The main relay handler (`_handle_listen_requests`) saw `kind="scanner"` and called `_push_scanner_audio()` — which launched `rtl_fm` at the last-tuned FM frequency, grabbed the dongle, and logged `[Scanner] 96.50 MHz device=0 slot=…`. Two changes: (1) DAB plugin now creates slots with `kind="dab"` (a plugin-managed kind that the main relay handler must not intercept); (2) `_handle_listen_requests` in `signalscope.py` now skips any slot whose kind is not in `{"live","scanner","clip"}` — plugin-managed slots post their own audio chunks directly to `/api/v1/audio_chunk/<slot_id>` and need no relay thread. The DAB streaming endpoint check updated from `kind != "scanner"` to `kind != "dab"`.
+
 ## [3.3.104] - 2026-03-25
 
 ### Fixed
