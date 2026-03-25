@@ -14,7 +14,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/scanner",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.2",
+    "version":  "1.0.3",
 }
 
 import hashlib
@@ -512,17 +512,20 @@ function _initAudio(){
 }
 
 function _unlockAudio(){
-  // Safari requires scheduling real audio output (even a silent 1-sample buffer)
-  // from within the user-gesture handler to fully activate the AudioContext.
-  // Calling resume() alone leaves the context suspended in Safari.
-  // This must be called synchronously inside the click/gesture handler.
+  // Safari requires scheduling real audio output from within the user-gesture
+  // handler to fully activate the AudioContext.  resume() alone is not enough.
+  // We schedule the silent buffer inside the resume() Promise so it is started
+  // only once the context is actually in 'running' state — starting it while
+  // still 'suspended' can be silently ignored by Safari.
   if(!_audioCtx) return;
-  _audioCtx.resume();
-  var buf = _audioCtx.createBuffer(1, 1, _SR);
-  var src = _audioCtx.createBufferSource();
-  src.buffer = buf;
-  src.connect(_audioCtx.destination);
-  src.start(0);
+  _audioCtx.resume().then(function(){
+    if(!_audioCtx) return;
+    var buf = _audioCtx.createBuffer(1, 1, _audioCtx.sampleRate || _SR);
+    var src = _audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(_audioCtx.destination);
+    src.start(0);
+  }).catch(function(){});
 }
 
 function disconnectAudio(){
@@ -548,14 +551,28 @@ function connectAudio(url){
     _connectAudioXHR(url);
     return;
   }
+  // Stall guard: the relay always sends a silence block immediately on connect,
+  // so _sched should be > 0 within a second or two.  If it is still 0 after 4s,
+  // the fetch body is not streaming incrementally (a known Safari behaviour with
+  // application/octet-stream responses) — abort and switch to XHR.
+  var _stallUrl   = url;
+  var _stallTimer = setTimeout(function(){
+    _stallTimer = null;
+    if(_sched === 0 && _state !== 'idle'){
+      if(_reader){ try{ _reader.cancel(); }catch(e){} _reader = null; }
+      _connectAudioXHR(_stallUrl);
+    }
+  }, 4000);
   fetch(url, {credentials: 'same-origin'})
     .then(function(resp){
       if(!resp.ok){
+        clearTimeout(_stallTimer); _stallTimer = null;
         if(_state !== 'idle') setStatus('error', 'Stream error \u2014 try reconnecting');
         return;
       }
       if(!resp.body || typeof resp.body.getReader !== 'function'){
         // Safari didn't expose a streaming body — use XHR fallback.
+        clearTimeout(_stallTimer); _stallTimer = null;
         _connectAudioXHR(url);
         return;
       }
@@ -563,14 +580,17 @@ function connectAudio(url){
       (function pump(){
         _reader.read().then(function(r){
           if(r.done || !_reader) return;
+          if(_stallTimer){ clearTimeout(_stallTimer); _stallTimer = null; }
           _feedPCM(r.value);
           pump();
         }).catch(function(){
+          if(_stallTimer){ clearTimeout(_stallTimer); _stallTimer = null; }
           if(_state !== 'idle'){ setStatus('error', 'Stream error \u2014 try reconnecting'); stopPoll(); }
         });
       })();
     })
     .catch(function(){
+      if(_stallTimer){ clearTimeout(_stallTimer); _stallTimer = null; }
       if(_state !== 'idle'){ setStatus('error', 'Network error \u2014 try reconnecting'); stopPoll(); }
     });
 }
@@ -578,6 +598,9 @@ function connectAudio(url){
 // XHR-based binary streaming — works in all Safari versions including iOS.
 // Uses the classic "charset=x-user-defined" trick so that each response byte
 // is preserved as-is in responseText (mask with 0xff to extract the byte value).
+// responseText grows without bound for long sessions, so we restart the XHR
+// every _XHR_RESTART_BYTES (~5 MB) to cap memory usage.
+var _XHR_RESTART_BYTES = 5 * 1024 * 1024;
 function _connectAudioXHR(url){
   if(_xhrStream){ try{ _xhrStream.abort(); }catch(e){} _xhrStream = null; }
   var xhr = new XMLHttpRequest();
@@ -586,6 +609,7 @@ function _connectAudioXHR(url){
   xhr.withCredentials = true;
   try{ xhr.overrideMimeType('text/plain; charset=x-user-defined'); }catch(e){}
   var offset = 0;
+  var _restarting = false;
   xhr.onprogress = function(){
     var text = xhr.responseText;
     var len  = text.length - offset;
@@ -594,6 +618,12 @@ function _connectAudioXHR(url){
     for(var i = 0; i < len; i++) chunk[i] = text.charCodeAt(offset + i) & 0xff;
     offset = text.length;
     _feedPCM(chunk);
+    // Restart XHR when responseText grows too large (~5 MB ≈ 50 s of audio)
+    // to prevent memory accumulation on long sessions.
+    if(!_restarting && offset > _XHR_RESTART_BYTES){
+      _restarting = true;
+      setTimeout(function(){ if(_state !== 'idle') _connectAudioXHR(url); }, 0);
+    }
   };
   xhr.onerror = function(){
     if(_state !== 'idle') setStatus('error', 'Stream error \u2014 try reconnecting');
