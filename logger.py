@@ -189,14 +189,21 @@ def _stream_cfg(stream_name):
     }
 
 _SAFE_URL_SCHEMES = ("http://", "https://", "rtp://", "rtsp://", "rtmp://",
-                     "udp://", "tcp://", "sound://", "fm://", "dab://")
+                     "udp://", "tcp://", "srt://", "hls://",
+                     "alsa://", "pulse://", "jack://",
+                     "avfoundation://", "dshow://",
+                     "sound://", "fm://", "dab://")
+
+# Local device paths accepted on all platforms (e.g. /dev/dsp, /dev/audio0)
+_SAFE_DEV_PREFIXES = ("/dev/",)
 
 def _is_safe_url(url):
     """Accept URLs with known schemes or local device paths; reject anything else."""
     if not url:
         return False
     low = url.lower()
-    return any(low.startswith(s) for s in _SAFE_URL_SCHEMES)
+    return (any(low.startswith(s) for s in _SAFE_URL_SCHEMES) or
+            any(url.startswith(p) for p in _SAFE_DEV_PREFIXES))
 
 def _available_streams():
     cfg = _monitor.app_cfg
