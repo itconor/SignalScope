@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.88] - 2026-03-25
+
+### Fixed
+- **FM Scanner no audio after plugin move** — Chrome's autoplay policy requires `AudioContext.resume()` to be called synchronously inside a user-gesture handler. The Connect button's click handler now calls `_initAudio()` and `_audioCtx.resume()` immediately (before the async `fetch` to start the session), so the context is always in `running` state by the time PCM blocks arrive. A second safeguard `resume()` call is added at the top of `_scheduleBlock` to handle any edge cases where the context is suspended when data arrives.
+
 ## [3.3.87] - 2026-03-25
 
 ### Changed

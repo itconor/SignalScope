@@ -408,6 +408,11 @@ volSlider.addEventListener('input', function(){
 
 // ── Connect / Disconnect ──────────────────────────────────────
 connBtn.addEventListener('click', function(){
+  // Prime AudioContext in the user-gesture handler (Chrome autoplay policy
+  // requires resume() to be called synchronously from a user gesture; if it
+  // is only called inside a .then() callback the activation may have expired).
+  _initAudio();
+  if(_audioCtx.state === 'suspended') _audioCtx.resume();
   if(_state === 'streaming' || _state === 'connecting'){ doStop(); }
   else { _freq = parseFloat(startFreq.value) || 96.5; doStart(_freq); }
 });
@@ -536,6 +541,8 @@ function _feedPCM(chunk){
 }
 
 function _scheduleBlock(bytes){
+  // Safeguard: resume context if it ended up suspended after the click handler ran
+  if(_audioCtx.state === 'suspended') _audioCtx.resume();
   var buf = _audioCtx.createBuffer(1, _BLK_S, _SR);
   var ch  = buf.getChannelData(0);
   var dv  = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
