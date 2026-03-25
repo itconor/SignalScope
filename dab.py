@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.19",
+    "version":  "1.0.20",
 }
 
 import hashlib
@@ -1635,7 +1635,7 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
         proc_ffmpeg = subprocess.Popen(
             ffmpeg_cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,   # capture stderr so we can log it
             bufsize=0,
         )
 
@@ -1643,6 +1643,18 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
         with _state_lock:
             if _client_sess.get("slot_id") == slot_id:
                 _client_sess["proc_ffmpeg"] = proc_ffmpeg
+
+        # Log ffmpeg stderr in a background thread
+        def _log_ffmpeg_stderr():
+            try:
+                for raw in proc_ffmpeg.stderr:
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    if line:
+                        _log(f"[DAB ffmpeg] {line}")
+            except Exception:
+                pass
+        threading.Thread(target=_log_ffmpeg_stderr, daemon=True,
+                         name="DABFfmpegStderr").start()
 
         import select as _select
         out_deadline   = None
@@ -1660,7 +1672,8 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
                          f"after {chunks_sent} chunks")
                     break
                 if proc_ffmpeg and proc_ffmpeg.poll() is not None:
-                    _log(f"[DAB] ffmpeg exited after {chunks_sent} chunks")
+                    rc = proc_ffmpeg.returncode
+                    _log(f"[DAB] ffmpeg exited (rc={rc}) after {chunks_sent} chunks")
                     break
                 continue
 
