@@ -5,6 +5,7 @@ SignalScope is a broadcast signal intelligence platform. Single Python file (`si
 
 - **Repo**: https://github.com/itconor/SignalScope
 - **Current build string**: `BUILD = "SignalScope-3.3.79"` (increment on every release)
+- **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **Release flow**: bump `BUILD`, update `CHANGELOG.md`, `git commit`, `git push`, `gh release create v{version}`
 
 ---
@@ -233,6 +234,65 @@ Add an entry to `plugins.json` at the repo root:
 ```
 
 Users will see it in **Settings → Plugins → Check GitHub for plugins** and can install with one click.
+
+---
+
+## Known Bugs Fixed (don't reintroduce)
+
+### FM Scanner stereo always MONO (fixed 3.3.77)
+At heartbeat ingestion (`/api/v1/heartbeat`), `sess["rds"]` was only updated when `ps` or `rt` was present. Fields like `stereo`, `tp`, `ta`, `pi` arrive from redsea *before* PS/RT and were silently dropped.
+```python
+# WRONG — was:
+if _sess and (_scanner_rds.get("ps") or _scanner_rds.get("rt")):
+# CORRECT — is:
+if _sess and any(k for k in _scanner_rds if not k.startswith("_")):
+```
+Internal fields (e.g. `_level`) start with `_` and don't trigger the update. All real RDS fields do.
+
+### FM Scanner doTuneOrStart — clicking history/presets/scan results while idle did nothing (fixed 3.3.74)
+All three click handlers (`.hist-item`, `.preset-item`, `.peak-btn`) were gated on `_state === 'streaming'`. Added `doTuneOrStart(freq)`: calls `doTune()` if streaming, `doStart()` if idle with a site selected.
+
+### Scanner `out_deadline` burst causing ~1.5 s silence (fixed 3.3.69)
+`out_deadline` was initialised to `time.monotonic()` at loop start, *before* the `_SKIP=15` warm-up silence blocks were flushed. Those 15 × 0.1 s blocks pushed the deadline 1.5 s into the past, causing 15 blocks to be sent instantly on connect. Fix: defer `out_deadline = None`; set it to `time.monotonic()` only when the **first real block** is dequeued.
+
+### WAN audio choppy every ~0.5 s (fixed 3.3.70–3.3.73)
+Root cause: hub hosted remotely from SDR client. WAN RTT >250 ms triggered `_KP_THRESHOLD = 0.25 s` silence injection in `generate_scanner()`. Also, when RTT > `_BLK_DUR` (0.1 s), sequential POSTs fell behind real-time.
+Fixes applied:
+- `_KP_THRESHOLD = 1.0` — silence only injected after 1 s gap
+- `_PRE = 1.0` — browser pre-buffer raised to match
+- `slot.get(timeout=0.30)` — relay generator polls less aggressively
+- Adaptive chunk batching when RTT > `_BLK_DUR` — client batches multiple blocks per POST to maintain real-time throughput
+
+---
+
+## FM Scanner Details
+
+### Band scan
+- Endpoint: `POST /api/hub/scanner/band_scan` — requires `{site, start_mhz, end_mhz, step_khz}`
+- Result poll: `GET /api/hub/scanner/scan_result/<site>` — returns `{ready, peaks: [{freq_mhz, power_db}]}`
+- Runs `rtl_power` on the client; requires dongle to be free (conflicts with active stream)
+- Scan button is enabled when a site with scanner dongles is selected, regardless of stream state
+
+### `doTuneOrStart(freq)` pattern
+```javascript
+function doTuneOrStart(freq){
+  if(_state === 'streaming' || _state === 'connecting') doTune(freq);
+  else if(siteSel.value) doStart(freq);
+}
+```
+Used by history items, preset items, and scan result peak buttons. Always use this instead of calling `doTune()` directly from click handlers.
+
+### RDS data flow
+```
+redsea (client) → JSON line → _rds_reader thread → _scanner_rds dict
+→ heartbeat payload["scanner_rds"] → hub /api/v1/heartbeat handler
+→ sess["rds"] (only if any non-_ key present) → /api/hub/scanner/status/<site>
+→ browser _updateRDS()
+```
+`_rds_reader` stabilises PS (needs 3 of last 12 matching, min 6 chars) and RT (2 of last 10 matching or ≥12 chars). Stereo/TP/TA/PI bypass stabilisation and are written directly.
+
+### Site filtering
+FM Scanner page only shows sites where `hub_server._sites[site]["scanner_serials"]` is non-empty. This list is populated from the client heartbeat (`scanner_serials = [d.serial for d in cfg.sdr_devices if d.role == "scanner"]`). After changing a dongle's role to `scanner`, wait one heartbeat cycle (~10 s) for the hub to update.
 
 ---
 
