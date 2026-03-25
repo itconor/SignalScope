@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.12",
+    "version":  "1.0.13",
 }
 
 import hashlib
@@ -1375,6 +1375,7 @@ def _dispatch_client_cmd(cmd, hub_url, site, cfg, monitor):
             hub_url    = hub_url,
             site       = site,
             secret     = cfg.hub.secret_key or "",
+            monitor    = monitor,
         )
     elif action == "stop":
         _stop_stream()
@@ -1398,12 +1399,14 @@ def _dispatch_client_cmd(cmd, hub_url, site, cfg, monitor):
         t.start()
 
 
-def _start_stream(slot_id, channel, service, bitrate, sdr_serial, hub_url, site, secret):
+def _start_stream(slot_id, channel, service, bitrate, sdr_serial, hub_url, site, secret,
+                  monitor=None):
     _stop_stream()
     stop = threading.Event()
     t = threading.Thread(
         target=_stream_worker,
-        args=(slot_id, channel, service, bitrate, sdr_serial, hub_url, site, secret, stop),
+        args=(slot_id, channel, service, bitrate, sdr_serial, hub_url, site, secret, stop,
+              monitor),
         daemon=True,
         name="DABWorker",
     )
@@ -1451,7 +1454,8 @@ def _stop_stream():
 # Client-side: DAB audio streaming worker
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site, secret, stop):
+def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site, secret, stop,
+                   monitor=None):
     """
     Launch welle-cli | ffmpeg pipeline and POST MP3 chunks to hub relay.
 
@@ -1461,14 +1465,19 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
 
     ffmpeg transcodes PCM → MP3 at the requested bitrate.
     """
+    def _log(msg):
+        if monitor:
+            monitor.log(msg)
+        print(msg, flush=True)
+
     welle_bin  = shutil.which("welle-cli")
     ffmpeg_bin = shutil.which("ffmpeg")
 
     if not welle_bin:
-        print("[DAB] ERROR: welle-cli not found in PATH")
+        _log("[DAB] ERROR: welle-cli not found in PATH")
         return
     if not ffmpeg_bin:
-        print("[DAB] ERROR: ffmpeg not found in PATH")
+        _log("[DAB] ERROR: ffmpeg not found in PATH")
         return
 
     chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
@@ -1489,8 +1498,8 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
         "-f", "mp3", "pipe:1",
     ]
 
-    print(f"[DAB] Starting stream: ch={channel} service='{service}' "
-          f"bitrate={bitrate}k serial={sdr_serial or 'auto'}")
+    _log(f"[DAB] Starting stream: ch={channel} service='{service}' "
+         f"bitrate={bitrate}k serial={sdr_serial or 'auto'}")
 
     proc_welle  = None
     proc_ffmpeg = None
@@ -1565,7 +1574,7 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
                 pass
 
     except Exception as e:
-        print(f"[DAB] Stream worker error: {e}")
+        _log(f"[DAB] Stream worker error: {e}")
     finally:
         for p in (proc_ffmpeg, proc_welle):
             if p:
@@ -1573,7 +1582,7 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
                     p.terminate()
                 except Exception:
                     pass
-        print(f"[DAB] Stream worker exited: ch={channel} service='{service}'")
+        _log(f"[DAB] Stream worker exited: ch={channel} service='{service}'")
 
 
 def _dls_reader(stderr_stream, site, hub_url, stop):
@@ -1742,13 +1751,14 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
 
     _log(f"[DAB] Band scan started: site='{site}' channels={total} welle={welle_bin}")
 
-    # Use welle-cli's built-in HTTP server — avoids all text-parsing fragility
+    # Use welle-cli's built-in HTTP server — avoids all text-parsing fragility.
+    # Timing mirrors signalscope.py _dab_quick_probe:
+    #   - poll from second 1 (no fixed startup delay)
+    #   - accept on first 2 consecutive identical service lists (no min wait)
+    #   - 18s timeout — marginal signals take 12-15s to acquire DAB sync
     _WELLE_PORT  = 7979
-    # Per-channel timeouts (seconds): give each mux time to sync
-    _STARTUP     = 2.0   # seconds before first mux.json poll
-    _MAX_WAIT    = 20.0  # max seconds polling per channel
-    _MIN_WAIT    = 8.0   # minimum seconds before accepting stable result
-    _STABLE_NEED = 3     # consecutive identical service counts required
+    _MAX_WAIT    = 18.0  # max seconds per channel (marginal signals need ~15s)
+    _STABLE_NEED = 2     # consecutive identical service counts before accepting
 
     def _drain(pipe):
         try:
@@ -1805,15 +1815,11 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
             threading.Thread(target=_drain, args=(proc.stdout,), daemon=True).start()
             threading.Thread(target=_drain, args=(proc.stderr,), daemon=True).start()
 
-            # Wait for welle-cli to open the device and begin decoding
-            time.sleep(_STARTUP)
-
             if proc.poll() is not None:
                 _log(f"[DAB] {ch}: welle-cli exited early (device busy or no signal)")
             else:
                 stable_count = 0
-                scan_start   = time.time()
-                deadline     = scan_start + _MAX_WAIT
+                deadline     = time.time() + _MAX_WAIT
 
                 while time.time() < deadline:
                     time.sleep(1.0)
@@ -1826,11 +1832,11 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
                         f"http://localhost:{_WELLE_PORT}/api/mux.json",
                     ]:
                         try:
-                            with urllib.request.urlopen(url, timeout=2) as r:
+                            with urllib.request.urlopen(url, timeout=1) as r:
                                 mux_data = _json.loads(r.read())
                                 break
                         except Exception:
-                            continue
+                            break
 
                     if not mux_data:
                         stable_count = 0
@@ -1869,11 +1875,10 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
                     if len(candidate) == len(found_services) and candidate:
                         stable_count += 1
                     else:
-                        stable_count  = 0
+                        stable_count   = 0
                         found_services = candidate
 
-                    elapsed = time.time() - scan_start
-                    if candidate and elapsed >= _MIN_WAIT and stable_count >= _STABLE_NEED:
+                    if candidate and stable_count >= _STABLE_NEED:
                         found_services = candidate
                         break
 
@@ -1883,12 +1888,15 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
             if proc is not None:
                 proc.terminate()
                 try:
-                    proc.wait(timeout=3)
+                    # 4s grace — gives welle-cli time to call rtlsdr_close()
+                    # so the kernel releases the USB device cleanly for the
+                    # next channel (same as signalscope.py _dab_quick_probe).
+                    proc.wait(timeout=4)
                 except subprocess.TimeoutExpired:
                     _log(f"[DAB] welle-cli hung on {ch}, sending SIGKILL")
                     proc.kill()
                     try:
-                        proc.wait(timeout=2)
+                        proc.wait(timeout=3)
                     except Exception:
                         pass
                     _usb_reset_rtlsdr(sdr_serial or None)
@@ -1896,8 +1904,9 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
                     pass
             _scan_proc = None
 
-        # Let USB device settle before next channel
-        time.sleep(0.5)
+        # 0.8s USB settle — libusb holds a kernel reference until the fd is
+        # closed, which happens asynchronously after process exit.
+        time.sleep(0.8)
 
         if found_services:
             _log(f"[DAB] {ch}: {len(found_services)} services ({ensemble_name})")

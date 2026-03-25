@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.104] - 2026-03-25
+
+### Fixed
+- **DAB Scanner band scan missing weak muxes** (`dab.py` v1.0.13) — scan timing now mirrors signalscope.py's `_dab_quick_probe`: polling starts from second 1 (no fixed startup delay), accepts the first 2 consecutive identical service lists (no minimum wait), 18s timeout per channel (marginal signals need 12–15s to acquire DAB sync). Previously `_STARTUP=2s` + `_MIN_WAIT=8s` + `_STABLE_NEED=3` wasted 8+ seconds before even checking stability, leaving weak signals (which sync at 12–15s) less than 7 seconds of polling time. SIGTERM wait increased from 3s→4s and USB settle from 0.5s→0.8s to give welle-cli time to call `rtlsdr_close()` cleanly between channels.
+- **DAB stream start/stop now visible in client log window** (`dab.py` v1.0.13) — `_stream_worker` previously used `print()` (stdout only); now uses `monitor.log()` via a `_log()` helper so "Starting stream", "Stream worker error", and "Stream worker exited" messages appear in Settings → Logs. `monitor` is threaded through `_dispatch_client_cmd` → `_start_stream` → `_stream_worker`.
+
 ## [3.3.103] - 2026-03-25
 
 ### Fixed
