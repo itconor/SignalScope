@@ -53,6 +53,7 @@ A PowerShell installer (`install_signalscope_windows.ps1`) is included for Windo
 | **Inputs** | FM via RTL-SDR, DAB via RTL-SDR, Livewire/AES67 (RTP multicast), HTTP/HTTPS audio streams, local ALSA/PulseAudio devices |
 | **FM Scanner** | On-demand FM frequency tuning via RTL-SDR with live browser audio, RDS decoding, band scan, tuning history and presets; hub scanner page (`/hub/scanner`) |
 | **Web SDR plugin** | Browser-based SDR with scrolling waterfall, click-to-tune, WFM/NFM/AM demodulation — installed via Settings → Plugins |
+| **Logger plugin** | Continuous 24/7 compliance recording of any monitored stream; 5-minute segments with silence overlay, scrubable timeline, mark in/out clip export, per-stream quality tiers and configurable retention — installed via Settings → Plugins |
 | **Level & loudness** | dBFS level, LUFS Momentary/Short-term/Integrated (EBU R128), true peak |
 | **Metadata** | RDS PS name, RDS RadioText, stereo flag, TP/TA/PI; DAB service name, DLS now-playing text, ensemble/mode/bitrate/SNR |
 | **Rule alerts** | Silence, clipping, hiss, LUFS true peak, LUFS integrated loudness |
@@ -193,6 +194,54 @@ For WAN deployments where the hub is hosted remotely from the SDR client, the pi
 
 ---
 
+## Logger Plugin
+
+The Logger plugin (`logger.py`) provides continuous 24/7 compliance recording for any monitored stream, with a visual timeline browser and clip export — similar in concept to a Myriad Logger.
+
+Install it from **Settings → Plugins → Check GitHub for plugins**.
+
+### Recording
+
+Each stream you enable is recorded continuously as 5-minute clock-aligned MP3 segments stored under `logger_recordings/{stream}/{YYYY-MM-DD}/HH-MM.mp3`. Recordings start as soon as the plugin is saved — no restart required.
+
+Silence is detected inline using ffmpeg's `silencedetect` filter and stored per-segment in a local SQLite index.
+
+### Timeline
+
+The **Timeline** tab shows a 24-hour grid of 288 colour-coded blocks for any stream and date:
+
+| Colour | Meaning |
+|---|---|
+| 🟢 Green | Segment recorded, audio present throughout |
+| 🟡 Amber | Segment recorded, partial silence detected |
+| 🔴 Red | Segment recorded, mostly or completely silent |
+| ⬛ Dark | No recording for this time slot |
+
+Click any block to load and play that 5-minute segment in the player bar.
+
+### Playback & Clip Export
+
+The player bar at the bottom provides:
+
+- **Scrub bar** — click or drag to seek within the loaded segment
+- **Mark In / Mark Out** — set clip boundaries at any point while playing
+- **Export Clip** — extracts the marked range using ffmpeg and downloads it as a named MP3; ranges can span multiple consecutive segments (up to 2 hours)
+
+### Quality Tiers & Retention
+
+Configure per-stream in the **Settings** tab:
+
+| Setting | Default | Description |
+|---|---|---|
+| HQ Bitrate | 128k | Bitrate for new recordings |
+| LQ Bitrate | 48k | Bitrate after quality downgrade |
+| LQ after (days) | 30 | Re-encode to LQ after this many days |
+| Delete after (days) | 90 | Purge recordings after this many days |
+
+A background thread runs hourly, re-encoding older segments to the LQ bitrate and deleting segments beyond the retention period.
+
+---
+
 ## Plugin System
 
 SignalScope supports drop-in plugins. Any `.py` file placed alongside `signalscope.py` that contains the string `SIGNALSCOPE_PLUGIN` is loaded automatically at startup and can register new Flask routes and nav bar items.
@@ -217,6 +266,12 @@ The **Web SDR** plugin (`sdr.py`) adds a browser-based software defined radio at
 - Demodulation modes: WFM, NFM, AM
 - Live audio streamed to the browser using the same relay infrastructure as the FM Scanner
 - Requires a dongle configured with role **Scanner**
+
+Install it from **Settings → Plugins → Check GitHub for plugins**.
+
+### Logger Plugin
+
+The **Logger** plugin (`logger.py`) provides 24/7 compliance recording at `/hub/logger`. See the [Logger Plugin](#logger-plugin) section above for full documentation.
 
 Install it from **Settings → Plugins → Check GitHub for plugins**.
 

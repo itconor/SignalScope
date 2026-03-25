@@ -2,6 +2,21 @@
 
 ---
 
+## [logger-1.0.0] - 2026-03-25
+
+### Added
+- **Logger plugin** (`logger.py`) — new compliance logger for continuous 24/7 recording of any monitored stream. Records in 5-minute clock-aligned segments stored as `logger_recordings/{stream}/{YYYY-MM-DD}/HH-MM.mp3`. Key features:
+  - **Silence detection** — ffmpeg `silencedetect` filter runs inline during recording; silence timestamps are stored per segment in an SQLite index (`logger_index.db`)
+  - **Interactive timeline UI** — 24-hour grid of 288 colour-coded 5-minute blocks (green = OK, amber = partial silence, red = silence, dark = no recording); click any block to load and play it in the browser
+  - **Scrubable player** — HTML5 audio with custom scrub bar; Mark In / Mark Out buttons set clip boundaries; Export Clip sends selected range to ffmpeg and downloads an MP3
+  - **Quality tiers** — recordings start at a configurable high-quality bitrate (default 128k); a background maintenance thread re-encodes segments older than N days to a lower bitrate (default 48k after 30 days) and prunes segments beyond the retention period (default 90 days)
+  - **Per-stream settings** — enable/disable recording independently per stream; configure HQ bitrate, LQ bitrate, LQ-after days, and retention days from the plugin's Settings tab
+  - **Opt-in by default** — no streams are recorded until explicitly enabled; a notice banner links directly to Settings
+  - **Reconnecting ingest** — ffmpeg uses `-reconnect` / `-reconnect_streamed` flags for HTTP sources; other protocols (RTP, local) supported without reconnect flags
+  - **Disk usage reporting** — status endpoint tracks total storage and which streams are actively recording; shown in the header badge and Settings tab
+  - **Plugin registry entry** added to `plugins.json` — install via Settings → Plugins → Check GitHub for plugins
+  - Requires ffmpeg (already a SignalScope dependency)
+
 ## [3.3.129] - 2026-03-25
 
 ### Added
