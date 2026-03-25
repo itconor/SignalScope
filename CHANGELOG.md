@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.87] - 2026-03-25
+
+### Changed
+- **FM Scanner extracted to plugin** — the FM Scanner is now a standalone `scanner.py` plugin (drop alongside `signalscope.py` on the hub machine). All routes (`/hub/scanner`, `/api/hub/scanner/*`, `/hub/scanner/stream/*`, `/hub/scanner_scan_result`) and the browser template are implemented in the plugin. The core client-side scanner logic (dongle management, audio streaming, RDS, band scan) remains in `signalscope.py` unchanged. The hardcoded **📻 FM Scanner** button in the hub dashboard is removed; the plugin nav item is injected automatically by the plugin loader.
+
 ## [3.3.86] - 2026-03-25
 
 ### Fixed
