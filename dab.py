@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.26",
+    "version":  "1.0.27",
 }
 
 import hashlib
@@ -209,8 +209,8 @@ main{flex:1;display:flex;align-items:flex-start;justify-content:center;padding:2
 .dls-wrap{background:#040c1a;border:1px solid #0f2248;border-radius:8px;padding:10px 14px;margin-bottom:14px;min-height:46px}
 .dls-label{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--mu);margin-bottom:5px}
 .dls-rt-outer{overflow:hidden;white-space:nowrap;text-align:center}
-.dls-rt-static{font-size:13px;color:var(--lcd-dim);font-family:'Courier New',monospace}
-.dls-rt-scroll{display:inline-flex;white-space:nowrap;animation:dls-marquee 18s linear infinite;font-size:13px;color:var(--lcd-dim);font-family:'Courier New',monospace}
+.dls-rt-static{font-size:13px;color:var(--lcd);font-family:'Courier New',monospace}
+.dls-rt-scroll{display:inline-flex;white-space:nowrap;animation:dls-marquee 18s linear infinite;font-size:13px;color:var(--lcd);font-family:'Courier New',monospace}
 .dls-rt-scroll span{display:inline-block;padding-right:3rem}
 @keyframes dls-marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
 .vol-row{display:flex;align-items:center;justify-content:center;gap:10px;padding-top:14px;border-top:1px solid var(--bor)}
