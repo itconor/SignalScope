@@ -2,6 +2,78 @@
 
 ---
 
+## [3.3.118] - 2026-03-25
+
+### Changed
+- **Plugin nav collapsed into hover dropdown** (`signalscope.py`) — the flat row of per-plugin nav buttons is replaced by a single **Plugins ▾** trigger. Hovering (or tabbing) reveals a panel listing all installed plugins. The trigger lights up in accent blue when the current page is a plugin. `:focus-within` makes it keyboard-accessible. The panel is a nonce-gated `<style>` block so it passes CSP without hashes or `unsafe-inline`. If no plugins are installed the trigger is omitted entirely.
+
+---
+
+## [3.3.117] - 2026-03-25
+
+### Fixed
+- **DAB Scanner DLS (Dynamic Label Segment) not displaying** (`dab.py` v1.0.26) — in welle-cli HTTP server mode, DLS is not emitted to stderr; it is available in `mux.json` as `svc["dynamicLabel"]` (may be a dict with a `"label"` key). Added `_dls_poller` thread that polls `mux.json` every 5 s and POSTs updates to the hub. `_dls_reader` is now a logging-only stderr drain.
+
+---
+
+## [3.3.116] - 2026-03-25
+
+### Fixed
+- **DAB Scanner Northern Ireland channel list incorrect** (`dab.py` v1.0.25) — channels were `["11D","12A","12B","11C"]`; 12A and 11C are not NI muxes. Corrected to `["11D","11A","12B","12D","9A","9C"]` (12D = NI regional/Bauer, 9A = Belfast SSDAB, 9C = UlsterMUX).
+- **DAB Scanner audio silent/glitchy in Safari** (`dab.py` v1.0.25) — Safari's `<audio>` element does not handle infinite chunked HTTP streams reliably. Replaced with MediaSource Extensions (MSE): MP3 chunks are appended to a `SourceBuffer` directly, eliminating buffering issues. Falls back to plain `<audio src>` if MSE is unavailable.
+
+---
+
+## [3.3.115] - 2026-03-25
+
+### Fixed
+- **DAB Scanner weak muxes not found / poor audio quality** (`dab.py` v1.0.24) — welle-cli was launched without `-g` or `-p` flags, using default gain instead of the configured dongle gain/PPM. Added `_lookup_device()` to read `SdrDevice.gain` and `.ppm` from config; both flags are now passed in scan and stream worker commands.
+- **DAB Scanner audio silent in Safari** (`dab.py` v1.0.24) — added `type="audio/mpeg"` to the `<audio>` element; Safari requires an explicit type hint to begin MP3 playback.
+
+---
+
+## [3.3.114] - 2026-03-25
+
+### Fixed
+- **DAB Scanner ~50% of audio chunks rejected with HTTP 403** (`dab.py` v1.0.23) — `_sign_chunk` used `f"{ts:.0f}:"` (rounds half-up) but the `X-Hub-Ts` header sent `str(int(ts))` (truncates). The hub recomputes the signature from the header value, so any chunk where the fractional timestamp part was ≥ 0.5 produced a different signature and was rejected. Fixed: use `f"{int(ts)}:"` in `_sign_chunk`.
+
+---
+
+## [3.3.113] - 2026-03-25
+
+### Fixed
+- **DAB Scanner `NameError: name '_json' is not defined`** (`dab.py` v1.0.22) — `import json` was used at the top level but the stream worker and other call sites expected `_json`. Renamed to `import json as _json` and updated all bare `json.loads`/`json.dumps` calls.
+
+---
+
+## [3.3.112] - 2026-03-25
+
+### Fixed
+- **DAB Scanner audio stream: remove redundant ffmpeg layer** (`dab.py` v1.0.21) — welle-cli's `/mp3/{SID}` endpoint already serves MP3 frames directly; piping through ffmpeg added a failure point with no benefit. Stream worker now opens the URL and relays chunks directly to the hub relay slot. Also logs the full service list from `mux.json` when the requested service name is not found, making name-mismatch problems diagnosable.
+
+---
+
+## [3.3.111] - 2026-03-25
+
+### Diagnostic
+- **DAB stream worker: log ffmpeg stderr** (`dab.py` v1.0.20) — ffmpeg stderr was routed to `/dev/null`; connection and codec errors were invisible. Now logged as `[DAB ffmpeg]` lines alongside `[DAB]` and `[DAB welle]`.
+
+---
+
+## [3.3.110] - 2026-03-25
+
+### Fixed
+- **DAB stream: service sometimes not found within probe window** (`dab.py` v1.0.19) — probe deadline extended from 15 s to 35 s (matching signalscope.py; some services take 20–25 s after mux becomes ready). Probe exceptions now logged instead of swallowed. SID comparison now uses `str()` wrapping to match signalscope.py's `_find_dab_service_in_mux`. Service name match falls back to substring comparison. Probe retry interval halved from 1.0 s to 0.5 s.
+
+---
+
+## [3.3.109] - 2026-03-25
+
+### Fixed
+- **DAB Scanner audio stream produces no output** (`dab.py` v1.0.18) — the `-A rawfile` backend pipes raw PCM to stdout, but the probe + ffmpeg pipeline was not matching signalscope.py's proven approach. Rewrote `_stream_worker` to use welle-cli HTTP server mode (`-w 7980`): launch welle-cli, poll `mux.json` for the SID, probe `/mp3/{SID}`, then stream MP3 chunks directly to the hub relay slot. Eliminates the 35 s silence-then-disconnect that Chrome was exhibiting.
+
+---
+
 ## [3.3.108] - 2026-03-25
 
 ### Fixed
