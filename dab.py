@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.8",
+    "version":  "1.0.9",
 }
 
 import hashlib
@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 # ── DAB Band III channels (European standard, kHz centre frequencies) ──────────
@@ -1583,7 +1584,7 @@ def _dls_reader(stderr_stream, site, hub_url, stop):
         DLS: <text>
     or variations like:  DLS update: <text>
     """
-    dls_url  = f"{hub_url}/api/hub/dab/dls/{site}"
+    dls_url  = f"{hub_url}/api/hub/dab/dls/{urllib.parse.quote(site, safe='')}"
     last_dls = ""
 
     try:
@@ -1729,8 +1730,9 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None, monitor=None):
         _log("[DAB] Scan aborted: welle-cli not found in PATH")
         return
 
-    progress_url = f"{hub_url}/api/hub/dab/scan_progress/{site}"
-    result_url   = f"{hub_url}/api/hub/dab/scan_result/{site}"
+    _site_enc    = urllib.parse.quote(site, safe="")
+    progress_url = f"{hub_url}/api/hub/dab/scan_progress/{_site_enc}"
+    result_url   = f"{hub_url}/api/hub/dab/scan_result/{_site_enc}"
 
     all_services = []
     channels     = channels_to_scan if channels_to_scan else list(_DAB_CHANNELS.keys())

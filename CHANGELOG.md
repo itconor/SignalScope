@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.100] - 2026-03-25
+
+### Fixed
+- **DAB Scanner scan progress never reaching hub** (`dab.py` v1.0.9) — site names containing spaces (e.g. `Northern Ireland DAB`) were embedded raw into URLs: `…/scan_progress/Northern Ireland DAB`. `urllib.request` throws an exception on the unencoded space, which was silently caught, so every progress push, result push, and DLS update was silently dropped and the hub stayed permanently at 0. Fix: `urllib.parse.quote(site, safe="")` applied to the site name segment of all three client→hub push URLs (`scan_progress`, `scan_result`, `dls`). Flask's `<path:site_name>` routing URL-decodes the segment automatically so the hub receives the correct site name. Added `import urllib.parse`.
+
 ## [3.3.99] - 2026-03-25
 
 ### Fixed
