@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.117"
+BUILD                  = "SignalScope-3.3.118"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -11963,13 +11963,8 @@ def _inject_nav():
         home_href = "/hub" if hub_only else "/"
         local_links = "" if hub_only else (_a("dashboard", "Dashboard", "/") + _a("inputs", "Inputs", "/inputs") + _a("reports", "Reports", "/reports") + _a("sla", "SLA", "/sla"))
         hub_link = (_a("hub", "Hub", "/hub") + _a("hub_reports", "Hub Reports", "/hub/reports") + _a("chains", "Broadcast Chains", "/chains")) if show_hub else ""
-        plugin_links = "".join(
-            _a(p.get("id", "plugin"),
-               ((p["icon"] + " ") if p.get("icon") else "") + p["label"],
-               p["url"])
-            for p in _plugins
-            if not p.get("hub_only") or show_hub
-        )
+        # ── Plugins dropdown ─────────────────────────────────────────────────
+        _vis_plugins = [p for p in _plugins if not p.get("hub_only") or show_hub]
         # ── Update-available banner ───────────────────────────────────────────
         nonce       = _csp_nonce()
         current_ver = build_.split("-")[-1]
@@ -11993,6 +11988,34 @@ def _inject_nav():
                 f'(function(){{if(sessionStorage.getItem("ss_upd")==={_lv!r})'
                 f'{{var b=document.getElementById("ss-update-banner");if(b)b.remove();}}}})();</script>'
             )
+        # ── Build plugin dropdown (nonce available here) ──────────────────────
+        if _vis_plugins:
+            _active_plugin = any(p.get("id") == active for p in _vis_plugins)
+            _trigger_cls   = "btn bg bs nav-active" if _active_plugin else "btn bg bs"
+            _items = "".join(
+                _a(p.get("id", "plugin"),
+                   ((p["icon"] + "\u202f") if p.get("icon") else "") + p["label"],
+                   p["url"])
+                for p in _vis_plugins
+            )
+            plugin_links = (
+                f'<style nonce="{nonce}">'
+                f'.ss-pg{{position:relative;display:inline-block}}'
+                f'.ss-pdrop{{display:none;position:absolute;top:calc(100% + 5px);right:0;'
+                f'min-width:175px;background:var(--sur,#0d2346);border:1px solid var(--bor,#17345f);'
+                f'border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.5);padding:4px;'
+                f'z-index:1000;flex-direction:column;gap:2px}}'
+                f'.ss-pg:hover .ss-pdrop,.ss-pg:focus-within .ss-pdrop{{display:flex!important}}'
+                f'.ss-pdrop .btn{{display:block;text-align:left;width:100%;'
+                f'box-sizing:border-box;white-space:nowrap}}'
+                f'</style>'
+                f'<div class="ss-pg">'
+                f'<button class="{_trigger_cls}" style="pointer-events:none">Plugins\u202f\u25be</button>'
+                f'<div class="ss-pdrop">{_items}</div>'
+                f'</div>'
+            )
+        else:
+            plugin_links = ""
         return (
             '<header style="background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);box-shadow:0 10px 24px rgba(0,0,0,.18)">'
             f'<a href="{home_href}" style="text-decoration:none;display:flex;align-items:center;gap:12px;min-width:0">'
