@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.77] - 2026-03-25
+
+### Fixed
+- **FM Scanner stereo indicator always shows MONO** — the heartbeat RDS ingestion guard only updated `sess["rds"]` when `ps` or `rt` was present. Fields like `stereo`, `tp`, `ta`, and `pi` that arrive from redsea before any PS/RadioText was decoded were silently dropped. The guard now updates on any non-internal RDS field (any key not prefixed with `_`).
+
 ## [3.3.76] - 2026-03-25
 
 ### Added

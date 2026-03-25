@@ -1138,7 +1138,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.76"
+BUILD                  = "SignalScope-3.3.77"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -17162,7 +17162,11 @@ def hub_heartbeat():
     _scanner_rds = payload.get("scanner_rds")
     if isinstance(_scanner_rds, dict) and site_name and hub_server:
         _sess = hub_server._scanner_sessions.get(site_name)
-        if _sess and (_scanner_rds.get("ps") or _scanner_rds.get("rt")):
+        # Update session RDS whenever any real RDS field is present.
+        # Fields prefixed with "_" (e.g. "_level") are internal and don't
+        # count — previously only "ps" or "rt" were checked, which caused
+        # stereo / tp / ta to be dropped when they arrived before any PS/RT.
+        if _sess and any(k for k in _scanner_rds if not k.startswith("_")):
             _sess["rds"] = _scanner_rds
 
     # ── Post-update comeback detection ────────────────────────────────────────
