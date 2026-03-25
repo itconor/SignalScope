@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.98] - 2026-03-25
+
+### Fixed / Diagnostic
+- **DAB Scanner command poll switched from GET to POST** (`dab.py` v1.0.7) — the client's command poll was a GET request with a custom `X-Dab-Site` header. GET requests with custom headers can be silently stripped or blocked by reverse proxies and some middleware. Changed to POST with the site name in the JSON body, consistent with every other working client→hub call (heartbeat, audio chunks, DLS push). The GET route is kept for backward compatibility. Hub-side `monitor.log()` additions: (1) first poll from each client site logs `[DAB] Client 'sitename' poller connected` — visible in the hub's in-app log window so the user can confirm the client is alive; (2) 403 rejections log the exact flag values that caused the rejection; (3) any dispatched command logs its action. Browser `console.log/error` added to `_startScan()` so the browser DevTools console shows whether the scan POST succeeds and what the hub returns.
+
 ## [3.3.97] - 2026-03-25
 
 ### Fixed

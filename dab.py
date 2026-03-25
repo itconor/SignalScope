@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.6",
+    "version":  "1.0.7",
 }
 
 import hashlib
@@ -807,28 +807,36 @@ function _startScan(site, channels, regionLabel){
   scanFound.style.color    = 'var(--mu)';
   muxChips.innerHTML       = '';
 
+  var scanBody = {site: site, sdr_serial: sdrSel.value, channels: channels};
+  console.log('[DAB] Starting scan', scanBody);
   _f('/api/hub/dab/scan', {
     method: 'POST',
-    body: JSON.stringify({site: site, sdr_serial: sdrSel.value, channels: channels})
+    body: JSON.stringify(scanBody)
   })
-  .then(function(r){ return r.json(); })
+  .then(function(r){
+    if(!r.ok){ console.error('[DAB] /api/hub/dab/scan HTTP error', r.status); }
+    return r.json();
+  })
   .then(function(d){
     if(!d.ok){
       stopScanPoll();
       _setScanBtns(false);
       scanStopBtn.style.display = 'none';
       scanProg.style.display    = 'none';
+      console.error('[DAB] Scan rejected by hub:', d.error || d);
       alert('Scan failed: ' + (d.error || '?'));
       return;
     }
+    console.log('[DAB] Scan accepted by hub, polling for progress');
     _scanPoll = setInterval(function(){ _pollScan(site); }, 3000);
     setTimeout(function(){ _pollScan(site); }, 1500);
   })
-  .catch(function(){
+  .catch(function(e){
     stopScanPoll();
     _setScanBtns(false);
     scanStopBtn.style.display = 'none';
     scanProg.style.display    = 'none';
+    console.error('[DAB] Scan POST failed:', e);
   });
 }
 
@@ -1117,27 +1125,47 @@ def register(app, ctx):
         return jsonify({"ok": True})
 
     # ── Hub: client polls for commands ─────────────────────────────────────────
-    # No login_required — authenticated by site being approved in hub_server._sites
+    # POST (not GET) — consistent with every other client→hub call (heartbeat,
+    # audio chunks, DLS push).  GET with custom headers can be silently blocked
+    # by reverse-proxies and some middleware.  Site name comes from the JSON body
+    # so it is not subject to header-stripping.  Also keep the old GET route for
+    # backwards compat with older dab.py clients.
 
-    @app.get("/api/hub/dab/cmd")
-    def dab_cmd_poll():
+    _cmd_poll_seen = set()   # sites we've already logged a checkin for
+
+    def _dab_cmd_poll_handler():
         if not hub_server:
             return jsonify({}), 200
-        site = request.headers.get("X-Dab-Site", "").strip()
+        d    = request.get_json(silent=True) or {}
+        site = str(d.get("site", "")
+                   or request.headers.get("X-Dab-Site", "")).strip()
         if not site:
             return jsonify({}), 400
-        sdata = hub_server._sites.get(site, {})
-        # Accept either _approved (explicitly approved via hub admin) or the
-        # looser approved/default-True check used everywhere else in the plugin.
-        # A site that appears in the DAB Scanner dropdown should be able to poll
-        # for commands — using _approved alone locked out sites that hadn't gone
-        # through the formal approval flow even though they were heartbeating fine.
+        sdata       = hub_server._sites.get(site, {})
         is_approved = sdata.get("_approved") or sdata.get("approved", True)
         if not is_approved or sdata.get("blocked"):
+            monitor.log(f"[DAB] Cmd poll rejected for '{site}' "
+                        f"(_approved={sdata.get('_approved')} "
+                        f"approved={sdata.get('approved')} "
+                        f"blocked={sdata.get('blocked')})")
             return jsonify({}), 403
+        # Log first contact from each site so we know the client poller is live
+        if site not in _cmd_poll_seen:
+            _cmd_poll_seen.add(site)
+            monitor.log(f"[DAB] Client '{site}' poller connected")
         with _state_lock:
             cmd = _hub_pending.pop(site, None)
+        if cmd:
+            monitor.log(f"[DAB] Cmd '{cmd.get('action')}' dispatched to '{site}'")
         return jsonify({"cmd": cmd} if cmd else {})
+
+    @app.post("/api/hub/dab/cmd")
+    def dab_cmd_poll_post():
+        return _dab_cmd_poll_handler()
+
+    @app.get("/api/hub/dab/cmd")
+    def dab_cmd_poll_get():
+        return _dab_cmd_poll_handler()
 
     # ── Client → Hub: push DLS update ─────────────────────────────────────────
 
@@ -1302,9 +1330,15 @@ def _client_poller(monitor):
                 time.sleep(3)
                 continue
             _idles = 0
+            # POST — same pattern as heartbeat/audio chunks, works through
+            # reverse proxies that strip custom GET headers.
+            payload = _json.dumps({"site": site}).encode()
             req = urllib.request.Request(
                 f"{hub_url}/api/hub/dab/cmd",
-                headers={"X-Dab-Site": site},
+                data=payload,
+                method="POST",
+                headers={"Content-Type": "application/json",
+                         "X-Dab-Site": site},
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 status = resp.status
