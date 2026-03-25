@@ -196,7 +196,7 @@ For WAN deployments where the hub is hosted remotely from the SDR client, the pi
 
 ## Logger Plugin
 
-The Logger plugin (`logger.py`) provides continuous 24/7 compliance recording for any monitored stream, with a visual timeline browser and clip export — similar in concept to a Myriad Logger.
+The Logger plugin (`logger.py`) provides continuous 24/7 compliance recording for any monitored stream, with a visual timeline browser and clip export
 
 Install it from **Settings → Plugins → Check GitHub for plugins**.
 
