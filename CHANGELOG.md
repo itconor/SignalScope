@@ -2,6 +2,18 @@
 
 ---
 
+## [3.3.76] - 2026-03-25
+
+### Added
+- **Scanner dongle role** — SDR devices in Settings now have a `Scanner` role option alongside DAB/FM/None. Marking a dongle as `Scanner` designates it exclusively for the FM Scanner page.
+- **FM Scanner site filtering** — the FM Scanner page now only shows sites that have at least one dongle configured with `role = Scanner`. Sites with no scanner dongle assigned are hidden entirely.
+- **Scanner-only SDR dropdown** — `/api/hub/scanner/devices/<site>` now returns only `Scanner`-role serials (reported in each client heartbeat) instead of scraping all stream device URLs. The SDR selector on the scanner page therefore only shows the designated scanner dongle(s).
+
+### How to migrate
+1. Go to **Settings → SDR Devices** and change the role of your FM scanner dongle from `FM` or `None` to **Scanner**.
+2. Save and allow one heartbeat cycle (~30 s) for the hub to pick up the new role.
+3. The FM Scanner page will then show only sites with a designated scanner dongle.
+
 ## [3.3.75] - 2026-03-25
 
 ### Added

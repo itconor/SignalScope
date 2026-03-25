@@ -852,9 +852,10 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
       <td style="padding:6px 8px"><input type="text" name="sdr_serial" value="{{dev.serial}}" style="width:160px;font-family:monospace;font-size:12px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx)"></td>
       <td style="padding:6px 8px">
         <select name="sdr_role" style="padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px">
-          <option value="none" {{'selected' if dev.role=='none'}}>None</option>
-          <option value="dab"  {{'selected' if dev.role=='dab' }}>DAB</option>
-          <option value="fm"   {{'selected' if dev.role=='fm'  }}>FM</option>
+          <option value="none"    {{'selected' if dev.role=='none'   }}>None</option>
+          <option value="dab"     {{'selected' if dev.role=='dab'    }}>DAB</option>
+          <option value="fm"      {{'selected' if dev.role=='fm'     }}>FM</option>
+          <option value="scanner" {{'selected' if dev.role=='scanner'}}>Scanner</option>
         </select>
       </td>
       <td style="padding:6px 8px"><input type="number" name="sdr_ppm" value="{{dev.ppm}}" style="width:70px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-150" max="150"></td>
@@ -878,6 +879,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
       +'<option value="none"'+(role==="none"?" selected":"")+'">None</option>'
       +'<option value="dab"'+(role==="dab"?" selected":"")+'">DAB</option>'
       +'<option value="fm"'+(role==="fm"?" selected":"")+'">FM</option>'
+      +'<option value="scanner"'+(role==="scanner"?" selected":"")+'">Scanner</option>'
       +'</select></td>'
       +'<td style="padding:6px 8px"><input type="number" name="sdr_ppm" value="'+ppm+'" style="width:70px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-150" max="150"></td>'
       +'<td style="padding:6px 8px"><input type="number" name="sdr_gain" value="'+gain+'" title="-1 = hardware AGC. Tenths of dB e.g. 496 = 49.6 dB max gain. Try 486-496 for weak signals." style="width:60px;padding:4px 6px;background:#173a69;border:1px solid var(--bor);border-radius:4px;color:var(--tx);font-size:13px" min="-1" max="496"></td>'
@@ -1136,7 +1138,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.75"
+BUILD                  = "SignalScope-3.3.76"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8683,6 +8685,10 @@ class HubClient:
             "system":          self._build_system_health(),
             "app_log":         [str(l)[:200] for l in list(self._monitor._log)[-30:]],
             "scanner_rds": self._get_scanner_rds(),
+            # Dongles on this machine registered with role="scanner" — used by
+            # the hub FM Scanner page to show only sites with a scanner dongle
+            # and to populate the SDR dropdown with only scanner-role serials.
+            "scanner_serials": [d.serial for d in cfg.sdr_devices if d.role == "scanner"],
         }
 
     def _handle_listen_requests(self, cfg, listen_requests: list):
@@ -18541,30 +18547,30 @@ def hub_scanner_page():
         with hub_server._lock:
             for sname, sdata in sorted(hub_server._sites.items()):
                 if sdata.get("approved", True) and not sdata.get("blocked"):
+                    scanner_serials = sdata.get("scanner_serials", [])
+                    # Only list sites that have at least one dongle marked as
+                    # role="scanner" in their SDR device config.
+                    if not scanner_serials:
+                        continue
                     online = (now - sdata.get("_received", 0)) < HUB_SITE_TIMEOUT
-                    sites.append({"name": sname, "online": online})
+                    sites.append({"name": sname, "online": online,
+                                  "scanner_serials": scanner_serials})
     return render_template_string(HUB_SCANNER_TPL, sites=sites, build=BUILD)
 
 
 @app.get("/api/hub/scanner/devices/<path:site_name>")
 @login_required
 def hub_scanner_devices(site_name):
-    """Return known SDR serial numbers for a site, parsed from its stream configs."""
+    """Return scanner-role SDR serial numbers for a site.
+
+    Only serials explicitly marked role='scanner' in the client's SDR device
+    config are returned — these are reported in every heartbeat payload under
+    the 'scanner_serials' key.
+    """
     if not hub_server:
         return jsonify({"ok": False, "error": "no hub"}), 400
     site_data = hub_server._sites.get(site_name, {})
-    serials = []
-    seen = set()
-    for st in site_data.get("streams", []):
-        dev = str(st.get("device_index", "") or "").strip().lower()
-        # Parse serial from fm://freq?serial=XXXX or dab://...?serial=XXXX
-        if "serial=" in dev:
-            for part in dev.split("?", 1)[-1].split("&"):
-                if part.startswith("serial="):
-                    s = part.split("=", 1)[1].strip()
-                    if s and s not in seen:
-                        seen.add(s)
-                        serials.append(s)
+    serials   = site_data.get("scanner_serials", [])
     return jsonify({"ok": True, "serials": serials})
 
 
