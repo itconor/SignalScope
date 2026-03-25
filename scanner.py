@@ -14,7 +14,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/scanner",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.0",
+    "version":  "1.0.1",
 }
 
 import hashlib
@@ -409,11 +409,12 @@ volSlider.addEventListener('input', function(){
 
 // ── Connect / Disconnect ──────────────────────────────────────
 connBtn.addEventListener('click', function(){
-  // Prime AudioContext in the user-gesture handler (Chrome autoplay policy
-  // requires resume() to be called synchronously from a user gesture; if it
-  // is only called inside a .then() callback the activation may have expired).
+  // Safari + Chrome: call _initAudio() then _unlockAudio() synchronously inside
+  // the gesture handler. Safari requires actually scheduling audio (even a silent
+  // 1-sample buffer) to fully activate the AudioContext — resume() alone is not
+  // sufficient in Safari and the context stays suspended indefinitely.
   _initAudio();
-  if(_audioCtx.state === 'suspended') _audioCtx.resume();
+  _unlockAudio();
   if(_state === 'streaming' || _state === 'connecting'){ doStop(); }
   else { _freq = parseFloat(startFreq.value) || 96.5; doStart(_freq); }
 });
@@ -494,6 +495,20 @@ function _initAudio(){
   _gainNode.connect(_audioCtx.destination);
 }
 
+function _unlockAudio(){
+  // Safari requires scheduling real audio output (even a silent 1-sample buffer)
+  // from within the user-gesture handler to fully activate the AudioContext.
+  // Calling resume() alone leaves the context suspended in Safari.
+  // This must be called synchronously inside the click/gesture handler.
+  if(!_audioCtx) return;
+  _audioCtx.resume();
+  var buf = _audioCtx.createBuffer(1, 1, _SR);
+  var src = _audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(_audioCtx.destination);
+  src.start(0);
+}
+
 function disconnectAudio(){
   if(_reader){ try{ _reader.cancel(); }catch(e){} _reader = null; }
   _pcmBuf = new Uint8Array(0);
@@ -505,7 +520,7 @@ function disconnectAudio(){
 function connectAudio(url){
   disconnectAudio();
   _initAudio();
-  if(_audioCtx.state === 'suspended') _audioCtx.resume();
+  _audioCtx.resume();
   _nextTime = _audioCtx.currentTime + _PRE;
   _pcmBuf   = new Uint8Array(0);
   _sched    = 0;
@@ -542,8 +557,14 @@ function _feedPCM(chunk){
 }
 
 function _scheduleBlock(bytes){
-  // Safeguard: resume context if it ended up suspended after the click handler ran
-  if(_audioCtx.state === 'suspended') _audioCtx.resume();
+  _audioCtx.resume();
+  // If blocks accumulated while the context was suspended (e.g. Safari autoplay
+  // hold), reset the schedule rather than playing a burst of stale audio.
+  // Anything scheduled more than 3 s into the future is dropped.
+  if(_nextTime - _audioCtx.currentTime > 3.0){
+    _nextTime = _audioCtx.currentTime + _PRE;
+    _sched = 0;
+  }
   var buf = _audioCtx.createBuffer(1, _BLK_S, _SR);
   var ch  = buf.getChannelData(0);
   var dv  = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

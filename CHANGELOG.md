@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.91] - 2026-03-25
+
+### Fixed
+- **FM Scanner no audio in Safari** (`scanner.py` v1.0.1) — `AudioContext.resume()` alone is not sufficient to activate the context in Safari; the browser requires actual audio output to be scheduled from within the user-gesture handler. Added `_unlockAudio()`: plays a 1-sample silent `AudioBuffer` synchronously in the Connect button's click handler, which forces Safari to fully activate the context. Also added a buffer-overflow guard in `_scheduleBlock`: if `_nextTime` is more than 3 s ahead of `currentTime` (i.e. blocks accumulated while the context was suspended), the schedule is reset to `currentTime + _PRE` and `_sched` is zeroed — preventing a burst of stale audio when the context finally activates.
+
 ## [3.3.90] - 2026-03-25
 
 ### Added
