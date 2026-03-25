@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.120"
+BUILD                  = "SignalScope-3.3.121"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -13031,7 +13031,7 @@ function loadClips(idx,streamName){
           +'<a href="/clips/'+encodeURIComponent(streamName)+'/'+encodeURIComponent(c.filename)+'" download class="btn bg" style="font-size:11px;padding:2px 7px">⬇</a>'
           +'<button class="btn" style="background:#3a0f0f;font-size:11px;padding:2px 7px" onclick="deleteClip(\''+encodeURIComponent(streamName)+'\',\''+encodeURIComponent(c.filename)+'\','+idx+')">🗑</button>'
           +'</span></div>'
-          +'<audio controls src="/clips/'+encodeURIComponent(streamName)+'/'+encodeURIComponent(c.filename)+'" style="width:100%;height:28px;margin-top:4px"></audio>'
+          +'<audio controls preload="metadata" src="/clips/'+encodeURIComponent(streamName)+'/'+encodeURIComponent(c.filename)+'" style="width:100%;height:28px;margin-top:4px"></audio>'
           +'</div>';
       });
       listEl.innerHTML=html;
@@ -13254,7 +13254,7 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
       </td>
       <td>
         {% if e.clip %}
-        <audio controls preload="none" src="/clips/{{e.stream}}/{{e.clip}}"></audio>
+        <audio controls preload="metadata" src="/clips/{{e.stream}}/{{e.clip}}"></audio>
         {% else %}<span style="color:var(--mu);font-size:11px">—</span>{% endif %}
         {% if e.type in ('AI_ALERT','AI_WARN') %}
         <div class="fb-wrap">
@@ -13358,7 +13358,7 @@ function rowHTML(e){
   }
   var clip='<span style="color:var(--mu);font-size:11px">—</span>';
   if(e.clip){
-    clip='<audio controls preload="none" src="/clips/'+encodeURIComponent(e.stream)+'/'+e.clip+'" style="height:28px;width:200px;accent-color:var(--acc);vertical-align:middle"></audio>';
+    clip='<audio controls preload="metadata" src="/clips/'+encodeURIComponent(e.stream)+'/'+e.clip+'" style="height:28px;width:200px;accent-color:var(--acc);vertical-align:middle"></audio>';
   }
   // AI feedback thumbs — only shown on AI_ALERT / AI_WARN rows
   var fbHtml='';
@@ -15957,14 +15957,57 @@ def clips_serve(stream_name, filename):
         return "Forbidden", 403
     if not os.path.exists(path):
         return "Not found", 404
+    file_size = os.path.getsize(path)
+    safe_cd = safe_file.replace('"', '').replace('\r', '').replace('\n', '')
+    # ETag based on file mtime + size (stable, avoids re-reading on unchanged files)
+    mtime = int(os.path.getmtime(path))
+    etag = f'"{mtime:x}-{file_size:x}"'
+    # Honour If-None-Match for browser caching
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status=304, headers={"ETag": etag})
+    # Handle Range requests (Chrome audio element always sends Range: bytes=0-)
+    range_header = request.headers.get("Range")
+    if range_header:
+        try:
+            byte_range = range_header.strip().replace("bytes=", "")
+            start_s, end_s = byte_range.split("-", 1)
+            start = int(start_s) if start_s else 0
+            end   = int(end_s)   if end_s   else file_size - 1
+        except Exception:
+            return Response("Bad Range", status=400)
+        end = min(end, file_size - 1)
+        if start > end or start >= file_size:
+            return Response(
+                status=416,
+                headers={"Content-Range": f"bytes */{file_size}"},
+            )
+        length = end - start + 1
+        with open(path, "rb") as f:
+            f.seek(start)
+            data = f.read(length)
+        return Response(
+            data,
+            status=206,
+            mimetype="audio/wav",
+            headers={
+                "Content-Disposition": f'inline; filename="{safe_cd}"',
+                "Content-Range":  f"bytes {start}-{end}/{file_size}",
+                "Content-Length": str(length),
+                "Accept-Ranges":  "bytes",
+                "ETag":           etag,
+                "Cache-Control":  "private, max-age=3600",
+            },
+        )
+    # Full file
     with open(path, "rb") as f:
         data = f.read()
-    safe_cd = safe_file.replace('"', '').replace('\r', '').replace('\n', '')
     return Response(data, mimetype="audio/wav",
         headers={
             "Content-Disposition": f'inline; filename="{safe_cd}"',
             "Accept-Ranges":  "bytes",
-            "Content-Length": str(len(data)),
+            "Content-Length": str(file_size),
+            "ETag":           etag,
+            "Cache-Control":  "private, max-age=3600",
         })
 
 @app.delete("/clips/<path:stream_name>/<filename>")

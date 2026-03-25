@@ -2,6 +2,28 @@
 
 ---
 
+## [3.3.121] - 2026-03-25
+
+### Fixed
+- **Hub reports clips inline player unreliable / slow in Chrome** (`signalscope.py`) — `clips_serve` now properly handles `Range` requests (returns 206 Partial Content), which Chrome's `<audio>` element requires before it will play or show a duration. Added `ETag` (mtime+size) and `Cache-Control: private, max-age=3600` so the browser caches clips locally and avoids re-reading from disk on every interaction. Changed all hub-reports inline `<audio>` elements from `preload="none"` to `preload="metadata"` so the duration bar is populated as soon as the page loads — no need to click play first.
+
+---
+
+## [3.3.120] - 2026-03-25
+
+### Fixed
+- **Plugin dropdown overlapping page content** (`signalscope.py`) — the `<header>` element now has `position:relative; z-index:200` establishing a proper stacking context, ensuring the Plugins ▾ dropdown panel renders above all page content rather than behind controls in the body.
+
+---
+
+## [3.3.119] - 2026-03-25
+
+### Fixed
+- **Plugin dropdown panel right-aligned (off-screen on narrow viewports)** (`signalscope.py`) — changed from `right:0` to `left:0` anchor so the panel opens left-aligned with the trigger button instead of right-aligned.
+- **Plugin dropdown trigger unclickable** (`signalscope.py`) — the trigger `<button>` had `pointer-events:none` inherited; replaced with a `<span>` inside a `tabindex="0"` `<div>` so clicks register correctly.
+
+---
+
 ## [3.3.118] - 2026-03-25
 
 ### Changed
