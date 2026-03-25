@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.90] - 2026-03-25
+
+### Added
+- **DAB Scanner plugin** (`dab.py`) — new plugin for DAB digital radio reception. Scans all European Band III channels with `welle-cli` to discover services and stores a per-site service database (`dab_services.json`). Services are grouped by ensemble in a browser panel; clicking a service tunes to it. Audio pipeline: `welle-cli | ffmpeg → MP3` at selectable bitrate (64/96/128/192/256 kbps), streamed to a browser `<audio>` element via the hub relay. DLS (Dynamic Label Segment) scrolling text is extracted from `welle-cli` stderr and polled by the browser (equivalent to FM RDS RadioText). Features: service browser, DLS display, history, presets, band scan with live progress. Hub-only plugin; client machines require `welle-cli` and `ffmpeg` in PATH. Added to `plugins.json` registry.
+
 ## [3.3.89] - 2026-03-25
 
 ### Added

@@ -19,4 +19,15 @@
     "requirements": "numpy scipy",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/sdr.py"
   }
+  ,
+  {
+    "id": "dab",
+    "name": "DAB Scanner",
+    "file": "dab.py",
+    "icon": "📻",
+    "description": "DAB digital radio browser. Scans all Band III channels to discover services, streams selected services as MP3 audio via welle-cli and ffmpeg. Displays DLS (Dynamic Label Segment) scrolling text. Requires welle-cli and ffmpeg on the client machine.",
+    "version": "1.0.0",
+    "requirements": "welle-cli ffmpeg",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/dab.py"
+  }
 ]
