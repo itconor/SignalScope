@@ -2,6 +2,14 @@
 
 ---
 
+## [3.3.86] - 2026-03-25
+
+### Fixed
+- **Web SDR silence after second frequency change** — race condition in `_stop_capture` / `_start_capture`: the stop event was set on the old worker but the function returned immediately without waiting for the thread to exit. The new worker then started a second `rtl_sdr` process while the old one still held the device, causing `librtlsdr` to return "device busy" and the new worker to exit silently. Fixed by: (1) storing the subprocess handle in `_client_sess` as soon as it is created; (2) terminating the process directly in `_stop_capture` so `proc.stdout.read()` unblocks immediately; (3) joining the old thread with a 2-second timeout before returning, so `_start_capture` never opens the dongle while the previous process is still running. `_start_capture` now explicitly calls `_stop_capture` first to ensure ordering.
+
+### Added
+- **Web SDR kHz/MHz unit toggle** — a unit button next to the frequency field switches between MHz and kHz entry. Clicking toggles the label (MHz → kHz, highlighted in blue) and converts the current value. All frequency entry paths — manual input, waterfall click-to-tune, and the ±0.1 step buttons — respect the active unit.
+
 ## [3.3.85] - 2026-03-25
 
 ### Fixed

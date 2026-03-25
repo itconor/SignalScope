@@ -284,6 +284,9 @@ def _dispatch_client_cmd(cmd, hub_url, cfg):
 
 
 def _start_capture(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret):
+    # Stop and fully drain the old worker before opening the dongle again.
+    # _stop_capture kills the subprocess so the join returns quickly.
+    _stop_capture()
     stop = threading.Event()
     t = threading.Thread(
         target=_sdr_worker,
@@ -302,6 +305,16 @@ def _stop_capture():
         _client_sess.clear()
     if old.get("stop"):
         old["stop"].set()
+    # Kill the subprocess directly so proc.stdout.read() unblocks immediately
+    # and the thread exits before we start a new worker (dongle conflict).
+    proc = old.get("proc")
+    if proc:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    if old.get("thread"):
+        old["thread"].join(timeout=2.0)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -377,6 +390,10 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
             stderr=subprocess.DEVNULL,
             bufsize=_BLK_BYTES * 4,
         )
+        # Register proc in session so _stop_capture() can kill it immediately
+        with _state_lock:
+            if _client_sess.get("slot_id") == slot_id:
+                _client_sess["proc"] = proc
 
         raw_buf = b""
 
@@ -610,9 +627,11 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
   <select id="sdr-sel"><option value="">Auto</option></select>
 
   <label>Freq</label>
-  <input type="number" id="freq-inp" value="96.5" step="0.1" min="50" max="2000"
-         style="width:90px">
-  <span style="font-size:12px;color:var(--mu)">MHz</span>
+  <input type="number" id="freq-inp" value="96.5" step="0.1" min="0.1" max="2000000"
+         style="width:100px">
+  <button id="unit-btn" style="padding:4px 8px;border-radius:6px;font-size:11px;
+          font-weight:700;border:1px solid var(--bor);background:var(--bg3);
+          color:var(--mu);cursor:pointer;letter-spacing:.05em">MHz</button>
 
   <label>Gain</label>
   <select id="gain-sel">
@@ -686,6 +705,7 @@ var _poll     = null;
 var siteSel   = document.getElementById('site-sel');
 var sdrSel    = document.getElementById('sdr-sel');
 var freqInp   = document.getElementById('freq-inp');
+var unitBtn   = document.getElementById('unit-btn');
 var gainSel   = document.getElementById('gain-sel');
 var connBtn   = document.getElementById('conn-btn');
 var sDot      = document.getElementById('s-dot');
@@ -693,6 +713,20 @@ var sTxt      = document.getElementById('s-txt');
 var freqDisp  = document.getElementById('freq-disp');
 var volSlider = document.getElementById('vol-slider');
 var noSig     = document.getElementById('no-sig');
+
+// ── Unit toggle (MHz / kHz) ────────────────────────────────────────────────
+var _useKhz = false;
+function _toMhz(val){ return _useKhz ? val / 1000 : val; }
+function _fromMhz(mhz){ return _useKhz ? mhz * 1000 : mhz; }
+function _freqStep(){ return _useKhz ? 100 : 0.1; }
+unitBtn.addEventListener('click', function(){
+  var curMhz = _toMhz(parseFloat(freqInp.value) || 96.5);
+  _useKhz = !_useKhz;
+  unitBtn.textContent = _useKhz ? 'kHz' : 'MHz';
+  unitBtn.style.color = _useKhz ? 'var(--acc)' : 'var(--mu)';
+  freqInp.step = _freqStep();
+  freqInp.value = _useKhz ? (curMhz * 1000).toFixed(0) : curMhz.toFixed(3);
+});
 
 // ── Web Audio ──────────────────────────────────────────────────────────────
 var _audioCtx = null, _gainNode = null, _reader = null;
@@ -744,7 +778,8 @@ function _scheduleBlock(bytes){
   var t = Math.max(_nextTime, _audioCtx.currentTime + 0.05);
   src.start(t); _nextTime = t + buf.duration; _sched++;
   if(_state==='connecting' && _sched > Math.ceil(_PRE/0.1)+1){
-    setState('streaming', '● Live — ' + _cf.toFixed(3) + ' MHz');
+    var dispFreq = _useKhz ? (_cf*1000).toFixed(0)+' kHz' : _cf.toFixed(3)+' MHz';
+    setState('streaming', '● Live — ' + dispFreq);
     noSig.style.display = 'none';
   }
 }
@@ -771,12 +806,13 @@ document.getElementById('mode-sel').addEventListener('click', function(e){
 // ── Connect/Disconnect ─────────────────────────────────────────────────────
 connBtn.addEventListener('click', function(){
   if(_state==='streaming'||_state==='connecting') doStop();
-  else doStart(parseFloat(freqInp.value)||96.5);
+  else doStart(_toMhz(parseFloat(freqInp.value)||96.5));
 });
 
 function doStart(freq){
   if(!siteSel.value){ setState('error','Select a site'); return; }
   _cf = freq; freqDisp.textContent = freq.toFixed(3);
+  freqInp.value = _fromMhz(freq).toFixed(_useKhz ? 0 : 3);
   noSig.textContent = 'Waiting for signal from client…';
   noSig.style.display = '';
   setState('connecting','Connecting…');
@@ -797,7 +833,9 @@ function doStart(freq){
 
 function doTune(freq){
   if(_state!=='streaming'&&_state!=='connecting') return;
-  _cf = freq; freqDisp.textContent = freq.toFixed(3);
+  _cf = freq;
+  freqDisp.textContent = freq.toFixed(3);
+  freqInp.value = _fromMhz(freq).toFixed(_useKhz ? 0 : 3);
   setState('connecting','Retuning…');
   _f('/api/hub/sdr/tune', {method:'POST', body:JSON.stringify({
     site: siteSel.value, freq_mhz: freq, mode: _mode,
@@ -835,7 +873,10 @@ if(siteSel.value) siteSel.dispatchEvent(new Event('change'));
 // ── Tune step buttons ──────────────────────────────────────────────────────
 document.querySelectorAll('.tune-btn').forEach(function(b){
   b.addEventListener('click', function(){
-    doTune(Math.round((_cf + parseFloat(b.dataset.step)) * 1000) / 1000);
+    var step = _useKhz ? parseFloat(b.dataset.step) / 1000 : parseFloat(b.dataset.step);
+    var freq = Math.round((_cf + step) * 1000) / 1000;
+    freqInp.value = _fromMhz(freq).toFixed(_useKhz ? 0 : 3);
+    doTune(freq);
   });
 });
 
@@ -947,7 +988,7 @@ _wfCanvas.addEventListener('click', function(e){
   var x    = (e.clientX - rect.left) * (_wfCanvas.width / rect.width);
   var freq = (_cf - _bw/2) + (x / _wfW) * _bw;
   freq = Math.round(freq * 1000) / 1000;
-  freqInp.value = freq.toFixed(3);
+  freqInp.value = _fromMhz(freq).toFixed(_useKhz ? 0 : 3);
   doTune(freq);
 });
 _wfCanvas.title = 'Click to tune';
