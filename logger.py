@@ -92,8 +92,13 @@ def register(app, ctx):
     @login_req
     def api_logger_status():
         with _rec_lock:
-            active = {sl: {"stream": t.stream_name, "running": t.is_alive()}
-                      for sl, t in _recorders.items()}
+            active = {sl: {
+                "stream":     t.stream_name,
+                "running":    t.is_alive(),
+                "last_error": t.last_error,
+                "last_ok_ts": t.last_ok_ts,
+                "seg_count":  t.seg_count,
+            } for sl, t in _recorders.items()}
         rec_root = _app_dir / _REC_DIR
         total = sum(f.stat().st_size for f in rec_root.rglob("*.mp3") if f.is_file()) \
                 if rec_root.exists() else 0
@@ -188,14 +193,22 @@ def _stream_cfg(stream_name):
         "retain_days":   int(s.get("retain_days", _DEFAULT_RETAIN)),
     }
 
+# All URL schemes we consider "safe" to store in config (security allowlist)
 _SAFE_URL_SCHEMES = ("http://", "https://", "rtp://", "rtsp://", "rtmp://",
                      "udp://", "tcp://", "srt://", "hls://",
                      "alsa://", "pulse://", "jack://",
                      "avfoundation://", "dshow://",
                      "sound://", "fm://", "dab://")
 
-# Local device paths accepted on all platforms (e.g. /dev/dsp, /dev/audio0)
+# Local device paths (e.g. /dev/dsp, /dev/audio0)
 _SAFE_DEV_PREFIXES = ("/dev/",)
+
+# Schemes ffmpeg can actually open as a standalone process.
+# fm://, dab://, sound:// are SignalScope-internal and cannot be opened by ffmpeg directly.
+_FFMPEG_RECORDABLE_SCHEMES = ("http://", "https://", "rtp://", "rtsp://", "rtmp://",
+                               "udp://", "tcp://", "srt://", "hls://",
+                               "alsa://", "pulse://", "jack://",
+                               "avfoundation://", "dshow://")
 
 def _is_safe_url(url):
     """Accept URLs with known schemes or local device paths; reject anything else."""
@@ -205,10 +218,29 @@ def _is_safe_url(url):
     return (any(low.startswith(s) for s in _SAFE_URL_SCHEMES) or
             any(url.startswith(p) for p in _SAFE_DEV_PREFIXES))
 
+def _is_ffmpeg_recordable(url):
+    """Returns True if ffmpeg can open this URL directly as an input source."""
+    if not url:
+        return False
+    low = url.lower()
+    return (any(low.startswith(s) for s in _FFMPEG_RECORDABLE_SCHEMES) or
+            any(url.startswith(p) for p in _SAFE_DEV_PREFIXES))
+
 def _available_streams():
     cfg = _monitor.app_cfg
-    return [{"name": inp.name, "url": inp.device_index, "slug": _slug(inp.name)}
-            for inp in cfg.inputs if inp.enabled and _is_safe_url(inp.device_index)]
+    result = []
+    for inp in cfg.inputs:
+        if not inp.enabled or not _is_safe_url(inp.device_index):
+            continue
+        scheme = inp.device_index.split("://")[0] if "://" in inp.device_index else "device"
+        result.append({
+            "name":       inp.name,
+            "url":        inp.device_index,
+            "slug":       _slug(inp.name),
+            "recordable": _is_ffmpeg_recordable(inp.device_index),
+            "scheme":     scheme,
+        })
+    return result
 
 def _slug_to_name(slug):
     for s in _available_streams():
@@ -309,6 +341,9 @@ class _RecorderThread(threading.Thread):
         self.stream_url  = stream_url
         self.slug        = slug
         self.stop_evt    = threading.Event()
+        self.last_error  = None   # last ffmpeg error string, or None if OK
+        self.last_ok_ts  = None   # time.time() of last successful segment
+        self.seg_count   = 0      # total segments successfully written
 
     def run(self):
         _log(f"[Logger] Started recording: {self.stream_name}")
@@ -362,11 +397,13 @@ class _RecorderThread(threading.Thread):
 
         silence_ranges = []
         sil_start      = None
+        stderr_lines   = []
 
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.PIPE, text=True, bufsize=1)
             for line in proc.stderr:
+                stderr_lines.append(line.rstrip())
                 m_s = re.search(r"silence_start:\s*([\d.]+)", line)
                 m_e = re.search(r"silence_end:\s*([\d.]+)", line)
                 if m_s:
@@ -379,7 +416,20 @@ class _RecorderThread(threading.Thread):
                     break
             proc.wait()
         except Exception as e:
+            self.last_error = str(e)
             _log(f"[Logger] ffmpeg error ({self.stream_name}): {e}")
+            return
+
+        # Check ffmpeg exit code — a non-zero code means the stream couldn't be opened
+        # or recording failed. This is the most common cause of "running but no files".
+        if proc.returncode not in (0, None) and not self.stop_evt.is_set():
+            # Extract the most informative error line from stderr
+            err = next((l for l in reversed(stderr_lines)
+                        if l.strip() and not l.startswith("  ")), "ffmpeg exited with error")
+            self.last_error = f"rc={proc.returncode}: {err}"[:250]
+            _log(f"[Logger] ffmpeg failed for '{self.stream_name}' ({self.last_error})")
+            # Back off before retrying so we don't spam the log
+            self.stop_evt.wait(15)
             return
 
         if sil_start is not None:
@@ -387,6 +437,9 @@ class _RecorderThread(threading.Thread):
 
         if out_path.exists() and out_path.stat().st_size > 1000:
             _upsert_segment(self.slug, date_str, filename, start_s, silence_ranges)
+            self.last_error = None
+            self.last_ok_ts = time.time()
+            self.seg_count += 1
 
         # Wait for next boundary
         if not self.stop_evt.is_set():
@@ -689,6 +742,10 @@ select:focus,input:focus{border-color:var(--acc)}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
 .b-rec{background:rgba(239,68,68,.2);color:#f87171}
 .b-idle{background:#1e3a5f;color:var(--mu)}
+.b-err{background:rgba(245,158,11,.2);color:#fbbf24}
+/* Non-recordable stream warning */
+.warn-chip{display:inline-block;padding:2px 7px;border-radius:6px;font-size:11px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3)}
+.err-msg{margin-top:6px;padding:8px 10px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);border-radius:6px;font-size:12px;color:#f87171;word-break:break-word}
 /* Timeline */
 .tl-wrap{flex:1;overflow-y:auto;padding:14px 18px}
 .tl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
@@ -771,6 +828,7 @@ select:focus,input:focus{border-color:var(--acc)}
     <a href="/" class="btn bg bs">← SignalScope</a>
   </div>
 </header>
+<div id="hdr-errors" style="padding:0 18px"></div>
 
 <div class="app-wrap">
   <!-- Left sidebar nav -->
@@ -1165,14 +1223,36 @@ document.getElementById('export-btn').addEventListener('click', function(){
 // ── Status ────────────────────────────────────────────────────────────────
 function loadStatus(){
   _get('/api/logger/status').then(function(data){
-    var recs   = data.recorders||{};
-    var active = Object.values(recs).filter(function(r){ return r.running; });
-    var badge  = document.getElementById('rec-status');
-    badge.className = active.length ? 'badge b-rec' : 'badge b-idle';
-    badge.textContent = active.length ? '● REC ('+active.length+')' : 'Idle';
+    var recs      = data.recorders||{};
+    var recList   = Object.values(recs);
+    var running   = recList.filter(function(r){ return r.running; });
+    var errored   = running.filter(function(r){ return r.last_error; });
+    var healthy   = running.filter(function(r){ return !r.last_error && r.seg_count > 0; });
+    var badge     = document.getElementById('rec-status');
+    if(errored.length && !healthy.length){
+      badge.className   = 'badge b-err';
+      badge.textContent = '⚠ Error ('+errored.length+')';
+    } else if(running.length){
+      badge.className   = 'badge b-rec';
+      badge.textContent = '● REC ('+running.length+')';
+    } else {
+      badge.className   = 'badge b-idle';
+      badge.textContent = 'Idle';
+    }
+    // Show per-recorder error messages under the header
+    var errBox = document.getElementById('hdr-errors');
+    if(errBox){
+      errBox.innerHTML = '';
+      errored.forEach(function(r){
+        var d=document.createElement('div'); d.className='err-msg';
+        d.textContent = r.stream+': '+r.last_error;
+        errBox.appendChild(d);
+      });
+    }
     var di = document.getElementById('disk-info');
-    if(di) di.textContent = 'Disk usage: '+_fmtBytes(data.disk_bytes||0)
-      +(active.length ? ' · '+active.length+' stream(s) recording' : ' · no active recordings');
+    if(di) di.textContent = 'Disk: '+_fmtBytes(data.disk_bytes||0)
+      +(running.length ? ' · '+running.length+' recording' : ' · idle')
+      +(errored.length ? ' · '+errored.length+' error(s)' : '');
   });
 }
 
@@ -1199,30 +1279,39 @@ function renderSettingsRows(){
     var card=document.createElement('div'); card.className='scard';
     var chkd = sc.enabled ? ' checked' : '';
     var eid  = 'lbl-en-'+s.name.replace(/[^a-z0-9]/gi,'_');
+    var recordable = s.recordable !== false;  // default true for safety
+    var warnHtml = recordable ? '' :
+      '<div style="margin:8px 0 2px">'
+      +'<span class="warn-chip">⚠ '+_esc(s.scheme)+'://  — not directly recordable by this logger. '
+      +'Only HTTP/RTSP/SRT/network streams can be recorded.</span>'
+      +'</div>';
     card.innerHTML =
       '<div class="scard-hdr">'
       +'<div><div class="name">'+_esc(s.name)+'</div><div class="url">'+_esc(s.url||'')+'</div></div>'
       +'<div class="tog-wrap">'
-      +'<label class="tog"><input type="checkbox" data-stream="'+_esc(s.name)+'" data-key="enabled"'+chkd+'>'
+      +'<label class="tog"><input type="checkbox" data-stream="'+_esc(s.name)+'" data-key="enabled"'+(recordable?'':' disabled')+chkd+'>'
       +'<span class="tog-sl"></span></label>'
-      +'<span class="tog-lbl'+(sc.enabled?' on':'')+'" id="'+eid+'">'+(sc.enabled?'Recording':'Off')+'</span>'
+      +'<span class="tog-lbl'+(sc.enabled&&recordable?' on':'')+'" id="'+eid+'">'+(sc.enabled&&recordable?'Recording':'Off')+'</span>'
       +'</div></div>'
+      + warnHtml
       +'<div class="scard-body"><div class="scard-fields">'
-      +'<div><label>HQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="hq_bitrate">'
+      +'<div><label>HQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="hq_bitrate"'+(recordable?'':' disabled')+'>'
       +['64k','96k','128k','192k','256k','320k'].map(function(b){ return '<option'+(( sc.hq_bitrate||'128k')===b?' selected':'')+'>'+b+'</option>'; }).join('')
       +'</select></div>'
-      +'<div><label>LQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="lq_bitrate">'
+      +'<div><label>LQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="lq_bitrate"'+(recordable?'':' disabled')+'>'
       +['32k','48k','64k','96k'].map(function(b){ return '<option'+((sc.lq_bitrate||'48k')===b?' selected':'')+'>'+b+'</option>'; }).join('')
       +'</select></div>'
-      +'<div><label>LQ after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="lq_after_days" value="'+(sc.lq_after_days||30)+'"></div>'
-      +'<div><label>Delete after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="retain_days" value="'+(sc.retain_days||90)+'"></div>'
+      +'<div><label>LQ after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="lq_after_days" value="'+(sc.lq_after_days||30)+'"'+(recordable?'':' disabled')+'></div>'
+      +'<div><label>Delete after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="retain_days" value="'+(sc.retain_days||90)+'"'+(recordable?'':' disabled')+'></div>'
       +'</div></div>';
-    var chk = card.querySelector('input[type=checkbox]');
-    chk.addEventListener('change', function(){
-      var lbl=document.getElementById(eid);
-      lbl.textContent = this.checked ? 'Recording' : 'Off';
-      lbl.className   = 'tog-lbl'+(this.checked?' on':'');
-    });
+    if(recordable){
+      var chk = card.querySelector('input[type=checkbox]');
+      chk.addEventListener('change', function(){
+        var lbl=document.getElementById(eid);
+        lbl.textContent = this.checked ? 'Recording' : 'Off';
+        lbl.className   = 'tog-lbl'+(this.checked?' on':'');
+      });
+    }
     el.appendChild(card);
   });
 }
