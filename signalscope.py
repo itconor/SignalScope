@@ -43,6 +43,7 @@ function st(id){
   if(p)p.classList.add('on');if(b)b.classList.add('on');
   history.replaceState(null,'','#'+id);
   if(id==='mobile') loadMobileApiStatus();
+  if(id==='plugins' && typeof window.pluginFetchAvail==='function') window.pluginFetchAvail(true);
 }
 
 async function loadMobileApiStatus(){
@@ -1146,69 +1147,111 @@ function adminRestart(){
   <p style="font-size:13px;color:var(--mu);margin-bottom:18px">No plugins installed.</p>
   {% endif %}
 
-  <!-- Available plugins -->
-  <div style="font-size:11px;font-weight:700;letter-spacing:2px;color:var(--mu);
-              text-transform:uppercase;margin-bottom:8px">Available</div>
-  <button class="btn bg bs" id="avail-fetch-btn" onclick="pluginFetchAvail()">
-    🔍 Check GitHub for plugins
-  </button>
-  <span id="avail-status" style="font-size:12px;color:var(--mu);margin-left:10px"></span>
-  <div id="avail-list" style="margin-top:12px"></div>
+  <!-- Available plugins / update check -->
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+    <div style="font-size:11px;font-weight:700;letter-spacing:2px;color:var(--mu);text-transform:uppercase">Available / Updates</div>
+    <button class="btn bg bs" id="avail-fetch-btn" onclick="pluginFetchAvail(false)" title="Re-check GitHub now">↻ Refresh</button>
+    <span id="avail-status" style="font-size:12px;color:var(--mu)"></span>
+  </div>
+  <div id="avail-list" style="margin-top:4px"></div>
 </div>
 
 <script nonce="{{csp_nonce()}}">
 (function(){
 var _installed = {{_installed_plugins | tojson}};
-var _installedFiles = new Set(_installed.map(function(p){return p.file;}));
+// Map file → {version, active} for quick lookup during version comparison
+var _installedByFile = {};
+_installed.forEach(function(p){ _installedByFile[p.file] = {version: p.version||'', active: p.active}; });
+
+var _availFetched = false;   // true once a successful fetch has been rendered
 
 function _getCsrf(){
-  // Prefer the meta tag (rendered server-side with the correct session token).
-  // Fall back to the cookie for pages that don't include the meta tag.
   return (document.querySelector('meta[name="csrf-token"]')||{}).content
       || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]
       || '';
 }
-
 function _csrfPost(url, body){
   return fetch(url, {method:'POST', credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRFToken':_getCsrf()},
     body: JSON.stringify(body)});
 }
+function _esc(s){ var d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
 
-window.pluginFetchAvail = function(){
+// Semver-style comparison: returns >0 if a is newer, 0 if equal, <0 if older
+function _verCmp(a, b){
+  var av=(a||'0').split('.').map(Number);
+  var bv=(b||'0').split('.').map(Number);
+  for(var i=0;i<Math.max(av.length,bv.length);i++){
+    var d=(av[i]||0)-(bv[i]||0);
+    if(d!==0) return d;
+  }
+  return 0;
+}
+
+// pluginFetchAvail(silentIfDone)
+// silentIfDone=true: only fetch if not yet fetched this page-load (used by auto-check on tab open)
+// silentIfDone=false/undefined: always fetch (used by manual refresh button)
+window.pluginFetchAvail = function(silentIfDone){
+  if(silentIfDone && _availFetched) return;
   var btn = document.getElementById('avail-fetch-btn');
   var st  = document.getElementById('avail-status');
   var lst = document.getElementById('avail-list');
-  btn.disabled = true; st.textContent = 'Fetching…';
+  if(btn) btn.disabled = true;
+  st.textContent = 'Checking GitHub…'; st.style.color='var(--mu)';
   fetch('/api/plugins/available', {credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      btn.disabled = false;
-      if(!d.ok){ st.textContent = 'Error: ' + (d.error||'?'); st.style.color='var(--al)'; return; }
+      if(btn) btn.disabled = false;
+      if(!d.ok){ st.textContent='Error: '+(d.error||'?'); st.style.color='var(--al)'; return; }
       var plugins = d.plugins || [];
-      if(!plugins.length){ st.textContent = 'No plugins listed.'; return; }
-      st.textContent = plugins.length + ' plugin(s) found.'; st.style.color='var(--ok)';
+      if(!plugins.length){ st.textContent='No plugins listed in registry.'; return; }
+
+      // Count installs and available updates
+      var updates=0, newPlugins=0;
+      plugins.forEach(function(p){
+        var inst = _installedByFile[p.file];
+        if(!inst) newPlugins++;
+        else if(_verCmp(p.version, inst.version) > 0) updates++;
+      });
+
+      var summary = [];
+      if(updates)    summary.push('<span style="color:var(--wn);font-weight:700">'+updates+' update'+(updates>1?'s':'')+' available</span>');
+      if(newPlugins) summary.push(newPlugins+' new');
+      if(!updates && !newPlugins) summary.push('<span style="color:var(--ok)">✓ All plugins up to date</span>');
+      st.innerHTML = summary.join(' &nbsp;·&nbsp; ');
+
       lst.innerHTML = plugins.map(function(p){
-        var installed = _installedFiles.has(p.file);
+        var inst = _installedByFile[p.file];
+        var badge;
+        if(!inst){
+          badge = '<button class="btn bp bs plugin-install-btn" style="flex-shrink:0;white-space:nowrap" '
+                + 'data-id='+JSON.stringify(p.id)+' data-url='+JSON.stringify(p.url)+' data-file='+JSON.stringify(p.file)+'>'
+                + '⬇ Install</button>';
+        } else if(_verCmp(p.version, inst.version) > 0){
+          badge = '<button class="btn bo bs plugin-update-btn" style="flex-shrink:0;white-space:nowrap" '
+                + 'data-id='+JSON.stringify(p.id)+' data-url='+JSON.stringify(p.url)+' data-file='+JSON.stringify(p.file)
+                + ' data-newver='+JSON.stringify(p.version||'')+'>'
+                + '⟳ Update to v'+_esc(p.version||'?')+'</button>';
+        } else {
+          badge = '<span style="font-size:12px;color:var(--ok);flex-shrink:0;white-space:nowrap">✓ v'+_esc(p.version||'?')+'</span>';
+        }
+        var verLine = (p.version && inst) ? '<div style="font-size:11px;color:var(--mu);margin-top:2px">'
+          + 'Installed: v'+_esc(inst.version||'?')+' &nbsp;·&nbsp; Latest: v'+_esc(p.version||'?')+'</div>' : '';
         return '<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;'
-          + 'background:var(--bg3);border:1px solid var(--bor);border-radius:8px;margin-bottom:8px">'
+          + 'background:var(--bg3,#111f35);border:1px solid var(--bor);border-radius:8px;margin-bottom:8px">'
           + '<span style="font-size:22px;flex-shrink:0">'+(p.icon||'🔌')+'</span>'
           + '<div style="flex:1;min-width:0">'
           + '<div style="font-weight:700;font-size:13px">'+_esc(p.name)+'</div>'
           + (p.description ? '<div style="font-size:12px;color:var(--mu);margin-top:2px">'+_esc(p.description)+'</div>' : '')
+          + (inst ? verLine : (p.version ? '<div style="font-size:11px;color:var(--mu);margin-top:2px">v'+_esc(p.version)+'</div>' : ''))
           + (p.requirements ? '<div style="font-size:11px;color:var(--mu);margin-top:3px">Requires: <code style="background:#173a69;padding:1px 5px;border-radius:3px">pip install '+_esc(p.requirements)+'</code></div>' : '')
           + '</div>'
-          + (installed
-             ? '<button class="btn bg bs plugin-update-btn" style="flex-shrink:0" '
-               + 'data-id='+JSON.stringify(p.id)+' data-url='+JSON.stringify(p.url)+' data-file='+JSON.stringify(p.file)+'>'
-               + '⟳ Update</button>'
-             : '<button class="btn bp bs plugin-install-btn" style="flex-shrink:0" '
-               + 'data-id='+JSON.stringify(p.id)+' data-url='+JSON.stringify(p.url)+' data-file='+JSON.stringify(p.file)+'>'
-               + '⬇ Install</button>')
+          + badge
           + '</div>';
       }).join('');
+      _availFetched = true;
     })
-    .catch(function(e){ btn.disabled=false; st.textContent='Network error'; st.style.color='var(--al)'; });
+    .catch(function(){ if(btn) btn.disabled=false; st.textContent='Network error'; st.style.color='var(--al)'; });
 };
 
 window.pluginInstall = function(id, url, file){
@@ -1221,33 +1264,34 @@ window.pluginInstall = function(id, url, file){
     .then(function(d){
       if(d.ok){
         if(btn){ btn.textContent='✓ Installed — restart to activate';
-                 btn.style.background='var(--bg3)'; btn.style.color='var(--ok)'; }
-        _installedFiles.add(file);
+                 btn.className='btn bg bs'; btn.style.color='var(--ok)'; }
+        _availFetched = false;  // re-check on next open so status is fresh
       } else {
         if(btn){ btn.disabled=false; btn.textContent='⬇ Install'; }
-        alert('Install failed: ' + (d.error||'?'));
+        alert('Install failed: '+(d.error||'?'));
       }
     })
     .catch(function(){ if(btn){btn.disabled=false;btn.textContent='⬇ Install';} alert('Network error'); });
 };
 
-window.pluginUpdate = function(id, url, file){
-  if(!confirm('Update plugin "'+id+'" from GitHub?\n\nThe local file will be overwritten. A restart is required to apply the update.')) return;
+window.pluginUpdate = function(id, url, file, newVer){
+  if(!confirm('Update plugin "'+id+'" to v'+newVer+' from GitHub?\n\nThe local file will be overwritten. A restart is required to apply the update.')) return;
   var lst = document.getElementById('avail-list');
-  var btn = lst.querySelector('[data-id='+JSON.stringify(id)+'].plugin-update-btn');
+  var btn = lst.querySelector('.plugin-update-btn[data-id='+JSON.stringify(id)+']');
   if(btn){ btn.disabled=true; btn.textContent='Updating…'; }
   _csrfPost('/api/plugins/install', {id:id, url:url, file:file})
     .then(function(r){return r.json();})
     .then(function(d){
       if(d.ok){
-        if(btn){ btn.disabled=false; btn.textContent='✓ Updated — restart to apply';
-                 btn.style.color='var(--ok)'; }
+        if(btn){ btn.disabled=false; btn.textContent='✓ Updated to v'+_esc(newVer)+' — restart to apply';
+                 btn.style.background=''; btn.style.borderColor='var(--ok)'; btn.style.color='var(--ok)'; }
+        _availFetched = false;
       } else {
-        if(btn){ btn.disabled=false; btn.textContent='⟳ Update'; }
-        alert('Update failed: ' + (d.error||'?'));
+        if(btn){ btn.disabled=false; btn.textContent='⟳ Update to v'+_esc(newVer); }
+        alert('Update failed: '+(d.error||'?'));
       }
     })
-    .catch(function(){ if(btn){btn.disabled=false;btn.textContent='⟳ Update';} alert('Network error'); });
+    .catch(function(){ if(btn){btn.disabled=false;btn.textContent='⟳ Update to v'+_esc(newVer);} alert('Network error'); });
 };
 
 window.pluginRemove = function(file){
@@ -1261,8 +1305,6 @@ window.pluginRemove = function(file){
     .catch(function(){ alert('Network error'); });
 };
 
-function _esc(s){ var d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
-
 // Event delegation — handles plugin-rm-btn, plugin-install-btn, plugin-update-btn
 document.getElementById('p-plugins').addEventListener('click', function(e){
   var rm = e.target.closest('.plugin-rm-btn');
@@ -1270,7 +1312,7 @@ document.getElementById('p-plugins').addEventListener('click', function(e){
   var inst = e.target.closest('.plugin-install-btn');
   if(inst){ pluginInstall(inst.dataset.id, inst.dataset.url, inst.dataset.file); return; }
   var upd = e.target.closest('.plugin-update-btn');
-  if(upd){ pluginUpdate(upd.dataset.id, upd.dataset.url, upd.dataset.file); }
+  if(upd){ pluginUpdate(upd.dataset.id, upd.dataset.url, upd.dataset.file, upd.dataset.newver||'?'); }
 });
 })();
 </script>
@@ -1318,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.88"
+BUILD                  = "SignalScope-3.3.89"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -11488,6 +11530,13 @@ def _scan_installed_plugins() -> list:
         info.setdefault("name",        py.stem)
         info.setdefault("icon",        "🔌")
         info.setdefault("description", "")
+        # Extract version from file source for inactive (not-yet-loaded) plugins
+        # so the panel can compare installed vs registry version correctly.
+        if not active:
+            import re as _re
+            _m = _re.search(r'"version"\s*:\s*"([^"]+)"', src)
+            if _m:
+                info["version"] = _m.group(1)
         result.append(info)
     return result
 

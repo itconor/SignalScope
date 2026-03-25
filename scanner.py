@@ -14,6 +14,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/scanner",
     "icon":     "📻",
     "hub_only": True,
+    "version":  "1.0.0",
 }
 
 import hashlib

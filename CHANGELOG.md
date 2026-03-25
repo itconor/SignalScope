@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.89] - 2026-03-25
+
+### Added
+- **Plugin update checking** — Settings → Plugins now automatically checks the GitHub registry for updates whenever the Plugins tab is opened (once per page load, no button click needed). Each plugin shows its installed vs latest version and one of three states: **✓ v1.0.0** (up to date), **⟳ Update to v1.0.1** (update available, orange button), or **⬇ Install** (not yet installed). A summary line ("2 updates available · 1 new") appears above the list. The manual **↻ Refresh** button forces a re-check. `_scan_installed_plugins()` now extracts the version from inactive plugin files via regex so version info is available even for plugins installed but not yet restarted. All plugins declare a `version` field in `SIGNALSCOPE_PLUGIN`.
+
 ## [3.3.88] - 2026-03-25
 
 ### Fixed

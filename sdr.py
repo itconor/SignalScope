@@ -20,6 +20,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/sdr",
     "icon":     "📡",
     "hub_only": True,   # only inject nav item in hub / both mode
+    "version":  "1.0.0",
 }
 
 import hashlib
