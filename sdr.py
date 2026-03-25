@@ -512,8 +512,9 @@ WEBSDR_TPL = r"""<!doctype html>
 <meta charset="utf-8">
 <title>Web SDR — SignalScope</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="{{csrf_token()}}">
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
-<style>
+<style nonce="{{csp_nonce()}}">
 :root{--bg:#060d1a;--bg2:#0d1629;--bg3:#111f35;--bor:#1e3048;--tx:#f0f4ff;
       --mu:#6b7280;--acc:#3b82f6;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -660,13 +661,17 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
   </div>
 </div>
 
-<script>
+<script nonce="{{csp_nonce()}}">
 (function(){
 'use strict';
 
-var _csrf = (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+function _getCsrf(){
+  return (document.querySelector('meta[name="csrf-token"]')||{}).content
+      || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]
+      || '';
+}
 function _f(url,o){o=o||{};o.credentials='same-origin';
-  o.headers=Object.assign({'X-CSRFToken':_csrf,'Content-Type':'application/json'},o.headers||{});
+  o.headers=Object.assign({'X-CSRFToken':_getCsrf(),'Content-Type':'application/json'},o.headers||{});
   return fetch(url,o);}
 
 // ── State ──────────────────────────────────────────────────────────────────

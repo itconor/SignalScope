@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.84] - 2026-03-25
+
+### Fixed
+- **Web SDR Connect button does nothing** — the WebSDR template's `<script>` and `<style>` blocks had no CSP `nonce` attribute, so the browser's Content Security Policy blocked the entire script. Added `nonce="{{csp_nonce()}}"` to both tags. Also added `<meta name="csrf-token">` to the page `<head>` and replaced the stale per-load `_csrf` cookie capture with a `_getCsrf()` function that reads the meta tag fresh on every request (same fix as 3.3.81 applied to the settings page).
+
 ## [3.3.83] - 2026-03-25
 
 ### Added

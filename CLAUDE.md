@@ -265,6 +265,7 @@ document.getElementById('p-plugins').addEventListener('click', function(e){
 });
 ```
 **Rule**: Never add `onclick=` to elements whose handler strings contain runtime-variable content or Jinja2 expressions. Use `data-*` + event delegation instead.
+**Rule**: Every plugin template rendered with `render_template_string` MUST include `nonce="{{csp_nonce()}}"` on ALL `<script>` and `<style>` tags, and `<meta name="csrf-token" content="{{csrf_token()}}">` in `<head>`. Without the nonce the browser's CSP silently blocks the entire script/style block. Without the meta tag, CSRF posts will fail on HTTPS hubs (see 3.3.81).
 
 ### Plugin active detection mismatch (fixed 3.3.82)
 `_scan_installed_plugins()` checked `py.stem in active_ids` where `active_ids` came from `p.get("id")` on loaded plugins. If a plugin's declared `id` differs from its filename stem (e.g. `sdr.py` with `id="websdr"`), the check always returned False — showing "Restart needed" even when the plugin was running.
