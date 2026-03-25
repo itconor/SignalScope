@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.18",
+    "version":  "1.0.19",
 }
 
 import hashlib
@@ -1576,8 +1576,8 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
                 for svc in mux_data.get("services", []):
                     lbl  = svc.get("label", {})
                     name = (lbl.get("label", "") or lbl.get("shortlabel", "")).strip()
-                    if name.lower() == service.lower():
-                        sid = svc.get("sid", "")
+                    if name.lower() == service.lower() or service.lower() in name.lower():
+                        sid = str(svc.get("sid", ""))
                         break
                 if sid:
                     _log(f"[DAB] Found SID={sid} for service '{service}'")
@@ -1592,12 +1592,14 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
             _log(f"[DAB] Service '{service}' not found in mux.json after 30 s — giving up")
             return
 
-        # ── Phase 2: probe /mp3/{SID} until it serves audio (up to 15 s) ─────
+        # ── Phase 2: probe /mp3/{SID} until it serves audio (up to 35 s) ─────
+        # signalscope.py uses 35s here — some services take 20-25s after mux
+        # ready before their /mp3/ endpoint serves enough bytes.
         audio_url = f"http://localhost:{_WELLE_STREAM_PORT}/mp3/{sid}"
         _log(f"[DAB] Probing audio endpoint: {audio_url}")
 
         stream_ready   = False
-        probe_deadline = time.time() + 15.0
+        probe_deadline = time.time() + 35.0
         while not stop.is_set() and time.time() < probe_deadline:
             if proc_welle.poll() is not None:
                 _log(f"[DAB] welle-cli exited during probe (rc={proc_welle.returncode})")
@@ -1606,16 +1608,17 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
                 with urllib.request.urlopen(audio_url, timeout=3) as r:
                     probe = r.read(32768)
                     if probe and len(probe) >= 4096:
+                        _log(f"[DAB] Audio endpoint ready ({len(probe)} bytes)")
                         stream_ready = True
                         break
-            except Exception:
-                pass
-            time.sleep(1.0)
+            except Exception as e:
+                _log(f"[DAB] Waiting for audio endpoint: {e}")
+            time.sleep(0.5)
 
         if stop.is_set():
             return
         if not stream_ready:
-            _log(f"[DAB] Audio endpoint not ready after 15 s — giving up")
+            _log(f"[DAB] Audio endpoint not ready after 35 s — giving up")
             return
 
         # ── Phase 3: ffmpeg reads from welle-cli HTTP → MP3 ──────────────────
