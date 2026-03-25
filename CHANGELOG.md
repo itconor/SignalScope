@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.79] - 2026-03-25
+
+### Added
+- **Settings → Plugins panel** — new tab in Settings shows installed plugins (with active/restart-needed status and a Remove button) and lets you browse + install available plugins directly from the SignalScope GitHub repository.
+- **Plugin registry (`plugins.json`)** — published at the repo root; lists available plugins with name, description, requirements, and download URL.
+- **API endpoints**: `GET /api/plugins`, `GET /api/plugins/available`, `POST /api/plugins/install`, `POST /api/plugins/remove`. Install endpoint validates that the source URL is from the official repo and that the file contains `SIGNALSCOPE_PLUGIN` before writing to disk.
+
 ## [3.3.77] - 2026-03-25
 
 ### Fixed

@@ -145,7 +145,8 @@ document.addEventListener('DOMContentLoaded',function(){
   <button class="tb" id="b-gen"   onclick="st('gen')"  >⚙ General</button>
   <button class="tb" id="b-maint" onclick="st('maint')">🗂 Maintenance</button>
   <button class="tb" id="b-mobile" onclick="st('mobile')">📱 Mobile API</button>
-  <button class="tb" id="b-sdr"   onclick="st('sdr')"  >📻 SDR Devices</button>
+  <button class="tb" id="b-sdr"     onclick="st('sdr')"    >📻 SDR Devices</button>
+  <button class="tb" id="b-plugins" onclick="st('plugins')">🔌 Plugins</button>
 </nav>
 <div class="ct">
 {% with m=get_flashed_messages() %}{% if m %}<ul class="fl">{% for x in m %}<li>{{x}}</li>{% endfor %}</ul>{% endif %}{% endwith %}
@@ -1095,6 +1096,148 @@ function adminRestart(){
 </script>
 </form>
 
+<!-- ── Plugins panel — outside the settings form (uses fetch API, not form submit) -->
+<div class="pn" id="p-plugins">
+  <div class="sec">🔌 Plugins</div>
+  <p class="help" style="margin-bottom:14px">
+    Plugins are <code>.py</code> files placed alongside <code>signalscope.py</code>.
+    They are loaded automatically on startup. A restart is required after installing or removing a plugin.
+  </p>
+
+  <!-- Installed plugins -->
+  <div style="font-size:11px;font-weight:700;letter-spacing:2px;color:var(--mu);
+              text-transform:uppercase;margin-bottom:8px">Installed</div>
+  {% if _installed_plugins %}
+  <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:18px">
+    <thead><tr style="color:var(--mu);font-size:11px;text-transform:uppercase">
+      <th style="padding:4px 8px;text-align:left">Plugin</th>
+      <th style="padding:4px 8px;text-align:left">File</th>
+      <th style="padding:4px 8px;text-align:left">Status</th>
+      <th style="padding:4px 8px"></th>
+    </tr></thead>
+    <tbody>
+    {% for p in _installed_plugins %}
+    <tr style="border-top:1px solid var(--bor)">
+      <td style="padding:8px 8px">
+        <span style="font-size:16px;margin-right:6px">{{p.get('icon','🔌')}}</span>
+        <strong>{{p.get('name', p.file)}}</strong>
+        {% if p.get('description') %}<div style="font-size:11px;color:var(--mu);margin-top:2px">{{p.description}}</div>{% endif %}
+      </td>
+      <td style="padding:8px 8px;font-family:monospace;font-size:12px;color:var(--mu)">{{p.file}}</td>
+      <td style="padding:8px 8px">
+        {% if p.active %}
+        <span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;
+                     font-weight:700;background:rgba(34,197,94,.15);color:var(--ok);
+                     border:1px solid rgba(34,197,94,.3)">● Active</span>
+        {% else %}
+        <span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;
+                     font-weight:700;background:rgba(245,158,11,.15);color:var(--wn);
+                     border:1px solid rgba(245,158,11,.3)">⟳ Restart needed</span>
+        {% endif %}
+      </td>
+      <td style="padding:8px 8px">
+        <button class="btn bw bs" onclick="pluginRemove('{{p.file}}')">Remove</button>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="font-size:13px;color:var(--mu);margin-bottom:18px">No plugins installed.</p>
+  {% endif %}
+
+  <!-- Available plugins -->
+  <div style="font-size:11px;font-weight:700;letter-spacing:2px;color:var(--mu);
+              text-transform:uppercase;margin-bottom:8px">Available</div>
+  <button class="btn bg bs" id="avail-fetch-btn" onclick="pluginFetchAvail()">
+    🔍 Check GitHub for plugins
+  </button>
+  <span id="avail-status" style="font-size:12px;color:var(--mu);margin-left:10px"></span>
+  <div id="avail-list" style="margin-top:12px"></div>
+</div>
+
+<script nonce="{{csp_nonce()}}">
+(function(){
+var _csrf = (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+var _installed = {{_installed_plugins | tojson}};
+var _installedFiles = new Set(_installed.map(function(p){return p.file;}));
+
+function _csrfPost(url, body){
+  return fetch(url, {method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':_csrf},
+    body: JSON.stringify(body)});
+}
+
+window.pluginFetchAvail = function(){
+  var btn = document.getElementById('avail-fetch-btn');
+  var st  = document.getElementById('avail-status');
+  var lst = document.getElementById('avail-list');
+  btn.disabled = true; st.textContent = 'Fetching…';
+  fetch('/api/plugins/available', {credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      btn.disabled = false;
+      if(!d.ok){ st.textContent = 'Error: ' + (d.error||'?'); st.style.color='var(--al)'; return; }
+      var plugins = d.plugins || [];
+      if(!plugins.length){ st.textContent = 'No plugins listed.'; return; }
+      st.textContent = plugins.length + ' plugin(s) found.'; st.style.color='var(--ok)';
+      lst.innerHTML = plugins.map(function(p){
+        var installed = _installedFiles.has(p.file);
+        return '<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;'
+          + 'background:var(--bg3);border:1px solid var(--bor);border-radius:8px;margin-bottom:8px">'
+          + '<span style="font-size:22px;flex-shrink:0">'+(p.icon||'🔌')+'</span>'
+          + '<div style="flex:1;min-width:0">'
+          + '<div style="font-weight:700;font-size:13px">'+_esc(p.name)+'</div>'
+          + (p.description ? '<div style="font-size:12px;color:var(--mu);margin-top:2px">'+_esc(p.description)+'</div>' : '')
+          + (p.requirements ? '<div style="font-size:11px;color:var(--mu);margin-top:3px">Requires: <code style="background:#173a69;padding:1px 5px;border-radius:3px">pip install '+_esc(p.requirements)+'</code></div>' : '')
+          + '</div>'
+          + (installed
+             ? '<span style="padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;'
+               + 'background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3);flex-shrink:0">Installed</span>'
+             : '<button class="btn bp bs" style="flex-shrink:0" '
+               + 'onclick="pluginInstall('+JSON.stringify(p.id)+','+JSON.stringify(p.url)+','+JSON.stringify(p.file)+')">'
+               + '⬇ Install</button>')
+          + '</div>';
+      }).join('');
+    })
+    .catch(function(e){ btn.disabled=false; st.textContent='Network error'; st.style.color='var(--al)'; });
+};
+
+window.pluginInstall = function(id, url, file){
+  if(!confirm('Install plugin "'+id+'" from GitHub?\n\nThe file will be saved to the SignalScope directory. A restart is required to activate it.')) return;
+  var lst = document.getElementById('avail-list');
+  var btn = lst.querySelector('[onclick*="'+id+'"]');
+  if(btn){ btn.disabled=true; btn.textContent='Installing…'; }
+  _csrfPost('/api/plugins/install', {id:id, url:url, file:file})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){
+        if(btn){ btn.textContent='✓ Installed — restart to activate';
+                 btn.style.background='var(--bg3)'; btn.style.color='var(--ok)'; }
+        _installedFiles.add(file);
+      } else {
+        if(btn){ btn.disabled=false; btn.textContent='⬇ Install'; }
+        alert('Install failed: ' + (d.error||'?'));
+      }
+    })
+    .catch(function(){ if(btn){btn.disabled=false;btn.textContent='⬇ Install';} alert('Network error'); });
+};
+
+window.pluginRemove = function(file){
+  if(!confirm('Remove plugin file "'+file+'"?\n\nA restart is required to fully unload it.')) return;
+  _csrfPost('/api/plugins/remove', {file:file})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){ window.location.reload(); }
+      else { alert('Remove failed: '+(d.error||'?')); }
+    })
+    .catch(function(){ alert('Network error'); });
+};
+
+function _esc(s){ var d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
+})();
+</script>
+
 </div></div>
 
 </body></html>"""#!/usr/bin/env python3
@@ -1138,7 +1281,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.77"
+BUILD                  = "SignalScope-3.3.79"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -11270,6 +11413,44 @@ def _load_plugins():
             monitor.log(f"[Plugin] Failed to load {py.name}: {e}")
             print(f"[Plugin] WARNING: failed to load {py.name}: {e}")
 
+# ─── Plugin management helpers ────────────────────────────────────────────────
+
+_PLUGIN_REGISTRY_URL = (
+    "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins.json"
+)
+_PLUGIN_ALLOWED_BASE = "https://raw.githubusercontent.com/itconor/SignalScope/"
+
+
+def _scan_installed_plugins() -> list:
+    """Return a list of dicts for every *.py plugin file found in the app dir.
+    Each dict has at least: file, id, active, name, icon, description.
+    'active' is True if the plugin was successfully loaded this session.
+    """
+    import pathlib
+    app_dir    = pathlib.Path(__file__).parent
+    self_name  = pathlib.Path(__file__).name
+    active_ids = {p.get("id", "") for p in _plugins}
+    result     = []
+    for py in sorted(app_dir.glob("*.py")):
+        if py.name == self_name:
+            continue
+        try:
+            src = py.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "SIGNALSCOPE_PLUGIN" not in src:
+            continue
+        # Use the active (already-imported) plugin's full info when available
+        active = next((p for p in _plugins if p.get("id") == py.stem), None)
+        info: dict = dict(active) if active else {"id": py.stem}
+        info["file"]   = py.name
+        info["active"] = py.stem in active_ids
+        info.setdefault("name",        py.stem)
+        info.setdefault("icon",        "🔌")
+        info.setdefault("description", "")
+        result.append(info)
+    return result
+
 # ─── Login brute-force protection ─────────────────────────────────────────────
 
 class LoginLimiter:
@@ -15221,7 +15402,8 @@ def settings():
     return render_template_string(SETTINGS_TPL, cfg=cfg,
         hub_sites=_hub_sites,
         _hub_default_fwd=_HUB_DEFAULT_FORWARD_TYPES,
-        _all_alert_types=_ALL_ALERT_TYPES)
+        _all_alert_types=_ALL_ALERT_TYPES,
+        _installed_plugins=_scan_installed_plugins())
 
 @app.post("/api/hub/site_rules")
 @login_required
@@ -15724,6 +15906,91 @@ input[type=text],input[type=password]{width:100%;margin-top:4px;padding:9px 11px
     <a href="https://github.com/itconor/SignalScope" target="_blank" rel="noopener noreferrer" style="color:var(--mu);text-decoration:none" title="SignalScope on GitHub">⎇ GitHub</a>
   </div>
 </div></body></html>"""
+
+@app.get("/api/plugins")
+@login_required
+def api_plugins_installed():
+    """Return the list of installed plugin files and their active status."""
+    return jsonify({"ok": True, "plugins": _scan_installed_plugins()})
+
+
+@app.get("/api/plugins/available")
+@login_required
+def api_plugins_available():
+    """Fetch the plugin registry from GitHub and return available plugins."""
+    import urllib.request as _ur, json as _js
+    try:
+        req = _ur.Request(_PLUGIN_REGISTRY_URL,
+                          headers={"User-Agent": f"SignalScope/{BUILD}"})
+        with _ur.urlopen(req, timeout=10) as resp:
+            plugins = _js.loads(resp.read())
+        if not isinstance(plugins, list):
+            return jsonify({"ok": False, "error": "unexpected registry format"}), 502
+        return jsonify({"ok": True, "plugins": plugins})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+
+@app.post("/api/plugins/install")
+@login_required
+@csrf_protect
+def api_plugins_install():
+    """Download a plugin file from the official GitHub repo and save it locally.
+    Only URLs under the allowed base path are accepted.
+    A restart is required to activate the plugin.
+    """
+    import pathlib, urllib.request as _ur
+    data    = request.get_json(silent=True) or {}
+    url     = str(data.get("url", "")).strip()
+    fname   = str(data.get("file", "")).strip()
+
+    if not url.startswith(_PLUGIN_ALLOWED_BASE):
+        return jsonify({"ok": False,
+                        "error": "URL must be from the official SignalScope repository"}), 400
+    if not fname.endswith(".py") or "/" in fname or ".." in fname:
+        return jsonify({"ok": False, "error": "Invalid filename"}), 400
+
+    dest = pathlib.Path(__file__).parent / fname
+    try:
+        req = _ur.Request(url, headers={"User-Agent": f"SignalScope/{BUILD}"})
+        with _ur.urlopen(req, timeout=20) as resp:
+            content = resp.read()
+        if b"SIGNALSCOPE_PLUGIN" not in content:
+            return jsonify({"ok": False,
+                            "error": "Downloaded file does not appear to be a SignalScope plugin"}), 400
+        dest.write_bytes(content)
+        monitor.log(f"[Plugin] Installed {fname} from {url}")
+        return jsonify({"ok": True, "file": fname,
+                        "message": f"{fname} saved — restart SignalScope to activate"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+
+@app.post("/api/plugins/remove")
+@login_required
+@csrf_protect
+def api_plugins_remove():
+    """Delete a plugin file from the app directory.
+    A restart is required to fully unload the plugin.
+    """
+    import pathlib
+    data  = request.get_json(silent=True) or {}
+    fname = str(data.get("file", "")).strip()
+    if not fname.endswith(".py") or "/" in fname or ".." in fname:
+        return jsonify({"ok": False, "error": "Invalid filename"}), 400
+    dest = pathlib.Path(__file__).parent / fname
+    if not dest.exists():
+        return jsonify({"ok": False, "error": "File not found"}), 404
+    # Safety check: don't delete the main app
+    if dest.resolve() == pathlib.Path(__file__).resolve():
+        return jsonify({"ok": False, "error": "Cannot remove the main application"}), 400
+    try:
+        dest.unlink()
+        monitor.log(f"[Plugin] Removed {fname}")
+        return jsonify({"ok": True, "message": f"{fname} removed — restart to fully unload"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @app.get("/api/sdr/scan")
 @login_required
