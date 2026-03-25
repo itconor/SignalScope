@@ -193,54 +193,13 @@ def _stream_cfg(stream_name):
         "retain_days":   int(s.get("retain_days", _DEFAULT_RETAIN)),
     }
 
-# All URL schemes we consider "safe" to store in config (security allowlist)
-_SAFE_URL_SCHEMES = ("http://", "https://", "rtp://", "rtsp://", "rtmp://",
-                     "udp://", "tcp://", "srt://", "hls://",
-                     "alsa://", "pulse://", "jack://",
-                     "avfoundation://", "dshow://",
-                     "sound://", "fm://", "dab://")
-
-# Local device paths (e.g. /dev/dsp, /dev/audio0)
-_SAFE_DEV_PREFIXES = ("/dev/",)
-
-# Schemes ffmpeg can actually open as a standalone process.
-# fm://, dab://, sound:// are SignalScope-internal and cannot be opened by ffmpeg directly.
-_FFMPEG_RECORDABLE_SCHEMES = ("http://", "https://", "rtp://", "rtsp://", "rtmp://",
-                               "udp://", "tcp://", "srt://", "hls://",
-                               "alsa://", "pulse://", "jack://",
-                               "avfoundation://", "dshow://")
-
-def _is_safe_url(url):
-    """Accept URLs with known schemes or local device paths; reject anything else."""
-    if not url:
-        return False
-    low = url.lower()
-    return (any(low.startswith(s) for s in _SAFE_URL_SCHEMES) or
-            any(url.startswith(p) for p in _SAFE_DEV_PREFIXES))
-
-def _is_ffmpeg_recordable(url):
-    """Returns True if ffmpeg can open this URL directly as an input source."""
-    if not url:
-        return False
-    low = url.lower()
-    return (any(low.startswith(s) for s in _FFMPEG_RECORDABLE_SCHEMES) or
-            any(url.startswith(p) for p in _SAFE_DEV_PREFIXES))
-
 def _available_streams():
+    """Return all enabled SignalScope inputs.
+    Recording taps SignalScope's internal _stream_buffer, so every input
+    type (FM, DAB, HTTP, AoIP, sound device…) is capturable."""
     cfg = _monitor.app_cfg
-    result = []
-    for inp in cfg.inputs:
-        if not inp.enabled or not _is_safe_url(inp.device_index):
-            continue
-        scheme = inp.device_index.split("://")[0] if "://" in inp.device_index else "device"
-        result.append({
-            "name":       inp.name,
-            "url":        inp.device_index,
-            "slug":       _slug(inp.name),
-            "recordable": _is_ffmpeg_recordable(inp.device_index),
-            "scheme":     scheme,
-        })
-    return result
+    return [{"name": inp.name, "slug": _slug(inp.name), "url": inp.device_index}
+            for inp in cfg.inputs if inp.enabled]
 
 def _slug_to_name(slug):
     for s in _available_streams():
@@ -335,23 +294,50 @@ def _get_segments(slug, date):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _RecorderThread(threading.Thread):
-    def __init__(self, stream_name, stream_url, slug):
+    """Records one SignalScope input by tapping its internal _stream_buffer.
+
+    SignalScope stores decoded PCM for every input as np.float32 chunks
+    (48 kHz, mono, 24000 samples = 0.5 s each) in a rolling deque.  We
+    drain that deque into an ffmpeg process via stdin so that FM, DAB,
+    HTTP, AoIP, sound-device — anything SignalScope monitors — can be
+    logged without re-opening the source.
+    """
+
+    # SignalScope constants (must match signalscope.py)
+    _SR         = 48000
+    _CHUNK_SIZE = 24000   # samples per chunk (0.5 s)
+
+    def __init__(self, stream_name, slug):
         super().__init__(daemon=True, name=f"Logger-{slug}")
         self.stream_name = stream_name
-        self.stream_url  = stream_url
         self.slug        = slug
         self.stop_evt    = threading.Event()
         self.last_error  = None   # last ffmpeg error string, or None if OK
         self.last_ok_ts  = None   # time.time() of last successful segment
         self.seg_count   = 0      # total segments successfully written
 
+    def _get_buf(self):
+        """Return the live _stream_buffer deque for this input, or None."""
+        try:
+            for inp in _monitor.app_cfg.inputs:
+                if inp.name == self.stream_name:
+                    return getattr(inp, "_stream_buffer", None)
+        except Exception:
+            pass
+        return None
+
     def run(self):
         _log(f"[Logger] Started recording: {self.stream_name}")
         ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+        if not ffmpeg:
+            self.last_error = "ffmpeg not found"
+            _log(f"[Logger] ffmpeg not found — cannot record {self.stream_name}")
+            return
         while not self.stop_evt.is_set():
             try:
                 self._record_segment(ffmpeg)
             except Exception as e:
+                self.last_error = str(e)
                 _log(f"[Logger] Recorder error ({self.stream_name}): {e}")
                 self.stop_evt.wait(5)
         _log(f"[Logger] Stopped recording: {self.stream_name}")
@@ -365,7 +351,6 @@ class _RecorderThread(threading.Thread):
         now       = datetime.datetime.utcnow()
         seg_start = _seg_start(now)
         seg_end   = seg_start + datetime.timedelta(seconds=_SEG_SECS)
-        duration  = max(5, (seg_end - now).total_seconds())
         date_str  = seg_start.strftime("%Y-%m-%d")
         time_str  = seg_start.strftime("%H-%M")
         filename  = f"{time_str}.mp3"
@@ -375,73 +360,134 @@ class _RecorderThread(threading.Thread):
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / filename
 
-        # Skip if already recorded
+        # Skip if this segment already exists and looks complete
         if out_path.exists() and out_path.stat().st_size > 5000:
             wait = (seg_end - datetime.datetime.utcnow()).total_seconds()
             if wait > 0:
                 self.stop_evt.wait(wait)
             return
 
-        # Build ffmpeg command
-        http = self.stream_url.lower().startswith(("http://", "https://"))
-        reconnect = ["-reconnect", "1", "-reconnect_streamed", "1",
-                     "-reconnect_delay_max", "10"] if http else []
-        cmd = ([ffmpeg, "-hide_banner", "-loglevel", "warning"]
-               + reconnect
-               + ["-i", self.stream_url,
-                  "-af", f"silencedetect=n={_SILENCE_DB:.1f}dB:d={_SILENCE_DUR}",
-                  "-t", str(int(duration)),
-                  "-vn", "-ac", "1", "-ar", "44100",
-                  "-b:a", scfg["hq_bitrate"],
-                  "-f", "mp3", str(out_path)])
+        # Wait up to 10 s for SignalScope to populate the buffer
+        waited = 0
+        while self._get_buf() is None and waited < 10 and not self.stop_evt.is_set():
+            self.stop_evt.wait(1)
+            waited += 1
+        if self.stop_evt.is_set():
+            return
+
+        # Launch ffmpeg reading raw float32 PCM from stdin.
+        # silencedetect runs as an audio filter so we keep that metadata.
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "warning",
+               "-f", "f32le", "-ar", str(self._SR), "-ac", "1", "-i", "pipe:0",
+               "-af", f"silencedetect=n={_SILENCE_DB:.1f}dB:d={_SILENCE_DUR}",
+               "-vn", "-ac", "1", "-ar", "44100",
+               "-b:a", scfg["hq_bitrate"],
+               "-f", "mp3", str(out_path)]
 
         silence_ranges = []
         sil_start      = None
         stderr_lines   = []
 
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.PIPE, text=True, bufsize=1)
-            for line in proc.stderr:
-                stderr_lines.append(line.rstrip())
-                m_s = re.search(r"silence_start:\s*([\d.]+)", line)
-                m_e = re.search(r"silence_end:\s*([\d.]+)", line)
-                if m_s:
-                    sil_start = float(m_s.group(1))
-                if m_e and sil_start is not None:
-                    silence_ranges.append([sil_start, float(m_e.group(1))])
-                    sil_start = None
-                if self.stop_evt.is_set():
-                    proc.terminate()
-                    break
-            proc.wait()
+            proc = subprocess.Popen(cmd,
+                                    stdin=subprocess.PIPE,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE,
+                                    bufsize=0)
         except Exception as e:
             self.last_error = str(e)
-            _log(f"[Logger] ffmpeg error ({self.stream_name}): {e}")
+            _log(f"[Logger] Could not launch ffmpeg for {self.stream_name}: {e}")
             return
 
-        # Check ffmpeg exit code — a non-zero code means the stream couldn't be opened
-        # or recording failed. This is the most common cause of "running but no files".
-        if proc.returncode not in (0, None) and not self.stop_evt.is_set():
-            # Extract the most informative error line from stderr
-            err = next((l for l in reversed(stderr_lines)
-                        if l.strip() and not l.startswith("  ")), "ffmpeg exited with error")
-            self.last_error = f"rc={proc.returncode}: {err}"[:250]
-            _log(f"[Logger] ffmpeg failed for '{self.stream_name}' ({self.last_error})")
-            # Back off before retrying so we don't spam the log
-            self.stop_evt.wait(15)
-            return
+        # Read stderr on a background thread so it never blocks the write loop
+        def _read_stderr():
+            for line in proc.stderr:
+                stderr_lines.append(line.rstrip())
+        stderr_thr = threading.Thread(target=_read_stderr, daemon=True)
+        stderr_thr.start()
 
+        # Drain _stream_buffer → ffmpeg stdin until segment end.
+        # We track the last chunk object we've written; if it disappears from
+        # the deque (buffer wrapped) we log a warning and catch up.
+        last_ref = None
+
+        try:
+            while not self.stop_evt.is_set():
+                if datetime.datetime.utcnow() >= seg_end:
+                    break
+
+                buf = self._get_buf()
+                if not buf:
+                    self.stop_evt.wait(0.3)
+                    continue
+
+                chunks = list(buf)   # thread-safe snapshot
+                if not chunks:
+                    self.stop_evt.wait(0.3)
+                    continue
+
+                if last_ref is None:
+                    # First iteration — anchor to latest chunk, don't replay history
+                    last_ref = chunks[-1]
+                    new_chunks = []
+                else:
+                    # Find our anchor in the current snapshot
+                    idx = next((i for i, c in enumerate(chunks) if c is last_ref), None)
+                    if idx is None:
+                        # Anchor evicted — buffer lapped us (shouldn't happen with 0.2 s poll)
+                        _log(f"[Logger] Buffer overrun on '{self.stream_name}', small gap possible")
+                        new_chunks = chunks
+                    else:
+                        new_chunks = chunks[idx + 1:]
+                    if new_chunks:
+                        last_ref = new_chunks[-1]
+
+                if new_chunks:
+                    import numpy as np
+                    raw = b"".join(c.astype(np.float32).tobytes() for c in new_chunks)
+                    try:
+                        proc.stdin.write(raw)
+                    except (BrokenPipeError, OSError):
+                        break
+
+                self.stop_evt.wait(0.2)
+
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+            proc.wait()
+            stderr_thr.join(timeout=2)
+
+        # Parse silence events from accumulated stderr
+        for line in stderr_lines:
+            m_s = re.search(r"silence_start:\s*([\d.]+)", line)
+            m_e = re.search(r"silence_end:\s*([\d.]+)", line)
+            if m_s:
+                sil_start = float(m_s.group(1))
+            if m_e and sil_start is not None:
+                silence_ranges.append([sil_start, float(m_e.group(1))])
+                sil_start = None
         if sil_start is not None:
-            silence_ranges.append([sil_start, duration])
+            silence_ranges.append([sil_start, _SEG_SECS])
+
+        if proc.returncode not in (0, None) and not self.stop_evt.is_set():
+            err = next((l for l in reversed(stderr_lines)
+                        if l.strip() and not l.startswith("  ")), "unknown ffmpeg error")
+            self.last_error = f"rc={proc.returncode}: {err}"[:250]
+            _log(f"[Logger] ffmpeg failed for '{self.stream_name}': {self.last_error}")
+            self.stop_evt.wait(10)
+            return
 
         if out_path.exists() and out_path.stat().st_size > 1000:
             _upsert_segment(self.slug, date_str, filename, start_s, silence_ranges)
             self.last_error = None
             self.last_ok_ts = time.time()
             self.seg_count += 1
+            _log(f"[Logger] Segment saved: {self.stream_name}/{date_str}/{filename}")
 
-        # Wait for next boundary
+        # Wait for next 5-minute boundary
         if not self.stop_evt.is_set():
             wait = (seg_end - datetime.datetime.utcnow()).total_seconds()
             if wait > 0:
@@ -468,7 +514,7 @@ def _reconcile_recorders():
             slug = s["slug"]
             scfg = _stream_cfg(s["name"])
             if scfg["enabled"] and (slug not in _recorders or not _recorders[slug].is_alive()):
-                t = _RecorderThread(s["name"], s["url"], slug)
+                t = _RecorderThread(s["name"], slug)
                 _recorders[slug] = t
                 t.start()
             elif not scfg["enabled"] and slug in _recorders:
@@ -743,8 +789,6 @@ select:focus,input:focus{border-color:var(--acc)}
 .b-rec{background:rgba(239,68,68,.2);color:#f87171}
 .b-idle{background:#1e3a5f;color:var(--mu)}
 .b-err{background:rgba(245,158,11,.2);color:#fbbf24}
-/* Non-recordable stream warning */
-.warn-chip{display:inline-block;padding:2px 7px;border-radius:6px;font-size:11px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3)}
 .err-msg{margin-top:6px;padding:8px 10px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);border-radius:6px;font-size:12px;color:#f87171;word-break:break-word}
 /* Timeline */
 .tl-wrap{flex:1;overflow-y:auto;padding:14px 18px}
@@ -1279,39 +1323,30 @@ function renderSettingsRows(){
     var card=document.createElement('div'); card.className='scard';
     var chkd = sc.enabled ? ' checked' : '';
     var eid  = 'lbl-en-'+s.name.replace(/[^a-z0-9]/gi,'_');
-    var recordable = s.recordable !== false;  // default true for safety
-    var warnHtml = recordable ? '' :
-      '<div style="margin:8px 0 2px">'
-      +'<span class="warn-chip">⚠ '+_esc(s.scheme)+'://  — not directly recordable by this logger. '
-      +'Only HTTP/RTSP/SRT/network streams can be recorded.</span>'
-      +'</div>';
     card.innerHTML =
       '<div class="scard-hdr">'
       +'<div><div class="name">'+_esc(s.name)+'</div><div class="url">'+_esc(s.url||'')+'</div></div>'
       +'<div class="tog-wrap">'
-      +'<label class="tog"><input type="checkbox" data-stream="'+_esc(s.name)+'" data-key="enabled"'+(recordable?'':' disabled')+chkd+'>'
+      +'<label class="tog"><input type="checkbox" data-stream="'+_esc(s.name)+'" data-key="enabled"'+chkd+'>'
       +'<span class="tog-sl"></span></label>'
-      +'<span class="tog-lbl'+(sc.enabled&&recordable?' on':'')+'" id="'+eid+'">'+(sc.enabled&&recordable?'Recording':'Off')+'</span>'
+      +'<span class="tog-lbl'+(sc.enabled?' on':'')+'" id="'+eid+'">'+(sc.enabled?'Recording':'Off')+'</span>'
       +'</div></div>'
-      + warnHtml
       +'<div class="scard-body"><div class="scard-fields">'
-      +'<div><label>HQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="hq_bitrate"'+(recordable?'':' disabled')+'>'
+      +'<div><label>HQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="hq_bitrate">'
       +['64k','96k','128k','192k','256k','320k'].map(function(b){ return '<option'+(( sc.hq_bitrate||'128k')===b?' selected':'')+'>'+b+'</option>'; }).join('')
       +'</select></div>'
-      +'<div><label>LQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="lq_bitrate"'+(recordable?'':' disabled')+'>'
+      +'<div><label>LQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="lq_bitrate">'
       +['32k','48k','64k','96k'].map(function(b){ return '<option'+((sc.lq_bitrate||'48k')===b?' selected':'')+'>'+b+'</option>'; }).join('')
       +'</select></div>'
-      +'<div><label>LQ after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="lq_after_days" value="'+(sc.lq_after_days||30)+'"'+(recordable?'':' disabled')+'></div>'
-      +'<div><label>Delete after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="retain_days" value="'+(sc.retain_days||90)+'"'+(recordable?'':' disabled')+'></div>'
+      +'<div><label>LQ after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="lq_after_days" value="'+(sc.lq_after_days||30)+'"></div>'
+      +'<div><label>Delete after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="retain_days" value="'+(sc.retain_days||90)+'"></div>'
       +'</div></div>';
-    if(recordable){
-      var chk = card.querySelector('input[type=checkbox]');
-      chk.addEventListener('change', function(){
-        var lbl=document.getElementById(eid);
-        lbl.textContent = this.checked ? 'Recording' : 'Off';
-        lbl.className   = 'tog-lbl'+(this.checked?' on':'');
-      });
-    }
+    var chk = card.querySelector('input[type=checkbox]');
+    chk.addEventListener('change', function(){
+      var lbl=document.getElementById(eid);
+      lbl.textContent = this.checked ? 'Recording' : 'Off';
+      lbl.className   = 'tog-lbl'+(this.checked?' on':'');
+    });
     el.appendChild(card);
   });
 }
