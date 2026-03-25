@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.5",
+    "version":  "1.0.6",
 }
 
 import hashlib
@@ -1261,14 +1261,15 @@ def register(app, ctx):
             direct_passthrough=True,
         )
 
-    # ── Start client command poller (on client machines) ──────────────────────
-
-    cfg = monitor.app_cfg
-    if cfg.hub.mode in ("client", "both") and cfg.hub.hub_url:
-        t = threading.Thread(target=_client_poller, args=(monitor,),
-                              daemon=True, name="DABCmdPoller")
-        t.start()
-        print("[DAB] Client command poller started")
+    # ── Start client command poller ────────────────────────────────────────────
+    # Start unconditionally — the poller checks mode/hub_url on every iteration
+    # so a misconfigured startup state can't permanently prevent it from running.
+    # hub_only machines (pure hubs with no RTL-SDR) have hub_server set and
+    # hub_url empty, so the poller will simply idle without doing anything.
+    t = threading.Thread(target=_client_poller, args=(monitor,),
+                          daemon=True, name="DABCmdPoller")
+    t.start()
+    print("[DAB] Client command poller thread started")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1279,32 +1280,47 @@ def _client_poller(monitor):
     """Poll hub every 3 s for pending DAB commands."""
     import json as _json
     _consecutive_errors = 0
+    _idles = 0
     print("[DAB] Client poller running")
     while True:
         try:
             cfg     = monitor.app_cfg
+            mode    = cfg.hub.mode or ""
             hub_url = (cfg.hub.hub_url or "").rstrip("/")
             site    = (cfg.hub.site_name or "").strip()
-            if hub_url and site:
-                req = urllib.request.Request(
-                    f"{hub_url}/api/hub/dab/cmd",
-                    headers={"X-Dab-Site": site},
-                )
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    status = resp.status
-                    body   = resp.read()
-                if status == 403:
-                    if _consecutive_errors % 20 == 0:
-                        print(f"[DAB] Command poll: 403 Forbidden "
-                              f"(site '{site}' not approved on hub?)")
-                    _consecutive_errors += 1
-                else:
-                    _consecutive_errors = 0
-                    d   = _json.loads(body)
-                    cmd = d.get("cmd")
-                    if cmd:
-                        print(f"[DAB] Received command: {cmd.get('action')}")
-                        _dispatch_client_cmd(cmd, hub_url, site, cfg)
+            if mode not in ("client", "both"):
+                # Hub-only machine — no RTL-SDR here, nothing to do
+                _idles += 1
+                if _idles == 1:
+                    print(f"[DAB] Poller idle: mode='{mode}' (not client/both)")
+                time.sleep(3)
+                continue
+            if not hub_url or not site:
+                _idles += 1
+                if _idles % 20 == 0:
+                    print(f"[DAB] Poller waiting: hub_url={hub_url!r} site={site!r}")
+                time.sleep(3)
+                continue
+            _idles = 0
+            req = urllib.request.Request(
+                f"{hub_url}/api/hub/dab/cmd",
+                headers={"X-Dab-Site": site},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                status = resp.status
+                body   = resp.read()
+            if status == 403:
+                if _consecutive_errors % 20 == 0:
+                    print(f"[DAB] Command poll: 403 Forbidden — "
+                          f"site '{site}' not approved on hub")
+                _consecutive_errors += 1
+            else:
+                _consecutive_errors = 0
+                d   = _json.loads(body)
+                cmd = d.get("cmd")
+                if cmd:
+                    print(f"[DAB] Received command: {cmd.get('action')}")
+                    _dispatch_client_cmd(cmd, hub_url, site, cfg)
         except urllib.error.HTTPError as e:
             if _consecutive_errors % 20 == 0:
                 print(f"[DAB] Command poll HTTP error: {e.code} {e.reason}")

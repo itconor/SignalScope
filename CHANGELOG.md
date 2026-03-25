@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.97] - 2026-03-25
+
+### Fixed
+- **DAB Scanner client poller never starting** (`dab.py` v1.0.6) — the poller thread was only created if `cfg.hub.hub_url` was non-empty at the exact moment `register()` ran at plugin load time. If the config was not fully loaded yet, or if `hub_url` was momentarily empty, the thread was never started and no log appeared — the client stayed permanently silent. Fix: the poller thread now starts unconditionally on every machine; the mode/hub_url checks that were the startup gate are now inside the loop, where they log a clear diagnostic and retry every 3 s. Hub-only machines (mode not `client`/`both`) log once that they are idle and then sleep indefinitely. Machines waiting for `hub_url`/`site` to be configured log every 60 s. This means the first thing visible in client logs after install/restart is always `[DAB] Client poller running` followed by either `[DAB] Poller idle: mode='hub'` (on a hub-only machine) or polling activity.
+
 ## [3.3.96] - 2026-03-25
 
 ### Fixed
