@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.94] - 2026-03-25
+
+### Fixed
+- **DAB Scanner RTL-SDR dongle locked by welle-cli** (`dab.py` v1.0.3) — `welle-cli` could hold the RTL-SDR USB device and not release it on `SIGTERM`, leaving the dongle inaccessible even after the process appeared to exit. Three-part fix: (1) `_do_scan()` now uses a SIGKILL fallback: after `proc.terminate()`, if `proc.wait(timeout=3)` raises `TimeoutExpired`, `proc.kill()` is called to force-kill the process and reclaim the device; (2) the pipe is explicitly drained after each channel so no buffered bytes hold the process open; (3) a 0.5 s settle delay is inserted between channels so the OS and `librtlsdr` can fully release the USB device before the next probe. `_stop_stream()` gets the same SIGKILL fallback for the streaming pipeline. The "Stop Scan" button now also queues an immediate `scan_stop` command in `_hub_pending` so the client kills `_scan_proc` via the 3 s command-poll path rather than waiting up to 12 s for the next channel's progress push.
+
 ## [3.3.93] - 2026-03-25
 
 ### Added

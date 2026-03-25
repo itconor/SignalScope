@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.2",
+    "version":  "1.0.3",
 }
 
 import hashlib
@@ -129,6 +129,7 @@ _hub_scan       = {}   # site → {status, channel, progress, total, found, muxe
 _hub_scan_stop  = set()  # sites that have requested scan abort
 _state_lock     = threading.Lock()
 _client_sess    = {}   # {stop, thread, proc_welle, proc_ffmpeg, slot_id}
+_scan_proc      = None  # current welle-cli scan subprocess (client side)
 _services_file  = None  # pathlib.Path to dab_services.json, set in register()
 
 
@@ -1109,6 +1110,10 @@ def register(app, ctx):
                 entry = _hub_scan.get(site)
                 if entry:
                     entry["status"] = "idle"
+                # Also queue an immediate scan_stop command so the client
+                # SIGKILL's the current welle-cli probe without waiting for
+                # the next channel's progress push (up to 12 s delay).
+                _hub_pending[site] = {"action": "scan_stop"}
         return jsonify({"ok": True})
 
     # ── Hub: client polls for commands ─────────────────────────────────────────
@@ -1303,6 +1308,16 @@ def _dispatch_client_cmd(cmd, hub_url, site, cfg):
         )
     elif action == "stop":
         _stop_stream()
+    elif action == "scan_stop":
+        # Kill the current scan process immediately (SIGKILL)
+        global _scan_proc
+        p = _scan_proc
+        if p:
+            try:
+                p.kill()
+            except Exception:
+                pass
+        print(f"[DAB] Scan aborted by hub command (scan_stop)")
     elif action == "scan":
         channels = cmd.get("channels") or list(_DAB_CHANNELS.keys())
         t = threading.Thread(
@@ -1340,6 +1355,16 @@ def _stop_stream():
         if proc:
             try:
                 proc.terminate()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
             except Exception:
                 pass
     if old.get("thread"):
@@ -1607,17 +1632,38 @@ def _do_scan(site, sdr_serial, hub_url, channels_to_scan=None):
                 stderr=subprocess.STDOUT,
                 bufsize=0,
             )
+            # Store at module level so stop handler can SIGKILL immediately
+            global _scan_proc
+            _scan_proc = proc
             t = threading.Thread(target=_reader, args=(proc,), daemon=True)
             t.start()
             done_evt.wait(timeout=12)
+            # Graceful terminate → SIGKILL fallback → drain pipe
             proc.terminate()
             try:
                 proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                print(f"[DAB] welle-cli hung on {ch}, sending SIGKILL")
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
             except Exception:
                 pass
+            # Drain stdout so the pipe buffer doesn't hold the process alive
+            try:
+                proc.stdout.read()
+            except Exception:
+                pass
+            _scan_proc = None
         except Exception as e:
+            _scan_proc = None
             print(f"[DAB] Scan error on {ch}: {e}")
             continue
+
+        # Let the USB device settle before next channel
+        time.sleep(0.5)
 
         if not output_lines:
             continue
