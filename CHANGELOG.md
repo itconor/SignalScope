@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.108] - 2026-03-25
+
+### Fixed
+- **DAB scan returns 0 services after a stream attempt** (`dab.py` v1.0.17) — stream worker used `-A stdout` which is not a valid welle-cli 2.4 audio backend; welle-cli played to ALSA and produced no PCM on stdout. `proc_ffmpeg.stdout.read()` blocked forever, keeping welle-cli running and holding the RTL-SDR dongle. When a scan command arrived, the scan's welle-cli couldn't open the device ("No dongles found") and returned 0 services on all channels. Three fixes: (1) Changed audio backend from `-A stdout` to `-A rawfile` which is the correct welle-cli 2.4 backend for raw PCM output to stdout. (2) Added `select.select()` with 2s timeout around the ffmpeg read so the worker never blocks permanently — if welle-cli exits or the service isn't found, the worker unblocks within 2s and logs the exit. (3) `_dispatch_client_cmd` now calls `_stop_stream()` before starting a scan so any held dongle is released.
+- **welle-cli stderr log limit removed** (`dab.py` v1.0.17) — the 30-line unconditional limit caused post-sync messages (service selection, audio start) to be silently dropped. Now logs ALL welle-cli stderr lines unconditionally.
+
 ## [3.3.107] - 2026-03-25
 
 ### Diagnostic

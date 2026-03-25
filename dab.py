@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.16",
+    "version":  "1.0.17",
 }
 
 import hashlib
@@ -1416,6 +1416,10 @@ def _dispatch_client_cmd(cmd, hub_url, site, cfg, monitor):
                 pass
         monitor.log("[DAB] Scan stopped by hub command")
     elif action == "scan":
+        # Stop any running stream first — welle-cli must release the dongle
+        # before the scan can open it.  Without this, the scan gets 0 services
+        # because the device is still held by the stream worker.
+        _stop_stream()
         channels = cmd.get("channels") or list(_DAB_CHANNELS.keys())
         t = threading.Thread(
             target=_do_scan,
@@ -1509,8 +1513,10 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
 
     chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
 
-    # welle-cli command
-    welle_cmd = [welle_bin, "-c", channel, "-s", service, "-A", "stdout"]
+    # welle-cli command.
+    # -A rawfile outputs raw S16LE PCM to stdout when no -G filename is given.
+    # ("-A stdout" is not a valid backend name in welle-cli 2.4.)
+    welle_cmd = [welle_bin, "-c", channel, "-s", service, "-A", "rawfile"]
     if sdr_serial:
         welle_cmd[1:1] = ["-D", f"driver=rtlsdr,serial={sdr_serial}"]
 
@@ -1564,13 +1570,33 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, hub_url, site
         )
         dls_thread.start()
 
-        # Read MP3 from ffmpeg and POST chunks to hub
+        # Read MP3 from ffmpeg and POST chunks to hub.
+        # Use select() with a 2s timeout so the read never blocks permanently
+        # if welle-cli produces no PCM (wrong backend, service not found, etc.).
+        import select as _select
         _CHUNK = 8192  # ~0.5 s at 128 kbps
-        out_deadline  = None
-        chunks_sent   = 0
+        out_deadline   = None
+        chunks_sent    = 0
         post_err_count = 0
+        last_chunk_t   = time.monotonic()
 
         while not stop.is_set():
+            # Non-blocking wait: up to 2 s for ffmpeg to produce output
+            rlist, _, _ = _select.select([proc_ffmpeg.stdout], [], [], 2.0)
+            if not rlist:
+                # Nothing from ffmpeg — check if processes are still alive
+                if stop.is_set():
+                    break
+                if proc_welle and proc_welle.poll() is not None:
+                    _log(f"[DAB] welle-cli exited (rc={proc_welle.returncode}) "
+                         f"after {chunks_sent} chunks — service not found or no signal")
+                    break
+                if proc_ffmpeg and proc_ffmpeg.poll() is not None:
+                    _log(f"[DAB] ffmpeg exited after {chunks_sent} chunks")
+                    break
+                # Still alive but no output — keep waiting (DAB sync takes time)
+                continue
+
             chunk = proc_ffmpeg.stdout.read(_CHUNK)
             if not chunk:
                 if proc_welle and proc_welle.poll() is not None:
@@ -1644,15 +1670,12 @@ def _dls_reader(stderr_stream, site, hub_url, stop, monitor=None):
             if not line:
                 continue
 
-            # Log ALL welle-cli stderr so startup errors are visible in the
-            # in-app log window — log first 30 lines unconditionally, then
-            # only lines that look like errors or status.
+            # Log ALL welle-cli stderr — no line limit, no keyword filter.
+            # Every line is visible in the client log window so we can see
+            # exactly what happens after sync: service selection, audio
+            # start, errors, etc.
             line_count += 1
-            if monitor and (line_count <= 30
-                            or any(k in line.lower() for k in
-                                   ("error", "fail", "cannot", "unable",
-                                    "dls", "service", "ensemble", "tuned",
-                                    "sync", "audio"))):
+            if monitor:
                 monitor.log(f"[DAB welle] {line}")
 
             # Match common welle-cli DLS output patterns
