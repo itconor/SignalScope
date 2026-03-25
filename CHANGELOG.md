@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.85] - 2026-03-25
+
+### Fixed
+- **Web SDR waterfall never appears** — the "Connect to see spectrum" overlay (`noSig`) was only hidden when enough PCM audio had been scheduled. If the client hadn't yet delivered audio (e.g. startup latency), the overlay permanently covered the canvas even while the waterfall was rendering correctly behind it. `noSig` is now hidden immediately on the first spectrum frame received from the server, decoupling waterfall visibility from audio state. On connect, the overlay message changes to "Waiting for signal from client…" so the user can see that a connection attempt is in progress.
+- **Waterfall blurry on retina/HiDPI displays** — `_resize()` computed `devicePixelRatio` but never applied it. Canvas internal resolution is now set to `clientWidth × dpr` × `clientHeight × dpr` with matching CSS size overrides, giving sharp rendering on HiDPI screens. First resize deferred to `requestAnimationFrame` to ensure flex layout has settled before reading dimensions.
+
 ## [3.3.84] - 2026-03-25
 
 ### Fixed

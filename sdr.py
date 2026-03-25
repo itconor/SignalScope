@@ -777,6 +777,8 @@ connBtn.addEventListener('click', function(){
 function doStart(freq){
   if(!siteSel.value){ setState('error','Select a site'); return; }
   _cf = freq; freqDisp.textContent = freq.toFixed(3);
+  noSig.textContent = 'Waiting for signal from client…';
+  noSig.style.display = '';
   setState('connecting','Connecting…');
   _f('/api/hub/sdr/start', {method:'POST', body:JSON.stringify({
     site: siteSel.value,
@@ -812,6 +814,7 @@ function doStop(){
   _f('/api/hub/sdr/stop',{method:'POST',body:JSON.stringify({site:siteSel.value})})
     .catch(function(){});
   setState('idle','Idle');
+  noSig.textContent = 'Connect to see spectrum';
   noSig.style.display = '';
   _slotId = '';
 }
@@ -853,16 +856,23 @@ var _DB_MIN    = -110, _DB_MAX = -20;
 function _resize(){
   var wrap = document.getElementById('wf-wrap');
   var dpr  = window.devicePixelRatio || 1;
-  _wfW = wrap.clientWidth;
-  _wfH = wrap.clientHeight;
+  _wfW = Math.round(wrap.clientWidth  * dpr);
+  _wfH = Math.round(wrap.clientHeight * dpr);
   _wfCanvas.width  = _wfW;
   _wfCanvas.height = _wfH;
-  _ruCanvas.width  = _ruCanvas.parentElement.clientWidth;
-  _ruCanvas.height = 22;
+  _wfCanvas.style.width  = wrap.clientWidth  + 'px';
+  _wfCanvas.style.height = wrap.clientHeight + 'px';
+  var ruW = _ruCanvas.parentElement.clientWidth;
+  _ruCanvas.width  = Math.round(ruW * dpr);
+  _ruCanvas.height = Math.round(22  * dpr);
+  _ruCanvas.style.width  = ruW + 'px';
+  _ruCanvas.style.height = '22px';
+  _ruCtx.scale(dpr, dpr);
   _drawRuler();
 }
 window.addEventListener('resize', _resize);
-_resize();
+// Defer first resize to ensure flex layout has settled
+requestAnimationFrame(_resize);
 
 // Precompute color LUT (256 entries)
 var _colorLUT = (function(){
@@ -956,6 +966,8 @@ function _pollSpectrum(){
     .then(function(r){return r.json();})
     .then(function(d){
       if(!d.fft || !d.fft.length) return;
+      // Hide the overlay on first frame — waterfall is now visible
+      noSig.style.display = 'none';
       // Update BW if changed
       if(d.bw && Math.abs(d.bw - _bw) > 0.001){
         _bw = d.bw;
