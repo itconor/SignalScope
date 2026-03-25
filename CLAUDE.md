@@ -1,0 +1,268 @@
+# SignalScope — Project Memory
+
+## Project Overview
+SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
+
+- **Repo**: https://github.com/itconor/SignalScope
+- **Current build string**: `BUILD = "SignalScope-3.3.79"` (increment on every release)
+- **Release flow**: bump `BUILD`, update `CHANGELOG.md`, `git commit`, `git push`, `gh release create v{version}`
+
+---
+
+## Plugin System
+
+### How it works
+On startup, `_load_plugins()` scans the app directory for any `*.py` file (except `signalscope.py` itself) that contains the string `SIGNALSCOPE_PLUGIN`. Matching files are imported and their `register(app, ctx)` function is called. A nav bar item is injected automatically between hub links and Settings.
+
+Key code locations in `signalscope.py`:
+- `_plugins: list[dict]` — module-level registry (line ~11340)
+- `_load_plugins()` — discovery and import (line ~11350)
+- `_scan_installed_plugins()` — settings page helper (line ~11416)
+- `_PLUGIN_REGISTRY_URL` — GitHub `plugins.json` URL (line ~11450)
+- Plugin API routes: `/api/plugins`, `/api/plugins/available`, `/api/plugins/install`, `/api/plugins/remove`
+- Settings nav button: `b-plugins` / panel: `p-plugins` — outside the `<form>` tag
+
+### Plugin registry
+`plugins.json` at repo root lists installable plugins. Users can browse and install via **Settings → Plugins**.
+
+---
+
+## Writing a Plugin
+
+### Minimal skeleton
+```python
+# myplugin.py — drop alongside signalscope.py
+
+SIGNALSCOPE_PLUGIN = {
+    "id":    "myplugin",       # unique slug, matches filename stem
+    "label": "My Plugin",      # nav bar label
+    "url":   "/hub/myplugin",  # nav bar href
+    "icon":  "🔧",             # optional emoji
+}
+
+def register(app, ctx):
+    """Called once at startup. Register Flask routes here."""
+    login_required  = ctx["login_required"]
+    csrf_protect    = ctx["csrf_protect"]
+    monitor         = ctx["monitor"]         # AppMonitor — access cfg, log, etc.
+    hub_server      = ctx["hub_server"]      # HubServer or None
+    listen_registry = ctx["listen_registry"] # ListenSlotRegistry
+    BUILD           = ctx["BUILD"]           # version string
+
+    @app.get("/hub/myplugin")
+    @login_required
+    def myplugin_page():
+        return "<h1>My Plugin</h1>"
+```
+
+### `ctx` keys
+| Key | Type | Description |
+|-----|------|-------------|
+| `app` | Flask | The Flask application |
+| `monitor` | AppMonitor | Access `monitor.app_cfg` (config), `monitor.log()`, etc. |
+| `hub_server` | HubServer \| None | Hub state, `_sites`, `_scanner_sessions`, etc. |
+| `listen_registry` | ListenSlotRegistry | Create/get relay slots |
+| `login_required` | decorator | Require authenticated session |
+| `csrf_protect` | decorator | Validate CSRF token on POST routes |
+| `BUILD` | str | e.g. `"SignalScope-3.3.79"` |
+
+### Accessing config
+```python
+cfg      = monitor.app_cfg          # AppConfig dataclass
+hub_url  = cfg.hub.hub_url          # remote hub URL (client side)
+site     = cfg.hub.site_name        # this machine's site name
+secret   = cfg.hub.secret_key       # HMAC secret
+dongles  = cfg.sdr_devices          # list[SdrDevice]
+scanner_dongles = [d for d in cfg.sdr_devices if d.role == "scanner"]
+```
+
+### Using the audio relay infrastructure
+
+Plugins can push PCM audio to the browser using the **existing** relay pipeline — no new streaming code needed.
+
+```python
+# 1. Create a slot (hub side — usually triggered by a browser POST)
+slot = listen_registry.create(
+    site_name, 0,
+    kind="scanner",                        # reuses scanner relay
+    mimetype="application/octet-stream",
+    freq_mhz=96.5,                         # metadata only
+)
+slot_id    = slot.slot_id
+stream_url = f"/hub/scanner/stream/{slot_id}"   # give this to the browser
+
+# 2. Push PCM chunks (client side — in a background thread)
+#    Format: 16-bit signed LE, mono, 48 kHz, 9600 bytes per block (0.1 s)
+import urllib.request, hashlib, hmac as _hmac, time, os
+
+def _sign(secret, data, ts):
+    key = hashlib.sha256(f"{secret}:signing".encode()).digest()
+    msg = f"{ts:.0f}:".encode() + data
+    return _hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
+ts  = time.time()
+sig = _sign(secret, pcm_bytes, ts) if secret else ""
+req = urllib.request.Request(chunk_url, data=pcm_bytes, method="POST",
+      headers={"Content-Type": "application/octet-stream",
+               "X-Hub-Sig": sig, "X-Hub-Ts": f"{ts:.0f}",
+               "X-Hub-Nonce": hashlib.md5(os.urandom(8)).hexdigest()[:16]})
+urllib.request.urlopen(req, timeout=5).close()
+
+# 3. Browser connects to stream_url — reuse scanner JS audio pump:
+#    connectAudio(stream_url)  — 48 kHz, 16-bit PCM, _PRE=1.0 s pre-buffer
+```
+
+### Hub ↔ Client communication
+
+The hub cannot directly call the client (NAT). Use the **client-polls-hub** pattern:
+
+```python
+# Hub side: queue a command for the client
+_pending = {}   # site → cmd dict (module-level)
+
+@app.get("/api/myplugin/cmd")
+def myplugin_cmd_poll():
+    site = request.headers.get("X-Site", "").strip()
+    sdata = hub_server._sites.get(site, {})
+    if not sdata.get("_approved"): return jsonify({}), 403
+    cmd = _pending.pop(site, None)
+    return jsonify({"cmd": cmd} if cmd else {})
+
+# Client side: polling thread (started in register())
+def _poller(monitor):
+    import urllib.request, json
+    while True:
+        cfg = monitor.app_cfg
+        r = urllib.request.urlopen(
+            urllib.request.Request(f"{cfg.hub.hub_url}/api/myplugin/cmd",
+                headers={"X-Site": cfg.hub.site_name}), timeout=5)
+        d = json.loads(r.read())
+        if d.get("cmd"): _handle(d["cmd"])
+        time.sleep(3)
+```
+
+### SDR dongle access
+
+```python
+import shutil, subprocess
+
+rtl_sdr = shutil.which("rtl_sdr")   # or "rtl_fm", "welle-cli", etc.
+cmd = [rtl_sdr, "-f", "96500000", "-s", "1024000", "-g", "0", "-n", "0", "-"]
+if sdr_serial:
+    cmd[1:1] = ["-d", sdr_serial]
+proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+# proc.stdout → raw uint8 IQ pairs (I then Q, 127.5-centred)
+```
+
+IQ → complex float → demodulate pattern:
+```python
+import numpy as np
+raw = np.frombuffer(proc.stdout.read(204800), dtype=np.uint8)
+iq  = (raw[0::2].astype(np.float32) - 127.5 \
+     + 1j*(raw[1::2].astype(np.float32) - 127.5)) / 127.5
+# WFM demodulate:
+demod = np.angle(iq[1:] * np.conj(iq[:-1])) / np.pi
+# Resample 1024 kHz → 48 kHz (scipy):
+from scipy import signal as sp
+audio = sp.resample_poly(demod, 3, 64)   # UP=3, DN=64
+pcm   = np.clip(audio * 32767 * 2.5, -32768, 32767).astype(np.int16)
+```
+
+### Scanner dongle role
+
+Dongles marked `role = "scanner"` in Settings → SDR Devices are:
+- Reported to hub in every heartbeat: `payload["scanner_serials"]`
+- Stored per-site in `hub_server._sites[site]["scanner_serials"]`
+- Returned by `GET /api/hub/scanner/devices/<site>`
+- Used to filter the FM Scanner and Web SDR site selectors
+
+### Browser audio pump (JS — copy this into plugin templates)
+```javascript
+var _audioCtx=null,_gainNode=null,_reader=null,_nextTime=0;
+var _pcmBuf=new Uint8Array(0),_sched=0;
+var _SR=48000,_BLK_S=4800,_BLK_B=9600,_PRE=1.0;
+
+function _initAudio(){
+  if(_audioCtx)return;
+  _audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:_SR});
+  _gainNode=_audioCtx.createGain(); _gainNode.connect(_audioCtx.destination);
+}
+function connectAudio(url){
+  if(_reader){try{_reader.cancel();}catch(e){}_reader=null;}
+  _pcmBuf=new Uint8Array(0);_sched=0;
+  _initAudio(); if(_audioCtx.state==='suspended')_audioCtx.resume();
+  _nextTime=_audioCtx.currentTime+_PRE;
+  fetch(url,{credentials:'same-origin'}).then(function(r){
+    _reader=r.body.getReader();
+    (function pump(){_reader.read().then(function(d){
+      if(d.done||!_reader)return;
+      var tmp=new Uint8Array(_pcmBuf.length+d.value.length);
+      tmp.set(_pcmBuf);tmp.set(d.value,_pcmBuf.length);_pcmBuf=tmp;
+      while(_pcmBuf.length>=_BLK_B){
+        var blk=_pcmBuf.slice(0,_BLK_B);_pcmBuf=_pcmBuf.slice(_BLK_B);
+        var buf=_audioCtx.createBuffer(1,_BLK_S,_SR);
+        var ch=buf.getChannelData(0);
+        var dv=new DataView(blk.buffer,blk.byteOffset,blk.byteLength);
+        for(var i=0;i<_BLK_S;i++)ch[i]=dv.getInt16(i*2,true)/32768.0;
+        var src=_audioCtx.createBufferSource();
+        src.buffer=buf;src.connect(_gainNode);
+        var t=Math.max(_nextTime,_audioCtx.currentTime+0.05);
+        src.start(t);_nextTime=t+buf.duration;_sched++;
+      }
+      pump();
+    });})();
+  });
+}
+```
+
+### Adding a plugin to the public registry
+
+Add an entry to `plugins.json` at the repo root:
+```json
+{
+  "id":           "myplugin",
+  "name":         "My Plugin",
+  "file":         "myplugin.py",
+  "icon":         "🔧",
+  "description":  "What it does.",
+  "version":      "1.0.0",
+  "requirements": "numpy scipy",
+  "url":          "https://raw.githubusercontent.com/itconor/SignalScope/main/myplugin.py"
+}
+```
+
+Users will see it in **Settings → Plugins → Check GitHub for plugins** and can install with one click.
+
+---
+
+## Architecture Notes
+
+### Hub ↔ Client heartbeat
+- Client POSTs heartbeat every ~10 s to `{hub_url}/api/v1/heartbeat`
+- Hub stores full payload in `hub_server._sites[site_name]`
+- Hub returns ACK with `listen_requests`, `commands`, etc.
+- `scanner_serials` (dongles with role=scanner) are included in every heartbeat payload
+
+### Audio relay slots
+- `listen_registry.create(site, idx, kind, ...)` → `ListenSlot`
+- Client POSTs PCM to `/api/v1/audio_chunk/<slot_id>`
+- Browser GETs `/hub/scanner/stream/<slot_id>` — existing relay generator
+- Slot expires after inactivity; `slot.closed = True` to expire immediately
+
+### WAN audio latency (solved in 3.3.70–3.3.73)
+- `_KP_THRESHOLD = 1.0` in `generate_scanner()` relay — silence injection threshold
+- Browser `_PRE = 1.0` — 1 s pre-buffer
+- Client batches chunks when RTT > `_BLK_DUR` (0.1 s) to maintain real-time delivery
+- RDS/stereo fields flow: client `_scanner_rds` dict → heartbeat payload → hub session `sess["rds"]` → `/api/hub/scanner/status/<site>` → browser
+
+### Settings page structure
+- Template: `SETTINGS_TPL` (starts ~line 14, inside `"""`)
+- Tab nav: `<nav class="sb">` with `<button class="tb" id="b-{id}" onclick="st('{id}')">`
+- Panels: `<div class="pn" id="p-{id}">` — inside `<form>` for settings that save, OUTSIDE for JS-only panels (like Plugins)
+- `st(id)` JS function shows/hides panels and updates active button
+
+### SDR device roles
+`SdrDevice.role` options: `"none"` | `"dab"` | `"fm"` | `"scanner"`
+- `"scanner"` — designated FM Scanner / WebSDR dongle
+- Reported to hub in heartbeat as `scanner_serials`
