@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.126"
+BUILD                  = "SignalScope-3.3.127"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -21929,25 +21929,21 @@ def api_mobile_hub_dab_stream(slot_id: str):
     def generate():
         # welle-cli can take 15-35 s to acquire DAB sync before any output
         deadline = time.time() + 35.0
-        try:
-            while True:
-                try:
-                    chunk = slot.get(timeout=0.5)
-                    yield chunk
-                    break
-                except _queue.Empty:
-                    if slot.closed or time.time() > deadline:
-                        return
-            while True:
-                try:
-                    chunk = slot.get(timeout=1.0)
-                    yield chunk
-                except _queue.Empty:
-                    if slot.closed or slot.stale:
-                        break
-        finally:
-            slot.closed = True
-            listen_registry.remove(slot.slot_id)
+        while True:
+            try:
+                chunk = slot.get(timeout=0.5)
+                yield chunk
+                break
+            except _queue.Empty:
+                if slot.closed or time.time() > deadline:
+                    return
+        while True:
+            try:
+                chunk = slot.get(timeout=1.0)
+                yield chunk
+            except _queue.Empty:
+                if slot.closed or slot.stale:
+                    return
 
     return Response(
         generate(),
