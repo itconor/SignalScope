@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.126] - 2026-03-25
+
+### Added
+- **Mobile API — DAB region presets** (`dab.py`, `signalscope.py`) — new `GET /api/hub/dab/regions` endpoint in the DAB plugin returns the `_SCAN_REGIONS` hierarchy (same data used by the web scanner region tree). New mobile wrapper `/api/mobile/dab/regions` exposes this to the iOS app. Mobile `scan` endpoint already accepted a `channels` list — now the iOS app can pass a filtered channel set based on the selected location preset, scanning only the relevant 4–8 channels for a region instead of all 38 European Band III channels. **Requires iOS app update.**
+
+---
+
 ## [3.3.125] - 2026-03-25
 
 ### Fixed

@@ -1190,6 +1190,14 @@ def register(app, ctx):
         monitor.log(f"[DAB] Band scan triggered for site '{site}' ({len(channels)} channels)")
         return jsonify({"ok": True})
 
+    # ── Hub: region presets (used by browser and mobile clients) ─────────────────
+
+    @app.get("/api/hub/dab/regions")
+    @login_required
+    def dab_regions():
+        """Return the scan region hierarchy (id, label, icon, channels, children)."""
+        return jsonify({"ok": True, "regions": _SCAN_REGIONS})
+
     # ── Hub: scan status (browser polls during scan) ───────────────────────────
 
     @app.get("/api/hub/dab/scan_status/<path:site_name>")

@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.125"
+BUILD                  = "SignalScope-3.3.126"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -21972,6 +21972,19 @@ def api_mobile_dab_scan_status(site_name: str):
     if not fn:
         return jsonify({"ok": True, "status": "idle", "progress": 0, "total": 0, "found": 0})
     return fn(site_name)
+
+
+@app.get("/api/mobile/dab/regions")
+@mobile_api_required
+def api_mobile_dab_regions():
+    """Return DAB scan region hierarchy (id, label, icon, channels[], children[]).
+    Used by the iOS app to show location presets so users can scan a subset of
+    channels rather than all 38 European Band III channels.
+    """
+    fn = _dab_vf("dab_regions")
+    if not fn:
+        return jsonify({"ok": True, "regions": {}})
+    return fn()
 
 
 # ─── Mobile: chain maintenance endpoint ──────────────────────────────────────
