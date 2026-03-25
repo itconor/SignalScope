@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.124] - 2026-03-25
+
+### Fixed
+- **iOS DAB Scanner — scan/start does nothing, welle-cli never spawned** (`signalscope.py`) — the mobile DAB wrapper endpoints were calling the fully-decorated plugin view functions (`vf()`) which failed silently due to `@csrf_protect` and `@login_required` rejecting the token-authenticated mobile request. Added `_dab_vf()` helper that peels off all `__wrapped__` decorator layers before invoking, so the bare DAB plugin logic runs without CSRF/session checks (mobile token auth already validated by `@mobile_api_required`).
+
+---
+
 ## [3.3.123] - 2026-03-25
 
 ### Fixed

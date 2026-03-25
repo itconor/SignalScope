@@ -1360,7 +1360,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.123"
+BUILD                  = "SignalScope-3.3.124"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -21783,21 +21783,29 @@ def api_mobile_dab_sites():
     return jsonify({"ok": True, "sites": sites})
 
 
+def _dab_vf(name):
+    """Return the unwrapped (no decorators) DAB plugin view function by name, or None."""
+    fn = current_app.view_functions.get(name)
+    if fn is None:
+        return None
+    # Peel off @login_required / @csrf_protect wrappers so mobile token auth suffices
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+    return fn
+
+
 @app.post("/api/mobile/dab/start")
 @mobile_api_required
 def api_mobile_dab_start():
     """Start a DAB stream. Body: {site, service, channel, sdr_serial}."""
-    vf = current_app.view_functions.get("dab_start")
-    if not vf:
+    fn = _dab_vf("dab_start")
+    if not fn:
         return jsonify({"ok": False, "error": "dab plugin not installed"}), 503
-    # Call the real dab_start handler without CSRF requirement
-    resp = vf()
-    # Patch stream_url to use mobile path
+    resp = fn()
     try:
         body = resp.get_json(silent=True) or {}
         if body.get("ok") and body.get("slot_id"):
-            slot_id = body["slot_id"]
-            body["mobile_stream_url"] = f"/api/mobile/hub/dab/stream/{slot_id}"
+            body["mobile_stream_url"] = f"/api/mobile/hub/dab/stream/{body['slot_id']}"
             return jsonify(body), resp.status_code
     except Exception:
         pass
@@ -21808,25 +21816,24 @@ def api_mobile_dab_start():
 @mobile_api_required
 def api_mobile_dab_stop():
     """Stop DAB stream. Body: {site}."""
-    vf = current_app.view_functions.get("dab_stop")
-    if not vf:
+    fn = _dab_vf("dab_stop")
+    if not fn:
         return jsonify({"ok": False, "error": "dab plugin not installed"}), 503
-    return vf()
+    return fn()
 
 
 @app.get("/api/mobile/dab/status/<path:site_name>")
 @mobile_api_required
 def api_mobile_dab_status(site_name: str):
     """Get DAB session status for a site."""
-    vf = current_app.view_functions.get("dab_status")
-    if not vf:
+    fn = _dab_vf("dab_status")
+    if not fn:
         return jsonify({"ok": True, "active": False})
-    resp = vf(site_name)
+    resp = fn(site_name)
     try:
         body = resp.get_json(silent=True) or {}
         if body.get("ok") and body.get("slot_id"):
-            slot_id = body["slot_id"]
-            body["mobile_stream_url"] = f"/api/mobile/hub/dab/stream/{slot_id}"
+            body["mobile_stream_url"] = f"/api/mobile/hub/dab/stream/{body['slot_id']}"
             return jsonify(body), resp.status_code
     except Exception:
         pass
@@ -21837,29 +21844,29 @@ def api_mobile_dab_status(site_name: str):
 @mobile_api_required
 def api_mobile_dab_services(site_name: str):
     """List scanned DAB services for a site."""
-    vf = current_app.view_functions.get("dab_services")
-    if not vf:
+    fn = _dab_vf("dab_services")
+    if not fn:
         return jsonify({"ok": True, "services": []})
-    return vf(site_name)
+    return fn(site_name)
 
 
 @app.post("/api/mobile/dab/scan")
 @mobile_api_required
 def api_mobile_dab_scan():
     """Trigger DAB band scan. Body: {site, sdr_serial, channels?}."""
-    vf = current_app.view_functions.get("dab_scan")
-    if not vf:
+    fn = _dab_vf("dab_scan")
+    if not fn:
         return jsonify({"ok": False, "error": "dab plugin not installed"}), 503
-    return vf()
+    return fn()
 
 
 @app.get("/api/mobile/hub/dab/stream/<slot_id>")
 @mobile_api_required
 def api_mobile_hub_dab_stream(slot_id: str):
-    """Proxy DAB MP3 stream for mobile clients."""
-    vf = current_app.view_functions.get("hub_dab_stream")
-    if vf:
-        return vf(slot_id)
+    """Proxy DAB MP3 stream for mobile clients (MP3, played directly by AVPlayer)."""
+    fn = _dab_vf("hub_dab_stream")
+    if fn:
+        return fn(slot_id)
     return jsonify({"error": "dab plugin not installed"}), 503
 
 
