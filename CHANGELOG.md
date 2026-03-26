@@ -2,6 +2,17 @@
 
 ---
 
+## [3.3.157] - 2026-03-26
+
+### Changed
+- **SVG icons replace emoji in Dashboard stream cards** — the four most prominent emoji in the dashboard stream card UI have been replaced with clean inline SVG icons that render consistently across all platforms:
+  - `⬇ Clip` → download arrow SVG
+  - `▶ Live` → play triangle SVG
+  - `💾 Saved Clips` → floppy disk / save SVG
+  - `📋 Recent Events` → list SVG
+- Added `_SVG` icon dict and `@app.context_processor` so `{{icons.NAME|safe}}` works in all templates going forward — future icons can be added to one place.
+- Added `.ic` CSS utility class for correct inline vertical alignment of SVG icons.
+
 ## [3.3.156] - 2026-03-26
 
 ### Changed

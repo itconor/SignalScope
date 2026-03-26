@@ -1550,7 +1550,20 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.156"
+BUILD                  = "SignalScope-3.3.157"
+
+# ── SVG icon snippets ─────────────────────────────────────────────────────────
+# Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
+# .ic CSS rule (vertical-align:-2px) present in every page's <style> block.
+_SVG: dict[str, str] = {
+    "download": '<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+    "play":     '<svg class="ic" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>',
+    "save":     '<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>',
+    "list":     '<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
+    "chart":    '<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
+    "settings": '<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    "refresh":  '<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+}
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -12970,6 +12983,12 @@ def _inject_nav():
         return Markup(topnav(active))
 
     return {"hub_mode": mode, "topnav": topnav_safe}
+
+@app.context_processor
+def _inject_icons():
+    """Make SVG icon snippets available as {{icons.NAME|safe}} in every template."""
+    return {"icons": _SVG}
+
 _sk_path = os.path.join(BASE_DIR, ".flask_secret")
 if os.path.exists(_sk_path):
     with open(_sk_path,"rb") as _f: app.secret_key = _f.read()
@@ -13192,6 +13211,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 .card-expand-btn:hover{color:var(--tx)}.card-expand-btn.open{transform:rotate(180deg)}
 .card-more-btn{padding:3px 8px;font-size:16px;line-height:1}
 /* ── Extracted component classes ── */
+.ic{display:inline-block;vertical-align:-2px;flex-shrink:0}
 .card-dev{font-size:11px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:140px;white-space:nowrap}
 .lbar-mode-label{font-size:11px;color:var(--acc);width:32px;cursor:pointer;user-select:none;flex-shrink:0}
 .rv-mu{font-size:11px;color:var(--mu)}
@@ -13373,8 +13393,8 @@ main{padding:16px;max-width:1440px;margin:0 auto}
           <option value="5">5s</option><option value="10" selected>10s</option>
           <option value="20">20s</option><option value="30">30s</option>
         </select>
-        <a href="#" class="btn bg bs" data-idx="{{idx}}" data-action="clip">⬇ Clip</a>
-        <button class="btn bp bs" id="livebtn_{{idx}}" data-idx="{{idx}}" data-action="live">▶ Live</button>
+        <a href="#" class="btn bg bs" data-idx="{{idx}}" data-action="clip">{{icons.download|safe}} Clip</a>
+        <button class="btn bp bs" id="livebtn_{{idx}}" data-idx="{{idx}}" data-action="live">{{icons.play|safe}} Live</button>
         <audio id="live_{{idx}}" style="display:none;flex:1;min-width:0;height:28px" controls></audio>
       </div>
       {% endif %}
@@ -13382,7 +13402,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
       {# ── Saved clips ── #}
       <div class="hist-wrap">
         <button class="hist-toggle" data-idx="{{idx}}" data-action="clips">
-          <span>💾 Saved Clips</span><span id="clips_arrow_{{idx}}">▶</span>
+          <span>{{icons.save|safe}} Saved Clips</span><span id="clips_arrow_{{idx}}">▶</span>
         </button>
         <div id="clips_panel_{{idx}}" style="display:none">
           <div id="clips_list_{{idx}}" style="font-size:12px;color:var(--mu);padding:6px 13px">Loading…</div>
@@ -13392,7 +13412,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
       {# ── Event history ── #}
       <div class="hist-wrap">
         <button class="hist-toggle" data-idx="{{idx}}" data-action="hist">
-          <span>📋 Recent Events</span><span id="hist_arrow_{{idx}}">▶</span>
+          <span>{{icons.list|safe}} Recent Events</span><span id="hist_arrow_{{idx}}">▶</span>
         </button>
         <div id="hist_panel_{{idx}}" style="display:none">
           <div class="hist" id="hist_{{idx}}">
@@ -26336,6 +26356,7 @@ body.wall-mode .sc{}
 .sc-name{font-weight:600;font-size:13px;padding:10px 10px 4px;display:flex;align-items:center;gap:6px}
 .sc-dev{font-size:10px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap}
 .sc-name strong{font-size:12px}
+.ic{display:inline-block;vertical-align:-2px;flex-shrink:0}
 .sc-row{display:flex;justify-content:space-between;font-size:12px;color:var(--mu);margin-top:4px}
 .sc-row span{color:var(--tx)}
 .rtp-ok{color:var(--ok)}.rtp-wn{color:var(--wn)}.rtp-al{color:var(--al)}
