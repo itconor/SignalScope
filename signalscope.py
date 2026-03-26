@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.149"
+BUILD                  = "SignalScope-3.3.150"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -12827,93 +12827,138 @@ def _inject_nav():
         mode = "client"; build_ = BUILD; running_ = False
 
     def topnav(active=""):
-        show_hub = mode in ("hub", "both")
-        hub_only = (mode == "hub")
-        csrf = _csrf_token()
+        show_hub    = mode in ("hub", "both")
+        hub_only    = (mode == "hub")
+        csrf        = _csrf_token()
+        nonce       = _csp_nonce()
+        current_ver = build_.split("-")[-1]
+
         def _a(page, label, href):
             cls = "btn bg bs nav-active" if active == page else "btn bg bs"
             return f'<a class="{cls}" href="{href}">{label}</a>'
+
+        # ── Start / Stop (dashboard only, non-hub) ────────────────────────
         start_stop = ""
         if active == "dashboard" and not hub_only:
             if running_:
-                start_stop = f'<form method="post" action="/stop" style="margin:0"><input type="hidden" name="_csrf_token" value="{csrf}"><button class="btn bd bs">⏹ Stop</button></form>'
+                start_stop = (f'<form method="post" action="/stop" style="margin:0">'
+                              f'<input type="hidden" name="_csrf_token" value="{csrf}">'
+                              f'<button class="btn bd bs">&#9209; Stop</button></form>')
             else:
-                start_stop = f'<form method="post" action="/start" style="margin:0"><input type="hidden" name="_csrf_token" value="{csrf}"><button class="btn bp bs">▶ Start</button></form>'
+                start_stop = (f'<form method="post" action="/start" style="margin:0">'
+                              f'<input type="hidden" name="_csrf_token" value="{csrf}">'
+                              f'<button class="btn bp bs">&#9654; Start</button></form>')
+
         home_href = "/hub" if hub_only else "/"
-        local_links = "" if hub_only else (_a("dashboard", "Dashboard", "/") + _a("inputs", "Inputs", "/inputs") + _a("reports", "Reports", "/reports") + _a("sla", "SLA", "/sla"))
-        hub_link = (_a("hub", "Hub", "/hub") + _a("hub_reports", "Hub Reports", "/hub/reports") + _a("chains", "Broadcast Chains", "/chains")) if show_hub else ""
-        # ── Plugins dropdown ─────────────────────────────────────────────────
+
+        # ── Dropdown group helper ─────────────────────────────────────────
+        def _group(label, pages_hrefs):
+            """pages_hrefs = list of (page_id, label, href)"""
+            is_active   = any(active == p for p, _l, _h in pages_hrefs)
+            tcls        = "btn bg bs nav-active" if is_active else "btn bg bs"
+            items       = "".join(_a(p, l, h) for p, l, h in pages_hrefs)
+            return (f'<div class="ss-pg" tabindex="0">'
+                    f'<span class="{tcls}" style="cursor:default;user-select:none">'
+                    f'{label}\u202f\u25be</span>'
+                    f'<div class="ss-pdrop">{items}</div></div>')
+
+        # ── Nav groups ────────────────────────────────────────────────────
+        monitor_group = ("" if hub_only else
+                         _group("Monitor", [("dashboard", "Dashboard", "/"),
+                                            ("inputs",    "Inputs",    "/inputs")]))
+        reports_group = ("" if hub_only else
+                         _group("Reports", [("reports", "Reports", "/reports"),
+                                            ("sla",     "SLA",     "/sla")]))
+        hub_group     = (_group("Hub", [("hub",         "Hub",              "/hub"),
+                                        ("hub_reports", "Hub Reports",      "/hub/reports"),
+                                        ("chains",      "Broadcast Chains", "/chains")])
+                         if show_hub else "")
+
+        # ── Plugins dropdown ──────────────────────────────────────────────
         _vis_plugins = [p for p in _plugins if not p.get("hub_only") or show_hub]
-        # ── Update-available banner ───────────────────────────────────────────
-        nonce       = _csp_nonce()
-        current_ver = build_.split("-")[-1]
-        _latest     = _UPDATE_STATE.get("latest")
-        update_banner = ""
-        if _latest and _ver_tuple(_latest) > _ver_tuple(current_ver):
-            _lv = _latest          # captured for f-string use
-            update_banner = (
-                f'<div id="ss-update-banner" style="background:linear-gradient(90deg,#78350f,#92400e);'
-                f'border-bottom:1px solid #b45309;padding:7px 20px;display:flex;align-items:center;'
-                f'gap:14px;font-size:13px;flex-wrap:wrap">'
-                f'<span style="color:#fde68a">&#11014; SignalScope <strong style="color:#fff">{_lv}</strong> is available</span>'
-                f'<a href="https://github.com/itconor/SignalScope/releases" target="_blank" rel="noopener noreferrer" '
-                f'style="color:#fbbf24;font-weight:600;text-decoration:underline">View release</a>'
-                f'<span style="color:#d97706;font-size:12px">&#xb7; re-run the installer to update</span>'
-                f'<button onclick="sessionStorage.setItem(\'ss_upd\',\'{_lv}\');document.getElementById(\'ss-update-banner\').remove()" '
-                f'style="margin-left:auto;background:none;border:none;color:#fde68a;cursor:pointer;font-size:20px;'
-                f'line-height:1;padding:0 4px;flex-shrink:0" title="Dismiss">&times;</button>'
-                f'</div>'
-                f'<script nonce="{nonce}">'
-                f'(function(){{if(sessionStorage.getItem("ss_upd")==={_lv!r})'
-                f'{{var b=document.getElementById("ss-update-banner");if(b)b.remove();}}}})();</script>'
-            )
-        # ── Build plugin dropdown (nonce available here) ──────────────────────
+        plugin_links = ""
         if _vis_plugins:
             _active_plugin = any(p.get("id") == active for p in _vis_plugins)
-            _trigger_cls   = "btn bg bs nav-active" if _active_plugin else "btn bg bs"
-            _items = "".join(
+            _tcls          = "btn bg bs nav-active" if _active_plugin else "btn bg bs"
+            _items         = "".join(
                 _a(p.get("id", "plugin"),
                    ((p["icon"] + "\u202f") if p.get("icon") else "") + p["label"],
                    p["url"])
                 for p in _vis_plugins
             )
-            plugin_links = (
-                f'<style nonce="{nonce}">'
-                f'.ss-pg{{position:relative;display:inline-block}}'
-                f'.ss-pdrop{{display:none;position:absolute;top:calc(100% + 5px);left:0;'
-                f'min-width:175px;background:var(--sur,#0d2346);border:1px solid var(--bor,#17345f);'
-                f'border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.5);padding:4px;'
-                f'z-index:1000;flex-direction:column;gap:2px}}'
-                f'.ss-pg:hover .ss-pdrop,.ss-pg:focus-within .ss-pdrop{{display:flex!important}}'
-                f'.ss-pdrop .btn{{display:block;text-align:left;width:100%;'
-                f'box-sizing:border-box;white-space:nowrap}}'
-                f'</style>'
-                f'<div class="ss-pg" tabindex="0">'
-                f'<span class="{_trigger_cls}" style="cursor:default;user-select:none">Plugins\u202f\u25be</span>'
-                f'<div class="ss-pdrop">{_items}</div>'
+            plugin_links = (f'<div class="ss-pg" tabindex="0">'
+                            f'<span class="{_tcls}" style="cursor:default;user-select:none">'
+                            f'Plugins\u202f\u25be</span>'
+                            f'<div class="ss-pdrop">{_items}</div></div>')
+
+        # ── Update-available banner ───────────────────────────────────────
+        _latest       = _UPDATE_STATE.get("latest")
+        update_banner = ""
+        if _latest and _ver_tuple(_latest) > _ver_tuple(current_ver):
+            _lv = _latest
+            update_banner = (
+                f'<div id="ss-update-banner" style="background:linear-gradient(90deg,#78350f,#92400e);'
+                f'border-bottom:1px solid #b45309;padding:7px 20px;display:flex;align-items:center;'
+                f'gap:14px;font-size:13px;flex-wrap:wrap">'
+                f'<span style="color:#fde68a">&#11014; SignalScope '
+                f'<strong style="color:#fff">{_lv}</strong> is available</span>'
+                f'<a href="https://github.com/itconor/SignalScope/releases" target="_blank" '
+                f'rel="noopener noreferrer" style="color:#fbbf24;font-weight:600;'
+                f'text-decoration:underline">View release</a>'
+                f'<span style="color:#d97706;font-size:12px">&#xb7; re-run the installer to update</span>'
+                f'<button onclick="sessionStorage.setItem(\'ss_upd\',\'{_lv}\');'
+                f'document.getElementById(\'ss-update-banner\').remove()" '
+                f'style="margin-left:auto;background:none;border:none;color:#fde68a;cursor:pointer;'
+                f'font-size:20px;line-height:1;padding:0 4px;flex-shrink:0" title="Dismiss">&times;</button>'
                 f'</div>'
+                f'<script nonce="{nonce}">'
+                f'(function(){{if(sessionStorage.getItem("ss_upd")==={_lv!r})'
+                f'{{var b=document.getElementById("ss-update-banner");if(b)b.remove();}}}})();</script>'
             )
-        else:
-            plugin_links = ""
+
+        # ── Dropdown CSS (shared by all groups) ───────────────────────────
+        dropdown_css = (
+            f'<style nonce="{nonce}">'
+            f'.ss-pg{{position:relative;display:inline-block}}'
+            f'.ss-pdrop{{display:none;position:absolute;top:calc(100% + 6px);left:0;'
+            f'min-width:180px;background:var(--sur,#0d2346);border:1px solid var(--bor,#17345f);'
+            f'border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.5);padding:4px;'
+            f'z-index:1000;flex-direction:column;gap:2px}}'
+            f'.ss-pg:hover .ss-pdrop,.ss-pg:focus-within .ss-pdrop{{display:flex!important}}'
+            f'.ss-pdrop .btn{{display:block;text-align:left;width:100%;'
+            f'box-sizing:border-box;white-space:nowrap}}'
+            f'</style>'
+        )
+
         return (
-            '<header style="background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);box-shadow:0 10px 24px rgba(0,0,0,.18);position:relative;z-index:200">'
-            f'<a href="{home_href}" style="text-decoration:none;display:flex;align-items:center;gap:12px;min-width:0">'
-            '<img src="/static/signalscope_icon.png" alt="SignalScope" style="height:46px;width:46px;display:block;object-fit:contain;flex-shrink:0;filter:drop-shadow(0 4px 12px rgba(23,168,255,.28))">'
-            '<div style="display:flex;flex-direction:column;line-height:1.05;min-width:0">'
-            '<span style="font-weight:800;font-size:24px;color:var(--tx);letter-spacing:-.02em">SignalScope</span>'
-            '<span style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.16em">Broadcast Signal Intelligence</span>'
-            '</div>'
-            '</a>'
-            '<div style="margin-left:14px;padding:5px 10px;border-radius:999px;background:#0f2e5e;border:1px solid var(--bor);font-size:11px;font-weight:700;color:#b7d8ff;white-space:nowrap">v'
-            f'{current_ver}'
-            '</div>'
-            '<nav style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-left:auto">'
+            dropdown_css
+            + '<header style="background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));'
+              'border-bottom:1px solid var(--bor);box-shadow:0 10px 24px rgba(0,0,0,.18);'
+              'position:relative;z-index:200">'
+            + f'<a href="{home_href}" style="text-decoration:none;display:flex;'
+              f'align-items:center;gap:12px;min-width:0">'
+            + '<img src="/static/signalscope_icon.png" alt="SignalScope" style="height:46px;'
+              'width:46px;display:block;object-fit:contain;flex-shrink:0;'
+              'filter:drop-shadow(0 4px 12px rgba(23,168,255,.28))">'
+            + '<div style="display:flex;flex-direction:column;line-height:1.05;min-width:0">'
+            + '<span style="font-weight:800;font-size:24px;color:var(--tx);'
+              'letter-spacing:-.02em">SignalScope</span>'
+            + '<span style="font-size:11px;color:var(--mu);text-transform:uppercase;'
+              'letter-spacing:.16em">Broadcast Signal Intelligence</span>'
+            + '</div></a>'
+            + f'<div style="margin-left:14px;padding:5px 10px;border-radius:999px;'
+              f'background:#0f2e5e;border:1px solid var(--bor);font-size:11px;'
+              f'font-weight:700;color:#b7d8ff;white-space:nowrap">v{current_ver}</div>'
+            + '<nav style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-left:auto">'
             + start_stop
-            + local_links
-            + hub_link
+            + monitor_group
+            + reports_group
+            + hub_group
             + plugin_links
-            + _a("settings",  "Settings",  "/settings")
-            + f'<form method="post" action="/logout" style="margin:0"><input type="hidden" name="_csrf_token" value="{csrf}"><button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
+            + _a("settings", "Settings", "/settings")
+            + f'<form method="post" action="/logout" style="margin:0">'
+              f'<input type="hidden" name="_csrf_token" value="{csrf}">'
+              f'<button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
             + '</nav></header>'
             + update_banner
         )

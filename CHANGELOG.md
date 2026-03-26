@@ -2,6 +2,18 @@
 
 ---
 
+## [3.3.150] - 2026-03-26
+
+### Changed
+- **Navigation restructured — grouped dropdowns replace flat button row** — the top nav previously listed every page as a flat row of buttons (Dashboard, Inputs, Reports, SLA, Hub, Hub Reports, Broadcast Chains, Plugins…) which grew unmanageable with plugins. Replaced with four grouped dropdowns:
+  - **Monitor ▾** → Dashboard, Inputs
+  - **Reports ▾** → Reports, SLA
+  - **Hub ▾** → Hub, Hub Reports, Broadcast Chains (hub/both mode only)
+  - **Plugins ▾** → existing plugin list (unchanged)
+  - Settings and Logout remain as direct buttons
+  - Parent group button highlights (`nav-active`) when any child page is active
+  - Dropdown CSS promoted to always-on and shared across all groups
+
 ## [3.3.149] - 2026-03-26
 
 ### Improved
