@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.15"
+BUILD                  = "SignalScope-3.4.16"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -11608,7 +11608,11 @@ class HubServer:
                             _last_rec = self._chain_last_recovery.get(cid, 0)
                             _tail = float(chain.get("fault_tail_secs", 20.0))
                             _in_stability_window = (_last_rec > 0 and now - _last_rec < 2 * _tail)
-                            if _in_stability_window and min_fault_secs > 0:
+                            # Never apply stability window to ad-break candidates —
+                            # pre-mixin silence recurring within 40 s of a recovery is
+                            # almost certainly back-to-back ad breaks, not a re-fault.
+                            if (_in_stability_window and min_fault_secs > 0
+                                    and not result.get("adbreak_candidate")):
                                 monitor.log(
                                     f"[Chain] '{result['name']}' re-faulted within stability window "
                                     f"({round(now - _last_rec)}s < {round(2 * _tail)}s) — confirmation skipped.")
