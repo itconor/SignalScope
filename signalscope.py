@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.152"
+BUILD                  = "SignalScope-3.3.153"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -26315,8 +26315,8 @@ body.wall-mode .site-meta{font-size:13px}
 }
 
 body.wall-mode .streams{grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;padding:10px}
-.sc{background:#123764;border:1px solid var(--bor);border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.12);min-height:330px}
-body.wall-mode .sc{min-height:260px}
+.sc{background:#123764;border:1px solid var(--bor);border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+body.wall-mode .sc{}
 .sc.stats-alert{border-left:3px solid var(--al)}.sc.stats-warn{border-left:3px solid var(--wn)}
 .alert-badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.04em;margin-left:4px}
 .badge-silence{background:#102033;color:#93c5fd}.badge-hiss{background:#3a2f0f;color:#fde68a}.badge-clip{background:#381414;color:#fca5a5}.badge-ai{background:#14263a;color:#93c5fd}
@@ -26378,6 +26378,9 @@ body.wall-mode .sc{min-height:260px}
 #hmp-audio{flex:1;min-width:200px;height:32px;accent-color:var(--acc)}
 #hmp-close{background:none;border:1px solid var(--bor);border-radius:6px;color:var(--mu);font-size:13px;cursor:pointer;padding:5px 12px;line-height:1;flex-shrink:0;white-space:nowrap}
 #hmp-close:hover{border-color:var(--al);color:var(--al)}
+.sc-detail{display:none}.sc-detail.open{display:block}
+.sc-expand-btn{background:none;border:none;color:var(--mu);padding:2px 5px;font-size:13px;cursor:pointer;line-height:1;transition:transform .2s,color .15s;flex-shrink:0}
+.sc-expand-btn:hover{color:var(--tx)}.sc-expand-btn.open{transform:rotate(180deg)}
 </style>
 <script nonce="{{csp_nonce()}}">
 function aiClass(s){return s.includes('ALERT')?'ai-al':s.includes('WARN')?'ai-wn':'ai-ok';}
@@ -26748,6 +26751,15 @@ document.addEventListener('click', function(e){
   if(e.target.closest('#hmp-close')){ _closeHubMiniPlayer(); return; }
   var btn = e.target.closest('[data-action]');
   if(!btn) return;
+  if(btn.dataset.action === 'sc-expand'){
+    var key = btn.dataset.scKey;
+    var detail = document.getElementById('sc_detail_'+key);
+    if(!detail) return;
+    var open = detail.classList.toggle('open');
+    btn.classList.toggle('open', open);
+    try{ localStorage.setItem('hub_sc_expand_'+key, open ? '1' : '0'); }catch(ex){}
+    return;
+  }
   if(btn.dataset.action !== 'live') return;
   e.preventDefault();
   toggleLive(btn.dataset.sidx, btn.dataset.site, btn);
@@ -26757,6 +26769,16 @@ document.addEventListener('click', function(e){
 document.addEventListener('DOMContentLoaded', function(){
   initCardSearch('hubSearch', 'site-grid', '.site-card');
   initDragGrid('site-grid', 'signalscope.hub.order', '.site-card');
+  // Restore sc-detail expand state from localStorage
+  document.querySelectorAll('[data-action="sc-expand"]').forEach(function(btn){
+    var key = btn.dataset.scKey;
+    var saved = null;
+    try{ saved = localStorage.getItem('hub_sc_expand_'+key); }catch(ex){}
+    if(saved === '1'){
+      var detail = document.getElementById('sc_detail_'+key);
+      if(detail){ detail.classList.add('open'); btn.classList.add('open'); }
+    }
+  });
   tickClock();
   setInterval(tickClock, 1000);
   setTimeout(function(){
@@ -27110,6 +27132,7 @@ setInterval(_loadTrends, 300000);
         <span class="dot {{dc}}"></span>
         <strong style="font-size:12px">{{s.name}}</strong>
         <span style="font-size:10px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap">{{s.device_index or ''}}</span>
+        <button class="sc-expand-btn" data-action="sc-expand" data-sc-key="{{site.site|replace(' ','_')|replace('.','_')|replace('-','_')}}__{{i}}" title="Expand / Collapse">&#9662;</button>
       </div>
 
       {# Level bar #}
@@ -27127,6 +27150,9 @@ setInterval(_loadTrends, 300000);
           <span style="color:#22c55e">■</span> <span style="color:#ef4444">■</span> <span style="color:#f59e0b">■</span> <span style="color:#374151">■</span>
         </span>
       </div>
+
+      {# Collapsible detail #}
+      <div class="sc-detail" id="sc_detail_{{site.site|replace(' ','_')|replace('.','_')|replace('-','_')}}__{{i}}">
 
       {# Info rows #}
       <div style="padding:0 10px 4px">
@@ -27340,6 +27366,8 @@ setInterval(_loadTrends, 300000);
           <div class="sc-hs" style="display:none;font-size:11px;color:var(--mu);text-align:center;padding:4px 0 6px"></div>
         </div>
       </div>
+
+      </div>{# /sc-detail #}
     </div>
     {% else %}
     <div style="padding:20px;text-align:center;color:var(--mu);font-size:13px">

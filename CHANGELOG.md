@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.153] - 2026-03-26
+
+### Changed
+- **Hub page stream cards collapse by default** — stream cards on the Hub page now start collapsed showing only the name, status dot, device label, level bar and 24h timeline. A `▾` chevron in the card header expands/collapses all details (info rows, AI status, Now Playing, listen strip, clips, event history, signal history chart). Expand state persisted per-card per-site in `localStorage`. Removed the hard-coded `min-height` on stream cards so collapsed cards are compact.
+
 ## [3.3.152] - 2026-03-26
 
 ### Changed
