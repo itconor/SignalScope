@@ -2,10 +2,11 @@
 # Drop alongside signalscope.py
 
 SIGNALSCOPE_PLUGIN = {
-    "id":    "logger",
-    "label": "Logger",
-    "url":   "/hub/logger",
-    "icon":  "🎙",
+    "id":      "logger",
+    "label":   "Logger",
+    "url":     "/hub/logger",
+    "icon":    "🎙",
+    "version": "1.0.0",
 }
 
 import datetime

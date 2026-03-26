@@ -7,6 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/meterwall",
     "icon":     "📊",
     "hub_only": False,
+    "version":  "1.0.0",
 }
 
 
