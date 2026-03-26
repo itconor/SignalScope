@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.21"
+BUILD                  = "SignalScope-3.4.22"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -9234,6 +9234,58 @@ class HubClient:
         if synced:
             monitor.log(f"[Hub] Clip sync complete — {synced} clip(s) uploaded")
 
+    def _prune_uploaded_clips(self):
+        """Delete clips older than 24 h that have a .hub upload-confirmed marker.
+
+        Once a clip is safely on the hub it no longer needs to live on the
+        client.  This keeps alert_snippets/ from growing unboundedly.
+
+        Applies retroactively — any .hub marker written by a previous version
+        is equally eligible, so clips uploaded before this update are pruned
+        on the first pass without any manual action.
+
+        Companion .hub and .meta sidecar files are removed alongside the audio
+        file so no orphan files accumulate.
+        """
+        _PRUNE_AGE_SECS = 86400  # 24 hours
+        snip_dir = os.path.join(BASE_DIR, "alert_snippets")
+        if not os.path.exists(snip_dir):
+            return
+        cutoff  = time.time() - _PRUNE_AGE_SECS
+        removed = 0
+        try:
+            for folder in os.listdir(snip_dir):
+                folder_path = os.path.join(snip_dir, folder)
+                if not os.path.isdir(folder_path):
+                    continue
+                for fname in list(os.listdir(folder_path)):
+                    if not (fname.endswith(".wav") or fname.endswith(".mp3")):
+                        continue
+                    clip_path = os.path.join(folder_path, fname)
+                    stem      = os.path.splitext(clip_path)[0]
+                    marker    = stem + ".hub"
+                    if not os.path.exists(marker):
+                        continue  # not yet confirmed on hub — keep it
+                    try:
+                        mtime = os.path.getmtime(clip_path)
+                    except OSError:
+                        continue
+                    if mtime >= cutoff:
+                        continue  # uploaded recently — keep it
+                    # Confirmed on hub and older than 24 h — safe to delete
+                    for ext in (".wav", ".mp3", ".hub", ".meta"):
+                        p = stem + ext
+                        try:
+                            if os.path.exists(p):
+                                os.remove(p)
+                                removed += 1
+                        except Exception:
+                            pass
+        except Exception as _e:
+            monitor.log(f"[Hub] Clip prune error: {_e}")
+        if removed:
+            monitor.log(f"[Hub] Pruned {removed} file(s) from uploaded clips older than 24 h")
+
     def _cmd_self_update(self, payload: dict):
         """Hub command: download the hub's current signalscope.py and restart."""
         hub_version = payload.get("hub_version", "?")
@@ -10636,6 +10688,13 @@ class HubClient:
                     threading.Thread(
                         target=self._sync_pending_clips,
                         daemon=True, name="ClipSync",
+                    ).start()
+                # Prune uploaded clips older than 24 h — offset by 5 cycles so
+                # sync and prune don't race on the same files.
+                if self._hb_count % 10 == 5:
+                    threading.Thread(
+                        target=self._prune_uploaded_clips,
+                        daemon=True, name="ClipPrune",
                     ).start()
             else:
                 self.fail_total += 1

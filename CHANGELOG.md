@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.22] - 2026-03-26
+
+### Added
+- **Automatic 24-hour pruning of uploaded clips** — the client now runs a `ClipPrune` background task every ~100 s (offset from `ClipSync` by 50 s to avoid races). Any clip that has a `.hub` upload-confirmed marker and is older than 24 hours is deleted, along with its `.hub` and `.meta` sidecar files. Once a clip is safely on the hub it no longer needs to live on disk. Applies retroactively — `.hub` markers written by previous versions are equally eligible, so clips already uploaded before this update are cleaned up on the first pass without any manual action.
+
 ## [3.4.21] - 2026-03-26
 
 ### Fixed
