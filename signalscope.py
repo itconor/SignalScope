@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.145"
+BUILD                  = "SignalScope-3.3.146"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -4984,14 +4984,26 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                 cfg._silence_alert_key = alert_key
             cfg._silence_secs=0.0
         elif cfg._silence_active and lev>cfg.silence_threshold_dbfs:
-            # Audio has just resumed — save a clip that ends AFTER the silence so the
-            # recording captures the tail of the outage and the moment audio comes back.
-            clip=_save_alert_wav(cfg,"silence_end",cfg.alert_wav_duration)
-            _add_history(cfg, cfg._silence_alert_key or "SILENCE",
-                         f"Audio restored on '{cfg.name}'", clip_path=clip or "")
-            log_fn(f"[Alert] Silence ended on '{cfg.name}'")
+            # Audio has just resumed. Reset state immediately to avoid re-triggering,
+            # then wait _POST_SILENCE_SECS so the rolling buffer fills with restored
+            # audio before saving — the clip will show [tail of silence + recovery].
+            _post_key  = cfg._silence_alert_key or "SILENCE"
+            _post_dur  = cfg.alert_wav_duration
+            _post_name = cfg.name
+            # Wait 85 % of clip length so the clip ends well into the restored
+            # audio — the first ~15 % gives a short tail of silence for context.
+            _post_wait = _post_dur * 0.85
             cfg._silence_active=False
             cfg._silence_alert_key=""
+            def _save_silence_end(_cfg=cfg, _dur=_post_dur, _key=_post_key,
+                                  _name=_post_name, _wait=_post_wait, _log=log_fn):
+                time.sleep(_wait)
+                clip=_save_alert_wav(_cfg,"silence_end",_dur)
+                _add_history(_cfg, _key, f"Audio restored on '{_name}'",
+                             clip_path=clip or "")
+                _log(f"[Alert] Silence ended on '{_name}'")
+            threading.Thread(target=_save_silence_end, daemon=True,
+                             name="SilenceEndClip").start()
 
     # Clip
     if cfg.alert_on_clip:

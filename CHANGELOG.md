@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.146] - 2026-03-26
+
+### Fixed
+- **Recovery clip contained almost no restored audio** — the `silence_end` clip introduced in 3.3.145 was saved at the exact frame audio resumed. The rolling buffer at that instant was still almost entirely silence, so the clip showed the outage but only a sample or two of restored audio.
+
+  Fix: the recovery save is deferred by **85 % of `alert_wav_duration`** seconds on a short daemon thread. When the save fires, the buffer contains a brief silence tail (≈15 % of the clip for context) followed by a substantial stretch of restored audio. Example: with a 30 s clip setting, the thread waits 25.5 s and the clip ends 25.5 s into the recovery.
+
 ## [3.3.145] - 2026-03-26
 
 ### Fixed
