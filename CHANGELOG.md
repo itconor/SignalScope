@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.163] - 2026-03-26
+
+### Fixed
+- **Hub Reports — filter overflow persists despite CSS constraints** — Chrome's `datetime-local` input has a browser-enforced minimum intrinsic size for its date/time picker UI. This minimum overrides CSS `width` and `max-width` on the input element itself: the page initially renders with the CSS-specified width (correct), then snaps to the browser minimum ~100 ms later (broken). No CSS approach applied to the input itself can reliably prevent this. Fix: the two `datetime-local` inputs have been moved out of `.filters` entirely into a new `.filter-sub` row below the filter bar, alongside the "Clips only" checkbox and the event count. `.filters` now contains only `<select>` elements (Site, Stream, Type, Chain) whose width is fully controllable via CSS. The `.filter-sub` row uses `flex-wrap:wrap` so datetime inputs, checkbox, and count are always visible regardless of viewport width.
+
 ## [3.3.162] - 2026-03-26
 
 ### Fixed
