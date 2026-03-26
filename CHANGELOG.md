@@ -2,6 +2,16 @@
 
 ---
 
+## [3.3.149] - 2026-03-26
+
+### Improved
+- **Chain fault alerts now report whether downstream nodes still have audio** — previously the fault message said "X downstream position(s) may also be affected" regardless of actual downstream state. The note now distinguishes three cases:
+  - *All downstream still up* → `"Audio still present downstream: TX Output, DAB Mux."`
+  - *Mixed* → `"Audio still present at TX Output; DAB Mux also affected."`
+  - *All downstream also down* → `"X downstream position(s) also affected."`
+
+  This immediately tells the engineer whether the fault is isolated (signal is still on-air somewhere) or has taken down the entire chain end-to-end.
+
 ## [3.3.148] - 2026-03-26
 
 ### Added

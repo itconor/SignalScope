@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.148"
+BUILD                  = "SignalScope-3.3.149"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -11825,9 +11825,31 @@ class HubServer:
         nodes       = result.get("nodes", [])
         total       = len(nodes)
         chain_label = result["name"]
-        downstream  = total - idx - 1
-        ds_note     = (f" {downstream} downstream position(s) may also be affected."
-                       if downstream > 0 else "")
+
+        # ── Build downstream note ──────────────────────────────────────────────
+        # Distinguish nodes that are still producing audio from those also down.
+        def _node_label(n):
+            return n.get("label") or n.get("stream") or "?"
+        def _node_is_ok(n):
+            st = n.get("status")
+            if st == "down": return False
+            if st == "offline" and not n.get("offline_grace_active", False): return False
+            return True
+        downstream_nodes = nodes[idx + 1:] if idx + 1 < total else []
+        if downstream_nodes:
+            still_up  = [n for n in downstream_nodes if _node_is_ok(n)]
+            also_down = [n for n in downstream_nodes if not _node_is_ok(n)]
+            if still_up and not also_down:
+                up_names = ", ".join(_node_label(n) for n in still_up)
+                ds_note = f" Audio still present downstream: {up_names}."
+            elif still_up and also_down:
+                up_names   = ", ".join(_node_label(n) for n in still_up)
+                down_names = ", ".join(_node_label(n) for n in also_down)
+                ds_note = f" Audio still present at {up_names}; {down_names} also affected."
+            else:
+                ds_note = f" {len(also_down)} downstream position(s) also affected."
+        else:
+            ds_note = ""
 
         # ── Build the fault description ────────────────────────────────────────
         if fn.get("type") == "stack":
