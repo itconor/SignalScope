@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.134] - 2026-03-26
+
+### Added
+- **Log viewer in Settings → Log** — new tab in the Settings page showing the last 500 SignalScope log lines in a terminal-style panel. Auto-refreshes every 3 seconds while the tab is open, stops polling when you switch away. Features: live filter box (type `[Clip]`, `[Hub]`, `ERROR`, stream name etc. to narrow down), pause/resume, clear display, copy-all to clipboard, and a scroll-to-bottom button. Lines are colour-coded: red for errors, yellow for warnings, cyan for `[Clip]` events, purple for `[Hub]` events, green for success messages. Backed by new `GET /api/settings/log?n=500&filter=…` endpoint.
+
 ## [3.3.133] - 2026-03-26
 
 ### Fixed

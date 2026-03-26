@@ -44,6 +44,8 @@ function st(id){
   history.replaceState(null,'','#'+id);
   if(id==='mobile') loadMobileApiStatus();
   if(id==='plugins' && typeof window.pluginFetchAvail==='function') window.pluginFetchAvail(true);
+  if(id==='log' && typeof window.logViewerActivate==='function') window.logViewerActivate();
+  if(id!=='log' && typeof window.logViewerDeactivate==='function') window.logViewerDeactivate();
 }
 
 async function loadMobileApiStatus(){
@@ -148,6 +150,7 @@ document.addEventListener('DOMContentLoaded',function(){
   <button class="tb" id="b-mobile" onclick="st('mobile')">📱 Mobile API</button>
   <button class="tb" id="b-sdr"     onclick="st('sdr')"    >📻 SDR Devices</button>
   <button class="tb" id="b-plugins" onclick="st('plugins')">🔌 Plugins</button>
+  <button class="tb" id="b-log"     onclick="st('log')"    >📋 Log</button>
 </nav>
 <div class="ct">
 {% with m=get_flashed_messages() %}{% if m %}<ul class="fl">{% for x in m %}<li>{{x}}</li>{% endfor %}</ul>{% endif %}{% endwith %}
@@ -1341,6 +1344,125 @@ document.getElementById('p-plugins').addEventListener('click', function(e){
 })();
 </script>
 
+<!-- ── Log viewer panel — outside the settings form -->
+<div class="pn" id="p-log">
+  <div class="sec">📋 Live Log</div>
+  <p class="help" style="margin-bottom:12px">Real-time SignalScope log (last 500 lines, newest at bottom). Auto-refreshes every 3 s while this tab is open. Use the filter to find specific events — try <code>[Clip]</code>, <code>[Hub]</code>, <code>ERROR</code>, or a stream name.</p>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+    <input id="log-filter" type="text" placeholder="Filter…" style="flex:1;min-width:160px;font-size:12px;padding:5px 9px;background:var(--bg);border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
+    <button type="button" id="log-pause-btn"  class="btn bg bs" style="font-size:12px">⏸ Pause</button>
+    <button type="button" id="log-clear-btn"  class="btn bg bs" style="font-size:12px">🗑 Clear</button>
+    <button type="button" id="log-copy-btn"   class="btn bg bs" style="font-size:12px">📋 Copy all</button>
+    <button type="button" id="log-bottom-btn" class="btn bg bs" style="font-size:12px">⬇ Bottom</button>
+    <span id="log-status" style="font-size:11px;color:var(--mu);white-space:nowrap">—</span>
+  </div>
+  <pre id="log-box" style="background:#080b10;border:1px solid var(--bor);border-radius:8px;padding:10px 14px;height:480px;overflow-y:auto;font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Courier New',monospace;color:#c8d3e0;line-height:1.6;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+</div>
+<script nonce="{{csp_nonce()}}">
+(function(){
+  var _paused=false, _lines=[], _filter='', _poll=null, _userScrolled=false;
+  var box=document.getElementById('log-box');
+  var filterEl=document.getElementById('log-filter');
+  var pauseBtn=document.getElementById('log-pause-btn');
+  var clearBtn=document.getElementById('log-clear-btn');
+  var copyBtn=document.getElementById('log-copy-btn');
+  var botBtn=document.getElementById('log-bottom-btn');
+  var statusEl=document.getElementById('log-status');
+
+  function _esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function colorLine(raw){
+    var e=_esc(raw);
+    // Timestamp prefix [HH:MM:SS] → dim
+    e=e.replace(/^(\[\d{2}:\d{2}:\d{2}\])/,'<span style="color:#4a5a72">$1</span>');
+    var l=raw.toLowerCase();
+    if(/error|exception|traceback|failed|failure/.test(l))
+      return '<span style="color:#ff7b7b">'+e+'</span>';
+    if(/warn/.test(l))
+      return '<span style="color:#ffd93d">'+e+'</span>';
+    if(/\[clip\]/i.test(raw))
+      return '<span style="color:#67d8f0">'+e+'</span>';
+    if(/\[hub\]/i.test(raw))
+      return '<span style="color:#c084fc">'+e+'</span>';
+    if(/started|ok\b|success|saved|uploaded ok/i.test(raw))
+      return '<span style="color:#a6e3a1">'+e+'</span>';
+    return e;
+  }
+
+  function atBottom(){ return box.scrollHeight-box.scrollTop-box.clientHeight<60; }
+
+  function render(){
+    var filt=_filter.toLowerCase();
+    var vis=filt?_lines.filter(function(l){return l.toLowerCase().indexOf(filt)>=0;}):_lines;
+    var wasBottom=atBottom();
+    box.innerHTML=vis.map(colorLine).join('\n');
+    if(wasBottom&&!_userScrolled) box.scrollTop=box.scrollHeight;
+  }
+
+  function fetchLog(){
+    if(_paused) return;
+    fetch('/api/settings/log?n=500',{credentials:'same-origin'})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        _lines=d.lines||[];
+        statusEl.textContent=(_filter?'Filtered: ':'')+(d.count||0)+' lines · '+new Date().toLocaleTimeString();
+        render();
+      })
+      .catch(function(e){ statusEl.textContent='Fetch error: '+e.message; });
+  }
+
+  box.addEventListener('scroll',function(){
+    _userScrolled=!atBottom();
+  });
+
+  filterEl.addEventListener('input',function(){
+    _filter=this.value;
+    render();
+  });
+
+  pauseBtn.addEventListener('click',function(){
+    _paused=!_paused;
+    pauseBtn.textContent=_paused?'▶ Resume':'⏸ Pause';
+    pauseBtn.className=_paused?'btn bw bs':'btn bg bs';
+    if(!_paused) fetchLog();
+  });
+
+  clearBtn.addEventListener('click',function(){
+    _lines=[];
+    box.innerHTML='<span style="color:var(--mu);font-style:italic">Display cleared — server log is unchanged. New lines appear on next refresh.</span>';
+    statusEl.textContent='Cleared';
+  });
+
+  copyBtn.addEventListener('click',function(){
+    navigator.clipboard.writeText(_lines.join('\n')).then(function(){
+      copyBtn.textContent='✓ Copied';
+      setTimeout(function(){copyBtn.textContent='📋 Copy all';},2000);
+    }).catch(function(){
+      /* fallback for older browsers */
+      var ta=document.createElement('textarea');
+      ta.value=_lines.join('\n');
+      document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);
+      copyBtn.textContent='✓ Copied';
+      setTimeout(function(){copyBtn.textContent='📋 Copy all';},2000);
+    });
+  });
+
+  botBtn.addEventListener('click',function(){
+    _userScrolled=false;
+    box.scrollTop=box.scrollHeight;
+  });
+
+  window.logViewerActivate=function(){
+    if(_poll) return;
+    fetchLog();
+    _poll=setInterval(fetchLog,3000);
+  };
+  window.logViewerDeactivate=function(){
+    if(_poll){ clearInterval(_poll); _poll=null; }
+  };
+})();
+</script>
+
 </div></div>
 
 </body></html>"""#!/usr/bin/env python3
@@ -1384,7 +1506,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.133"
+BUILD                  = "SignalScope-3.3.134"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -15918,6 +16040,23 @@ def api_hub_site_rules():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.get("/api/settings/log")
+@login_required
+def api_settings_log():
+    """Return recent log lines for the Settings → Log viewer.
+
+    Query params:
+      n      — number of lines to return (default 500, max 2000)
+      filter — case-insensitive substring filter applied server-side
+    """
+    n    = min(int(request.args.get("n", 500)), 2000)
+    filt = (request.args.get("filter") or "").lower().strip()
+    lines = monitor.get_logs(n)
+    if filt:
+        lines = [l for l in lines if filt in l.lower()]
+    return jsonify({"lines": lines, "count": len(lines)})
 
 
 @app.get("/settings/backup")
