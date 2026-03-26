@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.1"
+BUILD                  = "SignalScope-3.4.2"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -1681,10 +1681,11 @@ _ALL_ALERT_TYPES = [
     "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
 ]
 # Chain monitoring constants
-CHAIN_FLAP_WINDOW  = 600    # seconds — window for flap detection
-CHAIN_FLAP_COUNT   = 3      # fault transitions in window = flapping
-CHAIN_TREND_WINDOW = 60     # minutes of level history used for predictive trend
-CHAIN_TREND_THRESH = -0.3   # dBFS/min — slope steeper than this triggers amber warning
+CHAIN_FLAP_WINDOW        = 600    # seconds — window for flap detection
+CHAIN_FLAP_COUNT         = 3      # fault transitions in window = flapping
+CHAIN_TREND_WINDOW       = 60     # minutes of level history used for predictive trend
+CHAIN_TREND_THRESH       = -0.3   # dBFS/min — slope steeper than this triggers amber warning
+CHAIN_SHARED_FAULT_WINDOW = 5.0   # seconds — window for shared-fault aggregation (Change 5)
 STREAM_BUFFER_SECONDS  = 20.0
 ALERT_BUFFER_SECONDS   = 10.0
 CHAIN_CLIP_MIN_SECS    = 10.0  # minimum clip duration for chain fault recordings
@@ -3600,6 +3601,27 @@ class MetricsDB:
                     print("[MetricsDB] Migrated chain_fault_log: added clips column")
                 except _sqlite3.OperationalError:
                     pass  # column already exists — normal path
+                # Migration: add adbreak_overshoot column (Change 8)
+                try:
+                    conn.execute("ALTER TABLE chain_fault_log ADD COLUMN adbreak_overshoot INTEGER DEFAULT 0")
+                    conn.commit()
+                    print("[MetricsDB] Migrated chain_fault_log: added adbreak_overshoot column")
+                except _sqlite3.OperationalError:
+                    pass
+                # Migration: add cascaded_from column (Change 8 / Change 7)
+                try:
+                    conn.execute("ALTER TABLE chain_fault_log ADD COLUMN cascaded_from TEXT DEFAULT ''")
+                    conn.commit()
+                    print("[MetricsDB] Migrated chain_fault_log: added cascaded_from column")
+                except _sqlite3.OperationalError:
+                    pass
+                # Migration: add message column (Change 8)
+                try:
+                    conn.execute("ALTER TABLE chain_fault_log ADD COLUMN message TEXT DEFAULT ''")
+                    conn.commit()
+                    print("[MetricsDB] Migrated chain_fault_log: added message column")
+                except _sqlite3.OperationalError:
+                    pass
                 self._conn = conn
         except Exception as e:
             print(f"[MetricsDB] Init error: {e}")
@@ -3615,8 +3637,9 @@ class MetricsDB:
                 self._conn.execute(
                     "INSERT OR IGNORE INTO chain_fault_log"
                     "(id, chain_id, ts_start, fault_node_label, fault_site,"
-                    " fault_stream, rtp_loss_pct, ts_recovered, clips)"
-                    " VALUES(?,?,?,?,?,?,?,?,?)",
+                    " fault_stream, rtp_loss_pct, ts_recovered, clips,"
+                    " adbreak_overshoot, cascaded_from, message)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         entry.get("id"),
                         entry.get("chain_id", ""),
@@ -3627,6 +3650,9 @@ class MetricsDB:
                         entry.get("rtp_loss_pct"),
                         entry.get("ts_recovered"),
                         json.dumps(entry.get("clips") or []),
+                        1 if entry.get("adbreak_overshoot") else 0,
+                        entry.get("cascaded_from", ""),
+                        entry.get("message", ""),
                     ),
                 )
                 self._conn.commit()
@@ -3664,6 +3690,22 @@ class MetricsDB:
             print(f"[MetricsDB] fault_log_update_clips error: {e}")
             self._conn = None
 
+    def fault_log_update_meta(self, entry_id: str, message: str = "", cascaded_from: str = "",
+                              adbreak_overshoot: bool = False):
+        """Update message, cascaded_from and adbreak_overshoot fields for a fault entry."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                self._conn.execute(
+                    "UPDATE chain_fault_log SET message=?, cascaded_from=?, adbreak_overshoot=? WHERE id=?",
+                    (message, cascaded_from, 1 if adbreak_overshoot else 0, entry_id),
+                )
+                self._conn.commit()
+        except Exception as e:
+            print(f"[MetricsDB] fault_log_update_meta error: {e}")
+            self._conn = None
+
     def fault_log_load(self, chain_id: str, limit: int = 25) -> list:
         """Return the most recent `limit` fault log entries for a chain, oldest first."""
         try:
@@ -3672,7 +3714,8 @@ class MetricsDB:
                     self._conn = self._connect()
                 cur = self._conn.execute(
                     "SELECT id, chain_id, ts_start, fault_node_label, fault_site,"
-                    " fault_stream, rtp_loss_pct, ts_recovered, clips"
+                    " fault_stream, rtp_loss_pct, ts_recovered, clips,"
+                    " adbreak_overshoot, cascaded_from, message"
                     " FROM chain_fault_log WHERE chain_id=?"
                     " ORDER BY ts_start DESC LIMIT ?",
                     (chain_id, limit),
@@ -3698,6 +3741,9 @@ class MetricsDB:
                 "rtp_loss_pct":     r[6],
                 "ts_recovered":     r[7],
                 "clips":            clips,
+                "adbreak_overshoot": bool(r[9]) if len(r) > 9 else False,
+                "cascaded_from":    r[10] or "" if len(r) > 10 else "",
+                "message":          r[11] or "" if len(r) > 11 else "",
             })
         return entries
 
@@ -10168,6 +10214,24 @@ class HubServer:
         # adbreak/pending countdown starts counting down immediately on the UI
         # rather than staying frozen at the full window until the next 10s loop tick.
         self._chain_api_pre_pending_since: dict = {}
+        # Recovery confirmation — cid → epoch ts when recovery first seen
+        # Used for min_recovery_seconds: chain stays "pending_recovery" until elapsed
+        self._chain_recovery_since: dict = {}
+        # Tracks when CHAIN_RECOVERED last fired per chain — cid → epoch ts
+        # Used for post-recovery fast re-fault (Change 3) and cooldown (Change 4)
+        self._chain_last_recovery: dict = {}
+        # Per-chain last alert notification timestamp — cid → epoch ts
+        # Used for min_alert_interval_minutes cooldown (Change 4)
+        self._chain_last_alert_ts: dict = {}
+        # Hysteresis: per-node silence fault active flag — "cid:node_index" → bool
+        # True when that node is currently in a silence fault state (Change 2)
+        self._chain_node_fault_active: dict = {}
+        # Shared-fault aggregation — machine_tag → pending info dict (Change 5)
+        self._chain_shared_fault_pending: dict = {}
+        # Degrading alert fired flag — "cid:node_label" → bool (Change 6)
+        self._chain_degrading_fired: dict = {}
+        # Node offline notification sent flag — "cid:site:stream" → bool (Change 9)
+        self._chain_node_offline_notified: dict = {}
         # Remote backup metadata — site_name → {"ts": float, "size": int}
         # Actual ZIP data lives on disk under HUB_BACKUP_DIR/<safe_name>/backup.zip
         self._site_backups: Dict[str, dict] = {}
@@ -10695,8 +10759,13 @@ class HubServer:
 
     # ── Broadcast chain evaluation ────────────────────────────────────────────
     def _eval_one_node(self, node: dict, cfg, sites_snap: dict,
-                       maintenance: "dict | None" = None) -> dict:
-        """Evaluate a single (non-stack) chain node and return its status dict."""
+                       maintenance: "dict | None" = None,
+                       hysteresis_key: "str | None" = None) -> dict:
+        """Evaluate a single (non-stack) chain node and return its status dict.
+
+        hysteresis_key: if set, use the _chain_node_fault_active dict to apply
+        silence_off_threshold_dbfs hysteresis (Change 2).  Key = "cid:node_index".
+        """
         site    = node.get("site", "")
         sname   = node.get("stream", "")
         label   = node.get("label") or f"{site}/{sname}"
@@ -10709,6 +10778,27 @@ class HubServer:
                 return {"label": label, "site": site, "stream": sname, "machine": machine,
                         "status": "maintenance", "level": None,
                         "maintenance_until": mexp}
+
+        def _apply_hysteresis(level: float, on_thresh: float, node_cfg: dict) -> bool:
+            """Return True if node should be considered 'down' (silence fault).
+            Applies hysteresis band: fault enters at on_thresh, clears at off_thresh.
+            off_thresh defaults to on_thresh + 10 dB if not explicitly set.
+            """
+            off_raw = node_cfg.get("silence_off_threshold_dbfs")
+            off_thresh = float(off_raw) if off_raw is not None else (on_thresh + 10.0)
+            if hysteresis_key is not None:
+                currently_active = self._chain_node_fault_active.get(hysteresis_key, False)
+                if currently_active:
+                    # In fault — use off_thresh to clear
+                    new_down = level <= off_thresh
+                else:
+                    # Not in fault — use on_thresh to enter fault
+                    new_down = level <= on_thresh
+                self._chain_node_fault_active[hysteresis_key] = new_down
+                return new_down
+            else:
+                return level <= on_thresh
+
         if site == "local":
             inp = next((i for i in cfg.inputs if i.name == sname and i.enabled), None)
             if inp is None:
@@ -10717,7 +10807,7 @@ class HubServer:
             dev  = (inp.device_index or "").strip().lower()
             node_override_local = node.get("silence_threshold_dbfs")
             _local_thresh = float(node_override_local) if node_override_local is not None else inp.silence_threshold_dbfs
-            down = inp._last_level_dbfs <= _local_thresh
+            down = _apply_hysteresis(inp._last_level_dbfs, _local_thresh, node)
             if dev.startswith("dab://") and not inp._dab_ok:
                 down = True
             is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
@@ -10752,7 +10842,7 @@ class HubServer:
             else:
                 remote_threshold = sd.get("silence_threshold_dbfs")
                 _silence_thresh  = float(remote_threshold) if remote_threshold is not None else -55.0
-            down = lev <= _silence_thresh
+            down = _apply_hysteresis(lev, _silence_thresh, node)
             if dev.startswith("dab://") and not sd.get("dab_ok", True):
                 down = True
             is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
@@ -10843,10 +10933,14 @@ class HubServer:
             }
 
         nodes_out = []
-        for node in chain.get("nodes", []):
+        _cid = chain.get("id", "")
+        for _ni, node in enumerate(chain.get("nodes", [])):
             if node.get("type") == "stack":
                 mode     = node.get("mode", "all")
-                sub_eval = [self._eval_one_node(n, cfg, sites_snap, maintenance) for n in node.get("nodes", [])]
+                sub_eval = []
+                for _si, _sn in enumerate(node.get("nodes", [])):
+                    _hk = f"{_cid}:{_ni}:{_si}" if _cid else None
+                    sub_eval.append(self._eval_one_node(_sn, cfg, sites_snap, maintenance, hysteresis_key=_hk))
                 if sub_eval:
                     if mode == "any":
                         is_down = any(
@@ -10874,7 +10968,8 @@ class HubServer:
                     "nodes":  sub_eval,
                 })
             else:
-                nodes_out.append(self._eval_one_node(node, cfg, sites_snap, maintenance))
+                _hk = f"{_cid}:{_ni}" if _cid else None
+                nodes_out.append(self._eval_one_node(node, cfg, sites_snap, maintenance, hysteresis_key=_hk))
 
         # maintenance nodes are skipped in fault detection — they count as ok.
         # Brief remote-site heartbeat loss is also softened: an offline node within
@@ -11008,6 +11103,78 @@ class HubServer:
                                     trend = ("down" if slope <= CHAIN_TREND_THRESH
                                              else "up" if slope >= abs(CHAIN_TREND_THRESH) else "stable")
                                     self._chain_node_trend[db_key] = {"trend": trend, "slope": round(slope, 3), "ts": now}
+                                    # ── Change 6: Predictive / Degrading Alert ────────────────
+                                    # Check each chain that references this stream node
+                                    for _dch in cfg.signal_chains:
+                                        _dcid = _dch.get("id", "")
+                                        _trend_thresh = float(_dch.get("trend_alert_dbfs_per_min", 0.0) or 0.0)
+                                        if _trend_thresh == 0.0 or not _dcid:
+                                            continue
+                                        # Only fire if slope is falling faster than the threshold (negative slope)
+                                        if slope > _trend_thresh:
+                                            continue
+                                        # Find the node label for this stream in this chain
+                                        _node_label_for_deg = _strm
+                                        for _dn in _dch.get("nodes", []):
+                                            _subs2 = _dn.get("nodes", []) if _dn.get("type") == "stack" else [_dn]
+                                            for _ds in _subs2:
+                                                if (_ds.get("site", "") == _site and
+                                                        _ds.get("stream", "") == _strm):
+                                                    _node_label_for_deg = _ds.get("label") or _strm
+                                        _deg_key = f"{_dcid}:{_node_label_for_deg}"
+                                        if self._chain_degrading_fired.get(_deg_key, False):
+                                            continue
+                                        # Only alert if chain is currently ok (not already faulted)
+                                        if self._chain_fault_state.get(_dcid, "ok") in ("alerted", "pending"):
+                                            continue
+                                        self._chain_degrading_fired[_deg_key] = True
+                                        # Compute projected time to silence
+                                        _curr_level = ys[-1] if ys else None
+                                        _node_thresh = next(
+                                            (float(n.get("silence_threshold_dbfs", -55.0))
+                                             for n in _dch.get("nodes", [])
+                                             if n.get("stream") == _strm),
+                                            -55.0
+                                        )
+                                        mins_to_silence = None
+                                        if _curr_level is not None and slope < 0:
+                                            _diff = _curr_level - _node_thresh
+                                            if _diff > 0:
+                                                mins_to_silence = _diff / abs(slope)
+                                        _deg_msg = (
+                                            f"Chain '{_dch.get('name', _dcid)}' degrading at node "
+                                            f"'{_node_label_for_deg}': level trending at "
+                                            f"{slope:.2f} dBFS/min"
+                                            + (f", projected silence in ~{mins_to_silence:.0f} min"
+                                               if mins_to_silence is not None else "")
+                                        )
+                                        _alert_log_append({
+                                            "id":            str(uuid.uuid4()),
+                                            "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
+                                            "stream":        _dch.get("name", _dcid),
+                                            "type":          "CHAIN_DEGRADING",
+                                            "message":       _deg_msg,
+                                            "level_dbfs":    _curr_level,
+                                            "rtp_loss_pct":  None,
+                                            "rtp_jitter_ms": None,
+                                            "clip":          "",
+                                            "ptp_state":     "",
+                                            "ptp_offset_us": 0,
+                                            "ptp_drift_us":  0,
+                                            "ptp_jitter_us": 0,
+                                            "ptp_gm":        "",
+                                        })
+                                        try:
+                                            _deg_sender = AlertSender(cfg, monitor.log)
+                                            _deg_sender.send(
+                                                f"CHAIN DEGRADING — {_dch.get('name', _dcid)}",
+                                                _deg_msg,
+                                                alert_type="CHAIN_DEGRADING",
+                                                stream=_dch.get("name", _dcid)
+                                            )
+                                            monitor.log(f"[Chain] DEGRADING: {_deg_msg}")
+                                        except Exception as _de:
+                                            monitor.log(f"[Chain] Degrading alert error: {_de}")
                     except Exception as _te:
                         monitor.log(f"[Chain] Trend compute error: {_te}")
 
@@ -11099,6 +11266,16 @@ class HubServer:
                     # ── Fault detection ──────────────────────────────────────
                     if curr == "fault":
                         if prev == "ok":
+                            # Check post-recovery fast re-fault (Change 3)
+                            _last_rec = self._chain_last_recovery.get(cid, 0)
+                            _tail = float(chain.get("fault_tail_secs", 20.0))
+                            _in_stability_window = (_last_rec > 0 and now - _last_rec < 2 * _tail)
+                            if _in_stability_window and min_fault_secs > 0:
+                                monitor.log(
+                                    f"[Chain] '{result['name']}' re-faulted within stability window "
+                                    f"({round(now - _last_rec)}s < {round(2 * _tail)}s) — confirmation skipped.")
+                                # Fall through with min_fault_secs treated as 0
+                                min_fault_secs = 0
                             if min_fault_secs == 0 or mixin_is_down or fault_is_post_mixin or any_post_mixin_fault:
                                 # Alert immediately:
                                 #  - no confirmation delay configured, OR
@@ -11218,69 +11395,24 @@ class HubServer:
 
                     # ── Recovery detection ───────────────────────────────────
                     elif curr == "ok":
+                        min_recovery_secs = max(0, int(chain.get("min_recovery_seconds", 0) or 0))
                         if prev == "alerted":
-                            # Record recovery in fault log + DB
-                            flog = self._chain_fault_log.setdefault(cid, [])
-                            if flog and flog[-1].get("ts_recovered") is None:
-                                flog[-1]["ts_recovered"] = now
-                                metrics_db.fault_log_set_recovered(
-                                    flog[-1].get("id", ""), now)
-                                tail_secs = float(chain.get("fault_tail_secs", 20.0))
-                                if chain.get("record_all_nodes", True) and tail_secs >= 0:
-                                    flog[-1]["ts_recovered"] = now  # already set above, just ensure
-                                    self._schedule_chain_recovery_clips(chain, flog[-1], cfg, tail_secs)
-                            # Clear adbreak-overshoot flag now that the chain is ok
-                            self._chain_fault_adbreak.pop(cid, None)
-                            # Check if chain was in flapping state — if so send flapping resolved
-                            if self._chain_flapping.get(cid):
-                                self._chain_flapping.pop(cid, None)
-                                try:
-                                    flap_msg = f"Chain '{result['name']}' flapping has resolved — chain is now stable."
-                                    sender.send(f"CHAIN STABLE — {result['name']}", flap_msg,
-                                                alert_type="CHAIN_FLAPPING", stream=result["name"])
-                                    monitor.log(f"[Chain] {flap_msg}")
-                                except Exception as _fe:
-                                    monitor.log(f"[Chain] Flap-resolved notify error: {_fe}")
+                            if min_recovery_secs > 0:
+                                # Start recovery confirmation window
+                                self._chain_fault_state[cid] = "pending_recovery"
+                                self._chain_recovery_since[cid] = now
+                                monitor.log(
+                                    f"[Chain] '{result['name']}' recovery pending — "
+                                    f"waiting {min_recovery_secs}s confirmation.")
                             else:
-                                # Normal recovery notification
-                                rec_msg = f"Chain '{result['name']}' has recovered — all positions OK."
-                                for node in result.get("nodes", []):
-                                    local_nodes = (node.get("nodes", [])
-                                                   if node.get("type") == "stack" else [node])
-                                    for n in local_nodes:
-                                        if n.get("site") == "local":
-                                            rc_cfg = next((i for i in cfg.inputs
-                                                           if i.name == n.get("stream", "") and i.enabled), None)
-                                            if rc_cfg:
-                                                _add_history(rc_cfg, "CHAIN_FAULT", rec_msg)
-                                _alert_log_append({
-                                    "id":            str(uuid.uuid4()),
-                                    "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
-                                    "stream":        result["name"],
-                                    "type":          "CHAIN_RECOVERED",
-                                    "message":       rec_msg,
-                                    "level_dbfs":    None,
-                                    "rtp_loss_pct":  None,
-                                    "rtp_jitter_ms": None,
-                                    "clip":          "",
-                                    "ptp_state":     "",
-                                    "ptp_offset_us": 0,
-                                    "ptp_drift_us":  0,
-                                    "ptp_jitter_us": 0,
-                                    "ptp_gm":        "",
-                                })
-                                try:
-                                    sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
-                                                alert_type="CHAIN_RECOVERED", stream=result["name"])
-                                    monitor.log(f"[Chain] {rec_msg}")
-                                except Exception as e:
-                                    monitor.log(f"[Chain] Recovery notification error: {e}")
-                                _send_apns_push(
-                                    title=f"✅ Recovered: {result['name']}",
-                                    body=rec_msg[:180],
-                                    data={"chain_id": cid, "event": "recovered"},
-                                )
-                            self._chain_fault_state[cid] = "ok"
+                                # Immediate recovery (existing behaviour)
+                                self._do_chain_recovery(cid, result, chain, cfg, sender, now)
+                        elif prev == "pending_recovery":
+                            elapsed = now - self._chain_recovery_since.get(cid, now)
+                            if elapsed >= min_recovery_secs:
+                                self._chain_recovery_since.pop(cid, None)
+                                self._do_chain_recovery(cid, result, chain, cfg, sender, now)
+                            # else: still waiting — do nothing
                         elif prev == "pending":
                             # Fault resolved within confirmation window (e.g. ad break ended)
                             elapsed = round(now - self._chain_fault_since.get(cid, now), 1)
@@ -11291,6 +11423,72 @@ class HubServer:
                             self._chain_fault_since.pop(cid, None)
                             self._chain_fault_index.pop(cid, None)
                         # prev == "ok": already ok, nothing to do
+
+                    # ── pending_recovery → fault: abort recovery ─────────────
+                    elif curr == "fault" and prev == "pending_recovery":
+                        monitor.log(
+                            f"[Chain] '{result['name']}' re-faulted during recovery "
+                            f"confirmation window — aborting recovery, state back to alerted.")
+                        self._chain_fault_state[cid] = "alerted"
+                        self._chain_recovery_since.pop(cid, None)
+
+                    # ── Change 9: Node-level offline notification ────────────
+                    if _warmed_up:
+                        chain_state_now = self._chain_fault_state.get(cid, "ok")
+                        _node_cfg_list = chain.get("nodes", [])
+                        for _ni2, _ne in enumerate(result.get("nodes", [])):
+                            _ncfg = _node_cfg_list[_ni2] if _ni2 < len(_node_cfg_list) else {}
+                            # Flatten stack nodes
+                            _subs3 = (list(zip(_ncfg.get("nodes", []), _ne.get("nodes", [])))
+                                      if _ne.get("type") == "stack"
+                                      else [(_ncfg, _ne)])
+                            for (_scfg, _seval) in _subs3:
+                                if not _scfg.get("offline_notify", False):
+                                    continue
+                                _ok_site   = _scfg.get("site", "")
+                                _ok_stream = _scfg.get("stream", "")
+                                _ok_key    = f"{cid}:{_ok_site}:{_ok_stream}"
+                                if _seval.get("status") == "offline" and chain_state_now != "alerted":
+                                    if not self._chain_node_offline_notified.get(_ok_key, False):
+                                        self._chain_node_offline_notified[_ok_key] = True
+                                        _ok_label = _scfg.get("label") or _ok_stream or "?"
+                                        _ok_msg = (
+                                            f"Node '{_ok_label}' in chain '{chain.get('name','?')}' "
+                                            f"is offline (site: {_ok_site})"
+                                        )
+                                        _alert_log_append({
+                                            "id":            str(uuid.uuid4()),
+                                            "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
+                                            "stream":        chain.get("name", "?"),
+                                            "type":          "CHAIN_NODE_OFFLINE",
+                                            "message":       _ok_msg,
+                                            "level_dbfs":    None,
+                                            "rtp_loss_pct":  None,
+                                            "rtp_jitter_ms": None,
+                                            "clip":          "",
+                                            "ptp_state":     "",
+                                            "ptp_offset_us": 0,
+                                            "ptp_drift_us":  0,
+                                            "ptp_jitter_us": 0,
+                                            "ptp_gm":        "",
+                                        })
+                                        try:
+                                            sender.send(
+                                                f"NODE OFFLINE — {chain.get('name','?')}",
+                                                _ok_msg,
+                                                alert_type="CHAIN_NODE_OFFLINE",
+                                                stream=chain.get("name", "?"),
+                                            )
+                                            monitor.log(f"[Chain] NODE OFFLINE: {_ok_msg}")
+                                        except Exception as _oe:
+                                            monitor.log(f"[Chain] Node offline notify error: {_oe}")
+                                elif _seval.get("status") != "offline":
+                                    if self._chain_node_offline_notified.get(_ok_key, False):
+                                        self._chain_node_offline_notified[_ok_key] = False
+                                        _ok_label = _scfg.get("label") or _ok_stream or "?"
+                                        monitor.log(
+                                            f"[Chain] Node '{_ok_label}' back online "
+                                            f"in chain '{chain.get('name','?')}'")
 
                     # ── SLA metric write (every 60 s) ─────────────────────────
                     last_sla = self._chain_sla_last_write.get(cid, 0)
@@ -11331,6 +11529,98 @@ class HubServer:
                     pass
             _warmed_up = True
             stop_evt.wait(10)   # state machine runs every 10 s; trend gate stays at 30 s
+
+    def _do_chain_recovery(self, cid: str, result: dict, chain: dict, cfg, sender, now: float):
+        """Execute recovery actions: log, clip scheduling, notifications.
+        Called from _chains_monitor_loop when recovery is confirmed (immediately or
+        after min_recovery_seconds has elapsed).
+        """
+        # Record recovery in fault log + DB
+        flog = self._chain_fault_log.setdefault(cid, [])
+        if flog and flog[-1].get("ts_recovered") is None:
+            flog[-1]["ts_recovered"] = now
+            metrics_db.fault_log_set_recovered(flog[-1].get("id", ""), now)
+            tail_secs = float(chain.get("fault_tail_secs", 20.0))
+            if chain.get("record_all_nodes", True) and tail_secs >= 0:
+                flog[-1]["ts_recovered"] = now
+                self._schedule_chain_recovery_clips(chain, flog[-1], cfg, tail_secs)
+        # Record last recovery time (used for fast re-fault detection, Change 3)
+        self._chain_last_recovery[cid] = now
+        # Clear adbreak-overshoot flag now that the chain is ok
+        self._chain_fault_adbreak.pop(cid, None)
+        # Reset degrading-alert fired flags for all nodes in this chain (Change 6)
+        _chain_name_pfx = cid + ":"
+        for _k in list(self._chain_degrading_fired.keys()):
+            if _k.startswith(_chain_name_pfx):
+                self._chain_degrading_fired.pop(_k, None)
+        # Check if chain was in flapping state
+        if self._chain_flapping.get(cid):
+            self._chain_flapping.pop(cid, None)
+            try:
+                flap_msg = f"Chain '{result['name']}' flapping has resolved — chain is now stable."
+                sender.send(f"CHAIN STABLE — {result['name']}", flap_msg,
+                            alert_type="CHAIN_FLAPPING", stream=result["name"])
+                monitor.log(f"[Chain] {flap_msg}")
+            except Exception as _fe:
+                monitor.log(f"[Chain] Flap-resolved notify error: {_fe}")
+        else:
+            # Normal recovery notification — apply cooldown check (Change 4)
+            cooldown_mins = int(chain.get("min_alert_interval_minutes", 0) or 0)
+            suppress_notify = False
+            if cooldown_mins > 0:
+                last_alert = self._chain_last_alert_ts.get(cid, 0)
+                if now - last_alert < cooldown_mins * 60:
+                    suppress_notify = True
+                    monitor.log(f"[Chain] '{result['name']}' recovery notification suppressed (cooldown {cooldown_mins}m)")
+            rec_msg = f"Chain '{result['name']}' has recovered — all positions OK."
+            # Check cascade suppression (Change 7)
+            upstream_id = chain.get("upstream_chain_id", "")
+            cascade_suppressed = False
+            if upstream_id:
+                upstream_state = self._chain_fault_state.get(upstream_id, "ok")
+                if upstream_state in ("alerted", "pending_recovery"):
+                    cascade_suppressed = True
+                    up_name = next((c.get("name","?") for c in (monitor.app_cfg.signal_chains or [])
+                                    if c.get("id") == upstream_id), upstream_id)
+                    monitor.log(f"[Chain] '{result['name']}' recovery notification suppressed — cascaded from '{up_name}'")
+            for node in result.get("nodes", []):
+                local_nodes = (node.get("nodes", []) if node.get("type") == "stack" else [node])
+                for n in local_nodes:
+                    if n.get("site") == "local":
+                        rc_cfg = next((i for i in cfg.inputs
+                                       if i.name == n.get("stream", "") and i.enabled), None)
+                        if rc_cfg:
+                            _add_history(rc_cfg, "CHAIN_FAULT", rec_msg)
+            _alert_log_append({
+                "id":            str(uuid.uuid4()),
+                "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
+                "stream":        result["name"],
+                "type":          "CHAIN_RECOVERED",
+                "message":       rec_msg,
+                "level_dbfs":    None,
+                "rtp_loss_pct":  None,
+                "rtp_jitter_ms": None,
+                "clip":          "",
+                "ptp_state":     "",
+                "ptp_offset_us": 0,
+                "ptp_drift_us":  0,
+                "ptp_jitter_us": 0,
+                "ptp_gm":        "",
+            })
+            if not suppress_notify and not cascade_suppressed:
+                self._chain_last_alert_ts[cid] = now
+                try:
+                    sender.send(f"CHAIN RECOVERED — {result['name']}", rec_msg,
+                                alert_type="CHAIN_RECOVERED", stream=result["name"])
+                    monitor.log(f"[Chain] {rec_msg}")
+                except Exception as e:
+                    monitor.log(f"[Chain] Recovery notification error: {e}")
+                _send_apns_push(
+                    title=f"✅ Recovered: {result['name']}",
+                    body=rec_msg[:180],
+                    data={"chain_id": cid, "event": "recovered"},
+                )
+        self._chain_fault_state[cid] = "ok"
 
     def _schedule_chain_recovery_clips(self, chain: dict, fault_entry: dict,
                                         cfg, tail_secs: float = 20.0):
@@ -11608,6 +11898,7 @@ class HubServer:
         # Only nodes with an explicit machine tag participate in cross-chain
         # shared-fault detection.  Site name is no longer used as a fallback.
         fault_machine = (fn.get("machine") or "").strip()
+        _use_shared_aggregation = False
         if fault_machine:
             shared_names = []
             for _oc in (monitor.app_cfg.signal_chains or []):
@@ -11621,6 +11912,41 @@ class HubServer:
             if shared_names:
                 msg += (f" NOTE: other chains share hardware '{fault_machine}': "
                         f"{', '.join(shared_names)} — those chains may also be affected.")
+                _use_shared_aggregation = True
+
+        # ── Check cascade suppression (Change 7) ─────────────────────────────
+        cid = chain.get("id", "")
+        upstream_id = chain.get("upstream_chain_id", "")
+        cascade_suppressed = False
+        _cascaded_from_name = ""
+        if upstream_id:
+            upstream_state = self._chain_fault_state.get(upstream_id, "ok")
+            if upstream_state in ("alerted", "pending_recovery"):
+                cascade_suppressed = True
+                _cascaded_from_name = next((c.get("name","?") for c in (monitor.app_cfg.signal_chains or [])
+                                if c.get("id") == upstream_id), upstream_id)
+                monitor.log(f"[Chain] '{chain_label}' fault notification suppressed — cascaded from '{_cascaded_from_name}'")
+
+        # ── Back-patch message + cascaded_from into the fault log entry + DB ──
+        _flog2 = self._chain_fault_log.get(cid, [])
+        _flog_target = (next((e for e in reversed(_flog2) if e.get("id") == entry_id), None)
+                        if entry_id else (_flog2[-1] if _flog2 else None))
+        if _flog_target:
+            _flog_target["message"] = msg
+            _flog_target["cascaded_from"] = _cascaded_from_name
+            metrics_db.fault_log_update_meta(
+                _flog_target.get("id", ""), msg, _cascaded_from_name,
+                bool(_flog_target.get("adbreak_overshoot", False))
+            )
+
+        # ── Check per-chain notification cooldown (Change 4) ─────────────────
+        cooldown_mins = int(chain.get("min_alert_interval_minutes", 0) or 0)
+        suppress_notify = False
+        if cooldown_mins > 0 and not cascade_suppressed:
+            last_alert = self._chain_last_alert_ts.get(cid, 0)
+            if now - last_alert < cooldown_mins * 60:
+                suppress_notify = True
+                monitor.log(f"[Chain] '{chain_label}' alert suppressed (cooldown {cooldown_mins}m)")
 
         # ── Write to alert log (always — even for hub-only chains with no local nodes) ──
         _alert_log_append({
@@ -11640,34 +11966,159 @@ class HubServer:
             "ptp_gm":        "",
         })
 
-        # ── Send notification ─────────────────────────────────────────────────
-        try:
-            sender.send(f"CHAIN FAULT — {chain_label}", msg, fault_clip,
-                        alert_type="CHAIN_FAULT", stream=chain_label)
-            monitor.log(f"[Chain] {msg}")
-        except Exception as e:
-            monitor.log(f"[Chain] Alert send error: {e}")
+        # ── Send notification (skip if cascade-suppressed or cooldown active) ─
+        if not cascade_suppressed and not suppress_notify:
+            if _use_shared_aggregation:
+                # Shared-fault aggregation (Change 5): defer notification via timer
+                pending = self._chain_shared_fault_pending.get(fault_machine)
+                chain_info = {
+                    "cid": cid, "name": chain_label, "msg": msg,
+                    "fault_clip": fault_clip,
+                    "cooldown_mins": int(chain.get("min_alert_interval_minutes", 0) or 0),
+                }
+                if pending is None:
+                    # Start new aggregation window
+                    self._chain_shared_fault_pending[fault_machine] = {
+                        "chains": [chain_info],
+                        "ts":     now,
+                    }
+                    _t = threading.Timer(CHAIN_SHARED_FAULT_WINDOW,
+                                         self._flush_shared_fault, args=[fault_machine])
+                    _t.daemon = True
+                    self._chain_shared_fault_pending[fault_machine]["timer"] = _t
+                    _t.start()
+                    monitor.log(f"[Chain] '{chain_label}' shared-fault window started for machine '{fault_machine}'")
+                else:
+                    # Add to existing aggregation; cancel and restart timer
+                    pending["chains"].append(chain_info)
+                    old_timer = pending.get("timer")
+                    if old_timer:
+                        old_timer.cancel()
+                    _t = threading.Timer(CHAIN_SHARED_FAULT_WINDOW,
+                                         self._flush_shared_fault, args=[fault_machine])
+                    _t.daemon = True
+                    pending["timer"] = _t
+                    _t.start()
+                    monitor.log(f"[Chain] '{chain_label}' added to shared-fault window for machine '{fault_machine}' ({len(pending['chains'])} chains)")
+            else:
+                self._chain_last_alert_ts[cid] = now
+                try:
+                    sender.send(f"CHAIN FAULT — {chain_label}", msg, fault_clip,
+                                alert_type="CHAIN_FAULT", stream=chain_label)
+                    monitor.log(f"[Chain] {msg}")
+                except Exception as e:
+                    monitor.log(f"[Chain] Alert send error: {e}")
 
-        # ── APNs push to mobile app ───────────────────────────────────────────
-        try:
-            cid = chain.get("id", "")
-            _send_apns_push(
-                title=f"Fault: {chain_label}",
-                body=msg[:180],
-                data={"chain_id": cid},
-            )
-        except Exception as e:
-            monitor.log(f"[APNs] Push error in _fire_chain_fault: {e}")
+                # ── APNs push to mobile app ───────────────────────────────────────
+                try:
+                    _send_apns_push(
+                        title=f"Fault: {chain_label}",
+                        body=msg[:180],
+                        data={"chain_id": cid},
+                    )
+                except Exception as e:
+                    monitor.log(f"[APNs] Push error in _fire_chain_fault: {e}")
 
-        # ── FCM push to Android devices ───────────────────────────────────────
+                # ── FCM push to Android devices ───────────────────────────────────
+                try:
+                    _send_fcm_push(
+                        title=f"Fault: {chain_label}",
+                        body=msg[:180],
+                        data={"type": "chain_fault", "chain_id": cid},
+                    )
+                except Exception as e:
+                    monitor.log(f"[FCM] Push error in _fire_chain_fault: {e}")
+        else:
+            monitor.log(f"[Chain] Fault logged (no notification): {msg}")
+
+    def _flush_shared_fault(self, machine_tag: str):
+        """Called by timer after CHAIN_SHARED_FAULT_WINDOW seconds.
+        If multiple chains faulted together, send one grouped notification.
+        If only one chain faulted, send its individual notification.
+        """
         try:
-            _send_fcm_push(
-                title=f"Fault: {chain_label}",
-                body=msg[:180],
-                data={"type": "chain_fault", "chain_id": cid},
-            )
-        except Exception as e:
-            monitor.log(f"[FCM] Push error in _fire_chain_fault: {e}")
+            pending = self._chain_shared_fault_pending.pop(machine_tag, None)
+            if not pending:
+                return
+            chains_info = pending.get("chains", [])
+            cfg = monitor.app_cfg
+            sender = AlertSender(cfg, monitor.log)
+            now = time.time()
+            if len(chains_info) == 1:
+                # Only one chain — send normal individual notification
+                info = chains_info[0]
+                chain_label = info.get("name", "?")
+                msg = info.get("msg", "")
+                cid = info.get("cid", "")
+                fault_clip = info.get("fault_clip")
+                cooldown_mins = int(info.get("cooldown_mins", 0) or 0)
+                suppress_notify = False
+                if cooldown_mins > 0:
+                    last_alert = self._chain_last_alert_ts.get(cid, 0)
+                    if now - last_alert < cooldown_mins * 60:
+                        suppress_notify = True
+                if not suppress_notify:
+                    self._chain_last_alert_ts[cid] = now
+                    try:
+                        sender.send(f"CHAIN FAULT — {chain_label}", msg, fault_clip,
+                                    alert_type="CHAIN_FAULT", stream=chain_label)
+                        monitor.log(f"[Chain] {msg}")
+                    except Exception as _e:
+                        monitor.log(f"[Chain] Shared-fault single notify error: {_e}")
+                    try:
+                        _send_apns_push(title=f"Fault: {chain_label}", body=msg[:180],
+                                        data={"chain_id": cid})
+                    except Exception:
+                        pass
+                    try:
+                        _send_fcm_push(title=f"Fault: {chain_label}", body=msg[:180],
+                                       data={"type": "chain_fault", "chain_id": cid})
+                    except Exception:
+                        pass
+            else:
+                # Multiple chains — send grouped notification
+                chain_names = ", ".join(c.get("name", "?") for c in chains_info)
+                grouped_msg = (f"Shared fault on machine '{machine_tag}': "
+                               f"{len(chains_info)} chains affected — {chain_names}")
+                try:
+                    sender.send(f"SHARED FAULT — {machine_tag}", grouped_msg,
+                                alert_type="CHAIN_FAULT", stream=machine_tag)
+                    monitor.log(f"[Chain] Shared fault grouped: {grouped_msg}")
+                except Exception as _e:
+                    monitor.log(f"[Chain] Shared-fault grouped notify error: {_e}")
+                _alert_log_append({
+                    "id":            str(uuid.uuid4()),
+                    "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "stream":        f"[Shared] {machine_tag}",
+                    "type":          "CHAIN_FAULT",
+                    "message":       grouped_msg,
+                    "level_dbfs":    None,
+                    "rtp_loss_pct":  None,
+                    "rtp_jitter_ms": None,
+                    "clip":          "",
+                    "ptp_state":     "",
+                    "ptp_offset_us": 0,
+                    "ptp_drift_us":  0,
+                    "ptp_jitter_us": 0,
+                    "ptp_gm":        "",
+                })
+                try:
+                    _send_apns_push(title=f"Shared Fault: {machine_tag}", body=grouped_msg[:180],
+                                    data={"event": "chain_fault", "machine": machine_tag})
+                except Exception:
+                    pass
+                try:
+                    _send_fcm_push(title=f"Shared Fault: {machine_tag}", body=grouped_msg[:180],
+                                   data={"type": "chain_fault", "machine": machine_tag})
+                except Exception:
+                    pass
+                for info in chains_info:
+                    self._chain_last_alert_ts[info.get("cid", "")] = now
+        except Exception as _fe:
+            try:
+                monitor.log(f"[Chain] _flush_shared_fault error: {_fe}")
+            except Exception:
+                pass
 
     def _check_watched_nodes(self, cid: str, result: dict, now: float):
         """Fire targeted APNs push for nodes that have just gone down (fault→ok
@@ -20082,6 +20533,30 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
       <div style="font-size:11px;color:var(--mu);margin-top:3px">Silent here = real fault, skip delay</div>
     </div>
   </div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;border-top:1px solid var(--bor);padding-top:12px">
+    <div style="min-width:160px">
+      <label title="Chain must stay continuously OK for this many seconds before a CHAIN_RECOVERED notification fires. 0 = fire immediately on first OK poll.">Recovery confirmation (seconds)</label>
+      <input type="number" id="builder_min_recovery" min="0" max="3600" step="30" value="0" style="width:100px">
+      <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = immediate · 60 = 1 min</div>
+    </div>
+    <div style="min-width:160px">
+      <label title="Minimum time between alert notifications (email/push/webhook) for this chain. Clips and alert log are always written. 0 = no limit.">Alert interval (minutes)</label>
+      <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:100px">
+      <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = no limit · 30 = every 30 min</div>
+    </div>
+    <div style="min-width:160px">
+      <label title="Send CHAIN_DEGRADING alert when any node's level trend slope (dBFS/min) falls below this value. 0 = disabled.">Degrading alert threshold (dBFS/min)</label>
+      <input type="number" id="builder_trend_alert" min="-10" max="0" step="0.1" value="0" style="width:100px">
+      <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = off · -1 = alert at −1dB/min</div>
+    </div>
+    <div style="min-width:200px">
+      <label title="If set, and the upstream chain is currently faulted, notifications for this chain are suppressed (but still logged). Used to suppress downstream chains when an upstream failure is the root cause.">Upstream chain (cascade suppress)</label>
+      <select id="builder_upstream_chain" style="width:100%">
+        <option value="">— None —</option>
+      </select>
+      <div style="font-size:11px;color:var(--mu);margin-top:3px">Suppress notifications if upstream faulted</div>
+    </div>
+  </div>
   <div style="font-size:12px;color:var(--mu);margin-bottom:10px">Positions — left = source, right = destination. Each position can hold multiple streams (stack). The first position that is down is the fault point.</div>
   <div id="builder_nodes" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px"></div>
   <button class="btn bg bs" id="btn_add_node" style="margin-top:8px">+ Add Position</button>
@@ -20315,6 +20790,14 @@ function _addNodeRowToGroup(group, nd){
   threshIn.placeholder='Silence dBFS override';threshIn.style.cssText='flex:0 0 130px;min-width:100px;max-width:150px';
   threshIn.title='Override silence threshold (dBFS) for this node in this chain only. Leave blank to use the stream\'s own configured threshold.';
   threshIn.step='0.5';threshIn.min='-120';threshIn.max='0';
+  var offThreshIn=document.createElement('input');offThreshIn.type='number';offThreshIn.className='noth';
+  offThreshIn.placeholder='Off-threshold (dBFS)';offThreshIn.style.cssText='flex:0 0 130px;min-width:100px;max-width:150px';
+  offThreshIn.title='Hysteresis off-threshold (dBFS): node exits fault only when level rises above this. Leave blank for on_threshold + 10 dB.';
+  offThreshIn.step='0.5';offThreshIn.min='-120';offThreshIn.max='0';
+  var offlineNotifyChk=document.createElement('label');offlineNotifyChk.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;white-space:nowrap;cursor:pointer';
+  var offlineCb=document.createElement('input');offlineCb.type='checkbox';offlineCb.className='nonl';offlineCb.title='Send offline notification for this node when chain is not faulted (redundant node offline alert).';
+  offlineNotifyChk.appendChild(offlineCb);
+  offlineNotifyChk.appendChild(document.createTextNode('Offline alert'));
   var rmRow=document.createElement('button');rmRow.type='button';rmRow.textContent='−';rmRow.className='btn bd bs';rmRow.title='Remove this stream';
   rmRow.style.cssText='padding:3px 8px;font-size:14px';
   rmRow.onclick=function(){
@@ -20334,8 +20817,10 @@ function _addNodeRowToGroup(group, nd){
     if(nd.label)labelIn.value=nd.label;
     if(nd.machine)machineIn.value=nd.machine;
     if(nd.silence_threshold_dbfs!==undefined&&nd.silence_threshold_dbfs!==null)threshIn.value=nd.silence_threshold_dbfs;
+    if(nd.silence_off_threshold_dbfs!==undefined&&nd.silence_off_threshold_dbfs!==null)offThreshIn.value=nd.silence_off_threshold_dbfs;
+    if(nd.offline_notify)offlineCb.checked=true;
   } else { fillStreams(); }
-  row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(machineIn);row.appendChild(threshIn);row.appendChild(rmRow);
+  row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(machineIn);row.appendChild(threshIn);row.appendChild(offThreshIn);row.appendChild(offlineNotifyChk);row.appendChild(rmRow);
   // Insert before the controls footer of the group
   var footer=group.querySelector('.pos-footer');
   if(footer){group.insertBefore(row,footer);}else{group.appendChild(row);}
@@ -20421,6 +20906,22 @@ function showBuilder(chain){
     document.getElementById('builder_name').value=chain.name||'';
     document.getElementById('builder_min_fault').value=chain.min_fault_seconds||0;
     document.getElementById('builder_fault_shift_grace').value=chain.fault_shift_grace_seconds||0;
+    document.getElementById('builder_min_recovery').value=chain.min_recovery_seconds||0;
+    document.getElementById('builder_min_alert_interval').value=chain.min_alert_interval_minutes||0;
+    document.getElementById('builder_trend_alert').value=chain.trend_alert_dbfs_per_min||0;
+    // Populate upstream chain dropdown
+    var ucs=document.getElementById('builder_upstream_chain');
+    if(ucs){
+      ucs.innerHTML='<option value="">— None —</option>';
+      (Object.values(_chainData)||[]).forEach(function(oc){
+        if(oc.id&&oc.id!==chain.id){
+          var opt=document.createElement('option');
+          opt.value=oc.id;opt.textContent=oc.name||oc.id;
+          if(chain.upstream_chain_id===oc.id)opt.selected=true;
+          ucs.appendChild(opt);
+        }
+      });
+    }
     loadOpts(function(){
       (chain.nodes||[]).forEach(addPosition);
       (chain.comparators||[]).forEach(function(c){addComparator(c.from_idx,c.to_idx);});
@@ -20437,6 +20938,19 @@ function showBuilder(chain){
     document.getElementById('builder_name').value='';
     document.getElementById('builder_min_fault').value=0;
     document.getElementById('builder_fault_shift_grace').value=0;
+    document.getElementById('builder_min_recovery').value=0;
+    document.getElementById('builder_min_alert_interval').value=0;
+    document.getElementById('builder_trend_alert').value=0;
+    var ucs2=document.getElementById('builder_upstream_chain');
+    if(ucs2){
+      ucs2.innerHTML='<option value="">— None —</option>';
+      (Object.values(_chainData)||[]).forEach(function(oc){
+        if(oc.id){
+          var opt=document.createElement('option');opt.value=oc.id;opt.textContent=oc.name||oc.id;
+          ucs2.appendChild(opt);
+        }
+      });
+    }
     loadOpts(function(){addPosition(null);});
   }
   b.style.display='';b.scrollIntoView({behavior:'smooth',block:'start'});
@@ -20493,12 +21007,15 @@ function saveChain(){
     var mode=modeSel?modeSel.value:'all';
     var subNodes=[];
     rows.forEach(function(row){
-      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl'),m=row.querySelector('.nm'),nth=row.querySelector('.nth');
+      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl'),m=row.querySelector('.nm'),nth=row.querySelector('.nth'),noth=row.querySelector('.noth'),nonl=row.querySelector('.nonl');
       if(s&&st2&&st2.value){
         var nd2={site:s.value,stream:st2.value,label:(l?l.value.trim():'')};
         var mval=m?m.value.trim():'';if(mval)nd2.machine=mval;
         var tval=nth&&nth.value.trim()!==''?parseFloat(nth.value):null;
         if(tval!==null&&!isNaN(tval))nd2.silence_threshold_dbfs=tval;
+        var otval=noth&&noth.value.trim()!==''?parseFloat(noth.value):null;
+        if(otval!==null&&!isNaN(otval))nd2.silence_off_threshold_dbfs=otval;
+        if(nonl&&nonl.checked)nd2.offline_notify=true;
         subNodes.push(nd2);
       }
     });
@@ -20525,7 +21042,11 @@ function saveChain(){
   var shiftGrace=parseInt(document.getElementById('builder_fault_shift_grace').value||'0',10)||0;
   var mixinRaw=document.getElementById('builder_mixin_idx').value;
   var mixinIdx=(mixinRaw!=='')?parseInt(mixinRaw,10):null;
-  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_shift_grace_seconds:shiftGrace,mixin_node_idx:mixinIdx};
+  var minRecovery=parseInt(document.getElementById('builder_min_recovery').value||'0',10)||0;
+  var minAlertInterval=parseInt(document.getElementById('builder_min_alert_interval').value||'0',10)||0;
+  var trendAlert=parseFloat(document.getElementById('builder_trend_alert').value||'0')||0;
+  var upstreamChainId=(document.getElementById('builder_upstream_chain')||{}).value||'';
+  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_shift_grace_seconds:shiftGrace,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId};
   if(cid)payload.id=cid;
   st.style.color='var(--mu)';st.textContent='Saving…';
   _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
@@ -23782,13 +24303,34 @@ def api_chains_save():
         fault_shift_grace_seconds = max(0, min(300, int(data.get("fault_shift_grace_seconds", 0) or 0)))
     except (TypeError, ValueError):
         fault_shift_grace_seconds = 0
+    # min_recovery_seconds: how long the chain must stay ok before CHAIN_RECOVERED fires (Change 1)
+    try:
+        min_recovery_seconds = max(0, min(3600, int(data.get("min_recovery_seconds", 0) or 0)))
+    except (TypeError, ValueError):
+        min_recovery_seconds = 0
+    # min_alert_interval_minutes: minimum time between notifications for this chain (Change 4)
+    try:
+        min_alert_interval_minutes = max(0, min(1440, int(data.get("min_alert_interval_minutes", 0) or 0)))
+    except (TypeError, ValueError):
+        min_alert_interval_minutes = 0
+    # trend_alert_dbfs_per_min: fire CHAIN_DEGRADING when slope <= this value (Change 6); 0 = disabled
+    try:
+        trend_alert_dbfs_per_min = float(data.get("trend_alert_dbfs_per_min", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        trend_alert_dbfs_per_min = 0.0
+    # upstream_chain_id: suppress notifications if upstream chain is faulted (Change 7)
+    upstream_chain_id = str(data.get("upstream_chain_id", "") or "").strip()
     chain_dict = {"id": cid if cid else "", "name": name,
                   "nodes": clean_nodes, "comparators": clean_comps,
                   "min_fault_seconds": min_fault_seconds,
                   "mixin_node_idx": mixin_node_idx,
                   "fault_tail_secs": fault_tail_secs,
                   "record_all_nodes": record_all_nodes,
-                  "fault_shift_grace_seconds": fault_shift_grace_seconds}
+                  "fault_shift_grace_seconds": fault_shift_grace_seconds,
+                  "min_recovery_seconds": min_recovery_seconds,
+                  "min_alert_interval_minutes": min_alert_interval_minutes,
+                  "trend_alert_dbfs_per_min": trend_alert_dbfs_per_min,
+                  "upstream_chain_id": upstream_chain_id}
     if cid:
         # Update existing
         for i, c in enumerate(chains):
