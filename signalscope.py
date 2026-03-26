@@ -314,6 +314,13 @@ document.addEventListener('DOMContentLoaded',function(){
           <label>Audio interface IP (for multicast reception)<input type="text" name="audio_ip" value="{{cfg.network.audio_interface_ip}}" placeholder="0.0.0.0"></label>
           <p class="help">Use 0.0.0.0 to accept on any interface.</p>
           <label>Management interface IP (for outbound alerts)<input type="text" name="mgmt_ip" value="{{cfg.network.management_interface_ip}}" placeholder="0.0.0.0"></label>
+          <label>HTTP server bind address
+            <select name="server_bind_host">
+              <option value="0.0.0.0" {{'selected' if cfg.network.server_bind_host == '0.0.0.0' else ''}}>0.0.0.0 — all interfaces (default)</option>
+              <option value="127.0.0.1" {{'selected' if cfg.network.server_bind_host == '127.0.0.1' else ''}}>127.0.0.1 — localhost only (recommended behind nginx)</option>
+            </select>
+          </label>
+          <p class="help">Set to 127.0.0.1 when running behind nginx — port 5000 will no longer be reachable from outside. Requires a restart to take effect.</p>
   <div class="sec">📡 PTP Clock Thresholds</div>
   <p class="help" style="margin-bottom:8px">This monitor is a passive PTP observer, not a slave — absolute offset depends on NTP accuracy. Set thresholds to match your network. Defaults are suitable for NTP-synced systems (±5 ms warn, ±50 ms alert).</p>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -524,6 +531,13 @@ document.addEventListener('DOMContentLoaded',function(){
           <label>Audio interface IP (for multicast reception)<input type="text" name="audio_ip" value="{{cfg.network.audio_interface_ip}}" placeholder="0.0.0.0"></label>
           <p class="help">Use 0.0.0.0 to accept on any interface.</p>
           <label>Management interface IP (for outbound alerts)<input type="text" name="mgmt_ip" value="{{cfg.network.management_interface_ip}}" placeholder="0.0.0.0"></label>
+          <label>HTTP server bind address
+            <select name="server_bind_host">
+              <option value="0.0.0.0" {{'selected' if cfg.network.server_bind_host == '0.0.0.0' else ''}}>0.0.0.0 — all interfaces (default)</option>
+              <option value="127.0.0.1" {{'selected' if cfg.network.server_bind_host == '127.0.0.1' else ''}}>127.0.0.1 — localhost only (recommended behind nginx)</option>
+            </select>
+          </label>
+          <p class="help">Set to 127.0.0.1 when running behind nginx — port 5000 will no longer be reachable from outside. Requires a restart to take effect.</p>
   <div class="sec">📡 PTP Clock Thresholds</div>
   <p class="help" style="margin-bottom:8px">This monitor is a passive PTP observer, not a slave — absolute offset depends on NTP accuracy. Set thresholds to match your network. Defaults are suitable for NTP-synced systems (±5 ms warn, ±50 ms alert).</p>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -1559,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.12"
+BUILD                  = "SignalScope-3.4.13"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2032,6 +2046,7 @@ class NetworkConfig:
     management_interface_ip: str = "0.0.0.0"
     audio_interface_name: str = "any"
     management_interface_name: str = "any"
+    server_bind_host: str = "0.0.0.0"   # HTTP server bind — use 127.0.0.1 behind nginx
 
 
 @dataclass
@@ -2212,6 +2227,7 @@ def load_config() -> AppConfig:
             management_interface_ip=n.get("management_interface_ip","0.0.0.0"),
             audio_interface_name=n.get("audio_interface_name","any"),
             management_interface_name=n.get("management_interface_name","any"),
+            server_bind_host=n.get("server_bind_host","0.0.0.0"),
         ),
         hub=HubConfig(
             mode=h.get("mode","client"), site_name=h.get("site_name",""),
@@ -2353,6 +2369,7 @@ def save_config(cfg: AppConfig):
             "management_interface_ip": cfg.network.management_interface_ip,
             "audio_interface_name": cfg.network.audio_interface_name,
             "management_interface_name": cfg.network.management_interface_name,
+            "server_bind_host": cfg.network.server_bind_host,
         },
         "hub": {
             "mode": cfg.hub.mode, "site_name": cfg.hub.site_name,
@@ -17105,6 +17122,7 @@ def settings():
         cfg.pushover.priority_alert=int(f.get("pv_pri_alert",1))
         cfg.network.audio_interface_ip=f.get("audio_ip","0.0.0.0").strip()
         cfg.network.management_interface_ip=f.get("mgmt_ip","0.0.0.0").strip()
+        cfg.network.server_bind_host=f.get("server_bind_host","0.0.0.0").strip() or "0.0.0.0"
         cfg.hub.enabled=bool(f.get("hub_enabled")); cfg.hub.mode=f.get("hub_mode","client")
         cfg.hub.site_name=f.get("hub_site_name","").strip()
         _raw_url = f.get("hub_url","").strip()
@@ -28805,13 +28823,14 @@ if __name__=="__main__":
     else:
         print(f"[{BUILD}] CLIENT mode — http://0.0.0.0:5000")
 
-    print(f"[{BUILD}] HTTPS/SSL is handled by nginx — app always binds port 5000")
+    _bind_host = cfg.network.server_bind_host or "0.0.0.0"
+    print(f"[{BUILD}] HTTPS/SSL is handled by nginx — app binds port 5000 on {_bind_host}")
 
     try:
         from waitress import serve
-        print(f"[{BUILD}] Starting waitress WSGI server on port 5000 (threads=24)")
+        print(f"[{BUILD}] Starting waitress WSGI server on {_bind_host}:5000 (threads=24)")
         serve(app,
-              host="0.0.0.0",
+              host=_bind_host,
               port=5000,
               threads=24,
               channel_timeout=120,
@@ -28820,4 +28839,4 @@ if __name__=="__main__":
     except ImportError:
         print(f"[{BUILD}] waitress not found — using Flask dev server")
         print(f"[{BUILD}] Install for better performance:  pip install waitress")
-        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+        app.run(host=_bind_host, port=5000, debug=False, threaded=True)
