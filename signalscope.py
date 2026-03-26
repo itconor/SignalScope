@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.163"
+BUILD                  = "SignalScope-3.3.164"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -24405,7 +24405,7 @@ main{padding:18px 20px 24px}
 .sc.sc-active{border-color:var(--acc);box-shadow:0 0 0 3px rgba(23,168,255,.35);background:linear-gradient(180deg,#153461,#102a54)}
 .sc-val{font-size:24px;font-weight:800;line-height:1.1}.sc-lbl{font-size:11px;color:var(--mu);margin-top:4px;text-transform:uppercase;letter-spacing:.08em}
 .metrics-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.metric-chip{padding:8px 10px;border:1px solid var(--bor);border-radius:999px;background:#12305c;font-size:12px}.metric-chip strong{color:var(--tx)}
-.table-wrap{border:1px solid var(--bor);border-radius:12px;overflow:hidden;background:rgba(13,35,70,.96);box-shadow:0 4px 10px rgba(0,0,0,.14)}
+.table-wrap{border:1px solid var(--bor);border-radius:12px;overflow-x:auto;overflow-y:visible;background:rgba(13,35,70,.96);box-shadow:0 4px 10px rgba(0,0,0,.14)}
 table{width:100%;border-collapse:collapse}
 thead th{text-align:left;padding:8px 10px;background:#12305c;border-bottom:2px solid var(--bor);font-size:11px;color:#c5dcff;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;position:sticky;top:0;z-index:2}
 tbody td{padding:8px 10px;border-bottom:1px solid var(--bor);vertical-align:top}
@@ -24419,7 +24419,7 @@ tr:hover td{background:#123764}
 .t-ptp{background:#1e3a2a;color:#86efac}.t-cmp{background:#2a1e3a;color:#d8b4fe}
 .t-chain_fault{background:#4a1010;color:#fca5a5;font-weight:700}
 .t-other{background:var(--bor);color:var(--mu)}
-.chain-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;background:#1e2e1a;color:#86efac;white-space:nowrap;font-weight:600}
+.chain-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;background:#1e2e1a;color:#86efac;white-space:nowrap;font-weight:600;max-width:180px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
 .chain-row td{border-left:3px solid var(--al)}
 .level-bar{display:inline-block;width:60px;height:6px;background:var(--bor);border-radius:3px;vertical-align:middle;margin-left:4px}
 .level-fill{height:6px;border-radius:3px}

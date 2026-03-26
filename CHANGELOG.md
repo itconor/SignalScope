@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.164] - 2026-03-26
+
+### Fixed
+- **Hub Reports — Clip column pushed off right edge of page** — the actual problem was never the filter bar. The events table uses `table-layout:auto` (default), so the browser sizes columns based on content. Long stream names ("CoolFM - MSAPPENCLON15") and chain badges ("⛓ Cool FM Broadcast Chain", `white-space:nowrap`) forced the Stream and Chain columns wider than their specified widths, pushing the Clip column off screen. The table wrapper had `overflow:hidden` which clipped the column entirely. Fix: changed `.table-wrap` to `overflow-x:auto` (table scrolls within its container when wider than the viewport), and added `max-width:180px;overflow:hidden;text-overflow:ellipsis` to `.chain-badge` so long chain names are capped and shown with ellipsis rather than forcing the column to expand.
+
 ## [3.3.163] - 2026-03-26
 
 ### Fixed
