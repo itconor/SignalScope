@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.152] - 2026-03-26
+
+### Changed
+- **Stream cards collapse by default — expand with ▾ button** — every input card on the Dashboard now starts collapsed, showing only the header (name, status dot, device label) and the live level bar. A `▾` chevron button in the card header expands/collapses the full detail area (info rows, AI status, Now Playing, listen strip, saved clips, event history). Expand state is persisted per-card in `localStorage` so cards stay open across page reloads. An `⋮` overflow menu replaces the inline Edit button, keeping the header uncluttered while still providing quick access to the edit page.
+
 ## [3.3.151] - 2026-03-26
 
 ### Fixed

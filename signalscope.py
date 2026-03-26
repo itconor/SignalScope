@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.151"
+BUILD                  = "SignalScope-3.3.152"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -13186,6 +13186,11 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 .cb{padding:11px 13px}
 .logbox{background:var(--sur);border:1px solid var(--bor);border-radius:8px;padding:12px;font-family:monospace;font-size:11px;height:190px;overflow-y:auto;margin-top:12px;white-space:pre-wrap;word-break:break-all}
 .st{font-size:12px;font-weight:600;color:var(--mu);letter-spacing:.06em;text-transform:uppercase;margin:14px 0 8px}
+/* ── Card expand / collapse ── */
+.card-detail{display:none}.card-detail.open{display:block}
+.card-expand-btn{background:none;border:none;color:var(--mu);padding:2px 6px;font-size:14px;cursor:pointer;line-height:1;transition:transform .2s,color .15s;flex-shrink:0}
+.card-expand-btn:hover{color:var(--tx)}.card-expand-btn.open{transform:rotate(180deg)}
+.card-more-btn{padding:3px 8px;font-size:16px;line-height:1}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("dashboard") }}
 <main>
@@ -13219,7 +13224,13 @@ main{padding:16px;max-width:1440px;margin:0 auto}
         <span style="font-size:11px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:140px;white-space:nowrap" title="{{inp.device_index}}">
           {{inp.device_index[:30]}}{{'…' if inp.device_index|length>30 else ''}}
         </span>
-        <a class="btn bg bs" href="/inputs/{{idx}}/edit" style="flex-shrink:0">Edit</a>
+        <div class="ss-pg" tabindex="0" style="flex-shrink:0;position:relative">
+          <button class="btn bg bs card-more-btn">&#8942;</button>
+          <div class="ss-pdrop" style="right:0;left:auto;min-width:110px">
+            <a class="btn bg bs" href="/inputs/{{idx}}/edit" style="width:100%;box-sizing:border-box">Edit</a>
+          </div>
+        </div>
+        <button class="btn bg bs card-expand-btn" data-idx="{{idx}}" data-action="expand" title="Expand / Collapse">&#9662;</button>
       </div>
 
       {# ── Level bar ── #}
@@ -13230,6 +13241,9 @@ main{padding:16px;max-width:1440px;margin:0 auto}
         </div>
         <span class="lbar-val" id="lval_{{idx}}" style="color:{{lcol}}">{{lev|round(1)}} dB</span>
       </div>
+
+      {# ── Collapsible detail ── #}
+      <div class="card-detail" id="detail_{{idx}}">
 
       {# ── Info rows ── #}
       <div class="rows" id="rows_{{idx}}">
@@ -13393,6 +13407,8 @@ main{padding:16px;max-width:1440px;margin:0 auto}
           </div>
         </div>
       </div>
+
+      </div>{# ── /card-detail ── #}
 
     </div>
   {% endfor %}
@@ -13939,8 +13955,27 @@ document.addEventListener('click', function(e){
     var dur = document.getElementById('dur_'+idx);
     var secs = dur ? dur.value : '5';
     window.location = '/stream/'+idx+'/audio.wav?seconds='+secs;
+  } else if(action === 'expand'){
+    var detail = document.getElementById('detail_'+idx);
+    if(!detail) return;
+    var open = detail.classList.toggle('open');
+    btn.classList.toggle('open', open);
+    try{ localStorage.setItem('card_expand_'+idx, open ? '1' : '0'); }catch(ex){}
   }
 });
+
+// Restore expand state from localStorage
+(function(){
+  document.querySelectorAll('[data-action="expand"]').forEach(function(btn){
+    var idx = btn.dataset.idx;
+    var saved = null;
+    try{ saved = localStorage.getItem('card_expand_'+idx); }catch(ex){}
+    if(saved === '1'){
+      var detail = document.getElementById('detail_'+idx);
+      if(detail){ detail.classList.add('open'); btn.classList.add('open'); }
+    }
+  });
+})();
 
 function loadClips(idx,streamName){
   var listEl=document.getElementById('clips_list_'+idx);
