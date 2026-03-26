@@ -1384,7 +1384,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.130"
+BUILD                  = "SignalScope-3.3.131"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8568,39 +8568,62 @@ class HubClient:
                      entry_id: str = "", clip_path: str = "",
                      node_label: str = "", pos=None,
                      status: str = "", level_dbfs: float = -120.0):
-        """Upload a saved clip WAV to the hub's /hub/clip_upload endpoint."""
+        """Upload a saved clip WAV to the hub's /hub/clip_upload endpoint.
+
+        Retries up to 3 times with 15 s / 30 s back-off so transient
+        network errors or hub restarts don't silently lose clips.
+        4xx responses are not retried (the request itself is wrong).
+        Timeout raised to 60 s to accommodate large WAVs over WAN links.
+        """
         try:
             with open(clip_path, "rb") as f:
                 data_b64 = base64.b64encode(f.read()).decode()
-            payload_dict = {
-                "site": site, "stream": stream, "label": label,
-                "chain_name": chain_name, "chain_id": chain_id,
-                "entry_id": entry_id,
-                "node_label": node_label, "pos": pos, "status": status,
-                "ts": time.time(), "data_b64": data_b64,
-                "level_dbfs": level_dbfs,
-            }
-            payload_bytes = json.dumps(payload_dict).encode()
-            ts  = time.time()
-            sig = hub_sign_payload(secret, payload_bytes, ts) if secret else ""
-            headers = {"X-Hub-Sig": sig, "X-Hub-Ts": str(ts)}
-            if secret:
-                body = hub_encrypt_payload(secret, payload_bytes)
-                headers["Content-Type"] = "application/octet-stream"
-            else:
-                body = payload_bytes
-                headers["Content-Type"] = "application/json"
-            req = urllib.request.Request(
-                f"{hub_url}/hub/clip_upload", data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=30) as r:
-                resp_body = r.read().decode("utf-8", errors="replace")
-                monitor.log(f"[Hub] Clip uploaded OK: {site}/{stream}/{label} → "
-                            f"HTTP {r.status} {resp_body[:120]}")
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
-            monitor.log(f"[Hub] Clip upload HTTP {e.code} for '{stream}': {e.reason} — {err_body[:200]}")
         except Exception as e:
-            monitor.log(f"[Hub] Clip upload failed for '{stream}': {type(e).__name__}: {e}")
+            monitor.log(f"[Hub] Clip upload: cannot read '{clip_path}': {e}")
+            return
+
+        payload_dict = {
+            "site": site, "stream": stream, "label": label,
+            "chain_name": chain_name, "chain_id": chain_id,
+            "entry_id": entry_id,
+            "node_label": node_label, "pos": pos, "status": status,
+            "ts": time.time(), "data_b64": data_b64,
+            "level_dbfs": level_dbfs,
+        }
+        payload_bytes = json.dumps(payload_dict).encode()
+
+        for attempt in range(3):
+            try:
+                ts  = time.time()
+                sig = hub_sign_payload(secret, payload_bytes, ts) if secret else ""
+                headers = {"X-Hub-Sig": sig, "X-Hub-Ts": str(ts)}
+                if secret:
+                    body = hub_encrypt_payload(secret, payload_bytes)
+                    headers["Content-Type"] = "application/octet-stream"
+                else:
+                    body = payload_bytes
+                    headers["Content-Type"] = "application/json"
+                req = urllib.request.Request(
+                    f"{hub_url}/hub/clip_upload", data=body, headers=headers, method="POST")
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    resp_body = r.read().decode("utf-8", errors="replace")
+                    monitor.log(f"[Hub] Clip uploaded OK: {site}/{stream}/{label} → "
+                                f"HTTP {r.status} {resp_body[:120]}")
+                return  # success — stop retrying
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+                monitor.log(f"[Hub] Clip upload HTTP {e.code} (attempt {attempt+1}) "
+                            f"for '{stream}': {e.reason} — {err_body[:200]}")
+                if e.code < 500:
+                    return  # 4xx — don't retry, the request itself is wrong
+            except Exception as e:
+                monitor.log(f"[Hub] Clip upload failed (attempt {attempt+1}) "
+                            f"for '{stream}': {type(e).__name__}: {e}")
+            if attempt < 2:
+                backoff = 15 * (attempt + 1)   # 15 s then 30 s
+                monitor.log(f"[Hub] Clip upload retrying in {backoff}s …")
+                time.sleep(backoff)
+        monitor.log(f"[Hub] Clip upload gave up after 3 attempts for '{stream}/{label}'")
 
     def _cmd_self_update(self, payload: dict):
         """Hub command: download the hub's current signalscope.py and restart."""
@@ -16255,6 +16278,66 @@ def clips_list(stream_name):
         })
     return jsonify(files)
 
+def _serve_clip_wav(path: str, force_download: bool = False) -> "Response":
+    """Serve a WAV clip file with full RFC 7233 Range-request support.
+
+    Chrome / Safari / Firefox always open an audio element with
+    ``Range: bytes=0-`` so the browser can determine duration before buffering
+    the rest.  send_from_directory relies on Werkzeug's conditional-response
+    machinery which is version-sensitive and can silently fall back to a full
+    200 response, causing the <audio> element to error.  This helper always
+    handles Range correctly and is used by both the /clips/ and
+    /api/chains/clip/ routes so the behaviour is identical.
+    """
+    if not os.path.exists(path):
+        return Response("Not found", status=404)
+    file_size = os.path.getsize(path)
+    safe_file = os.path.basename(path)
+    safe_cd   = safe_file.replace('"', '').replace('\r', '').replace('\n', '')
+    mtime     = int(os.path.getmtime(path))
+    etag      = f'"{mtime:x}-{file_size:x}"'
+    disp      = "attachment" if force_download else "inline"
+
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status=304, headers={"ETag": etag})
+
+    range_header = request.headers.get("Range")
+    if range_header:
+        try:
+            byte_range = range_header.strip().replace("bytes=", "")
+            start_s, end_s = byte_range.split("-", 1)
+            start = int(start_s) if start_s else 0
+            end   = int(end_s)   if end_s   else file_size - 1
+        except Exception:
+            return Response("Bad Range", status=400)
+        end = min(end, file_size - 1)
+        if start > end or start >= file_size:
+            return Response(status=416,
+                            headers={"Content-Range": f"bytes */{file_size}"})
+        length = end - start + 1
+        with open(path, "rb") as f:
+            f.seek(start)
+            data = f.read(length)
+        return Response(data, status=206, mimetype="audio/wav", headers={
+            "Content-Disposition": f'{disp}; filename="{safe_cd}"',
+            "Content-Range":  f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(length),
+            "Accept-Ranges":  "bytes",
+            "ETag":           etag,
+            "Cache-Control":  "private, max-age=3600",
+        })
+
+    with open(path, "rb") as f:
+        data = f.read()
+    return Response(data, mimetype="audio/wav", headers={
+        "Content-Disposition": f'{disp}; filename="{safe_cd}"',
+        "Accept-Ranges":  "bytes",
+        "Content-Length": str(file_size),
+        "ETag":           etag,
+        "Cache-Control":  "private, max-age=3600",
+    })
+
+
 @app.get("/clips/<path:stream_name>/<filename>")
 @login_required
 def clips_serve(stream_name, filename):
@@ -16274,63 +16357,9 @@ def clips_serve(stream_name, filename):
         safe_stream = _safe_name(stream_name)
     safe_file = os.path.basename(filename)
     path = os.path.join(snip_dir, safe_stream, safe_file)
-    # Security: must stay within snip_dir
     if not os.path.abspath(path).startswith(os.path.abspath(snip_dir) + os.sep):
         return "Forbidden", 403
-    if not os.path.exists(path):
-        return "Not found", 404
-    file_size = os.path.getsize(path)
-    safe_cd = safe_file.replace('"', '').replace('\r', '').replace('\n', '')
-    # ETag based on file mtime + size (stable, avoids re-reading on unchanged files)
-    mtime = int(os.path.getmtime(path))
-    etag = f'"{mtime:x}-{file_size:x}"'
-    # Honour If-None-Match for browser caching
-    if request.headers.get("If-None-Match") == etag:
-        return Response(status=304, headers={"ETag": etag})
-    # Handle Range requests (Chrome audio element always sends Range: bytes=0-)
-    range_header = request.headers.get("Range")
-    if range_header:
-        try:
-            byte_range = range_header.strip().replace("bytes=", "")
-            start_s, end_s = byte_range.split("-", 1)
-            start = int(start_s) if start_s else 0
-            end   = int(end_s)   if end_s   else file_size - 1
-        except Exception:
-            return Response("Bad Range", status=400)
-        end = min(end, file_size - 1)
-        if start > end or start >= file_size:
-            return Response(
-                status=416,
-                headers={"Content-Range": f"bytes */{file_size}"},
-            )
-        length = end - start + 1
-        with open(path, "rb") as f:
-            f.seek(start)
-            data = f.read(length)
-        return Response(
-            data,
-            status=206,
-            mimetype="audio/wav",
-            headers={
-                "Content-Disposition": f'inline; filename="{safe_cd}"',
-                "Content-Range":  f"bytes {start}-{end}/{file_size}",
-                "Content-Length": str(length),
-                "Accept-Ranges":  "bytes",
-                "ETag":           etag,
-                "Cache-Control":  "private, max-age=3600",
-            },
-        )
-    # Full file
-    with open(path, "rb") as f:
-        data = f.read()
-    return Response(data, mimetype="audio/wav",
-        headers={
-            "Content-Disposition": f'inline; filename="{safe_cd}"',
-            "Accept-Ranges":  "bytes",
-            "Content-Length": str(file_size),
-            "ETag":           etag,
-            "Cache-Control":  "private, max-age=3600",
-        })
+    return _serve_clip_wav(path)
 
 @app.delete("/clips/<path:stream_name>/<filename>")
 @login_required
@@ -22865,10 +22894,15 @@ def api_chains_fault_log(cid: str):
             for entry in entries:
                 fid = entry.get("id", "")
                 if fid and fid in mem_by_id:
-                    # Replace DB clips with the in-memory clips — these are
-                    # always at least as fresh and may have remote clips that
-                    # arrived after the last DB write.
-                    entry["clips"] = mem_by_id[fid].get("clips", entry.get("clips", []))
+                    # Merge DB clips with in-memory clips — take the longer
+                    # list.  In-memory is fresher for clips that arrived after
+                    # the last DB write, but DB can have more if in-memory was
+                    # evicted (hub restart / 25-entry ring wrap).  Using the
+                    # shorter in-memory list would silently lose already-uploaded
+                    # clips.
+                    mem_clips = mem_by_id[fid].get("clips") or []
+                    db_clips  = entry.get("clips") or []
+                    entry["clips"] = mem_clips if len(mem_clips) >= len(db_clips) else db_clips
 
     notes = _load_chain_notes()
     if notes:
@@ -22908,20 +22942,27 @@ def api_chain_note_save(fault_log_id: str):
 @app.get("/api/chains/clip/<clip_key>/<fname>")
 @login_required
 def api_chains_clip_download(clip_key: str, fname: str):
-    """Serve a chain fault audio clip.
+    """Serve a chain fault audio clip with full Range-request support.
 
     Pass ?dl=1 to force a download (Content-Disposition: attachment).
-    Default (no query param) serves inline so <audio> elements can play it
-    directly in the browser without a separate download step.
+    Default serves inline so <audio> elements work in the browser.
+
+    Uses _serve_clip_wav() rather than send_from_directory() so that
+    Chrome/Safari Range requests (always sent before audio playback)
+    receive a proper 206 Partial Content response.  send_from_directory
+    relies on Werkzeug's conditional machinery which is version-sensitive
+    and can silently return a 200 full response instead of 206, causing
+    the <audio> element to error or stall.
     """
-    # Reject any path traversal attempts
     if ".." in clip_key or ".." in fname or "/" in fname or "\\" in fname:
         return "Bad request", 400
-    clip_dir = os.path.join(BASE_DIR, "alert_snippets", clip_key)
-    if not os.path.isdir(clip_dir):
-        return "Not found", 404
-    force_download = request.args.get("dl") == "1"
-    return send_from_directory(clip_dir, fname, as_attachment=force_download)
+    snip_dir = os.path.join(BASE_DIR, "alert_snippets")
+    clip_dir = os.path.join(snip_dir, clip_key)
+    # Containment check — clip_dir must be inside alert_snippets/
+    if not os.path.abspath(clip_dir).startswith(os.path.abspath(snip_dir) + os.sep):
+        return "Forbidden", 403
+    path = os.path.join(clip_dir, fname)
+    return _serve_clip_wav(path, force_download=request.args.get("dl") == "1")
 
 
 @app.get("/api/mobile/clip/<clip_key>/<fname>")
