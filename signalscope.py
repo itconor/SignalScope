@@ -1559,7 +1559,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.11"
+BUILD                  = "SignalScope-3.4.12"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -28809,11 +28809,11 @@ if __name__=="__main__":
 
     try:
         from waitress import serve
-        print(f"[{BUILD}] Starting waitress WSGI server on port 5000 (threads=8)")
+        print(f"[{BUILD}] Starting waitress WSGI server on port 5000 (threads=24)")
         serve(app,
               host="0.0.0.0",
               port=5000,
-              threads=8,
+              threads=24,
               channel_timeout=120,
               asyncore_use_poll=True,
               ident=BUILD)
