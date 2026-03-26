@@ -4,7 +4,7 @@
 SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
 
 - **Repo**: https://github.com/itconor/SignalScope
-- **Current build string**: `BUILD = "SignalScope-3.3.135"` (increment on every release)
+- **Current build string**: `BUILD = "SignalScope-3.3.137"` (increment on every release)
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **Release flow**: bump `BUILD`, update `CHANGELOG.md`, `git commit`, `git push`, `gh release create v{version}`
 
@@ -301,6 +301,18 @@ function _getCsrf(){
 }
 ```
 **Rule**: Never capture the CSRF token in a variable at IIFE time. Always call `_getCsrf()` (or equivalent) at the point of use so the value is always fresh and the meta tag fallback is available.
+
+### Clip inline player errors — persistent (fixed 3.3.136)
+Despite `preload="none"` (3.3.132) and `send_file(conditional=True)` (3.3.133), `<audio>` elements still errored. Root cause: Werkzeug's `make_conditional` Range handling is unreliable with certain browser/proxy combinations — Chrome/Safari issue a `Range: bytes=0-` probe before playback and error if they receive anything other than 206.
+
+Fix: replaced `send_file` entirely with an explicit Range handler in `_serve_clip_wav()`. Reads the file into memory (`open(path,"rb").read()`), parses the `Range` header manually, returns 206 with correct `Content-Range` / `Accept-Ranges` headers for Range requests, or 200 with `Accept-Ranges: bytes` for full-file requests.
+
+**Rule**: For audio/video file endpoints served to browser `<audio>`/`<video>` elements, do NOT use `send_file(conditional=True)` — handle Range requests explicitly. Clip files are small enough (≤500 KB) to read into memory without streaming.
+
+### Clip sync — re-upload clips missing from hub (added 3.3.136)
+After a successful upload `_upload_clip_inner` writes a zero-byte `.hub` marker (e.g. `clip.hub`) alongside the WAV. The new `_sync_pending_clips()` method on `HubClient` scans `alert_snippets/` for WAV files without a `.hub` marker and uploads them using `_upload_clip_inner` with empty chain_name/chain_id (clips appear on Reports but not in fault-replay panels). Called from the heartbeat thread every 10 cycles (~100 s) via `threading.Thread(target=self._sync_pending_clips, daemon=True, name="ClipSync").start()`.
+
+**Rule**: Always write a `.hub` marker after confirmed upload. Never delete `.hub` markers — they prevent re-uploads on sync.
 
 ### FM Scanner stereo always MONO (fixed 3.3.77)
 At heartbeat ingestion (`/api/v1/heartbeat`), `sess["rds"]` was only updated when `ps` or `rt` was present. Fields like `stereo`, `tp`, `ta`, `pi` arrive from redsea *before* PS/RT and were silently dropped.

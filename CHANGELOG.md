@@ -2,6 +2,25 @@
 
 ---
 
+## [3.3.137] - 2026-03-26
+
+### Added
+- **Clip auto-upload toggle** (`Settings → Hub → Clip Upload`) — new checkbox to disable automatic clip push to the hub. When off, clips are saved on the client only; the hub can still request them via the chain-fault `save_clip` command. Useful on metered links or when you prefer to pull clips manually.
+- **Clip sync toggle** — separate checkbox to disable the periodic background re-upload of missed clips (every ~100 s). Can be turned off independently of auto-upload.
+- **MP3 clip format** — new `Clip Format` setting. Choosing MP3 encodes clips ~8× smaller before upload and storage. Uses `lameenc` (pure Python — `pip install lameenc`) if available, falls back to `ffmpeg` subprocess, then falls back to WAV if neither encoder is found. Extension is preserved through the upload/save pipeline (`ext` field in the upload payload; hub saves with correct `.mp3` extension).
+- **Deferred fault-clip capture** — `save_clip` commands with `status="fault"` now wait `clip_duration` seconds before capturing audio, so the recorded clip contains post-fault content rather than the pre-fault audio that was in the rolling buffer at the moment the hub sent the command. `last_good` clips are still captured immediately (they intentionally record the audio before the fault).
+
+### Fixed
+- `_clip_cleanup` and `_sync_pending_clips` now include `.mp3` files alongside `.wav`.
+
+## [3.3.136] - 2026-03-26
+
+### Fixed
+- **Clip inline player errors (persistent)** — replaced Werkzeug's `send_file(conditional=True)` with a fully explicit Range-request handler in `_serve_clip_wav()`. Reads the clip into memory, checks the `Range` header manually, and returns a correct `206 Partial Content` response with `Content-Range` / `Accept-Ranges` headers. This removes all dependency on Werkzeug's conditional machinery, which was producing inconsistent results with certain browser/proxy combinations even in 3.1.6.
+
+### Added
+- **Periodic clip sync** — clients now periodically re-upload any alert clips that are present on disk but were never confirmed as uploaded to the hub. After each successful upload `_upload_clip_inner` writes a zero-byte `.hub` marker alongside the WAV file; `_sync_pending_clips` (run every ~100 s in the heartbeat thread) scans `alert_snippets/` for WAVs without a marker and uploads them. This ensures clips are never permanently lost due to transient network errors or hub restarts at the moment of a fault.
+
 ## [3.3.135] - 2026-03-26
 
 ### Improved

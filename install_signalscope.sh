@@ -1173,6 +1173,9 @@ main() {
   python -m pip install --upgrade pip wheel "setuptools<81"
   python -m pip install flask waitress cheroot numpy scipy requests certifi cryptography psutil sounddevice "httpx[http2]"
 
+  step "Installing optional MP3 encoder (lameenc)"
+  python -m pip install lameenc || warn "lameenc not available — MP3 clip encoding will fall back to ffmpeg or WAV"
+
   step "Installing/checking ONNX stack"
   python -m pip install onnx || warn "Failed to install onnx"
   if ! python -m pip install onnxruntime; then

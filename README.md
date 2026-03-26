@@ -40,10 +40,6 @@ The installer will:
 
 Once complete, open `http://localhost:5000`. The setup wizard will guide you through the rest.
 
-### Windows
-
-A PowerShell installer (`install_signalscope_windows.ps1`) is included for Windows installations using a venv and scheduled task.
-
 ---
 
 ## Features Overview
