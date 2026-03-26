@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.6] - 2026-03-26
+
+### Added
+- **Sustained glitching escalation alert** (`AUDIO_GLITCH_SUSTAINED`) — a second, louder alert tier that fires when glitches are hammering continuously. Uses a configurable longer look-back window (default 10 dropouts in 10 min). Includes an audio clip. Re-fires every 10 minutes while the condition persists. The existing first-tier alert (`AUDIO_GLITCH`) is unchanged. The timestamp prune window is now extended to cover whichever of the two windows is longer so both tiers always have the data they need.
+
 ## [3.4.5] - 2026-03-26
 
 ### Changed

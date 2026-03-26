@@ -1559,7 +1559,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.5"
+BUILD                  = "SignalScope-3.4.6"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -1815,11 +1815,14 @@ class InputConfig:
     flatness_min_seconds:     int   = 300        # must persist this long before firing alert
 
     # Short drop / glitch detection
-    glitch_detect:            bool  = False      # enable glitch detection
-    glitch_drop_db:           float = 18.0       # drop must be this many dB below rolling mean
-    glitch_max_seconds:       float = 8.0        # drop lasting longer counts as silence, not glitch
-    glitch_alert_count:       int   = 3          # N glitches in window triggers alert
-    glitch_alert_window_min:  int   = 5          # sliding window length (minutes)
+    glitch_detect:                bool  = False   # enable glitch detection
+    glitch_drop_db:               float = 18.0   # drop must be this many dB below rolling mean
+    glitch_max_seconds:           float = 8.0    # drop lasting longer counts as silence, not glitch
+    glitch_alert_count:           int   = 3      # N glitches in window triggers first alert
+    glitch_alert_window_min:      int   = 5      # sliding window for first alert (minutes)
+    # Sustained glitching — fires a louder alert when hammering continues
+    glitch_sustained_count:       int   = 10     # N glitches in sustained window triggers escalation
+    glitch_sustained_window_min:  int   = 10     # sustained window length (minutes)
 
     # Expected identity — alert when actual name differs or changes
     expected_fm_rds_ps:   str = ""   # expected RDS Programme Service name; blank = alert on any change
@@ -1911,10 +1914,11 @@ class InputConfig:
     _flatness_active:       bool  = field(default=False, init=False, repr=False)
     _flatness_since:        float = field(default=0.0,   init=False, repr=False)
     # Glitch tracking (runtime)
-    _glitch_dip_start:      float = field(default=0.0,   init=False, repr=False)  # wall-clock ts dip began
-    _glitch_timestamps:     List  = field(default_factory=list, init=False, repr=False)  # recent glitch ts list
-    _glitch_count_total:    int   = field(default=0,     init=False, repr=False)  # cumulative lifetime count
-    _last_glitch_alert_ts:  float = field(default=0.0,   init=False, repr=False)
+    _glitch_dip_start:           float = field(default=0.0,   init=False, repr=False)  # wall-clock ts dip began
+    _glitch_timestamps:          List  = field(default_factory=list, init=False, repr=False)  # recent glitch ts list
+    _glitch_count_total:         int   = field(default=0,     init=False, repr=False)  # cumulative lifetime count
+    _last_glitch_alert_ts:       float = field(default=0.0,   init=False, repr=False)
+    _last_sustained_alert_ts:    float = field(default=0.0,   init=False, repr=False)
 
 
 @dataclass
@@ -2162,6 +2166,8 @@ def load_config() -> AppConfig:
             glitch_max_seconds=float(item.get("glitch_max_seconds", 8.0)),
             glitch_alert_count=int(item.get("glitch_alert_count", 3)),
             glitch_alert_window_min=int(item.get("glitch_alert_window_min", 5)),
+            glitch_sustained_count=int(item.get("glitch_sustained_count", 10)),
+            glitch_sustained_window_min=int(item.get("glitch_sustained_window_min", 10)),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
     return AppConfig(
@@ -2305,6 +2311,8 @@ def save_config(cfg: AppConfig):
             "glitch_max_seconds": i.glitch_max_seconds,
             "glitch_alert_count": i.glitch_alert_count,
             "glitch_alert_window_min": i.glitch_alert_window_min,
+            "glitch_sustained_count": i.glitch_sustained_count,
+            "glitch_sustained_window_min": i.glitch_sustained_window_min,
         } for i in cfg.inputs],
         "email": {
             "enabled": cfg.email.enabled, "smtp_host": cfg.email.smtp_host,
@@ -5210,8 +5218,10 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                     # Count it
                     cfg._glitch_timestamps.append(_gn)
                     cfg._glitch_count_total += 1
-                    # Prune window
-                    _g_cutoff = _gn - cfg.glitch_alert_window_min * 60.0
+                    # Prune to the longest window we need so both alert
+                    # levels can look back as far as they require.
+                    _g_cutoff = _gn - max(cfg.glitch_alert_window_min,
+                                          cfg.glitch_sustained_window_min) * 60.0
                     cfg._glitch_timestamps = [t for t in cfg._glitch_timestamps if t >= _g_cutoff]
 
                     # ── Per-glitch clip capture ───────────────────────────
@@ -5225,32 +5235,49 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                         _gcmsg = (f"Audio glitch on '{cfg.name}' — "
                                   f"{_dip_dur:.1f}s dropout "
                                   f"({lev:.1f} dBFS, ref {_rolling_mean:.1f} dBFS)")
-                        # Clip length: enough context before/after the glitch.
-                        # Use the configured alert clip length (capped at 12 s so
-                        # short glitch clips don't eat into a long clip budget).
                         _gcclip_dur = min(cfg.alert_wav_duration, 12.0)
                         _gcclip = _save_alert_wav(cfg, "glitch", _gcclip_dur)
                         _add_history(cfg, "AUDIO_GLITCH", _gcmsg,
                                      clip_path=_gcclip or "")
                         log_fn(f"[Glitch] {_gcmsg}")
 
-                    # ── Notification alert after N glitches in window ─────
-                    # External notification (push/email/webhook) fires only
-                    # when the count threshold is reached; no duplicate
-                    # _add_history call here since the per-glitch path above
-                    # already logged it.
-                    if len(cfg._glitch_timestamps) >= cfg.glitch_alert_count:
+                    # ── Notification: N glitches in short window ──────────
+                    _gw_cutoff = _gn - cfg.glitch_alert_window_min * 60.0
+                    _gw_count  = sum(1 for t in cfg._glitch_timestamps if t >= _gw_cutoff)
+                    if _gw_count >= cfg.glitch_alert_count:
                         if _gn - cfg._last_glitch_alert_ts >= ALERT_COOLDOWN:
                             cfg._last_glitch_alert_ts = _gn
-                            _gcount = len(cfg._glitch_timestamps)
                             _gnmsg = (f"Audio glitching on '{cfg.name}' — "
-                                      f"{_gcount} dropout(s) in "
+                                      f"{_gw_count} dropout(s) in "
                                       f"{cfg.glitch_alert_window_min} min")
                             if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
                                 sender.send(f"GLITCH on {cfg.name}", _gnmsg, None,
                                             alert_type="AUDIO_GLITCH", stream=cfg.name,
                                             level_dbfs=lev)
                             log_fn(f"[ALERT] {_gnmsg}")
+
+                    # ── Notification: sustained hammering ─────────────────
+                    # Fires a louder escalation when glitches keep piling up
+                    # over the longer sustained window. 10-minute cooldown so
+                    # it re-alerts if the problem persists but doesn't spam.
+                    _sw_cutoff = _gn - cfg.glitch_sustained_window_min * 60.0
+                    _sw_count  = sum(1 for t in cfg._glitch_timestamps if t >= _sw_cutoff)
+                    _SUSTAINED_COOLDOWN = 600.0   # 10 minutes
+                    if _sw_count >= cfg.glitch_sustained_count:
+                        if _gn - cfg._last_sustained_alert_ts >= _SUSTAINED_COOLDOWN:
+                            cfg._last_sustained_alert_ts = _gn
+                            _sclip = _save_alert_wav(cfg, "glitch_sustained",
+                                                     min(cfg.alert_wav_duration, 12.0))
+                            _smsg = (f"Sustained glitching on '{cfg.name}' — "
+                                     f"{_sw_count} dropouts in "
+                                     f"{cfg.glitch_sustained_window_min} min "
+                                     f"(total session: {cfg._glitch_count_total})")
+                            _add_history(cfg, "AUDIO_GLITCH_SUSTAINED", _smsg,
+                                         clip_path=_sclip or "")
+                            sender.send(f"⚠ SUSTAINED GLITCH on {cfg.name}", _smsg,
+                                        _sclip, alert_type="AUDIO_GLITCH_SUSTAINED",
+                                        stream=cfg.name, level_dbfs=lev)
+                            log_fn(f"[ALERT] {_smsg}")
             elif cfg._glitch_dip_start > 0.0 and (_gn - cfg._glitch_dip_start) >= cfg.glitch_max_seconds:
                 # Dip has become a silence event — hand off to silence detection, reset glitch tracker
                 cfg._glitch_dip_start = 0.0
@@ -16177,6 +16204,16 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
         <label class="lbl">… in this many minutes
           <input type="number" name="glitch_alert_window_min" value="{{inp.glitch_alert_window_min}}" step="1" min="1">
         </label>
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--bor)">
+          <div class="sec" style="margin-bottom:6px">⚠ Sustained glitching escalation</div>
+          <label class="lbl">Escalate after N dropouts total
+            <input type="number" name="glitch_sustained_count" value="{{inp.glitch_sustained_count}}" step="1" min="2">
+          </label>
+          <label class="lbl">… in this many minutes
+            <input type="number" name="glitch_sustained_window_min" value="{{inp.glitch_sustained_window_min}}" step="1" min="1">
+          </label>
+          <p class="help" style="margin-top:4px">Fires a louder <strong>AUDIO_GLITCH_SUSTAINED</strong> alert (with clip) when glitches are hammering. Re-fires every 10 min while sustained. Default: 10 dropouts in 10 min.</p>
+        </div>
       </div>
 
       <div class="sec" style="margin-top:14px">〰 Audio Flatness / Static Detection</div>
@@ -16651,6 +16688,8 @@ def _inp_from_form(f):
         glitch_max_seconds=float(f.get("glitch_max_seconds") or 8.0),
         glitch_alert_count=int(f.get("glitch_alert_count") or 3),
         glitch_alert_window_min=int(f.get("glitch_alert_window_min") or 5),
+        glitch_sustained_count=int(f.get("glitch_sustained_count") or 10),
+        glitch_sustained_window_min=int(f.get("glitch_sustained_window_min") or 10),
     )
 
 @app.route("/inputs/add", methods=["GET","POST"])
