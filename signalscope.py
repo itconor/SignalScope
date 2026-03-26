@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.161"
+BUILD                  = "SignalScope-3.3.162"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -24387,16 +24387,16 @@ nav{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap;align-items:center}
 .bg{background:var(--bor);color:var(--tx)}.bp{background:var(--acc);color:#fff}.bw{background:#7c2d12;color:#fca5a5}
 .bd{background:var(--al);color:#fff}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
 /* Hub reports uses the shared topnav/header styling from the main app */
-main{padding:18px 20px 24px}
+main{padding:18px 20px 24px;overflow-x:hidden}
 .report-hero{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:14px 18px;background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;margin-bottom:14px}
 .report-title{font-size:20px;font-weight:800;line-height:1.1}
 .report-sub{font-size:12px;color:var(--mu);margin-top:4px}
 .hero-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.filters{display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap;align-items:center;background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px}
-.filters select,.filters input{background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 10px;font-size:12px;min-width:0}
-.filters select{max-width:160px}
-.filters input[type="datetime-local"]{max-width:175px}
-.filters label{color:var(--mu);font-size:12px}
+.filters{display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap;align-items:center;background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px;overflow-x:auto}
+.filters select,.filters input{background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 10px;font-size:12px;min-width:0;box-sizing:border-box}
+.filters select{max-width:150px}
+.filters input[type="datetime-local"]{width:155px;max-width:155px}
+.filters label{color:var(--mu);font-size:12px;white-space:nowrap}
 .filter-row-count{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--mu);margin-bottom:14px;padding:0 4px}
 .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px}
 .sc{background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px 14px;box-shadow:0 4px 10px rgba(0,0,0,.14);cursor:pointer;transition:border-color .15s,box-shadow .15s,background .15s;user-select:none}

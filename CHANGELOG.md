@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.162] - 2026-03-26
+
+### Fixed
+- **Hub Reports — filter bar still causing horizontal page overflow** — `datetime-local` inputs resist `max-width` in many browsers (they have a browser-enforced minimum display width for the date/time text). Even with `max-width:175px` set, the inputs rendered wider on some systems, overflowing `.filters` → overflowing `<main>` → creating a page-level horizontal scrollbar. When the page scrolled right, all content shifted including the "Clips only" row beneath the filter bar. Fix: added `overflow-x:hidden` to `<main>` (prevents the page ever getting a horizontal scrollbar), added `overflow-x:auto` to `.filters` (the filter bar itself scrolls internally if items are too wide), and pinned datetime inputs to `width:155px` (not just `max-width`) to override the browser minimum.
+
 ## [3.3.161] - 2026-03-26
 
 ### Fixed
