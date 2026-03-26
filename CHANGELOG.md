@@ -2,6 +2,17 @@
 
 ---
 
+## [3.4.0] - 2026-03-26
+
+### Changed
+- **Remove pyrtlsdr FM backend** — the pure-Python RTL-SDR demodulator (`_run_fm_pyrtlsdr`, ~390 lines) has been removed. The only supported FM backend is now `rtl_fm`. Removes the backend selector from the FM input settings UI, all related JavaScript, and the pyrtlsdr dependency entry from the system requirements page.
+
+### Fixed
+- **Hub Reports clip player route broken for stream names containing "/"** — Jinja2's `urlencode` filter uses `safe='/'`, leaving literal slashes unencoded in clip URLs. The route used `<stream_name>` (no `path:` converter) so Flask split at the slash and returned 404. Route changed to `<path:stream_filename>`; function splits on last `/` to recover stream name and filename. Mobile API `__wrapped__` call updated accordingly.
+- **Hub Reports "(hub)" clips returned "Site not found"** — clips recorded on the hub are tagged `_site="(hub)"` in the reports. `hub_server.get_site("(hub)")` returns None (the hub isn't a registered remote client), causing the function to bail before checking the local `alert_snippets` cache. Fix: `(hub)` is now treated as a pseudo-site, bypassing `get_site` and setting `client_addr=""`.
+- **Hub Reports remote chain clips 504** — uploaded chain-fault clips are stored as `alert_snippets/{safe(site)}_{safe(stream)}/` but the alert-log entry uses `stream = f"{site} / {stream}"`. For `(hub)` pseudo-site clips, the cache key was built incorrectly as `hub_...`, missing the underscore separator. Fix: split on ` / ` to recover the real site and stream names.
+- **Two hub API routes missing `<path:>` converter** — `POST /api/hub/site/<site_name>/update` and `POST /api/hub/site/<site_name>/relay_bitrate` were missing `path:` on the `site_name` parameter, which would break for site names containing `/`. Fixed to `<path:site_name>` to match all other hub site routes.
+
 ## [3.3.167] - 2026-03-26
 
 ### Fixed

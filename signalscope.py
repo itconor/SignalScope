@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.167"
+BUILD                  = "SignalScope-3.4.0"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -18847,7 +18847,7 @@ def _set_site_chain_maintenance(site_name: str, duration: int) -> None:
                     monitor.log(f"[Chain] Auto-maintenance CLEARED for {mkey} in chain {cid!r} (update complete)")
 
 
-@app.post("/api/hub/site/<site_name>/update")
+@app.post("/api/hub/site/<path:site_name>/update")
 @login_required
 @csrf_protect
 def hub_trigger_update(site_name):
@@ -18879,7 +18879,7 @@ def hub_trigger_update(site_name):
     return jsonify({"ok": True})
 
 
-@app.post("/api/hub/site/<site_name>/relay_bitrate")
+@app.post("/api/hub/site/<path:site_name>/relay_bitrate")
 @login_required
 @csrf_protect
 def hub_set_relay_bitrate(site_name):
@@ -19753,9 +19753,6 @@ def hub_proxy_clip(site_name, sidx):
 @app.get("/hub/site/<path:site_name>/alerts/clip/<path:stream_filename>")
 @login_required
 def hub_proxy_alert_clip(site_name, stream_filename):
-    if '/' not in stream_filename:
-        return "Invalid clip path", 404
-    stream_name, filename = stream_filename.rsplit('/', 1)
     """Proxy a saved alert clip WAV from a client site through the hub.
 
     Alert clips are small fixed-length WAV files.  We buffer the entire file
@@ -19763,6 +19760,9 @@ def hub_proxy_alert_clip(site_name, stream_filename):
     Safari (and other strict audio players) reject chunked WAV responses with
     no Content-Length — they send a Range request and need a 206 reply.
     """
+    if '/' not in stream_filename:
+        return "Invalid clip path", 404
+    stream_name, filename = stream_filename.rsplit('/', 1)
     cfg = monitor.app_cfg
     if cfg.hub.mode not in ("hub","both"):
         return "Not a hub", 404
