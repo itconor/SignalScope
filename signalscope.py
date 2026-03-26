@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.0"
+BUILD                  = "SignalScope-3.4.1"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2426,8 +2426,8 @@ def _alert_log_prune():
                 with open(ALERT_LOG_PATH, "w", encoding="utf-8") as f:
                     f.writelines(lines[-limit:])
         _alert_log_last_prune = time.time()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[AlertLog] Prune failed: {e}")
 
 def _alert_log_load(limit: int = 2000) -> List[dict]:
     """Read the last `limit` events from the alert log."""
@@ -19807,7 +19807,7 @@ def hub_proxy_alert_clip(site_name, stream_filename):
                 _clip_mime  = "audio/mpeg" if _try_fname.lower().endswith(".mp3") else "audio/wav"
                 _safe_fname = _try_fname   # use found name in response headers
             except Exception as _e:
-                print(f"[HubProxy] Local clip read failed, falling back: {_e}")
+                monitor.log(f"[HubProxy] Local clip read failed, falling back: {_e}")
             break
 
     if not wav_data and client_addr and not _hub_client_addr_is_private(client_addr):
@@ -19816,14 +19816,14 @@ def hub_proxy_alert_clip(site_name, stream_filename):
             with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as resp:
                 wav_data = resp.read()
         except Exception as e:
-            print(f"[HubProxy] Falling back to relay alert clip for {site_name}: {e}")
+            monitor.log(f"[HubProxy] Falling back to relay alert clip for {site_name}: {e}")
 
     if not wav_data:
         # Relay mode: buffer the entire WAV from the client before responding.
         slot = listen_registry.create(site_name, 0, kind="alert_wav",
                                       stream_name=stream_name, filename=filename,
                                       mimetype="audio/wav")
-        print(f"[HubProxy] Relay alert clip slot {slot.slot_id} created for {site_name}/{filename}")
+        monitor.log(f"[HubProxy] Relay alert clip slot {slot.slot_id} created for {site_name}/{filename}")
         buf = io.BytesIO()
         deadline = time.time() + 25.0
         started  = False
@@ -24283,8 +24283,10 @@ document.addEventListener('click',function(e){
     var sub=pb.dataset.sub||'';
     var fname=pb.dataset.fname||'clip.wav';
     // Update info labels
-    document.getElementById('mp-title').textContent=title;
-    document.getElementById('mp-sub').textContent=sub;
+    var _mpt=document.getElementById('mp-title');
+    _mpt.textContent=title; _mpt.title=title;
+    var _mps=document.getElementById('mp-sub');
+    _mps.textContent=sub; _mps.title=sub;
     // Set audio src
     _mpAudio=document.getElementById('mp-audio');
     _mpAudio.src=url;
@@ -26073,8 +26075,10 @@ function toggleLive(siteIdx,streamIdx,btn){
   var url=btn.dataset.url;
   var name=btn.dataset.name||('Stream '+streamIdx);
   var site=btn.dataset.siteName||'';
-  document.getElementById('hmp-title').textContent=name;
-  document.getElementById('hmp-sub').textContent=site;
+  var _hmpt=document.getElementById('hmp-title');
+  _hmpt.textContent=name; _hmpt.title=name;
+  var _hmps=document.getElementById('hmp-sub');
+  _hmps.textContent=site; _hmps.title=site;
   audio.src=url;audio.type='audio/mpeg';audio.load();audio.play().catch(function(){});
   mp.style.display='flex';
   document.body.style.paddingBottom='72px';

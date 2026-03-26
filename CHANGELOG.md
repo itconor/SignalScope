@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.1] - 2026-03-26
+
+### Fixed
+- **Alert log prune failure now logged** — `_alert_log_prune()` was catching all exceptions silently (`except: pass`). If pruning ever failed (permissions error, disk full, file corruption) the alert log would grow unboundedly with no indication. Exception is now printed to the app log.
+- **Hub proxy clip errors now appear in the app log** — several `print()` calls in the clip relay path (`hub_proxy_alert_clip`) were writing to raw stdout instead of `monitor.log()`, so errors never appeared in the Settings → Log panel.
+- **Mini-player hover tooltip on long stream names** — the bottom mini-player bar truncates long stream names with ellipsis but had no `title=` attribute, so hovering showed nothing. Both the clip player and hub live player now set `title=` on the stream name and site/timestamp elements so the full text is always accessible on hover.
+
 ## [3.4.0] - 2026-03-26
 
 ### Changed
