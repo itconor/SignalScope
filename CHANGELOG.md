@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.5] - 2026-03-26
+
+### Changed
+- **Glitch detection: per-glitch audio clip capture** — every confirmed glitch now saves a short audio clip (up to 12 s, rate-limited to one clip per 30 s) and logs it to Hub Reports as `AUDIO_GLITCH`. The clip captures context before, during, and after the dropout so the exact audio artifact is preserved. External notifications (push/email/webhook) are unchanged — they still only fire after the N-glitches-in-window threshold is reached. This separates *evidence capture* (always, silent) from *alerting* (only when persistent).
+
 ## [3.4.4] - 2026-03-26
 
 ### Added

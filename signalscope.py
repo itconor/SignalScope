@@ -1559,7 +1559,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.4"
+BUILD                  = "SignalScope-3.4.5"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -5213,20 +5213,44 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                     # Prune window
                     _g_cutoff = _gn - cfg.glitch_alert_window_min * 60.0
                     cfg._glitch_timestamps = [t for t in cfg._glitch_timestamps if t >= _g_cutoff]
-                    # Alert if threshold reached
+
+                    # ── Per-glitch clip capture ───────────────────────────
+                    # Every glitch saves a short audio clip and logs it to
+                    # Reports — no external notification fires here.
+                    # Rate-limited to one clip every 30 s so rapid bursts
+                    # don't flood the clip store.
+                    _GLITCH_CLIP_COOLDOWN = 30.0
+                    if _gn - cfg._last_alerts.get("_glitch_clip", 0) >= _GLITCH_CLIP_COOLDOWN:
+                        cfg._last_alerts["_glitch_clip"] = _gn
+                        _gcmsg = (f"Audio glitch on '{cfg.name}' — "
+                                  f"{_dip_dur:.1f}s dropout "
+                                  f"({lev:.1f} dBFS, ref {_rolling_mean:.1f} dBFS)")
+                        # Clip length: enough context before/after the glitch.
+                        # Use the configured alert clip length (capped at 12 s so
+                        # short glitch clips don't eat into a long clip budget).
+                        _gcclip_dur = min(cfg.alert_wav_duration, 12.0)
+                        _gcclip = _save_alert_wav(cfg, "glitch", _gcclip_dur)
+                        _add_history(cfg, "AUDIO_GLITCH", _gcmsg,
+                                     clip_path=_gcclip or "")
+                        log_fn(f"[Glitch] {_gcmsg}")
+
+                    # ── Notification alert after N glitches in window ─────
+                    # External notification (push/email/webhook) fires only
+                    # when the count threshold is reached; no duplicate
+                    # _add_history call here since the per-glitch path above
+                    # already logged it.
                     if len(cfg._glitch_timestamps) >= cfg.glitch_alert_count:
                         if _gn - cfg._last_glitch_alert_ts >= ALERT_COOLDOWN:
                             cfg._last_glitch_alert_ts = _gn
                             _gcount = len(cfg._glitch_timestamps)
-                            _gmsg = (f"Audio glitching on '{cfg.name}' — "
-                                     f"{_gcount} dropout(s) in {cfg.glitch_alert_window_min} min "
-                                     f"(last: {_dip_dur:.1f}s, ref: {_rolling_mean:.1f} dBFS)")
-                            _add_history(cfg, "AUDIO_GLITCH", _gmsg)
+                            _gnmsg = (f"Audio glitching on '{cfg.name}' — "
+                                      f"{_gcount} dropout(s) in "
+                                      f"{cfg.glitch_alert_window_min} min")
                             if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
-                                sender.send(f"GLITCH on {cfg.name}", _gmsg, None,
+                                sender.send(f"GLITCH on {cfg.name}", _gnmsg, None,
                                             alert_type="AUDIO_GLITCH", stream=cfg.name,
                                             level_dbfs=lev)
-                            log_fn(f"[ALERT] {_gmsg}")
+                            log_fn(f"[ALERT] {_gnmsg}")
             elif cfg._glitch_dip_start > 0.0 and (_gn - cfg._glitch_dip_start) >= cfg.glitch_max_seconds:
                 # Dip has become a silence event — hand off to silence detection, reset glitch tracker
                 cfg._glitch_dip_start = 0.0
