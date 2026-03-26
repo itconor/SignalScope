@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.155] - 2026-03-26
+
+### Changed
+- **Dashboard — PTP Clock and Hub Connection cards collapse by default** — the PTP Clock and Hub Connection cards at the bottom of the Dashboard now start collapsed, showing only the header (status dot + name). A `▾` chevron expands the full detail. Expand state persisted in `localStorage`. This cleans up the dashboard tail for the common case where these panels don't need constant attention.
+
 ## [3.3.154] - 2026-03-26
 
 ### Added

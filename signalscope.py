@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.154"
+BUILD                  = "SignalScope-3.3.155"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -13421,8 +13421,9 @@ main{padding:16px;max-width:1440px;margin:0 auto}
     <div class="dot" id="ptpdot" style="background:var(--mu)"></div>
     <strong>IEEE 1588 / PTP</strong>
     <span style="font-size:11px;color:var(--mu);margin-left:auto">224.0.1.129</span>
+    <button class="btn bg bs card-expand-btn" data-idx="ptp" data-action="expand" title="Expand / Collapse">&#9662;</button>
   </div>
-  <div class="cb">
+  <div class="cb card-detail" id="detail_ptp">
     <div class="mr"><span class="ml">Status</span><span id="ptpstatus" style="font-size:12px">—</span></div>
     <div class="mr"><span class="ml">Offset</span><span id="ptpoffset">—</span></div>
     <div class="mr"><span class="ml">Jitter</span><span id="ptpjitter">—</span></div>
@@ -13439,8 +13440,9 @@ main{padding:16px;max-width:1440px;margin:0 auto}
     <div class="dot" id="hubconn-dot" style="background:var(--mu)"></div>
     <strong>Hub Reporting</strong>
     <span style="font-size:11px;color:var(--mu);margin-left:auto" id="hubconn-url">{{hub_url}}</span>
+    <button class="btn bg bs card-expand-btn" data-idx="hubconn" data-action="expand" title="Expand / Collapse">&#9662;</button>
   </div>
-  <div class="cb">
+  <div class="cb card-detail" id="detail_hubconn">
     <div class="mr"><span class="ml">State</span><span id="hubconn-state">—</span></div>
     <div class="mr"><span class="ml">Last ACK</span><span id="hubconn-ack">—</span></div>
     <div class="mr"><span class="ml">Sent</span><span id="hubconn-sent">—</span></div>
