@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.153"
+BUILD                  = "SignalScope-3.3.154"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -26746,6 +26746,14 @@ function tickClock(){
   el.textContent=d.toLocaleTimeString();
 }
 
+function _syncExpandAllBtn(siteCard){
+  var allBtn = siteCard.querySelector('[data-action="sc-expand-all"]');
+  if(!allBtn) return;
+  var details = siteCard.querySelectorAll('.sc-detail');
+  var allOpen = details.length > 0 && Array.from(details).every(function(d){ return d.classList.contains('open'); });
+  allBtn.textContent = allOpen ? '⊟ Collapse All' : '⊞ Expand All';
+}
+
 // CSP-safe button wiring for hub listen buttons + mini-player close
 document.addEventListener('click', function(e){
   if(e.target.closest('#hmp-close')){ _closeHubMiniPlayer(); return; }
@@ -26758,6 +26766,23 @@ document.addEventListener('click', function(e){
     var open = detail.classList.toggle('open');
     btn.classList.toggle('open', open);
     try{ localStorage.setItem('hub_sc_expand_'+key, open ? '1' : '0'); }catch(ex){}
+    // Keep the "Expand All" button label in sync
+    var siteCard = btn.closest('.site-card');
+    if(siteCard) _syncExpandAllBtn(siteCard);
+    return;
+  }
+  if(btn.dataset.action === 'sc-expand-all'){
+    var siteCard = btn.closest('.site-card');
+    if(!siteCard) return;
+    var details = siteCard.querySelectorAll('.sc-detail');
+    var expandBtns = siteCard.querySelectorAll('[data-action="sc-expand"]');
+    var anyCollapsed = Array.from(details).some(function(d){ return !d.classList.contains('open'); });
+    details.forEach(function(d){ d.classList.toggle('open', anyCollapsed); });
+    expandBtns.forEach(function(b){
+      b.classList.toggle('open', anyCollapsed);
+      try{ localStorage.setItem('hub_sc_expand_'+b.dataset.scKey, anyCollapsed ? '1' : '0'); }catch(ex){}
+    });
+    _syncExpandAllBtn(siteCard);
     return;
   }
   if(btn.dataset.action !== 'live') return;
@@ -26779,6 +26804,8 @@ document.addEventListener('DOMContentLoaded', function(){
       if(detail){ detail.classList.add('open'); btn.classList.add('open'); }
     }
   });
+  // Sync Expand All button labels after restore
+  document.querySelectorAll('.site-card').forEach(function(sc){ _syncExpandAllBtn(sc); });
   tickClock();
   setInterval(tickClock, 1000);
   setTimeout(function(){
@@ -27104,11 +27131,13 @@ setInterval(_loadTrends, 300000);
     {% endif %}
   </div>
   {% if not _pending %}
-  <div style="padding:8px 16px;border-bottom:1px solid var(--bor);display:flex;gap:8px;flex-wrap:wrap;background:linear-gradient(180deg,#12305c,#10284f)">
+  <div style="padding:8px 16px;border-bottom:1px solid var(--bor);display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:linear-gradient(180deg,#12305c,#10284f)">
     <span class="sum-pill" style="padding:4px 8px">🎚 {{site.streams|length}} streams</span>
     <span class="sum-pill" style="padding:4px 8px;color:var(--al)">🚨 {{site.alert_count}} alert</span>
     <span class="sum-pill" style="padding:4px 8px;color:var(--wn)">⚠ {{site.warn_count}} warn</span>
     <span class="sum-pill" style="padding:4px 8px;color:var(--ok)">✅ {{site.ok_count}} ok</span>
+    <button class="btn bg bs sc-expand-all-btn" style="margin-left:auto;font-size:11px;padding:3px 10px"
+            data-action="sc-expand-all" data-site-id="site-{{site.site|replace(' ','_')|replace('.','_')|replace('-','_')}}">⊞ Expand All</button>
   </div>
 
   {% if not site.online %}

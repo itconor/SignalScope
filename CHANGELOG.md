@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.154] - 2026-03-26
+
+### Added
+- **Hub page — "Expand All / Collapse All" button per site** — each site's summary bar now has an `⊞ Expand All` button (right-aligned). Clicking it expands every stream card in that site at once. When all cards are already open it reads `⊟ Collapse All` and collapses them all. The label also updates when individual cards are toggled so it always reflects the current state.
+
 ## [3.3.153] - 2026-03-26
 
 ### Changed
