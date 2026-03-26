@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.151] - 2026-03-26
+
+### Fixed
+- **Nav dropdown disappears when moving mouse into it** — a 6 px gap between the trigger button and the dropdown panel caused the hover state to break mid-travel. Fixed with a `::before` pseudo-element on `.ss-pdrop` that invisibly bridges the gap. No visual change.
+
 ## [3.3.150] - 2026-03-26
 
 ### Changed

@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.150"
+BUILD                  = "SignalScope-3.3.151"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -12924,6 +12924,8 @@ def _inject_nav():
             f'min-width:180px;background:var(--sur,#0d2346);border:1px solid var(--bor,#17345f);'
             f'border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.5);padding:4px;'
             f'z-index:1000;flex-direction:column;gap:2px}}'
+            f'.ss-pdrop::before{{content:"";position:absolute;top:-6px;left:0;'
+            f'right:0;height:6px}}'
             f'.ss-pg:hover .ss-pdrop,.ss-pg:focus-within .ss-pdrop{{display:flex!important}}'
             f'.ss-pdrop .btn{{display:block;text-align:left;width:100%;'
             f'box-sizing:border-box;white-space:nowrap}}'
