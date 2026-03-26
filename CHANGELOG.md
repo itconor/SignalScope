@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.133] - 2026-03-26
+
+### Fixed
+- **Simultaneous clip uploads overloading hub** — when a broadcast chain fault fires, every chain node tries to upload its audio clip concurrently. With no limit this could exhaust the hub's Waitress thread pool (8 threads), causing the last uploads to queue and potentially timeout, resulting in missing clips on the hub's Reports page and 404 errors in the inline player. Added `_clip_upload_sem` (threading.Semaphore(3)) so at most 3 clips upload concurrently from any one client; the rest wait their turn rather than hammering the hub.
+- **Clip player errors on hub Reports page** — replaced the hand-rolled Range-request implementation in `_serve_clip_wav()` with Flask's `send_file(conditional=True)`. Werkzeug's battle-tested `make_conditional()` correctly handles `Range`, `ETag`, `If-None-Match`, and `304 Not Modified` across all browser/player combinations.
+- **Diagnostic logging for missing clip files** — `_serve_clip_wav()` now logs the expected path whenever it returns 404, making it easy to confirm in the hub log whether a clip upload arrived on disk. `hub_clip_upload` also logs each successfully saved clip (key/filename/size) so the upload journey is fully traceable.
+
 ## [3.3.132] - 2026-03-26
 
 ### Fixed

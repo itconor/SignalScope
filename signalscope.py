@@ -1384,7 +1384,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.132"
+BUILD                  = "SignalScope-3.3.133"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -1536,6 +1536,10 @@ HUB_PORT                = 5001          # hub dashboard port
 HUB_API_VERSION         = "v1"
 HUB_TIMESTAMP_TOLERANCE = 30    # max age (s) of a signed request
 HUB_RATE_LIMIT_RPM      = 60    # max heartbeats per minute per site key
+# Semaphore that caps concurrent clip uploads from one client to the hub.
+# When a chain fault fires, every node tries to upload a clip simultaneously.
+# Without a cap this can overwhelm the hub's thread pool and cause timeouts.
+_clip_upload_sem        = threading.Semaphore(3)   # max 3 in-flight at once
 
 # ─── PTP constants ───────────────────────────────────────────────────────────────
 
@@ -8574,7 +8578,24 @@ class HubClient:
         network errors or hub restarts don't silently lose clips.
         4xx responses are not retried (the request itself is wrong).
         Timeout raised to 60 s to accommodate large WAVs over WAN links.
+
+        A module-level semaphore (_clip_upload_sem) caps concurrent uploads
+        at 3.  When a chain fault fires every node tries to upload a clip
+        simultaneously — without the cap this can cause hub thread exhaustion
+        and upload timeouts, resulting in missing clips on the hub's reports
+        page.  Threads wait here rather than hammering the hub.
         """
+        with _clip_upload_sem:
+            self._upload_clip_inner(hub_url, secret, site, stream, label,
+                                    chain_name, chain_id, entry_id, clip_path,
+                                    node_label, pos, status, level_dbfs)
+
+    def _upload_clip_inner(self, hub_url: str, secret: str, site: str,
+                           stream: str, label: str, chain_name: str, chain_id: str,
+                           entry_id: str = "", clip_path: str = "",
+                           node_label: str = "", pos=None,
+                           status: str = "", level_dbfs: float = -120.0):
+        """Inner upload body — called after the concurrency semaphore is acquired."""
         try:
             with open(clip_path, "rb") as f:
                 data_b64 = base64.b64encode(f.read()).decode()
@@ -16279,69 +16300,36 @@ def clips_list(stream_name):
     return jsonify(files)
 
 def _serve_clip_wav(path: str, force_download: bool = False) -> "Response":
-    """Serve a WAV clip file with full RFC 7233 Range-request support.
+    """Serve a WAV clip with Range, ETag, and 304 support via Flask send_file.
 
-    Chrome / Safari / Firefox always open an audio element with
-    ``Range: bytes=0-`` so the browser can determine duration before buffering
-    the rest.  send_from_directory relies on Werkzeug's conditional-response
-    machinery which is version-sensitive and can silently fall back to a full
-    200 response, causing the <audio> element to error.  This helper always
-    handles Range correctly and is used by both the /clips/ and
-    /api/chains/clip/ routes so the behaviour is identical.
+    Previous hand-rolled implementation had a concurrency problem: Chrome
+    opens TWO connections simultaneously when an audio element starts playing
+    — one for the full file (to discover Accept-Ranges) and one Range probe.
+    With a single-threaded WSGI server the Range probe blocks until the full
+    streaming response finishes, which can take seconds for large WAV files,
+    causing the player to time out and show a media error.
+
+    Flask's send_file() delegates to Werkzeug's make_conditional() which
+    handles Range / ETag / 304 correctly, and uses wsgi.file_wrapper /
+    OS-level sendfile so the connection is handed off to the OS and the
+    worker thread is freed immediately — no blocking.
     """
     if not os.path.exists(path):
-        return Response("Not found", status=404)
-    file_size = os.path.getsize(path)
-    safe_file = os.path.basename(path)
-    safe_cd   = safe_file.replace('"', '').replace('\r', '').replace('\n', '')
-    mtime     = int(os.path.getmtime(path))
-    etag      = f'"{mtime:x}-{file_size:x}"'
-    disp      = "attachment" if force_download else "inline"
-
-    if request.headers.get("If-None-Match") == etag:
-        return Response(status=304, headers={"ETag": etag})
-
-    range_header = request.headers.get("Range")
-    if range_header:
+        # Log the missing path so operators can diagnose upload failures
+        # (common when a chain fault fires and uploads don't all arrive).
         try:
-            byte_range = range_header.strip().replace("bytes=", "")
-            start_s, end_s = byte_range.split("-", 1)
-            start = int(start_s) if start_s else 0
-            end   = int(end_s)   if end_s   else file_size - 1
+            monitor.log(f"[Clip] 404 — file not on disk: {os.path.basename(path)!r} "
+                        f"(expected at {path!r})")
         except Exception:
-            return Response("Bad Range", status=400)
-        end = min(end, file_size - 1)
-        if start > end or start >= file_size:
-            return Response(status=416,
-                            headers={"Content-Range": f"bytes */{file_size}"})
-        length = end - start + 1
-        with open(path, "rb") as f:
-            f.seek(start)
-            data = f.read(length)
-        return Response(data, status=206, mimetype="audio/wav", headers={
-            "Content-Disposition": f'{disp}; filename="{safe_cd}"',
-            "Content-Range":  f"bytes {start}-{end}/{file_size}",
-            "Content-Length": str(length),
-            "Accept-Ranges":  "bytes",
-            "ETag":           etag,
-            "Cache-Control":  "private, max-age=3600",
-        })
-
-    # Stream rather than buffer the whole file — WAV clips can be tens of MB
-    def _gen(p, chunk=65536):
-        with open(p, "rb") as _f:
-            while True:
-                blk = _f.read(chunk)
-                if not blk:
-                    break
-                yield blk
-    return Response(_gen(path), mimetype="audio/wav", headers={
-        "Content-Disposition": f'{disp}; filename="{safe_cd}"',
-        "Accept-Ranges":  "bytes",
-        "Content-Length": str(file_size),
-        "ETag":           etag,
-        "Cache-Control":  "private, max-age=3600",
-    })
+            pass
+        return Response("Not found", status=404)
+    return send_file(
+        path,
+        mimetype="audio/wav",
+        as_attachment=force_download,
+        conditional=True,      # Werkzeug handles Range, ETag, If-None-Match, 304
+        max_age=3600,
+    )
 
 
 @app.get("/clips/<path:stream_name>/<filename>")
@@ -18106,6 +18094,7 @@ def hub_clip_upload():
     if not os.path.exists(fpath):   # idempotent — don't overwrite on retry
         with open(fpath, "wb") as f:
             f.write(wav_bytes)
+        monitor.log(f"[Hub] Clip saved: {safe_key}/{fname} ({len(wav_bytes)//1024} KB)")
 
     # Write to hub alert log so it appears on the Reports page
     _alert_log_append({
