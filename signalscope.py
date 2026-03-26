@@ -1506,7 +1506,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.134"
+BUILD                  = "SignalScope-3.3.135"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -14596,6 +14596,20 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
 .help{font-size:12px;color:var(--mu);margin-top:4px;line-height:1.5}
 .sec{margin-top:18px;padding-top:13px;border-top:1px solid var(--bor);font-weight:600;font-size:14px}
 .act{margin-top:20px;display:flex;gap:8px}.panelbar{padding:8px 20px;background:linear-gradient(180deg,#12305c,#10284f);border-bottom:1px solid var(--bor);display:flex;align-items:center;gap:8px}
+.acard{background:var(--sur);border:1px solid var(--bor);border-radius:10px;margin-top:10px;overflow:hidden}
+.acard-hdr{display:flex;align-items:center;gap:10px;padding:12px 14px}
+.acard-ttl{flex:1;font-weight:600;font-size:13px}
+.acard-badge{font-size:11px;padding:2px 8px;border-radius:12px;font-weight:700;white-space:nowrap}
+.badge-on{background:rgba(34,197,94,.15);color:#4ade80;border:1px solid rgba(34,197,94,.25)}
+.badge-off{background:rgba(255,255,255,.04);color:var(--mu);border:1px solid var(--bor)}
+.acard-body{padding:12px 14px;border-top:1px solid var(--bor)}
+.fg2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}
+.fg3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:8px}
+.lbl{display:block;font-size:12px;color:var(--mu);font-weight:600;margin-top:10px}
+details.acard{overflow:visible}
+details.acard>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:12px 14px;user-select:none}
+details.acard>summary::-webkit-details-marker{display:none}
+details.acard>.acard-body{border-top:1px solid var(--bor)}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("inputs") }}
 <div class="panelbar">
@@ -15284,80 +15298,213 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
 
 
   <div id="non_dab_fields">
-  <div class="sec">Rule-based alerts</div>
-  <div class="cr"><input type="checkbox" name="alert_on_silence" value="1" {{'checked' if inp.alert_on_silence}}><label style="margin:0;text-transform:none">Silence / low level</label></div>
-  <div class="cr"><input type="checkbox" name="alert_on_hiss" value="1" {{'checked' if inp.alert_on_hiss}}><label style="margin:0;text-transform:none">Hiss / HF noise</label></div>
-  <div class="cr"><input type="checkbox" name="alert_on_clip" value="1" {{'checked' if inp.alert_on_clip}}><label style="margin:0;text-transform:none">Clipping / over-mod</label></div>
-  <label>Silence threshold (dBFS)<input type="number" name="silence_threshold_dbfs" value="{{inp.silence_threshold_dbfs}}" step="0.5"></label>
-  <label>Silence min duration (s)<input type="number" name="silence_min_duration" value="{{inp.silence_min_duration}}" step="0.5" min="0.5"></label>
-  <label>Hiss HF band (Hz)<input type="number" name="hiss_hf_band_hz" value="{{inp.hiss_hf_band_hz}}" step="100" min="1000" max="20000"></label>
-  <label>Hiss rise threshold (dB)<input type="number" name="hiss_rise_db" value="{{inp.hiss_rise_db}}" step="0.5" min="1"></label>
-  <label>Hiss min duration (s)<input type="number" name="hiss_min_duration" value="{{inp.hiss_min_duration}}" step="0.5" min="0.5"></label>
-  <label>Clip threshold (dBFS)<input type="number" name="clip_threshold_dbfs" value="{{inp.clip_threshold_dbfs}}" step="0.5"></label>
-  <label>Clip detection window (s)<input type="number" name="clip_window_seconds" value="{{inp.clip_window_seconds}}" step="0.5" min="0.5"></label>
-  <label>Clip count threshold<input type="number" name="clip_count_threshold" value="{{inp.clip_count_threshold}}" step="1" min="1"></label>
-  <label>Alert clip length (s)<input type="number" name="alert_wav_duration" value="{{inp.alert_wav_duration}}" step="1" min="1" max="60"></label>
-  <p class="help">Duration of the WAV clip saved and attached to alerts for this stream. Default: 10s.</p>
 
-  <div class="sec">📊 EBU R128 Loudness Monitoring</div>
-  <div class="cr"><input type="checkbox" name="alert_on_lufs_tp" value="1" {{'checked' if inp.alert_on_lufs_tp}}><label style="margin:0;text-transform:none">Alert on true peak (dBTP) threshold</label></div>
-  <label>True peak threshold (dBTP)<input type="number" name="lufs_tp_threshold" value="{{inp.lufs_tp_threshold}}" step="0.1" max="0"></label>
-  <p class="help">EBU R128 / BS.1770-4: −1.0 dBTP is standard. Alert fires when the measured true peak exceeds this value.</p>
-  <div class="cr"><input type="checkbox" name="alert_on_lufs_integrated" value="1" {{'checked' if inp.alert_on_lufs_integrated}}><label style="margin:0;text-transform:none">Alert when integrated loudness deviates from target</label></div>
-  <label>Target loudness (LUFS)<input type="number" name="lufs_target" value="{{inp.lufs_target}}" step="0.5"></label>
-  <label>Tolerance (LU)<input type="number" name="lufs_tolerance_db" value="{{inp.lufs_tolerance_db}}" step="0.5" min="0.5"></label>
-  <p class="help">Alert fires when the 30 s integrated loudness deviates more than the tolerance from the target. EBU R128 target is −23 LUFS ±1 LU. Requires scipy.</p>
+  <div class="sec" style="margin-top:22px">⚠ Monitoring &amp; Alerts</div>
+  <p class="help" style="margin-bottom:10px">Enable the checks you need — parameters appear once a check is turned on.</p>
 
-  <div class="sec">🔔 Alert Escalation</div>
-  <label>Escalation time (minutes, 0 = off)
-    <input type="number" name="escalation_minutes" value="{{inp.escalation_minutes}}" step="1" min="0">
-  </label>
-  <p class="help">Re-send an alert notification if it has not been acknowledged within this many minutes. Set to 0 to disable.</p>
+  <!-- Silence -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_silence" value="1" class="acard-chk" data-card="silence" {{'checked' if inp.alert_on_silence}}>
+      <span class="acard-ttl">🔇 Silence / Low Level</span>
+      <span class="acard-badge" id="abadge-silence"></span>
+    </div>
+    <div class="acard-body" id="abody-silence">
+      <div class="fg2">
+        <label class="lbl">Threshold (dBFS)
+          <input type="number" name="silence_threshold_dbfs" value="{{inp.silence_threshold_dbfs}}" step="0.5">
+        </label>
+        <label class="lbl">Min duration (s)
+          <input type="number" name="silence_min_duration" value="{{inp.silence_min_duration}}" step="0.5" min="0.5">
+        </label>
+      </div>
+    </div>
+  </div>
 
-  <div class="sec">🤖 Local AI (ONNX autoencoder)</div>
-  <div class="cr"><input type="checkbox" name="ai_monitor" value="1" {{'checked' if inp.ai_monitor}}><label style="margin:0;text-transform:none">Enable AI monitoring</label></div>
-  <p class="help">Learns what "normal" sounds like over 5 minutes. Detects dropouts, clipping, hiss, noise bursts, distortion, spectral shifts — entirely locally, no internet required.<br>Requires: <code>pip install onnxruntime</code></p>
+  <!-- Clipping -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_clip" value="1" class="acard-chk" data-card="clip" {{'checked' if inp.alert_on_clip}}>
+      <span class="acard-ttl">📢 Clipping / Over-modulation</span>
+      <span class="acard-badge" id="abadge-clip"></span>
+    </div>
+    <div class="acard-body" id="abody-clip">
+      <div class="fg3">
+        <label class="lbl">Threshold (dBFS)
+          <input type="number" name="clip_threshold_dbfs" value="{{inp.clip_threshold_dbfs}}" step="0.5">
+        </label>
+        <label class="lbl">Window (s)
+          <input type="number" name="clip_window_seconds" value="{{inp.clip_window_seconds}}" step="0.5" min="0.5">
+        </label>
+        <label class="lbl">Consecutive clips
+          <input type="number" name="clip_count_threshold" value="{{inp.clip_count_threshold}}" step="1" min="1">
+        </label>
+      </div>
+    </div>
+  </div>
 
-  <div class="sec">Stream Comparison</div>
-  <label>Compare role
-    <select name="compare_role" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
-      <option value="" {{'selected' if not inp.compare_role}}>— Not in a comparison pair —</option>
-      <option value="pre"  {{'selected' if inp.compare_role=='pre'}}>Pre-processing (source)</option>
-      <option value="post" {{'selected' if inp.compare_role=='post'}}>Post-processing (output)</option>
-    </select>
-  </label>
-  <label>Compare peer (other stream in pair)
-    <select name="compare_peer">
-      <option value="">— None —</option>
-      {% for n in all_names %}{% if n!=inp.name %}<option value="{{n}}" {{'selected' if inp.compare_peer==n}}>{{n}}</option>{% endif %}{% endfor %}
-    </select>
-  </label>
-  <label style="margin-top:8px;display:block">Gain shift alert threshold (dB)
-    <input type="number" name="compare_gain_alert_db" min="1" max="30" step="0.5"
-           value="{{inp.compare_gain_alert_db if inp.compare_gain_alert_db is defined else 3.0}}"
-           style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
-  </label>
-  <p class="help">Set one stream as Pre, the other as Post, and select each other as the peer. The monitor will auto-align for delay up to {{cmp_search}}s. The gain shift threshold controls how much the output level is allowed to drift from its learned baseline before alerting — set this higher (e.g. 4&ndash;6 dB) for chains with dynamic loudness processing.</p>
+  <!-- Hiss -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_hiss" value="1" class="acard-chk" data-card="hiss" {{'checked' if inp.alert_on_hiss}}>
+      <span class="acard-ttl">🌬 Hiss / HF Noise</span>
+      <span class="acard-badge" id="abadge-hiss"></span>
+    </div>
+    <div class="acard-body" id="abody-hiss">
+      <div class="fg3">
+        <label class="lbl">HF band (Hz)
+          <input type="number" name="hiss_hf_band_hz" value="{{inp.hiss_hf_band_hz}}" step="100" min="1000" max="20000">
+        </label>
+        <label class="lbl">Rise (dB)
+          <input type="number" name="hiss_rise_db" value="{{inp.hiss_rise_db}}" step="0.5" min="1">
+        </label>
+        <label class="lbl">Min duration (s)
+          <input type="number" name="hiss_min_duration" value="{{inp.hiss_min_duration}}" step="0.5" min="0.5">
+        </label>
+      </div>
+    </div>
+  </div>
 
-  <div class="sec">Cascade suppression</div>
-  <label>Suppress if this upstream stream is silent
-    <select name="cascade_parent">
-      <option value="">— None —</option>
-      {% for n in all_names %}{% if n!=inp.name %}<option value="{{n}}" {{'selected' if inp.cascade_parent==n}}>{{n}}</option>{% endif %}{% endfor %}
-    </select>
-  </label>
-  <div class="cr"><input type="checkbox" name="cascade_suppress_alerts" value="1" {{'checked' if inp.cascade_suppress_alerts}}><label style="margin:0;text-transform:none">Enable cascade suppression</label></div>
+  <!-- EBU R128 -->
+  <div class="acard">
+    <div class="acard-hdr" style="background:rgba(79,156,249,.06)">
+      <span style="font-size:16px">📊</span>
+      <span class="acard-ttl">EBU R128 Loudness</span>
+      <span style="font-size:11px;color:var(--mu)">True Peak &amp; Integrated</span>
+    </div>
+    <div class="acard-body">
+      <div class="cr">
+        <input type="checkbox" name="alert_on_lufs_tp" value="1" class="sub-chk" data-sub="lufs-tp" {{'checked' if inp.alert_on_lufs_tp}}>
+        <label style="margin:0;text-transform:none;color:var(--tx)">Alert on True Peak (dBTP)</label>
+      </div>
+      <div class="fg2" id="sub-lufs-tp">
+        <label class="lbl">True peak threshold (dBTP)
+          <input type="number" name="lufs_tp_threshold" value="{{inp.lufs_tp_threshold}}" step="0.1" max="0">
+        </label>
+        <p class="help" style="align-self:end;padding-bottom:4px">EBU R128 standard: −1.0 dBTP. Alert fires when TP exceeds this value.</p>
+      </div>
+      <div class="cr" style="margin-top:12px">
+        <input type="checkbox" name="alert_on_lufs_integrated" value="1" class="sub-chk" data-sub="lufs-int" {{'checked' if inp.alert_on_lufs_integrated}}>
+        <label style="margin:0;text-transform:none;color:var(--tx)">Alert on Integrated Loudness deviation</label>
+      </div>
+      <div class="fg2" id="sub-lufs-int">
+        <label class="lbl">Target (LUFS)
+          <input type="number" name="lufs_target" value="{{inp.lufs_target}}" step="0.5">
+        </label>
+        <label class="lbl">Tolerance (LU)
+          <input type="number" name="lufs_tolerance_db" value="{{inp.lufs_tolerance_db}}" step="0.5" min="0.5">
+        </label>
+      </div>
+      <p class="help" style="margin-top:8px">Alert fires when 30 s integrated loudness deviates by more than the tolerance from the target. EBU R128 target is −23 LUFS ±1 LU. Requires scipy.</p>
+    </div>
+  </div>
 
-  <div class="sec">🎵 Now Playing (Planet Radio)</div>
-  <label>Station
-    <select name="nowplaying_station_id" id="np_select" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
-      <option value="">— None —</option>
-    </select>
-  </label>
-  <p class="help">Select a Planet Radio station to show Now Playing info on this stream's card.</p>
+  <!-- AI -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="ai_monitor" value="1" class="acard-chk" data-card="ai" {{'checked' if inp.ai_monitor}}>
+      <span class="acard-ttl">🤖 AI Monitoring (ONNX)</span>
+      <span class="acard-badge" id="abadge-ai"></span>
+    </div>
+    <div class="acard-body" id="abody-ai">
+      <p class="help">Learns "normal" over 5 minutes. Detects dropouts, clipping, hiss, noise bursts and distortion — entirely locally, no internet required. Requires <code style="background:#173a69;padding:1px 5px;border-radius:3px">pip install onnxruntime</code>.</p>
+    </div>
+  </div>
+
+  <!-- Advanced (collapsible) -->
+  <details class="acard" {{'open' if inp.compare_role or inp.cascade_parent or inp.nowplaying_station_id or inp.escalation_minutes}}>
+    <summary class="acard-hdr">
+      <span class="acard-ttl" style="color:var(--mu)">⚙ Advanced Settings</span>
+      <span style="font-size:11px;color:var(--mu)">Clip length · Escalation · Compare · Cascade · Now Playing</span>
+      <span style="font-size:11px;color:var(--mu);margin-left:4px">▾</span>
+    </summary>
+    <div class="acard-body">
+      <label class="lbl">Alert clip length (s)
+        <input type="number" name="alert_wav_duration" value="{{inp.alert_wav_duration}}" step="1" min="1" max="60">
+      </label>
+      <p class="help">Duration of the WAV clip saved and attached to alerts. Default: 10 s.</p>
+
+      <div class="sec" style="margin-top:14px">🔔 Alert Escalation</div>
+      <label class="lbl">Escalation time (minutes, 0 = off)
+        <input type="number" name="escalation_minutes" value="{{inp.escalation_minutes}}" step="1" min="0">
+      </label>
+      <p class="help">Re-send alert notification if not acknowledged within this many minutes.</p>
+
+      <div class="sec" style="margin-top:14px">Stream Comparison</div>
+      <div class="fg2" style="margin-top:10px">
+        <label class="lbl">Compare role
+          <select name="compare_role" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
+            <option value="" {{'selected' if not inp.compare_role}}>— Not in a pair —</option>
+            <option value="pre"  {{'selected' if inp.compare_role=='pre'}}>Pre-processing (source)</option>
+            <option value="post" {{'selected' if inp.compare_role=='post'}}>Post-processing (output)</option>
+          </select>
+        </label>
+        <label class="lbl">Compare peer
+          <select name="compare_peer" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
+            <option value="">— None —</option>
+            {% for n in all_names %}{% if n!=inp.name %}<option value="{{n}}" {{'selected' if inp.compare_peer==n}}>{{n}}</option>{% endif %}{% endfor %}
+          </select>
+        </label>
+      </div>
+      <label class="lbl">Gain shift alert threshold (dB)
+        <input type="number" name="compare_gain_alert_db" min="1" max="30" step="0.5"
+               value="{{inp.compare_gain_alert_db if inp.compare_gain_alert_db is defined else 3.0}}">
+      </label>
+      <p class="help">Set one stream as Pre, the other as Post, pick each other as peer. Auto-aligns for delay up to {{cmp_search}} s.</p>
+
+      <div class="sec" style="margin-top:14px">Cascade Suppression</div>
+      <label class="lbl">Suppress if upstream stream is silent
+        <select name="cascade_parent" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
+          <option value="">— None —</option>
+          {% for n in all_names %}{% if n!=inp.name %}<option value="{{n}}" {{'selected' if inp.cascade_parent==n}}>{{n}}</option>{% endif %}{% endfor %}
+        </select>
+      </label>
+      <div class="cr" style="margin-top:8px">
+        <input type="checkbox" name="cascade_suppress_alerts" value="1" {{'checked' if inp.cascade_suppress_alerts}}>
+        <label style="margin:0;text-transform:none">Enable cascade suppression</label>
+      </div>
+
+      <div class="sec" style="margin-top:14px">🎵 Now Playing (Planet Radio)</div>
+      <label class="lbl">Station
+        <select name="nowplaying_station_id" id="np_select" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+          <option value="">— None —</option>
+        </select>
+      </label>
+      <p class="help">Select a Planet Radio station to show Now Playing info on this stream's card.</p>
+    </div>
+  </details>
+
   <script nonce="{{csp_nonce()}}">
   (function(){
-    fetch('/api/nowplaying_stations').then(r=>r.json()).then(function(stations){
+    // Alert card toggles — checkbox drives show/hide of parameters
+    document.querySelectorAll('.acard-chk').forEach(function(chk){
+      var id = chk.dataset.card;
+      function sync(){
+        var body  = document.getElementById('abody-'+id);
+        var badge = document.getElementById('abadge-'+id);
+        if(body)  body.style.display = chk.checked ? '' : 'none';
+        if(badge){
+          badge.textContent = chk.checked ? 'On' : 'Off';
+          badge.className   = 'acard-badge '+(chk.checked ? 'badge-on' : 'badge-off');
+        }
+      }
+      sync();
+      chk.addEventListener('change', sync);
+    });
+
+    // Sub-parameter toggles (EBU R128 nested)
+    document.querySelectorAll('.sub-chk').forEach(function(chk){
+      var id = chk.dataset.sub;
+      function sync(){
+        var body = document.getElementById('sub-'+id);
+        if(body) body.style.display = chk.checked ? '' : 'none';
+      }
+      sync();
+      chk.addEventListener('change', sync);
+    });
+
+    // Now Playing stations
+    fetch('/api/nowplaying_stations').then(function(r){return r.json();}).then(function(stations){
       var sel = document.getElementById('np_select');
       var cur = '{{inp.nowplaying_station_id}}';
       stations.forEach(function(s){
@@ -15367,43 +15514,43 @@ input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px
         sel.appendChild(opt);
       });
     }).catch(function(){});
-  })();
 
-  // Require an explicit dongle serial for FM and DAB — "any available" is no longer accepted.
-  document.querySelector('form[method="post"]').addEventListener('submit', function(e){
-    var t = document.getElementById("src_type").value;
-    if(t === "fm"){
-      var fmSer = document.getElementById("fm_serial").value.trim();
-      if(!fmSer){
-        e.preventDefault();
-        var err = document.getElementById("fm_serial_err");
-        if(!err){
-          err = document.createElement("span");
-          err.id = "fm_serial_err";
-          err.style.cssText = "color:var(--al);font-size:12px;display:block;margin-top:4px";
-          document.getElementById("fm_serial").insertAdjacentElement("afterend", err);
+    // Require dongle serial for FM and DAB
+    document.querySelector('form[method="post"]').addEventListener('submit', function(e){
+      var t = document.getElementById("src_type").value;
+      if(t === "fm"){
+        var fmSer = document.getElementById("fm_serial").value.trim();
+        if(!fmSer){
+          e.preventDefault();
+          var err = document.getElementById("fm_serial_err");
+          if(!err){
+            err = document.createElement("span");
+            err.id = "fm_serial_err";
+            err.style.cssText = "color:var(--al);font-size:12px;display:block;margin-top:4px";
+            document.getElementById("fm_serial").insertAdjacentElement("afterend", err);
+          }
+          err.textContent = "⚠ Select a dongle — register dongles in Settings → SDR Devices.";
+          document.getElementById("fm_serial").focus();
+          return;
         }
-        err.textContent = "⚠ Select a dongle — register dongles in Settings → SDR Devices.";
-        document.getElementById("fm_serial").focus();
-        return;
-      }
-    } else if(t === "dab"){
-      var dabSer = document.getElementById("dab_serial").value.trim();
-      if(!dabSer){
-        e.preventDefault();
-        var err2 = document.getElementById("dab_serial_err");
-        if(!err2){
-          err2 = document.createElement("span");
-          err2.id = "dab_serial_err";
-          err2.style.cssText = "color:var(--al);font-size:12px;display:block;margin-top:4px";
-          document.getElementById("dab_serial").insertAdjacentElement("afterend", err2);
+      } else if(t === "dab"){
+        var dabSer = document.getElementById("dab_serial").value.trim();
+        if(!dabSer){
+          e.preventDefault();
+          var err2 = document.getElementById("dab_serial_err");
+          if(!err2){
+            err2 = document.createElement("span");
+            err2.id = "dab_serial_err";
+            err2.style.cssText = "color:var(--al);font-size:12px;display:block;margin-top:4px";
+            document.getElementById("dab_serial").insertAdjacentElement("afterend", err2);
+          }
+          err2.textContent = "⚠ Select a dongle — register dongles in Settings → SDR Devices.";
+          document.getElementById("dab_serial").focus();
+          return;
         }
-        err2.textContent = "⚠ Select a dongle — register dongles in Settings → SDR Devices.";
-        document.getElementById("dab_serial").focus();
-        return;
       }
-    }
-  });
+    });
+  })();
   </script>
 
   </div>{# /non_dab_fields #}

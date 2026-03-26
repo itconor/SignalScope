@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.135] - 2026-03-26
+
+### Improved
+- **Add/Edit Input form redesigned** — monitoring and alert settings are now organised into expandable cards instead of a flat list. Each alert type (Silence, Clipping, Hiss, EBU R128, AI) has its own card; enabling the checkbox reveals the relevant parameters and hides them when the check is off. Advanced options (clip length, escalation, stream comparison, cascade suppression, now playing) are collapsed under a single "⚙ Advanced Settings" section that auto-opens when any of those fields are already configured. All form field names and values are unchanged — no server-side changes required.
+
 ## [3.3.134] - 2026-03-26
 
 ### Added
