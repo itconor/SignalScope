@@ -2,6 +2,19 @@
 
 ---
 
+## [3.4.18] - 2026-03-26
+
+### Fixed
+- **Chain comparators broken for stack positions** — when a comparator referenced a position group containing multiple nodes (a "stack"), `chain_nodes[fi]` was `{type:'stack', nodes:[...]}` which has no `site`/`stream` keys. `_chain_correlate_nodes` returned `no_data` for every stack-based comparator pair. Fixed by resolving stack nodes to their first sub-node before correlation.
+
+### Added
+- **On-demand client-side comparators** — when the hub detects a broadcast-chain comparator pair where both nodes are on the same remote site, it automatically sends a `cmp_pair` command to that site via the heartbeat ACK. The client spawns a `StreamComparator` locally (real-time FFT cross-correlation at full audio resolution). Results appear in the next heartbeat and the hub uses them in place of 1-minute metric_history averages. The chain diagram shows the **🎧** badge indicating live audio data with latency (ms), gain difference (dB), and alignment status in the tooltip. Re-requests are rate-limited to once every 5 minutes, only when the comparator is absent (e.g. after a client restart).
+
+## [3.4.17] - 2026-03-26
+
+### Added
+- **Local audio comparator shortcut in chain correlator** — when both chain comparator nodes live on the same remote site, `_chain_correlate_nodes` now checks the site's live heartbeat comparator data first. Real-time cross-correlation (correlation, delay_ms, gain_diff_db, aligned) from the client is used in place of metric_history averages. Chain diagram shows 🎧 badge with tooltip showing latency and gain diff.
+
 ## [3.4.7] - 2026-03-26
 
 ### Fixed

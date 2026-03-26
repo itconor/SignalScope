@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.17"
+BUILD                  = "SignalScope-3.4.18"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2484,6 +2484,10 @@ HUB_BACKUP_DIR   = os.path.join(BASE_DIR, "hub_backups")   # one sub-dir per sit
 _alert_log_lock = threading.Lock()
 _alert_acks: Dict[str, dict] = {}
 _alert_acks_lock = threading.Lock()
+# On-demand comparator request tracking — prevents flooding the command queue.
+# Key: (site, pre_name, post_name). Value: unix ts of last push.
+_cmp_pair_requested: Dict[tuple, float] = {}
+_CMP_PAIR_RECHECK_SECS = 300  # re-push if comparator vanishes for 5+ minutes
 
 def _alert_log_append(event: dict):
     """Append one event to the alert log, pruning if over the configured limit."""
@@ -9436,6 +9440,40 @@ class HubClient:
         except Exception as e:
             monitor.log(f"[Hub] Ping result upload failed: {e}")
 
+    def _cmd_cmp_pair(self, payload: dict):
+        """Hub command: spawn an on-demand StreamComparator for two local streams.
+
+        The hub issues this command when it detects that two broadcast-chain
+        comparator nodes both live on this site.  A local StreamComparator
+        produces real-time xcorr/delay/gain data that the hub uses in place of
+        the coarser 1-minute metric_history averages.  The comparator result
+        appears in the next heartbeat and the hub chain page shows the 🎧 badge.
+        """
+        pre_name  = str(payload.get("pre_name",  "")).strip()
+        post_name = str(payload.get("post_name", "")).strip()
+        if not pre_name or not post_name:
+            monitor.log("[CMP] cmp_pair command missing pre_name/post_name — ignored")
+            return
+        enabled = {c.name: c for c in monitor.app_cfg.inputs if c.enabled}
+        pre_cfg  = enabled.get(pre_name)
+        post_cfg = enabled.get(post_name)
+        if not pre_cfg or not post_cfg:
+            monitor.log(f"[CMP] cmp_pair: stream not found: {pre_name!r} / {post_name!r}")
+            return
+        # Check if a comparator already exists for this pair (either direction)
+        existing = any(
+            (c.pre.name == pre_name  and c.post.name == post_name)
+            or (c.pre.name == post_name and c.post.name == pre_name)
+            for c in monitor._comparators
+        )
+        if existing:
+            return
+        monitor.log(f"[CMP] Hub-requested on-demand comparator: '{pre_name}' → '{post_name}'")
+        monitor._comparators.append(
+            StreamComparator(pre_cfg, post_cfg, monitor.log,
+                             AlertSender(monitor.app_cfg, monitor.log))
+        )
+
     def _restart_if_running(self):
         """Restart monitoring if it is currently active (to apply config changes)."""
         if monitor.is_running():
@@ -10416,6 +10454,8 @@ class HubClient:
                         self._cmd_push_log(cmd_payload)
                     elif cmd_type == "scanner_band_scan":
                         self._cmd_scanner_band_scan(cmd_payload)
+                    elif cmd_type == "cmp_pair":
+                        self._cmd_cmp_pair(cmd_payload)
                 # Drain auto-clip-upload queue — clips saved since the last
                 # heartbeat are uploaded to the hub for the Reports page.
                 # Cap at 2 per heartbeat cycle to avoid spawning a burst of
@@ -22258,18 +22298,30 @@ function refreshStatus(){
           el.title=el.title.replace(/\s*\(.*\)$/,'');
         } else {
           var isProcessed=(comp.status==='processed');
-          cv.textContent=pct.toFixed(1)+'%'+(isProcessed?' ⚙':'');
+          var isLocalAudio=(comp.status==='local_audio');
+          var badge=isLocalAudio?' 🎧':(isProcessed?' ⚙':'');
+          cv.textContent=pct.toFixed(1)+'%'+badge;
           el.className='corr-chip '+(pct>=80?'corr-ok':pct>=50?'corr-warn':'corr-poor');
           var tip='Confidence: '+pct.toFixed(1)+'%';
-          if(isProcessed){
+          if(isLocalAudio){
+            tip+=' | 🎧 Live audio cross-correlation (client-side)';
+            if(comp.delay_ms!=null)    tip+=' | Latency: '+comp.delay_ms.toFixed(0)+'ms';
+            if(comp.gain_diff_db!=null)tip+=' | Gain diff: '+comp.gain_diff_db.toFixed(1)+' dB';
+            if(comp.aligned!=null)     tip+=' | Aligned: '+(comp.aligned?'yes':'no');
+          } else if(isProcessed){
             tip+=' | ⚙ Audio processor detected';
             if(comp.level_gap!=null) tip+=' ('+comp.level_gap.toFixed(0)+' dB gain difference)';
             tip+=' — using LUFS-I + silence alignment';
+            if(comp.silence_pct!=null) tip+=' | Silence agreement: '+comp.silence_pct.toFixed(1)+'%';
+            if(comp.r!=null)           tip+=' | LUFS-I r: '+comp.r.toFixed(2);
+            if(comp.best_lag>0)        tip+=' | Best at '+comp.best_lag+' min offset';
+            tip+=' ('+( comp.samples||'?')+' min samples)';
+          } else {
+            if(comp.silence_pct!=null) tip+=' | Silence agreement: '+comp.silence_pct.toFixed(1)+'%';
+            if(comp.r!=null)           tip+=' | Dynamics r: '+comp.r.toFixed(2);
+            if(comp.best_lag>0)        tip+=' | Best at '+comp.best_lag+' min offset';
+            tip+=' ('+( comp.samples||'?')+' min samples)';
           }
-          if(comp.silence_pct!=null) tip+=' | Silence agreement: '+comp.silence_pct.toFixed(1)+'%';
-          if(comp.r!=null)           tip+=' | LUFS-I r: '+comp.r.toFixed(2);
-          if(comp.best_lag>0)        tip+=' | Best at '+comp.best_lag+' min offset';
-          tip+=' ('+( comp.samples||'?')+' min samples)';
           el.title=tip;
         }
       });
@@ -22771,6 +22823,40 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 60) -> dic
 
     ka, kb = _key(node_a), _key(node_b)
     ta, tb = _thresh(node_a), _thresh(node_b)
+
+    # ── Local audio comparator shortcut ───────────────────────────────────────
+    # If both nodes are on the same remote site, that client is already doing
+    # real-time sample-accurate audio cross-correlation locally and reporting it
+    # in its heartbeat payload.  Use that data when available — it is far richer
+    # than 1-minute averaged levels from metric_history.
+    site_a = node_a.get("site", "")
+    site_b = node_b.get("site", "")
+    if (site_a and site_a != "local" and site_a == site_b
+            and hub_server is not None):
+        site_data = hub_server._sites.get(site_a, {})
+        remote_cmps = site_data.get("comparators", [])
+        na = node_a.get("stream", "")
+        nb = node_b.get("stream", "")
+        matched = next(
+            (c for c in remote_cmps
+             if (c.get("pre_name") == na and c.get("post_name") == nb)
+             or (c.get("pre_name") == nb and c.get("post_name") == na)),
+            None
+        )
+        if matched is not None:
+            corr = matched.get("correlation")
+            if corr is not None:
+                pct = max(0.0, min(100.0, float(corr) * 100.0))
+                return {
+                    "status":      "local_audio",
+                    "r":           round(float(corr), 3),
+                    "pct":         round(pct, 1),
+                    "silence_pct": None,
+                    "samples":     None,
+                    "delay_ms":    matched.get("delay_ms"),
+                    "gain_diff_db": matched.get("gain_diff_db"),
+                    "aligned":     matched.get("aligned"),
+                }
 
     def _pearson_delta(sa, sb):
         """First-difference Pearson of two equal-length lists. Returns None if insufficient variance."""
@@ -23286,11 +23372,48 @@ def api_chains_status():
             # Compute correlation for each configured comparator pair
             chain_nodes = chain.get("nodes", [])
             corr_out = []
+
+            def _resolve_stack(nd: dict) -> dict:
+                """Stacks have no site/stream at the top level — use first sub-node."""
+                if nd.get("type") == "stack":
+                    sub = nd.get("nodes", [])
+                    return sub[0] if sub else nd
+                return nd
+
             for comp in chain.get("comparators", []):
                 fi = int(comp.get("from_idx", 0))
                 ti = int(comp.get("to_idx", 1))
                 if fi < len(chain_nodes) and ti < len(chain_nodes) and fi != ti:
-                    corr = _chain_correlate_nodes(chain_nodes[fi], chain_nodes[ti])
+                    node_a = _resolve_stack(chain_nodes[fi])
+                    node_b = _resolve_stack(chain_nodes[ti])
+                    # ── On-demand comparator request ──────────────────────────
+                    # When both nodes are on the same remote site, ask the client
+                    # to spawn a local StreamComparator for this pair.  The richer
+                    # client-side data (real-time xcorr, delay_ms, gain_diff_db)
+                    # arrives in the next heartbeat and is consumed by the
+                    # local_audio shortcut in _chain_correlate_nodes.
+                    _sa = node_a.get("site", "")
+                    _sb = node_b.get("site", "")
+                    if (_sa and _sa != "local" and _sa == _sb
+                            and hub_server is not None):
+                        _na = node_a.get("stream", "")
+                        _nb = node_b.get("stream", "")
+                        _cmp_key = (_sa, _na, _nb)
+                        _now_cmp = time.time()
+                        _last_req = _cmp_pair_requested.get(_cmp_key, 0.0)
+                        _site_cmps = hub_server._sites.get(_sa, {}).get("comparators", [])
+                        _already_live = any(
+                            (c.get("pre_name") == _na and c.get("post_name") == _nb)
+                            or (c.get("pre_name") == _nb and c.get("post_name") == _na)
+                            for c in _site_cmps
+                        )
+                        if not _already_live and (_now_cmp - _last_req > _CMP_PAIR_RECHECK_SECS):
+                            hub_server.push_pending_command(_sa, {
+                                "type": "cmp_pair",
+                                "payload": {"pre_name": _na, "post_name": _nb},
+                            })
+                            _cmp_pair_requested[_cmp_key] = _now_cmp
+                    corr = _chain_correlate_nodes(node_a, node_b)
                     corr_out.append({"from_idx": fi, "to_idx": ti, **corr})
             result["comparators"] = corr_out
 
