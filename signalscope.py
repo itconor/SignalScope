@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.166"
+BUILD                  = "SignalScope-3.3.167"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -19782,7 +19782,15 @@ def hub_proxy_alert_clip(site_name, stream_filename):
     #    Clips are uploaded as MP3 when the WAV is >200 KB (to stay under
     #    nginx's default client_max_body_size).  The client's alert log still
     #    records the original .wav filename, so we try both extensions.
-    _safe_key   = f"{_safe_name(site_name)}_{_safe_name(stream_name)}"
+    # For (hub) pseudo-site, stream_name is stored in the alert log as
+    # f"{real_site} / {real_stream}" (see hub_clip_upload).  Reconstruct the
+    # correct cache key by splitting on " / " to recover the real site and
+    # stream names that were used when saving the file.
+    if _is_hub_site and ' / ' in stream_name:
+        _hub_real_site, _hub_real_stream = stream_name.split(' / ', 1)
+        _safe_key = f"{_safe_name(_hub_real_site)}_{_safe_name(_hub_real_stream)}"
+    else:
+        _safe_key = f"{_safe_name(site_name)}_{_safe_name(stream_name)}"
     _safe_fname = os.path.basename(filename)
     _snip_root  = os.path.realpath(os.path.join(BASE_DIR, "alert_snippets"))
     _stem_req, _ext_req = os.path.splitext(_safe_fname)

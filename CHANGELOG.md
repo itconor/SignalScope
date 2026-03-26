@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.167] - 2026-03-26
+
+### Fixed
+- **Hub Reports — remote chain clips 504 (still can't play after 3.3.166)** — when a client uploads a chain-fault clip, the hub stores it as `alert_snippets/{safe(site)}_{safe(stream)}/` (e.g. `London-Livewire_DowntownCountryDAB/`) and writes an alert-log entry with `stream = f"{site} / {stream}"` (e.g. `"London - Livewire / Downtown Country DAB"`). The clip-serve route tags all hub alert-log events with `_site = "(hub)"`. The local cache lookup was building the key as `hub_{safe("London - Livewire / Downtown Country DAB")}` = `hub_London-LivewireDowntownCountryDAB`, which doesn't match the stored `London-Livewire_DowntownCountryDAB`. Fix: for `(hub)` pseudo-site clips where `stream_name` contains ` / `, split on the first ` / ` to recover the real site and stream, then build the key as `{safe(real_site)}_{safe(real_stream)}`.
+
 ## [3.3.166] - 2026-03-26
 
 ### Fixed
