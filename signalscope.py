@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.13"
+BUILD                  = "SignalScope-3.4.14"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -1833,7 +1833,7 @@ class InputConfig:
     # Short drop / glitch detection
     glitch_detect:                bool  = False   # enable glitch detection
     glitch_drop_db:               float = 18.0   # drop must be this many dB below rolling mean
-    glitch_max_seconds:           float = 8.0    # drop lasting longer counts as silence, not glitch
+    glitch_max_seconds:           float = 4.0    # drop lasting longer counts as silence, not glitch
     glitch_alert_count:           int   = 3      # N glitches in window triggers first alert
     glitch_alert_window_min:      int   = 5      # sliding window for first alert (minutes)
     # Sustained glitching — fires a louder alert when hammering continues
@@ -1842,7 +1842,7 @@ class InputConfig:
     # Fade vs glitch discrimination: require a minimum drop rate at onset
     # Fades are gradual (2–5 dBFS/s); real glitches are abrupt (20–100+ dBFS/s).
     # 0 = disabled (count all dips regardless of slope).
-    glitch_min_drop_rate_dbfs_s:  float = 12.0  # minimum dBFS/s fall rate to count as a glitch
+    glitch_min_drop_rate_dbfs_s:  float = 22.0  # minimum dBFS/s fall rate to count as a glitch
 
     # Expected identity — alert when actual name differs or changes
     expected_fm_rds_ps:   str = ""   # expected RDS Programme Service name; blank = alert on any change
@@ -2186,12 +2186,12 @@ def load_config() -> AppConfig:
             flatness_min_seconds=int(item.get("flatness_min_seconds", 300)),
             glitch_detect=bool(item.get("glitch_detect", False)),
             glitch_drop_db=float(item.get("glitch_drop_db", 18.0)),
-            glitch_max_seconds=float(item.get("glitch_max_seconds", 8.0)),
+            glitch_max_seconds=float(item.get("glitch_max_seconds", 4.0)),
             glitch_alert_count=int(item.get("glitch_alert_count", 3)),
             glitch_alert_window_min=int(item.get("glitch_alert_window_min", 5)),
             glitch_sustained_count=int(item.get("glitch_sustained_count", 10)),
             glitch_sustained_window_min=int(item.get("glitch_sustained_window_min", 10)),
-            glitch_min_drop_rate_dbfs_s=float(item.get("glitch_min_drop_rate_dbfs_s", 12.0)),
+            glitch_min_drop_rate_dbfs_s=float(item.get("glitch_min_drop_rate_dbfs_s", 22.0)),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
     return AppConfig(
