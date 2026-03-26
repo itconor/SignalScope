@@ -4,7 +4,7 @@
 SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
 
 - **Repo**: https://github.com/itconor/SignalScope
-- **Current build string**: `BUILD = "SignalScope-3.3.139"` (increment on every release)
+- **Current build string**: `BUILD = "SignalScope-3.3.140"` (increment on every release)
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **Release flow**: bump `BUILD`, update `CHANGELOG.md`, `git commit`, `git push`, `gh release create v{version}`
 
@@ -329,6 +329,22 @@ All three click handlers (`.hist-item`, `.preset-item`, `.peak-btn`) were gated 
 
 ### Scanner `out_deadline` burst causing ~1.5 s silence (fixed 3.3.69)
 `out_deadline` was initialised to `time.monotonic()` at loop start, *before* the `_SKIP=15` warm-up silence blocks were flushed. Those 15 × 0.1 s blocks pushed the deadline 1.5 s into the past, causing 15 blocks to be sent instantly on connect. Fix: defer `out_deadline = None`; set it to `time.monotonic()` only when the **first real block** is dequeued.
+
+### Clip audio not playing on hub Reports page (fixed 3.3.140)
+Root cause: nginx's default `client_max_body_size` is 1 MB. A 30-second WAV clip at 48 kHz mono-16-bit is ~2.75 MB. The upload failed with HTTP 413; the clip never landed on the hub disk; the audio player returned a 404.
+
+Two compounding bugs:
+1. `_sync_pending_clips` logged "Clip sync uploaded" even when `_upload_clip_inner` returned early due to a 4xx error (including 413) — making failed uploads look successful.
+2. `hub_proxy_alert_clip` hardcoded MIME and filename from the request; didn't check alternative extensions in the local cache.
+
+Fixes:
+- `_upload_clip_inner` now auto-compresses WAV→MP3 before upload when file > 200 KB. 30 s WAV → ~350 KB MP3. Uses `_try_encode_mp3` (lameenc or ffmpeg). If no encoder available, WAV is still sent and a log message explains the nginx directive needed.
+- `_upload_clip_inner` now returns `bool` (True = success, False = failure); 413 path returns False.
+- `_sync_pending_clips` only increments count and logs "uploaded" on True.
+- `hub_proxy_alert_clip` now tries both `.wav` and `.mp3` extensions in local cache lookup. Serves with correct MIME type based on actual file found.
+
+**Rule**: Never hardcode `mimetype="audio/wav"` in `hub_proxy_alert_clip` — clips may be stored as `.mp3` if the WAV was above the compression threshold. Use `_clip_mime` (set during local-cache lookup) for both 206 and 200 responses.
+**Rule**: `_upload_clip_inner` must return a boolean. `_sync_pending_clips` must check it before logging success.
 
 ### WAN audio choppy every ~0.5 s (fixed 3.3.70–3.3.73)
 Root cause: hub hosted remotely from SDR client. WAN RTT >250 ms triggered `_KP_THRESHOLD = 0.25 s` silence injection in `generate_scanner()`. Also, when RTT > `_BLK_DUR` (0.1 s), sequential POSTs fell behind real-time.

@@ -1570,7 +1570,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.139"
+BUILD                  = "SignalScope-3.3.140"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -8904,18 +8904,61 @@ class HubClient:
                            stream: str, label: str, chain_name: str, chain_id: str,
                            entry_id: str = "", clip_path: str = "",
                            node_label: str = "", pos=None,
-                           status: str = "", level_dbfs: float = -120.0):
-        """Inner upload body — called after the concurrency semaphore is acquired."""
+                           status: str = "", level_dbfs: float = -120.0) -> bool:
+        """Inner upload body — called after the concurrency semaphore is acquired.
+
+        Returns True on successful upload, False on any failure.
+
+        WAV→MP3 pre-compression
+        -----------------------
+        Nginx's default ``client_max_body_size`` is 1 MB.  A 30-second WAV clip
+        at 48 kHz mono-16-bit is ~2.75 MB — roughly 3.7 MB after base64 — which
+        nginx rejects with 413.  Before building the payload, any WAV file larger
+        than 200 KB is compressed to MP3 (via ``_try_encode_mp3``).  A 30-second
+        clip becomes ~350 KB as MP3, safely under the limit.  If an encoder is
+        unavailable the WAV is sent as-is (a 413 is still logged with a hint to
+        raise ``client_max_body_size`` in nginx).
+
+        The hub stores the file under the compressed filename (e.g.
+        ``clip.mp3`` instead of ``clip.wav``).  ``hub_proxy_alert_clip`` checks
+        for both extensions when serving from its local cache so the audio player
+        still works even when the alert log holds the original ``.wav`` name.
+        """
         try:
             with open(clip_path, "rb") as f:
-                data_b64 = base64.b64encode(f.read()).decode()
+                clip_bytes = f.read()
         except Exception as e:
             monitor.log(f"[Hub] Clip upload: cannot read '{clip_path}': {e}")
-            return
+            return False
 
         _ext = os.path.splitext(clip_path)[1].lstrip(".").lower() if clip_path else "wav"
         if _ext not in ("wav", "mp3"):
             _ext = "wav"
+        _upload_filename = os.path.basename(clip_path) if clip_path else ""
+
+        # Compress WAV→MP3 to avoid nginx 413 (default client_max_body_size=1m).
+        # Only try if we have a WAV that's larger than ~200 KB (about 2 seconds).
+        _MP3_UPLOAD_THRESHOLD = 200 * 1024
+        if _ext == "wav" and len(clip_bytes) > _MP3_UPLOAD_THRESHOLD:
+            try:
+                import wave as _wave, io as _io
+                with _wave.open(_io.BytesIO(clip_bytes)) as _wv:
+                    _pcm_frames = _wv.readframes(_wv.getnframes())
+                _pcm = np.frombuffer(_pcm_frames, dtype=np.int16)
+                _mp3 = _try_encode_mp3(_pcm)
+                if _mp3:
+                    _prev_kb = len(clip_bytes) // 1024
+                    clip_bytes = _mp3
+                    _ext = "mp3"
+                    _stem = os.path.splitext(_upload_filename)[0]
+                    _upload_filename = f"{_stem}.mp3"
+                    monitor.log(f"[Hub] Clip compressed WAV→MP3 for upload: "
+                                f"{_prev_kb} KB → {len(clip_bytes)//1024} KB "
+                                f"({_upload_filename})")
+            except Exception as _ce:
+                monitor.log(f"[Hub] Clip WAV→MP3 pre-compression skipped: {_ce}")
+
+        data_b64 = base64.b64encode(clip_bytes).decode()
         payload_dict = {
             "site": site, "stream": stream, "label": label,
             "chain_name": chain_name, "chain_id": chain_id,
@@ -8924,9 +8967,8 @@ class HubClient:
             "ts": time.time(), "data_b64": data_b64,
             "level_dbfs": level_dbfs,
             "ext": _ext,
-            # Send the original filename so the hub preserves it exactly —
-            # the stream name and original timestamp are embedded in the name.
-            "filename": os.path.basename(clip_path) if clip_path else "",
+            # Send the (possibly MP3) filename so the hub preserves it exactly.
+            "filename": _upload_filename,
         }
         payload_bytes = json.dumps(payload_dict).encode()
 
@@ -8953,13 +8995,19 @@ class HubClient:
                         open(clip_path[:-4] + ".hub", "w").close()
                     except Exception:
                         pass
-                return  # success — stop retrying
+                return True   # success — stop retrying
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
                 monitor.log(f"[Hub] Clip upload HTTP {e.code} (attempt {attempt+1}) "
                             f"for '{stream}': {e.reason} — {err_body[:200]}")
+                if e.code == 413:
+                    monitor.log(
+                        f"[Hub] Clip upload 413 — nginx body size limit exceeded "
+                        f"(payload {len(payload_bytes)//1024} KB).  Add "
+                        f"'client_max_body_size 20m;' in your nginx server block "
+                        f"to allow larger clips without MP3 compression.")
                 if e.code < 500:
-                    return  # 4xx — don't retry, the request itself is wrong
+                    return False  # 4xx — don't retry
             except Exception as e:
                 monitor.log(f"[Hub] Clip upload failed (attempt {attempt+1}) "
                             f"for '{stream}': {type(e).__name__}: {e}")
@@ -8968,6 +9016,7 @@ class HubClient:
                 monitor.log(f"[Hub] Clip upload retrying in {backoff}s …")
                 time.sleep(backoff)
         monitor.log(f"[Hub] Clip upload gave up after 3 attempts for '{stream}/{label}'")
+        return False
 
     def _sync_pending_clips(self):
         """Scan alert_snippets for clips not yet confirmed on the hub and re-upload them.
@@ -9016,13 +9065,15 @@ class HubClient:
                 label  = os.path.splitext(fname)[0]
                 stream = folder
                 try:
-                    self._upload_clip_inner(
+                    _ok = self._upload_clip_inner(
                         hub_url, secret, site, stream, label,
                         "", "",           # no chain_name / chain_id
                         clip_path=clip_path,
                     )
-                    synced += 1
-                    monitor.log(f"[Hub] Clip sync uploaded: {folder}/{fname}")
+                    if _ok:
+                        synced += 1
+                        monitor.log(f"[Hub] Clip sync uploaded: {folder}/{fname}")
+                    # else: failure already logged by _upload_clip_inner
                 except Exception as _e:
                     monitor.log(f"[Hub] Clip sync failed for {folder}/{fname}: {_e}")
         if synced:
@@ -19967,16 +20018,29 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
 
     # 0. Check local cache first — auto-downloaded clips are stored here and
     #    can be served directly without any streaming or relay overhead.
+    #
+    #    Clips are uploaded as MP3 when the WAV is >200 KB (to stay under
+    #    nginx's default client_max_body_size).  The client's alert log still
+    #    records the original .wav filename, so we try both extensions.
     _safe_key   = f"{_safe_name(site_name)}_{_safe_name(stream_name)}"
-    _local_path = os.path.realpath(
-        os.path.join(BASE_DIR, "alert_snippets", _safe_key, os.path.basename(filename)))
+    _safe_fname = os.path.basename(filename)
     _snip_root  = os.path.realpath(os.path.join(BASE_DIR, "alert_snippets"))
-    if _local_path.startswith(_snip_root + os.sep) and os.path.isfile(_local_path):
-        try:
-            with open(_local_path, "rb") as _lf:
-                wav_data = _lf.read()
-        except Exception as _e:
-            print(f"[HubProxy] Local clip read failed, falling back: {_e}")
+    _stem_req, _ext_req = os.path.splitext(_safe_fname)
+    _clip_mime  = "audio/mpeg" if _ext_req.lower() == ".mp3" else "audio/wav"
+    # Try original extension first, then alternative (wav↔mp3)
+    _alt_ext    = ".mp3" if _ext_req.lower() == ".wav" else ".wav"
+    for _try_fname in (_safe_fname, _stem_req + _alt_ext):
+        _local_path = os.path.realpath(
+            os.path.join(BASE_DIR, "alert_snippets", _safe_key, _try_fname))
+        if _local_path.startswith(_snip_root + os.sep) and os.path.isfile(_local_path):
+            try:
+                with open(_local_path, "rb") as _lf:
+                    wav_data = _lf.read()
+                _clip_mime  = "audio/mpeg" if _try_fname.lower().endswith(".mp3") else "audio/wav"
+                _safe_fname = _try_fname   # use found name in response headers
+            except Exception as _e:
+                print(f"[HubProxy] Local clip read failed, falling back: {_e}")
+            break
 
     if not wav_data and client_addr and not _hub_client_addr_is_private(client_addr):
         url = f"{client_addr}/clips/{urllib.parse.quote(stream_name)}/{urllib.parse.quote(filename)}"
@@ -20017,11 +20081,15 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
     # Serve with proper headers so browser audio players work.
     # Handle Range requests (required by Safari).
     # Pass ?dl=1 to force a file download instead of inline playback.
+    # Use _clip_mime / _safe_fname set during local-cache lookup — clips may
+    # have been compressed WAV→MP3 on upload, so the actual file extension can
+    # differ from the filename recorded in the client's alert log.
     total         = len(wav_data)
-    safe_name     = os.path.basename(filename)
+    _serve_fname  = _safe_fname if "_safe_fname" in dir() else os.path.basename(filename)
+    _serve_mime   = _clip_mime  if "_clip_mime"  in dir() else "audio/wav"
     force_dl      = request.args.get("dl") == "1"
-    disposition   = (f'attachment; filename="{safe_name}"' if force_dl
-                     else f'inline; filename="{safe_name}"')
+    disposition   = (f'attachment; filename="{_serve_fname}"' if force_dl
+                     else f'inline; filename="{_serve_fname}"')
     range_hdr  = request.headers.get("Range", "")
     if range_hdr:
         import re as _re
@@ -20034,7 +20102,7 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
             return Response(
                 wav_data[start : end + 1],
                 status=206,
-                mimetype="audio/wav",
+                mimetype=_serve_mime,
                 headers={
                     "Content-Range":       f"bytes {start}-{end}/{total}",
                     "Accept-Ranges":       "bytes",
@@ -20045,7 +20113,7 @@ def hub_proxy_alert_clip(site_name, stream_name, filename):
             )
     return Response(
         wav_data,
-        mimetype="audio/wav",
+        mimetype=_serve_mime,
         headers={
             "Accept-Ranges":       "bytes",
             "Content-Length":      str(total),

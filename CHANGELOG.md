@@ -2,6 +2,14 @@
 
 ---
 
+## [3.3.140] - 2026-03-26
+
+### Fixed
+- **Clip audio not playing on hub** — root cause identified: nginx's default `client_max_body_size` of 1 MB rejected large WAV clips (a 30-second clip is ~2.75 MB). The upload silently failed with HTTP 413, so the clip never landed on the hub disk and the audio player returned a 404. Fix: WAV clips larger than ~200 KB are now automatically compressed to MP3 before upload (30 s WAV → ~350 KB MP3, well under the limit). If no MP3 encoder is available, the WAV is still sent and a log message explains how to raise `client_max_body_size` in nginx.
+- **Hub proxy serves MP3 clips regardless of alert-log extension** — `hub_proxy_alert_clip` now checks both the original extension (`.wav`) and its alternative (`.mp3`) in the local cache. This means audio plays even when the client's alert log recorded a `.wav` name but the upload was transparently compressed to `.mp3`.
+- **Clip sync false "uploaded" log** — `_sync_pending_clips` was logging "Clip sync uploaded: …" even when `_upload_clip_inner` returned early on a 4xx error (such as 413). It now only logs success when the upload actually succeeded. Failure details continue to be logged by `_upload_clip_inner`.
+- **413 nginx hint** — when a 413 is received the log now includes the payload size and the nginx config directive needed: `client_max_body_size 20m;`.
+
 ## [3.3.139] - 2026-03-26
 
 ### Fixed
