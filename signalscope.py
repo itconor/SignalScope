@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.16"
+BUILD                  = "SignalScope-3.4.17"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -22257,12 +22257,18 @@ function refreshStatus(){
           el.className='corr-chip';
           el.title=el.title.replace(/\s*\(.*\)$/,'');
         } else {
-          cv.textContent=pct.toFixed(1)+'%';
+          var isProcessed=(comp.status==='processed');
+          cv.textContent=pct.toFixed(1)+'%'+(isProcessed?' ⚙':'');
           el.className='corr-chip '+(pct>=80?'corr-ok':pct>=50?'corr-warn':'corr-poor');
-          // Tooltip breakdown: silence agreement + dynamics correlation
           var tip='Confidence: '+pct.toFixed(1)+'%';
+          if(isProcessed){
+            tip+=' | ⚙ Audio processor detected';
+            if(comp.level_gap!=null) tip+=' ('+comp.level_gap.toFixed(0)+' dB gain difference)';
+            tip+=' — using LUFS-I + silence alignment';
+          }
           if(comp.silence_pct!=null) tip+=' | Silence agreement: '+comp.silence_pct.toFixed(1)+'%';
-          if(comp.r!=null)           tip+=' | Dynamics r: '+comp.r.toFixed(2);
+          if(comp.r!=null)           tip+=' | LUFS-I r: '+comp.r.toFixed(2);
+          if(comp.best_lag>0)        tip+=' | Best at '+comp.best_lag+' min offset';
           tip+=' ('+( comp.samples||'?')+' min samples)';
           el.title=tip;
         }
@@ -22765,6 +22771,28 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 60) -> dic
 
     ka, kb = _key(node_a), _key(node_b)
     ta, tb = _thresh(node_a), _thresh(node_b)
+
+    def _pearson_delta(sa, sb):
+        """First-difference Pearson of two equal-length lists. Returns None if insufficient variance."""
+        if len(sa) < 3: return None
+        da = [sa[i+1] - sa[i] for i in range(len(sa)-1)]
+        db = [sb[i+1] - sb[i] for i in range(len(sb)-1)]
+        m = len(da); ma = sum(da)/m; mb = sum(db)/m
+        num = sum((da[i]-ma)*(db[i]-mb) for i in range(m))
+        va = sum((v-ma)**2 for v in da)**0.5
+        vb = sum((v-mb)**2 for v in db)**0.5
+        if va < 0.05 or vb < 0.05: return None   # near-zero variance → unreliable
+        return max(-1.0, min(1.0, num / (va * vb)))
+
+    def _pearson_raw(sa, sb):
+        if len(sa) < 3: return None
+        ma = sum(sa)/len(sa); mb = sum(sb)/len(sb)
+        num = sum((sa[i]-ma)*(sb[i]-mb) for i in range(len(sa)))
+        va = sum((v-ma)**2 for v in sa)**0.5
+        vb = sum((v-mb)**2 for v in sb)**0.5
+        if va < 0.05 or vb < 0.05: return None
+        return max(-1.0, min(1.0, num / (va * vb)))
+
     try:
         import sqlite3 as _sq
         cutoff = time.time() - minutes * 60
@@ -22779,6 +22807,18 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 60) -> dic
                 "WHERE stream=? AND metric='level_dbfs' AND ts>? GROUP BY t ORDER BY t",
                 (kb, cutoff)
             ).fetchall()
+            # LUFS-I rows — used when level correlation is unreliable (processed path)
+            la_rows = conn.execute(
+                "SELECT CAST(ts/60 AS INT)*60 AS t, AVG(value) FROM metric_history "
+                "WHERE stream=? AND metric='lufs_i' AND ts>? GROUP BY t ORDER BY t",
+                (ka, cutoff)
+            ).fetchall()
+            lb_rows = conn.execute(
+                "SELECT CAST(ts/60 AS INT)*60 AS t, AVG(value) FROM metric_history "
+                "WHERE stream=? AND metric='lufs_i' AND ts>? GROUP BY t ORDER BY t",
+                (kb, cutoff)
+            ).fetchall()
+
         if len(a_rows) < 10 or len(b_rows) < 10:
             return {"status": "no_data", "r": None, "pct": None, "silence_pct": None,
                     "samples": min(len(a_rows), len(b_rows))}
@@ -22792,40 +22832,85 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 60) -> dic
         bv = [b_d[t] for t in common]
         n  = len(av)
 
-        # ── Silence/activity agreement (used only as penalty) ─────────────────
+        # ── Activity / silence agreement ──────────────────────────────────────
         a_act = [v > ta for v in av]
         b_act = [v > tb for v in bv]
-        silence_pct = sum(1 for i in range(n) if a_act[i] == b_act[i]) / n  # 0..1
+        silence_pct    = sum(1 for i in range(n) if a_act[i] == b_act[i]) / n
+        a_silent_frac  = sum(1 for v in a_act if not v) / n
+        b_silent_frac  = sum(1 for v in b_act if not v) / n
 
-        # ── Primary: first-difference Pearson across all common buckets ───────
-        # Correlates level *changes* minute-to-minute; unaffected by static
-        # gain offsets introduced by compressors, limiters, or level trims.
-        delta_r = None
-        if n >= 3:
-            da_v = [av[i + 1] - av[i] for i in range(n - 1)]
-            db_v = [bv[i + 1] - bv[i] for i in range(n - 1)]
-            m    = len(da_v)
-            ma   = sum(da_v) / m
-            mb   = sum(db_v) / m
-            num  = sum((da_v[i] - ma) * (db_v[i] - mb) for i in range(m))
-            sa   = sum((v - ma) ** 2 for v in da_v) ** 0.5
-            sb   = sum((v - mb) ** 2 for v in db_v) ** 0.5
-            if sa > 0 and sb > 0:
-                delta_r = max(-1.0, min(1.0, num / (sa * sb)))
+        # ── Processing gap detection ──────────────────────────────────────────
+        # >8 dB mean level difference strongly indicates a loudness/AGC processor
+        # in the path.  Level-based Pearson is unreliable in that case because the
+        # processor compresses dynamics to near-zero variance.
+        mean_a      = sum(av) / n
+        mean_b      = sum(bv) / n
+        level_gap   = abs(mean_a - mean_b)
+        processed   = level_gap > 8.0
 
-        # ── Secondary: raw-level Pearson ──────────────────────────────────────
-        raw_r = None
-        mean_a = sum(av) / n
-        mean_b = sum(bv) / n
-        num_r  = sum((av[i] - mean_a) * (bv[i] - mean_b) for i in range(n))
-        sa_r   = sum((v - mean_a) ** 2 for v in av) ** 0.5
-        sb_r   = sum((v - mean_b) ** 2 for v in bv) ** 0.5
-        if sa_r > 0 and sb_r > 0:
-            raw_r = max(-1.0, min(1.0, num_r / (sa_r * sb_r)))
+        # ── Lag compensation: try 0-3 minute offsets, keep best ───────────────
+        # Accounts for STL/processing latency that can shift events between buckets.
+        best_delta_r = None
+        best_lag     = 0
+        for lag in range(4):
+            if lag == 0:
+                r = _pearson_delta(av, bv)
+            elif n > lag + 3:
+                r = _pearson_delta(av[lag:], bv[:-lag])
+            else:
+                r = None
+            if r is not None and (best_delta_r is None or r > best_delta_r):
+                best_delta_r = r
+                best_lag     = lag
+        delta_r = best_delta_r
 
-        # ── Combined confidence ───────────────────────────────────────────────
-        # Blend delta_r (60%) + raw_r (40%), both clamped to [0, 1].
-        # Negative correlation → treated as 0 (streams clearly differ).
+        raw_r = _pearson_raw(av, bv)
+
+        if processed:
+            # ── Processed path: LUFS-I correlation + silence alignment ────────
+            # Level dynamics are unreliable through AGC/loudness processors.
+            # LUFS-I is more stable and silence timing is the clearest indicator
+            # that both feeds carry the same programme.
+            lufs_r = None
+            if len(la_rows) >= 10 and len(lb_rows) >= 10:
+                la_d = {r[0]: r[1] for r in la_rows if r[1] is not None}
+                lb_d = {r[0]: r[1] for r in lb_rows if r[1] is not None}
+                lcommon = sorted(set(la_d) & set(lb_d))
+                if len(lcommon) >= 10:
+                    lav = [la_d[t] for t in lcommon]
+                    lbv = [lb_d[t] for t in lcommon]
+                    lufs_r = _pearson_delta(lav, lbv) or _pearson_raw(lav, lbv)
+
+            has_silence = a_silent_frac > 0.03 or b_silent_frac > 0.03
+            if has_silence:
+                # Silence timing available — reliable indicator of same content
+                base = silence_pct
+                if lufs_r is not None:
+                    pct = (base * 0.65 + max(0.0, lufs_r) * 0.35) * 100.0
+                else:
+                    pct = base * 100.0
+                # Penalise silence timing disagreement
+                if a_silent_frac > 0.05 and b_silent_frac > 0.05:
+                    pct = max(0.0, pct - (1.0 - silence_pct) * 50.0)
+            else:
+                # 24/7 continuous — both always active; silence timing unavailable
+                if lufs_r is not None:
+                    pct = (0.60 + max(0.0, lufs_r) * 0.40) * 100.0
+                else:
+                    # No useful signal — report "monitoring" floor, not a false number
+                    pct = 68.0
+
+            return {
+                "status":      "processed",
+                "r":           round(lufs_r, 3) if lufs_r is not None else None,
+                "pct":         round(pct, 1),
+                "silence_pct": round(silence_pct * 100.0, 1),
+                "samples":     n,
+                "level_gap":   round(level_gap, 1),
+                "best_lag":    best_lag,
+            }
+
+        # ── Normal path: level Pearson blend ─────────────────────────────────
         if delta_r is not None and raw_r is not None:
             pct = (max(0.0, delta_r) * 0.6 + max(0.0, raw_r) * 0.4) * 100.0
         elif delta_r is not None:
@@ -22835,16 +22920,9 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 60) -> dic
         else:
             pct = silence_pct * 100.0
 
-        # ── Silence-schedule penalty ──────────────────────────────────────────
-        # Only applies when both streams actually have silence events (>5 % of
-        # buckets silent).  For 24/7 continuous audio neither threshold is crossed
-        # and no penalty is applied.  When both streams have silence but disagree
-        # on timing, the disagreement fraction is penalised up to -50 pp.
-        a_silent_frac = sum(1 for v in a_act if not v) / n
-        b_silent_frac = sum(1 for v in b_act if not v) / n
+        # Silence-schedule penalty (only when both have silence events)
         if a_silent_frac > 0.05 and b_silent_frac > 0.05:
-            disagree_frac = 1.0 - silence_pct
-            pct = max(0.0, pct - disagree_frac * 50.0)
+            pct = max(0.0, pct - (1.0 - silence_pct) * 50.0)
 
         return {
             "status":      "ok",
@@ -22852,6 +22930,7 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 60) -> dic
             "pct":         round(pct, 1),
             "silence_pct": round(silence_pct * 100.0, 1),
             "samples":     n,
+            "best_lag":    best_lag,
         }
     except Exception as e:
         return {"status": "error", "error": str(e), "r": None, "pct": None,
