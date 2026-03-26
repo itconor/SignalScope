@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.0.0",
+    "version": "1.0.1",
 }
 
 import datetime
@@ -52,7 +52,7 @@ def _rec_root() -> Path:
     if raw:
         p = Path(raw)
         return p if p.is_absolute() else (_app_dir / p).resolve()
-    return _rec_root()
+    return (_app_dir / _REC_DIR).resolve()
 _cfg       = {}
 _cfg_lock  = threading.Lock()
 _recorders = {}   # slug → _RecorderThread
