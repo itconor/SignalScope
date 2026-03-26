@@ -483,18 +483,8 @@ document.addEventListener('DOMContentLoaded',function(){
                 </span>
               </label>
             </div>
-            <div>
-              <label style="font-size:12px;font-weight:600;color:var(--mu);display:block;margin-bottom:4px">Clip Format</label>
-              <select name="clip_format" style="width:100%;padding:8px 10px;background:#141820;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
-                <option value="wav" {{'selected' if cfg.clip_format == 'wav' else ''}}>WAV — uncompressed, universal (default)</option>
-                <option value="mp3" {{'selected' if cfg.clip_format == 'mp3' else ''}}>MP3 — ~8× smaller, needs lameenc or ffmpeg</option>
-              </select>
-              <p style="margin-top:6px;font-size:12px;color:var(--mu)">
-                MP3 reduces upload bandwidth and storage. Install <code style="font-size:11px">pip install lameenc</code> for built-in encoding, or ensure <code style="font-size:11px">ffmpeg</code> is on PATH. Falls back to WAV if neither is available.
-              </p>
-            </div>
           </div>
-        
+
           <script nonce="{{csp_nonce()}}">
           function updateHubPanels(){
             var mode = document.getElementById('hub_mode_sel').value;
@@ -703,18 +693,8 @@ document.addEventListener('DOMContentLoaded',function(){
                 </span>
               </label>
             </div>
-            <div>
-              <label style="font-size:12px;font-weight:600;color:var(--mu);display:block;margin-bottom:4px">Clip Format</label>
-              <select name="clip_format" style="width:100%;padding:8px 10px;background:#141820;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
-                <option value="wav" {{'selected' if cfg.clip_format == 'wav' else ''}}>WAV — uncompressed, universal (default)</option>
-                <option value="mp3" {{'selected' if cfg.clip_format == 'mp3' else ''}}>MP3 — ~8× smaller, needs lameenc or ffmpeg</option>
-              </select>
-              <p style="margin-top:6px;font-size:12px;color:var(--mu)">
-                MP3 reduces upload bandwidth and storage. Install <code style="font-size:11px">pip install lameenc</code> for built-in encoding, or ensure <code style="font-size:11px">ffmpeg</code> is on PATH. Falls back to WAV if neither is available.
-              </p>
-            </div>
           </div>
-        
+
           <script nonce="{{csp_nonce()}}">
           function updateHubPanels(){
             var mode = document.getElementById('hub_mode_sel').value;
@@ -1570,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.140"
+BUILD                  = "SignalScope-3.3.142"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -2041,7 +2021,6 @@ class AppConfig:
     suppress_local_notifications: bool = False   # client: skip email/webhook/pushover when hub is connected
     hub_site_rules: dict = field(default_factory=dict)  # hub: per-site {enabled, forward_types}
     signal_chains: list = field(default_factory=list)   # hub: broadcast signal chains [{id,name,nodes}]
-    clip_format:   str  = "wav"      # "wav" or "mp3" (requires lameenc or ffmpeg)
 
 # ─── Config persistence ───────────────────────────────────────────────────────
 
@@ -2179,7 +2158,6 @@ def load_config() -> AppConfig:
         alert_log_max=int(raw.get("alert_log_max",10000)),
         clip_max_age_days=int(raw.get("clip_max_age_days",30)),
         clip_max_per_stream=int(raw.get("clip_max_per_stream",200)),
-        clip_format=str(raw.get("clip_format","wav")),
         ptp_offset_warn_us=int(raw.get("ptp_offset_warn_us",5000)),
         ptp_offset_alert_us=int(raw.get("ptp_offset_alert_us",50000)),
         ptp_jitter_warn_us=int(raw.get("ptp_jitter_warn_us",2000)),
@@ -2306,7 +2284,6 @@ def save_config(cfg: AppConfig):
         "suppress_local_notifications": cfg.suppress_local_notifications,
         "hub_site_rules": cfg.hub_site_rules,
         "signal_chains": cfg.signal_chains,
-        "clip_format": cfg.clip_format,
     }
     with open(CONFIG_PATH, "w") as f:
         json.dump(data, f, indent=2)
@@ -4052,10 +4029,11 @@ def _try_encode_mp3(pcm_int16: "np.ndarray") -> "Optional[bytes]":
 
 def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
                     _skip_hub_queue: bool = False) -> Optional[str]:
-    """Save an alert audio clip to disk.
+    """Save an alert audio clip to disk as WAV.
 
-    Format is determined by ``AppConfig.clip_format``: "wav" (default) or
-    "mp3" (requires lameenc or ffmpeg — falls back to WAV if unavailable).
+    Local clips are always saved as WAV for maximum compatibility.
+    Upload compression (WAV→MP3) is handled automatically by ``_upload_clip_inner``
+    when the file exceeds the size threshold.
     Returns the saved file path, or None if the buffer was empty.
     """
     # Prune old clips before saving a new one
@@ -4077,29 +4055,14 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
     base_name = f"{ts_str}_{safe_stream}_{safe_lbl}"
     pcm       = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
 
-    _clip_fmt = str(getattr(getattr(monitor, "app_cfg", None), "clip_format", "wav"))
-    path: Optional[str] = None
-
-    if _clip_fmt == "mp3":
-        _mp3 = _try_encode_mp3(pcm)
-        if _mp3:
-            path = os.path.join(out, f"{base_name}.mp3")
-            try:
-                with open(path, "wb") as _f:
-                    _f.write(_mp3)
-            except Exception as _e:
-                print(f"[WARN] Could not save alert MP3: {_e}")
-                path = None
-
-    if path is None:   # WAV (default or MP3 fallback)
-        path = os.path.join(out, f"{base_name}.wav")
-        try:
-            with wave.open(path, "wb") as wf:
-                wf.setnchannels(1); wf.setsampwidth(2)
-                wf.setframerate(SAMPLE_RATE); wf.writeframes(pcm.tobytes())
-        except Exception as e:
-            print(f"[WARN] Could not save alert WAV: {e}")
-            return None
+    path = os.path.join(out, f"{base_name}.wav")
+    try:
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(1); wf.setsampwidth(2)
+            wf.setframerate(SAMPLE_RATE); wf.writeframes(pcm.tobytes())
+    except Exception as e:
+        print(f"[WARN] Could not save alert WAV: {e}")
+        return None
 
     # Auto-queue for hub upload unless the caller (e.g. _cmd_save_clip) will
     # handle the upload itself to avoid sending the same clip twice.
@@ -8855,6 +8818,27 @@ class HubClient:
             if clip_path:
                 monitor.log(f"[Hub] save_clip: saved '{label}' for '{stream}' → "
                             f"{os.path.basename(clip_path)}")
+                # Write a metadata sidecar so periodic sync can re-upload with
+                # full chain context if the primary upload fails or is disabled.
+                if chain_id or chain_name:
+                    _meta_path = os.path.splitext(clip_path)[0] + ".meta"
+                    try:
+                        _meta_d = {
+                            "stream":     stream,
+                            "label":      label,
+                            "chain_name": chain_name,
+                            "chain_id":   chain_id,
+                            "entry_id":   entry_id,
+                            "node_label": node_label,
+                            "pos":        pos,
+                            "status":     status,
+                            "level_dbfs": round(
+                                getattr(_inp, "_last_level_dbfs", -120.0), 1),
+                        }
+                        with open(_meta_path, "w") as _mf:
+                            json.dump(_meta_d, _mf)
+                    except Exception as _me:
+                        monitor.log(f"[Hub] save_clip: could not write .meta sidecar: {_me}")
             else:
                 monitor.log(f"[Hub] save_clip: no audio data for '{stream}' (buffer empty?). "
                             f"Buffer length: "
@@ -8992,7 +8976,7 @@ class HubClient:
                 # Write a marker so _sync_pending_clips skips this file
                 if clip_path and (clip_path.endswith(".wav") or clip_path.endswith(".mp3")):
                     try:
-                        open(clip_path[:-4] + ".hub", "w").close()
+                        open(os.path.splitext(clip_path)[0] + ".hub", "w").close()
                     except Exception:
                         pass
                 return True   # success — stop retrying
@@ -9055,20 +9039,35 @@ class HubClient:
                 if not (fname.endswith(".wav") or fname.endswith(".mp3")):
                     continue
                 clip_path = os.path.join(folder_path, fname)
-                marker    = clip_path[:-4] + ".hub"
+                marker    = os.path.splitext(clip_path)[0] + ".hub"
                 if os.path.exists(marker):
                     continue  # already confirmed on hub
-                # Use the folder name as the stream identifier and the filename
-                # stem as the label.  No chain metadata is available for synced
-                # clips so they won't appear in fault-replay panels, but they will
-                # show on the Reports/Alerts page.
+                # Defaults — folder name as stream, filename stem as label.
                 label  = os.path.splitext(fname)[0]
                 stream = folder
+                # Read chain metadata sidecar written by _cmd_save_clip so that
+                # chain clips re-uploaded by sync still appear in fault history.
+                _smeta: dict = {}
+                _meta_path = os.path.splitext(clip_path)[0] + ".meta"
+                if os.path.exists(_meta_path):
+                    try:
+                        with open(_meta_path) as _mf:
+                            _smeta = json.load(_mf)
+                        stream = _smeta.get("stream", stream) or stream
+                        label  = _smeta.get("label",  label)  or label
+                    except Exception:
+                        _smeta = {}
                 try:
                     _ok = self._upload_clip_inner(
                         hub_url, secret, site, stream, label,
-                        "", "",           # no chain_name / chain_id
-                        clip_path=clip_path,
+                        _smeta.get("chain_name", ""),
+                        _smeta.get("chain_id",   ""),
+                        _smeta.get("entry_id",   ""),
+                        clip_path,
+                        _smeta.get("node_label", ""),
+                        _smeta.get("pos",        None),
+                        _smeta.get("status",     ""),
+                        float(_smeta.get("level_dbfs", -120.0)),
                     )
                     if _ok:
                         synced += 1
@@ -16389,8 +16388,6 @@ def settings():
         except ValueError: pass
         cfg.hub.clip_auto_upload = bool(f.get("hub_clip_auto_upload"))
         cfg.hub.clip_sync        = bool(f.get("hub_clip_sync"))
-        _cfmt = f.get("clip_format", "wav").strip()
-        cfg.clip_format = _cfmt if _cfmt in ("wav", "mp3") else "wav"
         # Auth
         cfg.auth.enabled  = bool(f.get("auth_enabled"))
         cfg.auth.username = f.get("auth_username","admin").strip() or "admin"

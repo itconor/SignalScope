@@ -4,7 +4,7 @@
 SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
 
 - **Repo**: https://github.com/itconor/SignalScope
-- **Current build string**: `BUILD = "SignalScope-3.3.140"` (increment on every release)
+- **Current build string**: `BUILD = "SignalScope-3.3.142"` (increment on every release)
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **Release flow**: bump `BUILD`, update `CHANGELOG.md`, `git commit`, `git push`, `gh release create v{version}`
 
@@ -345,6 +345,11 @@ Fixes:
 
 **Rule**: Never hardcode `mimetype="audio/wav"` in `hub_proxy_alert_clip` — clips may be stored as `.mp3` if the WAV was above the compression threshold. Use `_clip_mime` (set during local-cache lookup) for both 206 and 200 responses.
 **Rule**: `_upload_clip_inner` must return a boolean. `_sync_pending_clips` must check it before logging success.
+
+### Clip Format setting removed (3.3.141)
+The `clip_format` AppConfig field ("wav"/"mp3") and its Settings UI selector have been removed. Local clips are always saved as WAV. Upload compression (WAV→MP3) is applied automatically by `_upload_clip_inner` when the file exceeds ~200 KB, regardless of any setting.
+
+**Rule**: Do not re-add a `clip_format` setting. Upload compression is unconditional and automatic; local storage is always WAV.
 
 ### WAN audio choppy every ~0.5 s (fixed 3.3.70–3.3.73)
 Root cause: hub hosted remotely from SDR client. WAN RTT >250 ms triggered `_KP_THRESHOLD = 0.25 s` silence injection in `generate_scanner()`. Also, when RTT > `_BLK_DUR` (0.1 s), sequential POSTs fell behind real-time.

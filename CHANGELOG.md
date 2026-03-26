@@ -2,6 +2,20 @@
 
 ---
 
+## [3.3.142] - 2026-03-26
+
+### Fixed
+- **Chain clips missing from fault history after sync re-upload** — `_sync_pending_clips` previously uploaded every clip with empty `chain_id`/`chain_name`, so the hub routed them all to Reports-only ("Clip received without chain_id"). Root cause: when the primary upload failed (e.g. network timeout), the chain metadata was never persisted alongside the WAV, so the sync had no way to re-attach it.
+
+  Fix: `_cmd_save_clip` now writes a `.meta` JSON sidecar (e.g. `20260326-072351_chain_DowntownRadioBroadcastChain_pos3.meta`) next to the WAV immediately after saving, containing `chain_id`, `chain_name`, `entry_id`, `node_label`, `pos`, `status`, and `level_dbfs`. `_sync_pending_clips` reads the sidecar when present and passes the full metadata to `_upload_clip_inner`, so re-uploaded chain clips correctly appear in the fault history panel.
+
+- **`.hub` marker path fragility** — changed `clip_path[:-4] + ".hub"` to `os.path.splitext(clip_path)[0] + ".hub"` in both `_upload_clip_inner` and `_sync_pending_clips` for robustness.
+
+## [3.3.141] - 2026-03-26
+
+### Removed
+- **Clip Format setting** — the WAV/MP3 clip format selector has been removed from Settings. Local clips are always saved as WAV (for compatibility and lossless preservation). Upload compression is handled automatically: WAV clips larger than ~200 KB are compressed to MP3 before upload regardless of any setting. The `clip_format` field is removed from `AppConfig`, the config serialiser, and the Settings POST handler.
+
 ## [3.3.140] - 2026-03-26
 
 ### Fixed
