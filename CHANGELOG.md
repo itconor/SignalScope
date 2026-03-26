@@ -2,6 +2,23 @@
 
 ---
 
+## [3.4.3] - 2026-03-26
+
+### Fixed
+- **Chain comparator always shows 100%** — `_chain_correlate_nodes()` used silence/activity agreement as its primary metric. For continuous 24/7 broadcast streams (both streams always carrying audio) the silence agreement is trivially 100%, so the comparator always returned 100% regardless of whether the two nodes carried the same content. Root cause: the `delta_r` first-difference Pearson was only an *additive bonus* (up to +20 pp) and could never reduce the base `silence_pct * 100` score.
+
+  Fix: replaced the scoring algorithm entirely:
+  - **Primary metric (60% weight):** first-difference Pearson (`delta_r`) computed across *all* common 1-minute buckets. Measures whether level *changes* track together, unaffected by AGC/limiting static gain offsets.
+  - **Secondary metric (40% weight):** raw-level Pearson (`raw_r`). Useful for lightly-processed streams.
+  - Both metrics mapped to `[0, 100]` with negative correlation → 0% (clearly different sources).
+  - **Silence-schedule penalty:** only applied when both streams genuinely have silence events (>5% of buckets silent). When streams disagree on *when* silence occurs, score is penalised up to −50 pp. For 24/7 continuous audio (no silence events) this penalty is never applied.
+  - Window increased from 10 → 60 minutes; minimum samples raised from 5 → 10 for a more stable estimate.
+
+## [3.4.2] - 2026-03-26
+
+### Added
+- **9 broadcast chain reliability improvements** — recovery confirmation window, silence threshold hysteresis, post-recovery fast re-fault, per-chain notification cooldown, shared-fault aggregation, predictive degrading alert, cascade suppression, persistent fault log with new columns (`adbreak_overshoot`, `cascaded_from`, `message`), and node-level offline notification.
+
 ## [3.4.1] - 2026-03-26
 
 ### Fixed

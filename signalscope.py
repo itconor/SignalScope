@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.2"
+BUILD                  = "SignalScope-3.4.3"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -21915,19 +21915,25 @@ def api_chains_streams():
     return jsonify({"options": options})
 
 
-def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 10) -> dict:
+def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 60) -> dict:
     """Compute stream-agreement confidence between two chain nodes using metrics history.
 
-    Primary metric: silence/activity agreement (processing-invariant).
-    Compressors and limiters change absolute levels but cannot manufacture audio
-    from silence — so timing agreement on silent vs active periods is a reliable
-    indicator that both nodes carry the same source, regardless of how much
-    processing sits between them.
+    Primary metric: first-difference Pearson correlation (delta_r) on all common
+    1-minute level buckets.  Measures whether the *dynamics* (level changes) of
+    both streams track together.  This works through AGC and limiting because it
+    ignores absolute offsets and tracks only the shape of level movement.
 
-    Secondary metric: first-difference Pearson on periods when both streams are
-    active.  Uses level *changes* rather than absolute levels, which removes the
-    DC-offset bias introduced by limiters/AGC while still detecting dynamics
-    divergence.  Can add up to +20 pp to the base score but cannot lower it.
+    Secondary metric: raw-level Pearson (raw_r).  Useful for lightly-processed
+    streams; blended with delta_r at 60/40 weight.
+
+    Penalty: if both streams genuinely have silence events but disagree on *when*
+    they occur (e.g. different programme schedules), the score is penalised by up
+    to 50 pp proportional to the fraction of disagreeing buckets.  For continuous
+    24/7 broadcast streams (no silence) this penalty is never applied.
+
+    The old ``silence_pct``-as-primary-metric was incorrect: for continuous audio
+    both streams are always "active" so silence_pct == 1.0 == 100% regardless of
+    whether the streams carry the same content.
     """
     def _key(n):
         site   = n.get("site", "")
@@ -21957,33 +21963,31 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 10) -> dic
                 "WHERE stream=? AND metric='level_dbfs' AND ts>? GROUP BY t ORDER BY t",
                 (kb, cutoff)
             ).fetchall()
-        if len(a_rows) < 5 or len(b_rows) < 5:
+        if len(a_rows) < 10 or len(b_rows) < 10:
             return {"status": "no_data", "r": None, "pct": None, "silence_pct": None,
                     "samples": min(len(a_rows), len(b_rows))}
         a_d = {r[0]: r[1] for r in a_rows}
         b_d = {r[0]: r[1] for r in b_rows}
         common = sorted(set(a_d) & set(b_d))
-        if len(common) < 5:
+        if len(common) < 10:
             return {"status": "no_overlap", "r": None, "pct": None, "silence_pct": None,
                     "samples": len(common)}
         av = [a_d[t] for t in common]
         bv = [b_d[t] for t in common]
         n  = len(av)
 
-        # ── Primary: silence/activity agreement ───────────────────────────────
+        # ── Silence/activity agreement (used only as penalty) ─────────────────
         a_act = [v > ta for v in av]
         b_act = [v > tb for v in bv]
         silence_pct = sum(1 for i in range(n) if a_act[i] == b_act[i]) / n  # 0..1
 
-        # ── Secondary: first-difference Pearson on mutually-active periods ────
-        # Only considers samples where both streams are carrying audio, so a
-        # limiter making one stream flat never poisons the result.
+        # ── Primary: first-difference Pearson across all common buckets ───────
+        # Correlates level *changes* minute-to-minute; unaffected by static
+        # gain offsets introduced by compressors, limiters, or level trims.
         delta_r = None
-        ap = [i for i in range(n - 1)
-              if a_act[i] and b_act[i] and a_act[i + 1] and b_act[i + 1]]
-        if len(ap) >= 5:
-            da_v = [av[i + 1] - av[i] for i in ap]
-            db_v = [bv[i + 1] - bv[i] for i in ap]
+        if n >= 3:
+            da_v = [av[i + 1] - av[i] for i in range(n - 1)]
+            db_v = [bv[i + 1] - bv[i] for i in range(n - 1)]
             m    = len(da_v)
             ma   = sum(da_v) / m
             mb   = sum(db_v) / m
@@ -21993,12 +21997,38 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 10) -> dic
             if sa > 0 and sb > 0:
                 delta_r = max(-1.0, min(1.0, num / (sa * sb)))
 
+        # ── Secondary: raw-level Pearson ──────────────────────────────────────
+        raw_r = None
+        mean_a = sum(av) / n
+        mean_b = sum(bv) / n
+        num_r  = sum((av[i] - mean_a) * (bv[i] - mean_b) for i in range(n))
+        sa_r   = sum((v - mean_a) ** 2 for v in av) ** 0.5
+        sb_r   = sum((v - mean_b) ** 2 for v in bv) ** 0.5
+        if sa_r > 0 and sb_r > 0:
+            raw_r = max(-1.0, min(1.0, num_r / (sa_r * sb_r)))
+
         # ── Combined confidence ───────────────────────────────────────────────
-        # Base = silence agreement %.  Delta-r provides a bonus of up to +20 pp
-        # (r=1.0 → +20 pp) but cannot drag the score below the base.
-        pct = silence_pct * 100.0
-        if delta_r is not None:
-            pct = min(100.0, pct + abs(delta_r) * 20.0)
+        # Blend delta_r (60%) + raw_r (40%), both clamped to [0, 1].
+        # Negative correlation → treated as 0 (streams clearly differ).
+        if delta_r is not None and raw_r is not None:
+            pct = (max(0.0, delta_r) * 0.6 + max(0.0, raw_r) * 0.4) * 100.0
+        elif delta_r is not None:
+            pct = max(0.0, delta_r) * 100.0
+        elif raw_r is not None:
+            pct = max(0.0, raw_r) * 100.0
+        else:
+            pct = silence_pct * 100.0
+
+        # ── Silence-schedule penalty ──────────────────────────────────────────
+        # Only applies when both streams actually have silence events (>5 % of
+        # buckets silent).  For 24/7 continuous audio neither threshold is crossed
+        # and no penalty is applied.  When both streams have silence but disagree
+        # on timing, the disagreement fraction is penalised up to -50 pp.
+        a_silent_frac = sum(1 for v in a_act if not v) / n
+        b_silent_frac = sum(1 for v in b_act if not v) / n
+        if a_silent_frac > 0.05 and b_silent_frac > 0.05:
+            disagree_frac = 1.0 - silence_pct
+            pct = max(0.0, pct - disagree_frac * 50.0)
 
         return {
             "status":      "ok",
