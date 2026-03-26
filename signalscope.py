@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.25"
+BUILD                  = "SignalScope-3.4.26"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -5593,14 +5593,19 @@ class PTPMonitor:
         self.sender = sender
 
         # Status visible to the dashboard
-        self.status:    str   = "Waiting for PTP…"
-        self.state:     str   = "idle"   # idle | ok | warn | alert | lost
-        self.gm_id:     str   = ""       # grandmaster clock identity (hex)
-        self.domain:    int   = 0
-        self.offset_us: float = 0.0      # latest offset µs
-        self.jitter_us: float = 0.0      # rolling std-dev of offset
-        self.last_sync: float = 0.0      # time.time() of last Sync received
-        self.history:   List[Dict] = []
+        self.status:       str   = "Waiting for PTP…"
+        self.state:        str   = "idle"   # idle | ok | warn | alert | lost
+        self.gm_id:        str   = ""       # grandmaster clock identity (hex)
+        self.domain:       int   = 0
+        self.offset_us:    float = 0.0      # latest offset µs
+        self.jitter_us:    float = 0.0      # rolling std-dev of offset
+        self.last_sync:    float = 0.0      # time.time() of last Sync received
+        self.history:      List[Dict] = []
+        # pmc_mode=True when data comes from the linuxptp pmc tool (accurate,
+        # includes path delay compensation).  False = passive raw-socket listener
+        # (offset includes uncompensated one-way path delay — not a true PTP offset).
+        self.pmc_mode:     bool  = False
+        self.path_delay_us: float = 0.0    # meanPathDelay from pmc (informational)
 
         self._offsets: collections.deque = collections.deque(maxlen=PTP_HISTORY_LEN)
         self._offset_baseline: Optional[float] = None
@@ -5698,8 +5703,11 @@ class PTPMonitor:
 
     def _evaluate(self):
         """Check thresholds and alert on DRIFT from baseline and jitter.
-        We are not a PTP slave so absolute offset is meaningless —
-        we watch for sudden changes which indicate a real clock event."""
+        In pmc_mode the offset is accurate (path delay compensated) so both
+        drift and jitter thresholds apply normally.
+        In passive mode the offset includes uncompensated one-way path delay
+        so jitter is dominated by path-delay variance (not clock jitter) —
+        only alert on very large changes; suppress jitter warn entirely."""
         drift   = abs(getattr(self, 'drift_us', 0.0))
         jitter  = self.jitter_us
         now     = time.time()
@@ -5707,8 +5715,15 @@ class PTPMonitor:
         cfg = monitor.app_cfg
         o_warn  = cfg.ptp_offset_warn_us
         o_alert = cfg.ptp_offset_alert_us
-        j_warn  = cfg.ptp_jitter_warn_us
-        j_alert = cfg.ptp_jitter_alert_us
+        if self.pmc_mode:
+            # Accurate data: use configured jitter thresholds
+            j_warn  = cfg.ptp_jitter_warn_us
+            j_alert = cfg.ptp_jitter_alert_us
+        else:
+            # Passive listener: jitter reflects path-delay variance, not clock
+            # instability — raise thresholds to avoid false alarms
+            j_warn  = 50_000   # 50 ms — only warn on severe instability
+            j_alert = 200_000  # 200 ms — only alert on very severe
         if drift >= o_alert or jitter >= j_alert:
             new_state = "alert"
         elif drift >= o_warn or jitter >= j_warn:
@@ -5773,9 +5788,67 @@ class PTPMonitor:
 
     # ── Receive loop ──────────────────────────────────────────────────────────
 
+    def _try_pmc(self) -> bool:
+        """Read accurate PTP slave data from the linuxptp pmc tool.
+
+        pmc queries the running ptp4l daemon for CURRENT_DATA_SET, which
+        contains the actual offsetFromMaster (path-delay compensated) and
+        meanPathDelay.  Returns True if offset was obtained.
+
+        Falls back to passive-listener data if pmc is not installed or
+        ptp4l is not running.
+        """
+        import shutil as _sh, subprocess as _sp, re as _re
+        pmc = _sh.which("pmc")
+        if not pmc:
+            return False
+        try:
+            out = _sp.check_output(
+                [pmc, "-u", "-b", "0", "GET CURRENT_DATA_SET"],
+                timeout=3, stderr=_sp.DEVNULL,
+            ).decode(errors="replace")
+            m = _re.search(r'offsetFromMaster\s+(-?\d+)', out)
+            if not m:
+                return False
+            offset_ns = int(m.group(1))
+            offset_us = offset_ns / 1000.0
+            # meanPathDelay (ns → µs, informational)
+            md = _re.search(r'meanPathDelay\s+(-?\d+)', out)
+            if md:
+                self.path_delay_us = int(md.group(1)) / 1000.0
+            # Seed / advance baseline
+            if self._offset_baseline is None:
+                self._offset_baseline = offset_us
+            self._offset_baseline = 0.95 * self._offset_baseline + 0.05 * offset_us
+            self.drift_us  = offset_us - self._offset_baseline
+            self.offset_us = offset_us
+            self.last_sync = time.time()
+            self._offsets.append(offset_us)
+            if len(self._offsets) >= 3:
+                self.jitter_us = float(np.std(list(self._offsets)))
+            if not self.pmc_mode:
+                self.log("[PTP] pmc available — switching to accurate slave-mode data")
+                self.pmc_mode = True
+            self._evaluate()
+            return True
+        except Exception:
+            return False
+
+    def _pmc_poller(self, stop_evt: threading.Event):
+        """Background thread: poll pmc every 10 s for accurate PTP data."""
+        # Stagger first poll by 5 s to let the passive listener start first
+        stop_evt.wait(5)
+        while not stop_evt.is_set():
+            self._try_pmc()
+            stop_evt.wait(10)
+
     def run(self, stop_evt: threading.Event, iface_ip: str = "0.0.0.0"):
         """Main receive loop — runs in its own thread."""
         self.log("[PTP] Starting monitor on 224.0.1.129:319/320")
+        # Start pmc poller alongside passive listener — whichever provides data wins
+        _pmc_t = threading.Thread(target=self._pmc_poller, args=(stop_evt,),
+                                  daemon=True, name="PTPpmc")
+        _pmc_t.start()
 
         # We listen on the event port (319) for Sync,
         # and general port (320) for Follow_Up / Announce
@@ -9856,15 +9929,17 @@ class HubClient:
             "comparators":  comparators,
             "recent_alerts": recent_alerts,
             "ptp": {
-                "state":     ptp.state     if ptp else "idle",
-                "status":    ptp.status    if ptp else "—",
-                "offset_us": ptp.offset_us if ptp else 0,
-                "drift_us":  ptp.drift_us  if ptp else 0,
-                "jitter_us": ptp.jitter_us if ptp else 0,
-                "gm_id":     ptp.gm_id     if ptp else "",
-                "domain":    ptp.domain    if ptp else 0,
-                "last_sync": ptp.last_sync if ptp else 0,
-            } if mon.is_running() else {"state":"idle","status":"Not running","offset_us":0,"drift_us":0,"jitter_us":0,"gm_id":"","domain":0,"last_sync":0},
+                "state":         ptp.state         if ptp else "idle",
+                "status":        ptp.status         if ptp else "—",
+                "offset_us":     ptp.offset_us      if ptp else 0,
+                "drift_us":      ptp.drift_us       if ptp else 0,
+                "jitter_us":     ptp.jitter_us      if ptp else 0,
+                "gm_id":         ptp.gm_id          if ptp else "",
+                "domain":        ptp.domain         if ptp else 0,
+                "last_sync":     ptp.last_sync      if ptp else 0,
+                "pmc_mode":      ptp.pmc_mode       if ptp else False,
+                "path_delay_us": ptp.path_delay_us  if ptp else 0,
+            } if mon.is_running() else {"state":"idle","status":"Not running","offset_us":0,"drift_us":0,"jitter_us":0,"gm_id":"","domain":0,"last_sync":0,"pmc_mode":False,"path_delay_us":0},
             "dab_scan_result": self._pop_dab_scan_result(),
             "system":          self._build_system_health(),
             "app_log":         [str(l)[:200] for l in list(self._monitor._log)[-30:]],
@@ -29201,12 +29276,14 @@ setInterval(_loadTrends, 300000);
 
     {# PTP bar #}
     {% set ptp = site.ptp %}
+    {% set ptp_col = 'var(--ok)' if ptp.state=='ok' else ('var(--al)' if ptp.state in ('alert','lost') else 'var(--wn)') %}
     <div class="ptp-bar">
       <span style="color:var(--mu)">🕐 PTP:</span>
-      <span>State <span style="color:{{'var(--ok)' if ptp.state=='locked' else 'var(--wn)'}}">{{ptp.state}}</span></span>
-      <span>Offset <span>{{(ptp.offset_us/1000)|round(1)}} ms</span></span>
-      <span>Drift  <span style="color:{{'var(--ok)' if ptp.drift_us|abs < 1000 else 'var(--wn)'}}">{{(ptp.drift_us/1000)|round(1)}} ms</span></span>
+      <span>State <span style="color:{{ptp_col}}">{{ptp.state}}</span>{% if not ptp.pmc_mode %}<span style="color:var(--mu);font-size:10px"> passive</span>{% endif %}</span>
+      <span>{{'Offset' if ptp.pmc_mode else 'Offset~'}} <span title="{{'Accurate offset from ptp4l via pmc' if ptp.pmc_mode else 'Passive estimate — includes uncompensated path delay'}}">{{(ptp.offset_us/1000)|round(1)}} ms</span></span>
+      <span>Drift <span style="color:{{'var(--ok)' if ptp.drift_us|abs < 1000 else ptp_col}}">{{(ptp.drift_us/1000)|round(1)}} ms</span></span>
       <span>Jitter <span>{{(ptp.jitter_us/1000)|round(1)}} ms</span></span>
+      {% if ptp.pmc_mode and ptp.path_delay_us %}<span>Path delay <span>{{(ptp.path_delay_us/1000)|round(1)}} ms</span></span>{% endif %}
       <span>GM <span style="font-size:11px">{{ptp.gm_id or '—'}}</span></span>
       <span>Last sync <span>{{fmt(ptp.last_sync)}}</span></span>
     </div>

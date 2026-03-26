@@ -2,6 +2,16 @@
 
 ---
 
+## [3.4.26] - 2026-03-26
+
+### Fixed
+- **PTP monitor accuracy and false warnings**:
+  - **`pmc` integration** — on startup a background thread polls `pmc -u -b 0 'GET CURRENT_DATA_SET'` every 10 s. If linuxptp/ptp4l is running, this gives the actual path-delay-compensated `offsetFromMaster` and `meanPathDelay` directly from the PTP slave daemon. Data source switches automatically; logged as "switching to accurate slave-mode data".
+  - **Passive-mode jitter threshold raised** — the raw-socket passive listener has no `Delay_Req` so its jitter figure reflects path-delay variance, not clock instability. Jitter warn raised from 2 ms → 50 ms in passive mode to stop false `warn` states (6 ms passive jitter is normal). In `pmc_mode` the configured threshold is used unchanged.
+  - **Template state colour bug fixed** — was checking `ptp.state=='locked'` which can never match (states are `ok/warn/alert/lost/idle`), so state was always shown in amber. Now uses a proper three-way: ok→green, alert/lost→red, otherwise amber.
+  - **Offset label** — shown as `Offset~` with a tooltip explaining path-delay is not compensated in passive mode; shown as `Offset` in pmc mode. Path delay displayed separately when available.
+  - **`passive` label** shown next to state when not in pmc mode so it's clear the data is approximate.
+
 ## [3.4.25] - 2026-03-26
 
 ### Fixed
