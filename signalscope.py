@@ -1384,7 +1384,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.131"
+BUILD                  = "SignalScope-3.3.132"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -13368,7 +13368,7 @@ function loadClips(idx,streamName){
           +'<a href="/clips/'+encodeURIComponent(streamName)+'/'+encodeURIComponent(c.filename)+'" download class="btn bg" style="font-size:11px;padding:2px 7px">⬇</a>'
           +'<button class="btn" style="background:#3a0f0f;font-size:11px;padding:2px 7px" onclick="deleteClip(\''+encodeURIComponent(streamName)+'\',\''+encodeURIComponent(c.filename)+'\','+idx+')">🗑</button>'
           +'</span></div>'
-          +'<audio controls preload="metadata" src="/clips/'+encodeURIComponent(streamName)+'/'+encodeURIComponent(c.filename)+'" style="width:100%;height:28px;margin-top:4px"></audio>'
+          +'<audio controls preload="none" src="/clips/'+encodeURIComponent(streamName)+'/'+encodeURIComponent(c.filename)+'" style="width:100%;height:28px;margin-top:4px"></audio>'
           +'</div>';
       });
       listEl.innerHTML=html;
@@ -13591,7 +13591,7 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
       </td>
       <td>
         {% if e.clip %}
-        <audio controls preload="metadata" src="/clips/{{e.stream}}/{{e.clip}}"></audio>
+        <audio controls preload="none" src="/clips/{{e.stream}}/{{e.clip}}"></audio>
         {% else %}<span style="color:var(--mu);font-size:11px">—</span>{% endif %}
         {% if e.type in ('AI_ALERT','AI_WARN') %}
         <div class="fb-wrap">
@@ -13695,7 +13695,7 @@ function rowHTML(e){
   }
   var clip='<span style="color:var(--mu);font-size:11px">—</span>';
   if(e.clip){
-    clip='<audio controls preload="metadata" src="/clips/'+encodeURIComponent(e.stream)+'/'+e.clip+'" style="height:28px;width:200px;accent-color:var(--acc);vertical-align:middle"></audio>';
+    clip='<audio controls preload="none" src="/clips/'+encodeURIComponent(e.stream)+'/'+e.clip+'" style="height:28px;width:200px;accent-color:var(--acc);vertical-align:middle"></audio>';
   }
   // AI feedback thumbs — only shown on AI_ALERT / AI_WARN rows
   var fbHtml='';
@@ -16327,9 +16327,15 @@ def _serve_clip_wav(path: str, force_download: bool = False) -> "Response":
             "Cache-Control":  "private, max-age=3600",
         })
 
-    with open(path, "rb") as f:
-        data = f.read()
-    return Response(data, mimetype="audio/wav", headers={
+    # Stream rather than buffer the whole file — WAV clips can be tens of MB
+    def _gen(p, chunk=65536):
+        with open(p, "rb") as _f:
+            while True:
+                blk = _f.read(chunk)
+                if not blk:
+                    break
+                yield blk
+    return Response(_gen(path), mimetype="audio/wav", headers={
         "Content-Disposition": f'{disp}; filename="{safe_cd}"',
         "Accept-Ranges":  "bytes",
         "Content-Length": str(file_size),
