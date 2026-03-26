@@ -2,6 +2,12 @@
 
 ---
 
+## [3.4.7] - 2026-03-26
+
+### Fixed
+- **Hub Reports — AUDIO_GLITCH / AUDIO_GLITCH_SUSTAINED / AUDIO_FLATNESS missing from Type filter dropdown** — the type filter is built from the union of dynamic event types in the current window plus a fixed constant set (`_SILENCE_TYPES`). The three new glitch/flatness types were never added to that constant, so the dropdown only showed them when a glitch event happened to be within the most recent 50 heartbeat events. Fixed by adding all three to the constant set so they always appear in the filter.
+- **Hub not forwarding glitch/flatness alerts from remote clients** — `AUDIO_GLITCH_SUSTAINED` and `AUDIO_FLATNESS` were not in `_HUB_DEFAULT_FORWARD_TYPES`, so the hub silently dropped them instead of forwarding via email/push/webhook. `AUDIO_GLITCH` (per-glitch clips, no notification intended) is intentionally left out of defaults but is now in `_ALL_ALERT_TYPES` so it can be selectively enabled per-site in hub site rules.
+
 ## [3.4.6] - 2026-03-26
 
 ### Added

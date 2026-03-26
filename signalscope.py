@@ -1559,7 +1559,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.6"
+BUILD                  = "SignalScope-3.4.7"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -1677,6 +1677,7 @@ _HUB_DEFAULT_FORWARD_TYPES = [
     "DAB_SERVICE_MISSING", "DAB_AUDIO_FAULT",
     "LUFS_TP", "ESCALATION", "CHAIN_FAULT", "CHAIN_RECOVERED", "CHAIN_FLAPPING",
     "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
+    "AUDIO_GLITCH_SUSTAINED", "AUDIO_FLATNESS",
 ]
 # All alert type identifiers (shown as checkboxes in hub site rules UI)
 _ALL_ALERT_TYPES = [
@@ -1688,6 +1689,7 @@ _ALL_ALERT_TYPES = [
     "PTP_OFFSET", "PTP_JITTER", "PTP_LOST", "PTP_GM_CHANGE",
     "CHAIN_FAULT", "CHAIN_RECOVERED", "CHAIN_FLAPPING",
     "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
+    "AUDIO_GLITCH", "AUDIO_GLITCH_SUSTAINED", "AUDIO_FLATNESS",
 ]
 # Chain monitoring constants
 CHAIN_FLAP_WINDOW        = 600    # seconds — window for flap detection
@@ -24822,7 +24824,8 @@ def hub_reports():
     # recent silence events are in the current window (e.g. 50-event heartbeat
     # window displaced older silence events with newer non-silence events).
     _SILENCE_TYPES = {"SILENCE", "STUDIO_FAULT", "STL_FAULT", "TX_DOWN",
-                      "DAB_AUDIO_FAULT", "RTP_FAULT"}
+                      "DAB_AUDIO_FAULT", "RTP_FAULT",
+                      "AUDIO_GLITCH", "AUDIO_GLITCH_SUSTAINED", "AUDIO_FLATNESS"}
     type_names  = sorted(
         set(e.get("type","") for e in all_events if e.get("type")) | _SILENCE_TYPES
     )
