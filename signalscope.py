@@ -1559,7 +1559,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.9"
+BUILD                  = "SignalScope-3.4.10"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -1825,6 +1825,10 @@ class InputConfig:
     # Sustained glitching — fires a louder alert when hammering continues
     glitch_sustained_count:       int   = 10     # N glitches in sustained window triggers escalation
     glitch_sustained_window_min:  int   = 10     # sustained window length (minutes)
+    # Fade vs glitch discrimination: require a minimum drop rate at onset
+    # Fades are gradual (2–5 dBFS/s); real glitches are abrupt (20–100+ dBFS/s).
+    # 0 = disabled (count all dips regardless of slope).
+    glitch_min_drop_rate_dbfs_s:  float = 12.0  # minimum dBFS/s fall rate to count as a glitch
 
     # Expected identity — alert when actual name differs or changes
     expected_fm_rds_ps:   str = ""   # expected RDS Programme Service name; blank = alert on any change
@@ -1917,6 +1921,7 @@ class InputConfig:
     _flatness_since:        float = field(default=0.0,   init=False, repr=False)
     # Glitch tracking (runtime)
     _glitch_dip_start:           float = field(default=0.0,   init=False, repr=False)  # wall-clock ts dip began
+    _glitch_entry_rate:          float = field(default=0.0,   init=False, repr=False)  # dBFS/s slope at dip onset
     _glitch_timestamps:          List  = field(default_factory=list, init=False, repr=False)  # recent glitch ts list
     _glitch_count_total:         int   = field(default=0,     init=False, repr=False)  # cumulative lifetime count
     _last_glitch_alert_ts:       float = field(default=0.0,   init=False, repr=False)
@@ -2171,6 +2176,7 @@ def load_config() -> AppConfig:
             glitch_alert_window_min=int(item.get("glitch_alert_window_min", 5)),
             glitch_sustained_count=int(item.get("glitch_sustained_count", 10)),
             glitch_sustained_window_min=int(item.get("glitch_sustained_window_min", 10)),
+            glitch_min_drop_rate_dbfs_s=float(item.get("glitch_min_drop_rate_dbfs_s", 12.0)),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
     return AppConfig(
@@ -2317,6 +2323,7 @@ def save_config(cfg: AppConfig):
             "glitch_alert_window_min": i.glitch_alert_window_min,
             "glitch_sustained_count": i.glitch_sustained_count,
             "glitch_sustained_window_min": i.glitch_sustained_window_min,
+            "glitch_min_drop_rate_dbfs_s": i.glitch_min_drop_rate_dbfs_s,
         } for i in cfg.inputs],
         "email": {
             "enabled": cfg.email.enabled, "smtp_host": cfg.email.smtp_host,
@@ -5283,10 +5290,29 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                        and lev > cfg.silence_threshold_dbfs - 15.0)
             if _is_dip and cfg._glitch_dip_start == 0.0:
                 cfg._glitch_dip_start = _gn
+                # Measure drop rate at onset: compare current level to the
+                # most recent pre-dip sample within the last 5 s.
+                # Fades: 2–5 dBFS/s.  Real glitches: 20–100+ dBFS/s.
+                _pre = [(t, v) for (t, v) in cfg._level_buf
+                        if _gn - 5.0 <= t <= _gn - 0.02
+                        and v > cfg.silence_threshold_dbfs]
+                if _pre:
+                    _pt, _pv = _pre[-1]
+                    _dt = max(0.02, _gn - _pt)
+                    cfg._glitch_entry_rate = (_pv - lev) / _dt
+                else:
+                    cfg._glitch_entry_rate = 999.0   # no ref — treat as abrupt
             elif not _is_dip and cfg._glitch_dip_start > 0.0:
                 _dip_dur = _gn - cfg._glitch_dip_start
+                _entry_rate = cfg._glitch_entry_rate
                 cfg._glitch_dip_start = 0.0
-                if 0.0 < _dip_dur < cfg.glitch_max_seconds:
+                cfg._glitch_entry_rate = 0.0
+                # Reject fades: if the level fell too slowly this is a song
+                # fade-out or intentional ramp, not an audio fault.
+                _min_rate = cfg.glitch_min_drop_rate_dbfs_s
+                if _min_rate > 0 and _entry_rate < _min_rate:
+                    pass   # too gradual — skip
+                elif 0.0 < _dip_dur < cfg.glitch_max_seconds:
                     # Count it
                     cfg._glitch_timestamps.append(_gn)
                     cfg._glitch_count_total += 1
@@ -16415,6 +16441,13 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
           </label>
           <p class="help" style="margin-top:4px">Fires a louder <strong>AUDIO_GLITCH_SUSTAINED</strong> alert (with clip) when glitches are hammering. Re-fires every 10 min while sustained. Default: 10 dropouts in 10 min.</p>
         </div>
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--bor)">
+          <div class="sec" style="margin-bottom:6px">📐 Fade vs glitch discrimination</div>
+          <label class="lbl">Minimum drop rate to count as glitch (dBFS/s)
+            <input type="number" name="glitch_min_drop_rate_dbfs_s" value="{{inp.glitch_min_drop_rate_dbfs_s}}" step="1" min="0" max="200">
+          </label>
+          <p class="help">Measures how steeply the level fell at the moment the dip started. Fades are gradual (2–6 dBFS/s). Real glitches — packet loss, STL hitches, encoder dropouts — are abrupt (20–100+ dBFS/s). Set to 0 to disable and count all dips. Default: 12 dBFS/s.</p>
+        </div>
       </div>
 
       <div class="sec" style="margin-top:14px">〰 Audio Flatness / Static Detection</div>
@@ -16891,6 +16924,7 @@ def _inp_from_form(f):
         glitch_alert_window_min=int(f.get("glitch_alert_window_min") or 5),
         glitch_sustained_count=int(f.get("glitch_sustained_count") or 10),
         glitch_sustained_window_min=int(f.get("glitch_sustained_window_min") or 10),
+        glitch_min_drop_rate_dbfs_s=float(f.get("glitch_min_drop_rate_dbfs_s") or 12.0),
     )
 
 @app.route("/inputs/add", methods=["GET","POST"])
