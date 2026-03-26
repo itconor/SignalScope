@@ -1291,8 +1291,10 @@ EOF
   _ng_conf="/etc/nginx/sites-available/signalscope"
   if [[ -f "${_ng_conf}" ]] && ! grep -q "client_max_body_size" "${_ng_conf}" 2>/dev/null; then
     step "Patching nginx config: adding client_max_body_size 20m"
-    # Insert directive on the line after each 'server {' opening brace
-    ${SUDO} sed -i '/^server {/a\    client_max_body_size 20m;' "${_ng_conf}"
+    # Insert directive on the line after each 'server {' opening brace.
+    # Match regardless of leading whitespace (certbot may rewrite the file
+    # with indented server blocks).
+    ${SUDO} sed -i '/^[[:space:]]*server[[:space:]]*{/a\    client_max_body_size 20m;' "${_ng_conf}"
     if ${SUDO} nginx -t >/dev/null 2>&1; then
       ${SUDO} nginx -s reload 2>/dev/null || ${SUDO} systemctl reload nginx 2>/dev/null || true
       ok "nginx patched: client_max_body_size 20m"
