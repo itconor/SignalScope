@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.144"
+BUILD                  = "SignalScope-3.3.145"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -1826,6 +1826,8 @@ class InputConfig:
 
     # runtime state
     _silence_secs:      float = field(default=0.0,    init=False, repr=False)
+    _silence_active:    bool  = field(default=False,  init=False, repr=False)
+    _silence_alert_key: str   = field(default="",     init=False, repr=False)
     _hiss_secs:         float = field(default=0.0,    init=False, repr=False)
     _hf_baseline:       Optional[float] = field(default=None, init=False, repr=False)
     _mid_baseline:      Optional[float] = field(default=None, init=False, repr=False)
@@ -4957,7 +4959,7 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
     if cfg.cascade_suppress_alerts and cfg.cascade_parent and all_inputs:
         parent=next((i for i in all_inputs if i.name==cfg.cascade_parent),None)
         if parent and parent._last_level_dbfs<=parent.silence_threshold_dbfs:
-            cfg._silence_secs=0.0; return
+            cfg._silence_secs=0.0; cfg._silence_active=False; cfg._silence_alert_key=""; return
 
     # Silence / composite fault classification
     if cfg.alert_on_silence:
@@ -4976,7 +4978,20 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                     sender.send(alert_title, alert_msg, clip,
                         alert_type=alert_key, stream=cfg.name, level_dbfs=lev)
                 log_fn(f"[ALERT] {alert_msg}")
+            # Track that silence is active so we can save a recovery clip when audio returns
+            if not cfg._silence_active:
+                cfg._silence_active    = True
+                cfg._silence_alert_key = alert_key
             cfg._silence_secs=0.0
+        elif cfg._silence_active and lev>cfg.silence_threshold_dbfs:
+            # Audio has just resumed — save a clip that ends AFTER the silence so the
+            # recording captures the tail of the outage and the moment audio comes back.
+            clip=_save_alert_wav(cfg,"silence_end",cfg.alert_wav_duration)
+            _add_history(cfg, cfg._silence_alert_key or "SILENCE",
+                         f"Audio restored on '{cfg.name}'", clip_path=clip or "")
+            log_fn(f"[Alert] Silence ended on '{cfg.name}'")
+            cfg._silence_active=False
+            cfg._silence_alert_key=""
 
     # Clip
     if cfg.alert_on_clip:
@@ -5755,7 +5770,8 @@ class MonitorManager:
                 _ensure_alert_buffer_capacity(cfg)
                 cfg._stream_buffer=collections.deque(maxlen=int(SAMPLE_RATE*STREAM_BUFFER_SECONDS/CHUNK_SIZE)+2)
                 cfg._baseline_learning_remaining=5.0; cfg._hf_baseline=None
-                cfg._silence_secs=0.0; cfg._hiss_secs=0.0
+                cfg._silence_secs=0.0; cfg._silence_active=False; cfg._silence_alert_key=""
+                cfg._hiss_secs=0.0
                 cfg._ai_status=""; cfg._ai_phase="idle"; cfg._ai_learn_samples=[]
 
                 ai=StreamAI(cfg,self.log,sender); self._stream_ais[cfg.name]=ai; ai.start()
@@ -5818,9 +5834,11 @@ class MonitorManager:
             # Reset per-input metrics so the hub heartbeat immediately reports
             # silence/down for all streams rather than keeping stale healthy levels.
             for _inp in self.app_cfg.inputs:
-                _inp._last_level_dbfs = -120.0
-                _inp._silence_secs    = 0.0
-                _inp._dab_ok          = False
+                _inp._last_level_dbfs  = -120.0
+                _inp._silence_secs     = 0.0
+                _inp._silence_active   = False
+                _inp._silence_alert_key= ""
+                _inp._dab_ok           = False
                 _inp._rtp_loss_pct    = 0.0
 
     def request_retrain(self, name: str):

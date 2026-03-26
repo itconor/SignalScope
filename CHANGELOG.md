@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.145] - 2026-03-26
+
+### Fixed
+- **Silence clips always ending before the silence ends** — the clip was saved the moment silence was *detected* (after `silence_min_duration` seconds). The recording captured audio leading up to the fault onset but the silence was still in progress when the clip ended, making it useless for diagnosing the recovery.
+
+  Fix: when audio resumes after a silence fault, a second **recovery clip** (`silence_end`) is automatically saved. The rolling audio buffer at that moment contains the tail of the outage plus the instant audio comes back, so the clip spans the silence boundary. A matching "Audio restored" history entry is added alongside it. The original start clip is unchanged — together the two clips bracket the full event.
+
 ## [3.3.144] - 2026-03-26
 
 ### Fixed

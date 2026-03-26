@@ -4,7 +4,7 @@
 SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
 
 - **Repo**: https://github.com/itconor/SignalScope
-- **Current build string**: `BUILD = "SignalScope-3.3.144"` (increment on every release)
+- **Current build string**: `BUILD = "SignalScope-3.3.145"` (increment on every release)
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **Release flow**: bump `BUILD`, update `CHANGELOG.md`, `git commit`, `git push`, `gh release create v{version}`
 
@@ -350,6 +350,15 @@ Fixes:
 The `clip_format` AppConfig field ("wav"/"mp3") and its Settings UI selector have been removed. Local clips are always saved as WAV. Upload compression (WAV→MP3) is applied automatically by `_upload_clip_inner` when the file exceeds ~200 KB, regardless of any setting.
 
 **Rule**: Do not re-add a `clip_format` setting. Upload compression is unconditional and automatic; local storage is always WAV.
+
+### Silence clips ending before the silence ends (fixed 3.3.145)
+`_save_alert_wav` was called immediately when silence was *detected* (after `silence_min_duration` seconds). The clip captured audio leading up to the silence onset but the silence was still active when the clip ended.
+
+Fix: `InputConfig` gains two new runtime fields — `_silence_active: bool` and `_silence_alert_key: str`. When silence is first detected these are set. The existing start clip is still saved. An `elif` branch catches the transition back to audio (`_silence_active and lev > threshold`) and saves a second clip labelled `silence_end` plus a "Audio restored" history entry. The recovery clip ends AFTER the silence, so it shows the tail of the outage and the moment audio comes back.
+
+Both fields are reset in: cascade-suppress early return, stream reconnect (`cfg._silence_secs=0.0` block), and monitor-loop disconnect reset.
+
+**Rule**: Do not remove `_silence_active` / `_silence_alert_key` resets from the cascade-suppress, stream-reconnect, and monitor disconnect paths — stale `True` values would cause spurious recovery clips after unrelated stream restarts.
 
 ### WAN audio choppy every ~0.5 s (fixed 3.3.70–3.3.73)
 Root cause: hub hosted remotely from SDR client. WAN RTT >250 ms triggered `_KP_THRESHOLD = 0.25 s` silence injection in `generate_scanner()`. Also, when RTT > `_BLK_DUR` (0.1 s), sequential POSTs fell behind real-time.
