@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.164"
+BUILD                  = "SignalScope-3.3.165"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -1565,6 +1565,14 @@ _SVG: dict[str, str] = {
     "refresh":  '<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
 }
 # CHANGELOG
+# 3.3.165 (2026-03-26) — Hub Reports clip player broken for streams whose name contains a
+#                         "/" character (e.g. "Northern Ireland DAB / Absolute 90s"). The
+#                         clip URL was built with Jinja2's urlencode filter, which leaves "/"
+#                         unencoded (safe="/"). The route used <stream_name> (no path:), so
+#                         Flask split the stream name at the slash, routing to a 404. Fix:
+#                         route changed to <path:stream_filename>; function splits on the
+#                         last "/" to recover stream_name and filename. Direct __wrapped__
+#                         call from mobile API updated to pass combined path string.
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
 #                        chain JSON as node.label, surfaced in the chain diagram above the sub-nodes,
@@ -1827,7 +1835,6 @@ class InputConfig:
     _fm_rds_metric:     float = field(default=0.0, init=False, repr=False)
     _fm_rds_best_phase: int   = field(default=-1, init=False, repr=False)
     _fm_rds_last_good:  float = field(default=0.0, init=False, repr=False)
-    _fm_backend:        str   = field(default="",   init=False, repr=False)
     # Name-change tracking (runtime)
     _fm_rds_ps_prev:    str   = field(default="",   init=False, repr=False)
     _dab_service_prev:  str   = field(default="",   init=False, repr=False)
@@ -6586,12 +6593,6 @@ class MonitorManager:
             fm://96.7?serial=FM_DONGLE_1&ppm=5         with explicit PPM override
             fm://96.7?serial=FM_DONGLE_1&gain=35.4     with manual tuner gain (dB)
             fm://96.7?serial=FM_DONGLE_1&backend=rtl_fm   force rtl_fm backend
-            fm://96.7?serial=FM_DONGLE_1&backend=pyrtlsdr force pyrtlsdr backend
-
-        Backend selection:
-            auto      — prefer rtl_fm, fall back to pyrtlsdr
-            rtl_fm    — force rtl_fm
-            pyrtlsdr  — force pyrtlsdr, fall back to rtl_fm if unavailable
 
         Audio output: 48kHz mono float32 into existing analyse_chunk pipeline.
         """
@@ -6628,10 +6629,8 @@ class MonitorManager:
                 try: backend = urllib.parse.unquote_plus(part.split("=", 1)[1]).strip().lower()
                 except Exception: pass
 
-        if backend in ("rtlfm", "rtl-fm"):
+        if backend not in ("rtl_fm",):
             backend = "rtl_fm"
-        elif backend not in ("auto", "rtl_fm", "pyrtlsdr"):
-            backend = "auto"
 
         # Resolve PPM from device registry if not overridden
         if not ppm and serial:
@@ -6660,424 +6659,14 @@ class MonitorManager:
             return
 
         try:
-            if backend == "rtl_fm":
-                self.log(f"[{name}] FM: backend forced to rtl_fm")
-                self._run_fm_rtlsdr(cfg, sender, stop_evt, freq_hz, device_idx, ppm, gain)
+            if not _find_binary("rtl_fm"):
+                self.log(f"[{name}] FM: rtl_fm not found — install rtl-sdr tools")
+                cfg._livewire_mode = "FM (rtl_fm not found)"
                 return
-
-            if backend == "pyrtlsdr":
-                self.log(f"[{name}] FM: backend forced to pyrtlsdr")
-                if self._run_fm_pyrtlsdr(cfg, sender, stop_evt, freq_hz, device_idx, ppm, gain):
-                    return
-                self.log(f"[{name}] FM: pyrtlsdr unavailable — falling back to rtl_fm")
-                self._run_fm_rtlsdr(cfg, sender, stop_evt, freq_hz, device_idx, ppm, gain)
-                return
-
-            # auto: prefer rtl_fm for stable audio, fall back to pyrtlsdr
-            self.log(f"[{name}] FM: backend auto — preferring rtl_fm")
-            if _find_binary("rtl_fm"):
-                self._run_fm_rtlsdr(cfg, sender, stop_evt, freq_hz, device_idx, ppm, gain)
-                return
-
-            self.log(f"[{name}] FM: rtl_fm unavailable — trying pyrtlsdr")
-            if self._run_fm_pyrtlsdr(cfg, sender, stop_evt, freq_hz, device_idx, ppm, gain):
-                return
-
-            self.log(f"[{name}] FM: no usable backend found")
-            cfg._livewire_mode = "FM (no backend)"
+            self._run_fm_rtlsdr(cfg, sender, stop_evt, freq_hz, device_idx, ppm, gain)
         finally:
             if lease:
                 lease.__exit__(None, None, None)
-
-    # ── pyrtlsdr backend ──────────────────────────────────────────────────────
-
-    def _run_fm_pyrtlsdr(self, cfg, sender, stop_evt,
-                          freq_hz: int, device_idx: int, ppm: int,
-                          gain: float | None = None) -> bool:
-        """
-        Demodulate FM using pyrtlsdr (pure Python I/Q).
-        Returns True if it ran (even if it errored), False if pyrtlsdr unavailable.
-        Provides: audio, signal strength (dBm), SNR, stereo detection, RDS PS/RT.
-        """
-        try:
-            from rtlsdr import RtlSdr
-        except ImportError:
-            return False
-
-        name = cfg.name
-        cfg._fm_backend = "pyrtlsdr"
-
-        # RTL-SDR sample rate for FM: request 2.4 MHz, then read back the
-        # actual rate the driver accepted. Some dongle/driver combos coerce
-        # this, and assuming an exact 2.400 MHz can make playback speed wrong.
-        SDR_FS_REQ = 240_000
-        AUDIO_FS   = 48_000
-
-        sdr = None
-        try:
-            sdr = RtlSdr(device_index=device_idx)
-            sdr.sample_rate = SDR_FS_REQ
-            actual_sdr_fs = int(round(float(sdr.sample_rate)))
-            sdr.center_freq = freq_hz
-
-            try:
-                # Disable RTL AGC first so manual tuner gain actually takes effect.
-                # When no manual gain is requested we leave the tuner in automatic mode.
-                sdr.set_agc_mode(False)
-            except Exception:
-                pass
-
-            try:
-                if gain is None:
-                    # Fixed gain is more predictable for broadcast FM and tends to
-                    # behave better for both audio and RDS than tuner auto mode.
-                    sdr.gain = 38.0
-                    gain_mode = "manual-default(38.0 dB)"
-                else:
-                    sdr.gain = float(gain)
-                    gain_mode = f"manual({float(gain):.1f} dB)"
-            except Exception as e:
-                self.log(f"[{name}] FM pyrtlsdr: gain set failed ({gain!r}): {e}")
-                try:
-                    sdr.gain = 38.0
-                    gain_mode = "manual-fallback(38.0 dB)"
-                except Exception as e2:
-                    self.log(f"[{name}] FM pyrtlsdr: fallback gain set failed: {e2}")
-                    gain_mode = "unknown"
-
-            if ppm:
-                try:
-                    sdr.freq_correction = ppm
-                except Exception as e:
-                    self.log(f"[{name}] FM pyrtlsdr: could not apply ppm correction {ppm}: {e}")
-
-            self.log(f"[{name}] FM pyrtlsdr: {freq_hz/1e6:.3f} MHz  "
-                     f"fs_req={SDR_FS_REQ/1e6:.3f}MS/s  fs_actual={actual_sdr_fs/1e6:.3f}MS/s  ppm={ppm}  gain={gain_mode}")
-
-            # Read buffer: ~100ms of I/Q at 2.4MS/s = 240000 complex samples
-            READ_SIZE = 65536   # balance USB overhead and realtime DSP cadence at 240 kS/s
-
-            # RDS state / audio DSP state
-            _audio_accum = np.empty(0, dtype=np.float32)
-            _fm_started = False
-            cfg._fm_rds_buf = None
-            cfg._fm_rds_fs = actual_sdr_fs
-            cfg._fm_rds_bits = list(getattr(cfg, "_fm_rds_bits", []) or [])
-            import multiprocessing as _mp, queue as _queue
-            _rds_in_q = _mp.Queue(maxsize=1)
-            _rds_out_q = _mp.Queue(maxsize=4)
-            try:
-                _rds_in_q.cancel_join_thread()
-                _rds_out_q.cancel_join_thread()
-            except Exception:
-                pass
-            _rds_proc = _mp.Process(target=self._fm_rds_proc_worker, args=(_rds_in_q, _rds_out_q), daemon=True)
-            _rds_proc.start()
-            try:
-                self.log(f"[{name}] RDS proc started pid={_rds_proc.pid}")
-            except Exception:
-                pass
-            cfg._fm_rds_status = getattr(cfg, "_fm_rds_status", "Detecting…")
-            cfg._fm_rds_metric = getattr(cfg, "_fm_rds_metric", 0.0)
-            cfg._fm_rds_best_phase = getattr(cfg, "_fm_rds_best_phase", -1)
-            cfg._fm_rds_valid_groups = getattr(cfg, "_fm_rds_valid_groups", 0)
-            FM_PREBUFFER_CHUNKS = 3
-            MAX_FM_BUFFER = CHUNK_SIZE * 10
-            _deemph_prev = 0.0
-            _dc_prev_in = 0.0
-            _dc_prev_out = 0.0
-            _audio_lpf_b = None
-            _audio_lpf_a = None
-            _audio_lpf_zi = None
-            _dc_b = None
-            _dc_a = None
-            _dc_zi = None
-            _deemph_b = None
-            _deemph_a = None
-            _deemph_zi = None
-
-            # Gentle deemphasis for UK/Europe FM broadcast (50 µs)
-            _deemph_alpha = math.exp(-1.0 / (AUDIO_FS * 50e-6))
-            # Simple DC blocker coefficient
-            _dc_r = 0.995
-            _dc_b = np.asarray([1.0, -1.0], dtype=np.float32)
-            _dc_a = np.asarray([1.0, -_dc_r], dtype=np.float32)
-            _deemph_b = np.asarray([1.0 - _deemph_alpha], dtype=np.float32)
-            _deemph_a = np.asarray([1.0, -_deemph_alpha], dtype=np.float32)
-
-            while not stop_evt.is_set():
-                try:
-                    iq = sdr.read_samples(READ_SIZE)
-                    iq = np.asarray(iq, dtype=np.complex64)
-                except Exception as e:
-                    self.log(f"[{name}] FM read error: {e}")
-                    time.sleep(0.5)
-                    continue
-
-                # ── Signal strength ───────────────────────────────────────────
-                power_w            = float(np.mean(np.abs(iq) ** 2))
-                cfg._fm_signal_dbm = float(10 * np.log10(power_w + 1e-12) + 30)
-
-                # ── Wideband FM demodulation ──────────────────────────────────
-                # Keep the previously-working discriminator, but make the audio
-                # chain gentler and better behaved rather than rewriting FM DSP
-                # wholesale in one jump.
-                # Use a raw phase-difference discriminator. The earlier
-                # normalised-IQ path made the FM audio sound "digitally encoded"
-                # / phasey on some dongles even when rtl_fm sounded fine.
-                try:
-                    demod = np.angle(iq[1:] * np.conj(iq[:-1])).astype(np.float32, copy=False)
-                except Exception as e:
-                    self.log(f"[{name}] FM demod error: {e}")
-                    time.sleep(0.5)
-                    continue
-
-                try:
-                    # Conservative scaling so strong stations do not immediately
-                    # slam into full scale before deemphasis/limiting.
-                    demod *= actual_sdr_fs / (2 * np.pi * 140_000.0)
-
-                    # Keep the demodulated FM at the *actual* SDR sample rate and
-                    # avoid intermediate-rate assumptions.
-                    demod_fs = float(actual_sdr_fs)
-                except Exception as e:
-                    self.log(f"[{name}] FM post-demod scale error: {e}")
-                    time.sleep(0.5)
-                    continue
-
-                try:
-                    # ── Noise floor for SNR estimate ──────────────────────────────
-                    signal_pwr = float(np.var(demod))
-                    noise_pwr  = float(np.var(np.diff(demod))) / 2 + 1e-12
-                    cfg._fm_snr_db = float(10 * np.log10(max(signal_pwr, 1e-12) / noise_pwr))
-                except Exception as e:
-                    self.log(f"[{name}] FM snr error: {e}")
-                    time.sleep(0.5)
-                    continue
-
-                try:
-                    # ── Stereo pilot detection (19 kHz) ──────────────────────────
-                    fft_size = min(8192, len(demod))
-                    fft_mag  = np.abs(np.fft.rfft(demod[:fft_size]))
-                    pilot_bin = int(19_000 * fft_size / max(float(demod_fs), 1.0))
-                    if 0 < pilot_bin < len(fft_mag):
-                        pilot_pwr = float(fft_mag[pilot_bin])
-                        noise_ref = float(np.median(fft_mag[max(0, pilot_bin-10):pilot_bin] + 1e-6))
-                        cfg._fm_stereo = pilot_pwr > noise_ref * 5
-                except Exception as e:
-                    self.log(f"[{name}] FM stereo error: {e}")
-                    time.sleep(0.5)
-                    continue
-
-                try:
-                    # ── RDS handoff (separate process; latest slice only) ─────────────
-                    cfg._fm_rds_fs = int(demod_fs)
-                    _slice = np.asarray(demod[-32768:], dtype=np.float32).copy()
-                    try:
-                        while True:
-                            _latest = _rds_out_q.get_nowait()
-                            if "diag" in _latest:
-                                self.log(f"[{name}] {_latest['diag']}")
-                                continue
-                            cfg._fm_rds_status = _latest.get("status", getattr(cfg, "_fm_rds_status", ""))
-                            cfg._fm_rds_metric = _latest.get("metric", getattr(cfg, "_fm_rds_metric", 0.0))
-                            cfg._fm_rds_best_phase = _latest.get("phase", getattr(cfg, "_fm_rds_best_phase", -1))
-                            cfg._fm_rds_valid_groups = _latest.get("valid", getattr(cfg, "_fm_rds_valid_groups", 0))
-                            cfg._fm_rds_ps = _latest.get("ps", getattr(cfg, "_fm_rds_ps", ""))
-                            cfg._fm_rds_rt = _latest.get("rt", getattr(cfg, "_fm_rds_rt", ""))
-                            cfg._fm_rds_last_good = _latest.get("last_good", getattr(cfg, "_fm_rds_last_good", 0.0))
-                            _check_rds_name(cfg, sender, self.log, time.time())
-                            cfg._fm_rds_bp_rms = _latest.get("bp", getattr(cfg, "_fm_rds_bp_rms", 0.0))
-                            cfg._fm_rds_bb_rms = _latest.get("bb", getattr(cfg, "_fm_rds_bb_rms", 0.0))
-                            cfg._fm_rds_sym_metric = _latest.get("sym", getattr(cfg, "_fm_rds_sym_metric", 0.0))
-                            try:
-                                import time as _time
-                                _now = _time.time()
-                                _sig = (cfg._fm_rds_status, round(float(cfg._fm_rds_metric), 4), int(cfg._fm_rds_best_phase), int(cfg._fm_rds_valid_groups))
-                                if _sig != getattr(cfg, "_fm_rds_last_sig", None) or (_now - float(getattr(cfg, "_fm_rds_last_log", 0.0) or 0.0)) >= 3.0:
-                                    cfg._fm_rds_last_sig = _sig
-                                    cfg._fm_rds_last_log = _now
-                                    self.log(f"[{name}] RDS result: status={cfg._fm_rds_status} metric={cfg._fm_rds_metric:.6f} phase={cfg._fm_rds_best_phase} valid={cfg._fm_rds_valid_groups}")
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    try:
-                        import time as _time
-                        _now = _time.time()
-                        if (_now - float(getattr(cfg, "_fm_rds_handoff_last", 0.0) or 0.0)) >= 2.0:
-                            cfg._fm_rds_handoff_last = _now
-                            self.log(f"[{name}] RDS handoff: n={len(_slice)} fs={int(demod_fs)}")
-                        _rds_in_q.put_nowait((_slice, int(demod_fs)))
-                    except Exception:
-                        try:
-                            _rds_in_q.get_nowait()
-                        except Exception:
-                            pass
-                        try:
-                            _rds_in_q.put_nowait((_slice, int(demod_fs)))
-                        except Exception:
-                            pass
-                except Exception as e:
-                    self.log(f"[{name}] FM rds handoff error: {e}")
-
-                # ── Make proper mono FM audio and decimate directly 960 kHz → 48 kHz ──
-                # Keep this path computationally cheap: stateful LPF followed by
-                # clean integer decimation by 20. This removes the heavier resample
-                # stage that was falling behind realtime.
-                audio_if = demod.astype(np.float32, copy=False)
-                target_audio_fs = AUDIO_FS
-                decim_to_audio = max(1, int(round(float(demod_fs) / float(target_audio_fs))))
-                if decim_to_audio < 1:
-                    decim_to_audio = 1
-                target_cut = 15_000.0
-                if audio_if.size:
-                    try:
-                        raise ImportError("force audio fallback")
-                        from scipy.signal import butter, sosfilt, sosfilt_zi, lfilter, lfilter_zi
-                        if (_audio_lpf_b is None or _audio_lpf_a is None or
-                            int(round(demod_fs)) != getattr(self, '_fm_dbg_lpf_fs', None) or
-                            decim_to_audio != getattr(self, '_fm_dbg_lpf_decim', None)):
-                            cutoff = min(target_cut, 0.45 * float(target_audio_fs))
-                            wn = cutoff / max(float(demod_fs) / 2.0, 1.0)
-                            wn = min(max(wn, 1e-4), 0.99)
-                            sos = butter(6, wn, btype="low", output="sos")
-                            _audio_lpf_b = np.asarray(sos, dtype=np.float32)
-                            _audio_lpf_a = None
-                            try:
-                                zi = sosfilt_zi(_audio_lpf_b).astype(np.float32)
-                                _audio_lpf_zi = zi * float(audio_if[0] if audio_if.size else 0.0)
-                            except Exception:
-                                _audio_lpf_zi = None
-                            self._fm_dbg_lpf_fs = int(round(demod_fs))
-                            self._fm_dbg_lpf_decim = decim_to_audio
-                        if _audio_lpf_zi is not None:
-                            audio_if, _audio_lpf_zi = sosfilt(_audio_lpf_b, audio_if, zi=_audio_lpf_zi)
-                        else:
-                            audio_if = sosfilt(_audio_lpf_b, audio_if)
-                        audio_if = np.asarray(audio_if, dtype=np.float32)
-                    except Exception:
-                        # Fallback FIR if SciPy SOS is unavailable.
-                        taps = 121
-                        fc = min(target_cut, 0.45 * float(target_audio_fs)) / max(float(demod_fs), 1.0)
-                        n = np.arange(taps, dtype=np.float32) - (taps - 1) / 2.0
-                        h = 2.0 * fc * np.sinc(2.0 * fc * n)
-                        w = np.hamming(taps).astype(np.float32)
-                        h = (h * w).astype(np.float32)
-                        h /= np.sum(h) + 1e-12
-                        audio_if = np.convolve(audio_if, h, mode="same").astype(np.float32, copy=False)
-
-                # Direct integer decimation to the final 48 kHz audio rate.
-                if decim_to_audio > 1:
-                    audio = audio_if[::decim_to_audio].astype(np.float32, copy=False)
-                else:
-                    audio = audio_if.astype(np.float32, copy=False)
-
-                if audio.size:
-                    # Vectorised IIR stages are much cheaper than Python per-sample
-                    # loops and keep the FM path closer to realtime.
-                    try:
-                        raise ImportError("force audio fallback")
-                        if _dc_zi is None:
-                            _dc_zi = lfilter_zi(_dc_b, _dc_a).astype(np.float32) * float(audio[0])
-                        audio, _dc_zi = lfilter(_dc_b, _dc_a, audio, zi=_dc_zi)
-                        audio = np.asarray(audio, dtype=np.float32)
-
-                        if _deemph_zi is None:
-                            _deemph_zi = lfilter_zi(_deemph_b, _deemph_a).astype(np.float32) * float(audio[0])
-                        audio, _deemph_zi = lfilter(_deemph_b, _deemph_a, audio, zi=_deemph_zi)
-                        audio = np.asarray(audio, dtype=np.float32)
-                    except Exception:
-                        # Fallback to the original scalar path if SciPy stateful
-                        # filtering is unavailable for any reason.
-                        out = np.empty_like(audio)
-                        x_prev = _dc_prev_in
-                        y_prev = _dc_prev_out
-                        for i, x in enumerate(audio):
-                            y = x - x_prev + _dc_r * y_prev
-                            out[i] = y
-                            x_prev = float(x)
-                            y_prev = float(y)
-                        _dc_prev_in = x_prev
-                        _dc_prev_out = y_prev
-                        audio = out
-
-                        out = np.empty_like(audio)
-                        y_prev = _deemph_prev
-                        a = _deemph_alpha
-                        b = 1.0 - a
-                        for i, x in enumerate(audio):
-                            y_prev = a * y_prev + b * float(x)
-                            out[i] = y_prev
-                        _deemph_prev = float(y_prev)
-                        audio = out
-
-                    # Remove residual DC and scale gently rather than trying to
-                    # run right up to full scale.
-                    audio = audio - np.mean(audio)
-                    peak = float(np.max(np.abs(audio)) + 1e-9)
-                    if peak > 0.85:
-                        audio = audio * (0.85 / peak)
-
-                    # Soft limiting instead of flat clipping.
-                    audio = np.tanh(audio * 1.2) / np.tanh(1.2)
-                    audio = np.clip(audio, -0.95, 0.95).astype(np.float32, copy=False)
-
-
-                    # Accumulate FM output and only emit exact half-second blocks.
-                    # Prebuffer a few chunks so small cadence variations in the
-                    # SDR read/demod path do not sound like sped-up/glitchy audio.
-                    if _audio_accum.size:
-                        _audio_accum = np.concatenate((_audio_accum, audio))
-                    else:
-                        _audio_accum = audio
-
-                    if len(_audio_accum) > MAX_FM_BUFFER:
-                        _audio_accum = _audio_accum[-MAX_FM_BUFFER:]
-
-                    if not _fm_started and len(_audio_accum) >= (CHUNK_SIZE * FM_PREBUFFER_CHUNKS):
-                        _fm_started = True
-
-                    while _fm_started and len(_audio_accum) >= CHUNK_SIZE:
-                        chunk = _audio_accum[:CHUNK_SIZE].copy()
-                        _audio_accum = _audio_accum[CHUNK_SIZE:]
-                        try:
-                            _rms = float(np.sqrt(np.mean(np.square(chunk)))) if len(chunk) else 0.0
-                            _peak = float(np.max(np.abs(chunk))) if len(chunk) else 0.0
-                        except Exception:
-                            pass
-                        cfg._stream_buffer.append(chunk.copy())
-                        cfg._audio_buffer.append(chunk.copy())
-                        cfg._live_chunk_seq = getattr(cfg, "_live_chunk_seq", 0) + 1
-                        analyse_chunk(cfg, sender,
-                                      lambda m, n=name: self.log(f"[{n}] {m}"),
-                                      chunk, CHUNK_DURATION,
-                                      cfg.alert_wav_duration,
-                                      self.app_cfg.inputs)
-
-        except Exception as e:
-            self.log(f"[{name}] FM pyrtlsdr error: {e}")
-        finally:
-            try:
-                if '_rds_in_q' in locals():
-                    try:
-                        _rds_in_q.put_nowait(None)
-                    except Exception:
-                        pass
-                if '_rds_proc' in locals() and _rds_proc.is_alive():
-                    _rds_proc.join(timeout=0.5)
-                    if _rds_proc.is_alive():
-                        _rds_proc.terminate()
-            except Exception:
-                pass
-            if sdr:
-                try: sdr.close()
-                except: pass
-
-        return True
-
-    
-    
 
 
 
@@ -7537,7 +7126,6 @@ class MonitorManager:
         """
         import subprocess, threading, json
         name = cfg.name
-        cfg._fm_backend = "rtl_fm"
 
         if not _find_binary("rtl_fm"):
             self.log(f"[{name}] FM: rtl_fm not found. Install rtl-sdr.")
@@ -15267,15 +14855,8 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       <label>Gain (dB)
         <input type="number" id="fm_gain" step="0.1" min="0" max="49.6" placeholder="38.0" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
       </label>
-      <label>Backend
-        <select id="fm_backend" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
-          <option value="auto">Auto (prefer rtl_fm)</option>
-          <option value="rtl_fm">rtl_fm (recommended)</option>
-          <option value="pyrtlsdr">pyrtlsdr</option>
-        </select>
-      </label>
     </div>
-    <p class="help" style="margin-top:8px">FM backend can be selected per input. <code style="background:#173a69;padding:1px 5px;border-radius:3px">rtl_fm</code> is recommended for stable audio. <code style="background:#173a69;padding:1px 5px;border-radius:3px">pyrtlsdr</code> is available for development work on metrics/RDS. Leave gain blank for current automatic behaviour, or set a manual tuner gain such as 38&ndash;42 dB. Register dongles in Settings → Hub &amp; Network → SDR Devices.</p>
+    <p class="help" style="margin-top:8px"><code style="background:#173a69;padding:1px 5px;border-radius:3px">rtl_fm</code> is the FM demodulation backend. Leave gain blank for automatic behaviour, or set a manual tuner gain such as 38&ndash;42 dB. Register dongles in Settings &rarr; Hub &amp; Network &rarr; SDR Devices.</p>
     <div style="margin-top:10px">
       <label style="font-size:12px;color:var(--mu);display:block;margin-bottom:4px">Expected RDS Station Name (PS)
         <input type="text" name="expected_fm_rds_ps" value="{{inp.expected_fm_rds_ps}}" maxlength="8" placeholder="e.g. COOL FM" style="width:180px;margin-top:4px;padding:6px 10px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:13px;text-transform:uppercase" oninput="this.value=this.value.toUpperCase()">
@@ -15368,8 +14949,6 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       }
       var gm2 = v.match(/gain=([^&?]+)/);
       if(gm2) document.getElementById("fm_gain").value = decodeURIComponent(gm2[1]);
-      var bm2 = v.match(/backend=([^&?]+)/);
-      if(bm2) document.getElementById("fm_backend").value = decodeURIComponent(bm2[1]);
     } else if(v.toLowerCase().startsWith("sound://")){
       sel.value = "sound";
       var sdv = v.slice(8);
@@ -15431,11 +15010,9 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
         val = "fm://" + freq;
         var ser2 = document.getElementById("fm_serial").value.trim();
         var gain2 = document.getElementById("fm_gain").value.trim();
-        var backend2 = document.getElementById("fm_backend").value.trim();
         var params = [];
         if(ser2) params.push("serial=" + encodeURIComponent(ser2));
         if(gain2) params.push("gain=" + encodeURIComponent(gain2));
-        if(backend2 && backend2 !== "auto") params.push("backend=" + encodeURIComponent(backend2));
         if(params.length) val += "?" + params.join("&");
       }
     } else if(t === "sound"){
@@ -15450,7 +15027,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
   document.getElementById("src_type").addEventListener("change", srcTypeChanged);
 
   // Wire up live updates
-  ["device_index_other","fm_freq","fm_serial","fm_gain","fm_backend","dab_serial","dab_channel","sound_device"]
+  ["device_index_other","fm_freq","fm_serial","fm_gain","dab_serial","dab_channel","sound_device"]
     .forEach(function(id){
       var el = document.getElementById(id);
       if(el) el.addEventListener("input", updateHiddenField);
@@ -16165,7 +15742,6 @@ def status_json():
             "fm_rds_ok":    i._fm_rds_ok,
             "fm_rds_status": getattr(i, "_fm_rds_status", "No lock"),
             "fm_rds_valid": int(getattr(i, "_fm_rds_valid_groups", 0)),
-            "fm_backend":   i._fm_backend,
             "sla_pct":      round(sla_pct(i), 3),
             "history":      _history_with_acks(i._history[-5:]),
             "lufs_m":       round(i._lufs_m, 1),
@@ -18083,17 +17659,6 @@ def api_setup_deps():
         except Exception:
             return None
 
-    pyrtlsdr_ver = _pkg_version("pyrtlsdr")
-    if pyrtlsdr_ver == "0.2.93":
-        pyrtlsdr_status = "ok"
-        pyrtlsdr_desc = "Python RTL-SDR library for FM monitoring with signal metrics"
-    elif pyrtlsdr_ver:
-        pyrtlsdr_status = "warn"
-        pyrtlsdr_desc = "Installed, but SignalScope expects pyrtlsdr 0.2.93"
-    else:
-        pyrtlsdr_status = "err"
-        pyrtlsdr_desc = "Python RTL-SDR library for FM monitoring with signal metrics"
-
     deps = [
         # Required
         {
@@ -18168,14 +17733,6 @@ def api_setup_deps():
             "status":   "ok" if _find_binary("rtl_test") and _find_binary("rtl_fm") else "err",
             "version":  "found" if _find_binary("rtl_test") else None,
             "install":  "sudo apt install rtl-sdr librtlsdr-dev",
-        },
-        {
-            "name":     "pyrtlsdr",
-            "desc":     pyrtlsdr_desc,
-            "optional": True,
-            "status":   pyrtlsdr_status,
-            "version":  f"v{pyrtlsdr_ver}" if pyrtlsdr_ver else None,
-            "install":  'pip install --upgrade "pyrtlsdr==0.2.93"',
         },
         {
             "name":     "redsea",
@@ -20193,9 +19750,12 @@ def hub_proxy_clip(site_name, sidx):
     return _hub_stream_relay_response(slot, startup_timeout=20.0)
 
 
-@app.get("/hub/site/<path:site_name>/alerts/clip/<stream_name>/<filename>")
+@app.get("/hub/site/<path:site_name>/alerts/clip/<path:stream_filename>")
 @login_required
-def hub_proxy_alert_clip(site_name, stream_name, filename):
+def hub_proxy_alert_clip(site_name, stream_filename):
+    if '/' not in stream_filename:
+        return "Invalid clip path", 404
+    stream_name, filename = stream_filename.rsplit('/', 1)
     """Proxy a saved alert clip WAV from a client site through the hub.
 
     Alert clips are small fixed-length WAV files.  We buffer the entire file
@@ -23712,7 +23272,7 @@ def api_mobile_reports_clip(clip_id: str):
         site_name = (payload.get("site") or "").strip()
         if not site_name:
             return jsonify({"ok": False, "error": "invalid clip id"}), 400
-        return hub_proxy_alert_clip.__wrapped__(site_name, stream_name, filename)
+        return hub_proxy_alert_clip.__wrapped__(site_name, f"{stream_name}/{filename}")
 
     if mode == "local":
         return clips_serve.__wrapped__(stream_name, filename)

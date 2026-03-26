@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.165] - 2026-03-26
+
+### Fixed
+- **Hub Reports — clip player errors immediately for streams with "/" in the name** — stream names like "Northern Ireland DAB / Absolute 90s" contain a literal `/`. The clip URL was built in the template using Jinja2's `urlencode` filter, which leaves `/` unencoded (it uses `safe='/'`). The Flask route used `<stream_name>` (no `path:` converter), so the unencoded slash was treated as a path separator, routing to a 404 before the audio player even loaded any data. Fix: route changed to `<path:stream_filename>`; the function now splits on the last `/` to recover `stream_name` and `filename`. The direct `__wrapped__` call from the mobile API endpoint is updated to pass a combined path string.
+
 ## [3.3.164] - 2026-03-26
 
 ### Fixed
