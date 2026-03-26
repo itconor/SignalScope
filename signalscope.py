@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.20"
+BUILD                  = "SignalScope-3.4.21"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -5923,6 +5923,7 @@ class StreamComparator:
         self.status:        str   = "Finding delay…"
         self._last_alerts:  Dict[str,float] = {}
         self._last_align:   float = 0.0
+        self._started_at:   float = time.monotonic()
         # Live metrics updated every COMPARE_INTERVAL
         self.delay_ms:          float = 0.0
         self.correlation:       float = 0.0
@@ -6181,15 +6182,30 @@ class StreamComparator:
                                             + 0.02 * self.gain_diff_db)
 
             # ── Low correlation alert ──────────────────────────────────────
-            corr_label = (
-                "excellent" if self.correlation >= 0.85 else
-                "good"      if self.correlation >= 0.65 else
-                "weak"      if self.correlation >= 0.40 else
-                "poor"
-            )
+            # Processed paths have inherently lower envelope correlation due to
+            # AGC/limiting squashing dynamics — use relaxed thresholds.
+            if self.processed:
+                corr_label = (
+                    "excellent" if self.correlation >= 0.75 else
+                    "good"      if self.correlation >= 0.50 else
+                    "weak"      if self.correlation >= 0.30 else
+                    "poor"
+                )
+                corr_alert_thresh = 0.30
+            else:
+                corr_label = (
+                    "excellent" if self.correlation >= 0.85 else
+                    "good"      if self.correlation >= 0.65 else
+                    "weak"      if self.correlation >= 0.40 else
+                    "poor"
+                )
+                corr_alert_thresh = 0.40
             mode_label = "block-RMS" + (" processed" if self.processed else "")
             self.status = f"OK ({corr_label} {mode_label} corr)"
-            if self.correlation < 0.40 and pre_has_audio and post_has_audio:
+            # Suppress alert during startup grace period (_CORR_BLOCKS × 100 ms + 5 s margin)
+            _grace_secs = self._CORR_BLOCKS * 0.1 + 5.0
+            _warmed_up  = (time.monotonic() - self._started_at) >= _grace_secs
+            if self.correlation < corr_alert_thresh and pre_has_audio and post_has_audio and _warmed_up:
                 key = "CMP_LOW_CORR"
                 if now - self._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 6:
                     self._last_alerts[key] = now

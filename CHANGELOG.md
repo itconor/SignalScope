@@ -2,6 +2,12 @@
 
 ---
 
+## [3.4.21] - 2026-03-26
+
+### Fixed
+- **StreamComparator — relaxed thresholds for processed audio paths**: When `processed=True` (AGC/limiting detected), correlation label thresholds are lowered (excellent ≥75%, good ≥50%, weak ≥30%) and the low-correlation alert fires below 30% instead of 40%. Previously 61–70% on a processed path was labelled "weak" and triggered a false alert; it is now correctly "good".
+- **StreamComparator — startup grace period**: Low-correlation alerts are suppressed for the first `_CORR_BLOCKS × 100 ms + 5 s` (~20 s) after the comparator is created. During this window there are not yet enough blocks for a stable Pearson estimate, causing spurious "Low corr 0.09" alerts on every restart.
+
 ## [3.4.20] - 2026-03-26
 
 ### Fixed
