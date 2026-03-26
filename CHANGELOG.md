@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.4] - 2026-03-26
+
+### Added
+- **Audio glitch / short dropout detection** — new per-input feature (`glitch_detect`). Maintains a rolling 60-second level reference; when a sample drops more than `glitch_drop_db` (default 18 dB) below that reference and recovers within `glitch_max_seconds` (default 8 s), it is counted as a glitch rather than silence. Fires `AUDIO_GLITCH` alert after N events in a configurable sliding window. Longer drops still trigger the existing silence alarm.
+- **Audio flatness / static detection** — new per-input feature (`flatness_detect`). Monitors the level range (max−min) over a rolling window; if the stream stays above the silence threshold but has less than `flatness_min_range_db` (default 2 dB) of variation for `flatness_min_seconds` (default 300 s), fires `AUDIO_FLATNESS` alert (and recovers automatically when dynamics return). Catches constant static, frozen audio, stuck encoders, and looping content.
+- **Chain diagram badges** — both signals surface visually on broadcast chain nodes: ⚡ glitch count (last 5 min) and 〰 Static. Chain header shows ⚡ Glitching / 〰 Static detected summary badges when any node in the chain is affected.
+- **Hub telemetry** — glitch count and flatness state are included in every client heartbeat, stored in `metric_history` as `glitch_count` and `flatness_flag` (local and remote), and available on the hub chain diagram in real time.
+- **Settings UI** — both features are configurable per-input under Settings → Inputs with show/hide sub-fields toggled by their enable checkboxes.
+
 ## [3.4.3] - 2026-03-26
 
 ### Fixed

@@ -36,6 +36,15 @@ function _csrfFetch(url,opts){
   opts.headers["X-CSRFToken"]=t;
   return fetch(url,opts);
 }
+// Toggle sub-field visibility for checkboxes that use data-toggle
+document.addEventListener('change', function(e){
+  var cb = e.target;
+  if(cb.type === 'checkbox' && cb.dataset.toggle){
+    var panel = document.getElementById(cb.dataset.toggle);
+    if(panel) panel.style.display = cb.checked ? '' : 'none';
+  }
+});
+
 function st(id){
   document.querySelectorAll('.pn').forEach(function(p){p.classList.remove('on');});
   document.querySelectorAll('.tb').forEach(function(b){b.classList.remove('on');});
@@ -1550,7 +1559,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.3"
+BUILD                  = "SignalScope-3.4.4"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -1799,6 +1808,19 @@ class InputConfig:
     lufs_target:              float = -23.0      # target integrated loudness (LUFS, EBU R128)
     lufs_tolerance_db:        float = 3.0        # alert if I-LUFS deviates more than this (LU)
     escalation_minutes:       int   = 0          # re-notify for unacked alerts after N minutes (0 = off)
+
+    # Audio flatness / static detection
+    flatness_detect:          bool  = False      # enable flatness detection
+    flatness_min_range_db:    float = 2.0        # level must vary by at least this much (dB)
+    flatness_min_seconds:     int   = 300        # must persist this long before firing alert
+
+    # Short drop / glitch detection
+    glitch_detect:            bool  = False      # enable glitch detection
+    glitch_drop_db:           float = 18.0       # drop must be this many dB below rolling mean
+    glitch_max_seconds:       float = 8.0        # drop lasting longer counts as silence, not glitch
+    glitch_alert_count:       int   = 3          # N glitches in window triggers alert
+    glitch_alert_window_min:  int   = 5          # sliding window length (minutes)
+
     # Expected identity — alert when actual name differs or changes
     expected_fm_rds_ps:   str = ""   # expected RDS Programme Service name; blank = alert on any change
     expected_dab_service: str = ""   # expected DAB service name; blank = alert on any change
@@ -1881,6 +1903,18 @@ class InputConfig:
     _lufs_kw_zi2: Optional[object] = field(default=None, init=False, repr=False)
     _lufs_s_buf:  List  = field(default_factory=list, init=False, repr=False)
     _lufs_i_buf:  List  = field(default_factory=list, init=False, repr=False)
+
+    # Shared level history buffer for flatness + glitch detection (runtime)
+    # Holds (wall_clock_ts, level_dbfs) tuples, pruned to last 10 minutes.
+    _level_buf:             List  = field(default_factory=list, init=False, repr=False)
+    # Flatness tracking (runtime)
+    _flatness_active:       bool  = field(default=False, init=False, repr=False)
+    _flatness_since:        float = field(default=0.0,   init=False, repr=False)
+    # Glitch tracking (runtime)
+    _glitch_dip_start:      float = field(default=0.0,   init=False, repr=False)  # wall-clock ts dip began
+    _glitch_timestamps:     List  = field(default_factory=list, init=False, repr=False)  # recent glitch ts list
+    _glitch_count_total:    int   = field(default=0,     init=False, repr=False)  # cumulative lifetime count
+    _last_glitch_alert_ts:  float = field(default=0.0,   init=False, repr=False)
 
 
 @dataclass
@@ -2120,6 +2154,14 @@ def load_config() -> AppConfig:
             escalation_minutes=int(item.get("escalation_minutes", 0)),
             expected_fm_rds_ps=item.get("expected_fm_rds_ps", ""),
             expected_dab_service=item.get("expected_dab_service", ""),
+            flatness_detect=bool(item.get("flatness_detect", False)),
+            flatness_min_range_db=float(item.get("flatness_min_range_db", 2.0)),
+            flatness_min_seconds=int(item.get("flatness_min_seconds", 300)),
+            glitch_detect=bool(item.get("glitch_detect", False)),
+            glitch_drop_db=float(item.get("glitch_drop_db", 18.0)),
+            glitch_max_seconds=float(item.get("glitch_max_seconds", 8.0)),
+            glitch_alert_count=int(item.get("glitch_alert_count", 3)),
+            glitch_alert_window_min=int(item.get("glitch_alert_window_min", 5)),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
     return AppConfig(
@@ -2255,6 +2297,14 @@ def save_config(cfg: AppConfig):
             "escalation_minutes": i.escalation_minutes,
             "expected_fm_rds_ps": i.expected_fm_rds_ps,
             "expected_dab_service": i.expected_dab_service,
+            "flatness_detect": i.flatness_detect,
+            "flatness_min_range_db": i.flatness_min_range_db,
+            "flatness_min_seconds": i.flatness_min_seconds,
+            "glitch_detect": i.glitch_detect,
+            "glitch_drop_db": i.glitch_drop_db,
+            "glitch_max_seconds": i.glitch_max_seconds,
+            "glitch_alert_count": i.glitch_alert_count,
+            "glitch_alert_window_min": i.glitch_alert_window_min,
         } for i in cfg.inputs],
         "email": {
             "enabled": cfg.email.enabled, "smtp_host": cfg.email.smtp_host,
@@ -3977,6 +4027,14 @@ def _metrics_flush(inputs: list):
         rows.append((name, "silence_flag",  now, 1.0 if cfg._last_level_dbfs <= cfg.silence_threshold_dbfs else 0.0))
         # clip_count: clipping events per monitoring chunk (reset by monitor loop)
         rows.append((name, "clip_count",    now, float(cfg._clip_count)))
+        # glitch_rate: glitch events detected in the last 5 minutes (0 if feature off)
+        if cfg.glitch_detect and cfg._glitch_timestamps:
+            _g_win_cutoff = now - 300.0
+            _g_recent = sum(1 for t in cfg._glitch_timestamps if t >= _g_win_cutoff)
+            rows.append((name, "glitch_count", now, float(_g_recent)))
+        # flatness_flag: 1.0 if flatness is currently active
+        if cfg.flatness_detect:
+            rows.append((name, "flatness_flag", now, 1.0 if cfg._flatness_active else 0.0))
 
         # FM-specific
         if dev.startswith("fm://"):
@@ -5012,6 +5070,13 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
     in_alert = lev <= cfg.silence_threshold_dbfs
     _sla_update(cfg, elapsed, in_alert)
 
+    # ── Rolling level buffer (shared by flatness + glitch detectors) ──────────
+    _buf_now = time.time()
+    cfg._level_buf.append((_buf_now, lev))
+    # Prune to last 10 minutes — enough for longest flatness window
+    _buf_cutoff = _buf_now - 600.0
+    cfg._level_buf = [(t, v) for (t, v) in cfg._level_buf if t >= _buf_cutoff]
+
     # EBU R128 loudness
     _lufs_update(cfg, sender, log_fn, data, elapsed)
 
@@ -5025,7 +5090,8 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
     if cfg.cascade_suppress_alerts and cfg.cascade_parent and all_inputs:
         parent=next((i for i in all_inputs if i.name==cfg.cascade_parent),None)
         if parent and parent._last_level_dbfs<=parent.silence_threshold_dbfs:
-            cfg._silence_secs=0.0; cfg._silence_active=False; cfg._silence_alert_key=""; return
+            cfg._silence_secs=0.0; cfg._silence_active=False; cfg._silence_alert_key=""
+            cfg._flatness_since=0.0; cfg._glitch_dip_start=0.0; return
 
     # Silence / composite fault classification
     if cfg.alert_on_silence:
@@ -5118,6 +5184,88 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                     level_dbfs=float(cfg._last_level_dbfs))
                     log_fn(f"[ALERT] {msg}")
                 cfg._hiss_secs=0.0
+
+    # ── Glitch / short dropout detection ─────────────────────────────────────
+    # A glitch is a level dip that is significantly below the recent rolling mean
+    # but shorter than glitch_max_seconds (longer = silence, handled above).
+    if cfg.glitch_detect:
+        _gn = time.time()
+        # Rolling mean reference: last 60 s, excluding the current glitch_max_seconds
+        # window so an ongoing dip doesn't poison its own reference.
+        _ref_window_end = _gn - max(0.5, cfg.glitch_max_seconds)
+        _ref_samples = [v for (t, v) in cfg._level_buf
+                        if (_gn - 60.0) <= t <= _ref_window_end
+                        and v > cfg.silence_threshold_dbfs]
+        if len(_ref_samples) >= 5:
+            _rolling_mean = sum(_ref_samples) / len(_ref_samples)
+            # A dip: significantly below rolling mean but not complete silence
+            _is_dip = (lev < _rolling_mean - cfg.glitch_drop_db
+                       and lev > cfg.silence_threshold_dbfs - 15.0)
+            if _is_dip and cfg._glitch_dip_start == 0.0:
+                cfg._glitch_dip_start = _gn
+            elif not _is_dip and cfg._glitch_dip_start > 0.0:
+                _dip_dur = _gn - cfg._glitch_dip_start
+                cfg._glitch_dip_start = 0.0
+                if 0.0 < _dip_dur < cfg.glitch_max_seconds:
+                    # Count it
+                    cfg._glitch_timestamps.append(_gn)
+                    cfg._glitch_count_total += 1
+                    # Prune window
+                    _g_cutoff = _gn - cfg.glitch_alert_window_min * 60.0
+                    cfg._glitch_timestamps = [t for t in cfg._glitch_timestamps if t >= _g_cutoff]
+                    # Alert if threshold reached
+                    if len(cfg._glitch_timestamps) >= cfg.glitch_alert_count:
+                        if _gn - cfg._last_glitch_alert_ts >= ALERT_COOLDOWN:
+                            cfg._last_glitch_alert_ts = _gn
+                            _gcount = len(cfg._glitch_timestamps)
+                            _gmsg = (f"Audio glitching on '{cfg.name}' — "
+                                     f"{_gcount} dropout(s) in {cfg.glitch_alert_window_min} min "
+                                     f"(last: {_dip_dur:.1f}s, ref: {_rolling_mean:.1f} dBFS)")
+                            _add_history(cfg, "AUDIO_GLITCH", _gmsg)
+                            if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                                sender.send(f"GLITCH on {cfg.name}", _gmsg, None,
+                                            alert_type="AUDIO_GLITCH", stream=cfg.name,
+                                            level_dbfs=lev)
+                            log_fn(f"[ALERT] {_gmsg}")
+            elif cfg._glitch_dip_start > 0.0 and (_gn - cfg._glitch_dip_start) >= cfg.glitch_max_seconds:
+                # Dip has become a silence event — hand off to silence detection, reset glitch tracker
+                cfg._glitch_dip_start = 0.0
+
+    # ── Audio flatness / static detection ────────────────────────────────────
+    # Detects constant static, frozen audio, or looping: the level stays above
+    # the silence threshold but has almost no dynamic variation.
+    if cfg.flatness_detect:
+        _fn = time.time()
+        _flat_cutoff = _fn - float(cfg.flatness_min_seconds)
+        # Only use samples where the stream is actually carrying audio
+        _flat_samples = [v for (t, v) in cfg._level_buf
+                         if t >= _flat_cutoff and v > cfg.silence_threshold_dbfs]
+        if len(_flat_samples) >= 10 and lev > cfg.silence_threshold_dbfs:
+            _flat_range = max(_flat_samples) - min(_flat_samples)
+            _is_flat = _flat_range < cfg.flatness_min_range_db
+            if _is_flat:
+                if cfg._flatness_since == 0.0:
+                    cfg._flatness_since = _fn  # start timing
+                elif (not cfg._flatness_active
+                      and (_fn - cfg._flatness_since) >= cfg.flatness_min_seconds):
+                    cfg._flatness_active = True
+                    _fmsg = (f"Audio flatness on '{cfg.name}' — "
+                             f"level range only {_flat_range:.1f} dB over "
+                             f"{cfg.flatness_min_seconds}s (static or frozen audio?)")
+                    _add_history(cfg, "AUDIO_FLATNESS", _fmsg)
+                    if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                        sender.send(f"FLATNESS on {cfg.name}", _fmsg, None,
+                                    alert_type="AUDIO_FLATNESS", stream=cfg.name,
+                                    level_dbfs=lev)
+                    log_fn(f"[ALERT] {_fmsg}")
+            else:
+                if cfg._flatness_active:
+                    _add_history(cfg, "AUDIO_FLATNESS",
+                                 f"Audio dynamics restored on '{cfg.name}' "
+                                 f"(range now {_flat_range:.1f} dB)")
+                    log_fn(f"[Alert] Flatness ended on '{cfg.name}'")
+                cfg._flatness_active = False
+                cfg._flatness_since = 0.0
 
 def _lufs_update(cfg: InputConfig, sender: AlertSender, log_fn, data: np.ndarray, elapsed: float):
     """Update EBU R128 loudness measurements and fire threshold alerts."""
@@ -9234,6 +9382,10 @@ class HubClient:
                 "lufs_s":            round(inp._lufs_s, 1),
                 "lufs_i":            round(inp._lufs_i, 1),
                 "lufs_tp":           round(inp._lufs_tp, 1),
+                # Glitch / flatness telemetry
+                "glitch_count":      inp._glitch_count_total,
+                "glitch_recent":     [round(t, 1) for t in inp._glitch_timestamps[-10:]],
+                "flatness_active":   inp._flatness_active,
             })
         comparators = []
         for c in mon._comparators:
@@ -10663,6 +10815,13 @@ class HubServer:
             cc = st.get("clip_count")
             if cc is not None:
                 rows.append((name, "clip_count", now, float(cc)))
+            # Glitch / flatness from remote client
+            gc = st.get("glitch_count")
+            if gc is not None:
+                rows.append((name, "glitch_count", now, float(gc)))
+            ff = st.get("flatness_active")
+            if ff is not None:
+                rows.append((name, "flatness_flag", now, 1.0 if ff else 0.0))
 
             # FM-specific
             if dev.startswith("fm://"):
@@ -10811,10 +10970,15 @@ class HubServer:
             if dev.startswith("dab://") and not inp._dab_ok:
                 down = True
             is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
+            # Recent glitches in last 5 minutes
+            _g_recent_local = [t for t in inp._glitch_timestamps if t >= time.time() - 300.0]
             return {"label": label, "site": site, "stream": sname, "machine": machine,
                     "status": "down" if down else "ok",
                     "level": round(inp._last_level_dbfs, 1),
-                    "rtp_loss_pct": round(inp._rtp_loss_pct, 2) if is_rtp else None}
+                    "rtp_loss_pct": round(inp._rtp_loss_pct, 2) if is_rtp else None,
+                    "glitch_count":   inp._glitch_count_total,
+                    "glitch_recent":  _g_recent_local,
+                    "flatness_active": inp._flatness_active}
         else:
             site_data = sites_snap.get(site)
             if not site_data:
@@ -10847,10 +11011,14 @@ class HubServer:
                 down = True
             is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
             rtp_loss = sd.get("rtp_loss_pct")
+            _g_recent_remote = sd.get("glitch_recent", [])
             return {"label": label, "site": site, "stream": sname, "machine": machine,
                     "status": "down" if down else "ok",
                     "level": round(lev, 1),
-                    "rtp_loss_pct": round(float(rtp_loss), 2) if is_rtp and rtp_loss is not None else None}
+                    "rtp_loss_pct": round(float(rtp_loss), 2) if is_rtp and rtp_loss is not None else None,
+                    "glitch_count":   sd.get("glitch_count", 0),
+                    "glitch_recent":  _g_recent_remote,
+                    "flatness_active": bool(sd.get("flatness_active", False))}
 
     def _pending_fault_meta(self, chain_id: str) -> dict:
         """Return pending-state metadata for a chain.
@@ -15966,6 +16134,42 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       </label>
       <p class="help">Re-send alert notification if not acknowledged within this many minutes.</p>
 
+      <div class="sec" style="margin-top:14px">⚡ Glitch / Short Dropout Detection</div>
+      <label class="lbl" style="margin-top:8px">
+        <input type="checkbox" name="glitch_detect" value="1" {{'checked' if inp.glitch_detect}} data-toggle="glitch_fields_{{inp.name|e}}">
+        Enable glitch detection
+      </label>
+      <p class="help">Detects brief audio dropouts shorter than the silence alarm window. Shows ⚡ badges on chain nodes and fires an AUDIO_GLITCH alert.</p>
+      <div class="fg2" id="glitch_fields_{{inp.name|e}}" style="margin-top:8px;{{'display:none' if not inp.glitch_detect}}">
+        <label class="lbl">Drop threshold below rolling mean (dB)
+          <input type="number" name="glitch_drop_db" value="{{inp.glitch_drop_db}}" step="1" min="5" max="50">
+        </label>
+        <label class="lbl">Max drop duration to count as glitch (s)
+          <input type="number" name="glitch_max_seconds" value="{{inp.glitch_max_seconds}}" step="0.5" min="0.5" max="30">
+        </label>
+        <label class="lbl">Alert after N glitches
+          <input type="number" name="glitch_alert_count" value="{{inp.glitch_alert_count}}" step="1" min="1">
+        </label>
+        <label class="lbl">… in this many minutes
+          <input type="number" name="glitch_alert_window_min" value="{{inp.glitch_alert_window_min}}" step="1" min="1">
+        </label>
+      </div>
+
+      <div class="sec" style="margin-top:14px">〰 Audio Flatness / Static Detection</div>
+      <label class="lbl" style="margin-top:8px">
+        <input type="checkbox" name="flatness_detect" value="1" {{'checked' if inp.flatness_detect}} data-toggle="flat_fields_{{inp.name|e}}">
+        Enable flatness detection
+      </label>
+      <p class="help">Detects constant static, frozen audio, or looping content — stream is above silence threshold but has almost no dynamic variation. Shows 〰 badge on chain nodes.</p>
+      <div class="fg2" id="flat_fields_{{inp.name|e}}" style="margin-top:8px;{{'display:none' if not inp.flatness_detect}}">
+        <label class="lbl">Minimum level range to be considered dynamic (dB)
+          <input type="number" name="flatness_min_range_db" value="{{inp.flatness_min_range_db}}" step="0.5" min="0.5" max="20">
+        </label>
+        <label class="lbl">Persist this long before alerting (s)
+          <input type="number" name="flatness_min_seconds" value="{{inp.flatness_min_seconds}}" step="10" min="30">
+        </label>
+      </div>
+
       <div class="sec" style="margin-top:14px">Stream Comparison</div>
       <div class="fg2" style="margin-top:10px">
         <label class="lbl">Compare role
@@ -16415,6 +16619,14 @@ def _inp_from_form(f):
         escalation_minutes=int(f.get("escalation_minutes") or 0),
         expected_fm_rds_ps=f.get("expected_fm_rds_ps", "").strip().upper(),
         expected_dab_service=f.get("expected_dab_service", "").strip(),
+        flatness_detect=bool(f.get("flatness_detect")),
+        flatness_min_range_db=float(f.get("flatness_min_range_db") or 2.0),
+        flatness_min_seconds=int(f.get("flatness_min_seconds") or 300),
+        glitch_detect=bool(f.get("glitch_detect")),
+        glitch_drop_db=float(f.get("glitch_drop_db") or 18.0),
+        glitch_max_seconds=float(f.get("glitch_max_seconds") or 8.0),
+        glitch_alert_count=int(f.get("glitch_alert_count") or 3),
+        glitch_alert_window_min=int(f.get("glitch_alert_window_min") or 5),
     )
 
 @app.route("/inputs/add", methods=["GET","POST"])
@@ -20382,6 +20594,7 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .listen-icon{position:absolute;top:4px;right:5px;font-size:11px;opacity:.6;pointer-events:none;user-select:none}.chain-node.listening .listen-icon{opacity:1;animation:icon-pulse 1.4s ease-in-out infinite}
 @keyframes icon-pulse{0%,100%{opacity:.8}50%{opacity:.4}}.chain-stack{display:flex;flex-direction:column;align-items:stretch;gap:0;position:relative}.chain-stack .chain-node{border-radius:6px;min-width:120px;max-width:180px}.chain-stack-sep{display:flex;justify-content:center;color:var(--mu);font-size:13px;line-height:1;padding:1px 0}.chain-stack-mode{font-size:10px;text-align:center;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:1px 7px;margin:3px auto 0;display:table}.chain-stack-label{font-size:10px;font-weight:700;text-align:center;color:var(--acc);letter-spacing:.03em;padding:2px 6px;margin:0 auto 4px;background:rgba(23,168,255,.1);border:1px solid rgba(23,168,255,.25);border-radius:4px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .node-label{font-weight:700;font-size:12px;word-break:break-word}.node-sub{font-size:10px;color:var(--mu);margin-top:3px;word-break:break-word}.node-level{font-size:11px;margin-top:5px;font-variant-numeric:tabular-nums}
+.node-glitch{display:block;font-size:10px;color:#f59e0b;margin-top:3px;cursor:default}.node-flat{display:block;font-size:10px;color:#a855f7;margin-top:3px;cursor:default}
 .fault-marker{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;white-space:nowrap}
 .node-pill{font-size:9px;font-weight:700;border-radius:3px;padding:1px 5px;text-align:center;display:block;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .node-pill-adbreak{background:rgba(180,83,9,.25);color:#fbbf24;border:1px solid #b45309}
@@ -20599,6 +20812,8 @@ var _chainData={
     <span class="sla-badge" id="sla_{{c.id|e}}" style="display:none"></span>
     <span class="health-badge" id="health_{{c.id|e}}" style="display:none"></span>
     <span class="chain-maint-badge" id="chain_maint_{{c.id|e}}" style="display:none;font-size:11px;background:#1d4ed8;color:#bfdbfe;border-radius:999px;padding:2px 8px;border:1px solid #3b82f6" title="Entire chain is in maintenance mode">🔧 Maintenance</span>
+    <span id="chain_glitch_{{c.id|e}}" style="display:none;font-size:11px;color:#f59e0b;background:rgba(245,158,11,.1);border:1px solid #b45309;border-radius:999px;padding:2px 8px" title="One or more nodes have detected audio dropouts in the last 5 minutes">⚡ Glitching</span>
+    <span id="chain_flat_{{c.id|e}}" style="display:none;font-size:11px;color:#a855f7;background:rgba(168,85,247,.1);border:1px solid #7e22ce;border-radius:999px;padding:2px 8px" title="One or more nodes have detected audio flatness (possible static or frozen audio)">〰 Static detected</span>
     {% if c.min_fault_seconds %}
     <span style="font-size:11px;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:2px 8px" title="Fault confirmation delay — alert fires only after fault persists this long">⏱ {{c.min_fault_seconds}}s delay</span>
     {% endif %}
@@ -21218,6 +21433,27 @@ document.getElementById('hist_banner_live').addEventListener('click',_exitHistMo
 // ── Live status refresh ───────────────────────────────────────────────────────
 var BORDER={ok:'var(--ok)',down:'var(--al)',offline:'#374151',unknown:'var(--bor)',downstream:'#1e3a5f',adbreak:'#b45309'};
 var BG={ok:'rgba(34,197,94,.07)',down:'rgba(239,68,68,.09)',offline:'',unknown:'var(--bg)',downstream:'',adbreak:'rgba(251,191,36,.08)'};
+function _renderNodeHealth(el,nd){
+  // Remove stale badges (already stripped in bulk, but guard here too)
+  el.querySelectorAll('.node-glitch,.node-flat').forEach(function(b){b.remove();});
+  // Glitch badge — show if any glitches in the last 5 minutes
+  var g5=nd.glitch_5min||0;
+  if(g5>0){
+    var gb=document.createElement('span');
+    gb.className='node-glitch';
+    gb.title=g5+' dropout(s) detected in the last 5 min';
+    gb.textContent='⚡ '+g5+' glitch'+(g5>1?'es':'');
+    el.appendChild(gb);
+  }
+  // Flatness badge — show if static / frozen audio detected
+  if(nd.flatness_active){
+    var fb=document.createElement('span');
+    fb.className='node-flat';
+    fb.title='Audio flatness detected — possible static, frozen audio, or looping content';
+    fb.textContent='〰 Static';
+    el.appendChild(fb);
+  }
+}
 var CARD_CLS={ok:'chain-card card-ok',fault:'chain-card card-fault',unknown:'chain-card card-unknown',adbreak:'chain-card card-adbreak',pending:'chain-card card-adbreak'};
 
 function refreshStatus(){
@@ -21270,6 +21506,11 @@ function refreshStatus(){
       // Chain-level maintenance badge
       var cmBadge=document.getElementById('chain_maint_'+chain.id);
       if(cmBadge){cmBadge.style.display=chain.has_maintenance?'':'none';}
+      // Chain-level glitch / flatness summary badges
+      var glitchBadge=document.getElementById('chain_glitch_'+chain.id);
+      if(glitchBadge){glitchBadge.style.display=chain.has_glitch?'':'none';}
+      var flatBadge=document.getElementById('chain_flat_'+chain.id);
+      if(flatBadge){flatBadge.style.display=chain.has_flatness?'':'none';}
       // Flapping override badge
       if(chain.flapping&&badge){
         badge.textContent='FLAPPING';badge.className='badge badge-flap';
@@ -21334,7 +21575,7 @@ function refreshStatus(){
               subEl.className='chain-node '+subEff+(isListeningEl?' listening':'');
               subEl.style.borderColor=BORDER[subEff]||BORDER.unknown;
               subEl.style.background=BG[subEff]||'';
-              subEl.querySelectorAll('.fault-marker,.maint-badge,.shared-badge,.node-pill').forEach(function(m){m.remove();});
+              subEl.querySelectorAll('.fault-marker,.maint-badge,.shared-badge,.node-pill,.node-glitch,.node-flat').forEach(function(m){m.remove();});
               var lvlEl=subEl.querySelector('.node-level');
               if(lvlEl){
                 lvlEl.style.color=subEff==='adbreak'?'#fbbf24':sub.status==='ok'?'var(--ok)':sub.status==='down'?'var(--al)':'var(--mu)';
@@ -21357,6 +21598,8 @@ function refreshStatus(){
                   rtpEl.style.color=rtp>5?'var(--al)':rtp>0.5?'var(--wn)':'var(--mu)';
                 } else { rtpEl.style.display='none'; }
               }
+              // Glitch / flatness badges
+              _renderNodeHealth(subEl, sub);
             });
             // Fault marker on the stack wrapper (only for the fault position)
             if(stackEl){
@@ -21395,7 +21638,7 @@ function refreshStatus(){
             el.className='chain-node '+nodeEff+(isListeningEl?' listening':'');
             el.style.borderColor=BORDER[nodeEff]||BORDER.unknown;
             el.style.background=BG[nodeEff]||'';
-            el.querySelectorAll('.fault-marker,.maint-badge,.shared-badge,.node-pill').forEach(function(m){m.remove();});
+            el.querySelectorAll('.fault-marker,.maint-badge,.shared-badge,.node-pill,.node-glitch,.node-flat').forEach(function(m){m.remove();});
             var lvlEl=el.querySelector('.node-level');
             if(lvlEl){
               lvlEl.style.color=nodeEff==='adbreak'?'#fbbf24':node.status==='ok'?'var(--ok)':node.status==='down'?'var(--al)':'var(--mu)';
@@ -21418,6 +21661,8 @@ function refreshStatus(){
                 rtpEl2.style.color=rtp2>5?'var(--al)':rtp2>0.5?'var(--wn)':'var(--mu)';
               } else { rtpEl2.style.display='none'; }
             }
+            // Glitch / flatness badges on single node
+            _renderNodeHealth(el, node);
             // Shared fault badge on fault node
             if(isFaultPos&&chain.shared_fault_chains&&chain.shared_fault_chains.length>0){
               var sb=document.createElement('span');sb.className='shared-badge';
@@ -22415,6 +22660,30 @@ def api_chains_status():
                         nd["trend"] = tr.get("trend") if tr else None
                         nd["trend_slope"] = tr.get("slope") if tr else None
             _stamp_trend(result.get("nodes", []))
+
+            # ── Glitch / flatness annotation on chain nodes ────────────────
+            # Aggregates per-node health signals so the chain diagram can
+            # show ⚡ glitch and 〰 static badges at the correct node.
+            _chain_has_glitch   = False
+            _chain_has_flatness = False
+            def _stamp_health(node_list):
+                nonlocal _chain_has_glitch, _chain_has_flatness
+                _now_h = time.time()
+                for nd in node_list:
+                    if nd.get("type") == "stack":
+                        _stamp_health(nd.get("nodes", []))
+                    else:
+                        _gr = nd.get("glitch_recent", [])
+                        _g5 = [t for t in _gr if _now_h - float(t) < 300.0]
+                        nd["glitch_5min"] = len(_g5)
+                        nd["flatness_active"] = bool(nd.get("flatness_active", False))
+                        if nd["glitch_5min"] > 0:
+                            _chain_has_glitch = True
+                        if nd["flatness_active"]:
+                            _chain_has_flatness = True
+            _stamp_health(result.get("nodes", []))
+            result["has_glitch"]   = _chain_has_glitch
+            result["has_flatness"] = _chain_has_flatness
 
             # ── SLA computation ────────────────────────────────────────────
             try:
