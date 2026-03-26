@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.24] - 2026-03-26
+
+### Changed
+- **Stream Comparators panel redesign** — cards now match the hub's stream-card design language: `background:#123764`, `border:1px solid var(--bor)`, `border-radius:10px`, `box-shadow`, and a coloured left-border accent (green/muted/red based on status). Header row has a status dot + separator line. Correlation bar uses a flex layout with a wider track.
+- **Status colour fixed** — was checking `c.status == 'OK'` which always failed for the verbose status strings (e.g. `"OK (excellent block-RMS processed corr)"`), causing every comparator to show in red. Now uses `c.status.startswith('OK')` → green, "Finding…" → muted, otherwise red.
+- **Processed-path correlation bar uses correct thresholds** — on processed paths the bar turns green at ≥50% (matching the relaxed Python thresholds) instead of showing misleading amber/orange on a healthy path. Unprocessed paths retain the original ≥65% threshold for green.
+
 ## [3.4.23] - 2026-03-26
 
 ### Fixed

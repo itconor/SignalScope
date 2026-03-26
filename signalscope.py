@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.23"
+BUILD                  = "SignalScope-3.4.24"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -29138,41 +29138,56 @@ setInterval(_loadTrends, 300000);
 
     {# Comparators #}
     {% if site.comparators %}
-    <div style="padding:10px 16px;border-top:1px solid var(--bor)">
-      <div style="font-size:11px;color:var(--mu);margin-bottom:8px;font-weight:600">🔀 STREAM COMPARATORS</div>
+    <div style="padding:10px 16px 14px;border-top:1px solid var(--bor)">
+      <div style="font-size:11px;color:var(--mu);margin-bottom:8px;font-weight:600;letter-spacing:.04em">🔀 STREAM COMPARATORS</div>
       {% for c in site.comparators %}
-      <div style="background:#0d1520;border-radius:6px;padding:8px 10px;margin-bottom:6px;font-size:12px">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-          <strong>{{c.pre_name}}</strong>
-          <span style="color:var(--mu)">→</span>
-          <strong>{{c.post_name}}</strong>
-          <span style="margin-left:auto;font-size:11px;color:{{'var(--ok)' if c.status=='OK' else 'var(--al)'}}">{{c.status}}</span>
+      {% set c_ok   = c.status.startswith('OK') %}
+      {% set c_find = c.status.startswith('Find') %}
+      {% set c_col  = 'var(--ok)' if c_ok else ('var(--mu)' if c_find else 'var(--al)') %}
+      <div style="background:#123764;border:1px solid var(--bor);border-left:3px solid {{c_col}};border-radius:10px;overflow:hidden;margin-bottom:8px;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.12)">
+        {# Header row #}
+        <div style="padding:8px 12px;border-bottom:1px solid var(--bor);display:flex;align-items:center;gap:8px">
+          <span style="width:8px;height:8px;border-radius:999px;background:{{c_col}};flex-shrink:0;display:inline-block"></span>
+          <strong style="color:var(--tx)">{{c.pre_name}}</strong>
+          <span style="color:var(--mu);font-size:11px">→</span>
+          <strong style="color:var(--tx)">{{c.post_name}}</strong>
+          <span style="margin-left:auto;font-size:11px;color:{{c_col}};white-space:nowrap">{{c.status}}</span>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;color:var(--mu)">
-          <span>Pre level  <span style="color:var(--tx)">{{c.pre_dbfs}} dBFS</span></span>
-          <span>Post level <span style="color:var(--tx)">{{c.post_dbfs}} dBFS</span></span>
-          <span>Gain diff  <span style="color:{{'#fb923c' if c.gain_diff_db|abs > c.gain_alert_db else 'var(--tx)'}}">{{'+' if c.gain_diff_db>=0 else ''}}{{c.gain_diff_db}} dB</span></span>
-          <span>Delay      <span style="color:var(--tx)">{{c.delay_ms}} ms</span></span>
-        </div>
-        {% if c.aligned %}
-        <div style="margin-top:6px">
-          <span style="font-size:11px;color:var(--mu)">Correlation </span>
-          {% set cc = c.correlation %}
-          {% set cw = (cc * 100)|int %}
-          {% set ccol = 'var(--ok)' if cc>=0.85 else ('var(--wn)' if cc>=0.65 else ('#fb923c' if cc>=0.40 else 'var(--al)')) %}
-          <div style="display:inline-block;background:var(--bor);border-radius:3px;width:80px;height:6px;vertical-align:middle;margin:0 6px">
-            <div style="width:{{cw}}%;height:6px;border-radius:3px;background:{{ccol}}"></div>
+        {# Stats grid #}
+        <div style="padding:8px 12px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;color:var(--mu)">
+            <span>Pre level <span style="color:var(--tx)">{{c.pre_dbfs}} dBFS</span></span>
+            <span>Post level <span style="color:var(--tx)">{{c.post_dbfs}} dBFS</span></span>
+            <span>Gain diff <span style="color:{{'#fb923c' if c.gain_diff_db|abs > c.gain_alert_db else 'var(--tx)'}}">{{'+' if c.gain_diff_db>=0 else ''}}{{c.gain_diff_db}} dB</span></span>
+            <span>Delay <span style="color:var(--tx)">{{c.delay_ms}} ms</span></span>
           </div>
-          <span style="color:{{ccol}}">{{(cc*100)|round(0)|int}}%</span>
+          {# Correlation bar — uses processed-aware thresholds so a healthy
+             processed path shows green, not misleading orange #}
+          {% if c.aligned %}
+          <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+            <span style="font-size:11px;color:var(--mu);flex-shrink:0">Correlation</span>
+            {% set cc = c.correlation %}
+            {% set cw = (cc * 100)|int %}
+            {% if c.processed %}
+              {% set ccol = 'var(--ok)' if cc>=0.75 else ('var(--ok)' if cc>=0.50 else ('var(--wn)' if cc>=0.30 else 'var(--al)')) %}
+            {% else %}
+              {% set ccol = 'var(--ok)' if cc>=0.85 else ('var(--ok)' if cc>=0.65 else ('var(--wn)' if cc>=0.40 else 'var(--al)')) %}
+            {% endif %}
+            <div style="flex:1;max-width:120px;background:var(--bor);border-radius:4px;height:7px">
+              <div style="width:{{cw}}%;height:7px;border-radius:4px;background:{{ccol}}"></div>
+            </div>
+            <span style="color:{{ccol}};font-weight:600;min-width:32px">{{(cc*100)|round(0)|int}}%</span>
+          </div>
+          {% endif %}
+          {# Event history #}
+          {% if c.cmp_history %}
+          <div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--bor);font-size:11px;color:var(--mu)">
+            {% for ev in c.cmp_history|reverse %}
+            <div style="padding:1px 0">{{ev}}</div>
+            {% endfor %}
+          </div>
+          {% endif %}
         </div>
-        {% endif %}
-        {% if c.cmp_history %}
-        <div style="margin-top:6px;font-size:11px;color:var(--mu)">
-          {% for ev in c.cmp_history|reverse %}
-          <div>{{ev}}</div>
-          {% endfor %}
-        </div>
-        {% endif %}
       </div>
       {% endfor %}
     </div>
