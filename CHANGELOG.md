@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.132] - 2026-03-26
+
+### Fixed
+- **Clip audio player errors on Reports page** — all `<audio>` clip elements used `preload="metadata"`, causing every clip on the page to fire a Range request simultaneously when the page loaded. Flask serialises requests, so they queued and timed out, leaving the player in an error state even though individual downloads worked. Changed all clip players to `preload="none"` so no request is made until the user presses play. Also switched the full-file path in `_serve_clip_wav()` from a single `f.read()` to a 64 kB streaming generator to avoid loading large WAV files into memory.
+
 ## [3.3.131] - 2026-03-26
 
 ### Fixed
