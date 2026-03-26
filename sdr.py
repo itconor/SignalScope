@@ -20,13 +20,14 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/sdr",
     "icon":     "📡",
     "hub_only": True,   # only inject nav item in hub / both mode
-    "version":  "1.1.0",
+    "version":  "1.2.0",
 }
 
 import hashlib
 import hmac as _hmac
 import os
 import queue
+import struct
 import threading
 import time
 import urllib.request
@@ -51,12 +52,13 @@ _BLK_DUR      = _BLK_SAMPS / _SAMPLE_RATE   # 0.1 s
 _PCM_BLKSIZE  = int(_OUT_RATE * _BLK_DUR) * 2  # 9600 bytes — matches scanner
 
 # ── Module-level state ─────────────────────────────────────────────────────────
-_hub_sessions  = {}   # site_name → {slot_id, freq_mhz, mode, sdr_serial}
-_hub_pending   = {}   # site_name → pending command dict for client poller
-_sdr_spectrum  = {}   # slot_id   → {fft, cf, bw, n, ts}
-_client_sess   = {}   # {stop: Event, thread: Thread, slot_id: str}
-_state_lock    = threading.Lock()
-_monitor       = None  # set in register(); used by module-level worker for logging
+_hub_sessions    = {}   # site_name → {slot_id, freq_mhz, mode, sdr_serial}
+_hub_pending     = {}   # site_name → pending command dict for client poller
+_sdr_spectrum    = {}   # slot_id   → {fft, cf, bw, n, level, ts}
+_sdr_scan_results= {}   # site_name → {peaks, start_mhz, end_mhz, step_khz, ts}
+_client_sess     = {}   # {stop: Event, thread: Thread, slot_id: str}
+_state_lock      = threading.Lock()
+_monitor         = None  # set in register(); used by module-level worker for logging
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -141,6 +143,13 @@ def register(app, ctx):
                                   "mode": mode,
                                   "gain": gain,
                                   "sdr_serial": sdr_serial}
+        # Register in _scanner_sessions so the relay generator buffers PCM for recording
+        if hub_server and hasattr(hub_server, "_scanner_pcm"):
+            from collections import deque as _deque
+            hub_server._scanner_pcm.setdefault(site, _deque(maxlen=600))
+            if hasattr(hub_server, "_scanner_sessions"):
+                hub_server._scanner_sessions[site] = {"slot_id": slot.slot_id,
+                                                       "sdr_serial": sdr_serial}
         return jsonify({"ok": True, "slot_id": slot.slot_id,
                         "stream_url": f"/hub/scanner/stream/{slot.slot_id}"})
 
@@ -176,6 +185,10 @@ def register(app, ctx):
                                   "mode": mode,
                                   "gain": sess.get("gain", "auto"),
                                   "sdr_serial": sess.get("sdr_serial", "")}
+        # Keep _scanner_sessions in sync so PCM buffer keeps being filled
+        if hub_server and hasattr(hub_server, "_scanner_sessions"):
+            hub_server._scanner_sessions[site] = {"slot_id": slot.slot_id,
+                                                   "sdr_serial": sess.get("sdr_serial", "")}
         return jsonify({"ok": True, "slot_id": slot.slot_id,
                         "stream_url": f"/hub/scanner/stream/{slot.slot_id}"})
 
@@ -193,6 +206,8 @@ def register(app, ctx):
             old_slot = listen_registry.get(sess["slot_id"])
             if old_slot:
                 old_slot.closed = True
+        if hub_server and hasattr(hub_server, "_scanner_sessions"):
+            hub_server._scanner_sessions.pop(site, None)
         return jsonify({"ok": True})
 
     # ── Hub: browser polls spectrum ──────────────────────────────────────────
@@ -231,6 +246,91 @@ def register(app, ctx):
                 for k in oldest[:100]:
                     _sdr_spectrum.pop(k, None)
         return "", 204
+
+    # ── Hub: browser requests band scan ─────────────────────────────────────
+    @app.post("/api/hub/sdr/band_scan")
+    @login_required
+    @csrf_protect
+    def websdr_band_scan():
+        data       = request.get_json(silent=True) or {}
+        site       = str(data.get("site", "")).strip()
+        if not site:
+            return jsonify({"ok": False, "error": "site required"}), 400
+        sdr_serial = str(data.get("sdr_serial", "") or "")
+        _sdr_scan_results.pop(site, None)   # clear stale result
+        with _state_lock:
+            _hub_pending[site] = {
+                "action":     "band_scan",
+                "start_mhz":  float(data.get("start_mhz",  76.0)),
+                "end_mhz":    float(data.get("end_mhz",   108.0)),
+                "step_khz":   int(data.get("step_khz",     100)),
+                "gain":       data.get("gain", "auto"),
+                "sdr_serial": sdr_serial,
+            }
+        monitor.log(f"[WebSDR] Band scan queued for site '{site}'")
+        return jsonify({"ok": True})
+
+    # ── Client → Hub: band scan result ───────────────────────────────────────
+    # No login_required — authenticated by X-Sdr-Site + approved-site check
+    @app.post("/api/hub/sdr/scan_result")
+    def websdr_scan_result_push():
+        site = request.headers.get("X-Sdr-Site", "").strip()
+        if not site:
+            return jsonify({"error": "missing site"}), 400
+        if hub_server:
+            sdata = hub_server._sites.get(site, {})
+            if not sdata.get("_approved"):
+                return jsonify({"error": "forbidden"}), 403
+        d = request.get_json(silent=True) or {}
+        if d:
+            _sdr_scan_results[site] = {**d, "ts": time.time()}
+            monitor.log(f"[WebSDR] Scan result from '{site}': "
+                        f"{len(d.get('peaks', []))} readings")
+        return "", 204
+
+    # ── Hub: browser polls for scan result ───────────────────────────────────
+    @app.get("/api/hub/sdr/scan_result/<path:site_name>")
+    @login_required
+    def websdr_scan_result_get(site_name):
+        result = _sdr_scan_results.get(site_name)
+        if not result:
+            return jsonify({"ready": False})
+        return jsonify({"ready": True, **result})
+
+    # ── Hub: browser downloads a WAV recording ───────────────────────────────
+    @app.get("/api/hub/sdr/record/<path:site_name>")
+    @login_required
+    def websdr_record(site_name):
+        import io as _io
+        from flask import send_file as _sf
+        secs = min(int(request.args.get("secs", 30)), 60)
+        if not hub_server:
+            return jsonify({"error": "no hub"}), 400
+        buf = getattr(hub_server, "_scanner_pcm", {}).get(site_name)
+        if not buf:
+            return jsonify({"error": "no buffered audio — stream must be active"}), 404
+        pcm_bytes = b"".join(list(buf)[-(secs * 10):])
+        if not pcm_bytes:
+            return jsonify({"error": "buffer empty"}), 404
+        SR, CH, BPS = 48000, 1, 16
+        wav_io      = _io.BytesIO()
+        data_size   = len(pcm_bytes)
+        wav_io.write(b"RIFF")
+        wav_io.write(struct.pack("<I", 36 + data_size))
+        wav_io.write(b"WAVE")
+        wav_io.write(b"fmt ")
+        wav_io.write(struct.pack("<IHHIIHH", 16, 1, CH, SR,
+                                 SR * CH * BPS // 8, CH * BPS // 8, BPS))
+        wav_io.write(b"data")
+        wav_io.write(struct.pack("<I", data_size))
+        wav_io.write(pcm_bytes)
+        wav_io.seek(0)
+        sess    = _hub_sessions.get(site_name, {})
+        freq_s  = f"_{sess['freq_mhz']:.3f}MHz" if sess.get("freq_mhz") else ""
+        ts_str  = time.strftime("%Y%m%d_%H%M%S")
+        fname   = f"websdr_{site_name.replace(' ','_')}{freq_s}_{ts_str}.wav"
+        return _sf(wav_io, mimetype="audio/wav", as_attachment=True,
+                   download_name=fname)
 
     # ── Client: start polling thread ─────────────────────────────────────────
     cfg = monitor.app_cfg
@@ -286,6 +386,101 @@ def _dispatch_client_cmd(cmd, hub_url, cfg):
         )
     elif action == "stop":
         _stop_capture()
+    elif action == "band_scan":
+        # Stop any active stream so rtl_power can use the dongle
+        _stop_capture()
+        threading.Thread(target=_run_band_scan, args=(cmd, hub_url, cfg),
+                         daemon=True, name="SDRBandScan").start()
+
+
+def _run_band_scan(cmd, hub_url, cfg):
+    """Run rtl_power band scan on the client and POST the result to the hub."""
+    import shutil, subprocess, os, tempfile, json as _json
+
+    def _log(msg):
+        if _monitor: _monitor.log(msg)
+        else: print(msg)
+
+    start_mhz  = float(cmd.get("start_mhz",  76.0))
+    end_mhz    = float(cmd.get("end_mhz",   108.0))
+    step_khz   = int(cmd.get("step_khz",     100))
+    gain       = cmd.get("gain", "auto")
+    sdr_serial = str(cmd.get("sdr_serial", "") or "")
+    site       = (cfg.hub.site_name or "").strip()
+
+    rtl_power = shutil.which("rtl_power")
+    if not rtl_power:
+        _log("[WebSDR] rtl_power not found — band scan unavailable")
+        return
+
+    gain_arg = "0" if str(gain).lower() == "auto" else str(gain)
+
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tf:
+        tmpfile = tf.name
+
+    try:
+        scan_cmd = [rtl_power,
+                    "-f", f"{start_mhz}M:{end_mhz}M:{step_khz}k",
+                    "-g", gain_arg,
+                    "-i", "1",   # 1-second integration per bin
+                    "-1",        # single sweep then exit
+                    tmpfile]
+        if sdr_serial:
+            scan_cmd[1:1] = ["-d", sdr_serial]
+        _log(f"[WebSDR] Band scan {start_mhz:.1f}–{end_mhz:.1f} MHz "
+             f"step {step_khz} kHz…")
+        subprocess.run(scan_cmd, timeout=180,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Parse CSV: date, time, Hz_low, Hz_high, step_Hz, samples, v0, v1, …
+        peaks = []
+        with open(tmpfile, newline="") as f:
+            for line in f:
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 7:
+                    continue
+                try:
+                    hz_low  = float(parts[2])
+                    hz_step = float(parts[4])
+                    vals    = [float(x) for x in parts[6:] if x]
+                    for i, v in enumerate(vals):
+                        peaks.append({
+                            "freq_mhz": round((hz_low + hz_step * i) / 1e6, 4),
+                            "power_db": round(v, 1),
+                        })
+                except (ValueError, IndexError):
+                    continue
+
+        # Keep readings within 25 dB of the strongest signal
+        if peaks:
+            p_max = max(p["power_db"] for p in peaks)
+            peaks = [p for p in peaks if p["power_db"] >= p_max - 25]
+            peaks.sort(key=lambda p: p["freq_mhz"])
+
+        _log(f"[WebSDR] Band scan complete: {len(peaks)} readings above threshold")
+
+        data = _json.dumps({
+            "site":      site,
+            "peaks":     peaks,
+            "start_mhz": start_mhz,
+            "end_mhz":   end_mhz,
+            "step_khz":  step_khz,
+        }).encode()
+        req = urllib.request.Request(
+            f"{hub_url}/api/hub/sdr/scan_result",
+            data=data,
+            headers={"Content-Type": "application/json", "X-Sdr-Site": site},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=10).close()
+
+    except subprocess.TimeoutExpired:
+        _log("[WebSDR] Band scan timed out after 180 s")
+    except Exception as e:
+        _log(f"[WebSDR] Band scan error: {e}")
+    finally:
+        try: os.unlink(tmpfile)
+        except: pass
 
 
 def _start_capture(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret):
@@ -399,6 +594,8 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
     fft_deadline  = time.monotonic()
     proc          = None
     _level_db     = None   # exponential moving average of RMS dBFS
+    _nfm_sos      = None   # NFM pre-filter SOS coefficients (built once)
+    _nfm_zi       = None   # NFM SOS filter state carried across blocks
 
     # ── POST worker: drains post_q, batching blocks when RTT > _BLK_DUR ─────
     # Decouples pacing (real-time) from network I/O (RTT-bound) so WAN latency
@@ -481,10 +678,16 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
                 demod -= np.mean(demod)
 
             elif mode == "nfm":
-                # Pre-filter to ±12 kHz then FM discriminate
+                # Pre-filter to ±12 kHz then FM discriminate.
+                # SOS filter is built once and state (zi) is carried across
+                # blocks to avoid click/pop artefacts at block boundaries.
                 if _HAS_SCIPY:
-                    sos  = _sp.butter(5, 12_000 / (_SAMPLE_RATE / 2), output="sos")
-                    iq_f = _sp.sosfilt(sos, iq)
+                    if _nfm_sos is None:
+                        _nfm_sos = _sp.butter(
+                            5, 12_000 / (_SAMPLE_RATE / 2), output="sos")
+                        _nfm_zi = np.zeros(
+                            (_nfm_sos.shape[0], 2), dtype=complex)
+                    iq_f, _nfm_zi = _sp.sosfilt(_nfm_sos, iq, zi=_nfm_zi)
                 else:
                     iq_f = iq   # skip pre-filter without scipy
                 demod = np.angle(iq_f[1:] * np.conj(iq_f[:-1])) / np.pi
@@ -655,6 +858,30 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
           cursor:pointer}
 .tune-btn:hover{background:rgba(59,130,246,.2)}
 
+/* Record buttons */
+.btn-rec{padding:4px 10px;border-radius:6px;font-size:12px;font-weight:700;
+         border:1px solid var(--bor);background:var(--bg3);color:var(--mu);
+         cursor:pointer;transition:all .15s}
+.btn-rec:not(:disabled):hover{border-color:#ef4444;color:#ef4444}
+.btn-rec:disabled{opacity:.4;cursor:default}
+
+/* Band scan */
+.scan-btn{padding:5px 12px;border-radius:6px;font-size:12px;font-weight:700;
+          border:1px solid var(--bor);background:var(--bg3);color:var(--mu);
+          cursor:pointer;transition:all .15s;white-space:nowrap}
+.scan-btn:not(:disabled):hover{border-color:var(--acc);color:var(--tx)}
+.scan-btn:disabled{opacity:.4;cursor:default}
+.scan-col{flex:1.4}
+.scan-peak{display:flex;align-items:center;gap:4px;padding:2px 3px;border-radius:4px;
+           cursor:pointer;font-size:12px;color:var(--mu)}
+.scan-peak:hover{background:rgba(59,130,246,.15);color:var(--tx)}
+.scan-peak .sp-freq{font-weight:700;font-variant-numeric:tabular-nums;
+                    color:var(--tx);min-width:52px}
+.scan-peak .sp-bar-bg{flex:1;height:5px;background:var(--bg3);border-radius:3px;
+                       overflow:hidden;min-width:20px}
+.scan-peak .sp-bar{height:100%;border-radius:3px;background:var(--acc)}
+.scan-peak .sp-db{font-size:10px;min-width:36px;text-align:right}
+
 /* Level meter */
 .level-wrap{display:flex;align-items:center;gap:6px}
 .level-bar-bg{width:90px;height:7px;background:var(--bg3);border-radius:4px;
@@ -741,6 +968,18 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
   </div>
 
   <button class="btn-conn idle" id="conn-btn">Connect</button>
+
+  <div style="margin-left:auto;display:flex;align-items:center;gap:6px">
+    <label>Scan</label>
+    <input type="number" id="scan-start" value="76" step="1" min="0.1" max="2000"
+           style="width:56px" title="Scan start MHz">
+    <span style="font-size:11px;color:var(--mu)">–</span>
+    <input type="number" id="scan-end" value="108" step="1" min="0.1" max="2000"
+           style="width:56px" title="Scan end MHz">
+    <span style="font-size:11px;color:var(--mu)">MHz</span>
+    <button class="scan-btn" id="scan-btn" disabled>📡 Scan</button>
+    <span id="scan-status" style="font-size:11px;color:var(--mu);display:none">Scanning…</span>
+  </div>
 </div>
 
 <div class="sdr-main">
@@ -772,6 +1011,10 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
     <label>Vol</label>
     <input type="range" id="vol-slider" min="0" max="2" step="0.05" value="1">
   </div>
+  <div style="display:flex;gap:4px;flex-shrink:0">
+    <button class="btn-rec" id="rec30-btn" disabled title="Download last 30 s as WAV">⏺ 30s</button>
+    <button class="btn-rec" id="rec60-btn" disabled title="Download last 60 s as WAV">⏺ 60s</button>
+  </div>
   <span class="key-hint" title="Keyboard: ← → tune ±0.1 MHz · ↑ ↓ tune ±1 MHz · PgUp/Dn ±10 MHz · Shift ×5">
     ← → ±0.1&nbsp; ↑ ↓ ±1&nbsp; PgUp/Dn ±10 MHz
   </span>
@@ -788,6 +1031,10 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
       <button class="hp-save-btn" id="save-preset-btn">+ Save current</button>
     </div>
     <div id="preset-list"></div>
+  </div>
+  <div class="hp-col scan-col" id="scan-col" style="display:none">
+    <div class="hp-hdr">📡 Scan Results</div>
+    <div id="scan-list"></div>
   </div>
 </div>
 
@@ -902,8 +1149,14 @@ function setState(st, msg){
   _state = st;
   sDot.className = 'sdot ' + st;
   sTxt.textContent = msg;
-  connBtn.textContent = (st==='streaming'||st==='connecting') ? 'Disconnect' : 'Connect';
-  connBtn.className = 'btn-conn ' + ((st==='streaming'||st==='connecting') ? 'active' : 'idle');
+  var live = (st==='streaming'||st==='connecting');
+  connBtn.textContent = live ? 'Disconnect' : 'Connect';
+  connBtn.className   = 'btn-conn ' + (live ? 'active' : 'idle');
+  // Scan enabled any time a site is selected and not already scanning
+  scanBtn.disabled  = !siteSel.value || _scanning;
+  // Record requires active stream (buffer must be filling)
+  rec30Btn.disabled = !live;
+  rec60Btn.disabled = !live;
 }
 
 // ── Mode helpers ────────────────────────────────────────────────────────────
@@ -969,7 +1222,7 @@ function doTune(freq){
 }
 
 function doStop(){
-  stopSpectrumPoll(); disconnectAudio();
+  stopSpectrumPoll(); stopScanPoll(); disconnectAudio();
   _f('/api/hub/sdr/stop',{method:'POST',body:JSON.stringify({site:siteSel.value})})
     .catch(function(){});
   setState('idle','Idle');
@@ -988,6 +1241,7 @@ siteSel.addEventListener('change', function(){
     var o=document.createElement('option');
     o.value=s; o.textContent=s; sdrSel.appendChild(o);
   });
+  scanBtn.disabled = !siteSel.value || _scanning;
 });
 if(siteSel.value) siteSel.dispatchEvent(new Event('change'));
 
@@ -1113,6 +1367,99 @@ _wfCanvas.addEventListener('click', function(e){
   doTune(freq);
 });
 _wfCanvas.title = 'Click to tune';
+
+// ── Record ─────────────────────────────────────────────────────────────────
+var rec30Btn = document.getElementById('rec30-btn');
+var rec60Btn = document.getElementById('rec60-btn');
+function doRecord(secs){
+  var site = siteSel.value; if(!site) return;
+  var a = document.createElement('a');
+  a.href = '/api/hub/sdr/record/' + encodeURIComponent(site) + '?secs=' + secs;
+  a.download = '';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+rec30Btn.addEventListener('click', function(){ doRecord(30); });
+rec60Btn.addEventListener('click', function(){ doRecord(60); });
+
+// ── Band scan ──────────────────────────────────────────────────────────────
+var scanBtn    = document.getElementById('scan-btn');
+var scanStatus = document.getElementById('scan-status');
+var scanCol    = document.getElementById('scan-col');
+var _scanPoll  = null;
+var _scanning  = false;
+
+function doScan(){
+  var site = siteSel.value; if(!site) return;
+  var startMhz = parseFloat(document.getElementById('scan-start').value) || 76;
+  var endMhz   = parseFloat(document.getElementById('scan-end').value)   || 108;
+  if(endMhz <= startMhz){ alert('End must be greater than start'); return; }
+  _scanning = true;
+  scanBtn.disabled = true;
+  scanStatus.style.display = '';
+  scanStatus.textContent = 'Scanning\u2026';
+  document.getElementById('scan-list').innerHTML =
+    '<div class="hp-empty">Waiting for results\u2026</div>';
+  scanCol.style.display = '';
+  _f('/api/hub/sdr/band_scan', {method:'POST', body: JSON.stringify({
+    site: site,
+    start_mhz: startMhz,
+    end_mhz: endMhz,
+    step_khz: 100,
+    gain: gainSel.value,
+    sdr_serial: sdrSel.value,
+  })}).then(function(r){ return r.json(); }).then(function(d){
+    if(!d.ok){ scanStatus.textContent = d.error||'Failed'; _scanning=false; return; }
+    _scanPoll = setInterval(_pollScanResult, 3000);
+    setTimeout(_pollScanResult, 2000);
+  }).catch(function(){
+    scanStatus.textContent = 'Request failed';
+    _scanning = false;
+    scanBtn.disabled = false;
+  });
+}
+function stopScanPoll(){
+  if(_scanPoll){ clearInterval(_scanPoll); _scanPoll=null; }
+}
+function _pollScanResult(){
+  var site = siteSel.value; if(!site) return;
+  fetch('/api/hub/sdr/scan_result/' + encodeURIComponent(site), {credentials:'same-origin'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(!d.ready) return;
+      stopScanPoll();
+      _scanning = false;
+      scanBtn.disabled = !siteSel.value;
+      scanStatus.style.display = 'none';
+      _renderScanPeaks(d.peaks || []);
+    }).catch(function(){});
+}
+function _renderScanPeaks(peaks){
+  var el = document.getElementById('scan-list');
+  scanCol.style.display = '';
+  if(!peaks.length){
+    el.innerHTML = '<div class="hp-empty">No signals found</div>'; return;
+  }
+  var pMax = Math.max.apply(null, peaks.map(function(p){return p.power_db;}));
+  var pMin = pMax - 25;
+  el.innerHTML = peaks.map(function(p){
+    var pct = Math.round(Math.max(0,Math.min(100,(p.power_db-pMin)/(pMax-pMin)*100)));
+    return '<div class="scan-peak" data-f="'+p.freq_mhz+'">'
+         + '<span class="sp-freq">'+p.freq_mhz.toFixed(3)+'</span>'
+         + '<div class="sp-bar-bg"><div class="sp-bar" style="width:'+pct+'%"></div></div>'
+         + '<span class="sp-db">'+p.power_db.toFixed(0)+' dB</span>'
+         + '</div>';
+  }).join('');
+}
+document.getElementById('scan-list').addEventListener('click', function(e){
+  var pk = e.target.closest('.scan-peak');
+  if(!pk) return;
+  var freq = parseFloat(pk.dataset.f);
+  _setMode('wfm');
+  freqInp.value = _fromMhz(freq).toFixed(_useKhz ? 0 : 3);
+  if(_state==='streaming'||_state==='connecting') doTune(freq);
+  else if(siteSel.value) doStart(freq);
+});
+scanBtn.addEventListener('click', doScan);
 
 // ── Level meter ────────────────────────────────────────────────────────────
 var _levelBar  = document.getElementById('level-bar');
