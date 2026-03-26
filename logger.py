@@ -37,6 +37,21 @@ _DB_FILE       = "logger_index.db"
 # ─── Module state ─────────────────────────────────────────────────────────────
 _monitor   = None
 _app_dir   = None
+
+
+def _rec_root() -> Path:
+    """Return the absolute recordings root directory.
+
+    Reads ``rec_dir`` from config.  If it is an absolute path it is used as-is;
+    if relative it is resolved relative to the plugin directory; if blank the
+    default ``logger_recordings`` subdirectory is used.
+    """
+    with _cfg_lock:
+        raw = _cfg.get("rec_dir", "").strip()
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (_app_dir / p).resolve()
+    return _rec_root()
 _cfg       = {}
 _cfg_lock  = threading.Lock()
 _recorders = {}   # slug → _RecorderThread
@@ -56,7 +71,7 @@ def register(app, ctx):
 
     _load_config()
     _init_db()
-    (_app_dir / _REC_DIR).mkdir(parents=True, exist_ok=True)
+    _rec_root().mkdir(parents=True, exist_ok=True)
 
     threading.Thread(target=_delayed_start, daemon=True, name="LoggerInit").start()
     threading.Thread(target=_maintenance_loop, daemon=True, name="LoggerMaint").start()
@@ -84,7 +99,20 @@ def register(app, ctx):
         data = request.get_json(force=True) or {}
         with _cfg_lock:
             _cfg["streams"] = data.get("streams", _cfg.get("streams", {}))
+            # Validate and store the recordings path
+            new_rec_dir = str(data.get("rec_dir", "")).strip()
+            if new_rec_dir:
+                # Basic safety: reject obviously dangerous values
+                p = Path(new_rec_dir)
+                if ".." in p.parts:
+                    return jsonify({"ok": False, "error": "Path must not contain .."}), 400
+            _cfg["rec_dir"] = new_rec_dir
             _save_config()
+        # Ensure new directory exists
+        try:
+            _rec_root().mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"Cannot create recordings directory: {e}"}), 400
         _reconcile_recorders()
         return jsonify({"ok": True})
 
@@ -99,15 +127,16 @@ def register(app, ctx):
                 "last_ok_ts": t.last_ok_ts,
                 "seg_count":  t.seg_count,
             } for sl, t in _recorders.items()}
-        rec_root = _app_dir / _REC_DIR
+        rec_root = _rec_root()
         total = sum(f.stat().st_size for f in rec_root.rglob("*.mp3") if f.is_file()) \
                 if rec_root.exists() else 0
-        return jsonify({"recorders": active, "disk_bytes": total})
+        return jsonify({"recorders": active, "disk_bytes": total,
+                        "rec_root": str(rec_root)})
 
     @app.get("/api/logger/days/<stream_slug>")
     @login_req
     def api_logger_days(stream_slug):
-        sdir = _app_dir / _REC_DIR / _safe(stream_slug)
+        sdir = _rec_root() / _safe(stream_slug)
         if not sdir.exists():
             return jsonify([])
         days = sorted(
@@ -130,7 +159,7 @@ def register(app, ctx):
             abort(400)
         if not re.match(r"^[\w\-]+\.mp3$", filename):
             abort(400)
-        path = _app_dir / _REC_DIR / _safe(stream_slug) / date / filename
+        path = _rec_root() / _safe(stream_slug) / date / filename
         # Confirm resolved path stays within the recordings root
         try:
             _assert_within_rec_root(path)
@@ -170,6 +199,7 @@ def _load_config():
     except Exception:
         _cfg = {}
     _cfg.setdefault("streams", {})
+    _cfg.setdefault("rec_dir", "")
 
 def _save_config():
     try:
@@ -259,7 +289,7 @@ def _upsert_segment(slug, date, filename, start_s, silence_ranges, quality="high
         _log(f"[Logger] DB write error: {e}")
 
 def _get_segments(slug, date):
-    day_dir = _app_dir / _REC_DIR / slug / date
+    day_dir = _rec_root() / slug / date
     result  = {}
     try:
         db   = _get_db()
@@ -356,7 +386,7 @@ class _RecorderThread(threading.Thread):
         filename  = f"{time_str}.mp3"
         start_s   = seg_start.hour * 3600 + seg_start.minute * 60
 
-        out_dir  = _app_dir / _REC_DIR / self.slug / date_str
+        out_dir  = _rec_root() / self.slug / date_str
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / filename
 
@@ -539,7 +569,7 @@ def _maintenance_loop():
 
 def _run_maintenance():
     ffmpeg   = shutil.which("ffmpeg") or "ffmpeg"
-    rec_root = _app_dir / _REC_DIR
+    rec_root = _rec_root()
     if not rec_root.exists():
         return
     today = datetime.date.today()
@@ -610,7 +640,7 @@ def _maybe_downgrade(path, slug, date, lq_br, ffmpeg):
 
 def _assert_within_rec_root(path: Path):
     """Raise ValueError if path escapes the recordings root directory."""
-    rec_root = (_app_dir / _REC_DIR).resolve()
+    rec_root = (_rec_root()).resolve()
     try:
         path.resolve().relative_to(rec_root)
     except ValueError:
@@ -622,7 +652,7 @@ def _ffmpeg_concat_escape(p: Path) -> str:
     return str(p).replace("\\", "\\\\").replace("'", "\\'")
 
 def _export_clip(slug, date, start_s, end_s):
-    day_dir = _app_dir / _REC_DIR / slug / date
+    day_dir = _rec_root() / slug / date
     if not day_dir.exists():
         return jsonify({"error": "no recordings"}), 404
     ffmpeg  = shutil.which("ffmpeg") or "ffmpeg"
@@ -958,10 +988,24 @@ select:focus,input:focus{border-color:var(--acc)}
     <div id="view-settings" class="settings-content hidden">
       <h2>Recording Settings</h2>
       <p class="sub">Enable recording per stream. Changes take effect immediately after saving.</p>
+
+      <!-- Recordings path -->
+      <div style="margin-bottom:18px;padding:14px 16px;background:var(--sur);border:1px solid var(--bor);border-radius:10px">
+        <label style="font-size:12px;font-weight:700;color:var(--mu);letter-spacing:.6px;text-transform:uppercase;display:block;margin-bottom:6px">Recordings Path</label>
+        <input type="text" id="rec-dir-input" placeholder="Default: logger_recordings (next to signalscope.py)"
+               style="width:100%;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:8px 10px;border-radius:6px;font-size:13px;font-family:monospace;outline:none">
+        <div style="margin-top:6px;font-size:12px;color:var(--mu)">
+          Absolute path (e.g. <code>/mnt/recordings</code>) or relative to the SignalScope directory.
+          Leave blank to use the default. The directory is created automatically if it does not exist.
+        </div>
+        <div id="rec-dir-resolved" style="margin-top:5px;font-size:11px;color:var(--mu);font-family:monospace"></div>
+      </div>
+
       <div id="settings-rows"></div>
       <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
         <button class="btn bp" id="save-settings-btn">💾 Save Settings</button>
         <span id="save-msg" style="color:var(--ok);font-size:13px;display:none">✓ Saved</span>
+        <span id="save-err" style="color:var(--al);font-size:13px;display:none"></span>
       </div>
       <div class="disk-card" id="disk-info">Calculating disk usage…</div>
     </div>
@@ -1308,8 +1352,14 @@ function loadSettingsPanel(){
   .then(function(res){
     _streams=res[0]; _cfg=res[1];
     renderSettingsRows();
+    var st = res[2];
     document.getElementById('disk-info').textContent =
-      'Disk usage: '+_fmtBytes((res[2].disk_bytes)||0);
+      'Disk usage: '+_fmtBytes(st.disk_bytes||0);
+    // Populate recordings path input
+    var rdInp = document.getElementById('rec-dir-input');
+    rdInp.value = _cfg.rec_dir || '';
+    var rdRes = document.getElementById('rec-dir-resolved');
+    rdRes.textContent = st.rec_root ? '→ ' + st.rec_root : '';
   });
 }
 
@@ -1362,15 +1412,28 @@ document.getElementById('save-settings-btn').addEventListener('click', function(
     else if(el.type==='number') streams[name][key]=parseInt(el.value,10)||0;
     else streams[name][key]=el.value;
   });
-  _post('/api/logger/config',{streams:streams}).then(function(r){
+  var recDir = document.getElementById('rec-dir-input').value.trim();
+  var saveMsg = document.getElementById('save-msg');
+  var saveErr = document.getElementById('save-err');
+  saveMsg.style.display='none'; saveErr.style.display='none';
+  _post('/api/logger/config',{streams:streams, rec_dir:recDir}).then(function(r){
     if(r.ok){
-      _cfg.streams=streams;
-      var msg=document.getElementById('save-msg');
-      msg.style.display='inline'; setTimeout(function(){ msg.style.display='none'; },3000);
+      _cfg.streams=streams; _cfg.rec_dir=recDir;
+      saveMsg.style.display='inline';
+      setTimeout(function(){ saveMsg.style.display='none'; },3000);
+      // Refresh resolved path display from status
+      fetch('/api/logger/status').then(function(res){ return res.json(); }).then(function(st){
+        var rdRes=document.getElementById('rec-dir-resolved');
+        rdRes.textContent = st.rec_root ? '→ '+st.rec_root : '';
+        document.getElementById('disk-info').textContent='Disk usage: '+_fmtBytes(st.disk_bytes||0);
+      });
       // Refresh notice on timeline
       var anyEnabled=Object.values(streams).some(function(s){ return s.enabled; });
       document.getElementById('tl-notice').classList.toggle('hidden', anyEnabled);
-    } else { alert('Save failed'); }
+    } else {
+      var errTxt = (r && r.error) ? r.error : 'Save failed';
+      saveErr.textContent = '✗ '+errTxt; saveErr.style.display='inline';
+    }
   });
 });
 
