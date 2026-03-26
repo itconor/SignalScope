@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.157"
+BUILD                  = "SignalScope-3.3.158"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -13134,8 +13134,8 @@ MAIN_TPL = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}a{color:var(--acc);text-decoration:none}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8;--fs-xs:10px;--fs-sm:11px;--fs-md:12px;--fs-base:13px;--fs-lg:15px;--lh:1.45;--sp-xs:4px;--sp-sm:8px;--sp-md:13px;--sp-lg:18px;--r-sm:5px;--r:8px;--r-lg:12px}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;line-height:var(--lh);position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}a{color:var(--acc);text-decoration:none}
 header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
 header h1{font-size:17px;font-weight:700}.badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
 .nav-active{background:var(--acc)!important;color:#fff!important}
@@ -13147,7 +13147,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 .fl{list-style:none;margin-bottom:10px}.fl li{padding:8px 12px;border-radius:6px;background:#1e3a5f;border-left:3px solid var(--acc);margin-bottom:5px;font-size:13px}
 .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 14px}
 .search{min-width:260px;flex:1;max-width:420px;padding:9px 11px;background:linear-gradient(180deg,#143766,#102b54);border:1px solid var(--bor);border-radius:8px;color:var(--tx)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px}
 .alert-badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.04em;margin-left:4px}
 .badge-silence{background:#102033;color:#93c5fd}.badge-hiss{background:#3a2f0f;color:#fde68a}.badge-clip{background:#381414;color:#fca5a5}.badge-ai{background:#14263a;color:#93c5fd}
 .stats-block{margin-top:6px;border-top:1px solid var(--bor);padding-top:6px}
@@ -13173,7 +13173,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 .lbar-val{font-size:12px;font-weight:600;min-width:62px;text-align:right;font-variant-numeric:tabular-nums}
 /* ── Rows ── */
 .rows{padding:8px 13px}
-.row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--bor);font-size:12px;gap:8px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--bor);font-size:var(--fs-md);gap:8px;line-height:var(--lh)}
 .row:last-child{border:none}
 .rl{color:var(--mu);flex-shrink:0}
 .rv{text-align:right;word-break:break-word}
@@ -13188,8 +13188,8 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 .hist-wrap{border-top:1px solid var(--bor)}
 .hist-toggle{width:100%;padding:5px 13px;background:none;border:none;color:var(--mu);font-size:11px;text-align:left;cursor:pointer;display:flex;justify-content:space-between}
 .hist-toggle:hover{background:#123764}
-.hist{max-height:90px;overflow-y:auto;font-size:11px;color:var(--mu)}
-.hev{padding:3px 13px;border-bottom:1px solid var(--bor)}
+.hist{max-height:110px;overflow-y:auto;font-size:var(--fs-sm);color:var(--mu);line-height:var(--lh)}
+.hev{padding:4px 13px;border-bottom:1px solid var(--bor);line-height:var(--lh)}
 .hSILENCE,.hAI_ALERT,.hRTP_LOSS{color:#f87171}.hCLIP{color:#fb923c}.hHISS,.hRTP_LOSS_WARN,.hDAB_SERVICE_MISSING{color:#fbbf24}.hAI_WARN{color:#fcd34d}.hSTL_FAULT,.hTX_DOWN{color:#ef4444}.hSTUDIO_FAULT{color:#f97316}
 /* ── Now Playing ── */
 .np-strip{padding:7px 13px;border-top:1px solid var(--bor);display:flex;gap:9px;align-items:center;min-height:52px}
@@ -13201,10 +13201,10 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 .pb{background:var(--bor);border-radius:4px;height:4px;margin:4px 13px 8px;overflow:hidden}
 .pbi{height:4px;border-radius:4px;background:var(--acc);transition:width .6s}
 /* ── PTP / Log ── */
-.mr{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--bor);font-size:13px}.mr:last-child{border:none}.ml{color:var(--mu)}
+.mr{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--bor);font-size:var(--fs-base);line-height:var(--lh)}.mr:last-child{border:none}.ml{color:var(--mu)}
 .cb{padding:11px 13px}
 .logbox{background:var(--sur);border:1px solid var(--bor);border-radius:8px;padding:12px;font-family:monospace;font-size:11px;height:190px;overflow-y:auto;margin-top:12px;white-space:pre-wrap;word-break:break-all}
-.st{font-size:12px;font-weight:600;color:var(--mu);letter-spacing:.06em;text-transform:uppercase;margin:14px 0 8px}
+.st{font-size:var(--fs-sm);font-weight:700;color:var(--mu);letter-spacing:.08em;text-transform:uppercase;margin:16px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--bor)}
 /* ── Card expand / collapse ── */
 .card-detail{display:none}.card-detail.open{display:block}
 .card-expand-btn{background:none;border:none;color:var(--mu);padding:2px 6px;font-size:14px;cursor:pointer;line-height:1;transition:transform .2s,color .15s;flex-shrink:0}
@@ -26302,8 +26302,8 @@ HUB_TPL = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8;--fs-xs:10px;--fs-sm:11px;--fs-md:12px;--fs-base:13px;--fs-lg:15px;--lh:1.45;--sp-xs:4px;--sp-sm:8px;--sp-md:13px;--sp-lg:18px;--r-sm:5px;--r:8px;--r-lg:12px}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;line-height:var(--lh);position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
 header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
 header h1{font-size:17px;font-weight:700}.badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
 .nav-active{background:var(--acc)!important;color:#fff!important}
@@ -26357,7 +26357,7 @@ body.wall-mode .sc{}
 .sc-dev{font-size:10px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap}
 .sc-name strong{font-size:12px}
 .ic{display:inline-block;vertical-align:-2px;flex-shrink:0}
-.sc-row{display:flex;justify-content:space-between;font-size:12px;color:var(--mu);margin-top:4px}
+.sc-row{display:flex;justify-content:space-between;font-size:var(--fs-md);color:var(--mu);margin-top:5px;line-height:var(--lh)}
 .sc-row span{color:var(--tx)}
 .rtp-ok{color:var(--ok)}.rtp-wn{color:var(--wn)}.rtp-al{color:var(--al)}
 .ai-ok{color:var(--ok)}.ai-wn{color:var(--wn)}.ai-al{color:var(--al)}
@@ -26378,7 +26378,7 @@ body.wall-mode .sc{}
 .hist-wrap{border-top:1px solid var(--bor)}
 .hist-toggle{width:100%;text-align:left;background:none;border:none;color:var(--mu);font-size:12px;padding:6px 10px;cursor:pointer}
 .hist-toggle:hover{color:var(--tx)}
-.hev{padding:4px 10px;border-bottom:1px solid var(--bor);font-size:11px;color:var(--mu)}
+.hev{padding:4px 10px;border-bottom:1px solid var(--bor);font-size:var(--fs-sm);color:var(--mu);line-height:var(--lh)}
 .hSILENCE,.hsilence{color:#93c5fd}.hCLIP,.hclip{color:#fca5a5}.hHISS,.hhiss{color:#fde68a}
 .hAI_ALERT,.hai_alert{color:#fca5a5}.hAI_WARN,.hai_warn{color:#fde68a}
 .hRTP_LOSS,.hrtp_loss{color:#c4b5fd}.hPTP,.hptp{color:#86efac}

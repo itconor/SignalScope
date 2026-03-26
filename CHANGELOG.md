@@ -2,6 +2,19 @@
 
 ---
 
+## [3.3.158] - 2026-03-26
+
+### Changed
+- **Type and spacing scale** — added a full CSS custom property scale to the Dashboard and Hub `:root` blocks (`--fs-xs/sm/md/base/lg`, `--lh:1.45`, `--sp-xs/sm/md/lg`, `--r-sm/r/r-lg`). Applied selectively to key components:
+  - `body` now has `line-height:var(--lh)` globally
+  - `.row` — padding 4px → 5px, font-size uses `--fs-md`, line-height added
+  - `.hist` / `.hev` — line-height added, max-height 90px → 110px (shows ~2 more events)
+  - `.st` section headers — weight 600 → 700, letter-spacing .06em → .08em, bottom border added for visual anchoring, margin top 14px → 16px
+  - `.mr` (PTP/Hub Connection rows) — padding 3px → 5px, line-height added
+  - `.grid` card gap 14px → 16px
+  - Hub `.sc-row` — margin-top 4px → 5px, line-height added; `.hev` line-height added
+  - CSS variable scale available for future use throughout all templates
+
 ## [3.3.157] - 2026-03-26
 
 ### Changed
