@@ -2,6 +2,24 @@
 
 ---
 
+## [3.3.131] - 2026-03-26
+
+### Fixed
+- **Inline clip player errors** — `/api/chains/clip/` was using `send_from_directory` which does not reliably return HTTP 206 Partial Content. Chrome and Safari always send `Range: bytes=0-` when opening an `<audio>` element; without a proper 206 response the player errors or stalls while download still worked. Extracted `_serve_clip_wav()` helper with a hand-rolled Range implementation (identical to the working `/clips/` route) and used it in both routes for consistent behaviour.
+- **Remote chain fault clips missing or incomplete** — `_upload_clip` had no retry mechanism. Large WAV clips (base64 JSON) over WAN links could exceed the 30 s timeout, silently dropping clips. Now retries up to 3 times with 15 s / 30 s back-off; 4xx errors are not retried; timeout raised to 60 s.
+- **Clips disappearing from fault log after hub restart** — `api_chains_fault_log` unconditionally replaced DB clips with in-memory clips. After a hub restart (or after the 25-entry in-memory ring evicted older entries), in-memory had fewer clips than DB, silently wiping already-uploaded remote clips from the response. Now takes whichever list (in-memory or DB) is longer.
+
+## [3.3.130] - 2026-03-26
+
+### Fixed
+- **LUFS loudness not shown on hub stream cards** — LUFS values (M/S/I/TP) have been included in every client heartbeat payload since 3.3.77 and stored in `hub_server._sites`, but `HUB_SITE_TPL` never rendered them. Added a compact LUFS row directly below the level bar on each hub stream card, matching the client card layout. Row hides when `lufs_m ≤ −69` (uninitialised default). True Peak coloured amber above −3 dBTP and red above −1 dBTP.
+
+## [logger-1.0.1] - 2026-03-26
+
+### Fixed
+- **Logger now records every input type** — previously used a standalone ffmpeg process to re-open the source URL, which failed silently for FM (`fm://`), DAB (`dab://`), sound devices, and any other SignalScope-internal input type. Now taps SignalScope's internal `_stream_buffer` (a rolling deque of float32 PCM chunks at 48 kHz, ~41 s of history) and pipes raw audio to ffmpeg via stdin. Any input that SignalScope monitors can now be logged.
+- **Bytes/str TypeError in silence detection** — ffmpeg stderr pipe yielded bytes but silence regex patterns were string patterns, raising `TypeError: cannot use a string pattern on a bytes-like object`. Fixed by decoding each stderr line explicitly with UTF-8.
+
 ## [logger-1.0.0] - 2026-03-25
 
 ### Added
