@@ -15,7 +15,7 @@
     "file": "sdr.py",
     "icon": "📡",
     "description": "Browser-based software defined radio with scrolling waterfall display. Tune any frequency within the capture bandwidth. WFM, NFM, and AM demodulation modes. Requires an RTL-SDR dongle on the client machine.",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "requirements": "numpy scipy",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/sdr.py"
   }

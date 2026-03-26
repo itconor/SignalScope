@@ -20,7 +20,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/sdr",
     "icon":     "📡",
     "hub_only": True,   # only inject nav item in hub / both mode
-    "version":  "1.0.1",
+    "version":  "1.1.0",
 }
 
 import hashlib
@@ -398,6 +398,7 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
     out_deadline  = None
     fft_deadline  = time.monotonic()
     proc          = None
+    _level_db     = None   # exponential moving average of RMS dBFS
 
     # ── POST worker: drains post_q, batching blocks when RTT > _BLK_DUR ─────
     # Decouples pacing (real-time) from network I/O (RTT-bound) so WAN latency
@@ -521,6 +522,11 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
             pcm   = np.clip(audio * scale, -32768, 32767).astype(np.int16)
             pcm_b = pcm.tobytes()
 
+            # ── Track signal level (EMA of RMS dBFS) ─────────────────────
+            _rms = float(np.sqrt(np.mean(audio ** 2)))
+            _db  = 20.0 * np.log10(max(_rms, 1e-12))
+            _level_db = _db if _level_db is None else 0.85 * _level_db + 0.15 * _db
+
             # ── Pace to real-time then enqueue for POST ───────────────────
             if out_deadline is None:
                 out_deadline = time.monotonic()
@@ -544,7 +550,8 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
                     mag = np.abs(np.fft.fftshift(np.fft.fft(iq[:n] * win, n)))
                     db  = (20 * np.log10(mag / n + 1e-12)).round(1).tolist()
                     frame = {"fft": db, "cf": freq_mhz,
-                             "bw": _SAMPLE_RATE / 1e6, "n": n}
+                             "bw": _SAMPLE_RATE / 1e6, "n": n,
+                             "level": round(_level_db, 1) if _level_db is not None else None}
                     data  = _json.dumps(frame).encode()
                     req   = urllib.request.Request(
                         spectrum_url, data=data,
@@ -647,6 +654,40 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
           border:1px solid var(--bor);background:var(--bg3);color:var(--tx);
           cursor:pointer}
 .tune-btn:hover{background:rgba(59,130,246,.2)}
+
+/* Level meter */
+.level-wrap{display:flex;align-items:center;gap:6px}
+.level-bar-bg{width:90px;height:7px;background:var(--bg3);border-radius:4px;
+              border:1px solid var(--bor);overflow:hidden}
+.level-bar{height:100%;width:0%;border-radius:4px;transition:width .12s}
+.level-txt{font-size:11px;font-variant-numeric:tabular-nums;min-width:52px;color:var(--mu)}
+
+/* History / Presets panel */
+.hp-panel{display:flex;gap:0;border-top:1px solid var(--bor);background:var(--bg2);
+          max-height:110px;overflow:hidden;flex-shrink:0}
+.hp-col{flex:1;padding:5px 10px;overflow-y:auto;border-right:1px solid var(--bor);
+        min-width:0}
+.hp-col:last-child{border-right:none}
+.hp-hdr{font-size:10px;font-weight:700;color:var(--mu);text-transform:uppercase;
+        letter-spacing:.08em;margin-bottom:3px;display:flex;align-items:center;gap:6px;
+        position:sticky;top:0;background:var(--bg2);padding-bottom:2px}
+.hp-save-btn{margin-left:auto;padding:1px 7px;border-radius:4px;font-size:10px;
+             border:1px solid var(--bor);background:var(--bg3);color:var(--mu);
+             cursor:pointer;white-space:nowrap}
+.hp-save-btn:hover{color:var(--tx)}
+.hp-item{display:flex;align-items:center;gap:5px;padding:2px 3px;border-radius:4px;
+         cursor:pointer;font-size:12px;white-space:nowrap;overflow:hidden;color:var(--mu)}
+.hp-item:hover{background:rgba(59,130,246,.15);color:var(--tx)}
+.hp-item .hp-freq{font-weight:700;font-variant-numeric:tabular-nums;color:var(--tx)}
+.hp-item .hp-mode{font-size:10px;font-weight:600;background:var(--bg3);
+                  border:1px solid var(--bor);border-radius:3px;padding:0 4px;
+                  line-height:16px;flex-shrink:0}
+.hp-item .hp-name{flex:1;overflow:hidden;text-overflow:ellipsis;font-size:11px}
+.hp-del{flex-shrink:0;padding:0 4px;color:var(--mu);font-size:11px;line-height:1}
+.hp-del:hover{color:var(--al)}
+.hp-empty{font-size:11px;color:var(--mu);font-style:italic;padding:2px 4px}
+.key-hint{font-size:10px;color:var(--mu);margin-left:auto;display:none}
+@media(min-width:700px){.key-hint{display:block}}
 </style>
 </head>
 <body>
@@ -719,6 +760,10 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
     <div class="sdot" id="s-dot"></div>
     <span class="status-txt" id="s-txt">Idle</span>
   </div>
+  <div class="level-wrap" id="level-wrap" style="display:none">
+    <div class="level-bar-bg"><div class="level-bar" id="level-bar"></div></div>
+    <span class="level-txt" id="level-txt">--- dBFS</span>
+  </div>
   <div class="tuner-btns">
     <button class="tune-btn" id="btn-dn" data-step="-0.1">−0.1</button>
     <button class="tune-btn" id="btn-up" data-step="0.1">+0.1</button>
@@ -726,6 +771,23 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
   <div class="vol-wrap">
     <label>Vol</label>
     <input type="range" id="vol-slider" min="0" max="2" step="0.05" value="1">
+  </div>
+  <span class="key-hint" title="Keyboard: ← → tune ±0.1 MHz · ↑ ↓ tune ±1 MHz · PgUp/Dn ±10 MHz · Shift ×5">
+    ← → ±0.1&nbsp; ↑ ↓ ±1&nbsp; PgUp/Dn ±10 MHz
+  </span>
+</div>
+
+<div class="hp-panel">
+  <div class="hp-col">
+    <div class="hp-hdr">📻 History</div>
+    <div id="hist-list"></div>
+  </div>
+  <div class="hp-col">
+    <div class="hp-hdr">
+      ⭐ Presets
+      <button class="hp-save-btn" id="save-preset-btn">+ Save current</button>
+    </div>
+    <div id="preset-list"></div>
   </div>
 </div>
 
@@ -741,6 +803,8 @@ function _getCsrf(){
 function _f(url,o){o=o||{};o.credentials='same-origin';
   o.headers=Object.assign({'X-CSRFToken':_getCsrf(),'Content-Type':'application/json'},o.headers||{});
   return fetch(url,o);}
+
+function _esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 
 // ── State ──────────────────────────────────────────────────────────────────
 var _state    = 'idle';
@@ -842,13 +906,19 @@ function setState(st, msg){
   connBtn.className = 'btn-conn ' + ((st==='streaming'||st==='connecting') ? 'active' : 'idle');
 }
 
+// ── Mode helpers ────────────────────────────────────────────────────────────
+function _setMode(mode){
+  _mode = mode;
+  document.querySelectorAll('.mode-btn').forEach(function(b){
+    b.classList.toggle('sel', b.dataset.mode === mode);
+  });
+}
+
 // ── Mode buttons ───────────────────────────────────────────────────────────
 document.getElementById('mode-sel').addEventListener('click', function(e){
   var mb = e.target.closest('.mode-btn');
   if(!mb) return;
-  document.querySelectorAll('.mode-btn').forEach(function(b){b.classList.remove('sel');});
-  mb.classList.add('sel');
-  _mode = mb.dataset.mode;
+  _setMode(mb.dataset.mode);
   if(_state==='streaming'||_state==='connecting') doTune(_cf);
 });
 
@@ -865,6 +935,7 @@ function doStart(freq){
   noSig.textContent = 'Waiting for signal from client…';
   noSig.style.display = '';
   setState('connecting','Connecting…');
+  _saveHistory(freq, _mode);
   _f('/api/hub/sdr/start', {method:'POST', body:JSON.stringify({
     site: siteSel.value,
     freq_mhz: freq,
@@ -886,6 +957,7 @@ function doTune(freq){
   freqDisp.textContent = freq.toFixed(3);
   freqInp.value = _fromMhz(freq).toFixed(_useKhz ? 0 : 3);
   setState('connecting','Retuning…');
+  _saveHistory(freq, _mode);
   _f('/api/hub/sdr/tune', {method:'POST', body:JSON.stringify({
     site: siteSel.value, freq_mhz: freq, mode: _mode,
   })}).then(function(r){return r.json();}).then(function(d){
@@ -1042,6 +1114,21 @@ _wfCanvas.addEventListener('click', function(e){
 });
 _wfCanvas.title = 'Click to tune';
 
+// ── Level meter ────────────────────────────────────────────────────────────
+var _levelBar  = document.getElementById('level-bar');
+var _levelTxt  = document.getElementById('level-txt');
+var _levelWrap = document.getElementById('level-wrap');
+function _updateLevel(db){
+  if(db === null || db === undefined){ _levelWrap.style.display='none'; return; }
+  _levelWrap.style.display = '';
+  var pct = Math.max(0, Math.min(100, (db + 80) / 80 * 100));
+  _levelBar.style.width = pct + '%';
+  var col = db > -20 ? 'var(--ok)' : db > -40 ? 'var(--wn)' : 'var(--al)';
+  _levelBar.style.background = col;
+  _levelTxt.style.color = col;
+  _levelTxt.textContent = db.toFixed(1) + '\u202fdBFS';
+}
+
 // ── Spectrum polling ───────────────────────────────────────────────────────
 function startSpectrumPoll(){
   stopSpectrumPoll();
@@ -1064,8 +1151,116 @@ function _pollSpectrum(){
         _drawRuler();
       }
       _paintRow(d.fft);
+      _updateLevel(d.level !== undefined ? d.level : null);
     }).catch(function(){});
 }
+
+// ── Keyboard shortcuts ─────────────────────────────────────────────────────
+document.addEventListener('keydown', function(e){
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||e.target.tagName==='TEXTAREA') return;
+  if(_state!=='streaming'&&_state!=='connecting') return;
+  var mult = e.shiftKey ? 5 : 1;
+  var step = 0;
+  if(e.key==='ArrowRight')    step =  0.1 * mult;
+  else if(e.key==='ArrowLeft')  step = -0.1 * mult;
+  else if(e.key==='ArrowUp')    step =  1.0 * mult;
+  else if(e.key==='ArrowDown')  step = -1.0 * mult;
+  else if(e.key==='PageUp')     step =  10.0 * mult;
+  else if(e.key==='PageDown')   step = -10.0 * mult;
+  else return;
+  e.preventDefault();
+  var freq = Math.round((_cf + step) * 1000) / 1000;
+  freq = Math.max(0.1, Math.min(2000, freq));
+  freqInp.value = _fromMhz(freq).toFixed(_useKhz ? 0 : 3);
+  doTune(freq);
+});
+
+// ── History ────────────────────────────────────────────────────────────────
+var _HIST_KEY = 'ss_sdr_hist';
+var _HIST_MAX = 12;
+function _loadHistory(){ try{return JSON.parse(localStorage.getItem(_HIST_KEY)||'[]');}catch(e){return[];} }
+function _saveHistory(freq, mode){
+  var list = _loadHistory().filter(function(h){
+    return Math.abs(h.f - freq) > 0.05 || h.mode !== mode;
+  });
+  list.unshift({f: parseFloat(freq.toFixed(3)), mode: mode || 'wfm'});
+  if(list.length > _HIST_MAX) list.length = _HIST_MAX;
+  try{localStorage.setItem(_HIST_KEY, JSON.stringify(list));}catch(e){}
+  _renderHistory(list);
+}
+function _renderHistory(list){
+  if(!list) list = _loadHistory();
+  var el = document.getElementById('hist-list');
+  if(!el) return;
+  if(!list.length){
+    el.innerHTML = '<div class="hp-empty">Tune to build history</div>'; return;
+  }
+  el.innerHTML = list.map(function(h){
+    return '<div class="hp-item" data-f="'+h.f+'" data-mode="'+(h.mode||'wfm')+'">'
+         + '<span class="hp-freq">'+h.f.toFixed(3)+'</span>'
+         + '<span class="hp-mode">'+(h.mode||'wfm').toUpperCase()+'</span>'
+         + '</div>';
+  }).join('');
+}
+document.getElementById('hist-list').addEventListener('click', function(e){
+  var item = e.target.closest('.hp-item');
+  if(!item) return;
+  var freq = parseFloat(item.dataset.f);
+  var mode = item.dataset.mode || 'wfm';
+  _setMode(mode);
+  if(_state==='streaming'||_state==='connecting') doTune(freq);
+  else if(siteSel.value){ freqInp.value = _fromMhz(freq).toFixed(_useKhz?0:3); doStart(freq); }
+});
+_renderHistory();
+
+// ── Presets ────────────────────────────────────────────────────────────────
+var _PSET_KEY = 'ss_sdr_presets';
+function _loadPresets(){ try{return JSON.parse(localStorage.getItem(_PSET_KEY)||'[]');}catch(e){return[];} }
+function _savePreset(name, freq, mode){
+  var list = _loadPresets().filter(function(p){return p.name!==name;});
+  list.unshift({name:name, f:parseFloat(freq.toFixed(3)), mode:mode||'wfm'});
+  try{localStorage.setItem(_PSET_KEY, JSON.stringify(list));}catch(e){}
+  _renderPresets();
+}
+function _deletePreset(name){
+  var list = _loadPresets().filter(function(p){return p.name!==name;});
+  try{localStorage.setItem(_PSET_KEY, JSON.stringify(list));}catch(e){}
+  _renderPresets();
+}
+function _renderPresets(){
+  var el = document.getElementById('preset-list');
+  if(!el) return;
+  var list = _loadPresets();
+  if(!list.length){
+    el.innerHTML = '<div class="hp-empty">No presets — click + Save current while streaming</div>'; return;
+  }
+  el.innerHTML = list.map(function(p){
+    return '<div class="hp-item" data-f="'+p.f+'" data-mode="'+(p.mode||'wfm')+'">'
+         + '<span class="hp-freq">'+p.f.toFixed(3)+'</span>'
+         + '<span class="hp-mode">'+(p.mode||'wfm').toUpperCase()+'</span>'
+         + '<span class="hp-name">'+_esc(p.name)+'</span>'
+         + '<span class="hp-del" data-pname="'+_esc(p.name)+'">✕</span>'
+         + '</div>';
+  }).join('');
+}
+document.getElementById('preset-list').addEventListener('click', function(e){
+  var del = e.target.closest('.hp-del');
+  if(del){ _deletePreset(del.dataset.pname); return; }
+  var item = e.target.closest('.hp-item');
+  if(!item) return;
+  var freq = parseFloat(item.dataset.f);
+  var mode = item.dataset.mode || 'wfm';
+  _setMode(mode);
+  if(_state==='streaming'||_state==='connecting') doTune(freq);
+  else if(siteSel.value){ freqInp.value = _fromMhz(freq).toFixed(_useKhz?0:3); doStart(freq); }
+});
+document.getElementById('save-preset-btn').addEventListener('click', function(){
+  if(_state!=='streaming'&&_state!=='connecting') return;
+  var name = window.prompt('Preset name:', _cf.toFixed(3)+' MHz '+_mode.toUpperCase());
+  if(!name||!name.trim()) return;
+  _savePreset(name.trim(), _cf, _mode);
+});
+_renderPresets();
 
 })();
 </script>
