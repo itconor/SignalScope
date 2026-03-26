@@ -2,6 +2,19 @@
 
 ---
 
+## [3.3.143] - 2026-03-26
+
+### Fixed
+- **Chain fault cascade — CPU spike triggering more faults** — when a chain went down, every node simultaneously saved and uploaded a clip. The burst of concurrent WAV→MP3 compressions spiked CPU enough to cause RTP packet loss, which in turn triggered new chain faults and generated another wave of clips, creating a runaway cascade.
+
+  Three changes to break the cycle:
+
+  1. **Per-position save stagger (`_CLIP_SAVE_STAGGER = 1.5 s`)** — each chain node's clip save is offset by `pos × 1.5 s` so saves are spread across time rather than all firing at once. A 5-node chain that previously all saved at T+5 s now saves at T+5 s, T+6.5 s, T+8 s, T+9.5 s, T+11 s.
+
+  2. **Serial clip uploads (`_clip_upload_sem = 1`)** — reduced from 3 to 1. WAV→MP3 compression is CPU-heavy; allowing 3 simultaneous compressions was the primary cause of the load spike. Clips upload sequentially; the extra seconds of latency is preferable to triggering further faults.
+
+  3. **Auto-clip-queue drain capped at 2 per heartbeat** — the `_hub_clip_queue` drainer previously spawned one upload thread per queued clip all at once. Now at most 2 clips are dispatched per 10 s heartbeat cycle; remaining items drain on subsequent heartbeats.
+
 ## [3.3.142] - 2026-03-26
 
 ### Fixed

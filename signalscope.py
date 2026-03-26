@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.142"
+BUILD                  = "SignalScope-3.3.143"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -1703,9 +1703,16 @@ HUB_API_VERSION         = "v1"
 HUB_TIMESTAMP_TOLERANCE = 30    # max age (s) of a signed request
 HUB_RATE_LIMIT_RPM      = 60    # max heartbeats per minute per site key
 # Semaphore that caps concurrent clip uploads from one client to the hub.
-# When a chain fault fires, every node tries to upload a clip simultaneously.
-# Without a cap this can overwhelm the hub's thread pool and cause timeouts.
-_clip_upload_sem        = threading.Semaphore(3)   # max 3 in-flight at once
+# Kept at 1 (serial) — simultaneous WAV→MP3 compression is CPU-heavy and
+# can spike load enough to cause RTP packet loss, which triggers more chain
+# faults and creates a cascade.  Clips are small and upload quickly in
+# sequence; the extra few seconds of latency is preferable to a storm.
+_clip_upload_sem        = threading.Semaphore(1)   # serial — one at a time
+
+# Per-position stagger added to clip save delays when a chain fires.
+# Spreads the save+compress burst across multiple seconds instead of hitting
+# all nodes simultaneously.  Pos 0 → no extra wait; pos 1 → +1.5 s; etc.
+_CLIP_SAVE_STAGGER      = 1.5   # seconds per chain position
 
 # ─── PTP constants ───────────────────────────────────────────────────────────────
 
@@ -8796,12 +8803,19 @@ class HubClient:
                      if duration else max(float(inp.alert_wav_duration or 0), CHAIN_CLIP_MIN_SECS))
 
         # Fault clips need a delay; all other clip types (last_good, etc.) save immediately.
-        _delay = _clip_dur if status == "fault" else 0.0
+        # Add a per-position stagger so multiple chain nodes don't all compress and
+        # upload at the same instant — that CPU burst can cause RTP packet loss which
+        # triggers further faults and creates a cascade.
+        _pos_int = int(pos) if pos is not None else 0
+        _stagger = _pos_int * _CLIP_SAVE_STAGGER
+        _delay   = (_clip_dur + _stagger) if status == "fault" else _stagger
 
         def _do_save():
             if _delay:
-                monitor.log(f"[Hub] save_clip: waiting {_delay:.0f}s to capture post-fault audio "
-                            f"(stream={stream!r} label={label!r})")
+                if status == "fault":
+                    monitor.log(f"[Hub] save_clip: waiting {_delay:.1f}s "
+                                f"(clip_dur={_clip_dur:.0f}s + pos{_pos_int} stagger) "
+                                f"for '{stream}' label={label!r}")
                 time.sleep(_delay)
             # Re-fetch config in case it was updated during the delay
             _cfg = self._cfg_fn()
@@ -10407,15 +10421,18 @@ class HubClient:
                         self._cmd_push_log(cmd_payload)
                     elif cmd_type == "scanner_band_scan":
                         self._cmd_scanner_band_scan(cmd_payload)
-                # Drain auto-clip-upload queue — any clips saved since the last
-                # heartbeat are uploaded to the hub now so they can be played
-                # locally from the hub's reports page without streaming.
+                # Drain auto-clip-upload queue — clips saved since the last
+                # heartbeat are uploaded to the hub for the Reports page.
+                # Cap at 2 per heartbeat cycle to avoid spawning a burst of
+                # upload threads that spike CPU and cause RTP packet loss.
+                # Remaining clips will upload on the next heartbeat (≈10 s).
                 _cq = getattr(monitor, "_hub_clip_queue", None)
                 if _cq and cfg.hub.hub_url:
                     _hub_url_str = cfg.hub.hub_url.rstrip("/")
                     _secret      = cfg.hub.secret_key
                     _site        = (cfg.hub.site_name or socket.gethostname()).strip()
-                    while True:
+                    _drained     = 0
+                    while _drained < 2:
                         try:
                             _sn, _lbl, _cpath, _lev = _cq.get_nowait()
                             threading.Thread(
@@ -10424,6 +10441,7 @@ class HubClient:
                                 kwargs={"clip_path": _cpath, "level_dbfs": _lev},
                                 daemon=True, name="AutoClipUpload",
                             ).start()
+                            _drained += 1
                         except queue.Empty:
                             break
                 # Periodic clip sync — re-upload any clips that never got their
