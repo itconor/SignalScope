@@ -20,12 +20,13 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/sdr",
     "icon":     "📡",
     "hub_only": True,   # only inject nav item in hub / both mode
-    "version":  "1.0.0",
+    "version":  "1.0.1",
 }
 
 import hashlib
 import hmac as _hmac
 import os
+import queue
 import threading
 import time
 import urllib.request
@@ -55,6 +56,7 @@ _hub_pending   = {}   # site_name → pending command dict for client poller
 _sdr_spectrum  = {}   # slot_id   → {fft, cf, bw, n, ts}
 _client_sess   = {}   # {stop: Event, thread: Thread, slot_id: str}
 _state_lock    = threading.Lock()
+_monitor       = None  # set in register(); used by module-level worker for logging
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -64,7 +66,9 @@ _state_lock    = threading.Lock()
 def register(app, ctx):
     from flask import request, jsonify, render_template_string
 
+    global _monitor
     monitor         = ctx["monitor"]
+    _monitor        = monitor
     hub_server      = ctx.get("hub_server")
     listen_registry = ctx["listen_registry"]
     login_required  = ctx["login_required"]
@@ -339,15 +343,26 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
       wfm  — wideband FM (broadcast, 200 kHz), 75 μs de-emphasis
       nfm  — narrow FM (comms, ±5 kHz deviation)
       am   — amplitude modulation (envelope detector)
+
+    Two-thread delivery: the pacing loop enqueues PCM blocks at real-time rate
+    without blocking on POSTs.  A dedicated POST thread drains the queue and
+    batches accumulated blocks when WAN RTT > _BLK_DUR (0.1 s), ensuring the
+    hub always receives audio at real-time rate regardless of round-trip latency.
     """
     import shutil, subprocess, json as _json
 
     chunk_url    = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
     spectrum_url = f"{hub_url}/api/hub/sdr/spectrum/{slot_id}"
 
+    def _log(msg):
+        if _monitor:
+            _monitor.log(msg)
+        else:
+            print(msg)
+
     rtl_sdr_bin = shutil.which("rtl_sdr")
     if not rtl_sdr_bin:
-        print("[WebSDR] rtl_sdr not found in PATH — install rtl-sdr package")
+        _log("[WebSDR] rtl_sdr not found in PATH — install rtl-sdr package")
         return
 
     gain_arg = "0" if str(gain).lower() == "auto" else str(int(float(gain) * 10))
@@ -361,8 +376,8 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
     if sdr_serial:
         cmd[1:1] = ["-d", sdr_serial]
 
-    print(f"[WebSDR] Starting capture: {freq_mhz:.3f} MHz  mode={mode}  "
-          f"serial={sdr_serial or 'auto'}  gain={gain}")
+    _log(f"[WebSDR] Starting capture: {freq_mhz:.3f} MHz  mode={mode}  "
+         f"serial={sdr_serial or 'auto'}  gain={gain}")
 
     # Build resampler state (polyphase FIR coefficients)
     if _HAS_SCIPY:
@@ -383,6 +398,50 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
     out_deadline  = None
     fft_deadline  = time.monotonic()
     proc          = None
+
+    # ── POST worker: drains post_q, batching blocks when RTT > _BLK_DUR ─────
+    # Decouples pacing (real-time) from network I/O (RTT-bound) so WAN latency
+    # never stalls the demodulation/pacing loop.
+    post_q:   queue.Queue = queue.Queue(maxsize=200)
+    post_err: list        = [0]   # mutable error counter shared with POST thread
+
+    def _post_worker():
+        while not stop_flag.is_set():
+            try:
+                blk = post_q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            # Drain any blocks that accumulated while the previous POST was
+            # in flight — this is the batching that handles RTT > _BLK_DUR.
+            batch = bytearray(blk)
+            while True:
+                try:
+                    batch += post_q.get_nowait()
+                except queue.Empty:
+                    break
+            try:
+                body  = bytes(batch)
+                ts_c  = time.time()
+                sig_c = _sign_chunk(secret, body, ts_c) if secret else ""
+                hdrs  = {
+                    "Content-Type": "application/octet-stream",
+                    "X-Hub-Sig":    sig_c,
+                    "X-Hub-Ts":     f"{ts_c:.0f}",
+                    "X-Hub-Nonce":  hashlib.md5(os.urandom(8)).hexdigest()[:16],
+                }
+                req = urllib.request.Request(chunk_url, data=body,
+                                             headers=hdrs, method="POST")
+                urllib.request.urlopen(req, timeout=5).close()
+                post_err[0] = 0
+            except Exception as e:
+                post_err[0] += 1
+                if post_err[0] >= 5:
+                    _log(f"[WebSDR] PCM push failed: {e}")
+                    stop_flag.set()
+                    return
+
+    threading.Thread(target=_post_worker, daemon=True,
+                     name=f"SDRPost-{slot_id[:6]}").start()
 
     try:
         proc = subprocess.Popen(
@@ -462,28 +521,16 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
             pcm   = np.clip(audio * scale, -32768, 32767).astype(np.int16)
             pcm_b = pcm.tobytes()
 
-            # ── Pace to real-time ─────────────────────────────────────────
+            # ── Pace to real-time then enqueue for POST ───────────────────
             if out_deadline is None:
                 out_deadline = time.monotonic()
             slack = out_deadline - time.monotonic()
             if slack > 0.001:
                 time.sleep(slack)
-
-            # ── Push PCM to hub audio relay ───────────────────────────────
             try:
-                ts_c  = time.time()
-                sig_c = _sign_chunk(secret, pcm_b, ts_c) if secret else ""
-                hdrs  = {
-                    "Content-Type": "application/octet-stream",
-                    "X-Hub-Sig":    sig_c,
-                    "X-Hub-Ts":     f"{ts_c:.0f}",
-                    "X-Hub-Nonce":  hashlib.md5(os.urandom(8)).hexdigest()[:16],
-                }
-                req = urllib.request.Request(chunk_url, data=pcm_b,
-                                             headers=hdrs, method="POST")
-                urllib.request.urlopen(req, timeout=5).close()
-            except Exception as e:
-                print(f"[WebSDR] PCM push failed: {e}")
+                post_q.put_nowait(pcm_b)
+            except queue.Full:
+                pass   # hub unreachable; POST thread will detect and stop
 
             out_deadline += _BLK_DUR
 
@@ -509,15 +556,16 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
                     pass
 
     except Exception as e:
-        print(f"[WebSDR] Worker error: {e}")
+        _log(f"[WebSDR] Worker error: {e}")
     finally:
+        stop_flag.set()   # ensure POST thread exits cleanly
         if proc:
             try:
                 proc.terminate()
                 proc.wait(timeout=3)
             except Exception:
                 pass
-        print(f"[WebSDR] Worker stopped for slot {slot_id[:6]}")
+        _log(f"[WebSDR] Worker stopped for slot {slot_id[:6]}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
