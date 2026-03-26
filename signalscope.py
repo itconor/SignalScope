@@ -1559,7 +1559,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.7"
+BUILD                  = "SignalScope-3.4.8"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2091,6 +2091,7 @@ class AppConfig:
     suppress_local_notifications: bool = False   # client: skip email/webhook/pushover when hub is connected
     hub_site_rules: dict = field(default_factory=dict)  # hub: per-site {enabled, forward_types}
     signal_chains: list = field(default_factory=list)   # hub: broadcast signal chains [{id,name,nodes}]
+    ab_groups:     list = field(default_factory=list)      # hub: A/B redundancy groups [{id,name,chain_a_id,chain_b_id,rx_node,active_role}]
 
 # ─── Config persistence ───────────────────────────────────────────────────────
 
@@ -2253,6 +2254,7 @@ def load_config() -> AppConfig:
         suppress_local_notifications=bool(raw.get("suppress_local_notifications", False)),
         hub_site_rules=raw.get("hub_site_rules", {}),
         signal_chains=raw.get("signal_chains", []),
+        ab_groups=raw.get("ab_groups", []),
     )
 
 
@@ -2374,6 +2376,7 @@ def save_config(cfg: AppConfig):
         "suppress_local_notifications": cfg.suppress_local_notifications,
         "hub_site_rules": cfg.hub_site_rules,
         "signal_chains": cfg.signal_chains,
+        "ab_groups": cfg.ab_groups,
     }
     with open(CONFIG_PATH, "w") as f:
         json.dump(data, f, indent=2)
@@ -10437,6 +10440,10 @@ class HubServer:
         self._chain_degrading_fired: dict = {}
         # Node offline notification sent flag — "cid:site:stream" → bool (Change 9)
         self._chain_node_offline_notified: dict = {}
+        # A/B Group states — group_id → {status, a_ok, b_ok, rx_ok, since, ts}
+        self._abgroup_states: dict = {}
+        # A/B Group last alert timestamp — group_id → float
+        self._abgroup_alert_ts: dict = {}
         # Remote backup metadata — site_name → {"ts": float, "size": int}
         # Actual ZIP data lives on disk under HUB_BACKUP_DIR/<safe_name>/backup.zip
         self._site_backups: Dict[str, dict] = {}
@@ -11742,6 +11749,93 @@ class HubServer:
                         metrics_db.write(_state_rows)
                     except Exception:
                         pass
+
+                # ── A/B Group evaluation ─────────────────────────────────────────
+                for grp in (cfg.ab_groups or []):
+                    gid = grp.get("id", "")
+                    if not gid:
+                        continue
+                    chain_a_id  = grp.get("chain_a_id", "")
+                    chain_b_id  = grp.get("chain_b_id", "")
+                    rx_node     = grp.get("rx_node") or {}
+
+                    def _chain_ok(cid_):
+                        return self._chain_fault_state.get(cid_, "ok") in ("ok", "pending_recovery")
+
+                    a_ok = _chain_ok(chain_a_id) if chain_a_id else True
+                    b_ok = _chain_ok(chain_b_id) if chain_b_id else True
+
+                    # Evaluate RX node independently via a synthetic single-node chain
+                    rx_ok = True
+                    if rx_node.get("stream"):
+                        try:
+                            _rx_synth = {
+                                "id": f"_rx_{gid}",
+                                "name": rx_node.get("label", "Broadcast RX"),
+                                "nodes": [rx_node],
+                            }
+                            rx_ok = self.eval_chain(_rx_synth, maintenance={})["status"] == "ok"
+                        except Exception:
+                            rx_ok = True
+
+                    # Composite status
+                    if not rx_ok and not a_ok and not b_ok:
+                        new_gs = "off_air"
+                    elif not rx_ok:
+                        new_gs = "rx_fault"
+                    elif not a_ok and not b_ok:
+                        new_gs = "both_fault"
+                    elif not a_ok:
+                        new_gs = "a_fault"
+                    elif not b_ok:
+                        new_gs = "b_fault"
+                    else:
+                        new_gs = "ok"
+
+                    prev_info = self._abgroup_states.get(gid, {})
+                    prev_gs   = prev_info.get("status", "ok")
+                    since     = prev_info.get("since", now) if new_gs == prev_gs else now
+                    self._abgroup_states[gid] = {
+                        "status": new_gs, "a_ok": a_ok, "b_ok": b_ok,
+                        "rx_ok": rx_ok, "since": since, "ts": now,
+                    }
+
+                    if not _warmed_up or new_gs == prev_gs:
+                        continue
+
+                    # Fire alert on transition
+                    grp_name    = grp.get("name", gid)
+                    active_role = grp.get("active_role", "a")
+                    try:
+                        if new_gs == "ok":
+                            _abg_msg = f"A/B Group '{grp_name}' fully recovered — all paths healthy"
+                            _abg_type = "ABGROUP_RECOVERED"
+                        elif new_gs == "off_air":
+                            _abg_msg = (f"\u26a0 OFF AIR: '{grp_name}' — "
+                                        f"both A & B paths AND broadcast RX are silent")
+                            _abg_type = "ABGROUP_OFF_AIR"
+                        elif new_gs == "rx_fault":
+                            _abg_msg = (f"A/B Group '{grp_name}' — Broadcast RX silent "
+                                        f"(signal paths appear ok — check RX/air monitor)")
+                            _abg_type = "ABGROUP_RX_FAULT"
+                        elif new_gs == "both_fault":
+                            _abg_msg = (f"A/B Group '{grp_name}' — BOTH A and B paths faulted")
+                            _abg_type = "ABGROUP_BOTH_FAULT"
+                        elif new_gs == "a_fault":
+                            _note = " — consider switching to B" if active_role == "a" else " (B is active)"
+                            _abg_msg = (f"A/B Group '{grp_name}' — A path faulted, B path healthy{_note}")
+                            _abg_type = "ABGROUP_A_FAULT"
+                        else:  # b_fault
+                            _note = " — consider switching to A" if active_role == "b" else " (A is active)"
+                            _abg_msg = (f"A/B Group '{grp_name}' — B path faulted, A path healthy{_note}")
+                            _abg_type = "ABGROUP_B_FAULT"
+                        _alert_log_append({"type": _abg_type, "stream": grp_name,
+                                           "message": _abg_msg, "_site": "(hub)"})
+                        sender.send(f"{_abg_type.replace('_',' ')} — {grp_name}",
+                                    _abg_msg, alert_type=_abg_type, stream=grp_name)
+                        monitor.log(f"[ABGroup] {grp_name}: {prev_gs} → {new_gs}")
+                    except Exception as _abge:
+                        monitor.log(f"[ABGroup] Alert error: {_abge}")
 
             except Exception as e:
                 try:
@@ -20695,6 +20789,50 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .flog-view-hint{font-size:10px;opacity:.45;transition:opacity .12s}
 .flog-row:hover .flog-view-hint{opacity:1}
 .flog-empty{color:var(--mu);font-size:11px;padding:8px 0}
+/* A/B Group cards */
+.abg-section{margin-bottom:28px}
+.abg-section-hdr{font-size:13px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.abg-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;margin-bottom:12px;overflow:hidden;box-shadow:0 4px 14px rgba(0,0,0,.16);transition:transform .14s}
+.abg-card:hover{transform:translateY(-1px)}
+.abg-card.abg-ok{border-left:4px solid var(--ok)}
+.abg-card.abg-a-fault,.abg-card.abg-b-fault{border-left:4px solid var(--wn)}
+.abg-card.abg-both-fault,.abg-card.abg-rx-fault{border-left:4px solid var(--al)}
+.abg-card.abg-off-air{border-left:4px solid #ef4444;animation:abg-pulse 1.2s ease-in-out infinite}
+@keyframes abg-pulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.4)}50%{box-shadow:0 0 0 6px rgba(239,68,68,0)}}
+.abg-header{display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--bor);flex-wrap:wrap}
+.abg-name{font-size:15px;font-weight:700}
+.abg-status-badge{font-size:11px;padding:2px 10px;border-radius:999px;font-weight:700;margin-left:auto}
+.abg-badge-ok{background:#14532d;color:#86efac}
+.abg-badge-a-fault,.abg-badge-b-fault{background:#78350f;color:#fde68a}
+.abg-badge-both-fault,.abg-badge-rx-fault{background:#450a0a;color:#fca5a5}
+.abg-badge-off-air{background:#7f1d1d;color:#fca5a5;animation:badge-flash .8s step-start infinite}
+@keyframes badge-flash{50%{opacity:.3}}
+.abg-paths{display:flex;align-items:stretch;gap:0;padding:12px 16px;flex-wrap:wrap}
+.abg-path{flex:1;min-width:160px;background:var(--bg);border:1px solid var(--bor);border-radius:10px;padding:10px 14px;margin:4px}
+.abg-path-label{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.abg-path-name{font-size:13px;font-weight:600;margin-bottom:4px}
+.abg-path-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot-ok{background:var(--ok)}.dot-fault{background:var(--al)}.dot-unknown{background:var(--mu)}
+.abg-path.path-ok{border-color:rgba(34,197,94,.3)}
+.abg-path.path-fault{border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.04)}
+.abg-active-badge{display:inline-block;font-size:9px;padding:1px 6px;border-radius:3px;background:#1e3a5f;color:var(--acc);border:1px solid var(--acc);font-weight:700;margin-left:4px}
+.abg-rx{flex:1;min-width:160px;background:var(--bg);border:2px solid var(--bor);border-radius:10px;padding:10px 14px;margin:4px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.abg-rx.rx-ok{border-color:var(--ok);background:rgba(34,197,94,.06)}
+.abg-rx.rx-fault{border-color:var(--al);background:rgba(239,68,68,.07)}
+.abg-rx-label{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--mu);margin-bottom:4px}
+.abg-rx-name{font-size:13px;font-weight:600}
+.abg-arrow{display:flex;align-items:center;color:var(--mu);font-size:20px;padding:0 4px;flex-shrink:0;align-self:center}
+.abg-actions{display:flex;gap:6px;margin-left:auto;align-items:center}
+.abg-switch-btn{font-size:11px;padding:3px 10px;border-radius:6px;border:1px solid var(--acc);color:var(--acc);background:transparent;cursor:pointer;font-weight:600;transition:background .15s}
+.abg-switch-btn:hover{background:rgba(23,168,255,.12)}
+/* A/B group builder modal */
+.abg-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;display:flex;align-items:center;justify-content:center}
+.abg-modal{background:#0d2346;border:1px solid var(--bor);border-radius:14px;padding:22px;width:100%;max-width:520px;box-shadow:0 16px 48px rgba(0,0,0,.5)}
+.abg-modal h3{font-size:16px;font-weight:700;margin-bottom:16px}
+.abg-modal .form-row{margin-bottom:12px}
+.abg-modal label{font-size:12px;color:var(--mu);margin-bottom:4px;display:block}
+.abg-modal input,.abg-modal select{width:100%;background:#12305c;border:1px solid var(--bor);color:var(--tx);border-radius:8px;padding:7px 10px;font-size:13px}
+.abg-modal-actions{display:flex;gap:8px;margin-top:18px;justify-content:flex-end}
 /* Chain health score badge */
 .health-badge{font-size:11px;font-weight:700;padding:2px 8px;border:1px solid;border-radius:999px;white-space:nowrap;letter-spacing:.02em}
 /* Fault replay timeline */
@@ -20758,10 +20896,77 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 </style></head><body>
 {{topnav('chains')|safe}}
 <main>
+<!-- ── A/B Groups section ──────────────────────────────────────────────── -->
+{% if ab_groups %}
+<div class="abg-section" id="abg-section">
+  <div class="abg-section-hdr">⇄ A/B Redundancy Groups</div>
+  <div id="abg-cards-container">
+  {% for grp in ab_groups %}
+  <div class="abg-card abg-unknown" id="abg_{{grp.id|e}}">
+    <div class="abg-header">
+      <span class="abg-name">{{grp.name|e}}</span>
+      <span class="abg-status-badge abg-badge-unknown" id="abg_badge_{{grp.id|e}}">…</span>
+      <div class="abg-actions">
+        <button class="abg-switch-btn" data-gid="{{grp.id|e}}">⇄ Switch Active</button>
+        <button class="btn bg bs" data-abg-edit="{{grp.id|e}}">✎ Edit</button>
+        <button class="btn bd bs" data-abg-del="{{grp.id|e}}" data-abg-name="{{grp.name|e}}">✕</button>
+      </div>
+    </div>
+    <div class="abg-paths">
+      <div class="abg-path" id="abg_a_{{grp.id|e}}">
+        <div class="abg-path-label">
+          <span class="abg-path-dot dot-unknown" id="abg_adot_{{grp.id|e}}"></span>
+          A Path{% if grp.active_role == 'a' %}<span class="abg-active-badge">ACTIVE</span>{% endif %}
+        </div>
+        <div class="abg-path-name">{{grp.chain_a_name|e}}</div>
+      </div>
+      <div class="abg-arrow">→</div>
+      {% if grp.rx_node and grp.rx_node.stream %}
+      <div class="abg-rx" id="abg_rx_{{grp.id|e}}">
+        <div class="abg-rx-label">Broadcast RX</div>
+        <div class="abg-rx-name">{{grp.rx_node.label or grp.rx_node.stream|e}}</div>
+      </div>
+      <div class="abg-arrow">←</div>
+      {% endif %}
+      <div class="abg-path" id="abg_b_{{grp.id|e}}">
+        <div class="abg-path-label">
+          <span class="abg-path-dot dot-unknown" id="abg_bdot_{{grp.id|e}}"></span>
+          B Path{% if grp.active_role == 'b' %}<span class="abg-active-badge">ACTIVE</span>{% endif %}
+        </div>
+        <div class="abg-path-name">{{grp.chain_b_name|e}}</div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+<!-- ── A/B Group builder modal ──────────────────────────────────────────── -->
+<div id="abg-modal" class="abg-modal-overlay" style="display:none">
+  <div class="abg-modal">
+    <h3 id="abg-modal-title">New A/B Group</h3>
+    <input type="hidden" id="abg-edit-id">
+    <div class="form-row"><label>Group Name</label><input type="text" id="abg-name" placeholder="e.g. Main Transmission Path"></div>
+    <div class="form-row"><label>A Chain (Primary)</label><select id="abg-chain-a"><option value="">— select chain —</option>{% for c in all_chains %}<option value="{{c.id|e}}">{{c.name|e}}</option>{% endfor %}</select></div>
+    <div class="form-row"><label>B Chain (Backup)</label><select id="abg-chain-b"><option value="">— select chain —</option>{% for c in all_chains %}<option value="{{c.id|e}}">{{c.name|e}}</option>{% endfor %}</select></div>
+    <div class="form-row"><label>Active Role</label><select id="abg-active-role"><option value="a">A (Primary active)</option><option value="b">B (Backup active)</option></select></div>
+    <div style="background:#0a1e3d;border:1px solid var(--bor);border-radius:8px;padding:12px;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--mu);margin-bottom:8px;font-weight:600">Broadcast RX Node (shared end node)</div>
+      <div class="form-row"><label>Stream Name</label><select id="abg-rx-stream"><option value="">— none / skip RX monitoring —</option></select></div>
+      <div class="form-row"><label>Display Label</label><input type="text" id="abg-rx-label" placeholder="e.g. Air Monitor"></div>
+    </div>
+    <div class="form-row"><label>Notes (optional)</label><input type="text" id="abg-notes" placeholder=""></div>
+    <div class="abg-modal-actions">
+      <button class="btn bg" onclick="document.getElementById('abg-modal').style.display='none'">Cancel</button>
+      <button class="btn bp" id="abg-save-btn">Save Group</button>
+    </div>
+  </div>
+</div>
 <div class="page-title">
   <h1>⛓ Broadcast Chains</h1>
   <div style="display:flex;gap:8px;align-items:center">
     <button class="btn bg bs" id="btn_test_alert" title="Send a clearly-labelled TEST alert through all notification channels (email, webhook, Pushover, APNs) — will not create a real fault log entry">🧪 Test Alert</button>
+    <button class="btn bp bs" onclick="abgOpenNew()">＋ New A/B Group</button>
     <button class="btn bp" id="btn_new_chain">+ New Chain</button>
   </div>
 </div>
@@ -22202,8 +22407,20 @@ def broadcast_chains():
     cfg = monitor.app_cfg
     if cfg.hub.mode not in ("hub", "both"):
         return "Not a hub", 404
-    chains = cfg.signal_chains or []
-    return render_template_string(BROADCAST_CHAINS_TPL, chains=chains)
+    chains    = cfg.signal_chains or []
+    ab_groups = cfg.ab_groups or []
+    # Resolve chain names for template
+    chains_by_id = {c.get("id"): c.get("name", c.get("id","")) for c in chains}
+    ab_groups_with_names = []
+    for g in ab_groups:
+        g2 = dict(g)
+        g2["chain_a_name"] = chains_by_id.get(g.get("chain_a_id",""), g.get("chain_a_id",""))
+        g2["chain_b_name"] = chains_by_id.get(g.get("chain_b_id",""), g.get("chain_b_id",""))
+        ab_groups_with_names.append(g2)
+    return render_template_string(BROADCAST_CHAINS_TPL,
+                                  chains=chains,
+                                  ab_groups=ab_groups_with_names,
+                                  all_chains=chains)
 
 
 @app.get("/api/chains/streams")
@@ -24726,6 +24943,98 @@ def api_chains_delete(chain_id):
     return jsonify({"ok": True})
 
 
+@app.get("/api/ab_groups/status")
+@login_required
+def api_ab_groups_status():
+    """Return current A/B group states for all configured groups."""
+    cfg    = monitor.app_cfg
+    groups = cfg.ab_groups or []
+    states = hub_server._abgroup_states if hub_server else {}
+    result = []
+    for grp in groups:
+        gid  = grp.get("id", "")
+        st   = states.get(gid, {"status": "unknown", "a_ok": True, "b_ok": True, "rx_ok": True, "since": 0.0})
+        # Resolve chain names
+        chains_by_id = {c.get("id"): c.get("name", c.get("id","")) for c in (cfg.signal_chains or [])}
+        result.append({
+            "id":           gid,
+            "name":         grp.get("name", gid),
+            "chain_a_id":   grp.get("chain_a_id", ""),
+            "chain_a_name": chains_by_id.get(grp.get("chain_a_id",""), grp.get("chain_a_id","")),
+            "chain_b_id":   grp.get("chain_b_id", ""),
+            "chain_b_name": chains_by_id.get(grp.get("chain_b_id",""), grp.get("chain_b_id","")),
+            "rx_node":      grp.get("rx_node") or {},
+            "active_role":  grp.get("active_role", "a"),
+            "notes":        grp.get("notes", ""),
+            "status":       st.get("status", "unknown"),
+            "a_ok":         st.get("a_ok", True),
+            "b_ok":         st.get("b_ok", True),
+            "rx_ok":        st.get("rx_ok", True),
+            "since":        st.get("since", 0.0),
+        })
+    return jsonify(result)
+
+
+@app.post("/api/ab_groups/save")
+@login_required
+@csrf_protect
+def api_ab_groups_save():
+    """Create or update an A/B group."""
+    cfg  = monitor.app_cfg
+    data = request.get_json(force=True) or {}
+    gid  = data.get("id", "").strip()
+    if not gid:
+        import uuid as _uuid2
+        gid = str(_uuid2.uuid4())
+    grp = {
+        "id":          gid,
+        "name":        str(data.get("name", "")).strip(),
+        "chain_a_id":  str(data.get("chain_a_id", "")).strip(),
+        "chain_b_id":  str(data.get("chain_b_id", "")).strip(),
+        "rx_node":     data.get("rx_node") or {},
+        "active_role": str(data.get("active_role", "a")),
+        "notes":       str(data.get("notes", "")).strip(),
+    }
+    groups = list(cfg.ab_groups or [])
+    for i, g in enumerate(groups):
+        if g.get("id") == gid:
+            groups[i] = grp
+            break
+    else:
+        groups.append(grp)
+    cfg.ab_groups = groups
+    save_config(cfg)
+    return jsonify({"ok": True, "id": gid})
+
+
+@app.delete("/api/ab_groups/<group_id>")
+@login_required
+@csrf_protect
+def api_ab_groups_delete(group_id):
+    """Delete an A/B group by id."""
+    cfg = monitor.app_cfg
+    cfg.ab_groups = [g for g in (cfg.ab_groups or []) if g.get("id") != group_id]
+    save_config(cfg)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/ab_groups/<group_id>/toggle_active")
+@login_required
+@csrf_protect
+def api_ab_groups_toggle(group_id):
+    """Toggle active role between a and b."""
+    cfg    = monitor.app_cfg
+    groups = list(cfg.ab_groups or [])
+    for g in groups:
+        if g.get("id") == group_id:
+            g["active_role"] = "b" if g.get("active_role", "a") == "a" else "a"
+            break
+    cfg.ab_groups = groups
+    save_config(cfg)
+    active = next((g.get("active_role","a") for g in groups if g.get("id") == group_id), "a")
+    return jsonify({"ok": True, "active_role": active})
+
+
 @app.get("/hub/reports")
 @login_required
 def hub_reports():
@@ -24825,7 +25134,9 @@ def hub_reports():
     # window displaced older silence events with newer non-silence events).
     _SILENCE_TYPES = {"SILENCE", "STUDIO_FAULT", "STL_FAULT", "TX_DOWN",
                       "DAB_AUDIO_FAULT", "RTP_FAULT",
-                      "AUDIO_GLITCH", "AUDIO_GLITCH_SUSTAINED", "AUDIO_FLATNESS"}
+                      "AUDIO_GLITCH", "AUDIO_GLITCH_SUSTAINED", "AUDIO_FLATNESS",
+                      "ABGROUP_OFF_AIR", "ABGROUP_BOTH_FAULT", "ABGROUP_A_FAULT",
+                      "ABGROUP_B_FAULT", "ABGROUP_RX_FAULT", "ABGROUP_RECOVERED"}
     type_names  = sorted(
         set(e.get("type","") for e in all_events if e.get("type")) | _SILENCE_TYPES
     )
@@ -26821,6 +27132,135 @@ setInterval(pollChains,5000);
 
 // ── Page refresh every 60s to pick up new streams/sites ────────────
 setTimeout(function(){location.reload();},60000);
+
+// ── A/B Group UI ─────────────────────────────────────────────────────────
+var _csrf_abg = function(){ return (document.querySelector('meta[name="csrf-token"]')||{}).content || ''; };
+
+function abgToggleActive(gid){
+  fetch('/api/ab_groups/'+gid+'/toggle_active',{method:'POST',headers:{'X-CSRFToken':_csrf_abg(),'Content-Type':'application/json'}})
+  .then(function(r){return r.json();}).then(function(d){if(d.ok)abgPoll();});
+}
+
+function abgDelete(gid, name){
+  if(!confirm('Delete A/B group "'+name+'"?')) return;
+  fetch('/api/ab_groups/'+gid,{method:'DELETE',headers:{'X-CSRFToken':_csrf_abg()}})
+  .then(function(){location.reload();});
+}
+
+function abgEdit(gid){
+  // Find group data from current status
+  fetch('/api/ab_groups/status').then(function(r){return r.json();}).then(function(groups){
+    var g = groups.find(function(x){return x.id===gid;});
+    if(!g) return;
+    document.getElementById('abg-modal-title').textContent = 'Edit A/B Group';
+    document.getElementById('abg-edit-id').value = g.id;
+    document.getElementById('abg-name').value = g.name;
+    document.getElementById('abg-chain-a').value = g.chain_a_id;
+    document.getElementById('abg-chain-b').value = g.chain_b_id;
+    document.getElementById('abg-active-role').value = g.active_role;
+    document.getElementById('abg-rx-label').value = (g.rx_node||{}).label||'';
+    document.getElementById('abg-notes').value = g.notes||'';
+    // Set RX stream
+    var rxSel = document.getElementById('abg-rx-stream');
+    var rxKey = g.rx_node ? ((g.rx_node.site||'local')+'/'+g.rx_node.stream) : '';
+    rxSel.value = rxKey;
+    document.getElementById('abg-modal').style.display='flex';
+  });
+}
+
+function abgOpenNew(){
+  document.getElementById('abg-modal-title').textContent = 'New A/B Group';
+  document.getElementById('abg-edit-id').value = '';
+  document.getElementById('abg-name').value = '';
+  document.getElementById('abg-chain-a').value = '';
+  document.getElementById('abg-chain-b').value = '';
+  document.getElementById('abg-active-role').value = 'a';
+  document.getElementById('abg-rx-stream').value = '';
+  document.getElementById('abg-rx-label').value = '';
+  document.getElementById('abg-notes').value = '';
+  document.getElementById('abg-modal').style.display='flex';
+}
+
+// Populate RX stream dropdown from chains stream API
+fetch('/api/chains/streams').then(function(r){return r.json();}).then(function(opts){
+  var sel = document.getElementById('abg-rx-stream');
+  opts.forEach(function(o){
+    var opt = document.createElement('option');
+    opt.value = (o.site||'local')+'/'+o.stream;
+    opt.textContent = (o.site && o.site!=='local' ? o.site+' / ' : '')+o.stream;
+    sel.appendChild(opt);
+  });
+});
+
+document.getElementById('abg-save-btn').addEventListener('click', function(){
+  var rxVal = document.getElementById('abg-rx-stream').value;
+  var rxNode = null;
+  if(rxVal){
+    var parts = rxVal.split('/');
+    var rxSite = parts[0]; var rxStream = parts.slice(1).join('/');
+    rxNode = {site: rxSite, stream: rxStream, label: document.getElementById('abg-rx-label').value||rxStream};
+  }
+  var payload = {
+    id: document.getElementById('abg-edit-id').value||'',
+    name: document.getElementById('abg-name').value.trim(),
+    chain_a_id: document.getElementById('abg-chain-a').value,
+    chain_b_id: document.getElementById('abg-chain-b').value,
+    active_role: document.getElementById('abg-active-role').value,
+    rx_node: rxNode,
+    notes: document.getElementById('abg-notes').value
+  };
+  if(!payload.name){alert('Group name is required');return;}
+  if(!payload.chain_a_id||!payload.chain_b_id){alert('Both A and B chains must be selected');return;}
+  fetch('/api/ab_groups/save',{method:'POST',headers:{'X-CSRFToken':_csrf_abg(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
+  .then(function(r){return r.json();}).then(function(d){
+    if(d.ok){document.getElementById('abg-modal').style.display='none';location.reload();}
+    else{alert('Save failed');}
+  });
+});
+
+// Event delegation for A/B group buttons
+document.addEventListener('click', function(e){
+  var sw = e.target.closest('.abg-switch-btn');
+  if(sw){abgToggleActive(sw.dataset.gid);return;}
+  var ed = e.target.closest('[data-abg-edit]');
+  if(ed){abgEdit(ed.dataset.abgEdit);return;}
+  var dl = e.target.closest('[data-abg-del]');
+  if(dl){abgDelete(dl.dataset.abgDel, dl.dataset.abgName);return;}
+});
+
+// A/B group status polling (every 10 s)
+function abgPoll(){
+  fetch('/api/ab_groups/status').then(function(r){return r.json();}).then(function(groups){
+    groups.forEach(function(g){
+      var card = document.getElementById('abg_'+g.id);
+      if(!card) return;
+      var s = g.status;
+      // Update card class
+      card.className = 'abg-card abg-'+s.replace(/_/g,'-');
+      // Update badge
+      var badge = document.getElementById('abg_badge_'+g.id);
+      if(badge){
+        var labels = {ok:'ON AIR',a_fault:'A FAULT',b_fault:'B FAULT',both_fault:'BOTH FAULT',rx_fault:'RX FAULT',off_air:'OFF AIR',unknown:'…'};
+        badge.textContent = labels[s]||s;
+        badge.className = 'abg-status-badge abg-badge-'+s.replace(/_/g,'-');
+      }
+      // Update path dots and classes
+      var aDot = document.getElementById('abg_adot_'+g.id);
+      var bDot = document.getElementById('abg_bdot_'+g.id);
+      var aPath = document.getElementById('abg_a_'+g.id);
+      var bPath = document.getElementById('abg_b_'+g.id);
+      if(aDot) aDot.className = 'abg-path-dot '+(g.a_ok?'dot-ok':'dot-fault');
+      if(bDot) bDot.className = 'abg-path-dot '+(g.b_ok?'dot-ok':'dot-fault');
+      if(aPath) aPath.className = 'abg-path '+(g.a_ok?'path-ok':'path-fault');
+      if(bPath) bPath.className = 'abg-path '+(g.b_ok?'path-ok':'path-fault');
+      // Update RX
+      var rxEl = document.getElementById('abg_rx_'+g.id);
+      if(rxEl) rxEl.className = 'abg-rx '+(g.rx_ok?'rx-ok':'rx-fault');
+    });
+  }).catch(function(){});
+}
+abgPoll();
+setInterval(abgPoll, 10000);
 </script>
 </body></html>"""
 
