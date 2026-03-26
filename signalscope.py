@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.22"
+BUILD                  = "SignalScope-3.4.23"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -5923,7 +5923,8 @@ class StreamComparator:
         self.status:        str   = "Finding delay…"
         self._last_alerts:  Dict[str,float] = {}
         self._last_align:   float = 0.0
-        self._started_at:   float = time.monotonic()
+        self._started_at:        float         = time.monotonic()
+        self._baseline_gain_diff: Optional[float] = None  # set after warmup
         # Live metrics updated every COMPARE_INTERVAL
         self.delay_ms:          float = 0.0
         self.correlation:       float = 0.0
@@ -6159,27 +6160,36 @@ class StreamComparator:
                                  level_dbfs=self.pre_dbfs)
 
         else:
+            # Grace period: suppress all startup alerts until the Pearson and
+            # level estimates have fully warmed up.  35 s covers the 15 s block
+            # accumulation window plus the gain/delay settling time.
+            _grace_secs = self._CORR_BLOCKS * 0.1 + 20.0   # 35 s
+            _warmed_up  = (time.monotonic() - self._started_at) >= _grace_secs
+
             # ── Gain-shift detection ───────────────────────────────────────
-            if not hasattr(self, "_baseline_gain_diff"):
+            # Baseline is set only after warmup so an unstable early reading
+            # can’t lock in a wrong reference and immediately fire a false alert.
+            if _warmed_up and self._baseline_gain_diff is None:
                 self._baseline_gain_diff = self.gain_diff_db
-            gain_drift = abs(self.gain_diff_db - self._baseline_gain_diff)
-            gain_alert_thresh = getattr(self.pre, "compare_gain_alert_db", 3.0)
-            if gain_drift > gain_alert_thresh:
-                key = "CMP_GAIN_SHIFT"
-                if now - self._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 4:
-                    self._last_alerts[key] = now
-                    msg = (f"Gain shift on ‘{self.post.name}’: "
-                           f"{self.gain_diff_db:+.1f} dB vs baseline "
-                           f"{self._baseline_gain_diff:+.1f} dB{proc_note}")
-                    self._log_cmp_event(f"⚠ Gain shift {self.gain_diff_db:+.1f} dB")
-                    _add_history(self.pre, "CMP_ALERT", msg)
-                    self.log(f"[CMP] {msg}")
-                    self.sender.send(f"Stream Compare — Gain shift on {self.post.name}", msg, None,
-                                     alert_type="CMP_ALERT", stream=self.post.name,
-                                     level_dbfs=self.post_dbfs)
-            elif gain_drift < 1.0:
-                self._baseline_gain_diff = (0.98 * self._baseline_gain_diff
-                                            + 0.02 * self.gain_diff_db)
+            if _warmed_up and self._baseline_gain_diff is not None:
+                gain_drift = abs(self.gain_diff_db - self._baseline_gain_diff)
+                gain_alert_thresh = getattr(self.pre, "compare_gain_alert_db", 3.0)
+                if gain_drift > gain_alert_thresh:
+                    key = "CMP_GAIN_SHIFT"
+                    if now - self._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 4:
+                        self._last_alerts[key] = now
+                        msg = (f"Gain shift on ‘{self.post.name}’: "
+                               f"{self.gain_diff_db:+.1f} dB vs baseline "
+                               f"{self._baseline_gain_diff:+.1f} dB{proc_note}")
+                        self._log_cmp_event(f"⚠ Gain shift {self.gain_diff_db:+.1f} dB")
+                        _add_history(self.pre, "CMP_ALERT", msg)
+                        self.log(f"[CMP] {msg}")
+                        self.sender.send(f"Stream Compare — Gain shift on {self.post.name}", msg, None,
+                                         alert_type="CMP_ALERT", stream=self.post.name,
+                                         level_dbfs=self.post_dbfs)
+                elif gain_drift < 1.0:
+                    self._baseline_gain_diff = (0.98 * self._baseline_gain_diff
+                                                + 0.02 * self.gain_diff_db)
 
             # ── Low correlation alert ──────────────────────────────────────
             # Processed paths have inherently lower envelope correlation due to
@@ -6202,9 +6212,6 @@ class StreamComparator:
                 corr_alert_thresh = 0.40
             mode_label = "block-RMS" + (" processed" if self.processed else "")
             self.status = f"OK ({corr_label} {mode_label} corr)"
-            # Suppress alert during startup grace period (_CORR_BLOCKS × 100 ms + 5 s margin)
-            _grace_secs = self._CORR_BLOCKS * 0.1 + 5.0
-            _warmed_up  = (time.monotonic() - self._started_at) >= _grace_secs
             if self.correlation < corr_alert_thresh and pre_has_audio and post_has_audio and _warmed_up:
                 key = "CMP_LOW_CORR"
                 if now - self._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 6:

@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.23] - 2026-03-26
+
+### Fixed
+- **StreamComparator — startup false alerts for gain-shift and low correlation**: Extended the startup grace period from 20 s to 35 s and applied it to both the gain-shift and low-correlation alerts (previously only low-correlation was gated). Root cause: `_baseline_gain_diff` was initialised lazily on the very first `update()` call while the level estimate was still settling, locking in a wrong reference and immediately triggering a "Gain shift" alert. Fixed by initialising `_baseline_gain_diff = None` in `__init__` and only setting the baseline after the 35 s warmup window.
+
 ## [3.4.22] - 2026-03-26
 
 ### Added
