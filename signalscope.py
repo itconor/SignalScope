@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.18"
+BUILD                  = "SignalScope-3.4.19"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -5881,12 +5881,38 @@ class PTPMonitor:
 
 class StreamComparator:
     """
-    Compares two streams (pre and post processing) by:
-    1. Cross-correlating to find the delay offset (up to COMPARE_SEARCH_SECS)
-    2. Continuously monitoring for divergence at that offset:
-       - Post silent while pre has audio → processor failure
-       - Dropout on one but not other → RTP loss on one path
+    Compares two streams (pre/post) with full audio cross-correlation.
+
+    Delay detection: GCC-PHAT (Generalized Cross-Correlation with Phase
+    Transform) — whitens the cross-spectrum so the lag peak is sharp even
+    through heavily processed audio.  Much more reliable than plain xcorr
+    when the post signal has been limited, compressed or EQ’d.
+
+    Correlation score:
+    - Clean paths (|gain_gap| < 8 dB, compression_ratio > 0.5):
+        multi-window post-alignment Pearson on waveform samples.
+    - Processed paths (audio processor detected):
+        envelope correlation — rectify + 100 ms smooth → Pearson of
+        amplitude envelopes.  Robust through AGC / compression / limiting
+        because the programme content shape (speech, music, silence events)
+        is preserved even when the waveform is heavily modified.
+
+    Processor auto-detection via two independent signals:
+    1. Gain gap: |pre_dBFS − post_dBFS| > _PROC_GAIN_GAP_DB (8 dB)
+    2. Compression ratio: post_env_std / pre_env_std < _PROC_DYN_RATIO (0.50)
+       — heavy limiting squashes envelope variance on the post side.
+    Either signal alone is sufficient to flag processed=True.
+
+    Multi-window stability: correlation is computed over 5 non-overlapping
+    2-second windows and the median is reported.  Removes transient spikes
+    caused by ads starting/ending mid-window.
     """
+
+    _PROC_GAIN_GAP_DB  = 8.0     # level gap (dB) → processor likely in path
+    _PROC_DYN_RATIO    = 0.50    # post_env_std / pre_env_std < this → heavy compression
+    _ENV_WIN_SAMPLES   = 4800    # 100 ms smoothing window for envelope (48 kHz)
+    _ALIGN_WIN_SECS    = 2.0     # each sub-window size (s) for multi-window correlation
+    _N_WINDOWS         = 5       # number of sub-windows to median over
 
     def __init__(self, pre: InputConfig, post: InputConfig, log_fn, sender):
         self.pre    = pre
@@ -5899,68 +5925,188 @@ class StreamComparator:
         self._last_alerts:  Dict[str,float] = {}
         self._last_align:   float = 0.0
         # Live metrics updated every COMPARE_INTERVAL
-        self.delay_ms:      float = 0.0
-        self.correlation:   float = 0.0    # 0.0–1.0 normalised xcorr peak
-        self.pre_dbfs:      float = -80.0
-        self.post_dbfs:     float = -80.0
-        self.gain_diff_db:  float = 0.0    # post - pre in dB (positive = louder out)
-        self.cmp_history:   list  = []     # last 8 CMP events
+        self.delay_ms:         float = 0.0
+        self.correlation:      float = 0.0    # 0.0–1.0 primary correlation score
+        self.pre_dbfs:         float = -80.0
+        self.post_dbfs:        float = -80.0
+        self.gain_diff_db:     float = 0.0    # post - pre in dB (positive = louder out)
+        self.cmp_history:      list  = []     # last 8 CMP events
+        # Processor detection
+        self.processed:        bool  = False  # True if audio processor detected
+        self.compression_ratio: float = 1.0  # post_env_std / pre_env_std
 
-    def _xcorr_delay(self) -> Optional[tuple]:
-        """Cross-correlate pre and post to find delay.
-        Returns (delay_samples, correlation_0_to_1) or None."""
-        if not self.pre._stream_buffer or not self.post._stream_buffer:
+    # ── GCC-PHAT delay detection ─────────────────────────────────────────────
+
+    @staticmethod
+    def _gcc_phat(pre_seg: np.ndarray, post_seg: np.ndarray) -> Optional[tuple]:
+        """GCC-PHAT: find best lag using phase-transformed cross-spectrum.
+
+        Returns (best_lag_samples, phat_peak_0_to_1) or None.
+        The PHAT peak value itself is NOT used for the correlation score —
+        it is only used to find the lag.  Pearson on aligned segments gives
+        the correlation score.
+        """
+        ml = min(len(pre_seg), len(post_seg))
+        if ml < SAMPLE_RATE:
             return None
-        pre_chunks  = list(self.pre._stream_buffer)
-        post_chunks = list(self.post._stream_buffer)
-        if not pre_chunks or not post_chunks:
-            return None
-        pre_audio  = np.concatenate(pre_chunks).astype(np.float32)
-        post_audio = np.concatenate(post_chunks).astype(np.float32)
-        use = SAMPLE_RATE * 5
-        pre_seg  = pre_audio[-use:]  if len(pre_audio)  > use else pre_audio
-        post_seg = post_audio[-use:] if len(post_audio) > use else post_audio
-        min_len = min(len(pre_seg), len(post_seg))
-        if min_len < SAMPLE_RATE:
-            return None
-        pre_seg  = pre_seg[:min_len]
-        post_seg = post_seg[:min_len]
-        pre_std  = float(np.std(pre_seg)  + 1e-10)
-        post_std = float(np.std(post_seg) + 1e-10)
-        pre_n    = pre_seg  / pre_std
-        post_n   = post_seg / post_std
-        n    = len(pre_n) + len(post_n) - 1
+        pre_seg  = pre_seg[:ml]
+        post_seg = post_seg[:ml]
+        n    = ml * 2 - 1
         nfft = 1 << (n - 1).bit_length()
-        Pre  = np.fft.rfft(pre_n,  nfft)
-        Post = np.fft.rfft(post_n, nfft)
-        xcorr = np.fft.irfft(np.conj(Pre) * Post, nfft)[:n]
-        max_lag   = int(COMPARE_SEARCH_SECS * SAMPLE_RATE)
-        best_lag  = int(np.argmax(xcorr[: max_lag + 1]))
-        peak_corr = float(xcorr[best_lag]) / float(min_len)   # normalise to -1..1
-        peak_corr = float(np.clip(peak_corr, 0.0, 1.0))
-        return best_lag, peak_corr
+        Pre  = np.fft.rfft(pre_seg,  nfft)
+        Post = np.fft.rfft(post_seg, nfft)
+        xspec = np.conj(Pre) * Post
+        # Phase transform: normalise magnitude → sharp lag peak independent of loudness
+        denom = np.abs(xspec) + 1e-10
+        xcorr_phat = np.fft.irfft(xspec / denom, nfft)[:n]
+        max_lag  = int(COMPARE_SEARCH_SECS * SAMPLE_RATE)
+        best_lag = int(np.argmax(xcorr_phat[:max_lag + 1]))
+        # Normalise peak to 0–1 (ratio of peak to mean of top-10 lags)
+        top10 = float(np.mean(np.sort(xcorr_phat[:max_lag + 1])[-10:]) + 1e-10)
+        peak  = float(np.clip(xcorr_phat[best_lag] / top10 / 10.0, 0.0, 1.0))
+        return best_lag, peak
+
+    # ── Post-alignment Pearson (waveform, for clean paths) ───────────────────
+
+    @staticmethod
+    def _pearson(a: np.ndarray, b: np.ndarray) -> float:
+        """Pearson correlation of two equal-length arrays.  Returns 0.0–1.0."""
+        ml = min(len(a), len(b))
+        if ml < 256:
+            return 0.0
+        a, b = a[:ml].astype(np.float64), b[:ml].astype(np.float64)
+        sa, sb = float(np.std(a)), float(np.std(b))
+        if sa < 1e-8 or sb < 1e-8:
+            return 0.0
+        return float(np.clip(np.mean((a - a.mean()) * (b - b.mean())) / (sa * sb), 0.0, 1.0))
+
+    # ── Envelope correlation (for processed paths) ───────────────────────────
+
+    @classmethod
+    def _envelope(cls, audio: np.ndarray) -> np.ndarray:
+        """Amplitude envelope: rectify then smooth with a 100 ms window."""
+        w = cls._ENV_WIN_SAMPLES
+        # Use cumsum trick for fast moving average
+        abs_a = np.abs(audio).astype(np.float64)
+        cs = np.cumsum(abs_a)
+        cs = np.concatenate(([0.0], cs))
+        env = (cs[w:] - cs[:-w]) / w
+        return env
+
+    @classmethod
+    def _envelope_corr(cls, a: np.ndarray, b: np.ndarray) -> float:
+        """Pearson of amplitude envelopes after aligning to same length."""
+        ea, eb = cls._envelope(a), cls._envelope(b)
+        return cls._pearson(ea, eb)
+
+    # ── Multi-window median correlation ──────────────────────────────────────
+
+    def _multiwindow_corr(self, pre_aligned: np.ndarray,
+                          post_aligned: np.ndarray) -> float:
+        """Compute correlation over N non-overlapping windows, return median.
+
+        Uses waveform Pearson for clean paths, envelope Pearson for processed.
+        The median discards transient mismatches caused by ad break edges.
+        """
+        wsz  = int(self._ALIGN_WIN_SECS * SAMPLE_RATE)
+        ml   = min(len(pre_aligned), len(post_aligned))
+        n_w  = min(self._N_WINDOWS, ml // wsz)
+        if n_w < 1:
+            # Fall back to single full-segment correlation
+            if self.processed:
+                return self._envelope_corr(pre_aligned[:ml], post_aligned[:ml])
+            return self._pearson(pre_aligned[:ml], post_aligned[:ml])
+        scores = []
+        for i in range(n_w):
+            s, e = i * wsz, (i + 1) * wsz
+            pa, pb = pre_aligned[s:e], post_aligned[s:e]
+            if self.processed:
+                scores.append(self._envelope_corr(pa, pb))
+            else:
+                scores.append(self._pearson(pa, pb))
+        return float(np.median(scores))
+
+    # ── Processor detection ───────────────────────────────────────────────────
+
+    def _detect_processor(self, pre_seg: np.ndarray,
+                          post_seg: np.ndarray) -> tuple:
+        """Detect audio processor via gain gap and dynamic compression ratio.
+
+        Returns (is_processed: bool, compression_ratio: float).
+        compression_ratio = post_env_std / pre_env_std:
+          ~1.0 → unprocessed (equal dynamics)
+          <0.5 → heavy limiting/compression on post
+        """
+        pre_env  = self._envelope(pre_seg)
+        post_env = self._envelope(post_seg)
+        pre_std  = float(np.std(pre_env)  + 1e-10)
+        post_std = float(np.std(post_env) + 1e-10)
+        comp_ratio = post_std / pre_std
+        # Gain gap check (absolute level difference)
+        pr = max(float(np.sqrt(np.mean(pre_seg.astype(np.float64)**2))), 1e-10)
+        po = max(float(np.sqrt(np.mean(post_seg.astype(np.float64)**2))), 1e-10)
+        gain_gap = abs(20 * math.log10(pr) - 20 * math.log10(po))
+        is_proc = (gain_gap > self._PROC_GAIN_GAP_DB
+                   or comp_ratio < self._PROC_DYN_RATIO)
+        return is_proc, round(comp_ratio, 3)
+
+    # ── Logging helper ────────────────────────────────────────────────────────
 
     def _log_cmp_event(self, msg: str):
-        """Append to local cmp_history (capped at 8) and the stream history."""
+        """Append to local cmp_history (capped at 8)."""
         ts = time.strftime("%H:%M:%S")
         self.cmp_history.append({"ts": ts, "msg": msg})
         if len(self.cmp_history) > 8:
             self.cmp_history.pop(0)
 
+    # ── Main update loop ──────────────────────────────────────────────────────
+
     def update(self):
-        """Call periodically. Re-aligns if needed, then checks divergence."""
+        """Call periodically. Re-aligns if needed, then measures correlation."""
         now = time.time()
+
+        # ── Collect audio buffers ──────────────────────────────────────────
+        pre_chunks  = list(self.pre._stream_buffer)  if self.pre._stream_buffer  else []
+        post_chunks = list(self.post._stream_buffer) if self.post._stream_buffer else []
+        if not pre_chunks or not post_chunks:
+            self.status = "Waiting for audio buffers…"
+            return
+        pre_audio  = np.concatenate(pre_chunks).astype(np.float32)
+        post_audio = np.concatenate(post_chunks).astype(np.float32)
+
+        # Need enough history for xcorr search + alignment windows
+        needed = int((COMPARE_SEARCH_SECS + self._ALIGN_WIN_SECS * self._N_WINDOWS) * SAMPLE_RATE)
+        if len(pre_audio) < needed // 2 or len(post_audio) < needed // 2:
+            self.status = "Buffering…"
+            return
+
+        # ── Delay detection (GCC-PHAT) ─────────────────────────────────────
         if now - self._last_align > COMPARE_INTERVAL or not self.aligned:
-            result = self._xcorr_delay()
+            use = int(COMPARE_SEARCH_SECS * SAMPLE_RATE) + int(self._ALIGN_WIN_SECS * SAMPLE_RATE)
+            pre_seg  = pre_audio[-use:]  if len(pre_audio)  > use else pre_audio
+            post_seg = post_audio[-use:] if len(post_audio) > use else post_audio
+            result = self._gcc_phat(pre_seg, post_seg)
             if result is not None:
-                delay, corr = result
-                self.delay_samples = delay
-                self.correlation   = corr
+                lag, _ = result
+                self.delay_samples = lag
+                self.delay_ms      = lag / SAMPLE_RATE * 1000
                 self.aligned       = True
                 self._last_align   = now
-                self.delay_ms      = delay / SAMPLE_RATE * 1000
+                # Detect processor on this fresh segment
+                is_proc, comp_ratio = self._detect_processor(pre_seg, post_seg)
+                if is_proc and not self.processed:
+                    self.log(f"[CMP:{self.pre.name}→{self.post.name}] "
+                             f"Audio processor detected — gain gap or compression "
+                             f"(ratio {comp_ratio:.2f}).  Switching to envelope correlation.")
+                    self._log_cmp_event(
+                        f"⚙ Processor detected (comp ratio {comp_ratio:.2f}) — "
+                        "using envelope correlation"
+                    )
+                self.processed         = is_proc
+                self.compression_ratio = comp_ratio
                 self.log(f"[CMP:{self.pre.name}→{self.post.name}] "
-                         f"Delay {self.delay_ms:.0f} ms  corr {corr:.2f}")
+                         f"Delay {self.delay_ms:.0f} ms  processed={is_proc}  "
+                         f"comp_ratio={comp_ratio:.2f}")
             else:
                 self.status = "Waiting for audio buffers…"
                 return
@@ -5968,70 +6114,67 @@ class StreamComparator:
         if not self.aligned:
             return
 
-        # Get aligned windows for comparison (last 2 seconds of aligned audio)
-        window = SAMPLE_RATE * 2
-        pre_chunks  = list(self.pre._stream_buffer)
-        post_chunks = list(self.post._stream_buffer)
-        if not pre_chunks or not post_chunks:
-            return
-        pre_audio  = np.concatenate(pre_chunks).astype(np.float32)
-        post_audio = np.concatenate(post_chunks).astype(np.float32)
-
-        # Align: trim pre by delay to match post
-        if self.delay_samples > 0 and len(pre_audio) > self.delay_samples + window:
-            pre_aligned = pre_audio[-(window + self.delay_samples): -self.delay_samples]
+        # ── Build aligned windows ──────────────────────────────────────────
+        total_win = int(self._ALIGN_WIN_SECS * self._N_WINDOWS * SAMPLE_RATE)
+        if self.delay_samples > 0 and len(pre_audio) > self.delay_samples + total_win:
+            pre_aligned = pre_audio[-(total_win + self.delay_samples): -self.delay_samples]
         else:
-            pre_aligned = pre_audio[-window:]
-        post_aligned = post_audio[-window:]
-        min_len = min(len(pre_aligned), len(post_aligned))
-        if min_len < SAMPLE_RATE // 2:
+            pre_aligned = pre_audio[-total_win:]
+        post_aligned = post_audio[-total_win:]
+        ml = min(len(pre_aligned), len(post_aligned))
+        if ml < SAMPLE_RATE // 2:
             return
-        pre_aligned  = pre_aligned[:min_len]
-        post_aligned = post_aligned[:min_len]
+        pre_aligned  = pre_aligned[:ml]
+        post_aligned = post_aligned[:ml]
 
-        pre_rms  = max(float(np.sqrt(np.mean(pre_aligned**2))),  1e-10)
-        post_rms = max(float(np.sqrt(np.mean(post_aligned**2))), 1e-10)
-        self.pre_dbfs   = 20 * math.log10(pre_rms)
-        self.post_dbfs  = 20 * math.log10(post_rms)
+        # ── Level metrics ──────────────────────────────────────────────────
+        pre_rms  = max(float(np.sqrt(np.mean(pre_aligned.astype(np.float64)**2))),  1e-10)
+        post_rms = max(float(np.sqrt(np.mean(post_aligned.astype(np.float64)**2))), 1e-10)
+        self.pre_dbfs     = 20 * math.log10(pre_rms)
+        self.post_dbfs    = 20 * math.log10(post_rms)
         self.gain_diff_db = round(self.post_dbfs - self.pre_dbfs, 1)
 
         pre_has_audio  = self.pre_dbfs  > COMPARE_SILENCE_THRESH
         post_has_audio = self.post_dbfs > COMPARE_SILENCE_THRESH
 
-        # Alert: post silent, pre has audio → processor/path failure
+        # ── Multi-window correlation ───────────────────────────────────────
+        self.correlation = self._multiwindow_corr(pre_aligned, post_aligned)
+
+        # ── Silence / dropout alerts ───────────────────────────────────────
+        proc_note = f" (processor in path, comp ratio {self.compression_ratio:.2f})" if self.processed else ""
+
         if pre_has_audio and not post_has_audio:
             key = "CMP_POST_SILENT"
             if now - self._last_alerts.get(key, 0) >= ALERT_COOLDOWN:
                 self._last_alerts[key] = now
                 msg = (f"POST ‘{self.post.name}’ silent while PRE ‘{self.pre.name}’ "
-                       f"has audio ({self.pre_dbfs:.1f} dBFS) — possible processor failure")
-                self.status = f"⚠ POST SILENT"
+                       f"has audio ({self.pre_dbfs:.1f} dBFS) — possible processor failure{proc_note}")
+                self.status = "⚠ POST SILENT"
                 _add_history(self.pre, "CMP_ALERT", msg)
                 self._log_cmp_event("⚠ POST silent / processor failure")
                 self.log(f"[CMP] {msg}")
                 snippet = _save_alert_wav(self.post, "compare_post_silent")
                 self.sender.send(f"Stream Compare ALERT — {self.post.name} silent", msg, snippet,
-                             alert_type="CMP_ALERT", stream=self.post.name,
-                             level_dbfs=self.post_dbfs)
+                                 alert_type="CMP_ALERT", stream=self.post.name,
+                                 level_dbfs=self.post_dbfs)
 
-        # Alert: pre has dropout but post doesn't → RTP loss on pre path
         elif post_has_audio and not pre_has_audio:
             key = "CMP_PRE_SILENT"
             if now - self._last_alerts.get(key, 0) >= ALERT_COOLDOWN:
                 self._last_alerts[key] = now
                 msg = (f"PRE ‘{self.pre.name}’ silent/dropout while POST "
-                       f"‘{self.post.name}’ has audio — possible RTP loss on pre path")
-                self.status = f"⚠ PRE DROPOUT"
+                       f"’{self.post.name}’ has audio — possible RTP loss on pre path{proc_note}")
+                self.status = "⚠ PRE DROPOUT"
                 _add_history(self.post, "CMP_ALERT", msg)
                 self._log_cmp_event("⚠ PRE dropout / RTP loss")
                 self.log(f"[CMP] {msg}")
                 snippet = _save_alert_wav(self.pre, "compare_pre_dropout")
                 self.sender.send(f"Stream Compare ALERT — {self.pre.name} dropout", msg, snippet,
-                             alert_type="CMP_ALERT", stream=self.pre.name,
-                             level_dbfs=self.pre_dbfs)
+                                 alert_type="CMP_ALERT", stream=self.pre.name,
+                                 level_dbfs=self.pre_dbfs)
 
         else:
-            # Update gain-change detection: warn if gain shifts by >3 dB from baseline
+            # ── Gain-shift detection ───────────────────────────────────────
             if not hasattr(self, "_baseline_gain_diff"):
                 self._baseline_gain_diff = self.gain_diff_db
             gain_drift = abs(self.gain_diff_db - self._baseline_gain_diff)
@@ -6041,35 +6184,40 @@ class StreamComparator:
                 if now - self._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 4:
                     self._last_alerts[key] = now
                     msg = (f"Gain shift on ‘{self.post.name}’: "
-                           f"{self.gain_diff_db:+.1f} dB vs baseline {self._baseline_gain_diff:+.1f} dB")
+                           f"{self.gain_diff_db:+.1f} dB vs baseline "
+                           f"{self._baseline_gain_diff:+.1f} dB{proc_note}")
                     self._log_cmp_event(f"⚠ Gain shift {self.gain_diff_db:+.1f} dB")
                     _add_history(self.pre, "CMP_ALERT", msg)
                     self.log(f"[CMP] {msg}")
                     self.sender.send(f"Stream Compare — Gain shift on {self.post.name}", msg, None,
-                             alert_type="CMP_ALERT", stream=self.post.name,
-                             level_dbfs=self.post_dbfs)
+                                     alert_type="CMP_ALERT", stream=self.post.name,
+                                     level_dbfs=self.post_dbfs)
             elif gain_drift < 1.0:
-                # Only update baseline during stable periods
-                self._baseline_gain_diff = 0.98 * self._baseline_gain_diff + 0.02 * self.gain_diff_db
+                # Slowly adapt baseline during stable periods
+                self._baseline_gain_diff = (0.98 * self._baseline_gain_diff
+                                            + 0.02 * self.gain_diff_db)
 
+            # ── Low correlation alert ──────────────────────────────────────
             corr_label = (
                 "excellent" if self.correlation >= 0.85 else
                 "good"      if self.correlation >= 0.65 else
                 "weak"      if self.correlation >= 0.40 else
-                "poor — streams may not match"
+                "poor"
             )
-            self.status = "OK"
+            mode_label = "envelope" if self.processed else "waveform"
+            self.status = f"OK ({corr_label} {mode_label} corr)"
             if self.correlation < 0.40 and pre_has_audio and post_has_audio:
                 key = "CMP_LOW_CORR"
                 if now - self._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 6:
                     self._last_alerts[key] = now
-                    msg = (f"Low correlation ({self.correlation:.2f}) between ‘{self.pre.name}’ "
-                           f"and ‘{self.post.name}’ — streams may have diverged")
-                    self._log_cmp_event(f"⚠ Low corr {self.correlation:.2f}")
+                    msg = (f"Low {mode_label} correlation ({self.correlation:.2f}) between "
+                           f"’{self.pre.name}’ and ‘{self.post.name}’ — "
+                           f"streams may have diverged{proc_note}")
+                    self._log_cmp_event(f"⚠ Low corr {self.correlation:.2f} ({mode_label})")
                     _add_history(self.pre, "CMP_ALERT", msg)
                     self.log(f"[CMP] {msg}")
                     self.sender.send(f"Stream Compare — Low correlation {self.post.name}", msg, None,
-                             alert_type="CMP_ALERT", stream=self.post.name)
+                                     alert_type="CMP_ALERT", stream=self.post.name)
 
 
 @dataclass
@@ -9594,17 +9742,19 @@ class HubClient:
         comparators = []
         for c in mon._comparators:
             comparators.append({
-                "pre_name":     c.pre.name,
-                "post_name":    c.post.name,
-                "status":       c.status,
-                "aligned":      c.aligned,
-                "delay_ms":     round(c.delay_ms, 0),
-                "correlation":  round(c.correlation, 3),
-                "pre_dbfs":     round(c.pre_dbfs, 1),
-                "post_dbfs":    round(c.post_dbfs, 1),
-                "gain_diff_db": round(c.gain_diff_db, 1),
-                "gain_alert_db": getattr(c.pre, "compare_gain_alert_db", 3.0),
-                "cmp_history":  c.cmp_history[-6:],
+                "pre_name":          c.pre.name,
+                "post_name":         c.post.name,
+                "status":            c.status,
+                "aligned":           c.aligned,
+                "delay_ms":          round(c.delay_ms, 0),
+                "correlation":       round(c.correlation, 3),
+                "pre_dbfs":          round(c.pre_dbfs, 1),
+                "post_dbfs":         round(c.post_dbfs, 1),
+                "gain_diff_db":      round(c.gain_diff_db, 1),
+                "gain_alert_db":     getattr(c.pre, "compare_gain_alert_db", 3.0),
+                "processed":         c.processed,
+                "compression_ratio": round(c.compression_ratio, 3),
+                "cmp_history":       c.cmp_history[-6:],
             })
         # Recent alerts for hub reports page (last 50 — keep payload lean)
         _raw_alerts = _alert_log_load(50)
@@ -22297,19 +22447,25 @@ function refreshStatus(){
           el.className='corr-chip';
           el.title=el.title.replace(/\s*\(.*\)$/,'');
         } else {
-          var isProcessed=(comp.status==='processed');
+          var isMetricProcessed=(comp.status==='processed');
           var isLocalAudio=(comp.status==='local_audio');
-          var badge=isLocalAudio?' 🎧':(isProcessed?' ⚙':'');
+          var isLocalProc=isLocalAudio&&comp.processed;
+          var badge=isLocalAudio?(isLocalProc?' 🎧⚙':' 🎧'):(isMetricProcessed?' ⚙':'');
           cv.textContent=pct.toFixed(1)+'%'+badge;
           el.className='corr-chip '+(pct>=80?'corr-ok':pct>=50?'corr-warn':'corr-poor');
           var tip='Confidence: '+pct.toFixed(1)+'%';
           if(isLocalAudio){
-            tip+=' | 🎧 Live audio cross-correlation (client-side)';
-            if(comp.delay_ms!=null)    tip+=' | Latency: '+comp.delay_ms.toFixed(0)+'ms';
+            tip+=' | 🎧 Live audio (GCC-PHAT · '+(isLocalProc?'envelope':'waveform')+' correlation)';
+            if(isLocalProc){
+              tip+=' | ⚙ Processor detected';
+              if(comp.compression_ratio!=null)
+                tip+=' (compression ratio '+comp.compression_ratio.toFixed(2)+')';
+            }
+            if(comp.delay_ms!=null)    tip+=' | Latency: '+comp.delay_ms.toFixed(0)+' ms';
             if(comp.gain_diff_db!=null)tip+=' | Gain diff: '+comp.gain_diff_db.toFixed(1)+' dB';
             if(comp.aligned!=null)     tip+=' | Aligned: '+(comp.aligned?'yes':'no');
-          } else if(isProcessed){
-            tip+=' | ⚙ Audio processor detected';
+          } else if(isMetricProcessed){
+            tip+=' | ⚙ Processor detected (metric history)';
             if(comp.level_gap!=null) tip+=' ('+comp.level_gap.toFixed(0)+' dB gain difference)';
             tip+=' — using LUFS-I + silence alignment';
             if(comp.silence_pct!=null) tip+=' | Silence agreement: '+comp.silence_pct.toFixed(1)+'%';
@@ -22848,14 +23004,16 @@ def _chain_correlate_nodes(node_a: dict, node_b: dict, minutes: int = 60) -> dic
             if corr is not None:
                 pct = max(0.0, min(100.0, float(corr) * 100.0))
                 return {
-                    "status":      "local_audio",
-                    "r":           round(float(corr), 3),
-                    "pct":         round(pct, 1),
-                    "silence_pct": None,
-                    "samples":     None,
-                    "delay_ms":    matched.get("delay_ms"),
-                    "gain_diff_db": matched.get("gain_diff_db"),
-                    "aligned":     matched.get("aligned"),
+                    "status":            "local_audio",
+                    "r":                 round(float(corr), 3),
+                    "pct":               round(pct, 1),
+                    "silence_pct":       None,
+                    "samples":           None,
+                    "delay_ms":          matched.get("delay_ms"),
+                    "gain_diff_db":      matched.get("gain_diff_db"),
+                    "aligned":           matched.get("aligned"),
+                    "processed":         matched.get("processed", False),
+                    "compression_ratio": matched.get("compression_ratio"),
                 }
 
     def _pearson_delta(sa, sb):

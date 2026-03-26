@@ -2,6 +2,18 @@
 
 ---
 
+## [3.4.19] - 2026-03-26
+
+### Changed
+- **StreamComparator — full algorithm rewrite for accuracy**:
+  - **GCC-PHAT delay detection** replaces plain xcorr. The phase-transform whitens the cross-spectrum so the lag peak is sharp and accurate even through heavily processed/compressed audio.
+  - **Post-alignment Pearson correlation** replaces the xcorr-peak-divided-by-length heuristic for a mathematically correct 0–1 agreement score on clean paths.
+  - **Envelope correlation fallback** — for processed paths, correlates amplitude envelopes (100 ms smoothing) instead of raw waveforms. Programme content shape (speech/music/silence timing) is preserved through AGC/compression/limiting where sample-level correlation is inherently low.
+  - **Multi-window median stability** — correlation is computed over 5 non-overlapping 2-second windows and the median is reported. Removes transient spikes from ad break edges and short-term mismatches.
+  - **Automatic processor detection** via two independent signals: (1) gain gap `|pre_dBFS − post_dBFS| > 8 dB`, (2) compression ratio `post_env_std / pre_env_std < 0.50` (heavy limiting squashes envelope variance). Either signal flags `processed=True` and triggers the envelope correlation path.
+  - New exported fields in heartbeat: `processed` (bool), `compression_ratio` (float).
+  - Chain diagram badge updated: `🎧⚙` for local audio with processor detected, with compression ratio in tooltip. `🎧` for clean local audio.
+
 ## [3.4.18] - 2026-03-26
 
 ### Fixed
