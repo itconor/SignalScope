@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.26"
+BUILD                  = "SignalScope-3.4.27"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -13787,8 +13787,84 @@ def _inject_nav():
             f'</style>'
         )
 
+        # ── Persistent live-audio mini-player ────────────────────────────────
+        # Injected via topnav() so it survives navigation between hub pages.
+        # toggleLive() saves {url,title,sub} to sessionStorage; on every page
+        # load this script restores the stream automatically.
+        _hmp_css = (
+            f'<style nonce="{nonce}">'
+            '#hub-mini-player{position:fixed;bottom:0;left:0;right:0;z-index:9999;'
+            'background:linear-gradient(180deg,#0d2346 0%,#070f24 100%);'
+            'border-top:2px solid var(--acc,#17a8ff);padding:10px 18px;display:none;'
+            'align-items:center;gap:14px;box-shadow:0 -6px 28px rgba(0,0,0,.5);flex-wrap:wrap}'
+            '#hmp-badge{background:#ef4444;color:#fff;font-size:10px;font-weight:800;'
+            'letter-spacing:.06em;padding:3px 7px;border-radius:999px;flex-shrink:0;'
+            'animation:livePulse 1.4s ease-in-out infinite}'
+            '@keyframes livePulse{0%,100%{opacity:1}50%{opacity:.55}}'
+            '#hmp-info{min-width:0;flex:0 1 200px}'
+            '#hmp-title{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;'
+            'text-overflow:ellipsis;color:var(--tx,#eef5ff)}'
+            '#hmp-sub{font-size:11px;color:var(--mu,#8aa4c8);margin-top:2px;'
+            'white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+            '#hmp-audio{flex:1;min-width:200px;height:32px;accent-color:var(--acc,#17a8ff)}'
+            '#hmp-close{background:none;border:1px solid var(--bor,#17345f);border-radius:6px;'
+            'color:var(--mu,#8aa4c8);font-size:13px;cursor:pointer;padding:5px 12px;'
+            'line-height:1;flex-shrink:0;white-space:nowrap}'
+            '#hmp-close:hover{border-color:var(--al,#ef4444);color:var(--al,#ef4444)}'
+            '</style>'
+        )
+        _hmp_html = (
+            '<div id="hub-mini-player">'
+            '<div id="hmp-badge">\U0001f534 LIVE</div>'
+            '<div id="hmp-info">'
+            '<div id="hmp-title">\u2014</div>'
+            '<div id="hmp-sub"></div>'
+            '</div>'
+            '<audio id="hmp-audio" controls preload="none"></audio>'
+            '<button id="hmp-close">\u23f9 Stop &amp; close</button>'
+            '</div>'
+        )
+        _hmp_script = (
+            f'<script nonce="{nonce}">'
+            # Self-contained close — works on any hub page.
+            # On the hub dashboard _closeHubMiniPlayer() is also called via
+            # the delegated click listener; both are idempotent so no conflict.
+            '(function(){'
+            'var _HMP="hmp_live";'
+            'function _hmpCloseBasic(){'
+            'var au=document.getElementById("hmp-audio");'
+            'if(au){au.pause();au.src="";au.load();}'
+            'var pl=document.getElementById("hub-mini-player");'
+            'if(pl)pl.style.display="none";'
+            'document.body.style.paddingBottom="";'
+            'try{sessionStorage.removeItem(_HMP);}catch(e){}'
+            '}'
+            'var _cb=document.getElementById("hmp-close");'
+            'if(_cb)_cb.addEventListener("click",_hmpCloseBasic);'
+            # Restore any in-progress stream from sessionStorage
+            'var s;try{s=JSON.parse(sessionStorage.getItem(_HMP)||"null");}catch(e){}'
+            'if(!s||!s.url)return;'
+            'var pl=document.getElementById("hub-mini-player");'
+            'var au=document.getElementById("hmp-audio");'
+            'if(!pl||!au)return;'
+            'var t=document.getElementById("hmp-title");'
+            'var sb=document.getElementById("hmp-sub");'
+            'if(t)t.textContent=s.title||"\u2014";'
+            'if(sb)sb.textContent=s.sub||"";'
+            'au.src=s.url;au.load();'
+            'au.play().catch(function(){});'
+            'pl.style.display="flex";'
+            'document.body.style.paddingBottom="72px";'
+            # Clear state if relay slot has expired (audio errors or ends)
+            'au.addEventListener("error",_hmpCloseBasic);'
+            'au.addEventListener("ended",_hmpCloseBasic);'
+            '})();'
+            '</script>'
+        )
+
         return (
             dropdown_css
+            + _hmp_css
             + '<header style="background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));'
               'border-bottom:1px solid var(--bor);box-shadow:0 10px 24px rgba(0,0,0,.18);'
               'position:relative;z-index:200">'
@@ -13818,6 +13894,8 @@ def _inject_nav():
               f'<button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
             + '</nav></header>'
             + update_banner
+            + _hmp_html
+            + _hmp_script
         )
 
     from markupsafe import Markup
@@ -28173,16 +28251,6 @@ body.wall-mode .sc{}
 .rds-rt-scroll{display:inline-flex;align-items:center;white-space:nowrap;min-width:max-content;animation:rds-rt-marquee 14s linear infinite}
 .rds-rt-scroll span{display:inline-block;padding-right:2.5rem}
 @keyframes rds-rt-marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-/* Hub live mini-player */
-#hub-mini-player{position:fixed;bottom:0;left:0;right:0;z-index:9999;background:linear-gradient(180deg,#0d2346 0%,#070f24 100%);border-top:2px solid var(--acc);padding:10px 18px;display:none;align-items:center;gap:14px;box-shadow:0 -6px 28px rgba(0,0,0,.5);flex-wrap:wrap}
-#hmp-badge{background:#ef4444;color:#fff;font-size:10px;font-weight:800;letter-spacing:.06em;padding:3px 7px;border-radius:999px;flex-shrink:0;animation:livePulse 1.4s ease-in-out infinite}
-@keyframes livePulse{0%,100%{opacity:1}50%{opacity:.55}}
-#hmp-info{min-width:0;flex:0 1 200px}
-#hmp-title{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--tx)}
-#hmp-sub{font-size:11px;color:var(--mu);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#hmp-audio{flex:1;min-width:200px;height:32px;accent-color:var(--acc)}
-#hmp-close{background:none;border:1px solid var(--bor);border-radius:6px;color:var(--mu);font-size:13px;cursor:pointer;padding:5px 12px;line-height:1;flex-shrink:0;white-space:nowrap}
-#hmp-close:hover{border-color:var(--al);color:var(--al)}
 .sc-detail{display:none}.sc-detail.open{display:block}
 .sc-expand-btn{background:none;border:none;color:var(--mu);padding:2px 5px;font-size:13px;cursor:pointer;line-height:1;transition:transform .2s,color .15s;flex-shrink:0}
 .sc-expand-btn:hover{color:var(--tx)}.sc-expand-btn.open{transform:rotate(180deg)}
@@ -28218,6 +28286,7 @@ function _closeHubMiniPlayer(){
   if(audio){audio.pause();audio.src='';}
   if(_hmpActive){_hmpActive.textContent='▶ Live';_hmpActive.className='btn bp bs';_hmpActive=null;}
   document.body.style.paddingBottom='';
+  try{sessionStorage.removeItem('hmp_live');}catch(e){}
 }
 function toggleLive(siteIdx,streamIdx,btn){
   // Tapping the active button again stops playback
@@ -28239,6 +28308,7 @@ function toggleLive(siteIdx,streamIdx,btn){
   document.body.style.paddingBottom='72px';
   btn.textContent='⏹ Stop';btn.className='btn bd bs';
   _hmpActive=btn;
+  try{sessionStorage.setItem('hmp_live',JSON.stringify({url:url,title:name,sub:site}));}catch(e){}
 }// ── Hub AJAX refresh ──────────────────────────────────────────
 var _hubTimer = null;
 var _hubLastReload = 0; // epoch ms — guard against reload loops
@@ -29293,15 +29363,6 @@ setInterval(_loadTrends, 300000);
 {% endfor %}
 </div>
 {% endif %}
-<div id="hub-mini-player">
-  <div id="hmp-badge">🔴 LIVE</div>
-  <div id="hmp-info">
-    <div id="hmp-title">—</div>
-    <div id="hmp-sub"></div>
-  </div>
-  <audio id="hmp-audio" controls preload="none"></audio>
-  <button id="hmp-close">⏹ Stop &amp; close</button>
-</div>
 </main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
 
 # ─── Error handlers ──────────────────────────────────────────────────────────

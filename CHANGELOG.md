@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.27] - 2026-03-26
+
+### Added
+- **Persistent hub mini player** — the live audio mini player now survives navigation between hub pages (dashboard, reports, broadcast chains, plugins). When a stream is started the URL, title, and site name are saved to `sessionStorage`. The player is injected by `topnav()` on every hub page; on load it restores from `sessionStorage` and reconnects to the same relay slot URL automatically. Stopping via the ⏹ button or the stream ending clears `sessionStorage` so the player does not reappear. Duplicate mini-player CSS and HTML removed from `HUB_TPL` — now emitted exclusively by `topnav()`.
+
 ## [3.4.26] - 2026-03-26
 
 ### Fixed
