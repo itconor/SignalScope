@@ -783,6 +783,85 @@ WDEOF
   ${SUDO} chmod +x /usr/local/bin/${SERVICE_NAME}-watchdog.sh
 }
 
+setup_ptp() {
+  # Install linuxptp (ptp4l + pmc) and configure it as a monitor-only PTP slave.
+  #
+  # free_running 1  — ptp4l measures offsetFromMaster but NEVER adjusts the
+  #                   system clock.  NTP continues to own clock discipline
+  #                   entirely.  There is no conflict.
+  # slaveOnly 1     — this machine will never participate in BMCA as a potential
+  #                   master and will never send Announce messages.
+  # time_stamping software — no hardware PHC required; works on any NIC.
+  #
+  # The only network traffic added: Delay_Req packets (~44 bytes, ~1/s) sent to
+  # the grandmaster so path delay can be measured.  The GM expects these from
+  # every slave and handles many simultaneously.
+  #
+  # Idempotent — safe to run on updates; skips if already configured identically.
+
+  step "Installing linuxptp (ptp4l + pmc)"
+  if command -v apt-get &>/dev/null; then
+    export DEBIAN_FRONTEND=noninteractive
+    ${SUDO} apt-get install -y linuxptp || { warn "linuxptp install failed — PTP monitoring will use passive listener only"; return 0; }
+  else
+    warn "apt-get not available — skipping linuxptp install"
+    return 0
+  fi
+
+  # Detect the default network interface (used for PTP multicast)
+  local ptp_iface
+  ptp_iface=$(ip route get 1.1.1.1 2>/dev/null \
+    | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' \
+    | head -1)
+  [[ -z "$ptp_iface" ]] && ptp_iface="eth0"
+
+  ${SUDO} mkdir -p /etc/linuxptp
+
+  ${SUDO} tee /etc/linuxptp/ptp4l.conf > /dev/null <<EOF
+# ptp4l configuration — managed by SignalScope installer
+#
+# MONITOR-ONLY mode:
+#   slaveOnly 1     — never becomes a PTP master
+#   free_running 1  — measures offset but does NOT adjust the system clock
+#                     NTP continues to own clock discipline; no conflict possible
+#
+# To change the network interface: edit the section header at the bottom of
+# this file and run:  sudo systemctl restart ptp4l
+
+[global]
+slaveOnly               1
+free_running            1
+time_stamping           software
+logging_level           5
+summary_interval        1
+kernel_leap             1
+check_fup_sync          1
+follow_up_info          1
+tx_timestamp_timeout    10
+
+[$ptp_iface]
+EOF
+
+  # Override the default service ExecStart so it always reads our config
+  # (distribution defaults vary — some pass -i eth0, some pass nothing)
+  ${SUDO} mkdir -p /etc/systemd/system/ptp4l.service.d
+  ${SUDO} tee /etc/systemd/system/ptp4l.service.d/signalscope.conf > /dev/null <<'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/ptp4l -f /etc/linuxptp/ptp4l.conf
+EOF
+
+  ${SUDO} systemctl daemon-reload
+  ${SUDO} systemctl enable ptp4l
+  if ${SUDO} systemctl restart ptp4l 2>/dev/null; then
+    ok "ptp4l running (slave-only, monitor mode) on interface: ${ptp_iface}"
+  else
+    warn "ptp4l failed to start — PTP traffic may not be present on ${ptp_iface}"
+    warn "To change interface: edit /etc/linuxptp/ptp4l.conf, then: sudo systemctl restart ptp4l"
+  fi
+  ok "pmc available for accurate PTP offset readings"
+}
+
 create_service() {
   step "Installing systemd service"
 
@@ -1279,6 +1358,11 @@ EOF
 
     [[ "${ENABLE_SERVICE}" == "1" ]] && create_service
   fi
+
+  # ── linuxptp — monitor-only PTP slave (fresh install and updates) ────────────
+  # Runs on every install/update so existing machines get ptp4l on upgrade.
+  # safe to re-run: config is overwritten only if changed, service is restarted.
+  setup_ptp
 
   # ── nginx (fresh install or explicitly requested) ────────────────────────────
   if [[ "${ENABLE_NGINX}" == "1" ]]; then
