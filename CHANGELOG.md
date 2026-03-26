@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.160] - 2026-03-26
+
+### Fixed
+- **Hub Reports — "Clips only" filter pushed off right edge** — the filter row contained Site, Stream, Type, Chain, two `datetime-local` inputs, the Clips checkbox, and the row count all in a single flex row. The datetime inputs had no width constraint (browsers render them at ~195 px each), which could overflow the container and push the Clips checkbox off-screen on typical laptop widths. Fix: added `max-width:160px` on filter selects and `max-width:175px` on datetime inputs, moved the "N events shown" count out of the flex row into a dedicated `filter-row-count` div below the filter bar.
+- **Broadcast Chains — clicking a fault log row scrolls to top and "closes" the fault panel** — the fault log row click handler called `_enterHistMode(ts)` then `banner.scrollIntoView({behavior:'smooth', block:'nearest'})`. Because the history banner is at the top of the page and the user was scrolled down to the fault log, the scroll jumped to the top and moved the open fault log panel out of view. Fix: removed the auto-scroll; instead the history banner gets a 2 s blue highlight ring to confirm that history mode was entered, without moving the page scroll position.
+
 ## [3.3.159] - 2026-03-26
 
 ### Fixed

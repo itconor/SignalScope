@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.159"
+BUILD                  = "SignalScope-3.3.160"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -21544,9 +21544,10 @@ document.getElementById('chains_list').addEventListener('click',function(e){
   var ts=parseFloat(row.dataset.ts);
   if(!ts||isNaN(ts))return;
   _enterHistMode(ts);
-  // Scroll the history banner into view so the user sees the time-travel controls
+  // Highlight the history banner without scrolling away from the fault log.
+  // (Auto-scrolling to the top closed the fault log panel from the user's view.)
   var banner=document.getElementById('hist_banner');
-  if(banner)banner.scrollIntoView({behavior:'smooth',block:'nearest'});
+  if(banner){ banner.style.transition='box-shadow .3s'; banner.style.boxShadow='0 0 0 3px rgba(23,168,255,.6)'; setTimeout(function(){if(banner)banner.style.boxShadow='';},2000); }
 });
 
 // ── Fault Replay Timeline ────────────────────────────────────────────────────
@@ -24383,9 +24384,12 @@ main{padding:18px 20px 24px}
 .report-title{font-size:20px;font-weight:800;line-height:1.1}
 .report-sub{font-size:12px;color:var(--mu);margin-top:4px}
 .hero-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.filters{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center;background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px}
-.filters select,.filters input{background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 10px;font-size:12px}
+.filters{display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap;align-items:center;background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px}
+.filters select,.filters input{background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 10px;font-size:12px;min-width:0}
+.filters select{max-width:160px}
+.filters input[type="datetime-local"]{max-width:175px}
 .filters label{color:var(--mu);font-size:12px}
+.filter-row-count{text-align:right;font-size:12px;color:var(--mu);margin-bottom:14px;padding:0 2px}
 .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px}
 .sc{background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px 14px;box-shadow:0 4px 10px rgba(0,0,0,.14);cursor:pointer;transition:border-color .15s,box-shadow .15s,background .15s;user-select:none}
 .sc:hover{border-color:var(--acc);box-shadow:0 0 0 2px rgba(23,168,255,.18)}
@@ -24486,8 +24490,8 @@ tr:hover td{background:#123764}
     <label>From <input type="datetime-local" id="f_from" onchange="applyFilters()"></label>
     <label>To   <input type="datetime-local" id="f_to"   onchange="applyFilters()"></label>
     <label><input type="checkbox" id="f_clips" onchange="applyFilters()"> Clips only</label>
-    <span class="page-info" id="row_count"></span>
   </div>
+  <div class="filter-row-count" id="row_count"></div>
 
   <div class="table-wrap">
   <table id="evt_table">
