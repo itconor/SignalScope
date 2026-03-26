@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.165"
+BUILD                  = "SignalScope-3.3.166"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -19766,10 +19766,13 @@ def hub_proxy_alert_clip(site_name, stream_filename):
     cfg = monitor.app_cfg
     if cfg.hub.mode not in ("hub","both"):
         return "Not a hub", 404
-    site = hub_server.get_site(site_name)
-    if not site:
+    # "(hub)" is a pseudo-site for clips recorded directly on the hub machine.
+    # These are always in the local alert_snippets cache — no remote relay needed.
+    _is_hub_site = (site_name == "(hub)")
+    site = hub_server.get_site(site_name) if not _is_hub_site else None
+    if not site and not _is_hub_site:
         return "Site not found", 404
-    client_addr = _hub_sanitise_client_addr(site.get("_client_addr",""))
+    client_addr = _hub_sanitise_client_addr(site.get("_client_addr","")) if site else ""
 
     wav_data: bytes = b""
 

@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.166] - 2026-03-26
+
+### Fixed
+- **Hub Reports — clip player still 404 for hub-side clips** — clips recorded directly on the hub are tagged `_site = "(hub)"`. The route was fixed in 3.3.165 to handle `/` in stream names, but `hub_server.get_site("(hub)")` returns `None` (the hub isn't a registered remote client), causing the function to return "Site not found" before ever reaching the local `alert_snippets` cache where hub clips live. Fix: `(hub)` is now recognised as a pseudo-site; the `get_site` check is skipped and `client_addr` is set to empty string, allowing the local cache lookup to proceed normally.
+
 ## [3.3.165] - 2026-03-26
 
 ### Fixed
