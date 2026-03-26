@@ -1559,7 +1559,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.8"
+BUILD                  = "SignalScope-3.4.9"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -3655,6 +3655,16 @@ class MetricsDB:
                     CREATE INDEX IF NOT EXISTS idx_cfl_chain
                         ON chain_fault_log(chain_id, ts_start);
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS adbreak_history (
+                        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chain_id TEXT NOT NULL,
+                        ts_start REAL NOT NULL,
+                        duration REAL NOT NULL,
+                        minute_of_day INTEGER NOT NULL
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_adbreak_chain ON adbreak_history(chain_id, ts_start)")
                 conn.commit()
                 # Migration: add clips column to chain_fault_log if absent
                 # (DBs created before clips support was added won't have it)
@@ -3768,6 +3778,63 @@ class MetricsDB:
         except Exception as e:
             print(f"[MetricsDB] fault_log_update_meta error: {e}")
             self._conn = None
+
+    def adbreak_log(self, chain_id: str, ts_start: float, duration: float) -> None:
+        """Record a confirmed ad-break event for learning."""
+        import datetime as _dt
+        minute_of_day = int(_dt.datetime.fromtimestamp(ts_start).hour * 60
+                            + _dt.datetime.fromtimestamp(ts_start).minute)
+        try:
+            with sqlite3.connect(self._path, timeout=10) as conn:
+                conn.execute(
+                    "INSERT INTO adbreak_history(chain_id,ts_start,duration,minute_of_day) VALUES(?,?,?,?)",
+                    (chain_id, ts_start, duration, minute_of_day)
+                )
+                # Keep only last 500 breaks per chain
+                conn.execute(
+                    "DELETE FROM adbreak_history WHERE chain_id=? AND id NOT IN "
+                    "(SELECT id FROM adbreak_history WHERE chain_id=? ORDER BY ts_start DESC LIMIT 500)",
+                    (chain_id, chain_id)
+                )
+        except Exception:
+            pass
+
+    def adbreak_stats(self, chain_id: str, window_days: int = 60) -> dict:
+        """Return {p95: float, common_minutes: list[int], count: int} for a chain.
+        common_minutes contains minute_of_day values that appear >= 2 times within
+        a +-4-minute window (i.e. recurring break start times)."""
+        cutoff = time.time() - window_days * 86400
+        try:
+            with sqlite3.connect(self._path, timeout=10) as conn:
+                rows = conn.execute(
+                    "SELECT duration, minute_of_day FROM adbreak_history "
+                    "WHERE chain_id=? AND ts_start>? ORDER BY duration",
+                    (chain_id, cutoff)
+                ).fetchall()
+        except Exception:
+            return {"p95": 0.0, "common_minutes": [], "count": 0}
+        if not rows:
+            return {"p95": 0.0, "common_minutes": [], "count": 0}
+        durations = [r[0] for r in rows]
+        n = len(durations)
+        p95_idx = min(int(n * 0.95), n - 1)
+        p95 = durations[p95_idx]
+        # Find recurring break windows: cluster minute_of_day values
+        minutes = [r[1] for r in rows]
+        from collections import Counter as _Counter
+        freq = _Counter(minutes)
+        common = []
+        checked = set()
+        for m, cnt in freq.most_common():
+            if m in checked:
+                continue
+            # Sum counts within +-4 minutes (wrapping at 1440)
+            total = sum(freq.get((m + d) % 1440, 0) for d in range(-4, 5))
+            if total >= 2:
+                common.append(m)
+            for d in range(-4, 5):
+                checked.add((m + d) % 1440)
+        return {"p95": p95, "common_minutes": common, "count": n}
 
     def fault_log_load(self, chain_id: str, limit: int = 25) -> list:
         """Return the most recent `limit` fault log entries for a chain, oldest first."""
@@ -11578,6 +11645,33 @@ class HubServer:
                                         f"({_elapsed_so_far}s / {min_fault_secs}s elapsed).")
                             elapsed = now - self._chain_fault_since.get(cid, now)
                             pending_adbreak = bool(pending_meta.get("adbreak_candidate", False))
+                            # ── Ad-break schedule learning: dynamic confirmation window ──
+                            # When we have enough history for this chain, shorten the window
+                            # if the break time doesn't match any known schedule slot, or
+                            # fire early if the break has run past the p95 duration.
+                            if pending_adbreak:
+                                try:
+                                    _ab_stats = metrics_db.adbreak_stats(cid)
+                                    if _ab_stats["count"] >= 5:
+                                        import datetime as _dt2
+                                        _fault_since = self._chain_fault_since.get(cid, now)
+                                        _mod = int(_dt2.datetime.fromtimestamp(_fault_since).hour * 60
+                                                   + _dt2.datetime.fromtimestamp(_fault_since).minute)
+                                        _in_window = any(
+                                            abs((_mod - _cm) % 1440) <= 4 or abs((_cm - _mod) % 1440) <= 4
+                                            for _cm in _ab_stats["common_minutes"]
+                                        )
+                                        if not _in_window:
+                                            # Not a known ad-break slot — shorten window aggressively
+                                            min_fault_secs = max(20, int(min_fault_secs * 0.4))
+                                        elif _ab_stats["p95"] > 0 and elapsed > _ab_stats["p95"] * 1.2:
+                                            # Break has run longer than p95 * 1.2 — force alert now
+                                            min_fault_secs = 0
+                                            monitor.log(
+                                                f"[Chain] '{result['name']}' ad-break overshoot: "
+                                                f"{elapsed:.0f}s > p95 {_ab_stats['p95']:.0f}s — firing alert.")
+                                except Exception:
+                                    pass
                             # mixin_is_down and post-mixin faults always bypass regardless of
                             # whether the pending window started as an adbreak candidate —
                             # a post-mixin fault is never an ad break, and if the mix-in
@@ -11861,6 +11955,17 @@ class HubServer:
                 self._schedule_chain_recovery_clips(chain, flog[-1], cfg, tail_secs)
         # Record last recovery time (used for fast re-fault detection, Change 3)
         self._chain_last_recovery[cid] = now
+        # Log confirmed ad-break durations for schedule learning
+        _flog_now = self._chain_fault_log.get(cid, [])
+        _ab_ts = _flog_now[-1].get("ts_start", 0.0) if _flog_now else 0.0
+        if self._chain_fault_adbreak.get(cid) and _ab_ts > 0:
+            _ab_dur = now - _ab_ts
+            if 5.0 < _ab_dur < 600.0:   # sanity: 5 s - 10 min
+                try:
+                    metrics_db.adbreak_log(cid, _ab_ts, _ab_dur)
+                    monitor.log(f"[Chain] Logged ad-break for '{cid}': {_ab_dur:.0f}s at minute {int(_ab_ts % 3600 // 60)}")
+                except Exception:
+                    pass
         # Clear adbreak-overshoot flag now that the chain is ok
         self._chain_fault_adbreak.pop(cid, None)
         # Reset degrading-alert fired flags for all nodes in this chain (Change 6)
@@ -20789,6 +20894,31 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .flog-view-hint{font-size:10px;opacity:.45;transition:opacity .12s}
 .flog-row:hover .flog-view-hint{opacity:1}
 .flog-empty{color:var(--mu);font-size:11px;padding:8px 0}
+/* Chain builder redesign */
+.blk{margin-bottom:14px}
+.blk label{font-size:12px;color:var(--mu);margin-bottom:4px;display:block}
+.blk-hdr{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px;border-bottom:1px solid var(--bor);padding-bottom:6px}
+.blk-hdr span:first-child{font-size:13px;font-weight:600;color:var(--tx)}
+.blk-collapsible{border:1px solid var(--bor);border-radius:8px;overflow:hidden;margin-bottom:6px}
+.blk-collapsible-hdr{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;font-size:13px;font-weight:600;background:#0a1e42;transition:background .15s;user-select:none}
+.blk-collapsible-hdr:hover{background:#0d2550}
+.blk-caret{margin-left:auto;font-size:10px;transition:transform .2s;color:var(--mu)}
+.blk-collapsible-hdr.open .blk-caret{transform:rotate(90deg)}
+.blk-collapsible-hdr.open{border-bottom:1px solid var(--bor)}
+.adv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;padding:12px}
+.adv-field label{font-size:12px;color:var(--mu);margin-bottom:4px;display:block}
+.field-hint{font-size:10px;color:var(--mu);margin-top:3px}
+/* Node card redesign */
+.pos-group{border:1px solid var(--bor);border-radius:10px;background:#0a1e42;overflow:hidden;margin-bottom:6px}
+.pos-group-hdr{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#0d2550;border-bottom:1px solid var(--bor);font-size:12px;font-weight:600;color:var(--mu)}
+.node-row{display:grid;grid-template-columns:minmax(130px,1fr) minmax(160px,2fr) auto;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.04)}
+.node-row:last-of-type{border-bottom:none}
+.node-row-expand{display:none;grid-column:1/-1;padding:8px 10px 10px;border-top:1px solid rgba(255,255,255,.05);background:rgba(0,0,0,.18)}
+.node-row-expand.open{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
+.node-row-expand label{font-size:11px;color:var(--mu);margin-bottom:3px;display:block}
+.node-expand-btn{background:transparent;border:1px solid var(--bor);border-radius:5px;color:var(--mu);cursor:pointer;padding:2px 7px;font-size:11px;white-space:nowrap;transition:border-color .15s}
+.node-expand-btn:hover{border-color:var(--acc);color:var(--acc)}
+.pos-footer{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#0a1830;flex-wrap:wrap}
 /* A/B Group cards */
 .abg-section{margin-bottom:28px}
 .abg-section-hdr{font-size:13px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px;display:flex;align-items:center;gap:8px}
@@ -20993,69 +21123,91 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 <div id="builder" class="builder-panel" style="display:none">
   <div class="builder-title" id="builder_title">New Chain</div>
   <input type="hidden" id="builder_id">
-  <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px">
-    <div style="flex:1;min-width:200px">
-      <label>Chain Name</label>
-      <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%">
+
+  <!-- Basic: name -->
+  <div class="blk">
+    <label>Chain Name</label>
+    <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%">
+  </div>
+
+  <!-- Nodes -->
+  <div class="blk-hdr">
+    <span>Signal Path — left = source, right = destination</span>
+    <span style="font-size:11px;color:var(--mu)">Each position can hold multiple streams (stack)</span>
+  </div>
+  <div id="builder_nodes" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
+  <button class="btn bg bs" id="btn_add_node" style="margin-bottom:14px">&#xFF0B; Add Position</button>
+
+  <!-- Advanced settings — collapsible -->
+  <div class="blk-collapsible" id="blk_advanced">
+    <div class="blk-collapsible-hdr" data-target="adv_body">
+      <span>&#x2699; Timing &amp; Behaviour</span>
+      <span class="blk-caret">&#x25B6;</span>
     </div>
-    <div style="min-width:160px">
-      <label title="How long the chain must stay in fault before an alert fires. Set this longer than your typical ad break to avoid false alarms.">Fault confirmation delay (seconds)</label>
-      <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:100px">
-      <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = alert immediately · 180 = 3 min</div>
-    </div>
-    <div style="min-width:160px">
-      <label title="When the fault position shifts during the confirmation window (e.g. a brief upstream program break coincides with a poll), give the new position this many seconds before firing. 0 = keep the original clock running — recommended unless you have many legitimate upstream breaks.">Fault shift grace (seconds)</label>
-      <input type="number" id="builder_fault_shift_grace" min="0" max="300" step="10" value="0" style="width:100px">
-      <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = keep clock · 20 = legacy</div>
-    </div>
-    <div style="min-width:180px">
-      <label title="Mark the node where ad audio is injected into the chain. If this node is also silent, it cannot be an ad break — the confirmation timer is bypassed and the alert fires immediately.">Ad mix-in point <span style="color:var(--mu)">(optional)</span></label>
-      <select id="builder_mixin_idx" style="width:100%">
-        <option value="">— None —</option>
-      </select>
-      <div style="font-size:11px;color:var(--mu);margin-top:3px">Silent here = real fault, skip delay</div>
+    <div id="adv_body" style="display:none">
+      <div class="adv-grid">
+        <div class="adv-field">
+          <label title="How long the chain must stay in fault before an alert fires.">Fault confirmation (s)</label>
+          <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:90px">
+          <div class="field-hint">0 = immediate · 180 = 3 min</div>
+        </div>
+        <div class="adv-field">
+          <label title="Mark the node where ad audio is injected. Silent here = real fault.">Ad mix-in node</label>
+          <select id="builder_mixin_idx" style="width:100%">
+            <option value="">— None —</option>
+          </select>
+          <div class="field-hint">Silent here = bypass delay</div>
+        </div>
+        <div class="adv-field">
+          <label title="Chain must stay OK for this long before a recovery notification fires.">Recovery confirmation (s)</label>
+          <input type="number" id="builder_min_recovery" min="0" max="3600" step="30" value="0" style="width:90px">
+          <div class="field-hint">0 = immediate</div>
+        </div>
+        <div class="adv-field">
+          <label title="Minimum time between alert notifications. Clips always written.">Alert interval (min)</label>
+          <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:90px">
+          <div class="field-hint">0 = no limit</div>
+        </div>
+        <div class="adv-field">
+          <label title="Alert when level trend falls below this slope. 0 = disabled.">Degrading threshold (dBFS/min)</label>
+          <input type="number" id="builder_trend_alert" min="-10" max="0" step="0.1" value="0" style="width:90px">
+          <div class="field-hint">0 = off · &#x2212;1 = alert at &#x2212;1dB/min</div>
+        </div>
+        <div class="adv-field">
+          <label title="Suppress notifications if this upstream chain is faulted.">Upstream chain (cascade)</label>
+          <select id="builder_upstream_chain" style="width:100%">
+            <option value="">— None —</option>
+          </select>
+          <div class="field-hint">Suppress if upstream faulted</div>
+        </div>
+        <div class="adv-field">
+          <label title="Extra grace if fault position shifts during the confirmation window.">Fault shift grace (s)</label>
+          <input type="number" id="builder_fault_shift_grace" min="0" max="300" step="10" value="0" style="width:90px">
+          <div class="field-hint">0 = keep clock</div>
+        </div>
+      </div>
     </div>
   </div>
-  <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;border-top:1px solid var(--bor);padding-top:12px">
-    <div style="min-width:160px">
-      <label title="Chain must stay continuously OK for this many seconds before a CHAIN_RECOVERED notification fires. 0 = fire immediately on first OK poll.">Recovery confirmation (seconds)</label>
-      <input type="number" id="builder_min_recovery" min="0" max="3600" step="30" value="0" style="width:100px">
-      <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = immediate · 60 = 1 min</div>
+
+  <!-- Comparators — collapsible -->
+  <div class="blk-collapsible" id="blk_comparators" style="margin-top:8px">
+    <div class="blk-collapsible-hdr" data-target="comp_body">
+      <span>&#x2194; Signal Comparators</span>
+      <span style="font-size:11px;color:var(--mu);margin-left:8px">Needs &#x2265; 5 min shared history</span>
+      <span class="blk-caret" style="margin-left:auto">&#x25B6;</span>
     </div>
-    <div style="min-width:160px">
-      <label title="Minimum time between alert notifications (email/push/webhook) for this chain. Clips and alert log are always written. 0 = no limit.">Alert interval (minutes)</label>
-      <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:100px">
-      <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = no limit · 30 = every 30 min</div>
-    </div>
-    <div style="min-width:160px">
-      <label title="Send CHAIN_DEGRADING alert when any node's level trend slope (dBFS/min) falls below this value. 0 = disabled.">Degrading alert threshold (dBFS/min)</label>
-      <input type="number" id="builder_trend_alert" min="-10" max="0" step="0.1" value="0" style="width:100px">
-      <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = off · -1 = alert at −1dB/min</div>
-    </div>
-    <div style="min-width:200px">
-      <label title="If set, and the upstream chain is currently faulted, notifications for this chain are suppressed (but still logged). Used to suppress downstream chains when an upstream failure is the root cause.">Upstream chain (cascade suppress)</label>
-      <select id="builder_upstream_chain" style="width:100%">
-        <option value="">— None —</option>
-      </select>
-      <div style="font-size:11px;color:var(--mu);margin-top:3px">Suppress notifications if upstream faulted</div>
+    <div id="comp_body" style="display:none">
+      <div id="builder_comparators" style="margin-bottom:8px"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn bg bs" type="button" id="btn_add_comp">&#xFF0B; Add Comparator</button>
+        <button class="btn bg bs" type="button" id="btn_add_e2e">&#x2194; Add End-to-End</button>
+      </div>
     </div>
   </div>
-  <div style="font-size:12px;color:var(--mu);margin-bottom:10px">Positions — left = source, right = destination. Each position can hold multiple streams (stack). The first position that is down is the fault point.</div>
-  <div id="builder_nodes" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px"></div>
-  <button class="btn bg bs" id="btn_add_node" style="margin-top:8px">+ Add Position</button>
-  <!-- Comparators section -->
-  <div style="margin-top:18px;border-top:1px solid var(--bor);padding-top:14px">
-    <div style="font-size:12px;color:var(--mu);margin-bottom:10px">
-      ↔ <strong style="color:var(--tx)">Signal Comparators</strong> — Measure level correlation between two points in the chain. Needs ≥ 5 minutes of shared metric history to show a result.
-    </div>
-    <div id="builder_comparators"></div>
-    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-      <button class="btn bg bs" type="button" id="btn_add_comp">+ Add Comparator</button>
-      <button class="btn bg bs" type="button" id="btn_add_e2e">↔ Add End-to-End</button>
-    </div>
-  </div>
+
+  <!-- Actions -->
   <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
-    <button class="btn bp" id="btn_save_chain">💾 Save Chain</button>
+    <button class="btn bp" id="btn_save_chain">&#x1F4BE; Save Chain</button>
     <button class="btn bg" id="btn_cancel_builder">Cancel</button>
   </div>
   <div id="builder_status" style="margin-top:8px;font-size:12px;color:var(--mu)"></div>
@@ -21181,6 +21333,18 @@ var _chainData={
 var _csrf=(document.cookie.match(/csrf_token=([^;]+)/)||[])[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
 var _opts=[];
 
+// Collapsible section toggle
+document.addEventListener('click', function(e){
+  var hdr = e.target.closest('.blk-collapsible-hdr');
+  if(!hdr) return;
+  var targetId = hdr.dataset.target;
+  var body = document.getElementById(targetId);
+  if(!body) return;
+  var open = body.style.display === 'none' || body.style.display === '';
+  body.style.display = open ? '' : 'none';
+  hdr.classList.toggle('open', open);
+});
+
 function _f(url,o){o=o||{};o.headers=Object.assign({'X-CSRFToken':_csrf,'Content-Type':'application/json'},o.headers||{});return fetch(url,o);}
 
 function loadOpts(cb){
@@ -21255,10 +21419,12 @@ document.getElementById('btn_add_e2e').addEventListener('click',function(){
 // ── Node builder ──────────────────────────────────────────────────────────────
 function _addNodeRowToGroup(group, nd){
   var row=document.createElement('div');row.className='node-row';
-  var siteSel=document.createElement('select');siteSel.className='ns';siteSel.style.cssText='flex:1;min-width:130px;max-width:220px';
+  var siteSel=document.createElement('select');siteSel.className='ns';
+  siteSel.style.cssText='min-width:120px;width:100%';
   var sites=sitesFromOpts();
   Object.keys(sites).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=sites[s];siteSel.appendChild(o);});
-  var streamSel=document.createElement('select');streamSel.className='nst';streamSel.style.cssText='flex:2;min-width:160px;max-width:280px';
+  var streamSel=document.createElement('select');streamSel.className='nst';
+  streamSel.style.cssText='min-width:150px;width:100%';
   function fillStreams(){
     streamSel.innerHTML='';
     streamsFor(siteSel.value).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;streamSel.appendChild(o);});
@@ -21266,33 +21432,59 @@ function _addNodeRowToGroup(group, nd){
   }
   siteSel.addEventListener('change',function(){fillStreams();_refreshCompSels();_refreshMixinSel();});
   streamSel.addEventListener('change',function(){_refreshCompSels();_refreshMixinSel();});
-  var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';labelIn.placeholder='Label (optional)';labelIn.style.cssText='flex:1;min-width:110px;max-width:180px';
+  // Expand toggle
+  var expandBtn=document.createElement('button');expandBtn.type='button';
+  expandBtn.className='node-expand-btn';expandBtn.textContent='\u22EF Options';
+  expandBtn.title='Label, machine tag, thresholds, offline alert';
+  // Expanded detail panel
+  var detail=document.createElement('div');detail.className='node-row-expand';
+  function mkDetailField(lbl,el){
+    var w=document.createElement('div');
+    var l=document.createElement('label');l.textContent=lbl;
+    w.appendChild(l);w.appendChild(el);return w;
+  }
+  var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';
+  labelIn.placeholder='Label (optional)';labelIn.style.width='100%';
   labelIn.addEventListener('input',function(){_refreshCompSels();_refreshMixinSel();});
   var machineIn=document.createElement('input');machineIn.type='text';machineIn.className='nm';
-  machineIn.placeholder='Machine tag (optional)';machineIn.style.cssText='flex:1;min-width:110px;max-width:180px';
-  machineIn.title='Hardware tag — nodes with the same tag across chains are treated as being on the same physical machine for shared-fault detection (e.g. LONCTAXZC03)';
+  machineIn.placeholder='Machine tag (optional)';machineIn.style.width='100%';
+  machineIn.title='Hardware tag for shared-fault detection';
   var threshIn=document.createElement('input');threshIn.type='number';threshIn.className='nth';
-  threshIn.placeholder='Silence dBFS override';threshIn.style.cssText='flex:0 0 130px;min-width:100px;max-width:150px';
-  threshIn.title='Override silence threshold (dBFS) for this node in this chain only. Leave blank to use the stream\'s own configured threshold.';
+  threshIn.placeholder='e.g. \u221240';threshIn.style.width='100%';
+  threshIn.title='Override silence threshold (dBFS) for this node';
   threshIn.step='0.5';threshIn.min='-120';threshIn.max='0';
   var offThreshIn=document.createElement('input');offThreshIn.type='number';offThreshIn.className='noth';
-  offThreshIn.placeholder='Off-threshold (dBFS)';offThreshIn.style.cssText='flex:0 0 130px;min-width:100px;max-width:150px';
-  offThreshIn.title='Hysteresis off-threshold (dBFS): node exits fault only when level rises above this. Leave blank for on_threshold + 10 dB.';
+  offThreshIn.placeholder='e.g. \u221230';offThreshIn.style.width='100%';
+  offThreshIn.title='Hysteresis off-threshold (dBFS) \u2014 leave blank for on+10dB';
   offThreshIn.step='0.5';offThreshIn.min='-120';offThreshIn.max='0';
-  var offlineNotifyChk=document.createElement('label');offlineNotifyChk.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;white-space:nowrap;cursor:pointer';
-  var offlineCb=document.createElement('input');offlineCb.type='checkbox';offlineCb.className='nonl';offlineCb.title='Send offline notification for this node when chain is not faulted (redundant node offline alert).';
+  var offlineNotifyChk=document.createElement('label');
+  offlineNotifyChk.style.cssText='display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-top:16px';
+  var offlineCb=document.createElement('input');offlineCb.type='checkbox';offlineCb.className='nonl';
+  offlineCb.title='Alert when this node goes offline (separate from chain fault)';
   offlineNotifyChk.appendChild(offlineCb);
   offlineNotifyChk.appendChild(document.createTextNode('Offline alert'));
-  var rmRow=document.createElement('button');rmRow.type='button';rmRow.textContent='−';rmRow.className='btn bd bs';rmRow.title='Remove this stream';
-  rmRow.style.cssText='padding:3px 8px;font-size:14px';
+  detail.appendChild(mkDetailField('Label',labelIn));
+  detail.appendChild(mkDetailField('Machine tag',machineIn));
+  detail.appendChild(mkDetailField('Silence on (dBFS)',threshIn));
+  detail.appendChild(mkDetailField('Silence off (dBFS)',offThreshIn));
+  detail.appendChild(offlineNotifyChk);
+  expandBtn.addEventListener('click',function(){
+    var open=detail.classList.toggle('open');
+    expandBtn.textContent=open?'\u25B2 Less':'\u22EF Options';
+  });
+  // Remove button
+  var rmRow=document.createElement('button');rmRow.type='button';rmRow.textContent='\u2715';rmRow.className='btn bd bs';
+  rmRow.style.cssText='padding:3px 8px;font-size:13px';
+  rmRow.title='Remove this stream';
   rmRow.onclick=function(){
-    group.removeChild(row);
+    // Remove both the row and its detail panel
+    if(row.parentNode)row.parentNode.removeChild(row);
+    if(detail.parentNode)detail.parentNode.removeChild(detail);
     _updateGroupControls(group);
     _refreshCompSels();_refreshMixinSel();
-    // If group is now empty, remove it from builder_nodes
     if(!group.querySelector('.node-row')){
       var container=document.getElementById('builder_nodes');
-      container.removeChild(group);
+      if(container&&group.parentNode===container)container.removeChild(group);
     }
   };
   if(nd){
@@ -21304,11 +21496,21 @@ function _addNodeRowToGroup(group, nd){
     if(nd.silence_threshold_dbfs!==undefined&&nd.silence_threshold_dbfs!==null)threshIn.value=nd.silence_threshold_dbfs;
     if(nd.silence_off_threshold_dbfs!==undefined&&nd.silence_off_threshold_dbfs!==null)offThreshIn.value=nd.silence_off_threshold_dbfs;
     if(nd.offline_notify)offlineCb.checked=true;
+    // Auto-open detail if any optional field has a value
+    if(nd.label||nd.machine||nd.silence_threshold_dbfs||nd.offline_notify){
+      detail.classList.add('open');expandBtn.textContent='\u25B2 Less';
+    }
   } else { fillStreams(); }
-  row.appendChild(siteSel);row.appendChild(streamSel);row.appendChild(labelIn);row.appendChild(machineIn);row.appendChild(threshIn);row.appendChild(offThreshIn);row.appendChild(offlineNotifyChk);row.appendChild(rmRow);
-  // Insert before the controls footer of the group
+  row.appendChild(siteSel);row.appendChild(streamSel);
+  row.appendChild(expandBtn);row.appendChild(rmRow);
   var footer=group.querySelector('.pos-footer');
-  if(footer){group.insertBefore(row,footer);}else{group.appendChild(row);}
+  if(footer){
+    group.insertBefore(row,footer);
+    group.insertBefore(detail,footer);
+  }else{
+    group.appendChild(row);
+    group.appendChild(detail);
+  }
   _updateGroupControls(group);
   _refreshCompSels();
   _refreshMixinSel();
@@ -21325,17 +21527,21 @@ function _updateGroupControls(group){
   var stackLblWrap=group.querySelector('.stack-lbl-wrap');
   if(stackLblWrap){stackLblWrap.style.display=isStack?'':'none';}
   // Update remove-row button visibility: only show if >1 row
-  group.querySelectorAll('.node-row button').forEach(function(btn){
+  // Only hide the remove (bd) buttons — expand buttons always stay visible
+  group.querySelectorAll('.node-row .btn.bd').forEach(function(btn){
     btn.style.display=isStack?'':'none';
   });
 }
 
 function _mkPosGroup(){
   var grp=document.createElement('div');grp.className='pos-group';
-  grp.style.cssText='display:flex;flex-direction:column;border:1px solid var(--bor);border-radius:8px;padding:8px 10px;background:#0a1e42;margin-bottom:2px;position:relative';
+  // Position header (shows position number + stack label when stacked)
+  var posHdr=document.createElement('div');posHdr.className='pos-group-hdr pos-num-hdr';
+  posHdr.textContent='Position '+(document.getElementById('builder_nodes').children.length+1);
+  grp.appendChild(posHdr);
   // Stack label — only visible when group has >1 node (i.e. it becomes a stack)
   var stackLblWrap=document.createElement('div');stackLblWrap.className='stack-lbl-wrap';
-  stackLblWrap.style.cssText='display:none;margin-bottom:6px';
+  stackLblWrap.style.cssText='display:none;padding:6px 10px;border-bottom:1px solid var(--bor);background:#0a1830';
   var stackLblIn=document.createElement('input');stackLblIn.type='text';stackLblIn.className='stack-label-in';
   stackLblIn.placeholder='Stack label (e.g. Primary Sources, STL feeds…)';
   stackLblIn.title='A short name for this stack shown in the chain diagram, fault log and alerts';
@@ -23055,6 +23261,19 @@ def api_chains_status():
                 result["health_score"] = None
                 result["health_label"] = "Unknown"
                 result["health_color"] = "#8aa4c8"
+
+            # ── Ad-break stats (expose p95 + count if enough history) ──────
+            try:
+                _abs = metrics_db.adbreak_stats(cid)
+                if _abs["count"] >= 3:
+                    result["adbreak_stats"] = {
+                        "p95": round(_abs["p95"], 1),
+                        "count": _abs["count"],
+                    }
+                else:
+                    result["adbreak_stats"] = None
+            except Exception:
+                result["adbreak_stats"] = None
 
             results.append(result)
         except Exception as e:
