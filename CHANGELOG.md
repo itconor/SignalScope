@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.148] - 2026-03-26
+
+### Added
+- **Configurable fault-shift grace window per chain** — a new **"Fault shift grace (seconds)"** field in the chain builder (default 0). When the fault position shifts during the confirmation window, this controls how much time the new fault position gets before the alert fires:
+  - **0 (default)** — keep the original clock running (3.3.147 behaviour). Best for chains where upstream nodes have intermittent program breaks that would otherwise delay the alert indefinitely.
+  - **> 0** — give the new fault position that many seconds before firing (e.g. set to 20 to restore pre-3.3.147 legacy behaviour). Useful if your chain has nodes with genuine heartbeat lag where the old grace window was intentional.
+
 ## [3.3.147] - 2026-03-26
 
 ### Fixed

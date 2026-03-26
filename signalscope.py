@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.147"
+BUILD                  = "SignalScope-3.3.148"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -11420,7 +11420,8 @@ class HubServer:
                     result = self.eval_chain(chain, maintenance=maint)
                     self._check_watched_nodes(cid, result, now)
                     curr   = result["status"]   # "ok" | "fault" | "unknown"
-                    min_fault_secs = max(0, int(chain.get("min_fault_seconds", 0) or 0))
+                    min_fault_secs       = max(0, int(chain.get("min_fault_seconds", 0) or 0))
+                    fault_shift_grace    = max(0, int(chain.get("fault_shift_grace_seconds", 0) or 0))
 
                     # Work out whether the confirmation window should apply.
                     #
@@ -11548,18 +11549,27 @@ class HubServer:
                             if (current_fault_idx is not None
                                     and current_fault_idx != stored_fault_idx):
                                 # Fault position shifted (e.g. a brief upstream program
-                                # break coincided with the poll cycle).  Update which node
-                                # we will report but keep the original confirmation clock
-                                # running — the chain has been broken somewhere throughout,
-                                # and resetting the timer here would let intermittent
-                                # upstream breaks delay the alert indefinitely.
-                                _elapsed_so_far = round(now - self._chain_fault_since.get(cid, now))
+                                # break coincided with the poll cycle).
                                 self._set_pending_fault_meta(cid, current_fault_idx, pending_meta.get("adbreak_candidate", False))
-                                monitor.log(
-                                    f"[Chain] '{result['name']}' fault position shifted "
-                                    f"(pos {stored_fault_idx} → {current_fault_idx}) — "
-                                    f"confirmation clock continues "
-                                    f"({_elapsed_so_far}s / {min_fault_secs}s elapsed).")
+                                if fault_shift_grace > 0:
+                                    # Grace window configured: give the new fault position
+                                    # fault_shift_grace_seconds of remaining time before firing.
+                                    self._chain_fault_since[cid] = now - max(0.0, min_fault_secs - fault_shift_grace)
+                                    monitor.log(
+                                        f"[Chain] '{result['name']}' fault position shifted "
+                                        f"(pos {stored_fault_idx} → {current_fault_idx}) — "
+                                        f"applying {fault_shift_grace}s grace window.")
+                                else:
+                                    # Default (grace = 0): keep the original clock running.
+                                    # The chain has been broken somewhere continuously;
+                                    # resetting here would let intermittent upstream breaks
+                                    # delay the alert indefinitely.
+                                    _elapsed_so_far = round(now - self._chain_fault_since.get(cid, now))
+                                    monitor.log(
+                                        f"[Chain] '{result['name']}' fault position shifted "
+                                        f"(pos {stored_fault_idx} → {current_fault_idx}) — "
+                                        f"confirmation clock continues "
+                                        f"({_elapsed_so_far}s / {min_fault_secs}s elapsed).")
                             elapsed = now - self._chain_fault_since.get(cid, now)
                             pending_adbreak = bool(pending_meta.get("adbreak_candidate", False))
                             # mixin_is_down and post-mixin faults always bypass regardless of
@@ -20357,6 +20367,11 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
       <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:100px">
       <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = alert immediately · 180 = 3 min</div>
     </div>
+    <div style="min-width:160px">
+      <label title="When the fault position shifts during the confirmation window (e.g. a brief upstream program break coincides with a poll), give the new position this many seconds before firing. 0 = keep the original clock running — recommended unless you have many legitimate upstream breaks.">Fault shift grace (seconds)</label>
+      <input type="number" id="builder_fault_shift_grace" min="0" max="300" step="10" value="0" style="width:100px">
+      <div style="font-size:11px;color:var(--mu);margin-top:3px">0 = keep clock · 20 = legacy</div>
+    </div>
     <div style="min-width:180px">
       <label title="Mark the node where ad audio is injected into the chain. If this node is also silent, it cannot be an ad break — the confirmation timer is bypassed and the alert fires immediately.">Ad mix-in point <span style="color:var(--mu)">(optional)</span></label>
       <select id="builder_mixin_idx" style="width:100%">
@@ -20703,6 +20718,7 @@ function showBuilder(chain){
     document.getElementById('builder_id').value=chain.id||'';
     document.getElementById('builder_name').value=chain.name||'';
     document.getElementById('builder_min_fault').value=chain.min_fault_seconds||0;
+    document.getElementById('builder_fault_shift_grace').value=chain.fault_shift_grace_seconds||0;
     loadOpts(function(){
       (chain.nodes||[]).forEach(addPosition);
       (chain.comparators||[]).forEach(function(c){addComparator(c.from_idx,c.to_idx);});
@@ -20718,6 +20734,7 @@ function showBuilder(chain){
     document.getElementById('builder_id').value='';
     document.getElementById('builder_name').value='';
     document.getElementById('builder_min_fault').value=0;
+    document.getElementById('builder_fault_shift_grace').value=0;
     loadOpts(function(){addPosition(null);});
   }
   b.style.display='';b.scrollIntoView({behavior:'smooth',block:'start'});
@@ -20803,9 +20820,10 @@ function saveChain(){
     }
   });
   var minFault=parseInt(document.getElementById('builder_min_fault').value||'0',10)||0;
+  var shiftGrace=parseInt(document.getElementById('builder_fault_shift_grace').value||'0',10)||0;
   var mixinRaw=document.getElementById('builder_mixin_idx').value;
   var mixinIdx=(mixinRaw!=='')?parseInt(mixinRaw,10):null;
-  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,mixin_node_idx:mixinIdx};
+  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_shift_grace_seconds:shiftGrace,mixin_node_idx:mixinIdx};
   if(cid)payload.id=cid;
   st.style.color='var(--mu)';st.textContent='Saving…';
   _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
@@ -24047,12 +24065,19 @@ def api_chains_save():
         fault_tail_secs = 20.0
     # record_all_nodes: save clips from every chain node on fault/recovery (default True)
     record_all_nodes = bool(data.get("record_all_nodes", True))
+    # fault_shift_grace_seconds: when fault_index shifts during the confirmation window,
+    # give the new position this many seconds before firing (0 = keep original clock)
+    try:
+        fault_shift_grace_seconds = max(0, min(300, int(data.get("fault_shift_grace_seconds", 0) or 0)))
+    except (TypeError, ValueError):
+        fault_shift_grace_seconds = 0
     chain_dict = {"id": cid if cid else "", "name": name,
                   "nodes": clean_nodes, "comparators": clean_comps,
                   "min_fault_seconds": min_fault_seconds,
                   "mixin_node_idx": mixin_node_idx,
                   "fault_tail_secs": fault_tail_secs,
-                  "record_all_nodes": record_all_nodes}
+                  "record_all_nodes": record_all_nodes,
+                  "fault_shift_grace_seconds": fault_shift_grace_seconds}
     if cid:
         # Update existing
         for i, c in enumerate(chains):
