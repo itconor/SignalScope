@@ -2,6 +2,16 @@
 
 ---
 
+## [3.4.20] - 2026-03-26
+
+### Fixed
+- **StreamComparator — block-RMS xcorr replaces GCC-PHAT + multi-window envelope**:
+  - **GCC-PHAT** was returning lag=0 for heavily processed broadcast audio (AGC/limiting destroys phase coherence → flat cross-spectrum → argmax trivially returns 0). Replaced with **block-level RMS cross-correlation**: audio is chunked into 100 ms blocks, block-RMS sequences are cross-correlated. Programme structure (speech/music/silence transitions) survives any amount of processing and produces a clear xcorr peak at the correct delay.
+  - **Negative lag formula bug** in `_block_delay`: `-(argmax + 1)` was used instead of `-(max_lag - argmax)`. For an actual lag of −27 blocks with `max_lag=100` and `argmax=73`, the code returned −74 instead of −27. Now correctly computes `best_neg_lag = -(max_lag - best_neg_i)`.
+  - **Block Pearson alignment direction bug** in `_block_pearson`: for lag=+L, the code used `a = pre_blocks[lag:]` paired with `post_blocks[:n]`, which pairs content ~5.4 s apart instead of matched content. Correct: `a = pre_blocks[-(n+lag):-lag]`, `b = post_blocks[-n:]`. Same fix applied symmetrically for negative lag.
+  - **2-second sub-window instability** removed: 100 ms smoothed envelope has ~5 Hz bandwidth → only ~10 independent samples per 2 s window → Pearson std error ±0.22 → frequent 0% readings. Replaced with a single Pearson over `_CORR_BLOCKS=150` blocks (15 s) for a stable estimate.
+- **Processor detection thresholds broadened**: compression ratio window widened to `[0.35, 2.80]` (was `[0.50, 2.0]`) to avoid false positives on stations with moderate processing.
+
 ## [3.4.19] - 2026-03-26
 
 ### Changed

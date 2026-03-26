@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.19"
+BUILD                  = "SignalScope-3.4.20"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -5881,38 +5881,37 @@ class PTPMonitor:
 
 class StreamComparator:
     """
-    Compares two streams (pre/post) with full audio cross-correlation.
+    Compares two audio streams (pre/post) using block-level RMS analysis.
 
-    Delay detection: GCC-PHAT (Generalized Cross-Correlation with Phase
-    Transform) — whitens the cross-spectrum so the lag peak is sharp even
-    through heavily processed audio.  Much more reliable than plain xcorr
-    when the post signal has been limited, compressed or EQ’d.
+    ALL correlation and delay work operates on 100 ms RMS blocks rather than
+    raw samples.  This makes every step robust through any kind of processing
+    (AGC, compression, limiting, multiband, EQ) because programme structure
+    (speech/music events, silence, transitions) is preserved in the RMS
+    envelope even when the waveform is completely transformed.
 
-    Correlation score:
-    - Clean paths (|gain_gap| < 8 dB, compression_ratio > 0.5):
-        multi-window post-alignment Pearson on waveform samples.
-    - Processed paths (audio processor detected):
-        envelope correlation — rectify + 100 ms smooth → Pearson of
-        amplitude envelopes.  Robust through AGC / compression / limiting
-        because the programme content shape (speech, music, silence events)
-        is preserved even when the waveform is heavily modified.
+    Delay detection: cross-correlate RMS block sequences (not waveforms).
+    The block xcorr gives a clean, unambiguous peak for both clean and heavily
+    processed paths, and searches both ±directions so it doesn’t matter which
+    way round the pre/post assignment is.
 
-    Processor auto-detection via two independent signals:
-    1. Gain gap: |pre_dBFS − post_dBFS| > _PROC_GAIN_GAP_DB (8 dB)
-    2. Compression ratio: post_env_std / pre_env_std < _PROC_DYN_RATIO (0.50)
-       — heavy limiting squashes envelope variance on the post side.
-    Either signal alone is sufficient to flag processed=True.
+    Correlation score: Pearson of aligned RMS block sequences.
+    With 150 × 100 ms blocks (~15 seconds), n = 150 independent data points →
+    standard error ≈ 0.08.  Far more stable than previous 2-second sub-window
+    approach which had n_eff ≈ 10–15 and produced wildly variable estimates.
 
-    Multi-window stability: correlation is computed over 5 non-overlapping
-    2-second windows and the median is reported.  Removes transient spikes
-    caused by ads starting/ending mid-window.
+    Processor auto-detection:
+    1. Gain gap |pre_dBFS − post_dBFS| > _PROC_GAIN_GAP_DB (8 dB)
+    2. Block RMS std ratio outside [_PROC_DYN_LO, _PROC_DYN_HI] — the ratio
+       can go either way (processor could make the output more OR less dynamic
+       than the input depending on where in the chain you monitor).
     """
 
-    _PROC_GAIN_GAP_DB  = 8.0     # level gap (dB) → processor likely in path
-    _PROC_DYN_RATIO    = 0.50    # post_env_std / pre_env_std < this → heavy compression
-    _ENV_WIN_SAMPLES   = 4800    # 100 ms smoothing window for envelope (48 kHz)
-    _ALIGN_WIN_SECS    = 2.0     # each sub-window size (s) for multi-window correlation
-    _N_WINDOWS         = 5       # number of sub-windows to median over
+    _PROC_GAIN_GAP_DB = 8.0    # level gap (dB) → processor likely in path
+    _PROC_DYN_LO      = 0.35   # block_std ratio below this → heavy compression
+    _PROC_DYN_HI      = 2.80   # block_std ratio above this → unusual, flag anyway
+    _BLOCK_SZ         = 4800   # 100 ms @ 48 kHz — one RMS block
+    _CORR_BLOCKS      = 150    # blocks used for Pearson score (15 seconds)
+    _MIN_BLOCKS       = 30     # minimum blocks needed before computing anything
 
     def __init__(self, pre: InputConfig, post: InputConfig, log_fn, sender):
         self.pre    = pre
@@ -5925,135 +5924,132 @@ class StreamComparator:
         self._last_alerts:  Dict[str,float] = {}
         self._last_align:   float = 0.0
         # Live metrics updated every COMPARE_INTERVAL
-        self.delay_ms:         float = 0.0
-        self.correlation:      float = 0.0    # 0.0–1.0 primary correlation score
-        self.pre_dbfs:         float = -80.0
-        self.post_dbfs:        float = -80.0
-        self.gain_diff_db:     float = 0.0    # post - pre in dB (positive = louder out)
-        self.cmp_history:      list  = []     # last 8 CMP events
+        self.delay_ms:          float = 0.0
+        self.correlation:       float = 0.0
+        self.pre_dbfs:          float = -80.0
+        self.post_dbfs:         float = -80.0
+        self.gain_diff_db:      float = 0.0
+        self.cmp_history:       list  = []
         # Processor detection
-        self.processed:        bool  = False  # True if audio processor detected
-        self.compression_ratio: float = 1.0  # post_env_std / pre_env_std
+        self.processed:         bool  = False
+        self.compression_ratio: float = 1.0
 
-    # ── GCC-PHAT delay detection ─────────────────────────────────────────────
+    # ── Block RMS helper ──────────────────────────────────────────────────────
 
-    @staticmethod
-    def _gcc_phat(pre_seg: np.ndarray, post_seg: np.ndarray) -> Optional[tuple]:
-        """GCC-PHAT: find best lag using phase-transformed cross-spectrum.
+    @classmethod
+    def _block_rms(cls, audio: np.ndarray) -> np.ndarray:
+        """Return array of RMS values for each 100 ms block.
 
-        Returns (best_lag_samples, phat_peak_0_to_1) or None.
-        The PHAT peak value itself is NOT used for the correlation score —
-        it is only used to find the lag.  Pearson on aligned segments gives
-        the correlation score.
+        Reshapes audio into (n_blocks, _BLOCK_SZ) and computes RMS per row.
+        Fast vectorised operation — no Python loops.
         """
-        ml = min(len(pre_seg), len(post_seg))
-        if ml < SAMPLE_RATE:
-            return None
-        pre_seg  = pre_seg[:ml]
-        post_seg = post_seg[:ml]
-        n    = ml * 2 - 1
-        nfft = 1 << (n - 1).bit_length()
-        Pre  = np.fft.rfft(pre_seg,  nfft)
-        Post = np.fft.rfft(post_seg, nfft)
-        xspec = np.conj(Pre) * Post
-        # Phase transform: normalise magnitude → sharp lag peak independent of loudness
-        denom = np.abs(xspec) + 1e-10
-        xcorr_phat = np.fft.irfft(xspec / denom, nfft)[:n]
-        max_lag  = int(COMPARE_SEARCH_SECS * SAMPLE_RATE)
-        best_lag = int(np.argmax(xcorr_phat[:max_lag + 1]))
-        # Normalise peak to 0–1 (ratio of peak to mean of top-10 lags)
-        top10 = float(np.mean(np.sort(xcorr_phat[:max_lag + 1])[-10:]) + 1e-10)
-        peak  = float(np.clip(xcorr_phat[best_lag] / top10 / 10.0, 0.0, 1.0))
-        return best_lag, peak
+        n = len(audio) // cls._BLOCK_SZ
+        if n == 0:
+            return np.array([], dtype=np.float64)
+        frames = audio[:n * cls._BLOCK_SZ].reshape(n, cls._BLOCK_SZ).astype(np.float64)
+        return np.sqrt(np.mean(frames ** 2, axis=1))
 
-    # ── Post-alignment Pearson (waveform, for clean paths) ───────────────────
+    # ── Delay detection via block xcorr ──────────────────────────────────────
+
+    @classmethod
+    def _block_delay(cls, pre_blocks: np.ndarray,
+                     post_blocks: np.ndarray) -> int:
+        """Find delay (in blocks) via block RMS cross-correlation.
+
+        Cross-correlation convention: R[lag] = sum(pre[t] * post[t+lag]).
+        Peak at +L means pre[t] best matches post[t+L] — post is delayed by L
+        blocks.  Searching both positive and negative halves handles the case
+        where the pre/post assignment is opposite to the signal-flow direction.
+
+        Returns signed lag in blocks: +L → post delayed, −L → pre delayed.
+        """
+        nm = min(len(pre_blocks), len(post_blocks))
+        if nm < 4:
+            return 0
+        pre_n  = pre_blocks[:nm].copy().astype(np.float64)
+        post_n = post_blocks[:nm].copy().astype(np.float64)
+        # Zero-mean, unit variance
+        pre_n  = (pre_n  - pre_n.mean())  / (pre_n.std()  + 1e-10)
+        post_n = (post_n - post_n.mean()) / (post_n.std() + 1e-10)
+
+        # Full circular xcorr — pad to ≥ 2*nm−1 to avoid aliasing
+        nfft = 1 << (2 * nm - 1).bit_length()
+        xcorr = np.fft.irfft(
+            np.conj(np.fft.rfft(pre_n, nfft)) * np.fft.rfft(post_n, nfft),
+            nfft
+        )
+        # Limit search to ±COMPARE_SEARCH_SECS
+        max_lag = min(int(COMPARE_SEARCH_SECS * 1000 / 100), nm // 2)
+
+        # Positive lags  xcorr[0 .. max_lag]  (post delayed)
+        best_pos = int(np.argmax(xcorr[:max_lag + 1]))
+
+        # Negative lags live at the TAIL of the circular buffer:
+        #   xcorr[nfft − k]  ==  lag −k   for k = 1 … max_lag
+        # neg_vals[i] = xcorr[nfft − max_lag + i]  ==  lag −(max_lag − i)
+        neg_vals    = xcorr[nfft - max_lag : nfft]      # length = max_lag
+        best_neg_i  = int(np.argmax(neg_vals))
+        best_neg_lag = -(max_lag - best_neg_i)           # convert index → signed lag
+
+        if xcorr[best_pos] >= neg_vals[best_neg_i]:
+            return best_pos
+        else:
+            return best_neg_lag
+
+    # ── Pearson of aligned block sequences ───────────────────────────────────
 
     @staticmethod
-    def _pearson(a: np.ndarray, b: np.ndarray) -> float:
-        """Pearson correlation of two equal-length arrays.  Returns 0.0–1.0."""
+    def _block_pearson(pre_blocks: np.ndarray,
+                       post_blocks: np.ndarray,
+                       lag: int,
+                       n_blocks: int) -> float:
+        """Pearson of the most recent n_blocks aligned block pairs.
+
+        XCorr peak at +L means R[L]=sum(pre[t]*post[t+L]) is maximum, so
+        pre[t] matches post[t+L].  The aligned pairs for the most recent
+        n_blocks of POST are:
+
+            a = pre_blocks[-(n_blocks + L) : -L]   (or pre[-n:] when L=0)
+            b = post_blocks[-n_blocks:]
+
+        For negative lag (−L, pre delayed):
+
+            a = pre_blocks[-n_blocks:]
+            b = post_blocks[-(n_blocks + L) : -L]
+        """
+        np_pre, np_post = len(pre_blocks), len(post_blocks)
+        if lag > 0:
+            n = min(n_blocks, np_pre - lag, np_post)
+            if n < 10:
+                return 0.0
+            a = pre_blocks[-(n + lag): -lag]
+            b = post_blocks[-n:]
+        elif lag < 0:
+            k = -lag
+            n = min(n_blocks, np_pre, np_post - k)
+            if n < 10:
+                return 0.0
+            a = pre_blocks[-n:]
+            b = post_blocks[-(n + k): -k]
+        else:
+            n = min(n_blocks, np_pre, np_post)
+            if n < 10:
+                return 0.0
+            a = pre_blocks[-n:]
+            b = post_blocks[-n:]
         ml = min(len(a), len(b))
-        if ml < 256:
+        if ml < 10:
             return 0.0
-        a, b = a[:ml].astype(np.float64), b[:ml].astype(np.float64)
-        sa, sb = float(np.std(a)), float(np.std(b))
-        if sa < 1e-8 or sb < 1e-8:
-            return 0.0
-        return float(np.clip(np.mean((a - a.mean()) * (b - b.mean())) / (sa * sb), 0.0, 1.0))
-
-    # ── Envelope correlation (for processed paths) ───────────────────────────
-
-    @classmethod
-    def _envelope(cls, audio: np.ndarray) -> np.ndarray:
-        """Amplitude envelope: rectify then smooth with a 100 ms window."""
-        w = cls._ENV_WIN_SAMPLES
-        # Use cumsum trick for fast moving average
-        abs_a = np.abs(audio).astype(np.float64)
-        cs = np.cumsum(abs_a)
-        cs = np.concatenate(([0.0], cs))
-        env = (cs[w:] - cs[:-w]) / w
-        return env
-
-    @classmethod
-    def _envelope_corr(cls, a: np.ndarray, b: np.ndarray) -> float:
-        """Pearson of amplitude envelopes after aligning to same length."""
-        ea, eb = cls._envelope(a), cls._envelope(b)
-        return cls._pearson(ea, eb)
-
-    # ── Multi-window median correlation ──────────────────────────────────────
-
-    def _multiwindow_corr(self, pre_aligned: np.ndarray,
-                          post_aligned: np.ndarray) -> float:
-        """Compute correlation over N non-overlapping windows, return median.
-
-        Uses waveform Pearson for clean paths, envelope Pearson for processed.
-        The median discards transient mismatches caused by ad break edges.
-        """
-        wsz  = int(self._ALIGN_WIN_SECS * SAMPLE_RATE)
-        ml   = min(len(pre_aligned), len(post_aligned))
-        n_w  = min(self._N_WINDOWS, ml // wsz)
-        if n_w < 1:
-            # Fall back to single full-segment correlation
-            if self.processed:
-                return self._envelope_corr(pre_aligned[:ml], post_aligned[:ml])
-            return self._pearson(pre_aligned[:ml], post_aligned[:ml])
-        scores = []
-        for i in range(n_w):
-            s, e = i * wsz, (i + 1) * wsz
-            pa, pb = pre_aligned[s:e], post_aligned[s:e]
-            if self.processed:
-                scores.append(self._envelope_corr(pa, pb))
-            else:
-                scores.append(self._pearson(pa, pb))
-        return float(np.median(scores))
-
-    # ── Processor detection ───────────────────────────────────────────────────
-
-    def _detect_processor(self, pre_seg: np.ndarray,
-                          post_seg: np.ndarray) -> tuple:
-        """Detect audio processor via gain gap and dynamic compression ratio.
-
-        Returns (is_processed: bool, compression_ratio: float).
-        compression_ratio = post_env_std / pre_env_std:
-          ~1.0 → unprocessed (equal dynamics)
-          <0.5 → heavy limiting/compression on post
-        """
-        pre_env  = self._envelope(pre_seg)
-        post_env = self._envelope(post_seg)
-        pre_std  = float(np.std(pre_env)  + 1e-10)
-        post_std = float(np.std(post_env) + 1e-10)
-        comp_ratio = post_std / pre_std
-        # Gain gap check (absolute level difference)
-        pr = max(float(np.sqrt(np.mean(pre_seg.astype(np.float64)**2))), 1e-10)
-        po = max(float(np.sqrt(np.mean(post_seg.astype(np.float64)**2))), 1e-10)
-        gain_gap = abs(20 * math.log10(pr) - 20 * math.log10(po))
-        is_proc = (gain_gap > self._PROC_GAIN_GAP_DB
-                   or comp_ratio < self._PROC_DYN_RATIO)
-        return is_proc, round(comp_ratio, 3)
+        a = a[:ml].astype(np.float64)
+        b = b[:ml].astype(np.float64)
+        sa = float(np.std(a) + 1e-12)
+        sb = float(np.std(b) + 1e-12)
+        r  = float(np.mean((a - a.mean()) * (b - b.mean())) / (sa * sb))
+        return float(np.clip(r, 0.0, 1.0))
 
     # ── Logging helper ────────────────────────────────────────────────────────
 
     def _log_cmp_event(self, msg: str):
-        """Append to local cmp_history (capped at 8)."""
         ts = time.strftime("%H:%M:%S")
         self.cmp_history.append({"ts": ts, "msg": msg})
         if len(self.cmp_history) > 8:
@@ -6062,10 +6058,10 @@ class StreamComparator:
     # ── Main update loop ──────────────────────────────────────────────────────
 
     def update(self):
-        """Call periodically. Re-aligns if needed, then measures correlation."""
+        """Call periodically.  Re-aligns if needed, then measures correlation."""
         now = time.time()
 
-        # ── Collect audio buffers ──────────────────────────────────────────
+        # ── Collect audio and convert to RMS blocks ────────────────────────
         pre_chunks  = list(self.pre._stream_buffer)  if self.pre._stream_buffer  else []
         post_chunks = list(self.post._stream_buffer) if self.post._stream_buffer else []
         if not pre_chunks or not post_chunks:
@@ -6074,74 +6070,62 @@ class StreamComparator:
         pre_audio  = np.concatenate(pre_chunks).astype(np.float32)
         post_audio = np.concatenate(post_chunks).astype(np.float32)
 
-        # Need enough history for xcorr search + alignment windows
-        needed = int((COMPARE_SEARCH_SECS + self._ALIGN_WIN_SECS * self._N_WINDOWS) * SAMPLE_RATE)
-        if len(pre_audio) < needed // 2 or len(post_audio) < needed // 2:
+        pre_blocks  = self._block_rms(pre_audio)
+        post_blocks = self._block_rms(post_audio)
+        if len(pre_blocks) < self._MIN_BLOCKS or len(post_blocks) < self._MIN_BLOCKS:
             self.status = "Buffering…"
             return
 
-        # ── Delay detection (GCC-PHAT) ─────────────────────────────────────
-        if now - self._last_align > COMPARE_INTERVAL or not self.aligned:
-            use = int(COMPARE_SEARCH_SECS * SAMPLE_RATE) + int(self._ALIGN_WIN_SECS * SAMPLE_RATE)
-            pre_seg  = pre_audio[-use:]  if len(pre_audio)  > use else pre_audio
-            post_seg = post_audio[-use:] if len(post_audio) > use else post_audio
-            result = self._gcc_phat(pre_seg, post_seg)
-            if result is not None:
-                lag, _ = result
-                self.delay_samples = lag
-                self.delay_ms      = lag / SAMPLE_RATE * 1000
-                self.aligned       = True
-                self._last_align   = now
-                # Detect processor on this fresh segment
-                is_proc, comp_ratio = self._detect_processor(pre_seg, post_seg)
-                if is_proc and not self.processed:
-                    self.log(f"[CMP:{self.pre.name}→{self.post.name}] "
-                             f"Audio processor detected — gain gap or compression "
-                             f"(ratio {comp_ratio:.2f}).  Switching to envelope correlation.")
-                    self._log_cmp_event(
-                        f"⚙ Processor detected (comp ratio {comp_ratio:.2f}) — "
-                        "using envelope correlation"
-                    )
-                self.processed         = is_proc
-                self.compression_ratio = comp_ratio
-                self.log(f"[CMP:{self.pre.name}→{self.post.name}] "
-                         f"Delay {self.delay_ms:.0f} ms  processed={is_proc}  "
-                         f"comp_ratio={comp_ratio:.2f}")
-            else:
-                self.status = "Waiting for audio buffers…"
-                return
-
-        if not self.aligned:
-            return
-
-        # ── Build aligned windows ──────────────────────────────────────────
-        total_win = int(self._ALIGN_WIN_SECS * self._N_WINDOWS * SAMPLE_RATE)
-        if self.delay_samples > 0 and len(pre_audio) > self.delay_samples + total_win:
-            pre_aligned = pre_audio[-(total_win + self.delay_samples): -self.delay_samples]
-        else:
-            pre_aligned = pre_audio[-total_win:]
-        post_aligned = post_audio[-total_win:]
-        ml = min(len(pre_aligned), len(post_aligned))
-        if ml < SAMPLE_RATE // 2:
-            return
-        pre_aligned  = pre_aligned[:ml]
-        post_aligned = post_aligned[:ml]
-
-        # ── Level metrics ──────────────────────────────────────────────────
-        pre_rms  = max(float(np.sqrt(np.mean(pre_aligned.astype(np.float64)**2))),  1e-10)
-        post_rms = max(float(np.sqrt(np.mean(post_aligned.astype(np.float64)**2))), 1e-10)
-        self.pre_dbfs     = 20 * math.log10(pre_rms)
-        self.post_dbfs    = 20 * math.log10(post_rms)
+        # ── Level metrics (from full available blocks) ─────────────────────
+        nm = min(len(pre_blocks), len(post_blocks))
+        pre_rms_mean  = max(float(np.mean(pre_blocks[-nm:])),  1e-10)
+        post_rms_mean = max(float(np.mean(post_blocks[-nm:])), 1e-10)
+        self.pre_dbfs     = 20 * math.log10(pre_rms_mean)
+        self.post_dbfs    = 20 * math.log10(post_rms_mean)
         self.gain_diff_db = round(self.post_dbfs - self.pre_dbfs, 1)
+        pre_has_audio     = self.pre_dbfs  > COMPARE_SILENCE_THRESH
+        post_has_audio    = self.post_dbfs > COMPARE_SILENCE_THRESH
 
-        pre_has_audio  = self.pre_dbfs  > COMPARE_SILENCE_THRESH
-        post_has_audio = self.post_dbfs > COMPARE_SILENCE_THRESH
+        # ── Delay detection and processor check (every COMPARE_INTERVAL) ──
+        if now - self._last_align > COMPARE_INTERVAL or not self.aligned:
+            lag_blocks = self._block_delay(pre_blocks, post_blocks)
+            self.delay_samples = lag_blocks * self._BLOCK_SZ
+            self.delay_ms      = abs(self.delay_samples) / SAMPLE_RATE * 1000
+            self.aligned       = True
+            self._last_align   = now
 
-        # ── Multi-window correlation ───────────────────────────────────────
-        self.correlation = self._multiwindow_corr(pre_aligned, post_aligned)
+            # Processor detection via gain gap AND block-std ratio
+            gain_gap    = abs(self.gain_diff_db)
+            pre_bstd    = float(np.std(pre_blocks[-nm:])  + 1e-10)
+            post_bstd   = float(np.std(post_blocks[-nm:]) + 1e-10)
+            comp_ratio  = post_bstd / pre_bstd
+            is_proc = (gain_gap > self._PROC_GAIN_GAP_DB
+                       or comp_ratio < self._PROC_DYN_LO
+                       or comp_ratio > self._PROC_DYN_HI)
+            if is_proc and not self.processed:
+                reason = (f"gain gap {gain_gap:.1f} dB" if gain_gap > self._PROC_GAIN_GAP_DB
+                          else f"comp ratio {comp_ratio:.2f}")
+                self.log(f"[CMP:{self.pre.name}→{self.post.name}] "
+                         f"Audio processor detected ({reason})")
+                self._log_cmp_event(
+                    f"⚙ Processor detected ({reason}) — block RMS correlation"
+                )
+            self.processed         = is_proc
+            self.compression_ratio = round(comp_ratio, 3)
+            mode = "block-RMS" + (" processed" if is_proc else " clean")
+            self.log(f"[CMP:{self.pre.name}→{self.post.name}] "
+                     f"Lag {lag_blocks:+d} blocks ({self.delay_ms:.0f} ms)  "
+                     f"mode={mode}  comp_ratio={comp_ratio:.2f}")
+
+        # ── Correlation: Pearson of aligned block sequences ────────────────
+        lag_blocks = self.delay_samples // self._BLOCK_SZ
+        self.correlation = self._block_pearson(
+            pre_blocks, post_blocks, lag_blocks, self._CORR_BLOCKS
+        )
 
         # ── Silence / dropout alerts ───────────────────────────────────────
-        proc_note = f" (processor in path, comp ratio {self.compression_ratio:.2f})" if self.processed else ""
+        proc_note = (f" (processor detected, comp ratio {self.compression_ratio:.2f})"
+                     if self.processed else "")
 
         if pre_has_audio and not post_has_audio:
             key = "CMP_POST_SILENT"
@@ -6193,7 +6177,6 @@ class StreamComparator:
                                      alert_type="CMP_ALERT", stream=self.post.name,
                                      level_dbfs=self.post_dbfs)
             elif gain_drift < 1.0:
-                # Slowly adapt baseline during stable periods
                 self._baseline_gain_diff = (0.98 * self._baseline_gain_diff
                                             + 0.02 * self.gain_diff_db)
 
@@ -6204,13 +6187,13 @@ class StreamComparator:
                 "weak"      if self.correlation >= 0.40 else
                 "poor"
             )
-            mode_label = "envelope" if self.processed else "waveform"
+            mode_label = "block-RMS" + (" processed" if self.processed else "")
             self.status = f"OK ({corr_label} {mode_label} corr)"
             if self.correlation < 0.40 and pre_has_audio and post_has_audio:
                 key = "CMP_LOW_CORR"
                 if now - self._last_alerts.get(key, 0) >= ALERT_COOLDOWN * 6:
                     self._last_alerts[key] = now
-                    msg = (f"Low {mode_label} correlation ({self.correlation:.2f}) between "
+                    msg = (f"Low correlation ({self.correlation:.2f}) between "
                            f"’{self.pre.name}’ and ‘{self.post.name}’ — "
                            f"streams may have diverged{proc_note}")
                     self._log_cmp_event(f"⚠ Low corr {self.correlation:.2f} ({mode_label})")
