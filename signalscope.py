@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.14"
+BUILD                  = "SignalScope-3.4.15"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -12114,6 +12114,8 @@ class HubServer:
                         if _lc:
                             _ensure_alert_buffer_capacity(_lc, clip_dur)
                             _clip = _save_alert_wav(_lc, _clbl, clip_dur, _skip_hub_queue=True)
+                            # Shrink buffer back to normal after saving
+                            _ensure_alert_buffer_capacity(_lc, None)
                             if _clip:
                                 new_clips.append({
                                     "key":        _safe_name(_stream),
@@ -12309,8 +12311,12 @@ class HubServer:
                         None,
                     )
                     if _lc:
-                        _chain_clip_secs = max(float(_lc.alert_wav_duration or 0), CHAIN_CLIP_MIN_SECS)
-                        _clip = _save_alert_wav(_lc, _clbl, _chain_clip_secs, _skip_hub_queue=True)
+                        # Expand buffer NOW so we accumulate full fault audio
+                        # from this point; recovery clip will cover the whole event.
+                        _ensure_alert_buffer_capacity(_lc, CHAIN_CLIP_MAX_SECS)
+                        # Onset clip: fixed lead-in only — full fault duration
+                        # captured at recovery by _schedule_chain_recovery_clips.
+                        _clip = _save_alert_wav(_lc, _clbl, CHAIN_CLIP_MIN_SECS, _skip_hub_queue=True)
                         _lc_msg = (
                             f"Chain '{chain_label}' — '{_node_label}' "
                             f"({_pos_label.replace('_', ' ')}) clip."
