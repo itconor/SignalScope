@@ -399,10 +399,12 @@ class _RecorderThread(threading.Thread):
             _log(f"[Logger] Could not launch ffmpeg for {self.stream_name}: {e}")
             return
 
-        # Read stderr on a background thread so it never blocks the write loop
+        # Read stderr on a background thread so it never blocks the write loop.
+        # stdin must stay binary (float32 PCM) so we can't use text=True on the
+        # whole Popen — decode stderr lines explicitly instead.
         def _read_stderr():
-            for line in proc.stderr:
-                stderr_lines.append(line.rstrip())
+            for raw in proc.stderr:
+                stderr_lines.append(raw.rstrip().decode("utf-8", errors="replace"))
         stderr_thr = threading.Thread(target=_read_stderr, daemon=True)
         stderr_thr.start()
 
