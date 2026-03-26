@@ -590,6 +590,9 @@ server {
     listen 80 default_server;
     server_name _;
 
+    # Allow large clip uploads (WAV/MP3) from client nodes
+    client_max_body_size 20m;
+
     proxy_set_header Host              \$host;
     proxy_set_header X-Real-IP         \$remote_addr;
     proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
@@ -621,6 +624,9 @@ EOF
 server {
     listen 80;
     server_name ${fqdn};
+
+    # Allow large clip uploads (WAV/MP3) from client nodes
+    client_max_body_size 20m;
 
     location /.well-known/acme-challenge/ {
         root /var/www/html;
@@ -1277,6 +1283,23 @@ EOF
   # ── nginx (fresh install or explicitly requested) ────────────────────────────
   if [[ "${ENABLE_NGINX}" == "1" ]]; then
     configure_nginx "${NGINX_FQDN:-}" "${NGINX_HTTPS:-0}"
+  fi
+
+  # ── Ensure client_max_body_size is set in any existing nginx config ───────────
+  # Clip uploads (WAV/MP3) can be large; nginx's 1 MB default causes 413 errors.
+  # Patch every server block in the SignalScope config that lacks the directive.
+  _ng_conf="/etc/nginx/sites-available/signalscope"
+  if [[ -f "${_ng_conf}" ]] && ! grep -q "client_max_body_size" "${_ng_conf}" 2>/dev/null; then
+    step "Patching nginx config: adding client_max_body_size 20m"
+    # Insert directive on the line after each 'server {' opening brace
+    ${SUDO} sed -i '/^server {/a\    client_max_body_size 20m;' "${_ng_conf}"
+    if ${SUDO} nginx -t >/dev/null 2>&1; then
+      ${SUDO} nginx -s reload 2>/dev/null || ${SUDO} systemctl reload nginx 2>/dev/null || true
+      ok "nginx patched: client_max_body_size 20m"
+    else
+      warn "nginx config test failed after patch — reverting client_max_body_size change"
+      ${SUDO} sed -i '/client_max_body_size 20m;/d' "${_ng_conf}"
+    fi
   fi
 
   # ── Log rotation — written on every run so updates also get it ──────────────
