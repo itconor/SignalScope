@@ -1559,7 +1559,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.10"
+BUILD                  = "SignalScope-3.4.11"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -21121,7 +21121,7 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
     </div>
     <div class="form-row"><label>Notes (optional)</label><input type="text" id="abg-notes" placeholder=""></div>
     <div class="abg-modal-actions">
-      <button class="btn bg" onclick="document.getElementById('abg-modal').style.display='none'">Cancel</button>
+      <button class="btn bg" id="abg-cancel-btn">Cancel</button>
       <button class="btn bp" id="abg-save-btn">Save Group</button>
     </div>
   </div>
@@ -21130,7 +21130,7 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
   <h1>⛓ Broadcast Chains</h1>
   <div style="display:flex;gap:8px;align-items:center">
     <button class="btn bg bs" id="btn_test_alert" title="Send a clearly-labelled TEST alert through all notification channels (email, webhook, Pushover, APNs) — will not create a real fault log entry">🧪 Test Alert</button>
-    <button class="btn bp bs" onclick="abgOpenNew()">＋ New A/B Group</button>
+    <button class="btn bp bs" id="btn_new_abg">＋ New A/B Group</button>
     <button class="btn bp" id="btn_new_chain">+ New Chain</button>
   </div>
 </div>
@@ -21164,15 +21164,7 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
     <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%">
   </div>
 
-  <!-- Nodes -->
-  <div class="blk-hdr">
-    <span>Signal Path — left = source, right = destination</span>
-    <span style="font-size:11px;color:var(--mu)">Each position can hold multiple streams (stack)</span>
-  </div>
-  <div id="builder_nodes" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
-  <button class="btn bg bs" id="btn_add_node" style="margin-bottom:14px">&#xFF0B; Add Position</button>
-
-  <!-- Advanced settings — collapsible -->
+  <!-- Advanced settings — collapsible (above nodes so always reachable) -->
   <div class="blk-collapsible" id="blk_advanced">
     <div class="blk-collapsible-hdr" data-target="adv_body">
       <span>&#x2699; Timing &amp; Behaviour</span>
@@ -21222,6 +21214,14 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
       </div>
     </div>
   </div>
+
+  <!-- Nodes — below timing so timing is always visible -->
+  <div class="blk-hdr" style="margin-top:14px">
+    <span>Signal Path — left = source, right = destination</span>
+    <span style="font-size:11px;color:var(--mu)">Each position can hold multiple streams (stack)</span>
+  </div>
+  <div id="builder_nodes" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
+  <button class="btn bg bs" id="btn_add_node" style="margin-bottom:14px">&#xFF0B; Add Position</button>
 
   <!-- Comparators — collapsible -->
   <div class="blk-collapsible" id="blk_comparators" style="margin-top:8px">
@@ -21678,9 +21678,30 @@ function showBuilder(chain){
     }
     loadOpts(function(){addPosition(null);});
   }
+  // Auto-expand Timing & Behaviour if any timing value is non-zero
+  var _hasTimingVals = (
+    parseInt(document.getElementById('builder_min_fault').value||'0') > 0 ||
+    parseInt(document.getElementById('builder_min_recovery').value||'0') > 0 ||
+    parseInt(document.getElementById('builder_min_alert_interval').value||'0') > 0 ||
+    parseFloat(document.getElementById('builder_trend_alert').value||'0') !== 0 ||
+    parseInt(document.getElementById('builder_fault_shift_grace').value||'0') > 0 ||
+    (document.getElementById('builder_mixin_idx').value || '') !== '' ||
+    (document.getElementById('builder_upstream_chain').value || '') !== ''
+  );
+  var _advBody = document.getElementById('adv_body');
+  var _advHdr  = document.querySelector('#blk_advanced .blk-collapsible-hdr');
+  if(_hasTimingVals && _advBody){
+    _advBody.style.display = '';
+    if(_advHdr) _advHdr.classList.add('open');
+  } else if(_advBody){
+    _advBody.style.display = 'none';
+    if(_advHdr) _advHdr.classList.remove('open');
+  }
   b.style.display='';b.scrollIntoView({behavior:'smooth',block:'start'});
 }
 document.getElementById('btn_new_chain').addEventListener('click',function(){showBuilder(null);});
+document.getElementById('btn_new_abg').addEventListener('click',function(){abgOpenNew();});
+document.getElementById('abg-cancel-btn').addEventListener('click',function(){document.getElementById('abg-modal').style.display='none';});
 
 document.getElementById('btn_test_alert').addEventListener('click', function() {
   var btn = this;
