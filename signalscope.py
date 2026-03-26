@@ -1384,7 +1384,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.129"
+BUILD                  = "SignalScope-3.3.130"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -23955,6 +23955,18 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           <div class="lbar-track"><div class="lbar-fill" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
           <span class="lbar-val" style="color:{{lcol}}">{{lev}} dB</span>
         </div>
+        {% if s.lufs_m is not none and s.lufs_m > -69 %}
+        {% set tpcol = 'var(--al)' if s.lufs_tp > -1 else ('var(--wn)' if s.lufs_tp > -3 else 'var(--mu)') %}
+        <div class="lbar-wrap" style="padding-bottom:2px">
+          <span style="font-size:11px;color:var(--mu);width:28px">LUFS</span>
+          <span style="font-size:11px;font-family:monospace;color:var(--tx)">
+            M&nbsp;<b>{{s.lufs_m}}</b>&nbsp;
+            S&nbsp;<b>{{s.lufs_s}}</b>&nbsp;
+            I&nbsp;<b>{{s.lufs_i}}</b>&nbsp;
+            TP&nbsp;<b style="color:{{tpcol}}">{{s.lufs_tp}}</b>
+          </span>
+        </div>
+        {% endif %}
         <div class="sc-tl-wrap" style="display:flex;align-items:center;gap:5px;padding:0 10px 4px">
           <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">24h</span>
           <canvas class="sc-tl" data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-hours="24"
