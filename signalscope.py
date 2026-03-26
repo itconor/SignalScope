@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.158"
+BUILD                  = "SignalScope-3.3.159"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -24271,6 +24271,7 @@ def hub_reports():
 
     # Merge all sites' recent_alerts, tagging each with site name and chain membership
     all_events = []
+    seen_ids: set = set()
     for s in sites:
         client_addr = s.get("_client_addr","")
         site_name   = s.get("site","?")
@@ -24286,6 +24287,30 @@ def hub_reports():
             else:
                 merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
             all_events.append(merged)
+            if ev.get("id"):
+                seen_ids.add(ev["id"])
+
+    # Also merge the hub's own alert log.  CHAIN_FAULT events are written here
+    # by _fire_chain_fault() but are never included in any site's recent_alerts
+    # in pure hub-mode deployments, so they would always show as "0" above.
+    # In both-mode nodes the hub IS a client site and its recent_alerts already
+    # carries these events; seen_ids deduplication prevents double-counting.
+    for ev in _alert_log_load(2000):
+        eid = ev.get("id", "")
+        if eid and eid in seen_ids:
+            continue
+        merged = dict(ev)
+        merged["_site"]        = "(hub)"
+        merged["_client_addr"] = ""
+        merged["_online"]      = True
+        ev_stream = merged.get("stream", "")
+        if merged.get("type") == "CHAIN_FAULT":
+            merged["_chain"] = ev_stream
+        else:
+            merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
+        all_events.append(merged)
+        if eid:
+            seen_ids.add(eid)
 
     # Sort newest first
     all_events.sort(key=lambda e: e.get("ts",""), reverse=True)
@@ -24309,7 +24334,14 @@ def hub_reports():
 
     site_names  = sorted(set(e["_site"]   for e in all_events))
     stream_names= sorted(set(e.get("stream","") for e in all_events if e.get("stream")))
-    type_names  = sorted(set(e.get("type","")   for e in all_events if e.get("type")))
+    # Always include silence-family types so the filter is stable even when no
+    # recent silence events are in the current window (e.g. 50-event heartbeat
+    # window displaced older silence events with newer non-silence events).
+    _SILENCE_TYPES = {"SILENCE", "STUDIO_FAULT", "STL_FAULT", "TX_DOWN",
+                      "DAB_AUDIO_FAULT", "RTP_FAULT"}
+    type_names  = sorted(
+        set(e.get("type","") for e in all_events if e.get("type")) | _SILENCE_TYPES
+    )
 
     counts = {}
     for e in all_events:

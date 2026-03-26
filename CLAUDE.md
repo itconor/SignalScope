@@ -4,7 +4,7 @@
 SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
 
 - **Repo**: https://github.com/itconor/SignalScope
-- **Current build string**: `BUILD = "SignalScope-3.3.158"` (increment on every release)
+- **Current build string**: `BUILD = "SignalScope-3.3.159"` (increment on every release)
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **Release flow**: bump `BUILD`, update `CHANGELOG.md`, `git commit`, `git push`, `gh release create v{version}`
 
@@ -359,6 +359,20 @@ Fix: `InputConfig` gains two new runtime fields — `_silence_active: bool` and 
 Both fields are reset in: cascade-suppress early return, stream reconnect (`cfg._silence_secs=0.0` block), and monitor-loop disconnect reset.
 
 **Rule**: Do not remove `_silence_active` / `_silence_alert_key` resets from the cascade-suppress, stream-reconnect, and monitor disconnect paths — stale `True` values would cause spurious recovery clips after unrelated stream restarts.
+
+### Hub Reports — Chain Faults always "0" (fixed 3.3.159)
+`hub_reports()` only collected events from `s.get("recent_alerts", [])` for each site (client heartbeat data). `CHAIN_FAULT` events are generated on the hub by `_fire_chain_fault()` → `_alert_log_append()` and written to the hub's own `alert_log.json`. In pure hub-mode they are never in any site's `recent_alerts`, so `counts.get('CHAIN_FAULT', 0)` was always 0.
+
+Fix: after collecting site events, also call `_alert_log_load(2000)` and merge hub events tagged `_site="(hub)"`. A `seen_ids` set prevents duplication when the hub is also a client (both-mode). Chain/stream lookup works identically for hub events.
+
+**Rule**: `hub_reports()` must always merge the hub's own alert log in addition to site heartbeat events. Hub-generated events (CHAIN_FAULT and others) only exist in `alert_log.json`, not in site payloads.
+
+### Hub Reports — Silence type missing from type filter (fixed 3.3.159)
+`type_names` was built purely from event types present in `all_events`. On busy systems, silence events could be displaced from the 50-event heartbeat window and the silence-family types (SILENCE, STUDIO_FAULT, STL_FAULT, TX_DOWN, DAB_AUDIO_FAULT, RTP_FAULT) would disappear from the Type dropdown.
+
+Fix: `type_names` is now built as the union of dynamic types found in `all_events` plus the constant set `_SILENCE_TYPES`, so silence-related options are always present in the filter regardless of the current event window.
+
+**Rule**: Never build `type_names` in `hub_reports()` from events alone — always union with `_SILENCE_TYPES` to keep the filter stable.
 
 ### WAN audio choppy every ~0.5 s (fixed 3.3.70–3.3.73)
 Root cause: hub hosted remotely from SDR client. WAN RTT >250 ms triggered `_KP_THRESHOLD = 0.25 s` silence injection in `generate_scanner()`. Also, when RTT > `_BLK_DUR` (0.1 s), sequential POSTs fell behind real-time.

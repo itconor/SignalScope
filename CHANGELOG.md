@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.159] - 2026-03-26
+
+### Fixed
+- **Hub Reports — Chain Faults always showed "0"** — `hub_reports()` was only collecting events from site heartbeat `recent_alerts` payloads. `CHAIN_FAULT` events are generated on the hub by `_fire_chain_fault()` → `_alert_log_append()` and are never included in any site's `recent_alerts` in pure hub-mode deployments. Fix: also load the hub's own `alert_log.json` (via `_alert_log_load(2000)`) and merge those events into `all_events`, tagged `_site="(hub)"`. Events already present from a site heartbeat are skipped via `seen_ids` deduplication, so both-mode nodes are not double-counted.
+- **Hub Reports — Silence type missing from type filter dropdown** — the type dropdown was built purely from event types present in the current `all_events` window (last 50 events per site from heartbeat). On busy systems, silence events could be displaced from the 50-event window and the SILENCE/STUDIO_FAULT/STL_FAULT/TX_DOWN/DAB_AUDIO_FAULT/RTP_FAULT types would disappear from the filter. Fix: the silence-family types are now always included in `type_names` regardless of whether events with those types are present in the current window.
+
 ## [3.3.158] - 2026-03-26
 
 ### Changed
