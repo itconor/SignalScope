@@ -1570,7 +1570,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.137"
+BUILD                  = "SignalScope-3.3.138"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -4060,9 +4060,14 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
     chunks = list(cfg._audio_buffer)
     if not chunks: return None
     audio = np.concatenate(chunks)[-int(SAMPLE_RATE * duration):]
-    safe_lbl = _safe_label(label)
-    ts_str   = time.strftime("%Y%m%d-%H%M%S")
-    pcm      = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+    safe_lbl    = _safe_label(label)
+    safe_stream = _safe_name(cfg.name)
+    ts_str      = time.strftime("%Y%m%d-%H%M%S")
+    # Format: YYYYMMDD-HHMMSS_StreamName_alerttype
+    # Stream name in the filename makes downloaded clips self-identifying without
+    # needing to look at the folder they came from.
+    base_name = f"{ts_str}_{safe_stream}_{safe_lbl}"
+    pcm       = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
 
     _clip_fmt = str(getattr(getattr(monitor, "app_cfg", None), "clip_format", "wav"))
     path: Optional[str] = None
@@ -4070,7 +4075,7 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
     if _clip_fmt == "mp3":
         _mp3 = _try_encode_mp3(pcm)
         if _mp3:
-            path = os.path.join(out, f"{ts_str}_{safe_lbl}.mp3")
+            path = os.path.join(out, f"{base_name}.mp3")
             try:
                 with open(path, "wb") as _f:
                     _f.write(_mp3)
@@ -4079,7 +4084,7 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
                 path = None
 
     if path is None:   # WAV (default or MP3 fallback)
-        path = os.path.join(out, f"{ts_str}_{safe_lbl}.wav")
+        path = os.path.join(out, f"{base_name}.wav")
         try:
             with wave.open(path, "wb") as wf:
                 wf.setnchannels(1); wf.setsampwidth(2)
@@ -8911,6 +8916,9 @@ class HubClient:
             "ts": time.time(), "data_b64": data_b64,
             "level_dbfs": level_dbfs,
             "ext": _ext,
+            # Send the original filename so the hub preserves it exactly —
+            # the stream name and original timestamp are embedded in the name.
+            "filename": os.path.basename(clip_path) if clip_path else "",
         }
         payload_bytes = json.dumps(payload_dict).encode()
 
@@ -18640,10 +18648,29 @@ def hub_clip_upload():
     clip_status= str(data.get("status",     "")).strip()
     data_b64   = data.get("data_b64", "")
     level_dbfs = data.get("level_dbfs", None)
-    clip_ts    = data.get("ts", time.time())   # use sender's timestamp for filename
+    clip_ts    = data.get("ts", time.time())
     clip_ext   = str(data.get("ext", "wav")).strip(".")
     if clip_ext not in ("wav", "mp3"):
         clip_ext = "wav"
+    # Client sends its original filename (includes stream name + embedded timestamp).
+    # Sanitise and use it directly so the hub file matches what the operator sees
+    # when they open the folder on the client.  Fall back to the legacy
+    # {label}_{ts}.{ext} format for older clients that don't send this field.
+    _raw_fname = str(data.get("filename", "")).strip()
+    _raw_fname = os.path.basename(_raw_fname)   # strip any path components
+    # Allow only safe filename characters
+    import re as _re
+    _raw_fname = _re.sub(r"[^a-zA-Z0-9._\-]", "_", _raw_fname)
+    if _raw_fname and _raw_fname.endswith(f".{clip_ext}"):
+        client_filename = _raw_fname
+        # Try to recover the original clip time from the embedded timestamp
+        # (format: YYYYMMDD-HHMMSS_StreamName_alerttype.ext)
+        try:
+            clip_ts = time.mktime(time.strptime(_raw_fname.split("_")[0], "%Y%m%d-%H%M%S"))
+        except Exception:
+            pass  # keep sender's ts
+    else:
+        client_filename = ""
 
     if not data_b64:
         return jsonify({"error": "no clip data"}), 400
@@ -18678,7 +18705,9 @@ def hub_clip_upload():
     safe_key = f"{_safe_name(site)}_{_safe_name(stream)}"
     out_dir  = os.path.join(BASE_DIR, "alert_snippets", safe_key)
     os.makedirs(out_dir, exist_ok=True)
-    fname = f"{label}_{int(clip_ts)}.{clip_ext}"
+    # Use the client's original filename when available (contains stream name +
+    # embedded timestamp).  Fall back to the legacy format for older clients.
+    fname = client_filename if client_filename else f"{label}_{int(clip_ts)}.{clip_ext}"
     fpath = os.path.join(out_dir, fname)
     if not os.path.exists(fpath):   # idempotent — don't overwrite on retry
         with open(fpath, "wb") as f:

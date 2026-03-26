@@ -2,6 +2,13 @@
 
 ---
 
+## [3.3.138] - 2026-03-26
+
+### Fixed
+- **Clip filenames now include the stream/input name** — clips are saved as `YYYYMMDD-HHMMSS_StreamName_alerttype.wav` (e.g. `20260326-065351_CoolFM-LONCTAXZC03_silence.wav`) instead of the previous `YYYYMMDD-HHMMSS_alerttype.wav`. Makes downloaded clips self-identifying without needing to inspect the folder they came from.
+- **Clip filenames preserved end-to-end** — the client sends its original filename in the upload payload (`filename` field); the hub saves with exactly that name so client and hub directories stay in sync. Falls back to the legacy `{label}_{ts}.{ext}` format for older clients.
+- **Sync upload timestamps corrected** — when the periodic sync re-uploads old clips the hub now extracts the original creation time from the embedded timestamp in the filename, so the alert log entry shows the correct clip date rather than the time the sync ran.
+
 ## [3.3.137] - 2026-03-26
 
 ### Added
