@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.143"
+BUILD                  = "SignalScope-3.3.144"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -18810,89 +18810,100 @@ def hub_clip_upload():
     # entry_id is the UUID assigned when the fault fired — use it to find the
     # right entry directly.  If the client is older and didn't send entry_id,
     # fall back to flog[-1] as before.
+    #
+    # IMPORTANT: wrap the entire back-patch in try/except so that ANY exception
+    # here (e.g. hub_server temporarily None at startup, DB contention, etc.)
+    # does NOT cause a 500 response.  A 500 means the client never writes its
+    # .hub marker, retries indefinitely, and adds duplicate Reports entries on
+    # every retry while fault history stays empty forever.  The clip is already
+    # safely on disk — a back-patch failure is recoverable; a 500 loop is not.
     if chain_id:
-        # Derive a consistent label
-        if clip_status in ("fault", "last_good"):
-            _clip_label = clip_status
-        elif "last_good" in label:
-            _clip_label = "last_good"
-        elif "fault" in label:
-            _clip_label = "fault"
+        if hub_server is None:
+            monitor.log(f"[Hub] Clip back-patch skipped: hub_server not ready "
+                        f"(chain_id={chain_id!r} {safe_key}/{fname})")
         else:
-            _clip_label = label  # e.g. "pos0", "pos2"
-        flog = hub_server._chain_fault_log.get(chain_id, [])
-        monitor.log(f"[Hub] Clip back-patch: chain_id={chain_id!r} entry_id={entry_id!r} "
-                    f"flog_len={len(flog)} known_chains={list(hub_server._chain_fault_log.keys())}")
-        if flog:
-            if entry_id:
-                _target = next((e for e in reversed(flog) if e.get("id") == entry_id), None)
-                if _target is None:
-                    # entry_id not matched — older hub may have re-created the list;
-                    # fall back to most recent entry as a best-effort
-                    flog_ids = [e.get("id","?") for e in flog]
-                    monitor.log(f"[Hub] Clip back-patch: entry_id {entry_id!r} not found in "
-                                f"flog[{len(flog)}] ids={flog_ids} — falling back to flog[-1]")
-                    _target = flog[-1]
+            try:
+                # Derive a consistent clip label
+                if clip_status in ("fault", "last_good"):
+                    _clip_label = clip_status
+                elif "last_good" in label:
+                    _clip_label = "last_good"
+                elif "fault" in label:
+                    _clip_label = "fault"
                 else:
-                    monitor.log(f"[Hub] Clip back-patch: matched entry_id {entry_id!r} directly")
-            else:
-                _target = flog[-1]   # legacy fallback (older client, no entry_id)
-                monitor.log(f"[Hub] Clip back-patch: no entry_id — using flog[-1] id={_target.get('id','?')!r}")
-            if _target:
-                clips = _target.setdefault("clips", [])
-                clips.append({
+                    _clip_label = label  # e.g. "pos0", "pos2"
+                _clip_entry = {
                     "key":        safe_key,
                     "fname":      fname,
                     "label":      _clip_label,
                     "node_label": node_label or stream,
                     "pos":        clip_pos,
                     "status":     clip_status or _clip_label,
-                })
-                metrics_db.fault_log_update_clips(_target.get("id", ""), clips)
-                monitor.log(f"[Hub] Clip back-patched to fault log entry {_target.get('id', '?')!r} "
-                            f"for chain {chain_id!r} ({safe_key}/{fname}) — entry now has {len(clips)} clip(s)")
-        else:
-            monitor.log(f"[Hub] Clip back-patch: flog EMPTY for chain {chain_id!r} — "
-                        f"attempting DB fallback (entry_id={entry_id!r})")
-            # flog is empty (e.g. hub restarted after fault) — write clip directly to DB
-            # by locating the entry in the DB and updating its clips column.
-            _db_entries = metrics_db.fault_log_load(chain_id, limit=10)
-            monitor.log(f"[Hub] Clip back-patch DB fallback: found {len(_db_entries)} DB entries for chain {chain_id!r}")
-            if _db_entries:
-                if entry_id:
-                    _db_target = next((e for e in reversed(_db_entries) if e.get("id") == entry_id), None)
-                    if _db_target is None:
-                        monitor.log(f"[Hub] Clip back-patch DB: entry_id {entry_id!r} not found in DB "
-                                    f"— falling back to most recent DB entry")
-                        _db_target = _db_entries[-1]
+                }
+                flog = hub_server._chain_fault_log.get(chain_id, [])
+                monitor.log(f"[Hub] Clip back-patch: chain_id={chain_id!r} entry_id={entry_id!r} "
+                            f"flog_len={len(flog)} known_chains={list(hub_server._chain_fault_log.keys())}")
+                if flog:
+                    if entry_id:
+                        _target = next((e for e in reversed(flog) if e.get("id") == entry_id), None)
+                        if _target is None:
+                            flog_ids = [e.get("id","?") for e in flog]
+                            monitor.log(f"[Hub] Clip back-patch: entry_id {entry_id!r} not found in "
+                                        f"flog[{len(flog)}] ids={flog_ids} — falling back to flog[-1]")
+                            _target = flog[-1]
+                        else:
+                            monitor.log(f"[Hub] Clip back-patch: matched entry_id {entry_id!r} directly")
                     else:
-                        monitor.log(f"[Hub] Clip back-patch DB: matched entry_id {entry_id!r}")
+                        _target = flog[-1]
+                        monitor.log(f"[Hub] Clip back-patch: no entry_id — using flog[-1] "
+                                    f"id={_target.get('id','?')!r}")
+                    if _target:
+                        clips = _target.setdefault("clips", [])
+                        clips.append(_clip_entry)
+                        metrics_db.fault_log_update_clips(_target.get("id", ""), clips)
+                        monitor.log(f"[Hub] Clip back-patched to fault log entry "
+                                    f"{_target.get('id', '?')!r} for chain {chain_id!r} "
+                                    f"({safe_key}/{fname}) — entry now has {len(clips)} clip(s)")
                 else:
-                    _db_target = _db_entries[-1]
-                    monitor.log(f"[Hub] Clip back-patch DB: no entry_id — using most recent DB entry "
-                                f"id={_db_target.get('id','?')!r}")
-                if _db_target:
-                    _db_clips = list(_db_target.get("clips") or [])
-                    _db_clips.append({
-                        "key":        safe_key,
-                        "fname":      fname,
-                        "label":      _clip_label,
-                        "node_label": node_label or stream,
-                        "pos":        clip_pos,
-                        "status":     clip_status or _clip_label,
-                    })
-                    metrics_db.fault_log_update_clips(_db_target.get("id", ""), _db_clips)
-                    monitor.log(f"[Hub] Clip written directly to DB for entry "
-                                f"{_db_target.get('id', '?')!r} (chain {chain_id!r}) "
-                                f"— entry now has {len(_db_clips)} clip(s)")
-                    # Also restore into in-memory flog so in-memory overlay works immediately
-                    _new_flog = metrics_db.fault_log_load(chain_id, limit=25)
-                    if _new_flog:
-                        hub_server._chain_fault_log[chain_id] = _new_flog
-                        monitor.log(f"[Hub] Restored {len(_new_flog)} entries to in-memory flog for chain {chain_id!r}")
-            else:
-                monitor.log(f"[Hub] Clip back-patch FAILED: no DB entries for chain {chain_id!r} — "
-                            f"clip saved to disk only ({safe_key}/{fname})")
+                    monitor.log(f"[Hub] Clip back-patch: flog EMPTY for chain {chain_id!r} — "
+                                f"attempting DB fallback (entry_id={entry_id!r})")
+                    _db_entries = metrics_db.fault_log_load(chain_id, limit=10)
+                    monitor.log(f"[Hub] Clip back-patch DB fallback: found "
+                                f"{len(_db_entries)} DB entries for chain {chain_id!r}")
+                    if _db_entries:
+                        if entry_id:
+                            _db_target = next(
+                                (e for e in reversed(_db_entries) if e.get("id") == entry_id), None)
+                            if _db_target is None:
+                                monitor.log(f"[Hub] Clip back-patch DB: entry_id {entry_id!r} "
+                                            f"not found — falling back to most recent DB entry")
+                                _db_target = _db_entries[-1]
+                            else:
+                                monitor.log(f"[Hub] Clip back-patch DB: matched entry_id {entry_id!r}")
+                        else:
+                            _db_target = _db_entries[-1]
+                            monitor.log(f"[Hub] Clip back-patch DB: no entry_id — using most recent "
+                                        f"DB entry id={_db_target.get('id','?')!r}")
+                        if _db_target:
+                            _db_clips = list(_db_target.get("clips") or [])
+                            _db_clips.append(_clip_entry)
+                            metrics_db.fault_log_update_clips(_db_target.get("id", ""), _db_clips)
+                            monitor.log(f"[Hub] Clip written directly to DB for entry "
+                                        f"{_db_target.get('id', '?')!r} (chain {chain_id!r}) "
+                                        f"— entry now has {len(_db_clips)} clip(s)")
+                            # Restore into in-memory flog so overlay works immediately
+                            _new_flog = metrics_db.fault_log_load(chain_id, limit=25)
+                            if _new_flog:
+                                hub_server._chain_fault_log[chain_id] = _new_flog
+                                monitor.log(f"[Hub] Restored {len(_new_flog)} entries to "
+                                            f"in-memory flog for chain {chain_id!r}")
+                    else:
+                        monitor.log(f"[Hub] Clip back-patch FAILED: no DB entries for chain "
+                                    f"{chain_id!r} — clip saved to disk only ({safe_key}/{fname})")
+            except Exception as _bp_err:
+                monitor.log(f"[Hub] Clip back-patch ERROR (chain {chain_id!r} "
+                            f"entry {entry_id!r}): {_bp_err} — clip is saved, "
+                            f"fault history link failed")
     else:
         monitor.log(f"[Hub] Clip received without chain_id — saved to Reports only "
                     f"({safe_key}/{fname}). This clip will NOT appear in fault history.")
@@ -21317,8 +21328,13 @@ function loadFaultLog(cid, body, arrow){
       });
       html+='</tbody></table>';
       body.innerHTML=html;
-      // One-shot 15-second refresh to pick up late-arriving remote clips
-      setTimeout(function(){ if(document.body.contains(body)) loadFaultLog(cid, body, arrow); }, 15000);
+      // Staggered refreshes to pick up late-arriving remote clips.
+      // Clips from multi-node chains are staggered by position (pos×1.5s) plus
+      // upload time, so the last clip in a large chain can arrive 30-60s after
+      // the fault.  Three refreshes cover the full window without polling forever.
+      [20000, 40000, 70000].forEach(function(ms){
+        setTimeout(function(){ if(document.body.contains(body)) loadFaultLog(cid, body, arrow); }, ms);
+      });
     }).catch(function(){body.innerHTML='<div class="flog-empty">Error loading fault log.</div>';});
 }
 // Fault log toggle handler

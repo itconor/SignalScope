@@ -2,6 +2,17 @@
 
 ---
 
+## [3.3.144] - 2026-03-26
+
+### Fixed
+- **Chain fault history clips never appearing** — the back-patch block in `hub_clip_upload` had no try/except. Any unhandled exception (e.g. `hub_server` temporarily None at startup, DB contention) caused Flask to return HTTP 500. The client never received a 200, never wrote its `.hub` marker, and kept retrying. Each retry re-ran `_alert_log_append` (adding a duplicate Reports entry) but the back-patch kept crashing → clips accumulated in Reports, fault history showed "No clips" forever.
+
+  Fix:
+  - Wrapped the entire back-patch block in `try/except` with a clear `[Hub] Clip back-patch ERROR` log line. Any exception is now caught; the function always returns 200 so the client writes its `.hub` marker and stops retrying.
+  - Added an explicit `hub_server is None` guard with its own log line before touching `hub_server._chain_fault_log`.
+
+- **Fault history panel misses staggered clips** — the per-position save stagger added in 3.3.143 means the last clip in a large chain can arrive 30–60 s after the fault. The single 15-second one-shot refresh fired before the last clips arrived. Replaced with three refreshes at 20 s, 40 s, and 70 s so the panel picks up all clips without manual close/reopen.
+
 ## [3.3.143] - 2026-03-26
 
 ### Fixed
