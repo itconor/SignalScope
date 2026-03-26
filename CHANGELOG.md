@@ -2,6 +2,18 @@
 
 ---
 
+## [3.3.156] - 2026-03-26
+
+### Changed
+- **CSS extraction — inline styles replaced with named classes** — extracted the most frequently repeated inline style blocks from the Dashboard and Hub stream card templates into named CSS classes:
+  - `.card-dev` — device label in Dashboard card headers (6-property truncation style)
+  - `.lbar-mode-label` — RMS/Peak toggle label on the level bar
+  - `.rv-mu` — muted small-text value spans (Format row etc.)
+  - `.rv-mono` — monospace muted value spans (LUFS row)
+  - `.sc-dev` — device label in Hub stream card headers
+  - `.sc-name strong` — Hub stream card name font size moved to CSS rule
+  - No visual change; HTML templates are cleaner and easier to maintain.
+
 ## [3.3.155] - 2026-03-26
 
 ### Changed

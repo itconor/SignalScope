@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.155"
+BUILD                  = "SignalScope-3.3.156"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -13191,6 +13191,11 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 .card-expand-btn{background:none;border:none;color:var(--mu);padding:2px 6px;font-size:14px;cursor:pointer;line-height:1;transition:transform .2s,color .15s;flex-shrink:0}
 .card-expand-btn:hover{color:var(--tx)}.card-expand-btn.open{transform:rotate(180deg)}
 .card-more-btn{padding:3px 8px;font-size:16px;line-height:1}
+/* ── Extracted component classes ── */
+.card-dev{font-size:11px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:140px;white-space:nowrap}
+.lbar-mode-label{font-size:11px;color:var(--acc);width:32px;cursor:pointer;user-select:none;flex-shrink:0}
+.rv-mu{font-size:11px;color:var(--mu)}
+.rv-mono{font-size:11px;font-family:monospace;color:var(--mu)}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("dashboard") }}
 <main>
@@ -13221,7 +13226,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
       <div class="ch">
         <div class="dot {{dc}}" id="dot_{{idx}}"></div>
         <strong style="font-size:13px">{{inp.name}}</strong>
-        <span style="font-size:11px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:140px;white-space:nowrap" title="{{inp.device_index}}">
+        <span class="card-dev" title="{{inp.device_index}}">
           {{inp.device_index[:30]}}{{'…' if inp.device_index|length>30 else ''}}
         </span>
         <div class="ss-pg" tabindex="0" style="flex-shrink:0;position:relative">
@@ -13235,7 +13240,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
 
       {# ── Level bar ── #}
       <div class="lbar-wrap">
-        <span class="lbar-mode-label" style="font-size:11px;color:var(--acc);width:32px;cursor:pointer;user-select:none" title="Click to toggle RMS / Peak">RMS</span>
+        <span class="lbar-mode-label" title="Click to toggle RMS / Peak">RMS</span>
         <div class="lbar-track">
           <div class="lbar-fill" id="lbar_{{idx}}" style="width:{{lpct}}%;background:{{lcol}}"></div>
         </div>
@@ -13249,7 +13254,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
       <div class="rows" id="rows_{{idx}}">
         <div class="row">
           <span class="rl">Format</span>
-          <span class="rv" id="fmt_{{idx}}" style="font-size:11px;color:var(--mu)">{{inp._livewire_mode or '—'}}</span>
+          <span class="rv rv-mu" id="fmt_{{idx}}">{{inp._livewire_mode or '—'}}</span>
         </div>
         {% set _dev = inp.device_index.lower() %}
         {% if not (_dev.startswith('dab://') or _dev.startswith('fm://') or _dev.startswith('http://') or _dev.startswith('https://')) %}
@@ -13273,7 +13278,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
         </div>
         <div class="row">
           <span class="rl" style="white-space:nowrap">Loudness</span>
-          <span class="rv" id="lufs_{{idx}}" style="font-size:11px;font-family:monospace;color:var(--mu)">—</span>
+          <span class="rv rv-mono" id="lufs_{{idx}}">—</span>
         </div>
         <div class="row">
           <span class="rl">Alerts</span>
@@ -24868,9 +24873,9 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}">
         <div class="sc-name">
           <span class="dot {{dc}}"></span>
-          <strong style="font-size:12px">{{s.name}}</strong>
+          <strong>{{s.name}}</strong>
           {% if s.get('clip_count') %}<span class="clip-badge" title="Saved alert clips">{{s.get('clip_count')}} clips</span>{% endif %}
-          <span style="font-size:10px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap">{{s.device_index or ''}}</span>
+          <span class="sc-dev">{{s.device_index or ''}}</span>
         </div>
         <div class="lbar-wrap">
           <span style="font-size:11px;color:var(--mu);width:28px">Lvl</span>
@@ -26329,6 +26334,8 @@ body.wall-mode .sc{}
 .site-card.skeleton::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.05),transparent);transform:translateX(-100%);animation:hubshimmer 1.2s infinite}
 @keyframes hubshimmer{100%{transform:translateX(100%)}}
 .sc-name{font-weight:600;font-size:13px;padding:10px 10px 4px;display:flex;align-items:center;gap:6px}
+.sc-dev{font-size:10px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap}
+.sc-name strong{font-size:12px}
 .sc-row{display:flex;justify-content:space-between;font-size:12px;color:var(--mu);margin-top:4px}
 .sc-row span{color:var(--tx)}
 .rtp-ok{color:var(--ok)}.rtp-wn{color:var(--wn)}.rtp-al{color:var(--al)}
@@ -27161,8 +27168,8 @@ setInterval(_loadTrends, 300000);
       {# Header #}
       <div class="sc-name">
         <span class="dot {{dc}}"></span>
-        <strong style="font-size:12px">{{s.name}}</strong>
-        <span style="font-size:10px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap">{{s.device_index or ''}}</span>
+        <strong>{{s.name}}</strong>
+        <span class="sc-dev">{{s.device_index or ''}}</span>
         <button class="sc-expand-btn" data-action="sc-expand" data-sc-key="{{site.site|replace(' ','_')|replace('.','_')|replace('-','_')}}__{{i}}" title="Expand / Collapse">&#9662;</button>
       </div>
 
