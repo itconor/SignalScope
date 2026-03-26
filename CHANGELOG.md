@@ -2,6 +2,15 @@
 
 ---
 
+## [3.3.147] - 2026-03-26
+
+### Fixed
+- **Genuine chain fault never firing when upstream nodes have intermittent breaks** — the chain monitor runs every 10 s and finds the *first* faulted node. If a downstream node (e.g. a DAB output) has a continuous silence fault, but upstream nodes have occasional short program breaks, the `fault_index` shifts every time a poll catches an upstream node mid-break. The shift handler was backdating `_chain_fault_since` to `now − (min_fault_secs − 20 s)` (a "grace window"), effectively resetting the confirmation timer on every shift. If breaks shift the fault index more often than every 20 s, the timer perpetually resets and the chain **never** fires — even for a node that has been silent for hours.
+
+  The individual stream `DAB_AUDIO_FAULT` alert fired correctly (via `analyse_chunk`) but the `CHAIN_FAULT` never triggered, making the fault look like a one-off stream alert rather than a chain-level problem.
+
+  Fix: when the fault position shifts during the pending window, update the stored fault index for reporting purposes but **leave `_chain_fault_since` unchanged**. The chain has been broken somewhere continuously; the confirmation clock runs from first detection regardless of which node happens to be first-faulted on each poll. The log line now shows `(Xs / Ys elapsed)` so the progression is visible.
+
 ## [3.3.146] - 2026-03-26
 
 ### Fixed

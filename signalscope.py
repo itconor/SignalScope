@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.146"
+BUILD                  = "SignalScope-3.3.147"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -11547,19 +11547,19 @@ class HubServer:
                             stored_fault_idx  = pending_meta.get("fault_index")
                             if (current_fault_idx is not None
                                     and current_fault_idx != stored_fault_idx):
-                                # Fault position shifted — e.g. studio came back after
-                                # an ad break but the downstream node hasn't reported yet
-                                # (heartbeat lag of ~1 heartbeat cycle).  Give the new
-                                # position a short fixed grace window (2 heartbeat cycles)
-                                # rather than a full timer reset, so a genuine fault at
-                                # the new position still fires promptly.
-                                _grace = HUB_HEARTBEAT_INTERVAL * 2  # ~10 s
-                                self._chain_fault_since[cid] = now - max(0.0, min_fault_secs - _grace)
+                                # Fault position shifted (e.g. a brief upstream program
+                                # break coincided with the poll cycle).  Update which node
+                                # we will report but keep the original confirmation clock
+                                # running — the chain has been broken somewhere throughout,
+                                # and resetting the timer here would let intermittent
+                                # upstream breaks delay the alert indefinitely.
+                                _elapsed_so_far = round(now - self._chain_fault_since.get(cid, now))
                                 self._set_pending_fault_meta(cid, current_fault_idx, pending_meta.get("adbreak_candidate", False))
                                 monitor.log(
                                     f"[Chain] '{result['name']}' fault position shifted "
                                     f"(pos {stored_fault_idx} → {current_fault_idx}) — "
-                                    f"applying {round(_grace)}s grace window.")
+                                    f"confirmation clock continues "
+                                    f"({_elapsed_so_far}s / {min_fault_secs}s elapsed).")
                             elapsed = now - self._chain_fault_since.get(cid, now)
                             pending_adbreak = bool(pending_meta.get("adbreak_candidate", False))
                             # mixin_is_down and post-mixin faults always bypass regardless of
