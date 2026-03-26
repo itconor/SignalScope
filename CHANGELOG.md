@@ -2,6 +2,11 @@
 
 ---
 
+## [3.3.139] - 2026-03-26
+
+### Fixed
+- **APNs bad token auto-removal** — `BadDeviceToken` (400) responses are now handled the same way as 410 Unregistered: the token is immediately removed from the device list and the config is saved. Previously only 410 and `BadDeviceToken` via a 403 environment-flip retry were pruned; a direct 400 `BadDeviceToken` was logged but the dead token stayed in the list, causing two failed push attempts on every subsequent notification.
+
 ## [3.3.138] - 2026-03-26
 
 ### Fixed

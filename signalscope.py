@@ -1570,7 +1570,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.138"
+BUILD                  = "SignalScope-3.3.139"
 # CHANGELOG
 # 3.2.83 (2026-03-23) — Named stacks: chain builder now shows a "Stack label" text input whenever
 #                        a position has >1 node (i.e. becomes a stack).  The label is saved in the
@@ -3060,7 +3060,15 @@ def _send_apns_push(title: str, body: str, data: "dict|None" = None, badge: "int
                             else:
                                 monitor.log(f"[APNs] ✘ Push 403 for {token[:12]}… ({env}): {reason or resp.text[:200]}")
                         else:
-                            monitor.log(f"[APNs] ✘ Push {resp.status_code} for {token[:12]}… ({env}): {resp.text[:200]}")
+                            try:
+                                _r = resp.json().get("reason", "")
+                            except Exception:
+                                _r = ""
+                            if _r == "BadDeviceToken":
+                                monitor.log(f"[APNs] Token {token[:12]}… BadDeviceToken ({resp.status_code}) — removing")
+                                to_remove.append(entry)
+                            else:
+                                monitor.log(f"[APNs] ✘ Push {resp.status_code} for {token[:12]}… ({env}): {resp.text[:200]}")
                     except Exception as e:
                         monitor.log(f"[APNs] Push error for {token[:12]}… ({env}): {e}")
         except Exception as e:
