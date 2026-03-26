@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.25] - 2026-03-26
+
+### Fixed
+- **Broadcast chain comparator chip colour for processed paths** — chain diagram used fixed thresholds (`pct>=80` → green) regardless of whether a processor was detected. A healthy 80% processed path showed orange. Now uses relaxed thresholds for processed paths (≥50% → green, ≥30% → amber) matching the Python-side labels, and tightened thresholds for clean paths (≥65% → green, ≥40% → amber). Tooltip text updated from stale "GCC-PHAT · envelope/waveform" to "block-RMS processed/clean".
+
 ## [3.4.24] - 2026-03-26
 
 ### Changed

@@ -1573,7 +1573,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.24"
+BUILD                  = "SignalScope-3.4.25"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -22515,12 +22515,18 @@ function refreshStatus(){
           var isMetricProcessed=(comp.status==='processed');
           var isLocalAudio=(comp.status==='local_audio');
           var isLocalProc=isLocalAudio&&comp.processed;
+          var isProcessed=isLocalProc||isMetricProcessed;
           var badge=isLocalAudio?(isLocalProc?' 🎧⚙':' 🎧'):(isMetricProcessed?' ⚙':'');
           cv.textContent=pct.toFixed(1)+'%'+badge;
-          el.className='corr-chip '+(pct>=80?'corr-ok':pct>=50?'corr-warn':'corr-poor');
+          // Use relaxed thresholds for processed paths — AGC/limiting naturally
+          // reduces envelope correlation so 50–75% is healthy, not marginal.
+          var chipCls;
+          if(isProcessed) chipCls=pct>=50?'corr-ok':pct>=30?'corr-warn':'corr-poor';
+          else            chipCls=pct>=65?'corr-ok':pct>=40?'corr-warn':'corr-poor';
+          el.className='corr-chip '+chipCls;
           var tip='Confidence: '+pct.toFixed(1)+'%';
           if(isLocalAudio){
-            tip+=' | 🎧 Live audio (GCC-PHAT · '+(isLocalProc?'envelope':'waveform')+' correlation)';
+            tip+=' | 🎧 Live audio (block-RMS '+(isLocalProc?'processed':'clean')+' correlation)';
             if(isLocalProc){
               tip+=' | ⚙ Processor detected';
               if(comp.compression_ratio!=null)
