@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/meterwall",
     "icon":     "📊",
     "hub_only": False,
-    "version":  "1.0.0",
+    "version":  "1.0.1",
 }
 
 
@@ -298,12 +298,12 @@ body{
   <span id="mw-alert-badge">⚠ ALERTS</span>
   <div class="mw-ctrl">
     <span style="font-size:11px;color:var(--mu)">Size</span>
-    <button class="btn" id="btn-sm" onclick="setSize('sm')" title="Compact (key: 1)">S</button>
-    <button class="btn active" id="btn-md" onclick="setSize('md')" title="Normal (key: 2)">M</button>
-    <button class="btn" id="btn-lg" onclick="setSize('lg')" title="Large (key: 3)">L</button>
-    <button class="btn" id="btn-sort" onclick="toggleSort()" title="Sort by level (key: S)">↕ Level</button>
+    <button class="btn" id="btn-sm" title="Compact (key: 1)">S</button>
+    <button class="btn active" id="btn-md" title="Normal (key: 2)">M</button>
+    <button class="btn" id="btn-lg" title="Large (key: 3)">L</button>
+    <button class="btn" id="btn-sort" title="Sort by level (key: S)">↕ Level</button>
     <a class="btn" href="/">⌂ Dashboard</a>
-    <button class="btn bp" id="btn-fs" onclick="toggleFs()" title="Fullscreen (key: F)">⛶ Full</button>
+    <button class="btn bp" id="btn-fs" title="Fullscreen (key: F)">⛶ Full</button>
     <span id="mw-clock">--:--:--</span>
   </div>
 </div>
@@ -652,6 +652,13 @@ body{
       if (saved && _sizes[saved]) _curSize = saved;
     } catch(e) {}
     setSize(_curSize);
+
+    /* Button listeners — must be inside IIFE so functions are in scope */
+    document.getElementById('btn-sm').addEventListener('click', function() { setSize('sm'); });
+    document.getElementById('btn-md').addEventListener('click', function() { setSize('md'); });
+    document.getElementById('btn-lg').addEventListener('click', function() { setSize('lg'); });
+    document.getElementById('btn-sort').addEventListener('click', toggleSort);
+    document.getElementById('btn-fs').addEventListener('click', toggleFs);
 
     /* Keyboard shortcuts */
     document.addEventListener('keydown', function(e) {
