@@ -2,6 +2,12 @@
 
 ---
 
+## [3.3.161] - 2026-03-26
+
+### Fixed
+- **Hub Reports — "Clips only" still pushed off right edge** — the previous fix constrained input widths but left the checkbox inside the flex row. On a typical 1280 px display the six filter controls (three selects + two datetime inputs + Clips checkbox) still exceeded the available row width. Fix: "Clips only" checkbox is now in its own row below the filter bar, sharing a flex container with the "N events shown" count (left-aligned checkbox, right-aligned count). The filter bar itself now only contains the select and datetime-local controls, which always fit within 1280 px.
+- **Broadcast Chains — fault log auto-refresh jumps scroll and destroys open replay panel** — the staggered refresh used `[20000,40000,70000].forEach(...)` inside `loadFaultLog`, scheduling three new timeouts *every* call. This caused exponential growth (calls at 20 s, 40 s, 60 s, 70 s, 80 s, 110 s …), repeatedly firing `body.innerHTML=html` which destroyed any open replay panel ("closes the dropdown") and reset the browser scroll position to the top. Fix: each call now schedules at most *one* next refresh using a `_nRefresh` counter; total auto-refreshes are capped at three (at approximately +20 s, +60 s, and +170 s from initial open). Additionally, `window.scrollY` is saved and restored around the `innerHTML` replacement, and replacement is skipped entirely when a replay panel (`[id^="rrow_"]`) is open inside the fault log body.
+
 ## [3.3.160] - 2026-03-26
 
 ### Fixed

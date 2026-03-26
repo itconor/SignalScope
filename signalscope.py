@@ -1550,7 +1550,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.3.160"
+BUILD                  = "SignalScope-3.3.161"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -21447,10 +21447,11 @@ document.getElementById('chains_list').addEventListener('click', function(e){
 
 // Fault log loader — extracted so the toggle handler and the one-shot
 // 15-second auto-refresh can both call it.
-function loadFaultLog(cid, body, arrow){
+function loadFaultLog(cid, body, arrow, _nRefresh){
   if(!body) body=document.getElementById('flog_body_'+cid);
   if(!arrow) arrow=document.getElementById('flog_arrow_'+cid);
   if(!body) return;
+  _nRefresh=_nRefresh||0;
   // Always fetch fresh — clips are back-patched asynchronously after the
   // fault fires, so a cached panel would show "No clips" until page reload.
   _f('/api/chains/'+encodeURIComponent(cid)+'/fault_log').then(function(r){return r.json();}).then(function(d){
@@ -21506,14 +21507,21 @@ function loadFaultLog(cid, body, arrow){
              +rtpCell+clipsCell+'<td>'+dur+'</td>'+noteCell+'</tr>';
       });
       html+='</tbody></table>';
-      body.innerHTML=html;
-      // Staggered refreshes to pick up late-arriving remote clips.
-      // Clips from multi-node chains are staggered by position (pos×1.5s) plus
-      // upload time, so the last clip in a large chain can arrive 30-60s after
-      // the fault.  Three refreshes cover the full window without polling forever.
-      [20000, 40000, 70000].forEach(function(ms){
-        setTimeout(function(){ if(document.body.contains(body)) loadFaultLog(cid, body, arrow); }, ms);
-      });
+      // Don't replace the fault log while a replay panel is open — user is watching clips.
+      // Save/restore scroll position so innerHTML replacement doesn't jump the page to the top.
+      var _hasReplay=body.querySelector('[id^="rrow_"]');
+      if(!_hasReplay){
+        var _sv=window.scrollY;
+        body.innerHTML=html;
+        if(window.scrollY!==_sv) window.scrollTo(0,_sv);
+      }
+      // Staggered refreshes: schedule ONE next refresh per call, capped at 3 total auto-refreshes,
+      // to pick up late-arriving clips without exponential timeout growth.
+      // Effective delays from initial open: +20 s, +60 s, +170 s — then stop.
+      var _delays=[20000,40000,70000];
+      if(_nRefresh<_delays.length){
+        setTimeout(function(){ if(document.body.contains(body)) loadFaultLog(cid,body,arrow,_nRefresh+1); },_delays[_nRefresh]);
+      }
     }).catch(function(){body.innerHTML='<div class="flog-empty">Error loading fault log.</div>';});
 }
 // Fault log toggle handler
@@ -24389,7 +24397,7 @@ main{padding:18px 20px 24px}
 .filters select{max-width:160px}
 .filters input[type="datetime-local"]{max-width:175px}
 .filters label{color:var(--mu);font-size:12px}
-.filter-row-count{text-align:right;font-size:12px;color:var(--mu);margin-bottom:14px;padding:0 2px}
+.filter-row-count{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--mu);margin-bottom:14px;padding:0 4px}
 .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px}
 .sc{background:linear-gradient(180deg,#12305c,#10284f);border:1px solid var(--bor);border-radius:12px;padding:12px 14px;box-shadow:0 4px 10px rgba(0,0,0,.14);cursor:pointer;transition:border-color .15s,box-shadow .15s,background .15s;user-select:none}
 .sc:hover{border-color:var(--acc);box-shadow:0 0 0 2px rgba(23,168,255,.18)}
@@ -24489,9 +24497,11 @@ tr:hover td{background:#123764}
     {% endif %}
     <label>From <input type="datetime-local" id="f_from" onchange="applyFilters()"></label>
     <label>To   <input type="datetime-local" id="f_to"   onchange="applyFilters()"></label>
-    <label><input type="checkbox" id="f_clips" onchange="applyFilters()"> Clips only</label>
   </div>
-  <div class="filter-row-count" id="row_count"></div>
+  <div class="filter-row-count">
+    <label style="cursor:pointer"><input type="checkbox" id="f_clips" onchange="applyFilters()"> Clips only</label>
+    <span id="row_count"></span>
+  </div>
 
   <div class="table-wrap">
   <table id="evt_table">

@@ -4,7 +4,7 @@
 SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
 
 - **Repo**: https://github.com/itconor/SignalScope
-- **Current build string**: `BUILD = "SignalScope-3.3.160"` (increment on every release)
+- **Current build string**: `BUILD = "SignalScope-3.3.161"` (increment on every release)
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **Release flow**: bump `BUILD`, update `CHANGELOG.md`, `git commit`, `git push`, `gh release create v{version}`
 
@@ -373,6 +373,24 @@ Fix: after collecting site events, also call `_alert_log_load(2000)` and merge h
 Fix: `type_names` is now built as the union of dynamic types found in `all_events` plus the constant set `_SILENCE_TYPES`, so silence-related options are always present in the filter regardless of the current event window.
 
 **Rule**: Never build `type_names` in `hub_reports()` from events alone — always union with `_SILENCE_TYPES` to keep the filter stable.
+
+### Hub Reports — "Clips only" off screen (fixed 3.3.161)
+The "Clips only" checkbox was a flex item inside `.filters` alongside the Site/Stream/Type/Chain selects and two `datetime-local` inputs. On a 1280 px display the combined minimum content width (~1280 px) matched the viewport, pushing the checkbox off the right edge on any screen narrower than that.
+
+Fix: "Clips only" checkbox was moved out of `.filters` into a new `.filter-row-count` flex row directly below the filter bar. The row is `justify-content:space-between` with the checkbox on the left and the "N events shown" count on the right. The filter bar itself now only contains select/datetime controls.
+
+**Rule**: Never put the "Clips only" checkbox back inside the `.filters` flex container — it must remain in the `.filter-row-count` row below the filter bar.
+
+### Broadcast Chains — fault log refresh destroys replay panel and jumps scroll (fixed 3.3.161)
+`loadFaultLog` used `[20000,40000,70000].forEach(...)` to schedule staggered refreshes. Because all three timeouts were scheduled on every call (including auto-refresh calls), the pattern caused exponential growth: within 2 minutes the function was being called every 20–40 seconds indefinitely. Each call did `body.innerHTML=html` which: (1) destroyed any open replay panel (`<tr id="rrow_...">`) — the user's "dropdown closes", and (2) caused some browsers to reset scroll position to the top.
+
+Fix applied to `loadFaultLog`:
+- Added `_nRefresh` parameter (default 0); each call schedules **one** next refresh at `_delays[_nRefresh]` and increments the counter. Cap is `_delays.length` (3), so refreshes happen at approximately +20 s, +60 s, +170 s from initial open — then stop.
+- `window.scrollY` is saved before and restored after `body.innerHTML=html`.
+- If `body.querySelector('[id^="rrow_"]')` is truthy (replay panel is open), `body.innerHTML` replacement is skipped for that cycle; the next refresh is still scheduled.
+
+**Rule**: Never schedule multiple timeouts inside `loadFaultLog` per call — use the `_nRefresh` counter pattern to ensure exactly one next timeout, capped at three total.
+**Rule**: Always save/restore `window.scrollY` around `body.innerHTML = html` in fault log refreshes.
 
 ### WAN audio choppy every ~0.5 s (fixed 3.3.70–3.3.73)
 Root cause: hub hosted remotely from SDR client. WAN RTT >250 ms triggered `_KP_THRESHOLD = 0.25 s` silence injection in `generate_scanner()`. Also, when RTT > `_BLK_DUR` (0.1 s), sequential POSTs fell behind real-time.
