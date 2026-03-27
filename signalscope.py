@@ -1607,7 +1607,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.31"
+BUILD                  = "SignalScope-3.4.32"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -9990,8 +9990,10 @@ class HubClient:
             # Dongles with role="dab" — used by the DAB Scanner plugin to
             # populate its SDR dropdown with DAB-capable serials.
             "dab_serials":     [d.serial for d in cfg.sdr_devices if d.role == "dab"],
-            # Inform hub of effective low-bandwidth mode so it adjusts thresholds
-            "low_bw":          getattr(self, "_low_bw", False) or getattr(cfg.hub, "low_bw", False),
+            # Report only the locally saved setting — not the hub-pushed value.
+            # Including self._low_bw would create a feedback loop: hub pushes
+            # true → client echoes true back → hub stores true forever.
+            "low_bw":          getattr(cfg.hub, "low_bw", False),
         }
 
     def _handle_listen_requests(self, cfg, listen_requests: list):

@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.32] - 2026-03-27
+
+### Fixed
+- **Low-bandwidth mode can't be turned off from client** — heartbeat payload was reporting `self._low_bw OR cfg.hub.low_bw` (the effective value), which included the hub-pushed `self._low_bw`. This created a feedback loop: hub pushes `true` → client echoes `true` back in heartbeat → hub stores `true` forever, even after hub_site_rules was cleared. Fixed by reporting only `cfg.hub.low_bw` (the locally saved setting) in the heartbeat payload. The hub's own hub_site_rules is the authoritative source for the hub-side override.
+
 ## [3.4.31] - 2026-03-27
 
 ### Fixed
