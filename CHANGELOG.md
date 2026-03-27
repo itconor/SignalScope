@@ -2,6 +2,16 @@
 
 ---
 
+## [3.4.36] - 2026-03-27
+
+### Added
+- **Glitch detection: four new false-positive discriminators**
+  - **Recovery rate filter** — audio must snap back abruptly after the dip (measured over 0.5–3 s after recovery). Gradual recoveries (next song fading in) are rejected. Reuses the same dBFS/s threshold as onset.
+  - **Silence floor requirement** (`glitch_floor_db`, default 15 dB) — the dip must reach within N dB of the silence threshold. Real dropouts go to near-silence; quiet musical passages rarely do. Configurable, 0 = disabled.
+  - **Dip floor tracking** — minimum level during the dip is tracked and used for the floor check, so a dip that briefly touches the threshold but doesn't go deep is correctly rejected.
+  - **Pre-dip trend rejection** (`glitch_pre_trend_db`, default 4 dB) — if the level was already declining by this many dB in the 2–5 s before the threshold crossing, the dip is treated as a content fade and ignored entirely. Catches slow fades that still appear abrupt at the exact crossing instant.
+  - All three of onset rate / floor depth / recovery rate must pass for a glitch to be counted.
+
 ## [3.4.35] - 2026-03-27
 
 ### Fixed

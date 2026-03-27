@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.35"
+BUILD                  = "SignalScope-3.4.36"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -1890,7 +1890,9 @@ class InputConfig:
     # over the 0.5–3 s window before the threshold crossing.
     # Song fades: 2–10 dBFS/s.  Real glitches (packet loss, STL): 40–200+ dBFS/s.
     # 0 = disabled (count all dips regardless of slope).
-    glitch_min_drop_rate_dbfs_s:  float = 22.0  # minimum dBFS/s fall rate to count as a glitch
+    glitch_min_drop_rate_dbfs_s:  float = 22.0  # minimum dBFS/s fall rate to count as a glitch (onset AND recovery)
+    glitch_floor_db:              float = 15.0   # dip must reach within this many dB of silence threshold (0=disabled)
+    glitch_pre_trend_db:          float = 4.0    # reject if level already fell this many dB in 2-5 s before onset (0=disabled)
 
     # Expected identity — alert when actual name differs or changes
     expected_fm_rds_ps:   str = ""   # expected RDS Programme Service name; blank = alert on any change
@@ -1984,6 +1986,7 @@ class InputConfig:
     # Glitch tracking (runtime)
     _glitch_dip_start:           float = field(default=0.0,   init=False, repr=False)  # wall-clock ts dip began
     _glitch_entry_rate:          float = field(default=0.0,   init=False, repr=False)  # dBFS/s slope at dip onset
+    _glitch_dip_floor:           float = field(default=0.0,   init=False, repr=False)  # min level reached during active dip
     _glitch_timestamps:          List  = field(default_factory=list, init=False, repr=False)  # recent glitch ts list
     _glitch_count_total:         int   = field(default=0,     init=False, repr=False)  # cumulative lifetime count
     _last_glitch_alert_ts:       float = field(default=0.0,   init=False, repr=False)
@@ -2241,6 +2244,8 @@ def load_config() -> AppConfig:
             glitch_sustained_count=int(item.get("glitch_sustained_count", 10)),
             glitch_sustained_window_min=int(item.get("glitch_sustained_window_min", 10)),
             glitch_min_drop_rate_dbfs_s=float(item.get("glitch_min_drop_rate_dbfs_s", 22.0)),
+            glitch_floor_db=float(item.get("glitch_floor_db", 15.0)),
+            glitch_pre_trend_db=float(item.get("glitch_pre_trend_db", 4.0)),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
     return AppConfig(
@@ -2390,6 +2395,8 @@ def save_config(cfg: AppConfig):
             "glitch_sustained_count": i.glitch_sustained_count,
             "glitch_sustained_window_min": i.glitch_sustained_window_min,
             "glitch_min_drop_rate_dbfs_s": i.glitch_min_drop_rate_dbfs_s,
+            "glitch_floor_db": i.glitch_floor_db,
+            "glitch_pre_trend_db": i.glitch_pre_trend_db,
         } for i in cfg.inputs],
         "email": {
             "enabled": cfg.email.enabled, "smtp_host": cfg.email.smtp_host,
@@ -5361,34 +5368,67 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
             _is_dip = (lev < _rolling_mean - cfg.glitch_drop_db
                        and lev > cfg.silence_threshold_dbfs - 15.0)
             if _is_dip and cfg._glitch_dip_start == 0.0:
-                cfg._glitch_dip_start = _gn
-                # Measure the approach rate: compare the current (dip) level to
-                # a sample from 0.5–3.0 s BEFORE the threshold crossing.
-                # Using the immediate previous sample (< 50 ms ago) gave wildly
-                # inflated rates: even a 4-second song fade reads as 60+ dBFS/s
-                # at the instant it crosses the threshold.  Using a sample from
-                # half a second ago gives the true slope leading into the dip.
-                # Fades: 2–10 dBFS/s.  Real glitches: 40–100+ dBFS/s.
-                _pre = [(t, v) for (t, v) in cfg._level_buf
-                        if _gn - 3.0 <= t <= _gn - 0.5
-                        and v > cfg.silence_threshold_dbfs]
-                if _pre:
-                    _pt, _pv = _pre[-1]   # most recent sample in the 0.5-3 s window
-                    _dt = max(0.1, _gn - _pt)
-                    cfg._glitch_entry_rate = (_pv - lev) / _dt
+                # ── Pre-dip trend check (#4) ─────────────────────────────────
+                # If the level was already declining for 2-5 s before the crossing
+                # this is a content fade-out, not an abrupt fault. Reject early.
+                _p_early = [v for (t, v) in cfg._level_buf
+                            if _gn - 5.0 <= t <= _gn - 3.0
+                            and v > cfg.silence_threshold_dbfs]
+                _p_late  = [v for (t, v) in cfg._level_buf
+                            if _gn - 2.5 <= t <= _gn - 0.5
+                            and v > cfg.silence_threshold_dbfs]
+                _pre_trend_db = 0.0
+                if _p_early and _p_late:
+                    _pre_trend_db = ((sum(_p_early) / len(_p_early))
+                                     - (sum(_p_late)  / len(_p_late)))
+                if cfg.glitch_pre_trend_db > 0 and _pre_trend_db >= cfg.glitch_pre_trend_db:
+                    pass   # level was already declining — treat as fade, not glitch
                 else:
-                    cfg._glitch_entry_rate = 999.0   # no ref — treat as abrupt
+                    cfg._glitch_dip_start = _gn
+                    cfg._glitch_dip_floor = lev   # initialise floor tracker
+                    # ── Approach rate (onset) ─────────────────────────────────
+                    # Measure over 0.5–3 s before crossing so gradual fades
+                    # are not inflated to 60+ dBFS/s at the threshold instant.
+                    _pre = [(t, v) for (t, v) in cfg._level_buf
+                            if _gn - 3.0 <= t <= _gn - 0.5
+                            and v > cfg.silence_threshold_dbfs]
+                    if _pre:
+                        _pt, _pv = _pre[-1]
+                        _dt = max(0.1, _gn - _pt)
+                        cfg._glitch_entry_rate = (_pv - lev) / _dt
+                    else:
+                        cfg._glitch_entry_rate = 999.0   # no ref — treat as abrupt
+            elif _is_dip and cfg._glitch_dip_start > 0.0:
+                # ── Track minimum level during the dip (#3) ──────────────────
+                if lev < cfg._glitch_dip_floor:
+                    cfg._glitch_dip_floor = lev
             elif not _is_dip and cfg._glitch_dip_start > 0.0:
-                _dip_dur = _gn - cfg._glitch_dip_start
+                _dip_dur    = _gn - cfg._glitch_dip_start
                 _entry_rate = cfg._glitch_entry_rate
-                cfg._glitch_dip_start = 0.0
+                _dip_floor  = cfg._glitch_dip_floor
+                cfg._glitch_dip_start  = 0.0
                 cfg._glitch_entry_rate = 0.0
-                # Reject fades: if the level fell too slowly this is a song
-                # fade-out or intentional ramp, not an audio fault.
+                cfg._glitch_dip_floor  = 0.0
                 _min_rate = cfg.glitch_min_drop_rate_dbfs_s
+                _reject   = False
+                # Filter A — onset too gradual
                 if _min_rate > 0 and _entry_rate < _min_rate:
-                    pass   # too gradual — skip
-                elif 0.0 < _dip_dur < cfg.glitch_max_seconds:
+                    _reject = True
+                # Filter B — dip never reached close enough to silence (#2/#3)
+                if not _reject and cfg.glitch_floor_db > 0:
+                    if _dip_floor > cfg.silence_threshold_dbfs + cfg.glitch_floor_db:
+                        _reject = True
+                # Filter C — recovery too gradual (#1 recovery rate)
+                if not _reject and _min_rate > 0:
+                    _post = [(t, v) for (t, v) in cfg._level_buf
+                             if _gn - 3.0 <= t <= _gn - 0.5]
+                    if _post:
+                        _rpt, _rpv = _post[-1]
+                        _rdt = max(0.1, _gn - _rpt)
+                        _recovery_rate = (lev - _rpv) / _rdt
+                        if _recovery_rate < _min_rate:
+                            _reject = True
+                if not _reject and 0.0 < _dip_dur < cfg.glitch_max_seconds:
                     # Count it
                     cfg._glitch_timestamps.append(_gn)
                     cfg._glitch_count_total += 1
@@ -16953,7 +16993,15 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
           <label class="lbl">Minimum drop rate to count as glitch (dBFS/s)
             <input type="number" name="glitch_min_drop_rate_dbfs_s" value="{{inp.glitch_min_drop_rate_dbfs_s}}" step="1" min="0" max="200">
           </label>
-          <p class="help">Measures the average fall rate over the 0.5–3 s leading into the dip. Song fades and quiet passages drop gradually (2–10 dBFS/s). Real glitches — packet loss, STL hitches, encoder dropouts — are abrupt (40–200+ dBFS/s). Set to 0 to disable and count all dips. Default: 22 dBFS/s.</p>
+          <p class="help">Average fall rate over the 0.5–3 s before the dip, and rise rate over 0.5–3 s after recovery. Song fades: 2–10 dBFS/s. Real glitches: 40–200+ dBFS/s. Applied to both onset and recovery — both must be abrupt to count. Set to 0 to disable. Default: 22 dBFS/s.</p>
+          <label class="lbl">Silence floor margin (dB, 0 = disabled)
+            <input type="number" name="glitch_floor_db" value="{{inp.glitch_floor_db}}" step="1" min="0" max="40">
+          </label>
+          <p class="help">The dip must reach within this many dB of the silence threshold. Real dropouts go to near-silence; quiet musical passages rarely do. E.g. with threshold −50 dBFS and margin 15, the dip must hit −35 dBFS or lower. Default: 15 dB.</p>
+          <label class="lbl">Pre-dip trend rejection (dB, 0 = disabled)
+            <input type="number" name="glitch_pre_trend_db" value="{{inp.glitch_pre_trend_db}}" step="1" min="0" max="20">
+          </label>
+          <p class="help">If the level was already falling by this many dB in the 2–5 s before the threshold crossing, the dip is treated as a content fade and ignored. Catches slow fades that still appear abrupt at the instant they cross the threshold. Default: 4 dB.</p>
         </div>
       </div>
 
@@ -17432,6 +17480,8 @@ def _inp_from_form(f):
         glitch_sustained_count=int(f.get("glitch_sustained_count") or 10),
         glitch_sustained_window_min=int(f.get("glitch_sustained_window_min") or 10),
         glitch_min_drop_rate_dbfs_s=float(f.get("glitch_min_drop_rate_dbfs_s") or 12.0),
+        glitch_floor_db=float(f.get("glitch_floor_db") or 0.0),
+        glitch_pre_trend_db=float(f.get("glitch_pre_trend_db") or 0.0),
     )
 
 @app.route("/inputs/add", methods=["GET","POST"])
