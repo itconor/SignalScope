@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.40"
+BUILD                  = "SignalScope-3.4.41"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -11792,16 +11792,23 @@ class HubServer:
                 and fault_idx is not None and mixin_idx is None):
             _fn = nodes_out[fault_idx]
             if _fn.get("type") == "stack" and _fn.get("mode", "all") == "all":
-                # Only if no downstream node is also faulted — if the whole chain is
-                # dark it is a cascading failure, not an ad break.
+                # Ad-break test: the studio-stack is silent but downstream TX is
+                # still carrying audio (from automation / ad-server).
+                #
+                # The OLD check ("no downstream node is down") was too strict.
+                # A pass-through router immediately after the codec stack naturally
+                # mirrors the studio silence — it went dark too.  That caused
+                # _any_post_down=True and blocked adbreak_candidate even though the
+                # TX end of the chain was perfectly healthy.
+                #
+                # Better test: if ANY downstream node is actively "ok" (confirmed
+                # carrying audio), the broadcast chain is still alive from another
+                # source → ad break, not a cascading failure.
+                # Only if EVERY downstream node is also dark do we treat it as a
+                # genuine outage.
                 _post = nodes_out[fault_idx + 1:]
-                _any_post_down = any(
-                    n.get("status") == "down"
-                    or (n.get("status") == "offline"
-                        and not n.get("offline_grace_active", False))
-                    for n in _post
-                )
-                if not _any_post_down:
+                _any_post_ok = any(n.get("status") == "ok" for n in _post)
+                if _any_post_ok:
                     adbreak_candidate = True
         return {
             "id":               chain.get("id", ""),

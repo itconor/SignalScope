@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.41] - 2026-03-27
+
+### Fixed
+- **Broadcast Chains — ad break at start of ads misdetected as FAULT** — the secondary ad-break candidate test (`eval_chain`) required that *no* downstream node was faulted. In a typical chain topology (Studio Codecs → Pass-through Router → Audio Processing → Broadcast TX) the pass-through router immediately downstream of the codec stack *mirrors* the studio silence — it has no audio of its own, so it also reads below the silence threshold for the brief lag before the ad-server kicks in. This caused `_any_post_down = True`, blocking `adbreak_candidate = True` even though Audio Processing and Broadcast TX were both healthy with audio. The result: the chain went straight to FAULT (red) instead of AD BREAK (amber) for a few minutes until the 330 s confirmation window elapsed, at which point the fault self-healed — repeating on every ad break.
+
+  Fix: changed the test from "no downstream node is faulted" to "at least one downstream node is confirmed OK". If any node further in the chain is actively carrying audio, the broadcast chain is still alive from another source (automation/ad-server) and the codec silence is an ad break. Only when *every* downstream node is also dark is it treated as a genuine cascading outage.
+
+---
+
 ## [3.4.40] - 2026-03-27
 
 ### Fixed
