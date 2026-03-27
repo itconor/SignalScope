@@ -56,7 +56,7 @@ Once complete, open `http://localhost:5000`. The setup wizard will guide you thr
 | **Composite fault alerts** | STUDIO_FAULT, STL_FAULT, TX_DOWN (FM); DAB_AUDIO_FAULT, DAB_SERVICE_MISSING (DAB); RTP_FAULT (Livewire/AES67) |
 | **Name mismatch alerts** | FM_RDS_MISMATCH, DAB_SERVICE_MISMATCH |
 | **AI anomaly detection** | Per-stream ONNX autoencoder, 24 h learning phase, adaptive baseline, feedback-driven retraining (👍/👎 in Reports or Hub Reports) |
-| **Broadcast Chains** | Visual signal path builder with fault location, node stacking, ad break handling, maintenance bypass, flap detection, chain health score, chain SLA, fault history with audio replay timeline, all-node clip capture, predictive level trend, shared fault detection, historical time-travel view |
+| **Broadcast Chains** | Visual signal path builder with fault location, node stacking, ad break handling (including pass-through router topologies), maintenance bypass, flap detection, A/B group failover monitoring, chain health score, chain SLA, fault history with colour-coded audio replay timeline, all-node clip capture, predictive level trend, shared fault detection, historical time-travel view |
 | **Stream comparator** | Cross-correlate pre/post processing pairs; detect processor failure, gain drift, dropout |
 | **Metric history** | SQLite time-series, 90-day retention, signal history charts (15+ metrics), availability timeline, trend analysis |
 | **Notifications** | Email (SMTP), MS Teams Adaptive Cards, Pushover, plain text webhooks, alert escalation |
@@ -102,6 +102,12 @@ The dashboard shows a card for each monitored stream. Each card displays:
 - Listen button for live audio in the browser — opens a sticky mini-player bar at the bottom of the page
 
 Cards are drag-to-reorder. Alert cards sort to the top automatically.
+
+### Hub Dashboard
+
+The hub dashboard aggregates all connected sites in one view. A **search bar** at the top filters site cards in real time — type any site name, stream name, format (`DAB`, `FM`), alert text, device ID or AI status. The filter searches all card content including collapsed stream detail panels.
+
+Cards can be drag-reordered; the order persists across page reloads via localStorage.
 
 ---
 
@@ -310,6 +316,7 @@ See `CLAUDE.md` in the repository for full plugin authoring documentation includ
 | `HISS` | High-frequency noise floor detected above threshold |
 | `LUFS_TP` | True peak exceeds configured dBTP threshold (default −1.0 dBTP) |
 | `LUFS_I` | 30-second integrated loudness deviates from EBU R128 target (default −23 LUFS ± 3 LU) |
+| `GLITCH` | Brief audio dropout detected — onset rate, recovery rate, dip depth, and pre-dip trend are all evaluated to filter out fade transitions and music dynamics before an alert fires |
 
 **Composite fault alerts** (silence is diagnosed automatically):
 
@@ -389,7 +396,13 @@ Place multiple streams at the same chain position to model parallel monitoring. 
 
 ### Ad Break Handling
 
-Mark an injection point as the **Ad mix-in point**. While that node carries audio, SignalScope treats upstream silence as an ad break and holds fault alerts for the configured **Fault confirmation delay**. Ad break periods are excluded from SLA downtime and the chain health score.
+SignalScope suppresses false fault alerts during ad breaks using two detection paths:
+
+**With a mix-in point configured** — mark one chain node as the **Ad mix-in point** (the node where the ad server or automation feeds in). While that node is carrying audio, upstream silence is treated as an ad break and held for the **Fault confirmation delay** before any alert fires.
+
+**Without a mix-in point** — when a "fault-if-ALL-silent" stack at the start of the chain goes silent but at least one downstream node is actively carrying audio, SignalScope recognises this as an ad break automatically. This handles pass-through router topologies where the node immediately after the codec stack mirrors studio silence momentarily, while audio processing and TX continue to receive audio from the ad server.
+
+In both cases the badge shows **AD BREAK** (amber) rather than **FAULT** (red) during the confirmation window. If the audio returns within the window, no alert is sent and no SLA downtime is recorded.
 
 ### Node Maintenance Bypass
 
@@ -409,9 +422,13 @@ Each chain shows a live health score (0–100):
 
 Colour-coded labels: **Healthy** (≥ 90) · **Watch** (75–89) · **Degraded** (50–74) · **Poor** (< 50).
 
+### A/B Group Monitoring
+
+Create **A/B groups** to monitor failover pairs across chains. An A/B group tracks two chains (the A-chain and B-chain) and alerts if the active chain faults while the standby chain is also degraded — catching silent failover failures before they become on-air incidents. Configure groups at **Hub → Broadcast Chains → + New A/B Group**.
+
 ### Fault History & Audio Replay
 
-Each chain maintains a rolling log of the last 50 fault/recovery events. At fault time, audio clips are saved for **every node** in the chain. Click **🎬 Replay** on any fault entry to open an inline replay timeline with clips laid out in signal-path order. **▶ Play All** plays through clips sequentially with the active node highlighted.
+Each chain maintains a rolling log of the last 50 fault/recovery events. At fault time, audio clips are saved for **every node** in the chain. Click **🎬 Replay** on any fault entry to open an inline replay timeline with clips colour-coded by signal-path position — fault point (red), last-good clip (green), and each recovery position in its own distinct colour (amber, cyan, purple, pink…). The colour runs from the timeline bar through to the player row so the connection is immediately clear. **▶ Play All** plays through clips sequentially with the active node highlighted.
 
 ### Historical Chain View
 
@@ -445,7 +462,14 @@ Configure a client to suppress its own notifications and delegate to the hub, wh
 
 ### Wall Mode
 
-Open `/hub?wall=1` for a large-screen overview: live clock, summary pills, per-site status strip, broadcast chains panel, and a unified stream status grid across all sites.
+Open `/hub?wall=1` (or click **🖥 Wall Mode** from the hub dashboard) for a large-screen kiosk overview:
+
+- **Header bar** — live clock, summary pills (alert/warn/offline counts), exit button
+- **Connected Sites strip** — one pill per site with coloured status dot and alert count
+- **Broadcast Chains panel** — each chain is a card showing the signal path left→right in a single scrollable horizontal flow. Redundancy stacks list each feed as a compact row (status dot · name · level bar · dB value) rather than tall column widgets. Each position is labelled P1, P2, P3… for fast fault location. Cards update every 5 seconds.
+- **Stream Status grid** — one card per stream across all sites with level bar, format badge, and site name
+
+The page auto-reloads every 60 seconds to pick up newly connected sites.
 
 ### Architecture
 
