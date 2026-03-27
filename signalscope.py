@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.39"
+BUILD                  = "SignalScope-3.4.40"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -28623,9 +28623,10 @@ function hubRefresh(){
     });
     var knownIds = Array.from(document.querySelectorAll('.site-card')).map(c=>c.id);
     var incoming = data.sites.map(s=>'site-'+s.site.replace(/ /g,'_').replace(/[.]/g,'_').replace(/-/g,'_'));
-    // Reload if a new site appeared OR if stream count changed for any existing site.
-    // Both require at least 30 s since last reload to prevent reload storms.
-    var hasNew = knownIds.length > 0 && incoming.some(id=>!knownIds.includes(id));
+    // Reload when a new site appears OR stream count changes.
+    // Also reload when page has 0 cards but sites exist (first-site-connects case).
+    // Guard: at least 30 s since last reload to prevent storms.
+    var hasNew = incoming.some(id=>!knownIds.includes(id));
     var streamCountChanged = !hasNew && data.sites.some(function(site){
       var sid='site-'+site.site.replace(/ /g,'_').replace(/[.]/g,'_').replace(/-/g,'_');
       var c=document.getElementById(sid);
@@ -28638,6 +28639,9 @@ function hubRefresh(){
       location.reload();
       return;
     }
+    // Re-apply active search filter after card content updates
+    var _si = document.getElementById('hubSearch');
+    if(_si && _si._searchApply && ((_si.value||'').trim())) _si._searchApply();
   }).catch(function(e){console.warn('[hubRefresh]',e);}).finally(function(){ _hubSchedule(); });
 }
 function agoJS(s){ s=Math.round(s||0); if(s<5)return'just now'; if(s<60)return s+'s ago'; return Math.round(s/60)+'m ago'; }
@@ -28653,12 +28657,25 @@ function initCardSearch(inputId, gridId, itemSelector){
   if(!input || !grid) return;
   function apply(){
     var q=(input.value||'').toLowerCase().trim();
+    var shown=0, hidden=0;
     grid.querySelectorAll(itemSelector).forEach(function(card){
-      var hay=(card.innerText||'').toLowerCase();
-      card.style.display = !q || hay.indexOf(q) !== -1 ? '' : 'none';
+      // Use textContent (not innerText) so hidden elements like .sc-detail
+      // (format, alert history, etc.) are included in the match.
+      var hay=(card.textContent||'').toLowerCase();
+      var match=!q || hay.indexOf(q)!==-1;
+      card.style.display=match?'':'none';
+      match?shown++:hidden++;
     });
+    // Show a "no results" hint if everything is hidden
+    var hint=document.getElementById('hub-search-hint');
+    if(q && shown===0){
+      if(!hint){hint=document.createElement('div');hint.id='hub-search-hint';hint.style.cssText='color:var(--mu);font-size:13px;padding:18px 4px;grid-column:1/-1';grid.insertBefore(hint,grid.firstChild);}
+      hint.textContent='No sites or streams matching "'+q+'"';
+    } else if(hint){hint.remove();}
   }
   input.addEventListener('input', apply);
+  // Expose so hubRefresh can re-apply after updates
+  input._searchApply = apply;
 }
 function initDragGrid(gridId, storageKey, itemSelector){
   var grid=document.getElementById(gridId);

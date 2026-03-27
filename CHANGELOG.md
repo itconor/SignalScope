@@ -2,6 +2,16 @@
 
 ---
 
+## [3.4.40] - 2026-03-27
+
+### Fixed
+- **Hub page search never worked** — `initCardSearch` used `card.innerText` which deliberately skips `display:none` elements. The stream detail panel (`.sc-detail`) is hidden by default and contains almost everything users want to search: format ("DAB", "FM"), alert details, device IDs, RTP stats, AI status history. The placeholder even advertised "FM, DAB, alerts…" none of which were reachable. Fixed: switched to `card.textContent` so all text — visible or not — is included in the match.
+- **Search shows no feedback on zero results** — added an inline "No sites or streams matching X" hint row that appears inside the grid when the current query hides every card, and disappears when the query is cleared.
+- **Search filter lost after polling updates** — `hubRefresh` now re-applies the active search filter after each AJAX update cycle, so cards that gain or lose matching text stay correctly filtered without requiring a keypress.
+- **First site connecting never triggers page reload** — the previous `hasNew` guard required `knownIds.length > 0`, meaning a hub page loaded with 0 sites would never auto-reload when the first site connected. Removed the guard; the 30 s flood-control timer is sufficient.
+
+---
+
 ## [3.4.39] - 2026-03-27
 
 ### Changed
