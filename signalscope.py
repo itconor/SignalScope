@@ -526,6 +526,17 @@ document.addEventListener('DOMContentLoaded',function(){
             sp.style.display = (mode==='hub'   ||mode==='both') ? '' : 'none';
           }
           document.addEventListener('DOMContentLoaded', updateHubPanels);
+          // Disable inputs inside hidden panels before submit so duplicate fields
+          // in collapsed panels don't override the value from the visible panel.
+          document.addEventListener('DOMContentLoaded', function(){
+            var f = document.querySelector('form');
+            if(f) f.addEventListener('submit', function(){
+              f.querySelectorAll('input,select,textarea').forEach(function(el){
+                if(el.type === 'hidden') return;
+                if(el.offsetParent === null) el.disabled = true;
+              });
+            });
+          });
           function saveHubSiteRules(siteName, idx){
             var enEl = document.getElementById('hsr_en_'+idx);
             var lbwEl = document.getElementById('hsr_lbw_'+idx);
@@ -760,6 +771,17 @@ document.addEventListener('DOMContentLoaded',function(){
             sp.style.display = (mode==='hub'   ||mode==='both') ? '' : 'none';
           }
           document.addEventListener('DOMContentLoaded', updateHubPanels);
+          // Disable inputs inside hidden panels before submit so duplicate fields
+          // in collapsed panels don't override the value from the visible panel.
+          document.addEventListener('DOMContentLoaded', function(){
+            var f = document.querySelector('form');
+            if(f) f.addEventListener('submit', function(){
+              f.querySelectorAll('input,select,textarea').forEach(function(el){
+                if(el.type === 'hidden') return;
+                if(el.offsetParent === null) el.disabled = true;
+              });
+            });
+          });
           function saveHubSiteRules(siteName, idx){
             var enEl = document.getElementById('hsr_en_'+idx);
             var lbwEl = document.getElementById('hsr_lbw_'+idx);
@@ -1607,7 +1629,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.32"
+BUILD                  = "SignalScope-3.4.33"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global

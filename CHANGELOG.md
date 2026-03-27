@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.33] - 2026-03-27
+
+### Fixed
+- **Low-bandwidth mode (and other hub checkboxes) can't be unchecked** — the settings form contains two parallel copies of the hub settings panel (one shown per mode via JS). Both copies share the same `<form>`, so a checked-but-hidden duplicate always submitted `value="1"`, overriding the user's unchecked value. Fixed by adding a form `submit` listener that disables all non-hidden inputs whose `offsetParent` is `null` (i.e. inside a `display:none` ancestor) before the form is serialised. This correctly suppresses any collapsed panel's inputs regardless of which setting is duplicated.
+
 ## [3.4.32] - 2026-03-27
 
 ### Fixed
