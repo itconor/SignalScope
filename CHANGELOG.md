@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.30] - 2026-03-27
+
+### Fixed
+- **Low-bandwidth mode — hub now aware of client-side setting**: Client heartbeat payload now includes `low_bw: true/false` (effective value combining local config and hub-pushed override). Hub uses this to:
+  - **Show the `📶 Low BW` badge** even when low-bw was set locally on the client, not via hub Settings.
+  - **Adjust missed-heartbeat calculation**: uses 30 s interval (not 5 s) when computing `consecutive_missed` for low-bw sites, so a 30 s gap between heartbeats no longer counts as ~5 missed.
+  - **Adjust site-offline timeout**: low-bw sites are not marked OFFLINE until 90 s without a heartbeat (up from 30 s).
+  - **Adjust STALE threshold**: STALE badge only shows after 60 s of silence for low-bw sites (not 10 s).
+
 ## [3.4.29] - 2026-03-27
 
 ### Added

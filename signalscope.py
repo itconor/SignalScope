@@ -1607,7 +1607,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.29"
+BUILD                  = "SignalScope-3.4.30"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -9988,6 +9988,8 @@ class HubClient:
             # Dongles with role="dab" — used by the DAB Scanner plugin to
             # populate its SDR dropdown with DAB-capable serials.
             "dab_serials":     [d.serial for d in cfg.sdr_devices if d.role == "dab"],
+            # Inform hub of effective low-bandwidth mode so it adjusts thresholds
+            "low_bw":          getattr(self, "_low_bw", False) or getattr(cfg.hub, "low_bw", False),
         }
 
     def _handle_listen_requests(self, cfg, listen_requests: list):
@@ -11256,7 +11258,8 @@ class HubServer:
                 # ── Approved site: full processing ────────────────────────────
                 last_rx = prev.get("_received", 0)
                 gap     = now - last_rx if last_rx else 0
-                missed  = max(0, int(gap / HUB_HEARTBEAT_INTERVAL) - 1) if last_rx else 0
+                _hb_ivl = 30 if prev.get("low_bw") else HUB_HEARTBEAT_INTERVAL
+                missed  = max(0, int(gap / _hb_ivl) - 1) if last_rx else 0
                 consecutive_missed = prev.get("_consecutive_missed", 0)
                 consecutive_missed = consecutive_missed + missed if missed else 0
 
@@ -13046,7 +13049,8 @@ class HubServer:
             result = []
             for name, data in self._sites.items():
                 age    = now - data.get("_received", 0)
-                online = age < HUB_SITE_TIMEOUT
+                _timeout = 90 if data.get("low_bw") else HUB_SITE_TIMEOUT
+                online = age < _timeout
                 # Health score: % of expected heartbeats received
                 total_rx  = data.get("_total_received", 0)
                 total_miss= data.get("_total_missed", 0)
@@ -20886,7 +20890,7 @@ def hub_data():
     sites = hub_server.get_sites()
     _site_rules = cfg.hub_site_rules if isinstance(getattr(cfg, "hub_site_rules", None), dict) else {}
     for s in sites:
-        s["low_bw"] = bool(_site_rules.get(s.get("site", ""), {}).get("low_bw", False))
+        s["low_bw"] = bool(_site_rules.get(s.get("site", ""), {}).get("low_bw", False)) or bool(s.get("low_bw", False))
         streams = s.get("streams", [])
         if not s["online"]:
             s["site_status"] = "offline"
@@ -29066,7 +29070,7 @@ setInterval(_loadTrends, 300000);
     {% if site.consecutive_missed > 0 %}
     <span class="site-meta" style="color:var(--wn);margin-left:4px" title="Consecutive missed heartbeats">⚠ {{site.consecutive_missed}} missed</span>
     {% endif %}
-    {% if site.online and site.age_s >= 10 %}
+    {% if site.online and site.age_s >= (60 if site.low_bw else 10) %}
     <span class="badge" style="background:#2a2412;color:var(--wn)">STALE</span>
     {% endif %}
     {% if site.low_bw %}
