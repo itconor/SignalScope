@@ -416,6 +416,13 @@ document.addEventListener('DOMContentLoaded',function(){
                       </label>
                       {% endfor %}
                     </div>
+                    <div class="cr" style="margin-bottom:8px">
+                      <input type="checkbox" id="hsr_lbw_{{loop.index}}"
+                             {{'checked' if srules.get('low_bw', False)}}>
+                      <label for="hsr_lbw_{{loop.index}}" style="margin:0;font-size:12px;text-transform:none;color:var(--mu)">
+                        Low-bandwidth mode — slow heartbeat (~30 s) and disable auto-upload for this site
+                      </label>
+                    </div>
                     <button type="button" class="btn bp bs" style="font-size:11px;padding:4px 10px"
                             onclick="saveHubSiteRules('{{site.site}}', {{loop.index}})">Save Rules</button>
                     <span id="hsr_status_{{loop.index}}" style="font-size:11px;margin-left:8px;color:var(--mu)"></span>
@@ -426,7 +433,7 @@ document.addEventListener('DOMContentLoaded',function(){
               {% endif %}
             </div>
           </div>
-        
+
           {# ── Shared secret — applies to BOTH sides, always shown prominently ── #}
           <div style="margin-top:12px;padding:12px;background:#1a1020;border:2px solid
                {{'#22c55e' if cfg.hub.secret_key|length >= 16 else ('#f59e0b' if cfg.hub.secret_key else '#ef4444')}};border-radius:8px">
@@ -499,6 +506,15 @@ document.addEventListener('DOMContentLoaded',function(){
                 </span>
               </label>
             </div>
+            <div style="margin-bottom:10px">
+              <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+                <input type="checkbox" name="hub_low_bw" value="1" {{'checked' if cfg.hub.low_bw}} style="margin-top:2px;accent-color:var(--acc)">
+                <span>
+                  <span style="font-size:13px;font-weight:600">Low-bandwidth mode</span><br>
+                  <span style="font-size:12px;color:var(--mu)">Reduces heartbeat frequency to ~30 s and disables automatic clip uploads. Clips are still delivered to the hub on demand when viewed in Reports or fault replay. Use on sites with data caps.</span>
+                </span>
+              </label>
+            </div>
           </div>
 
           <script nonce="{{csp_nonce()}}">
@@ -512,10 +528,11 @@ document.addEventListener('DOMContentLoaded',function(){
           document.addEventListener('DOMContentLoaded', updateHubPanels);
           function saveHubSiteRules(siteName, idx){
             var enEl = document.getElementById('hsr_en_'+idx);
+            var lbwEl = document.getElementById('hsr_lbw_'+idx);
             var typeEls = document.querySelectorAll('.hsr-type[data-site="'+siteName+'"]');
             var fwdTypes = [];
             typeEls.forEach(function(el){ if(el.checked) fwdTypes.push(el.value); });
-            var body = JSON.stringify({site_name: siteName, enabled: enEl ? enEl.checked : true, forward_types: fwdTypes});
+            var body = JSON.stringify({site_name: siteName, enabled: enEl ? enEl.checked : true, forward_types: fwdTypes, low_bw: lbwEl ? lbwEl.checked : false});
             var statusEl = document.getElementById('hsr_status_'+idx);
             if(statusEl) statusEl.textContent = 'Saving…';
             fetch('/api/hub/site_rules', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':document.querySelector('meta[name=csrf-token]').content},body:body})
@@ -633,6 +650,13 @@ document.addEventListener('DOMContentLoaded',function(){
                       </label>
                       {% endfor %}
                     </div>
+                    <div class="cr" style="margin-bottom:8px">
+                      <input type="checkbox" id="hsr_lbw_{{loop.index}}"
+                             {{'checked' if srules.get('low_bw', False)}}>
+                      <label for="hsr_lbw_{{loop.index}}" style="margin:0;font-size:12px;text-transform:none;color:var(--mu)">
+                        Low-bandwidth mode — slow heartbeat (~30 s) and disable auto-upload for this site
+                      </label>
+                    </div>
                     <button type="button" class="btn bp bs" style="font-size:11px;padding:4px 10px"
                             onclick="saveHubSiteRules('{{site.site}}', {{loop.index}})">Save Rules</button>
                     <span id="hsr_status_{{loop.index}}" style="font-size:11px;margin-left:8px;color:var(--mu)"></span>
@@ -643,7 +667,7 @@ document.addEventListener('DOMContentLoaded',function(){
               {% endif %}
             </div>
           </div>
-        
+
           {# ── Shared secret — applies to BOTH sides, always shown prominently ── #}
           <div style="margin-top:12px;padding:12px;background:#1a1020;border:2px solid
                {{'#22c55e' if cfg.hub.secret_key|length >= 16 else ('#f59e0b' if cfg.hub.secret_key else '#ef4444')}};border-radius:8px">
@@ -716,6 +740,15 @@ document.addEventListener('DOMContentLoaded',function(){
                 </span>
               </label>
             </div>
+            <div style="margin-bottom:10px">
+              <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+                <input type="checkbox" name="hub_low_bw" value="1" {{'checked' if cfg.hub.low_bw}} style="margin-top:2px;accent-color:var(--acc)">
+                <span>
+                  <span style="font-size:13px;font-weight:600">Low-bandwidth mode</span><br>
+                  <span style="font-size:12px;color:var(--mu)">Reduces heartbeat frequency to ~30 s and disables automatic clip uploads. Clips are still delivered to the hub on demand when viewed in Reports or fault replay. Use on sites with data caps.</span>
+                </span>
+              </label>
+            </div>
           </div>
 
           <script nonce="{{csp_nonce()}}">
@@ -729,10 +762,11 @@ document.addEventListener('DOMContentLoaded',function(){
           document.addEventListener('DOMContentLoaded', updateHubPanels);
           function saveHubSiteRules(siteName, idx){
             var enEl = document.getElementById('hsr_en_'+idx);
+            var lbwEl = document.getElementById('hsr_lbw_'+idx);
             var typeEls = document.querySelectorAll('.hsr-type[data-site="'+siteName+'"]');
             var fwdTypes = [];
             typeEls.forEach(function(el){ if(el.checked) fwdTypes.push(el.value); });
-            var body = JSON.stringify({site_name: siteName, enabled: enEl ? enEl.checked : true, forward_types: fwdTypes});
+            var body = JSON.stringify({site_name: siteName, enabled: enEl ? enEl.checked : true, forward_types: fwdTypes, low_bw: lbwEl ? lbwEl.checked : false});
             var statusEl = document.getElementById('hsr_status_'+idx);
             if(statusEl) statusEl.textContent = 'Saving…';
             fetch('/api/hub/site_rules', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':document.querySelector('meta[name=csrf-token]').content},body:body})
@@ -1573,7 +1607,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.27"
+BUILD                  = "SignalScope-3.4.28"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2059,6 +2093,7 @@ class HubConfig:
     relay_bitrate:    int  = 128       # kbps for live audio relay to hub (32/48/64/96/128/192)
     clip_auto_upload: bool = True      # auto-upload clips to hub as they are saved
     clip_sync:        bool = True      # periodic background re-upload of any missed clips
+    low_bw:           bool = False     # low-bandwidth mode: slow heartbeat (~30 s), disable auto-upload
 
 
 @dataclass
@@ -9254,6 +9289,8 @@ class HubClient:
         cfg_obj = self._cfg_fn()
         if not getattr(cfg_obj.hub, "clip_sync", True):
             return
+        if getattr(self, "_low_bw", False) or getattr(cfg_obj.hub, "low_bw", False):
+            return
         if cfg_obj.hub.mode not in ("client", "both"):
             return
         hub_url = cfg_obj.hub.hub_url.rstrip("/")
@@ -9969,7 +10006,7 @@ class HubClient:
         # to /api/v1/audio_chunk/<slot_id> from their own client-side worker
         # and must NOT be intercepted here — doing so would launch an FM
         # stream that steals the RTL-SDR dongle.
-        _HANDLED_KINDS = {"live", "scanner", "clip"}
+        _HANDLED_KINDS = {"live", "scanner", "clip", "alert_wav"}
 
         for req in listen_requests:
             slot_id    = req.get("slot_id","")
@@ -10681,6 +10718,10 @@ class HubClient:
                 hub_br = last_body.get("relay_bitrate")
                 if isinstance(hub_br, int) and hub_br > 0:
                     self._hub_relay_bitrate = hub_br
+                # Apply hub-controlled low-bandwidth mode
+                hub_low_bw = last_body.get("low_bw")
+                if hub_low_bw is not None:
+                    self._low_bw = bool(hub_low_bw)
                 # Execute hub-issued remote commands.
                 # New hubs send a "commands" list (all queued cmds at once).
                 # Legacy hubs send a single "command" dict — wrap in a list.
@@ -10744,8 +10785,11 @@ class HubClient:
                 # Cap at 2 per heartbeat cycle to avoid spawning a burst of
                 # upload threads that spike CPU and cause RTP packet loss.
                 # Remaining clips will upload on the next heartbeat (≈10 s).
+                # In low-bandwidth mode the queue is left intact — clips are
+                # delivered on-demand via the relay when viewed in Reports.
+                _eff_low_bw = getattr(self, '_low_bw', False) or getattr(cfg.hub, 'low_bw', False)
                 _cq = getattr(monitor, "_hub_clip_queue", None)
-                if _cq and cfg.hub.hub_url:
+                if _cq and cfg.hub.hub_url and not _eff_low_bw:
                     _hub_url_str = cfg.hub.hub_url.rstrip("/")
                     _secret      = cfg.hub.secret_key
                     _site        = (cfg.hub.site_name or socket.gethostname()).strip()
@@ -10793,7 +10837,9 @@ class HubClient:
                           f"(consecutive: {self._backoff}/10, "
                           f"error: {self.last_error})")
 
-            wait = min(BASE_WAIT * (1.5 ** self._backoff), MAX_BACKOFF) if self._backoff else BASE_WAIT
+            _eff_low_bw2 = getattr(self, '_low_bw', False) or getattr(cfg.hub, 'low_bw', False)
+            _base = 30 if _eff_low_bw2 else BASE_WAIT
+            wait = min(_base * (1.5 ** self._backoff), MAX_BACKOFF) if self._backoff else _base
             self._stop.wait(wait)
           except Exception as _top_e:
             # Safety net: prevent any uncaught exception from silently killing
@@ -17550,6 +17596,7 @@ def settings():
         except ValueError: pass
         cfg.hub.clip_auto_upload = bool(f.get("hub_clip_auto_upload"))
         cfg.hub.clip_sync        = bool(f.get("hub_clip_sync"))
+        cfg.hub.low_bw           = bool(f.get("hub_low_bw"))
         # Auth
         cfg.auth.enabled  = bool(f.get("auth_enabled"))
         cfg.auth.username = f.get("auth_username","admin").strip() or "admin"
@@ -17665,7 +17712,7 @@ def api_hub_site_rules():
         cfg = monitor.app_cfg
         if not isinstance(cfg.hub_site_rules, dict):
             cfg.hub_site_rules = {}
-        cfg.hub_site_rules[site_name] = {"enabled": enabled, "forward_types": forward_types}
+        cfg.hub_site_rules[site_name] = {"enabled": enabled, "forward_types": forward_types, "low_bw": bool(data.get("low_bw", False))}
         save_config(cfg)
         return jsonify({"ok": True})
     except Exception as e:
@@ -19787,7 +19834,9 @@ def hub_heartbeat():
     listen_reqs   = listen_registry.pending_for_site(site_name)
     relay_bitrate = hub_server.get_relay_bitrate(site_name)
     pending_cmds  = hub_server.pop_all_pending_commands(site_name)  # flush whole queue at once
-    ack = {"ok": True, "listen_requests": listen_reqs, "relay_bitrate": relay_bitrate}
+    _site_rules   = cfg.hub_site_rules.get(site_name, {}) if isinstance(getattr(cfg, "hub_site_rules", None), dict) else {}
+    _low_bw_ack   = bool(_site_rules.get("low_bw", False))
+    ack = {"ok": True, "listen_requests": listen_reqs, "relay_bitrate": relay_bitrate, "low_bw": _low_bw_ack}
     if pending_cmds:
         # "commands" list — client processes all in one heartbeat cycle
         ack["commands"] = pending_cmds
@@ -21222,7 +21271,7 @@ def hub_proxy_alert_clip(site_name, stream_filename):
                                       mimetype="audio/wav")
         monitor.log(f"[HubProxy] Relay alert clip slot {slot.slot_id} created for {site_name}/{filename}")
         buf = io.BytesIO()
-        deadline = time.time() + 25.0
+        deadline = time.time() + 35.0
         started  = False
         while True:
             try:

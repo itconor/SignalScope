@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.28] - 2026-03-27
+
+### Added
+- **Low-bandwidth mode** — for sites with data caps or metered connections:
+  - **Per-site from hub**: Settings → Hub Server → Per-Site Alert Rules — each connected site now has a "Low-bandwidth mode" checkbox. When enabled the hub pushes `low_bw: true` in every heartbeat ACK for that site.
+  - **Local on client**: Settings → Hub → Low-bandwidth mode checkbox. Effective immediately without a hub restart.
+  - **Effect on client**: heartbeat interval increases from ~5 s to 30 s; automatic clip uploads and periodic clip sync are suspended.
+  - **On-demand clip delivery**: clips are not lost — when a clip is viewed in Reports or fault replay, the hub creates a relay slot and the client streams the clip file on demand. `alert_wav` added to `_HANDLED_KINDS` so relay requests work. Relay timeout raised from 25 s to 35 s to accommodate the slower heartbeat.
+
 ## [3.4.27] - 2026-03-26
 
 ### Added
