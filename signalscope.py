@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.36"
+BUILD                  = "SignalScope-3.4.37"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -21565,21 +21565,25 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 /* Fault replay timeline */
 .replay-wrap{margin-top:6px;padding:10px 12px;background:rgba(0,0,0,.28);border-radius:8px;border:1px solid var(--bor)}
 .replay-timeline{display:flex;align-items:flex-start;gap:0;overflow-x:auto;padding-bottom:6px;margin-bottom:10px}
-.replay-tnode{display:flex;flex-direction:column;align-items:center;min-width:76px;max-width:110px}
-.replay-tbar{width:68px;padding:4px 5px;border-radius:5px;border:2px solid;font-size:9px;font-weight:700;text-align:center;cursor:pointer;transition:transform .12s,box-shadow .12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.replay-tbar:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.4)}
-.replay-tbar.ractive{transform:translateY(-2px);box-shadow:0 0 0 2px var(--acc),0 4px 12px rgba(0,0,0,.4)}
-.replay-tlabel{font-size:9px;color:var(--mu);margin-top:3px;text-align:center;max-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.replay-tarrow{align-self:center;color:var(--mu);font-size:13px;padding:0 3px;margin-bottom:14px}
+.replay-tnode{display:flex;flex-direction:column;align-items:center;min-width:78px;max-width:114px}
+.replay-tbar{width:70px;padding:5px 5px;border-radius:6px;border:2px solid;font-size:9px;font-weight:700;text-align:center;cursor:pointer;transition:transform .15s,box-shadow .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.5)}
+.replay-tbar:hover{transform:translateY(-3px);box-shadow:0 5px 14px rgba(0,0,0,.45)}
+.replay-tbar.ractive{transform:translateY(-3px);box-shadow:0 0 0 2px #fff,0 6px 18px rgba(0,0,0,.5)}
+.replay-tlabel{font-size:9px;font-weight:600;margin-top:3px;text-align:center;max-width:82px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.replay-tarrow{align-self:center;font-size:13px;padding:0 3px;margin-bottom:14px;opacity:.55}
 .replay-controls{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
 .replay-play-all{font-size:11px;padding:3px 11px;background:var(--acc);color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:600}
 .replay-play-all:hover{opacity:.85}
 .replay-now-playing{font-size:10px;color:var(--mu);font-style:italic}
 .replay-players{display:flex;flex-direction:column;gap:0}
-.replay-clip-row{padding:5px 6px;border-radius:5px;transition:background .12s}
-.replay-clip-row.rplaying{background:rgba(23,168,255,.1)}
+.replay-section-hdr{font-size:9px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;padding:7px 6px 3px;border-top:1px solid var(--bor);margin-top:2px;opacity:.8}
+.replay-section-hdr:first-child{border-top:none;padding-top:2px;margin-top:0}
+.replay-clip-row{padding:5px 8px;border-radius:5px;border-left:3px solid transparent;transition:background .12s,border-left-color .12s;margin-bottom:1px}
+.replay-clip-row.rplaying{background:rgba(23,168,255,.1);border-left-color:var(--acc)!important}
 .replay-clip-header{display:flex;align-items:center;gap:5px;margin-bottom:3px}
 .replay-clip-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.replay-clip-badge{font-size:9px;font-weight:700;padding:1px 6px;border-radius:999px;flex-shrink:0;white-space:nowrap}
+.replay-clip-node{font-size:10px;color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
 .replay-clip-label{font-size:10px;color:var(--tx);font-weight:500}
 .replay-clip-status{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px}
 .flog-note-cell{vertical-align:top;min-width:160px}
@@ -23020,49 +23024,77 @@ document.getElementById('chains_list').addEventListener('click',function(e){
 });
 
 // ── Fault Replay Timeline ────────────────────────────────────────────────────
+var _REPLAY_PALETTE=['#f59e0b','#06b6d4','#8b5cf6','#ec4899','#f97316','#14b8a6','#a78bfa','#fb7185'];
 function _replayClipColor(c){
   if(c.status==='fault'||c.label==='fault')return'#ef4444';
   if(c.status==='last_good'||c.label==='last_good')return'#22c55e';
-  return'#8aa4c8';
+  // Per-position palette: extract trailing digit from label (pos0, pos1, recovery_pos2…)
+  var m=(c.label||'').match(/(\d+)$/);
+  var pi=m?parseInt(m[1]):0;
+  return _REPLAY_PALETTE[pi%_REPLAY_PALETTE.length];
+}
+function _replayClipShortLabel(c){
+  var raw=(c.label||'');
+  if(raw==='fault')return'FAULT POINT';
+  if(raw==='last_good')return'LAST GOOD';
+  var s=raw.replace(/_/g,' ').toUpperCase();
+  // Strip verbose embedded chain name: "CHAIN XXXXXCHAIN RECOVERY POS0" → "RECOVERY POS0"
+  s=s.replace(/^CHAIN\s+\S+\s+/,'');
+  return s;
 }
 function _replayClipDispLabel(c){
-  var posL=c.label==='fault'?'FAULT POINT':c.label==='last_good'?'LAST GOOD':(c.label||'').replace(/_/g,' ').toUpperCase();
-  return(c.node_label||c.key||'')+(posL?' — '+posL:'');
+  return(c.node_label||c.key||'')+' — '+_replayClipShortLabel(c);
 }
 function _buildReplayPanel(clips,rid){
   var sorted=clips.slice().sort(function(a,b){return(a.pos==null?999:a.pos)-(b.pos==null?999:b.pos);});
-  // Timeline
+  // ── Timeline ──
   var tl='<div class="replay-timeline">';
   sorted.forEach(function(c,i){
-    if(i>0)tl+='<div class="replay-tarrow">→</div>';
+    if(i>0){
+      var pc=_replayClipColor(sorted[i-1]);
+      tl+='<div class="replay-tarrow" style="color:'+pc+'">→</div>';
+    }
     var col=_replayClipColor(c);
     var shortName=(c.node_label||c.key||'Node '+(i+1));
-    if(shortName.length>14)shortName=shortName.slice(0,13)+'…';
-    var posLbl=c.label==='fault'?'fault':c.label==='last_good'?'last good':(c.label||'pos '+i).replace(/_/g,' ');
+    if(shortName.length>13)shortName=shortName.slice(0,12)+'…';
+    var statusLbl=_replayClipShortLabel(c);
+    // Fault = solid bright bg; last_good = solid; recovery = 70% opacity bg
+    var isFault=c.label==='fault'||c.status==='fault';
+    var isLG=c.label==='last_good'||c.status==='last_good';
+    var bgAlpha=isFault||isLG?'dd':'99';
     tl+='<div class="replay-tnode">'
-      +'<div class="replay-tbar" style="color:'+col+';border-color:'+col+';background:'+col+'22" data-replay-idx="'+i+'" title="'+_esc(_replayClipDispLabel(c))+'">'
+      +'<div class="replay-tbar" style="border-color:'+col+';background:'+col+bgAlpha+'" data-replay-idx="'+i+'" title="'+_esc(_replayClipDispLabel(c))+'">'
       +_esc(shortName)+'</div>'
-      +'<div class="replay-tlabel">'+_esc(posLbl)+'</div>'
+      +'<div class="replay-tlabel" style="color:'+col+'">'+_esc(statusLbl)+'</div>'
       +'</div>';
   });
   tl+='</div>';
-  // Controls
+  // ── Controls ──
   var ctrl='<div class="replay-controls">'
     +'<button class="replay-play-all" data-replay-id="'+_esc(rid)+'">▶ Play All</button>'
     +'<span class="replay-now-playing" id="rnp_'+_esc(rid)+'"></span>'
     +'</div>';
-  // Players
+  // ── Players — sorted order, with inline section dividers ──
   var players='<div class="replay-players" id="rplayers_'+_esc(rid)+'">';
+  var prevSection=null;
   sorted.forEach(function(c,i){
+    var isFault=c.label==='fault'||c.status==='fault';
+    var isLG=c.label==='last_good'||c.status==='last_good';
+    var section=isFault?'⚡ Fault Point':isLG?'✓ Last Good':'🔗 Recovery Chain';
+    if(section!==prevSection){
+      players+='<div class="replay-section-hdr">'+section+'</div>';
+      prevSection=section;
+    }
     var col=_replayClipColor(c);
-    var lbl=_replayClipDispLabel(c);
+    var shortLbl=_replayClipShortLabel(c);
+    var nodeName=_esc(c.node_label||c.key||'');
     var inlineUrl='/api/chains/clip/'+encodeURIComponent(c.key)+'/'+encodeURIComponent(c.fname);
-    var dlUrl='/api/chains/clip/'+encodeURIComponent(c.key)+'/'+encodeURIComponent(c.fname)+'?dl=1';
-    players+='<div class="replay-clip-row" id="rclip_'+_esc(rid)+'_'+i+'">'
+    var dlUrl=inlineUrl+'?dl=1';
+    players+='<div class="replay-clip-row" id="rclip_'+_esc(rid)+'_'+i+'" style="border-left-color:'+col+'">'
       +'<div class="replay-clip-header">'
-      +'<span class="replay-clip-dot" style="background:'+col+'"></span>'
-      +'<span class="replay-clip-label">'+_esc(lbl)+'</span>'
-      +'<a href="'+dlUrl+'" style="font-size:10px;color:var(--mu);margin-left:4px;text-decoration:none" title="Download">⬇</a>'
+      +'<span class="replay-clip-badge" style="background:'+col+'28;color:'+col+';border:1px solid '+col+'66">'+_esc(shortLbl)+'</span>'
+      +'<span class="replay-clip-node">'+nodeName+'</span>'
+      +'<a href="'+dlUrl+'" style="font-size:10px;color:var(--mu);flex-shrink:0;text-decoration:none" title="Download">⬇</a>'
       +'</div>'
       +'<audio id="raudio_'+_esc(rid)+'_'+i+'" controls preload="none" src="'+inlineUrl+'" style="height:24px;width:100%;max-width:360px;margin-top:2px"></audio>'
       +'</div>';

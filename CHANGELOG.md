@@ -2,6 +2,19 @@
 
 ---
 
+## [3.4.37] - 2026-03-27
+
+### Changed
+- **Broadcast Chains — fault replay timeline redesign**
+  - Per-position color palette: fault = red, last good = green, each recovery position gets its own distinct hue (amber/cyan/purple/pink/orange/teal…), applied consistently to both the timeline bar and its player row
+  - Solid timeline bars: fault/last-good at full opacity, recovery bars at 60% — critical fault point stands out immediately
+  - Colored label text below each timeline bar (was grey for all)
+  - Colored arrows between bars, tinted to the preceding node's color
+  - Colored left border on every player row — visually connects the clip back to its timeline position
+  - Status pill badge replaces the tiny colored dot: "FAULT POINT", "LAST GOOD", "RECOVERY POS0" etc. in the position color
+  - Verbose chain name stripped from clip labels: "CHAIN COOLFMBROADCASTCHAIN RECOVERY POS0" → "RECOVERY POS0"
+  - Inline section headers group the player list: "⚡ Fault Point" / "✓ Last Good" / "🔗 Recovery Chain" (sorted order preserved)
+
 ## [3.4.36] - 2026-03-27
 
 ### Added
