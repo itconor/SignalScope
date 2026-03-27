@@ -2,6 +2,20 @@
 
 ---
 
+## [3.4.39] - 2026-03-27
+
+### Changed
+- **Hub Wall — broadcast chain layout redesign** (clearer left→right signal flow)
+  - Chain flow is now `flex-wrap: nowrap` with horizontal scroll — the signal path always reads left to right, never wraps onto a second line
+  - Stacked-position sub-nodes replaced with compact horizontal rows (`.wc-srow`): status dot, stream name, mini level bar, dB value — all in one tight line instead of a tall column widget
+  - Stack-mode label (`ANY SILENT = FAULT`) moved to the top of each stack group with a separator line, so you read the logic before the nodes
+  - Position number labels (`P1`, `P2`, `P3`…) above each position column make it easy to identify where in the chain each group sits
+  - Arrow glyphs between positions styled softer (muted, smaller) so node content reads first
+  - Chain card minimum width widened (`360px → 460px`) to fit typical 4–5 node chains on large displays without scrolling
+  - Thin horizontal scrollbar (4 px) appears inside the flow strip if a chain has many positions — non-interactive on wall kiosks, still useful on desktop
+
+---
+
 ## [3.4.38] - 2026-03-27
 
 ### Fixed

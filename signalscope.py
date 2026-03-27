@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.38"
+BUILD                  = "SignalScope-3.4.39"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -27968,7 +27968,7 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
 .site-pill .sdot{width:8px;height:8px;border-radius:50%;background:currentColor;flex-shrink:0}
 .site-pill .sc-cnt{font-size:10px;opacity:.7;margin-left:2px}
 /* ── Broadcast Chains ────────────────────────────────────── */
-.chains-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
+.chains-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));gap:12px}
 .chain-card{background:var(--bg2);border:2px solid var(--bor);border-radius:12px;overflow:hidden;transition:border-color .5s,box-shadow .5s}
 .chain-card.ok{border-color:rgba(34,197,94,.35)}
 .chain-card.fault{border-color:rgba(239,68,68,.7);box-shadow:0 0 22px rgba(239,68,68,.14)}
@@ -27984,29 +27984,47 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
 .chain-card-badge.fault{background:rgba(239,68,68,.22);color:var(--al)}
 .chain-card-badge.adbreak{background:rgba(245,158,11,.18);color:var(--wn)}
 .chain-card-badge.unknown,.chain-card-badge.maintenance{background:rgba(59,130,246,.15);color:#93c5fd}
-/* Node flow inside card */
-.chain-flow{display:flex;align-items:center;flex-wrap:wrap;gap:2px;padding:10px 12px 12px;min-height:88px}
-.wc-arrow{color:var(--bor);font-size:18px;padding:0 3px;flex-shrink:0;line-height:1;user-select:none;align-self:center}
-/* Individual node */
-.wc-node{display:flex;flex-direction:column;align-items:center;padding:6px 8px;border-radius:8px;border:1.5px solid;min-width:78px;max-width:115px;text-align:center;transition:all .4s;position:relative;flex-shrink:0}
+/* Node flow — horizontal scroll, always left→right */
+.chain-flow{display:flex;align-items:center;flex-wrap:nowrap;overflow-x:auto;gap:2px;padding:8px 12px 10px;scrollbar-width:thin;scrollbar-color:var(--bor) transparent}
+.chain-flow::-webkit-scrollbar{height:4px}.chain-flow::-webkit-scrollbar-track{background:transparent}.chain-flow::-webkit-scrollbar-thumb{background:var(--bor);border-radius:2px}
+.wc-arrow{color:var(--mu);font-size:14px;padding:0 4px;flex-shrink:0;line-height:1;user-select:none;align-self:center;opacity:.55}
+/* Position column wrapper */
+.wc-pos{display:flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0}
+.wc-pos-num{font-size:8px;font-weight:800;letter-spacing:1.5px;color:var(--mu);opacity:.45;text-transform:uppercase}
+/* Individual node (single-stream position) */
+.wc-node{display:flex;flex-direction:column;align-items:center;padding:6px 8px;border-radius:8px;border:1.5px solid;min-width:80px;max-width:120px;text-align:center;transition:all .4s;position:relative;flex-shrink:0}
 .wc-node.ok{background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.4);color:var(--ok)}
 .wc-node.down{background:rgba(239,68,68,.12);border-color:var(--al);color:var(--al);animation:nodePulse 1.4s infinite}
 .wc-node.offline{background:rgba(107,114,128,.07);border-color:var(--bor);color:var(--mu)}
 .wc-node.unknown{background:rgba(59,130,246,.07);border-color:rgba(59,130,246,.25);color:#93c5fd}
 .wc-node.maintenance{background:rgba(29,78,216,.1);border-color:rgba(59,130,246,.45);color:#93c5fd}
-.wc-node.downstream{opacity:.35;border-color:var(--bor);background:transparent;color:var(--mu);animation:none}
-.wc-node-lbl{font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:105px;line-height:1.2}
-.wc-node-site{font-size:9px;opacity:.6;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:105px}
+.wc-node.downstream{opacity:.32;border-color:var(--bor);background:transparent;color:var(--mu);animation:none}
+.wc-node-lbl{font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:108px;line-height:1.2}
+.wc-node-site{font-size:9px;opacity:.55;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:108px}
 .wc-node-bar{width:100%;height:3px;background:rgba(255,255,255,.08);border-radius:2px;margin-top:5px;overflow:hidden}
 .wc-node-fill{height:100%;border-radius:2px;transition:width .9s}
 .wc-node-lev{font-size:9px;margin-top:2px;font-variant-numeric:tabular-nums;opacity:.85}
 .wc-fault-tag{position:absolute;top:-9px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;font-size:8px;font-weight:800;padding:1px 5px;border-radius:3px;white-space:nowrap;letter-spacing:.3px}
-/* Stack group */
-.wc-stack{display:flex;flex-direction:column;gap:4px;border:1.5px solid;border-radius:9px;padding:5px 6px;position:relative;flex-shrink:0}
-.wc-stack.ok{border-color:rgba(34,197,94,.3)}.wc-stack.down{border-color:rgba(239,68,68,.6);animation:nodePulse 1.4s infinite}
-.wc-stack.offline{border-color:var(--bor)}.wc-stack.unknown{border-color:rgba(59,130,246,.25)}
-.wc-stack-mode{font-size:8px;text-align:center;color:var(--mu);margin-top:3px;letter-spacing:.3px;opacity:.7}
-.wc-stack .wc-node{max-width:105px;min-width:70px}
+/* Stack group (redundancy position) */
+.wc-stack{display:flex;flex-direction:column;gap:3px;border:1.5px solid;border-radius:9px;padding:5px 7px;position:relative;flex-shrink:0;min-width:170px;max-width:230px}
+.wc-stack.ok{border-color:rgba(34,197,94,.35)}.wc-stack.down{border-color:rgba(239,68,68,.6);animation:nodePulse 1.4s infinite}
+.wc-stack.offline{border-color:var(--bor)}.wc-stack.unknown{border-color:rgba(59,130,246,.28)}
+.wc-stack.downstream{opacity:.32;border-color:var(--bor);animation:none}
+.wc-stack-mode{font-size:8px;text-align:left;color:var(--mu);margin-bottom:3px;letter-spacing:.5px;opacity:.75;font-weight:700;text-transform:uppercase;border-bottom:1px solid rgba(255,255,255,.06);padding-bottom:3px}
+/* Compact sub-node row inside stack */
+.wc-srow{display:flex;align-items:center;gap:5px;padding:4px 6px;border-radius:6px;border:1px solid;transition:all .4s;position:relative}
+.wc-srow.ok{background:rgba(34,197,94,.07);border-color:rgba(34,197,94,.35);color:var(--ok)}
+.wc-srow.down{background:rgba(239,68,68,.11);border-color:var(--al);color:var(--al);animation:nodePulse 1.4s infinite}
+.wc-srow.offline{background:rgba(107,114,128,.06);border-color:var(--bor);color:var(--mu)}
+.wc-srow.unknown{background:rgba(59,130,246,.06);border-color:rgba(59,130,246,.22);color:#93c5fd}
+.wc-srow.maintenance{background:rgba(29,78,216,.09);border-color:rgba(59,130,246,.42);color:#93c5fd}
+.wc-srow.downstream{opacity:.28;border-color:var(--bor);background:transparent;color:var(--mu);animation:none}
+.wc-srow-dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex-shrink:0}
+.wc-srow-lbl{font-size:11px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.wc-srow-site{font-size:9px;opacity:.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;max-width:60px}
+.wc-srow-bar{flex:0 0 44px;height:4px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden;flex-shrink:0}
+.wc-srow-fill{height:100%;border-radius:2px;transition:width .9s}
+.wc-srow-lev{font-size:9px;font-variant-numeric:tabular-nums;opacity:.82;white-space:nowrap;flex-shrink:0;width:38px;text-align:right}
 /* Animations */
 @keyframes nodePulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0)}50%{box-shadow:0 0 12px 3px rgba(239,68,68,.3)}}
 @keyframes dotPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
@@ -28102,27 +28120,31 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
         {% for node in chain.nodes %}
         {% set ni = loop.index0 %}
         {% if not loop.first %}<div class="wc-arrow">→</div>{% endif %}
-        {% if node.get('type') == 'stack' %}
-        <div class="wc-stack unknown" id="wc_node_{{chain.id|e}}_{{ni}}">
-          {% for sub in node.nodes %}
-          {% set si = loop.index0 %}
-          <div class="wc-node unknown" id="wc_sub_{{chain.id|e}}_{{ni}}_{{si}}">
-            <div class="wc-node-lbl" title="{{(sub.get('label') or sub.get('stream',''))|e}}">{{(sub.get('label') or sub.get('stream',''))|e}}</div>
-            <div class="wc-node-site">{{sub.get('site','')|e}}</div>
+        <div class="wc-pos">
+          <div class="wc-pos-num">P{{loop.index}}</div>
+          {% if node.get('type') == 'stack' %}
+          <div class="wc-stack unknown" id="wc_node_{{chain.id|e}}_{{ni}}">
+            <div class="wc-stack-mode">{{(node.get('mode') or 'all')|upper}} silent = fault</div>
+            {% for sub in node.nodes %}
+            {% set si = loop.index0 %}
+            <div class="wc-srow unknown" id="wc_sub_{{chain.id|e}}_{{ni}}_{{si}}">
+              <div class="wc-srow-dot"></div>
+              <div class="wc-srow-lbl" title="{{(sub.get('label') or sub.get('stream',''))|e}}">{{(sub.get('label') or sub.get('stream',''))|e}}</div>
+              {% if sub.get('site') %}<div class="wc-srow-site" title="{{sub.get('site','')|e}}">{{sub.get('site','')|e}}</div>{% endif %}
+              <div class="wc-srow-bar"><div class="wc-srow-fill" style="width:0%;background:currentColor"></div></div>
+              <div class="wc-srow-lev">…</div>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="wc-node unknown" id="wc_node_{{chain.id|e}}_{{ni}}">
+            <div class="wc-node-lbl" title="{{(node.get('label') or node.get('stream',''))|e}}">{{(node.get('label') or node.get('stream',''))|e}}</div>
+            <div class="wc-node-site">{{node.get('site','')|e}}</div>
             <div class="wc-node-bar"><div class="wc-node-fill" style="width:0%;background:var(--ok)"></div></div>
             <div class="wc-node-lev">…</div>
           </div>
-          {% endfor %}
-          <div class="wc-stack-mode">{{(node.get('mode') or 'all')|upper}} silent = fault</div>
+          {% endif %}
         </div>
-        {% else %}
-        <div class="wc-node unknown" id="wc_node_{{chain.id|e}}_{{ni}}">
-          <div class="wc-node-lbl" title="{{(node.get('label') or node.get('stream',''))|e}}">{{(node.get('label') or node.get('stream',''))|e}}</div>
-          <div class="wc-node-site">{{node.get('site','')|e}}</div>
-          <div class="wc-node-bar"><div class="wc-node-fill" style="width:0%;background:var(--ok)"></div></div>
-          <div class="wc-node-lev">…</div>
-        </div>
-        {% endif %}
         {% endfor %}
       </div>
     </div>
@@ -28207,25 +28229,27 @@ function _fmtDur(ms){
 }
 
 function _applyWcNode(el,st,level,isFaultPt,isStack){
-  var cls=isStack?'wc-stack':'wc-node';
+  // Detect element type from existing class (wc-stack / wc-node / wc-srow)
+  var isSrow=(el.className||'').indexOf('wc-srow')>=0;
+  var cls=isStack?'wc-stack':(isSrow?'wc-srow':'wc-node');
   el.className=cls+' '+st;
-  // level bar + value (nodes only, not stack containers)
+  // level bar + value (nodes and compact rows, not stack containers)
   if(!isStack){
-    var fill=el.querySelector('.wc-node-fill');
-    var lev=el.querySelector('.wc-node-lev');
+    var fill=el.querySelector('.wc-node-fill')||el.querySelector('.wc-srow-fill');
+    var lev=el.querySelector('.wc-node-lev')||el.querySelector('.wc-srow-lev');
     if(level!==null&&level!==undefined){
       var pct=Math.max(0,Math.min(100,Math.round((level+80)/80*100)));
       var col=st==='ok'?'var(--ok)':st==='down'?'var(--al)':'var(--mu)';
-      if(fill){fill.style.width=pct+'%';fill.style.background=col;}
+      if(fill){fill.style.width=pct+'%';if(!isSrow)fill.style.background=col;}
       if(lev)lev.textContent=level+' dB';
     } else {
       if(fill)fill.style.width='0%';
       if(lev)lev.textContent=st==='offline'?'Offline':'—';
     }
   }
-  // fault point tag
+  // fault point tag (single nodes only)
   var old=el.querySelector('.wc-fault-tag');if(old)old.remove();
-  if(isFaultPt&&!isStack){
+  if(isFaultPt&&!isStack&&!isSrow){
     var tag=document.createElement('div');tag.className='wc-fault-tag';tag.textContent='FAULT';
     el.appendChild(tag);
   }
