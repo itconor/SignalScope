@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.31] - 2026-03-27
+
+### Fixed
+- **Low-bandwidth mode resets on restart** — `low_bw` was missing from both `save_config()` and `load_config()`, so the setting was never written to disk and always loaded as `False`. Added to both paths.
+
 ## [3.4.30] - 2026-03-27
 
 ### Fixed

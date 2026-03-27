@@ -1607,7 +1607,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.30"
+BUILD                  = "SignalScope-3.4.31"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2271,6 +2271,7 @@ def load_config() -> AppConfig:
             relay_bitrate=int(h.get("relay_bitrate", 128)),
             clip_auto_upload=bool(h.get("clip_auto_upload", True)),
             clip_sync=bool(h.get("clip_sync", True)),
+            low_bw=bool(h.get("low_bw", False)),
         ),
         auth=AuthConfig(
             enabled=au.get("enabled",False), username=au.get("username","admin"),
@@ -2412,6 +2413,7 @@ def save_config(cfg: AppConfig):
             "enabled": cfg.hub.enabled, "relay_bitrate": cfg.hub.relay_bitrate,
             "clip_auto_upload": cfg.hub.clip_auto_upload,
             "clip_sync": cfg.hub.clip_sync,
+            "low_bw": cfg.hub.low_bw,
         },
         "auth": {
             "enabled": cfg.auth.enabled, "username": cfg.auth.username,
