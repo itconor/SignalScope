@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.38] - 2026-03-27
+
+### Fixed
+- **Broadcast Chains — "New A/B Group" button did nothing**: All A/B group JS functions (`abgOpenNew`, `abgEdit`, `abgDelete`, `abgToggleActive`, `abgPoll`) were accidentally placed in `HUB_WALL_TPL` (the hub dashboard template) while all the HTML — the modal, the button, and the A/B group cards — is in `BROADCAST_CHAINS_TPL`. Clicking the button silently threw `ReferenceError: abgOpenNew is not defined`. Fixed by moving the entire A/B group JS block into the chains page template where it belongs, and removing the orphaned copy from the hub wall template (which also had a secondary crash: `document.getElementById('abg-save-btn')` returned null and threw on page load).
+- **A/B group RX stream dropdown always empty**: `/api/chains/streams` returns `{"options":[...]}` but the JS called `.forEach()` directly on the response object (treating it as an array). Fixed: now uses `resp.options || resp || []`.
+- **Save errors now surfaced**: added `.catch()` to the A/B group save fetch so network failures show an error instead of silently doing nothing.
+
+---
+
 ## [3.4.37] - 2026-03-27
 
 ### Changed

@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.37"
+BUILD                  = "SignalScope-3.4.38"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -23284,6 +23284,131 @@ _refreshLevels();
   <audio id="cmp-audio" controls preload="none"></audio>
   <button id="cmp-close">⏹ Stop &amp; close</button>
 </div>
+<script nonce="{{csp_nonce()}}">
+// ── A/B Group UI ─────────────────────────────────────────────────────────────
+var _csrf_abg = function(){ return (document.querySelector('meta[name="csrf-token"]')||{}).content || ''; };
+
+function abgToggleActive(gid){
+  fetch('/api/ab_groups/'+gid+'/toggle_active',{method:'POST',headers:{'X-CSRFToken':_csrf_abg(),'Content-Type':'application/json'}})
+  .then(function(r){return r.json();}).then(function(d){if(d.ok)abgPoll();});
+}
+
+function abgDelete(gid, name){
+  if(!confirm('Delete A/B group "'+name+'"?')) return;
+  fetch('/api/ab_groups/'+gid,{method:'DELETE',headers:{'X-CSRFToken':_csrf_abg()}})
+  .then(function(){location.reload();});
+}
+
+function abgEdit(gid){
+  fetch('/api/ab_groups/status').then(function(r){return r.json();}).then(function(groups){
+    var g = groups.find(function(x){return x.id===gid;});
+    if(!g) return;
+    document.getElementById('abg-modal-title').textContent = 'Edit A/B Group';
+    document.getElementById('abg-edit-id').value = g.id;
+    document.getElementById('abg-name').value = g.name;
+    document.getElementById('abg-chain-a').value = g.chain_a_id;
+    document.getElementById('abg-chain-b').value = g.chain_b_id;
+    document.getElementById('abg-active-role').value = g.active_role;
+    document.getElementById('abg-rx-label').value = (g.rx_node||{}).label||'';
+    document.getElementById('abg-notes').value = g.notes||'';
+    var rxSel = document.getElementById('abg-rx-stream');
+    var rxKey = g.rx_node ? ((g.rx_node.site||'local')+'/'+g.rx_node.stream) : '';
+    rxSel.value = rxKey;
+    document.getElementById('abg-modal').style.display='flex';
+  });
+}
+
+function abgOpenNew(){
+  document.getElementById('abg-modal-title').textContent = 'New A/B Group';
+  document.getElementById('abg-edit-id').value = '';
+  document.getElementById('abg-name').value = '';
+  document.getElementById('abg-chain-a').value = '';
+  document.getElementById('abg-chain-b').value = '';
+  document.getElementById('abg-active-role').value = 'a';
+  document.getElementById('abg-rx-stream').value = '';
+  document.getElementById('abg-rx-label').value = '';
+  document.getElementById('abg-notes').value = '';
+  document.getElementById('abg-modal').style.display='flex';
+}
+
+// Populate RX stream dropdown — response is {options:[...]}, not a bare array
+fetch('/api/chains/streams').then(function(r){return r.json();}).then(function(resp){
+  var sel = document.getElementById('abg-rx-stream');
+  var opts = resp.options || resp || [];
+  opts.forEach(function(o){
+    var opt = document.createElement('option');
+    opt.value = (o.site||'local')+'/'+o.stream;
+    opt.textContent = (o.site && o.site!=='local' ? o.site+' / ' : '')+o.stream;
+    sel.appendChild(opt);
+  });
+});
+
+document.getElementById('abg-save-btn').addEventListener('click', function(){
+  var rxVal = document.getElementById('abg-rx-stream').value;
+  var rxNode = null;
+  if(rxVal){
+    var parts = rxVal.split('/');
+    var rxSite = parts[0]; var rxStream = parts.slice(1).join('/');
+    rxNode = {site: rxSite, stream: rxStream, label: document.getElementById('abg-rx-label').value||rxStream};
+  }
+  var payload = {
+    id: document.getElementById('abg-edit-id').value||'',
+    name: document.getElementById('abg-name').value.trim(),
+    chain_a_id: document.getElementById('abg-chain-a').value,
+    chain_b_id: document.getElementById('abg-chain-b').value,
+    active_role: document.getElementById('abg-active-role').value,
+    rx_node: rxNode,
+    notes: document.getElementById('abg-notes').value
+  };
+  if(!payload.name){alert('Group name is required');return;}
+  if(!payload.chain_a_id||!payload.chain_b_id){alert('Both A and B chains must be selected');return;}
+  fetch('/api/ab_groups/save',{method:'POST',headers:{'X-CSRFToken':_csrf_abg(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
+  .then(function(r){return r.json();}).then(function(d){
+    if(d.ok){document.getElementById('abg-modal').style.display='none';location.reload();}
+    else{alert('Save failed: '+JSON.stringify(d));}
+  }).catch(function(e){alert('Network error: '+e);});
+});
+
+// Event delegation for A/B group card buttons
+document.addEventListener('click', function(e){
+  var sw = e.target.closest('.abg-switch-btn');
+  if(sw){abgToggleActive(sw.dataset.gid);return;}
+  var ed = e.target.closest('[data-abg-edit]');
+  if(ed){abgEdit(ed.dataset.abgEdit);return;}
+  var dl = e.target.closest('[data-abg-del]');
+  if(dl){abgDelete(dl.dataset.abgDel, dl.dataset.abgName);return;}
+});
+
+// A/B group status polling — update card colours and badges every 10 s
+function abgPoll(){
+  fetch('/api/ab_groups/status').then(function(r){return r.json();}).then(function(groups){
+    groups.forEach(function(g){
+      var card = document.getElementById('abg_'+g.id);
+      if(!card) return;
+      var s = g.status;
+      card.className = 'abg-card abg-'+s.replace(/_/g,'-');
+      var badge = document.getElementById('abg_badge_'+g.id);
+      if(badge){
+        var labels = {ok:'ON AIR',a_fault:'A FAULT',b_fault:'B FAULT',both_fault:'BOTH FAULT',rx_fault:'RX FAULT',off_air:'OFF AIR',unknown:'…'};
+        badge.textContent = labels[s]||s;
+        badge.className = 'abg-status-badge abg-badge-'+s.replace(/_/g,'-');
+      }
+      var aDot=document.getElementById('abg_adot_'+g.id);
+      var bDot=document.getElementById('abg_bdot_'+g.id);
+      var aPath=document.getElementById('abg_a_'+g.id);
+      var bPath=document.getElementById('abg_b_'+g.id);
+      if(aDot) aDot.className='abg-path-dot '+(g.a_ok?'dot-ok':'dot-fault');
+      if(bDot) bDot.className='abg-path-dot '+(g.b_ok?'dot-ok':'dot-fault');
+      if(aPath) aPath.className='abg-path '+(g.a_ok?'path-ok':'path-fault');
+      if(bPath) bPath.className='abg-path '+(g.b_ok?'path-ok':'path-fault');
+      var rxEl=document.getElementById('abg_rx_'+g.id);
+      if(rxEl) rxEl.className='abg-rx '+(g.rx_ok?'rx-ok':'rx-fault');
+    });
+  }).catch(function(){});
+}
+abgPoll();
+setInterval(abgPoll, 10000);
+</script>
 </body></html>"""
 
 
@@ -28177,135 +28302,6 @@ setInterval(pollChains,5000);
 
 // ── Page refresh every 60s to pick up new streams/sites ────────────
 setTimeout(function(){location.reload();},60000);
-
-// ── A/B Group UI ─────────────────────────────────────────────────────────
-var _csrf_abg = function(){ return (document.querySelector('meta[name="csrf-token"]')||{}).content || ''; };
-
-function abgToggleActive(gid){
-  fetch('/api/ab_groups/'+gid+'/toggle_active',{method:'POST',headers:{'X-CSRFToken':_csrf_abg(),'Content-Type':'application/json'}})
-  .then(function(r){return r.json();}).then(function(d){if(d.ok)abgPoll();});
-}
-
-function abgDelete(gid, name){
-  if(!confirm('Delete A/B group "'+name+'"?')) return;
-  fetch('/api/ab_groups/'+gid,{method:'DELETE',headers:{'X-CSRFToken':_csrf_abg()}})
-  .then(function(){location.reload();});
-}
-
-function abgEdit(gid){
-  // Find group data from current status
-  fetch('/api/ab_groups/status').then(function(r){return r.json();}).then(function(groups){
-    var g = groups.find(function(x){return x.id===gid;});
-    if(!g) return;
-    document.getElementById('abg-modal-title').textContent = 'Edit A/B Group';
-    document.getElementById('abg-edit-id').value = g.id;
-    document.getElementById('abg-name').value = g.name;
-    document.getElementById('abg-chain-a').value = g.chain_a_id;
-    document.getElementById('abg-chain-b').value = g.chain_b_id;
-    document.getElementById('abg-active-role').value = g.active_role;
-    document.getElementById('abg-rx-label').value = (g.rx_node||{}).label||'';
-    document.getElementById('abg-notes').value = g.notes||'';
-    // Set RX stream
-    var rxSel = document.getElementById('abg-rx-stream');
-    var rxKey = g.rx_node ? ((g.rx_node.site||'local')+'/'+g.rx_node.stream) : '';
-    rxSel.value = rxKey;
-    document.getElementById('abg-modal').style.display='flex';
-  });
-}
-
-function abgOpenNew(){
-  document.getElementById('abg-modal-title').textContent = 'New A/B Group';
-  document.getElementById('abg-edit-id').value = '';
-  document.getElementById('abg-name').value = '';
-  document.getElementById('abg-chain-a').value = '';
-  document.getElementById('abg-chain-b').value = '';
-  document.getElementById('abg-active-role').value = 'a';
-  document.getElementById('abg-rx-stream').value = '';
-  document.getElementById('abg-rx-label').value = '';
-  document.getElementById('abg-notes').value = '';
-  document.getElementById('abg-modal').style.display='flex';
-}
-
-// Populate RX stream dropdown from chains stream API
-fetch('/api/chains/streams').then(function(r){return r.json();}).then(function(opts){
-  var sel = document.getElementById('abg-rx-stream');
-  opts.forEach(function(o){
-    var opt = document.createElement('option');
-    opt.value = (o.site||'local')+'/'+o.stream;
-    opt.textContent = (o.site && o.site!=='local' ? o.site+' / ' : '')+o.stream;
-    sel.appendChild(opt);
-  });
-});
-
-document.getElementById('abg-save-btn').addEventListener('click', function(){
-  var rxVal = document.getElementById('abg-rx-stream').value;
-  var rxNode = null;
-  if(rxVal){
-    var parts = rxVal.split('/');
-    var rxSite = parts[0]; var rxStream = parts.slice(1).join('/');
-    rxNode = {site: rxSite, stream: rxStream, label: document.getElementById('abg-rx-label').value||rxStream};
-  }
-  var payload = {
-    id: document.getElementById('abg-edit-id').value||'',
-    name: document.getElementById('abg-name').value.trim(),
-    chain_a_id: document.getElementById('abg-chain-a').value,
-    chain_b_id: document.getElementById('abg-chain-b').value,
-    active_role: document.getElementById('abg-active-role').value,
-    rx_node: rxNode,
-    notes: document.getElementById('abg-notes').value
-  };
-  if(!payload.name){alert('Group name is required');return;}
-  if(!payload.chain_a_id||!payload.chain_b_id){alert('Both A and B chains must be selected');return;}
-  fetch('/api/ab_groups/save',{method:'POST',headers:{'X-CSRFToken':_csrf_abg(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
-  .then(function(r){return r.json();}).then(function(d){
-    if(d.ok){document.getElementById('abg-modal').style.display='none';location.reload();}
-    else{alert('Save failed');}
-  });
-});
-
-// Event delegation for A/B group buttons
-document.addEventListener('click', function(e){
-  var sw = e.target.closest('.abg-switch-btn');
-  if(sw){abgToggleActive(sw.dataset.gid);return;}
-  var ed = e.target.closest('[data-abg-edit]');
-  if(ed){abgEdit(ed.dataset.abgEdit);return;}
-  var dl = e.target.closest('[data-abg-del]');
-  if(dl){abgDelete(dl.dataset.abgDel, dl.dataset.abgName);return;}
-});
-
-// A/B group status polling (every 10 s)
-function abgPoll(){
-  fetch('/api/ab_groups/status').then(function(r){return r.json();}).then(function(groups){
-    groups.forEach(function(g){
-      var card = document.getElementById('abg_'+g.id);
-      if(!card) return;
-      var s = g.status;
-      // Update card class
-      card.className = 'abg-card abg-'+s.replace(/_/g,'-');
-      // Update badge
-      var badge = document.getElementById('abg_badge_'+g.id);
-      if(badge){
-        var labels = {ok:'ON AIR',a_fault:'A FAULT',b_fault:'B FAULT',both_fault:'BOTH FAULT',rx_fault:'RX FAULT',off_air:'OFF AIR',unknown:'…'};
-        badge.textContent = labels[s]||s;
-        badge.className = 'abg-status-badge abg-badge-'+s.replace(/_/g,'-');
-      }
-      // Update path dots and classes
-      var aDot = document.getElementById('abg_adot_'+g.id);
-      var bDot = document.getElementById('abg_bdot_'+g.id);
-      var aPath = document.getElementById('abg_a_'+g.id);
-      var bPath = document.getElementById('abg_b_'+g.id);
-      if(aDot) aDot.className = 'abg-path-dot '+(g.a_ok?'dot-ok':'dot-fault');
-      if(bDot) bDot.className = 'abg-path-dot '+(g.b_ok?'dot-ok':'dot-fault');
-      if(aPath) aPath.className = 'abg-path '+(g.a_ok?'path-ok':'path-fault');
-      if(bPath) bPath.className = 'abg-path '+(g.b_ok?'path-ok':'path-fault');
-      // Update RX
-      var rxEl = document.getElementById('abg_rx_'+g.id);
-      if(rxEl) rxEl.className = 'abg-rx '+(g.rx_ok?'rx-ok':'rx-fault');
-    });
-  }).catch(function(){});
-}
-abgPoll();
-setInterval(abgPoll, 10000);
 </script>
 </body></html>"""
 
