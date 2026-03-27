@@ -2,6 +2,18 @@
 
 ---
 
+## [3.4.42] - 2026-03-27
+
+### Fixed
+- **Broadcast Chains — badly-segued ad breaks trigger false FAULT** — when ad spots are poorly edited (brief silence at the end of one spot before the next begins), the chain briefly recovered from the `"pending"` confirmation window back to `"ok"`, then immediately re-entered `"pending"` with a fresh countdown. Enough inter-ad gaps could exhaust the full confirmation window and fire a real FAULT alert for what was clearly an ongoing ad break.
+
+  Fix: **ad-break gap stitching**. When a chain recovers within the confirmation window from an adbreak-candidate fault, the system now stores the original `_chain_fault_since` timestamp and the recovery time. If the chain re-faults within the configurable **Ad-break gap tolerance** (default 5 s) and is still an adbreak candidate, the original clock is restored rather than starting a fresh countdown. All the inter-ad silences collectively eat into one shared confirmation window — the fault can only fire if the *total* codec-silent time (minus brief inter-ad audio) exceeds `min_fault_seconds`. Normal audio recovery beyond the tolerance clears the stitching state and subsequent faults get a fresh timer as before.
+
+### Added
+- **Chain builder — Ad-break gap tolerance setting** — new per-chain setting in the Timing & Behaviour panel (default 5 s, range 0–30 s). Controls the maximum inter-ad silence gap that will be stitched into one confirmation window. Set to 0 to disable stitching and restore the old per-silence-period behaviour.
+
+---
+
 ## [3.4.41] - 2026-03-27
 
 ### Fixed

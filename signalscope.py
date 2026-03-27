@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.41"
+BUILD                  = "SignalScope-3.4.42"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -10992,6 +10992,11 @@ class HubServer:
         self._chain_node_offline_notified: dict = {}
         # A/B Group states — group_id → {status, a_ok, b_ok, rx_ok, since, ts}
         self._abgroup_states: dict = {}
+        # Ad-break gap stitching — cid → epoch ts when brief inter-ad recovery started
+        # Used to carry the original confirmation clock through badly-segued ad breaks.
+        self._chain_adbreak_gap_start: dict = {}
+        # Ad-break gap stitching — cid → original _chain_fault_since before brief recovery
+        self._chain_adbreak_original_since: dict = {}
         # A/B Group last alert timestamp — group_id → float
         self._abgroup_alert_ts: dict = {}
         # Remote backup metadata — site_name → {"ts": float, "size": int}
@@ -11976,6 +11981,7 @@ class HubServer:
                     curr   = result["status"]   # "ok" | "fault" | "unknown"
                     min_fault_secs       = max(0, int(chain.get("min_fault_seconds", 0) or 0))
                     fault_shift_grace    = max(0, int(chain.get("fault_shift_grace_seconds", 0) or 0))
+                    adbreak_gap_tol      = max(0, int(chain.get("adbreak_gap_tolerance_seconds", 5) or 5))
 
                     # Work out whether the confirmation window should apply.
                     #
@@ -12087,6 +12093,9 @@ class HubServer:
                                 flap_evts = self._chain_flap_events.setdefault(cid, [])
                                 flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
                                 flap_evts.append(now)
+                                # Clear any stale gap-stitching state — real fault fired
+                                self._chain_adbreak_gap_start.pop(cid, None)
+                                self._chain_adbreak_original_since.pop(cid, None)
                                 # Update fault log ring buffer + DB
                                 _flog_entry = self._append_fault_log_entry(cid, now, result)
                                 if len(flap_evts) >= CHAIN_FLAP_COUNT and not self._chain_flapping.get(cid):
@@ -12097,13 +12106,37 @@ class HubServer:
                                     self._fire_chain_fault(result, chain, cfg, sender, now,
                                                            entry_id=_flog_entry.get("id", ""))
                             else:
-                                # Start confirmation window
-                                self._chain_fault_state[cid] = "pending"
-                                self._chain_fault_since[cid] = now
-                                self._set_pending_fault_meta(cid, result.get("fault_index"), result.get("adbreak_candidate", False))
-                                monitor.log(
-                                    f"[Chain] '{result['name']}' entered fault state — "
-                                    f"waiting {min_fault_secs}s confirmation before alerting.")
+                                # Start confirmation window.
+                                # Gap stitching: if this re-fault is an adbreak candidate and
+                                # occurs within adbreak_gap_tolerance_seconds of a brief
+                                # inter-ad recovery, carry the original clock forward so that
+                                # poorly-segued ad breaks (brief silence → brief audio → brief
+                                # silence…) share one confirmation window rather than each
+                                # getting a fresh countdown.
+                                _gap_start   = self._chain_adbreak_gap_start.pop(cid, 0)
+                                _orig_since  = self._chain_adbreak_original_since.pop(cid, 0)
+                                _is_adbreak  = result.get("adbreak_candidate", False)
+                                _in_gap      = (_gap_start > 0
+                                                and adbreak_gap_tol > 0
+                                                and (now - _gap_start) <= adbreak_gap_tol)
+                                if _is_adbreak and _in_gap and _orig_since > 0:
+                                    # Stitch: restore original fault clock
+                                    self._chain_fault_state[cid] = "pending"
+                                    self._chain_fault_since[cid] = _orig_since
+                                    self._set_pending_fault_meta(cid, result.get("fault_index"), True)
+                                    _stitched_elapsed = round(now - _orig_since, 1)
+                                    monitor.log(
+                                        f"[Chain] '{result['name']}' ad-break gap stitch — "
+                                        f"brief inter-ad recovery ({round(now - _gap_start, 1)}s), "
+                                        f"original clock restored ({_stitched_elapsed}s elapsed).")
+                                else:
+                                    # Normal fresh confirmation window
+                                    self._chain_fault_state[cid] = "pending"
+                                    self._chain_fault_since[cid] = now
+                                    self._set_pending_fault_meta(cid, result.get("fault_index"), result.get("adbreak_candidate", False))
+                                    monitor.log(
+                                        f"[Chain] '{result['name']}' entered fault state — "
+                                        f"waiting {min_fault_secs}s confirmation before alerting.")
                         elif prev == "pending":
                             # If the fault position has shifted since we entered
                             # pending (e.g. Node A recovered from ad break but
@@ -12187,6 +12220,9 @@ class HubServer:
                                 self._chain_fault_state[cid] = "alerted"
                                 self._chain_fault_since.pop(cid, None)
                                 self._chain_fault_index.pop(cid, None)
+                                # Clear gap-stitching state — real fault confirmed
+                                self._chain_adbreak_gap_start.pop(cid, None)
+                                self._chain_adbreak_original_since.pop(cid, None)
                                 # Track flap events
                                 flap_evts = self._chain_flap_events.setdefault(cid, [])
                                 flap_evts[:] = [t for t in flap_evts if now - t < CHAIN_FLAP_WINDOW]
@@ -12233,9 +12269,20 @@ class HubServer:
                         elif prev == "pending":
                             # Fault resolved within confirmation window (e.g. ad break ended)
                             elapsed = round(now - self._chain_fault_since.get(cid, now), 1)
+                            _pending_was_adbreak = self._pending_fault_meta(cid).get("adbreak_candidate", False)
                             monitor.log(
                                 f"[Chain] '{result['name']}' recovered within confirmation "
                                 f"window ({elapsed}s) — no alert sent (likely ad break).")
+                            # Gap stitching: if this was an adbreak candidate, remember the
+                            # original fault clock and when the brief recovery started.
+                            # If the chain re-faults quickly (segue gap), we restore the
+                            # clock so inter-ad silences eat one shared confirmation window.
+                            if _pending_was_adbreak and adbreak_gap_tol > 0:
+                                self._chain_adbreak_gap_start[cid]  = now
+                                self._chain_adbreak_original_since[cid] = self._chain_fault_since.get(cid, now)
+                            else:
+                                self._chain_adbreak_gap_start.pop(cid, None)
+                                self._chain_adbreak_original_since.pop(cid, None)
                             self._chain_fault_state[cid] = "ok"
                             self._chain_fault_since.pop(cid, None)
                             self._chain_fault_index.pop(cid, None)
@@ -21785,6 +21832,11 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
           <input type="number" id="builder_fault_shift_grace" min="0" max="300" step="10" value="0" style="width:90px">
           <div class="field-hint">0 = keep clock</div>
         </div>
+        <div class="adv-field">
+          <label title="During an ad break, brief inter-ad silences shorter than this value share one confirmation window rather than each getting a fresh countdown. Prevents false faults from badly-segued ads. 0 = disabled.">Ad-break gap tolerance (s)</label>
+          <input type="number" id="builder_adbreak_gap_tol" min="0" max="30" step="1" value="5" style="width:90px">
+          <div class="field-hint">5 s default; 0 = off</div>
+        </div>
       </div>
     </div>
   </div>
@@ -22205,6 +22257,7 @@ function showBuilder(chain){
     document.getElementById('builder_name').value=chain.name||'';
     document.getElementById('builder_min_fault').value=chain.min_fault_seconds||0;
     document.getElementById('builder_fault_shift_grace').value=chain.fault_shift_grace_seconds||0;
+    document.getElementById('builder_adbreak_gap_tol').value=(chain.adbreak_gap_tolerance_seconds!==undefined?chain.adbreak_gap_tolerance_seconds:5);
     document.getElementById('builder_min_recovery').value=chain.min_recovery_seconds||0;
     document.getElementById('builder_min_alert_interval').value=chain.min_alert_interval_minutes||0;
     document.getElementById('builder_trend_alert').value=chain.trend_alert_dbfs_per_min||0;
@@ -22237,6 +22290,7 @@ function showBuilder(chain){
     document.getElementById('builder_name').value='';
     document.getElementById('builder_min_fault').value=0;
     document.getElementById('builder_fault_shift_grace').value=0;
+    document.getElementById('builder_adbreak_gap_tol').value=5;
     document.getElementById('builder_min_recovery').value=0;
     document.getElementById('builder_min_alert_interval').value=0;
     document.getElementById('builder_trend_alert').value=0;
@@ -22360,13 +22414,14 @@ function saveChain(){
   });
   var minFault=parseInt(document.getElementById('builder_min_fault').value||'0',10)||0;
   var shiftGrace=parseInt(document.getElementById('builder_fault_shift_grace').value||'0',10)||0;
+  var adbreakGapTol=parseInt(document.getElementById('builder_adbreak_gap_tol').value||'5',10);if(isNaN(adbreakGapTol))adbreakGapTol=5;
   var mixinRaw=document.getElementById('builder_mixin_idx').value;
   var mixinIdx=(mixinRaw!=='')?parseInt(mixinRaw,10):null;
   var minRecovery=parseInt(document.getElementById('builder_min_recovery').value||'0',10)||0;
   var minAlertInterval=parseInt(document.getElementById('builder_min_alert_interval').value||'0',10)||0;
   var trendAlert=parseFloat(document.getElementById('builder_trend_alert').value||'0')||0;
   var upstreamChainId=(document.getElementById('builder_upstream_chain')||{}).value||'';
-  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_shift_grace_seconds:shiftGrace,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId};
+  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_shift_grace_seconds:shiftGrace,adbreak_gap_tolerance_seconds:adbreakGapTol,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId};
   if(cid)payload.id=cid;
   st.style.color='var(--mu)';st.textContent='Saving…';
   _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
@@ -26061,6 +26116,12 @@ def api_chains_save():
         fault_shift_grace_seconds = max(0, min(300, int(data.get("fault_shift_grace_seconds", 0) or 0)))
     except (TypeError, ValueError):
         fault_shift_grace_seconds = 0
+    # adbreak_gap_tolerance_seconds: max inter-ad silence gap to stitch into one
+    # confirmation window (badly-segued ads). 0 = disable stitching. Default 5 s.
+    try:
+        adbreak_gap_tolerance_seconds = max(0, min(30, int(data.get("adbreak_gap_tolerance_seconds", 5) or 5)))
+    except (TypeError, ValueError):
+        adbreak_gap_tolerance_seconds = 5
     # min_recovery_seconds: how long the chain must stay ok before CHAIN_RECOVERED fires (Change 1)
     try:
         min_recovery_seconds = max(0, min(3600, int(data.get("min_recovery_seconds", 0) or 0)))
@@ -26085,6 +26146,7 @@ def api_chains_save():
                   "fault_tail_secs": fault_tail_secs,
                   "record_all_nodes": record_all_nodes,
                   "fault_shift_grace_seconds": fault_shift_grace_seconds,
+                  "adbreak_gap_tolerance_seconds": adbreak_gap_tolerance_seconds,
                   "min_recovery_seconds": min_recovery_seconds,
                   "min_alert_interval_minutes": min_alert_interval_minutes,
                   "trend_alert_dbfs_per_min": trend_alert_dbfs_per_min,
