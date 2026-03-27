@@ -49,5 +49,15 @@
     "version": "1.0.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/meterwall.py"
+  },
+  {
+    "id": "zetta",
+    "name": "Zetta Integration",
+    "file": "zetta.py",
+    "icon": "📻",
+    "description": "RCS Zetta broadcast automation integration. Polls the Zetta SOAP service to show live now-playing data for each station — title, artist, cart number, category. Detects commercial/spot blocks in real time. Provides /api/zetta/status for chain and external integration. Includes WSDL discovery and a raw SOAP debug console. No extra pip packages required.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/zetta.py"
   }
 ]
