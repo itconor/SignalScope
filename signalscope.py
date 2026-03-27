@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.34"
+BUILD                  = "SignalScope-3.4.35"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -1886,8 +1886,9 @@ class InputConfig:
     # Sustained glitching — fires a louder alert when hammering continues
     glitch_sustained_count:       int   = 10     # N glitches in sustained window triggers escalation
     glitch_sustained_window_min:  int   = 10     # sustained window length (minutes)
-    # Fade vs glitch discrimination: require a minimum drop rate at onset
-    # Fades are gradual (2–5 dBFS/s); real glitches are abrupt (20–100+ dBFS/s).
+    # Fade vs glitch discrimination: require a minimum approach rate, measured
+    # over the 0.5–3 s window before the threshold crossing.
+    # Song fades: 2–10 dBFS/s.  Real glitches (packet loss, STL): 40–200+ dBFS/s.
     # 0 = disabled (count all dips regardless of slope).
     glitch_min_drop_rate_dbfs_s:  float = 22.0  # minimum dBFS/s fall rate to count as a glitch
 
@@ -5361,15 +5362,19 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                        and lev > cfg.silence_threshold_dbfs - 15.0)
             if _is_dip and cfg._glitch_dip_start == 0.0:
                 cfg._glitch_dip_start = _gn
-                # Measure drop rate at onset: compare current level to the
-                # most recent pre-dip sample within the last 5 s.
-                # Fades: 2–5 dBFS/s.  Real glitches: 20–100+ dBFS/s.
+                # Measure the approach rate: compare the current (dip) level to
+                # a sample from 0.5–3.0 s BEFORE the threshold crossing.
+                # Using the immediate previous sample (< 50 ms ago) gave wildly
+                # inflated rates: even a 4-second song fade reads as 60+ dBFS/s
+                # at the instant it crosses the threshold.  Using a sample from
+                # half a second ago gives the true slope leading into the dip.
+                # Fades: 2–10 dBFS/s.  Real glitches: 40–100+ dBFS/s.
                 _pre = [(t, v) for (t, v) in cfg._level_buf
-                        if _gn - 5.0 <= t <= _gn - 0.02
+                        if _gn - 3.0 <= t <= _gn - 0.5
                         and v > cfg.silence_threshold_dbfs]
                 if _pre:
-                    _pt, _pv = _pre[-1]
-                    _dt = max(0.02, _gn - _pt)
+                    _pt, _pv = _pre[-1]   # most recent sample in the 0.5-3 s window
+                    _dt = max(0.1, _gn - _pt)
                     cfg._glitch_entry_rate = (_pv - lev) / _dt
                 else:
                     cfg._glitch_entry_rate = 999.0   # no ref — treat as abrupt
@@ -16948,7 +16953,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
           <label class="lbl">Minimum drop rate to count as glitch (dBFS/s)
             <input type="number" name="glitch_min_drop_rate_dbfs_s" value="{{inp.glitch_min_drop_rate_dbfs_s}}" step="1" min="0" max="200">
           </label>
-          <p class="help">Measures how steeply the level fell at the moment the dip started. Fades are gradual (2–6 dBFS/s). Real glitches — packet loss, STL hitches, encoder dropouts — are abrupt (20–100+ dBFS/s). Set to 0 to disable and count all dips. Default: 12 dBFS/s.</p>
+          <p class="help">Measures the average fall rate over the 0.5–3 s leading into the dip. Song fades and quiet passages drop gradually (2–10 dBFS/s). Real glitches — packet loss, STL hitches, encoder dropouts — are abrupt (40–200+ dBFS/s). Set to 0 to disable and count all dips. Default: 22 dBFS/s.</p>
         </div>
       </div>
 

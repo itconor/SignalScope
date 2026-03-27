@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.35] - 2026-03-27
+
+### Fixed
+- **Glitch detector false-triggering on song transitions** — the fade vs glitch discrimination was measuring the drop rate using the sample immediately before the threshold crossing (~50 ms ago). At that timescale, even a 4-second gradual song fade reads as 60+ dBFS/s at the instant it crosses the threshold — indistinguishable from a real glitch. Fixed by measuring the approach rate over the 0.5–3 s window before the crossing. Song fades now correctly read as 2–10 dBFS/s; real glitches (packet loss, STL, encoder) read as 40–200+ dBFS/s. Updated settings UI description accordingly.
+
 ## [3.4.34] - 2026-03-27
 
 ### Fixed
