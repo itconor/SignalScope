@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.29] - 2026-03-27
+
+### Added
+- **Low-bandwidth badge on hub dashboard** — site cards now show a `📶 Low BW` badge (green tint) when low-bandwidth mode is enabled for that site, either via hub per-site rules or the client's local setting. Badge is added/removed dynamically by the AJAX refresh so it reflects changes without a page reload.
+
 ## [3.4.28] - 2026-03-27
 
 ### Added

@@ -1607,7 +1607,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.28"
+BUILD                  = "SignalScope-3.4.29"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -20884,7 +20884,9 @@ def hub_data():
         return jsonify({"error":"not a hub"}), 404
     hub_server.set_secret(cfg.hub.secret_key)
     sites = hub_server.get_sites()
+    _site_rules = cfg.hub_site_rules if isinstance(getattr(cfg, "hub_site_rules", None), dict) else {}
     for s in sites:
+        s["low_bw"] = bool(_site_rules.get(s.get("site", ""), {}).get("low_bw", False))
         streams = s.get("streams", [])
         if not s["online"]:
             s["site_status"] = "offline"
@@ -28389,6 +28391,18 @@ function hubRefresh(){
       var latency = card.querySelector('.site-meta-latency');
       if(latency && site.latency_ms != null) latency.textContent = 'Latency: ' + site.latency_ms + ' ms';
       // Update version badge colour and update button against hub build
+      var lbwBadge = card.querySelector('.site-lowbw-badge');
+      if(site.low_bw && !lbwBadge){
+        var nb=document.createElement('span');
+        nb.className='badge site-lowbw-badge';
+        nb.title='Low-bandwidth mode — heartbeat every 30 s, clips on demand';
+        nb.style.cssText='background:#1a2a1a;color:#6ee7b7;border:1px solid #166534';
+        nb.textContent='📶 Low BW';
+        var siteHeader=card.querySelector('.site-header');
+        if(siteHeader) siteHeader.appendChild(nb);
+      } else if(!site.low_bw && lbwBadge){
+        lbwBadge.remove();
+      }
       var vbadge = card.querySelector('.site-version-badge');
       if(vbadge && site.build){
         var match = (site.build === data.hub_build);
@@ -29054,6 +29068,9 @@ setInterval(_loadTrends, 300000);
     {% endif %}
     {% if site.online and site.age_s >= 10 %}
     <span class="badge" style="background:#2a2412;color:var(--wn)">STALE</span>
+    {% endif %}
+    {% if site.low_bw %}
+    <span class="badge site-lowbw-badge" title="Low-bandwidth mode — heartbeat every 30 s, clips on demand" style="background:#1a2a1a;color:#6ee7b7;border:1px solid #166534">📶 Low BW</span>
     {% endif %}
   </div>
   {% if not _pending %}
