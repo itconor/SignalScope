@@ -2,6 +2,11 @@
 
 ---
 
+## [3.4.34] - 2026-03-27
+
+### Fixed
+- **Low-bandwidth mode can't be unchecked (definitive fix)** — the `offsetParent` JS approach added in 3.4.33 did not work because the settings tab system hides panels via CSS class (`.pn` without `.on`), not `display:none`, so `offsetParent` was never `null`. Root cause: the settings template contains two copies of the hub panel (lines ~312 and ~557) sharing the same `<form>`. The second copy always submitted its `hub_low_bw` value regardless of visibility. Fixed by removing the duplicate `hub_low_bw` checkbox from the second hub panel entirely — the first instance (in the client/both panel) is the canonical one and only one copy should exist in the form.
+
 ## [3.4.33] - 2026-03-27
 
 ### Fixed

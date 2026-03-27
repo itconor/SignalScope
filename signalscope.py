@@ -751,15 +751,6 @@ document.addEventListener('DOMContentLoaded',function(){
                 </span>
               </label>
             </div>
-            <div style="margin-bottom:10px">
-              <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-                <input type="checkbox" name="hub_low_bw" value="1" {{'checked' if cfg.hub.low_bw}} style="margin-top:2px;accent-color:var(--acc)">
-                <span>
-                  <span style="font-size:13px;font-weight:600">Low-bandwidth mode</span><br>
-                  <span style="font-size:12px;color:var(--mu)">Reduces heartbeat frequency to ~30 s and disables automatic clip uploads. Clips are still delivered to the hub on demand when viewed in Reports or fault replay. Use on sites with data caps.</span>
-                </span>
-              </label>
-            </div>
           </div>
 
           <script nonce="{{csp_nonce()}}">
@@ -1629,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.33"
+BUILD                  = "SignalScope-3.4.34"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
