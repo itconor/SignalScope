@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.22",
+    "version": "1.4.23",
 }
 
 import datetime
@@ -2461,23 +2461,36 @@ var _tlExp  = false;       // expanded row height mode
 var _metaEvents  = [];   // metadata events for the current day
 
 // ── Hub mode state ─────────────────────────────────────────────────────────
-var _hubSite       = '';   // empty = local mode, non-empty = hub mode
-var _hubPlayStart  = null;
-var _hubPlayOffset = 0;
+var _hubSite        = '';    // empty = local mode, non-empty = hub mode
+var _hubPlayStart   = null;
+var _hubPlayOffset  = 0;
+var _hubIsPlaying   = false; // true while PCM stream is active
+var _hubPlayPending = false; // true while startHubPlay POST is in-flight (prevents double-start)
 
 // ── PCM audio pump (for hub mode playback) ─────────────────────────────────
 var _audioCtx=null,_gainNode=null,_pcmReader=null,_nextTime=0;
 var _pcmBuf=new Uint8Array(0);
-var _SR=48000,_BLK_S=4800,_BLK_B=9600,_PRE=5.0;
+var _SR=48000,_BLK_S=4800,_BLK_B=9600,_PRE=1.0;
 function _initAudio(){
   if(_audioCtx)return;
   _audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:_SR});
   _gainNode=_audioCtx.createGain(); _gainNode.connect(_audioCtx.destination);
 }
+function _stopHubAudio(){
+  // Cancel incoming stream and mute any already-scheduled buffers immediately
+  if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
+  _pcmBuf=new Uint8Array(0);
+  if(_gainNode) _gainNode.gain.setValueAtTime(0, _audioCtx ? _audioCtx.currentTime : 0);
+  _hubIsPlaying  = false;
+  _hubPlayPending = false;
+  _hubPlayStart  = null;
+  document.getElementById('play-btn').textContent='▶';
+}
 function connectAudio(url){
   if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
   _pcmBuf=new Uint8Array(0);
   _initAudio(); if(_audioCtx.state==='suspended')_audioCtx.resume();
+  _gainNode.gain.setValueAtTime(1, _audioCtx.currentTime); // unmute (may have been muted by stop)
   _nextTime=_audioCtx.currentTime+_PRE;
   fetch(url,{credentials:'same-origin'}).then(function(r){
     _pcmReader=r.body.getReader();
@@ -2565,7 +2578,7 @@ function checkHubMode(){
 
 document.getElementById('site-sel').addEventListener('change', function(){
   _hubSite = this.value;
-  _hubPlayStart = null;
+  _stopHubAudio();
   _currentSlug = ''; _selSeg = null; _segsAll = []; _markIn = _markOut = null;
   _hubStatusMsg('');
   updateInOutLabel();
@@ -2647,7 +2660,7 @@ function _hubStatusMsg(msg){
 document.getElementById('stream-sel').addEventListener('change', function(){
   _currentSlug = this.value;
   _selSeg = null; _segsAll = []; _markIn = _markOut = null;
-  _hubPlayStart = null;
+  _stopHubAudio();
   _hubStatusMsg('');
   updateInOutLabel();
   document.getElementById('export-btn').disabled = true;
@@ -2930,14 +2943,21 @@ function playSeg(seg, blkEl){
 
 // ── Hub mode playback ─────────────────────────────────────────────────────
 function startHubPlay(seg, offset){
+  if(_hubPlayPending) return;   // already waiting for a play response — ignore
+  _hubPlayPending = true;
+  // Stop any currently playing stream before starting a new one
+  if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
+  _pcmBuf=new Uint8Array(0);
   var seekSecs = offset;
   _post('/api/logger/hub/play', {
     site: _hubSite, slug: _currentSlug, date: _currentDate,
     filename: seg.filename, seek_s: seekSecs
   }).then(function(r){
+    _hubPlayPending = false;
     if(!r || !r.ok) return;
     connectAudio(r.stream_url);
     _selSeg = seg;
+    _hubIsPlaying  = true;
     _hubPlayStart  = Date.now();
     _hubPlayOffset = seg.start_s + seekSecs;
     var h=Math.floor(seg.start_s/3600),m=Math.floor((seg.start_s%3600)/60);
@@ -2945,7 +2965,7 @@ function startHubPlay(seg, offset){
     document.getElementById('p-sub').textContent=_hubSite+' · '+_currentSlug;
     _updateGridPlaying(seg.start_s);
     document.getElementById('play-btn').textContent='⏸';
-  });
+  }).catch(function(){ _hubPlayPending = false; });
 }
 
 // ── Segment loading & navigation ──────────────────────────────────────────
@@ -2988,7 +3008,7 @@ function _playNext(){
   if(!_selSeg||!_segsAll.length) return;
   var next=null, ns=_selSeg.start_s+_SEG_SECS;
   for(var i=0;i<_segsAll.length;i++){ if(_segsAll[i].start_s===ns){ next=_segsAll[i]; break; } }
-  if(next){ _loadSegAndSeek(next,0); } else { document.getElementById('play-btn').textContent='▶'; _updateGridPlaying(-1); }
+  if(next){ _loadSegAndSeek(next,0); } else { _hubIsPlaying=false; document.getElementById('play-btn').textContent='▶'; _updateGridPlaying(-1); }
 }
 
 function _seekToSecs(secs){
@@ -3062,10 +3082,14 @@ function setupAudio(){
 
 document.getElementById('play-btn').addEventListener('click', function(){
   if(_hubSite){
-    // In hub mode, stop PCM stream by cancelling reader
-    if(_pcmReader){ try{_pcmReader.cancel();}catch(e){}_pcmReader=null; }
-    _hubPlayStart = null;
-    document.getElementById('play-btn').textContent='▶';
+    if(_hubIsPlaying || _hubPlayPending){
+      // Pause: mute immediately and cancel the stream
+      _stopHubAudio();
+    } else if(_selSeg){
+      // Resume: restart from the position we stopped at
+      var resumeOffset = Math.max(0, _hubPlayOffset - _selSeg.start_s);
+      startHubPlay(_selSeg, resumeOffset);
+    }
     return;
   }
   var a=document.getElementById('audio-el');
