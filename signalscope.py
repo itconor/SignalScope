@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.56"
+BUILD                  = "SignalScope-3.4.57"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -21972,10 +21972,22 @@ var _chainData={
     {% for comp in c.comparators %}
     {% set fi = comp.from_idx %}
     {% set ti = comp.to_idx %}
+    {% set fs = comp.from_sub %}
+    {% set ts = comp.to_sub %}
     {% if fi < c.nodes|length and ti < c.nodes|length %}
-    {% set fl = c.nodes[fi].label or c.nodes[fi].stream %}
-    {% set tl = c.nodes[ti].label or c.nodes[ti].stream %}
-    <div class="corr-chip" id="corr_{{c.id|e}}_{{fi}}_{{ti}}"
+    {% set fn = c.nodes[fi] %}
+    {% set tn = c.nodes[ti] %}
+    {% if fn.type == 'stack' and fs is not none and fs < fn.nodes|length %}
+      {% set fl = fn.nodes[fs].label or fn.nodes[fs].stream %}
+    {% else %}
+      {% set fl = fn.label or fn.stream %}
+    {% endif %}
+    {% if tn.type == 'stack' and ts is not none and ts < tn.nodes|length %}
+      {% set tl = tn.nodes[ts].label or tn.nodes[ts].stream %}
+    {% else %}
+      {% set tl = tn.label or tn.stream %}
+    {% endif %}
+    <div class="corr-chip" id="corr_{{c.id|e}}_{{fi}}_{{fs|default('x')}}_{{ti}}_{{ts|default('x')}}"
          title="Level correlation: {{fl|e}} → {{tl|e}} (10 min window)">
       <span>{{fl|e}}</span>
       <span style="opacity:.5">{{'⟶' if (ti-fi)>1 else '→'}}</span>
@@ -22036,17 +22048,24 @@ function getNodeOptions(){
   var grps=document.querySelectorAll('#builder_nodes .pos-group');
   var opts=[];
   grps.forEach(function(grp,i){
-    // Label: first node's label or stream name
-    var lbl=grp.querySelector('.nl');
-    var st=grp.querySelector('.nst');
     var rows=grp.querySelectorAll('.node-row');
-    var name='Position '+i;
     if(rows.length>1){
-      name='Stack '+(i+1);
+      // Stack — use the configured stack label, fall back to "Stack N"
+      var stackLblIn=grp.querySelector('.stack-label-in');
+      var stackName=(stackLblIn&&stackLblIn.value.trim())||('Stack '+(i+1));
+      // Expand each sub-node as a separate option so comparators can target individuals
+      rows.forEach(function(row,j){
+        var lbl=row.querySelector('.nl');
+        var st=row.querySelector('.nst');
+        var nodeName=(lbl&&lbl.value.trim())||(st&&st.value)||('Node '+(j+1));
+        opts.push({idx:i,sub:j,label:stackName+' / '+nodeName});
+      });
     } else {
-      name=(lbl&&lbl.value.trim())||(st&&st.value)||('Node '+i);
+      var lbl=grp.querySelector('.nl');
+      var st=grp.querySelector('.nst');
+      var name=(lbl&&lbl.value.trim())||(st&&st.value)||('Node '+i);
+      opts.push({idx:i,sub:null,label:name});
     }
-    opts.push({idx:i,label:name});
   });
   return opts;
 }
@@ -22069,19 +22088,25 @@ function _refreshMixinSel(){
   });
   if(cur!==''&&sel.querySelector('option[value="'+cur+'"]'))sel.value=cur;
 }
-function _mkCompSel(val){
+function _compOptVal(o){ return o.sub!==null?String(o.idx)+':'+String(o.sub):String(o.idx); }
+function _mkCompSel(idx,sub){
   var sel=document.createElement('select');sel.className='comp-node-sel';
-  getNodeOptions().forEach(function(o){var opt=document.createElement('option');opt.value=String(o.idx);opt.textContent=o.label;sel.appendChild(opt);});
-  if(val!==undefined&&val!==null)sel.value=String(val);
+  getNodeOptions().forEach(function(o){var opt=document.createElement('option');opt.value=_compOptVal(o);opt.textContent=o.label;sel.appendChild(opt);});
+  // Match saved value: prefer exact idx:sub match, fall back to idx-only match
+  if(idx!==undefined&&idx!==null){
+    var exact=(sub!==undefined&&sub!==null)?String(idx)+':'+String(sub):null;
+    if(exact&&sel.querySelector('option[value="'+exact+'"]')) sel.value=exact;
+    else sel.value=String(idx);
+  }
   return sel;
 }
-function addComparator(fromIdx,toIdx){
+function addComparator(fromIdx,fromSub,toIdx,toSub){
   var container=document.getElementById('builder_comparators');
   var row=document.createElement('div');row.className='comp-row';
-  var n=getNodeOptions().length;
-  var fs=_mkCompSel(fromIdx!==undefined?fromIdx:0);
+  var opts=getNodeOptions();
+  var fs=_mkCompSel(fromIdx!==undefined?fromIdx:0,fromSub);
   var sep=document.createElement('span');sep.textContent='↔';sep.style.cssText='color:var(--mu);font-size:16px;flex-shrink:0';
-  var ts=_mkCompSel(toIdx!==undefined?toIdx:(n>1?1:0));
+  var ts=_mkCompSel(toIdx!==undefined?toIdx:(opts.length>1?opts[opts.length-1].idx:0),toSub);
   var rm=document.createElement('button');rm.type='button';rm.textContent='✕';rm.className='btn bd bs';
   rm.onclick=function(){container.removeChild(row);};
   row.appendChild(fs);row.appendChild(sep);row.appendChild(ts);row.appendChild(rm);
@@ -22091,7 +22116,7 @@ document.getElementById('btn_add_comp').addEventListener('click',function(){addC
 document.getElementById('btn_add_e2e').addEventListener('click',function(){
   var n=document.querySelectorAll('#builder_nodes .pos-group').length;
   if(n<2){alert('Add at least 2 positions first.');return;}
-  addComparator(0,n-1);
+  addComparator(0,null,n-1,null);
 });
 
 // ── Node builder ──────────────────────────────────────────────────────────────
@@ -22294,7 +22319,7 @@ function showBuilder(chain){
     }
     loadOpts(function(){
       (chain.nodes||[]).forEach(addPosition);
-      (chain.comparators||[]).forEach(function(c){addComparator(c.from_idx,c.to_idx);});
+      (chain.comparators||[]).forEach(function(c){addComparator(c.from_idx,c.from_sub!=null?c.from_sub:null,c.to_idx,c.to_sub!=null?c.to_sub:null);});
       // Restore mix-in point after nodes are rendered (options are now populated)
       var mi=chain.mixin_node_idx;
       if(mi!==null&&mi!==undefined&&mi!==''){
@@ -22422,12 +22447,14 @@ function saveChain(){
     }
   });
   if(!nodes.length){st.style.color='var(--al)';st.textContent='Add at least one node.';return;}
+  function _parseCompVal(v){var p=String(v).split(':');var idx=parseInt(p[0]);var sub=p.length>1?parseInt(p[1]):null;return{idx:idx,sub:sub};}
   var comparators=[];
   document.querySelectorAll('#builder_comparators .comp-row').forEach(function(row){
     var sels=row.querySelectorAll('.comp-node-sel');
     if(sels.length>=2){
-      var fi=parseInt(sels[0].value),ti=parseInt(sels[1].value);
-      if(!isNaN(fi)&&!isNaN(ti)&&fi!==ti)comparators.push({from_idx:fi,to_idx:ti});
+      var fa=_parseCompVal(sels[0].value),ta=_parseCompVal(sels[1].value);
+      if(!isNaN(fa.idx)&&!isNaN(ta.idx)&&(fa.idx!==ta.idx||(fa.sub!==null&&fa.sub!==ta.sub)))
+        comparators.push({from_idx:fa.idx,from_sub:fa.sub,to_idx:ta.idx,to_sub:ta.sub});
     }
   });
   var minFault=parseInt(document.getElementById('builder_min_fault').value||'0',10)||0;
@@ -24119,19 +24146,26 @@ def api_chains_status():
             chain_nodes = chain.get("nodes", [])
             corr_out = []
 
-            def _resolve_stack(nd: dict) -> dict:
-                """Stacks have no site/stream at the top level — use first sub-node."""
+            def _resolve_stack(nd: dict, sub_idx=None) -> dict:
+                """Stacks have no site/stream at top level.
+                If sub_idx is given pick that specific member; otherwise use first."""
                 if nd.get("type") == "stack":
-                    sub = nd.get("nodes", [])
-                    return sub[0] if sub else nd
+                    subs = nd.get("nodes", [])
+                    if sub_idx is not None and 0 <= sub_idx < len(subs):
+                        return subs[sub_idx]
+                    return subs[0] if subs else nd
                 return nd
 
             for comp in chain.get("comparators", []):
                 fi = int(comp.get("from_idx", 0))
                 ti = int(comp.get("to_idx", 1))
-                if fi < len(chain_nodes) and ti < len(chain_nodes) and fi != ti:
-                    node_a = _resolve_stack(chain_nodes[fi])
-                    node_b = _resolve_stack(chain_nodes[ti])
+                fs = comp.get("from_sub")
+                ts = comp.get("to_sub")
+                fs = int(fs) if fs is not None else None
+                ts = int(ts) if ts is not None else None
+                if fi < len(chain_nodes) and ti < len(chain_nodes) and (fi != ti or fs != ts):
+                    node_a = _resolve_stack(chain_nodes[fi], fs)
+                    node_b = _resolve_stack(chain_nodes[ti], ts)
                     # ── On-demand comparator request ──────────────────────────
                     # When both nodes are on the same remote site, ask the client
                     # to spawn a local StreamComparator for this pair.  The richer
@@ -24160,7 +24194,7 @@ def api_chains_status():
                             })
                             _cmp_pair_requested[_cmp_key] = _now_cmp
                     corr = _chain_correlate_nodes(node_a, node_b)
-                    corr_out.append({"from_idx": fi, "to_idx": ti, **corr})
+                    corr_out.append({"from_idx": fi, "from_sub": fs, "to_idx": ti, "to_sub": ts, **corr})
             result["comparators"] = corr_out
 
             # ── Maintenance state ──────────────────────────────────────────
