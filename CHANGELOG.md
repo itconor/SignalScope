@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.14] - 2026-03-28
+
+### Fixed
+- **Logger — right-click mark-in/out now works in Safari** — Safari requires `contextmenu` to be intercepted at the `document` level for `preventDefault()` to reliably suppress the browser menu. Moved the listener from `.tl-scroll-wrap` to `document` with a target check (`e.target.closest('.tl-scroll-wrap')`); behaviour is otherwise identical.
+
+---
+
 ## [Logger 1.4.13] - 2026-03-28
 
 ### Added

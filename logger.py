@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.13",
+    "version": "1.4.14",
 }
 
 import datetime
@@ -2797,32 +2797,32 @@ document.getElementById('day-bar').addEventListener('mouseleave',function(){
 });
 
 // ── Right-click on timeline overview: set mark-in / mark-out ─────────────
-(function(){
+// Attached to document so Safari honours preventDefault reliably
+document.addEventListener('contextmenu', function(e){
   var wrap = document.querySelector('.tl-scroll-wrap');
   if(!wrap) return;
-  wrap.addEventListener('contextmenu', function(e){
-    // Ignore right-clicks directly on the day-bar (keep its own context menu)
-    if(e.target.closest('#day-bar')) return;
-    e.preventDefault();
-    var content = document.getElementById('tl-zoom-content');
-    if(!content) return;
-    var rect = content.getBoundingClientRect();
-    var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    var secs = pct * 86400;
-    // Cycle: no-in → set-in | in-only → set-out | both set → new-in
-    if(_markIn === null || _markOut !== null){
-      _markIn  = secs;
-      _markOut = null;
-    } else {
-      // mark-in is set, mark-out is not — place out (or move in if clicked before it)
-      if(secs <= _markIn){ _markIn = secs; }
-      else { _markOut = secs; }
-    }
-    updateInOutLabel(); updateScrubMarkers(); updateDayBarMarkers();
-    document.getElementById('export-btn').disabled =
-      (_markIn === null || _markOut === null || !!_hubSite);
-  });
-})();
+  // Must be inside the scroll wrap but not on the day-bar
+  if(!e.target.closest('.tl-scroll-wrap')) return;
+  if(e.target.closest('#day-bar')) return;
+  e.preventDefault();
+  var content = document.getElementById('tl-zoom-content');
+  if(!content) return;
+  var rect = content.getBoundingClientRect();
+  var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  var secs = pct * 86400;
+  // Cycle: no-in → set-in | in-only → set-out | both set → new-in
+  if(_markIn === null || _markOut !== null){
+    _markIn  = secs;
+    _markOut = null;
+  } else {
+    // mark-in is set, mark-out is not — place out (or move in if clicked before it)
+    if(secs <= _markIn){ _markIn = secs; }
+    else { _markOut = secs; }
+  }
+  updateInOutLabel(); updateScrubMarkers(); updateDayBarMarkers();
+  document.getElementById('export-btn').disabled =
+    (_markIn === null || _markOut === null || !!_hubSite);
+});
 
 // ── Mark in/out ───────────────────────────────────────────────────────────
 function _currentPlayPos(){
