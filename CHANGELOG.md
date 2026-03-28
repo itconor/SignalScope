@@ -2,6 +2,14 @@
 
 ---
 
+## [3.4.43] - 2026-03-28
+
+### Fixed
+- **Clip cleanup deletes unuploaded clips** — `_clip_cleanup` enforced a 200-clips-per-stream limit by deleting the oldest files, regardless of whether they had been confirmed uploaded to the hub (`.hub` marker). Clips still pending in the upload queue had their WAV files removed before the queue consumer could send them, making them permanently inaccessible on both client and hub. Fix: `_clip_cleanup` now only considers clips that have a `.hub` sidecar (confirmed on hub) when applying age and count limits. Unconfirmed clips are never deleted — `_sync_pending_clips` needs them to retry. Also removes the companion `.hub`/`.meta` sidecars when deleting an eligible confirmed clip (was only removing the audio file before).
+- **Glitch clips uploaded to hub classified as CHAIN_FAULT** — the label-to-alert-type mapping in `hub_clip_upload` had no `"glitch"` case, so glitch clips fell through to the `else` branch and were stored in the hub alert log as `CHAIN_FAULT` events. They now appear correctly as `GLITCH` events in hub Reports.
+
+---
+
 ## [3.4.42] - 2026-03-27
 
 ### Fixed

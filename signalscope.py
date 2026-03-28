@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.42"
+BUILD                  = "SignalScope-3.4.43"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -4239,7 +4239,12 @@ def _safe_label(label: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in label).strip("_")[:40]
 
 def _clip_cleanup(stream_name: str):
-    """Prune old/excess clips for a stream based on config limits."""
+    """Prune old/excess clips for a stream based on config limits.
+
+    Never deletes a clip that has not yet been confirmed uploaded to the hub
+    (i.e. no .hub sidecar).  Unconfirmed clips are still pending upload and
+    must not be removed — _sync_pending_clips needs them to retry.
+    """
     try:
         cfg = monitor.app_cfg
         max_age  = cfg.clip_max_age_days
@@ -4251,20 +4256,31 @@ def _clip_cleanup(stream_name: str):
              if f.endswith(".wav") or f.endswith(".mp3")],
             key=os.path.getmtime
         )
-        # Prune by age
+        # Only consider clips that are confirmed on the hub (.hub marker present)
+        # Unconfirmed clips are still queued for upload — never delete them here.
+        def _confirmed(p):
+            stem = os.path.splitext(p)[0]
+            return os.path.exists(stem + ".hub")
+        confirmed = [p for p in clips if _confirmed(p)]
+        # Prune confirmed clips by age
         if max_age > 0:
             cutoff = time.time() - max_age * 86400
-            for p in clips:
+            for p in confirmed:
                 if os.path.getmtime(p) < cutoff:
-                    try: os.remove(p)
+                    stem = os.path.splitext(p)[0]
+                    for ext in (".wav", ".mp3", ".hub", ".meta"):
+                        try: os.remove(stem + ext)
+                        except: pass
+                else:
+                    break
+            confirmed = [p for p in confirmed if os.path.exists(p)]
+        # Prune confirmed clips by count (keep newest max_clip)
+        if max_clip > 0 and len(confirmed) > max_clip:
+            for p in confirmed[:len(confirmed) - max_clip]:
+                stem = os.path.splitext(p)[0]
+                for ext in (".wav", ".mp3", ".hub", ".meta"):
+                    try: os.remove(stem + ext)
                     except: pass
-                else: break
-            clips = [p for p in clips if os.path.exists(p)]
-        # Prune by count
-        if max_clip > 0 and len(clips) > max_clip:
-            for p in clips[:len(clips) - max_clip]:
-                try: os.remove(p)
-                except: pass
     except Exception:
         pass
 
@@ -20075,6 +20091,8 @@ def hub_clip_upload():
         _alert_type = "AI_ANOMALY"
     elif "compare" in _lbl_lower:
         _alert_type = "COMPARATOR"
+    elif "glitch" in _lbl_lower:
+        _alert_type = "GLITCH"
     else:
         _alert_type = "CHAIN_FAULT"
 
