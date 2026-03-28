@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.4",
+    "version": "1.4.5",
 }
 
 import datetime
@@ -2002,6 +2002,7 @@ var _markIn      = null;
 var _markOut     = null;
 var _scrubDrag   = false;
 var _cfg         = {streams:{}};
+var _planetStations = [];  // [{rpuid, name}] from /api/nowplaying_stations
 var _metaEvents  = [];   // metadata events for the current day
 
 // ── Hub mode state ─────────────────────────────────────────────────────────
@@ -2688,6 +2689,13 @@ function loadSettingsPanel(){
     rdInp.value = _cfg.rec_dir || '';
     var rdRes = document.getElementById('rec-dir-resolved');
     rdRes.textContent = st.rec_root ? '→ ' + st.rec_root : '';
+    // Fetch Planet Radio stations — non-critical, re-render rows with dropdown if available
+    _get('/api/nowplaying_stations').then(function(stations){
+      if(Array.isArray(stations) && stations.length){
+        _planetStations = stations;
+        renderSettingsRows();
+      }
+    }).catch(function(){});
   }).catch(function(err){
     document.getElementById('disk-info').textContent = '⚠ Settings failed to load — check server logs';
     console.error('loadSettingsPanel failed:', err);
@@ -2770,6 +2778,23 @@ function renderSettingsRows(){
     dirs.forEach(function(bd){
       if(bd.name) bdOpts += '<option value="'+_esc(bd.name)+'"'+(sc.base_dir===bd.name?' selected':'')+'>'+_esc(bd.name)+'</option>';
     });
+    // Planet Radio station dropdown
+    var curUrl = sc.nowplaying_url || '';
+    var planetMatch = curUrl.match(/\/api\/nowplaying\/([A-Za-z0-9_]+)$/);
+    var selectedRpuid = planetMatch ? planetMatch[1] : '';
+    var planetSelHtml = '';
+    if(_planetStations.length){
+      var opts = '<option value="">— Custom URL —</option>';
+      _planetStations.forEach(function(ps){
+        opts += '<option value="'+_esc(ps.rpuid)+'"'+(selectedRpuid===ps.rpuid?' selected':'')+'>'+_esc(ps.name)+'</option>';
+      });
+      planetSelHtml = '<div style="margin-bottom:8px">'
+        +'<label style="font-size:11px;color:var(--mu);font-weight:600;letter-spacing:.03em;text-transform:uppercase;display:block;margin-bottom:5px">Planet Radio Station</label>'
+        +'<select data-stream="'+_esc(s.name)+'" data-planet-sel'
+        +' style="width:100%;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:7px 9px;border-radius:6px;font-size:12px;outline:none">'
+        +opts+'</select>'
+        +'</div>';
+    }
     card.innerHTML =
       '<div class="scard-hdr">'
       +'<div><div class="name">'+_esc(s.name)+'</div><div class="url">'+_esc(s.url||'')+'</div></div>'
@@ -2790,6 +2815,7 @@ function renderSettingsRows(){
       +'<div><label>Base Directory</label><select data-stream="'+_esc(s.name)+'" data-key="base_dir">'+bdOpts+'</select></div>'
       +'</div>'   // close scard-fields
       +'<div class="np-url-row">'
+      +planetSelHtml
       +'<label style="font-size:11px;color:var(--mu);font-weight:600;letter-spacing:.03em;text-transform:uppercase;display:block;margin-bottom:5px">Now Playing URL</label>'
       +'<input type="text" data-stream="'+_esc(s.name)+'" data-key="nowplaying_url" value="'+_esc(sc.nowplaying_url||'')+'"'
       +' placeholder="https://api.example.com/now-playing?station=… (leave blank to use DLS/RDS)"'
@@ -2803,6 +2829,16 @@ function renderSettingsRows(){
       lbl.textContent = this.checked ? 'Recording' : 'Off';
       lbl.className   = 'tog-lbl'+(this.checked?' on':'');
     });
+    var planetSel = card.querySelector('[data-planet-sel]');
+    if(planetSel){
+      planetSel.addEventListener('change', function(){
+        var rpuid = this.value;
+        var urlInp = card.querySelector('[data-key="nowplaying_url"]');
+        if(urlInp){
+          urlInp.value = rpuid ? (window.location.origin + '/api/nowplaying/' + rpuid) : '';
+        }
+      });
+    }
     el.appendChild(card);
   });
 }

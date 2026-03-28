@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.5] - 2026-03-28
+
+### Added
+- **Logger — Planet Radio station dropdown in settings** — The "Now Playing URL" text input in each stream's settings card now has a "Planet Radio Station" dropdown above it (populated from SignalScope's existing `/api/nowplaying_stations` endpoint). Selecting a station automatically fills the URL field with the local `/api/nowplaying/{rpuid}` route. Selecting "— Custom URL —" clears the field. Falls back gracefully to the plain text input when the endpoint is unavailable or returns no stations. The existing `_parse_nowplaying()` handler already parses the `{artist, title, show}` response format, so no backend changes are needed.
+
+---
+
 ## [3.4.56] - 2026-03-28
 
 ### Fixed
