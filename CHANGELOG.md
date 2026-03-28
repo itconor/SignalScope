@@ -2,6 +2,15 @@
 
 ---
 
+## [Latency 1.0.1] - 2026-03-28
+
+### Fixed
+- **Comparator data not appearing** — The poller read `comp.get("pre")` / `comp.get("post")` but the SignalScope heartbeat payload uses `pre_name` / `post_name`. Updated to read `pre_name`/`post_name` with fallback to bare `pre`/`post` for forward-compatibility. Also added an `aligned` guard so comparators that haven't yet cross-correlated (delay_ms = 0.0) are skipped rather than polluting the history database with false zero-delay readings.
+- **Wrong colour palette** — Plugin used a purple/indigo theme (`--ac:#6366f1`, dark grey backgrounds). Replaced with the standard SignalScope navy/cyan palette (`--bg:#07142b`, `--ac:#17a8ff`, etc.) across both the main page template and the Settings page template.
+- **Sparkline line colour** — SVG polyline stroke was hardcoded `#6366f1` (indigo). Changed to `#17a8ff` (SignalScope cyan) to match the rest of the UI.
+
+---
+
 ## [Logger 1.4.18] - 2026-03-28
 
 ### Fixed

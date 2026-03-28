@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/latency",
     "icon":     "⏱",
     "hub_only": True,
-    "version":  "1.0.0",
+    "version":  "1.0.1",
 }
 
 import os, json, time, threading, sqlite3
@@ -190,11 +190,13 @@ def _poller_loop(hub_server, monitor):
                     continue
 
                 for comp in comparators:
-                    pre  = comp.get("pre", "")
-                    post = comp.get("post", "")
-                    delay_ms = comp.get("delay_ms")
+                    pre  = comp.get("pre_name") or comp.get("pre", "")
+                    post = comp.get("post_name") or comp.get("post", "")
+                    delay_ms  = comp.get("delay_ms")
                     gain_diff = comp.get("gain_diff_db")
-                    if pre and post and delay_ms is not None:
+                    # Skip comparators that haven't aligned yet (delay_ms would be 0)
+                    aligned   = comp.get("aligned", True)
+                    if pre and post and delay_ms is not None and aligned:
                         try:
                             delay_f = float(delay_ms)
                         except (TypeError, ValueError):
@@ -319,7 +321,7 @@ def _make_sparkline(readings, baseline,
     # Data polyline
     svg_parts.append(
         f'<polyline points="{points_str}" '
-        f'fill="none" stroke="#6366f1" stroke-width="1.5" '
+        f'fill="none" stroke="#17a8ff" stroke-width="1.5" '
         f'stroke-linejoin="round" stroke-linecap="round"/>'
     )
 
@@ -523,8 +525,8 @@ _LATENCY_TPL = r"""<!doctype html>
 <title>Signal Path Latency — SignalScope</title>
 <style nonce="{{csp_nonce()}}">
 :root{
-  --bg:#0f1117;--bg2:#1a1d28;--bg3:#22263a;--bd:#2e3250;
-  --tx:#e2e8f0;--mu:#94a3b8;--ok:#22c55e;--al:#ef4444;--wa:#f59e0b;--ac:#6366f1;
+  --bg:#07142b;--bg2:#0d2346;--bg3:#0f2a50;--bd:#17345f;
+  --tx:#eef5ff;--mu:#8aa4c8;--ok:#22c55e;--al:#ef4444;--wa:#f59e0b;--ac:#17a8ff;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:13px;line-height:1.5}
@@ -749,7 +751,7 @@ _LATENCY_SETTINGS_TPL = r"""<!doctype html>
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>Latency Settings — SignalScope</title>
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#0f1117;--bg2:#1a1d28;--bg3:#22263a;--bd:#2e3250;--tx:#e2e8f0;--mu:#94a3b8;--ok:#22c55e;--al:#ef4444;--wa:#f59e0b;--ac:#6366f1}
+:root{--bg:#07142b;--bg2:#0d2346;--bg3:#0f2a50;--bd:#17345f;--tx:#eef5ff;--mu:#8aa4c8;--ok:#22c55e;--al:#ef4444;--wa:#f59e0b;--ac:#17a8ff}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:13px;line-height:1.5}
 .btn{display:inline-flex;align-items:center;gap:5px;padding:5px 14px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none;color:var(--tx);background:var(--bd);text-decoration:none;transition:filter .12s}

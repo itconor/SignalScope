@@ -76,7 +76,7 @@
     "file": "latency.py",
     "icon": "⏱",
     "description": "Signal path latency tracking for broadcast chains. Polls all connected sites for comparator delay measurements every 30 seconds, stores 90 days of history in SQLite, and computes rolling baselines. Displays per-comparator SVG sparklines, stable/drifting/alert status badges, and configurable alert thresholds per comparator pair. Hub-only.",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/latency.py"
   }
