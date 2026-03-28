@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.57"
+BUILD                  = "SignalScope-3.4.58"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -13383,13 +13383,14 @@ def _load_plugins():
     _app_dir = pathlib.Path(__file__).parent
     _self    = pathlib.Path(__file__).name
     ctx = {
-        "app":              app,
-        "monitor":          monitor,
-        "hub_server":       hub_server,
-        "listen_registry":  listen_registry,
-        "login_required":   login_required,
-        "csrf_protect":     csrf_protect,
-        "BUILD":            BUILD,
+        "app":                  app,
+        "monitor":              monitor,
+        "hub_server":           hub_server,
+        "listen_registry":      listen_registry,
+        "login_required":       login_required,
+        "csrf_protect":         csrf_protect,
+        "mobile_api_required":  mobile_api_required,
+        "BUILD":                BUILD,
     }
     for py in sorted(_app_dir.glob("*.py")):
         if py.name == _self:

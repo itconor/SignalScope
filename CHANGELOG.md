@@ -2,6 +2,20 @@
 
 ---
 
+## [SignalScope 3.4.58] - 2026-03-28
+
+### Fixed
+- **Plugin ctx missing `mobile_api_required`** — `_load_plugins()` now passes `mobile_api_required` through the `ctx` dict so plugins can correctly authenticate `/api/mobile/...` routes using the app's Bearer token rather than the web session cookie.
+
+---
+
+## [Logger 1.4.20] - 2026-03-28
+
+### Fixed
+- **Mobile API routes used wrong auth decorator** — All eight `/api/mobile/logger/...` routes were decorated with `@login_req` (session-based web auth) instead of `@mobile_api_req` (Bearer-token auth). With `@login_req`: if web auth was disabled the routes were completely open; if enabled the iOS app's Bearer token was silently ignored and every request received a login-page redirect. All mobile routes now use `mobile_api_required` — requires the mobile API to be enabled in Settings and validates the token with constant-time comparison. Falls back to `login_required` on older hub versions that don't yet pass `mobile_api_required` through ctx.
+
+---
+
 ## [Logger 1.4.19] - 2026-03-28
 
 ### Added

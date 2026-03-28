@@ -4,7 +4,7 @@
 SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
 
 - **Repo**: https://github.com/itconor/SignalScope
-- **Current build string**: `BUILD = "SignalScope-3.4.45"` (increment on every release)
+- **Current build string**: `BUILD = "SignalScope-3.4.58"` (increment on every release)
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **Release flow**: bump `BUILD`, update `CHANGELOG.md`, `git commit`, `git push`, `gh release create v{version}`
 
@@ -63,9 +63,12 @@ def register(app, ctx):
 | `monitor` | AppMonitor | Access `monitor.app_cfg` (config), `monitor.log()`, etc. |
 | `hub_server` | HubServer \| None | Hub state, `_sites`, `_scanner_sessions`, etc. |
 | `listen_registry` | ListenSlotRegistry | Create/get relay slots |
-| `login_required` | decorator | Require authenticated session |
+| `login_required` | decorator | Require authenticated **web session** — use for browser-facing routes |
 | `csrf_protect` | decorator | Validate CSRF token on POST routes |
-| `BUILD` | str | e.g. `"SignalScope-3.3.79"` |
+| `mobile_api_required` | decorator | Require valid mobile API Bearer token — use for ALL `/api/mobile/...` routes |
+| `BUILD` | str | e.g. `"SignalScope-3.4.58"` |
+
+**Rule**: Any route under `/api/mobile/...` added by a plugin MUST use `ctx["mobile_api_required"]` (not `login_required`). Using `login_required` on a mobile route means: (a) if auth is disabled → no auth at all; (b) if auth is enabled → Bearer tokens are silently ignored and every call gets a login redirect. Always fall back safely: `mobile_api_req = ctx.get("mobile_api_required", ctx["login_required"])`.
 
 ### Accessing config
 ```python

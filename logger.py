@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.19",
+    "version": "1.4.20",
 }
 
 import datetime
@@ -388,11 +388,12 @@ def _hub_result_post(hub_url, secret, site, payload_dict):
 
 def register(app, ctx):
     global _monitor, _app_dir, _listen_registry
-    _monitor  = ctx["monitor"]
-    login_req = ctx["login_required"]
-    csrf_dec  = ctx["csrf_protect"]
-    _app_dir  = Path(__file__).parent
-    hub_server = ctx.get("hub_server")
+    _monitor       = ctx["monitor"]
+    login_req      = ctx["login_required"]
+    csrf_dec       = ctx["csrf_protect"]
+    mobile_api_req = ctx.get("mobile_api_required", login_req)  # Bearer-token auth for /api/mobile/*
+    _app_dir       = Path(__file__).parent
+    hub_server     = ctx.get("hub_server")
 
     _load_config()
     _init_db()
@@ -891,7 +892,7 @@ def register(app, ctx):
     # ── Mobile API (iOS app) ─────────────────────────────────────────────────
 
     @app.get("/api/mobile/logger/status")
-    @login_req
+    @mobile_api_req
     def api_mobile_logger_status():
         """Presence check — 200 if logger plugin is installed, 404 otherwise."""
         with _rec_lock:
@@ -900,7 +901,7 @@ def register(app, ctx):
         return jsonify({"installed": True, "recorders": active})
 
     @app.get("/api/mobile/logger/sites")
-    @login_req
+    @mobile_api_req
     def api_mobile_logger_sites():
         if hub_server is None:
             return jsonify({"sites": []})
@@ -909,7 +910,7 @@ def register(app, ctx):
         return jsonify({"sites": sites})
 
     @app.get("/api/mobile/logger/streams")
-    @login_req
+    @mobile_api_req
     def api_mobile_logger_streams():
         site = request.args.get("site", "").strip()
         if hub_server is not None and site:
@@ -920,7 +921,7 @@ def register(app, ctx):
         return jsonify({"streams": streams})
 
     @app.get("/api/mobile/logger/days")
-    @login_req
+    @mobile_api_req
     def api_mobile_logger_days():
         site = request.args.get("site", "").strip()
         slug = request.args.get("slug", "").strip()
@@ -944,7 +945,7 @@ def register(app, ctx):
         return jsonify({"days": days, "pending": False})
 
     @app.get("/api/mobile/logger/segments")
-    @login_req
+    @mobile_api_req
     def api_mobile_logger_segments():
         site = request.args.get("site", "").strip()
         slug = request.args.get("slug", "").strip()
@@ -967,7 +968,7 @@ def register(app, ctx):
         return jsonify({"segments": segs_list, "pending": False})
 
     @app.get("/api/mobile/logger/metadata")
-    @login_req
+    @mobile_api_req
     def api_mobile_logger_metadata():
         site = request.args.get("site", "").strip()
         slug = request.args.get("slug", "").strip()
@@ -1010,7 +1011,7 @@ def register(app, ctx):
         return jsonify({"events": events, "pending": False})
 
     @app.post("/api/mobile/logger/play")
-    @login_req
+    @mobile_api_req
     def api_mobile_logger_play():
         body     = request.get_json(force=True) or {}
         site     = str(body.get("site", "")).strip()
@@ -1051,7 +1052,7 @@ def register(app, ctx):
         })
 
     @app.post("/api/mobile/logger/stop")
-    @login_req
+    @mobile_api_req
     def api_mobile_logger_stop():
         body = request.get_json(force=True) or {}
         site = str(body.get("site", "")).strip()
