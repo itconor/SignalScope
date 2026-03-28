@@ -276,6 +276,20 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
       {% if fcm_ok %}<span class="ok">✔ FCM configured</span>{% else %}<span class="al">✘ FCM not configured</span>{% endif %}
     </div>
     <p style="font-size:12px;color:var(--mu)">This hub is acting as a push server. Other SignalScope installations should set their <strong>Push Server URL</strong> to <code style="background:#071428;padding:1px 5px;border-radius:4px">{{request.host_url.rstrip('/')}}</code> in Settings → Notifications.</p>
+    {% if migrate_available %}
+    <div style="margin-top:14px;padding:12px 14px;border:1px solid var(--wn);border-radius:8px;background:#1a1000">
+      <p style="font-size:13px;color:var(--wn);margin-bottom:10px">⬆ <strong>Existing credentials found</strong> in SignalScope Settings → Notifications. Click below to copy them here in one go — no re-typing needed.</p>
+      <form method="post" action="/hub/push/migrate" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
+        <button class="btn" style="background:var(--wn);color:#000" type="submit">⬆ Migrate from existing settings</button>
+      </form>
+    </div>
+    {% endif %}
+    {% if migrate_done %}
+    <div style="margin-top:14px;padding:10px 14px;border:1px solid var(--ok);border-radius:8px;background:#001a08;font-size:13px;color:var(--ok)">
+      ✔ Credentials migrated successfully. You can now clear the APNs/FCM fields in Settings → Notifications.
+    </div>
+    {% endif %}
   </div>
 
   <form method="post" action="/hub/push/save">
@@ -366,8 +380,41 @@ def register(app, ctx):
         fcm_ok  = bool(c.get("fcm_project_id") and c.get("fcm_service_account_json"))
         with _log_lock:
             log = list(reversed(_delivery_log))
+        # Show migrate banner if signalscope.py still has credentials not yet copied here
+        ma = getattr(monitor.app_cfg, "mobile_api", None)
+        migrate_available = bool(
+            ma and not apns_ok and not fcm_ok and (
+                getattr(ma, "apns_key_id", "") or getattr(ma, "fcm_project_id", "")
+            )
+        )
+        migrate_done = request.args.get("migrated") == "1"
         return render_template_string(_TPL, cfg=proxy, apns_ok=apns_ok,
-                                      fcm_ok=fcm_ok, log=log, version=_PLUGIN_VERSION)
+                                      fcm_ok=fcm_ok, log=log, version=_PLUGIN_VERSION,
+                                      migrate_available=migrate_available,
+                                      migrate_done=migrate_done)
+
+    @app.post("/hub/push/migrate")
+    @login_required
+    @csrf_protect
+    def push_migrate():
+        """Copy APNs/FCM credentials from the running SignalScope config into push_config.json."""
+        ma = getattr(monitor.app_cfg, "mobile_api", None)
+        if not ma:
+            return redirect("/hub/push")
+        with _cfg_lock:
+            if getattr(ma, "apns_key_id", ""):
+                _cfg["apns_key_id"]    = getattr(ma, "apns_key_id",    "")
+                _cfg["apns_team_id"]   = getattr(ma, "apns_team_id",   "")
+                _cfg["apns_bundle_id"] = getattr(ma, "apns_bundle_id", "")
+                _cfg["apns_key_pem"]   = getattr(ma, "apns_key_pem",   "")
+            if getattr(ma, "fcm_project_id", ""):
+                _cfg["fcm_project_id"]           = getattr(ma, "fcm_project_id",           "")
+                _cfg["fcm_service_account_json"] = getattr(ma, "fcm_service_account_json", "")
+            _apns_jwt_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
+            _fcm_token_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
+            _save_cfg(_cfg_path, _cfg)
+        monitor.log("[Push] Credentials migrated from SignalScope config → push_config.json")
+        return redirect("/hub/push?migrated=1")
 
     @app.post("/hub/push/save")
     @login_required
