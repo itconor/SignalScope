@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.59"
+BUILD                  = "SignalScope-3.4.60"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -15719,7 +15719,7 @@ tr:hover td{background:#123764}
     </tbody>
   </table>
   <p style="margin-top:14px;font-size:12px;color:var(--mu)">SLA resets monthly. Downtime counted when stream level is at or below the silence threshold.</p>
-</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
+</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer></body></html>"""
 
 INPUT_LIST_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Inputs</title>
 <meta name="csrf-token" content="{{csrf_token()}}">
@@ -15755,7 +15755,7 @@ tr:hover td{background:#123764}
 </tr>{% endfor %}
 </tbody></table>
 {% else %}<p style="color:#64748b;margin:24px 0">No inputs yet.</p>{% endif %}
-</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
+</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer></body></html>"""
 
 
 # ─── First-run setup wizard ───────────────────────────────────────────────────
@@ -16099,7 +16099,7 @@ kill %1<button class="copy-btn" onclick="copyCmd(this)">Copy</button></div>
 
 </div><!-- content -->
 </div><!-- layout -->
-<div style="padding:12px 24px;border-top:1px solid var(--bor);font-size:11px;color:var(--mu);background:rgba(6,18,34,.86)">SignalScope {{build}} • Broadcast Signal Intelligence</div>
+<div style="padding:12px 24px;border-top:1px solid var(--bor);font-size:11px;color:var(--mu);background:rgba(6,18,34,.86)">SignalScope {{build}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></div>
 
 <script nonce="{{csp_nonce()}}">
 var _currentStep = 0;
@@ -17312,10 +17312,124 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
 
   </div>{# /non_dab_fields #}
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/inputs">Cancel</a></div>
-</form></main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
+</form></main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer></body></html>"""
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
+
+_PRIVACY_TPL = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacy Policy — SignalScope</title>
+<style>
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);min-height:100vh;font-size:15px;line-height:1.65}
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:14px 24px;display:flex;align-items:center;gap:12px}
+header h1{font-size:18px;font-weight:700}
+header .ver{margin-left:auto;font-size:12px;color:var(--mu)}
+.wrap{max-width:780px;margin:0 auto;padding:36px 24px 60px}
+h2{font-size:17px;font-weight:700;color:var(--acc);margin:32px 0 10px;padding-top:8px;border-top:1px solid var(--bor)}
+h2:first-child{margin-top:0;border-top:none}
+p{margin:0 0 12px;color:var(--tx)}
+ul{margin:0 0 12px 20px;color:var(--tx)}
+ul li{margin-bottom:5px}
+table{width:100%;border-collapse:collapse;margin:0 0 14px;font-size:13px}
+th{text-align:left;padding:7px 10px;background:var(--sur);border:1px solid var(--bor);color:var(--acc);font-weight:600}
+td{padding:7px 10px;border:1px solid var(--bor);vertical-align:top}
+code{font-family:ui-monospace,monospace;font-size:13px;background:#071428;padding:1px 5px;border-radius:4px;color:#7dd3fc}
+strong{color:#fff}
+.note{font-size:13px;color:var(--mu);margin-top:28px;padding-top:14px;border-top:1px solid var(--bor)}
+a{color:var(--acc);text-decoration:none}
+a:hover{text-decoration:underline}
+footer{padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)}
+</style></head><body>
+<header>
+  <span style="font-size:22px">📡</span>
+  <h1>Privacy Policy — SignalScope</h1>
+  <span class="ver">Last updated: 28 March 2026</span>
+</header>
+<div class="wrap">
+
+<h2>Overview</h2>
+<p>SignalScope is a professional broadcast monitoring application for iOS. This policy explains what data the app accesses, how it is used, and your rights as a user.</p>
+<p>SignalScope connects exclusively to a SignalScope hub server that <strong>you configure and control</strong>. We do not operate any centralised servers that receive your personal data, and we do not collect, store, or share any personal information.</p>
+
+<h2>1. Data We Do Not Collect</h2>
+<p>We do <strong>not</strong> collect, store, or transmit any of the following:</p>
+<ul>
+  <li>Personal information (name, email address, phone number)</li>
+  <li>Location data</li>
+  <li>Usage analytics or crash reports sent to us</li>
+  <li>Advertising identifiers</li>
+  <li>Browsing history or cross-app tracking data</li>
+</ul>
+<p>SignalScope does <strong>not</strong> track you across apps or websites.</p>
+
+<h2>2. Data Stored Locally on Your Device</h2>
+<p>The following information is stored <strong>only on your device</strong> using iOS standard storage (UserDefaults):</p>
+<table>
+  <tr><th>Data</th><th>Purpose</th></tr>
+  <tr><td>Hub URL</td><td>The address of your SignalScope monitoring hub</td></tr>
+  <tr><td>API token</td><td>Authentication credential for your hub</td></tr>
+  <tr><td>Refresh interval</td><td>Your preferred polling frequency</td></tr>
+  <tr><td>Acknowledged faults</td><td>Which faults you have already reviewed</td></tr>
+  <tr><td>Recent fault history</td><td>A short local cache for offline display</td></tr>
+  <tr><td>Push notification token</td><td>Registered with your hub only (see below)</td></tr>
+</table>
+<p>This data never leaves your device except to communicate with <strong>the hub URL you have configured</strong>.</p>
+
+<h2>3. Communication With Your Hub</h2>
+<p>SignalScope connects to the hub server address you provide in Settings. All network requests go directly to that server. The app:</p>
+<ul>
+  <li>Polls your hub for signal status, fault events, and audio streams</li>
+  <li>Registers your device push notification token with your hub so alerts can be delivered</li>
+  <li>Downloads audio clips stored on your hub for playback</li>
+</ul>
+<p>Your hub is operated by you or your organisation, not by us. Its privacy practices are governed by your own policies.</p>
+
+<h2>4. Push Notifications</h2>
+<p>If you enable push notifications, your device token is registered with your SignalScope hub. The hub may forward alerts via Apple Push Notification service (APNs).</p>
+<ul>
+  <li>Device tokens are stored on your hub only</li>
+  <li>We do not have access to your device token</li>
+  <li>You can revoke push permissions at any time in <strong>iOS Settings → Notifications → SignalScope</strong></li>
+</ul>
+
+<h2>5. Audio Playback</h2>
+<p>SignalScope can stream and play audio from your hub (live streams and recorded clips). Audio is streamed in real time and is not retained on your device beyond the duration of playback. Temporary files used during playback are deleted automatically when playback ends.</p>
+
+<h2>6. Local Network Access</h2>
+<p>SignalScope requests access to the local network so it can connect to a SignalScope hub running on your local Wi-Fi network. No data from your local network is collected or transmitted to us.</p>
+
+<h2>7. Widgets and Live Activities</h2>
+<p>The SignalScope widget and Live Activity features display fault and signal status information sourced from your hub. This information is stored in a shared App Group container accessible only to SignalScope and its extensions on your device.</p>
+
+<h2>8. Third-Party Services</h2>
+<p>SignalScope does not integrate with any third-party analytics, advertising, or tracking SDKs. The app uses only Apple's standard system frameworks (AVFoundation, UserNotifications, ActivityKit, Charts) to provide its core functionality.</p>
+
+<h2>9. Children's Privacy</h2>
+<p>SignalScope is a professional tool intended for use by broadcast engineers. It is not directed at children under 13, and we do not knowingly collect information from children.</p>
+
+<h2>10. Changes to This Policy</h2>
+<p>If we make material changes to this policy we will update the "Last updated" date at the top of this page.</p>
+
+<h2>11. Contact</h2>
+<p>If you have questions about this privacy policy, please contact:<br>
+<strong>Conor Ewings</strong><br>
+Email: <a href="mailto:conor@signalscope.site">conor@signalscope.site</a><br>
+Website: <a href="https://signalscope.site" target="_blank">https://signalscope.site</a></p>
+
+<p class="note">SignalScope is developed independently. This privacy policy applies to the iOS application "SignalScope" available on the Apple App Store and to the SignalScope hub server software.</p>
+</div>
+<footer>SignalScope • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer>
+</body></html>"""
+
+
+@app.get("/privacy")
+def privacy_policy():
+    """Public privacy policy page — no login required."""
+    return _PRIVACY_TPL
+
 
 @app.get("/")
 @login_required
@@ -22116,7 +22230,7 @@ var _chainData={
 </div>
 
 </main>
-<footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope • Broadcast Signal Intelligence</footer>
+<footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer>
 
 <script nonce="{{csp_nonce()}}">
 var _csrf=(document.cookie.match(/csrf_token=([^;]+)/)||[])[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
@@ -28205,7 +28319,7 @@ document.addEventListener('click',function(e){
 // Auto-load timelines after a short delay (let page render first)
 setTimeout(_tlLoadAll, 600);
 </script>
-<footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build}} • Broadcast Signal Intelligence</footer>
+<footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer>
 </body></html>"""
 
 HUB_WALL_TPL = r"""<!DOCTYPE html>
@@ -29848,7 +29962,7 @@ setInterval(_loadTrends, 300000);
 {% endfor %}
 </div>
 {% endif %}
-</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence</footer></body></html>"""
+</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer></body></html>"""
 
 # ─── Error handlers ──────────────────────────────────────────────────────────
 

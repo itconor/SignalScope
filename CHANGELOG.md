@@ -2,6 +2,14 @@
 
 ---
 
+## [SignalScope 3.4.60] - 2026-03-28
+
+### Added
+- Public `/privacy` route — privacy policy page served without login, styled to match the SignalScope UI. Use `https://your-hub/privacy` as the App Store privacy policy URL.
+- Privacy Policy link added to all page footers.
+
+---
+
 ## [SignalScope 3.4.58] - 2026-03-28
 
 ### Fixed
