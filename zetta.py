@@ -18,6 +18,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
+    "version":  "1.0.1",
 }
 
 import json
@@ -480,11 +481,16 @@ function _stRow(id,name){
   var d=document.createElement('div');d.className='st-row';
   d.innerHTML='<input class="st-id"   placeholder="Station ID"   value="'+_esc(id||'')+'" style="max-width:110px">'
              +'<input class="st-name" placeholder="Friendly name" value="'+_esc(name||'')+'">'
-             +'<button class="btn br" onclick="this.closest(\'.st-row\').remove()">&#x2715;</button>';
+             +'<button class="btn br st-rm-btn">&#x2715;</button>';
   return d;
 }
 document.getElementById('btn-add-station').addEventListener('click',function(){
   document.getElementById('stations-list').appendChild(_stRow('',''));
+});
+// Delegated listener for remove buttons (avoids CSP-blocked onclick attributes)
+document.getElementById('stations-list').addEventListener('click',function(e){
+  var btn=e.target.closest('.st-rm-btn');
+  if(btn) btn.closest('.st-row').remove();
 });
 
 // ── Save settings ─────────────────────────────────────────────────────────────
@@ -514,7 +520,7 @@ document.getElementById('btn-save').addEventListener('click',function(){
 // ── Discover stations ─────────────────────────────────────────────────────────
 document.getElementById('btn-discover').addEventListener('click',function(){
   var url=document.getElementById('cfg-url').value.trim();
-  if(!url){alert('Enter the SOAP URL first.');return;}
+  if(!url){_msg('msg','Enter the Zetta SOAP URL first.','var(--wa)');return;}
   _msg('msg','Querying Zetta for station list…');
   _f('/api/zetta/discover',{method:'POST',body:JSON.stringify({url:url})})
     .then(function(r){return r.json();})
@@ -533,7 +539,7 @@ document.getElementById('btn-discover').addEventListener('click',function(){
 // ── Test connection ───────────────────────────────────────────────────────────
 document.getElementById('btn-test').addEventListener('click',function(){
   var url=document.getElementById('cfg-url').value.trim();
-  if(!url){alert('Enter the SOAP URL first.');return;}
+  if(!url){_msg('msg','Enter the Zetta SOAP URL first.','var(--wa)');return;}
   _msg('msg','Testing…');
   _f('/api/zetta/test',{method:'POST',body:JSON.stringify({url:url})})
     .then(function(r){return r.json();})
@@ -548,7 +554,8 @@ document.getElementById('btn-dbg-call').addEventListener('click',function(){
   var url=document.getElementById('dbg-url').value.trim()||document.getElementById('cfg-url').value.trim();
   var method=document.getElementById('dbg-method').value.trim();
   var body=document.getElementById('dbg-body').value.trim();
-  if(!url||!method){alert('URL and method are required.');return;}
+  if(!url){_msg('dbg-msg','Enter a Service URL (or fill in the Settings URL).','var(--wa)');return;}
+  if(!method){_msg('dbg-msg','Enter a SOAP Method name.','var(--wa)');return;}
   _msg('dbg-msg','Calling '+method+'…');
   document.getElementById('dbg-response').value='';
   _f('/api/zetta/debug',{method:'POST',body:JSON.stringify({url:url,method:method,body:body})})
@@ -567,22 +574,27 @@ document.getElementById('btn-dbg-call').addEventListener('click',function(){
 // ── Debug — list WSDL methods ─────────────────────────────────────────────────
 document.getElementById('btn-dbg-wsdl').addEventListener('click',function(){
   var url=document.getElementById('dbg-url').value.trim()||document.getElementById('cfg-url').value.trim();
-  if(!url){alert('Enter the URL first.');return;}
+  if(!url){_msg('dbg-msg','Enter a Service URL (or fill in the Settings URL).','var(--wa)');return;}
   _msg('dbg-msg','Fetching WSDL…');
   document.getElementById('dbg-methods').innerHTML='';
   _f('/api/zetta/wsdl_methods',{method:'POST',body:JSON.stringify({url:url})})
     .then(function(r){return r.json();})
     .then(function(d){
       if(d.methods&&d.methods.length){
-        _msg('dbg-msg','Namespace: '+d.namespace+'   ('+d.methods.length+' operations)','var(--ok)');
+        _msg('dbg-msg','Namespace: '+d.namespace+'   ('+d.methods.length+' operations — click one to use it)','var(--ok)');
         document.getElementById('dbg-methods').innerHTML=
           '<div class="methods-list">'+d.methods.map(function(m){
-            return '<span style="cursor:pointer;color:var(--ac)" onclick="document.getElementById(\'dbg-method\').value=\''+_esc(m)+'\'">'+_esc(m)+'</span>';
+            return '<span class="wsdl-method" data-method="'+_esc(m)+'" style="cursor:pointer;color:var(--ac)">'+_esc(m)+'</span>';
           }).join('<br>')+'</div>';
       } else {
         _msg('dbg-msg',d.error||'No operations found in WSDL.','var(--wa)');
       }
     }).catch(function(e){_msg('dbg-msg',''+e,'var(--al)');});
+});
+// Delegated click — select a WSDL method into the method input
+document.getElementById('dbg-methods').addEventListener('click',function(e){
+  var sp=e.target.closest('.wsdl-method');
+  if(sp) document.getElementById('dbg-method').value=sp.dataset.method;
 });
 
 // ── Now playing cards ─────────────────────────────────────────────────────────
@@ -672,6 +684,7 @@ def register(app, ctx):
     @login_required
     def zetta_page():
         from flask import render_template_string
+        from markupsafe import Markup
         with _cfg_lock:
             url       = _zetta_cfg.get("url", "")
             interval  = _zetta_cfg.get("poll_interval", 10)
@@ -695,7 +708,7 @@ def register(app, ctx):
         return render_template_string(
             _PAGE_TPL,
             url=url, interval=interval, timeout=timeout,
-            spot_cats=spot_cats, stations_html=rows,
+            spot_cats=spot_cats, stations_html=Markup(rows),
         )
 
     # ── Status API ────────────────────────────────────────────────────────────
