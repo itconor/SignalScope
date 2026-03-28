@@ -59,5 +59,25 @@
     "version": "1.0.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/zetta.py"
+  },
+  {
+    "id": "morning_report",
+    "name": "Morning Report",
+    "file": "morning_report.py",
+    "icon": "📰",
+    "description": "Daily morning briefing for broadcast engineers. Auto-generates at 06:00 (configurable) covering the previous calendar day: at-a-glance fault summary, per-chain health table, hourly fault heatmap, auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks), and stream quality summary. Hub-only.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/morning_report.py"
+  },
+  {
+    "id": "latency",
+    "name": "Signal Path Latency",
+    "file": "latency.py",
+    "icon": "⏱",
+    "description": "Signal path latency tracking for broadcast chains. Polls all connected sites for comparator delay measurements every 30 seconds, stores 90 days of history in SQLite, and computes rolling baselines. Displays per-comparator SVG sparklines, stable/drifting/alert status badges, and configurable alert thresholds per comparator pair. Hub-only.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/latency.py"
   }
 ]
