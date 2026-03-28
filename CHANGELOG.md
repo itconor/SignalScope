@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.9] - 2026-03-28
+
+### Fixed
+- **Logger — zoom/expand now applies to the overview (day-bar + bands), not the hour grid** — 1.4.8 incorrectly put the hour grid inside the horizontal-scroll zoom container, so zooming moved the "bottom table with times" rather than the top overview area. The hour grid is now always fixed-width and unaffected by zoom. The zoom and expand controls affect only the day-bar overview, show band, mic band, and track band. Expand also grows the day-bar height from 30 px to 80 px. A thin separator divides the zoomed overview from the fixed hour grid below.
+
+---
+
 ## [Logger 1.4.8] - 2026-03-28
 
 ### Added

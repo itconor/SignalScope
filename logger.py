@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.8",
+    "version": "1.4.9",
 }
 
 import datetime
@@ -1840,14 +1840,16 @@ select:focus,input:focus{border-color:var(--acc)}
 /* Horizontal scroll wrapper for zoomed grid */
 .tl-scroll-wrap{overflow-x:auto;overflow-y:visible;margin:0 -1px;padding:0 1px}
 #tl-zoom-content{min-width:100%;width:100%;transition:width .22s}
-/* Expanded row heights */
-.tl-wrap.tl-exp .tl-block{height:40px}
+/* Expanded heights — day-bar grows, bands grow, hour grid stays the same */
+.tl-wrap.tl-exp .day-bar{height:80px}
 .tl-wrap.tl-exp #show-band{height:30px}
 .tl-wrap.tl-exp .show-span{height:28px;font-size:11px}
 .tl-wrap.tl-exp #track-band{height:30px}
 .tl-wrap.tl-exp .track-span{height:28px;font-size:11px}
 .tl-wrap.tl-exp #mic-band{height:22px}
 .tl-wrap.tl-exp .mic-span{height:20px}
+/* Separator between zoomed overview and the hour grid */
+#tl-grid{margin-top:8px;padding-top:6px;border-top:1px solid var(--bor)}
 /* Day bar */
 .day-bar{width:100%;height:30px;position:relative;background:#0a1828;border-radius:6px;overflow:hidden;cursor:pointer;margin-bottom:12px;flex-shrink:0;border:1px solid var(--bor);user-select:none}
 .day-bar-bg{display:flex;height:100%;width:100%}
@@ -2017,9 +2019,9 @@ select:focus,input:focus{border-color:var(--acc)}
             <div id="show-band"></div>
             <div id="mic-band"></div>
             <div id="track-band"></div>
-            <div id="tl-grid" class="tl-grid"></div>
           </div>
         </div>
+        <div id="tl-grid" class="tl-grid"></div>
       </div>
 
       <div class="player">
