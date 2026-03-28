@@ -16,10 +16,11 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/push",
     "icon":     "📡",
     "hub_only": True,
+    "version":  "1.0.1",
 }
 
 # ─── plugin version ───────────────────────────────────────────────────────────
-_PLUGIN_VERSION = "1.0.0"
+_PLUGIN_VERSION = "1.0.1"
 
 import json as _json
 import os as _os
