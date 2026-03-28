@@ -279,10 +279,7 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
     {% if migrate_available %}
     <div style="margin-top:14px;padding:12px 14px;border:1px solid var(--wn);border-radius:8px;background:#1a1000">
       <p style="font-size:13px;color:var(--wn);margin-bottom:10px">⬆ <strong>Existing credentials found</strong> in SignalScope Settings → Notifications. Click below to copy them here in one go — no re-typing needed.</p>
-      <form method="post" action="/hub/push/migrate" style="display:inline">
-        <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
-        <button class="btn" style="background:var(--wn);color:#000" type="submit">⬆ Migrate from existing settings</button>
-      </form>
+      <button class="btn" style="background:var(--wn);color:#000" onclick="doMigrate()">⬆ Migrate from existing settings</button>
     </div>
     {% endif %}
     {% if migrate_done %}
@@ -335,6 +332,15 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
   </div>
 
 </div>
+<script nonce="{{csp_nonce()}}">
+function doMigrate(){
+  var tok=(document.querySelector('meta[name="csrf-token"]')||{}).content
+         ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+  fetch('/hub/push/migrate',{method:'POST',headers:{'X-CSRFToken':tok,'Content-Type':'application/json'},body:'{}',credentials:'same-origin'})
+    .then(function(r){if(r.ok)window.location='/hub/push?migrated=1';else r.text().then(function(t){alert('Migration failed: '+t);});})
+    .catch(function(e){alert('Migration error: '+e);});
+}
+</script>
 </body></html>"""
 
 
@@ -400,7 +406,7 @@ def register(app, ctx):
         """Copy APNs/FCM credentials from the running SignalScope config into push_config.json."""
         ma = getattr(monitor.app_cfg, "mobile_api", None)
         if not ma:
-            return redirect("/hub/push")
+            return jsonify({"ok": False, "error": "no config"}), 500
         with _cfg_lock:
             if getattr(ma, "apns_key_id", ""):
                 _cfg["apns_key_id"]    = getattr(ma, "apns_key_id",    "")
@@ -414,7 +420,7 @@ def register(app, ctx):
             _fcm_token_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
             _save_cfg(_cfg_path, _cfg)
         monitor.log("[Push] Credentials migrated from SignalScope config → push_config.json")
-        return redirect("/hub/push?migrated=1")
+        return jsonify({"ok": True})
 
     @app.post("/hub/push/save")
     @login_required
