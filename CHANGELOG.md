@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.48] - 2026-03-28
+
+### Added
+- **Logger 1.2.0 — Hub remote playback** — When the logger plugin is installed on a hub, the Logger page now aggregates recorded streams from every connected client site. A "Site" selector appears above the stream picker; choosing a remote site loads its available days and segment timeline. Playback relays audio from the client to the hub using the existing PCM relay infrastructure — the full timeline UI (day bar, mark in/out, export) works identically for remote streams. Client nodes with the logger installed register their stream list with the hub on startup and respond to metadata and playback commands via the standard client-polls-hub pattern, requiring no direct hub→client connections.
+
+---
+
 ## [3.4.47] - 2026-03-28
 
 ### Changed

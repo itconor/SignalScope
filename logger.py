@@ -6,10 +6,12 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.1.0",
+    "version": "1.2.0",
 }
 
 import datetime
+import hashlib as _hashlib
+import hmac as _hmac_mod
 import json
 import os
 import re
@@ -19,6 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.request as _urllib_req
 from pathlib import Path
 
 from flask import abort, jsonify, render_template_string, request, Response, send_file
@@ -36,8 +39,9 @@ _REC_DIR       = "logger_recordings"
 _DB_FILE       = "logger_index.db"
 
 # ─── Module state ─────────────────────────────────────────────────────────────
-_monitor   = None
-_app_dir   = None
+_monitor        = None
+_app_dir        = None
+_listen_registry = None   # set in register() on hub nodes
 
 
 def _rec_root() -> Path:
@@ -58,17 +62,224 @@ _cfg_lock  = threading.Lock()
 _recorders = {}   # slug → _RecorderThread
 _rec_lock  = threading.Lock()
 
+# ─── Hub aggregation state (hub-only) ────────────────────────────────────────
+_hub_logger_streams  = {}   # site → [{"slug":..., "name":...}]
+_hub_logger_pending  = {}   # site → pending cmd dict or None
+_hub_logger_days     = {}   # "{site}:{slug}" → [date_str, ...]
+_hub_logger_segs     = {}   # "{site}:{slug}:{date}" → [seg_dict, ...]
+_hub_logger_active   = {}   # site → current play slot_id
+_hub_logger_lock     = threading.Lock()
+
+
+# ─── HMAC signing helpers ─────────────────────────────────────────────────────
+
+def _make_sig(secret: str, data: bytes, ts: float) -> str:
+    key = _hashlib.sha256(f"{secret}:signing".encode()).digest()
+    msg = f"{ts:.0f}:".encode() + data
+    return _hmac_mod.new(key, msg, _hashlib.sha256).hexdigest()
+
+
+def _check_sig(secret: str, data: bytes) -> bool:
+    """Verify X-Hub-Sig header on incoming client request. Returns True if no secret configured."""
+    if not secret:
+        return True
+    sig   = request.headers.get("X-Hub-Sig", "")
+    ts_h  = request.headers.get("X-Hub-Ts", "0")
+    if not sig:
+        return False
+    try:
+        ts = float(ts_h)
+    except ValueError:
+        return False
+    if abs(time.time() - ts) > 120:
+        return False
+    expected = _make_sig(secret, data, ts)
+    return _hmac_mod.compare_digest(sig, expected)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CLIENT → HUB: AUDIO PUSH & POLLER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
+    """Push PCM audio to a hub relay slot by transcoding a recorded segment with ffmpeg."""
+    path = _rec_root() / _safe(slug) / date / filename
+    if not path.exists():
+        _log(f"[Logger] _push_audio_to_relay: file not found: {path}")
+        return
+
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
+           "-ss", str(seek_s), "-i", str(path),
+           "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1"]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        _log(f"[Logger] _push_audio_to_relay: ffmpeg launch failed: {e}")
+        return
+
+    secret = (getattr(cfg.hub, "secret_key", None) or "").strip()
+    chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
+
+    try:
+        while True:
+            chunk = proc.stdout.read(9600)
+            if not chunk:
+                break
+            ts  = time.time()
+            headers = {"Content-Type": "application/octet-stream"}
+            if secret:
+                sig   = _make_sig(secret, chunk, ts)
+                nonce = _hashlib.md5(os.urandom(8)).hexdigest()[:16]
+                headers["X-Hub-Sig"]   = sig
+                headers["X-Hub-Ts"]    = f"{ts:.0f}"
+                headers["X-Hub-Nonce"] = nonce
+            req = _urllib_req.Request(chunk_url, data=chunk, method="POST", headers=headers)
+            try:
+                _urllib_req.urlopen(req, timeout=5).close()
+            except Exception as e:
+                err_str = str(e)
+                if "404" in err_str or "HTTP Error 404" in err_str:
+                    break   # slot closed
+                _log(f"[Logger] _push_audio_to_relay: chunk POST failed: {e}")
+                break
+    finally:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _hub_logger_poller():
+    """Background thread: registers local streams with the hub and handles playback commands."""
+    _registered_ts = 0.0
+
+    while True:
+        try:
+            cfg = _monitor.app_cfg if _monitor else None
+            if cfg is None:
+                time.sleep(5)
+                continue
+
+            hub_url = (getattr(cfg.hub, "hub_url", None) or "").strip().rstrip("/")
+            site    = (getattr(cfg.hub, "site_name", None) or "").strip()
+            secret  = (getattr(cfg.hub, "secret_key", None) or "").strip()
+
+            if not hub_url or not site:
+                time.sleep(10)
+                continue
+
+            now = time.time()
+
+            # ── Registration (every 60 s) ───────────────────────────────────
+            if now - _registered_ts >= 60:
+                try:
+                    streams = [{"slug": s["slug"], "name": s["name"]}
+                               for s in _available_streams()]
+                    payload = json.dumps({"site": site, "streams": streams}).encode()
+                    ts      = time.time()
+                    headers = {"Content-Type": "application/json"}
+                    if secret:
+                        headers["X-Hub-Sig"]   = _make_sig(secret, payload, ts)
+                        headers["X-Hub-Ts"]    = f"{ts:.0f}"
+                        headers["X-Hub-Nonce"] = _hashlib.md5(os.urandom(8)).hexdigest()[:16]
+                    req = _urllib_req.Request(
+                        f"{hub_url}/api/logger/hub/register",
+                        data=payload, method="POST", headers=headers)
+                    _urllib_req.urlopen(req, timeout=10).close()
+                    _registered_ts = time.time()
+                except Exception as e:
+                    _log(f"[Logger] Hub registration failed: {e}")
+
+            # ── Command poll (every 3 s) ────────────────────────────────────
+            try:
+                ts      = time.time()
+                headers = {}
+                if secret:
+                    headers["X-Hub-Sig"]   = _make_sig(secret, b"", ts)
+                    headers["X-Hub-Ts"]    = f"{ts:.0f}"
+                    headers["X-Hub-Nonce"] = _hashlib.md5(os.urandom(8)).hexdigest()[:16]
+                req = _urllib_req.Request(
+                    f"{hub_url}/api/logger/hub/poll/{site}",
+                    method="GET", headers=headers)
+                resp = _urllib_req.urlopen(req, timeout=10)
+                data = json.loads(resp.read())
+                resp.close()
+
+                cmd = data.get("cmd")
+                if cmd:
+                    ctype = cmd.get("type", "")
+
+                    if ctype == "days":
+                        slug = cmd.get("slug", "")
+                        sdir = _rec_root() / _safe(slug)
+                        if sdir.exists():
+                            days = sorted(
+                                [d.name for d in sdir.iterdir()
+                                 if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d.name)],
+                                reverse=True)
+                        else:
+                            days = []
+                        _hub_result_post(hub_url, secret, site,
+                                         {"site": site, "type": "days", "slug": slug, "days": days})
+
+                    elif ctype == "segments":
+                        slug = cmd.get("slug", "")
+                        date = cmd.get("date", "")
+                        segs = _get_segments(_safe(slug), date) if slug and date else []
+                        _hub_result_post(hub_url, secret, site,
+                                         {"site": site, "type": "segments",
+                                          "slug": slug, "date": date, "segments": segs})
+
+                    elif ctype == "play":
+                        slot_id  = cmd.get("slot_id", "")
+                        slug     = cmd.get("slug", "")
+                        date     = cmd.get("date", "")
+                        filename = cmd.get("filename", "")
+                        seek_s   = float(cmd.get("seek_s", 0))
+                        threading.Thread(
+                            target=_push_audio_to_relay,
+                            args=(hub_url, slot_id, slug, date, filename, seek_s, cfg),
+                            daemon=True, name="LoggerAudioPush").start()
+
+            except Exception as e:
+                _log(f"[Logger] Hub poll failed: {e}")
+
+        except Exception as e:
+            _log(f"[Logger] Hub poller error: {e}")
+
+        time.sleep(3)
+
+
+def _hub_result_post(hub_url, secret, site, payload_dict):
+    """POST a result back to the hub."""
+    payload = json.dumps(payload_dict).encode()
+    ts      = time.time()
+    headers = {"Content-Type": "application/json"}
+    if secret:
+        headers["X-Hub-Sig"]   = _make_sig(secret, payload, ts)
+        headers["X-Hub-Ts"]    = f"{ts:.0f}"
+        headers["X-Hub-Nonce"] = _hashlib.md5(os.urandom(8)).hexdigest()[:16]
+    req = _urllib_req.Request(
+        f"{hub_url}/api/logger/hub/result",
+        data=payload, method="POST", headers=headers)
+    try:
+        _urllib_req.urlopen(req, timeout=10).close()
+    except Exception as e:
+        _log(f"[Logger] Hub result POST failed: {e}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  REGISTRATION
 # ─────────────────────────────────────────────────────────────────────────────
 
 def register(app, ctx):
-    global _monitor, _app_dir
+    global _monitor, _app_dir, _listen_registry
     _monitor  = ctx["monitor"]
     login_req = ctx["login_required"]
     csrf_dec  = ctx["csrf_protect"]
     _app_dir  = Path(__file__).parent
+    hub_server = ctx.get("hub_server")
 
     _load_config()
     _init_db()
@@ -76,6 +287,12 @@ def register(app, ctx):
 
     threading.Thread(target=_delayed_start, daemon=True, name="LoggerInit").start()
     threading.Thread(target=_maintenance_loop, daemon=True, name="LoggerMaint").start()
+
+    # Start hub poller on client nodes (also started unconditionally — checks hub_url each loop)
+    threading.Thread(target=_hub_logger_poller, daemon=True, name="LoggerHubPoller").start()
+
+    if hub_server is not None:
+        _listen_registry = ctx["listen_registry"]
 
     @app.route("/hub/logger")
     @login_req
@@ -169,6 +386,142 @@ def register(app, ctx):
         if not path.exists():
             abort(404)
         return _serve_ranged(path, "audio/mpeg")
+
+    # ── Hub aggregation routes (registered on hub nodes only) ─────────────────
+    if hub_server is not None:
+
+        @app.post("/api/logger/hub/register")
+        def api_logger_hub_register():
+            data  = request.get_data()
+            secret = (_monitor.app_cfg.hub.secret_key or "").strip() if _monitor else ""
+            if not _check_sig(secret, data):
+                return jsonify({"error": "forbidden"}), 403
+            body  = json.loads(data) if data else {}
+            site  = str(body.get("site", "")).strip()
+            streams = body.get("streams", [])
+            if not site:
+                return jsonify({"error": "no site"}), 400
+            with _hub_logger_lock:
+                _hub_logger_streams[site] = streams
+            return jsonify({"ok": True})
+
+        @app.get("/api/logger/hub/poll/<path:site>")
+        def api_logger_hub_poll(site):
+            secret = (_monitor.app_cfg.hub.secret_key or "").strip() if _monitor else ""
+            if not _check_sig(secret, b""):
+                return jsonify({"error": "forbidden"}), 403
+            with _hub_logger_lock:
+                cmd = _hub_logger_pending.pop(site, None)
+            if cmd:
+                return jsonify({"cmd": cmd})
+            return jsonify({})
+
+        @app.post("/api/logger/hub/result")
+        def api_logger_hub_result():
+            data   = request.get_data()
+            secret = (_monitor.app_cfg.hub.secret_key or "").strip() if _monitor else ""
+            if not _check_sig(secret, data):
+                return jsonify({"error": "forbidden"}), 403
+            body   = json.loads(data) if data else {}
+            site   = str(body.get("site", "")).strip()
+            rtype  = str(body.get("type", "")).strip()
+            slug   = str(body.get("slug", "")).strip()
+            date   = str(body.get("date", "")).strip()
+            with _hub_logger_lock:
+                if rtype == "days":
+                    _hub_logger_days[f"{site}:{slug}"] = body.get("days", [])
+                elif rtype == "segments":
+                    _hub_logger_segs[f"{site}:{slug}:{date}"] = body.get("segments", [])
+            return jsonify({"ok": True})
+
+        @app.get("/api/logger/hub/sites")
+        @login_req
+        def api_logger_hub_sites():
+            with _hub_logger_lock:
+                sites = list(_hub_logger_streams.keys())
+            return jsonify(sites)
+
+        @app.get("/api/logger/hub/streams/<path:site>")
+        @login_req
+        def api_logger_hub_streams(site):
+            with _hub_logger_lock:
+                streams = _hub_logger_streams.get(site, [])
+            return jsonify(streams)
+
+        @app.get("/api/logger/hub/days/<path:site_slug>")
+        @login_req
+        def api_logger_hub_days(site_slug):
+            # site_slug is "site/slug" — split on first "/"
+            parts = site_slug.split("/", 1)
+            if len(parts) != 2:
+                return jsonify({"error": "bad path"}), 400
+            site, slug = parts
+            key = f"{site}:{slug}"
+            with _hub_logger_lock:
+                if key in _hub_logger_days:
+                    return jsonify(_hub_logger_days[key])
+                _hub_logger_pending[site] = {"type": "days", "slug": slug}
+            return jsonify({"pending": True})
+
+        @app.get("/api/logger/hub/segments/<path:site_slug_date>")
+        @login_req
+        def api_logger_hub_segments(site_slug_date):
+            # path is "site/slug/date" — rsplit to get date, then site/slug
+            parts = site_slug_date.rsplit("/", 2)
+            if len(parts) != 3:
+                return jsonify({"error": "bad path"}), 400
+            site, slug, date = parts
+            key = f"{site}:{slug}:{date}"
+            with _hub_logger_lock:
+                if key in _hub_logger_segs:
+                    return jsonify(_hub_logger_segs[key])
+                _hub_logger_pending[site] = {"type": "segments", "slug": slug, "date": date}
+            return jsonify({"pending": True})
+
+        @app.post("/api/logger/hub/play")
+        @login_req
+        @csrf_dec
+        def api_logger_hub_play():
+            body     = request.get_json(force=True) or {}
+            site     = str(body.get("site", "")).strip()
+            slug     = str(body.get("slug", "")).strip()
+            date     = str(body.get("date", "")).strip()
+            filename = str(body.get("filename", "")).strip()
+            seek_s   = float(body.get("seek_s", 0))
+            if not all([site, slug, date, filename]):
+                return jsonify({"error": "missing fields"}), 400
+            # Cancel existing slot for this site if any
+            with _hub_logger_lock:
+                old_id = _hub_logger_active.get(site)
+            if old_id and _listen_registry:
+                try:
+                    old_slot = _listen_registry.get(old_id)
+                    if old_slot:
+                        old_slot.closed = True
+                except Exception:
+                    pass
+            # Create new slot
+            if not _listen_registry:
+                return jsonify({"error": "no listen_registry"}), 500
+            slot = _listen_registry.create(
+                site, 0, kind="scanner", mimetype="application/octet-stream")
+            with _hub_logger_lock:
+                _hub_logger_active[site] = slot.slot_id
+                _hub_logger_pending[site] = {
+                    "type": "play",
+                    "slot_id": slot.slot_id,
+                    "slug": slug,
+                    "date": date,
+                    "filename": filename,
+                    "seek_s": seek_s,
+                }
+            return jsonify({
+                "ok": True,
+                "slot_id": slot.slot_id,
+                "stream_url": f"/hub/scanner/stream/{slot.slot_id}",
+            })
+
+    # ── Regular logger routes ─────────────────────────────────────────────────
 
     @app.post("/api/logger/export")
     @login_req
@@ -927,6 +1280,10 @@ select:focus,input:focus{border-color:var(--acc)}
 
     <!-- Stream + date controls (shown in timeline mode) -->
     <div class="ctrl-panel" id="ctrl-panel">
+      <div id="hub-site-row" style="display:none">
+        <div class="slbl">Site</div>
+        <select id="site-sel"></select>
+      </div>
       <div>
         <div class="slbl">Stream</div>
         <select id="stream-sel">
@@ -1064,6 +1421,47 @@ var _markOut     = null;
 var _scrubDrag   = false;
 var _cfg         = {streams:{}};
 
+// ── Hub mode state ─────────────────────────────────────────────────────────
+var _hubSite       = '';   // empty = local mode, non-empty = hub mode
+var _hubPlayStart  = null;
+var _hubPlayOffset = 0;
+
+// ── PCM audio pump (for hub mode playback) ─────────────────────────────────
+var _audioCtx=null,_gainNode=null,_pcmReader=null,_nextTime=0;
+var _pcmBuf=new Uint8Array(0);
+var _SR=48000,_BLK_S=4800,_BLK_B=9600,_PRE=1.0;
+function _initAudio(){
+  if(_audioCtx)return;
+  _audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:_SR});
+  _gainNode=_audioCtx.createGain(); _gainNode.connect(_audioCtx.destination);
+}
+function connectAudio(url){
+  if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
+  _pcmBuf=new Uint8Array(0);
+  _initAudio(); if(_audioCtx.state==='suspended')_audioCtx.resume();
+  _nextTime=_audioCtx.currentTime+_PRE;
+  fetch(url,{credentials:'same-origin'}).then(function(r){
+    _pcmReader=r.body.getReader();
+    (function pump(){_pcmReader.read().then(function(d){
+      if(d.done||!_pcmReader)return;
+      var tmp=new Uint8Array(_pcmBuf.length+d.value.length);
+      tmp.set(_pcmBuf);tmp.set(d.value,_pcmBuf.length);_pcmBuf=tmp;
+      while(_pcmBuf.length>=_BLK_B){
+        var blk=_pcmBuf.slice(0,_BLK_B);_pcmBuf=_pcmBuf.slice(_BLK_B);
+        var buf=_audioCtx.createBuffer(1,_BLK_S,_SR);
+        var ch=buf.getChannelData(0);
+        var dv=new DataView(blk.buffer,blk.byteOffset,blk.byteLength);
+        for(var i=0;i<_BLK_S;i++)ch[i]=dv.getInt16(i*2,true)/32768.0;
+        var src=_audioCtx.createBufferSource();
+        src.buffer=buf;src.connect(_gainNode);
+        var t=Math.max(_nextTime,_audioCtx.currentTime+0.05);
+        src.start(t);_nextTime=t+buf.duration;
+      }
+      pump();
+    });})();
+  });
+}
+
 // ── Tab switching ─────────────────────────────────────────────────────────
 function showTab(tab){
   var isTimeline = tab==='timeline';
@@ -1093,11 +1491,92 @@ loadStreams();
 loadStatus();
 setInterval(loadStatus, 10000);
 setupAudio();
+checkHubMode();
+// Hub playback time tracking interval
+setInterval(function(){
+  if(!_hubSite || !_hubPlayStart || !_selSeg) return;
+  var wallPos = _hubPlayOffset + (Date.now() - _hubPlayStart) / 1000;
+  document.getElementById('time-lbl').textContent = _fmtWall(wallPos);
+  var dbh = document.getElementById('day-bar-head');
+  dbh.style.left = (wallPos / 86400 * 100) + '%';
+  dbh.classList.remove('hidden');
+  // Update scrub fill using segment duration
+  var segDur = _SEG_SECS;
+  var elapsed = wallPos - _selSeg.start_s;
+  var pct = Math.max(0, Math.min(100, elapsed / segDur * 100));
+  document.getElementById('scrub-fill').style.width = pct + '%';
+  document.getElementById('scrub-thumb').style.left  = pct + '%';
+  updateScrubMarkers();
+}, 200);
+
+// ── Hub mode ───────────────────────────────────────────────────────────────
+function checkHubMode(){
+  _get('/api/logger/hub/sites').then(function(sites){
+    if(!Array.isArray(sites) || !sites.length) return;
+    // Hub mode: show the site selector
+    document.getElementById('hub-site-row').style.display = '';
+    var siteSel = document.getElementById('site-sel');
+    siteSel.innerHTML = '<option value="">— all local —</option>';
+    sites.forEach(function(s){
+      var o = document.createElement('option');
+      o.value = s; o.textContent = s; siteSel.appendChild(o);
+    });
+  }).catch(function(){});
+}
+
+document.getElementById('site-sel').addEventListener('change', function(){
+  _hubSite = this.value;
+  _hubPlayStart = null;
+  _currentSlug = ''; _selSeg = null; _segsAll = []; _markIn = _markOut = null;
+  updateInOutLabel();
+  document.getElementById('export-btn').disabled = true;
+  document.getElementById('day-bar-head').classList.add('hidden');
+  buildDayBar([]);
+  buildTimeline([]);
+  document.getElementById('day-list').innerHTML = '';
+  if(_hubSite){
+    // Load streams for selected site
+    _get('/api/logger/hub/streams/' + encodeURIComponent(_hubSite)).then(function(streams){
+      var sel = document.getElementById('stream-sel');
+      sel.innerHTML = '<option value="">— select stream —</option>';
+      streams.forEach(function(s){
+        var o = document.createElement('option');
+        o.value = s.slug;
+        o.textContent = '[' + _hubSite + '] ' + s.name;
+        sel.appendChild(o);
+      });
+    });
+  } else {
+    loadStreams();
+  }
+});
+
+// ── API wrappers (local vs hub mode) ──────────────────────────────────────
+function apiDays(slug, cb){
+  if(!_hubSite){ _get('/api/logger/days/'+slug).then(cb); return; }
+  function tryFetch(){
+    _get('/api/logger/hub/days/'+encodeURIComponent(_hubSite)+'/'+slug).then(function(d){
+      if(d && d.pending){ setTimeout(tryFetch, 2000); } else { cb(d); }
+    }).catch(function(){ setTimeout(tryFetch, 3000); });
+  }
+  tryFetch();
+}
+
+function apiSegments(slug, date, cb){
+  if(!_hubSite){ _get('/api/logger/segments/'+slug+'/'+date).then(cb); return; }
+  function tryFetch(){
+    _get('/api/logger/hub/segments/'+encodeURIComponent(_hubSite)+'/'+slug+'/'+date).then(function(d){
+      if(d && d.pending){ setTimeout(tryFetch, 2000); } else { cb(d); }
+    }).catch(function(){ setTimeout(tryFetch, 3000); });
+  }
+  tryFetch();
+}
 
 // ── Stream selector ───────────────────────────────────────────────────────
 document.getElementById('stream-sel').addEventListener('change', function(){
   _currentSlug = this.value;
   _selSeg = null; _segsAll = []; _markIn = _markOut = null;
+  _hubPlayStart = null;
   updateInOutLabel();
   document.getElementById('export-btn').disabled = true;
   document.getElementById('day-bar-head').classList.add('hidden');
@@ -1146,7 +1625,7 @@ function shiftDay(delta){
 }
 
 function loadDays(){
-  _get('/api/logger/days/'+_currentSlug).then(function(days){
+  apiDays(_currentSlug, function(days){
     var el = document.getElementById('day-list');
     el.innerHTML = '';
     if(!days.length){ el.innerHTML='<span style="color:var(--mu);font-size:12px;padding:4px 6px">No recordings yet</span>'; }
@@ -1176,8 +1655,8 @@ function loadSegments(){
   document.getElementById('export-btn').disabled = true;
   document.getElementById('day-bar-head').classList.add('hidden');
   buildDayBar([]);
-  _get('/api/logger/segments/'+_currentSlug+'/'+_currentDate).then(function(segs){
-    buildTimeline(segs);
+  apiSegments(_currentSlug, _currentDate, function(segs){
+    buildTimeline(segs || []);
   });
 }
 
@@ -1230,18 +1709,45 @@ function playSeg(seg, blkEl){
   updateDayBarMarkers();
 }
 
+// ── Hub mode playback ─────────────────────────────────────────────────────
+function startHubPlay(seg, offset){
+  var seekSecs = offset;
+  _post('/api/logger/hub/play', {
+    site: _hubSite, slug: _currentSlug, date: _currentDate,
+    filename: seg.filename, seek_s: seekSecs
+  }).then(function(r){
+    if(!r || !r.ok) return;
+    connectAudio(r.stream_url);
+    _selSeg = seg;
+    _hubPlayStart  = Date.now();
+    _hubPlayOffset = seg.start_s + seekSecs;
+    var h=Math.floor(seg.start_s/3600),m=Math.floor((seg.start_s%3600)/60);
+    document.getElementById('p-title').textContent=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+    document.getElementById('p-sub').textContent=_hubSite+' · '+_currentSlug;
+    _updateGridPlaying(seg.start_s);
+    document.getElementById('play-btn').textContent='⏸';
+  });
+}
+
 // ── Segment loading & navigation ──────────────────────────────────────────
 function _loadSegAndSeek(seg, offset){
-  var a=document.getElementById('audio-el');
-  var url='/api/logger/audio/'+_currentSlug+'/'+_currentDate+'/'+seg.filename;
   _selSeg=seg;
   var h=Math.floor(seg.start_s/3600),m=Math.floor((seg.start_s%3600)/60);
+  var spct=(seg.silence_pct||0).toFixed(1);
+  document.getElementById('seg-info-text').innerHTML='<b>'+_esc(seg.filename)+'</b><br>Silence: '+spct+'% · '+(seg.quality||'?')+' quality';
+  document.getElementById('seg-info').style.display='block';
+
+  if(_hubSite){
+    startHubPlay(seg, offset);
+    return;
+  }
+
+  // Local mode
+  var a=document.getElementById('audio-el');
+  var url='/api/logger/audio/'+_currentSlug+'/'+_currentDate+'/'+seg.filename;
   document.getElementById('p-title').textContent=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
   document.getElementById('p-sub').textContent=_currentDate+' · '+_currentSlug;
   _updateGridPlaying(seg.start_s);
-  var spct=(seg.silence_pct||0).toFixed(1);
-  document.getElementById('seg-info-text').innerHTML='<b>'+_esc(seg.filename)+'</b><br>Silence: '+spct+'% · '+seg.quality+' quality';
-  document.getElementById('seg-info').style.display='block';
   if(a.getAttribute('data-src')!==url){
     a.setAttribute('data-src',url);
     a.src=url; a.load();
@@ -1314,6 +1820,7 @@ function updateDayBarMarkers(){
 function setupAudio(){
   var a = document.getElementById('audio-el');
   a.addEventListener('timeupdate', function(){
+    if(_hubSite) return;   // hub mode uses setInterval instead
     var cur=a.currentTime, dur=a.duration||0;
     if(_selSeg){
       var wallPos=_selSeg.start_s+(a.currentTime||0);
@@ -1327,13 +1834,21 @@ function setupAudio(){
     updateScrubMarkers();
   });
   a.addEventListener('ended', function(){
+    if(_hubSite) return;
     _playNext();
   });
-  a.addEventListener('pause', function(){ document.getElementById('play-btn').textContent='▶'; });
-  a.addEventListener('play',  function(){ document.getElementById('play-btn').textContent='⏸'; });
+  a.addEventListener('pause', function(){ if(!_hubSite) document.getElementById('play-btn').textContent='▶'; });
+  a.addEventListener('play',  function(){ if(!_hubSite) document.getElementById('play-btn').textContent='⏸'; });
 }
 
 document.getElementById('play-btn').addEventListener('click', function(){
+  if(_hubSite){
+    // In hub mode, stop PCM stream by cancelling reader
+    if(_pcmReader){ try{_pcmReader.cancel();}catch(e){}_pcmReader=null; }
+    _hubPlayStart = null;
+    document.getElementById('play-btn').textContent='▶';
+    return;
+  }
   var a=document.getElementById('audio-el');
   if(!a.src||a.src===location.href) return;
   if(a.paused) a.play(); else a.pause();
@@ -1377,22 +1892,28 @@ document.getElementById('day-bar').addEventListener('mouseleave',function(){
 });
 
 // ── Mark in/out ───────────────────────────────────────────────────────────
+function _currentPlayPos(){
+  if(_hubSite && _hubPlayStart && _selSeg){
+    return _hubPlayOffset + (Date.now() - _hubPlayStart) / 1000;
+  }
+  var a=document.getElementById('audio-el');
+  return _selSeg ? _selSeg.start_s + (a.currentTime||0) : 0;
+}
+
 document.getElementById('mark-in-btn').addEventListener('click', function(){
   if(!_selSeg) return;
-  var a=document.getElementById('audio-el');
-  _markIn = _selSeg.start_s + a.currentTime;
+  _markIn = _currentPlayPos();
   if(_markOut!==null && _markOut<=_markIn) _markOut=null;
   updateInOutLabel(); updateScrubMarkers(); updateDayBarMarkers();
-  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null);
+  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null||!!_hubSite);
 });
 
 document.getElementById('mark-out-btn').addEventListener('click', function(){
   if(!_selSeg) return;
-  var a=document.getElementById('audio-el');
-  _markOut = _selSeg.start_s + a.currentTime;
+  _markOut = _currentPlayPos();
   if(_markIn!==null && _markOut<=_markIn) _markIn=null;
   updateInOutLabel(); updateScrubMarkers(); updateDayBarMarkers();
-  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null);
+  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null||!!_hubSite);
 });
 
 function updateInOutLabel(){
@@ -1405,7 +1926,7 @@ function updateInOutLabel(){
 
 function updateScrubMarkers(){
   if(!_selSeg) return;
-  var dur=document.getElementById('audio-el').duration||_SEG_SECS;
+  var dur=_hubSite ? _SEG_SECS : (document.getElementById('audio-el').duration||_SEG_SECS);
   var ss=_selSeg.start_s;
   var iE=document.getElementById('scrub-in'), oE=document.getElementById('scrub-out');
   if(_markIn!==null&&_markIn>=ss&&_markIn<ss+dur){ iE.style.left=((_markIn-ss)/dur*100)+'%'; iE.classList.remove('hidden'); } else { iE.classList.add('hidden'); }
