@@ -16,11 +16,11 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/push",
     "icon":     "📡",
     "hub_only": True,
-    "version":  "1.0.1",
+    "version":  "1.0.2",
 }
 
 # ─── plugin version ───────────────────────────────────────────────────────────
-_PLUGIN_VERSION = "1.0.1"
+_PLUGIN_VERSION = "1.0.2"
 
 import json as _json
 import os as _os
@@ -288,38 +288,41 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
       ✔ Credentials migrated successfully. You can now clear the APNs/FCM fields in Settings → Notifications.
     </div>
     {% endif %}
+    {% if saved %}
+    <div style="margin-top:14px;padding:10px 14px;border:1px solid var(--ok);border-radius:8px;background:#001a08;font-size:13px;color:var(--ok)">
+      ✔ Credentials saved.
+    </div>
+    {% endif %}
   </div>
 
-  <form method="post" action="/hub/push/save">
-    <input type="hidden" name="csrf_token" value="{{csrf_token()}}">
-
+  <div id="push-creds-form">
     <div class="card">
       <h2>🔔 APNs Credentials (iOS)</h2>
       <p style="font-size:12px;color:var(--mu);margin-bottom:14px">Get from <strong>developer.apple.com → Keys</strong>. Create a key with Apple Push Notifications service enabled.</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <label><span>Key ID</span><input name="apns_key_id" value="{{cfg.apns_key_id}}" placeholder="ABC1234DEF" maxlength="10" style="font-family:monospace"></label>
-        <label><span>Team ID</span><input name="apns_team_id" value="{{cfg.apns_team_id}}" placeholder="XYZ9876543" maxlength="10" style="font-family:monospace"></label>
-        <label style="grid-column:1/-1"><span>Bundle ID</span><input name="apns_bundle_id" value="{{cfg.apns_bundle_id}}" placeholder="com.example.SignalScope"></label>
+        <label><span>Key ID</span><input id="apns_key_id" value="{{cfg.apns_key_id}}" placeholder="ABC1234DEF" maxlength="10" style="font-family:monospace"></label>
+        <label><span>Team ID</span><input id="apns_team_id" value="{{cfg.apns_team_id}}" placeholder="XYZ9876543" maxlength="10" style="font-family:monospace"></label>
+        <label style="grid-column:1/-1"><span>Bundle ID</span><input id="apns_bundle_id" value="{{cfg.apns_bundle_id}}" placeholder="com.example.SignalScope"></label>
       </div>
       <label><span>.p8 Private Key <em style="font-weight:400;color:var(--mu)">(leave blank to keep existing)</em></span>
-        <textarea name="apns_key_pem" rows="6" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+        <textarea id="apns_key_pem" rows="6" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
       </label>
     </div>
 
     <div class="card">
       <h2>🤖 FCM Credentials (Android)</h2>
       <p style="font-size:12px;color:var(--mu);margin-bottom:14px">Get from <strong>console.firebase.google.com → Project settings → Service accounts → Generate new private key</strong>.</p>
-      <label><span>Firebase Project ID</span><input name="fcm_project_id" value="{{cfg.fcm_project_id}}" placeholder="my-project-12345" style="font-family:monospace"></label>
+      <label><span>Firebase Project ID</span><input id="fcm_project_id" value="{{cfg.fcm_project_id}}" placeholder="my-project-12345" style="font-family:monospace"></label>
       <label><span>Service Account JSON <em style="font-weight:400;color:var(--mu)">(leave blank to keep existing — current: {{cfg.fcm_service_account_json[:40]+'…' if cfg.fcm_service_account_json else 'not set'}})</em></span>
-        <textarea name="fcm_service_account_json" rows="5" placeholder='{"type":"service_account","project_id":"...",...}'></textarea>
+        <textarea id="fcm_service_account_json" rows="5" placeholder='{"type":"service_account","project_id":"...",...}'></textarea>
       </label>
     </div>
 
     <div style="display:flex;gap:10px">
-      <button class="btn bp" type="submit">💾 Save credentials</button>
+      <button id="save-btn" class="btn bp">💾 Save credentials</button>
       <a class="btn bg" href="/">Cancel</a>
     </div>
-  </form>
+  </div>
 
   <div class="card" style="margin-top:20px">
     <h2>📋 Recent Deliveries</h2>
@@ -334,12 +337,29 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
 
 </div>
 <script nonce="{{csp_nonce()}}">
+function _csrf(){
+  return (document.querySelector('meta[name="csrf-token"]')||{}).content
+        ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+}
+function _val(id){var e=document.getElementById(id);return e?e.value:'';};
+
+var _sb=document.getElementById('save-btn');
+if(_sb){_sb.addEventListener('click',function(){
+  _sb.disabled=true;_sb.textContent='Saving…';
+  var body=JSON.stringify({
+    apns_key_id:_val('apns_key_id'),apns_team_id:_val('apns_team_id'),
+    apns_bundle_id:_val('apns_bundle_id'),apns_key_pem:_val('apns_key_pem'),
+    fcm_project_id:_val('fcm_project_id'),fcm_service_account_json:_val('fcm_service_account_json')
+  });
+  fetch('/hub/push/save',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'},body:body,credentials:'same-origin'})
+    .then(function(r){if(r.ok){window.location='/hub/push?saved=1';}else{r.text().then(function(t){alert('Save failed: '+t);_sb.disabled=false;_sb.textContent='💾 Save credentials';});}})
+    .catch(function(e){alert('Save error: '+e);_sb.disabled=false;_sb.textContent='💾 Save credentials';});
+});}
+
 var _mb=document.getElementById('migrate-btn');
 if(_mb){_mb.addEventListener('click',function(){
-  var tok=(document.querySelector('meta[name="csrf-token"]')||{}).content
-         ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
-  _mb.disabled=true; _mb.textContent='Migrating…';
-  fetch('/hub/push/migrate',{method:'POST',headers:{'X-CSRFToken':tok,'Content-Type':'application/json'},body:'{}',credentials:'same-origin'})
+  _mb.disabled=true;_mb.textContent='Migrating…';
+  fetch('/hub/push/migrate',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'},body:'{}',credentials:'same-origin'})
     .then(function(r){if(r.ok){window.location='/hub/push?migrated=1';}else{r.text().then(function(t){alert('Migration failed: '+t);_mb.disabled=false;_mb.textContent='⬆ Migrate from existing settings';});}})
     .catch(function(e){alert('Migration error: '+e);_mb.disabled=false;_mb.textContent='⬆ Migrate from existing settings';});
 });}
@@ -397,10 +417,11 @@ def register(app, ctx):
             )
         )
         migrate_done = request.args.get("migrated") == "1"
+        saved        = request.args.get("saved")    == "1"
         return render_template_string(_TPL, cfg=proxy, apns_ok=apns_ok,
                                       fcm_ok=fcm_ok, log=log, version=_PLUGIN_VERSION,
                                       migrate_available=migrate_available,
-                                      migrate_done=migrate_done)
+                                      migrate_done=migrate_done, saved=saved)
 
     @app.post("/hub/push/migrate")
     @login_required
@@ -429,25 +450,28 @@ def register(app, ctx):
     @login_required
     @csrf_protect
     def push_save():
-        f = request.form
+        try:
+            f = request.get_json(force=True) or {}
+        except Exception:
+            f = {}
         with _cfg_lock:
-            _cfg["apns_key_id"]    = f.get("apns_key_id",    "").strip()
-            _cfg["apns_team_id"]   = f.get("apns_team_id",   "").strip()
-            _cfg["apns_bundle_id"] = f.get("apns_bundle_id", "").strip()
-            pem = f.get("apns_key_pem", "").strip()
+            _cfg["apns_key_id"]    = str(f.get("apns_key_id",    "")).strip()
+            _cfg["apns_team_id"]   = str(f.get("apns_team_id",   "")).strip()
+            _cfg["apns_bundle_id"] = str(f.get("apns_bundle_id", "")).strip()
+            pem = str(f.get("apns_key_pem", "")).strip()
             if pem:
                 _cfg["apns_key_pem"] = pem
-            pid = f.get("fcm_project_id", "").strip()
+            pid = str(f.get("fcm_project_id", "")).strip()
             if pid:
                 _cfg["fcm_project_id"] = pid
-            sa  = f.get("fcm_service_account_json", "").strip()
+            sa  = str(f.get("fcm_service_account_json", "")).strip()
             if sa:
                 _cfg["fcm_service_account_json"] = sa
-            # Invalidate JWT caches on credential change
             _apns_jwt_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
             _fcm_token_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
             _save_cfg(_cfg_path, _cfg)
-        return redirect("/hub/push")
+        monitor.log("[Push] Credentials saved")
+        return jsonify({"ok": True})
 
     @app.post("/api/push/v1/send")
     def push_v1_send():

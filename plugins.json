@@ -86,7 +86,7 @@
     "file": "push.py",
     "icon": "📡",
     "description": "Turns this SignalScope hub into a centralised push notification server for iOS and Android. Holds APNs (.p8 key) and FCM (service account JSON) credentials and delivers notifications on behalf of any SignalScope installation that points its Push Server URL here. Includes one-click migration from existing Settings credentials. Hub-only.",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "requirements": "cryptography",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/push.py"
   }
