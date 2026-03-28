@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.17",
+    "version": "1.4.18",
 }
 
 import datetime
@@ -41,9 +41,11 @@ _DB_FILE       = "logger_index.db"
 
 # Recording format definitions: fmt → (codec_args, ffmpeg_container, file_ext)
 _REC_FORMATS = {
-    "mp3":  ([],                   "mp3",  "mp3"),
-    "aac":  (["-c:a", "aac"],      "adts", "aac"),
-    "opus": (["-c:a", "libopus"],  "ogg",  "opus"),
+    # fmt: (codec_args, ffmpeg_container, file_ext, output_sample_rate)
+    # libopus only accepts 8000/12000/16000/24000/48000 Hz — must use 48000, not 44100
+    "mp3":  ([],                   "mp3",  "mp3",  "44100"),
+    "aac":  (["-c:a", "aac"],      "adts", "aac",  "44100"),
+    "opus": (["-c:a", "libopus"],  "ogg",  "opus", "48000"),
 }
 _AUDIO_GLOBS = ("*.mp3", "*.aac", "*.opus")
 
@@ -1380,7 +1382,7 @@ class _RecorderThread(threading.Thread):
         date_str  = seg_start.strftime("%Y-%m-%d")
         time_str  = seg_start.strftime("%H-%M")
         rec_fmt   = scfg["rec_format"]
-        _codec_args, _container, _ext = _REC_FORMATS[rec_fmt]
+        _codec_args, _container, _ext, _ar = _REC_FORMATS[rec_fmt]
         filename  = f"{time_str}.{_ext}"
         start_s   = seg_start.hour * 3600 + seg_start.minute * 60
 
@@ -1408,7 +1410,7 @@ class _RecorderThread(threading.Thread):
         cmd = [ffmpeg, "-hide_banner", "-loglevel", "warning",
                "-f", "f32le", "-ar", str(self._SR), "-ac", "1", "-i", "pipe:0",
                "-af", f"silencedetect=n={_SILENCE_DB:.1f}dB:d={_SILENCE_DUR}",
-               "-vn", "-ac", "1", "-ar", "44100",
+               "-vn", "-ac", "1", "-ar", _ar,
                *_codec_args, "-b:a", scfg["hq_bitrate"],
                "-f", _container, str(out_path)]
 
@@ -1620,15 +1622,16 @@ def _maybe_downgrade(path, slug, date, lq_br, ffmpeg):
     except Exception:
         pass
     # Determine re-encode args from the file's own extension
-    _ext_to_fmt = {".mp3": ("mp3", []), ".aac": ("adts", ["-c:a", "aac"]),
-                   ".opus": ("ogg", ["-c:a", "libopus"])}
-    _lq_container, _lq_codec = _ext_to_fmt.get(path.suffix, ("mp3", []))
+    _ext_to_fmt = {".mp3": ("mp3", [],                  "44100"),
+                   ".aac": ("adts", ["-c:a", "aac"],    "44100"),
+                   ".opus": ("ogg", ["-c:a", "libopus"],"48000")}
+    _lq_container, _lq_codec, _lq_ar = _ext_to_fmt.get(path.suffix, ("mp3", [], "44100"))
     tmp = path.with_name(path.stem + ".lq" + path.suffix)
     try:
         r = subprocess.run(
             [ffmpeg, "-hide_banner", "-loglevel", "error",
              "-i", str(path), *_lq_codec, "-b:a", lq_br, "-ac", "1",
-             "-f", _lq_container, str(tmp)],
+             "-ar", _lq_ar, "-f", _lq_container, str(tmp)],
             timeout=120, capture_output=True)
         if r.returncode == 0 and tmp.exists() and tmp.stat().st_size > 1000:
             tmp.replace(path)

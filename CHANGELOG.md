@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.18] - 2026-03-28
+
+### Fixed
+- **Logger — Opus recording produces empty files (rc=234)** — `libopus` only accepts sample rates of 8000, 12000, 16000, 24000, or 48000 Hz. The recording command hardcoded `-ar 44100` which is not a valid Opus rate, causing ffmpeg to silently fail with "Nothing was written into output file". Fixed by adding a per-format output sample rate to `_REC_FORMATS` (MP3/AAC use 44100, Opus uses 48000) and substituting it into both the recording command and the LQ quality-downgrade re-encode command.
+
+---
+
 ## [Logger 1.4.17] - 2026-03-28
 
 ### Added
