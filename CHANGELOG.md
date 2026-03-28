@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.15] - 2026-03-28
+
+### Fixed
+- **Logger — right-click mark-in/out now works on the green audio bar** — The day-bar waveform overview was incorrectly exempted from the contextmenu handler. Removed the guard so right-clicking anywhere in the full timeline area (including the audio waveform bar) sets mark-in/mark-out.
+
+---
+
 ## [Logger 1.4.14] - 2026-03-28
 
 ### Fixed

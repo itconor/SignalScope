@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.14",
+    "version": "1.4.15",
 }
 
 import datetime
@@ -2801,9 +2801,8 @@ document.getElementById('day-bar').addEventListener('mouseleave',function(){
 document.addEventListener('contextmenu', function(e){
   var wrap = document.querySelector('.tl-scroll-wrap');
   if(!wrap) return;
-  // Must be inside the scroll wrap but not on the day-bar
+  // Must be inside the scroll wrap (day-bar included)
   if(!e.target.closest('.tl-scroll-wrap')) return;
-  if(e.target.closest('#day-bar')) return;
   e.preventDefault();
   var content = document.getElementById('tl-zoom-content');
   if(!content) return;
