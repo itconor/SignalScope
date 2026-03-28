@@ -2,6 +2,17 @@
 
 ---
 
+## [3.4.49] - 2026-03-28
+
+### Fixed
+- **Logger 1.2.1 — Hub remote playback debugging & reliability** — Hub remote playback (days/segments/audio) was silent after stream selection. Fixes in this release:
+  - Comprehensive `_log()` tracing added throughout the command/poll/result cycle on both hub and client — every queue, dispatch, and result-store operation is now visible in the SignalScope log panel for diagnosis.
+  - `_push_audio_to_relay` now pushes audio at **1.15× real-time** instead of as-fast-as-possible. Unbounded push speed could flood the relay slot queue and cause the browser's Web Audio pump to schedule the entire file in one burst, leading to silence or distorted playback.
+  - `apiDays` and `apiSegments` JS polling loops now encode the slug with `encodeURIComponent` (consistent with site encoding) and display a "Fetching from remote site… (n)" status message in the sidebar so the user can see progress. A 20-attempt (~60s) timeout replaces the previous infinite retry, showing a diagnostic message if the client never responds.
+  - Hub-status message is cleared when site or stream changes.
+
+---
+
 ## [3.4.48] - 2026-03-28
 
 ### Added

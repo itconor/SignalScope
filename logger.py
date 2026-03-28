@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.2.0",
+    "version": "1.2.1",
 }
 
 import datetime
@@ -101,11 +101,19 @@ def _check_sig(secret: str, data: bytes) -> bool:
 #  CLIENT → HUB: AUDIO PUSH & POLLER
 # ─────────────────────────────────────────────────────────────────────────────
 
+_CHUNK_BYTES = 9600          # 0.1 s of 48 kHz mono 16-bit PCM
+_CHUNK_DUR   = 0.1           # seconds per chunk
+_PUSH_RATE   = 1.15          # push at 1.15× real-time to stay ahead of playback
+
+
 def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
-    """Push PCM audio to a hub relay slot by transcoding a recorded segment with ffmpeg."""
+    """Push PCM audio to a hub relay slot by transcoding a recorded segment with ffmpeg.
+
+    Pushes at ~1.15× real-time so the relay buffer stays small but always has data.
+    """
     path = _rec_root() / _safe(slug) / date / filename
     if not path.exists():
-        _log(f"[Logger] _push_audio_to_relay: file not found: {path}")
+        _log(f"[Logger] AudioPush: file not found: {path}")
         return
 
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
@@ -115,17 +123,30 @@ def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except Exception as e:
-        _log(f"[Logger] _push_audio_to_relay: ffmpeg launch failed: {e}")
+        _log(f"[Logger] AudioPush: ffmpeg launch failed: {e}")
         return
 
-    secret = (getattr(cfg.hub, "secret_key", None) or "").strip()
+    secret    = (getattr(cfg.hub, "secret_key", None) or "").strip()
     chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
+    _log(f"[Logger] AudioPush: starting {slug}/{date}/{filename} seek={seek_s:.1f}s → slot {slot_id}")
+
+    push_start = time.monotonic()
+    chunk_n    = 0
 
     try:
         while True:
-            chunk = proc.stdout.read(9600)
+            chunk = proc.stdout.read(_CHUNK_BYTES)
             if not chunk:
                 break
+            chunk_n += 1
+
+            # Rate-limit: pace pushes to 1.15× real-time so the relay
+            # buffer never exceeds a few seconds of audio.
+            target_t = push_start + chunk_n * _CHUNK_DUR / _PUSH_RATE
+            wait     = target_t - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+
             ts  = time.time()
             headers = {"Content-Type": "application/octet-stream"}
             if secret:
@@ -140,10 +161,12 @@ def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
             except Exception as e:
                 err_str = str(e)
                 if "404" in err_str or "HTTP Error 404" in err_str:
-                    break   # slot closed
-                _log(f"[Logger] _push_audio_to_relay: chunk POST failed: {e}")
+                    _log(f"[Logger] AudioPush: slot {slot_id} closed after {chunk_n} chunks")
+                    break
+                _log(f"[Logger] AudioPush: chunk POST failed: {e}")
                 break
     finally:
+        _log(f"[Logger] AudioPush: finished {chunk_n} chunks for {slug}/{date}/{filename}")
         try:
             proc.kill()
         except Exception:
@@ -153,6 +176,7 @@ def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
 def _hub_logger_poller():
     """Background thread: registers local streams with the hub and handles playback commands."""
     _registered_ts = 0.0
+    _last_hub_url  = None
 
     while True:
         try:
@@ -168,6 +192,11 @@ def _hub_logger_poller():
             if not hub_url or not site:
                 time.sleep(10)
                 continue
+
+            # Log once when hub_url is first detected
+            if hub_url != _last_hub_url:
+                _log(f"[Logger] HubPoller: connecting to hub {hub_url} as site '{site}'")
+                _last_hub_url = hub_url
 
             now = time.time()
 
@@ -188,8 +217,9 @@ def _hub_logger_poller():
                         data=payload, method="POST", headers=headers)
                     _urllib_req.urlopen(req, timeout=10).close()
                     _registered_ts = time.time()
+                    _log(f"[Logger] HubPoller: registered {len(streams)} stream(s) with hub")
                 except Exception as e:
-                    _log(f"[Logger] Hub registration failed: {e}")
+                    _log(f"[Logger] HubPoller: registration failed: {e}")
 
             # ── Command poll (every 3 s) ────────────────────────────────────
             try:
@@ -209,6 +239,7 @@ def _hub_logger_poller():
                 cmd = data.get("cmd")
                 if cmd:
                     ctype = cmd.get("type", "")
+                    _log(f"[Logger] HubPoller: got command type='{ctype}' slug='{cmd.get('slug','')}' date='{cmd.get('date','')}'")
 
                     if ctype == "days":
                         slug = cmd.get("slug", "")
@@ -220,6 +251,7 @@ def _hub_logger_poller():
                                 reverse=True)
                         else:
                             days = []
+                        _log(f"[Logger] HubPoller: days for slug='{slug}': {days}")
                         _hub_result_post(hub_url, secret, site,
                                          {"site": site, "type": "days", "slug": slug, "days": days})
 
@@ -227,6 +259,7 @@ def _hub_logger_poller():
                         slug = cmd.get("slug", "")
                         date = cmd.get("date", "")
                         segs = _get_segments(_safe(slug), date) if slug and date else []
+                        _log(f"[Logger] HubPoller: segments for slug='{slug}' date='{date}': {len(segs)} segs")
                         _hub_result_post(hub_url, secret, site,
                                          {"site": site, "type": "segments",
                                           "slug": slug, "date": date, "segments": segs})
@@ -237,16 +270,20 @@ def _hub_logger_poller():
                         date     = cmd.get("date", "")
                         filename = cmd.get("filename", "")
                         seek_s   = float(cmd.get("seek_s", 0))
+                        _log(f"[Logger] HubPoller: play {slug}/{date}/{filename} seek={seek_s:.1f}s slot={slot_id}")
                         threading.Thread(
                             target=_push_audio_to_relay,
                             args=(hub_url, slot_id, slug, date, filename, seek_s, cfg),
                             daemon=True, name="LoggerAudioPush").start()
 
+                    else:
+                        _log(f"[Logger] HubPoller: unknown command type '{ctype}'")
+
             except Exception as e:
-                _log(f"[Logger] Hub poll failed: {e}")
+                _log(f"[Logger] HubPoller: poll failed: {e}")
 
         except Exception as e:
-            _log(f"[Logger] Hub poller error: {e}")
+            _log(f"[Logger] HubPoller: outer error: {e}")
 
         time.sleep(3)
 
@@ -264,9 +301,11 @@ def _hub_result_post(hub_url, secret, site, payload_dict):
         f"{hub_url}/api/logger/hub/result",
         data=payload, method="POST", headers=headers)
     try:
-        _urllib_req.urlopen(req, timeout=10).close()
+        resp = _urllib_req.urlopen(req, timeout=10)
+        resp.close()
+        _log(f"[Logger] HubPoller: result POST ok type='{payload_dict.get('type')}'")
     except Exception as e:
-        _log(f"[Logger] Hub result POST failed: {e}")
+        _log(f"[Logger] HubPoller: result POST failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -395,6 +434,7 @@ def register(app, ctx):
             data  = request.get_data()
             secret = (_monitor.app_cfg.hub.secret_key or "").strip() if _monitor else ""
             if not _check_sig(secret, data):
+                _log("[Logger] Hub register: HMAC check failed (forbidden)")
                 return jsonify({"error": "forbidden"}), 403
             body  = json.loads(data) if data else {}
             site  = str(body.get("site", "")).strip()
@@ -403,16 +443,19 @@ def register(app, ctx):
                 return jsonify({"error": "no site"}), 400
             with _hub_logger_lock:
                 _hub_logger_streams[site] = streams
+            _log(f"[Logger] Hub: site '{site}' registered {len(streams)} stream(s)")
             return jsonify({"ok": True})
 
         @app.get("/api/logger/hub/poll/<path:site>")
         def api_logger_hub_poll(site):
             secret = (_monitor.app_cfg.hub.secret_key or "").strip() if _monitor else ""
             if not _check_sig(secret, b""):
+                _log(f"[Logger] Hub poll: HMAC check failed for site '{site}'")
                 return jsonify({"error": "forbidden"}), 403
             with _hub_logger_lock:
                 cmd = _hub_logger_pending.pop(site, None)
             if cmd:
+                _log(f"[Logger] Hub poll: dispatching cmd type='{cmd.get('type')}' to site '{site}'")
                 return jsonify({"cmd": cmd})
             return jsonify({})
 
@@ -421,6 +464,7 @@ def register(app, ctx):
             data   = request.get_data()
             secret = (_monitor.app_cfg.hub.secret_key or "").strip() if _monitor else ""
             if not _check_sig(secret, data):
+                _log("[Logger] Hub result: HMAC check failed (forbidden)")
                 return jsonify({"error": "forbidden"}), 403
             body   = json.loads(data) if data else {}
             site   = str(body.get("site", "")).strip()
@@ -429,9 +473,13 @@ def register(app, ctx):
             date   = str(body.get("date", "")).strip()
             with _hub_logger_lock:
                 if rtype == "days":
-                    _hub_logger_days[f"{site}:{slug}"] = body.get("days", [])
+                    days = body.get("days", [])
+                    _hub_logger_days[f"{site}:{slug}"] = days
+                    _log(f"[Logger] Hub result: stored {len(days)} day(s) for {site}:{slug}")
                 elif rtype == "segments":
-                    _hub_logger_segs[f"{site}:{slug}:{date}"] = body.get("segments", [])
+                    segs = body.get("segments", [])
+                    _hub_logger_segs[f"{site}:{slug}:{date}"] = segs
+                    _log(f"[Logger] Hub result: stored {len(segs)} segment(s) for {site}:{slug}:{date}")
             return jsonify({"ok": True})
 
         @app.get("/api/logger/hub/sites")
@@ -459,7 +507,10 @@ def register(app, ctx):
             key = f"{site}:{slug}"
             with _hub_logger_lock:
                 if key in _hub_logger_days:
-                    return jsonify(_hub_logger_days[key])
+                    days = _hub_logger_days[key]
+                    _log(f"[Logger] Hub days cache hit: {site}:{slug} → {len(days)} day(s)")
+                    return jsonify(days)
+                _log(f"[Logger] Hub days: queuing cmd for site='{site}' slug='{slug}'")
                 _hub_logger_pending[site] = {"type": "days", "slug": slug}
             return jsonify({"pending": True})
 
@@ -474,7 +525,10 @@ def register(app, ctx):
             key = f"{site}:{slug}:{date}"
             with _hub_logger_lock:
                 if key in _hub_logger_segs:
-                    return jsonify(_hub_logger_segs[key])
+                    segs = _hub_logger_segs[key]
+                    _log(f"[Logger] Hub segs cache hit: {key} → {len(segs)} seg(s)")
+                    return jsonify(segs)
+                _log(f"[Logger] Hub segs: queuing cmd for site='{site}' slug='{slug}' date='{date}'")
                 _hub_logger_pending[site] = {"type": "segments", "slug": slug, "date": date}
             return jsonify({"pending": True})
 
@@ -1284,6 +1338,7 @@ select:focus,input:focus{border-color:var(--acc)}
         <div class="slbl">Site</div>
         <select id="site-sel"></select>
       </div>
+      <div id="hub-status" style="font-size:11px;color:var(--wn);padding:2px 0 0 2px;min-height:14px"></div>
       <div>
         <div class="slbl">Stream</div>
         <select id="stream-sel">
@@ -1528,6 +1583,7 @@ document.getElementById('site-sel').addEventListener('change', function(){
   _hubSite = this.value;
   _hubPlayStart = null;
   _currentSlug = ''; _selSeg = null; _segsAll = []; _markIn = _markOut = null;
+  _hubStatusMsg('');
   updateInOutLabel();
   document.getElementById('export-btn').disabled = true;
   document.getElementById('day-bar-head').classList.add('hidden');
@@ -1554,22 +1610,53 @@ document.getElementById('site-sel').addEventListener('change', function(){
 // ── API wrappers (local vs hub mode) ──────────────────────────────────────
 function apiDays(slug, cb){
   if(!_hubSite){ _get('/api/logger/days/'+slug).then(cb); return; }
+  var attempts = 0;
+  var MAX_ATTEMPTS = 20;  // ~60s total before giving up
   function tryFetch(){
-    _get('/api/logger/hub/days/'+encodeURIComponent(_hubSite)+'/'+slug).then(function(d){
-      if(d && d.pending){ setTimeout(tryFetch, 2000); } else { cb(d); }
-    }).catch(function(){ setTimeout(tryFetch, 3000); });
+    attempts++;
+    _get('/api/logger/hub/days/'+encodeURIComponent(_hubSite)+'/'+encodeURIComponent(slug)).then(function(d){
+      if(d && d.pending){
+        if(attempts >= MAX_ATTEMPTS){
+          _hubStatusMsg('Remote site not responding — check SignalScope logs on client node');
+          return;
+        }
+        _hubStatusMsg('Fetching dates from remote site\u2026 ('+attempts+')');
+        setTimeout(tryFetch, 3000);
+      } else {
+        _hubStatusMsg('');
+        cb(d);
+      }
+    }).catch(function(e){ setTimeout(tryFetch, 4000); });
   }
   tryFetch();
 }
 
 function apiSegments(slug, date, cb){
   if(!_hubSite){ _get('/api/logger/segments/'+slug+'/'+date).then(cb); return; }
+  var attempts = 0;
+  var MAX_ATTEMPTS = 20;
   function tryFetch(){
-    _get('/api/logger/hub/segments/'+encodeURIComponent(_hubSite)+'/'+slug+'/'+date).then(function(d){
-      if(d && d.pending){ setTimeout(tryFetch, 2000); } else { cb(d); }
-    }).catch(function(){ setTimeout(tryFetch, 3000); });
+    attempts++;
+    _get('/api/logger/hub/segments/'+encodeURIComponent(_hubSite)+'/'+encodeURIComponent(slug)+'/'+date).then(function(d){
+      if(d && d.pending){
+        if(attempts >= MAX_ATTEMPTS){
+          _hubStatusMsg('Remote site not responding — check SignalScope logs on client node');
+          return;
+        }
+        _hubStatusMsg('Fetching segments from remote site\u2026 ('+attempts+')');
+        setTimeout(tryFetch, 3000);
+      } else {
+        _hubStatusMsg('');
+        cb(d);
+      }
+    }).catch(function(e){ setTimeout(tryFetch, 4000); });
   }
   tryFetch();
+}
+
+function _hubStatusMsg(msg){
+  var el = document.getElementById('hub-status');
+  if(el) el.textContent = msg;
 }
 
 // ── Stream selector ───────────────────────────────────────────────────────
@@ -1577,6 +1664,7 @@ document.getElementById('stream-sel').addEventListener('change', function(){
   _currentSlug = this.value;
   _selSeg = null; _segsAll = []; _markIn = _markOut = null;
   _hubPlayStart = null;
+  _hubStatusMsg('');
   updateInOutLabel();
   document.getElementById('export-btn').disabled = true;
   document.getElementById('day-bar-head').classList.add('hidden');
