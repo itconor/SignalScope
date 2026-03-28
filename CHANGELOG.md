@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.17] - 2026-03-28
+
+### Added
+- **Logger — Per-stream recording format (MP3 / AAC / Opus)** — Each stream in Settings now has a Format selector alongside the existing bitrate controls. **MP3** is the default and unchanged. **AAC** (`.aac`, ADTS container) uses the `aac` encoder — roughly half the storage of MP3 at the same perceived quality, so a 128k AAC recording is comparable to a 192–256k MP3. **Opus** (`.opus`, OGG container) uses `libopus` — the most efficient option, with quality at 64–96k that rivals MP3 at 192k+. All three formats are fully supported through the rest of the pipeline: the segment filesystem scan, `_fname_to_secs`, the quality-downgrade re-encoder, the disk-usage counter, the audio serve endpoint, and the export function all handle `.mp3`, `.aac`, and `.opus` files correctly. Export stream-copy optimisation (instant, no re-encode) is preserved for MP3→MP3; all other export format combinations re-encode via ffmpeg as before.
+
+---
+
 ## [Logger 1.4.16] - 2026-03-28
 
 ### Added

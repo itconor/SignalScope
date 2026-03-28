@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.16",
+    "version": "1.4.17",
 }
 
 import datetime
@@ -38,6 +38,14 @@ _DEFAULT_RETAIN   = 90      # days before deletion
 _CONFIG_FILE   = "logger_config.json"
 _REC_DIR       = "logger_recordings"
 _DB_FILE       = "logger_index.db"
+
+# Recording format definitions: fmt → (codec_args, ffmpeg_container, file_ext)
+_REC_FORMATS = {
+    "mp3":  ([],                   "mp3",  "mp3"),
+    "aac":  (["-c:a", "aac"],      "adts", "aac"),
+    "opus": (["-c:a", "libopus"],  "ogg",  "opus"),
+}
+_AUDIO_GLOBS = ("*.mp3", "*.aac", "*.opus")
 
 # ─── Module state ─────────────────────────────────────────────────────────────
 _monitor        = None
@@ -552,7 +560,8 @@ def register(app, ctx):
                 try:
                     if not root.exists():
                         continue
-                    for f in root.rglob("*.mp3"):
+                    for pat in _AUDIO_GLOBS:
+                      for f in root.rglob(pat):
                         try:
                             if f.is_file():
                                 key = str(f.resolve())
@@ -593,7 +602,7 @@ def register(app, ctx):
     def api_logger_audio(stream_slug, date, filename):
         if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
             abort(400)
-        if not re.match(r"^[\w\-]+\.mp3$", filename):
+        if not re.match(r"^[\w\-]+\.(mp3|aac|opus)$", filename):
             abort(400)
         path = _stream_rec_root_by_slug(_safe(stream_slug)) / _safe(stream_slug) / date / filename
         # Confirm resolved path stays within the recordings root
@@ -1177,8 +1186,11 @@ def _reconcile_meta_pollers():
 def _stream_cfg(stream_name):
     with _cfg_lock:
         s = _cfg.get("streams", {}).get(stream_name, {})
-    hq = s.get("hq_bitrate", _DEFAULT_HQ)
-    lq = s.get("lq_bitrate", _DEFAULT_LQ)
+    hq  = s.get("hq_bitrate", _DEFAULT_HQ)
+    lq  = s.get("lq_bitrate", _DEFAULT_LQ)
+    fmt = s.get("rec_format", "mp3")
+    if fmt not in _REC_FORMATS:
+        fmt = "mp3"
     return {
         "enabled":        bool(s.get("enabled", False)),
         "hq_bitrate":     hq if hq in _ALLOWED_BITRATES else _DEFAULT_HQ,
@@ -1187,6 +1199,7 @@ def _stream_cfg(stream_name):
         "retain_days":    int(s.get("retain_days", _DEFAULT_RETAIN)),
         "base_dir":       s.get("base_dir", ""),
         "nowplaying_url": str(s.get("nowplaying_url", "") or "").strip(),
+        "rec_format":     fmt,
     }
 
 def _available_streams():
@@ -1286,9 +1299,12 @@ def _get_segments(slug, date, base_root=None):
             result[d["filename"]] = d
     except Exception:
         pass
-    # Supplement with filesystem scan
+    # Supplement with filesystem scan (all supported audio formats)
     if day_dir.exists():
-        for f in sorted(day_dir.glob("*.mp3")):
+        found = []
+        for pat in _AUDIO_GLOBS:
+            found.extend(day_dir.glob(pat))
+        for f in sorted(found, key=lambda x: x.name):
             if f.name not in result:
                 ss = _fname_to_secs(f.name) or 0
                 result[f.name] = {
@@ -1363,7 +1379,9 @@ class _RecorderThread(threading.Thread):
         seg_end   = seg_start + datetime.timedelta(seconds=_SEG_SECS)
         date_str  = seg_start.strftime("%Y-%m-%d")
         time_str  = seg_start.strftime("%H-%M")
-        filename  = f"{time_str}.mp3"
+        rec_fmt   = scfg["rec_format"]
+        _codec_args, _container, _ext = _REC_FORMATS[rec_fmt]
+        filename  = f"{time_str}.{_ext}"
         start_s   = seg_start.hour * 3600 + seg_start.minute * 60
 
         out_dir  = _stream_rec_root(self.stream_name) / self.slug / date_str
@@ -1391,8 +1409,8 @@ class _RecorderThread(threading.Thread):
                "-f", "f32le", "-ar", str(self._SR), "-ac", "1", "-i", "pipe:0",
                "-af", f"silencedetect=n={_SILENCE_DB:.1f}dB:d={_SILENCE_DUR}",
                "-vn", "-ac", "1", "-ar", "44100",
-               "-b:a", scfg["hq_bitrate"],
-               "-f", "mp3", str(out_path)]
+               *_codec_args, "-b:a", scfg["hq_bitrate"],
+               "-f", _container, str(out_path)]
 
         silence_ranges = []
         sil_start      = None
@@ -1586,9 +1604,10 @@ def _run_maintenance():
                     _log(f"[Logger] Pruning {day_dir.name} ({stream_dir.name})")
                     shutil.rmtree(day_dir, ignore_errors=True)
                 elif lq_after > 0 and age >= lq_after:
-                    for mp3 in day_dir.glob("*.mp3"):
-                        _maybe_downgrade(mp3, stream_dir.name, day_dir.name,
-                                         scfg["lq_bitrate"], ffmpeg)
+                    for pat in _AUDIO_GLOBS:
+                        for af in day_dir.glob(pat):
+                            _maybe_downgrade(af, stream_dir.name, day_dir.name,
+                                             scfg["lq_bitrate"], ffmpeg)
 
 def _maybe_downgrade(path, slug, date, lq_br, ffmpeg):
     try:
@@ -1600,11 +1619,16 @@ def _maybe_downgrade(path, slug, date, lq_br, ffmpeg):
             return
     except Exception:
         pass
-    tmp = path.with_suffix(".lq.mp3")
+    # Determine re-encode args from the file's own extension
+    _ext_to_fmt = {".mp3": ("mp3", []), ".aac": ("adts", ["-c:a", "aac"]),
+                   ".opus": ("ogg", ["-c:a", "libopus"])}
+    _lq_container, _lq_codec = _ext_to_fmt.get(path.suffix, ("mp3", []))
+    tmp = path.with_name(path.stem + ".lq" + path.suffix)
     try:
         r = subprocess.run(
             [ffmpeg, "-hide_banner", "-loglevel", "error",
-             "-i", str(path), "-b:a", lq_br, "-ac", "1", "-f", "mp3", str(tmp)],
+             "-i", str(path), *_lq_codec, "-b:a", lq_br, "-ac", "1",
+             "-f", _lq_container, str(tmp)],
             timeout=120, capture_output=True)
         if r.returncode == 0 and tmp.exists() and tmp.stat().st_size > 1000:
             tmp.replace(path)
@@ -1661,6 +1685,9 @@ def _export_clip(slug, date, start_s, end_s, fmt="mp3"):
     segs    = _get_segments(slug, date, base_root=root)
 
     audio_args, container, mime, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
+    # Stream-copy optimisation only works when source and target are both MP3;
+    # for any other combination always re-encode via the codec args.
+    _src_ext = None  # determined after relevant list is built
 
     # Build list of relevant segments, validating each path stays within rec root
     relevant = []
@@ -1678,6 +1705,11 @@ def _export_clip(slug, date, start_s, end_s, fmt="mp3"):
 
     if not relevant:
         return jsonify({"error": "no segments in range"}), 404
+
+    # Use stream-copy only when source segments are MP3 and target format is MP3
+    _src_ext = relevant[0][1].suffix.lstrip(".")
+    if fmt == "mp3" and _src_ext == "mp3":
+        audio_args = ["-c", "copy"]
 
     tf_name = None
     try:
@@ -1738,7 +1770,7 @@ def _safe(s):
     return re.sub(r"[^\w\-]", "_", s).lower()
 
 def _fname_to_secs(filename):
-    m = re.match(r"^(\d{2})-(\d{2})\.mp3$", filename)
+    m = re.match(r"^(\d{2})-(\d{2})\.(mp3|aac|opus)$", filename)
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 if m else None
 
 def _serve_ranged(path: Path, mime: str):
@@ -3075,6 +3107,9 @@ function renderSettingsRows(){
       +'<span class="tog-lbl'+(sc.enabled?' on':'')+'" id="'+eid+'">'+(sc.enabled?'Recording':'Off')+'</span>'
       +'</div></div>'
       +'<div class="scard-body"><div class="scard-fields">'
+      +'<div><label>Format</label><select data-stream="'+_esc(s.name)+'" data-key="rec_format">'
+      +[['mp3','MP3'],['aac','AAC'],['opus','Opus']].map(function(f){ return '<option value="'+f[0]+'"'+((sc.rec_format||'mp3')===f[0]?' selected':'')+'>'+f[1]+'</option>'; }).join('')
+      +'</select></div>'
       +'<div><label>HQ Bitrate</label><select data-stream="'+_esc(s.name)+'" data-key="hq_bitrate">'
       +['64k','96k','128k','192k','256k','320k'].map(function(b){ return '<option'+(( sc.hq_bitrate||'128k')===b?' selected':'')+'>'+b+'</option>'; }).join('')
       +'</select></div>'
