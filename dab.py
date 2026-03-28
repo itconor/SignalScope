@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.27",
+    "version":  "1.0.28",
 }
 
 import hashlib
@@ -1018,9 +1018,8 @@ def register(app, ctx):
                                       regions=_SCAN_REGIONS)
 
     # ── Hub: DAB dongle list for a site ───────────────────────────────────────
-    # Returns serials of DAB-capable dongles for a site.
-    # Includes role="dab" dongles first, then role="scanner" dongles (scanner
-    # dongles are also RTL-SDR and work fine with welle-cli for DAB decoding).
+    # Returns serials of scanner-role dongles only.  DAB-role dongles are used
+    # for fixed background decoding and should not be grabbed by the DAB Scanner.
 
     @app.get("/api/hub/dab/devices/<path:site_name>")
     @login_required
@@ -1029,7 +1028,7 @@ def register(app, ctx):
         if hub_server:
             sdata = hub_server._sites.get(site_name, {})
             seen  = set()
-            for s in sdata.get("dab_serials", []) + sdata.get("scanner_serials", []):
+            for s in sdata.get("scanner_serials", []):
                 if s not in seen:
                     seen.add(s)
                     serials.append(s)
