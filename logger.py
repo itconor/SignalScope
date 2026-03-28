@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.15",
+    "version": "1.4.16",
 }
 
 import datetime
@@ -886,11 +886,14 @@ def register(app, ctx):
         date        = data.get("date", "")
         start_s     = float(data.get("start_s", 0))
         end_s       = float(data.get("end_s", 60))
+        fmt         = data.get("fmt", "mp3")
+        if fmt not in ("mp3", "aac", "opus"):
+            fmt = "mp3"
         if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
             return jsonify({"error": "bad date"}), 400
         if end_s <= start_s or end_s - start_s > 7200:
             return jsonify({"error": "invalid range (max 2h)"}), 400
-        return _export_clip(_safe(stream_slug), date, start_s, end_s)
+        return _export_clip(_safe(stream_slug), date, start_s, end_s, fmt=fmt)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1638,13 +1641,26 @@ def _ffmpeg_concat_escape(p: Path) -> str:
     # ffmpeg concat format: single-quote the path, escape internal single quotes
     return str(p).replace("\\", "\\\\").replace("'", "\\'")
 
-def _export_clip(slug, date, start_s, end_s):
+_EXPORT_FMTS = {
+    # fmt: (ffmpeg_audio_args, container_flag, mime, ext)
+    # MP3  — stream-copy existing segments (no re-encode, instant)
+    "mp3":  (["-c", "copy"],                                   "mp3",  "audio/mpeg",         ".mp3"),
+    # AAC  — ~half the size of MP3 at equal perceived quality; fragmented MP4 for pipe
+    "aac":  (["-c:a", "aac", "-b:a", "128k",
+              "-movflags", "frag_keyframe+empty_moov"],        "mp4",  "audio/mp4",           ".m4a"),
+    # Opus — most efficient; WebM container plays in all modern browsers
+    "opus": (["-c:a", "libopus", "-b:a", "96k"],               "webm", "audio/webm",          ".webm"),
+}
+
+def _export_clip(slug, date, start_s, end_s, fmt="mp3"):
     root    = _stream_rec_root_by_slug(slug)
     day_dir = root / slug / date
     if not day_dir.exists():
         return jsonify({"error": "no recordings"}), 404
     ffmpeg  = shutil.which("ffmpeg") or "ffmpeg"
     segs    = _get_segments(slug, date, base_root=root)
+
+    audio_args, container, mime, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
 
     # Build list of relevant segments, validating each path stays within rec root
     relevant = []
@@ -1671,7 +1687,7 @@ def _export_clip(slug, date, start_s, end_s):
             cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
                    "-ss", f"{ss:.3f}", "-i", str(seg_path),
                    "-t", f"{end_s - start_s:.3f}",
-                   "-c", "copy", "-f", "mp3", "pipe:1"]
+                   *audio_args, "-f", container, "pipe:1"]
         else:
             # Write concat list; use -safe 1 (relative paths not required when
             # paths are escaped correctly and don't use protocol prefixes).
@@ -1689,7 +1705,7 @@ def _export_clip(slug, date, start_s, end_s):
             cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
                    "-f", "concat", "-safe", "0", "-i", tf_name,
                    "-ss", f"{ss:.3f}", "-t", f"{end_s - start_s:.3f}",
-                   "-c", "copy", "-f", "mp3", "pipe:1"]
+                   *audio_args, "-f", container, "pipe:1"]
 
         proc = subprocess.run(cmd, capture_output=True, timeout=120)
         if proc.returncode != 0:
@@ -1697,8 +1713,8 @@ def _export_clip(slug, date, start_s, end_s):
         h   = int(start_s) // 3600
         m   = (int(start_s) % 3600) // 60
         dur = int(end_s - start_s)
-        fname = f"{slug}_{date}_{h:02d}h{m:02d}m_{dur}s.mp3"
-        return Response(proc.stdout, mimetype="audio/mpeg",
+        fname = f"{slug}_{date}_{h:02d}h{m:02d}m_{dur}s{ext}"
+        return Response(proc.stdout, mimetype=mime,
             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
     except subprocess.TimeoutExpired:
         return jsonify({"error": "export timeout"}), 500
@@ -2051,6 +2067,11 @@ select:focus,input:focus{border-color:var(--acc)}
           <button class="btn bg bs" id="mark-out-btn">⬥ Mark Out</button>
           <span class="inout-lbl" id="inout-lbl"></span>
           <div style="flex:1"></div>
+          <select id="export-fmt" title="Export format" style="background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:4px 7px;border-radius:6px;font-size:12px;outline:none;cursor:pointer">
+            <option value="mp3">MP3</option>
+            <option value="aac">AAC</option>
+            <option value="opus">Opus</option>
+          </select>
           <button class="btn bp bs" id="export-btn" disabled>⬇ Export Clip</button>
         </div>
       </div>
@@ -2869,15 +2890,18 @@ function updateScrubMarkers(){
 document.getElementById('export-btn').addEventListener('click', function(){
   if(_markIn===null||_markOut===null||!_currentSlug||!_currentDate) return;
   var btn=this; btn.disabled=true; btn.textContent='⏳ Exporting…';
+  var fmt=(document.getElementById('export-fmt')||{}).value||'mp3';
+  var extMap={mp3:'.mp3',aac:'.m4a',opus:'.webm'};
+  var ext=extMap[fmt]||'.mp3';
   fetch('/api/logger/export',{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
-    body:JSON.stringify({stream:_currentSlug,date:_currentDate,start_s:_markIn,end_s:_markOut})
+    body:JSON.stringify({stream:_currentSlug,date:_currentDate,start_s:_markIn,end_s:_markOut,fmt:fmt})
   }).then(function(r){
     if(!r.ok){ return r.json().then(function(d){ alert('Export failed: '+(d.error||r.status)); }); }
     return r.blob().then(function(blob){
       var a=document.createElement('a');
       a.href=URL.createObjectURL(blob);
-      a.download=_currentSlug+'_'+_currentDate+'_clip.mp3';
+      a.download=_currentSlug+'_'+_currentDate+'_clip'+ext;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
     });
   }).finally(function(){ btn.disabled=false; btn.textContent='⬇ Export Clip'; });

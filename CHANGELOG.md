@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.16] - 2026-03-28
+
+### Added
+- **Logger — Export format selector (MP3 / AAC / Opus)** — A format dropdown next to the Export Clip button lets you choose between three formats. MP3 is the default and uses a stream copy (no re-encode, instant). AAC (`.m4a`) re-encodes at 128 kbps — roughly half the file size of MP3 at equivalent perceived quality, with universal browser and device support including older Safari. Opus (`.webm`) re-encodes at 96 kbps — the most efficient option, approximately half the size of AAC again, supported in all modern browsers (Chrome, Firefox, Edge, Safari 16.4+). The downloaded filename extension matches the chosen format.
+
+---
+
 ## [Logger 1.4.15] - 2026-03-28
 
 ### Fixed
