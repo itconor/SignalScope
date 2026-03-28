@@ -964,8 +964,7 @@ def register(app, ctx):
             return jsonify({"segments": [], "pending": True})
         # Local mode
         segs = _get_segments(_safe(slug), date)
-        segs_list = sorted(segs.values(), key=lambda s: s.get("start_s", 0))
-        return jsonify({"segments": segs_list, "pending": False})
+        return jsonify({"segments": segs, "pending": False})
 
     @app.get("/api/mobile/logger/metadata")
     @mobile_api_req
@@ -1019,10 +1018,20 @@ def register(app, ctx):
         date     = str(body.get("date", "")).strip()
         filename = str(body.get("filename", "")).strip()
         seek_s   = float(body.get("seek_s", 0))
-        if not all([site, slug, date, filename]):
+        if not (slug and date and filename):
             return jsonify({"error": "missing fields"}), 400
-        if hub_server is None or _listen_registry is None:
-            return jsonify({"error": "hub not available"}), 503
+        # Local / direct-connect mode: return a direct PCM stream URL
+        if hub_server is None or not site:
+            qs = _urllib_parse.urlencode({
+                "slug": slug, "date": date, "filename": filename, "seek_s": seek_s
+            })
+            return jsonify({
+                "ok": True,
+                "slot_id": None,
+                "stream_url": f"/api/mobile/logger/stream_pcm?{qs}",
+            })
+        if _listen_registry is None:
+            return jsonify({"error": "relay not available"}), 503
         # Cancel existing slot for this site
         with _hub_logger_lock:
             old_id = _hub_logger_active.get(site)
@@ -1048,8 +1057,87 @@ def register(app, ctx):
         return jsonify({
             "ok": True,
             "slot_id": slot.slot_id,
-            "stream_url": f"/hub/scanner/stream/{slot.slot_id}",
+            "stream_url": f"/api/mobile/logger/relay_stream/{slot.slot_id}",
         })
+
+    @app.get("/api/mobile/logger/relay_stream/<slot_id>")
+    @mobile_api_req
+    def api_mobile_logger_relay_stream(slot_id):
+        """Mobile-auth wrapper that streams PCM from a relay slot.
+        Uses Bearer/token auth instead of the session-only /hub/scanner/stream/ route."""
+        if not _listen_registry:
+            return ("", 503)
+        slot = _listen_registry.get(slot_id)
+        if not slot:
+            return ("", 404)
+
+        _SILENCE = b"\x00" * 9600   # 0.1 s of silence (16-bit mono 48 kHz)
+        _THRESHOLD = 1.0             # inject silence after 1 s gap
+
+        def _gen():
+            last_data = time.monotonic()
+            while not getattr(slot, "closed", False):
+                try:
+                    chunk = slot.get(timeout=0.30)
+                    if chunk is not None:
+                        last_data = time.monotonic()
+                        yield chunk
+                    else:
+                        if time.monotonic() - last_data > _THRESHOLD:
+                            yield _SILENCE
+                            last_data = time.monotonic()
+                except Exception:
+                    if time.monotonic() - last_data > _THRESHOLD:
+                        yield _SILENCE
+                        last_data = time.monotonic()
+
+        return Response(_gen(), mimetype="application/octet-stream",
+                        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+    @app.get("/api/mobile/logger/stream_pcm")
+    @mobile_api_req
+    def api_mobile_logger_stream_pcm():
+        """Direct-mode: transcode a recorded segment to raw PCM and stream it.
+        Used when the iOS app is connected directly to this node (not via a hub relay).
+        Format: 16-bit signed LE, mono, 48 kHz — same as the hub relay stream."""
+        slug     = request.args.get("slug", "").strip()
+        date     = request.args.get("date", "").strip()
+        filename = request.args.get("filename", "").strip()
+        seek_s   = float(request.args.get("seek_s", 0) or 0)
+        if not (slug and date and filename):
+            return jsonify({"error": "missing params"}), 400
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            return jsonify({"error": "invalid date"}), 400
+        # _safe() replaces dots with underscores — do NOT apply to filenames
+        if not re.match(r"^[\w\-]+\.(mp3|aac|opus|wav)$", filename):
+            return jsonify({"error": "invalid filename"}), 400
+        path = _stream_rec_root_by_slug(_safe(slug)) / _safe(slug) / date / filename
+        if not path.exists():
+            return ("", 404)
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            return jsonify({"error": "ffmpeg not installed"}), 500
+        cmd = [ffmpeg_bin, "-hide_banner", "-loglevel", "error",
+               "-ss", str(max(0.0, seek_s)), "-i", str(path),
+               "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+        def _gen():
+            _CHUNK = 9600  # 0.1 s of 16-bit mono 48 kHz PCM
+            try:
+                while True:
+                    chunk = proc.stdout.read(_CHUNK)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+        return Response(_gen(), mimetype="application/octet-stream",
+                        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
     @app.post("/api/mobile/logger/stop")
     @mobile_api_req
