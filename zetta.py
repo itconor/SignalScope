@@ -18,7 +18,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.2",
+    "version":  "1.0.3",
 }
 
 import json
@@ -40,16 +40,18 @@ _poller_stop = threading.Event()
 
 _DEFAULT_CFG = {
     "url":              "",       # e.g. http://zetta-server/ZettaService/ZettaService.asmx
+    "status_feed_url":  "",       # e.g. http://zetta-server:3132/StatusFeed (blank = auto-derive)
     "stations":         [],       # [{"id": "1", "name": "Cool FM"}, …]
     "poll_interval":    10,       # seconds between polls
     "timeout":          6,        # SOAP request timeout
     "spot_categories":  ["SPOT", "SPOTS", "COMMERCIAL", "COMMS", "PROMO", "PROMOS"],
 }
 
-_zetta_cfg   : dict = dict(_DEFAULT_CFG)
-_zetta_state : dict = {}   # station_id → state dict
-_wsdl_cache  : dict = {}   # url → {"ns": str, "methods": [str]}
-_cfg_path    : str  = ""
+_zetta_cfg    : dict = dict(_DEFAULT_CFG)
+_zetta_state  : dict = {}   # station_id → state dict
+_wsdl_cache   : dict = {}   # url → {"ns": str, "methods": [str]}
+_cfg_path     : str  = ""
+_sf_health    : dict = {"ok": None, "error": "", "ts": 0.0}  # Status Feed health
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
@@ -133,6 +135,111 @@ def _find(elem: ET.Element, *local_names: str) -> str:
             if child.tag.split("}")[-1] == name and child.text:
                 return child.text.strip()
     return ""
+
+# ── Status Feed helpers ───────────────────────────────────────────────────────
+
+def _derive_status_feed_url(main_url: str) -> str:
+    """Auto-derive the Zetta Status Feed URL from the main SOAP service URL.
+    Strips path/port and rebuilds as http://HOST:3132/StatusFeed."""
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(main_url)
+        host = p.hostname or ""
+        if not host:
+            return ""
+        return f"http://{host}:3132/StatusFeed"
+    except Exception:
+        return ""
+
+def _effective_sf_url() -> str:
+    """Return the Status Feed URL to use (override or auto-derived)."""
+    with _cfg_lock:
+        override = _zetta_cfg.get("status_feed_url", "").strip()
+        main_url = _zetta_cfg.get("url", "").strip()
+    return override if override else _derive_status_feed_url(main_url)
+
+def _parse_zetta_ts(s: str) -> str:
+    """Strip Zetta timestamp quirks (trailing Z, UTC offset, microseconds) so
+    strptime can handle them.  Returns cleaned string unchanged if not a ts."""
+    if not s or "T" not in s:
+        return s
+    # Strip trailing Z
+    if s.endswith("Z"):
+        s = s[:-1]
+    # Strip UTC offset ±HH:MM at end
+    if len(s) > 6 and s[-3] == ":" and s[-6] in ("+", "-"):
+        s = s[:-6]
+    # Truncate microseconds to 6 digits for %f
+    dot = s.rfind(".")
+    if dot != -1:
+        s = s[:dot + 7]   # keep at most 6 decimal places
+    return s
+
+def _sf_call_is_alive(sf_url: str, timeout: int) -> bool:
+    """Call IsAlive on the Status Feed.  Returns True on any valid response."""
+    try:
+        ns = _ns(sf_url, timeout)
+        _soap_call(sf_url, "IsAlive", "", ns, timeout)
+        return True
+    except Exception:
+        return False
+
+def _sf_call_get_stations(sf_url: str, timeout: int) -> list:
+    """Call GetStations on the Status Feed; return list of {id, name}."""
+    ns = _ns(sf_url, timeout)
+    root, _ = _soap_call(sf_url, "GetStations", "", ns, timeout)
+    results = []
+    for el in root.iter():
+        tag = el.tag.split("}")[-1]
+        if tag in ("Station", "StationInfo", "StationDetails"):
+            sid  = _find(el, "ID", "Id", "StationID", "StationId")
+            name = _find(el, "Name", "StationName", "CallLetters",
+                         "DisplayName", "Description")
+            if sid:
+                results.append({"id": sid, "name": name or sid})
+    return results
+
+def _sf_call_get_station_full(sf_url: str, station_id: str, timeout: int) -> dict:
+    """Call GetStationFull on the Status Feed; return parsed state dict."""
+    ns   = _ns(sf_url, timeout)
+    body = f"<stationId>{station_id}</stationId>"
+    root, raw = _soap_call(sf_url, "GetStationFull", body, ns, timeout)
+
+    title       = _find(root, "Title", "MediaTitle", "CartTitle", "SongTitle", "Name")
+    artist      = _find(root, "Artist", "MediaArtist", "ArtistName", "Performer")
+    cart        = _find(root, "CartNumber", "Cart", "CartNum", "MediaID", "MediaId")
+    category    = _find(root, "CategoryName", "Category", "MediaCategory",
+                        "Type", "CartType", "CategoryType")
+    duration_s  = _find(root, "Duration", "TotalDuration", "LengthSeconds",
+                        "DurationSeconds", "TotalSeconds")
+    time_left_s = _find(root, "TimeLeft", "RemainingSeconds", "TimeRemaining",
+                        "SecondsRemaining", "TimeRemainingSeconds")
+
+    try:    dur  = float(duration_s)  if duration_s  else 0.0
+    except (ValueError, TypeError): dur  = 0.0
+    try:    left = float(time_left_s) if time_left_s else 0.0
+    except (ValueError, TypeError): left = 0.0
+
+    raw_cat = category.upper()
+    with _cfg_lock:
+        spot_cats = [c.upper() for c in _zetta_cfg.get("spot_categories", [])]
+    is_spot = any(sc in raw_cat or raw_cat in sc for sc in spot_cats) if spot_cats else False
+
+    return {
+        "station_id":   station_id,
+        "title":        title,
+        "artist":       artist,
+        "cart":         cart,
+        "category":     category,
+        "raw_category": raw_cat,
+        "duration":     dur,
+        "time_left":    left,
+        "is_spot":      is_spot,
+        "ts":           time.time(),
+        "error":        "",
+        "_raw":         raw,
+        "_source":      "status_feed",
+    }
 
 # ── Zetta method calls ────────────────────────────────────────────────────────
 
@@ -226,7 +333,11 @@ def _parse_now_playing(root: ET.Element, station_id: str, raw: str) -> dict:
 # ── Poller ────────────────────────────────────────────────────────────────────
 
 def _poll_loop(monitor):
+    global _sf_health
     _log.info("[Zetta] Poller started")
+    _sf_check_counter = 0  # check Status Feed health every N polls
+    _SF_CHECK_EVERY   = 6  # re-probe IsAlive every 6 polls (~60 s at 10 s interval)
+
     while not _poller_stop.is_set():
         try:
             with _cfg_lock:
@@ -235,17 +346,49 @@ def _poll_loop(monitor):
                 interval = int(_zetta_cfg.get("poll_interval", 10))
                 timeout  = int(_zetta_cfg.get("timeout", 6))
 
+            sf_url = _effective_sf_url()
+
+            # Probe Status Feed health periodically
+            if sf_url:
+                _sf_check_counter += 1
+                if _sf_check_counter >= _SF_CHECK_EVERY or _sf_health["ok"] is None:
+                    _sf_check_counter = 0
+                    alive = _sf_call_is_alive(sf_url, timeout)
+                    _sf_health = {"ok": alive, "error": "" if alive else "IsAlive returned False or unreachable", "ts": time.time()}
+                    if alive:
+                        _log.debug("[Zetta] Status Feed alive at %s", sf_url)
+                    else:
+                        _log.warning("[Zetta] Status Feed unavailable at %s — falling back to main service", sf_url)
+            else:
+                _sf_health = {"ok": False, "error": "No Status Feed URL configured or derivable", "ts": time.time()}
+
+            use_sf = bool(sf_url) and _sf_health.get("ok")
+
             if url and stations:
-                ns = _ns(url, timeout)
+                ns_main = _ns(url, timeout) if not use_sf else ""
                 for st in stations:
                     sid = str(st.get("id", "")).strip()
                     if not sid:
                         continue
                     try:
-                        info = _call_now_playing(url, ns, sid, timeout)
+                        if use_sf:
+                            info = _sf_call_get_station_full(sf_url, sid, timeout)
+                        else:
+                            info = _call_now_playing(url, ns_main, sid, timeout)
                         with _state_lock:
                             _zetta_state[sid] = {**info, "name": st.get("name", sid)}
                     except Exception as e:
+                        # If Status Feed call failed, retry once via main service
+                        if use_sf:
+                            try:
+                                ns_main = ns_main or _ns(url, timeout)
+                                info = _call_now_playing(url, ns_main, sid, timeout)
+                                info["_source"] = "main_service_fallback"
+                                with _state_lock:
+                                    _zetta_state[sid] = {**info, "name": st.get("name", sid)}
+                                continue
+                            except Exception:
+                                pass
                         with _state_lock:
                             _zetta_state[sid] = {
                                 "station_id": sid, "name": st.get("name", sid),
@@ -381,6 +524,17 @@ textarea{font-family:monospace;font-size:11px;resize:vertical}
         </div>
       </div>
       <div class="row">
+        <div class="f">
+          <label>Status Feed URL <span style="color:var(--mu);font-weight:400">(optional — auto-derived if blank)</span></label>
+          <input id="cfg-sf-url" placeholder="http://zetta-server:3132/StatusFeed" value="{{sf_url}}">
+          <div class="hint">
+            Port 3132 service used for <strong>GetStationFull</strong> — richer category data and more reliable spot detection.
+            Leave blank to auto-derive from the SOAP host above.
+            Status: <span id="sf-health-badge">{{sf_health_badge}}</span>
+          </div>
+        </div>
+      </div>
+      <div class="row">
         <div class="f" style="max-width:160px">
           <label>Poll interval (s)</label>
           <input type="number" id="cfg-interval" min="5" max="120" value="{{interval}}">
@@ -502,6 +656,7 @@ document.getElementById('btn-save').addEventListener('click',function(){
   });
   var p={
     url:       document.getElementById('cfg-url').value.trim(),
+    sf_url:    document.getElementById('cfg-sf-url').value.trim(),
     interval:  parseInt(document.getElementById('cfg-interval').value)||10,
     timeout:   parseInt(document.getElementById('cfg-timeout').value)||6,
     spot_cats: document.getElementById('cfg-spot-cats').value,
@@ -519,18 +674,20 @@ document.getElementById('btn-save').addEventListener('click',function(){
 // ── Discover stations ─────────────────────────────────────────────────────────
 document.getElementById('btn-discover').addEventListener('click',function(){
   var url=document.getElementById('cfg-url').value.trim();
+  var sfUrl=document.getElementById('cfg-sf-url').value.trim();
   if(!url){_msg('msg','Enter the Zetta SOAP URL first.','var(--wa)');return;}
   _msg('msg','Querying Zetta for station list…');
-  _f('/api/zetta/discover',{method:'POST',body:JSON.stringify({url:url})})
+  _f('/api/zetta/discover',{method:'POST',body:JSON.stringify({url:url,sf_url:sfUrl})})
     .then(function(r){return r.json();})
     .then(function(d){
       if(d.stations&&d.stations.length&&d.stations[0].id!=='error'){
+        var src=d.source==='status_feed'?' (via Status Feed)':d.source==='main_service'?' (via main service)':'';
         var list=document.getElementById('stations-list');
         list.innerHTML='';
         d.stations.forEach(function(s){list.appendChild(_stRow(s.id,s.name));});
-        _msg('msg','Found '+d.stations.length+' station(s). Review names then Save.','var(--ok)');
+        _msg('msg','Found '+d.stations.length+' station(s)'+src+'. Review names then Save.','var(--ok)');
       } else {
-        _msg('msg',(d.error||'No stations returned — enter them manually.'),'var(--wa)');
+        _msg('msg',(d.error||'No stations returned — enter them manually.'),'var(--wn)');
       }
     }).catch(function(e){_msg('msg',''+e,'var(--al)');});
 });
@@ -538,13 +695,19 @@ document.getElementById('btn-discover').addEventListener('click',function(){
 // ── Test connection ───────────────────────────────────────────────────────────
 document.getElementById('btn-test').addEventListener('click',function(){
   var url=document.getElementById('cfg-url').value.trim();
+  var sfUrl=document.getElementById('cfg-sf-url').value.trim();
   if(!url){_msg('msg','Enter the Zetta SOAP URL first.','var(--wa)');return;}
   _msg('msg','Testing…');
-  _f('/api/zetta/test',{method:'POST',body:JSON.stringify({url:url})})
+  _f('/api/zetta/test',{method:'POST',body:JSON.stringify({url:url,sf_url:sfUrl})})
     .then(function(r){return r.json();})
     .then(function(d){
-      if(d.ok)_msg('msg','✓ Connected. Namespace: '+d.namespace,'var(--ok)');
-      else _msg('msg','✗ '+d.error,'var(--al)');
+      if(d.ok){
+        var sfPart=d.sf_ok===true?' · ✓ Status Feed alive ('+_esc(d.sf_url)+')'
+                  :d.sf_ok===false?' · ⚠ Status Feed unreachable ('+_esc(d.sf_url)+')':'';
+        _msg('msg','✓ Connected. Namespace: '+d.namespace+sfPart,'var(--ok)');
+      } else {
+        _msg('msg','✗ '+d.error,'var(--al)');
+      }
     }).catch(function(e){_msg('msg',''+e,'var(--al)');});
 });
 
@@ -619,6 +782,13 @@ function _refreshNowPlaying(){
   _f('/api/zetta/status').then(function(r){return r.json();})
     .then(function(d){
       _lastPoll=Date.now();
+      // Update Status Feed health badge if present
+      var sfBadge=document.getElementById('sf-health-badge');
+      if(sfBadge&&d.sf_health!=null){
+        if(d.sf_health.ok)sfBadge.innerHTML='<span style="color:var(--ok)">&#x2714; Status Feed connected</span>';
+        else if(d.sf_health.ok===false)sfBadge.innerHTML='<span style="color:var(--wn)" title="'+_esc(d.sf_health.error||'')+'">&#x26A0; Unavailable — using main service</span>';
+        else sfBadge.innerHTML='<span style="color:var(--mu)">Checking…</span>';
+      }
       var grid=document.getElementById('np-grid');
       var stns=Object.values(d.stations||{});
       if(!stns.length){
@@ -628,6 +798,8 @@ function _refreshNowPlaying(){
       grid.innerHTML=stns.map(function(s){
         var err=!!(s.error);
         var cls=err?'err':s.is_spot?'spot':'music';
+        var src=s._source==='status_feed'?'<span title="Data via Zetta Status Feed" style="font-size:10px;color:var(--mu)">&#x2022; SF</span>':
+                s._source==='main_service_fallback'?'<span title="Status Feed failed — using main service" style="font-size:10px;color:var(--wn)">&#x26A0; fallback</span>':'';
         var body=err
           ? '<div style="color:var(--al);font-size:12px">'+_esc(s.error)+'</div>'
           : ('<div class="track-title">'+_esc(s.title||'—')+'</div>'
@@ -640,7 +812,7 @@ function _refreshNowPlaying(){
             +_prog(s.duration,s.time_left,s.is_spot));
         return '<div class="card '+cls+'">'
           +'<div class="card-hdr"><span class="stn-name">'+_esc(s.name||s.station_id)+'</span>'
-          +_badge(s.raw_category,s.is_spot,err)+'</div>'
+          +_badge(s.raw_category,s.is_spot,err)+src+'</div>'
           +body+'</div>';
       }).join('');
     }).catch(function(){});
@@ -686,10 +858,19 @@ def register(app, ctx):
         from markupsafe import Markup
         with _cfg_lock:
             url       = _zetta_cfg.get("url", "")
+            sf_url    = _zetta_cfg.get("status_feed_url", "")
             interval  = _zetta_cfg.get("poll_interval", 10)
             timeout   = _zetta_cfg.get("timeout", 6)
             spot_cats = ", ".join(_zetta_cfg.get("spot_categories", []))
             stations  = list(_zetta_cfg.get("stations", []))
+
+        sf_ok = _sf_health.get("ok")
+        if sf_ok is True:
+            sf_badge = Markup('<span style="color:var(--ok)">&#x2714; Status Feed connected</span>')
+        elif sf_ok is False:
+            sf_badge = Markup('<span style="color:var(--wn)">&#x26A0; Unavailable — using main service</span>')
+        else:
+            sf_badge = Markup('<span style="color:var(--mu)">Not yet checked</span>')
 
         def _e(s):
             return (str(s)
@@ -700,14 +881,15 @@ def register(app, ctx):
             f'<div class="st-row">'
             f'<input class="st-id"   placeholder="Station ID"    value="{_e(s["id"])}"       style="max-width:110px">'
             f'<input class="st-name" placeholder="Friendly name" value="{_e(s.get("name",""))}">'
-            f'<button class="btn br" onclick="this.closest(\'.st-row\').remove()">&#x2715;</button>'
+            f'<button class="btn br st-rm-btn">&#x2715;</button>'
             f'</div>'
             for s in stations
         )
         return render_template_string(
             _PAGE_TPL,
-            url=url, interval=interval, timeout=timeout,
+            url=url, sf_url=sf_url, interval=interval, timeout=timeout,
             spot_cats=spot_cats, stations_html=Markup(rows),
+            sf_health_badge=sf_badge,
         )
 
     # ── Status API ────────────────────────────────────────────────────────────
@@ -730,7 +912,8 @@ def register(app, ctx):
             if sid not in merged:
                 merged[sid] = {"station_id": sid, "name": scfg.get("name", sid),
                                "is_spot": False, "error": "No data yet"}
-        return jsonify({"stations": merged, "ts": time.time()})
+        return jsonify({"stations": merged, "ts": time.time(),
+                        "sf_health": dict(_sf_health)})
 
     # ── Settings save ─────────────────────────────────────────────────────────
 
@@ -741,9 +924,10 @@ def register(app, ctx):
         from flask import request, jsonify
         data = request.get_json(silent=True) or {}
         with _cfg_lock:
-            _zetta_cfg["url"]            = str(data.get("url", "")).strip()
-            _zetta_cfg["poll_interval"]  = max(5, min(120, int(data.get("interval", 10) or 10)))
-            _zetta_cfg["timeout"]        = max(2, min(30,  int(data.get("timeout",  6)  or 6)))
+            _zetta_cfg["url"]             = str(data.get("url",    "")).strip()
+            _zetta_cfg["status_feed_url"] = str(data.get("sf_url", "")).strip()
+            _zetta_cfg["poll_interval"]   = max(5, min(120, int(data.get("interval", 10) or 10)))
+            _zetta_cfg["timeout"]         = max(2, min(30,  int(data.get("timeout",  6)  or 6)))
             raw_cats = str(data.get("spot_cats", "")).split(",")
             _zetta_cfg["spot_categories"] = [c.strip().upper() for c in raw_cats if c.strip()]
             _zetta_cfg["stations"] = [
@@ -753,6 +937,8 @@ def register(app, ctx):
             ]
         _save_cfg()
         _wsdl_cache.clear()   # force namespace re-detection
+        # Reset SF health so it re-probes on next poll cycle
+        _sf_health.update({"ok": None, "error": "", "ts": 0.0})
         return jsonify({"ok": True})
 
     # ── Discover stations ─────────────────────────────────────────────────────
@@ -764,14 +950,27 @@ def register(app, ctx):
         from flask import request, jsonify
         data    = request.get_json(silent=True) or {}
         url     = str(data.get("url", "")).strip()
+        sf_url  = str(data.get("sf_url", "")).strip() or _derive_status_feed_url(url)
         if not url:
             return jsonify({"error": "No URL provided", "stations": []})
         with _cfg_lock:
             timeout = _zetta_cfg.get("timeout", 6)
+
+        # Try Status Feed GetStations first (richer/faster)
+        if sf_url:
+            try:
+                stations = _sf_call_get_stations(sf_url, timeout)
+                if stations:
+                    return jsonify({"stations": stations, "namespace": _ns(sf_url, timeout),
+                                    "source": "status_feed"})
+            except Exception as sf_err:
+                _log.debug("[Zetta] Status Feed discover failed (%s), trying main service", sf_err)
+
+        # Fall back to main SOAP service
         try:
             ns       = _ns(url, timeout)
             stations = _call_get_stations(url, ns, timeout)
-            return jsonify({"stations": stations, "namespace": ns})
+            return jsonify({"stations": stations, "namespace": ns, "source": "main_service"})
         except Exception as e:
             return jsonify({"error": str(e), "stations": []})
 
@@ -783,20 +982,31 @@ def register(app, ctx):
     def zetta_test():
         from flask import request, jsonify
         data    = request.get_json(silent=True) or {}
-        url     = str(data.get("url", "")).strip()
+        url     = str(data.get("url",    "")).strip()
+        sf_url  = str(data.get("sf_url", "")).strip() or _derive_status_feed_url(url)
         if not url:
             return jsonify({"ok": False, "error": "No URL provided"})
         with _cfg_lock:
             timeout = _zetta_cfg.get("timeout", 6)
+
+        result = {"ok": False, "namespace": "", "sf_ok": None, "sf_url": sf_url}
         try:
-            # A HEAD/GET to the base URL first (fast connectivity check)
             req = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(req, timeout=timeout):
                 pass
-            ns = _wsdl_info(url, timeout).get("ns") or "(could not parse WSDL)"
-            return jsonify({"ok": True, "namespace": ns})
+            result["namespace"] = _wsdl_info(url, timeout).get("ns") or "(could not parse WSDL)"
+            result["ok"] = True
         except Exception as e:
-            return jsonify({"ok": False, "error": str(e)})
+            return jsonify({"ok": False, "error": str(e), "sf_ok": None, "sf_url": sf_url})
+
+        # Also probe Status Feed if derivable
+        if sf_url:
+            try:
+                result["sf_ok"] = _sf_call_is_alive(sf_url, timeout)
+            except Exception:
+                result["sf_ok"] = False
+
+        return jsonify(result)
 
     # ── Raw debug call ────────────────────────────────────────────────────────
 
