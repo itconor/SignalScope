@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.44"
+BUILD                  = "SignalScope-3.4.45"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -24403,6 +24403,8 @@ def _mobile_node_summary(node: dict) -> dict:
         "machine": node.get("machine", ""),
         "live_url": _mobile_live_url_from_node(node),
         "level_dbfs": level_dbfs,
+        "rtp_loss_pct": node.get("rtp_loss_pct"),
+        "glitch_count": node.get("glitch_count") or 0,
         "ts": node.get("ts"),
     }
     if node.get("type") == "stack":
@@ -24448,6 +24450,8 @@ def _mobile_chain_summary(result: dict, now: float | None = None) -> dict:
         "age_secs": max(0, int(round(now - updated_at))),
         "nodes": [_mobile_node_summary(n) for n in (result.get("nodes", []) or [])],
         "fault_since_ts": result.get("fault_since_ts"),
+        "health_score": result.get("health_score"),
+        "health_label": result.get("health_label"),
     }
 
 
@@ -24486,18 +24490,34 @@ def api_mobile_hub_overview():
         if not online:
             site_status = "offline"
             total_offline += 1
-        elif any("ALERT" in (st.get("ai_status") or "") for st in streams):
+        elif any(
+            "ALERT" in (st.get("ai_status") or "") or
+            st.get("status") in ("alert", "silence", "fault") or
+            st.get("silence_active") or
+            (st.get("glitch_count") or 0) > 0
+            for st in streams
+        ):
             site_status = "alert"
             total_online += 1
-        elif any("WARN" in (st.get("ai_status") or "") for st in streams):
+        elif any(
+            "WARN" in (st.get("ai_status") or "") or
+            st.get("status") == "warn"
+            for st in streams
+        ):
             site_status = "warn"
             total_online += 1
         else:
             site_status = "ok"
             total_online += 1
 
-        s_alert = sum(1 for st in streams if "ALERT" in (st.get("ai_status") or ""))
-        s_warn  = sum(1 for st in streams if "WARN"  in (st.get("ai_status") or ""))
+        s_alert = sum(1 for st in streams if (
+            "ALERT" in (st.get("ai_status") or "") or
+            st.get("status") in ("alert", "silence", "fault")
+        ))
+        s_warn  = sum(1 for st in streams if (
+            "WARN" in (st.get("ai_status") or "") or
+            st.get("status") == "warn"
+        ))
         s_ok    = max(0, len(streams) - s_alert - s_warn)
         total_alert += s_alert
         total_warn  += s_warn
@@ -24528,6 +24548,7 @@ def api_mobile_hub_overview():
                 "ai_phase":    st.get("ai_phase", ""),
                 "rtp_loss_pct":   st.get("rtp_loss_pct"),
                 "rtp_jitter_ms":  st.get("rtp_jitter_ms"),
+                "glitch_count":   st.get("glitch_count") or 0,
                 "fm_rds_ps":   st.get("fm_rds_ps"),
                 "fm_rds_rt":   st.get("fm_rds_rt"),
                 "dab_service": st.get("dab_service"),
@@ -25794,6 +25815,42 @@ def api_chains_clip_download(clip_key: str, fname: str):
         return "Forbidden", 403
     path = os.path.join(clip_dir, fname)
     return _serve_clip_wav(path, force_download=request.args.get("dl") == "1")
+
+
+@app.get("/api/mobile/ab_groups")
+@mobile_api_required
+def api_mobile_ab_groups():
+    """Return all configured A/B groups with live status for the iOS app."""
+    cfg    = monitor.app_cfg
+    groups = cfg.ab_groups or []
+    states = hub_server._abgroup_states if hub_server else {}
+    chains_by_id = {c.get("id"): c.get("name", c.get("id", ""))
+                    for c in (cfg.signal_chains or [])}
+    result = []
+    for grp in groups:
+        gid = grp.get("id", "")
+        st  = states.get(gid, {
+            "status": "unknown", "a_ok": True, "b_ok": True,
+            "rx_ok": True, "since": 0.0,
+        })
+        result.append({
+            "id":           gid,
+            "name":         grp.get("name", gid),
+            "active_role":  grp.get("active_role", "a"),
+            "notes":        grp.get("notes", ""),
+            "chain_a_id":   grp.get("chain_a_id", ""),
+            "chain_a_name": chains_by_id.get(grp.get("chain_a_id", ""),
+                                             grp.get("chain_a_id", "")),
+            "chain_b_id":   grp.get("chain_b_id", ""),
+            "chain_b_name": chains_by_id.get(grp.get("chain_b_id", ""),
+                                             grp.get("chain_b_id", "")),
+            "status":  st.get("status", "unknown"),  # "ok"|"warn"|"fault"|"unknown"
+            "a_ok":    st.get("a_ok", True),
+            "b_ok":    st.get("b_ok", True),
+            "rx_ok":   st.get("rx_ok", True),
+            "since":   st.get("since", 0.0),
+        })
+    return jsonify({"ok": True, "results": result, "count": len(result)})
 
 
 @app.get("/api/mobile/clip/<clip_key>/<fname>")

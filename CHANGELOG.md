@@ -2,6 +2,21 @@
 
 ---
 
+## [3.4.45] - 2026-03-28
+
+### Added
+- **Mobile API — glitch data on streams and nodes** — `GET /api/mobile/hub/overview` now includes `glitch_count` per stream. `_mobile_node_summary` now includes `glitch_count` and `rtp_loss_pct` per chain node so the iOS app can show glitch and RTP badges on individual chain nodes.
+- **Mobile API — health score on chains** — `_mobile_chain_summary` now includes `health_score` and `health_label` so the iOS app receives and can display the chain health score (was always in the iOS model, now actually populated by the API).
+- **Mobile API — A/B groups endpoint** — New `GET /api/mobile/ab_groups` returns all configured A/B failover groups with live status (`ok`/`warn`/`fault`/`unknown`), active role, per-chain health booleans, and chain names. Used by the new iOS A/B Groups tab.
+- **iOS — glitch count badges** — Stream rows in the Sites tab show an orange ⚡ glitch count when > 0. Chain node detail rows show glitch count and RTP loss % with severity colour coding.
+- **iOS — A/B Groups tab** — New tab in the iOS app showing all configured A/B failover groups with status badge, active/standby chain labels, per-chain status dots, and notes. Pull-to-refresh.
+- **iOS — GLITCH event type** — Report event cards show GLITCH and AUDIO_GLITCH_SUSTAINED with an orange `bolt.fill` badge rather than the default grey.
+
+### Fixed
+- **Mobile API — site_status reflects actual stream alerts** — `api_mobile_hub_overview` previously set `site_status` based only on AI anomaly state (`ai_status`). Now also considers actual stream alert status (silence, fault) and glitch activity, so the app correctly shows a site as alert when there is a silence fault even if AI is fine.
+
+---
+
 ## [3.4.44] - 2026-03-28
 
 ### Fixed
