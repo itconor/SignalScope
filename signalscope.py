@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.43"
+BUILD                  = "SignalScope-3.4.44"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -29225,10 +29225,9 @@ setInterval(_loadTrends, 300000);
     <span class="sum-pill" style="color:var(--al)">🚨 {{alert_site_count}} alert</span>
     <span class="sum-pill" style="color:var(--wn)">⚠ {{warn_site_count}} warn</span>
     <span class="sum-pill" style="color:var(--acc)">⏳ {{stale_count}} stale</span>
+    {%- if hub_cpu is not none %}<span class="sum-pill" style="color:var(--mu)">🖥 CPU {{hub_cpu}}%</span>{% endif %}
+    {%- if hub_mem is not none %}<span class="sum-pill" style="color:var(--mu)">💾 RAM {{hub_mem}}%</span>{% endif %}
   </div>
-
-  <div class="sum-pill">🖥 CPU {{hub_cpu if hub_cpu!=None else "—"}}%</div>
-  <div class="sum-pill">💾 RAM {{hub_mem if hub_mem!=None else "—"}}%</div>
 
   <div class="hub-toolbar">
     <input id="hubSearch" class="search" type="text" placeholder="Search sites, streams, FM, DAB, alerts…">

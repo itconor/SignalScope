@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.44] - 2026-03-28
+
+### Fixed
+- **Hub dashboard — CPU / RAM pills appear on a separate row** — the CPU and RAM `<div class="sum-pill">` elements were placed outside the `.hub-summary` container, so the browser rendered them as block-level elements on their own row beneath the other summary pills. Moved them inside `.hub-summary` as inline `<span class="sum-pill">` elements, matching the clock / build / sites / offline / alert / warn / stale pills. They now sit on the same summary row and are conditionally rendered (hidden when metrics are unavailable).
+
+---
+
 ## [3.4.43] - 2026-03-28
 
 ### Fixed
