@@ -2,6 +2,16 @@
 
 ---
 
+## [Logger 1.4.13] - 2026-03-28
+
+### Added
+- **Logger — Right-click on timeline to set mark-in / mark-out** — Right-clicking anywhere in the zoomed timeline overview (show/track/mic bands) sets export markers directly from the overview without needing the Mark In / Mark Out buttons. First right-click sets the in-point (clearing any previous out-point); second right-click sets the out-point. If you right-click again after both markers are placed, a new in-point is started. Clicking before the current in-point moves the in-point instead. Works at any zoom level and correctly accounts for the horizontal scroll position. The day-bar audio waveform is exempt (right-clicking there has no effect, preserving its normal behaviour).
+
+### Fixed
+- **Logger — Show name band no longer fragments into repeated short blocks** — The metadata API re-emits the current show name on every 30-second poll, creating dozens of duplicate adjacent `show` events. `_renderShowBand` now merges consecutive events with the same `show_name + presenter` key into a single continuous block, so each show appears as one unbroken span that stretches from its start time to the next different show.
+
+---
+
 ## [Logger 1.4.12] - 2026-03-28
 
 ### Fixed

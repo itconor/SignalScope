@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.12",
+    "version": "1.4.13",
 }
 
 import datetime
@@ -2470,9 +2470,18 @@ function _renderShowBand(events){
   band.innerHTML = '';
   var shows = events.filter(function(e){ return e.type === 'show' && e.show_name; });
   if(!shows.length) return;
+  // Merge consecutive entries with the same show_name + presenter into one block
+  // (the metadata API may re-emit the same show name on every poll cycle)
+  var merged = [];
   for(var i = 0; i < shows.length; i++){
-    var start = shows[i].ts_s;
-    var end   = (i + 1 < shows.length) ? shows[i + 1].ts_s : 86400;
+    var key = shows[i].show_name + '\x00' + (shows[i].presenter || '');
+    if(merged.length && merged[merged.length - 1]._key === key) continue;
+    merged.push({ts_s: shows[i].ts_s, show_name: shows[i].show_name,
+                 presenter: shows[i].presenter || '', _key: key});
+  }
+  for(var i = 0; i < merged.length; i++){
+    var start = merged[i].ts_s;
+    var end   = (i + 1 < merged.length) ? merged[i + 1].ts_s : 86400;
     var w = (end - start) / 86400 * 100;
     var l = start / 86400 * 100;
     if(w < 0.05) continue;
@@ -2480,8 +2489,8 @@ function _renderShowBand(events){
     sp.className = 'show-span';
     sp.style.left  = l + '%';
     sp.style.width = w + '%';
-    var label = shows[i].show_name;
-    if(shows[i].presenter) label += ' \u00b7 ' + shows[i].presenter;
+    var label = merged[i].show_name;
+    if(merged[i].presenter) label += ' \u00b7 ' + merged[i].presenter;
     sp.textContent = label;
     sp.title = label;
     band.appendChild(sp);
@@ -2786,6 +2795,34 @@ document.getElementById('day-bar').addEventListener('mousemove',function(e){
 document.getElementById('day-bar').addEventListener('mouseleave',function(){
   document.getElementById('day-bar-hover').style.display='none';
 });
+
+// ── Right-click on timeline overview: set mark-in / mark-out ─────────────
+(function(){
+  var wrap = document.querySelector('.tl-scroll-wrap');
+  if(!wrap) return;
+  wrap.addEventListener('contextmenu', function(e){
+    // Ignore right-clicks directly on the day-bar (keep its own context menu)
+    if(e.target.closest('#day-bar')) return;
+    e.preventDefault();
+    var content = document.getElementById('tl-zoom-content');
+    if(!content) return;
+    var rect = content.getBoundingClientRect();
+    var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    var secs = pct * 86400;
+    // Cycle: no-in → set-in | in-only → set-out | both set → new-in
+    if(_markIn === null || _markOut !== null){
+      _markIn  = secs;
+      _markOut = null;
+    } else {
+      // mark-in is set, mark-out is not — place out (or move in if clicked before it)
+      if(secs <= _markIn){ _markIn = secs; }
+      else { _markOut = secs; }
+    }
+    updateInOutLabel(); updateScrubMarkers(); updateDayBarMarkers();
+    document.getElementById('export-btn').disabled =
+      (_markIn === null || _markOut === null || !!_hubSite);
+  });
+})();
 
 // ── Mark in/out ───────────────────────────────────────────────────────────
 function _currentPlayPos(){
