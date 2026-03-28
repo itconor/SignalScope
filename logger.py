@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.0.1",
+    "version": "1.1.0",
 }
 
 import datetime
@@ -844,6 +844,17 @@ select:focus,input:focus{border-color:var(--acc)}
 .tl-block[data-status="future"]{background:#0a1828}
 .tl-block::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 5px);left:50%;transform:translateX(-50%);background:#0d2346;border:1px solid var(--bor);padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;color:var(--tx);pointer-events:none;opacity:0;transition:opacity .12s;z-index:10}
 .tl-block:hover::after{opacity:1}
+.tl-block.in-range::before{content:'';position:absolute;inset:0;background:rgba(23,168,255,.30);border-radius:3px;pointer-events:none}
+/* Day bar */
+.day-bar{width:100%;height:30px;position:relative;background:#0a1828;border-radius:6px;overflow:hidden;cursor:pointer;margin-bottom:12px;flex-shrink:0;border:1px solid var(--bor);user-select:none}
+.day-bar-bg{display:flex;height:100%;width:100%}
+.day-bar-blk{height:100%;flex:1}
+.day-bar-head{position:absolute;top:0;bottom:0;width:2px;background:var(--ok);pointer-events:none;z-index:4;transform:translateX(-50%)}
+.day-bar-in{position:absolute;top:0;bottom:0;width:2px;background:var(--acc);pointer-events:none;z-index:3;transform:translateX(-50%)}
+.day-bar-out{position:absolute;top:0;bottom:0;width:2px;background:#f59e0b;pointer-events:none;z-index:3;transform:translateX(-50%)}
+.day-bar-range{position:absolute;top:0;bottom:0;background:rgba(23,168,255,.18);pointer-events:none;z-index:2}
+.day-bar-hover{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.3);pointer-events:none;z-index:5;display:none}
+.day-bar-ticks{position:absolute;inset:0;pointer-events:none;z-index:1}
 /* Notice */
 .notice{background:rgba(23,168,255,.08);border:1px solid rgba(23,168,255,.25);border-radius:8px;padding:11px 14px;font-size:13px;color:var(--mu);margin-bottom:12px}
 .notice b{color:var(--acc)}
@@ -856,7 +867,7 @@ select:focus,input:focus{border-color:var(--acc)}
 .p-sub{font-size:11px;color:var(--mu)}
 .play-btn{width:34px;height:34px;border-radius:50%;background:var(--ok);border:none;color:#fff;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .play-btn:hover{filter:brightness(1.1)}
-.time-lbl{font-size:12px;color:var(--mu);font-variant-numeric:tabular-nums;min-width:78px;text-align:center}
+.time-lbl{font-size:12px;color:var(--mu);font-variant-numeric:tabular-nums;min-width:60px;text-align:center}
 /* Scrub */
 .scrub-wrap{position:relative;height:22px;display:flex;align-items:center;cursor:pointer}
 .scrub-track{width:100%;height:4px;background:#0e2040;border-radius:2px;position:relative;overflow:visible;border:1px solid var(--bor)}
@@ -954,6 +965,17 @@ select:focus,input:focus{border-color:var(--acc)}
         <div id="tl-notice" class="notice hidden">
           <b>No streams enabled for recording.</b> Open <span class="notice-link" id="notice-settings-link">Settings</span> to choose which streams to log.
         </div>
+        <div class="day-bar" id="day-bar">
+          <div class="day-bar-bg" id="day-bar-bg"></div>
+          <div class="day-bar-range hidden" id="day-bar-range"></div>
+          <div class="day-bar-head hidden" id="day-bar-head"></div>
+          <div class="day-bar-in hidden" id="day-bar-in"></div>
+          <div class="day-bar-out hidden" id="day-bar-out"></div>
+          <div class="day-bar-hover" id="day-bar-hover"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--mu);margin-bottom:8px;padding:0 1px">
+          <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:55</span>
+        </div>
         <div id="tl-grid" class="tl-grid"></div>
       </div>
 
@@ -965,7 +987,7 @@ select:focus,input:focus{border-color:var(--acc)}
             <div class="p-title" id="p-title">No segment selected</div>
             <div class="p-sub" id="p-sub">Click a block on the timeline to play</div>
           </div>
-          <span class="time-lbl" id="time-lbl">0:00 / 0:00</span>
+          <span class="time-lbl" id="time-lbl">--:--:--</span>
         </div>
         <div class="scrub-wrap" id="scrub">
           <div class="scrub-track">
@@ -1027,6 +1049,7 @@ function _post(u,b){
 function _esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function _fmt(s){ s=isNaN(s)?0:s; var m=Math.floor(s/60),ss=Math.floor(s%60); return m+':'+(ss<10?'0':'')+ss; }
 function _fmtAbs(s){ var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=Math.floor(s%60); return (h>0?h+':':'')+(m<10&&h>0?'0':'')+m+':'+(sc<10?'0':'')+sc; }
+function _fmtWall(s){ s=s||0; var h=Math.floor(s/3600)%24,m=Math.floor((s%3600)/60),sc=Math.floor(s%60); return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sc).padStart(2,'0'); }
 function _fmtBytes(b){ if(b<1048576) return (b/1024).toFixed(1)+'KB'; if(b<1073741824) return (b/1048576).toFixed(1)+'MB'; return (b/1073741824).toFixed(2)+'GB'; }
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -1035,6 +1058,7 @@ var _streams     = [];
 var _currentSlug = '';
 var _currentDate = '';
 var _selSeg      = null;
+var _segsAll     = [];
 var _markIn      = null;
 var _markOut     = null;
 var _scrubDrag   = false;
@@ -1073,8 +1097,11 @@ setupAudio();
 // ── Stream selector ───────────────────────────────────────────────────────
 document.getElementById('stream-sel').addEventListener('change', function(){
   _currentSlug = this.value;
-  _selSeg = null; _markIn = _markOut = null;
+  _selSeg = null; _segsAll = []; _markIn = _markOut = null;
   updateInOutLabel();
+  document.getElementById('export-btn').disabled = true;
+  document.getElementById('day-bar-head').classList.add('hidden');
+  buildDayBar([]);
   if(_currentSlug) loadDays();
   else buildTimeline([]);
 });
@@ -1144,12 +1171,18 @@ function loadDays(){
 function loadSegments(){
   if(!_currentSlug||!_currentDate){ buildTimeline([]); return; }
   document.getElementById('tl-title').textContent = _currentDate;
+  _segsAll = []; _markIn = _markOut = null;
+  updateInOutLabel();
+  document.getElementById('export-btn').disabled = true;
+  document.getElementById('day-bar-head').classList.add('hidden');
+  buildDayBar([]);
   _get('/api/logger/segments/'+_currentSlug+'/'+_currentDate).then(function(segs){
     buildTimeline(segs);
   });
 }
 
 function buildTimeline(segs){
+  _segsAll = segs;
   var grid = document.getElementById('tl-grid');
   grid.innerHTML = '';
   var lookup = {};
@@ -1169,6 +1202,7 @@ function buildTimeline(segs){
       var ss = h*3600 + m*60;
       var blk = document.createElement('div');
       blk.className = 'tl-block';
+      blk.dataset.startS = String(ss);
       var seg = lookup[ss];
       var future = (_currentDate===todayStr && ss>nowSecs);
       if(future){
@@ -1188,29 +1222,92 @@ function buildTimeline(segs){
     }
     grid.appendChild(row);
   }
+  buildDayBar(segs);
 }
 
 function playSeg(seg, blkEl){
-  document.querySelectorAll('.tl-block.selected,.tl-block.playing').forEach(function(b){ b.classList.remove('selected','playing'); });
-  blkEl.classList.add('selected','playing');
-  _selSeg = seg;
-  var spct = (seg.silence_pct||0).toFixed(1);
-  var info = document.getElementById('seg-info');
-  document.getElementById('seg-info-text').innerHTML =
-    '<b>'+_esc(seg.filename)+'</b><br>Silence: '+spct+'% · '+seg.quality+' quality'
-    +(seg.silence_ranges&&seg.silence_ranges.length?' · '+seg.silence_ranges.length+' gap(s)':'');
-  info.style.display='block';
-  var audio = document.getElementById('audio-el');
-  audio.src = '/api/logger/audio/'+_currentSlug+'/'+_currentDate+'/'+seg.filename;
-  audio.load();
-  audio.play().catch(function(){});
-  document.getElementById('p-title').textContent = seg.filename;
-  document.getElementById('p-sub').textContent   = _currentDate+' · '+_currentSlug;
-  document.getElementById('play-btn').textContent = '⏸';
-  _markIn = _markOut = null;
-  updateInOutLabel();
-  document.getElementById('scrub-in').classList.add('hidden');
-  document.getElementById('scrub-out').classList.add('hidden');
+  _loadSegAndSeek(seg, 0);
+  updateDayBarMarkers();
+}
+
+// ── Segment loading & navigation ──────────────────────────────────────────
+function _loadSegAndSeek(seg, offset){
+  var a=document.getElementById('audio-el');
+  var url='/api/logger/audio/'+_currentSlug+'/'+_currentDate+'/'+seg.filename;
+  _selSeg=seg;
+  var h=Math.floor(seg.start_s/3600),m=Math.floor((seg.start_s%3600)/60);
+  document.getElementById('p-title').textContent=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+  document.getElementById('p-sub').textContent=_currentDate+' · '+_currentSlug;
+  _updateGridPlaying(seg.start_s);
+  var spct=(seg.silence_pct||0).toFixed(1);
+  document.getElementById('seg-info-text').innerHTML='<b>'+_esc(seg.filename)+'</b><br>Silence: '+spct+'% · '+seg.quality+' quality';
+  document.getElementById('seg-info').style.display='block';
+  if(a.getAttribute('data-src')!==url){
+    a.setAttribute('data-src',url);
+    a.src=url; a.load();
+    var _oncp=function(){ a.currentTime=Math.max(0,offset); a.play().catch(function(){}); a.removeEventListener('canplay',_oncp); };
+    a.addEventListener('canplay',_oncp);
+  } else {
+    a.currentTime=Math.max(0,offset);
+    if(a.paused) a.play().catch(function(){});
+  }
+}
+
+function _updateGridPlaying(startS){
+  document.querySelectorAll('.tl-block').forEach(function(b){ b.classList.remove('selected','playing'); });
+  var blk=document.querySelector('.tl-block[data-start-s="'+startS+'"]');
+  if(blk) blk.classList.add('selected','playing');
+}
+
+function _playNext(){
+  if(!_selSeg||!_segsAll.length) return;
+  var next=null, ns=_selSeg.start_s+_SEG_SECS;
+  for(var i=0;i<_segsAll.length;i++){ if(_segsAll[i].start_s===ns){ next=_segsAll[i]; break; } }
+  if(next){ _loadSegAndSeek(next,0); } else { document.getElementById('play-btn').textContent='▶'; _updateGridPlaying(-1); }
+}
+
+function _seekToSecs(secs){
+  if(!_segsAll.length) return;
+  secs=Math.max(0,Math.min(86399,secs));
+  var seg=null;
+  for(var i=0;i<_segsAll.length;i++){
+    if(_segsAll[i].start_s<=secs && secs<_segsAll[i].start_s+_SEG_SECS){ seg=_segsAll[i]; break; }
+  }
+  if(!seg) return;
+  var offset=secs-seg.start_s;
+  _loadSegAndSeek(seg, offset);
+}
+
+function buildDayBar(segs){
+  var bg=document.getElementById('day-bar-bg');
+  bg.innerHTML='';
+  var lookup={};
+  segs.forEach(function(s){ lookup[s.start_s]=s; });
+  for(var i=0;i<288;i++){
+    var ss=i*300;
+    var d=document.createElement('div');
+    d.className='day-bar-blk';
+    var seg=lookup[ss];
+    if(seg){
+      var sp=seg.silence_pct||0;
+      d.style.background=sp>80?'#7f1d1d':sp>10?'#78350f':'#166534';
+    } else {
+      d.style.background='#0e2040';
+    }
+    bg.appendChild(d);
+  }
+  updateDayBarMarkers();
+}
+
+function updateDayBarMarkers(){
+  var inE=document.getElementById('day-bar-in'),outE=document.getElementById('day-bar-out'),rngE=document.getElementById('day-bar-range');
+  if(_markIn!==null){ inE.style.left=(_markIn/86400*100)+'%'; inE.classList.remove('hidden'); } else { inE.classList.add('hidden'); }
+  if(_markOut!==null){ outE.style.left=(_markOut/86400*100)+'%'; outE.classList.remove('hidden'); } else { outE.classList.add('hidden'); }
+  if(_markIn!==null&&_markOut!==null){ rngE.style.left=(_markIn/86400*100)+'%'; rngE.style.width=((_markOut-_markIn)/86400*100)+'%'; rngE.classList.remove('hidden'); } else { rngE.classList.add('hidden'); }
+  document.querySelectorAll('.tl-block[data-start-s]').forEach(function(b){
+    var ss=parseInt(b.dataset.startS||-1);
+    b.classList.toggle('in-range', _markIn!==null&&_markOut!==null&&ss+_SEG_SECS>_markIn&&ss<_markOut);
+  });
 }
 
 // ── Player ────────────────────────────────────────────────────────────────
@@ -1218,15 +1315,19 @@ function setupAudio(){
   var a = document.getElementById('audio-el');
   a.addEventListener('timeupdate', function(){
     var cur=a.currentTime, dur=a.duration||0;
-    document.getElementById('time-lbl').textContent = _fmt(cur)+' / '+_fmt(dur);
+    if(_selSeg){
+      var wallPos=_selSeg.start_s+(a.currentTime||0);
+      document.getElementById('time-lbl').textContent=_fmtWall(wallPos);
+      var dbh=document.getElementById('day-bar-head');
+      dbh.style.left=(wallPos/86400*100)+'%'; dbh.classList.remove('hidden');
+    }
     var pct = dur>0 ? cur/dur*100 : 0;
     document.getElementById('scrub-fill').style.width = pct+'%';
     document.getElementById('scrub-thumb').style.left  = pct+'%';
     updateScrubMarkers();
   });
   a.addEventListener('ended', function(){
-    document.getElementById('play-btn').textContent='▶';
-    document.querySelectorAll('.tl-block.playing').forEach(function(b){ b.classList.remove('playing'); });
+    _playNext();
   });
   a.addEventListener('pause', function(){ document.getElementById('play-btn').textContent='▶'; });
   a.addEventListener('play',  function(){ document.getElementById('play-btn').textContent='⏸'; });
@@ -1257,13 +1358,31 @@ function seekTo(e){
   if(a.duration) a.currentTime = pct*a.duration;
 }
 
+// ── Day bar seek ──────────────────────────────────────────────────────────
+function _dayBarSeek(e){
+  var rect=document.getElementById('day-bar').getBoundingClientRect();
+  var pct=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
+  var secs=Math.floor(pct*86400);
+  _seekToSecs(secs);
+}
+document.getElementById('day-bar').addEventListener('click',function(e){ _dayBarSeek(e); });
+document.getElementById('day-bar').addEventListener('mousemove',function(e){
+  var rect=this.getBoundingClientRect();
+  var pct=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
+  var hv=document.getElementById('day-bar-hover');
+  hv.style.left=(pct*100)+'%'; hv.style.display='block';
+});
+document.getElementById('day-bar').addEventListener('mouseleave',function(){
+  document.getElementById('day-bar-hover').style.display='none';
+});
+
 // ── Mark in/out ───────────────────────────────────────────────────────────
 document.getElementById('mark-in-btn').addEventListener('click', function(){
   if(!_selSeg) return;
   var a=document.getElementById('audio-el');
   _markIn = _selSeg.start_s + a.currentTime;
   if(_markOut!==null && _markOut<=_markIn) _markOut=null;
-  updateInOutLabel(); updateScrubMarkers();
+  updateInOutLabel(); updateScrubMarkers(); updateDayBarMarkers();
   document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null);
 });
 
@@ -1272,14 +1391,14 @@ document.getElementById('mark-out-btn').addEventListener('click', function(){
   var a=document.getElementById('audio-el');
   _markOut = _selSeg.start_s + a.currentTime;
   if(_markIn!==null && _markOut<=_markIn) _markIn=null;
-  updateInOutLabel(); updateScrubMarkers();
+  updateInOutLabel(); updateScrubMarkers(); updateDayBarMarkers();
   document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null);
 });
 
 function updateInOutLabel(){
   var parts=[];
-  if(_markIn!==null)  parts.push('In: '+_fmtAbs(_markIn));
-  if(_markOut!==null) parts.push('Out: '+_fmtAbs(_markOut));
+  if(_markIn!==null)  parts.push('In: '+_fmtWall(_markIn));
+  if(_markOut!==null) parts.push('Out: '+_fmtWall(_markOut));
   if(_markIn!==null&&_markOut!==null) parts.push('Dur: '+_fmt(_markOut-_markIn));
   document.getElementById('inout-lbl').textContent = parts.join('  ·  ');
 }

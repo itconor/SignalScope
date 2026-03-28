@@ -2,6 +2,18 @@
 
 ---
 
+## [3.4.47] - 2026-03-28
+
+### Changed
+- **Logger plugin 1.1.0 — unified continuous timeline UI** — Complete UX overhaul of the compliance logger playback interface:
+  - **Full-day seekable bar**: A new thin horizontal bar above the block grid shows all 288 five-minute segments as a single strip coloured by silence status. Click or drag anywhere on the bar to jump to that exact time. A green playhead tracks current position; blue/amber in/out markers and a shaded range region update live.
+  - **Wall-clock timestamps everywhere**: The player now shows the real recorded time (`HH:MM:SS`) rather than position within the current 5-minute clip. In/Out labels show exact wall-clock times (e.g. `In: 14:32:18 · Out: 15:04:45 · Dur: 32:27`).
+  - **Cross-block mark in/out**: In and Out points persist when switching segments. You can mark in on one block, navigate to any other block, and mark out — the selection spans the full range. Timeline blocks within the selection get a blue tint overlay.
+  - **Cross-block export**: Export already stitched multi-segment files on the server; the client now correctly passes the marks regardless of which block is currently loaded.
+  - **Auto-advance playback**: When a segment finishes, playback automatically continues into the next consecutive recorded segment without user interaction.
+
+---
+
 ## [3.4.46] - 2026-03-28
 
 ### Fixed
