@@ -908,7 +908,23 @@ document.addEventListener('DOMContentLoaded',function(){
   </ol>
   <p class="help" style="margin-top:10px">Rotating the token immediately invalidates the previous one.</p>
 
-  <div class="sec" style="margin-top:24px">🔔 APNs Push Notifications</div>
+  <div class="sec" style="margin-top:24px">📡 Push Server</div>
+  <p class="help">SignalScope can route push notifications through a central push server instead of calling Apple/Google directly. The server holds the APNs/FCM credentials and delivers on behalf of all connected hubs.</p>
+  <p class="help" style="margin-top:6px"><strong>Default:</strong> <code style="background:#0b1d3b;padding:1px 5px;border-radius:4px">https://hub.signalscope.site</code> — hosted push service for all SignalScope users. <strong>Clear this field</strong> to use local APNs/FCM credentials below instead.</p>
+  <label style="margin-top:10px">Push Server URL
+    <input type="text" name="push_server_url" value="{{cfg.mobile_api.push_server_url}}" placeholder="https://hub.signalscope.site (clear to use direct APNs/FCM below)">
+  </label>
+  {% if cfg.mobile_api.push_server_url %}
+  <div style="margin-top:10px;padding:10px 14px;border:1px solid var(--bor);border-radius:8px;background:#0c1f40;font-size:13px">
+    <span style="color:#18e471">✔ Push server active</span> — notifications routed via <strong>{{cfg.mobile_api.push_server_url}}</strong>
+  </div>
+  {% else %}
+  <div style="margin-top:10px;padding:10px 14px;border:1px solid var(--bor);border-radius:8px;background:#0c1f40;font-size:13px">
+    <span style="color:var(--wn)">⚠ Push server not set</span> — using direct APNs/FCM credentials below
+  </div>
+  {% endif %}
+
+  <div class="sec" style="margin-top:24px">🔔 APNs Push Notifications <span style="color:var(--mu);font-size:11px;font-weight:400">(direct — used when Push Server URL is empty)</span></div>
   <p class="help">Fill these in to send real push notifications to the iPhone app when a chain fault fires. Leave blank to skip. Requires <code style="background:#0b1d3b;padding:1px 5px;border-radius:4px">httpx[http2]</code> installed on the server.</p>
   <p class="help" style="margin-top:6px">Get credentials at <strong>developer.apple.com → Keys</strong>. Create a key with <strong>Apple Push Notifications service (APNs)</strong> enabled, then download the <code>.p8</code> file.</p>
 
@@ -947,7 +963,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
     {% endif %}
   </div>
 
-  <div class="sec" style="margin-top:28px">🤖 FCM Push Notifications (Android)</div>
+  <div class="sec" style="margin-top:28px">🤖 FCM Push Notifications (Android) <span style="color:var(--mu);font-size:11px;font-weight:400">(direct — used when Push Server URL is empty)</span></div>
   <p class="help">Fill these in to send push notifications to the Android app when a chain fault fires. Requires a Firebase project with Cloud Messaging enabled.</p>
   <p class="help" style="margin-top:6px">Get credentials at <strong>console.firebase.google.com → Project settings → Service accounts → Generate new private key</strong>. Paste the downloaded JSON below.</p>
 
@@ -1620,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.58"
+BUILD                  = "SignalScope-3.4.59"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2016,6 +2032,9 @@ class MobileApiConfig:
     fcm_project_id:          str  = ""   # Firebase project ID (from google-services.json)
     fcm_service_account_json: str = ""   # Full contents of the service account .json file
     fcm_device_tokens:       list = field(default_factory=list)  # [{token, watched_nodes}]
+    # Push server — when set, alert notifications are POSTed here instead of
+    # calling APNs/FCM directly.  Default: hub.signalscope.site.  Clear to use direct.
+    push_server_url: str = "https://hub.signalscope.site"
 
 
 @dataclass
@@ -2308,6 +2327,7 @@ def load_config() -> AppConfig:
             fcm_project_id=str(ma.get("fcm_project_id", "")),
             fcm_service_account_json=str(ma.get("fcm_service_account_json", "")),
             fcm_device_tokens=list(ma.get("fcm_device_tokens", [])),
+            push_server_url=str(ma.get("push_server_url", "https://hub.signalscope.site")),
         ),
         sla_target_pct=raw.get("sla_target_pct", 99.9),
         nowplaying_country=raw.get("nowplaying_country","GB"),
@@ -2452,6 +2472,7 @@ def save_config(cfg: AppConfig):
             "fcm_project_id":          str(getattr(cfg.mobile_api, "fcm_project_id", "")),
             "fcm_service_account_json": str(getattr(cfg.mobile_api, "fcm_service_account_json", "")),
             "fcm_device_tokens":       list(getattr(cfg.mobile_api, "fcm_device_tokens", [])),
+            "push_server_url":         str(getattr(cfg.mobile_api, "push_server_url", "https://hub.signalscope.site")),
         },
         "sla_target_pct": cfg.sla_target_pct,
         "nowplaying_country": cfg.nowplaying_country,
@@ -3443,6 +3464,103 @@ def _send_fcm_push_targeted(entries: list, title: str, body: str, data: "dict|No
             save_config(monitor.app_cfg)
 
     threading.Thread(target=_push_thread, daemon=True).start()
+
+
+# ── Push server relay ─────────────────────────────────────────────────────────
+
+_PUSH_SERVER_API_PATH = "/api/push/v1/send"
+
+
+def _send_via_push_server(server_url: str, ios_tokens: list, android_tokens: list,
+                          title: str, body: str, data: dict):
+    """POST alert + device tokens to a remote push server (e.g. hub.signalscope.site).
+    The server holds APNs/FCM credentials and does the actual delivery.
+    Dead tokens returned in the response are removed from local config.
+    """
+    if not ios_tokens and not android_tokens:
+        return
+
+    def _run():
+        import json as _json, urllib.request as _ur
+        try:
+            payload = _json.dumps({
+                "title":           title,
+                "body":            body,
+                "data":            {k: str(v) for k, v in (data or {}).items()},
+                "tokens_ios":      ios_tokens,
+                "tokens_android":  android_tokens,
+            }).encode()
+            url = server_url.rstrip("/") + _PUSH_SERVER_API_PATH
+            req = _ur.Request(url, data=payload, method="POST",
+                              headers={"Content-Type": "application/json"})
+            resp   = _ur.urlopen(req, timeout=15)
+            result = _json.loads(resp.read())
+            dead   = result.get("dead_tokens", [])
+            if dead:
+                ma = getattr(monitor.app_cfg, "mobile_api", None)
+                if ma:
+                    changed = False
+                    with _apns_tokens_lock:
+                        before = len(ma.apns_device_tokens)
+                        ma.apns_device_tokens = [
+                            e for e in ma.apns_device_tokens
+                            if _apns_token_str(e) not in dead
+                        ]
+                        if len(ma.apns_device_tokens) < before:
+                            changed = True
+                    with _fcm_tokens_lock:
+                        before = len(ma.fcm_device_tokens)
+                        ma.fcm_device_tokens = [
+                            e for e in ma.fcm_device_tokens
+                            if (e.get("token", "") if isinstance(e, dict) else e) not in dead
+                        ]
+                        if len(ma.fcm_device_tokens) < before:
+                            changed = True
+                    if changed:
+                        save_config(monitor.app_cfg)
+                monitor.log(f"[Push] Cleaned up {len(dead)} dead token(s) from server response")
+            monitor.log(f"[Push] ✔ Server delivery: ios={result.get('sent_ios',0)} "
+                        f"android={result.get('sent_android',0)}")
+        except Exception as exc:
+            monitor.log(f"[Push] ✘ Server send error ({server_url}): {exc}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _dispatch_push(title: str, body: str, data: "dict|None" = None,
+                   ios_entries: "list|None" = None,
+                   android_entries: "list|None" = None):
+    """Send a push notification via the configured route.
+
+    If ``push_server_url`` is set on mobile_api config, the notification is
+    forwarded to that server (which holds APNs/FCM credentials).  Otherwise
+    APNs/FCM are called directly using local credentials.
+
+    ``ios_entries`` / ``android_entries`` are for targeted sends (watched-node
+    alerts); pass None to broadcast to all registered tokens.
+    """
+    ma = getattr(monitor.app_cfg, "mobile_api", None)
+    if not ma:
+        return
+    push_url = getattr(ma, "push_server_url", "").strip()
+    if push_url:
+        with _apns_tokens_lock:
+            ios_toks = list(ios_entries if ios_entries is not None
+                            else getattr(ma, "apns_device_tokens", []))
+        with _fcm_tokens_lock:
+            android_toks = list(android_entries if android_entries is not None
+                                else getattr(ma, "fcm_device_tokens", []))
+        _send_via_push_server(push_url, ios_toks, android_toks, title, body, data or {})
+    else:
+        # Direct APNs/FCM using local credentials
+        if ios_entries is not None:
+            _send_apns_push_targeted(ios_entries, title, body, data)
+        else:
+            _send_apns_push(title, body, data)
+        if android_entries is not None:
+            _send_fcm_push_targeted(android_entries, title, body, data)
+        else:
+            _send_fcm_push(title, body, data)
 
 
 # ── Per-request CSP nonce ────────────────────────────────────────────────────
@@ -12993,25 +13111,15 @@ class HubServer:
                 except Exception as e:
                     monitor.log(f"[Chain] Alert send error: {e}")
 
-                # ── APNs push to mobile app ───────────────────────────────────────
+                # ── Push notification (server relay or direct APNs/FCM) ───────────
                 try:
-                    _send_apns_push(
-                        title=f"Fault: {chain_label}",
-                        body=msg[:180],
-                        data={"chain_id": cid},
-                    )
-                except Exception as e:
-                    monitor.log(f"[APNs] Push error in _fire_chain_fault: {e}")
-
-                # ── FCM push to Android devices ───────────────────────────────────
-                try:
-                    _send_fcm_push(
+                    _dispatch_push(
                         title=f"Fault: {chain_label}",
                         body=msg[:180],
                         data={"type": "chain_fault", "chain_id": cid},
                     )
                 except Exception as e:
-                    monitor.log(f"[FCM] Push error in _fire_chain_fault: {e}")
+                    monitor.log(f"[Push] Push error in _fire_chain_fault: {e}")
         else:
             monitor.log(f"[Chain] Fault logged (no notification): {msg}")
 
@@ -13050,12 +13158,7 @@ class HubServer:
                     except Exception as _e:
                         monitor.log(f"[Chain] Shared-fault single notify error: {_e}")
                     try:
-                        _send_apns_push(title=f"Fault: {chain_label}", body=msg[:180],
-                                        data={"chain_id": cid})
-                    except Exception:
-                        pass
-                    try:
-                        _send_fcm_push(title=f"Fault: {chain_label}", body=msg[:180],
+                        _dispatch_push(title=f"Fault: {chain_label}", body=msg[:180],
                                        data={"type": "chain_fault", "chain_id": cid})
                     except Exception:
                         pass
@@ -13087,12 +13190,7 @@ class HubServer:
                     "ptp_gm":        "",
                 })
                 try:
-                    _send_apns_push(title=f"Shared Fault: {machine_tag}", body=grouped_msg[:180],
-                                    data={"event": "chain_fault", "machine": machine_tag})
-                except Exception:
-                    pass
-                try:
-                    _send_fcm_push(title=f"Shared Fault: {machine_tag}", body=grouped_msg[:180],
+                    _dispatch_push(title=f"Shared Fault: {machine_tag}", body=grouped_msg[:180],
                                    data={"type": "chain_fault", "machine": machine_tag})
                 except Exception:
                     pass
@@ -13152,12 +13250,6 @@ class HubServer:
                     targeted = [e for e in all_entries
                                 if label in (e.get("watched_nodes") or [])
                                 if isinstance(e, dict)]
-                    if targeted:
-                        monitor.log(f"[APNs] Node down '{label}' — pushing to {len(targeted)} iOS device(s)")
-                        _send_apns_push_targeted(
-                            targeted, title, body,
-                            data={"type": "silence", "node": label},
-                        )
 
                     # FCM — find Android tokens watching this node
                     with _fcm_tokens_lock:
@@ -13165,11 +13257,15 @@ class HubServer:
                     fcm_targeted = [e for e in fcm_all
                                     if label in (e.get("watched_nodes") or [])
                                     if isinstance(e, dict)]
-                    if fcm_targeted:
-                        monitor.log(f"[FCM] Node down '{label}' — pushing to {len(fcm_targeted)} Android device(s)")
-                        _send_fcm_push_targeted(
-                            fcm_targeted, title, body,
+
+                    if targeted or fcm_targeted:
+                        monitor.log(f"[Push] Node down '{label}' — "
+                                    f"pushing to {len(targeted)} iOS / {len(fcm_targeted)} Android device(s)")
+                        _dispatch_push(
+                            title, body,
                             data={"type": "silence", "node": label},
+                            ios_entries=targeted,
+                            android_entries=fcm_targeted,
                         )
         except Exception as e:
             monitor.log(f"[APNs/FCM] _check_watched_nodes error: {e}")
@@ -17827,6 +17923,8 @@ def settings():
         _fcm_sa = f.get("fcm_service_account_json", "").strip()
         if _fcm_sa:
             cfg.mobile_api.fcm_service_account_json = _fcm_sa
+        # Push server URL (route notifications via remote server instead of direct APNs/FCM)
+        cfg.mobile_api.push_server_url = f.get("push_server_url", "").strip()
         save_config(cfg)
         # Invalidate both JWT caches so new credentials are used immediately
         _apns_jwt_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
@@ -26060,13 +26158,13 @@ def api_chains_test_alert():
         except Exception as e:
             monitor.log(f"[Chain] Test alert send error: {e}")
         try:
-            _send_apns_push(
+            _dispatch_push(
                 title=title,
                 body=msg[:180],
-                data={"chain_id": chain_id, "test": True},
+                data={"type": "chain_fault", "chain_id": chain_id, "test": "1"},
             )
         except Exception as e:
-            monitor.log(f"[APNs] Test alert push error: {e}")
+            monitor.log(f"[Push] Test alert push error: {e}")
 
     threading.Thread(target=_do_send, daemon=True).start()
     monitor.log(f"[Chain] Test alert dispatched — chain='{chain_name}'")
