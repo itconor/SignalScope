@@ -35,8 +35,8 @@
     "name": "Logger",
     "file": "logger.py",
     "icon": "🎙",
-    "description": "Compliance logger for continuous 24/7 recording of monitored streams. 5-minute segments with silence detection overlay, scrubable timeline, mark in/out for clip export. Configurable HQ/LQ quality tiers and retention periods. Requires ffmpeg.",
-    "version": "1.0.1",
+    "description": "Compliance logger for continuous 24/7 recording of monitored streams. Unified full-day seekable timeline, wall-clock timestamps, cross-block mark in/out with automatic segment stitching on export, and auto-advance playback. Configurable HQ/LQ quality tiers and retention periods. Requires ffmpeg.",
+    "version": "1.1.0",
     "requirements": "ffmpeg",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/logger.py"
   },
