@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.60"
+BUILD                  = "SignalScope-3.4.61"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -22185,8 +22185,8 @@ var _chainData={
     {% for comp in c.comparators %}
     {% set fi = comp.from_idx %}
     {% set ti = comp.to_idx %}
-    {% set fs = comp.from_sub %}
-    {% set ts = comp.to_sub %}
+    {% set fs = comp.from_sub | default(none) %}
+    {% set ts = comp.to_sub | default(none) %}
     {% if fi < c.nodes|length and ti < c.nodes|length %}
     {% set fn = c.nodes[fi] %}
     {% set tn = c.nodes[ti] %}

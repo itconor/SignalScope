@@ -2,6 +2,13 @@
 
 ---
 
+## [SignalScope 3.4.61] - 2026-03-28
+
+### Fixed
+- Broadcast Chains page 500 error — comparator dicts saved before `from_sub`/`to_sub` fields were introduced caused a Jinja2 `UndefinedError` at render time. Fixed by defaulting both fields to `none` in the template (`| default(none)`).
+
+---
+
 ## [SignalScope 3.4.60] - 2026-03-28
 
 ### Added
