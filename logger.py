@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.27",
+    "version": "1.4.28",
 }
 
 import datetime
@@ -732,8 +732,8 @@ def register(app, ctx):
                     days = _hub_logger_days[key]
                     _log(f"[Logger] Hub days cache hit: {site}:{slug} → {len(days)} day(s)")
                     return jsonify(days)
-                _log(f"[Logger] Hub days: queuing cmd for site='{site}' slug='{slug}'")
-                _hub_set_pending(site, {"type": "days", "slug": slug})
+            _log(f"[Logger] Hub days: queuing cmd for site='{site}' slug='{slug}'")
+            _hub_set_pending(site, {"type": "days", "slug": slug})
             return jsonify({"pending": True})
 
         @app.get("/api/logger/hub/segments/<path:site_slug_date>")
@@ -750,8 +750,8 @@ def register(app, ctx):
                     segs = _hub_logger_segs[key]
                     _log(f"[Logger] Hub segs cache hit: {key} → {len(segs)} seg(s)")
                     return jsonify(segs)
-                _log(f"[Logger] Hub segs: queuing cmd for site='{site}' slug='{slug}' date='{date}'")
-                _hub_set_pending(site, {"type": "segments", "slug": slug, "date": date})
+            _log(f"[Logger] Hub segs: queuing cmd for site='{site}' slug='{slug}' date='{date}'")
+            _hub_set_pending(site, {"type": "segments", "slug": slug, "date": date})
             return jsonify({"pending": True})
 
         @app.post("/api/logger/hub/play")
@@ -783,14 +783,14 @@ def register(app, ctx):
                 site, 0, kind="scanner", mimetype="application/octet-stream")
             with _hub_logger_lock:
                 _hub_logger_active[site] = slot.slot_id
-                _hub_set_pending(site, {
-                    "type": "play",
-                    "slot_id": slot.slot_id,
-                    "slug": slug,
-                    "date": date,
-                    "filename": filename,
-                    "seek_s": seek_s,
-                }
+            _hub_set_pending(site, {
+                "type": "play",
+                "slot_id": slot.slot_id,
+                "slug": slug,
+                "date": date,
+                "filename": filename,
+                "seek_s": seek_s,
+            })
             return jsonify({
                 "ok": True,
                 "slot_id": slot.slot_id,
@@ -810,8 +810,8 @@ def register(app, ctx):
                     events = _hub_logger_meta[key]
                     _log(f"[Logger] Hub meta cache hit: {key} → {len(events)} event(s)")
                     return jsonify(events)
-                _log(f"[Logger] Hub meta: queuing cmd for site='{site}' slug='{slug}' date='{date}'")
-                _hub_set_pending(site, {"type": "metadata", "slug": slug, "date": date})
+            _log(f"[Logger] Hub meta: queuing cmd for site='{site}' slug='{slug}' date='{date}'")
+            _hub_set_pending(site, {"type": "metadata", "slug": slug, "date": date})
             return jsonify({"pending": True})
 
     # ── Regular logger routes ─────────────────────────────────────────────────
@@ -959,7 +959,7 @@ def register(app, ctx):
             with _hub_logger_lock:
                 if key in _hub_logger_days:
                     return jsonify({"days": _hub_logger_days[key], "pending": False})
-                _hub_set_pending(site, {"type": "days", "slug": _safe(slug)})
+            _hub_set_pending(site, {"type": "days", "slug": _safe(slug)})
             return jsonify({"days": [], "pending": True})
         # Local mode
         sdir = _stream_rec_root_by_slug(_safe(slug)) / _safe(slug)
@@ -987,7 +987,7 @@ def register(app, ctx):
                 if key in _hub_logger_segs:
                     segs = sorted(_hub_logger_segs[key], key=lambda s: s.get("start_s", 0))
                     return jsonify({"segments": segs, "pending": False})
-                _hub_set_pending(site, {"type": "segments", "slug": _safe(slug), "date": date})
+            _hub_set_pending(site, {"type": "segments", "slug": _safe(slug), "date": date})
             return jsonify({"segments": [], "pending": True})
         # Local mode
         segs = _get_segments(_safe(slug), date)
@@ -1008,7 +1008,7 @@ def register(app, ctx):
             with _hub_logger_lock:
                 if key in _hub_logger_meta:
                     return jsonify({"events": _hub_logger_meta[key], "pending": False})
-                _hub_set_pending(site, {"type": "metadata", "slug": _safe(slug), "date": date})
+            _hub_set_pending(site, {"type": "metadata", "slug": _safe(slug), "date": date})
             return jsonify({"events": [], "pending": True})
         # Local mode — read from DB
         try:
@@ -1073,14 +1073,14 @@ def register(app, ctx):
                                        mimetype="application/octet-stream")
         with _hub_logger_lock:
             _hub_logger_active[site] = slot.slot_id
-            _hub_set_pending(site, {
-                "type": "play",
-                "slot_id": slot.slot_id,
-                "slug": _safe(slug),
-                "date": date,
-                "filename": filename,
-                "seek_s": seek_s,
-            }
+        _hub_set_pending(site, {
+            "type": "play",
+            "slot_id": slot.slot_id,
+            "slug": _safe(slug),
+            "date": date,
+            "filename": filename,
+            "seek_s": seek_s,
+        })
         return jsonify({
             "ok": True,
             "slot_id": slot.slot_id,
