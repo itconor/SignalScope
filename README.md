@@ -40,6 +40,8 @@ The installer will:
 
 Once complete, open `http://localhost:5000`. The setup wizard will guide you through the rest.
 
+> 📖 **For a full walkthrough of every feature see [SignalScope User Guide](SignalScope_User_Guide.pdf)**
+
 ---
 
 ## Features Overview
@@ -49,7 +51,12 @@ Once complete, open `http://localhost:5000`. The setup wizard will guide you thr
 | **Inputs** | FM via RTL-SDR, DAB via RTL-SDR, Livewire/AES67 (RTP multicast), HTTP/HTTPS audio streams, local ALSA/PulseAudio devices |
 | **FM Scanner** | On-demand FM frequency tuning via RTL-SDR with live browser audio, RDS decoding, band scan, tuning history and presets; hub scanner page (`/hub/scanner`) |
 | **Web SDR plugin** | Browser-based SDR with scrolling waterfall, click-to-tune, WFM/NFM/AM demodulation — installed via Settings → Plugins |
-| **Logger plugin** | Continuous 24/7 compliance recording of any monitored stream; 5-minute segments with silence overlay, scrubable timeline, mark in/out clip export, per-stream quality tiers and configurable retention — installed via Settings → Plugins |
+| **Logger plugin** | Continuous 24/7 compliance recording of any monitored stream; 5-minute segments with silence overlay, scrubable timeline with zoom/pan, show-name and track bands, mic on-air band, mark in/out clip export, right-click timeline markers, configurable recording format (MP3/AAC/Opus), per-stream quality tiers and configurable retention — installed via Settings → Plugins |
+| **DAB Scanner plugin** | Browse all Band III DAB channels, stream services as MP3 via welle-cli, display DLS scrolling text — installed via Settings → Plugins |
+| **Meter Wall plugin** | Full-screen PPM-style level bars for every monitored stream across all connected sites, LUFS-I readout, peak hold, RDS/DLS now-playing — installed via Settings → Plugins |
+| **Zetta Integration plugin** | RCS Zetta broadcast automation integration; polls SOAP service for now-playing data, detects commercial blocks, provides WSDL discovery — installed via Settings → Plugins |
+| **Morning Report plugin** | Auto-generated daily briefing at 06:00 covering fault summary, chain health, hourly heatmap, and notable patterns — installed via Settings → Plugins |
+| **Signal Path Latency plugin** | Tracks comparator delay measurements over 90 days, SVG sparklines, drift/alert badges — installed via Settings → Plugins |
 | **Level & loudness** | dBFS level, LUFS Momentary/Short-term/Integrated (EBU R128), true peak |
 | **Metadata** | RDS PS name, RDS RadioText, stereo flag, TP/TA/PI; DAB service name, DLS now-playing text, ensemble/mode/bitrate/SNR |
 | **Rule alerts** | Silence, clipping, hiss, LUFS true peak, LUFS integrated loudness |
@@ -175,7 +182,7 @@ Requires at least one RTL-SDR dongle configured with role **Scanner** in **Setti
 
 ### Using the FM Scanner
 
-1. On the Hub page, click **🔍 Scanner** (or navigate to `/hub/scanner`)
+1. On the Hub page, click **📻 Scanner** (or navigate to `/hub/scanner`)
 2. Select a site from the site dropdown
 3. Enter an FM frequency in MHz and click **▶ Start** — audio begins streaming after a brief start-up delay
 4. While streaming, type a new frequency and click **Tune** to retune without restarting
@@ -198,19 +205,38 @@ For WAN deployments where the hub is hosted remotely from the SDR client, the pi
 
 ## Logger Plugin
 
-The Logger plugin (`logger.py`) provides continuous 24/7 compliance recording for any monitored stream, with a visual timeline browser and clip export
+The Logger plugin (`logger.py`) provides continuous 24/7 compliance recording for any monitored stream, with a visual timeline browser and clip export.
 
 Install it from **Settings → Plugins → Check GitHub for plugins**.
 
 ### Recording
 
-Each stream you enable is recorded continuously as 5-minute clock-aligned MP3 segments stored under `logger_recordings/{stream}/{YYYY-MM-DD}/HH-MM.mp3`. Recordings start as soon as the plugin is saved — no restart required.
+Each stream you enable is recorded continuously as 5-minute clock-aligned segments stored under `logger_recordings/{stream}/{YYYY-MM-DD}/HH-MM.{ext}`. Recordings start as soon as the plugin is saved — no restart required.
 
 Silence is detected inline using ffmpeg's `silencedetect` filter and stored per-segment in a local SQLite index.
 
+**Recording formats** — choose per-stream in Logger Settings:
+
+| Format | Extension | Notes |
+|---|---|---|
+| **MP3** (default) | `.mp3` | Universal compatibility |
+| **AAC** | `.aac` | ~½ the storage of MP3 at equal quality |
+| **Opus** | `.opus` | Most efficient — quality at 64 kbps rivals MP3 at 192 kbps |
+
 ### Timeline
 
-The **Timeline** tab shows a 24-hour grid of 288 colour-coded blocks for any stream and date:
+The **Timeline** tab shows a 24-hour overview at the top and a grid of 288 colour-coded 5-minute blocks below.
+
+**Overview bar** — the green audio waveform bar at the top shows the full day at a glance. Click anywhere to jump to that time.
+
+**Zoom and expand** — use the **1×/2×/4×/8× zoom buttons** to focus on a portion of the day. The **↕ Expand** button increases row heights for easier reading. At any zoom level you can **click and drag** horizontally to pan the timeline. Press **spacebar** to play/pause without losing your scroll position.
+
+**Metadata bands** — between the overview bar and the hour grid:
+- **Show band** (purple) — show name from now-playing metadata; consecutive events with the same show name are merged into one continuous block
+- **Mic band** (green) — on-air periods recorded via the Mic REST API
+- **Track band** (amber) — individual song start/end positions at exact timestamps
+
+**Block colours:**
 
 | Colour | Meaning |
 |---|---|
@@ -223,11 +249,43 @@ Click any block to load and play that 5-minute segment in the player bar.
 
 ### Playback & Clip Export
 
-The player bar at the bottom provides:
+The player bar provides:
 
 - **Scrub bar** — click or drag to seek within the loaded segment
-- **Mark In / Mark Out** — set clip boundaries at any point while playing
-- **Export Clip** — extracts the marked range using ffmpeg and downloads it as a named MP3; ranges can span multiple consecutive segments (up to 2 hours)
+- **Mark In / Mark Out buttons** — set clip boundaries at the current playback position
+- **Right-click on the timeline** — right-click anywhere in the overview area to set markers directly. First right-click = mark in; second right-click = mark out; third = start a new in point
+- **Export Clip** — extracts the marked range using ffmpeg and downloads it; ranges can span multiple consecutive segments (up to 2 hours)
+
+**Export formats:**
+
+| Format | Extension | Notes |
+|---|---|---|
+| **MP3** (default) | `.mp3` | Instant stream copy when recordings are also MP3 |
+| **AAC** | `.m4a` | 128 kbps; ~½ size of MP3 |
+| **Opus** | `.webm` | 96 kbps; most efficient; Chrome/Firefox/Edge/Safari 16.4+ |
+
+### Now-Playing Metadata Integration
+
+Logger polls a now-playing API every 30 seconds to populate show name and track metadata. Supported sources:
+
+- **Planet Radio API** — select a station from the dropdown in Logger Settings; the URL is filled automatically
+- **Triton Digital** — enter the Triton JSON endpoint URL
+- **Any JSON API** — enter a custom URL; Logger will attempt to extract title/artist/show fields from the response
+- **Fallback** — if no API is configured, DLS (DAB) or RDS RadioText (FM) metadata is used automatically
+
+### Mic On-Air REST API
+
+Trigger mic-on/mic-off events from broadcast automation or a hardware controller:
+
+```
+POST /api/logger/mic
+Content-Type: application/json
+Authorization: Bearer <mic_api_key>
+
+{"stream": "cool-fm", "state": "on", "label": "Studio A"}
+```
+
+The `mic_api_key` is configured in Logger Settings. Session cookie authentication is also accepted. Events appear immediately on the timeline green mic band.
 
 ### Quality Tiers & Retention
 
@@ -235,6 +293,7 @@ Configure per-stream in the **Settings** tab:
 
 | Setting | Default | Description |
 |---|---|---|
+| Format | MP3 | Recording format (MP3 / AAC / Opus) |
 | HQ Bitrate | 128k | Bitrate for new recordings |
 | LQ Bitrate | 48k | Bitrate after quality downgrade |
 | LQ after (days) | 30 | Re-encode to LQ after this many days |
@@ -259,23 +318,58 @@ Go to **Settings → Plugins** to:
 
 A restart is required to activate or fully unload a plugin after installing or removing.
 
-### Web SDR Plugin
+### Available Plugins
 
-The **Web SDR** plugin (`sdr.py`) adds a browser-based software defined radio at `/hub/sdr`:
+#### FM Scanner (built-in)
+Live FM frequency tuning with RDS, band scan, presets, and browser audio. See [FM Scanner](#fm-scanner) above.
 
+#### Web SDR (`sdr.py`)
+Browser-based software defined radio at `/hub/sdr`:
 - Scrolling waterfall display with colour-coded signal intensity
 - Click anywhere on the waterfall to tune to that frequency
 - Demodulation modes: WFM, NFM, AM
-- Live audio streamed to the browser using the same relay infrastructure as the FM Scanner
 - Requires a dongle configured with role **Scanner**
 
-Install it from **Settings → Plugins → Check GitHub for plugins**.
+#### Logger (`logger.py`)
+24/7 compliance recording. See [Logger Plugin](#logger-plugin) above.
 
-### Logger Plugin
+#### DAB Scanner (`dab.py`)
+Browse and stream DAB digital radio services at `/hub/dab`:
+- Scans all Band III channels to discover available services
+- Stream any service as MP3 audio via welle-cli and ffmpeg
+- Displays DLS Dynamic Label Segment scrolling text
+- Requires `welle-cli` and `ffmpeg` on the client machine
 
-The **Logger** plugin (`logger.py`) provides 24/7 compliance recording at `/hub/logger`. See the [Logger Plugin](#logger-plugin) section above for full documentation.
+#### Meter Wall (`meterwall.py`)
+Full-screen audio level display at `/hub/meterwall`:
+- PPM-style level bars for every monitored stream across all connected sites
+- Peak hold with decay, LUFS-I readout, alert flash
+- RDS/DLS now-playing text per stream
+- Site grouping, configurable grid density, auto-hiding fullscreen kiosk mode
 
-Install it from **Settings → Plugins → Check GitHub for plugins**.
+#### Zetta Integration (`zetta.py`)
+RCS Zetta broadcast automation integration at `/hub/zetta`:
+- Polls the Zetta SOAP service to show live now-playing data (title, artist, cart number, category)
+- Detects commercial/spot blocks in real time
+- Provides `/api/zetta/status` for chain and external integration
+- Includes WSDL discovery and raw SOAP debug console
+- No additional pip packages required
+
+#### Morning Report (`morning_report.py`)
+Daily broadcast engineering briefing at `/hub/morning_report`:
+- Auto-generates at 06:00 (configurable) covering the previous calendar day
+- At-a-glance fault summary, per-chain health table, hourly fault heatmap
+- Auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks)
+- Stream quality summary
+- Hub-only
+
+#### Signal Path Latency (`latency.py`)
+Latency tracking for broadcast chains at `/hub/latency`:
+- Polls all connected sites for comparator delay measurements every 30 seconds
+- Stores 90 days of history in SQLite, computes rolling baselines
+- Displays per-comparator SVG sparklines, stable/drifting/alert status badges
+- Configurable alert thresholds per comparator pair
+- Hub-only
 
 ### Writing a Plugin
 
@@ -428,7 +522,7 @@ Create **A/B groups** to monitor failover pairs across chains. An A/B group trac
 
 ### Fault History & Audio Replay
 
-Each chain maintains a rolling log of the last 50 fault/recovery events. At fault time, audio clips are saved for **every node** in the chain. Click **🎬 Replay** on any fault entry to open an inline replay timeline with clips colour-coded by signal-path position — fault point (red), last-good clip (green), and each recovery position in its own distinct colour (amber, cyan, purple, pink…). The colour runs from the timeline bar through to the player row so the connection is immediately clear. **▶ Play All** plays through clips sequentially with the active node highlighted.
+Each chain maintains a rolling log of the last 50 fault/recovery events. At fault time, audio clips are saved for **every node** in the chain. Click **🎬 Replay** on any fault entry to open an inline replay timeline with clips colour-coded by signal-path position — fault point (red), last-good clip (green), and each recovery position in its own distinct colour (amber, cyan, purple, pink…). **▶ Play All** plays through clips sequentially with the active node highlighted.
 
 ### Historical Chain View
 
