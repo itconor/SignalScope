@@ -2,6 +2,22 @@
 
 ---
 
+## [Zetta 1.0.2 · Morning Report 1.0.2] - 2026-03-28
+
+### Changed
+- **Style overhaul — Zetta and Morning Report now match the SignalScope palette** — Both plugins previously declared their own `:root` CSS variables (`--bg:#0f1117`, `--ac:#6366f1` indigo, etc.) that produced a clashing near-black / purple colour scheme instead of SignalScope's navy / cyan design system.
+
+  Changes applied to both plugins:
+  - `:root` block replaced with the standard SignalScope palette (`--bg:#07142b`, `--sur:#0d2346`, `--bor:#17345f`, `--acc:#17a8ff` cyan, `--wn:#f59e0b`, etc.)
+  - All `var(--bg2)` → `var(--sur)`, `var(--bg3)` → `#173a69` (input blue), `var(--bd)` → `var(--bor)`, `var(--ac)` → `var(--acc)`, `var(--wa)` → `var(--wn)`
+  - Topbar background `#1a1d28` → `var(--sur)` — matches the SignalScope header
+  - Buttons use `--acc` (cyan) instead of `--ac` (indigo)
+  - Heatmap cells (Morning Report) use cyan-tinted `rgba(23,168,255,…)` instead of indigo `rgba(99,102,241,…)`
+  - `pattern-item.color-blue` uses `var(--acc)`, inputs use `#173a69` background and `var(--acc)` focus ring
+  - Hardcoded Zetta card border colours `#b45309` / `#15803d` replaced with `var(--wn)` / `var(--ok)`
+
+---
+
 ## [Logger 1.4.7] - 2026-03-28
 
 ### Added

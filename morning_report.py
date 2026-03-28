@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.0.1",
+    "version":  "1.0.2",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -614,34 +614,31 @@ _REPORT_TPL = r"""<!doctype html>
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>Morning Report — SignalScope</title>
 <style nonce="{{csp_nonce()}}">
-:root{
-  --bg:#0f1117;--bg2:#1a1d28;--bg3:#22263a;--bd:#2e3250;
-  --tx:#e2e8f0;--mu:#94a3b8;--ok:#22c55e;--al:#ef4444;--wa:#f59e0b;--ac:#6366f1;
-}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:13px;line-height:1.5}
-a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}
-.btn{display:inline-flex;align-items:center;gap:5px;padding:5px 14px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none;color:var(--tx);background:var(--bd);text-decoration:none;transition:filter .12s}
-.btn:hover{filter:brightness(1.2)}.btn.bp{background:var(--ac);color:#fff}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:5px 14px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none;color:var(--tx);background:var(--bor);text-decoration:none;transition:filter .12s}
+.btn:hover{filter:brightness(1.2)}.btn.bp{background:var(--acc);color:#fff}
 /* Topbar */
-.topbar{display:flex;align-items:center;gap:10px;padding:10px 20px;background:var(--bg2);border-bottom:1px solid var(--bd);flex-wrap:wrap}
-.topbar-title{font-size:15px;font-weight:800;letter-spacing:.01em}
+.topbar{display:flex;align-items:center;gap:10px;padding:10px 20px;background:var(--sur);border-bottom:1px solid var(--bor);flex-wrap:wrap}
+.topbar-title{font-size:16px;font-weight:700;letter-spacing:.01em}
 .topbar-right{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 /* Page layout */
 .page{max-width:1100px;margin:0 auto;padding:20px 16px 40px}
 /* Section */
 .sec{margin-bottom:28px}
-.sec-hdr{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--mu);margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid var(--bd)}
+.sec-hdr{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--mu);margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid var(--bor)}
 /* At-a-glance cards */
 .aag-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
-.aag-card{background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:14px 16px}
+.aag-card{background:var(--sur);border:1px solid var(--bor);border-radius:10px;padding:14px 16px}
 .aag-val{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
 .aag-lbl{font-size:11px;color:var(--mu);margin-top:3px}
 /* Chain health table */
 .tbl-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12px}
-th{background:var(--bg3);padding:7px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--mu);white-space:nowrap}
-td{padding:6px 10px;border-bottom:1px solid var(--bd);vertical-align:middle}
+th{background:rgba(0,0,0,.2);padding:7px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--mu);white-space:nowrap}
+td{padding:6px 10px;border-bottom:1px solid var(--bor);vertical-align:middle}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:rgba(255,255,255,.03)}
 .trend-up{color:var(--al)}.trend-dn{color:var(--ok)}.trend-eq{color:var(--mu)}
@@ -649,29 +646,29 @@ tr:hover td{background:rgba(255,255,255,.03)}
 /* Heatmap */
 .heatmap{display:grid;grid-template-columns:repeat(24,1fr);gap:3px}
 .hm-cell{height:32px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:600;color:rgba(255,255,255,.7);cursor:default}
-.hm-cell[data-c="0"]{background:var(--bg3)}
-.hm-cell[data-c="1"]{background:rgba(99,102,241,.3)}
-.hm-cell[data-c="2"]{background:rgba(99,102,241,.5)}
-.hm-cell[data-c="3"]{background:rgba(239,68,68,.5)}
+.hm-cell[data-c="0"]{background:var(--bor)}
+.hm-cell[data-c="1"]{background:rgba(23,168,255,.3)}
+.hm-cell[data-c="2"]{background:rgba(23,168,255,.55)}
+.hm-cell[data-c="3"]{background:rgba(239,68,68,.55)}
 .hm-labels{display:grid;grid-template-columns:repeat(24,1fr);gap:3px;margin-top:3px}
 .hm-lbl{font-size:9px;color:var(--mu);text-align:center}
 /* Patterns */
 .pattern-list{display:flex;flex-direction:column;gap:8px}
-.pattern-item{background:var(--bg2);border-radius:8px;padding:10px 14px;border-left:3px solid var(--bd);font-size:12px}
+.pattern-item{background:var(--sur);border-radius:8px;padding:10px 14px;border-left:3px solid var(--bor);font-size:12px}
 .pattern-item.color-red{border-left-color:var(--al)}
-.pattern-item.color-amber{border-left-color:var(--wa)}
-.pattern-item.color-blue{border-left-color:var(--ac)}
+.pattern-item.color-amber{border-left-color:var(--wn)}
+.pattern-item.color-blue{border-left-color:var(--acc)}
 .pattern-item.color-green{border-left-color:var(--ok)}
 /* Stream quality */
 .sq-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
-.sq-card{background:var(--bg2);border:1px solid var(--bd);border-radius:8px;padding:12px 14px}
+.sq-card{background:var(--sur);border:1px solid var(--bor);border-radius:8px;padding:12px 14px}
 .sq-name{font-weight:700;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sq-site{font-size:10px;color:var(--mu);margin-bottom:8px}
 .sq-row{display:flex;justify-content:space-between;font-size:11px;color:var(--mu);padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04)}
 .sq-row:last-child{border-bottom:none}
 .sq-row span:last-child{color:var(--tx);font-variant-numeric:tabular-nums}
 /* Footer */
-.rpt-footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--bd);font-size:11px;color:var(--mu);display:flex;flex-wrap:wrap;gap:12px}
+.rpt-footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--bor);font-size:11px;color:var(--mu);display:flex;flex-wrap:wrap;gap:12px}
 /* No data */
 .no-data{color:var(--mu);font-style:italic;font-size:12px}
 /* Toast */
@@ -916,20 +913,20 @@ _SETTINGS_TPL = r"""<!doctype html>
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>Morning Report Settings — SignalScope</title>
 <style nonce="{{csp_nonce()}}">
-:root{--bg:#0f1117;--bg2:#1a1d28;--bg3:#22263a;--bd:#2e3250;--tx:#e2e8f0;--mu:#94a3b8;--ok:#22c55e;--al:#ef4444;--wa:#f59e0b;--ac:#6366f1}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:13px}
-.btn{display:inline-flex;align-items:center;gap:5px;padding:5px 14px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none;color:var(--tx);background:var(--bd);text-decoration:none;transition:filter .12s}
-.btn:hover{filter:brightness(1.2)}.btn.bp{background:var(--ac);color:#fff}
-.topbar{display:flex;align-items:center;gap:10px;padding:10px 20px;background:var(--bg2);border-bottom:1px solid var(--bd)}
-.topbar-title{font-size:15px;font-weight:800}.topbar-right{margin-left:auto;display:flex;gap:8px}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:5px 14px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none;color:var(--tx);background:var(--bor);text-decoration:none;transition:filter .12s}
+.btn:hover{filter:brightness(1.2)}.btn.bp{background:var(--acc);color:#fff}
+.topbar{display:flex;align-items:center;gap:10px;padding:10px 20px;background:var(--sur);border-bottom:1px solid var(--bor)}
+.topbar-title{font-size:16px;font-weight:700}.topbar-right{margin-left:auto;display:flex;gap:8px}
 .page{max-width:600px;margin:30px auto;padding:0 16px}
-.form-card{background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:20px 24px}
+.form-card{background:var(--sur);border:1px solid var(--bor);border-radius:10px;padding:20px 24px}
 .form-row{margin-bottom:16px}
 label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mu);margin-bottom:5px}
-input[type=time]{background:var(--bg3);border:1px solid var(--bd);border-radius:6px;color:var(--tx);padding:6px 10px;font-size:13px;width:160px}
-input[type=time]:focus{outline:none;border-color:var(--ac)}
-.saved-banner{background:rgba(34,197,94,.15);border:1px solid var(--ok);border-radius:7px;padding:8px 14px;margin-bottom:16px;font-size:12px;color:var(--ok)}
+input[type=time]{background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 10px;font-size:13px;width:160px}
+input[type=time]:focus{outline:none;border-color:var(--acc)}
+.saved-banner{background:rgba(34,197,94,.12);border:1px solid var(--ok);border-radius:7px;padding:8px 14px;margin-bottom:16px;font-size:12px;color:var(--ok)}
 </style>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
 </head>

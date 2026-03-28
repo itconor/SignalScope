@@ -56,7 +56,7 @@
     "file": "zetta.py",
     "icon": "📻",
     "description": "RCS Zetta broadcast automation integration. Polls the Zetta SOAP service to show live now-playing data for each station — title, artist, cart number, category. Detects commercial/spot blocks in real time. Provides /api/zetta/status for chain and external integration. Includes WSDL discovery and a raw SOAP debug console. No extra pip packages required.",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/zetta.py"
   },
@@ -66,7 +66,7 @@
     "file": "morning_report.py",
     "icon": "📰",
     "description": "Daily morning briefing for broadcast engineers. Auto-generates at 06:00 (configurable) covering the previous calendar day: at-a-glance fault summary, per-chain health table, hourly fault heatmap, auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks), and stream quality summary. Hub-only.",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/morning_report.py"
   },
