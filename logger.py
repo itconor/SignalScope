@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.3",
+    "version": "1.4.4",
 }
 
 import datetime
@@ -2314,7 +2314,7 @@ function _applyMeta(events){
       blk.classList.add('has-track');
       var t = tracks[0];
       var trackInfo = (t.artist ? t.artist + ' \u2014 ' : '') + t.title;
-      blk.dataset.tip = (blk.dataset.tip || '') + ' \u00b7 \uD83C\uDFB5 ' + trackInfo;
+      blk.dataset.tip = (blk.dataset.tip || '') + ' \u00b7 \U0001F3B5 ' + trackInfo;
     } else {
       blk.classList.remove('has-track');
     }
