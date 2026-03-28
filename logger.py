@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.18",
+    "version": "1.4.19",
 }
 
 import datetime
@@ -887,6 +887,184 @@ def register(app, ctx):
 
         _log(f"[Logger] Mic {state}: stream={slug} label={label!r} ts={ts:.1f}")
         return jsonify({"ok": True, "ts": ts, "stream": slug, "state": state})
+
+    # ── Mobile API (iOS app) ─────────────────────────────────────────────────
+
+    @app.get("/api/mobile/logger/status")
+    @login_req
+    def api_mobile_logger_status():
+        """Presence check — 200 if logger plugin is installed, 404 otherwise."""
+        with _rec_lock:
+            active = {sl: {"stream": t.stream_name, "running": t.is_alive()}
+                      for sl, t in _recorders.items()}
+        return jsonify({"installed": True, "recorders": active})
+
+    @app.get("/api/mobile/logger/sites")
+    @login_req
+    def api_mobile_logger_sites():
+        if hub_server is None:
+            return jsonify({"sites": []})
+        with _hub_logger_lock:
+            sites = list(_hub_logger_streams.keys())
+        return jsonify({"sites": sites})
+
+    @app.get("/api/mobile/logger/streams")
+    @login_req
+    def api_mobile_logger_streams():
+        site = request.args.get("site", "").strip()
+        if hub_server is not None and site:
+            with _hub_logger_lock:
+                streams = list(_hub_logger_streams.get(site, []))
+            return jsonify({"streams": streams})
+        streams = _available_streams()
+        return jsonify({"streams": streams})
+
+    @app.get("/api/mobile/logger/days")
+    @login_req
+    def api_mobile_logger_days():
+        site = request.args.get("site", "").strip()
+        slug = request.args.get("slug", "").strip()
+        if not slug:
+            return jsonify({"error": "slug required"}), 400
+        if hub_server is not None and site:
+            key = f"{site}:{_safe(slug)}"
+            with _hub_logger_lock:
+                if key in _hub_logger_days:
+                    return jsonify({"days": _hub_logger_days[key], "pending": False})
+                _hub_logger_pending[site] = {"type": "days", "slug": _safe(slug)}
+            return jsonify({"days": [], "pending": True})
+        # Local mode
+        sdir = _stream_rec_root_by_slug(_safe(slug)) / _safe(slug)
+        if not sdir.exists():
+            return jsonify({"days": [], "pending": False})
+        days = sorted(
+            [d.name for d in sdir.iterdir()
+             if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d.name)],
+            reverse=True)
+        return jsonify({"days": days, "pending": False})
+
+    @app.get("/api/mobile/logger/segments")
+    @login_req
+    def api_mobile_logger_segments():
+        site = request.args.get("site", "").strip()
+        slug = request.args.get("slug", "").strip()
+        date = request.args.get("date", "").strip()
+        if not (slug and date):
+            return jsonify({"error": "slug and date required"}), 400
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            return jsonify({"error": "invalid date"}), 400
+        if hub_server is not None and site:
+            key = f"{site}:{_safe(slug)}:{date}"
+            with _hub_logger_lock:
+                if key in _hub_logger_segs:
+                    segs = sorted(_hub_logger_segs[key], key=lambda s: s.get("start_s", 0))
+                    return jsonify({"segments": segs, "pending": False})
+                _hub_logger_pending[site] = {"type": "segments", "slug": _safe(slug), "date": date}
+            return jsonify({"segments": [], "pending": True})
+        # Local mode
+        segs = _get_segments(_safe(slug), date)
+        segs_list = sorted(segs.values(), key=lambda s: s.get("start_s", 0))
+        return jsonify({"segments": segs_list, "pending": False})
+
+    @app.get("/api/mobile/logger/metadata")
+    @login_req
+    def api_mobile_logger_metadata():
+        site = request.args.get("site", "").strip()
+        slug = request.args.get("slug", "").strip()
+        date = request.args.get("date", "").strip()
+        if not (slug and date):
+            return jsonify({"error": "slug and date required"}), 400
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            return jsonify({"error": "invalid date"}), 400
+        if hub_server is not None and site:
+            key = f"{site}:{_safe(slug)}:{date}"
+            with _hub_logger_lock:
+                if key in _hub_logger_meta:
+                    return jsonify({"events": _hub_logger_meta[key], "pending": False})
+                _hub_logger_pending[site] = {"type": "metadata", "slug": _safe(slug), "date": date}
+            return jsonify({"events": [], "pending": True})
+        # Local mode — read from DB
+        try:
+            midnight = datetime.datetime.strptime(date, "%Y-%m-%d").replace(
+                tzinfo=datetime.timezone.utc).timestamp()
+        except ValueError:
+            return jsonify({"events": [], "pending": False})
+        end_of_day = midnight + 86400
+        try:
+            db = _get_db()
+            rows = db.execute(
+                "SELECT ts, type, title, artist, show_name, presenter FROM metadata_log "
+                "WHERE stream=? AND ts>=? AND ts<? ORDER BY ts",
+                (_safe(slug), midnight, end_of_day)).fetchall()
+            db.close()
+        except Exception:
+            return jsonify({"events": [], "pending": False})
+        events = [{
+            "ts_s":      r["ts"] - midnight,
+            "type":      r["type"],
+            "title":     r["title"] or "",
+            "artist":    r["artist"] or "",
+            "show_name": r["show_name"] or "",
+            "presenter": r["presenter"] or "",
+        } for r in rows]
+        return jsonify({"events": events, "pending": False})
+
+    @app.post("/api/mobile/logger/play")
+    @login_req
+    def api_mobile_logger_play():
+        body     = request.get_json(force=True) or {}
+        site     = str(body.get("site", "")).strip()
+        slug     = str(body.get("slug", "")).strip()
+        date     = str(body.get("date", "")).strip()
+        filename = str(body.get("filename", "")).strip()
+        seek_s   = float(body.get("seek_s", 0))
+        if not all([site, slug, date, filename]):
+            return jsonify({"error": "missing fields"}), 400
+        if hub_server is None or _listen_registry is None:
+            return jsonify({"error": "hub not available"}), 503
+        # Cancel existing slot for this site
+        with _hub_logger_lock:
+            old_id = _hub_logger_active.get(site)
+        if old_id:
+            try:
+                old_slot = _listen_registry.get(old_id)
+                if old_slot:
+                    old_slot.closed = True
+            except Exception:
+                pass
+        slot = _listen_registry.create(site, 0, kind="scanner",
+                                       mimetype="application/octet-stream")
+        with _hub_logger_lock:
+            _hub_logger_active[site] = slot.slot_id
+            _hub_logger_pending[site] = {
+                "type": "play",
+                "slot_id": slot.slot_id,
+                "slug": _safe(slug),
+                "date": date,
+                "filename": filename,
+                "seek_s": seek_s,
+            }
+        return jsonify({
+            "ok": True,
+            "slot_id": slot.slot_id,
+            "stream_url": f"/hub/scanner/stream/{slot.slot_id}",
+        })
+
+    @app.post("/api/mobile/logger/stop")
+    @login_req
+    def api_mobile_logger_stop():
+        body = request.get_json(force=True) or {}
+        site = str(body.get("site", "")).strip()
+        with _hub_logger_lock:
+            old_id = _hub_logger_active.pop(site, None)
+        if old_id and _listen_registry:
+            try:
+                old_slot = _listen_registry.get(old_id)
+                if old_slot:
+                    old_slot.closed = True
+            except Exception:
+                pass
+        return jsonify({"ok": True})
 
     @app.post("/api/logger/export")
     @login_req

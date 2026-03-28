@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.19] - 2026-03-28
+
+### Added
+- **Mobile API for iOS app** — Added nine new routes under `/api/mobile/logger/` to support the iOS app Logger tab. `GET /api/mobile/logger/status` returns a presence check so the app can detect whether the Logger plugin is installed. `GET /api/mobile/logger/sites` lists hub-connected sites that have logger streams. `GET /api/mobile/logger/streams` returns available streams (optionally filtered by site). `GET /api/mobile/logger/days` returns available recording dates for a stream/site pair, with `pending: true` polling support for hub mode where the hub must first request the data from the remote client. `GET /api/mobile/logger/segments` returns the list of five-minute recording segments for a given stream/date, also with pending-poll support. `GET /api/mobile/logger/metadata` returns show/track/mic metadata events for a day from the local SQLite database (local mode) or the hub cache (hub mode). `POST /api/mobile/logger/play` creates a relay slot, sends a play command to the client site, and returns the PCM stream URL for the iOS `PCMStreamPlayer`. `POST /api/mobile/logger/stop` closes the relay slot and cancels playback. All routes require Bearer token authentication (`login_req`).
+
+---
+
 ## [Latency 1.0.1] - 2026-03-28
 
 ### Fixed
