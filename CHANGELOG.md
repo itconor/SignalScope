@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.52] - 2026-03-28
+
+### Added
+- **Logger 1.3.0 — Named base directories with per-stream assignment and automatic move-on-change** — Settings now has a "Base Directories" section where any number of named storage locations can be defined (e.g. "Local SSD" → `/var/recordings`, "NAS" → `/mnt/nas`). Each stream card gains a "Base Directory" dropdown; selecting a directory routes that stream's recordings to that location under a subdirectory named after the stream slug. The global "Default Path" remains as the fallback for streams set to "Default". When a stream's base directory assignment is changed and saved, the existing recording tree is automatically moved to the new location (date sub-directories are merged rather than overwritten if the destination already has data for that date). Disk usage totals in the status card are summed across all known root paths. Maintenance (retention pruning and LQ downgrade) runs across all roots.
+
+---
+
 ## [3.4.51] - 2026-03-28
 
 ### Fixed

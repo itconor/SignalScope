@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.2.3",
+    "version": "1.3.0",
 }
 
 import datetime
@@ -117,7 +117,7 @@ def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
     WAN round-trip cost.  Pushes at 3× real-time so the relay buffer stays
     4–8 s ahead of playback; the browser's 5 s pre-buffer absorbs jitter.
     """
-    path = _rec_root() / _safe(slug) / date / filename
+    path = _stream_rec_root_by_slug(_safe(slug)) / _safe(slug) / date / filename
     if not path.exists():
         _log(f"[Logger] AudioPush: file not found: {path}")
         return
@@ -270,8 +270,9 @@ def _hub_logger_poller():
                     _log(f"[Logger] HubPoller: got command type='{ctype}' slug='{cmd.get('slug','')}' date='{cmd.get('date','')}'")
 
                     if ctype == "days":
-                        slug = cmd.get("slug", "")
-                        sdir = _rec_root() / _safe(slug)
+                        slug  = cmd.get("slug", "")
+                        sroot = _stream_rec_root_by_slug(_safe(slug))
+                        sdir  = sroot / _safe(slug)
                         if sdir.exists():
                             days = sorted(
                                 [d.name for d in sdir.iterdir()
@@ -279,14 +280,15 @@ def _hub_logger_poller():
                                 reverse=True)
                         else:
                             days = []
-                        _log(f"[Logger] HubPoller: days for slug='{slug}': {days}")
+                        _log(f"[Logger] HubPoller: days for slug='{slug}' root={sroot}: {days}")
                         _hub_result_post(hub_url, secret, site,
                                          {"site": site, "type": "days", "slug": slug, "days": days})
 
                     elif ctype == "segments":
-                        slug = cmd.get("slug", "")
-                        date = cmd.get("date", "")
-                        segs = _get_segments(_safe(slug), date) if slug and date else []
+                        slug  = cmd.get("slug", "")
+                        date  = cmd.get("date", "")
+                        sroot = _stream_rec_root_by_slug(_safe(slug))
+                        segs  = _get_segments(_safe(slug), date, base_root=sroot) if slug and date else []
                         _log(f"[Logger] HubPoller: segments for slug='{slug}' date='{date}': {len(segs)} segs")
                         _hub_result_post(hub_url, secret, site,
                                          {"site": site, "type": "segments",
@@ -382,24 +384,80 @@ def register(app, ctx):
     @csrf_dec
     def api_logger_save_config():
         data = request.get_json(force=True) or {}
+
+        # ── Validate base_dirs ───────────────────────────────────────────
+        new_base_dirs = data.get("base_dirs", None)
+        if new_base_dirs is not None:
+            if not isinstance(new_base_dirs, list):
+                return jsonify({"ok": False, "error": "base_dirs must be a list"}), 400
+            for bd in new_base_dirs:
+                name = str(bd.get("name", "")).strip()
+                path_str = str(bd.get("path", "")).strip()
+                if not name:
+                    return jsonify({"ok": False, "error": "Each base directory must have a name"}), 400
+                if not path_str:
+                    return jsonify({"ok": False, "error": f"Base directory '{name}' has no path"}), 400
+                if ".." in Path(path_str).parts:
+                    return jsonify({"ok": False, "error": f"Path for '{name}' must not contain .."}), 400
+
+        # ── Validate global rec_dir ──────────────────────────────────────
+        new_rec_dir = str(data.get("rec_dir", "")).strip()
+        if new_rec_dir and ".." in Path(new_rec_dir).parts:
+            return jsonify({"ok": False, "error": "rec_dir must not contain .."}), 400
+
+        # ── Detect per-stream base_dir changes (before we update _cfg) ───
+        new_streams = data.get("streams", {})
+        moves_needed = []   # list of (stream_name, old_root, new_root)
         with _cfg_lock:
-            _cfg["streams"] = data.get("streams", _cfg.get("streams", {}))
-            # Validate and store the recordings path
-            new_rec_dir = str(data.get("rec_dir", "")).strip()
-            if new_rec_dir:
-                # Basic safety: reject obviously dangerous values
-                p = Path(new_rec_dir)
-                if ".." in p.parts:
-                    return jsonify({"ok": False, "error": "Path must not contain .."}), 400
+            old_base_dirs = {bd["name"]: bd["path"]
+                             for bd in _cfg.get("base_dirs", [])
+                             if bd.get("name") and bd.get("path")}
+            for stream_name, new_scfg in new_streams.items():
+                old_scfg    = _cfg.get("streams", {}).get(stream_name, {})
+                old_bd_name = old_scfg.get("base_dir", "").strip()
+                new_bd_name = str(new_scfg.get("base_dir", "")).strip()
+                if old_bd_name == new_bd_name:
+                    continue
+                # Resolve old root
+                if old_bd_name and old_bd_name in old_base_dirs:
+                    old_root = _resolve_path(old_base_dirs[old_bd_name])
+                else:
+                    old_root = _rec_root()
+                # Resolve new root (using incoming base_dirs list)
+                new_bd_map = {bd["name"]: bd["path"]
+                              for bd in (new_base_dirs or _cfg.get("base_dirs", []))
+                              if bd.get("name") and bd.get("path")}
+                if new_bd_name and new_bd_name in new_bd_map:
+                    new_root = _resolve_path(new_bd_map[new_bd_name])
+                else:
+                    new_root = (_resolve_path(new_rec_dir) if new_rec_dir
+                                else (_app_dir / _REC_DIR).resolve())
+                moves_needed.append((stream_name, old_root, new_root))
+
+        # ── Apply moves before saving config (so old root still resolves) ─
+        for stream_name, old_root, new_root in moves_needed:
+            if old_root != new_root:
+                new_root.mkdir(parents=True, exist_ok=True)
+                _move_stream_recordings(stream_name, old_root, new_root)
+
+        # ── Save config ─────────────────────────────────────────────────
+        with _cfg_lock:
+            _cfg["streams"] = new_streams
             _cfg["rec_dir"] = new_rec_dir
+            if new_base_dirs is not None:
+                _cfg["base_dirs"] = new_base_dirs
             _save_config()
-        # Ensure new directory exists
+
+        # Ensure all configured roots exist
         try:
             _rec_root().mkdir(parents=True, exist_ok=True)
+            for root in _all_rec_roots():
+                root.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             return jsonify({"ok": False, "error": f"Cannot create recordings directory: {e}"}), 400
+
         _reconcile_recorders()
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "moves": len(moves_needed)})
 
     @app.get("/api/logger/status")
     @login_req
@@ -412,16 +470,25 @@ def register(app, ctx):
                 "last_ok_ts": t.last_ok_ts,
                 "seg_count":  t.seg_count,
             } for sl, t in _recorders.items()}
+        # Sum disk usage across all configured root directories
+        seen_files: set = set()
+        total = 0
+        for root in _all_rec_roots():
+            if root.exists():
+                for f in root.rglob("*.mp3"):
+                    if f.is_file():
+                        key = str(f.resolve())
+                        if key not in seen_files:
+                            seen_files.add(key)
+                            total += f.stat().st_size
         rec_root = _rec_root()
-        total = sum(f.stat().st_size for f in rec_root.rglob("*.mp3") if f.is_file()) \
-                if rec_root.exists() else 0
         return jsonify({"recorders": active, "disk_bytes": total,
                         "rec_root": str(rec_root)})
 
     @app.get("/api/logger/days/<stream_slug>")
     @login_req
     def api_logger_days(stream_slug):
-        sdir = _rec_root() / _safe(stream_slug)
+        sdir = _stream_rec_root_by_slug(_safe(stream_slug)) / _safe(stream_slug)
         if not sdir.exists():
             return jsonify([])
         days = sorted(
@@ -444,7 +511,7 @@ def register(app, ctx):
             abort(400)
         if not re.match(r"^[\w\-]+\.mp3$", filename):
             abort(400)
-        path = _rec_root() / _safe(stream_slug) / date / filename
+        path = _stream_rec_root_by_slug(_safe(stream_slug)) / _safe(stream_slug) / date / filename
         # Confirm resolved path stays within the recordings root
         try:
             _assert_within_rec_root(path)
@@ -636,6 +703,7 @@ def _load_config():
         _cfg = {}
     _cfg.setdefault("streams", {})
     _cfg.setdefault("rec_dir", "")
+    _cfg.setdefault("base_dirs", [])   # list of {"name": str, "path": str}
 
 def _save_config():
     try:
@@ -645,6 +713,77 @@ def _save_config():
         _log(f"[Logger] Config save failed: {e}")
 
 _ALLOWED_BITRATES = {"32k", "48k", "64k", "96k", "128k", "192k", "256k", "320k"}
+
+def _resolve_path(path_str: str) -> Path:
+    """Resolve an absolute or app-relative path string to a Path."""
+    p = Path(path_str.strip())
+    return p if p.is_absolute() else (_app_dir / p).resolve()
+
+
+def _stream_rec_root(stream_name: str) -> Path:
+    """Return the recordings root for a specific stream.
+
+    Looks up the stream's ``base_dir`` name in the ``base_dirs`` list.
+    Falls back to the global ``_rec_root()`` if unset or not found.
+    """
+    with _cfg_lock:
+        scfg   = _cfg.get("streams", {}).get(stream_name, {})
+        bd_name = scfg.get("base_dir", "").strip()
+        if bd_name:
+            for bd in _cfg.get("base_dirs", []):
+                if bd.get("name") == bd_name:
+                    path_str = bd.get("path", "").strip()
+                    if path_str:
+                        return _resolve_path(path_str)
+    return _rec_root()
+
+
+def _stream_rec_root_by_slug(slug: str) -> Path:
+    """Return the recordings root for a stream identified by its slug."""
+    name = _slug_to_name(slug)
+    if name:
+        return _stream_rec_root(name)
+    return _rec_root()
+
+
+def _all_rec_roots() -> set:
+    """Return the set of all unique recording root paths currently configured."""
+    roots = {_rec_root()}
+    with _cfg_lock:
+        for bd in _cfg.get("base_dirs", []):
+            path_str = bd.get("path", "").strip()
+            if path_str:
+                try:
+                    roots.add(_resolve_path(path_str))
+                except Exception:
+                    pass
+    return roots
+
+
+def _move_stream_recordings(stream_name: str, old_root: Path, new_root: Path):
+    """Move a stream's slug directory from old_root to new_root."""
+    slug    = _slug(stream_name)
+    old_dir = old_root / _safe(slug)
+    new_dir = new_root / _safe(slug)
+    if not old_dir.exists() or old_dir == new_dir:
+        return
+    try:
+        new_dir.parent.mkdir(parents=True, exist_ok=True)
+        if new_dir.exists():
+            # Merge: move individual date sub-dirs so we don't clobber existing data
+            for date_dir in old_dir.iterdir():
+                dst = new_dir / date_dir.name
+                if dst.exists():
+                    _log(f"[Logger] Move: skipping {date_dir.name} for '{stream_name}' — already exists at destination")
+                else:
+                    shutil.move(str(date_dir), str(dst))
+            old_dir.rmdir()          # remove now-empty source dir
+        else:
+            shutil.move(str(old_dir), str(new_dir))
+        _log(f"[Logger] Moved recordings for '{stream_name}': {old_dir} → {new_dir}")
+    except Exception as e:
+        _log(f"[Logger] Failed to move recordings for '{stream_name}': {e}")
+
 
 def _stream_cfg(stream_name):
     with _cfg_lock:
@@ -657,6 +796,7 @@ def _stream_cfg(stream_name):
         "lq_bitrate":    lq if lq in _ALLOWED_BITRATES else _DEFAULT_LQ,
         "lq_after_days": int(s.get("lq_after_days", _DEFAULT_LQ_AFTER)),
         "retain_days":   int(s.get("retain_days", _DEFAULT_RETAIN)),
+        "base_dir":      s.get("base_dir", ""),
     }
 
 def _available_streams():
@@ -724,8 +864,9 @@ def _upsert_segment(slug, date, filename, start_s, silence_ranges, quality="high
     except Exception as e:
         _log(f"[Logger] DB write error: {e}")
 
-def _get_segments(slug, date):
-    day_dir = _rec_root() / slug / date
+def _get_segments(slug, date, base_root=None):
+    root    = base_root if base_root is not None else _stream_rec_root_by_slug(slug)
+    day_dir = root / slug / date
     result  = {}
     try:
         db   = _get_db()
@@ -822,7 +963,7 @@ class _RecorderThread(threading.Thread):
         filename  = f"{time_str}.mp3"
         start_s   = seg_start.hour * 3600 + seg_start.minute * 60
 
-        out_dir  = _rec_root() / self.slug / date_str
+        out_dir  = _stream_rec_root(self.stream_name) / self.slug / date_str
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / filename
 
@@ -1004,40 +1145,46 @@ def _maintenance_loop():
         time.sleep(3600)
 
 def _run_maintenance():
-    ffmpeg   = shutil.which("ffmpeg") or "ffmpeg"
-    rec_root = _rec_root()
-    if not rec_root.exists():
-        return
-    today = datetime.date.today()
-    for stream_dir in rec_root.iterdir():
-        if not stream_dir.is_dir():
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    today  = datetime.date.today()
+    seen_stream_dirs: set = set()
+
+    for rec_root in _all_rec_roots():
+        if not rec_root.exists():
             continue
-        name = _slug_to_name(stream_dir.name)
-        if name is None:
-            continue
-        scfg = _stream_cfg(name)
-        for day_dir in stream_dir.iterdir():
-            if not day_dir.is_dir():
+        for stream_dir in rec_root.iterdir():
+            if not stream_dir.is_dir():
                 continue
-            try:
-                day_date = datetime.date.fromisoformat(day_dir.name)
-            except ValueError:
+            key = str(stream_dir.resolve())
+            if key in seen_stream_dirs:
                 continue
-            age = (today - day_date).days
-            retain = scfg["retain_days"]
-            lq_after = scfg["lq_after_days"]
-            if retain > 0 and age >= retain:
-                try:
-                    _assert_within_rec_root(day_dir)
-                except ValueError:
-                    _log(f"[Logger] Refusing to prune path outside rec root: {day_dir}")
+            seen_stream_dirs.add(key)
+            name = _slug_to_name(stream_dir.name)
+            if name is None:
+                continue
+            scfg = _stream_cfg(name)
+            for day_dir in stream_dir.iterdir():
+                if not day_dir.is_dir():
                     continue
-                _log(f"[Logger] Pruning {day_dir.name} ({stream_dir.name})")
-                shutil.rmtree(day_dir, ignore_errors=True)
-            elif lq_after > 0 and age >= lq_after:
-                for mp3 in day_dir.glob("*.mp3"):
-                    _maybe_downgrade(mp3, stream_dir.name, day_dir.name,
-                                     scfg["lq_bitrate"], ffmpeg)
+                try:
+                    day_date = datetime.date.fromisoformat(day_dir.name)
+                except ValueError:
+                    continue
+                age      = (today - day_date).days
+                retain   = scfg["retain_days"]
+                lq_after = scfg["lq_after_days"]
+                if retain > 0 and age >= retain:
+                    try:
+                        _assert_within_rec_root(day_dir)
+                    except ValueError:
+                        _log(f"[Logger] Refusing to prune path outside any rec root: {day_dir}")
+                        continue
+                    _log(f"[Logger] Pruning {day_dir.name} ({stream_dir.name})")
+                    shutil.rmtree(day_dir, ignore_errors=True)
+                elif lq_after > 0 and age >= lq_after:
+                    for mp3 in day_dir.glob("*.mp3"):
+                        _maybe_downgrade(mp3, stream_dir.name, day_dir.name,
+                                         scfg["lq_bitrate"], ffmpeg)
 
 def _maybe_downgrade(path, slug, date, lq_br, ffmpeg):
     try:
@@ -1075,12 +1222,15 @@ def _maybe_downgrade(path, slug, date, lq_br, ffmpeg):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _assert_within_rec_root(path: Path):
-    """Raise ValueError if path escapes the recordings root directory."""
-    rec_root = (_rec_root()).resolve()
-    try:
-        path.resolve().relative_to(rec_root)
-    except ValueError:
-        raise ValueError(f"Path escapes recordings root: {path}")
+    """Raise ValueError if path escapes ALL known recordings roots."""
+    resolved = path.resolve()
+    for root in _all_rec_roots():
+        try:
+            resolved.relative_to(root.resolve())
+            return   # within at least one known root — OK
+        except ValueError:
+            pass
+    raise ValueError(f"Path escapes all recordings roots: {path}")
 
 def _ffmpeg_concat_escape(p: Path) -> str:
     """Escape a path for use in an ffmpeg concat list file."""
@@ -1088,11 +1238,12 @@ def _ffmpeg_concat_escape(p: Path) -> str:
     return str(p).replace("\\", "\\\\").replace("'", "\\'")
 
 def _export_clip(slug, date, start_s, end_s):
-    day_dir = _rec_root() / slug / date
+    root    = _stream_rec_root_by_slug(slug)
+    day_dir = root / slug / date
     if not day_dir.exists():
         return jsonify({"error": "no recordings"}), 404
     ffmpeg  = shutil.which("ffmpeg") or "ffmpeg"
-    segs    = _get_segments(slug, date)
+    segs    = _get_segments(slug, date, base_root=root)
 
     # Build list of relevant segments, validating each path stays within rec root
     relevant = []
@@ -1452,16 +1603,24 @@ select:focus,input:focus{border-color:var(--acc)}
       <h2>Recording Settings</h2>
       <p class="sub">Enable recording per stream. Changes take effect immediately after saving.</p>
 
-      <!-- Recordings path -->
+      <!-- Base directories -->
       <div style="margin-bottom:18px;padding:14px 16px;background:var(--sur);border:1px solid var(--bor);border-radius:10px">
-        <label style="font-size:12px;font-weight:700;color:var(--mu);letter-spacing:.6px;text-transform:uppercase;display:block;margin-bottom:6px">Recordings Path</label>
-        <input type="text" id="rec-dir-input" placeholder="Default: logger_recordings (next to signalscope.py)"
-               style="width:100%;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:8px 10px;border-radius:6px;font-size:13px;font-family:monospace;outline:none">
-        <div style="margin-top:6px;font-size:12px;color:var(--mu)">
-          Absolute path (e.g. <code>/mnt/recordings</code>) or relative to the SignalScope directory.
-          Leave blank to use the default. The directory is created automatically if it does not exist.
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <label style="font-size:12px;font-weight:700;color:var(--mu);letter-spacing:.6px;text-transform:uppercase">Base Directories</label>
+          <button class="btn bp bs" id="add-basedir-btn" style="padding:4px 10px;font-size:12px">+ Add Directory</button>
         </div>
-        <div id="rec-dir-resolved" style="margin-top:5px;font-size:11px;color:var(--mu);font-family:monospace"></div>
+        <div style="font-size:12px;color:var(--mu);margin-bottom:8px">
+          Named locations where recordings are stored. Assign each stream to a directory below.
+          The <em>Default</em> path is used when no directory is assigned.
+        </div>
+        <div id="basedir-rows"></div>
+        <!-- Default path (legacy / fallback) -->
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--bor)">
+          <label style="font-size:11px;font-weight:700;color:var(--mu);letter-spacing:.5px;text-transform:uppercase;display:block;margin-bottom:4px">Default Path</label>
+          <input type="text" id="rec-dir-input" placeholder="Default: logger_recordings (next to signalscope.py)"
+                 style="width:100%;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:7px 10px;border-radius:6px;font-size:12px;font-family:monospace;outline:none">
+          <div id="rec-dir-resolved" style="margin-top:4px;font-size:11px;color:var(--mu);font-family:monospace"></div>
+        </div>
       </div>
 
       <div id="settings-rows"></div>
@@ -2108,17 +2267,76 @@ function loadSettingsPanel(){
   Promise.all([_get('/api/logger/streams'), _get('/api/logger/config'), _get('/api/logger/status')])
   .then(function(res){
     _streams=res[0]; _cfg=res[1];
+    if(!_cfg.base_dirs) _cfg.base_dirs = [];
+    renderBaseDirs();
     renderSettingsRows();
     var st = res[2];
     document.getElementById('disk-info').textContent =
       'Disk usage: '+_fmtBytes(st.disk_bytes||0);
-    // Populate recordings path input
     var rdInp = document.getElementById('rec-dir-input');
     rdInp.value = _cfg.rec_dir || '';
     var rdRes = document.getElementById('rec-dir-resolved');
     rdRes.textContent = st.rec_root ? '→ ' + st.rec_root : '';
   });
 }
+
+function renderBaseDirs(){
+  var el = document.getElementById('basedir-rows');
+  el.innerHTML = '';
+  var dirs = _cfg.base_dirs || [];
+  if(!dirs.length){
+    el.innerHTML = '<div style="color:var(--mu);font-size:12px;padding:4px 0">No named directories yet. Click "+ Add Directory" to create one.</div>';
+    return;
+  }
+  dirs.forEach(function(bd, idx){
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px';
+    row.innerHTML =
+      '<input type="text" data-bd-idx="'+idx+'" data-bd-key="name" value="'+_esc(bd.name||'')+'" placeholder="Name (e.g. NAS)"'
+      +' style="flex:0 0 140px;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:6px 8px;border-radius:6px;font-size:12px;outline:none">'
+      +'<input type="text" data-bd-idx="'+idx+'" data-bd-key="path" value="'+_esc(bd.path||'')+'" placeholder="/mnt/recordings"'
+      +' style="flex:1;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:6px 8px;border-radius:6px;font-size:12px;font-family:monospace;outline:none">'
+      +'<button class="btn bw bs bd-rm-btn" data-bd-idx="'+idx+'" style="padding:5px 10px;font-size:12px;flex-shrink:0">✕</button>';
+    el.appendChild(row);
+  });
+}
+
+function _getBaseDirsFromForm(){
+  var dirs = [];
+  document.querySelectorAll('[data-bd-idx]').forEach(function(inp){
+    var idx = parseInt(inp.dataset.bdIdx, 10);
+    if(!dirs[idx]) dirs[idx] = {};
+    dirs[idx][inp.dataset.bdKey] = inp.value.trim();
+  });
+  return dirs.filter(function(d){ return d && d.name && d.path; });
+}
+
+document.getElementById('add-basedir-btn').addEventListener('click', function(){
+  if(!_cfg.base_dirs) _cfg.base_dirs = [];
+  _cfg.base_dirs.push({name:'', path:''});
+  renderBaseDirs();
+});
+
+document.getElementById('basedir-rows').addEventListener('click', function(e){
+  var btn = e.target.closest('.bd-rm-btn');
+  if(!btn) return;
+  var idx = parseInt(btn.dataset.bdIdx, 10);
+  var dirs = _getBaseDirsFromForm();
+  // also include rows being edited that may have empty name/path
+  document.querySelectorAll('[data-bd-idx]').forEach(function(inp){
+    var i = parseInt(inp.dataset.bdIdx, 10);
+    if(!dirs[i]) dirs[i] = {};
+    dirs[i][inp.dataset.bdKey] = inp.value.trim();
+  });
+  // Filter out the removed index
+  var all = [];
+  document.querySelectorAll('[data-bd-key="name"]').forEach(function(inp,i){
+    if(i !== idx) all.push({name: inp.value.trim(), path: document.querySelectorAll('[data-bd-key="path"]')[i].value.trim()});
+  });
+  _cfg.base_dirs = all;
+  renderBaseDirs();
+  renderSettingsRows();
+});
 
 function renderSettingsRows(){
   var el=document.getElementById('settings-rows');
@@ -2127,11 +2345,17 @@ function renderSettingsRows(){
     el.innerHTML='<p style="color:var(--mu)">No input streams configured in SignalScope.</p>';
     return;
   }
+  var dirs = _getBaseDirsFromForm();
   _streams.forEach(function(s){
     var sc=(_cfg.streams||{})[s.name]||{};
     var card=document.createElement('div'); card.className='scard';
     var chkd = sc.enabled ? ' checked' : '';
     var eid  = 'lbl-en-'+s.name.replace(/[^a-z0-9]/gi,'_');
+    // Base directory dropdown options
+    var bdOpts = '<option value=""'+((!sc.base_dir||sc.base_dir==='')?' selected':'')+'>Default</option>';
+    dirs.forEach(function(bd){
+      if(bd.name) bdOpts += '<option value="'+_esc(bd.name)+'"'+(sc.base_dir===bd.name?' selected':'')+'>'+_esc(bd.name)+'</option>';
+    });
     card.innerHTML =
       '<div class="scard-hdr">'
       +'<div><div class="name">'+_esc(s.name)+'</div><div class="url">'+_esc(s.url||'')+'</div></div>'
@@ -2149,6 +2373,7 @@ function renderSettingsRows(){
       +'</select></div>'
       +'<div><label>LQ after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="lq_after_days" value="'+(sc.lq_after_days||30)+'"></div>'
       +'<div><label>Delete after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="retain_days" value="'+(sc.retain_days||90)+'"></div>'
+      +'<div><label>Base Directory</label><select data-stream="'+_esc(s.name)+'" data-key="base_dir">'+bdOpts+'</select></div>'
       +'</div></div>';
     var chk = card.querySelector('input[type=checkbox]');
     chk.addEventListener('change', function(){
@@ -2169,25 +2394,32 @@ document.getElementById('save-settings-btn').addEventListener('click', function(
     else if(el.type==='number') streams[name][key]=parseInt(el.value,10)||0;
     else streams[name][key]=el.value;
   });
-  var recDir = document.getElementById('rec-dir-input').value.trim();
-  var saveMsg = document.getElementById('save-msg');
-  var saveErr = document.getElementById('save-err');
+  var recDir    = document.getElementById('rec-dir-input').value.trim();
+  var baseDirs  = _getBaseDirsFromForm();
+  var saveMsg   = document.getElementById('save-msg');
+  var saveErr   = document.getElementById('save-err');
   saveMsg.style.display='none'; saveErr.style.display='none';
-  _post('/api/logger/config',{streams:streams, rec_dir:recDir}).then(function(r){
+  // Show a "Moving…" note if any stream is changing base dir
+  var hasMove = Object.keys(streams).some(function(nm){
+    var oldBd = ((_cfg.streams||{})[nm]||{}).base_dir||'';
+    return (streams[nm].base_dir||'') !== oldBd;
+  });
+  if(hasMove){ saveMsg.textContent='Moving recordings…'; saveMsg.style.display='inline'; }
+  _post('/api/logger/config',{streams:streams, rec_dir:recDir, base_dirs:baseDirs}).then(function(r){
     if(r.ok){
-      _cfg.streams=streams; _cfg.rec_dir=recDir;
+      _cfg.streams=streams; _cfg.rec_dir=recDir; _cfg.base_dirs=baseDirs;
+      saveMsg.textContent='✓ Saved'+(r.moves?' ('+r.moves+' stream'+(r.moves!==1?'s':'')+' moved)':'');
       saveMsg.style.display='inline';
-      setTimeout(function(){ saveMsg.style.display='none'; },3000);
-      // Refresh resolved path display from status
+      setTimeout(function(){ saveMsg.textContent='✓ Saved'; saveMsg.style.display='none'; },4000);
       fetch('/api/logger/status').then(function(res){ return res.json(); }).then(function(st){
         var rdRes=document.getElementById('rec-dir-resolved');
         rdRes.textContent = st.rec_root ? '→ '+st.rec_root : '';
         document.getElementById('disk-info').textContent='Disk usage: '+_fmtBytes(st.disk_bytes||0);
       });
-      // Refresh notice on timeline
       var anyEnabled=Object.values(streams).some(function(s){ return s.enabled; });
       document.getElementById('tl-notice').classList.toggle('hidden', anyEnabled);
     } else {
+      saveMsg.style.display='none';
       var errTxt = (r && r.error) ? r.error : 'Save failed';
       saveErr.textContent = '✗ '+errTxt; saveErr.style.display='inline';
     }
