@@ -2,6 +2,17 @@
 
 ---
 
+## [3.4.51] - 2026-03-28
+
+### Fixed
+- **Logger 1.2.3 — WAN audio buffer underruns during hub remote playback** — Remote playback sounded choppy when the client was on a high-latency WAN link. The previous code sent one 9 600-byte PCM block (0.1 s of audio) per HTTP POST. With a 150–300 ms round-trip to the remote client, each synchronous POST consumed more wall-clock time than the audio it delivered, so the relay buffer drained faster than it filled.
+  - `_push_audio_to_relay` now batches **16 chunks per POST (1.6 s of audio)**. At 300 ms RTT each POST delivers 5× more audio than it takes to send, keeping the relay buffer 4–8 s ahead of playback even across a WAN link.
+  - Push rate raised to **3× real-time** (was 1.15×) to build the buffer faster on playback start.
+  - A new helper `_audio_post()` encapsulates HMAC signing and error handling, returning `False` on slot-closed (404) to stop the push loop cleanly.
+  - Browser PCM pre-buffer raised from **1.0 s → 5.0 s** (`_PRE`) to absorb jitter before the Web Audio scheduler runs dry.
+
+---
+
 ## [3.4.50] - 2026-03-28
 
 ### Fixed

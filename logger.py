@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.2.2",
+    "version": "1.2.3",
 }
 
 import datetime
@@ -102,15 +102,20 @@ def _check_sig(secret: str, data: bytes) -> bool:
 #  CLIENT → HUB: AUDIO PUSH & POLLER
 # ─────────────────────────────────────────────────────────────────────────────
 
-_CHUNK_BYTES = 9600          # 0.1 s of 48 kHz mono 16-bit PCM
-_CHUNK_DUR   = 0.1           # seconds per chunk
-_PUSH_RATE   = 1.15          # push at 1.15× real-time to stay ahead of playback
+_CHUNK_BYTES  = 9600   # 0.1 s of 48 kHz mono 16-bit PCM
+_CHUNK_DUR    = 0.1    # seconds per single chunk
+_BATCH_CHUNKS = 16     # chunks concatenated into one HTTP POST (= 1.6 s per POST)
+_BATCH_BYTES  = _CHUNK_BYTES * _BATCH_CHUNKS
+_BATCH_DUR    = _CHUNK_DUR   * _BATCH_CHUNKS   # 1.6 s
+_PUSH_RATE    = 3.0    # push at 3× real-time; large pre-buffer absorbs jitter
 
 
 def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
     """Push PCM audio to a hub relay slot by transcoding a recorded segment with ffmpeg.
 
-    Pushes at ~1.15× real-time so the relay buffer stays small but always has data.
+    Batches 16 raw PCM blocks (1.6 s of audio) per HTTP POST to amortise
+    WAN round-trip cost.  Pushes at 3× real-time so the relay buffer stays
+    4–8 s ahead of playback; the browser's 5 s pre-buffer absorbs jitter.
     """
     path = _rec_root() / _safe(slug) / date / filename
     if not path.exists():
@@ -132,46 +137,67 @@ def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
     _log(f"[Logger] AudioPush: starting {slug}/{date}/{filename} seek={seek_s:.1f}s → slot {slot_id}")
 
     push_start = time.monotonic()
-    chunk_n    = 0
+    batch_n    = 0
+    total_chunks = 0
 
     try:
+        buf = b""
         while True:
-            chunk = proc.stdout.read(_CHUNK_BYTES)
-            if not chunk:
+            piece = proc.stdout.read(_CHUNK_BYTES)
+            if not piece:
+                # Flush any remaining partial batch
+                if buf:
+                    _audio_post(chunk_url, buf, secret)
+                    total_chunks += len(buf) // _CHUNK_BYTES
                 break
-            chunk_n += 1
 
-            # Rate-limit: pace pushes to 1.15× real-time so the relay
-            # buffer never exceeds a few seconds of audio.
-            target_t = push_start + chunk_n * _CHUNK_DUR / _PUSH_RATE
+            buf += piece
+            if len(buf) < _BATCH_BYTES:
+                continue   # keep accumulating
+
+            batch_n += 1
+            total_chunks += _BATCH_CHUNKS
+
+            # Rate-limit: pace to 3× real-time so we stay ahead without
+            # flooding the relay queue on a fast LAN.
+            target_t = push_start + batch_n * _BATCH_DUR / _PUSH_RATE
             wait     = target_t - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
 
-            ts  = time.time()
-            headers = {"Content-Type": "application/octet-stream"}
-            if secret:
-                sig   = _make_sig(secret, chunk, ts)
-                nonce = _hashlib.md5(os.urandom(8)).hexdigest()[:16]
-                headers["X-Hub-Sig"]   = sig
-                headers["X-Hub-Ts"]    = f"{ts:.0f}"
-                headers["X-Hub-Nonce"] = nonce
-            req = _urllib_req.Request(chunk_url, data=chunk, method="POST", headers=headers)
-            try:
-                _urllib_req.urlopen(req, timeout=5).close()
-            except Exception as e:
-                err_str = str(e)
-                if "404" in err_str or "HTTP Error 404" in err_str:
-                    _log(f"[Logger] AudioPush: slot {slot_id} closed after {chunk_n} chunks")
-                    break
-                _log(f"[Logger] AudioPush: chunk POST failed: {e}")
-                break
+            if not _audio_post(chunk_url, buf, secret):
+                break   # slot closed or unrecoverable error
+            buf = b""
+
     finally:
-        _log(f"[Logger] AudioPush: finished {chunk_n} chunks for {slug}/{date}/{filename}")
+        _log(f"[Logger] AudioPush: finished {total_chunks} chunks ({total_chunks*_CHUNK_DUR:.1f}s) for {slug}/{date}/{filename}")
         try:
             proc.kill()
         except Exception:
             pass
+
+
+def _audio_post(chunk_url: str, data: bytes, secret: str) -> bool:
+    """POST a PCM batch to the relay endpoint.  Returns False if the slot is gone."""
+    ts      = time.time()
+    headers = {"Content-Type": "application/octet-stream"}
+    if secret:
+        sig   = _make_sig(secret, data, ts)
+        nonce = _hashlib.md5(os.urandom(8)).hexdigest()[:16]
+        headers["X-Hub-Sig"]   = sig
+        headers["X-Hub-Ts"]    = f"{ts:.0f}"
+        headers["X-Hub-Nonce"] = nonce
+    req = _urllib_req.Request(chunk_url, data=data, method="POST", headers=headers)
+    try:
+        _urllib_req.urlopen(req, timeout=10).close()
+        return True
+    except Exception as e:
+        err = str(e)
+        if "404" in err or "HTTP Error 404" in err:
+            _log(f"[Logger] AudioPush: slot closed")
+        else:
+            _log(f"[Logger] AudioPush: POST failed: {e}")
+        return False
 
 
 def _hub_logger_poller():
@@ -1486,7 +1512,7 @@ var _hubPlayOffset = 0;
 // ── PCM audio pump (for hub mode playback) ─────────────────────────────────
 var _audioCtx=null,_gainNode=null,_pcmReader=null,_nextTime=0;
 var _pcmBuf=new Uint8Array(0);
-var _SR=48000,_BLK_S=4800,_BLK_B=9600,_PRE=1.0;
+var _SR=48000,_BLK_S=4800,_BLK_B=9600,_PRE=5.0;
 function _initAudio(){
   if(_audioCtx)return;
   _audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:_SR});
