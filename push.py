@@ -279,7 +279,7 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
     {% if migrate_available %}
     <div style="margin-top:14px;padding:12px 14px;border:1px solid var(--wn);border-radius:8px;background:#1a1000">
       <p style="font-size:13px;color:var(--wn);margin-bottom:10px">⬆ <strong>Existing credentials found</strong> in SignalScope Settings → Notifications. Click below to copy them here in one go — no re-typing needed.</p>
-      <button class="btn" style="background:var(--wn);color:#000" onclick="doMigrate()">⬆ Migrate from existing settings</button>
+      <button id="migrate-btn" class="btn" style="background:var(--wn);color:#000">⬆ Migrate from existing settings</button>
     </div>
     {% endif %}
     {% if migrate_done %}
@@ -333,13 +333,15 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
 
 </div>
 <script nonce="{{csp_nonce()}}">
-function doMigrate(){
+var _mb=document.getElementById('migrate-btn');
+if(_mb){_mb.addEventListener('click',function(){
   var tok=(document.querySelector('meta[name="csrf-token"]')||{}).content
          ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+  _mb.disabled=true; _mb.textContent='Migrating…';
   fetch('/hub/push/migrate',{method:'POST',headers:{'X-CSRFToken':tok,'Content-Type':'application/json'},body:'{}',credentials:'same-origin'})
-    .then(function(r){if(r.ok)window.location='/hub/push?migrated=1';else r.text().then(function(t){alert('Migration failed: '+t);});})
-    .catch(function(e){alert('Migration error: '+e);});
-}
+    .then(function(r){if(r.ok){window.location='/hub/push?migrated=1';}else{r.text().then(function(t){alert('Migration failed: '+t);_mb.disabled=false;_mb.textContent='⬆ Migrate from existing settings';});}})
+    .catch(function(e){alert('Migration error: '+e);_mb.disabled=false;_mb.textContent='⬆ Migrate from existing settings';});
+});}
 </script>
 </body></html>"""
 
