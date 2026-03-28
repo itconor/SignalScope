@@ -2,6 +2,23 @@
 
 ---
 
+## [3.4.56] - 2026-03-28
+
+### Fixed
+- **Morning Report 1.0.1 — Page always returned 500** — The heatmap template used `{{h:02d}}` (Python f-string format spec) which is not valid Jinja2 syntax. Jinja2 treats the `:` as an unexpected token and raises a TemplateSyntaxError on every page render. The page was never functional since the first commit.
+
+  Fix: replaced `{{h:02d}}` with `{{ "%02d" % h }}` in both the heatmap cell `title` attribute and the hour label below the grid.
+
+  **Rule**: Jinja2 template expressions `{{ }}` do not support Python's format mini-language (`{value:spec}`). Use `{{ "%02d" % value }}` or `{{ value | string | rjust(2, "0") }}` for zero-padded integers.
+
+- **Logger 1.4.3 — Settings panel hangs if disk scan fails** — `api_logger_status` iterated over all recordings with `f.stat().st_size` inside a bare loop with no exception handling. A file deleted between `rglob` discovery and `stat()` (e.g. by the concurrent maintenance thread), an unreachable network share, or a permission error would raise an `OSError` that Flask caught as a 500. The `/api/logger/status` call in the settings panel `Promise.all` then returned an HTML or JSON error body; `r.json()` either threw or returned an error object, rejecting the promise and leaving the UI frozen at "Calculating disk usage…" with no streams or base directories shown.
+
+  Fix: wrapped the entire disk-scan loop in nested `try/except OSError` blocks so individual file errors are skipped silently. The outer `except Exception` catches any unexpected failure and logs it. Added `.catch()` to `loadSettingsPanel`'s `Promise.all` so any remaining API failure now shows "⚠ Settings failed to load — check server logs" instead of a frozen spinner.
+
+  **Rule**: Any route that scans the filesystem with `rglob` MUST wrap `f.stat()` in `try/except OSError` — files can be deleted between discovery and stat. Always add `.catch()` to `Promise.all` calls in the UI.
+
+---
+
 ## [3.4.55] - 2026-03-28
 
 ### Fixed

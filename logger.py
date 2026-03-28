@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.2",
+    "version": "1.4.3",
 }
 
 import datetime
@@ -543,16 +543,26 @@ def register(app, ctx):
                 "seg_count":  t.seg_count,
             } for sl, t in _recorders.items()}
         # Sum disk usage across all configured root directories
-        seen_files: set = set()
+        seen_files = set()
         total = 0
-        for root in _all_rec_roots():
-            if root.exists():
-                for f in root.rglob("*.mp3"):
-                    if f.is_file():
-                        key = str(f.resolve())
-                        if key not in seen_files:
-                            seen_files.add(key)
-                            total += f.stat().st_size
+        try:
+            for root in _all_rec_roots():
+                try:
+                    if not root.exists():
+                        continue
+                    for f in root.rglob("*.mp3"):
+                        try:
+                            if f.is_file():
+                                key = str(f.resolve())
+                                if key not in seen_files:
+                                    seen_files.add(key)
+                                    total += f.stat().st_size
+                        except OSError:
+                            pass
+                except OSError as e:
+                    _log(f"[Logger] Disk scan error for {root}: {e}")
+        except Exception as e:
+            _log(f"[Logger] Status disk scan failed: {e}")
         rec_root = _rec_root()
         return jsonify({"recorders": active, "disk_bytes": total,
                         "rec_root": str(rec_root)})
@@ -2678,6 +2688,9 @@ function loadSettingsPanel(){
     rdInp.value = _cfg.rec_dir || '';
     var rdRes = document.getElementById('rec-dir-resolved');
     rdRes.textContent = st.rec_root ? '→ ' + st.rec_root : '';
+  }).catch(function(err){
+    document.getElementById('disk-info').textContent = '⚠ Settings failed to load — check server logs';
+    console.error('loadSettingsPanel failed:', err);
   });
 }
 

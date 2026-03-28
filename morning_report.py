@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.0.0",
+    "version":  "1.0.1",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -800,14 +800,14 @@ tr:hover td{background:rgba(255,255,255,.03)}
     {% for h in range(24) %}
     {% set cnt = report.hourly_counts[h] %}
     {% set c = [0, cnt if cnt <= 3 else 3] | max %}
-    <div class="hm-cell" data-c="{{c}}" title="{{h:02d}}:00 — {{cnt}} fault{% if cnt != 1 %}s{% endif %}">
+    <div class="hm-cell" data-c="{{c}}" title="{{ "%02d" % h }}:00 — {{cnt}} fault{% if cnt != 1 %}s{% endif %}">
       {% if cnt > 0 %}{{cnt}}{% endif %}
     </div>
     {% endfor %}
   </div>
   <div class="hm-labels">
     {% for h in range(24) %}
-    <div class="hm-lbl">{{h:02d}}</div>
+    <div class="hm-lbl">{{ "%02d" % h }}</div>
     {% endfor %}
   </div>
   <div style="margin-top:8px;display:flex;gap:14px;font-size:10px;color:var(--mu);flex-wrap:wrap">
