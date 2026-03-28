@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.26",
+    "version": "1.4.27",
 }
 
 import datetime
@@ -87,6 +87,15 @@ _hub_logger_segs     = {}   # "{site}:{slug}:{date}" → [seg_dict, ...]
 _hub_logger_active   = {}   # site → current play slot_id
 _hub_logger_meta     = {}   # "{site}:{slug}:{date}" → [event_dict, ...]
 _hub_logger_lock     = threading.Lock()
+_hub_logger_events   = {}   # site → threading.Event for long-poll wakeup
+
+def _hub_set_pending(site: str, cmd: dict):
+    """Store a command for a site and wake any waiting long-poll connection."""
+    with _hub_logger_lock:
+        _hub_logger_pending[site] = cmd
+        evt = _hub_logger_events.get(site)
+        if evt:
+            evt.set()
 
 
 # ─── HMAC signing helpers ─────────────────────────────────────────────────────
@@ -265,7 +274,9 @@ def _hub_logger_poller():
                 except Exception as e:
                     _log(f"[Logger] HubPoller: registration failed: {e}")
 
-            # ── Command poll (every 3 s) ────────────────────────────────────
+            # ── Command poll (long-poll: blocks up to 25 s on the hub) ────────
+            # No sleep between polls — the hub holds the connection open until a
+            # command is available or 25 s elapse, so we reconnect immediately.
             try:
                 ts      = time.time()
                 headers = {}
@@ -277,7 +288,7 @@ def _hub_logger_poller():
                 req = _urllib_req.Request(
                     f"{hub_url}/api/logger/hub/poll/{site_enc}",
                     method="GET", headers=headers)
-                resp = _urllib_req.urlopen(req, timeout=10)
+                resp = _urllib_req.urlopen(req, timeout=30)  # 30 s > 25 s hub hold
                 data = json.loads(resp.read())
                 resp.close()
 
@@ -355,11 +366,11 @@ def _hub_logger_poller():
 
             except Exception as e:
                 _log(f"[Logger] HubPoller: poll failed: {e}")
+                time.sleep(2)  # back-off only on error to avoid hammering on network failure
 
         except Exception as e:
             _log(f"[Logger] HubPoller: outer error: {e}")
-
-        time.sleep(3)
+            time.sleep(2)
 
 
 def _hub_result_post(hub_url, secret, site, payload_dict):
@@ -643,6 +654,22 @@ def register(app, ctx):
             if not _check_sig(secret, b""):
                 _log(f"[Logger] Hub poll: HMAC check failed for site '{site}'")
                 return jsonify({"error": "forbidden"}), 403
+            # ── Long-poll: wait up to 25 s for a command ──────────────────────
+            # Register an Event for this site so _hub_set_pending() can wake us
+            # immediately instead of making the client wait for the next 3-second
+            # poll cycle.  Multiple simultaneous connections from the same site
+            # are unlikely but safe — they share the event and both return the
+            # same (now-empty) pending slot.
+            evt = _hub_logger_events.setdefault(site, threading.Event())
+            evt.clear()
+            # Check for an already-queued command before blocking
+            with _hub_logger_lock:
+                cmd = _hub_logger_pending.pop(site, None)
+            if cmd:
+                _log(f"[Logger] Hub poll: dispatching cmd type='{cmd.get('type')}' to site '{site}'")
+                return jsonify({"cmd": cmd})
+            # Block until woken by _hub_set_pending or 25 s timeout
+            evt.wait(timeout=25)
             with _hub_logger_lock:
                 cmd = _hub_logger_pending.pop(site, None)
             if cmd:
@@ -706,7 +733,7 @@ def register(app, ctx):
                     _log(f"[Logger] Hub days cache hit: {site}:{slug} → {len(days)} day(s)")
                     return jsonify(days)
                 _log(f"[Logger] Hub days: queuing cmd for site='{site}' slug='{slug}'")
-                _hub_logger_pending[site] = {"type": "days", "slug": slug}
+                _hub_set_pending(site, {"type": "days", "slug": slug})
             return jsonify({"pending": True})
 
         @app.get("/api/logger/hub/segments/<path:site_slug_date>")
@@ -724,7 +751,7 @@ def register(app, ctx):
                     _log(f"[Logger] Hub segs cache hit: {key} → {len(segs)} seg(s)")
                     return jsonify(segs)
                 _log(f"[Logger] Hub segs: queuing cmd for site='{site}' slug='{slug}' date='{date}'")
-                _hub_logger_pending[site] = {"type": "segments", "slug": slug, "date": date}
+                _hub_set_pending(site, {"type": "segments", "slug": slug, "date": date})
             return jsonify({"pending": True})
 
         @app.post("/api/logger/hub/play")
@@ -756,7 +783,7 @@ def register(app, ctx):
                 site, 0, kind="scanner", mimetype="application/octet-stream")
             with _hub_logger_lock:
                 _hub_logger_active[site] = slot.slot_id
-                _hub_logger_pending[site] = {
+                _hub_set_pending(site, {
                     "type": "play",
                     "slot_id": slot.slot_id,
                     "slug": slug,
@@ -784,7 +811,7 @@ def register(app, ctx):
                     _log(f"[Logger] Hub meta cache hit: {key} → {len(events)} event(s)")
                     return jsonify(events)
                 _log(f"[Logger] Hub meta: queuing cmd for site='{site}' slug='{slug}' date='{date}'")
-                _hub_logger_pending[site] = {"type": "metadata", "slug": slug, "date": date}
+                _hub_set_pending(site, {"type": "metadata", "slug": slug, "date": date})
             return jsonify({"pending": True})
 
     # ── Regular logger routes ─────────────────────────────────────────────────
@@ -932,7 +959,7 @@ def register(app, ctx):
             with _hub_logger_lock:
                 if key in _hub_logger_days:
                     return jsonify({"days": _hub_logger_days[key], "pending": False})
-                _hub_logger_pending[site] = {"type": "days", "slug": _safe(slug)}
+                _hub_set_pending(site, {"type": "days", "slug": _safe(slug)})
             return jsonify({"days": [], "pending": True})
         # Local mode
         sdir = _stream_rec_root_by_slug(_safe(slug)) / _safe(slug)
@@ -960,7 +987,7 @@ def register(app, ctx):
                 if key in _hub_logger_segs:
                     segs = sorted(_hub_logger_segs[key], key=lambda s: s.get("start_s", 0))
                     return jsonify({"segments": segs, "pending": False})
-                _hub_logger_pending[site] = {"type": "segments", "slug": _safe(slug), "date": date}
+                _hub_set_pending(site, {"type": "segments", "slug": _safe(slug), "date": date})
             return jsonify({"segments": [], "pending": True})
         # Local mode
         segs = _get_segments(_safe(slug), date)
@@ -981,7 +1008,7 @@ def register(app, ctx):
             with _hub_logger_lock:
                 if key in _hub_logger_meta:
                     return jsonify({"events": _hub_logger_meta[key], "pending": False})
-                _hub_logger_pending[site] = {"type": "metadata", "slug": _safe(slug), "date": date}
+                _hub_set_pending(site, {"type": "metadata", "slug": _safe(slug), "date": date})
             return jsonify({"events": [], "pending": True})
         # Local mode — read from DB
         try:
@@ -1046,7 +1073,7 @@ def register(app, ctx):
                                        mimetype="application/octet-stream")
         with _hub_logger_lock:
             _hub_logger_active[site] = slot.slot_id
-            _hub_logger_pending[site] = {
+            _hub_set_pending(site, {
                 "type": "play",
                 "slot_id": slot.slot_id,
                 "slug": _safe(slug),
@@ -2471,7 +2498,7 @@ var _hubPlayPending = false; // true while startHubPlay POST is in-flight (preve
 var _audioCtx=null,_gainNode=null,_pcmReader=null,_nextTime=0;
 var _pcmBuf=new Uint8Array(0);
 var _activeSrcs=[];  // all live AudioBufferSource nodes — stopped on stream switch
-var _SR=48000,_BLK_S=4800,_BLK_B=9600,_PRE=1.0;
+var _SR=48000,_BLK_S=4800,_BLK_B=9600,_PRE=0.6;
 function _initAudio(){
   if(_audioCtx)return;
   _audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:_SR});
@@ -2497,7 +2524,8 @@ function _stopHubAudio(){
   _hubIsPlaying   = false;
   _hubPlayPending = false;
   _hubPlayStart   = null;
-  document.getElementById('play-btn').textContent='▶';
+  var pb=document.getElementById('play-btn');
+  pb.textContent='▶'; pb.disabled=false;
 }
 function connectAudio(url){
   if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
@@ -2974,15 +3002,23 @@ function startHubPlay(seg, offset){
   _killActiveSrcs();
   _hubIsPlaying   = false;
   _hubPlayPending = true;
+  // Immediate visual feedback — show loading state before the POST even returns
+  document.getElementById('play-btn').textContent='⏳';
+  document.getElementById('play-btn').disabled=true;
   var gen = ++_playGen;   // capture generation for this click
   var seekSecs = offset;
   _post('/api/logger/hub/play', {
     site: _hubSite, slug: _currentSlug, date: _currentDate,
     filename: seg.filename, seek_s: seekSecs
   }).then(function(r){
-    if(gen !== _playGen){ return; } // superseded by a later click — discard
+    if(gen !== _playGen){
+      // Superseded by a later click — discard but re-enable button if nothing else pending
+      if(!_hubIsPlaying && !_hubPlayPending) { document.getElementById('play-btn').disabled=false; }
+      return;
+    }
     _hubPlayPending = false;
-    if(!r || !r.ok) return;
+    document.getElementById('play-btn').disabled=false;
+    if(!r || !r.ok){ document.getElementById('play-btn').textContent='▶'; return; }
     connectAudio(r.stream_url);
     _selSeg = seg;
     _hubIsPlaying  = true;
@@ -2993,7 +3029,9 @@ function startHubPlay(seg, offset){
     document.getElementById('p-sub').textContent=_hubSite+' · '+_currentSlug;
     _updateGridPlaying(seg.start_s);
     document.getElementById('play-btn').textContent='⏸';
-  }).catch(function(){ if(gen===_playGen){ _hubPlayPending=false; } });
+  }).catch(function(){
+    if(gen===_playGen){ _hubPlayPending=false; document.getElementById('play-btn').disabled=false; document.getElementById('play-btn').textContent='▶'; }
+  });
 }
 
 // ── Segment loading & navigation ──────────────────────────────────────────
