@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.24",
+    "version": "1.4.25",
 }
 
 import datetime
@@ -2477,12 +2477,16 @@ function _initAudio(){
   _gainNode=_audioCtx.createGain(); _gainNode.connect(_audioCtx.destination);
 }
 function _stopHubAudio(){
-  // Cancel incoming stream and mute any already-scheduled buffers immediately.
+  // Cancel incoming stream and mute immediately.
+  // cancelScheduledValues clears any pending automation so gain.value=0 sticks.
   // Increment _playGen so any in-flight POST response is treated as stale.
   ++_playGen;
   if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
   _pcmBuf=new Uint8Array(0);
-  if(_gainNode && _audioCtx) _gainNode.gain.setValueAtTime(0, _audioCtx.currentTime);
+  if(_gainNode && _audioCtx){
+    _gainNode.gain.cancelScheduledValues(0);
+    _gainNode.gain.value = 0;
+  }
   _hubIsPlaying   = false;
   _hubPlayPending = false;
   _hubPlayStart   = null;
@@ -2492,7 +2496,11 @@ function connectAudio(url){
   if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
   _pcmBuf=new Uint8Array(0);
   _initAudio(); if(_audioCtx.state==='suspended')_audioCtx.resume();
-  _gainNode.gain.setValueAtTime(1, _audioCtx.currentTime); // unmute (may have been muted by stop)
+  // Clear any pending automation and unmute — use direct .value assignment
+  // rather than setValueAtTime so there is no risk of conflicts with prior
+  // scheduled events leaving the gain stuck at 0.
+  _gainNode.gain.cancelScheduledValues(0);
+  _gainNode.gain.value = 1;
   _nextTime=_audioCtx.currentTime+_PRE;
   fetch(url,{credentials:'same-origin'}).then(function(r){
     _pcmReader=r.body.getReader();
@@ -2950,9 +2958,9 @@ function playSeg(seg, blkEl){
 var _playGen = 0;
 
 function startHubPlay(seg, offset){
-  // Immediately silence anything playing and cancel the reader.
-  // This runs synchronously so there is no window where two streams overlap.
-  if(_gainNode && _audioCtx) _gainNode.gain.setValueAtTime(0, _audioCtx.currentTime);
+  // Cancel the reader of any running stream. The generation counter (_playGen)
+  // ensures only the last click's POST response starts audio — no need to mute
+  // the gain here (which could leave it stuck at 0 if connectAudio is skipped).
   if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
   _pcmBuf=new Uint8Array(0);
   _hubIsPlaying   = false;
