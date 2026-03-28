@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.25",
+    "version": "1.4.26",
 }
 
 import datetime
@@ -2470,19 +2470,26 @@ var _hubPlayPending = false; // true while startHubPlay POST is in-flight (preve
 // ── PCM audio pump (for hub mode playback) ─────────────────────────────────
 var _audioCtx=null,_gainNode=null,_pcmReader=null,_nextTime=0;
 var _pcmBuf=new Uint8Array(0);
+var _activeSrcs=[];  // all live AudioBufferSource nodes — stopped on stream switch
 var _SR=48000,_BLK_S=4800,_BLK_B=9600,_PRE=1.0;
 function _initAudio(){
   if(_audioCtx)return;
   _audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:_SR});
   _gainNode=_audioCtx.createGain(); _gainNode.connect(_audioCtx.destination);
 }
+function _killActiveSrcs(){
+  // Stop every scheduled AudioBufferSource so old audio cannot bleed into the
+  // next stream. .stop() is safe to call even on nodes that haven't started yet.
+  var srcs = _activeSrcs; _activeSrcs = [];
+  srcs.forEach(function(s){ try{ s.stop(); }catch(e){} });
+}
 function _stopHubAudio(){
-  // Cancel incoming stream and mute immediately.
-  // cancelScheduledValues clears any pending automation so gain.value=0 sticks.
+  // Cancel incoming stream, kill scheduled buffers, and mute.
   // Increment _playGen so any in-flight POST response is treated as stale.
   ++_playGen;
   if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
   _pcmBuf=new Uint8Array(0);
+  _killActiveSrcs();
   if(_gainNode && _audioCtx){
     _gainNode.gain.cancelScheduledValues(0);
     _gainNode.gain.value = 0;
@@ -2518,6 +2525,8 @@ function connectAudio(url){
         src.buffer=buf;src.connect(_gainNode);
         var t=Math.max(_nextTime,_audioCtx.currentTime+0.05);
         src.start(t);_nextTime=t+buf.duration;
+        _activeSrcs.push(src);
+        src.onended=function(){ var i=_activeSrcs.indexOf(src); if(i>=0)_activeSrcs.splice(i,1); };
       }
       pump();
     });})();
@@ -2958,11 +2967,11 @@ function playSeg(seg, blkEl){
 var _playGen = 0;
 
 function startHubPlay(seg, offset){
-  // Cancel the reader of any running stream. The generation counter (_playGen)
-  // ensures only the last click's POST response starts audio — no need to mute
-  // the gain here (which could leave it stuck at 0 if connectAudio is skipped).
+  // Cancel the current reader and stop all scheduled buffers immediately so
+  // the old stream's pre-buffered audio does not overlap with the new stream.
   if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
   _pcmBuf=new Uint8Array(0);
+  _killActiveSrcs();
   _hubIsPlaying   = false;
   _hubPlayPending = true;
   var gen = ++_playGen;   // capture generation for this click
