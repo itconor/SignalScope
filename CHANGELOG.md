@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.46] - 2026-03-28
+
+### Fixed
+- **DAB Scanner — opens and partially functions when no DAB dongle is configured** — `GET /api/mobile/dab/sites` previously included dongles in `scanner` role alongside `dab` role dongles. If a site had only FM/scanner dongles, the iOS DAB Scanner would show the site picker and attempt to scan rather than displaying the "not available" card. Fix: endpoint now only returns sites where at least one dongle has `role = "dab"`. Sites with only `scanner` role dongles are excluded — the iOS unavailable card is shown correctly.
+
+---
+
 ## [3.4.45] - 2026-03-28
 
 ### Added

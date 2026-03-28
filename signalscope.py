@@ -1620,7 +1620,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.45"
+BUILD                  = "SignalScope-3.4.46"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -25024,14 +25024,12 @@ def api_mobile_hub_scanner_stream_wav(slot_id: str):
 @app.get("/api/mobile/dab/sites")
 @mobile_api_required
 def api_mobile_dab_sites():
-    """List sites that have DAB/scanner dongles available."""
+    """List sites that have dongles in 'dab' role available."""
     if not hub_server:
         return jsonify({"ok": True, "sites": []})
     sites = []
     for name, data in hub_server._sites.items():
-        serials = list(dict.fromkeys(
-            data.get("dab_serials", []) + data.get("scanner_serials", [])
-        ))
+        serials = data.get("dab_serials", [])
         if serials:
             sites.append({"site": name, "serials": serials})
     sites.sort(key=lambda x: x["site"].lower())
