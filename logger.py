@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.5",
+    "version": "1.4.6",
 }
 
 import datetime
@@ -1823,6 +1823,10 @@ select:focus,input:focus{border-color:var(--acc)}
 /* Track blocks — amber tint over existing status colour */
 .tl-block.has-track[data-status="ok"]{background:#92400e}
 .tl-block.has-track[data-status="warn"]{background:#7c3a0a}
+/* Track band — precise per-song spans below the hour grid */
+#track-band{width:100%;height:20px;position:relative;background:transparent;margin-top:3px;flex-shrink:0}
+.track-span{position:absolute;top:1px;height:18px;background:rgba(180,83,9,.2);border-left:2px solid rgba(251,191,36,.8);border-radius:0 2px 2px 0;overflow:hidden;white-space:nowrap;font-size:10px;color:#fcd34d;padding:0 5px;display:flex;align-items:center;box-sizing:border-box;cursor:default}
+.track-span:hover{background:rgba(180,83,9,.45);z-index:5}
 .tl-block.has-track[data-status="none"]{background:#3d2000}
 /* Now playing URL input in settings */
 .np-url-row{padding-top:10px;border-top:1px solid var(--bor);margin-top:10px}
@@ -1907,6 +1911,7 @@ select:focus,input:focus{border-color:var(--acc)}
           <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:55</span>
         </div>
         <div id="show-band"></div>
+        <div id="track-band"></div>
         <div id="tl-grid" class="tl-grid"></div>
       </div>
 
@@ -2273,6 +2278,7 @@ function loadSegments(){
   document.getElementById('day-bar-head').classList.add('hidden');
   buildDayBar([]);
   document.getElementById('show-band').innerHTML = '';
+  document.getElementById('track-band').innerHTML = '';
   apiSegments(_currentSlug, _currentDate, function(segs){
     buildTimeline(segs || []);
     loadMeta(_currentSlug, _currentDate);
@@ -2303,7 +2309,7 @@ function loadMeta(slug, date){
 
 function _applyMeta(events){
   _metaEvents = events;
-  // Apply track colours and extended tooltips to timeline blocks
+  // Apply track colours and timestamped tooltips to timeline blocks
   document.querySelectorAll('.tl-block').forEach(function(blk){
     var ss = parseInt(blk.dataset.startS || -1, 10);
     if(isNaN(ss) || ss < 0) return;
@@ -2313,14 +2319,20 @@ function _applyMeta(events){
     });
     if(tracks.length){
       blk.classList.add('has-track');
-      var t = tracks[0];
-      var trackInfo = (t.artist ? t.artist + ' \u2014 ' : '') + t.title;
-      blk.dataset.tip = (blk.dataset.tip || '') + ' \u00b7 \U0001F3B5 ' + trackInfo;
+      var trackLines = tracks.map(function(t){
+        var th = Math.floor(t.ts_s / 3600);
+        var tm = Math.floor((t.ts_s % 3600) / 60);
+        var ts = Math.floor(t.ts_s % 60);
+        var tstr = ('0'+th).slice(-2)+':'+('0'+tm).slice(-2)+':'+('0'+ts).slice(-2);
+        return '\U0001F3B5 '+tstr+' '+(t.artist ? t.artist+' \u2014 ' : '')+t.title;
+      }).join(' | ');
+      blk.dataset.tip = (blk.dataset.tip || '') + ' \u00b7 ' + trackLines;
     } else {
       blk.classList.remove('has-track');
     }
   });
   _renderShowBand(events);
+  _renderTrackBand(events);
 }
 
 function _renderShowBand(events){
@@ -2343,6 +2355,33 @@ function _renderShowBand(events){
     if(shows[i].presenter) label += ' \u00b7 ' + shows[i].presenter;
     sp.textContent = label;
     sp.title = label;
+    band.appendChild(sp);
+  }
+}
+
+function _renderTrackBand(events){
+  var band = document.getElementById('track-band');
+  if(!band) return;
+  band.innerHTML = '';
+  var tracks = events.filter(function(e){ return e.type === 'track' && e.title; });
+  if(!tracks.length) return;
+  for(var i = 0; i < tracks.length; i++){
+    var start = tracks[i].ts_s;
+    var end   = (i + 1 < tracks.length) ? tracks[i + 1].ts_s : 86400;
+    var w = (end - start) / 86400 * 100;
+    var l = start / 86400 * 100;
+    if(w < 0.02) continue;
+    var th = Math.floor(start / 3600);
+    var tm = Math.floor((start % 3600) / 60);
+    var ts = Math.floor(start % 60);
+    var tstr = ('0'+th).slice(-2)+':'+('0'+tm).slice(-2)+':'+('0'+ts).slice(-2);
+    var sp = document.createElement('div');
+    sp.className = 'track-span';
+    sp.style.left  = l + '%';
+    sp.style.width = w + '%';
+    var label = (tracks[i].artist ? tracks[i].artist + ' \u2014 ' : '') + tracks[i].title;
+    sp.textContent = label;
+    sp.title = tstr + ' \u2014 ' + label;
     band.appendChild(sp);
   }
 }

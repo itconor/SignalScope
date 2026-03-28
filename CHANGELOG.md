@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.6] - 2026-03-28
+
+### Added
+- **Logger — Per-song track band with exact start/stop times** — A new amber track band now appears between the show-name band and the hour grid. Each song is rendered as a precisely positioned span from its exact start timestamp to the moment the next track begins, mirroring how the show-name band works. Hovering a span shows `HH:MM:SS — Artist — Title`. Block-level tooltips on the 5-minute hour grid now also show the exact `HH:MM:SS` start time for every track that changed within that block (previously only the first track was named, with no timestamp).
+
+---
+
 ## [Logger 1.4.5] - 2026-03-28
 
 ### Added
