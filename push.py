@@ -16,11 +16,11 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/push",
     "icon":     "📡",
     "hub_only": True,
-    "version":  "1.0.2",
+    "version":  "1.0.3",
 }
 
 # ─── plugin version ───────────────────────────────────────────────────────────
-_PLUGIN_VERSION = "1.0.2"
+_PLUGIN_VERSION = "1.0.3"
 
 import json as _json
 import os as _os
@@ -295,6 +295,15 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
     {% endif %}
   </div>
 
+  <div class="card">
+    <h2>🧪 Test Push Notification</h2>
+    <p style="font-size:12px;color:var(--mu);margin-bottom:14px">Sends a [TEST] notification to all registered iOS and Android device tokens using the credentials above. Useful for verifying your APNs/FCM setup is working.</p>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <button id="test-btn" class="btn" style="background:#1e3a5f;color:var(--tx)">🔔 Send test notification</button>
+      <span id="test-result" style="font-size:13px"></span>
+    </div>
+  </div>
+
   <div id="push-creds-form">
     <div class="card">
       <h2>🔔 APNs Credentials (iOS)</h2>
@@ -354,6 +363,19 @@ if(_sb){_sb.addEventListener('click',function(){
   fetch('/hub/push/save',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'},body:body,credentials:'same-origin'})
     .then(function(r){if(r.ok){window.location='/hub/push?saved=1';}else{r.text().then(function(t){alert('Save failed: '+t);_sb.disabled=false;_sb.textContent='💾 Save credentials';});}})
     .catch(function(e){alert('Save error: '+e);_sb.disabled=false;_sb.textContent='💾 Save credentials';});
+});}
+
+var _tb=document.getElementById('test-btn'),_tr=document.getElementById('test-result');
+if(_tb){_tb.addEventListener('click',function(){
+  _tb.disabled=true;_tb.textContent='Sending…';_tr.textContent='';
+  fetch('/hub/push/test',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'},body:'{}',credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      _tb.disabled=false;_tb.textContent='🔔 Send test notification';
+      if(d.ok){_tr.style.color='var(--ok)';_tr.textContent='✔ Sent — iOS: '+d.sent_ios+', Android: '+d.sent_android+(d.no_tokens?' (no tokens registered)':'');}
+      else{_tr.style.color='var(--al)';_tr.textContent='✘ '+(d.error||'failed');}
+    })
+    .catch(function(e){_tb.disabled=false;_tb.textContent='🔔 Send test notification';_tr.style.color='var(--al)';_tr.textContent='✘ '+e;});
 });}
 
 var _mb=document.getElementById('migrate-btn');
@@ -472,6 +494,43 @@ def register(app, ctx):
             _save_cfg(_cfg_path, _cfg)
         monitor.log("[Push] Credentials saved")
         return jsonify({"ok": True})
+
+    @app.post("/hub/push/test")
+    @login_required
+    @csrf_protect
+    def push_test():
+        """Send a [TEST] push notification to all registered device tokens."""
+        ma = getattr(monitor.app_cfg, "mobile_api", None)
+        ios_tokens     = list(getattr(ma, "apns_device_tokens", [])) if ma else []
+        android_tokens = list(getattr(ma, "fcm_device_tokens",  [])) if ma else []
+
+        if not ios_tokens and not android_tokens:
+            return jsonify({"ok": True, "sent_ios": 0, "sent_android": 0, "no_tokens": True})
+
+        with _cfg_lock:
+            c = dict(_cfg)
+
+        title = "[TEST] SignalScope Push"
+        body  = "Push notifications are working correctly."
+        data  = {"type": "test"}
+
+        dead_ios = _send_apns_batch(
+            ios_tokens, title, body, data,
+            key_id    = c.get("apns_key_id",    ""),
+            team_id   = c.get("apns_team_id",   ""),
+            bundle_id = c.get("apns_bundle_id", ""),
+            key_pem   = c.get("apns_key_pem",   ""),
+        )
+        dead_android = _send_fcm_batch(
+            android_tokens, title, body, data,
+            project_id = c.get("fcm_project_id",           ""),
+            sa_json    = c.get("fcm_service_account_json", ""),
+        )
+
+        sent_ios     = max(0, len(ios_tokens)     - len(dead_ios))
+        sent_android = max(0, len(android_tokens) - len(dead_android))
+        monitor.log(f"[Push] Test sent: ios={sent_ios}/{len(ios_tokens)} android={sent_android}/{len(android_tokens)}")
+        return jsonify({"ok": True, "sent_ios": sent_ios, "sent_android": sent_android})
 
     @app.post("/api/push/v1/send")
     def push_v1_send():
