@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.7",
+    "version": "1.4.8",
 }
 
 import datetime
@@ -1832,6 +1832,22 @@ select:focus,input:focus{border-color:var(--acc)}
 .tl-block::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 5px);left:50%;transform:translateX(-50%);background:#0d2346;border:1px solid var(--bor);padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;color:var(--tx);pointer-events:none;opacity:0;transition:opacity .12s;z-index:10}
 .tl-block:hover::after{opacity:1}
 .tl-block.in-range::before{content:'';position:absolute;inset:0;background:rgba(23,168,255,.30);border-radius:3px;pointer-events:none}
+/* Zoom / expand controls */
+.zoom-grp{display:flex;gap:1px;background:var(--bor);border-radius:5px;overflow:hidden;flex-shrink:0}
+.zoom-btn{padding:3px 9px;font-size:11px;font-weight:700;border:none;cursor:pointer;background:var(--sur);color:var(--mu);transition:background .12s,color .12s;white-space:nowrap;line-height:1.4}
+.zoom-btn:hover{background:rgba(255,255,255,.07);color:var(--tx)}
+.zoom-btn.zact{background:var(--acc);color:#fff}
+/* Horizontal scroll wrapper for zoomed grid */
+.tl-scroll-wrap{overflow-x:auto;overflow-y:visible;margin:0 -1px;padding:0 1px}
+#tl-zoom-content{min-width:100%;width:100%;transition:width .22s}
+/* Expanded row heights */
+.tl-wrap.tl-exp .tl-block{height:40px}
+.tl-wrap.tl-exp #show-band{height:30px}
+.tl-wrap.tl-exp .show-span{height:28px;font-size:11px}
+.tl-wrap.tl-exp #track-band{height:30px}
+.tl-wrap.tl-exp .track-span{height:28px;font-size:11px}
+.tl-wrap.tl-exp #mic-band{height:22px}
+.tl-wrap.tl-exp .mic-span{height:20px}
 /* Day bar */
 .day-bar{width:100%;height:30px;position:relative;background:#0a1828;border-radius:6px;overflow:hidden;cursor:pointer;margin-bottom:12px;flex-shrink:0;border:1px solid var(--bor);user-select:none}
 .day-bar-bg{display:flex;height:100%;width:100%}
@@ -1965,12 +1981,21 @@ select:focus,input:focus{border-color:var(--acc)}
       <div class="tl-wrap" id="tl-wrap">
         <div class="tl-head">
           <div class="tl-title" id="tl-title">Select a stream</div>
-          <div class="tl-legend">
-            <span><i style="background:#166534"></i> OK</span>
-            <span><i style="background:#78350f"></i> Some silence</span>
-            <span><i style="background:#7f1d1d"></i> Silence</span>
-            <span><i style="background:#0e2040"></i> No recording</span>
-            <span><i style="background:#92400e"></i> Track</span>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto">
+            <div class="zoom-grp">
+              <button class="zoom-btn zact" data-z="1">1×</button>
+              <button class="zoom-btn" data-z="2">2×</button>
+              <button class="zoom-btn" data-z="4">4×</button>
+              <button class="zoom-btn" data-z="8">8×</button>
+            </div>
+            <button class="zoom-btn" id="exp-btn" title="Expand rows" style="border-radius:5px">↕ Expand</button>
+            <div class="tl-legend">
+              <span><i style="background:#166534"></i> OK</span>
+              <span><i style="background:#78350f"></i> Some silence</span>
+              <span><i style="background:#7f1d1d"></i> Silence</span>
+              <span><i style="background:#0e2040"></i> No recording</span>
+              <span><i style="background:#92400e"></i> Track</span>
+            </div>
           </div>
         </div>
         <div id="tl-notice" class="notice hidden">
@@ -1984,13 +2009,17 @@ select:focus,input:focus{border-color:var(--acc)}
           <div class="day-bar-out hidden" id="day-bar-out"></div>
           <div class="day-bar-hover" id="day-bar-hover"></div>
         </div>
-        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--mu);margin-bottom:4px;padding:0 1px">
-          <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:55</span>
+        <div class="tl-scroll-wrap">
+          <div id="tl-zoom-content">
+            <div id="tl-time-axis" style="display:flex;justify-content:space-between;font-size:10px;color:var(--mu);margin-bottom:4px;padding:0 1px">
+              <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:55</span>
+            </div>
+            <div id="show-band"></div>
+            <div id="mic-band"></div>
+            <div id="track-band"></div>
+            <div id="tl-grid" class="tl-grid"></div>
+          </div>
         </div>
-        <div id="show-band"></div>
-        <div id="mic-band"></div>
-        <div id="track-band"></div>
-        <div id="tl-grid" class="tl-grid"></div>
       </div>
 
       <div class="player">
@@ -2098,6 +2127,8 @@ var _markOut     = null;
 var _scrubDrag   = false;
 var _cfg         = {streams:{}};
 var _planetStations = [];  // [{rpuid, name}] from /api/nowplaying_stations
+var _tlZoom = 1;           // current horizontal zoom level (1/2/4/8)
+var _tlExp  = false;       // expanded row height mode
 var _metaEvents  = [];   // metadata events for the current day
 
 // ── Hub mode state ─────────────────────────────────────────────────────────
@@ -3061,6 +3092,41 @@ document.getElementById('save-settings-btn').addEventListener('click', function(
       saveErr.textContent = '✗ '+errTxt; saveErr.style.display='inline';
     }
   });
+});
+
+// ── Timeline zoom & expand ─────────────────────────────────────────────────
+function _setTlZoom(z){
+  _tlZoom = z;
+  var content = document.getElementById('tl-zoom-content');
+  if(content) content.style.width = (z === 1 ? '100%' : (z * 100) + '%');
+  document.querySelectorAll('.zoom-btn[data-z]').forEach(function(b){
+    b.classList.toggle('zact', parseInt(b.dataset.z, 10) === z);
+  });
+  // After zoom, scroll to keep the current playhead or selection roughly centred
+  var wrap = document.querySelector('.tl-scroll-wrap');
+  if(wrap && z > 1){
+    // Scroll to keep the current view position proportional
+    var ratio = wrap.scrollLeft / (wrap.scrollWidth || 1);
+    wrap.scrollLeft = ratio * wrap.scrollWidth;
+  }
+}
+
+function _setTlExp(v){
+  _tlExp = v;
+  var tw = document.getElementById('tl-wrap');
+  if(tw) tw.classList.toggle('tl-exp', v);
+  var btn = document.getElementById('exp-btn');
+  if(btn) btn.classList.toggle('zact', v);
+}
+
+document.querySelector('.zoom-grp').addEventListener('click', function(e){
+  var btn = e.target.closest('.zoom-btn[data-z]');
+  if(!btn) return;
+  _setTlZoom(parseInt(btn.dataset.z, 10));
+});
+
+document.getElementById('exp-btn').addEventListener('click', function(){
+  _setTlExp(!_tlExp);
 });
 
 })();

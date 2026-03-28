@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.8] - 2026-03-28
+
+### Added
+- **Logger — Timeline zoom (1×/2×/4×/8×) and row expand** — Four zoom preset buttons in the timeline header horizontally zoom the hour grid, show-name band, mic band, and track band together. At 2× you see 12 hours at a time; at 8× individual 5-minute blocks are large enough to clearly read song and show labels. The time axis, all three metadata bands, and the hour grid scroll horizontally in sync inside a dedicated scroll wrapper; the day-bar minimap and header controls stay fixed at full width. An ↕ Expand toggle alongside the zoom buttons doubles the row height (22 px → 40 px) and the band heights proportionally, making show and track labels visually prominent.
+
+---
+
 ## [Zetta 1.0.2 · Morning Report 1.0.2] - 2026-03-28
 
 ### Changed
