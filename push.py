@@ -16,11 +16,11 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/push",
     "icon":     "📡",
     "hub_only": True,
-    "version":  "1.0.4",
+    "version":  "1.0.5",
 }
 
 # ─── plugin version ───────────────────────────────────────────────────────────
-_PLUGIN_VERSION = "1.0.4"
+_PLUGIN_VERSION = "1.0.5"
 
 import json as _json
 import os as _os
@@ -97,8 +97,7 @@ def _get_apns_jwt(key_id: str, team_id: str, key_pem: str) -> str:
 
 def _send_apns_batch(tokens_ios: list, title: str, body: str, data: dict,
                      key_id: str, team_id: str, bundle_id: str, key_pem: str) -> list:
-    """Deliver to iOS tokens. Returns list of dead token strings to remove."""
-    import urllib.request as _ur, urllib.error as _ue
+    """Deliver to iOS tokens via APNs HTTP/2. Returns list of dead token strings."""
     dead = []
     if not (key_id and team_id and bundle_id and key_pem):
         _log_delivery("APNs: credentials not configured — skipped")
@@ -109,61 +108,71 @@ def _send_apns_batch(tokens_ios: list, title: str, body: str, data: dict,
         _log_delivery(f"APNs: JWT error — {e}")
         return dead
 
-    for entry in tokens_ios:
-        token = entry if isinstance(entry, str) else entry.get("token", "")
-        sandbox = True if isinstance(entry, str) else bool(entry.get("sandbox", True))
-        if not token:
-            continue
-        host = "api.sandbox.push.apple.com" if sandbox else "api.push.apple.com"
-        env  = "sandbox" if sandbox else "production"
-        try:
-            import http.client as _hc
-            conn = _hc.HTTPSConnection(host, 443)
-            payload = _json.dumps({
-                "aps": {
-                    "alert": {"title": title, "body": body},
-                    "sound": "default",
-                    "content-available": 1,
-                }
-            } | ({"data": data} if data else {})).encode()
-            headers = {
-                "authorization":   f"bearer {jwt}",
-                "apns-topic":      bundle_id,
-                "apns-push-type":  "alert",
-                "apns-priority":   "10",
-                "apns-expiration": str(int(_time.time()) + 86400),  # retry for 24 h
-                "content-type":    "application/json",
-            }
-            conn.request("POST", f"/3/device/{token}", payload, headers)
-            resp = conn.getresponse()
-            body_bytes = resp.read()  # always drain
-            if resp.status == 200:
-                _log_delivery(f"APNs ✔ {token[:12]}… env={env} — {title!r}")
-            elif resp.status == 410:
-                _log_delivery(f"APNs ✘ 410 gone {token[:12]}… env={env} — unregistered")
-                dead.append(token)
-            else:
-                err = body_bytes.decode(errors="replace")[:200]
-                _log_delivery(f"APNs ✘ {resp.status} {token[:12]}… env={env}: {err}")
-                if resp.status == 400 and "BadDeviceToken" in err:
-                    dead.append(token)
-                if resp.status == 400 and "BadEnvironment" in err:
-                    # token is for the other environment — flip and retry
-                    flip_host = "api.push.apple.com" if sandbox else "api.sandbox.push.apple.com"
-                    flip_env  = "production" if sandbox else "sandbox"
-                    try:
-                        conn2 = _hc.HTTPSConnection(flip_host, 443)
-                        conn2.request("POST", f"/3/device/{token}", payload, headers)
-                        resp2 = conn2.getresponse()
-                        body2 = resp2.read()
-                        if resp2.status == 200:
-                            _log_delivery(f"APNs ✔ {token[:12]}… env={flip_env} (corrected) — {title!r}")
-                        else:
-                            _log_delivery(f"APNs ✘ {resp2.status} {token[:12]}… env={flip_env} retry: {body2.decode(errors='replace')[:100]}")
-                    except Exception as e2:
-                        _log_delivery(f"APNs retry error {token[:12]}…: {e2}")
-        except Exception as e:
-            _log_delivery(f"APNs error {token[:12]}… env={env}: {e}")
+    # APNs requires HTTP/2 — use httpx (installed alongside signalscope.py)
+    try:
+        import httpx as _httpx
+    except ImportError:
+        _log_delivery("APNs: httpx not installed — run: pip install httpx[http2]")
+        return dead
+
+    payload = _json.dumps({
+        "aps": {
+            "alert": {"title": title, "body": body},
+            "sound": "default",
+        }
+    } | ({"data": data} if data else {})).encode()
+
+    headers_base = {
+        "authorization":   f"bearer {jwt}",
+        "apns-topic":      bundle_id,
+        "apns-push-type":  "alert",
+        "apns-priority":   "10",
+        "apns-expiration": str(int(_time.time()) + 86400),
+        "content-type":    "application/json",
+    }
+
+    sandbox_host    = "https://api.sandbox.push.apple.com"
+    production_host = "https://api.push.apple.com"
+
+    try:
+        with _httpx.Client(http2=True, timeout=10.0) as client:
+            for entry in tokens_ios:
+                token   = entry if isinstance(entry, str) else entry.get("token", "")
+                sandbox = True if isinstance(entry, str) else bool(entry.get("sandbox", True))
+                if not token:
+                    continue
+                host = sandbox_host if sandbox else production_host
+                env  = "sandbox" if sandbox else "production"
+                try:
+                    resp = client.post(f"{host}/3/device/{token}",
+                                       content=payload, headers=headers_base)
+                    if resp.status_code == 200:
+                        _log_delivery(f"APNs ✔ {token[:12]}… env={env} — {title!r}")
+                    elif resp.status_code == 410:
+                        _log_delivery(f"APNs ✘ 410 gone {token[:12]}… env={env} — unregistered")
+                        dead.append(token)
+                    else:
+                        err = resp.text[:200]
+                        _log_delivery(f"APNs ✘ {resp.status_code} {token[:12]}… env={env}: {err}")
+                        if resp.status_code == 400 and "BadDeviceToken" in err:
+                            dead.append(token)
+                        if resp.status_code == 400 and "BadEnvironment" in err:
+                            # token is for the other env — flip and retry
+                            flip_host = production_host if sandbox else sandbox_host
+                            flip_env  = "production" if sandbox else "sandbox"
+                            try:
+                                resp2 = client.post(f"{flip_host}/3/device/{token}",
+                                                    content=payload, headers=headers_base)
+                                if resp2.status_code == 200:
+                                    _log_delivery(f"APNs ✔ {token[:12]}… env={flip_env} (corrected) — {title!r}")
+                                else:
+                                    _log_delivery(f"APNs ✘ {resp2.status_code} {token[:12]}… env={flip_env} retry: {resp2.text[:100]}")
+                            except Exception as e2:
+                                _log_delivery(f"APNs retry error {token[:12]}…: {e2}")
+                except Exception as e:
+                    _log_delivery(f"APNs error {token[:12]}… env={env}: {e}")
+    except Exception as e:
+        _log_delivery(f"APNs: connection error — {e}")
     return dead
 
 
