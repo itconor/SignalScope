@@ -2,6 +2,21 @@
 
 ---
 
+## [Logger 1.4.7] - 2026-03-28
+
+### Added
+- **Logger — Mic on-air REST API + timeline band** — New `POST /api/logger/mic` endpoint records mic-on/off events on the timeline. Accepts `{"stream":"slug","state":"on","label":"Studio A"}` with optional `ts` (Unix timestamp; defaults to server time). Auth: logged-in browser session or `Authorization: Bearer <key>` using a configurable Mic API Key set in Logger Settings. Events appear as a thin green band between the show-name band and the song-track band — green spans show exactly when each mic was live; hovering shows the mic label and start time. A still-open mic\_on with no subsequent mic\_off renders with a brighter shade to indicate the mic is currently live.
+
+  **Example:**
+  ```sh
+  curl -X POST https://hub/api/logger/mic \
+    -H "Authorization: Bearer mysecret" \
+    -H "Content-Type: application/json" \
+    -d '{"stream":"capital_london","state":"on","label":"Studio 1"}'
+  ```
+
+---
+
 ## [Logger 1.4.6] - 2026-03-28
 
 ### Added

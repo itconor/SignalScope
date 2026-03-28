@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.6",
+    "version": "1.4.7",
 }
 
 import datetime
@@ -25,7 +25,7 @@ import urllib.parse as _urllib_parse
 import urllib.request as _urllib_req
 from pathlib import Path
 
-from flask import abort, jsonify, render_template_string, request, Response, send_file
+from flask import abort, jsonify, render_template_string, request, Response, send_file, session
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 _SEG_SECS      = 300        # 5-minute segments
@@ -480,6 +480,8 @@ def register(app, ctx):
             _cfg["rec_dir"] = new_rec_dir
             if new_base_dirs is not None:
                 _cfg["base_dirs"] = new_base_dirs
+            new_mic_key = str(data.get("mic_api_key", "")).strip()
+            _cfg["mic_api_key"] = new_mic_key
             _save_config()
 
         # Ensure all configured roots exist
@@ -806,6 +808,75 @@ def register(app, ctx):
         } for r in rows]
         return jsonify(events)
 
+    @app.post("/api/logger/mic")
+    def api_logger_mic():
+        """REST endpoint — record a mic-on / mic-off event on the timeline.
+
+        Auth: logged-in browser session OR ``Authorization: Bearer <mic_api_key>``.
+
+        JSON body::
+
+            {
+              "stream": "bbc_radio_1",   // stream slug (required)
+              "state":  "on",            // "on" or "off" (required)
+              "label":  "Studio A",      // mic name shown in tooltip (optional)
+              "site":   "London",        // hub-mode site name (optional)
+              "ts":     1234567890.0     // Unix timestamp; omit to use server time
+            }
+        """
+        # ── Auth ──────────────────────────────────────────────────────────
+        authenticated = bool(session.get("user"))
+        if not authenticated:
+            api_key = _cfg.get("mic_api_key", "").strip()
+            if api_key:
+                auth_hdr = request.headers.get("Authorization", "")
+                if auth_hdr.startswith("Bearer ") and auth_hdr[7:] == api_key:
+                    authenticated = True
+        if not authenticated:
+            return jsonify({"ok": False, "error": "Unauthorized — set a Mic API Key in Logger Settings or log in"}), 401
+
+        data = request.get_json(force=True) or {}
+
+        # ── Validate ──────────────────────────────────────────────────────
+        state = str(data.get("state", "")).lower().strip()
+        if state not in ("on", "off"):
+            return jsonify({"ok": False, "error": "state must be 'on' or 'off'"}), 400
+        stream = str(data.get("stream", "")).strip()
+        if not stream:
+            return jsonify({"ok": False, "error": "stream is required"}), 400
+        slug  = _safe(stream)
+        label = str(data.get("label", "")).strip()
+        ts    = float(data.get("ts", 0) or 0) or time.time()
+
+        # ── Write to local metadata_log ───────────────────────────────────
+        entry_type = f"mic_{state}"
+        _meta_write(slug, ts, entry_type, {"label": label, "title": label, "state": state})
+
+        # ── Inject into hub meta cache (so the hub UI updates immediately) ─
+        try:
+            dt = datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+            y, mo, d = int(dt[:4]), int(dt[5:7]), int(dt[8:10])
+            midnight = datetime.datetime(y, mo, d, tzinfo=datetime.timezone.utc).timestamp()
+            event_entry = {
+                "ts_s":      round(ts - midnight, 3),
+                "type":      entry_type,
+                "title":     label,
+                "artist":    "",
+                "show_name": "",
+                "presenter": "",
+            }
+            with _hub_logger_lock:
+                for key, evts in _hub_logger_meta.items():
+                    _, k_slug, k_date = key.split(":", 2)
+                    if k_slug == slug and k_date == dt:
+                        evts.append(event_entry)
+                        evts.sort(key=lambda e: e["ts_s"])
+        except Exception:
+            pass  # hub cache injection is best-effort
+
+        _log(f"[Logger] Mic {state}: stream={slug} label={label!r} ts={ts:.1f}")
+        return jsonify({"ok": True, "ts": ts, "stream": slug, "state": state})
+
     @app.post("/api/logger/export")
     @login_req
     @csrf_dec
@@ -838,6 +909,7 @@ def _load_config():
     _cfg.setdefault("streams", {})
     _cfg.setdefault("rec_dir", "")
     _cfg.setdefault("base_dirs", [])   # list of {"name": str, "path": str}
+    _cfg.setdefault("mic_api_key", "")  # Bearer token for /api/logger/mic REST API
 
 def _save_config():
     try:
@@ -1827,6 +1899,11 @@ select:focus,input:focus{border-color:var(--acc)}
 #track-band{width:100%;height:20px;position:relative;background:transparent;margin-top:3px;flex-shrink:0}
 .track-span{position:absolute;top:1px;height:18px;background:rgba(180,83,9,.2);border-left:2px solid rgba(251,191,36,.8);border-radius:0 2px 2px 0;overflow:hidden;white-space:nowrap;font-size:10px;color:#fcd34d;padding:0 5px;display:flex;align-items:center;box-sizing:border-box;cursor:default}
 .track-span:hover{background:rgba(180,83,9,.45);z-index:5}
+/* Mic band — on-air periods (green) */
+#mic-band{width:100%;height:14px;position:relative;background:transparent;margin-top:3px;flex-shrink:0}
+.mic-span{position:absolute;top:1px;height:12px;background:rgba(16,185,129,.25);border-left:2px solid rgba(52,211,153,.9);border-radius:0 2px 2px 0;box-sizing:border-box;cursor:default}
+.mic-span:hover{background:rgba(16,185,129,.45);z-index:5}
+.mic-span.mic-live{background:rgba(16,185,129,.4);border-left-color:#6ee7b7}
 .tl-block.has-track[data-status="none"]{background:#3d2000}
 /* Now playing URL input in settings */
 .np-url-row{padding-top:10px;border-top:1px solid var(--bor);margin-top:10px}
@@ -1911,6 +1988,7 @@ select:focus,input:focus{border-color:var(--acc)}
           <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:55</span>
         </div>
         <div id="show-band"></div>
+        <div id="mic-band"></div>
         <div id="track-band"></div>
         <div id="tl-grid" class="tl-grid"></div>
       </div>
@@ -1965,6 +2043,18 @@ select:focus,input:focus{border-color:var(--acc)}
           <input type="text" id="rec-dir-input" placeholder="Default: logger_recordings (next to signalscope.py)"
                  style="width:100%;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:7px 10px;border-radius:6px;font-size:12px;font-family:monospace;outline:none">
           <div id="rec-dir-resolved" style="margin-top:4px;font-size:11px;color:var(--mu);font-family:monospace"></div>
+        </div>
+      </div>
+
+      <!-- Mic API Key -->
+      <div style="margin-bottom:18px;padding:14px 16px;background:var(--sur);border:1px solid var(--bor);border-radius:10px">
+        <label style="font-size:12px;font-weight:700;color:var(--mu);letter-spacing:.6px;text-transform:uppercase;display:block;margin-bottom:6px">Mic API Key</label>
+        <input type="text" id="mic-api-key-input" placeholder="Leave blank to require a logged-in session"
+               style="width:100%;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:7px 10px;border-radius:6px;font-size:12px;font-family:monospace;outline:none">
+        <div style="margin-top:5px;font-size:11px;color:var(--mu)">
+          REST API: <code style="background:rgba(255,255,255,.06);padding:1px 5px;border-radius:3px">POST /api/logger/mic</code>
+          with <code style="background:rgba(255,255,255,.06);padding:1px 5px;border-radius:3px">Authorization: Bearer &lt;key&gt;</code>
+          — body: <code style="background:rgba(255,255,255,.06);padding:1px 5px;border-radius:3px">{"stream":"slug","state":"on","label":"Studio A"}</code>
         </div>
       </div>
 
@@ -2278,6 +2368,7 @@ function loadSegments(){
   document.getElementById('day-bar-head').classList.add('hidden');
   buildDayBar([]);
   document.getElementById('show-band').innerHTML = '';
+  document.getElementById('mic-band').innerHTML = '';
   document.getElementById('track-band').innerHTML = '';
   apiSegments(_currentSlug, _currentDate, function(segs){
     buildTimeline(segs || []);
@@ -2332,6 +2423,7 @@ function _applyMeta(events){
     }
   });
   _renderShowBand(events);
+  _renderMicBand(events);
   _renderTrackBand(events);
 }
 
@@ -2357,6 +2449,38 @@ function _renderShowBand(events){
     sp.title = label;
     band.appendChild(sp);
   }
+}
+
+function _renderMicBand(events){
+  var band = document.getElementById('mic-band');
+  if(!band) return;
+  band.innerHTML = '';
+  var mics = events.filter(function(e){ return e.type==='mic_on' || e.type==='mic_off'; });
+  if(!mics.length) return;
+  var onStart = null, onLabel = '';
+  function _addSpan(start, end, label, live){
+    var w = (end - start) / 86400 * 100;
+    var l = start / 86400 * 100;
+    if(w < 0.01) return;
+    var th = Math.floor(start / 3600);
+    var tm = Math.floor((start % 3600) / 60);
+    var ts = Math.floor(start % 60);
+    var tstr = ('0'+th).slice(-2)+':'+('0'+tm).slice(-2)+':'+('0'+ts).slice(-2);
+    var sp = document.createElement('div');
+    sp.className = 'mic-span'+(live?' mic-live':'');
+    sp.style.left  = l + '%';
+    sp.style.width = w + '%';
+    sp.title = tstr + ' \u2014 ' + (label ? label + ' on air' : 'Mic on air');
+    band.appendChild(sp);
+  }
+  for(var i = 0; i < mics.length; i++){
+    if(mics[i].type === 'mic_on'){
+      if(onStart === null){ onStart = mics[i].ts_s; onLabel = mics[i].title || ''; }
+    } else {
+      if(onStart !== null){ _addSpan(onStart, mics[i].ts_s, onLabel, false); onStart = null; onLabel = ''; }
+    }
+  }
+  if(onStart !== null) _addSpan(onStart, 86400, onLabel, true);  // still live
 }
 
 function _renderTrackBand(events){
@@ -2728,6 +2852,8 @@ function loadSettingsPanel(){
     rdInp.value = _cfg.rec_dir || '';
     var rdRes = document.getElementById('rec-dir-resolved');
     rdRes.textContent = st.rec_root ? '→ ' + st.rec_root : '';
+    var mkInput = document.getElementById('mic-api-key-input');
+    if(mkInput) mkInput.value = _cfg.mic_api_key || '';
     // Fetch Planet Radio stations — non-critical, re-render rows with dropdown if available
     _get('/api/nowplaying_stations').then(function(stations){
       if(Array.isArray(stations) && stations.length){
@@ -2893,12 +3019,13 @@ document.getElementById('save-settings-btn').addEventListener('click', function(
   });
   var recDir    = document.getElementById('rec-dir-input').value.trim();
   var baseDirs  = _getBaseDirsFromForm();
+  var micKey    = (document.getElementById('mic-api-key-input')||{}).value||'';
   var saveMsg   = document.getElementById('save-msg');
   var saveErr   = document.getElementById('save-err');
   saveMsg.style.display='none'; saveErr.style.display='none';
-  _post('/api/logger/config',{streams:streams, rec_dir:recDir, base_dirs:baseDirs}).then(function(r){
+  _post('/api/logger/config',{streams:streams, rec_dir:recDir, base_dirs:baseDirs, mic_api_key:micKey}).then(function(r){
     if(r.ok){
-      _cfg.streams=streams; _cfg.rec_dir=recDir; _cfg.base_dirs=baseDirs;
+      _cfg.streams=streams; _cfg.rec_dir=recDir; _cfg.base_dirs=baseDirs; _cfg.mic_api_key=micKey;
       fetch('/api/logger/status').then(function(res){ return res.json(); }).then(function(st){
         var rdRes=document.getElementById('rec-dir-resolved');
         rdRes.textContent = st.rec_root ? '→ '+st.rec_root : '';
