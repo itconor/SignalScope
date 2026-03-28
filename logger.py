@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.9",
+    "version": "1.4.10",
 }
 
 import datetime
@@ -1837,8 +1837,12 @@ select:focus,input:focus{border-color:var(--acc)}
 .zoom-btn{padding:3px 9px;font-size:11px;font-weight:700;border:none;cursor:pointer;background:var(--sur);color:var(--mu);transition:background .12s,color .12s;white-space:nowrap;line-height:1.4}
 .zoom-btn:hover{background:rgba(255,255,255,.07);color:var(--tx)}
 .zoom-btn.zact{background:var(--acc);color:#fff}
-/* Horizontal scroll wrapper for zoomed grid */
-.tl-scroll-wrap{overflow-x:auto;overflow-y:visible;margin:0 -1px;padding:0 1px}
+/* Horizontal scroll wrapper for zoomed overview */
+.tl-scroll-wrap{overflow-x:auto;overflow-y:visible;margin:0 -1px;padding:0 1px;cursor:grab}
+.tl-scroll-wrap.tl-panning{cursor:grabbing;user-select:none}
+.tl-scroll-wrap::-webkit-scrollbar{height:4px}
+.tl-scroll-wrap::-webkit-scrollbar-thumb{background:var(--bor);border-radius:2px}
+.tl-scroll-wrap::-webkit-scrollbar-thumb:hover{background:var(--mu)}
 #tl-zoom-content{min-width:100%;width:100%;transition:width .22s}
 /* Expanded heights — day-bar grows, bands grow, hour grid stays the same */
 .tl-wrap.tl-exp .day-bar{height:80px}
@@ -3130,6 +3134,50 @@ document.querySelector('.zoom-grp').addEventListener('click', function(e){
 document.getElementById('exp-btn').addEventListener('click', function(){
   _setTlExp(!_tlExp);
 });
+
+// ── Drag-to-pan on the zoomed overview ────────────────────────────────────
+(function(){
+  var wrap = document.querySelector('.tl-scroll-wrap');
+  if(!wrap) return;
+  var _dn = false, _startX = 0, _startScroll = 0;
+
+  wrap.addEventListener('mousedown', function(e){
+    if(e.button !== 0) return;
+    // Let the day-bar keep its own scrub interaction
+    if(e.target.closest('#day-bar')) return;
+    _dn = true;
+    _startX      = e.clientX;
+    _startScroll = wrap.scrollLeft;
+    wrap.classList.add('tl-panning');
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', function(e){
+    if(!_dn) return;
+    wrap.scrollLeft = _startScroll - (e.clientX - _startX);
+  });
+
+  document.addEventListener('mouseup', function(){
+    if(!_dn) return;
+    _dn = false;
+    wrap.classList.remove('tl-panning');
+  });
+
+  // Touch support
+  wrap.addEventListener('touchstart', function(e){
+    if(e.target.closest('#day-bar')) return;
+    _dn = true;
+    _startX      = e.touches[0].clientX;
+    _startScroll = wrap.scrollLeft;
+  }, {passive: true});
+
+  wrap.addEventListener('touchmove', function(e){
+    if(!_dn) return;
+    wrap.scrollLeft = _startScroll - (e.touches[0].clientX - _startX);
+  }, {passive: true});
+
+  wrap.addEventListener('touchend', function(){ _dn = false; });
+})();
 
 })();
 </script>
