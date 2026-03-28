@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.11",
+    "version": "1.4.12",
 }
 
 import datetime
@@ -2751,6 +2751,15 @@ scrubEl.addEventListener('mousedown', function(e){
   function up(){ _scrubDrag=false; document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); }
   document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
   e.preventDefault();
+});
+
+// ── Spacebar play/pause (prevent page scroll) ─────────────────────────────
+document.addEventListener('keydown', function(e){
+  if(e.code !== 'Space') return;
+  var tag = (document.activeElement||{}).tagName||'';
+  if(tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  e.preventDefault();
+  document.getElementById('play-btn').click();
 });
 
 function seekTo(e){

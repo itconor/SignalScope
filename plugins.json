@@ -36,7 +36,7 @@
     "file": "logger.py",
     "icon": "🎙",
     "description": "Compliance logger for continuous 24/7 recording of monitored streams. Hub mode aggregates recorded streams from all connected sites for remote playback — browse timelines and play audio from any site directly on the hub. Unified full-day seekable timeline, wall-clock timestamps, cross-block mark in/out, automatic segment stitching on export, auto-advance playback. Now-playing metadata integration: polls Planet Radio, Triton, or any JSON API every 30 s; falls back to DLS/RDS. Show-name band above timeline, per-song track band showing exact start/end times, track blocks highlighted in amber. Requires ffmpeg.",
-    "version": "1.4.11",
+    "version": "1.4.12",
     "requirements": "ffmpeg",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/logger.py"
   },

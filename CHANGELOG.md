@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.4.12] - 2026-03-28
+
+### Fixed
+- **Logger — spacebar no longer scrolls the page** — Pressing Space to toggle play/pause was triggering the browser's default scroll-down behaviour, jumping the user to the bottom of the page. A `keydown` listener now intercepts the Space key (when focus is not in an input, textarea, or select) and calls `preventDefault()` before firing the play button — so spacebar toggles playback without any page movement.
+
+---
+
 ## [Logger 1.4.11] - 2026-03-28
 
 ### Fixed
