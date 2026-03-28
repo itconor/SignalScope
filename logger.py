@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.23",
+    "version": "1.4.24",
 }
 
 import datetime
@@ -2477,13 +2477,15 @@ function _initAudio(){
   _gainNode=_audioCtx.createGain(); _gainNode.connect(_audioCtx.destination);
 }
 function _stopHubAudio(){
-  // Cancel incoming stream and mute any already-scheduled buffers immediately
+  // Cancel incoming stream and mute any already-scheduled buffers immediately.
+  // Increment _playGen so any in-flight POST response is treated as stale.
+  ++_playGen;
   if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
   _pcmBuf=new Uint8Array(0);
-  if(_gainNode) _gainNode.gain.setValueAtTime(0, _audioCtx ? _audioCtx.currentTime : 0);
-  _hubIsPlaying  = false;
+  if(_gainNode && _audioCtx) _gainNode.gain.setValueAtTime(0, _audioCtx.currentTime);
+  _hubIsPlaying   = false;
   _hubPlayPending = false;
-  _hubPlayStart  = null;
+  _hubPlayStart   = null;
   document.getElementById('play-btn').textContent='▶';
 }
 function connectAudio(url){
@@ -2942,17 +2944,26 @@ function playSeg(seg, blkEl){
 }
 
 // ── Hub mode playback ─────────────────────────────────────────────────────
+// _playGen increments on every startHubPlay call. The POST .then() checks
+// that the generation still matches before acting — stale responses from
+// superseded clicks are silently discarded, preventing duplicate streams.
+var _playGen = 0;
+
 function startHubPlay(seg, offset){
-  if(_hubPlayPending) return;   // already waiting for a play response — ignore
-  _hubPlayPending = true;
-  // Stop any currently playing stream before starting a new one
+  // Immediately silence anything playing and cancel the reader.
+  // This runs synchronously so there is no window where two streams overlap.
+  if(_gainNode && _audioCtx) _gainNode.gain.setValueAtTime(0, _audioCtx.currentTime);
   if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
   _pcmBuf=new Uint8Array(0);
+  _hubIsPlaying   = false;
+  _hubPlayPending = true;
+  var gen = ++_playGen;   // capture generation for this click
   var seekSecs = offset;
   _post('/api/logger/hub/play', {
     site: _hubSite, slug: _currentSlug, date: _currentDate,
     filename: seg.filename, seek_s: seekSecs
   }).then(function(r){
+    if(gen !== _playGen){ return; } // superseded by a later click — discard
     _hubPlayPending = false;
     if(!r || !r.ok) return;
     connectAudio(r.stream_url);
@@ -2965,7 +2976,7 @@ function startHubPlay(seg, offset){
     document.getElementById('p-sub').textContent=_hubSite+' · '+_currentSlug;
     _updateGridPlaying(seg.start_s);
     document.getElementById('play-btn').textContent='⏸';
-  }).catch(function(){ _hubPlayPending = false; });
+  }).catch(function(){ if(gen===_playGen){ _hubPlayPending=false; } });
 }
 
 // ── Segment loading & navigation ──────────────────────────────────────────
