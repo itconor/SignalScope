@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.2.1",
+    "version": "1.2.2",
 }
 
 import datetime
@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse as _urllib_parse
 import urllib.request as _urllib_req
 from pathlib import Path
 
@@ -229,8 +230,9 @@ def _hub_logger_poller():
                     headers["X-Hub-Sig"]   = _make_sig(secret, b"", ts)
                     headers["X-Hub-Ts"]    = f"{ts:.0f}"
                     headers["X-Hub-Nonce"] = _hashlib.md5(os.urandom(8)).hexdigest()[:16]
+                site_enc = _urllib_parse.quote(site, safe="")
                 req = _urllib_req.Request(
-                    f"{hub_url}/api/logger/hub/poll/{site}",
+                    f"{hub_url}/api/logger/hub/poll/{site_enc}",
                     method="GET", headers=headers)
                 resp = _urllib_req.urlopen(req, timeout=10)
                 data = json.loads(resp.read())

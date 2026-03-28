@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.50] - 2026-03-28
+
+### Fixed
+- **Logger 1.2.2 — Hub poll URL fails when site name contains spaces** — The client poller built the poll URL as a raw f-string: `/api/logger/hub/poll/Northern Ireland DAB`. Python's `urllib.request` rejects URLs with literal spaces, so every poll attempt raised `URL can't contain control characters` and the client never received any commands — causing the timeline, dates, and audio to all silently fail. Fix: `urllib.parse.quote(site, safe="")` is applied to the site name before embedding it in the poll URL. Flask's `<path:site>` route converter URL-decodes it back to the original string on the hub, so the lookup in `_hub_logger_pending` continues to work correctly.
+
+---
+
 ## [3.4.49] - 2026-03-28
 
 ### Fixed
