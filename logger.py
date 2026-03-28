@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.3.0",
+    "version": "1.4.2",
 }
 
 import datetime
@@ -43,6 +43,12 @@ _DB_FILE       = "logger_index.db"
 _monitor        = None
 _app_dir        = None
 _listen_registry = None   # set in register() on hub nodes
+_meta_pollers: dict = {}   # slug → _MetaPoller
+_meta_lock      = threading.Lock()
+
+# Background move status (shared between move thread and status endpoint)
+_move_status      = {"active": False, "current": "", "done": 0, "total": 0, "error": ""}
+_move_status_lock = threading.Lock()
 
 
 def _rec_root() -> Path:
@@ -69,6 +75,7 @@ _hub_logger_pending  = {}   # site → pending cmd dict or None
 _hub_logger_days     = {}   # "{site}:{slug}" → [date_str, ...]
 _hub_logger_segs     = {}   # "{site}:{slug}:{date}" → [seg_dict, ...]
 _hub_logger_active   = {}   # site → current play slot_id
+_hub_logger_meta     = {}   # "{site}:{slug}:{date}" → [event_dict, ...]
 _hub_logger_lock     = threading.Lock()
 
 
@@ -306,6 +313,33 @@ def _hub_logger_poller():
                             args=(hub_url, slot_id, slug, date, filename, seek_s, cfg),
                             daemon=True, name="LoggerAudioPush").start()
 
+                    elif ctype == "metadata":
+                        slug  = cmd.get("slug", "")
+                        date  = cmd.get("date", "")
+                        try:
+                            midnight = datetime.datetime.strptime(date, "%Y-%m-%d").replace(
+                                tzinfo=datetime.timezone.utc).timestamp()
+                        except Exception:
+                            midnight = 0.0
+                        end_of_day = midnight + 86400
+                        events = []
+                        try:
+                            db   = _get_db()
+                            rows = db.execute(
+                                "SELECT ts, type, title, artist, show_name, presenter FROM metadata_log "
+                                "WHERE stream=? AND ts>=? AND ts<? ORDER BY ts",
+                                (slug, midnight, end_of_day)).fetchall()
+                            db.close()
+                            events = [{"ts_s": r["ts"] - midnight, "type": r["type"],
+                                       "title": r["title"] or "", "artist": r["artist"] or "",
+                                       "show_name": r["show_name"] or "", "presenter": r["presenter"] or ""}
+                                      for r in rows]
+                        except Exception as e:
+                            _log(f"[Logger] HubPoller: metadata query error: {e}")
+                        _hub_result_post(hub_url, secret, site,
+                                         {"site": site, "type": "metadata",
+                                          "slug": slug, "date": date, "events": events})
+
                     else:
                         _log(f"[Logger] HubPoller: unknown command type '{ctype}'")
 
@@ -406,6 +440,10 @@ def register(app, ctx):
             return jsonify({"ok": False, "error": "rec_dir must not contain .."}), 400
 
         # ── Detect per-stream base_dir changes (before we update _cfg) ───
+        # Compute the default root BEFORE acquiring _cfg_lock — _rec_root() also
+        # acquires _cfg_lock, and threading.Lock is not reentrant; calling it
+        # inside the block below would deadlock the request thread forever.
+        default_old_root = _rec_root()
         new_streams = data.get("streams", {})
         moves_needed = []   # list of (stream_name, old_root, new_root)
         with _cfg_lock:
@@ -418,11 +456,11 @@ def register(app, ctx):
                 new_bd_name = str(new_scfg.get("base_dir", "")).strip()
                 if old_bd_name == new_bd_name:
                     continue
-                # Resolve old root
+                # Resolve old root (use pre-computed default — no lock re-entry)
                 if old_bd_name and old_bd_name in old_base_dirs:
                     old_root = _resolve_path(old_base_dirs[old_bd_name])
                 else:
-                    old_root = _rec_root()
+                    old_root = default_old_root
                 # Resolve new root (using incoming base_dirs list)
                 new_bd_map = {bd["name"]: bd["path"]
                               for bd in (new_base_dirs or _cfg.get("base_dirs", []))
@@ -432,15 +470,11 @@ def register(app, ctx):
                 else:
                     new_root = (_resolve_path(new_rec_dir) if new_rec_dir
                                 else (_app_dir / _REC_DIR).resolve())
+                _log(f"[Logger] Move queued: '{stream_name}' {old_root} → {new_root}")
                 moves_needed.append((stream_name, old_root, new_root))
 
-        # ── Apply moves before saving config (so old root still resolves) ─
-        for stream_name, old_root, new_root in moves_needed:
-            if old_root != new_root:
-                new_root.mkdir(parents=True, exist_ok=True)
-                _move_stream_recordings(stream_name, old_root, new_root)
-
-        # ── Save config ─────────────────────────────────────────────────
+        # ── Save config FIRST so new recordings land in the right place ─
+        # Moves are backgrounded — do not block the HTTP request.
         with _cfg_lock:
             _cfg["streams"] = new_streams
             _cfg["rec_dir"] = new_rec_dir
@@ -457,7 +491,45 @@ def register(app, ctx):
             return jsonify({"ok": False, "error": f"Cannot create recordings directory: {e}"}), 400
 
         _reconcile_recorders()
-        return jsonify({"ok": True, "moves": len(moves_needed)})
+
+        # ── Kick off background moves (non-blocking) ─────────────────────
+        if moves_needed:
+            def _bg_moves(moves):
+                with _move_status_lock:
+                    _move_status["active"]  = True
+                    _move_status["done"]    = 0
+                    _move_status["total"]   = len(moves)
+                    _move_status["current"] = ""
+                    _move_status["error"]   = ""
+                for stream_name, old_root, new_root in moves:
+                    with _move_status_lock:
+                        _move_status["current"] = stream_name
+                    try:
+                        if old_root != new_root:
+                            new_root.mkdir(parents=True, exist_ok=True)
+                            _move_stream_recordings(stream_name, old_root, new_root)
+                    except Exception as e:
+                        _log(f"[Logger] Background move failed for '{stream_name}': {e}")
+                        with _move_status_lock:
+                            _move_status["error"] = f"{stream_name}: {e}"
+                    with _move_status_lock:
+                        _move_status["done"] += 1
+                with _move_status_lock:
+                    _move_status["active"]  = False
+                    _move_status["current"] = ""
+                _log(f"[Logger] Background move complete: {len(moves)} stream(s)")
+
+            threading.Thread(target=_bg_moves, args=(moves_needed,),
+                             daemon=True, name="LoggerMoveRecordings").start()
+            return jsonify({"ok": True, "moves": len(moves_needed), "moving": True})
+
+        return jsonify({"ok": True, "moves": 0})
+
+    @app.get("/api/logger/move_status")
+    @login_req
+    def api_logger_move_status():
+        with _move_status_lock:
+            return jsonify(dict(_move_status))
 
     @app.get("/api/logger/status")
     @login_req
@@ -575,6 +647,10 @@ def register(app, ctx):
                     segs = body.get("segments", [])
                     _hub_logger_segs[f"{site}:{slug}:{date}"] = segs
                     _log(f"[Logger] Hub result: stored {len(segs)} segment(s) for {site}:{slug}:{date}")
+                elif rtype == "metadata":
+                    events = body.get("events", [])
+                    _hub_logger_meta[f"{site}:{slug}:{date}"] = events
+                    _log(f"[Logger] Hub result: stored {len(events)} meta event(s) for {site}:{slug}:{date}")
             return jsonify({"ok": True})
 
         @app.get("/api/logger/hub/sites")
@@ -670,7 +746,55 @@ def register(app, ctx):
                 "stream_url": f"/hub/scanner/stream/{slot.slot_id}",
             })
 
+        @app.get("/api/logger/hub/metadata/<path:site_slug_date>")
+        @login_req
+        def api_logger_hub_metadata(site_slug_date):
+            parts = site_slug_date.rsplit("/", 2)
+            if len(parts) != 3:
+                return jsonify({"error": "bad path"}), 400
+            site, slug, date = parts
+            key = f"{site}:{slug}:{date}"
+            with _hub_logger_lock:
+                if key in _hub_logger_meta:
+                    events = _hub_logger_meta[key]
+                    _log(f"[Logger] Hub meta cache hit: {key} → {len(events)} event(s)")
+                    return jsonify(events)
+                _log(f"[Logger] Hub meta: queuing cmd for site='{site}' slug='{slug}' date='{date}'")
+                _hub_logger_pending[site] = {"type": "metadata", "slug": slug, "date": date}
+            return jsonify({"pending": True})
+
     # ── Regular logger routes ─────────────────────────────────────────────────
+
+    @app.get("/api/logger/metadata/<stream_slug>/<date>")
+    @login_req
+    def api_logger_metadata(stream_slug, date):
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            return jsonify([]), 400
+        slug = _safe(stream_slug)
+        try:
+            midnight = datetime.datetime.strptime(date, "%Y-%m-%d").replace(
+                tzinfo=datetime.timezone.utc).timestamp()
+        except ValueError:
+            return jsonify([]), 400
+        end_of_day = midnight + 86400
+        try:
+            db   = _get_db()
+            rows = db.execute(
+                "SELECT ts, type, title, artist, show_name, presenter FROM metadata_log "
+                "WHERE stream=? AND ts>=? AND ts<? ORDER BY ts",
+                (slug, midnight, end_of_day)).fetchall()
+            db.close()
+        except Exception:
+            return jsonify([]), 500
+        events = [{
+            "ts_s":      r["ts"] - midnight,
+            "type":      r["type"],
+            "title":     r["title"] or "",
+            "artist":    r["artist"] or "",
+            "show_name": r["show_name"] or "",
+            "presenter": r["presenter"] or "",
+        } for r in rows]
+        return jsonify(events)
 
     @app.post("/api/logger/export")
     @login_req
@@ -785,18 +909,199 @@ def _move_stream_recordings(stream_name: str, old_root: Path, new_root: Path):
         _log(f"[Logger] Failed to move recordings for '{stream_name}': {e}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  METADATA POLLER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_nowplaying(raw: dict):
+    """Parse a now-playing JSON response into a normalised dict.
+
+    Supports Planet Radio/Bauer, Triton Digital, and generic flat JSON.
+    Returns ``{"title","artist","show_name","presenter"}`` or None.
+    """
+    if not isinstance(raw, dict):
+        return None
+    title = artist = show_name = presenter = ""
+
+    # ── Planet Radio / Bauer ──────────────────────────────────────────────
+    # {"data": {"now": {"title":…,"artist":…}, "schedule": {"current": {"title":…}}}}
+    data = raw.get("data") or raw.get("result") or raw
+    if isinstance(data, dict):
+        now = data.get("now") or data.get("current_song") or {}
+        if isinstance(now, dict):
+            title  = str(now.get("title", "") or now.get("song", "") or "").strip()
+            artist = str(now.get("artist", "") or now.get("artist_name", "") or "").strip()
+        sched = data.get("schedule") or data.get("on_air") or {}
+        if isinstance(sched, dict):
+            cur = sched.get("current") or sched.get("programme") or sched
+            if isinstance(cur, dict):
+                show_name = str(cur.get("title", "") or cur.get("name", "") or cur.get("show", "") or "").strip()
+                presenter = str(cur.get("presenter", "") or cur.get("host", "") or "").strip()
+
+    # ── Triton Digital ────────────────────────────────────────────────────
+    # {"now_playing": {"song": {"title":…,"artist":…}}}
+    if not title and isinstance(raw.get("now_playing"), dict):
+        song = raw["now_playing"].get("song") or raw["now_playing"]
+        if isinstance(song, dict):
+            title  = str(song.get("title", "") or "").strip()
+            artist = str(song.get("artist", "") or "").strip()
+
+    # ── Generic flat ──────────────────────────────────────────────────────
+    if not title:
+        title  = str(raw.get("title", "") or raw.get("track", "") or raw.get("song", "") or "").strip()
+        artist = str(raw.get("artist", "") or raw.get("artist_name", "") or "").strip()
+    if not show_name:
+        show_name = str(raw.get("show", "") or raw.get("show_name", "") or raw.get("programme", "") or "").strip()
+        presenter = presenter or str(raw.get("presenter", "") or raw.get("host", "") or "").strip()
+
+    if not title and not show_name:
+        return None
+    return {"title": title, "artist": artist, "show_name": show_name, "presenter": presenter}
+
+
+def _get_live_dls_rds(stream_name: str):
+    """Read live DLS/RDS text from SignalScope's monitor for a stream.
+
+    Returns ``{"title","artist","show_name","presenter"}`` or None.
+    """
+    if not _monitor:
+        return None
+    try:
+        for inp in _monitor.app_cfg.inputs:
+            if inp.name != stream_name:
+                continue
+            # DAB DLS text
+            dls = getattr(inp, "_dls_text", None) or getattr(inp, "dls_text", None)
+            if dls and str(dls).strip():
+                return {"title": str(dls).strip(), "artist": "", "show_name": "", "presenter": ""}
+            # FM RDS radiotext / programme service name
+            rt = getattr(inp, "_rds_rt", None) or getattr(inp, "rds_rt", None)
+            ps = getattr(inp, "_rds_ps", None) or getattr(inp, "rds_ps", None)
+            if rt or ps:
+                text = str(rt or ps or "").strip()
+                return {"title": text, "artist": "", "show_name": "", "presenter": ""}
+    except Exception:
+        pass
+    return None
+
+
+def _meta_write(slug: str, ts: float, entry_type: str, info: dict):
+    """Write a metadata event to the database."""
+    try:
+        db = _get_db()
+        db.execute("""
+            INSERT OR REPLACE INTO metadata_log
+            (stream, ts, type, title, artist, show_name, presenter, raw)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (slug, ts, entry_type,
+              info.get("title", ""), info.get("artist", ""),
+              info.get("show_name", ""), info.get("presenter", ""),
+              json.dumps(info)))
+        db.commit()
+        db.close()
+    except Exception as e:
+        _log(f"[Logger] Meta DB write error: {e}")
+
+
+class _MetaPoller(threading.Thread):
+    """Polls a now-playing URL (or DLS/RDS) every 30 s and logs changes."""
+
+    _POLL_INTERVAL = 30
+
+    def __init__(self, stream_name: str, slug: str):
+        super().__init__(daemon=True, name=f"MetaPoll-{slug}")
+        self.stream_name = stream_name
+        self.slug        = slug
+        self.stop_evt    = threading.Event()
+        self._last_track: str = ""   # "title||artist" dedup key
+        self._last_show:  str = ""   # "show_name||presenter" dedup key
+
+    def run(self):
+        while not self.stop_evt.is_set():
+            try:
+                self._poll_once()
+            except Exception as e:
+                _log(f"[Logger] MetaPoller ({self.slug}): {e}")
+            self.stop_evt.wait(self._POLL_INTERVAL)
+
+    def _poll_once(self):
+        with _cfg_lock:
+            scfg = _cfg.get("streams", {}).get(self.stream_name, {})
+        url = str(scfg.get("nowplaying_url", "") or "").strip()
+
+        info = None
+        if url:
+            try:
+                req  = _urllib_req.Request(url, headers={"User-Agent": "SignalScope-Logger/1.4"})
+                resp = _urllib_req.urlopen(req, timeout=10)
+                raw  = json.loads(resp.read().decode("utf-8", errors="replace"))
+                resp.close()
+                info = _parse_nowplaying(raw)
+            except Exception as e:
+                _log(f"[Logger] MetaPoller ({self.slug}): API error: {e}")
+
+        # DLS/RDS fallback when no URL configured or API failed
+        if not info:
+            info = _get_live_dls_rds(self.stream_name)
+
+        if not info:
+            return
+
+        now = time.time()
+
+        # Write track event if title/artist changed
+        track_key = f"{info.get('title', '')}||{info.get('artist', '')}"
+        if info.get("title") and track_key != self._last_track:
+            self._last_track = track_key
+            _meta_write(self.slug, now, "track", info)
+
+        # Write show event if show name changed
+        show_key = f"{info.get('show_name', '')}||{info.get('presenter', '')}"
+        if info.get("show_name") and show_key != self._last_show:
+            self._last_show = show_key
+            _meta_write(self.slug, now, "show", info)
+
+    def stop(self):
+        self.stop_evt.set()
+
+
+def _reconcile_meta_pollers():
+    """Start/stop MetaPoller threads to match current stream config."""
+    streams = _available_streams()
+    with _meta_lock:
+        active_slugs = {s["slug"] for s in streams}
+        for s in streams:
+            slug = s["slug"]
+            scfg = _stream_cfg(s["name"])
+            should_poll = scfg.get("enabled") or bool(scfg.get("nowplaying_url", "").strip())
+            if should_poll:
+                if slug not in _meta_pollers or not _meta_pollers[slug].is_alive():
+                    t = _MetaPoller(s["name"], slug)
+                    _meta_pollers[slug] = t
+                    t.start()
+            elif slug in _meta_pollers:
+                _meta_pollers[slug].stop()
+                del _meta_pollers[slug]
+        # Stop pollers for streams no longer present
+        for slug in list(_meta_pollers.keys()):
+            if slug not in active_slugs:
+                _meta_pollers[slug].stop()
+                del _meta_pollers[slug]
+
+
 def _stream_cfg(stream_name):
     with _cfg_lock:
         s = _cfg.get("streams", {}).get(stream_name, {})
     hq = s.get("hq_bitrate", _DEFAULT_HQ)
     lq = s.get("lq_bitrate", _DEFAULT_LQ)
     return {
-        "enabled":       bool(s.get("enabled", False)),
-        "hq_bitrate":    hq if hq in _ALLOWED_BITRATES else _DEFAULT_HQ,
-        "lq_bitrate":    lq if lq in _ALLOWED_BITRATES else _DEFAULT_LQ,
-        "lq_after_days": int(s.get("lq_after_days", _DEFAULT_LQ_AFTER)),
-        "retain_days":   int(s.get("retain_days", _DEFAULT_RETAIN)),
-        "base_dir":      s.get("base_dir", ""),
+        "enabled":        bool(s.get("enabled", False)),
+        "hq_bitrate":     hq if hq in _ALLOWED_BITRATES else _DEFAULT_HQ,
+        "lq_bitrate":     lq if lq in _ALLOWED_BITRATES else _DEFAULT_LQ,
+        "lq_after_days":  int(s.get("lq_after_days", _DEFAULT_LQ_AFTER)),
+        "retain_days":    int(s.get("retain_days", _DEFAULT_RETAIN)),
+        "base_dir":       s.get("base_dir", ""),
+        "nowplaying_url": str(s.get("nowplaying_url", "") or "").strip(),
     }
 
 def _available_streams():
@@ -837,6 +1142,19 @@ def _init_db():
             silence_ranges TEXT   DEFAULT '[]',
             quality       TEXT    DEFAULT 'high',
             PRIMARY KEY (stream, date, filename)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS metadata_log (
+            stream    TEXT NOT NULL,
+            ts        REAL NOT NULL,
+            type      TEXT NOT NULL,
+            title     TEXT DEFAULT '',
+            artist    TEXT DEFAULT '',
+            show_name TEXT DEFAULT '',
+            presenter TEXT DEFAULT '',
+            raw       TEXT DEFAULT '',
+            PRIMARY KEY (stream, ts, type)
         )
     """)
     db.commit()
@@ -1129,6 +1447,7 @@ def _reconcile_recorders():
             elif not scfg["enabled"] and slug in _recorders:
                 _recorders[slug].stop()
                 del _recorders[slug]
+    _reconcile_meta_pollers()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1488,6 +1807,15 @@ select:focus,input:focus{border-color:var(--acc)}
 /* Disk info */
 .disk-card{margin-top:14px;padding:11px 14px;background:var(--sur);border:1px solid var(--bor);border-radius:8px;font-size:13px;color:var(--mu)}
 .hidden{display:none}
+/* Show band */
+#show-band{width:100%;height:20px;position:relative;background:transparent;margin-bottom:4px;flex-shrink:0}
+.show-span{position:absolute;top:1px;height:18px;background:rgba(109,40,217,.15);border-left:2px solid rgba(167,139,250,.7);border-radius:0 2px 2px 0;overflow:hidden;white-space:nowrap;font-size:10px;color:#c4b5fd;padding:0 5px;display:flex;align-items:center;box-sizing:border-box}
+/* Track blocks — amber tint over existing status colour */
+.tl-block.has-track[data-status="ok"]{background:#92400e}
+.tl-block.has-track[data-status="warn"]{background:#7c3a0a}
+.tl-block.has-track[data-status="none"]{background:#3d2000}
+/* Now playing URL input in settings */
+.np-url-row{padding-top:10px;border-top:1px solid var(--bor);margin-top:10px}
 </style>
 </head>
 <body>
@@ -1551,6 +1879,7 @@ select:focus,input:focus{border-color:var(--acc)}
             <span><i style="background:#78350f"></i> Some silence</span>
             <span><i style="background:#7f1d1d"></i> Silence</span>
             <span><i style="background:#0e2040"></i> No recording</span>
+            <span><i style="background:#92400e"></i> Track</span>
           </div>
         </div>
         <div id="tl-notice" class="notice hidden">
@@ -1564,9 +1893,10 @@ select:focus,input:focus{border-color:var(--acc)}
           <div class="day-bar-out hidden" id="day-bar-out"></div>
           <div class="day-bar-hover" id="day-bar-hover"></div>
         </div>
-        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--mu);margin-bottom:8px;padding:0 1px">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--mu);margin-bottom:4px;padding:0 1px">
           <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:55</span>
         </div>
+        <div id="show-band"></div>
         <div id="tl-grid" class="tl-grid"></div>
       </div>
 
@@ -1662,6 +1992,7 @@ var _markIn      = null;
 var _markOut     = null;
 var _scrubDrag   = false;
 var _cfg         = {streams:{}};
+var _metaEvents  = [];   // metadata events for the current day
 
 // ── Hub mode state ─────────────────────────────────────────────────────────
 var _hubSite       = '';   // empty = local mode, non-empty = hub mode
@@ -1923,16 +2254,86 @@ function loadDays(){
 
 // ── Timeline ──────────────────────────────────────────────────────────────
 function loadSegments(){
-  if(!_currentSlug||!_currentDate){ buildTimeline([]); return; }
+  if(!_currentSlug||!_currentDate){ buildTimeline([]); _applyMeta([]); return; }
   document.getElementById('tl-title').textContent = _currentDate;
-  _segsAll = []; _markIn = _markOut = null;
+  _segsAll = []; _markIn = _markOut = null; _metaEvents = [];
   updateInOutLabel();
   document.getElementById('export-btn').disabled = true;
   document.getElementById('day-bar-head').classList.add('hidden');
   buildDayBar([]);
+  document.getElementById('show-band').innerHTML = '';
   apiSegments(_currentSlug, _currentDate, function(segs){
     buildTimeline(segs || []);
+    loadMeta(_currentSlug, _currentDate);
   });
+}
+
+function loadMeta(slug, date){
+  if(_hubSite){
+    var attempts = 0;
+    function tryMetaFetch(){
+      attempts++;
+      _get('/api/logger/hub/metadata/'+encodeURIComponent(_hubSite)+'/'+encodeURIComponent(slug)+'/'+date).then(function(d){
+        if(d && d.pending){
+          if(attempts >= 10){ _applyMeta([]); return; }
+          setTimeout(tryMetaFetch, 3000);
+        } else {
+          _applyMeta(Array.isArray(d) ? d : []);
+        }
+      }).catch(function(){ _applyMeta([]); });
+    }
+    tryMetaFetch();
+    return;
+  }
+  _get('/api/logger/metadata/'+encodeURIComponent(slug)+'/'+date)
+    .then(function(events){ _applyMeta(Array.isArray(events) ? events : []); })
+    .catch(function(){ _applyMeta([]); });
+}
+
+function _applyMeta(events){
+  _metaEvents = events;
+  // Apply track colours and extended tooltips to timeline blocks
+  document.querySelectorAll('.tl-block').forEach(function(blk){
+    var ss = parseInt(blk.dataset.startS || -1, 10);
+    if(isNaN(ss) || ss < 0) return;
+    var end = ss + _SEG_SECS;
+    var tracks = events.filter(function(e){
+      return e.type === 'track' && e.ts_s >= ss && e.ts_s < end;
+    });
+    if(tracks.length){
+      blk.classList.add('has-track');
+      var t = tracks[0];
+      var trackInfo = (t.artist ? t.artist + ' \u2014 ' : '') + t.title;
+      blk.dataset.tip = (blk.dataset.tip || '') + ' \u00b7 \uD83C\uDFB5 ' + trackInfo;
+    } else {
+      blk.classList.remove('has-track');
+    }
+  });
+  _renderShowBand(events);
+}
+
+function _renderShowBand(events){
+  var band = document.getElementById('show-band');
+  if(!band) return;
+  band.innerHTML = '';
+  var shows = events.filter(function(e){ return e.type === 'show' && e.show_name; });
+  if(!shows.length) return;
+  for(var i = 0; i < shows.length; i++){
+    var start = shows[i].ts_s;
+    var end   = (i + 1 < shows.length) ? shows[i + 1].ts_s : 86400;
+    var w = (end - start) / 86400 * 100;
+    var l = start / 86400 * 100;
+    if(w < 0.05) continue;
+    var sp = document.createElement('div');
+    sp.className = 'show-span';
+    sp.style.left  = l + '%';
+    sp.style.width = w + '%';
+    var label = shows[i].show_name;
+    if(shows[i].presenter) label += ' \u00b7 ' + shows[i].presenter;
+    sp.textContent = label;
+    sp.title = label;
+    band.appendChild(sp);
+  }
 }
 
 function buildTimeline(segs){
@@ -2374,7 +2775,15 @@ function renderSettingsRows(){
       +'<div><label>LQ after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="lq_after_days" value="'+(sc.lq_after_days||30)+'"></div>'
       +'<div><label>Delete after (days)</label><input type="number" min="1" max="3650" data-stream="'+_esc(s.name)+'" data-key="retain_days" value="'+(sc.retain_days||90)+'"></div>'
       +'<div><label>Base Directory</label><select data-stream="'+_esc(s.name)+'" data-key="base_dir">'+bdOpts+'</select></div>'
-      +'</div></div>';
+      +'</div>'   // close scard-fields
+      +'<div class="np-url-row">'
+      +'<label style="font-size:11px;color:var(--mu);font-weight:600;letter-spacing:.03em;text-transform:uppercase;display:block;margin-bottom:5px">Now Playing URL</label>'
+      +'<input type="text" data-stream="'+_esc(s.name)+'" data-key="nowplaying_url" value="'+_esc(sc.nowplaying_url||'')+'"'
+      +' placeholder="https://api.example.com/now-playing?station=… (leave blank to use DLS/RDS)"'
+      +' style="width:100%;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:7px 9px;border-radius:6px;font-size:12px;font-family:monospace;outline:none">'
+      +'<div style="font-size:11px;color:var(--mu);margin-top:4px">Planet Radio, Triton, or any JSON endpoint returning artist/title/show. Polled every 30 s. Leave blank to fall back to DLS/RDS.</div>'
+      +'</div>'
+      +'</div>';
     var chk = card.querySelector('input[type=checkbox]');
     chk.addEventListener('change', function(){
       var lbl=document.getElementById(eid);
@@ -2399,18 +2808,9 @@ document.getElementById('save-settings-btn').addEventListener('click', function(
   var saveMsg   = document.getElementById('save-msg');
   var saveErr   = document.getElementById('save-err');
   saveMsg.style.display='none'; saveErr.style.display='none';
-  // Show a "Moving…" note if any stream is changing base dir
-  var hasMove = Object.keys(streams).some(function(nm){
-    var oldBd = ((_cfg.streams||{})[nm]||{}).base_dir||'';
-    return (streams[nm].base_dir||'') !== oldBd;
-  });
-  if(hasMove){ saveMsg.textContent='Moving recordings…'; saveMsg.style.display='inline'; }
   _post('/api/logger/config',{streams:streams, rec_dir:recDir, base_dirs:baseDirs}).then(function(r){
     if(r.ok){
       _cfg.streams=streams; _cfg.rec_dir=recDir; _cfg.base_dirs=baseDirs;
-      saveMsg.textContent='✓ Saved'+(r.moves?' ('+r.moves+' stream'+(r.moves!==1?'s':'')+' moved)':'');
-      saveMsg.style.display='inline';
-      setTimeout(function(){ saveMsg.textContent='✓ Saved'; saveMsg.style.display='none'; },4000);
       fetch('/api/logger/status').then(function(res){ return res.json(); }).then(function(st){
         var rdRes=document.getElementById('rec-dir-resolved');
         rdRes.textContent = st.rec_root ? '→ '+st.rec_root : '';
@@ -2418,6 +2818,28 @@ document.getElementById('save-settings-btn').addEventListener('click', function(
       });
       var anyEnabled=Object.values(streams).some(function(s){ return s.enabled; });
       document.getElementById('tl-notice').classList.toggle('hidden', anyEnabled);
+      if(r.moving){
+        // Moves running in the background — poll until done
+        saveMsg.textContent='Moving recordings in background…'; saveMsg.style.display='inline';
+        (function pollMove(){
+          _get('/api/logger/move_status').then(function(ms){
+            if(ms.active){
+              var pct = ms.total>0 ? Math.round(ms.done/ms.total*100) : 0;
+              var cur = ms.current ? ' · '+ms.current : '';
+              saveMsg.textContent='Moving recordings… '+ms.done+'/'+ms.total+cur+' ('+pct+'%)';
+              setTimeout(pollMove, 1500);
+            } else {
+              var errTxt = ms.error ? ' (warning: '+ms.error+')' : '';
+              saveMsg.textContent='✓ Saved — '+r.moves+' stream'+(r.moves!==1?'s':'')+' moved'+errTxt;
+              setTimeout(function(){ saveMsg.style.display='none'; }, 6000);
+            }
+          }).catch(function(){ setTimeout(pollMove, 3000); });
+        })();
+      } else {
+        saveMsg.textContent='✓ Saved';
+        saveMsg.style.display='inline';
+        setTimeout(function(){ saveMsg.style.display='none'; },4000);
+      }
     } else {
       saveMsg.style.display='none';
       var errTxt = (r && r.error) ? r.error : 'Save failed';

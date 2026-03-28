@@ -2,6 +2,42 @@
 
 ---
 
+## [3.4.55] - 2026-03-28
+
+### Fixed
+- **Logger 1.4.2 — Changing base directory hangs forever (deadlock)** — Moving stream recordings after a base-directory change in Settings caused the page to hang indefinitely ("Moving recordings…" for 30+ minutes with nothing actually copied). Root cause: `api_logger_save_config` held `_cfg_lock` and then called `_rec_root()`, which also tries to acquire `_cfg_lock`. Python's `threading.Lock` is not reentrant — the same thread blocks on itself permanently. The save response never returned and nothing was moved.
+
+  Fix: `_rec_root()` is now called **before** the `with _cfg_lock:` detection block, storing the result in `default_old_root`. The lock block then uses the pre-computed value instead of re-entering the lock. The log also now prints the resolved source and destination paths at the point of queuing each move, making future path issues diagnosable without staring at a hung browser tab.
+
+  **Rule**: Never call `_rec_root()`, `_stream_rec_root()`, or any function that acquires `_cfg_lock` from inside a `with _cfg_lock:` block — Python's `threading.Lock` is not reentrant and will deadlock.
+
+---
+
+## [3.4.54] - 2026-03-28
+
+### Fixed
+- **Logger 1.4.1 — Recording directory move blocks forever on large archives** — Changing a stream's base directory assignment called `_move_stream_recordings` synchronously inside the Flask save-config request handler. For a cross-filesystem move (e.g. moving months of recordings to a NAS or different drive) `shutil.move` performs a full copy-then-delete; at typical NAS speeds this takes many minutes, holding the HTTP connection open and leaving the browser stuck on "Moving recordings…" with the destination still empty.
+
+  Fix: config is now saved **first** (new recordings immediately land in the correct location), then the move runs in a **background thread** (`LoggerMoveRecordings`). The save POST returns instantly with `{"ok": true, "moving": true}`. A new `GET /api/logger/move_status` endpoint reports `{active, done, total, current, error}`. The Settings JS polls this endpoint every 1.5 s and shows live progress ("Moving recordings… 2/3 · StreamName (66%)") until the move finishes, then shows "✓ Saved — N streams moved".
+
+  **Rule**: Never call `shutil.move` synchronously in a Flask request handler when the source may be large or cross-filesystem. Always background the move and return immediately.
+
+---
+
+## [3.4.53] - 2026-03-28
+
+### Added
+- **Logger 1.4.0 — Now-playing metadata integration** — The timeline now shows what show and song was playing on each stream throughout the day, sourced from a configurable now-playing API or from live DLS/RDS data.
+  - **Per-stream "Now Playing URL"** setting added to each stream card in Logger Settings. Accepts any JSON endpoint that returns artist/title/show info. Supports Planet Radio/Bauer nested format (`data.now.title`, `data.schedule.current.title`), Triton Digital (`now_playing.song`), and generic flat JSON with `title`/`artist`/`show` keys. Leave blank to use DLS (DAB) or RDS (FM) text from the SignalScope monitor.
+  - **`_MetaPoller` background thread** polls the configured URL every 30 seconds per stream. Writes change events to a new `metadata_log` SQLite table (columns: stream, ts, type, title, artist, show_name, presenter, raw). Events are only written when the title/artist or show name actually changes, so the log stays compact.
+  - **Show band** — a coloured strip just above the block grid shows the current show name across its full duration for the day. Purple/violet tint with the show name (and presenter if available) as text. Show spans are sized proportionally to the full 24-hour day.
+  - **Track blocks** — timeline blocks containing at least one logged track event are tinted amber/gold (distinct from the green/orange/red silence status colours). Hovering a track block shows the artist and title in the tooltip alongside the existing silence info.
+  - **`GET /api/logger/metadata/<slug>/<date>`** — returns all metadata events for a stream on a given date as a JSON array with `ts_s` (seconds since midnight UTC), `type` (`track` or `show`), `title`, `artist`, `show_name`, `presenter`.
+  - **Hub relay** — in hub mode the browser polls `/api/logger/hub/metadata/<site>/<slug>/<date>`, which queues a `metadata` command for the client via the existing hub↔client poll pattern. The client queries its local `metadata_log` and POSTs the results back. The same retry/pending logic as days/segments is used.
+  - **`metadata_log` table** added to `logger_index.db` automatically on startup. No migration needed — `CREATE TABLE IF NOT EXISTS` is used.
+
+---
+
 ## [3.4.52] - 2026-03-28
 
 ### Added
