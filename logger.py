@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.10",
+    "version": "1.4.11",
 }
 
 import datetime
@@ -2007,16 +2007,16 @@ select:focus,input:focus{border-color:var(--acc)}
         <div id="tl-notice" class="notice hidden">
           <b>No streams enabled for recording.</b> Open <span class="notice-link" id="notice-settings-link">Settings</span> to choose which streams to log.
         </div>
-        <div class="day-bar" id="day-bar">
-          <div class="day-bar-bg" id="day-bar-bg"></div>
-          <div class="day-bar-range hidden" id="day-bar-range"></div>
-          <div class="day-bar-head hidden" id="day-bar-head"></div>
-          <div class="day-bar-in hidden" id="day-bar-in"></div>
-          <div class="day-bar-out hidden" id="day-bar-out"></div>
-          <div class="day-bar-hover" id="day-bar-hover"></div>
-        </div>
         <div class="tl-scroll-wrap">
           <div id="tl-zoom-content">
+            <div class="day-bar" id="day-bar">
+              <div class="day-bar-bg" id="day-bar-bg"></div>
+              <div class="day-bar-range hidden" id="day-bar-range"></div>
+              <div class="day-bar-head hidden" id="day-bar-head"></div>
+              <div class="day-bar-in hidden" id="day-bar-in"></div>
+              <div class="day-bar-out hidden" id="day-bar-out"></div>
+              <div class="day-bar-hover" id="day-bar-hover"></div>
+            </div>
             <div id="tl-time-axis" style="display:flex;justify-content:space-between;font-size:10px;color:var(--mu);margin-bottom:4px;padding:0 1px">
               <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:55</span>
             </div>

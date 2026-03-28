@@ -2,6 +2,20 @@
 
 ---
 
+## [Logger 1.4.11] - 2026-03-28
+
+### Fixed
+- **Logger — day-bar audio overview now scrolls in sync with show/track/mic bands** — When click-and-drag panning a zoomed timeline, the audio waveform overview bar (day-bar) previously stayed fixed while the show-name, track, and mic bands scrolled beneath it. Root cause: the day-bar was outside the `.tl-scroll-wrap` / `#tl-zoom-content` container. Fix: moved `#day-bar` inside `#tl-zoom-content` so all timeline elements — overview bar, time axis, show band, mic band, and track band — share a single scrollable/zoomable container and move together.
+
+---
+
+## [Logger 1.4.10] - 2026-03-28
+
+### Added
+- **Logger — Click-and-drag pan on zoomed timeline** — At any zoom level > 1× the timeline overview area (day-bar, show band, mic band, track band) can be panned by clicking and dragging left or right. Cursor changes to a grab hand while hovering and a grabbing hand while dragging. The day-bar scrub interaction is preserved — clicking directly on the day-bar still seeks playback rather than panning. Touch drag is also supported.
+
+---
+
 ## [Logger 1.4.9] - 2026-03-28
 
 ### Fixed
