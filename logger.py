@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.21",
+    "version": "1.4.22",
 }
 
 import datetime
@@ -1575,7 +1575,7 @@ def _get_segments(slug, date, base_root=None):
             found.extend(day_dir.glob(pat))
         for f in sorted(found, key=lambda x: x.name):
             if f.name not in result:
-                ss = _fname_to_secs(f.name) or 0
+                ss = float(_fname_to_secs(f.name) or 0)
                 result[f.name] = {
                     "stream": slug, "date": date, "filename": f.name,
                     "start_s": ss, "has_silence": 0, "silence_pct": 0.0,
