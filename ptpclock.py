@@ -53,13 +53,28 @@ def _save_settings(s):
 #  MIC LIVE STATE (client-side only, polled by hub display)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_mic_state = {
-    "live": False,
-    "since": 0.0,       # time.time() when mic went live
-    "last_duration": 0,  # seconds of last mic-live session
-    "updated": 0.0,
-}
+# Per-preset mic state: {preset_id: {live, since, last_duration, updated}}
+_mic_states = {}
 _mic_lock = threading.Lock()
+
+def _get_mic(preset_id):
+    with _mic_lock:
+        return _mic_states.get(preset_id, {"live": False, "since": 0, "last_duration": 0, "updated": 0})
+
+def _set_mic(preset_id, live):
+    now = _time.time()
+    with _mic_lock:
+        state = _mic_states.get(preset_id, {"live": False, "since": 0, "last_duration": 0, "updated": 0})
+        was_live = state["live"]
+        if live and not was_live:
+            state["live"] = True
+            state["since"] = now
+        elif not live and was_live:
+            state["live"] = False
+            state["last_duration"] = int(now - state["since"])
+            state["since"] = 0
+        state["updated"] = now
+        _mic_states[preset_id] = state
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  NTP OFFSET CHECK (fallback when PTP not available)
@@ -154,6 +169,11 @@ input[type=text]:focus,select:focus{outline:none;border-color:#3b82f6}
     <div class="name">Studio</div>
     <div class="desc">Analog broadcast clock with sweep second hand</div>
   </div>
+  <div class="mode-card" data-mode="led">
+    <div class="icon">&#128308;</div>
+    <div class="name">LED Studio</div>
+    <div class="desc">LED-style digital display with seconds ring</div>
+  </div>
 </div>
 
 <div class="card">
@@ -165,8 +185,8 @@ input[type=text]:focus,select:focus{outline:none;border-color:#3b82f6}
     </div>
     <div>
       <label>Timezone</label>
-      <input type="text" id="f-tz" value="{{settings.timezone}}" placeholder="e.g. Europe/London">
-      <div class="help">IANA timezone name. Leave blank for server default.</div>
+      <input type="text" id="f-tz" list="tz-list" value="{{settings.timezone}}" placeholder="Start typing...">
+      <div class="help">IANA timezone. Leave blank for server default.</div>
     </div>
   </div>
   <label>NTP Server (fallback if PTP unavailable)</label>
@@ -212,22 +232,29 @@ input[type=text]:focus,select:focus{outline:none;border-color:#3b82f6}
       <div><label style="margin-top:0">Brand</label><input type="text" id="np-brand" placeholder="e.g. Cool FM"></div>
     </div>
     <div class="row">
-      <div><label>Timezone</label><input type="text" id="np-tz" placeholder="e.g. Europe/London"></div>
-      <div><label>Mode</label><select id="np-mode"><option value="digital">Digital</option><option value="studio">Studio</option></select></div>
+      <div><label>Timezone</label><input type="text" id="np-tz" list="tz-list" placeholder="Start typing..."></div>
+      <div><label>Mode</label><select id="np-mode"><option value="digital">Digital</option><option value="studio">Studio (Analog)</option><option value="led">LED Studio</option></select></div>
     </div>
     <div class="row">
       <div>
         <label>Logo</label>
         <input type="file" id="np-logo" accept="image/*" style="font-size:12px;color:#94a3b8">
-        <div class="help">Optional. PNG or JPG for the studio clock face.</div>
+        <div class="help">Optional. PNG or JPG for the clock face.</div>
       </div>
       <div>
-        <label>Audio Level (stream)</label>
-        <select id="np-stream"><option value="">None</option>
+        <label>Audio Levels (select multiple)</label>
+        <select id="np-stream" multiple size="4" style="height:auto">
         {% for s in streams %}<option value="{{s}}">{{s}}</option>{% endfor %}
         </select>
-        <div class="help">Show a live level meter on the clock display.</div>
+        <div class="help">Hold Ctrl/Cmd to select multiple. Shows PPM meters on the clock.</div>
       </div>
+    </div>
+    <div style="margin-top:8px;font-size:12px;color:#64748b">Colours (optional):</div>
+    <div class="row" style="margin-top:4px">
+      <div><label style="margin-top:0">Background</label><input type="color" id="np-bg" value="#0a0e1a" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
+      <div><label style="margin-top:0">Accent / Hands</label><input type="color" id="np-accent" value="#ef4444" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
+      <div><label style="margin-top:0">Text</label><input type="color" id="np-text" value="#f1f5f9" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
+      <div><label style="margin-top:0">Muted</label><input type="color" id="np-muted" value="#64748b" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
     </div>
     <button class="btn" id="add-preset-btn" style="margin-top:10px">Add Clock</button>
     <span class="saved" id="preset-ok">Added</span>
@@ -240,8 +267,45 @@ input[type=text]:focus,select:focus{outline:none;border-color:#3b82f6}
   <div id="links" style="font-size:13px;color:#64748b;line-height:2"></div>
 </div>
 
+<div class="card">
+  <h2>Mic Live API</h2>
+  <div class="help" style="margin-bottom:8px">Control the MIC LIVE indicator from external systems (GPIO, automation, mixing desk). Only available on client nodes (not exposed on the hub).</div>
+  <div style="font-size:13px;color:#94a3b8;line-height:1.8">
+    <div style="margin-bottom:8px"><b>Turn mic ON:</b></div>
+    <code style="background:#1e293b;padding:4px 8px;border-radius:4px;font-size:12px;display:block;overflow-x:auto">curl -X POST http://&lt;client-ip&gt;:5000/api/ptpclock/mic/&lt;preset-id&gt; -H "Content-Type: application/json" -d '{"live": true}'</code>
+    <div style="margin-top:8px;margin-bottom:8px"><b>Turn mic OFF:</b></div>
+    <code style="background:#1e293b;padding:4px 8px;border-radius:4px;font-size:12px;display:block;overflow-x:auto">curl -X POST http://&lt;client-ip&gt;:5000/api/ptpclock/mic/&lt;preset-id&gt; -H "Content-Type: application/json" -d '{"live": false}'</code>
+    <div style="margin-top:8px;margin-bottom:8px"><b>Check status:</b></div>
+    <code style="background:#1e293b;padding:4px 8px;border-radius:4px;font-size:12px;display:block;overflow-x:auto">curl http://&lt;client-ip&gt;:5000/api/ptpclock/mic/&lt;preset-id&gt;</code>
+    <div style="margin-top:12px;color:#64748b">
+      <div>Replace <code>&lt;preset-id&gt;</code> with the clock's preset ID (shown in the URL when opened).</div>
+      <div style="margin-top:4px">Use <code>/api/ptpclock/mic</code> (no preset ID) for the default clock.</div>
+      <div style="margin-top:4px">When live: red pulsing bar with count-up timer. When off: shows duration of last live session.</div>
+    </div>
+  </div>
 </div>
+
+</div>
+<datalist id="tz-list"></datalist>
 <script nonce="{{csp_nonce()}}">
+// Populate timezone datalist from Intl API
+(function(){
+  var dl=document.getElementById('tz-list');
+  var recent={{settings.get('recent_timezones',[])|tojson}};
+  // Common broadcast timezones first, then all from Intl
+  var common=['Europe/London','Europe/Dublin','Europe/Paris','Europe/Berlin','Europe/Amsterdam','Europe/Brussels','Europe/Rome','Europe/Madrid','Europe/Lisbon','Europe/Stockholm','Europe/Helsinki','Europe/Warsaw','Europe/Prague','Europe/Vienna','Europe/Zurich','Europe/Athens','Europe/Moscow','US/Eastern','US/Central','US/Mountain','US/Pacific','America/New_York','America/Chicago','America/Denver','America/Los_Angeles','America/Toronto','America/Vancouver','Asia/Tokyo','Asia/Shanghai','Asia/Singapore','Asia/Dubai','Asia/Kolkata','Australia/Sydney','Australia/Melbourne','Pacific/Auckland','UTC'];
+  var all=[];
+  try{all=Intl.supportedValuesOf('timeZone')}catch(e){}
+  var seen={};var opts=[];
+  // Recent first
+  recent.forEach(function(tz){if(!seen[tz]){seen[tz]=1;opts.push(tz)}});
+  // Then common
+  common.forEach(function(tz){if(!seen[tz]){seen[tz]=1;opts.push(tz)}});
+  // Then all
+  all.forEach(function(tz){if(!seen[tz]){seen[tz]=1;opts.push(tz)}});
+  opts.forEach(function(tz){var o=document.createElement('option');o.value=tz;dl.appendChild(o)});
+})();
+
 function _getCsrf(){
   return (document.querySelector('meta[name="csrf-token"]')||{}).content
       ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
@@ -306,13 +370,19 @@ document.getElementById('add-preset-btn').addEventListener('click',function(){
   var brand=document.getElementById('np-brand').value.trim();
   var tz=document.getElementById('np-tz').value.trim();
   var mode=document.getElementById('np-mode').value;
-  var stream=document.getElementById('np-stream').value;
+  var streamSel=document.getElementById('np-stream');
+  var streams=[];for(var i=0;i<streamSel.options.length;i++){if(streamSel.options[i].selected)streams.push(streamSel.options[i].value)}
+  var stream=streams.join(',');
   var logoFile=document.getElementById('np-logo').files[0];
 
   function doCreate(logoFilename){
     fetch('/api/hub/ptpclock/presets',{method:'POST',
       headers:{'Content-Type':'application/json','X-CSRFToken':_getCsrf()},
-      body:JSON.stringify({name:name,brand:brand,timezone:tz,mode:mode,stream:stream,logo_filename:logoFilename||''}),
+      body:JSON.stringify({name:name,brand:brand,timezone:tz,mode:mode,stream:stream,logo_filename:logoFilename||'',
+        color_bg:document.getElementById('np-bg').value,
+        color_accent:document.getElementById('np-accent').value,
+        color_text:document.getElementById('np-text').value,
+        color_muted:document.getElementById('np-muted').value}),
       credentials:'same-origin'
     }).then(function(r){return r.json()}).then(function(d){
       if(d.ok)location.reload();
@@ -351,28 +421,44 @@ DISPLAY_TPL = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">
+:root{--bg:{{colors.bg}};--accent:{{colors.accent}};--text:{{colors.text}};--muted:{{colors.muted}};--face:#0f172a;--border:#334155;--mark:#94a3b8}
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{height:100%;overflow:hidden;background:#0a0e1a;color:#e0e6f0;font-family:'SF Mono','Consolas','Menlo',monospace}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'SF Mono','Consolas','Menlo',monospace}
 body{display:flex;flex-direction:column;align-items:center;justify-content:center;user-select:none}
 
 /* ── Digital Mode ──────────────────────────────────────────────── */
 .digital{display:none;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%}
-.d-logo{max-height:6vh;max-width:30vw;margin-bottom:1vh;object-fit:contain}
-.d-brand{font-size:clamp(14px,2.5vw,28px);color:#64748b;letter-spacing:0.15em;text-transform:uppercase;margin-bottom:1vh}
+.d-logo{max-height:12vh;max-width:40vw;margin-bottom:1.5vh;object-fit:contain}
+.d-brand{font-size:clamp(14px,2.5vw,28px);color:var(--muted);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:1vh}
 .d-row{display:flex;gap:clamp(20px,6vw,80px);align-items:flex-start;justify-content:center}
 .d-col{text-align:center}
-.d-label{font-size:clamp(12px,1.8vw,22px);color:#64748b;letter-spacing:0.2em;text-transform:uppercase;margin-bottom:0.5vh}
-.d-time{font-size:clamp(48px,12vw,160px);font-weight:200;letter-spacing:0.02em;line-height:1;color:#f1f5f9}
-.d-tenths{font-size:clamp(24px,5vw,64px);font-weight:200;color:#475569;vertical-align:super;margin-left:2px}
-.d-date{font-size:clamp(14px,2.2vw,26px);color:#64748b;margin-top:2vh;letter-spacing:0.1em}
+.d-label{font-size:clamp(12px,1.8vw,22px);color:var(--muted);letter-spacing:0.2em;text-transform:uppercase;margin-bottom:0.5vh}
+.d-time{font-size:clamp(48px,12vw,160px);font-weight:200;letter-spacing:0.02em;line-height:1;color:var(--text)}
+.d-tenths{font-size:clamp(24px,5vw,64px);font-weight:200;color:var(--muted);vertical-align:super;margin-left:2px}
+.d-date{font-size:clamp(14px,2.2vw,26px);color:var(--muted);margin-top:2vh;letter-spacing:0.1em}
 
 /* ── Studio Mode ───────────────────────────────────────────────── */
 .studio{display:none;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%}
-.s-brand{font-size:clamp(14px,2.5vw,28px);color:#94a3b8;letter-spacing:0.15em;text-transform:uppercase;margin-bottom:1vh}
+.s-brand{font-size:clamp(14px,2.5vw,28px);color:var(--muted);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:1vh}
 .s-canvas-wrap{position:relative;width:min(65vh,65vw);height:min(65vh,65vw)}
 .s-canvas-wrap canvas{width:100%;height:100%}
 .s-utc{font-size:clamp(18px,3vw,36px);color:#f1f5f9;margin-top:1.5vh;letter-spacing:0.05em}
 .s-date{font-size:clamp(12px,1.8vw,20px);color:#64748b;margin-top:0.5vh;letter-spacing:0.1em}
+
+/* ── LED Studio Mode ───────────────────────────────────────────── */
+.led{display:none;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%}
+.led-logo{max-height:10vh;max-width:35vw;margin-bottom:1vh;object-fit:contain}
+.led-brand{font-size:clamp(14px,2.5vw,28px);color:var(--muted);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:1vh}
+.led-ring{position:relative;width:min(80vh,90vw);height:min(45vh,50vw);display:flex;flex-direction:column;align-items:center;justify-content:center}
+.led-time{font-family:'SF Mono','Consolas','Menlo',monospace;font-size:clamp(64px,18vw,220px);font-weight:700;color:var(--accent);text-shadow:0 0 20px var(--accent),0 0 60px color-mix(in srgb,var(--accent) 30%,transparent);letter-spacing:0.05em;line-height:1}
+.led-secs-wrap{width:min(75vh,85vw);height:6px;background:var(--border);border-radius:3px;margin-top:2vh;overflow:hidden;position:relative}
+.led-secs-fill{height:100%;background:var(--accent);border-radius:3px;transition:width 0.15s linear;box-shadow:0 0 8px var(--accent)}
+.led-secs-ticks{display:flex;justify-content:space-between;width:min(75vh,85vw);margin-top:4px}
+.led-secs-ticks span{width:2px;height:8px;background:var(--border);display:block}
+.led-secs-ticks span:nth-child(5n+1){height:14px;background:var(--muted)}
+.led-info{display:flex;gap:clamp(16px,5vw,60px);margin-top:2vh;font-size:clamp(12px,2vw,22px);color:var(--muted)}
+.led-info .val{color:var(--text);font-weight:600}
+.led-date{font-size:clamp(12px,1.8vw,20px);color:var(--muted);margin-top:1vh;letter-spacing:0.1em}
 
 /* ── Mic Live ──────────────────────────────────────────────────── */
 .mic-bar{display:none;position:fixed;top:0;left:0;right:0;padding:10px 20px;text-align:center;font-size:clamp(16px,3vw,32px);font-weight:700;letter-spacing:0.15em;text-transform:uppercase;z-index:100;transition:all 0.3s}
@@ -380,15 +466,6 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
 .mic-bar.off{display:block;background:#1e293b;color:#64748b;font-weight:400;font-size:clamp(12px,2vw,20px)}
 @keyframes mic-pulse{0%,100%{opacity:1}50%{opacity:0.7}}
 .mic-timer{font-size:clamp(12px,1.5vw,18px);font-weight:400;margin-left:12px;opacity:0.8}
-
-/* ── Level Meter ───────────────────────────────────────────────── */
-.level-wrap{position:fixed;left:16px;bottom:40px;top:60px;width:32px;display:none;flex-direction:column;align-items:center}
-.level-wrap.active{display:flex}
-.level-track{flex:1;width:16px;background:#1e293b;border-radius:8px;position:relative;overflow:hidden}
-.level-fill{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(to top,#22c55e 0%,#22c55e 60%,#f59e0b 80%,#ef4444 100%);border-radius:8px;transition:height 0.15s}
-.level-peak{position:absolute;left:0;right:0;height:2px;background:#f1f5f9;transition:bottom 0.05s}
-.level-val{font-size:10px;color:#64748b;margin-top:4px;font-family:monospace}
-.level-name{font-size:9px;color:#475569;writing-mode:vertical-rl;text-orientation:mixed;margin-top:4px;max-height:80px;overflow:hidden}
 
 /* ── Status Bar ────────────────────────────────────────────────── */
 .status-bar{position:fixed;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:center;gap:clamp(10px,3vw,40px);padding:8px 16px;background:rgba(10,14,26,0.85);border-top:1px solid #1e293b;font-size:clamp(10px,1.4vw,14px);color:#64748b}
@@ -435,15 +512,24 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
   <div class="s-date" id="s-date">---</div>
 </div>
 
-<!-- Level Meter -->
-<div class="level-wrap" id="level-wrap">
-  <div class="level-track">
-    <div class="level-fill" id="level-fill" style="height:0%"></div>
-    <div class="level-peak" id="level-peak" style="bottom:0%"></div>
+<!-- LED Studio Clock -->
+<div class="led" id="v-led">
+  {% if has_logo %}<img class="led-logo" src="/api/hub/ptpclock/logo{{('?preset='+preset_id) if preset_id else ''}}" alt="">{% endif %}
+  <div class="led-brand" id="led-brand"></div>
+  <div class="led-ring">
+    <div class="led-time" id="led-time">--:--:--</div>
+    <div class="led-secs-wrap"><div class="led-secs-fill" id="led-secs-fill"></div></div>
+    <div class="led-secs-ticks" id="led-ticks"></div>
   </div>
-  <div class="level-val" id="level-val">---</div>
-  <div class="level-name" id="level-name"></div>
+  <div class="led-info">
+    <span>UTC <span class="val" id="led-utc">--:--:--</span></span>
+    <span id="led-tz-lbl">LOCAL</span> <span class="val" id="led-local">--:--:--</span>
+  </div>
+  <div class="led-date" id="led-date">---</div>
 </div>
+
+<!-- Level Meters -->
+<div id="level-container" style="position:fixed;left:12px;bottom:40px;top:60px;display:none;gap:8px"></div>
 
 <!-- Status Bar -->
 <div class="status-bar">
@@ -457,6 +543,7 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
 <div class="mode-sw">
   <button id="btn-digital" data-mode="digital">Digital</button>
   <button id="btn-studio" data-mode="studio">Studio</button>
+  <button id="btn-led" data-mode="led">LED</button>
   <button data-mode="menu" style="font-size:10px">Menu</button>
 </div>
 
@@ -465,6 +552,7 @@ var _mode='digital',_brand='{{brand|e}}',_tz='{{tz|e}}';
 var _hasLogo={{has_logo|tojson}};
 var _presetId='{{preset_id|e}}';
 var _stream='{{stream|e}}';
+var _C={bg:'{{colors.bg}}',accent:'{{colors.accent}}',text:'{{colors.text}}',muted:'{{colors.muted}}'};
 var _levelDb=-120,_peakDb=-120,_peakDecay=0;
 var _utcH=0,_utcM=0,_utcS=0,_utcMs=0;
 var _locH=0,_locM=0,_locS=0,_locMs=0;
@@ -481,9 +569,18 @@ function setMode(m){
   _mode=m;
   document.getElementById('v-digital').style.display=m==='digital'?'flex':'none';
   document.getElementById('v-studio').style.display=m==='studio'?'flex':'none';
+  document.getElementById('v-led').style.display=m==='led'?'flex':'none';
   document.querySelectorAll('.mode-sw button').forEach(function(b){b.className=b.dataset.mode===m?'active':''});
   if(m==='studio')resizeCanvas();
+  if(m==='led'&&!_ledTicksInit)initLedTicks();
   var u=new URL(location);u.searchParams.set('mode',m);history.replaceState(null,'',u);
+}
+var _ledTicksInit=false;
+function initLedTicks(){
+  var el=document.getElementById('led-ticks');
+  if(!el||_ledTicksInit)return;
+  for(var i=0;i<60;i++){var s=document.createElement('span');el.appendChild(s)}
+  _ledTicksInit=true;
 }
 document.querySelector('.mode-sw').addEventListener('click',function(e){
   var btn=e.target.closest('button');
@@ -494,6 +591,7 @@ document.querySelector('.mode-sw').addEventListener('click',function(e){
 if(_brand){
   document.getElementById('d-brand').textContent=_brand;
   document.getElementById('s-brand').textContent=_brand;
+  document.getElementById('led-brand').textContent=_brand;
   document.title=_brand+' — PTP Clock';
 }
 
@@ -512,30 +610,46 @@ if(_hasLogo){
   _logoImg.src='/api/hub/ptpclock/logo'+(_presetId?'?preset='+_presetId:'');
 }
 
-// ── Level meter ───────────────────────────────────────────────────
-if(_stream){
-  document.getElementById('level-wrap').className='level-wrap active';
-  document.getElementById('level-name').textContent=_stream;
+// ── Level meters (multiple streams, comma-separated) ─────────────
+var _streams=_stream?_stream.split(',').filter(Boolean):[];
+var _meters={};
+if(_streams.length){
+  var container=document.getElementById('level-container');
+  container.style.display='flex';
+  _streams.forEach(function(sn){
+    var wrap=document.createElement('div');
+    wrap.style.cssText='display:flex;flex-direction:column;align-items:center;width:28px';
+    wrap.innerHTML='<div style="flex:1;width:14px;background:#1e293b;border-radius:7px;position:relative;overflow:hidden;min-height:40px">'
+      +'<div class="mfill" style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(to top,#22c55e 0%,#22c55e 60%,#f59e0b 80%,#ef4444 100%);border-radius:7px;transition:height 0.15s;height:0%"></div>'
+      +'<div class="mpeak" style="position:absolute;left:0;right:0;height:2px;background:#f1f5f9;bottom:0%;transition:bottom 0.05s"></div>'
+      +'</div>'
+      +'<div class="mval" style="font-size:9px;color:#64748b;margin-top:3px;font-family:monospace">---</div>'
+      +'<div style="font-size:8px;color:#475569;writing-mode:vertical-rl;text-orientation:mixed;margin-top:3px;max-height:70px;overflow:hidden">'+sn.replace(/</g,'&lt;')+'</div>';
+    container.appendChild(wrap);
+    _meters[sn]={el:wrap,peak:-120};
+  });
   setInterval(function(){
-    fetch('/api/hub/ptpclock/level?stream='+encodeURIComponent(_stream),{credentials:'same-origin'})
-    .then(function(r){return r.json()}).then(function(d){
-      if(d.level_dbfs!==null){
-        _levelDb=d.level_dbfs;
-        if(d.peak_dbfs!==null&&d.peak_dbfs>_peakDb)_peakDb=d.peak_dbfs;
-        var pct=Math.max(0,Math.min(100,((_levelDb+60)/60)*100));
-        var ppct=Math.max(0,Math.min(100,((_peakDb+60)/60)*100));
-        document.getElementById('level-fill').style.height=pct+'%';
-        document.getElementById('level-peak').style.bottom=ppct+'%';
-        document.getElementById('level-val').textContent=_levelDb.toFixed(1);
-        _peakDb-=0.5;if(_peakDb<_levelDb)_peakDb=_levelDb;
-      }
-    }).catch(function(){});
-  },200);
+    _streams.forEach(function(sn){
+      fetch('/api/hub/ptpclock/level?stream='+encodeURIComponent(sn),{credentials:'same-origin'})
+      .then(function(r){return r.json()}).then(function(d){
+        var m=_meters[sn];if(!m||d.level_dbfs===null)return;
+        var lev=d.level_dbfs,pk=d.peak_dbfs||lev;
+        if(pk>m.peak)m.peak=pk;
+        var pct=Math.max(0,Math.min(100,((lev+60)/60)*100));
+        var ppct=Math.max(0,Math.min(100,((m.peak+60)/60)*100));
+        m.el.querySelector('.mfill').style.height=pct+'%';
+        m.el.querySelector('.mpeak').style.bottom=ppct+'%';
+        m.el.querySelector('.mval').textContent=lev.toFixed(0);
+        m.peak-=0.5;if(m.peak<lev)m.peak=lev;
+      }).catch(function(){});
+    });
+  },250);
 }
 
 // ── Poll server time ──────────────────────────────────────────────
 function poll(){
-  fetch('/api/hub/ptpclock/time',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
+  var _timeUrl='/api/hub/ptpclock/time'+(_presetId?'?preset='+_presetId:'');
+  fetch(_timeUrl,{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
     _serverT=d.unix;_clientT=performance.now()/1000;
     _dateStr=d.date;
     _tzLabel=d.tz_label||_tzLabel;
@@ -602,8 +716,11 @@ function render(){
   if(_tz){try{locStr=utcDate.toLocaleTimeString('en-GB',{timeZone:_tz,hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch(e){}}
   if(locStr){var pp=locStr.split(':');_locH=parseInt(pp[0]);_locM=parseInt(pp[1]);_locS=parseInt(pp[2]);_locMs=_utcMs}
   else{_locH=utcDate.getHours();_locM=utcDate.getMinutes();_locS=utcDate.getSeconds();_locMs=utcDate.getMilliseconds()}
-  if(_mode==='digital')renderDigital();else renderStudio();
-  document.getElementById((_mode==='studio'?'s':'d')+'-date').textContent=_dateStr;
+  if(_mode==='digital')renderDigital();
+  else if(_mode==='studio')renderStudio();
+  else if(_mode==='led')renderLed();
+  var dateId=_mode==='studio'?'s-date':(_mode==='led'?'led-date':'d-date');
+  document.getElementById(dateId).textContent=_dateStr;
   requestAnimationFrame(render);
 }
 function pad2(n){return n<10?'0'+n:''+n}
@@ -628,8 +745,8 @@ function renderStudio(){
   c.clearRect(0,0,w,w);c.save();c.translate(r,r);
 
   // Face
-  c.beginPath();c.arc(0,0,r*0.95,0,Math.PI*2);c.fillStyle='#0f172a';c.fill();
-  c.strokeStyle='#334155';c.lineWidth=r*0.01;c.stroke();
+  c.beginPath();c.arc(0,0,r*0.95,0,Math.PI*2);c.fillStyle=_C.bg;c.fill();
+  c.strokeStyle=_C.muted;c.lineWidth=r*0.01;c.stroke();
 
   // Hour markers
   for(var i=0;i<12;i++){
@@ -638,30 +755,30 @@ function renderStudio(){
     var x1=Math.cos(a)*(r*0.82),y1=Math.sin(a)*(r*0.82);
     var x2=Math.cos(a)*(r*0.82+len),y2=Math.sin(a)*(r*0.82+len);
     c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);
-    c.strokeStyle=isQ?'#f1f5f9':'#94a3b8';c.lineWidth=thick;c.lineCap='round';c.stroke();
+    c.strokeStyle=isQ?_C.text:_C.muted;c.lineWidth=thick;c.lineCap='round';c.stroke();
   }
   // Minute ticks
   for(var i=0;i<60;i++){if(i%5===0)continue;
     var a=i*Math.PI/30-Math.PI/2;
     c.beginPath();c.moveTo(Math.cos(a)*(r*0.88),Math.sin(a)*(r*0.88));
     c.lineTo(Math.cos(a)*(r*0.91),Math.sin(a)*(r*0.91));
-    c.strokeStyle='#475569';c.lineWidth=r*0.005;c.stroke();
+    c.strokeStyle=_C.muted+'80';c.lineWidth=r*0.005;c.stroke();
   }
 
-  // Logo on face
+  // Logo on face (larger — 40% of radius)
   if(_logoImg&&_logoImg.complete&&_logoImg.naturalWidth>0){
-    var lsz=r*0.25;var aspect=_logoImg.naturalWidth/_logoImg.naturalHeight;
+    var lsz=r*0.4;var aspect=_logoImg.naturalWidth/_logoImg.naturalHeight;
     var lw,lh;if(aspect>1){lw=lsz;lh=lsz/aspect}else{lh=lsz;lw=lsz*aspect}
     c.drawImage(_logoImg,-lw/2,-r*0.35-lh/2,lw,lh);
   }else if(_brand){
     c.font='600 '+Math.round(r*0.08)+'px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
-    c.fillStyle='#64748b';c.textAlign='center';c.textBaseline='middle';
+    c.fillStyle=_C.muted;c.textAlign='center';c.textBaseline='middle';
     c.fillText(_brand,0,-r*0.3);
   }
 
   // "PTP" / "NTP" label
   c.font='600 '+Math.round(r*0.05)+'px monospace';
-  c.fillStyle='#334155';c.textAlign='center';c.textBaseline='middle';
+  c.fillStyle=_C.muted+'80';c.textAlign='center';c.textBaseline='middle';
   c.fillText(_syncType,0,r*0.35);
 
   // Hands
@@ -669,21 +786,39 @@ function renderStudio(){
   // Hour
   var ha=hr*Math.PI/6-Math.PI/2;
   c.beginPath();c.moveTo(0,0);c.lineTo(Math.cos(ha)*r*0.5,Math.sin(ha)*r*0.5);
-  c.strokeStyle='#f1f5f9';c.lineWidth=r*0.04;c.lineCap='round';c.stroke();
+  c.strokeStyle=_C.text;c.lineWidth=r*0.04;c.lineCap='round';c.stroke();
   // Minute
   var ma=min*Math.PI/30-Math.PI/2;
   c.beginPath();c.moveTo(0,0);c.lineTo(Math.cos(ma)*r*0.7,Math.sin(ma)*r*0.7);
-  c.strokeStyle='#e2e8f0';c.lineWidth=r*0.025;c.lineCap='round';c.stroke();
+  c.strokeStyle=_C.text;c.lineWidth=r*0.025;c.lineCap='round';c.stroke();
   // Second (sweep)
   var sa=sec*Math.PI/30-Math.PI/2;
   c.beginPath();c.moveTo(Math.cos(sa+Math.PI)*r*0.1,Math.sin(sa+Math.PI)*r*0.1);
   c.lineTo(Math.cos(sa)*r*0.82,Math.sin(sa)*r*0.82);
-  c.strokeStyle='#ef4444';c.lineWidth=r*0.01;c.lineCap='round';c.stroke();
+  c.strokeStyle=_C.accent;c.lineWidth=r*0.01;c.lineCap='round';c.stroke();
   // Center dot
-  c.beginPath();c.arc(0,0,r*0.025,0,Math.PI*2);c.fillStyle='#ef4444';c.fill();
+  c.beginPath();c.arc(0,0,r*0.025,0,Math.PI*2);c.fillStyle=_C.accent;c.fill();
 
   c.restore();
   document.getElementById('s-utc').textContent=pad2(_utcH)+':'+pad2(_utcM)+':'+pad2(_utcS)+'.'+Math.floor(_utcMs/100);
+}
+
+// ── LED render ────────────────────────────────────────────────────
+function renderLed(){
+  var t=pad2(_utcH)+':'+pad2(_utcM)+':'+pad2(_utcS);
+  document.getElementById('led-time').textContent=t;
+  // Seconds progress bar
+  var pct=((_utcS+_utcMs/1000)/60)*100;
+  document.getElementById('led-secs-fill').style.width=pct+'%';
+  // Highlight ticks up to current second
+  var ticks=document.getElementById('led-ticks');
+  if(ticks&&ticks.children.length===60){
+    for(var i=0;i<60;i++){
+      ticks.children[i].style.background=i<=_utcS?'var(--accent)':((i%5===0)?'var(--muted)':'var(--border)');
+    }
+  }
+  document.getElementById('led-utc').textContent=pad2(_utcH)+':'+pad2(_utcM)+':'+pad2(_utcS);
+  document.getElementById('led-local').textContent=pad2(_locH)+':'+pad2(_locM)+':'+pad2(_locS);
 }
 
 // ── Init ──────────────────────────────────────────────────────────
@@ -744,16 +879,23 @@ def register(app, ctx):
             has_logo = bool(preset.get("logo_filename"))
             mode  = preset.get("mode", "digital")
             stream = preset.get("stream", "")
+            colors = {
+                "bg": preset.get("color_bg", "#0a0e1a"),
+                "accent": preset.get("color_accent", "#ef4444"),
+                "text": preset.get("color_text", "#f1f5f9"),
+                "muted": preset.get("color_muted", "#64748b"),
+            }
         else:
             brand = request.args.get("brand", settings.get("brand", ""))
             tz    = request.args.get("tz", settings.get("timezone", ""))
             has_logo = bool(settings.get("logo_filename"))
             mode  = request.args.get("mode", "digital")
             stream = request.args.get("stream", "")
+            colors = {"bg": "#0a0e1a", "accent": "#ef4444", "text": "#f1f5f9", "muted": "#64748b"}
         return render_template_string(DISPLAY_TPL, brand=brand, tz=tz,
                                        has_logo=has_logo, build=BUILD,
                                        initial_mode=mode, stream=stream,
-                                       preset_id=preset_id)
+                                       preset_id=preset_id, colors=colors)
 
     # ── Time API ──────────────────────────────────────────────────────
     @app.get("/api/hub/ptpclock/time")
@@ -790,15 +932,16 @@ def register(app, ctx):
             if off is not None:
                 ntp_data = {"state": "ok", "offset_ms": off, "server": ntp_srv}
 
-        # Mic state
-        with _mic_lock:
-            mic_data = None
-            if _mic_state["updated"] > 0:
-                mic_data = {
-                    "live": _mic_state["live"],
-                    "since": _mic_state["since"],
-                    "last_duration": _mic_state["last_duration"],
-                }
+        # Mic state (per-preset)
+        mic_preset = request.args.get("preset", "")
+        mic = _get_mic(mic_preset) if mic_preset else _get_mic("default")
+        mic_data = None
+        if mic["updated"] > 0:
+            mic_data = {
+                "live": mic["live"],
+                "since": mic["since"],
+                "last_duration": mic["last_duration"],
+            }
 
         return jsonify({
             "utc":      _time.strftime("%H:%M:%S", utc) + f".{ms:03d}",
@@ -826,6 +969,14 @@ def register(app, ctx):
         for k in ("brand", "timezone", "ntp_server"):
             if k in data:
                 s[k] = str(data[k]).strip()
+        # Track recent timezones (most recent first, max 10)
+        tz = s.get("timezone", "")
+        if tz:
+            recent = s.get("recent_timezones", [])
+            if tz in recent:
+                recent.remove(tz)
+            recent.insert(0, tz)
+            s["recent_timezones"] = recent[:10]
         _save_settings(s)
         return jsonify({"ok": True})
 
@@ -910,6 +1061,10 @@ def register(app, ctx):
             "mode": str(data.get("mode", "digital")).strip(),
             "logo_filename": str(data.get("logo_filename", "")).strip(),
             "stream": str(data.get("stream", "")).strip(),
+            "color_bg": str(data.get("color_bg", "#0a0e1a")).strip(),
+            "color_accent": str(data.get("color_accent", "#ef4444")).strip(),
+            "color_text": str(data.get("color_text", "#f1f5f9")).strip(),
+            "color_muted": str(data.get("color_muted", "#64748b")).strip(),
         }
         presets.append(p)
         s["presets"] = presets
@@ -982,33 +1137,25 @@ def register(app, ctx):
         return jsonify({"level_dbfs": None, "stream": stream_name})
 
     # ── Mic Live API (client-only, not exposed on hub) ────────────────
-    # This endpoint is called by external systems (e.g. studio desk GPIO,
-    # automation system) to signal mic live/off state.
+    # Called by external systems (GPIO, automation) to signal mic state.
+    # Per-preset: POST /api/ptpclock/mic/<preset_id> {"live": true}
+    # Default:    POST /api/ptpclock/mic {"live": true}
     cfg = monitor.app_cfg
     if cfg.hub.mode not in ("hub",):
         @app.post("/api/ptpclock/mic")
-        def ptpclock_mic_post():
+        @app.post("/api/ptpclock/mic/<preset_id>")
+        def ptpclock_mic_post(preset_id="default"):
             data = request.get_json(silent=True) or {}
             live = bool(data.get("live", False))
-            now = _time.time()
-            with _mic_lock:
-                was_live = _mic_state["live"]
-                if live and not was_live:
-                    _mic_state["live"] = True
-                    _mic_state["since"] = now
-                elif not live and was_live:
-                    _mic_state["live"] = False
-                    dur = int(now - _mic_state["since"])
-                    _mic_state["last_duration"] = dur
-                    _mic_state["since"] = 0
-                _mic_state["updated"] = now
-            return jsonify({"ok": True, "live": live})
+            _set_mic(preset_id, live)
+            return jsonify({"ok": True, "live": live, "preset": preset_id})
 
         @app.get("/api/ptpclock/mic")
-        def ptpclock_mic_get():
-            with _mic_lock:
-                return jsonify({
-                    "live": _mic_state["live"],
-                    "since": _mic_state["since"],
-                    "last_duration": _mic_state["last_duration"],
+        @app.get("/api/ptpclock/mic/<preset_id>")
+        def ptpclock_mic_get(preset_id="default"):
+            mic = _get_mic(preset_id)
+            return jsonify({
+                "live": mic["live"],
+                "since": mic["since"],
+                "last_duration": mic["last_duration"],
                 })
