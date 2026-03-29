@@ -93,7 +93,7 @@ def draw_cover_page(c, doc):
     # Version
     c.setFillColor(colors.HexColor("#5a7fa0"))
     c.setFont("Helvetica", 10)
-    c.drawCentredString(w / 2, h * 0.46, "Current as of build  SignalScope-3.4.45")
+    c.drawCentredString(w / 2, h * 0.46, "Current as of build  SignalScope-3.4.58")
 
     # Lower rule
     c.setStrokeColor(colors.HexColor("#1a3a6a"))
@@ -364,18 +364,22 @@ TOC_ENTRIES = [
     (11, "Morning Report Plugin"),
     (12, "Signal Path Latency Plugin"),
     (13, "Web SDR Plugin"),
-    (14, "Alerting"),
-    (15, "Broadcast Chains"),
-    (16, "Hub Mode"),
-    (17, "AI Anomaly Detection"),
-    (18, "Stream Comparator"),
-    (19, "Metric History & Analytics"),
-    (20, "SLA Tracking"),
-    (21, "Security"),
-    (22, "Backup & Migration"),
-    (23, "Mobile API"),
-    (24, "Plugin Development"),
-    (25, "Troubleshooting"),
+    (14, "Codec Monitor Plugin"),
+    (15, "Push Server Plugin"),
+    (16, "PTP Clock Plugin"),
+    (17, "SignalScope Player"),
+    (18, "Alerting"),
+    (19, "Broadcast Chains"),
+    (20, "Hub Mode"),
+    (21, "AI Anomaly Detection"),
+    (22, "Stream Comparator"),
+    (23, "Metric History & Analytics"),
+    (24, "SLA Tracking"),
+    (25, "Security"),
+    (26, "Backup & Migration"),
+    (27, "Mobile API"),
+    (28, "Plugin Development"),
+    (29, "Troubleshooting"),
 ]
 
 
@@ -415,6 +419,10 @@ def ch1_introduction(styles):
         "AI-powered anomaly detection — per-stream ONNX autoencoder trained on 14 audio features",
         "Broadcast chain fault location — identifies the first failed node in a signal path",
         "Hub mode for multi-site aggregation — centralised monitoring of unlimited remote nodes",
+        "Codec Monitor — real-time connection tracking for Comrex, Tieline, Prodys, and APT contribution codecs",
+        "PTP / GPS-disciplined wall clock for studios, accurate on any browser",
+        "Push notification server for iOS and Android via APNs and FCM",
+        "SignalScope Player — desktop companion app (Windows & macOS) for logger recordings",
         "Extensible plugin system for adding custom functionality alongside the core application",
     ]
     for cap in caps:
@@ -751,7 +759,7 @@ def ch7_logger(styles):
         [
             ["MP3 (default)", ".mp3", "built-in", "Universal compatibility"],
             ["AAC", ".aac", "aac (ADTS)", "~0.5× storage vs MP3 at equivalent quality"],
-            ["Opus", ".opus", "libopus (OGG)", "~0.25× storage; Chrome/Firefox/Edge/Safari 16.4+"],
+            ["Opus", ".ogg", "libopus (OGG)", "~0.25× storage; Chrome/Firefox/Edge/Safari 16.4+"],
         ],
         col_widths=[90, 70, 110, 200]))
     elems.append(spacer(4))
@@ -873,11 +881,40 @@ def ch7_logger(styles):
     ]))
     elems.append(spacer(10))
 
-    elems += h1(styles, "Hub Mode")
+    elems += h1(styles, "Hub Mode — Centralised Playback")
     elems.append(body(styles,
-        "In hub mode, all connected client sites stream their recordings to the hub for centralised "
-        "playback. Select any site from the site dropdown in the Logger header to browse and play that "
-        "site's recordings without logging into the client node individually."))
+        "When SignalScope is running as a hub, the Logger aggregates recordings from all connected client "
+        "nodes for centralised playback. No files are copied — audio streams on demand through the hub "
+        "relay pipeline in real time."))
+    elems.append(spacer(6))
+    elems.append(body(styles,
+        "Select any site from the site dropdown in the Logger header to browse and play that site's "
+        "recordings without logging into the client node individually. The hub issues a <b>stream_file</b> "
+        "command to the client, which opens the requested segment with ffmpeg and pushes raw audio bytes "
+        "through the relay slot to your browser or desktop player."))
+    elems.append(spacer(6))
+    elems.append(body(styles,
+        "<b>Seeking:</b> when you click a specific time on the day bar or use the skip controls, the hub "
+        "passes a <b>seek_s</b> value to the client. ffmpeg performs a fast key-frame seek before "
+        "streaming, so playback starts at the requested wall-clock position within 1–2 seconds."))
+    elems.append(spacer(10))
+
+    elems += h1(styles, "Multi-Node Shared Recordings (Sidecar JSON)")
+    elems.append(body(styles,
+        "Multiple Logger instances on different nodes can share a common recording storage directory "
+        "(NFS, SMB, or any shared filesystem). Each instance writes a per-day metadata sidecar file "
+        "(<b>meta_{owner}.json</b>) alongside the audio segments. The Logger UI merges all sidecar "
+        "files at load time, so the timeline shows show names, mic spans, and track bands from every "
+        "contributing node without any network coordination or locking."))
+    elems.append(spacer(10))
+
+    elems += h1(styles, "SignalScope Player Integration")
+    elems.append(body(styles,
+        "SignalScope Player is a desktop companion application (see Chapter 17) that connects directly "
+        "to a hub's Logger to browse and play recordings offline. In Hub mode the player authenticates "
+        "with the hub URL and an API token, lists available sites and dates, and streams segments through "
+        "the same hub relay pipeline used by the browser player. Skip controls and exact-time seeking "
+        "work identically to the browser interface."))
     return elems
 
 
@@ -1032,9 +1069,227 @@ def ch13_websdr(styles):
     return elems
 
 
-def ch14_alerting(styles):
+def ch14_codec(styles):
     elems = []
-    elems += chapter_header(styles, 14, "Alerting")
+    elems += chapter_header(styles, 14, "Codec Monitor Plugin")
+    elems.append(body(styles,
+        "The Codec Monitor plugin provides real-time connection tracking for broadcast contribution "
+        "codecs. It polls each configured device and fires alerts when a codec drops or reconnects, "
+        "giving operations teams immediate visibility of STL and remote contribution link status. "
+        "Install from <b>Settings → Plugins → Check GitHub for plugins</b>. Requires <b>pysnmp</b> "
+        "for SNMP-based devices; HTTP-scraping devices need no additional packages."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Supported Devices")
+    elems.append(data_table(styles,
+        ["Manufacturer", "Models", "Protocol"],
+        [
+            ["Comrex", "ACCESS NX, BRIC-Link II, BRIC-Link III", "HTTP status page scraping"],
+            ["Tieline", "Gateway, ViA", "HTTP status page scraping"],
+            ["Prodys", "Quantum ST", "HTTP status page scraping"],
+            ["APT / WorldCast", "Quantum", "SNMP (requires pysnmp)"],
+        ],
+        col_widths=[110, 200, 160]))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Configuration")
+    elems.append(body(styles,
+        "Navigate to <b>Codec Monitor</b> in the nav bar and click <b>Add Codec</b>. For each device provide:"))
+    elems.append(bullet(styles, "<b>Label:</b> friendly display name (e.g. 'Studio A Comrex')"))
+    elems.append(bullet(styles, "<b>Host / IP:</b> IP address or hostname of the device"))
+    elems.append(bullet(styles, "<b>Type:</b> select from supported device list"))
+    elems.append(bullet(styles, "<b>Poll interval:</b> how often to query the device (default 30 s)"))
+    elems.append(bullet(styles, "<b>Alert on disconnect:</b> enable to fire CODEC_FAULT when link drops"))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Connection States")
+    elems.append(data_table(styles,
+        ["State", "Meaning"],
+        [
+            ["Connected", "Device is reachable and reports an active connection"],
+            ["Idle", "Device is reachable but no active connection (line idle)"],
+            ["Offline", "Device is unreachable or HTTP/SNMP request timed out"],
+        ],
+        col_widths=[100, 370]))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Alerts")
+    elems.append(body(styles,
+        "A <b>CODEC_FAULT</b> alert fires when a codec transitions from Connected → Idle or Offline. "
+        "A <b>CODEC_RECOVERY</b> alert fires when it returns to Connected. Both are sent to all "
+        "configured notification channels and appear in the Reports alert history."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Mobile API")
+    elems.append(body(styles,
+        "The endpoint <b>GET /api/mobile/codecs/status</b> returns all monitored devices with their "
+        "current state, label, host, device type, and ISO-8601 last-seen timestamp. Requires a valid "
+        "mobile API Bearer token."))
+    return elems
+
+
+def ch15_push(styles):
+    elems = []
+    elems += chapter_header(styles, 15, "Push Server Plugin")
+    elems.append(body(styles,
+        "The Push Server plugin turns a SignalScope hub into a centralised push notification server "
+        "for iOS and Android. It holds APNs and FCM credentials and delivers notifications on behalf "
+        "of any SignalScope installation that points its Push Server URL here — eliminating the need "
+        "to configure credentials on every client node. Hub-only. "
+        "Install from <b>Settings → Plugins → Check GitHub for plugins</b>."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Credentials")
+    elems.append(data_table(styles,
+        ["Platform", "Credential", "Notes"],
+        [
+            ["iOS (APNs)", ".p8 key file", "Download from Apple Developer portal. Also requires Team ID, Key ID, Bundle ID."],
+            ["Android (FCM)", "Service account JSON", "Download from Firebase Console → Project Settings → Service Accounts."],
+        ],
+        col_widths=[90, 110, 270]))
+    elems.append(spacer(4))
+    elems.append(body(styles,
+        "Upload credentials in <b>Plugins → Push Server → Settings</b>. One-click migration copies "
+        "existing credentials from the local Settings page to the Push Server."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Connecting Client Nodes")
+    elems.append(body(styles,
+        "On each client node navigate to <b>Settings → Notifications → Push Notifications</b> and "
+        "enter the hub's URL as the Push Server URL. The client will send all push notifications via "
+        "the hub's Push Server endpoint instead of calling APNs/FCM directly."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Delivery Flow")
+    steps = [
+        "iOS/Android app registers its device token with the local SignalScope instance",
+        "Client node relays the token registration to the Push Server hub",
+        "When an alert fires on any client, the notification is sent to the Push Server",
+        "Push Server signs the APNs JWT (valid 60 minutes, auto-renewed) and POSTs to APNs or FCM",
+        "Device receives the push notification within seconds",
+    ]
+    for i, s in enumerate(steps, 1):
+        elems.append(bullet(styles, f"{i}. {s}"))
+    return elems
+
+
+def ch16_ptpclock(styles):
+    elems = []
+    elems += chapter_header(styles, 16, "PTP Clock Plugin")
+    elems.append(body(styles,
+        "The PTP Clock plugin provides a full-screen GPS-accurate wall clock for broadcast studios. "
+        "Time is served from the GPS or PTP-disciplined server clock — any browser connected to the "
+        "server displays the same accurate time regardless of local clock drift. "
+        "Install from <b>Settings → Plugins → Check GitHub for plugins</b>. No additional packages required."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Display Modes")
+    elems.append(data_table(styles,
+        ["Mode", "Description"],
+        [
+            ["Digital", "Large HH:MM:SS display with tenths-of-a-second. Shows PTP sync status, offset, and jitter below the clock."],
+            ["Analog", "Studio-style analog clock face with sweep second hand. Suitable for on-air studio display."],
+        ],
+        col_widths=[80, 390]))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Usage")
+    elems.append(body(styles,
+        "Navigate to <b>PTP Clock</b> in the nav bar. Switch between digital and analog modes with the "
+        "toggle button. Append <b>?brand=MyStation</b> to the URL to display a custom branding label "
+        "below the clock — useful for studio monitor displays."))
+    elems.append(spacer(4))
+    elems.append(body(styles,
+        "The clock page is suitable for fullscreen display on a dedicated browser tab or kiosk display. "
+        "Press F11 (or use the browser's fullscreen mode) for a distraction-free studio clock."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "PTP Sync Status")
+    elems.append(body(styles,
+        "When the host machine is synchronised via PTP (IEEE 1588) or GPS the clock page shows "
+        "a sync status badge, current offset from the grandmaster clock, and jitter (standard deviation "
+        "of recent offset samples). A green badge indicates sync within ±1 ms of the grandmaster."))
+    return elems
+
+
+def ch17_player(styles):
+    elems = []
+    elems += chapter_header(styles, 17, "SignalScope Player")
+    elems.append(body(styles,
+        "SignalScope Player is a standalone desktop application for Windows and macOS that provides "
+        "offline access to logger recordings. It connects to a SignalScope hub's Logger API, browses "
+        "recordings by site and date, and streams audio on demand — without needing a browser."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Connection Modes")
+    elems.append(data_table(styles,
+        ["Mode", "Description"],
+        [
+            ["Hub", "Connect to a remote SignalScope hub. Enter the hub URL and a mobile API token. "
+                    "The player lists all sites and dates available through the hub's Logger. Audio "
+                    "streams through the hub relay pipeline in real time."],
+            ["Direct", "Point directly at a logger recordings folder on a shared drive or local disk. "
+                       "Audio is read and played directly from the filesystem — no network relay required."],
+        ],
+        col_widths=[60, 410]))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Features")
+    features = [
+        "Site and stream selector — browse all available sites and slugs",
+        "Date picker — navigate to any recorded date",
+        "Day bar — full-day minimap with colour-coded 5-minute blocks; click to jump to any time",
+        "Track band — amber song markers on the day bar showing exact start and end times",
+        "Segment-level playback with transport controls (play, pause, stop)",
+        "Skip controls — ±30 s and ±60 s buttons that cross segment boundaries automatically",
+        "Exact-time seeking — clicking the day bar seeks within the segment, not just to its start",
+        "Volume control and mute",
+        "Now-playing display — stream name, date, and wall-clock position",
+    ]
+    for f in features:
+        elems.append(bullet(styles, f))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Hub Mode Connection")
+    steps = [
+        "In SignalScope web UI: Settings → Mobile API → Generate token",
+        "Copy the hub URL (e.g. https://hub.example.com) and the API token",
+        "In SignalScope Player: Settings → Mode → Hub, paste URL and token",
+        "Click Connect — the player authenticates and loads available sites",
+        "Select site, stream, and date — recordings list populates automatically",
+        "Click any segment or day bar position to start playback",
+    ]
+    for i, s in enumerate(steps, 1):
+        elems.append(bullet(styles, f"{i}. {s}"))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Direct Mode")
+    elems.append(body(styles,
+        "In Direct mode the player reads audio files from a local or network path. Point it at "
+        "the <b>logger_recordings/</b> directory or any path structured as "
+        "<b>{slug}/{YYYY-MM-DD}/HH-MM.{ext}</b>. No hub connection or API token is needed. "
+        "Sidecar metadata files (<b>meta_*.json</b>) are loaded automatically for track bands and "
+        "show names if present."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Download & Installation")
+    elems.append(data_table(styles,
+        ["Platform", "Download", "Notes"],
+        [
+            ["Windows", "SignalScopePlayer.exe (GitHub Releases)", "Double-click to run. No installer needed."],
+            ["macOS", "SignalScopePlayer-macOS.zip (GitHub Releases)", "Unzip, drag SignalScopePlayer.app to Applications. Right-click → Open on first launch to bypass Gatekeeper."],
+        ],
+        col_widths=[70, 175, 225]))
+    elems.append(spacer(4))
+    elems.append(body(styles,
+        "Built with Python and PyQt6. Requires no Python installation on the host machine — "
+        "all dependencies are bundled in the executable."))
+    return elems
+
+
+def ch18_alerting(styles):
+    elems = []
+    elems += chapter_header(styles, 18, "Alerting")
     elems.append(body(styles,
         "SignalScope generates alerts for a wide range of signal quality and fault conditions. "
         "All alerts are logged to the alert history and, depending on configuration, sent via one "
@@ -1096,6 +1351,16 @@ def ch14_alerting(styles):
         col_widths=[120, 350]))
     elems.append(spacer(8))
 
+    elems += h1(styles, "Codec Alerts")
+    elems.append(data_table(styles,
+        ["Alert", "Condition"],
+        [
+            ["CODEC_FAULT", "A monitored contribution codec (Comrex, Tieline, Prodys, APT) transitions from connected to idle or offline"],
+            ["CODEC_RECOVERY", "A previously faulted codec reconnects and returns to connected state"],
+        ],
+        col_widths=[120, 350]))
+    elems.append(spacer(8))
+
     elems += h1(styles, "Setting Expected Names")
     elems.append(body(styles,
         "Click <b>📌 Set</b> on any FM card to pin the current RDS PS name as the expected name. "
@@ -1125,9 +1390,9 @@ def ch14_alerting(styles):
     return elems
 
 
-def ch15_chains(styles):
+def ch19_chains(styles):
     elems = []
-    elems += chapter_header(styles, 15, "Broadcast Chains")
+    elems += chapter_header(styles, 19, "Broadcast Chains")
     elems.append(body(styles,
         "Broadcast Chains model the physical signal path as an ordered sequence of monitoring points. "
         "The hub identifies the first failed node and fires a named fault alert with specific fault "
@@ -1212,9 +1477,9 @@ def ch15_chains(styles):
     return elems
 
 
-def ch16_hub(styles):
+def ch20_hub(styles):
     elems = []
-    elems += chapter_header(styles, 16, "Hub Mode")
+    elems += chapter_header(styles, 20, "Hub Mode")
     elems.append(body(styles,
         "Hub mode enables multi-site aggregation. A central hub node collects data from all connected "
         "client nodes, providing a unified view of the entire broadcast estate."))
@@ -1272,9 +1537,9 @@ def ch16_hub(styles):
     return elems
 
 
-def ch17_ai(styles):
+def ch21_ai(styles):
     elems = []
-    elems += chapter_header(styles, 17, "AI Anomaly Detection")
+    elems += chapter_header(styles, 21, "AI Anomaly Detection")
     elems.append(body(styles,
         "Each stream has its own ONNX autoencoder model trained on 14 audio features. The AI engine "
         "learns the normal behaviour of each stream and alerts when the signal deviates significantly "
@@ -1305,9 +1570,9 @@ def ch17_ai(styles):
     return elems
 
 
-def ch18_comparator(styles):
+def ch22_comparator(styles):
     elems = []
-    elems += chapter_header(styles, 18, "Stream Comparator")
+    elems += chapter_header(styles, 22, "Stream Comparator")
     elems.append(body(styles,
         "The Stream Comparator pairs two streams to measure processing delay and detect signal faults "
         "caused by processing chain issues. Configure in <b>Settings → Comparators</b>."))
@@ -1325,9 +1590,9 @@ def ch18_comparator(styles):
     return elems
 
 
-def ch19_metrics(styles):
+def ch23_metrics(styles):
     elems = []
-    elems += chapter_header(styles, 19, "Metric History & Analytics")
+    elems += chapter_header(styles, 23, "Metric History & Analytics")
 
     elems += h1(styles, "Stored Metrics")
     elems.append(body(styles,
@@ -1389,9 +1654,9 @@ def ch19_metrics(styles):
     return elems
 
 
-def ch20_sla(styles):
+def ch24_sla(styles):
     elems = []
-    elems += chapter_header(styles, 20, "SLA Tracking")
+    elems += chapter_header(styles, 24, "SLA Tracking")
     elems.append(body(styles,
         "SignalScope calculates monthly per-stream uptime percentages, providing SLA reporting for "
         "broadcast monitoring obligations."))
@@ -1412,9 +1677,9 @@ def ch20_sla(styles):
     return elems
 
 
-def ch21_security(styles):
+def ch25_security(styles):
     elems = []
-    elems += chapter_header(styles, 21, "Security")
+    elems += chapter_header(styles, 25, "Security")
     elems.append(data_table(styles,
         ["Feature", "Details"],
         [
@@ -1430,9 +1695,9 @@ def ch21_security(styles):
     return elems
 
 
-def ch22_backup(styles):
+def ch26_backup(styles):
     elems = []
-    elems += chapter_header(styles, 22, "Backup & Migration")
+    elems += chapter_header(styles, 26, "Backup & Migration")
     elems.append(body(styles,
         "Use <b>Settings → Maintenance → Backup &amp; Restore</b> to download a timestamped ZIP "
         "containing the complete application state."))
@@ -1458,9 +1723,9 @@ def ch22_backup(styles):
     return elems
 
 
-def ch23_mobile(styles):
+def ch27_mobile(styles):
     elems = []
-    elems += chapter_header(styles, 23, "Mobile API")
+    elems += chapter_header(styles, 27, "Mobile API")
     elems.append(body(styles,
         "All Mobile API endpoints require authentication via a Bearer token, X-API-Key header, or "
         "?token= query parameter. Generate tokens in <b>Settings → Mobile API</b>."))
@@ -1476,8 +1741,13 @@ def ch23_mobile(styles):
             ["/api/mobile/metrics/history", "GET", "Time-series metric data for charting"],
             ["/api/mobile/hub/overview", "GET", "Hub sites summary — status, alert counts, heartbeat age"],
             ["/api/mobile/register_token", "POST", "Register an APNs or FCM push notification token"],
+            ["/api/mobile/logger/sites", "GET", "List sites with logger recordings available on the hub"],
+            ["/api/mobile/logger/dates", "GET", "List recorded dates for a given site and stream slug"],
+            ["/api/mobile/logger/segments", "GET", "List 5-minute segment metadata for a given date"],
+            ["/api/mobile/logger/prepare_play", "POST", "Request a hub relay stream URL for a segment (with optional seek_s)"],
+            ["/api/mobile/codecs/status", "GET", "All monitored codec devices with connection state and last-seen time"],
         ],
-        col_widths=[170, 55, 245]))
+        col_widths=[175, 55, 240]))
     elems.append(spacer(8))
 
     elems += h1(styles, "iOS App Features")
@@ -1494,9 +1764,9 @@ def ch23_mobile(styles):
     return elems
 
 
-def ch24_plugins(styles):
+def ch28_plugins(styles):
     elems = []
-    elems += chapter_header(styles, 24, "Plugin Development")
+    elems += chapter_header(styles, 28, "Plugin Development")
     elems.append(body(styles,
         "SignalScope's plugin system allows you to extend the application with custom pages and "
         "functionality. Plugins are single Python files placed alongside <b>signalscope.py</b> that "
@@ -1540,7 +1810,7 @@ def ch24_plugins(styles):
             ["listen_registry", "ListenSlotRegistry", "Create and get audio relay slots"],
             ["login_required", "decorator", "Apply to routes that require an authenticated session"],
             ["csrf_protect", "decorator", "Apply to POST routes to validate CSRF token"],
-            ["BUILD", "str", "Current build string e.g. 'SignalScope-3.4.45'"],
+            ["BUILD", "str", "Current build string e.g. 'SignalScope-3.4.58'"],
         ],
         col_widths=[120, 110, 240]))
     elems.append(spacer(8))
@@ -1577,9 +1847,9 @@ def ch24_plugins(styles):
     return elems
 
 
-def ch25_troubleshooting(styles):
+def ch29_troubleshooting(styles):
     elems = []
-    elems += chapter_header(styles, 25, "Troubleshooting")
+    elems += chapter_header(styles, 29, "Troubleshooting")
 
     issues = [
         (
@@ -1719,7 +1989,7 @@ def build_pdf():
         pageTemplates=[cover_template, content_template],
         title="SignalScope User Guide",
         author="SignalScope",
-        subject="Comprehensive User Guide — SignalScope-3.4.45",
+        subject="Comprehensive User Guide — SignalScope-3.4.58",
     )
 
     styles = make_styles()
@@ -1747,18 +2017,22 @@ def build_pdf():
         ch11_morning,
         ch12_latency,
         ch13_websdr,
-        ch14_alerting,
-        ch15_chains,
-        ch16_hub,
-        ch17_ai,
-        ch18_comparator,
-        ch19_metrics,
-        ch20_sla,
-        ch21_security,
-        ch22_backup,
-        ch23_mobile,
-        ch24_plugins,
-        ch25_troubleshooting,
+        ch14_codec,
+        ch15_push,
+        ch16_ptpclock,
+        ch17_player,
+        ch18_alerting,
+        ch19_chains,
+        ch20_hub,
+        ch21_ai,
+        ch22_comparator,
+        ch23_metrics,
+        ch24_sla,
+        ch25_security,
+        ch26_backup,
+        ch27_mobile,
+        ch28_plugins,
+        ch29_troubleshooting,
     ]
 
     for i, ch_fn in enumerate(chapters):
