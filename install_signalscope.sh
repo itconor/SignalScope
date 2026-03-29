@@ -844,22 +844,29 @@ EOF
 
   # Override the default service ExecStart so it always reads our config
   # (distribution defaults vary — some pass -i eth0, some pass nothing)
-  ${SUDO} mkdir -p /etc/systemd/system/ptp4l.service.d
-  ${SUDO} tee /etc/systemd/system/ptp4l.service.d/signalscope.conf > /dev/null <<'EOF'
+  # Only create the drop-in if ptp4l.service actually exists — otherwise
+  # systemctl enable/restart would fail and (with set -e) abort the installer.
+  if systemctl list-unit-files ptp4l.service &>/dev/null && \
+     systemctl list-unit-files ptp4l.service 2>/dev/null | grep -q ptp4l; then
+    ${SUDO} mkdir -p /etc/systemd/system/ptp4l.service.d
+    ${SUDO} tee /etc/systemd/system/ptp4l.service.d/signalscope.conf > /dev/null <<'EOF'
 [Service]
 ExecStart=
 ExecStart=/usr/sbin/ptp4l -f /etc/linuxptp/ptp4l.conf
 EOF
 
-  ${SUDO} systemctl daemon-reload
-  ${SUDO} systemctl enable ptp4l
-  if ${SUDO} systemctl restart ptp4l 2>/dev/null; then
-    ok "ptp4l running (slave-only, monitor mode) on interface: ${ptp_iface}"
+    ${SUDO} systemctl daemon-reload
+    ${SUDO} systemctl enable ptp4l 2>/dev/null || true
+    if ${SUDO} systemctl restart ptp4l 2>/dev/null; then
+      ok "ptp4l running (slave-only, monitor mode) on interface: ${ptp_iface}"
+    else
+      warn "ptp4l failed to start — PTP traffic may not be present on ${ptp_iface}"
+      warn "To change interface: edit /etc/linuxptp/ptp4l.conf, then: sudo systemctl restart ptp4l"
+    fi
+    ok "pmc available for accurate PTP offset readings"
   else
-    warn "ptp4l failed to start — PTP traffic may not be present on ${ptp_iface}"
-    warn "To change interface: edit /etc/linuxptp/ptp4l.conf, then: sudo systemctl restart ptp4l"
+    warn "ptp4l.service not found — skipping systemd setup (pmc will still work if ptp4l is running)"
   fi
-  ok "pmc available for accurate PTP offset readings"
 }
 
 create_service() {
