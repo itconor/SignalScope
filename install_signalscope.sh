@@ -486,6 +486,11 @@ resolve_best_source() {
     mkdir -p "${TEMP_SOURCE_DIR}"
     if curl -fsSL --max-time 30 "${RAW_BASE_URL}/${APP_PY_NAME}" -o "${remote_app}" 2>/dev/null; then
       fetch_ok=1
+      # Also fetch static assets (curl doesn't get the full repo)
+      mkdir -p "${TEMP_SOURCE_DIR}/static"
+      for asset in signalscope_icon.ico signalscope_icon.png signalscope_logo.jpg signalscope_logo.png; do
+        curl -fsSL --max-time 10 "${RAW_BASE_URL}/static/${asset}" -o "${TEMP_SOURCE_DIR}/static/${asset}" 2>/dev/null || true
+      done
     else
       warn "Could not fetch remote file from GitHub"
     fi
@@ -1258,11 +1263,24 @@ main() {
     fi
   fi
 
-  if [[ -d "${SOURCE_DIR}/static" && "${WINNING_SOURCE}" != "installed" ]]; then
+  # Copy static assets if source has them AND either:
+  #   - this is a fresh install / update (not "installed"), OR
+  #   - the install dir is missing static assets
+  if [[ -d "${SOURCE_DIR}/static" ]]; then
+    if [[ "${WINNING_SOURCE}" != "installed" || ! -f "${INSTALL_ROOT}/static/signalscope_icon.png" ]]; then
+      ${SUDO} mkdir -p "${INSTALL_ROOT}/static"
+      ${SUDO} rsync -a "${SOURCE_DIR}/static/" "${INSTALL_ROOT}/static/"
+      ${SUDO} chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}/static"
+      ok "Updated static assets"
+    fi
+  elif [[ ! -f "${INSTALL_ROOT}/static/signalscope_icon.png" ]]; then
+    # No source static dir and no installed assets — fetch directly
     ${SUDO} mkdir -p "${INSTALL_ROOT}/static"
-    ${SUDO} rsync -a --delete "${SOURCE_DIR}/static/" "${INSTALL_ROOT}/static/"
+    for asset in signalscope_icon.ico signalscope_icon.png signalscope_logo.jpg signalscope_logo.png; do
+      ${SUDO} curl -fsSL --max-time 10 "${RAW_BASE_URL}/static/${asset}" -o "${INSTALL_ROOT}/static/${asset}" 2>/dev/null || true
+    done
     ${SUDO} chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}/static"
-    ok "Updated static assets"
+    ok "Downloaded static assets from GitHub"
   fi
 
   # ── Python version check ─────────────────────────────────────────────────────
