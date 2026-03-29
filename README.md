@@ -52,8 +52,12 @@ Once complete, open `http://localhost:5000`. The setup wizard will guide you thr
 | **FM Scanner** | On-demand FM frequency tuning via RTL-SDR with live browser audio, RDS decoding, band scan, tuning history and presets; hub scanner page (`/hub/scanner`) |
 | **Web SDR plugin** | Browser-based SDR with scrolling waterfall, click-to-tune, WFM/NFM/AM demodulation — installed via Settings → Plugins |
 | **Logger plugin** | Continuous 24/7 compliance recording of any monitored stream; 5-minute segments with silence overlay, scrubable timeline with zoom/pan, show-name and track bands, mic on-air band, mark in/out clip export, right-click timeline markers, configurable recording format (MP3/AAC/Opus), per-stream quality tiers and configurable retention — installed via Settings → Plugins |
+| **SignalScope Player** | Desktop companion app (Windows & macOS) for logger recordings; connects to a hub or a local recordings folder; zoomable/pannable timeline, skip ±30 s/±60 s, mark in/out clip export — download from [github.com/itconor/SignalScopePlayer](https://github.com/itconor/SignalScopePlayer) |
 | **DAB Scanner plugin** | Browse all Band III DAB channels, stream services as MP3 via welle-cli, display DLS scrolling text — installed via Settings → Plugins |
 | **Meter Wall plugin** | Full-screen PPM-style level bars for every monitored stream across all connected sites, LUFS-I readout, peak hold, RDS/DLS now-playing — installed via Settings → Plugins |
+| **Codec Monitor plugin** | Real-time connection monitor for contribution codecs (Comrex ACCESS/BRIC-Link, Tieline, Prodys, APT/WorldCast); SNMP + HTTP scraping; CODEC_FAULT/CODEC_RECOVERY alerts; iOS mobile API — installed via Settings → Plugins |
+| **Push Server plugin** | Centralised APNs/FCM push notification server — one hub delivers notifications for all connected SignalScope installations — installed via Settings → Plugins |
+| **PTP Clock plugin** | Full-screen GPS-accurate wall clock; digital or analogue studio-clock display; live PTP offset/jitter; custom branding via URL parameter — installed via Settings → Plugins |
 | **Zetta Integration plugin** | RCS Zetta broadcast automation integration; polls SOAP service for now-playing data, detects commercial blocks, provides WSDL discovery — installed via Settings → Plugins |
 | **Morning Report plugin** | Auto-generated daily briefing at 06:00 covering fault summary, chain health, hourly heatmap, and notable patterns — installed via Settings → Plugins |
 | **Signal Path Latency plugin** | Tracks comparator delay measurements over 90 days, SVG sparklines, drift/alert badges — installed via Settings → Plugins |
@@ -221,7 +225,7 @@ Silence is detected inline using ffmpeg's `silencedetect` filter and stored per-
 |---|---|---|
 | **MP3** (default) | `.mp3` | Universal compatibility |
 | **AAC** | `.aac` | ~½ the storage of MP3 at equal quality |
-| **Opus** | `.opus` | Most efficient — quality at 64 kbps rivals MP3 at 192 kbps |
+| **Opus** | `.ogg` | Most efficient — quality at 64 kbps rivals MP3 at 192 kbps |
 
 ### Timeline
 
@@ -264,6 +268,14 @@ The player bar provides:
 | **AAC** | `.m4a` | 128 kbps; ~½ size of MP3 |
 | **Opus** | `.webm` | 96 kbps; most efficient; Chrome/Firefox/Edge/Safari 16.4+ |
 
+### Hub Mode
+
+In hub deployments, the Logger plugin supports browsing and playing recordings from any connected client node — without the files ever leaving the client's disk. The hub acts as a relay: raw audio file bytes are streamed from the client's recording directory through the hub to the operator's browser or desktop player. No transcoding occurs on the hub.
+
+### Multi-Node Shared Recordings
+
+When multiple logger instances write to a shared network directory (NFS/SMB), each node writes its own **per-instance sidecar JSON** (`meta_{node}.json`) alongside each day's segments. Readers merge all sidecar files by timestamp, so metadata from every node is visible regardless of which machine generated it. No cross-process locking or shared SQLite access is required.
+
 ### Now-Playing Metadata Integration
 
 Logger polls a now-playing API every 30 seconds to populate show name and track metadata. Supported sources:
@@ -300,6 +312,41 @@ Configure per-stream in the **Settings** tab:
 | Delete after (days) | 90 | Purge recordings after this many days |
 
 A background thread runs hourly, re-encoding older segments to the LQ bitrate and deleting segments beyond the retention period.
+
+---
+
+## SignalScope Player
+
+SignalScope Player is a standalone desktop application for browsing and playing back logger recordings on **Windows** and **macOS**. It connects either directly to a local or network recordings folder, or to a SignalScope hub over HTTPS using the mobile API token.
+
+**Download:** [github.com/itconor/SignalScopePlayer/releases](https://github.com/itconor/SignalScopePlayer/releases)
+
+### Modes
+
+| Mode | How it connects | Use case |
+|---|---|---|
+| **Direct** | Points at a local or network-mounted recordings directory | Engineer on same LAN as recordings; NFS/SMB share |
+| **Hub** | Connects to a SignalScope hub URL with a mobile API Bearer token | Remote access from anywhere; audio relayed through hub |
+
+### Features
+
+- **Stream & date browser** — select any monitored stream and calendar date; the full day loads in seconds
+- **Zoomable timeline** — scroll to zoom (1×–48×), click and drag to pan; double-click to reset
+- **Metadata bands** — show name (purple), track (amber), mic on-air (green) bands aligned to the timeline
+- **Segment grid** — optional colour-coded 5-minute block grid (hidden by default; toggle with the grid button)
+- **Exact-time seeking** — click anywhere on the timeline to seek to that precise second
+- **Skip controls** — « 1m · ‹ 30s · 30s › · 1m » buttons in the player bar; work across segment boundaries and in hub relay mode
+- **Scrub bar** — drag to seek within the current segment
+- **Mark In / Mark Out** — set clip boundaries and export using ffmpeg (direct mode)
+- **Auto-advance** — at end of a segment, playback continues automatically into the next
+
+### Hub Relay Streaming
+
+In hub mode the player does not download files — the hub streams the original OGG/MP3/FLAC bytes directly from the client node to the player in real time. Seeking (including via skip buttons) is handled by an ffmpeg seek on the client side before streaming begins. No audio is stored on the hub.
+
+### Connection
+
+On first launch a connection dialog appears. Enter the hub URL and mobile API token (generated in **Settings → Mobile API**), or browse to a local recordings directory. Credentials are saved for subsequent launches.
 
 ---
 
@@ -347,6 +394,32 @@ Full-screen audio level display at `/hub/meterwall`:
 - RDS/DLS now-playing text per stream
 - Site grouping, configurable grid density, auto-hiding fullscreen kiosk mode
 
+#### Codec Monitor (`codec.py`)
+Real-time connection monitor for broadcast contribution codecs at `/hub/codecs`:
+- Monitors Comrex ACCESS / BRIC-Link, Tieline Gateway / ViA, Prodys Quantum ST, APT/WorldCast Quantum
+- Polls each device via HTTP status-page scraping or SNMP
+- Tracks connected / idle / offline state with colour-coded status indicators
+- Fires **CODEC_FAULT** and **CODEC_RECOVERY** alerts into the SignalScope Reports page on state changes
+- Mobile API at `/api/mobile/codecs/status` for the iOS companion app
+- Runs on both hub and client nodes
+
+#### Push Server (`push.py`)
+Centralised push notification server at `/hub/push`:
+- Turns a SignalScope hub into a single delivery point for iOS (APNs) and Android (FCM) push notifications
+- Stores APNs `.p8` key and FCM service account JSON credentials
+- Any SignalScope installation — including remote client nodes — can point its **Push Server URL** here and delegate all push delivery
+- Includes one-click migration from existing local Settings credentials
+- Hub-only
+
+#### PTP Clock (`ptpclock.py`)
+Full-screen GPS-accurate studio wall clock at `/hub/ptpclock`:
+- **Digital mode** — large HH:MM:SS with tenths-of-second display
+- **Analogue mode** — smooth sweep second-hand studio clock
+- Live PTP sync status, offset, and jitter from the GPS-disciplined server clock
+- Accurate on any browser on the LAN — no local GPS required on the viewing device
+- Custom branding via `?brand=` URL parameter
+- Link it from a studio display for a broadcast-quality clock with zero additional hardware
+
 #### Zetta Integration (`zetta.py`)
 RCS Zetta broadcast automation integration at `/hub/zetta`:
 - Polls the Zetta SOAP service to show live now-playing data (title, artist, cart number, category)
@@ -381,6 +454,7 @@ SIGNALSCOPE_PLUGIN = {
     "label": "My Plugin",
     "url":   "/hub/myplugin",
     "icon":  "🔧",
+    # "hub_only": True,   # hide nav item in client-only mode
 }
 
 def register(app, ctx):
@@ -439,6 +513,8 @@ See `CLAUDE.md` in the repository for full plugin authoring documentation includ
 | `CHAIN_FAULT` | First down node identified in a broadcast chain |
 | `CHAIN_RECOVERED` | Previously faulted chain returns to fully OK |
 | `CHAIN_FLAPPING` | Chain has faulted and recovered 3+ times within 10 minutes |
+| `CODEC_FAULT` | Contribution codec transitioned to idle or offline state |
+| `CODEC_RECOVERY` | Contribution codec returned to connected state |
 
 ### Setting Expected RDS / DAB Names
 
@@ -615,6 +691,10 @@ All mobile API endpoints require a Bearer token (or `X-API-Key` header / `?token
 | `/api/mobile/metrics/history` | GET | Time-series metric data; params: `stream`, `metric`, `hours`, `site` |
 | `/api/mobile/hub/overview` | GET | Hub sites summary with per-site stream list and alert counts |
 | `/api/mobile/register_token` | POST | Register an APNs device token for push notifications |
+| `/api/mobile/logger/catalog` | GET | List of recorded streams across all connected sites |
+| `/api/mobile/logger/play_file` | POST | Relay a logger recording through the hub to a desktop player |
+| `/api/mobile/logger/audio_file` | GET | Serve a logger recording directly (single-node hub or direct mode) |
+| `/api/mobile/codecs/status` | GET | Codec Monitor — live status of all monitored contribution codecs |
 
 ### iOS App Features
 
