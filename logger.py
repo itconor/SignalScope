@@ -1326,6 +1326,10 @@ def _stream_rec_root_by_slug(slug: str) -> Path:
     name = _slug_to_name(slug)
     if name:
         return _stream_rec_root(name)
+    # Foreign stream (catalog) — scan all roots for matching slug directory
+    for root in _all_rec_roots():
+        if (root / slug).is_dir():
+            return root
     return _rec_root()
 
 
