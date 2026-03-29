@@ -155,7 +155,10 @@ input[type=text]:focus,select:focus{outline:none;border-color:#3b82f6}
 </head>
 <body>
 <div class="wrap">
-<h1>PTP Clock</h1>
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+  <a href="/" style="color:#64748b;text-decoration:none;font-size:20px" title="Back to SignalScope">&larr;</a>
+  <h1 style="margin:0">PTP Clock</h1>
+</div>
 <div class="sub">GPS-accurate wall clock for broadcast studios</div>
 
 <div class="modes" id="modes">
@@ -242,18 +245,23 @@ input[type=text]:focus,select:focus{outline:none;border-color:#3b82f6}
         <div class="help">Optional. PNG or JPG for the clock face.</div>
       </div>
       <div>
-        <label>Audio Levels (select multiple)</label>
-        <select id="np-stream" multiple size="4" style="height:auto">
-        {% for s in streams %}<option value="{{s}}">{{s}}</option>{% endfor %}
-        </select>
-        <div class="help">Hold Ctrl/Cmd to select multiple. Shows PPM meters on the clock.</div>
+        <label>Audio Level Meters</label>
+        <div id="meter-list" style="margin-bottom:6px"></div>
+        <div style="display:flex;gap:6px">
+          <select id="np-stream-sel" style="flex:1"><option value="">Select stream...</option>
+          {% for s in streams %}<option value="{{s}}">{{s}}</option>{% endfor %}
+          </select>
+          <input type="text" id="np-stream-label" placeholder="Custom label (optional)" style="flex:1">
+          <button type="button" class="btn" style="font-size:11px;padding:4px 10px;white-space:nowrap" id="np-add-meter">+ Add</button>
+        </div>
+        <div class="help">Add multiple meters. Custom label overrides the stream name on the display.</div>
       </div>
     </div>
     <div style="margin-top:8px;font-size:12px;color:#64748b">Colours (optional):</div>
     <div class="row" style="margin-top:4px">
-      <div><label style="margin-top:0">Background</label><input type="color" id="np-bg" value="#0a0e1a" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
-      <div><label style="margin-top:0">Accent / Hands</label><input type="color" id="np-accent" value="#ef4444" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
-      <div><label style="margin-top:0">Text</label><input type="color" id="np-text" value="#f1f5f9" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
+      <div><label style="margin-top:0">Background</label><input type="color" id="np-bg" value="#0b1222" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
+      <div><label style="margin-top:0">Accent / Hands</label><input type="color" id="np-accent" value="#3b82f6" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
+      <div><label style="margin-top:0">Text</label><input type="color" id="np-text" value="#e0e6f0" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
       <div><label style="margin-top:0">Muted</label><input type="color" id="np-muted" value="#64748b" style="width:100%;height:32px;border:1px solid #334155;border-radius:4px;cursor:pointer"></div>
     </div>
     <button class="btn" id="add-preset-btn" style="margin-top:10px">Add Clock</button>
@@ -364,15 +372,37 @@ if(rmBtn)rmBtn.addEventListener('click',function(){
   .then(function(r){return r.json()}).then(function(d){if(d.ok)location.reload()});
 });
 
+// ── Meter list management ─────────────────────────────────────────
+var _meterItems=[];
+function renderMeterList(){
+  var el=document.getElementById('meter-list');
+  el.innerHTML=_meterItems.map(function(m,i){
+    return '<div style="display:flex;align-items:center;gap:6px;padding:3px 0">'
+      +'<span style="font-size:12px;color:#94a3b8;flex:1">'+m.stream.replace(/</g,'&lt;')
+      +(m.label?' <span style="color:#64748b">('+m.label.replace(/</g,'&lt;')+')</span>':'')+'</span>'
+      +'<button type="button" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px" data-rm-meter="'+i+'">x</button></div>';
+  }).join('');
+}
+document.getElementById('np-add-meter').addEventListener('click',function(){
+  var sel=document.getElementById('np-stream-sel');
+  var lbl=document.getElementById('np-stream-label');
+  if(!sel.value)return;
+  _meterItems.push({stream:sel.value,label:lbl.value.trim()});
+  sel.value='';lbl.value='';
+  renderMeterList();
+});
+document.getElementById('meter-list').addEventListener('click',function(e){
+  var rm=e.target.closest('[data-rm-meter]');
+  if(rm){_meterItems.splice(parseInt(rm.dataset.rmMeter),1);renderMeterList()}
+});
+
 // ── Presets ───────────────────────────────────────────────────────
 document.getElementById('add-preset-btn').addEventListener('click',function(){
   var name=document.getElementById('np-name').value.trim();
   var brand=document.getElementById('np-brand').value.trim();
   var tz=document.getElementById('np-tz').value.trim();
   var mode=document.getElementById('np-mode').value;
-  var streamSel=document.getElementById('np-stream');
-  var streams=[];for(var i=0;i<streamSel.options.length;i++){if(streamSel.options[i].selected)streams.push(streamSel.options[i].value)}
-  var stream=streams.join(',');
+  var stream=_meterItems.map(function(m){return m.stream+'|'+m.label}).join(',');
   var logoFile=document.getElementById('np-logo').files[0];
 
   function doCreate(logoFilename){
@@ -445,20 +475,10 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
 .s-utc{font-size:clamp(18px,3vw,36px);color:#f1f5f9;margin-top:1.5vh;letter-spacing:0.05em}
 .s-date{font-size:clamp(12px,1.8vw,20px);color:#64748b;margin-top:0.5vh;letter-spacing:0.1em}
 
-/* ── LED Studio Mode ───────────────────────────────────────────── */
+/* ── LED Dot Clock (Wharton-style) ─────────────────────────────── */
 .led{display:none;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%}
-.led-logo{max-height:10vh;max-width:35vw;margin-bottom:1vh;object-fit:contain}
-.led-brand{font-size:clamp(14px,2.5vw,28px);color:var(--muted);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:1vh}
-.led-ring{position:relative;width:min(80vh,90vw);height:min(45vh,50vw);display:flex;flex-direction:column;align-items:center;justify-content:center}
-.led-time{font-family:'SF Mono','Consolas','Menlo',monospace;font-size:clamp(64px,18vw,220px);font-weight:700;color:var(--accent);text-shadow:0 0 20px var(--accent),0 0 60px color-mix(in srgb,var(--accent) 30%,transparent);letter-spacing:0.05em;line-height:1}
-.led-secs-wrap{width:min(75vh,85vw);height:6px;background:var(--border);border-radius:3px;margin-top:2vh;overflow:hidden;position:relative}
-.led-secs-fill{height:100%;background:var(--accent);border-radius:3px;transition:width 0.15s linear;box-shadow:0 0 8px var(--accent)}
-.led-secs-ticks{display:flex;justify-content:space-between;width:min(75vh,85vw);margin-top:4px}
-.led-secs-ticks span{width:2px;height:8px;background:var(--border);display:block}
-.led-secs-ticks span:nth-child(5n+1){height:14px;background:var(--muted)}
-.led-info{display:flex;gap:clamp(16px,5vw,60px);margin-top:2vh;font-size:clamp(12px,2vw,22px);color:var(--muted)}
-.led-info .val{color:var(--text);font-weight:600}
-.led-date{font-size:clamp(12px,1.8vw,20px);color:var(--muted);margin-top:1vh;letter-spacing:0.1em}
+.led-canvas-wrap{position:relative;width:min(85vh,85vw);height:min(85vh,85vw)}
+.led-canvas-wrap canvas{width:100%;height:100%}
 
 /* ── Mic Live ──────────────────────────────────────────────────── */
 .mic-bar{display:none;position:fixed;top:0;left:0;right:0;padding:10px 20px;text-align:center;font-size:clamp(16px,3vw,32px);font-weight:700;letter-spacing:0.15em;text-transform:uppercase;z-index:100;transition:all 0.3s}
@@ -512,20 +532,11 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
   <div class="s-date" id="s-date">---</div>
 </div>
 
-<!-- LED Studio Clock -->
+<!-- LED Dot Clock (Wharton-style) -->
 <div class="led" id="v-led">
-  {% if has_logo %}<img class="led-logo" src="/api/hub/ptpclock/logo{{('?preset='+preset_id) if preset_id else ''}}" alt="">{% endif %}
-  <div class="led-brand" id="led-brand"></div>
-  <div class="led-ring">
-    <div class="led-time" id="led-time">--:--:--</div>
-    <div class="led-secs-wrap"><div class="led-secs-fill" id="led-secs-fill"></div></div>
-    <div class="led-secs-ticks" id="led-ticks"></div>
+  <div class="led-canvas-wrap">
+    <canvas id="led-canvas" width="800" height="800"></canvas>
   </div>
-  <div class="led-info">
-    <span>UTC <span class="val" id="led-utc">--:--:--</span></span>
-    <span id="led-tz-lbl">LOCAL</span> <span class="val" id="led-local">--:--:--</span>
-  </div>
-  <div class="led-date" id="led-date">---</div>
 </div>
 
 <!-- Level Meters -->
@@ -572,15 +583,8 @@ function setMode(m){
   document.getElementById('v-led').style.display=m==='led'?'flex':'none';
   document.querySelectorAll('.mode-sw button').forEach(function(b){b.className=b.dataset.mode===m?'active':''});
   if(m==='studio')resizeCanvas();
-  if(m==='led'&&!_ledTicksInit)initLedTicks();
+  if(m==='led')resizeLedCanvas();
   var u=new URL(location);u.searchParams.set('mode',m);history.replaceState(null,'',u);
-}
-var _ledTicksInit=false;
-function initLedTicks(){
-  var el=document.getElementById('led-ticks');
-  if(!el||_ledTicksInit)return;
-  for(var i=0;i<60;i++){var s=document.createElement('span');el.appendChild(s)}
-  _ledTicksInit=true;
 }
 document.querySelector('.mode-sw').addEventListener('click',function(e){
   var btn=e.target.closest('button');
@@ -591,7 +595,6 @@ document.querySelector('.mode-sw').addEventListener('click',function(e){
 if(_brand){
   document.getElementById('d-brand').textContent=_brand;
   document.getElementById('s-brand').textContent=_brand;
-  document.getElementById('led-brand').textContent=_brand;
   document.title=_brand+' — PTP Clock';
 }
 
@@ -611,12 +614,15 @@ if(_hasLogo){
 }
 
 // ── Level meters (multiple streams, comma-separated) ─────────────
-var _streams=_stream?_stream.split(',').filter(Boolean):[];
+// Parse stream|label pairs
+var _meterDefs=_stream?_stream.split(',').filter(Boolean).map(function(s){
+  var parts=s.split('|');return{stream:parts[0],label:parts[1]||parts[0]}
+}):[];
 var _meters={};
-if(_streams.length){
+if(_meterDefs.length){
   var container=document.getElementById('level-container');
   container.style.display='flex';
-  _streams.forEach(function(sn){
+  _meterDefs.forEach(function(def){
     var wrap=document.createElement('div');
     wrap.style.cssText='display:flex;flex-direction:column;align-items:center;width:28px';
     wrap.innerHTML='<div style="flex:1;width:14px;background:#1e293b;border-radius:7px;position:relative;overflow:hidden;min-height:40px">'
@@ -624,12 +630,12 @@ if(_streams.length){
       +'<div class="mpeak" style="position:absolute;left:0;right:0;height:2px;background:#f1f5f9;bottom:0%;transition:bottom 0.05s"></div>'
       +'</div>'
       +'<div class="mval" style="font-size:9px;color:#64748b;margin-top:3px;font-family:monospace">---</div>'
-      +'<div style="font-size:8px;color:#475569;writing-mode:vertical-rl;text-orientation:mixed;margin-top:3px;max-height:70px;overflow:hidden">'+sn.replace(/</g,'&lt;')+'</div>';
+      +'<div style="font-size:8px;color:#475569;writing-mode:vertical-rl;text-orientation:mixed;margin-top:3px;max-height:70px;overflow:hidden">'+def.label.replace(/</g,'&lt;')+'</div>';
     container.appendChild(wrap);
-    _meters[sn]={el:wrap,peak:-120};
+    _meters[def.stream]={el:wrap,peak:-120};
   });
   setInterval(function(){
-    _streams.forEach(function(sn){
+    _meterDefs.forEach(function(def){var sn=def.stream;
       fetch('/api/hub/ptpclock/level?stream='+encodeURIComponent(sn),{credentials:'same-origin'})
       .then(function(r){return r.json()}).then(function(d){
         var m=_meters[sn];if(!m||d.level_dbfs===null)return;
@@ -719,8 +725,10 @@ function render(){
   if(_mode==='digital')renderDigital();
   else if(_mode==='studio')renderStudio();
   else if(_mode==='led')renderLed();
-  var dateId=_mode==='studio'?'s-date':(_mode==='led'?'led-date':'d-date');
-  document.getElementById(dateId).textContent=_dateStr;
+  if(_mode!=='led'){
+    var dateId=_mode==='studio'?'s-date':'d-date';
+    document.getElementById(dateId).textContent=_dateStr;
+  }
   requestAnimationFrame(render);
 }
 function pad2(n){return n<10?'0'+n:''+n}
@@ -803,22 +811,136 @@ function renderStudio(){
   document.getElementById('s-utc').textContent=pad2(_utcH)+':'+pad2(_utcM)+':'+pad2(_utcS)+'.'+Math.floor(_utcMs/100);
 }
 
-// ── LED render ────────────────────────────────────────────────────
+// ── LED Wharton-style dot clock ───────────────────────────────────
+var _ledCvs,_ledCtx,_ledW;
+function resizeLedCanvas(){
+  _ledCvs=document.getElementById('led-canvas');
+  if(!_ledCvs)return;
+  var wrap=_ledCvs.parentElement;
+  var sz=Math.min(wrap.clientWidth,wrap.clientHeight);
+  _ledCvs.width=sz*2;_ledCvs.height=sz*2;
+  _ledCvs.style.width=sz+'px';_ledCvs.style.height=sz+'px';
+  _ledCtx=_ledCvs.getContext('2d');_ledW=sz*2;
+}
+window.addEventListener('resize',function(){if(_mode==='led')resizeLedCanvas()});
+
+// 5x7 dot matrix font for digits and colon
+var _DOT_FONT={
+  '0':['01110','10001','10011','10101','11001','10001','01110'],
+  '1':['00100','01100','00100','00100','00100','00100','01110'],
+  '2':['01110','10001','00001','00010','00100','01000','11111'],
+  '3':['01110','10001','00001','00110','00001','10001','01110'],
+  '4':['00010','00110','01010','10010','11111','00010','00010'],
+  '5':['11111','10000','11110','00001','00001','10001','01110'],
+  '6':['01110','10001','10000','11110','10001','10001','01110'],
+  '7':['11111','00001','00010','00100','01000','01000','01000'],
+  '8':['01110','10001','10001','01110','10001','10001','01110'],
+  '9':['01110','10001','10001','01111','00001','10001','01110'],
+  ':':['000','000','010','000','010','000','000']
+};
+
 function renderLed(){
-  var t=pad2(_utcH)+':'+pad2(_utcM)+':'+pad2(_utcS);
-  document.getElementById('led-time').textContent=t;
-  // Seconds progress bar
-  var pct=((_utcS+_utcMs/1000)/60)*100;
-  document.getElementById('led-secs-fill').style.width=pct+'%';
-  // Highlight ticks up to current second
-  var ticks=document.getElementById('led-ticks');
-  if(ticks&&ticks.children.length===60){
-    for(var i=0;i<60;i++){
-      ticks.children[i].style.background=i<=_utcS?'var(--accent)':((i%5===0)?'var(--muted)':'var(--border)');
+  if(!_ledCtx)resizeLedCanvas();
+  if(!_ledCtx)return;
+  var c=_ledCtx,w=_ledW,r=w/2;
+  c.clearRect(0,0,w,w);
+
+  var accent=_C.accent;
+  var dim=_C.muted+'40';  // very dim for inactive dots
+  var dotR=w*0.008;        // dot radius
+
+  // ── Outer seconds ring (60 dots in a circle) ────────────────
+  var ringR=r*0.88;
+  var curSec=_utcS+_utcMs/1000;
+  for(var i=0;i<60;i++){
+    var a=(i/60)*Math.PI*2-Math.PI/2;
+    var x=r+Math.cos(a)*ringR;
+    var y=r+Math.sin(a)*ringR;
+    var active=i<=Math.floor(curSec);
+    var isQuarter=i%15===0;
+    var is5=i%5===0;
+    var dr=isQuarter?dotR*1.6:(is5?dotR*1.3:dotR);
+    c.beginPath();c.arc(x,y,dr,0,Math.PI*2);
+    if(active){
+      c.fillStyle=accent;c.fill();
+      c.shadowColor=accent;c.shadowBlur=dr*3;c.fill();c.shadowBlur=0;
+    }else{
+      c.fillStyle=dim;c.fill();
     }
   }
-  document.getElementById('led-utc').textContent=pad2(_utcH)+':'+pad2(_utcM)+':'+pad2(_utcS);
-  document.getElementById('led-local').textContent=pad2(_locH)+':'+pad2(_locM)+':'+pad2(_locS);
+
+  // ── Inner ring (decorative, thinner) ────────────────────────
+  var innerR=r*0.72;
+  for(var i=0;i<60;i++){
+    var a=(i/60)*Math.PI*2-Math.PI/2;
+    var x=r+Math.cos(a)*innerR;
+    var y=r+Math.sin(a)*innerR;
+    var is5=i%5===0;
+    if(!is5)continue;
+    c.beginPath();c.arc(x,y,dotR*0.8,0,Math.PI*2);
+    c.fillStyle=dim;c.fill();
+  }
+
+  // ── Dot-matrix time HH:MM ──────────────────────────────────
+  var timeStr=pad2(_utcH)+':'+pad2(_utcM);
+  var cols=0;
+  for(var ci=0;ci<timeStr.length;ci++){
+    var ch=timeStr[ci];
+    var glyph=_DOT_FONT[ch];
+    if(glyph)cols+=glyph[0].length+(ci<timeStr.length-1?1:0);
+  }
+  var dotSz=w*0.018;
+  var gap=dotSz*1.5;
+  var totalW=cols*gap;
+  var startX=r-totalW/2;
+  var startY=r-3.5*gap-gap*0.5;
+  var cx2=startX;
+  for(var ci=0;ci<timeStr.length;ci++){
+    var ch=timeStr[ci];
+    var glyph=_DOT_FONT[ch];
+    if(!glyph)continue;
+    for(var row=0;row<7;row++){
+      for(var col=0;col<glyph[row].length;col++){
+        var on=glyph[row][col]==='1';
+        var dx=cx2+col*gap;
+        var dy=startY+row*gap;
+        c.beginPath();c.arc(dx,dy,dotSz*0.5,0,Math.PI*2);
+        if(on){
+          c.fillStyle=accent;c.fill();
+          c.shadowColor=accent;c.shadowBlur=dotSz;c.fill();c.shadowBlur=0;
+        }else{
+          c.fillStyle=dim;c.fill();
+        }
+      }
+    }
+    cx2+=glyph[0].length*gap+gap;
+  }
+
+  // ── Smaller seconds below ──────────────────────────────────
+  var secStr=pad2(_utcS);
+  var secDotSz=dotSz*0.6;
+  var secGap=secDotSz*1.5;
+  var secCols=0;
+  for(var si=0;si<secStr.length;si++){
+    var g=_DOT_FONT[secStr[si]];
+    if(g)secCols+=g[0].length+(si<secStr.length-1?1:0);
+  }
+  var secStartX=r-secCols*secGap/2;
+  var secStartY=startY+8*gap;
+  var scx=secStartX;
+  for(var si=0;si<secStr.length;si++){
+    var g=_DOT_FONT[secStr[si]];
+    if(!g)continue;
+    for(var row=0;row<7;row++){
+      for(var col=0;col<g[row].length;col++){
+        var on=g[row][col]==='1';
+        c.beginPath();c.arc(scx+col*secGap,secStartY+row*secGap,secDotSz*0.5,0,Math.PI*2);
+        if(on){c.fillStyle=accent;c.fill();c.shadowColor=accent;c.shadowBlur=secDotSz*0.6;c.fill();c.shadowBlur=0}
+        else{c.fillStyle=dim;c.fill()}
+      }
+    }
+    scx+=g[0].length*secGap+secGap;
+  }
 }
 
 // ── Init ──────────────────────────────────────────────────────────
@@ -880,9 +1002,9 @@ def register(app, ctx):
             mode  = preset.get("mode", "digital")
             stream = preset.get("stream", "")
             colors = {
-                "bg": preset.get("color_bg", "#0a0e1a"),
-                "accent": preset.get("color_accent", "#ef4444"),
-                "text": preset.get("color_text", "#f1f5f9"),
+                "bg": preset.get("color_bg", "#0b1222"),
+                "accent": preset.get("color_accent", "#3b82f6"),
+                "text": preset.get("color_text", "#e0e6f0"),
                 "muted": preset.get("color_muted", "#64748b"),
             }
         else:
@@ -891,7 +1013,7 @@ def register(app, ctx):
             has_logo = bool(settings.get("logo_filename"))
             mode  = request.args.get("mode", "digital")
             stream = request.args.get("stream", "")
-            colors = {"bg": "#0a0e1a", "accent": "#ef4444", "text": "#f1f5f9", "muted": "#64748b"}
+            colors = {"bg": "#0b1222", "accent": "#3b82f6", "text": "#e0e6f0", "muted": "#64748b"}
         return render_template_string(DISPLAY_TPL, brand=brand, tz=tz,
                                        has_logo=has_logo, build=BUILD,
                                        initial_mode=mode, stream=stream,
@@ -1061,9 +1183,9 @@ def register(app, ctx):
             "mode": str(data.get("mode", "digital")).strip(),
             "logo_filename": str(data.get("logo_filename", "")).strip(),
             "stream": str(data.get("stream", "")).strip(),
-            "color_bg": str(data.get("color_bg", "#0a0e1a")).strip(),
-            "color_accent": str(data.get("color_accent", "#ef4444")).strip(),
-            "color_text": str(data.get("color_text", "#f1f5f9")).strip(),
+            "color_bg": str(data.get("color_bg", "#0b1222")).strip(),
+            "color_accent": str(data.get("color_accent", "#3b82f6")).strip(),
+            "color_text": str(data.get("color_text", "#e0e6f0")).strip(),
             "color_muted": str(data.get("color_muted", "#64748b")).strip(),
         }
         presets.append(p)
