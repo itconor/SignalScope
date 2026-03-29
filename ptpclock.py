@@ -14,10 +14,11 @@
 import os, json, time as _time, threading
 
 SIGNALSCOPE_PLUGIN = {
-    "id":    "ptpclock",
-    "label": "PTP Clock",
-    "url":   "/hub/ptpclock",
-    "icon":  "",
+    "id":      "ptpclock",
+    "label":   "PTP Clock",
+    "url":     "/hub/ptpclock",
+    "icon":    "",
+    "version": "1.4.1",
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
