@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.62"
+BUILD                  = "SignalScope-3.4.63"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -14310,14 +14310,21 @@ def api_update_apply():
     monitor.log(f"[Update] signalscope.py replaced: {current_ver} → {dl_ver}. Restarting in 3 s…")
 
     # ── Restart after response is delivered ───────────────────────────────────
+    # Use os.execv (same as hub-push update) so the restart is independent of
+    # systemd service configuration.  SIGTERM relied on systemd Restart=always,
+    # which fails if the service unit has a broken dependency (e.g. ptp4l.service
+    # not found on systems that never ran the latest installer).
     def _restart():
         time.sleep(3)
         try:
-            os.kill(os.getpid(), _sig.SIGTERM)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception:
-            # SIGTERM failed (e.g. Windows) — fall back to hard exit
-            import sys as _sys
-            _sys.exit(0)
+            # execv failed — fall back to SIGTERM so systemd can restart us
+            try:
+                os.kill(os.getpid(), _sig.SIGTERM)
+            except Exception:
+                import sys as _sys
+                _sys.exit(0)
     threading.Thread(target=_restart, daemon=True, name="UpdateRestart").start()
 
     return jsonify({
