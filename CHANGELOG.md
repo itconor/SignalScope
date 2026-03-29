@@ -2,6 +2,67 @@
 
 ---
 
+## [Logger 1.4.28] - 2026-03-29
+
+### Fixed
+- **Long-poll deadlock and syntax error** — All `_hub_set_pending()` calls were incorrectly placed inside `with _hub_logger_lock:` blocks. Since `_hub_set_pending()` itself acquires the same non-reentrant lock, every hub play/days/segments/metadata request deadlocked immediately. The hub play endpoint also had a missing closing `)` on the call that prevented the plugin from loading entirely. All six call sites fixed — `_hub_set_pending()` moved outside the lock block in each case. Plugin now loads and long-polling works correctly.
+
+---
+
+## [Logger 1.4.27] - 2026-03-29
+
+### Changed
+- **Long-polling for hub commands** — Client polling thread no longer sleeps 3 s between polls. The hub holds `GET /api/logger/hub/poll/<site>` open for up to 25 s using a `threading.Event`; `_hub_set_pending()` calls `evt.set()` to wake the connection the instant a command is queued. Result: hub play/stop/metadata commands reach the client in milliseconds instead of up to 3 s. Only sleeps 2 s on error before retrying.
+
+---
+
+## [Logger 1.4.26] - 2026-03-29
+
+### Fixed
+- **Duplicate audio when clicking timeline rapidly** — `connectAudio()` cancelled the fetch reader on a new play request but left already-scheduled `AudioBufferSource` nodes running (Web Audio nodes continue playing after the reader is gone). Added `_activeSrcs` array tracking all scheduled sources; `_stopHubAudio()` calls `.stop()` on each to kill them immediately. Sources are removed from the array via their `onended` callback.
+
+---
+
+## [Logger 1.4.25] - 2026-03-29
+
+### Fixed
+- **Silent playback after clicking timeline** — `startHubPlay()` called `gainNode.gain.setValueAtTime(0)` to mute old audio before the new stream started. If the generation counter discarded the POST response (rapid clicks, network error) `connectAudio()` was never called to restore gain, leaving it permanently at 0. Fixed: removed gain muting from `startHubPlay()`; `_stopHubAudio()` and `connectAudio()` now use `cancelScheduledValues(0) + gain.value = X` for reliable immediate gain changes that can't be stranded.
+
+---
+
+## [Logger 1.4.24] - 2026-03-29
+
+### Fixed
+- **Clicking timeline spawned multiple concurrent audio streams** — Rapid clicks fired multiple `POST /api/logger/hub/play` requests; each `.then()` called `connectAudio()` when it resolved, resulting in simultaneous PCM streams. Fixed with a generation counter (`_playGen`): each `startHubPlay()` increments the counter and captures the current value; the `.then()` callback checks `gen !== _playGen` and discards responses from superseded requests. Play button shows ⏳ immediately while the POST is in flight; `disabled` prevents a second tap landing before the first resolves.
+
+---
+
+## [Logger 1.4.23] - 2026-03-28
+
+### Fixed
+- **Hub remote playback slow to start** — `_PRE` (audio pre-buffer) was 5.0 s — copied from the live scanner where WAN jitter makes it necessary. For recorded playback 1 s is sufficient. Reduced to 1.0 s; audio now begins within ~1 s of clicking play.
+- **Pause/spacebar didn't stop audio** — Play button handler only cancelled the fetch reader, leaving already-scheduled `AudioBufferSource` nodes playing for up to 5 s. `_stopHubAudio()` now sets gain to 0 immediately via `gainNode.gain.setValueAtTime(0, currentTime)`.
+- **Spacebar spawned a second player** — Play button had no toggle: pressing it always ran stop-only code with no resume path. Added `_hubIsPlaying` / `_hubPlayPending` flags; pressing play/space when stopped resumes from `_hubPlayOffset` (position saved on pause); `_hubPlayPending` guard prevents a double-start if play is tapped twice before the POST response arrives.
+
+---
+
+## [Logger 1.4.21] - 2026-03-28
+
+### Fixed
+- **Mobile relay stream endpoint** — Added `/api/mobile/logger/relay_stream/<slot_id>` with Bearer token auth so the iOS app can stream PCM audio without needing a web session cookie.
+- **Direct PCM stream in local/non-hub mode** — `POST /api/mobile/logger/play` now returns a direct stream URL in local mode instead of requiring a hub relay slot.
+- **`_safe(filename)` path bug** — filename was not sanitised before being joined to the recordings path, allowing path components to escape the recordings directory.
+- **Segments local mode crash** — `_hub_logger_segs.values()` called on a plain dict instead of the expected list in local-mode fallback path.
+
+---
+
+## [DAB Scanner 1.0.28] - 2026-03-28
+
+### Fixed
+- **Dongle selector showed DAB-role dongles** — `/api/hub/dab/devices` previously returned both `dab_serials` (fixed background decoding dongles) and `scanner_serials`. DAB-role dongles are permanently assigned to background decoding and must not be grabbed by the DAB Scanner UI. Endpoint now returns `scanner_serials` only, matching the FM Scanner behaviour.
+
+---
+
 ## [SignalScope 3.4.61] - 2026-03-28
 
 ### Fixed
