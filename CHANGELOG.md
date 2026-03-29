@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.5.8] - 2026-03-29
+
+### Fixed
+- **Hub relay OGG `cannot find sync word` / `End of file`** — the `relay_stream` generator was designed for live PCM and injected `\x00 × 9600` silence bytes whenever no data arrived for > 1 s. For raw OGG/MP3 file streaming this corrupted the container: QMediaPlayer's FFmpeg received null bytes before the `OggS` sync word and rejected the stream. Root causes: (a) silence injection poisons non-PCM containers; (b) the client-side `stream_file` command can take up to 3 s to arrive (hub polling interval), during which the generator was already injecting silence. Fix: `relay_stream` now checks `slot.kind`. Slots created by `play_file` use `kind="file"` (was `kind="scanner"`). In file mode: no silence injection; waits patiently (polls every 0.3 s) up to 20 s for the first chunk; after data starts flowing, closes the stream cleanly after 5 s of inactivity (signals end-of-file). PCM/live mode (`kind="scanner"`) behaviour is unchanged.
+
+---
+
 ## [Logger 1.5.7] - 2026-03-29
 
 ### Added

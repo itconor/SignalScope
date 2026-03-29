@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.7",
+    "version": "1.5.8",
 }
 
 import datetime
@@ -1181,31 +1181,51 @@ def register(app, ctx):
     @app.get("/api/mobile/logger/relay_stream/<slot_id>")
     @mobile_api_req
     def api_mobile_logger_relay_stream(slot_id):
-        """Mobile-auth wrapper that streams PCM from a relay slot.
-        Uses Bearer/token auth instead of the session-only /hub/scanner/stream/ route."""
+        """Mobile-auth wrapper that streams audio from a relay slot.
+
+        PCM mode (kind="scanner"): injects silence after 1 s with no data so
+        the live audio pump stays in sync.
+        File mode (kind="file"): never injects silence — waits up to 20 s for
+        the first chunk (covers the client polling lag), streams until 5 s of
+        inactivity after data begins (signals end-of-file), then closes cleanly.
+        Uses Bearer/token auth instead of the session-only /hub/scanner/stream/ route.
+        """
         if not _listen_registry:
             return ("", 503)
         slot = _listen_registry.get(slot_id)
         if not slot:
             return ("", 404)
 
+        is_pcm = getattr(slot, "kind", "scanner") == "scanner"
         _SILENCE = b"\x00" * 9600   # 0.1 s of silence (16-bit mono 48 kHz)
-        _THRESHOLD = 1.0             # inject silence after 1 s gap
 
         def _gen():
-            last_data = time.monotonic()
+            last_data  = time.monotonic()
+            start_time = time.monotonic()
+            got_data   = False
             while not getattr(slot, "closed", False):
                 try:
                     chunk = slot.get(timeout=0.30)
                     if chunk is not None:
                         last_data = time.monotonic()
+                        got_data  = True
                         yield chunk
-                    else:
-                        if time.monotonic() - last_data > _THRESHOLD:
+                    elif is_pcm:
+                        # PCM/live mode: inject silence to keep audio pump alive
+                        if time.monotonic() - last_data > 1.0:
                             yield _SILENCE
                             last_data = time.monotonic()
+                    elif not got_data:
+                        # File mode: waiting for client to start pushing
+                        # (client polling interval can be up to 3 s)
+                        if time.monotonic() - start_time > 20.0:
+                            break   # client never responded — give up
+                    else:
+                        # File mode: data has been flowing; no new chunks for a while
+                        if time.monotonic() - last_data > 5.0:
+                            break   # end of file — close stream cleanly
                 except Exception:
-                    if time.monotonic() - last_data > _THRESHOLD:
+                    if is_pcm and time.monotonic() - last_data > 1.0:
                         yield _SILENCE
                         last_data = time.monotonic()
 
@@ -1300,7 +1320,7 @@ def register(app, ctx):
             except Exception:
                 pass
 
-        slot = _listen_registry.create(site, 0, kind="scanner",
+        slot = _listen_registry.create(site, 0, kind="file",
                                        mimetype="application/octet-stream")
         with _hub_logger_lock:
             _hub_logger_active[site] = slot.slot_id
