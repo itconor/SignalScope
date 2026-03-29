@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.63"
+BUILD                  = "SignalScope-3.4.64"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -10058,6 +10058,7 @@ class HubClient:
                 "level_dbfs":        round(inp._last_level_dbfs, 1),
                 "peak_dbfs":         round(inp._last_peak_dbfs, 1),
                 "silence_threshold_dbfs": inp.silence_threshold_dbfs,
+                "silence_active":    bool(inp._silence_secs >= inp.silence_min_duration),
                 "ai_status":         inp._ai_status,
                 "ai_phase":          inp._ai_phase,
                 "ai_monitor":        inp.ai_monitor,
@@ -11719,6 +11720,10 @@ class HubServer:
             down = _apply_hysteresis(inp._last_level_dbfs, _local_thresh, node)
             if dev.startswith("dab://") and not inp._dab_ok:
                 down = True
+            # If client-side silence detector has already confirmed silence,
+            # force down regardless of instantaneous level.
+            if inp._silence_secs >= inp.silence_min_duration:
+                down = True
             is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
             # Recent glitches in last 5 minutes
             _g_recent_local = [t for t in inp._glitch_timestamps if t >= time.time() - 300.0]
@@ -11758,6 +11763,12 @@ class HubServer:
                 _silence_thresh  = float(remote_threshold) if remote_threshold is not None else -55.0
             down = _apply_hysteresis(lev, _silence_thresh, node)
             if dev.startswith("dab://") and not sd.get("dab_ok", True):
+                down = True
+            # Client-side silence detector runs continuously and catches silences
+            # that start and end between heartbeat snapshots.  If the client reports
+            # silence_active=True, the stream is definitively in silence regardless
+            # of the instantaneous level_dbfs in this heartbeat snapshot.
+            if sd.get("silence_active", False):
                 down = True
             is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
             rtp_loss = sd.get("rtp_loss_pct")
