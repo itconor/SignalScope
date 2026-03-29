@@ -2,6 +2,13 @@
 
 ---
 
+## [Codec Monitor 1.0.5] - 2026-03-29
+
+### Fixed
+- **Nav links broken on client nodes** — Overview, Reports, and Settings links in the Codec Monitor nav bar were hardcoded to `/hub/...` routes which do not exist on client-only nodes. Links are now resolved at render time: hub nodes use `/hub/status`, `/hub/reports`, `/hub/settings`; client nodes use `/`, `/reports`, `/settings`.
+
+---
+
 ## [Codec Monitor 1.0.4] - 2026-03-29
 
 ### Changed

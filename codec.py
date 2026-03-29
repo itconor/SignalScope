@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Codecs",
     "url":     "/hub/codecs",
     "icon":    "📡",
-    "version": "1.0.4",
+    "version": "1.0.5",
     # No hub_only — runs on both hub and client nodes.
     # Client: polls local codecs, pushes status to hub.
     # Hub: aggregates status from all connected sites.
@@ -648,10 +648,10 @@ h1{font-size:1.3em;font-weight:600;color:var(--tx);margin-bottom:20px}
 <body>
 <nav class="nav">
   <span class="logo">📡 Codecs</span>
-  <a href="/hub/status">Overview</a>
-  <a href="/hub/reports">Reports</a>
+  <a href="{{overview_url}}">Overview</a>
+  <a href="{{reports_url}}">Reports</a>
   <a href="/hub/codecs" class="cur">Codecs</a>
-  <a href="/hub/settings">Settings</a>
+  <a href="{{settings_url}}">Settings</a>
 </nav>
 <div class="wrap">
   <div class="toolbar">
@@ -1466,7 +1466,13 @@ def register(app, ctx):
         from flask import render_template_string
         # Render initial cards server-side; JS will keep them updated
         cards = _render_cards()
-        return render_template_string(_PAGE_TPL, cards_html=cards)
+        return render_template_string(
+            _PAGE_TPL,
+            cards_html=cards,
+            overview_url="/hub/status" if is_hub else "/",
+            reports_url="/hub/reports" if is_hub else "/reports",
+            settings_url="/hub/settings" if is_hub else "/settings",
+        )
 
     @app.get("/api/codecs/status")
     @login_req
