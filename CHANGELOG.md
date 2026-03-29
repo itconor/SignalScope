@@ -2,6 +2,16 @@
 
 ---
 
+## [Logger 1.5.2] - 2026-03-29
+
+### Fixed
+- **Shared directory metadata missing** — when multiple logger instances write to the same recording root (NFS/SMB share), browsing a stream recorded by another instance showed audio segments correctly but no metadata (show name, song/artist, presenter, mic events). Root cause: metadata was only written to the local SQLite DB of each instance. Fix: `_meta_write()` now also writes to a shared `metadata.db` (SQLite with WAL mode) alongside `catalog.json` in each recording root. Any instance that shares that filesystem can read it.
+- **Hub mode metadata missing for catalog streams** — the hub poller metadata command handler also now uses the shared DB, so if the client node is itself using a shared directory, its response to the hub includes all streams' metadata (not just its own).
+- **Hub legacy site-selector: `_hubSite` reset on stream switch** — when a site was selected via the site drop-down (legacy path), the stream options were built without `dataset.site`, causing `_hubSite` to silently clear to `''` when the user switched streams. This caused `loadMeta()` to call the local endpoint instead of the hub endpoint. Fixed by setting `o.dataset.site = _hubSite` on stream options built from the legacy path.
+- **Startup migration** — on first run after upgrade, `_seed_shared_meta_dbs()` copies all existing local SQLite metadata events to the new shared `metadata.db` files (one per recording root). Runs once; skipped on subsequent starts if the file already exists.
+
+---
+
 ## [Codec Monitor 1.0.5] - 2026-03-29
 
 ### Fixed

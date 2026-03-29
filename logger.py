@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.1",
+    "version": "1.5.2",
 }
 
 import datetime
@@ -348,21 +348,7 @@ def _hub_logger_poller():
                                 tzinfo=datetime.timezone.utc).timestamp()
                         except Exception:
                             midnight = 0.0
-                        end_of_day = midnight + 86400
-                        events = []
-                        try:
-                            db   = _get_db()
-                            rows = db.execute(
-                                "SELECT ts, type, title, artist, show_name, presenter FROM metadata_log "
-                                "WHERE stream=? AND ts>=? AND ts<? ORDER BY ts",
-                                (slug, midnight, end_of_day)).fetchall()
-                            db.close()
-                            events = [{"ts_s": r["ts"] - midnight, "type": r["type"],
-                                       "title": r["title"] or "", "artist": r["artist"] or "",
-                                       "show_name": r["show_name"] or "", "presenter": r["presenter"] or ""}
-                                      for r in rows]
-                        except Exception as e:
-                            _log(f"[Logger] HubPoller: metadata query error: {e}")
+                        events = _meta_query(slug, midnight)
                         _hub_result_post(hub_url, secret, site,
                                          {"site": site, "type": "metadata",
                                           "slug": slug, "date": date, "events": events})
@@ -867,25 +853,7 @@ def register(app, ctx):
                 tzinfo=datetime.timezone.utc).timestamp()
         except ValueError:
             return jsonify([]), 400
-        end_of_day = midnight + 86400
-        try:
-            db   = _get_db()
-            rows = db.execute(
-                "SELECT ts, type, title, artist, show_name, presenter FROM metadata_log "
-                "WHERE stream=? AND ts>=? AND ts<? ORDER BY ts",
-                (slug, midnight, end_of_day)).fetchall()
-            db.close()
-        except Exception:
-            return jsonify([]), 500
-        events = [{
-            "ts_s":      r["ts"] - midnight,
-            "type":      r["type"],
-            "title":     r["title"] or "",
-            "artist":    r["artist"] or "",
-            "show_name": r["show_name"] or "",
-            "presenter": r["presenter"] or "",
-        } for r in rows]
-        return jsonify(events)
+        return jsonify(_meta_query(slug, midnight))
 
     @app.post("/api/logger/mic")
     def api_logger_mic():
@@ -1079,30 +1047,13 @@ def register(app, ctx):
                     return jsonify({"events": _hub_logger_meta[key], "pending": False})
             _hub_set_pending(site, {"type": "metadata", "slug": _safe(slug), "date": date})
             return jsonify({"events": [], "pending": True})
-        # Local mode — read from DB
+        # Local mode — read from shared DB (covers catalog/foreign streams too)
         try:
             midnight = datetime.datetime.strptime(date, "%Y-%m-%d").replace(
                 tzinfo=datetime.timezone.utc).timestamp()
         except ValueError:
             return jsonify({"events": [], "pending": False})
-        end_of_day = midnight + 86400
-        try:
-            db = _get_db()
-            rows = db.execute(
-                "SELECT ts, type, title, artist, show_name, presenter FROM metadata_log "
-                "WHERE stream=? AND ts>=? AND ts<? ORDER BY ts",
-                (_safe(slug), midnight, end_of_day)).fetchall()
-            db.close()
-        except Exception:
-            return jsonify({"events": [], "pending": False})
-        events = [{
-            "ts_s":      r["ts"] - midnight,
-            "type":      r["type"],
-            "title":     r["title"] or "",
-            "artist":    r["artist"] or "",
-            "show_name": r["show_name"] or "",
-            "presenter": r["presenter"] or "",
-        } for r in rows]
+        events = _meta_query(_safe(slug), midnight)
         return jsonify({"events": events, "pending": False})
 
     @app.post("/api/mobile/logger/play")
@@ -1545,21 +1496,31 @@ def _get_live_dls_rds(stream_name: str):
 
 
 def _meta_write(slug: str, ts: float, entry_type: str, info: dict):
-    """Write a metadata event to the database."""
+    """Write a metadata event to both the local and shared metadata databases."""
+    row = (slug, ts, entry_type,
+           info.get("title", ""), info.get("artist", ""),
+           info.get("show_name", ""), info.get("presenter", ""),
+           json.dumps(info))
+    _SQL = """INSERT OR REPLACE INTO metadata_log
+              (stream, ts, type, title, artist, show_name, presenter, raw)
+              VALUES (?,?,?,?,?,?,?,?)"""
+    # Local SQLite (existing behaviour)
     try:
         db = _get_db()
-        db.execute("""
-            INSERT OR REPLACE INTO metadata_log
-            (stream, ts, type, title, artist, show_name, presenter, raw)
-            VALUES (?,?,?,?,?,?,?,?)
-        """, (slug, ts, entry_type,
-              info.get("title", ""), info.get("artist", ""),
-              info.get("show_name", ""), info.get("presenter", ""),
-              json.dumps(info)))
+        db.execute(_SQL, row)
         db.commit()
         db.close()
     except Exception as e:
         _log(f"[Logger] Meta DB write error: {e}")
+    # Shared DB alongside recordings (visible to other logger instances on same filesystem)
+    try:
+        sroot = _stream_rec_root_by_slug(slug)
+        sdb = _open_shared_meta_db(sroot)
+        sdb.execute(_SQL, row)
+        sdb.commit()
+        sdb.close()
+    except Exception as e:
+        _log(f"[Logger] Meta shared DB write error: {e}")
 
 
 class _MetaPoller(threading.Thread):
@@ -1727,6 +1688,73 @@ def _get_db():
     conn = sqlite3.connect(str(_app_dir / _DB_FILE), timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _open_shared_meta_db(root: Path):
+    """Open (creating if needed) the shared metadata DB at {root}/metadata.db.
+
+    This DB is written alongside catalog.json so any logger instance that
+    shares the same recording root can read metadata from other instances.
+    Uses WAL mode for safe concurrent access across processes.
+    """
+    conn = sqlite3.connect(str(root / "metadata.db"), timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS metadata_log (
+            stream    TEXT NOT NULL,
+            ts        REAL NOT NULL,
+            type      TEXT NOT NULL,
+            title     TEXT DEFAULT '',
+            artist    TEXT DEFAULT '',
+            show_name TEXT DEFAULT '',
+            presenter TEXT DEFAULT '',
+            raw       TEXT DEFAULT '',
+            PRIMARY KEY (stream, ts, type)
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def _meta_query(slug: str, midnight: float) -> list:
+    """Return metadata events for slug on the day starting at midnight (UTC Unix ts).
+
+    Checks the shared metadata.db in the recording root first so that
+    catalog/foreign streams (written by another logger instance to the same
+    filesystem) are visible.  Falls back to the local SQLite DB.
+    """
+    end = midnight + 86400
+    _SQL = ("SELECT ts, type, title, artist, show_name, presenter FROM metadata_log "
+            "WHERE stream=? AND ts>=? AND ts<? ORDER BY ts")
+
+    def _rows_to_events(rows):
+        return [{"ts_s": r["ts"] - midnight, "type": r["type"],
+                 "title": r["title"] or "", "artist": r["artist"] or "",
+                 "show_name": r["show_name"] or "", "presenter": r["presenter"] or ""}
+                for r in rows]
+
+    # Shared DB (covers both local and foreign streams on a shared filesystem)
+    try:
+        sroot = _stream_rec_root_by_slug(slug)
+        shared_path = sroot / "metadata.db"
+        if shared_path.exists():
+            sdb  = _open_shared_meta_db(sroot)
+            rows = sdb.execute(_SQL, (slug, midnight, end)).fetchall()
+            sdb.close()
+            if rows:
+                return _rows_to_events(rows)
+    except Exception as e:
+        _log(f"[Logger] Shared meta DB read error for '{slug}': {e}")
+
+    # Fall back to local SQLite (pre-1.5.2 recordings not yet seeded)
+    try:
+        db   = _get_db()
+        rows = db.execute(_SQL, (slug, midnight, end)).fetchall()
+        db.close()
+        return _rows_to_events(rows)
+    except Exception:
+        return []
 
 def _upsert_segment(slug, date, filename, start_s, silence_ranges, quality="high"):
     total_sil = sum(e - s for s, e in silence_ranges)
@@ -2016,9 +2044,50 @@ def _seg_start(now_utc):
     return now_utc.replace(hour=base // 3600, minute=(base % 3600) // 60,
                            second=0, microsecond=0)
 
+def _seed_shared_meta_dbs():
+    """Copy local SQLite metadata → shared metadata.db for recordings made before 1.5.2.
+
+    Only runs for streams whose rec root does not yet have a metadata.db, so
+    it is a one-time migration per recording root per stream.
+    """
+    try:
+        db    = _get_db()
+        slugs = [r[0] for r in db.execute("SELECT DISTINCT stream FROM metadata_log").fetchall()]
+        db.close()
+    except Exception:
+        return
+    for slug in slugs:
+        try:
+            sroot       = _stream_rec_root_by_slug(slug)
+            shared_path = sroot / "metadata.db"
+            if shared_path.exists():
+                continue  # already seeded by this or another instance
+            db   = _get_db()
+            rows = db.execute(
+                "SELECT stream, ts, type, title, artist, show_name, presenter, raw "
+                "FROM metadata_log WHERE stream=?", (slug,)).fetchall()
+            db.close()
+            if not rows:
+                continue
+            sdb = _open_shared_meta_db(sroot)
+            for r in rows:
+                sdb.execute(
+                    "INSERT OR IGNORE INTO metadata_log "
+                    "(stream, ts, type, title, artist, show_name, presenter, raw) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (r["stream"], r["ts"], r["type"], r["title"], r["artist"],
+                     r["show_name"], r["presenter"], r["raw"]))
+            sdb.commit()
+            sdb.close()
+            _log(f"[Logger] Seeded shared metadata.db for '{slug}' ({len(rows)} events)")
+        except Exception as e:
+            _log(f"[Logger] Metadata seed error for '{slug}': {e}")
+
+
 def _delayed_start():
     time.sleep(3)
     _reconcile_recorders()
+    _seed_shared_meta_dbs()
 
 def _reconcile_recorders():
     streams = _available_streams()
@@ -2846,6 +2915,7 @@ document.getElementById('site-sel').addEventListener('change', function(){
       streams.forEach(function(s){
         var o = document.createElement('option');
         o.value = s.slug;
+        o.dataset.site = _hubSite;
         o.textContent = '[' + _hubSite + '] ' + s.name;
         sel.appendChild(o);
       });
