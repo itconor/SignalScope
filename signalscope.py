@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.64"
+BUILD                  = "SignalScope-3.4.65"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -5895,11 +5895,20 @@ class PTPMonitor:
         if origin_ns <= 0:
             return
         local_ns  = int(time.time() * 1e9)
-        # Axia sends TAI timestamps; system clock is UTC. TAI is currently 37s ahead.
+        # PTP can carry TAI (Axia/Livewire) or UTC (linuxptp/ptp4l).
+        # TAI is currently 37 seconds ahead of UTC.
+        # Auto-detect: try with TAI correction first; if the result is still
+        # huge (~37 s off), the source is already UTC — use raw offset instead.
         TAI_OFFSET_NS = 37 * 1_000_000_000
-        offset_ns = local_ns - (origin_ns - TAI_OFFSET_NS) - correction_ns
+        offset_tai_ns = local_ns - (origin_ns - TAI_OFFSET_NS) - correction_ns
+        offset_raw_ns = local_ns - origin_ns - correction_ns
+        # Pick whichever interpretation gives the smaller offset
+        if abs(offset_raw_ns) < abs(offset_tai_ns):
+            offset_ns = offset_raw_ns   # source sends UTC (e.g. ptp4l)
+        else:
+            offset_ns = offset_tai_ns   # source sends TAI (e.g. Axia)
         offset_us = offset_ns / 1000.0
-        # Sanity guard — >5s after TAI correction means something is wrong
+        # Sanity guard — >5s means something is wrong
         if abs(offset_us) > 5_000_000:
             self.log(f"[PTP] Offset {offset_us/1e6:.2f}s out of range — skipping")
             return
