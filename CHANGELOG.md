@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.5.3] - 2026-03-29
+
+### Fixed
+- **Upgrade path with multiple logger instances** — `_seed_shared_meta_dbs()` in 1.5.2 skipped seeding if `metadata.db` already existed in the recording root. This meant whichever instance upgraded first seeded its events, and the second instance's metadata was never merged in. Fixed by running `INSERT OR IGNORE` on every startup (idempotent — primary key `stream, ts, type` prevents duplicates). Each instance independently merges its own local SQLite events into the shared DB, so both instances' metadata is present regardless of upgrade order.
+
+---
+
 ## [Logger 1.5.2] - 2026-03-29
 
 ### Fixed

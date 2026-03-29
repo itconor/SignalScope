@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.2",
+    "version": "1.5.3",
 }
 
 import datetime
@@ -2045,10 +2045,11 @@ def _seg_start(now_utc):
                            second=0, microsecond=0)
 
 def _seed_shared_meta_dbs():
-    """Copy local SQLite metadata → shared metadata.db for recordings made before 1.5.2.
+    """Merge this instance's local SQLite metadata into the shared metadata.db.
 
-    Only runs for streams whose rec root does not yet have a metadata.db, so
-    it is a one-time migration per recording root per stream.
+    Runs on every startup.  Uses INSERT OR IGNORE so multiple logger instances
+    sharing the same recording root each contribute their own events without
+    overwriting each other — idempotent regardless of upgrade order.
     """
     try:
         db    = _get_db()
@@ -2058,28 +2059,28 @@ def _seed_shared_meta_dbs():
         return
     for slug in slugs:
         try:
-            sroot       = _stream_rec_root_by_slug(slug)
-            shared_path = sroot / "metadata.db"
-            if shared_path.exists():
-                continue  # already seeded by this or another instance
-            db   = _get_db()
-            rows = db.execute(
+            sroot = _stream_rec_root_by_slug(slug)
+            db    = _get_db()
+            rows  = db.execute(
                 "SELECT stream, ts, type, title, artist, show_name, presenter, raw "
                 "FROM metadata_log WHERE stream=?", (slug,)).fetchall()
             db.close()
             if not rows:
                 continue
             sdb = _open_shared_meta_db(sroot)
+            n_new = 0
             for r in rows:
-                sdb.execute(
+                cur = sdb.execute(
                     "INSERT OR IGNORE INTO metadata_log "
                     "(stream, ts, type, title, artist, show_name, presenter, raw) "
                     "VALUES (?,?,?,?,?,?,?,?)",
                     (r["stream"], r["ts"], r["type"], r["title"], r["artist"],
                      r["show_name"], r["presenter"], r["raw"]))
+                n_new += cur.rowcount
             sdb.commit()
             sdb.close()
-            _log(f"[Logger] Seeded shared metadata.db for '{slug}' ({len(rows)} events)")
+            if n_new:
+                _log(f"[Logger] Merged {n_new} metadata event(s) into shared DB for '{slug}'")
         except Exception as e:
             _log(f"[Logger] Metadata seed error for '{slug}': {e}")
 
