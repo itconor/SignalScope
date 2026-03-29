@@ -842,12 +842,34 @@ tx_timestamp_timeout    10
 [$ptp_iface]
 EOF
 
+  # Some distros install linuxptp without a systemd service file.
+  # If ptp4l binary exists but the service doesn't, create it ourselves.
+  if ! systemctl list-unit-files ptp4l.service 2>/dev/null | grep -q ptp4l; then
+    if command -v ptp4l &>/dev/null; then
+      PTP4L_BIN=$(command -v ptp4l)
+      ${SUDO} tee /etc/systemd/system/ptp4l.service > /dev/null <<EOF
+[Unit]
+Description=Precision Time Protocol (PTP) service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${PTP4L_BIN} -f /etc/linuxptp/ptp4l.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+      ${SUDO} systemctl daemon-reload
+      ok "Created ptp4l.service (was missing from linuxptp package)"
+    fi
+  fi
+
   # Override the default service ExecStart so it always reads our config
   # (distribution defaults vary — some pass -i eth0, some pass nothing)
-  # Only create the drop-in if ptp4l.service actually exists — otherwise
-  # systemctl enable/restart would fail and (with set -e) abort the installer.
-  if systemctl list-unit-files ptp4l.service &>/dev/null && \
-     systemctl list-unit-files ptp4l.service 2>/dev/null | grep -q ptp4l; then
+  if systemctl list-unit-files ptp4l.service 2>/dev/null | grep -q ptp4l; then
     ${SUDO} mkdir -p /etc/systemd/system/ptp4l.service.d
     ${SUDO} tee /etc/systemd/system/ptp4l.service.d/signalscope.conf > /dev/null <<'EOF'
 [Service]
@@ -865,7 +887,7 @@ EOF
     fi
     ok "pmc available for accurate PTP offset readings"
   else
-    warn "ptp4l.service not found — skipping systemd setup (pmc will still work if ptp4l is running)"
+    warn "ptp4l binary not found — PTP monitoring will use passive listener only"
   fi
 }
 
