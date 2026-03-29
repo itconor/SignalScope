@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.3",
+    "version": "1.5.4",
 }
 
 import datetime
@@ -1515,10 +1515,11 @@ def _meta_write(slug: str, ts: float, entry_type: str, info: dict):
     # Shared DB alongside recordings (visible to other logger instances on same filesystem)
     try:
         sroot = _stream_rec_root_by_slug(slug)
-        sdb = _open_shared_meta_db(sroot)
-        sdb.execute(_SQL, row)
-        sdb.commit()
-        sdb.close()
+        with _smd_lock(sroot):
+            sdb = _open_shared_meta_db(sroot)
+            sdb.execute(_SQL, row)
+            sdb.commit()
+            sdb.close()
     except Exception as e:
         _log(f"[Logger] Meta shared DB write error: {e}")
 
@@ -1690,16 +1691,32 @@ def _get_db():
     return conn
 
 
+# Per-root locks — serialise all same-process threads that touch the same
+# metadata.db so SQLite never sees two concurrent writers from one process.
+_smd_locks: dict = {}
+_smd_locks_guard = threading.Lock()
+
+def _smd_lock(root: Path) -> threading.Lock:
+    key = str(root)
+    with _smd_locks_guard:
+        if key not in _smd_locks:
+            _smd_locks[key] = threading.Lock()
+        return _smd_locks[key]
+
+
 def _open_shared_meta_db(root: Path):
     """Open (creating if needed) the shared metadata DB at {root}/metadata.db.
 
-    This DB is written alongside catalog.json so any logger instance that
-    shares the same recording root can read metadata from other instances.
-    Uses WAL mode for safe concurrent access across processes.
+    Caller MUST hold _smd_lock(root) before calling this.
+    WAL mode is set only on first creation to avoid the brief exclusive lock
+    that PRAGMA journal_mode=WAL requires on every subsequent open.
     """
-    conn = sqlite3.connect(str(root / "metadata.db"), timeout=10)
+    path    = root / "metadata.db"
+    is_new  = not path.exists()
+    conn    = sqlite3.connect(str(path), timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    if is_new:
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS metadata_log (
             stream    TEXT NOT NULL,
@@ -1739,9 +1756,10 @@ def _meta_query(slug: str, midnight: float) -> list:
         sroot = _stream_rec_root_by_slug(slug)
         shared_path = sroot / "metadata.db"
         if shared_path.exists():
-            sdb  = _open_shared_meta_db(sroot)
-            rows = sdb.execute(_SQL, (slug, midnight, end)).fetchall()
-            sdb.close()
+            with _smd_lock(sroot):
+                sdb  = _open_shared_meta_db(sroot)
+                rows = sdb.execute(_SQL, (slug, midnight, end)).fetchall()
+                sdb.close()
             if rows:
                 return _rows_to_events(rows)
     except Exception as e:
@@ -2067,18 +2085,19 @@ def _seed_shared_meta_dbs():
             db.close()
             if not rows:
                 continue
-            sdb = _open_shared_meta_db(sroot)
-            n_new = 0
-            for r in rows:
-                cur = sdb.execute(
-                    "INSERT OR IGNORE INTO metadata_log "
-                    "(stream, ts, type, title, artist, show_name, presenter, raw) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    (r["stream"], r["ts"], r["type"], r["title"], r["artist"],
-                     r["show_name"], r["presenter"], r["raw"]))
-                n_new += cur.rowcount
-            sdb.commit()
-            sdb.close()
+            with _smd_lock(sroot):
+                sdb   = _open_shared_meta_db(sroot)
+                n_new = 0
+                for r in rows:
+                    cur = sdb.execute(
+                        "INSERT OR IGNORE INTO metadata_log "
+                        "(stream, ts, type, title, artist, show_name, presenter, raw) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        (r["stream"], r["ts"], r["type"], r["title"], r["artist"],
+                         r["show_name"], r["presenter"], r["raw"]))
+                    n_new += cur.rowcount
+                sdb.commit()
+                sdb.close()
             if n_new:
                 _log(f"[Logger] Merged {n_new} metadata event(s) into shared DB for '{slug}'")
         except Exception as e:

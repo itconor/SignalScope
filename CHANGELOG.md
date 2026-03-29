@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.5.4] - 2026-03-29
+
+### Fixed
+- **`database is locked` errors on shared metadata.db** — the seed, live writes, and reads all opened separate SQLite connections simultaneously from different threads, causing lock contention. Fixed with a per-recording-root `threading.Lock` (`_smd_lock`) that serialises all same-process access to each `metadata.db`. Additionally, `PRAGMA journal_mode=WAL` is now only issued on first creation of the file — setting it on every open also requires a brief exclusive lock, compounding the contention.
+
+---
+
 ## [Logger 1.5.3] - 2026-03-29
 
 ### Fixed
