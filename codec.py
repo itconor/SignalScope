@@ -7,10 +7,11 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/codecs",
     "icon":     "📡",
     "hub_only": True,
-    "version":  "1.0.1",
+    "version":  "1.0.2",
 }
 
 import base64
+import http.cookiejar
 import json
 import os
 import re
@@ -20,16 +21,33 @@ import threading
 import time
 import uuid
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 # ── Module-level state ──────────────────────────────────────────────────────
-_log      = None   # callable — set in register()
-_cfg_file = None   # Path to codec_devices.json
-_lock     = threading.Lock()
-_devices  = []     # list[dict] — loaded from _cfg_file
-_status   = {}     # device_id → status dict
-_alert_fn = None   # _alert_log_append from signalscope module
+_log         = None   # callable — set in register()
+_cfg_file    = None   # Path to codec_devices.json
+_lock        = threading.Lock()
+_devices     = []     # list[dict] — loaded from _cfg_file
+_status      = {}     # device_id → status dict
+_alert_fn    = None   # _alert_log_append from signalscope module
+_cookie_jars = {}     # device_id → http.cookiejar.CookieJar (captured login sessions)
+
+def _get_jar(did: str) -> http.cookiejar.CookieJar:
+    """Return (creating if needed) the per-device cookie jar."""
+    if did not in _cookie_jars:
+        _cookie_jars[did] = http.cookiejar.CookieJar()
+    return _cookie_jars[did]
+
+def _has_session(did: str) -> bool:
+    """True if the device jar has at least one cookie (i.e. user has logged in)."""
+    jar = _cookie_jars.get(did)
+    return jar is not None and any(True for _ in jar)
+
+def _clear_session(did: str):
+    """Discard the cookie jar for a device, forcing re-login."""
+    _cookie_jars.pop(did, None)
 
 # ── Device type registry ────────────────────────────────────────────────────
 _DTYPES = {
@@ -127,26 +145,32 @@ def _http_check(dev, timeout=8):
     scheme = "https" if use_ssl else "http"
     url    = f"{scheme}://{host}:{port}{endpoint}"
 
+    did = dev.get("id", "")
+    jar = _get_jar(did) if did else http.cookiejar.CookieJar()
+
+    # Always attach the cookie jar — if the user has logged in via the proxy
+    # it will contain a valid session and no auth headers are needed.
+    # If credentials are also configured, attach Basic/Digest handlers too as
+    # a fallback for devices that use standard HTTP auth.
+    handlers: list = [urllib.request.HTTPCookieProcessor(jar)]
+    if user:
+        mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+        mgr.add_password(None, url, user, pwd)
+        handlers += [
+            urllib.request.HTTPBasicAuthHandler(mgr),
+            urllib.request.HTTPDigestAuthHandler(mgr),
+        ]
+    opener = urllib.request.build_opener(*handlers)
+    opener.addheaders = [("User-Agent", "SignalScope-Codec/1.0")]
+
     try:
-        if user:
-            # Build an opener that handles both Basic and Digest challenges.
-            # urllib will re-send with the correct scheme after the 401.
-            mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-            mgr.add_password(None, url, user, pwd)
-            opener = urllib.request.build_opener(
-                urllib.request.HTTPBasicAuthHandler(mgr),
-                urllib.request.HTTPDigestAuthHandler(mgr),
-            )
-            opener.addheaders = [("User-Agent", "SignalScope-Codec/1.0")]
-            with opener.open(url, timeout=timeout) as r:
-                body = r.read(131072).decode("utf-8", errors="replace")
-        else:
-            req = urllib.request.Request(url, headers={"User-Agent": "SignalScope-Codec/1.0"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                body = r.read(131072).decode("utf-8", errors="replace")
+        with opener.open(url, timeout=timeout) as r:
+            body = r.read(131072).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            return "error", "Auth failed — check username/password (HTTP 401)", ""
+            hint = "Log in via the device page (🌐 button)" if not user else \
+                   "Auth failed — check username/password or use the device page to log in"
+            return "error", f"Auth required — {hint}", ""
         return "offline", f"HTTP {e.code}", ""
     except Exception as e:
         return "offline", str(e)[:100], ""
@@ -456,6 +480,19 @@ h1{font-size:1.3em;font-weight:600;color:var(--tx);margin-bottom:20px}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .modal-btns{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
 .snmp-fields{display:none}
+/* Device page iframe modal */
+.page-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);
+  z-index:200;flex-direction:column;align-items:center;justify-content:center}
+.page-modal.open{display:flex}
+.page-wrap{background:var(--bg2);border:1px solid var(--br);border-radius:8px;
+  width:95vw;max-width:1000px;height:88vh;display:flex;flex-direction:column;overflow:hidden}
+.page-bar{background:var(--bg3);padding:8px 14px;display:flex;align-items:center;
+  gap:10px;border-bottom:1px solid var(--br);flex-shrink:0}
+.page-bar .page-title{font-weight:600;flex:1;font-size:13px;color:var(--tx)}
+.page-bar .session-badge{font-size:11px;padding:2px 8px;border-radius:10px;
+  background:#22c55e22;color:#22c55e;border:1px solid #22c55e44}
+.page-bar .session-badge.none{background:#ef444422;color:#ef4444;border-color:#ef444444}
+.page-frame{flex:1;border:none;width:100%;background:#fff}
 </style></head>
 <body>
 <nav class="nav">
@@ -472,6 +509,20 @@ h1{font-size:1.3em;font-weight:600;color:var(--tx);margin-bottom:20px}
     <button class="btn bw" id="refresh-btn" style="margin-left:auto">↻ Refresh</button>
   </div>
   <div class="grid" id="grid">{{cards_html}}</div>
+</div>
+
+<!-- Device page proxy modal -->
+<div class="page-modal" id="page-modal">
+  <div class="page-wrap">
+    <div class="page-bar">
+      <span class="page-title" id="page-title">Device Page</span>
+      <span class="session-badge none" id="session-badge">No session</span>
+      <button class="btn bw" id="page-reload-btn" style="padding:4px 10px;font-size:12px">↻ Reload</button>
+      <button class="btn bw" id="clear-session-btn" style="padding:4px 10px;font-size:12px">✕ Clear session</button>
+      <button class="btn bw" id="page-close-btn" style="padding:4px 10px;font-size:12px">Close</button>
+    </div>
+    <iframe class="page-frame" id="page-frame" src="about:blank"></iframe>
+  </div>
 </div>
 
 <!-- Add / Edit modal -->
@@ -668,6 +719,7 @@ document.getElementById('grid').addEventListener('click', function(e){
   var rm   = e.target.closest('.rm-btn');
   var edit = e.target.closest('.edit-btn');
   var chk  = e.target.closest('.check-btn');
+  var pg   = e.target.closest('.page-btn');
   if(rm){
     if(!confirm('Remove "'+rm.dataset.name+'"?')) return;
     _post('/api/codecs/devices/'+rm.dataset.id+'/remove',{}).then(function(r){
@@ -686,6 +738,43 @@ document.getElementById('grid').addEventListener('click', function(e){
       loadStatus();
     });
   }
+  if(pg){ openDevicePage(pg.dataset.id, pg.dataset.name, pg.dataset.session==='true'); }
+});
+
+// ── Device page proxy modal ──
+var _pageDevId = null;
+function openDevicePage(did, name, hasSession){
+  _pageDevId = did;
+  document.getElementById('page-title').textContent = name + ' — Device Page';
+  _updateSessionBadge(hasSession);
+  document.getElementById('page-frame').src = '/hub/codecs/proxy/'+did+'/';
+  document.getElementById('page-modal').classList.add('open');
+}
+function _updateSessionBadge(hasSession){
+  var b = document.getElementById('session-badge');
+  if(hasSession){
+    b.textContent = '● Session active'; b.className = 'session-badge';
+  } else {
+    b.textContent = '○ No session — log in below'; b.className = 'session-badge none';
+  }
+}
+document.getElementById('page-close-btn').addEventListener('click', function(){
+  document.getElementById('page-modal').classList.remove('open');
+  document.getElementById('page-frame').src = 'about:blank';
+  loadStatus(); // refresh cards to show updated session state
+});
+document.getElementById('page-reload-btn').addEventListener('click', function(){
+  var f = document.getElementById('page-frame');
+  f.src = f.src; // force reload
+});
+document.getElementById('clear-session-btn').addEventListener('click', function(){
+  if(!_pageDevId) return;
+  if(!confirm('Clear saved session? You will need to log in again.')) return;
+  _post('/api/codecs/devices/'+_pageDevId+'/clear_session',{}).then(function(){
+    _updateSessionBadge(false);
+    var f = document.getElementById('page-frame');
+    f.src = f.src;
+  });
 });
 
 // ── Status refresh ──
@@ -733,7 +822,9 @@ function loadStatus(){
       return '<div class="card">'+
         '<div class="card-head">'+
           '<div><div class="card-name">'+_esc(d.name)+'</div>'+
-          '<span class="card-type">'+_esc(dtype)+'</span></div>'+
+          '<span class="card-type">'+_esc(dtype)+'</span>'+
+          (d.has_session?' <span style="font-size:10px;color:#22c55e" title="Session active — logged in via device page">● session</span>':'')+
+          '</div>'+
           '<div class="card-badge">'+
             '<div class="dot" style="background:'+col+'"></div>'+
             '<span style="color:'+col+'">'+lbl+'</span>'+
@@ -747,6 +838,11 @@ function loadStatus(){
         '</div>'+
         '<div class="card-actions">'+
           '<button class="btn bw check-btn" data-id="'+d.id+'">↻ Check</button>'+
+          '<button class="btn bw page-btn" data-id="'+d.id+'"'+
+            ' data-name="'+_esc(d.name)+'"'+
+            ' data-session="'+(d.has_session?'true':'false')+'"'+
+            ' title="Open device web page (log in to enable status monitoring)"'+
+          '>🌐</button>'+
           '<button class="btn bw edit-btn"'+
             ' data-id="'+d.id+'"'+
             ' data-name="'+_esc(d.name)+'"'+
@@ -779,6 +875,84 @@ _autoRefresh = setInterval(loadStatus, 30000);
 loadStatus();
 </script>
 </body></html>"""
+
+# ── Proxy helpers ──────────────────────────────────────────────────────────
+def _rewrite_html(html: str, did: str, current_path: str) -> str:
+    """
+    Rewrite href/src/action URLs in HTML so all navigation stays inside the
+    SignalScope proxy.  Absolute paths on the device become proxy paths;
+    relative paths are resolved against the current proxy path.
+    External URLs (different host) are left untouched.
+    A <base target="_self"> is injected so anchor clicks stay in the iframe.
+    """
+    proxy_base = f"/hub/codecs/proxy/{did}"
+
+    def rw(url: str) -> str:
+        url = url.strip()
+        if not url:
+            return url
+        # Leave these alone
+        if url.startswith(("#", "data:", "javascript:", "mailto:", "//")):
+            return url
+        # Absolute URL pointing to a different host — leave alone
+        if url.startswith(("http://", "https://")):
+            return url
+        # Absolute path on the device (e.g. /api/status)
+        if url.startswith("/"):
+            return f"{proxy_base}{url}"
+        # Relative path — resolve against current directory
+        parent = current_path.rsplit("/", 1)[0] if "/" in current_path else ""
+        base   = f"{proxy_base}/{parent}/" if parent else f"{proxy_base}/"
+        return base + url
+
+    def replace_attr(m):
+        attr, quote, url = m.group(1), m.group(2), m.group(3)
+        return f'{attr}={quote}{rw(url)}{quote}'
+
+    html = re.sub(r'(href|src|action)=(["\'])([^"\']*)\2', replace_attr, html, flags=re.I)
+
+    # Inject <base target="_self"> so links stay inside the iframe, not open in parent
+    if "</head>" in html.lower():
+        html = re.sub(r'</head>', '<base target="_self"></head>', html, count=1, flags=re.I)
+
+    return html
+
+
+def _proxy_fetch(dev, url_path: str, method: str = "GET",
+                 post_data: bytes = b"", content_type: str = "",
+                 extra_headers: dict = None):
+    """
+    Fetch a URL through the device proxy, using the device's cookie jar.
+    Returns (body_bytes, content_type_str, status_code).
+    Raises urllib.error.HTTPError / Exception on failure.
+    """
+    host    = dev.get("host", "").strip()
+    port    = int(dev.get("port", 80))
+    use_ssl = dev.get("ssl", False)
+    scheme  = "https" if use_ssl else "http"
+    did     = dev.get("id", "")
+
+    target = f"{scheme}://{host}:{port}/{url_path.lstrip('/')}"
+
+    jar     = _get_jar(did)
+    opener  = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    hdrs    = [("User-Agent", "SignalScope-Codec/1.0")]
+    if extra_headers:
+        hdrs += list(extra_headers.items())
+    opener.addheaders = hdrs
+
+    if method == "POST":
+        req = urllib.request.Request(target, data=post_data, method="POST")
+        if content_type:
+            req.add_header("Content-Type", content_type)
+    else:
+        req = urllib.request.Request(target)
+
+    with opener.open(req, timeout=15) as r:
+        body = r.read(4 * 1024 * 1024)   # 4 MB cap
+        ct   = r.headers.get("Content-Type", "application/octet-stream")
+        return body, ct, r.status
+
 
 # ── register() ─────────────────────────────────────────────────────────────
 def register(app, ctx):
@@ -829,7 +1003,8 @@ def register(app, ctx):
             did = d.get("id", "")
             row = dict(d)
             row.pop("password", None)  # never send password to browser
-            row["type_label"] = _DTYPES.get(d.get("type", ""), {}).get("label", d.get("type", ""))
+            row["type_label"]  = _DTYPES.get(d.get("type", ""), {}).get("label", d.get("type", ""))
+            row["has_session"] = _has_session(did)
             row["status"] = stat.get(did, {"state": "unknown", "detail": "Not yet checked"})
             out.append(row)
         return jsonify({"devices": out})
@@ -905,6 +1080,63 @@ def register(app, ctx):
                 and new_state in ("connected", "idle"):
             _do_recovery(dev, new_state)
         return jsonify({"ok": True, "status": new})
+
+    # ── Device page proxy ─────────────────────────────────────────────────
+    # Proxies the device's own web interface through SignalScope so the user
+    # can log in via the device's native UI.  The server-side cookie jar
+    # captures the session, which is then reused for status polling.
+
+    @app.route("/hub/codecs/proxy/<did>", methods=["GET", "POST"],
+               strict_slashes=False)
+    @app.route("/hub/codecs/proxy/<did>/<path:url_path>", methods=["GET", "POST"])
+    @login_req
+    def codec_proxy(did, url_path=""):
+        from flask import request, Response
+        dev = _dev_by_id(did)
+        if not dev:
+            return Response("Device not found", status=404, content_type="text/plain")
+
+        qs = request.query_string.decode("utf-8", errors="replace")
+        full_path = (url_path + ("?" + qs if qs else ""))
+
+        try:
+            body, ct, status = _proxy_fetch(
+                dev, full_path,
+                method       = request.method,
+                post_data    = request.get_data() if request.method == "POST" else b"",
+                content_type = request.headers.get("Content-Type", ""),
+            )
+        except urllib.error.HTTPError as e:
+            try:
+                err_body = e.read()
+                err_ct   = e.headers.get("Content-Type", "text/html")
+                if "text/html" in err_ct:
+                    html = _rewrite_html(err_body.decode("utf-8", errors="replace"), did, url_path)
+                    return Response(html.encode("utf-8"), status=e.code,
+                                    content_type="text/html; charset=utf-8")
+            except Exception:
+                pass
+            return Response(f"HTTP {e.code}: {e.reason}", status=e.code,
+                            content_type="text/plain")
+        except Exception as e:
+            return Response(f"Proxy error: {e}", status=502, content_type="text/plain")
+
+        # Rewrite HTML so all links stay in the proxy
+        if "text/html" in ct:
+            html = _rewrite_html(body.decode("utf-8", errors="replace"), did, url_path)
+            return Response(html.encode("utf-8"), status=status,
+                            content_type="text/html; charset=utf-8")
+
+        return Response(body, status=status, content_type=ct)
+
+    @app.post("/api/codecs/devices/<did>/clear_session")
+    @login_req
+    @csrf_dec
+    def codec_clear_session(did):
+        from flask import jsonify
+        _clear_session(did)
+        _log(f"[Codec] Session cleared for device {did}")
+        return jsonify({"ok": True})
 
     # ── Mobile API ────────────────────────────────────────────────────────
     @app.get("/api/mobile/codecs/status")

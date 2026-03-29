@@ -2,6 +2,16 @@
 
 ---
 
+## [Codec Monitor 1.0.2] - 2026-03-29
+
+### Added
+- **Device page proxy** — each codec card now has a 🌐 button that opens the device's own web interface inside a modal iframe, served through a SignalScope server-side proxy. The user logs in normally through the device's native UI; the server captures the session cookie in a per-device `CookieJar`. All subsequent status polls reuse that session automatically — no credentials need to be stored in SignalScope for devices with custom login screens (Prodys Quantum ST, etc.).
+- **Session indicator** — a green `● session` badge appears under the device type label when a live session is present. The proxy modal shows "Session active" or "No session — log in below" in its header bar.
+- **Clear session button** — in the proxy modal, clears the stored cookie jar and reloads the device page so the user can re-authenticate if the session expires.
+- HTML link rewriting in the proxy rewrites `href`, `src`, and `action` attributes so all navigation (links, form submissions, images, CSS, JS) stays inside the proxy. A `<base target="_self">` is injected so anchor clicks remain in the iframe rather than breaking out.
+
+---
+
 ## [Codec Monitor 1.0.1] - 2026-03-29
 
 ### Fixed
