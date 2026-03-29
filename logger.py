@@ -2029,6 +2029,18 @@ def _reconcile_recorders():
             elif not scfg["enabled"] and slug in _recorders:
                 _recorders[slug].stop()
                 del _recorders[slug]
+    # Seed catalog for all enabled streams so catalog.json exists immediately
+    # after startup (or upgrade) without waiting for the first segment write.
+    for s in streams:
+        scfg = _stream_cfg(s["name"])
+        if scfg["enabled"]:
+            try:
+                root = _stream_rec_root(s["name"])
+                slug_dir = root / _slug(s["name"])
+                if slug_dir.exists() and any(slug_dir.iterdir()):
+                    _catalog_write(root, _slug(s["name"]), s["name"], scfg["rec_format"])
+            except Exception:
+                pass
     _reconcile_meta_pollers()
 
 
