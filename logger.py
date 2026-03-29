@@ -6,10 +6,11 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.4.28",
+    "version": "1.5.0",
 }
 
 import datetime
+import fcntl
 import hashlib as _hashlib
 import hmac as _hmac_mod
 import json
@@ -81,6 +82,7 @@ _rec_lock  = threading.Lock()
 
 # ─── Hub aggregation state (hub-only) ────────────────────────────────────────
 _hub_logger_streams  = {}   # site → [{"slug":..., "name":...}]
+_hub_logger_catalog  = {}   # site → {slug: {name, owner, rec_format, updated}}
 _hub_logger_pending  = {}   # site → pending cmd dict or None
 _hub_logger_days     = {}   # "{site}:{slug}" → [date_str, ...]
 _hub_logger_segs     = {}   # "{site}:{slug}:{date}" → [seg_dict, ...]
@@ -258,7 +260,11 @@ def _hub_logger_poller():
                 try:
                     streams = [{"slug": s["slug"], "name": s["name"]}
                                for s in _available_streams()]
-                    payload = json.dumps({"site": site, "streams": streams}).encode()
+                    # Include catalog entries from all recording roots
+                    catalog = {}
+                    for _root in _all_rec_roots():
+                        catalog.update(_catalog_read(_root))
+                    payload = json.dumps({"site": site, "streams": streams, "catalog": catalog}).encode()
                     ts      = time.time()
                     headers = {"Content-Type": "application/json"}
                     if secret:
@@ -427,7 +433,17 @@ def register(app, ctx):
     @app.get("/api/logger/streams")
     @login_req
     def api_logger_streams():
-        return jsonify(_available_streams())
+        streams = _available_streams()
+        # Merge streams from shared catalog files (other instances)
+        local_slugs = {s["slug"] for s in streams}
+        for root in _all_rec_roots():
+            for slug, info in _catalog_read(root).items():
+                if slug not in local_slugs:
+                    streams.append({"name": info["name"], "slug": slug,
+                                    "url": "", "catalog": True,
+                                    "owner": info.get("owner", "")})
+                    local_slugs.add(slug)
+        return jsonify(streams)
 
     @app.get("/api/logger/config")
     @login_req
@@ -641,11 +657,14 @@ def register(app, ctx):
             body  = json.loads(data) if data else {}
             site  = str(body.get("site", "")).strip()
             streams = body.get("streams", [])
+            catalog = body.get("catalog", {})
             if not site:
                 return jsonify({"error": "no site"}), 400
             with _hub_logger_lock:
                 _hub_logger_streams[site] = streams
-            _log(f"[Logger] Hub: site '{site}' registered {len(streams)} stream(s)")
+                if isinstance(catalog, dict) and catalog:
+                    _hub_logger_catalog[site] = catalog
+            _log(f"[Logger] Hub: site '{site}' registered {len(streams)} stream(s), {len(catalog)} catalog entries")
             return jsonify({"ok": True})
 
         @app.get("/api/logger/hub/poll/<path:site>")
@@ -710,6 +729,27 @@ def register(app, ctx):
             with _hub_logger_lock:
                 sites = list(_hub_logger_streams.keys())
             return jsonify(sites)
+
+        @app.get("/api/logger/hub/catalog")
+        @login_req
+        def api_logger_hub_catalog():
+            """Merged catalog from all registered sites — streams with recordings."""
+            result = []
+            seen = set()
+            with _hub_logger_lock:
+                for site, cat in _hub_logger_catalog.items():
+                    for slug, info in cat.items():
+                        if slug not in seen:
+                            result.append({
+                                "slug": slug,
+                                "name": info.get("name", slug),
+                                "site": site,
+                                "owner": info.get("owner", site),
+                                "rec_format": info.get("rec_format", "mp3"),
+                            })
+                            seen.add(slug)
+            result.sort(key=lambda x: x["name"].lower())
+            return jsonify(result)
 
         @app.get("/api/logger/hub/streams/<path:site>")
         @login_req
@@ -946,6 +986,35 @@ def register(app, ctx):
             return jsonify({"streams": streams})
         streams = _available_streams()
         return jsonify({"streams": streams})
+
+    @app.get("/api/mobile/logger/catalog")
+    @mobile_api_req
+    def api_mobile_logger_catalog():
+        """Merged catalog of all streams with recordings across all sites."""
+        if hub_server is None:
+            # Local mode: return catalog from local recording roots
+            catalog = {}
+            for root in _all_rec_roots():
+                catalog.update(_catalog_read(root))
+            result = [{"slug": slug, "name": info.get("name", slug),
+                       "site": _my_owner(), "owner": info.get("owner", ""),
+                       "rec_format": info.get("rec_format", "mp3")}
+                      for slug, info in catalog.items()]
+            result.sort(key=lambda x: x["name"].lower())
+            return jsonify({"catalog": result})
+        # Hub mode: merge catalog from all registered sites
+        result = []
+        seen = set()
+        with _hub_logger_lock:
+            for site, cat in _hub_logger_catalog.items():
+                for slug, info in cat.items():
+                    if slug not in seen:
+                        result.append({"slug": slug, "name": info.get("name", slug),
+                                       "site": site, "owner": info.get("owner", site),
+                                       "rec_format": info.get("rec_format", "mp3")})
+                        seen.add(slug)
+        result.sort(key=lambda x: x["name"].lower())
+        return jsonify({"catalog": result})
 
     @app.get("/api/mobile/logger/days")
     @mobile_api_req
@@ -1272,6 +1341,102 @@ def _all_rec_roots() -> set:
                 except Exception:
                     pass
     return roots
+
+
+# ─── Shared catalog ──────────────────────────────────────────────────────────
+_CATALOG_FILE    = "catalog.json"
+_CATALOG_STALE_S = 7200   # 2 hours — entries older than this are stale
+
+
+def _my_owner() -> str:
+    """Return a unique owner identifier for this SignalScope instance."""
+    try:
+        return (_monitor.app_cfg.hub.site_name or "").strip() or "local"
+    except Exception:
+        return "local"
+
+
+def _catalog_path(root: Path) -> Path:
+    return root / _CATALOG_FILE
+
+
+def _catalog_read(root: Path) -> dict:
+    """Read catalog.json from *root*, dropping stale entries (>2 h old)."""
+    p = _catalog_path(root)
+    if not p.exists():
+        return {}
+    try:
+        with open(p, "r") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_SH)
+            except OSError:
+                pass  # SMB may not support flock — proceed without lock
+            data = json.load(f)
+    except Exception:
+        return {}
+    now = time.time()
+    return {slug: info for slug, info in data.items()
+            if now - info.get("updated", 0) < _CATALOG_STALE_S}
+
+
+def _catalog_write(root: Path, slug: str, name: str, rec_format: str):
+    """Add or update our entry in the shared catalog (atomic with flock)."""
+    p = _catalog_path(root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        lock_path = root / ".catalog.lock"
+        with open(lock_path, "w") as lf:
+            try:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+            except OSError:
+                pass
+            # Read existing
+            data = {}
+            if p.exists():
+                try:
+                    with open(p, "r") as f:
+                        data = json.load(f)
+                except Exception:
+                    data = {}
+            # Merge our entry
+            data[slug] = {
+                "name":       name,
+                "owner":      _my_owner(),
+                "rec_format": rec_format,
+                "updated":    time.time(),
+            }
+            # Write atomically via tmp + rename
+            tmp = p.with_suffix(".tmp")
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(str(tmp), str(p))
+    except Exception as e:
+        _log(f"[Logger] Catalog write failed: {e}")
+
+
+def _catalog_remove(root: Path, slug: str):
+    """Remove our entry from the catalog (only if we own it)."""
+    p = _catalog_path(root)
+    if not p.exists():
+        return
+    try:
+        lock_path = root / ".catalog.lock"
+        with open(lock_path, "w") as lf:
+            try:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+            except OSError:
+                pass
+            with open(p, "r") as f:
+                data = json.load(f)
+            owner = _my_owner()
+            if slug in data and data[slug].get("owner") == owner:
+                del data[slug]
+                tmp = p.with_suffix(".tmp")
+                with open(tmp, "w") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(str(tmp), str(p))
+    except Exception as e:
+        _log(f"[Logger] Catalog remove failed: {e}")
 
 
 def _move_stream_recordings(stream_name: str, old_root: Path, new_root: Path):
@@ -1663,12 +1828,29 @@ class _RecorderThread(threading.Thread):
                 _log(f"[Logger] Recorder error ({self.stream_name}): {e}")
                 self.stop_evt.wait(5)
         _log(f"[Logger] Stopped recording: {self.stream_name}")
+        try:
+            _catalog_remove(_stream_rec_root(self.stream_name), self.slug)
+        except Exception:
+            pass
 
     def _record_segment(self, ffmpeg):
         scfg = _stream_cfg(self.stream_name)
         if not scfg["enabled"]:
             self.stop_evt.set()
             return
+
+        # ── Catalog ownership check ─────────────────────────────────────
+        rec_root = _stream_rec_root(self.stream_name)
+        try:
+            cat = _catalog_read(rec_root)
+            entry = cat.get(self.slug)
+            if entry and entry.get("owner") != _my_owner():
+                self.last_error = f"Stream owned by '{entry['owner']}'"
+                _log(f"[Logger] Skipping {self.stream_name} — already recorded by '{entry['owner']}'")
+                self.stop_evt.wait(30)
+                return
+        except Exception:
+            pass
 
         now       = datetime.datetime.utcnow()
         seg_start = _seg_start(now)
@@ -1680,7 +1862,7 @@ class _RecorderThread(threading.Thread):
         filename  = f"{time_str}.{_ext}"
         start_s   = seg_start.hour * 3600 + seg_start.minute * 60
 
-        out_dir  = _stream_rec_root(self.stream_name) / self.slug / date_str
+        out_dir  = rec_root / self.slug / date_str
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / filename
 
@@ -1811,6 +1993,7 @@ class _RecorderThread(threading.Thread):
             self.last_error = None
             self.last_ok_ts = time.time()
             self.seg_count += 1
+            _catalog_write(rec_root, self.slug, self.stream_name, scfg["rec_format"])
             _log(f"[Logger] Segment saved: {self.stream_name}/{date_str}/{filename}")
 
         # Wait for next 5-minute boundary
@@ -2609,16 +2792,21 @@ setInterval(function(){
 }, 200);
 
 // ── Hub mode ───────────────────────────────────────────────────────────────
+var _catalogStreams = [];  // [{slug, name, site, owner, rec_format}]
+
 function checkHubMode(){
-  _get('/api/logger/hub/sites').then(function(sites){
-    if(!Array.isArray(sites) || !sites.length) return;
-    // Hub mode: show the site selector
-    document.getElementById('hub-site-row').style.display = '';
-    var siteSel = document.getElementById('site-sel');
-    siteSel.innerHTML = '<option value="">— all local —</option>';
-    sites.forEach(function(s){
+  _get('/api/logger/hub/catalog').then(function(entries){
+    if(!Array.isArray(entries) || !entries.length) return;
+    _catalogStreams = entries;
+    // Populate stream selector directly from catalog — no site selection needed
+    var sel = document.getElementById('stream-sel');
+    sel.innerHTML = '<option value="">— select stream —</option>';
+    entries.forEach(function(s){
       var o = document.createElement('option');
-      o.value = s; o.textContent = s; siteSel.appendChild(o);
+      o.value = s.slug;
+      o.dataset.site = s.site;
+      o.textContent = s.name + ' (' + s.site + ')';
+      sel.appendChild(o);
     });
   }).catch(function(){});
 }
@@ -2635,7 +2823,7 @@ document.getElementById('site-sel').addEventListener('change', function(){
   buildTimeline([]);
   document.getElementById('day-list').innerHTML = '';
   if(_hubSite){
-    // Load streams for selected site
+    // Load streams for selected site (legacy path — kept for backward compat)
     _get('/api/logger/hub/streams/' + encodeURIComponent(_hubSite)).then(function(streams){
       var sel = document.getElementById('stream-sel');
       sel.innerHTML = '<option value="">— select stream —</option>';
@@ -2706,6 +2894,9 @@ function _hubStatusMsg(msg){
 // ── Stream selector ───────────────────────────────────────────────────────
 document.getElementById('stream-sel').addEventListener('change', function(){
   _currentSlug = this.value;
+  // Auto-set _hubSite from catalog entry (or clear for local streams)
+  var opt = this.options[this.selectedIndex];
+  _hubSite = (opt && opt.dataset.site) ? opt.dataset.site : '';
   _selSeg = null; _segsAll = []; _markIn = _markOut = null;
   _stopHubAudio();
   _hubStatusMsg('');
@@ -2724,7 +2915,9 @@ function loadStreams(){
     sel.innerHTML = '<option value="">— select stream —</option>';
     data.forEach(function(s){
       var o = document.createElement('option');
-      o.value = s.slug; o.textContent = s.name; sel.appendChild(o);
+      o.value = s.slug;
+      o.textContent = s.name + (s.catalog ? ' (' + (s.owner||'remote') + ')' : '');
+      sel.appendChild(o);
     });
     _get('/api/logger/config').then(function(cfg){
       _cfg = cfg;
@@ -3431,7 +3624,7 @@ function renderSettingsRows(){
     return;
   }
   var dirs = _getBaseDirsFromForm();
-  _streams.forEach(function(s){
+  _streams.filter(function(s){ return !s.catalog; }).forEach(function(s){
     var sc=(_cfg.streams||{})[s.name]||{};
     var card=document.createElement('div'); card.className='scard';
     var chkd = sc.enabled ? ' checked' : '';
