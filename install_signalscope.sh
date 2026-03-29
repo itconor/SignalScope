@@ -1261,6 +1261,9 @@ main() {
   step "Installing optional MP3 encoder (lameenc)"
   python -m pip install lameenc || warn "lameenc not available — MP3 clip encoding will fall back to ffmpeg or WAV"
 
+  step "Installing optional SNMP library (pysnmp)"
+  python -m pip install pysnmp || warn "pysnmp not available — Codec Monitor will use HTTP/TCP fallback for SNMP devices (Prodys Quantum ST, APT WorldCast)"
+
   step "Installing/checking ONNX stack"
   python -m pip install onnx || warn "Failed to install onnx"
   if ! python -m pip install onnxruntime; then
