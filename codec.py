@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/codecs",
     "icon":     "📡",
     "hub_only": True,
-    "version":  "1.0.0",
+    "version":  "1.0.1",
 }
 
 import base64
@@ -108,7 +108,14 @@ def _snmp_get(host, community, oid, port=161, timeout=5):
         return None, str(e)[:120]
 
 def _http_check(dev, timeout=8):
-    """HTTP GET → (state, detail, remote_name)."""
+    """HTTP GET → (state, detail, remote_name).
+
+    Supports no auth, HTTP Basic, and HTTP Digest auth.  When credentials are
+    configured we build an opener with both Basic and Digest handlers so the
+    correct scheme is selected automatically after the server's 401 challenge.
+    For devices with no auth we still pre-send a Basic header to avoid a
+    wasted round-trip.
+    """
     host     = dev.get("host", "").strip()
     port     = int(dev.get("port", 80))
     use_ssl  = dev.get("ssl", False)
@@ -119,16 +126,27 @@ def _http_check(dev, timeout=8):
 
     scheme = "https" if use_ssl else "http"
     url    = f"{scheme}://{host}:{port}{endpoint}"
-    req    = urllib.request.Request(url, headers={"User-Agent": "SignalScope-Codec/1.0"})
-    if user:
-        cred = base64.b64encode(f"{user}:{pwd}".encode()).decode()
-        req.add_header("Authorization", f"Basic {cred}")
+
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            body = r.read(131072).decode("utf-8", errors="replace")
+        if user:
+            # Build an opener that handles both Basic and Digest challenges.
+            # urllib will re-send with the correct scheme after the 401.
+            mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+            mgr.add_password(None, url, user, pwd)
+            opener = urllib.request.build_opener(
+                urllib.request.HTTPBasicAuthHandler(mgr),
+                urllib.request.HTTPDigestAuthHandler(mgr),
+            )
+            opener.addheaders = [("User-Agent", "SignalScope-Codec/1.0")]
+            with opener.open(url, timeout=timeout) as r:
+                body = r.read(131072).decode("utf-8", errors="replace")
+        else:
+            req = urllib.request.Request(url, headers={"User-Agent": "SignalScope-Codec/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = r.read(131072).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            return "error", "Auth required (HTTP 401)", ""
+            return "error", "Auth failed — check username/password (HTTP 401)", ""
         return "offline", f"HTTP {e.code}", ""
     except Exception as e:
         return "offline", str(e)[:100], ""

@@ -2,6 +2,13 @@
 
 ---
 
+## [Codec Monitor 1.0.1] - 2026-03-29
+
+### Fixed
+- **HTTP Digest auth support** — devices that challenge with `WWW-Authenticate: Digest` (some Comrex and Tieline models) would get a 401 back and report offline even with correct credentials. Replaced the pre-emptive Basic `Authorization` header with a proper `HTTPBasicAuthHandler` + `HTTPDigestAuthHandler` opener so both auth schemes are handled automatically. On a 401 challenge urllib retries with the correct scheme. Devices with no auth are unaffected.
+
+---
+
 ## [Codec Monitor 1.0.0] - 2026-03-29
 
 ### Added
