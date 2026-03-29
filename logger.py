@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.8",
+    "version": "1.5.9",
 }
 
 import datetime
@@ -87,6 +87,7 @@ _hub_logger_pending  = {}   # site → pending cmd dict or None
 _hub_logger_days     = {}   # "{site}:{slug}" → [date_str, ...]
 _hub_logger_segs     = {}   # "{site}:{slug}:{date}" → [seg_dict, ...]
 _hub_logger_active   = {}   # site → current play slot_id
+_file_relay_slots    = set()  # slot_ids created by play_file (file-relay mode, no silence)
 _hub_logger_meta     = {}   # "{site}:{slug}:{date}" → [event_dict, ...]
 _hub_logger_lock     = threading.Lock()
 _hub_logger_events   = {}   # site → threading.Event for long-poll wakeup
@@ -157,16 +158,15 @@ def _push_file_to_relay(hub_url, slot_id, slug, date, filename, cfg, seek_s=0.0)
 
     try:
         if seek_s > 0.5:
-            # Use ffmpeg to seek and re-mux in the original container format
+            # Use ffmpeg to seek and re-mux.  Output as Matroska (MKV) which
+            # supports -c copy for any codec and produces a valid streamable
+            # container regardless of the source format (OGG, MP3, FLAC…).
+            # QMediaPlayer's FFmpeg backend handles MKV natively.
             import shutil as _shutil
-            ext = path.suffix.lstrip(".").lower() or "ogg"
-            fmt_map = {"ogg": "ogg", "mp3": "mp3", "flac": "flac",
-                       "aac": "adts", "m4a": "ipod", "wav": "wav"}
-            fmt = fmt_map.get(ext, ext)
             ffmpeg_bin = _shutil.which("ffmpeg") or "ffmpeg"
             cmd = [ffmpeg_bin, "-hide_banner", "-loglevel", "error",
                    "-ss", str(seek_s), "-i", str(path),
-                   "-c", "copy", "-f", fmt, "pipe:1"]
+                   "-c", "copy", "-f", "matroska", "pipe:1"]
             import subprocess as _sp
             proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.DEVNULL)
             try:
@@ -1196,38 +1196,42 @@ def register(app, ctx):
         if not slot:
             return ("", 404)
 
-        is_pcm = getattr(slot, "kind", "scanner") == "scanner"
+        # file relay mode: no silence injection; wait patiently for push to start
+        is_file = slot_id in _file_relay_slots
         _SILENCE = b"\x00" * 9600   # 0.1 s of silence (16-bit mono 48 kHz)
 
         def _gen():
             last_data  = time.monotonic()
             start_time = time.monotonic()
             got_data   = False
-            while not getattr(slot, "closed", False):
-                try:
-                    chunk = slot.get(timeout=0.30)
-                    if chunk is not None:
-                        last_data = time.monotonic()
-                        got_data  = True
-                        yield chunk
-                    elif is_pcm:
-                        # PCM/live mode: inject silence to keep audio pump alive
-                        if time.monotonic() - last_data > 1.0:
+            try:
+                while not getattr(slot, "closed", False):
+                    try:
+                        chunk = slot.get(timeout=0.30)
+                        if chunk is not None:
+                            last_data = time.monotonic()
+                            got_data  = True
+                            yield chunk
+                        elif not is_file:
+                            # PCM/live mode: inject silence to keep audio pump alive
+                            if time.monotonic() - last_data > 1.0:
+                                yield _SILENCE
+                                last_data = time.monotonic()
+                        elif not got_data:
+                            # File mode: waiting for client to start pushing
+                            # (client polling interval is up to 3 s, ffmpeg seek adds more)
+                            if time.monotonic() - start_time > 20.0:
+                                break   # client never responded — give up
+                        else:
+                            # File mode: data was flowing; inactivity = end of file
+                            if time.monotonic() - last_data > 15.0:
+                                break   # close stream cleanly
+                    except Exception:
+                        if not is_file and time.monotonic() - last_data > 1.0:
                             yield _SILENCE
                             last_data = time.monotonic()
-                    elif not got_data:
-                        # File mode: waiting for client to start pushing
-                        # (client polling interval can be up to 3 s)
-                        if time.monotonic() - start_time > 20.0:
-                            break   # client never responded — give up
-                    else:
-                        # File mode: data has been flowing; no new chunks for a while
-                        if time.monotonic() - last_data > 5.0:
-                            break   # end of file — close stream cleanly
-                except Exception:
-                    if is_pcm and time.monotonic() - last_data > 1.0:
-                        yield _SILENCE
-                        last_data = time.monotonic()
+            finally:
+                _file_relay_slots.discard(slot_id)  # clean up tracking
 
         return Response(_gen(), mimetype="application/octet-stream",
                         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
@@ -1320,10 +1324,11 @@ def register(app, ctx):
             except Exception:
                 pass
 
-        slot = _listen_registry.create(site, 0, kind="file",
+        slot = _listen_registry.create(site, 0, kind="scanner",
                                        mimetype="application/octet-stream")
         with _hub_logger_lock:
             _hub_logger_active[site] = slot.slot_id
+        _file_relay_slots.add(slot.slot_id)  # mark as file relay (no silence injection)
         _hub_set_pending(site, {
             "type":     "stream_file",
             "slot_id":  slot.slot_id,

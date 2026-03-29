@@ -2,6 +2,15 @@
 
 ---
 
+## [Logger 1.5.9] - 2026-03-29
+
+### Fixed
+- **Hub relay "no audio" / silence injection back on** — `kind="file"` was passed to `_listen_registry.create()` in 1.5.8, but `slot.kind` is not necessarily stored/accessible, so `getattr(slot, "kind", "scanner")` defaulted to `"scanner"` → `is_pcm = True` → silence injection re-enabled → OGG corruption back. Fix: reverted to `kind="scanner"` (stable, known to work); file relay slots are now tracked in a module-level `_file_relay_slots` set. The `relay_stream` generator checks `slot_id in _file_relay_slots` (not `slot.kind`) to determine file vs PCM mode. Set entry is removed in the generator's `finally` block.
+- **Relay EOF too aggressive** — 5 s inactivity timeout after first data could fire during normal playback network jitter or during an ffmpeg seek startup delay. Increased to 15 s.
+- **OGG copy-seek broken output** — `ffmpeg -ss X -c copy -f ogg pipe:1` for Opus sources emits `Could not update timestamps for skipped samples` and may produce output that QMediaPlayer rejects. Changed to `-f matroska` (MKV) which handles `-c copy` correctly for all codecs and produces a valid streamable container that Qt Multimedia's FFmpeg backend supports natively.
+
+---
+
 ## [Logger 1.5.8] - 2026-03-29
 
 ### Fixed
