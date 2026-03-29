@@ -99,5 +99,15 @@
     "version": "1.0.5",
     "requirements": "cryptography httpx[http2]",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/push.py"
+  },
+  {
+    "id": "ptpclock",
+    "name": "PTP Clock",
+    "file": "ptpclock.py",
+    "icon": "",
+    "description": "Full-screen GPS-accurate wall clock for broadcast studios. Two display modes: digital (large HH:MM:SS with tenths) and analog studio clock (sweep second hand). Shows live PTP sync status, offset, and jitter. Custom branding via URL parameter. Time served from the GPS-disciplined server clock, accurate on any browser.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/ptpclock.py"
   }
 ]
