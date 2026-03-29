@@ -2,6 +2,19 @@
 
 ---
 
+## [Codec Monitor 1.0.0] - 2026-03-29
+
+### Added
+- **New plugin: Codec Monitor** — real-time connection monitor for broadcast contribution codecs. Supported device types: **Comrex** ACCESS NX / BRIC-Link (HTTP status-page scraping), **Tieline** Gateway / Bridge-IT / ViA (HTTP + XML scraping), **Prodys Quantum ST** (SNMP v2c primary, HTTP fallback), **APT / WorldCast Quantum** (SNMP v2c primary, HTTP fallback), **TCP Ping Only** (basic reachability), and **Custom** (user-configured HTTP endpoint).
+- Each device is polled on a configurable interval (default 30 s). States: `Connected`, `Idle / Ready`, `Disconnected`, `Offline`, `Error`, `Unknown`.
+- **Alert integration** — fires `CODEC_FAULT` alert into the SignalScope Reports page when a device goes offline or disconnects; fires `CODEC_RECOVERY` when it comes back. Alerts carry the associated stream name so they appear alongside chain events.
+- **Force-check button** — manually trigger an immediate poll on any device from the dashboard.
+- **Remote name extraction** — where the device response includes a connected peer name it is shown on the card alongside the status.
+- **Mobile API** — `GET /api/mobile/codecs/status` (Bearer token auth) returns JSON array with `id`, `name`, `type`, `state`, `state_label`, `detail`, `remote`, `last_checked`, `last_change`, `duration_s` for every configured device. Suitable for an iOS Codecs tab.
+- SNMP requires `pysnmp` (`pip install pysnmp`). If not installed the plugin falls back to HTTP + TCP for SNMP-type devices automatically — no crash.
+
+---
+
 ## [SignalScope 3.4.62] - 2026-03-29
 
 ### Fixed
