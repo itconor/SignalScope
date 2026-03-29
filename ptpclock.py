@@ -621,7 +621,7 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
   <span>Offset <span class="ptp-val" id="ptp-off">---</span></span>
   <span>Jitter <span class="ptp-val" id="ptp-jit">---</span></span>
   <span>GM <span class="ptp-val" id="ptp-gm">---</span></span>
-  <span style="margin-left:auto;opacity:0.35;font-size:clamp(8px,1vw,11px);letter-spacing:0.05em">Powered by SignalScope</span>
+  <span style="margin-left:auto;color:#94a3b8;font-size:clamp(8px,1vw,11px);letter-spacing:0.05em">Powered by SignalScope</span>
 </div>
 
 <!-- Mode Switcher -->
