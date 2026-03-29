@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.5.5] - 2026-03-29
+
+### Changed
+- **Per-instance sidecar JSON replaces shared `metadata.db`** — SQLite file locking is unreliable on network shares (SMB/NFS), causing `database is locked` errors even with WAL mode and intra-process serialisation. Replaced with per-instance sidecar JSON files: each logger writes only its own `{rec_root}/{slug}/{date}/meta_{owner}.json` (where `owner` is derived from the site name). Readers scan all `meta_*.json` files in the day directory and merge events by `(ts, type)` key. Atomic `os.replace()` write from a `.tmp` file prevents partial reads. No cross-process locking required because each process owns exactly one file. Existing local SQLite data is seeded into sidecar files on startup (idempotent).
+
+---
+
 ## [Logger 1.5.4] - 2026-03-29
 
 ### Fixed

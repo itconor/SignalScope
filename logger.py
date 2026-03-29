@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.4",
+    "version": "1.5.5",
 }
 
 import datetime
@@ -1496,7 +1496,7 @@ def _get_live_dls_rds(stream_name: str):
 
 
 def _meta_write(slug: str, ts: float, entry_type: str, info: dict):
-    """Write a metadata event to both the local and shared metadata databases."""
+    """Write a metadata event to the local SQLite DB and the per-instance sidecar JSON."""
     row = (slug, ts, entry_type,
            info.get("title", ""), info.get("artist", ""),
            info.get("show_name", ""), info.get("presenter", ""),
@@ -1512,16 +1512,12 @@ def _meta_write(slug: str, ts: float, entry_type: str, info: dict):
         db.close()
     except Exception as e:
         _log(f"[Logger] Meta DB write error: {e}")
-    # Shared DB alongside recordings (visible to other logger instances on same filesystem)
+    # Per-instance sidecar JSON (visible to other logger instances on same filesystem,
+    # no cross-process locking needed — each process owns exactly one file)
     try:
-        sroot = _stream_rec_root_by_slug(slug)
-        with _smd_lock(sroot):
-            sdb = _open_shared_meta_db(sroot)
-            sdb.execute(_SQL, row)
-            sdb.commit()
-            sdb.close()
+        _meta_write_sidecar(slug, ts, entry_type, info)
     except Exception as e:
-        _log(f"[Logger] Meta shared DB write error: {e}")
+        _log(f"[Logger] Meta sidecar write error: {e}")
 
 
 class _MetaPoller(threading.Thread):
@@ -1691,86 +1687,129 @@ def _get_db():
     return conn
 
 
-# Per-root locks — serialise all same-process threads that touch the same
-# metadata.db so SQLite never sees two concurrent writers from one process.
-_smd_locks: dict = {}
-_smd_locks_guard = threading.Lock()
-
-def _smd_lock(root: Path) -> threading.Lock:
-    key = str(root)
-    with _smd_locks_guard:
-        if key not in _smd_locks:
-            _smd_locks[key] = threading.Lock()
-        return _smd_locks[key]
+def _meta_owner_slug() -> str:
+    """Return a filesystem-safe identifier for this logger instance."""
+    raw = _my_owner()
+    return re.sub(r"[^\w\-]", "_", raw)[:40] or "local"
 
 
-def _open_shared_meta_db(root: Path):
-    """Open (creating if needed) the shared metadata DB at {root}/metadata.db.
+def _meta_write_sidecar(slug: str, ts: float, entry_type: str, info: dict):
+    """Atomically update this instance's per-day sidecar JSON file.
 
-    Caller MUST hold _smd_lock(root) before calling this.
-    WAL mode is set only on first creation to avoid the brief exclusive lock
-    that PRAGMA journal_mode=WAL requires on every subsequent open.
+    File: {rec_root}/{slug}/{date}/meta_{owner}.json
+    Each file is owned exclusively by one logger process — no cross-process
+    locking required.  Atomic rename (os.replace) prevents partial writes.
     """
-    path    = root / "metadata.db"
-    is_new  = not path.exists()
-    conn    = sqlite3.connect(str(path), timeout=30)
-    conn.row_factory = sqlite3.Row
-    if is_new:
-        conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS metadata_log (
-            stream    TEXT NOT NULL,
-            ts        REAL NOT NULL,
-            type      TEXT NOT NULL,
-            title     TEXT DEFAULT '',
-            artist    TEXT DEFAULT '',
-            show_name TEXT DEFAULT '',
-            presenter TEXT DEFAULT '',
-            raw       TEXT DEFAULT '',
-            PRIMARY KEY (stream, ts, type)
-        )
-    """)
-    conn.commit()
-    return conn
+    date_str = datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+    sroot    = _stream_rec_root_by_slug(slug)
+    day_dir  = sroot / slug / date_str
+    try:
+        day_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    owner    = _meta_owner_slug()
+    path     = day_dir / f"meta_{owner}.json"
+    tmp_path = day_dir / f"meta_{owner}.tmp"
+
+    # Read existing events
+    events: list = []
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                events = json.load(f)
+        except Exception:
+            events = []
+
+    # Build the new event dict
+    event = {
+        "slug": slug, "ts": ts, "type": entry_type,
+        "title":     info.get("title",     ""),
+        "artist":    info.get("artist",    ""),
+        "show_name": info.get("show_name", ""),
+        "presenter": info.get("presenter", ""),
+        "raw":       json.dumps(info),
+    }
+
+    # Upsert: replace existing event with same (ts rounded to 0.1 s, type) key
+    key = (round(ts, 1), entry_type)
+    events = [e for e in events if (round(e.get("ts", 0), 1), e.get("type", "")) != key]
+    events.append(event)
+    events.sort(key=lambda e: e.get("ts", 0))
+
+    # Atomic write
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(events, f)
+    os.replace(tmp_path, path)
+
+
+def _meta_read_sidecars(slug: str, date_str: str) -> list:
+    """Merge all meta_*.json sidecar files for slug/date and return sorted events.
+
+    Each sidecar is written by exactly one logger instance.  Merging all of
+    them gives the complete picture across a shared filesystem without any
+    locking.  Events are deduped by (ts rounded to 0.1 s, type).
+    """
+    sroot   = _stream_rec_root_by_slug(slug)
+    day_dir = sroot / slug / date_str
+    if not day_dir.is_dir():
+        return []
+
+    midnight = datetime.datetime.strptime(date_str, "%Y-%m-%d").replace(
+        tzinfo=datetime.timezone.utc).timestamp()
+
+    seen: dict = {}   # (ts_key, type) → event dict
+    for meta_file in sorted(day_dir.glob("meta_*.json")):
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                entries = json.load(f)
+            for e in entries:
+                ts   = e.get("ts", 0)
+                etype = e.get("type", "")
+                key  = (round(ts, 1), etype)
+                if key not in seen:
+                    seen[key] = {
+                        "ts_s":      ts - midnight,
+                        "type":      etype,
+                        "title":     e.get("title",     ""),
+                        "artist":    e.get("artist",    ""),
+                        "show_name": e.get("show_name", ""),
+                        "presenter": e.get("presenter", ""),
+                    }
+        except Exception:
+            pass
+
+    return sorted(seen.values(), key=lambda e: e["ts_s"])
 
 
 def _meta_query(slug: str, midnight: float) -> list:
     """Return metadata events for slug on the day starting at midnight (UTC Unix ts).
 
-    Checks the shared metadata.db in the recording root first so that
-    catalog/foreign streams (written by another logger instance to the same
-    filesystem) are visible.  Falls back to the local SQLite DB.
+    Reads per-instance sidecar JSON files (meta_*.json) first — these cover
+    catalog/foreign streams written by other logger instances to the same
+    filesystem.  Falls back to the local SQLite DB for pre-1.5.5 recordings.
     """
     end = midnight + 86400
+
+    # Sidecar JSON (covers both local and foreign streams, no locking needed)
+    try:
+        date_str = datetime.datetime.utcfromtimestamp(midnight).strftime("%Y-%m-%d")
+        events   = _meta_read_sidecars(slug, date_str)
+        if events:
+            return events
+    except Exception as e:
+        _log(f"[Logger] Meta sidecar read error for '{slug}': {e}")
+
+    # Fall back to local SQLite (pre-1.5.5 recordings not yet seeded)
     _SQL = ("SELECT ts, type, title, artist, show_name, presenter FROM metadata_log "
             "WHERE stream=? AND ts>=? AND ts<? ORDER BY ts")
-
-    def _rows_to_events(rows):
-        return [{"ts_s": r["ts"] - midnight, "type": r["type"],
-                 "title": r["title"] or "", "artist": r["artist"] or "",
-                 "show_name": r["show_name"] or "", "presenter": r["presenter"] or ""}
-                for r in rows]
-
-    # Shared DB (covers both local and foreign streams on a shared filesystem)
-    try:
-        sroot = _stream_rec_root_by_slug(slug)
-        shared_path = sroot / "metadata.db"
-        if shared_path.exists():
-            with _smd_lock(sroot):
-                sdb  = _open_shared_meta_db(sroot)
-                rows = sdb.execute(_SQL, (slug, midnight, end)).fetchall()
-                sdb.close()
-            if rows:
-                return _rows_to_events(rows)
-    except Exception as e:
-        _log(f"[Logger] Shared meta DB read error for '{slug}': {e}")
-
-    # Fall back to local SQLite (pre-1.5.2 recordings not yet seeded)
     try:
         db   = _get_db()
         rows = db.execute(_SQL, (slug, midnight, end)).fetchall()
         db.close()
-        return _rows_to_events(rows)
+        return [{"ts_s": r["ts"] - midnight, "type": r["type"],
+                 "title": r["title"] or "", "artist": r["artist"] or "",
+                 "show_name": r["show_name"] or "", "presenter": r["presenter"] or ""}
+                for r in rows]
     except Exception:
         return []
 
@@ -2063,11 +2102,12 @@ def _seg_start(now_utc):
                            second=0, microsecond=0)
 
 def _seed_shared_meta_dbs():
-    """Merge this instance's local SQLite metadata into the shared metadata.db.
+    """Seed per-instance sidecar JSON files from this instance's local SQLite.
 
-    Runs on every startup.  Uses INSERT OR IGNORE so multiple logger instances
-    sharing the same recording root each contribute their own events without
-    overwriting each other — idempotent regardless of upgrade order.
+    Runs on every startup.  Writes meta_{owner}.json alongside each day's
+    recordings so other logger instances on the same filesystem can read this
+    instance's metadata.  Idempotent — existing events are merged (not
+    duplicated) because _meta_write_sidecar upserts by (ts, type) key.
     """
     try:
         db    = _get_db()
@@ -2077,29 +2117,27 @@ def _seed_shared_meta_dbs():
         return
     for slug in slugs:
         try:
-            sroot = _stream_rec_root_by_slug(slug)
-            db    = _get_db()
-            rows  = db.execute(
-                "SELECT stream, ts, type, title, artist, show_name, presenter, raw "
+            db   = _get_db()
+            rows = db.execute(
+                "SELECT ts, type, title, artist, show_name, presenter, raw "
                 "FROM metadata_log WHERE stream=?", (slug,)).fetchall()
             db.close()
             if not rows:
                 continue
-            with _smd_lock(sroot):
-                sdb   = _open_shared_meta_db(sroot)
-                n_new = 0
-                for r in rows:
-                    cur = sdb.execute(
-                        "INSERT OR IGNORE INTO metadata_log "
-                        "(stream, ts, type, title, artist, show_name, presenter, raw) "
-                        "VALUES (?,?,?,?,?,?,?,?)",
-                        (r["stream"], r["ts"], r["type"], r["title"], r["artist"],
-                         r["show_name"], r["presenter"], r["raw"]))
-                    n_new += cur.rowcount
-                sdb.commit()
-                sdb.close()
-            if n_new:
-                _log(f"[Logger] Merged {n_new} metadata event(s) into shared DB for '{slug}'")
+            n_written = 0
+            for r in rows:
+                try:
+                    raw_info = json.loads(r["raw"]) if r["raw"] else {}
+                except Exception:
+                    raw_info = {}
+                raw_info.setdefault("title",     r["title"]     or "")
+                raw_info.setdefault("artist",    r["artist"]    or "")
+                raw_info.setdefault("show_name", r["show_name"] or "")
+                raw_info.setdefault("presenter", r["presenter"] or "")
+                _meta_write_sidecar(slug, r["ts"], r["type"], raw_info)
+                n_written += 1
+            if n_written:
+                _log(f"[Logger] Seeded {n_written} metadata event(s) into sidecar for '{slug}'")
         except Exception as e:
             _log(f"[Logger] Metadata seed error for '{slug}': {e}")
 
