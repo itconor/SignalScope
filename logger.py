@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.6",
+    "version": "1.5.7",
 }
 
 import datetime
@@ -138,11 +138,13 @@ _BATCH_DUR    = _CHUNK_DUR   * _BATCH_CHUNKS   # 1.6 s
 _PUSH_RATE    = 3.0    # push at 3× real-time; large pre-buffer absorbs jitter
 
 
-def _push_file_to_relay(hub_url, slot_id, slug, date, filename, cfg):
+def _push_file_to_relay(hub_url, slot_id, slug, date, filename, cfg, seek_s=0.0):
     """Push raw audio file bytes (OGG/MP3/FLAC) to a hub relay slot.
 
-    Unlike _push_audio_to_relay, sends the original file without any
-    transcoding so the desktop player can decode the format natively.
+    When seek_s > 0, uses ffmpeg to trim the start so the player receives only
+    audio from the requested position.  The output container format is preserved
+    (e.g. OGG stays OGG) so the desktop player can decode natively.
+    When seek_s == 0, the file is sent as-is without any transcoding.
     """
     path = _stream_rec_root_by_slug(_safe(slug)) / _safe(slug) / date / filename
     if not path.exists():
@@ -151,17 +153,43 @@ def _push_file_to_relay(hub_url, slot_id, slug, date, filename, cfg):
 
     secret    = (getattr(cfg.hub, "secret_key", None) or "").strip()
     chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
-    _log(f"[Logger] FilePush: sending {slug}/{date}/{filename} → slot {slot_id}")
+    _log(f"[Logger] FilePush: sending {slug}/{date}/{filename} seek={seek_s:.1f}s → slot {slot_id}")
 
     try:
-        with open(path, "rb") as f:
-            while True:
-                chunk = f.read(65536)   # 64 KB per POST
-                if not chunk:
-                    break
-                if not _audio_post(chunk_url, chunk, secret):
-                    _log(f"[Logger] FilePush: relay slot gone — stopping")
-                    break
+        if seek_s > 0.5:
+            # Use ffmpeg to seek and re-mux in the original container format
+            import shutil as _shutil
+            ext = path.suffix.lstrip(".").lower() or "ogg"
+            fmt_map = {"ogg": "ogg", "mp3": "mp3", "flac": "flac",
+                       "aac": "adts", "m4a": "ipod", "wav": "wav"}
+            fmt = fmt_map.get(ext, ext)
+            ffmpeg_bin = _shutil.which("ffmpeg") or "ffmpeg"
+            cmd = [ffmpeg_bin, "-hide_banner", "-loglevel", "error",
+                   "-ss", str(seek_s), "-i", str(path),
+                   "-c", "copy", "-f", fmt, "pipe:1"]
+            import subprocess as _sp
+            proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.DEVNULL)
+            try:
+                while True:
+                    chunk = proc.stdout.read(65536)
+                    if not chunk:
+                        break
+                    if not _audio_post(chunk_url, chunk, secret):
+                        _log("[Logger] FilePush: relay slot gone — stopping")
+                        proc.kill()
+                        break
+            finally:
+                proc.stdout.close()
+                proc.wait()
+        else:
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(65536)   # 64 KB per POST
+                    if not chunk:
+                        break
+                    if not _audio_post(chunk_url, chunk, secret):
+                        _log("[Logger] FilePush: relay slot gone — stopping")
+                        break
     except Exception as e:
         _log(f"[Logger] FilePush: error: {e}")
     finally:
@@ -375,10 +403,12 @@ def _hub_logger_poller():
                         slug     = cmd.get("slug", "")
                         date     = cmd.get("date", "")
                         filename = cmd.get("filename", "")
-                        _log(f"[Logger] HubPoller: stream_file {slug}/{date}/{filename} slot={slot_id}")
+                        seek_s   = float(cmd.get("seek_s", 0))
+                        _log(f"[Logger] HubPoller: stream_file {slug}/{date}/{filename} seek={seek_s:.1f}s slot={slot_id}")
                         threading.Thread(
                             target=_push_file_to_relay,
                             args=(hub_url, slot_id, slug, date, filename, cfg),
+                            kwargs={"seek_s": seek_s},
                             daemon=True, name="LoggerFilePush").start()
 
                     elif ctype == "metadata":
@@ -1242,13 +1272,14 @@ def register(app, ctx):
         slug     = str(body.get("slug", "")).strip()
         date     = str(body.get("date", "")).strip()
         filename = str(body.get("filename", "")).strip()
+        seek_s   = float(body.get("seek_s", 0) or 0)
         if not (slug and date and filename):
             return jsonify({"error": "missing fields"}), 400
 
         # Direct / single-node mode: serve file straight from disk
         if hub_server is None or not site:
             qs = _urllib_parse.urlencode(
-                {"slug": slug, "date": date, "filename": filename})
+                {"slug": slug, "date": date, "filename": filename, "seek_s": seek_s})
             return jsonify({
                 "ok": True,
                 "slot_id": None,
@@ -1279,6 +1310,7 @@ def register(app, ctx):
             "slug":     _safe(slug),
             "date":     date,
             "filename": filename,
+            "seek_s":   seek_s,
         })
         return jsonify({
             "ok":        True,

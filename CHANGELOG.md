@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.5.7] - 2026-03-29
+
+### Added
+- **Exact-time seeking in hub relay mode** — `play_file` endpoint now extracts `seek_s` from the request body and passes it in the `stream_file` command to the client. `_push_file_to_relay()` accepts `seek_s`: when > 0.5 s, ffmpeg is used to seek to the position and re-mux in the original container format (`-c copy -f {fmt} pipe:1`) before streaming bytes to the relay slot. When seek_s ≤ 0.5 s the file is sent as-is (no transcoding overhead for near-start seeks). Single-node mode passes `seek_s` through the `audio_file` query string; the player seeks natively via HTTP Range / `setPosition`.
+
+---
+
 ## [Logger 1.5.6] - 2026-03-29
 
 ### Added
