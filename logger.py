@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.5",
+    "version": "1.5.6",
 }
 
 import datetime
@@ -136,6 +136,36 @@ _BATCH_CHUNKS = 16     # chunks concatenated into one HTTP POST (= 1.6 s per POS
 _BATCH_BYTES  = _CHUNK_BYTES * _BATCH_CHUNKS
 _BATCH_DUR    = _CHUNK_DUR   * _BATCH_CHUNKS   # 1.6 s
 _PUSH_RATE    = 3.0    # push at 3× real-time; large pre-buffer absorbs jitter
+
+
+def _push_file_to_relay(hub_url, slot_id, slug, date, filename, cfg):
+    """Push raw audio file bytes (OGG/MP3/FLAC) to a hub relay slot.
+
+    Unlike _push_audio_to_relay, sends the original file without any
+    transcoding so the desktop player can decode the format natively.
+    """
+    path = _stream_rec_root_by_slug(_safe(slug)) / _safe(slug) / date / filename
+    if not path.exists():
+        _log(f"[Logger] FilePush: file not found: {path}")
+        return
+
+    secret    = (getattr(cfg.hub, "secret_key", None) or "").strip()
+    chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
+    _log(f"[Logger] FilePush: sending {slug}/{date}/{filename} → slot {slot_id}")
+
+    try:
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(65536)   # 64 KB per POST
+                if not chunk:
+                    break
+                if not _audio_post(chunk_url, chunk, secret):
+                    _log(f"[Logger] FilePush: relay slot gone — stopping")
+                    break
+    except Exception as e:
+        _log(f"[Logger] FilePush: error: {e}")
+    finally:
+        _log(f"[Logger] FilePush: finished {filename}")
 
 
 def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
@@ -339,6 +369,17 @@ def _hub_logger_poller():
                             target=_push_audio_to_relay,
                             args=(hub_url, slot_id, slug, date, filename, seek_s, cfg),
                             daemon=True, name="LoggerAudioPush").start()
+
+                    elif ctype == "stream_file":
+                        slot_id  = cmd.get("slot_id", "")
+                        slug     = cmd.get("slug", "")
+                        date     = cmd.get("date", "")
+                        filename = cmd.get("filename", "")
+                        _log(f"[Logger] HubPoller: stream_file {slug}/{date}/{filename} slot={slot_id}")
+                        threading.Thread(
+                            target=_push_file_to_relay,
+                            args=(hub_url, slot_id, slug, date, filename, cfg),
+                            daemon=True, name="LoggerFilePush").start()
 
                     elif ctype == "metadata":
                         slug  = cmd.get("slug", "")
@@ -1185,6 +1226,94 @@ def register(app, ctx):
 
         return Response(_gen(), mimetype="application/octet-stream",
                         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+    @app.post("/api/mobile/logger/play_file")
+    @mobile_api_req
+    def api_mobile_logger_play_file():
+        """Like /play but relays the raw audio file bytes (OGG/MP3/FLAC) instead
+        of decoded PCM.  The desktop player can decode the format natively.
+
+        In hub mode: creates a relay slot and queues a stream_file command for
+        the client node so raw bytes flow hub → player over the relay.
+        In direct/single-node mode: returns a direct /audio_file URL.
+        """
+        body     = request.get_json(force=True) or {}
+        site     = str(body.get("site", "")).strip()
+        slug     = str(body.get("slug", "")).strip()
+        date     = str(body.get("date", "")).strip()
+        filename = str(body.get("filename", "")).strip()
+        if not (slug and date and filename):
+            return jsonify({"error": "missing fields"}), 400
+
+        # Direct / single-node mode: serve file straight from disk
+        if hub_server is None or not site:
+            qs = _urllib_parse.urlencode(
+                {"slug": slug, "date": date, "filename": filename})
+            return jsonify({
+                "ok": True,
+                "slot_id": None,
+                "stream_url": f"/api/mobile/logger/audio_file?{qs}",
+            })
+
+        if _listen_registry is None:
+            return jsonify({"error": "relay not available"}), 503
+
+        # Cancel existing slot for this site
+        with _hub_logger_lock:
+            old_id = _hub_logger_active.get(site)
+        if old_id:
+            try:
+                old_slot = _listen_registry.get(old_id)
+                if old_slot:
+                    old_slot.closed = True
+            except Exception:
+                pass
+
+        slot = _listen_registry.create(site, 0, kind="scanner",
+                                       mimetype="application/octet-stream")
+        with _hub_logger_lock:
+            _hub_logger_active[site] = slot.slot_id
+        _hub_set_pending(site, {
+            "type":     "stream_file",
+            "slot_id":  slot.slot_id,
+            "slug":     _safe(slug),
+            "date":     date,
+            "filename": filename,
+        })
+        return jsonify({
+            "ok":        True,
+            "slot_id":   slot.slot_id,
+            "stream_url": f"/api/mobile/logger/relay_stream/{slot.slot_id}",
+        })
+
+    @app.get("/api/mobile/logger/audio_file")
+    @mobile_api_req
+    def api_mobile_logger_audio_file():
+        """Serve the original audio file (OGG/MP3/FLAC/WAV) with mobile API
+        Bearer-token auth.  Used by the desktop player in direct/single-node
+        hub mode where the file lives on this node."""
+        slug     = request.args.get("slug",     "").strip()
+        date     = request.args.get("date",     "").strip()
+        filename = request.args.get("filename", "").strip()
+        if not (slug and date and filename):
+            return jsonify({"error": "missing params"}), 400
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            abort(400)
+        if not re.match(r"^[\w\.\-]+$", filename):
+            abort(400)
+        sroot = _stream_rec_root_by_slug(_safe(slug))
+        path  = sroot / _safe(slug) / date / filename
+        try:
+            _assert_within_rec_root(path)
+        except ValueError:
+            abort(400)
+        if not path.exists():
+            abort(404)
+        ext  = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        mime = {"mp3": "audio/mpeg", "opus": "audio/ogg", "ogg": "audio/ogg",
+                "aac": "audio/aac",  "m4a":  "audio/mp4", "flac": "audio/flac",
+                "wav": "audio/wav"}.get(ext, "application/octet-stream")
+        return _serve_ranged(path, mime)
 
     @app.post("/api/mobile/logger/stop")
     @mobile_api_req

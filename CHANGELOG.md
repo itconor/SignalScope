@@ -2,6 +2,16 @@
 
 ---
 
+## [Logger 1.5.6] - 2026-03-29
+
+### Added
+- **`/api/mobile/logger/play_file`** — new mobile API endpoint for desktop player audio. Creates a relay slot and queues a `stream_file` command to the client node, which sends the original OGG/MP3/FLAC file bytes through the relay (no PCM transcoding). In single-node mode returns a direct `/audio_file` URL instead.
+- **`/api/mobile/logger/audio_file`** — serves the original audio file (OGG/MP3/FLAC/WAV) with mobile Bearer token auth and HTTP Range support. Used by the desktop player in single-node hub mode.
+- **`stream_file` hub command** — client-side handler in the hub poller; pushes raw file bytes to the relay slot in 64 KB chunks using the existing `_audio_post` infrastructure.
+- **`_push_file_to_relay()`** — sends raw audio file bytes to a relay slot without any FFmpeg transcoding.
+
+---
+
 ## [Logger 1.5.5] - 2026-03-29
 
 ### Changed
