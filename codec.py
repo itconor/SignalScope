@@ -51,13 +51,16 @@ def _clear_session(did: str):
 
 # ── Device type registry ────────────────────────────────────────────────────
 _DTYPES = {
-    "comrex":     {"label": "Comrex",                  "port": 80,  "method": "http"},
-    "tieline":    {"label": "Tieline",                 "port": 80,  "method": "http"},
-    "quantum_st": {"label": "Prodys Quantum ST",       "port": 161, "method": "snmp"},
-    "apt":        {"label": "APT / WorldCast Quantum", "port": 161, "method": "snmp"},
-    "custom":     {"label": "Custom",                  "port": 80,  "method": "http"},
-    "tcp":        {"label": "TCP Ping Only",           "port": 80,  "method": "tcp"},
+    "comrex":     {"label": "Comrex",                  "port": 80,  "method": "http", "dual": False},
+    "tieline":    {"label": "Tieline",                 "port": 80,  "method": "http", "dual": False},
+    "quantum_st": {"label": "Prodys Quantum ST",       "port": 80,  "method": "http", "dual": True},
+    "apt":        {"label": "APT / WorldCast Quantum", "port": 80,  "method": "http", "dual": True},
+    "custom":     {"label": "Custom",                  "port": 80,  "method": "http", "dual": False},
+    "tcp":        {"label": "TCP Ping Only",           "port": 80,  "method": "tcp",  "dual": False},
 }
+# Devices whose physical unit contains two independent codecs (A + B).
+# _check_device returns {"a": status, "b": status} for these.
+_DUAL_CODEC_TYPES = {"quantum_st", "apt"}
 
 _STATE_COLOUR = {
     "connected":    "#22c55e",
@@ -126,13 +129,17 @@ def _snmp_get(host, community, oid, port=161, timeout=5):
         return None, str(e)[:120]
 
 def _http_check(dev, timeout=8):
-    """HTTP GET → (state, detail, remote_name).
+    """HTTP GET → (state, detail, remote_name)."""
+    state, detail, remote, _ = _http_check_with_body(dev, timeout)
+    return state, detail, remote
 
-    Supports no auth, HTTP Basic, and HTTP Digest auth.  When credentials are
-    configured we build an opener with both Basic and Digest handlers so the
-    correct scheme is selected automatically after the server's 401 challenge.
-    For devices with no auth we still pre-send a Basic header to avoid a
-    wasted round-trip.
+
+def _http_check_with_body(dev, timeout=8):
+    """HTTP GET → (state, detail, remote_name, body_str|None).
+
+    Returns the raw response body as the 4th element so dual-codec scrapers
+    can split it into A and B without a second network round-trip.
+    Supports no auth, HTTP Basic, and HTTP Digest auth.
     """
     host     = dev.get("host", "").strip()
     port     = int(dev.get("port", 80))
@@ -170,12 +177,13 @@ def _http_check(dev, timeout=8):
         if e.code == 401:
             hint = "Log in via the device page (🌐 button)" if not user else \
                    "Auth failed — check username/password or use the device page to log in"
-            return "error", f"Auth required — {hint}", ""
-        return "offline", f"HTTP {e.code}", ""
+            return "error", f"Auth required — {hint}", "", None
+        return "offline", f"HTTP {e.code}", "", None
     except Exception as e:
-        return "offline", str(e)[:100], ""
+        return "offline", str(e)[:100], "", None
 
-    return _parse_body(dtype, body)
+    state, detail, remote = _parse_body(dtype, body)
+    return state, detail, remote, body
 
 def _default_ep(dtype):
     return {"tieline": "/api/v1/status", "comrex": "/", "quantum_st": "/", "apt": "/"}.get(dtype, "/")
@@ -286,27 +294,48 @@ def _snmp_check(dev):
 
 # ── Device poll ─────────────────────────────────────────────────────────────
 def _check_device(dev):
-    """Poll one device. Returns {state, detail, remote}."""
+    """
+    Poll one device.
+    Single-codec devices return {state, detail, remote}.
+    Dual-codec devices (quantum_st, apt) return {"a": {...}, "b": {...}}.
+    """
     host   = dev.get("host", "").strip()
     port   = int(dev.get("port", 80))
     dtype  = dev.get("type", "custom")
     method = dev.get("method", _DTYPES.get(dtype, {}).get("method", "http"))
+    dual   = dtype in _DUAL_CODEC_TYPES
 
     if not host:
-        return {"state": "unknown", "detail": "No host configured", "remote": ""}
+        empty = {"state": "unknown", "detail": "No host configured", "remote": ""}
+        return {"a": empty, "b": empty} if dual else empty
 
     if method == "tcp":
-        ok = _tcp_ok(host, port)
-        return {"state": "idle" if ok else "offline",
-                "detail": "TCP reachable" if ok else "TCP unreachable",
-                "remote": ""}
+        ok    = _tcp_ok(host, port)
+        single = {"state": "idle" if ok else "offline",
+                  "detail": "TCP reachable" if ok else "TCP unreachable",
+                  "remote": ""}
+        return {"a": single, "b": dict(single)} if dual else single
 
     if method == "snmp":
         state, detail, remote = _snmp_check(dev)
-    else:
-        state, detail, remote = _http_check(dev)
+        single = {"state": state, "detail": detail, "remote": remote}
+        return {"a": single, "b": dict(single)} if dual else single
 
-    return {"state": state, "detail": detail, "remote": remote}
+    # HTTP — fetch the page once and parse
+    state, detail, remote, body = _http_check_with_body(dev)
+    if not dual:
+        return {"state": state, "detail": detail, "remote": remote}
+
+    # Dual-codec: try to split the page into A and B
+    if body and state != "offline":
+        sa, da, ra, sb, db, rb = _scrape_dual(body)
+        return {
+            "a": {"state": sa, "detail": da, "remote": ra},
+            "b": {"state": sb, "detail": db, "remote": rb},
+        }
+    # Device offline or no body — report same state for both
+    empty = {"state": state, "detail": detail, "remote": remote}
+    return {"a": empty, "b": dict(empty)}
 
 # ── Background poller ───────────────────────────────────────────────────────
 def _poller():
@@ -322,27 +351,60 @@ def _poller():
             if not did or now < _next.get(did, 0):
                 continue
             _next[did] = now + interval
+            dtype = dev.get("type", "custom")
+            dual  = dtype in _DUAL_CODEC_TYPES
             try:
                 new = _check_device(dev)
             except Exception as e:
-                new = {"state": "error", "detail": str(e)[:100], "remote": ""}
-            new["last_checked"] = now
+                err = {"state": "error", "detail": str(e)[:100], "remote": ""}
+                new = {"a": err, "b": dict(err)} if dual else err
+
+            now2 = time.time()
             with _lock:
-                old       = _status.get(did, {})
-                old_state = old.get("state", "unknown")
-                new_state = new["state"]
-                new["last_change"] = (
-                    old.get("last_change", now)
-                    if old_state == new_state else now
-                )
-                _status[did] = new
-            # State-change alerts
-            if old_state not in ("offline", "disconnected", "unknown", "error") \
-                    and new_state in ("offline", "disconnected", "error"):
-                _do_alert(dev, new_state, new.get("detail", ""))
-            elif old_state in ("offline", "disconnected", "error") \
-                    and new_state in ("connected", "idle"):
-                _do_recovery(dev, new_state)
+                old = _status.get(did, {})
+                if dual:
+                    # Merge A and B independently, preserving last_change
+                    updated = {}
+                    for ch in ("a", "b"):
+                        n_ch      = new.get(ch, {})
+                        o_ch      = old.get(ch, {})
+                        n_state   = n_ch.get("state", "unknown")
+                        o_state   = o_ch.get("state", "unknown")
+                        n_ch["last_checked"] = now2
+                        n_ch["last_change"]  = (o_ch.get("last_change", now2)
+                                                if n_state == o_state else now2)
+                        updated[ch] = n_ch
+                    updated["last_checked"] = now2
+                    _status[did] = updated
+                else:
+                    old_state = old.get("state", "unknown")
+                    new_state = new.get("state", "unknown")
+                    new["last_checked"] = now2
+                    new["last_change"]  = (old.get("last_change", now2)
+                                           if old_state == new_state else now2)
+                    _status[did] = new
+
+            # Per-channel state-change alerts
+            if dual:
+                for ch in ("a", "b"):
+                    o_state = old.get(ch, {}).get("state", "unknown")
+                    n_state = new.get(ch, {}).get("state", "unknown")
+                    ch_lbl  = f" Codec {'A' if ch == 'a' else 'B'}"
+                    if o_state not in ("offline", "disconnected", "unknown", "error") \
+                            and n_state in ("offline", "disconnected", "error"):
+                        _do_alert(dev, n_state, new[ch].get("detail", ""), ch_lbl)
+                    elif o_state in ("offline", "disconnected", "error") \
+                            and n_state in ("connected", "idle"):
+                        _do_recovery(dev, n_state, ch_lbl)
+            else:
+                o_state = old.get("state", "unknown")
+                n_state = new.get("state", "unknown")
+                if o_state not in ("offline", "disconnected", "unknown", "error") \
+                        and n_state in ("offline", "disconnected", "error"):
+                    _do_alert(dev, n_state, new.get("detail", ""))
+                elif o_state in ("offline", "disconnected", "error") \
+                        and n_state in ("connected", "idle"):
+                    _do_recovery(dev, n_state)
         time.sleep(2)
 
 # ── Alert log integration ───────────────────────────────────────────────────
@@ -379,21 +441,23 @@ def _append_alert(stream, atype, message):
         except Exception as e:
             _log(f"[Codec] Alert log error: {e}")
 
-def _do_alert(dev, state, detail):
+def _do_alert(dev, state, detail, channel_label: str = ""):
     name   = dev.get("name", dev.get("host", "?"))
     dtype  = _DTYPES.get(dev.get("type", ""), {}).get("label", dev.get("type", "Codec"))
     stream = dev.get("stream", name)
+    label  = f"{name}{channel_label}"
     _append_alert(stream, "CODEC_FAULT",
-                  f"[{dtype}] {name} — {_STATE_LABEL.get(state, state)}: {detail}")
-    _log(f"[Codec] FAULT — {name} → {state}: {detail}")
+                  f"[{dtype}] {label} — {_STATE_LABEL.get(state, state)}: {detail}")
+    _log(f"[Codec] FAULT — {label} → {state}: {detail}")
 
-def _do_recovery(dev, state):
+def _do_recovery(dev, state, channel_label: str = ""):
     name   = dev.get("name", dev.get("host", "?"))
     dtype  = _DTYPES.get(dev.get("type", ""), {}).get("label", dev.get("type", "Codec"))
     stream = dev.get("stream", name)
+    label  = f"{name}{channel_label}"
     _append_alert(stream, "CODEC_RECOVERY",
-                  f"[{dtype}] {name} — recovered ({_STATE_LABEL.get(state, state)})")
-    _log(f"[Codec] RECOVERED — {name} → {state}")
+                  f"[{dtype}] {label} — recovered ({_STATE_LABEL.get(state, state)})")
+    _log(f"[Codec] RECOVERED — {label} → {state}")
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 def _dev_by_id(did):
@@ -461,6 +525,16 @@ h1{font-size:1.3em;font-weight:600;color:var(--tx);margin-bottom:20px}
 .card-remote{font-size:12px;color:var(--gn);margin-top:3px;min-height:14px}
 .card-meta{font-size:11px;color:#4a7899;margin-top:8px;display:flex;
   justify-content:space-between}
+/* Dual-codec A/B split */
+.dual-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.ch-block{background:var(--bg3);border-radius:5px;padding:8px 10px}
+.ch-label{font-size:10px;font-weight:700;color:var(--tx2);letter-spacing:.05em;
+  margin-bottom:4px}
+.ch-badge{display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600}
+.ch-detail{font-size:11px;color:var(--tx2);margin-top:3px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.ch-remote{font-size:11px;color:#22c55e;margin-top:2px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
 .card-actions{display:flex;gap:6px;margin-top:12px}
 .card-actions .btn{padding:4px 10px;font-size:12px}
 .empty{text-align:center;color:var(--tx2);padding:60px 20px;font-size:15px}
@@ -802,6 +876,19 @@ function _dur(ts){
   return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h';
 }
 
+function _chBlock(ch, st){
+  if(!st) return '';
+  var col = _stateColour(st.state||'unknown');
+  var lbl = _stateLabel(st.state||'unknown');
+  return '<div class="ch-block">'+
+    '<div class="ch-label">CODEC '+ch.toUpperCase()+'</div>'+
+    '<div class="ch-badge"><div class="dot" style="background:'+col+'"></div>'+
+      '<span style="color:'+col+'">'+lbl+'</span></div>'+
+    (st.remote?'<div class="ch-remote">⇄ '+_esc(st.remote)+'</div>':'')+
+    '<div class="ch-detail">'+_esc(st.detail||'')+'</div>'+
+  '</div>';
+}
+
 function loadStatus(){
   fetch('/api/codecs/status').then(r=>r.json()).then(function(data){
     var grid = document.getElementById('grid');
@@ -810,31 +897,45 @@ function loadStatus(){
       return;
     }
     grid.innerHTML = data.devices.map(function(d){
-      var st = d.status||{};
-      var state = st.state||'unknown';
-      var col   = _stateColour(state);
-      var lbl   = _stateLabel(state);
+      var st    = d.status||{};
+      var dual  = d.dual_codec;
       var dtype = d.type_label||d.type;
       var checked = _age(st.last_checked);
-      var dur   = st.last_change ? _dur(st.last_change) : '';
-      var detail = st.detail||'';
-      var remote = st.remote ? '⇄ '+st.remote : '';
+
+      // For card header badge: single = st directly, dual = worst of A/B
+      var headState, headCol, headLbl;
+      if(dual){
+        var sa = (st.a||{}).state||'unknown', sb = (st.b||{}).state||'unknown';
+        var rank = {connected:0,idle:1,unknown:2,disconnected:3,error:4,offline:4};
+        headState = (rank[sa]||0) >= (rank[sb]||0) ? sa : sb;
+        headCol = _stateColour(headState); headLbl = _stateLabel(headState);
+      } else {
+        headState = st.state||'unknown';
+        headCol = _stateColour(headState); headLbl = _stateLabel(headState);
+      }
+
+      var bodyHtml = dual
+        ? '<div class="dual-row">'+_chBlock('a',st.a)+_chBlock('b',st.b)+'</div>'
+        : (st.remote?'<div class="card-remote">⇄ '+_esc(st.remote)+'</div>':'')+
+          '<div class="card-detail">'+_esc(st.detail||'')+'</div>';
+
+      var dur = st.last_change ? _dur(st.last_change) : '';
+
       return '<div class="card">'+
         '<div class="card-head">'+
           '<div><div class="card-name">'+_esc(d.name)+'</div>'+
           '<span class="card-type">'+_esc(dtype)+'</span>'+
-          (d.has_session?' <span style="font-size:10px;color:#22c55e" title="Session active — logged in via device page">● session</span>':'')+
+          (d.has_session?' <span style="font-size:10px;color:#22c55e" title="Session active">● session</span>':'')+
           '</div>'+
           '<div class="card-badge">'+
-            '<div class="dot" style="background:'+col+'"></div>'+
-            '<span style="color:'+col+'">'+lbl+'</span>'+
+            '<div class="dot" style="background:'+headCol+'"></div>'+
+            '<span style="color:'+headCol+'">'+headLbl+'</span>'+
           '</div>'+
         '</div>'+
-        (remote?'<div class="card-remote">'+_esc(remote)+'</div>':'')+
-        '<div class="card-detail">'+_esc(detail)+'</div>'+
+        bodyHtml+
         '<div class="card-meta">'+
           '<span>Checked '+checked+'</span>'+
-          (dur?'<span style="color:'+col+'">'+lbl+' '+dur+'</span>':'')+
+          (!dual&&dur?'<span style="color:'+headCol+'">'+headLbl+' '+dur+'</span>':'')+
         '</div>'+
         '<div class="card-actions">'+
           '<button class="btn bw check-btn" data-id="'+d.id+'">↻ Check</button>'+
@@ -875,6 +976,262 @@ _autoRefresh = setInterval(loadStatus, 30000);
 loadStatus();
 </script>
 </body></html>"""
+
+# ── Dual-codec HTML scraper ────────────────────────────────────────────────
+def _scrape_dual(body: str):
+    """
+    Split a two-column device page (Prodys Quantum ST, APT WorldCast) into
+    left (Codec A) and right (Codec B) and return (state_a, detail_a, remote_a,
+    state_b, detail_b, remote_b).
+
+    Strategy:
+    1. Look for explicit A/B or 1/2 column markers in the HTML (class/id names).
+    2. Fall back to splitting the body at its midpoint and parsing each half.
+    """
+
+    def _extract(fragment: str, label: str):
+        """Parse one column fragment and return (state, detail, remote)."""
+        # Delegate to the existing keyword parser, tagged with a dummy dtype
+        state, detail, remote = _parse_body("custom", fragment)
+        return state, detail, remote
+
+    # ── Strategy 1: explicit A/B markers in class or id ─────────────────────
+    # Look for containers like: id/class containing "codec-a", "codec_a",
+    # "channel-a", "encoder-a", "enc1", "codec1", "left", "portA" etc.
+    _A_PATS = re.compile(
+        r'(?:id|class)\s*=\s*["\'][^"\']*(?:codec[-_]?a|channel[-_]?a|enc(?:oder)?[-_]?a|'
+        r'enc(?:oder)?[-_]?1|codec[-_]?1|channel[-_]?1|left[-_]?codec|portA|port[-_]?a)[^"\']*["\']',
+        re.I,
+    )
+    _B_PATS = re.compile(
+        r'(?:id|class)\s*=\s*["\'][^"\']*(?:codec[-_]?b|channel[-_]?b|enc(?:oder)?[-_]?b|'
+        r'enc(?:oder)?[-_]?2|codec[-_]?2|channel[-_]?2|right[-_]?codec|portB|port[-_]?b)[^"\']*["\']',
+        re.I,
+    )
+    m_a = _A_PATS.search(body)
+    m_b = _B_PATS.search(body)
+
+    if m_a and m_b:
+        # Find each container block (next closing tag sequence after the match)
+        def _block(start_pos: int) -> str:
+            """Grab ~8 kB of HTML starting from start_pos."""
+            return body[start_pos: start_pos + 8192]
+
+        frag_a = _block(m_a.start())
+        frag_b = _block(m_b.start())
+        sa, da, ra = _extract(frag_a, "A")
+        sb, db, rb = _extract(frag_b, "B")
+        return sa, da, ra, sb, db, rb
+
+    # ── Strategy 2: split at midpoint ────────────────────────────────────────
+    mid = len(body) // 2
+    frag_a = body[:mid]
+    frag_b = body[mid:]
+    sa, da, ra = _extract(frag_a, "A")
+    sb, db, rb = _extract(frag_b, "B")
+    return sa, da, ra, sb, db, rb
+
+
+# ── SNMP trap receiver ──────────────────────────────────────────────────────
+# Listens on UDP (default port 10162 — no root required).
+# Configure your Quantum ST / APT device to send traps to the hub IP on this port.
+# Traps update _status immediately without waiting for the next poll cycle.
+#
+# Trap → device mapping is by source IP.  If a trap arrives from an IP that
+# matches a configured device's host, the device's status is updated instantly.
+# For dual-codec devices the codec channel (A or B) is inferred from the
+# varbind OID last-component (even index → A, odd → B, or explicit 1/2 suffix).
+
+_TRAP_PORT = 10162   # overridden by global config (see register())
+
+def _start_trap_receiver(port: int):
+    import socket as _sock
+    _log(f"[Codec] SNMP trap receiver starting on UDP {port}")
+    try:
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+        s.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", port))
+        s.settimeout(1.0)
+    except Exception as e:
+        _log(f"[Codec] Trap receiver failed to bind UDP {port}: {e}")
+        return
+
+    _log(f"[Codec] SNMP trap receiver listening on UDP {port}")
+    while True:
+        try:
+            data, addr = s.recvfrom(65535)
+            src_ip = addr[0]
+            threading.Thread(target=_handle_trap, args=(data, src_ip),
+                             daemon=True).start()
+        except _sock.timeout:
+            continue
+        except Exception as e:
+            _log(f"[Codec] Trap recv error: {e}")
+
+
+def _handle_trap(data: bytes, src_ip: str):
+    """Parse an incoming SNMP trap and update the matching device's status."""
+    # Find device by host IP
+    with _lock:
+        matching = [d for d in _devices if d.get("host", "").strip() == src_ip]
+    if not matching:
+        return   # no configured device for this IP
+
+    # Try pysnmp parsing first; fall back to raw heuristic
+    trap_info = _parse_trap_pysnmp(data) or _parse_trap_raw(data)
+    if not trap_info:
+        return
+
+    event_type = trap_info.get("event", "")   # "connected"|"disconnected"|"idle"|""
+    channel    = trap_info.get("channel", "")  # "a"|"b"|""
+    detail     = trap_info.get("detail", "SNMP trap")
+
+    if not event_type:
+        return   # unrecognised trap, ignore
+
+    state = {
+        "connected":    "connected",
+        "disconnected": "disconnected",
+        "idle":         "idle",
+        "offline":      "offline",
+        "alarm":        "offline",
+    }.get(event_type, "unknown")
+
+    now = time.time()
+    for dev in matching:
+        did   = dev.get("id", "")
+        dtype = dev.get("type", "")
+        dual  = dtype in _DUAL_CODEC_TYPES
+
+        with _lock:
+            old = _status.get(did, {})
+            if dual:
+                ch_key = channel if channel in ("a", "b") else "a"
+                old_state = old.get(ch_key, {}).get("state", "unknown")
+                new_sub   = {"state": state, "detail": f"[trap] {detail}",
+                             "remote": trap_info.get("remote", ""),
+                             "last_checked": now,
+                             "last_change":  now if old_state != state
+                                             else old.get(ch_key, {}).get("last_change", now)}
+                updated = dict(old)
+                updated[ch_key] = new_sub
+                updated["last_checked"] = now
+                _status[did] = updated
+            else:
+                old_state = old.get("state", "unknown")
+                _status[did] = {
+                    "state":        state,
+                    "detail":       f"[trap] {detail}",
+                    "remote":       trap_info.get("remote", ""),
+                    "last_checked": now,
+                    "last_change":  now if old_state != state else old.get("last_change", now),
+                }
+
+        # Fire alerts on state change
+        if old_state not in ("offline", "disconnected", "unknown") and state in ("offline", "disconnected"):
+            _do_alert(dev, state, detail,
+                      channel_label=f" Codec {'A' if channel == 'a' else 'B'}" if dual and channel else "")
+        elif old_state in ("offline", "disconnected") and state in ("connected", "idle"):
+            _do_recovery(dev, state,
+                         channel_label=f" Codec {'A' if channel == 'a' else 'B'}" if dual and channel else "")
+
+        _log(f"[Codec] Trap from {src_ip}: {dev['name']}"
+             + (f" [{channel.upper()}]" if dual and channel else "")
+             + f" → {state}: {detail}")
+
+
+def _parse_trap_pysnmp(data: bytes) -> dict | None:
+    """Parse SNMP trap using pysnmp. Returns dict or None."""
+    try:
+        from pysnmp.proto import api as papi
+        msg_ver = int(papi.decodeMessageVersion(data))
+        p_mod   = papi.PROTOCOL_MODULES[msg_ver]
+        msg, _  = p_mod.Message(), None
+        from pyasn1.codec.ber import decoder as _ber
+        msg, _  = _ber.decode(data, asn1Spec=p_mod.Message())
+        pdu     = p_mod.apiMessage.getPDU(msg)
+
+        if msg_ver == papi.protoVersion1:
+            pdu_type = pdu.__class__.__name__
+            enterprise = str(p_mod.apiTrapPDU.getEnterprise(pdu))
+            vbs        = p_mod.apiTrapPDU.getVarBinds(pdu)
+        else:
+            pdu_type = pdu.__class__.__name__
+            vbs      = p_mod.apiPDU.getVarBinds(pdu)
+            enterprise = ""
+
+        return _interpret_varbinds(vbs, enterprise)
+    except Exception:
+        return None
+
+
+def _parse_trap_raw(data: bytes) -> dict | None:
+    """
+    Very simple raw SNMP heuristic — look for connection-state keywords in the
+    printable portion of the trap PDU bytes. Used when pysnmp is unavailable.
+    """
+    try:
+        printable = data.decode("latin-1", errors="replace").lower()
+        if any(x in printable for x in ("connect", "link up", "established")):
+            return {"event": "connected", "detail": "trap (raw)", "channel": ""}
+        if any(x in printable for x in ("disconnect", "link down", "terminated", "lost")):
+            return {"event": "disconnected", "detail": "trap (raw)", "channel": ""}
+        if any(x in printable for x in ("alarm", "fault", "fail")):
+            return {"event": "offline", "detail": "trap (raw)", "channel": ""}
+    except Exception:
+        pass
+    return None
+
+
+def _interpret_varbinds(vbs, enterprise: str = "") -> dict:
+    """
+    Convert pysnmp varbinds to a dict with event/channel/detail/remote.
+
+    Prodys enterprise OID: 1.3.6.1.4.1.32775
+    APT/WorldCast OID:     1.3.6.1.4.1.7034
+    Channel inference:
+    - OID ends in .1.x or contains "EncoderA" / "ChannelA" → channel "a"
+    - OID ends in .2.x or contains "EncoderB" / "ChannelB" → channel "b"
+    """
+    channel = ""
+    detail  = ""
+    event   = ""
+    remote  = ""
+
+    for oid, val in vbs:
+        oid_str = str(oid)
+        val_str = str(val).strip()
+        val_low = val_str.lower()
+
+        # ── Channel detection ────────────────────────────────────────────────
+        if not channel:
+            if re.search(r'\b(encoder|channel|codec)[-_]?a\b', oid_str, re.I) or \
+               oid_str.endswith(".1.0") or re.search(r'\.1\.\d+$', oid_str):
+                channel = "a"
+            elif re.search(r'\b(encoder|channel|codec)[-_]?b\b', oid_str, re.I) or \
+                 oid_str.endswith(".2.0") or re.search(r'\.2\.\d+$', oid_str):
+                channel = "b"
+
+        # ── Event detection ──────────────────────────────────────────────────
+        if not event:
+            if any(x in val_low for x in ("connect", "established", "up", "linked")):
+                event = "connected"
+            elif any(x in val_low for x in ("disconnect", "down", "lost", "terminat")):
+                event = "disconnected"
+            elif any(x in val_low for x in ("alarm", "fault", "fail", "error")):
+                event = "offline"
+            elif any(x in val_low for x in ("idle", "ready", "standby", "waiting")):
+                event = "idle"
+
+        # ── Remote name ──────────────────────────────────────────────────────
+        if not remote and re.search(r'(remote|peer|caller|address)', oid_str, re.I):
+            if val_str and val_str not in ("0", ""):
+                remote = val_str[:60]
+
+        detail = detail or val_str[:80]
+
+    return {"event": event, "channel": channel, "detail": detail, "remote": remote}
+
 
 # ── Proxy helpers ──────────────────────────────────────────────────────────
 def _rewrite_html(html: str, did: str, current_path: str) -> str:
@@ -982,6 +1339,20 @@ def register(app, ctx):
     t = threading.Thread(target=_poller, daemon=True, name="CodecPoller")
     t.start()
 
+    # Start SNMP trap receiver
+    # Port is read from codec_devices.json metadata key "trap_port" (default 10162).
+    # Change to 162 if SignalScope runs as root or has CAP_NET_BIND_SERVICE.
+    trap_port = 10162
+    try:
+        meta_file = _cfg_file.parent / "codec_trap_port"
+        if meta_file.exists():
+            trap_port = int(meta_file.read_text().strip())
+    except Exception:
+        pass
+    tr = threading.Thread(target=_start_trap_receiver, args=(trap_port,),
+                          daemon=True, name="CodecTrapRecv")
+    tr.start()
+
     # ── Web routes ────────────────────────────────────────────────────────
     @app.get("/hub/codecs")
     @login_req
@@ -1005,6 +1376,7 @@ def register(app, ctx):
             row.pop("password", None)  # never send password to browser
             row["type_label"]  = _DTYPES.get(d.get("type", ""), {}).get("label", d.get("type", ""))
             row["has_session"] = _has_session(did)
+            row["dual_codec"]  = d.get("type", "") in _DUAL_CODEC_TYPES
             row["status"] = stat.get(did, {"state": "unknown", "detail": "Not yet checked"})
             out.append(row)
         return jsonify({"devices": out})
@@ -1147,25 +1519,49 @@ def register(app, ctx):
             devs = list(_devices)
             stat = dict(_status)
         out = []
+        now = time.time()
         for d in devs:
-            did = d.get("id", "")
-            st  = stat.get(did, {"state": "unknown"})
-            out.append({
+            did  = d.get("id", "")
+            st   = stat.get(did, {})
+            dual = d.get("type", "") in _DUAL_CODEC_TYPES
+
+            def _ch_obj(sub):
+                return {
+                    "state":       sub.get("state", "unknown"),
+                    "state_label": _STATE_LABEL.get(sub.get("state", "unknown"), "Unknown"),
+                    "detail":      sub.get("detail", ""),
+                    "remote":      sub.get("remote", ""),
+                    "last_change": sub.get("last_change"),
+                    "duration_s":  int(now - sub["last_change"]) if sub.get("last_change") else None,
+                }
+
+            row = {
                 "id":           did,
                 "name":         d.get("name", ""),
                 "type":         d.get("type", ""),
                 "type_label":   _DTYPES.get(d.get("type",""), {}).get("label", d.get("type","")),
+                "dual_codec":   dual,
                 "stream":       d.get("stream", ""),
                 "host":         d.get("host", ""),
-                "state":        st.get("state", "unknown"),
-                "state_label":  _STATE_LABEL.get(st.get("state","unknown"), "Unknown"),
-                "detail":       st.get("detail", ""),
-                "remote":       st.get("remote", ""),
                 "last_checked": st.get("last_checked"),
-                "last_change":  st.get("last_change"),
-                "duration_s":   int(time.time() - st["last_change"])
-                                if st.get("last_change") else None,
-            })
+            }
+            if dual:
+                row["codec_a"] = _ch_obj(st.get("a", {}))
+                row["codec_b"] = _ch_obj(st.get("b", {}))
+                # Top-level state = worst of A/B for simple checks
+                rank = {"connected": 0, "idle": 1, "unknown": 2,
+                        "disconnected": 3, "error": 4, "offline": 4}
+                sa = st.get("a", {}).get("state", "unknown")
+                sb = st.get("b", {}).get("state", "unknown")
+                row["state"] = sa if rank.get(sa, 0) >= rank.get(sb, 0) else sb
+            else:
+                row["state"]       = st.get("state", "unknown")
+                row["state_label"] = _STATE_LABEL.get(st.get("state", "unknown"), "Unknown")
+                row["detail"]      = st.get("detail", "")
+                row["remote"]      = st.get("remote", "")
+                row["last_change"] = st.get("last_change")
+                row["duration_s"]  = int(now - st["last_change"]) if st.get("last_change") else None
+            out.append(row)
         return jsonify({"codecs": out, "ts": time.time()})
 
     _log("[Codec] Plugin registered — polling started")

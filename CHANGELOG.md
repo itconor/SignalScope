@@ -2,6 +2,16 @@
 
 ---
 
+## [Codec Monitor 1.0.3] - 2026-03-29
+
+### Added
+- **Dual-codec support (Prodys Quantum ST / APT WorldCast)** — physical units with two codecs per box (Codec A left, Codec B right on the web interface) now display as a split A/B card. Each channel has its own status dot, remote name, and detail. The card header badge shows the worst state of the two. Per-channel `CODEC_FAULT` / `CODEC_RECOVERY` alerts are labelled "Codec A" / "Codec B" so Reports clearly identifies which channel faulted.
+- **SNMP trap receiver** — listens on UDP port 10162 (configurable via `codec_trap_port` file alongside `codec_devices.json`; change to 162 if running as root). Configure your Quantum ST / APT device to send traps to the hub IP on this port. Trap-triggered state changes update the dashboard and fire alerts instantly without waiting for the next poll cycle. Channel inference from trap OID patterns — OIDs with A/1 suffix → Codec A, B/2 suffix → Codec B. Falls back to raw keyword parsing if pysnmp is unavailable.
+- **Mobile API dual-codec fields** — `/api/mobile/codecs/status` now includes `dual_codec: true`, `codec_a: {state, state_label, detail, remote, duration_s}` and `codec_b: {...}` for dual-codec devices. Top-level `state` is the worst of A/B for backwards-compatible simple checks.
+- **Dual HTML scraper** — for HTTP-polled dual-codec devices, the page is fetched once and split into A/B halves. Strategy 1: look for explicit `id`/`class` attributes containing `codec-a`, `channel-b`, `encoder1`, `portA`, etc. Strategy 2: split at the page midpoint and parse each half independently.
+
+---
+
 ## [Codec Monitor 1.0.2] - 2026-03-29
 
 ### Added
