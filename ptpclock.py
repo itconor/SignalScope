@@ -476,9 +476,15 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
 .s-date{font-size:clamp(12px,1.8vw,20px);color:#64748b;margin-top:0.5vh;letter-spacing:0.1em}
 
 /* ── LED Dot Clock (Wharton-style) ─────────────────────────────── */
-.led{display:none;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%}
-.led-canvas-wrap{position:relative;width:min(85vh,85vw);height:min(85vh,85vw)}
+.led{display:none;flex-direction:row;align-items:center;justify-content:center;width:100%;height:100%;gap:clamp(16px,4vw,60px);padding:0 3vw}
+.led-canvas-wrap{position:relative;width:min(80vh,50vw);height:min(80vh,50vw);flex-shrink:0}
 .led-canvas-wrap canvas{width:100%;height:100%}
+.led-side{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:1.5vh;min-width:0}
+.led-side-logo{max-height:12vh;max-width:25vw;object-fit:contain}
+.led-side-brand{font-size:clamp(18px,3vw,42px);color:var(--text);font-weight:700;letter-spacing:0.08em;text-transform:uppercase;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+.led-side-date{font-size:clamp(12px,1.5vw,22px);color:var(--muted);letter-spacing:0.1em}
+.led-side-info{font-size:clamp(11px,1.2vw,16px);color:var(--muted)}
+.led-side-info .val{color:var(--text);font-weight:600;font-family:'SF Mono','Consolas',monospace}
 
 /* ── Mic Live ──────────────────────────────────────────────────── */
 .mic-bar{display:none;position:fixed;top:0;left:0;right:0;padding:10px 20px;text-align:center;font-size:clamp(16px,3vw,32px);font-weight:700;letter-spacing:0.15em;text-transform:uppercase;z-index:100;transition:all 0.3s}
@@ -536,6 +542,14 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
 <div class="led" id="v-led">
   <div class="led-canvas-wrap">
     <canvas id="led-canvas" width="800" height="800"></canvas>
+  </div>
+  <div class="led-side" id="led-side">
+    {% if has_logo %}<img class="led-side-logo" src="/api/hub/ptpclock/logo{{('?preset='+preset_id) if preset_id else ''}}" alt="">{% endif %}
+    <div class="led-side-brand" id="led-brand"></div>
+    <div class="led-side-date" id="led-date">---</div>
+    <div class="led-side-info">
+      <span id="led-tz-lbl">LOCAL</span> <span class="val" id="led-local">--:--:--</span>
+    </div>
   </div>
 </div>
 
@@ -595,6 +609,7 @@ document.querySelector('.mode-sw').addEventListener('click',function(e){
 if(_brand){
   document.getElementById('d-brand').textContent=_brand;
   document.getElementById('s-brand').textContent=_brand;
+  document.getElementById('led-brand').textContent=_brand;
   document.title=_brand+' — PTP Clock';
 }
 
@@ -725,10 +740,9 @@ function render(){
   if(_mode==='digital')renderDigital();
   else if(_mode==='studio')renderStudio();
   else if(_mode==='led')renderLed();
-  if(_mode!=='led'){
-    var dateId=_mode==='studio'?'s-date':'d-date';
-    document.getElementById(dateId).textContent=_dateStr;
-  }
+  var dateId=_mode==='studio'?'s-date':(_mode==='led'?'led-date':'d-date');
+  var dateEl=document.getElementById(dateId);
+  if(dateEl)dateEl.textContent=_dateStr;
   requestAnimationFrame(render);
 }
 function pad2(n){return n<10?'0'+n:''+n}
@@ -941,6 +955,10 @@ function renderLed(){
     }
     scx+=g[0].length*secGap+secGap;
   }
+
+  // Update side panel
+  var ledLocal=document.getElementById('led-local');
+  if(ledLocal)ledLocal.textContent=pad2(_locH)+':'+pad2(_locM)+':'+pad2(_locS);
 }
 
 // ── Init ──────────────────────────────────────────────────────────
@@ -1014,6 +1032,9 @@ def register(app, ctx):
             mode  = request.args.get("mode", "digital")
             stream = request.args.get("stream", "")
             colors = {"bg": "#0b1222", "accent": "#3b82f6", "text": "#e0e6f0", "muted": "#64748b"}
+        # LED mode defaults to red accent (classic Wharton look)
+        if mode == "led" and not preset:
+            colors["accent"] = "#ef4444"
         return render_template_string(DISPLAY_TPL, brand=brand, tz=tz,
                                        has_logo=has_logo, build=BUILD,
                                        initial_mode=mode, stream=stream,
