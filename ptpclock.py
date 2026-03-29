@@ -82,6 +82,10 @@ def _set_mic(preset_id, live):
 
 _ntp_cache = {"offset_ms": None, "server": "", "ts": 0}
 
+# ── Client clock presets cache (hub-side) ─────────────────────────
+_client_clocks_cache = {"data": [], "ts": 0}
+_client_clocks_lock = threading.Lock()
+
 def _check_ntp_offset(server):
     """Quick NTP offset check using ntpdate or sntp."""
     import subprocess
@@ -108,6 +112,44 @@ def _check_ntp_offset(server):
         except Exception:
             continue
     return None
+
+
+def _fetch_client_clocks(hub_server):
+    """Fetch clock presets from all connected client sites. Cached for 30s."""
+    now = _time.time()
+    with _client_clocks_lock:
+        if now - _client_clocks_cache["ts"] < 30:
+            return _client_clocks_cache["data"]
+    # Fetch in background-ish (blocking but fast — clients are on LAN)
+    results = []
+    if not hub_server:
+        return results
+    try:
+        import urllib.request
+        with hub_server._lock:
+            sites = {k: dict(v) for k, v in hub_server._sites.items() if v.get("_approved")}
+        for site_name, sdata in sites.items():
+            addr = sdata.get("_client_addr", "")
+            if not addr:
+                continue
+            url = f"{addr}/api/hub/ptpclock/settings"
+            try:
+                req = urllib.request.Request(url, headers={"Accept": "application/json"})
+                resp = urllib.request.urlopen(req, timeout=3)
+                d = json.loads(resp.read())
+                presets = d.get("presets", [])
+                for p in presets:
+                    p["_site"] = site_name
+                    p["_client_addr"] = addr
+                results.extend(presets)
+            except Exception:
+                pass  # client may not have the plugin or be unreachable
+    except Exception:
+        pass
+    with _client_clocks_lock:
+        _client_clocks_cache["data"] = results
+        _client_clocks_cache["ts"] = _time.time()
+    return results
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -268,6 +310,23 @@ input[type=text]:focus,select:focus{outline:none;border-color:#3b82f6}
     <span class="saved" id="preset-ok">Added</span>
   </div>
 </div>
+
+{% if client_clocks %}
+<div class="card">
+  <h2>Client Clocks</h2>
+  <div class="help" style="margin-bottom:8px">Clocks configured on connected client sites. Open them directly from the hub.</div>
+  {% for p in client_clocks %}
+  <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #1e293b">
+    <div style="flex:1">
+      <div style="font-size:14px;font-weight:600">{{p.name or p.brand or 'Untitled'}}</div>
+      <div style="font-size:11px;color:#64748b">{{p._site}} — {{p.mode or 'digital'}} — {{p.brand or 'No brand'}}{% if p.stream %} — Meters: {{p.stream.split(',')|length}}{% endif %}</div>
+    </div>
+    <a class="btn" style="font-size:11px;padding:4px 10px" href="{{p._client_addr}}/hub/ptpclock/display?preset={{p.id}}" target="_blank">Open on Client</a>
+    <a class="btn btn-outline" style="font-size:11px;padding:4px 10px" href="/hub/ptpclock/display?proxy_site={{p._site}}&preset={{p.id}}" target="_blank">Open via Hub</a>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
 
 <div class="card">
   <h2>Quick Links</h2>
@@ -513,7 +572,7 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
 
 <!-- Digital Clock -->
 <div class="digital" id="v-digital">
-  {% if has_logo %}<img class="d-logo" src="/api/hub/ptpclock/logo" alt="">{% endif %}
+  {% if has_logo %}<img class="d-logo" src="/api/hub/ptpclock/logo?preset={{preset_id}}{{'&proxy_site='+proxy_site if proxy_site else ''}}" alt="">{% endif %}
   <div class="d-brand" id="d-brand"></div>
   <div class="d-row">
     <div class="d-col">
@@ -544,7 +603,7 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
     <canvas id="led-canvas" width="800" height="800"></canvas>
   </div>
   <div class="led-side" id="led-side">
-    {% if has_logo %}<img class="led-side-logo" src="/api/hub/ptpclock/logo{{('?preset='+preset_id) if preset_id else ''}}" alt="">{% endif %}
+    {% if has_logo %}<img class="led-side-logo" src="/api/hub/ptpclock/logo?preset={{preset_id}}{{'&proxy_site='+proxy_site if proxy_site else ''}}" alt="">{% endif %}
     <div class="led-side-brand" id="led-brand"></div>
     <div class="led-side-date" id="led-date">---</div>
     <div class="led-side-info">
@@ -578,6 +637,7 @@ var _hasLogo={{has_logo|tojson}};
 var _presetId='{{preset_id|e}}';
 var _stream='{{stream|e}}';
 var _C={bg:'{{colors.bg}}',accent:'{{colors.accent}}',text:'{{colors.text}}',muted:'{{colors.muted}}'};
+var _proxySite='{{proxy_site|e}}';
 var _levelDb=-120,_peakDb=-120,_peakDecay=0;
 var _utcH=0,_utcM=0,_utcS=0,_utcMs=0;
 var _locH=0,_locM=0,_locS=0,_locMs=0;
@@ -625,7 +685,9 @@ if(_tz){
 // ── Preload logo for studio canvas ────────────────────────────────
 if(_hasLogo){
   _logoImg=new Image();
-  _logoImg.src='/api/hub/ptpclock/logo'+(_presetId?'?preset='+_presetId:'');
+  var _logoUrl='/api/hub/ptpclock/logo?preset='+(_presetId||'');
+  if(_proxySite)_logoUrl+='&proxy_site='+_proxySite;
+  _logoImg.src=_logoUrl;
 }
 
 // ── Level meters (multiple streams, comma-separated) ─────────────
@@ -1002,7 +1064,11 @@ def register(app, ctx):
                         if n and n not in streams:
                             streams.append(n)
         streams.sort()
-        return render_template_string(MENU_TPL, settings=settings, build=BUILD, streams=streams)
+        # Fetch client clocks if we're a hub
+        hub = ctx.get("hub_server")
+        client_clocks = _fetch_client_clocks(hub) if hub else []
+        return render_template_string(MENU_TPL, settings=settings, build=BUILD,
+                                       streams=streams, client_clocks=client_clocks)
 
     # ── Display page ──────────────────────────────────────────────────
     @app.get("/hub/ptpclock/display")
@@ -1010,8 +1076,27 @@ def register(app, ctx):
     def ptpclock_display():
         settings = _load_settings()
         preset_id = request.args.get("preset", "")
+        proxy_site = request.args.get("proxy_site", "")
         preset = None
-        if preset_id:
+
+        # If proxying a client's preset, fetch it from the client
+        if proxy_site and preset_id:
+            hub = ctx.get("hub_server")
+            if hub:
+                try:
+                    import urllib.request
+                    with hub._lock:
+                        sdata = hub._sites.get(proxy_site, {})
+                    addr = sdata.get("_client_addr", "")
+                    if addr:
+                        url = f"{addr}/api/hub/ptpclock/settings"
+                        resp = urllib.request.urlopen(url, timeout=3)
+                        d = json.loads(resp.read())
+                        preset = next((p for p in d.get("presets", []) if p.get("id") == preset_id), None)
+                except Exception:
+                    pass
+
+        if not preset and preset_id:
             preset = next((p for p in settings.get("presets", []) if p.get("id") == preset_id), None)
         if preset:
             brand = preset.get("brand", "")
@@ -1038,7 +1123,8 @@ def register(app, ctx):
         return render_template_string(DISPLAY_TPL, brand=brand, tz=tz,
                                        has_logo=has_logo, build=BUILD,
                                        initial_mode=mode, stream=stream,
-                                       preset_id=preset_id, colors=colors)
+                                       preset_id=preset_id, colors=colors,
+                                       proxy_site=proxy_site)
 
     # ── Time API ──────────────────────────────────────────────────────
     @app.get("/api/hub/ptpclock/time")
@@ -1151,8 +1237,31 @@ def register(app, ctx):
     @login_required
     def ptpclock_logo_serve():
         s = _load_settings()
-        # Check for preset-specific logo
         preset_id = request.args.get("preset", "")
+        proxy_site = request.args.get("proxy_site", "")
+
+        # Proxy logo from client site if requested
+        if proxy_site:
+            hub = ctx.get("hub_server")
+            if hub:
+                try:
+                    import urllib.request
+                    with hub._lock:
+                        sdata = hub._sites.get(proxy_site, {})
+                    addr = sdata.get("_client_addr", "")
+                    if addr:
+                        url = f"{addr}/api/hub/ptpclock/logo"
+                        if preset_id:
+                            url += f"?preset={preset_id}"
+                        resp = urllib.request.urlopen(url, timeout=5)
+                        data = resp.read()
+                        ct = resp.headers.get("Content-Type", "image/png")
+                        return Response(data, mimetype=ct)
+                except Exception:
+                    pass
+            return Response("", status=404)
+
+        # Local logo lookup
         fname = ""
         if preset_id:
             preset = next((p for p in s.get("presets", []) if p.get("id") == preset_id), None)
