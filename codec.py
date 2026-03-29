@@ -2,15 +2,19 @@
 # Drop alongside signalscope.py.  Hub-only plugin.
 
 SIGNALSCOPE_PLUGIN = {
-    "id":       "codec",
-    "label":    "Codecs",
-    "url":      "/hub/codecs",
-    "icon":     "📡",
-    "hub_only": True,
-    "version":  "1.0.2",
+    "id":      "codec",
+    "label":   "Codecs",
+    "url":     "/hub/codecs",
+    "icon":    "📡",
+    "version": "1.0.4",
+    # No hub_only — runs on both hub and client nodes.
+    # Client: polls local codecs, pushes status to hub.
+    # Hub: aggregates status from all connected sites.
 }
 
 import base64
+import hashlib
+import hmac as _hmac_mod
 import http.cookiejar
 import json
 import os
@@ -32,7 +36,15 @@ _lock        = threading.Lock()
 _devices     = []     # list[dict] — loaded from _cfg_file
 _status      = {}     # device_id → status dict
 _alert_fn    = None   # _alert_log_append from signalscope module
-_cookie_jars = {}     # device_id → http.cookiejar.CookieJar (captured login sessions)
+_cookie_jars     = {}   # device_id → http.cookiejar.CookieJar (captured login sessions)
+
+# Hub-side cache: receives codec status pushed by client nodes.
+# Keyed by site_name → {"devices": [...], "status": {...}, "ts": float}
+_hub_codec_cache = {}
+_hub_codec_lock  = threading.Lock()
+
+# Set in register() — used by the push thread on client nodes
+_monitor = None
 
 def _get_jar(did: str) -> http.cookiejar.CookieJar:
     """Return (creating if needed) the per-device cookie jar."""
@@ -48,6 +60,63 @@ def _has_session(did: str) -> bool:
 def _clear_session(did: str):
     """Discard the cookie jar for a device, forcing re-login."""
     _cookie_jars.pop(did, None)
+
+# ── HMAC signing (matches signalscope hub_verify_signature) ────────────────
+def _sign(secret: str, data: bytes, ts: float) -> str:
+    key = hashlib.sha256(f"{secret}:signing".encode()).digest()
+    msg = f"{int(ts)}:".encode() + data
+    return _hmac_mod.new(key, msg, hashlib.sha256).hexdigest()
+
+# ── Client → hub push thread ────────────────────────────────────────────────
+def _push_thread():
+    """
+    Runs on client nodes.  Pushes local codec status to the hub every 15 s
+    (or immediately after a state change via the poller).  Uses the same
+    HMAC signing scheme as audio chunk uploads so the hub can verify origin.
+    """
+    while True:
+        try:
+            cfg     = _monitor.app_cfg
+            hub_url = cfg.hub.hub_url.rstrip("/") if cfg.hub.hub_url else ""
+            if not hub_url:
+                time.sleep(30)
+                continue
+            site   = cfg.hub.site_name or "unknown"
+            secret = cfg.hub.secret_key or ""
+
+            with _lock:
+                devs = list(_devices)
+                stat = dict(_status)
+
+            # Strip passwords before sending
+            safe_devs = [{k: v for k, v in d.items() if k != "password"}
+                         for d in devs]
+
+            payload = json.dumps({
+                "site":    site,
+                "devices": safe_devs,
+                "status":  stat,
+                "ts":      time.time(),
+            }, default=str).encode()
+
+            ts  = time.time()
+            sig = _sign(secret, payload, ts) if secret else ""
+            req = urllib.request.Request(
+                f"{hub_url}/api/codecs/client_status",
+                data    = payload,
+                method  = "POST",
+                headers = {
+                    "Content-Type": "application/json",
+                    "X-Hub-Sig":    sig,
+                    "X-Hub-Ts":     str(int(ts)),
+                    "X-Site":       site,
+                },
+            )
+            urllib.request.urlopen(req, timeout=10).close()
+        except Exception as e:
+            _log(f"[Codec] Push to hub failed: {e}")
+        time.sleep(15)
+
 
 # ── Device type registry ────────────────────────────────────────────────────
 _DTYPES = {
@@ -538,6 +607,14 @@ h1{font-size:1.3em;font-weight:600;color:var(--tx);margin-bottom:20px}
 .card-actions{display:flex;gap:6px;margin-top:12px}
 .card-actions .btn{padding:4px 10px;font-size:12px}
 .empty{text-align:center;color:var(--tx2);padding:60px 20px;font-size:15px}
+.site-header{grid-column:1/-1;font-size:13px;font-weight:700;color:var(--tx2);
+  text-transform:uppercase;letter-spacing:.06em;padding:6px 0 8px;
+  border-bottom:1px solid var(--br);margin-top:12px}
+.site-header:first-child{margin-top:0}
+.site-grid{grid-column:1/-1;display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.stale-badge{font-size:10px;background:#7c3a00;color:#ffd;border-radius:3px;
+  padding:1px 5px;margin-left:4px;vertical-align:middle}
 /* Modal */
 .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);
   z-index:100;align-items:center;justify-content:center}
@@ -896,7 +973,24 @@ function loadStatus(){
       grid.innerHTML='<div class="empty">No codec devices configured.<br>Click <b>+ Add Device</b> to get started.</div>';
       return;
     }
-    grid.innerHTML = data.devices.map(function(d){
+
+    // Group by site when multiple sites present
+    var sites = {};
+    data.devices.forEach(function(d){
+      var s = d._site||'';
+      if(!sites[s]) sites[s]=[];
+      sites[s].push(d);
+    });
+    var siteNames = Object.keys(sites).sort();
+    var multiSite = siteNames.length > 1;
+
+    var html = '';
+    siteNames.forEach(function(siteName){
+      if(multiSite){
+        html += '<div class="site-header">'+_esc(siteName)+'</div>';
+        html += '<div class="site-grid">';
+      }
+      html += sites[siteName].map(function(d){
       var st    = d.status||{};
       var dual  = d.dual_codec;
       var dtype = d.type_label||d.type;
@@ -923,7 +1017,7 @@ function loadStatus(){
 
       return '<div class="card">'+
         '<div class="card-head">'+
-          '<div><div class="card-name">'+_esc(d.name)+'</div>'+
+          '<div><div class="card-name">'+_esc(d.name)+(d._stale?' <span class="stale-badge" title="No update from this site for >90s">stale</span>':'')+'</div>'+
           '<span class="card-type">'+_esc(dtype)+'</span>'+
           (d.has_session?' <span style="font-size:10px;color:#22c55e" title="Session active">● session</span>':'')+
           '</div>'+
@@ -963,6 +1057,9 @@ function loadStatus(){
         '</div>'+
       '</div>';
     }).join('');
+      if(multiSite) html += '</div>'; // close site-grid
+    });
+    grid.innerHTML = html;
   }).catch(function(e){ console.error('Status fetch failed',e); });
 }
 
@@ -1313,9 +1410,10 @@ def _proxy_fetch(dev, url_path: str, method: str = "GET",
 
 # ── register() ─────────────────────────────────────────────────────────────
 def register(app, ctx):
-    global _log, _cfg_file
+    global _log, _cfg_file, _monitor
 
-    _log        = ctx["monitor"].log
+    _monitor    = ctx["monitor"]
+    _log        = _monitor.log
     _cfg_file   = Path(ctx["monitor"].app_cfg.__class__.__module__
                        .replace(".", "/")).parent / "codec_devices.json"
 
@@ -1334,14 +1432,15 @@ def register(app, ctx):
     login_req  = ctx["login_required"]
     csrf_dec   = ctx["csrf_protect"]
     mobile_req = ctx.get("mobile_api_required", ctx["login_required"])
+    hub_server = ctx.get("hub_server")
+    is_hub     = hub_server is not None   # True on hub or both-mode nodes
 
-    # Start poller
+    # Always start the local poller (polls devices configured on this node)
     t = threading.Thread(target=_poller, daemon=True, name="CodecPoller")
     t.start()
 
-    # Start SNMP trap receiver
-    # Port is read from codec_devices.json metadata key "trap_port" (default 10162).
-    # Change to 162 if SignalScope runs as root or has CAP_NET_BIND_SERVICE.
+    # On client/both nodes: push status to hub + run SNMP trap receiver
+    # (Traps are sent from codecs on the LAN the client is on)
     trap_port = 10162
     try:
         meta_file = _cfg_file.parent / "codec_trap_port"
@@ -1352,6 +1451,13 @@ def register(app, ctx):
     tr = threading.Thread(target=_start_trap_receiver, args=(trap_port,),
                           daemon=True, name="CodecTrapRecv")
     tr.start()
+
+    cfg = _monitor.app_cfg
+    if cfg.hub.hub_url:
+        # This node has a hub to push to (client or both-mode)
+        pt = threading.Thread(target=_push_thread, daemon=True, name="CodecPush")
+        pt.start()
+        _log("[Codec] Client push thread started")
 
     # ── Web routes ────────────────────────────────────────────────────────
     @app.get("/hub/codecs")
@@ -1366,20 +1472,50 @@ def register(app, ctx):
     @login_req
     def codec_status():
         from flask import jsonify
+
+        # ── Local devices (configured on this node) ──────────────────────
         with _lock:
             devs = list(_devices)
             stat = dict(_status)
+
+        cfg_local = _monitor.app_cfg
+        local_site = cfg_local.hub.site_name or "(local)"
+
         out = []
         for d in devs:
             did = d.get("id", "")
             row = dict(d)
-            row.pop("password", None)  # never send password to browser
-            row["type_label"]  = _DTYPES.get(d.get("type", ""), {}).get("label", d.get("type", ""))
+            row.pop("password", None)
+            row["type_label"]  = _DTYPES.get(d.get("type",""), {}).get("label", d.get("type",""))
             row["has_session"] = _has_session(did)
-            row["dual_codec"]  = d.get("type", "") in _DUAL_CODEC_TYPES
-            row["status"] = stat.get(did, {"state": "unknown", "detail": "Not yet checked"})
+            row["dual_codec"]  = d.get("type","") in _DUAL_CODEC_TYPES
+            row["_site"]       = local_site
+            row["_local"]      = True
+            row["status"]      = stat.get(did, {"state": "unknown", "detail": "Not yet checked"})
             out.append(row)
-        return jsonify({"devices": out})
+
+        # ── Remote sites (hub only) ───────────────────────────────────────
+        if is_hub:
+            with _hub_codec_lock:
+                remote_cache = dict(_hub_codec_cache)
+            stale_thresh = time.time() - 90   # >90 s without update = stale
+            for site_name, entry in sorted(remote_cache.items()):
+                stale = entry.get("seen", 0) < stale_thresh
+                for d in entry.get("devices", []):
+                    did  = d.get("id", "")
+                    row  = dict(d)
+                    row.pop("password", None)
+                    row["type_label"] = _DTYPES.get(d.get("type",""), {}).get("label", d.get("type",""))
+                    row["has_session"] = False   # session lives on the remote client
+                    row["dual_codec"]  = d.get("type","") in _DUAL_CODEC_TYPES
+                    row["_site"]       = site_name
+                    row["_local"]      = False
+                    row["_stale"]      = stale
+                    row["status"]      = entry.get("status", {}).get(did,
+                                         {"state": "unknown", "detail": "No data yet"})
+                    out.append(row)
+
+        return jsonify({"devices": out, "is_hub": is_hub})
 
     @app.post("/api/codecs/devices")
     @login_req
@@ -1508,6 +1644,56 @@ def register(app, ctx):
         from flask import jsonify
         _clear_session(did)
         _log(f"[Codec] Session cleared for device {did}")
+        return jsonify({"ok": True})
+
+    # ── Hub: receive codec status pushed by client nodes ─────────────────
+    @app.post("/api/codecs/client_status")
+    def codec_client_status():
+        """
+        Receives codec status pushed by client nodes every 15 s.
+        Verifies the HMAC signature using the hub's shared secret.
+        No login_req — uses hub signature auth (same as heartbeat).
+        """
+        from flask import request, jsonify
+        cfg_hub = _monitor.app_cfg
+        secret  = cfg_hub.hub.secret_key or ""
+
+        raw = request.get_data()
+        if secret:
+            sig  = request.headers.get("X-Hub-Sig", "")
+            ts_h = request.headers.get("X-Hub-Ts",  "0")
+            try:
+                ts = float(ts_h)
+            except ValueError:
+                return jsonify({"error": "bad ts"}), 400
+            # Verify using same scheme as _sign()
+            key      = hashlib.sha256(f"{secret}:signing".encode()).digest()
+            msg      = f"{int(ts)}:".encode() + raw
+            expected = _hmac_mod.new(key, msg, hashlib.sha256).hexdigest()
+            if not _hmac_mod.compare_digest(expected, sig):
+                return jsonify({"error": "forbidden"}), 403
+
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return jsonify({"error": "bad json"}), 400
+
+        site    = str(data.get("site", "")).strip()
+        devices = data.get("devices", [])
+        status  = data.get("status", {})
+        ts_recv = data.get("ts", time.time())
+
+        if not site:
+            return jsonify({"error": "missing site"}), 400
+
+        with _hub_codec_lock:
+            _hub_codec_cache[site] = {
+                "devices": devices,
+                "status":  status,
+                "ts":      ts_recv,
+                "seen":    time.time(),
+            }
+
         return jsonify({"ok": True})
 
     # ── Mobile API ────────────────────────────────────────────────────────

@@ -86,7 +86,7 @@
     "file": "codec.py",
     "icon": "📡",
     "description": "Real-time connection monitor for broadcast contribution codecs — Comrex ACCESS/BRIC-Link, Tieline Gateway/ViA, Prodys Quantum ST, and APT/WorldCast Quantum. Polls each device via HTTP status-page scraping or SNMP and tracks connected/idle/offline state. Fires CODEC_FAULT and CODEC_RECOVERY alerts into the SignalScope Reports page on state changes. Mobile API at /api/mobile/codecs/status for the iOS app. Hub-only.",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "requirements": "pysnmp",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/codec.py"
   },

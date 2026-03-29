@@ -2,6 +2,16 @@
 
 ---
 
+## [Codec Monitor 1.0.4] - 2026-03-29
+
+### Changed
+- **Removed `hub_only` restriction** — Codec Monitor now runs on all node types (hub, client, both). Codec devices are configured per-node so they can be placed alongside the equipment they monitor on the local LAN.
+- **Client → hub push architecture** — client nodes poll their local codec devices and push aggregated status to the hub every 15 s via a signed HMAC POST to `/api/codecs/client_status`. The hub caches the latest status per site and merges it with its own local devices on the `/api/codecs/status` response.
+- **Multi-site card grouping** — when the hub aggregates codecs from multiple sites, the web dashboard groups cards under site-name section headers. Each site renders its own sub-grid so the layout remains consistent at all viewport widths.
+- **Stale indicator** — remote-site cards that have not received a push update in more than 90 s display a `stale` amber badge on the card header, clearly indicating that the status may be out of date (e.g. client node offline).
+
+---
+
 ## [Codec Monitor 1.0.3] - 2026-03-29
 
 ### Added
