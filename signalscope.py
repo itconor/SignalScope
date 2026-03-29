@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.61"
+BUILD                  = "SignalScope-3.4.62"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -20323,9 +20323,15 @@ def hub_clip_upload():
             f.write(wav_bytes)
         monitor.log(f"[Hub] Clip saved: {safe_key}/{fname} ({len(wav_bytes)//1024} KB)")
 
-    # Write to hub alert log so it appears on the Reports page
+    # Write to hub alert log so it appears on the Reports page.
+    # Use the client's original entry_id (sent in the upload payload) so that
+    # hub_reports() seen_ids deduplication suppresses this entry when the same
+    # event is already present in the site's recent_alerts heartbeat data.
+    # Generating a fresh UUID here (the old behaviour) caused every uploaded
+    # clip to appear twice — once from recent_alerts (site row) and again from
+    # the hub alert log (hub row).
     _alert_log_append({
-        "id":            str(uuid.uuid4()),
+        "id":            entry_id if entry_id else str(uuid.uuid4()),
         "ts":            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(clip_ts)),
         "stream":        f"{site} / {stream}",
         "type":          _alert_type,

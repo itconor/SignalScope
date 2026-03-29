@@ -2,6 +2,13 @@
 
 ---
 
+## [SignalScope 3.4.62] - 2026-03-29
+
+### Fixed
+- **Hub Reports duplicate clip rows** — When a client uploaded a clip, `hub_clip_upload` wrote a new entry to the hub alert log using a freshly generated UUID instead of the client's original event ID (`entry_id`). Because the IDs never matched, `hub_reports()`'s `seen_ids` deduplication never fired, and every uploaded clip appeared twice — once from the site's `recent_alerts` heartbeat (site row) and again from the hub alert log (`(hub)` row). Fixed: hub alert log entry now reuses `entry_id` from the upload payload when present, allowing the existing deduplication to suppress the duplicate. Falls back to a fresh UUID for old clients that don't send `entry_id`.
+
+---
+
 ## [Logger 1.4.28] - 2026-03-29
 
 ### Fixed
