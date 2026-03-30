@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.10",
+    "version": "1.5.11",
 }
 
 import datetime
@@ -244,6 +244,110 @@ def _push_file_to_relay(hub_url, slot_id, slug, date, filename, cfg, seek_s=0.0)
         _log(f"[Logger] FilePush: finished {filename}")
 
 
+def _hub_export_clip(slot_id: str, slug: str, date: str,
+                     start_s: float, end_s: float, fmt: str,
+                     hub_url: str, cfg):
+    """Run export locally and push the encoded bytes to the hub relay slot.
+
+    Called in a background thread when the HubPoller receives an
+    'export_clip' command.  The hub streams the relay slot bytes back to
+    the browser as a file download.
+    """
+    secret    = (getattr(cfg.hub, "secret_key", None) or "").strip()
+    chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
+
+    root    = _stream_rec_root_by_slug(_safe(slug))
+    day_dir = root / _safe(slug) / date
+    if not day_dir.exists():
+        _log(f"[Logger] HubExport: no recordings for {slug}/{date}")
+        return
+
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        _log("[Logger] HubExport: ffmpeg not found")
+        return
+
+    segs = _get_segments(_safe(slug), date, base_root=root)
+    audio_args, container, _, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
+
+    relevant = []
+    for seg in segs:
+        if not (seg["start_s"] + _SEG_SECS > start_s and seg["start_s"] < end_s):
+            continue
+        seg_path = day_dir / seg["filename"]
+        if not seg_path.exists():
+            continue
+        try:
+            _assert_within_rec_root(seg_path)
+        except ValueError:
+            continue
+        relevant.append((seg["start_s"], seg_path))
+
+    if not relevant:
+        _log(f"[Logger] HubExport: no segments in range {start_s:.0f}–{end_s:.0f}")
+        return
+
+    # Stream-copy optimisation — only when source and target are both MP3
+    _src_ext = relevant[0][1].suffix.lstrip(".")
+    if fmt == "mp3" and _src_ext == "mp3":
+        audio_args = ["-c", "copy"]
+
+    tf_name = None
+    proc    = None
+    try:
+        if len(relevant) == 1:
+            ss0, seg_path = relevant[0]
+            ss  = max(0.0, start_s - ss0)
+            cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
+                   "-ss", f"{ss:.3f}", "-i", str(seg_path),
+                   "-t", f"{end_s - start_s:.3f}",
+                   *audio_args, "-f", container, "pipe:1"]
+        else:
+            tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+            tf_name = tf.name
+            try:
+                for _, p in relevant:
+                    tf.write(f"file '{_ffmpeg_concat_escape(p)}'\n")
+            finally:
+                tf.close()
+            first_ss = relevant[0][0]
+            ss       = max(0.0, start_s - first_ss)
+            cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
+                   "-f", "concat", "-safe", "0", "-i", tf_name,
+                   "-ss", f"{ss:.3f}", "-t", f"{end_s - start_s:.3f}",
+                   *audio_args, "-f", container, "pipe:1"]
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        _log(f"[Logger] HubExport: started {slug}/{date} "
+             f"{start_s:.0f}–{end_s:.0f}s fmt={fmt} slot={slot_id}")
+
+        while True:
+            chunk = proc.stdout.read(65536)
+            if not chunk:
+                break
+            if not _audio_post(chunk_url, chunk, secret):
+                _log("[Logger] HubExport: relay slot gone — stopping")
+                proc.kill()
+                break
+
+        proc.wait()
+        _log(f"[Logger] HubExport: finished {slug}/{date} slot={slot_id}")
+
+    except Exception as e:
+        _log(f"[Logger] HubExport: error: {e}")
+    finally:
+        if proc:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        if tf_name:
+            try:
+                os.unlink(tf_name)
+            except Exception:
+                pass
+
+
 def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
     """Push PCM audio to a hub relay slot by transcoding a recorded segment with ffmpeg.
 
@@ -471,6 +575,21 @@ def _hub_logger_poller():
                         _hub_result_post(hub_url, secret, site,
                                          {"site": site, "type": "metadata",
                                           "slug": slug, "date": date, "events": events})
+
+                    elif ctype == "export_clip":
+                        slot_id = cmd.get("slot_id", "")
+                        slug    = cmd.get("slug", "")
+                        date    = cmd.get("date", "")
+                        start_s = float(cmd.get("start_s", 0))
+                        end_s   = float(cmd.get("end_s", 60))
+                        fmt     = cmd.get("fmt", "mp3")
+                        _log(f"[Logger] HubPoller: export_clip {slug}/{date} "
+                             f"{start_s:.0f}–{end_s:.0f}s fmt={fmt} slot={slot_id}")
+                        threading.Thread(
+                            target=_hub_export_clip,
+                            args=(slot_id, slug, date, start_s, end_s,
+                                  fmt, hub_url, cfg),
+                            daemon=True, name="LoggerHubExport").start()
 
                     else:
                         _log(f"[Logger] HubPoller: unknown command type '{ctype}'")
@@ -958,6 +1077,110 @@ def register(app, ctx):
             _log(f"[Logger] Hub meta: queuing cmd for site='{site}' slug='{slug}' date='{date}'")
             _hub_set_pending(site, {"type": "metadata", "slug": slug, "date": date})
             return jsonify({"pending": True})
+
+        @app.post("/api/logger/hub/export")
+        @login_req
+        @csrf_dec
+        def api_logger_hub_export():
+            """Queue an export_clip command to the client and return a relay slot ID.
+
+            The client runs ffmpeg locally and streams the encoded bytes back
+            to the hub relay slot.  The browser then fetches
+            /api/logger/hub/export_download/<slot_id> which serves the bytes
+            as a file download.
+            """
+            body    = request.get_json(force=True) or {}
+            site    = str(body.get("site",    "")).strip()
+            slug    = str(body.get("slug",    "")).strip()
+            date    = str(body.get("date",    "")).strip()
+            start_s = float(body.get("start_s", 0))
+            end_s   = float(body.get("end_s",   60))
+            fmt     = str(body.get("fmt",     "mp3")).strip()
+            if fmt not in ("mp3", "aac", "opus"):
+                fmt = "mp3"
+            if not (site and slug and date):
+                return jsonify({"error": "missing fields"}), 400
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+                return jsonify({"error": "bad date"}), 400
+            if end_s <= start_s or end_s - start_s > 7200:
+                return jsonify({"error": "invalid range (max 2 h)"}), 400
+            if not _listen_registry:
+                return jsonify({"error": "relay not available"}), 503
+
+            slot = _listen_registry.create(
+                site, 0, kind="scanner", mimetype="application/octet-stream")
+            _file_relay_slots.add(slot.slot_id)  # file mode — no silence injection
+
+            _hub_set_pending(site, {
+                "type":    "export_clip",
+                "slot_id": slot.slot_id,
+                "slug":    slug,
+                "date":    date,
+                "start_s": start_s,
+                "end_s":   end_s,
+                "fmt":     fmt,
+            })
+
+            _, _, mime, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
+            h    = int(start_s) // 3600
+            m    = (int(start_s) % 3600) // 60
+            dur  = int(end_s - start_s)
+            fname = f"{slug}_{date}_{h:02d}h{m:02d}m_{dur}s{ext}"
+            _log(f"[Logger] Hub export queued: site={site} {slug}/{date} "
+                 f"{start_s:.0f}–{end_s:.0f}s fmt={fmt} slot={slot.slot_id}")
+            return jsonify({"ok": True, "slot_id": slot.slot_id,
+                            "filename": fname, "mime": mime})
+
+        @app.get("/api/logger/hub/export_download/<slot_id>")
+        @login_req
+        def api_logger_hub_export_download(slot_id):
+            """Stream relay slot bytes back to the browser as a file download.
+
+            The generator waits up to 60 s for the client to start pushing,
+            then streams until 30 s of inactivity (EOF after ffmpeg finishes).
+            """
+            if not _listen_registry:
+                return ("", 503)
+            slot = _listen_registry.get(slot_id)
+            if not slot:
+                return ("", 404)
+
+            filename = request.args.get("filename", "export.mp3")
+            mime     = request.args.get("mime", "audio/mpeg")
+
+            def _gen():
+                last_data  = time.monotonic()
+                start_time = time.monotonic()
+                got_data   = False
+                try:
+                    while not getattr(slot, "closed", False):
+                        try:
+                            chunk = slot.get(timeout=0.5)
+                            if chunk is not None:
+                                last_data = time.monotonic()
+                                got_data  = True
+                                yield chunk
+                            elif not got_data:
+                                # Waiting for client to start pushing after receiving command
+                                if time.monotonic() - start_time > 60.0:
+                                    _log(f"[Logger] HubExportDL: timed out waiting for data (slot={slot_id})")
+                                    break
+                            else:
+                                # Client finished — inactivity means EOF
+                                if time.monotonic() - last_data > 30.0:
+                                    break
+                        except Exception:
+                            break
+                finally:
+                    _file_relay_slots.discard(slot_id)
+
+            return Response(
+                _gen(), mimetype=mime,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "X-Accel-Buffering":   "no",
+                    "Cache-Control":       "no-cache",
+                })
 
     # ── Regular logger routes ─────────────────────────────────────────────────
 
@@ -3818,7 +4041,7 @@ document.addEventListener('contextmenu', function(e){
   }
   updateInOutLabel(); updateScrubMarkers(); updateDayBarMarkers();
   document.getElementById('export-btn').disabled =
-    (_markIn === null || _markOut === null || !!_hubSite);
+    (_markIn === null || _markOut === null);
 });
 
 // ── Mark in/out ───────────────────────────────────────────────────────────
@@ -3835,7 +4058,7 @@ document.getElementById('mark-in-btn').addEventListener('click', function(){
   _markIn = _currentPlayPos();
   if(_markOut!==null && _markOut<=_markIn) _markOut=null;
   updateInOutLabel(); updateScrubMarkers(); updateDayBarMarkers();
-  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null||!!_hubSite);
+  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null);
 });
 
 document.getElementById('mark-out-btn').addEventListener('click', function(){
@@ -3843,7 +4066,7 @@ document.getElementById('mark-out-btn').addEventListener('click', function(){
   _markOut = _currentPlayPos();
   if(_markIn!==null && _markOut<=_markIn) _markIn=null;
   updateInOutLabel(); updateScrubMarkers(); updateDayBarMarkers();
-  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null||!!_hubSite);
+  document.getElementById('export-btn').disabled = (_markIn===null||_markOut===null);
 });
 
 function updateInOutLabel(){
@@ -3870,18 +4093,42 @@ document.getElementById('export-btn').addEventListener('click', function(){
   var fmt=(document.getElementById('export-fmt')||{}).value||'mp3';
   var extMap={mp3:'.mp3',aac:'.m4a',opus:'.webm'};
   var ext=extMap[fmt]||'.mp3';
-  fetch('/api/logger/export',{method:'POST',credentials:'same-origin',
-    headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
-    body:JSON.stringify({stream:_currentSlug,date:_currentDate,start_s:_markIn,end_s:_markOut,fmt:fmt})
-  }).then(function(r){
-    if(!r.ok){ return r.json().then(function(d){ alert('Export failed: '+(d.error||r.status)); }); }
-    return r.blob().then(function(blob){
+
+  if(_hubSite){
+    // Hub mode: ask hub to queue export command to client node, then
+    // open the relay-backed download URL which streams the result.
+    _post('/api/logger/hub/export',{
+      site:_hubSite, slug:_currentSlug, date:_currentDate,
+      start_s:_markIn, end_s:_markOut, fmt:fmt
+    }).then(function(r){
+      if(!r||!r.ok){ alert('Export failed: '+(r&&r.error)||'unknown error'); btn.disabled=false; btn.textContent='⬇ Export Clip'; return; }
+      var dlUrl='/api/logger/hub/export_download/'+r.slot_id
+        +'?filename='+encodeURIComponent(r.filename)
+        +'&mime='+encodeURIComponent(r.mime);
       var a=document.createElement('a');
-      a.href=URL.createObjectURL(blob);
-      a.download=_currentSlug+'_'+_currentDate+'_clip'+ext;
+      a.href=dlUrl; a.download=r.filename;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      // Re-enable after a moment — download has started in background
+      setTimeout(function(){ btn.disabled=false; btn.textContent='⬇ Export Clip'; }, 2000);
+    }).catch(function(e){
+      alert('Export failed: '+e);
+      btn.disabled=false; btn.textContent='⬇ Export Clip';
     });
-  }).finally(function(){ btn.disabled=false; btn.textContent='⬇ Export Clip'; });
+  } else {
+    // Direct / single-node mode: server runs ffmpeg and returns blob
+    fetch('/api/logger/export',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
+      body:JSON.stringify({stream:_currentSlug,date:_currentDate,start_s:_markIn,end_s:_markOut,fmt:fmt})
+    }).then(function(r){
+      if(!r.ok){ return r.json().then(function(d){ alert('Export failed: '+(d.error||r.status)); }); }
+      return r.blob().then(function(blob){
+        var a=document.createElement('a');
+        a.href=URL.createObjectURL(blob);
+        a.download=_currentSlug+'_'+_currentDate+'_clip'+ext;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      });
+    }).finally(function(){ btn.disabled=false; btn.textContent='⬇ Export Clip'; });
+  }
 });
 
 // ── Status ────────────────────────────────────────────────────────────────

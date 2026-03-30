@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.5.11] - 2026-03-30
+
+### Added
+- **Clip export now works in hub mode** — the Export Clip button is no longer greyed out when a hub site is selected. In hub mode, the hub queues an `export_clip` command to the client node; the client runs ffmpeg locally against its own recordings and streams the encoded bytes back to the hub through the existing relay infrastructure; the hub serves them to the browser as a file download with the correct MIME type and filename. All three formats (MP3, AAC, Opus) and multi-segment exports work identically to direct-mode export.
+
+---
+
 ## [Logger 1.5.10] - 2026-03-30
 
 ### Fixed
