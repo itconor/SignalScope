@@ -109,5 +109,15 @@
     "version": "1.4.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/ptpclock.py"
+  },
+  {
+    "id": "icecast",
+    "name": "Icecast Streaming",
+    "file": "icecast.py",
+    "icon": "📡",
+    "description": "Manage Icecast2 streaming servers on client nodes. Re-stream any monitored input to Icecast with live listener counts and hub-side overview.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/icecast.py"
   }
 ]

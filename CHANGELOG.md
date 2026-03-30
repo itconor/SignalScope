@@ -2983,3 +2983,14 @@ Full composite alert matrix:
 - **M-4 fix**: XOR fallback now uses version byte `\x03` (new) instead of `\x01` (legacy). Old `\x01` payloads from pre-3.4.68 clients are still decrypted without MAC verification (read-only compat). Prevents MAC mismatch errors during rolling upgrades for the rare case where `cryptography` package is not installed.
 - **M-5 fix (hub)**: Spectrum push endpoint now only rejects a *wrong* HMAC signature — an *absent* signature is allowed through during the upgrade window. Prevents 403 errors from old sdr.py clients that don't yet send `X-Hub-Sig` for spectrum frames.
 - **M-5 fix (client)**: `_sdr_worker` now includes `X-Hub-Sig` / `X-Hub-Ts` headers when pushing spectrum frames to the hub, when a shared secret is configured.
+
+## Icecast Plugin 1.0.0
+- New plugin: manage Icecast2 streaming servers on client nodes
+- Select any monitored input as a stream source (HTTP/HTTPS streams, ALSA devices, RTP)
+- Per-stream ffmpeg source processes push to local Icecast2 server (MP3 or OGG/Opus)
+- Live status: listener counts, connected state, stream URLs — auto-refreshes every 10s
+- Server settings management: port, source password, admin password
+- Auto-restarts dead ffmpeg processes for enabled streams
+- Hub overview page: all sites' Icecast streams and listener totals in one table
+- Hub can push start/stop commands and add new streams to any connected client
+- Mobile API endpoint: GET /api/mobile/icecast/streams
