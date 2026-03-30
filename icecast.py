@@ -13,17 +13,16 @@ SIGNALSCOPE_PLUGIN = {
 import hashlib as _hashlib
 import hmac as _hmac_mod
 import json
+import numpy as _np
 import os
 import re
 import shutil
 import signal
 import socket
 import subprocess
-import tempfile
 import threading
 import time
 import urllib.request as _urllib_req
-import urllib.error as _urllib_err
 import uuid
 
 from flask import abort, jsonify, render_template_string, request
@@ -45,7 +44,7 @@ _DEFAULT_CFG = {
 
 # ─── Module-level state ───────────────────────────────────────────────────────
 _icecast_proc: "subprocess.Popen | None" = None
-_stream_procs: dict  = {}   # stream_id → subprocess.Popen
+_stream_threads: dict = {}  # stream_id → IcecastStreamThread
 _stream_status: dict = {}   # stream_id → {listeners, connected, start_time, error}
 _client_statuses: dict = {} # hub side: site → status dict
 _pending_cmds: dict  = {}   # hub side: site → list[dict]
@@ -318,113 +317,236 @@ def _stop_icecast() -> "tuple[bool, str]":
     return True, "Killed"
 
 
-# ─── ffmpeg stream process management ────────────────────────────────────────
-
-def _build_ffmpeg_cmd(stream: dict, cfg: dict) -> "list[str] | None":
-    ffmpeg_bin = shutil.which("ffmpeg")
-    if not ffmpeg_bin:
-        return None
-
-    device      = stream.get("input_device", "")
-    bitrate     = int(stream.get("bitrate", 128))
-    fmt         = stream.get("format", "mp3")
-    mount       = stream.get("mount", "/stream")
-    src_pw      = cfg.get("source_password", "signalscope")
-    port        = int(cfg.get("port", 8000))
-    hostname    = cfg.get("hostname", "localhost")
-    stream_name = stream.get("name", "Stream")
-
-    # Build icecast:// destination URL — embed password but not in status API response
-    dest = (f"icecast://source:{src_pw}@{hostname}:{port}{mount}"
-            f"?name={urllib_quote(stream_name)}&ice-genre={urllib_quote(stream.get('genre','Radio'))}")
-
-    # Codec args
-    if fmt == "ogg":
-        codec_args = ["-vn", "-c:a", "libopus", "-b:a", f"{bitrate}k", "-f", "ogg"]
-    else:
-        codec_args = ["-vn", "-c:a", "libmp3lame", "-b:a", f"{bitrate}k", "-f", "mp3"]
-
-    # Input args based on device type
-    dev = device.strip()
-    if dev.startswith("http://") or dev.startswith("https://"):
-        input_args = ["-re", "-i", dev]
-    elif dev.startswith("hw:") or dev.startswith("plughw:"):
-        input_args = ["-f", "alsa", "-i", dev]
-    elif dev.startswith("rtp://") or "@" in dev:
-        input_args = ["-i", dev]
-    else:
-        input_args = ["-i", dev]
-
-    return [ffmpeg_bin, "-hide_banner", "-loglevel", "error",
-            ] + input_args + codec_args + [dest]
-
+# ─── ffmpeg stream thread management ─────────────────────────────────────────
 
 def urllib_quote(s: str) -> str:
     import urllib.parse
     return urllib.parse.quote(str(s), safe="")
 
 
+class IcecastStreamThread(threading.Thread):
+    """Worker thread: taps inp._stream_buffer → ffmpeg stdin → Icecast2.
+
+    Input routing:
+    - HTTP/HTTPS inputs: URL passed directly to ffmpeg (-re -i <url>).
+      Native codec is preserved which can be stereo.
+    - All other inputs (FM, DAB, ALSA, RTP, …): tap inp._stream_buffer,
+      a rolling deque of mono float32 chunks at 48 kHz (same approach as
+      the Logger plugin).  Selecting stereo=True still works here by
+      letting ffmpeg upmix the mono channel to dual-mono L=R.
+
+    The thread self-restarts after failure with a 5-second delay, until
+    stop() is called.
+    """
+
+    def __init__(self, stream_id: str, stream_cfg: dict, ice_cfg: dict,
+                 monitor_ref) -> None:
+        super().__init__(daemon=True, name=f"IcecastStream-{stream_id}")
+        self.stream_id   = stream_id
+        self.stream_cfg  = dict(stream_cfg)
+        self.ice_cfg     = dict(ice_cfg)
+        self.monitor_ref = monitor_ref
+        self._stop_evt   = threading.Event()
+
+    def stop(self) -> None:
+        self._stop_evt.set()
+
+    def _find_buffer(self, input_name: str):
+        """Return the _stream_buffer deque for the named input, or None."""
+        try:
+            inputs = getattr(self.monitor_ref.app_cfg, "inputs", []) or []
+            for inp in inputs:
+                if getattr(inp, "name", "") == input_name:
+                    return getattr(inp, "_stream_buffer", None)
+        except Exception:
+            pass
+        return None
+
+    def run(self) -> None:  # noqa: C901
+        sid          = self.stream_id
+        input_name   = self.stream_cfg.get("input_name", "")
+        input_device = self.stream_cfg.get("input_device", "")
+        bitrate      = int(self.stream_cfg.get("bitrate", 128))
+        fmt          = self.stream_cfg.get("format", "mp3")
+        mount        = self.stream_cfg.get("mount", "/stream")
+        stereo       = bool(self.stream_cfg.get("stereo", False))
+        name         = self.stream_cfg.get("name", "Stream")
+        genre        = self.stream_cfg.get("genre", "Radio")
+
+        src_pw = self.ice_cfg.get("source_password", "signalscope")
+        port   = int(self.ice_cfg.get("port", 8000))
+
+        # Always connect to localhost — the source password is embedded in the URL
+        dest = (f"icecast://source:{src_pw}@127.0.0.1:{port}{mount}"
+                f"?name={urllib_quote(name)}&ice-genre={urllib_quote(genre)}")
+
+        channels = 2 if stereo else 1
+
+        if fmt == "ogg":
+            codec_args = ["-vn", "-c:a", "libopus",    "-b:a", f"{bitrate}k",
+                          "-ac", str(channels), "-f", "ogg"]
+        else:
+            codec_args = ["-vn", "-c:a", "libmp3lame", "-b:a", f"{bitrate}k",
+                          "-ac", str(channels), "-f", "mp3"]
+
+        # Route: direct URL (HTTP inputs) or PCM pipe (everything else)
+        dev = input_device.strip()
+        use_url = dev.startswith("http://") or dev.startswith("https://")
+
+        if use_url:
+            # Feed stream URL directly to ffmpeg — native audio codec preserved,
+            # which may be stereo.  -re throttles to real-time playback speed.
+            input_args = ["-re", "-i", dev]
+        else:
+            # Mono float32 48 kHz PCM via stdin — works for FM, DAB, ALSA, RTP, …
+            input_args = ["-f", "f32le", "-ar", "48000", "-ac", "1", "-i", "pipe:0"]
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            _log(f"[Icecast] Stream {sid}: ffmpeg not found — aborting thread")
+            return
+
+        cmd = ([ffmpeg_bin, "-hide_banner", "-loglevel", "error"]
+               + input_args + codec_args + [dest])
+
+        while not self._stop_evt.is_set():
+            proc  = None
+            stdin = None
+            try:
+                if use_url:
+                    proc = subprocess.Popen(cmd,
+                                            stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL)
+                else:
+                    proc = subprocess.Popen(cmd,
+                                            stdin=subprocess.PIPE,
+                                            stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL)
+                    stdin = proc.stdin
+
+                with _lock:
+                    _stream_status.setdefault(sid, {}).update(
+                        {"start_time": time.time(), "error": ""})
+
+                if use_url:
+                    while not self._stop_evt.is_set():
+                        if proc.poll() is not None:
+                            break
+                        self._stop_evt.wait(1.0)
+                else:
+                    # Snapshot+anchor drain loop — identical to logger.py pattern.
+                    # Never calls popleft() so the buffer can be shared with the
+                    # Logger plugin or any other consumer simultaneously.
+                    last_ref = None
+                    while not self._stop_evt.is_set():
+                        buf = self._find_buffer(input_name)
+                        if buf is None:
+                            self._stop_evt.wait(1.0)
+                            continue
+                        chunks = list(buf)          # thread-safe snapshot
+                        if not chunks:
+                            self._stop_evt.wait(0.2)
+                            continue
+                        if last_ref is None:
+                            last_ref = chunks[-1]   # anchor at current tail
+                            new_chunks: list = []
+                        else:
+                            idx = next(
+                                (i for i, c in enumerate(chunks) if c is last_ref),
+                                None,
+                            )
+                            if idx is None:
+                                new_chunks = chunks  # buffer lapped
+                            else:
+                                new_chunks = chunks[idx + 1:]
+                            if new_chunks:
+                                last_ref = new_chunks[-1]
+                        if new_chunks:
+                            raw = b"".join(c.astype(_np.float32).tobytes()
+                                           for c in new_chunks)
+                            try:
+                                stdin.write(raw)
+                                stdin.flush()
+                            except (BrokenPipeError, OSError):
+                                break
+                        if proc.poll() is not None:
+                            break
+                        self._stop_evt.wait(0.1)
+
+            except Exception as exc:
+                _log(f"[Icecast] Stream {sid} error: {exc}")
+                with _lock:
+                    _stream_status.setdefault(sid, {})["error"] = str(exc)
+            finally:
+                if stdin:
+                    try:
+                        stdin.close()
+                    except OSError:
+                        pass
+                if proc:
+                    try:
+                        proc.send_signal(signal.SIGTERM)
+                    except OSError:
+                        pass
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+
+            if not self._stop_evt.is_set():
+                _log(f"[Icecast] Stream {sid} exited; restarting in 5 s")
+                self._stop_evt.wait(5.0)
+
+        _log(f"[Icecast] Stream {sid} thread stopped")
+
+
 def _start_stream(stream_id: str) -> "tuple[bool, str]":
-    cfg = _get_cfg()
+    cfg     = _get_cfg()
     streams = cfg.get("streams", [])
-    stream = next((s for s in streams if s.get("id") == stream_id), None)
+    stream  = next((s for s in streams if s.get("id") == stream_id), None)
     if stream is None:
         return False, "Stream not found"
     if not stream.get("enabled", True):
         return False, "Stream is disabled"
 
     with _lock:
-        existing = _stream_procs.get(stream_id)
-    if existing and existing.poll() is None:
+        existing = _stream_threads.get(stream_id)
+    if existing and existing.is_alive():
         return True, "Already running"
 
-    cmd = _build_ffmpeg_cmd(stream, cfg)
-    if cmd is None:
+    if not shutil.which("ffmpeg"):
         return False, "ffmpeg not found in PATH"
 
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception as exc:
-        return False, f"Failed to start ffmpeg: {exc}"
-
     with _lock:
-        _stream_procs[stream_id] = proc
         _stream_status[stream_id] = {
-            "listeners": 0,
-            "connected": False,
-            "start_time": time.time(),
-            "error": "",
+            "listeners": 0, "connected": False,
+            "start_time": time.time(), "error": "",
         }
 
-    _log(f"[Icecast] Stream {stream_id} ({stream.get('name')}) started")
+    t = IcecastStreamThread(stream_id, stream, cfg, _monitor)
+    with _lock:
+        _stream_threads[stream_id] = t
+    t.start()
+    _log(f"[Icecast] Stream {stream_id} ({stream.get('name')}) thread started")
     return True, "Started"
 
 
 def _stop_stream(stream_id: str) -> "tuple[bool, str]":
     with _lock:
-        proc = _stream_procs.pop(stream_id, None)
+        t = _stream_threads.pop(stream_id, None)
 
-    if proc is None or proc.poll() is not None:
+    if t is None or not t.is_alive():
         return True, "Not running"
 
-    try:
-        proc.send_signal(signal.SIGTERM)
-    except OSError:
-        pass
-
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            _log(f"[Icecast] Stream {stream_id} stopped")
-            return True, "Stopped"
-        time.sleep(0.1)
-
-    try:
-        proc.kill()
-    except OSError:
-        pass
-    _log(f"[Icecast] Stream {stream_id} killed")
-    return True, "Killed"
+    t.stop()
+    t.join(timeout=5.0)
+    if t.is_alive():
+        _log(f"[Icecast] Stream {stream_id} thread did not exit in 5 s")
+    _log(f"[Icecast] Stream {stream_id} stopped")
+    return True, "Stopped"
 
 
 # ─── Icecast2 HTTP status polling ─────────────────────────────────────────────
@@ -462,11 +584,12 @@ def _poll_icecast_status(port: int) -> dict:
 # ─── Background thread: status collector ──────────────────────────────────────
 
 def _status_collector_thread() -> None:
-    """Polls Icecast HTTP status every _STATUS_INTERVAL seconds. Also restarts
-    dead ffmpeg processes for enabled streams when Icecast is running."""
+    """Polls Icecast HTTP status every _STATUS_INTERVAL seconds.
+    Stream threads self-restart on failure; this thread only updates
+    listener counts and connected state from the Icecast HTTP API."""
     while True:
         try:
-            cfg = _get_cfg()
+            cfg  = _get_cfg()
             port = int(cfg.get("port", 8000))
 
             if _icecast_running():
@@ -474,12 +597,10 @@ def _status_collector_thread() -> None:
             else:
                 mount_status = {}
 
-            streams = cfg.get("streams", [])
             with _lock:
-                for s in streams:
-                    sid   = s.get("id", "")
-                    mount = s.get("mount", "")
-                    ms    = mount_status.get(mount, {})
+                for s in cfg.get("streams", []):
+                    sid      = s.get("id", "")
+                    ms       = mount_status.get(s.get("mount", ""), {})
                     existing = _stream_status.get(sid, {})
                     _stream_status[sid] = {
                         "listeners":  ms.get("listeners", 0),
@@ -487,27 +608,6 @@ def _status_collector_thread() -> None:
                         "start_time": existing.get("start_time"),
                         "error":      existing.get("error", ""),
                     }
-
-                    # Auto-restart dead ffmpeg for enabled streams
-                    if s.get("enabled", True) and _icecast_running():
-                        proc = _stream_procs.get(sid)
-                        if proc is not None and proc.poll() is not None:
-                            # process died — remove and restart
-                            _stream_procs.pop(sid, None)
-                            _log(f"[Icecast] Stream {sid} ffmpeg exited unexpectedly; restarting")
-                            cmd = _build_ffmpeg_cmd(s, cfg)
-                            if cmd:
-                                try:
-                                    new_proc = subprocess.Popen(
-                                        cmd,
-                                        stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.DEVNULL,
-                                    )
-                                    _stream_procs[sid] = new_proc
-                                    _stream_status[sid]["start_time"] = time.time()
-                                    _stream_status[sid]["error"] = ""
-                                except Exception as exc:
-                                    _stream_status[sid]["error"] = str(exc)
         except Exception as exc:
             _log(f"[Icecast] Status collector error: {exc}")
 
@@ -531,7 +631,7 @@ def _hub_reporter_thread(monitor) -> None:
             ice_cfg = _get_cfg()
             with _lock:
                 st_copy = dict(_stream_status)
-                sp_copy = {k: (v.poll() is None) for k, v in _stream_procs.items()}
+                sp_copy = {k: v.is_alive() for k, v in _stream_threads.items()}
 
             streams_out = []
             for s in ice_cfg.get("streams", []):
@@ -656,15 +756,24 @@ def _add_stream_to_cfg(stream_data: dict) -> None:
 # ─── Inputs helper ────────────────────────────────────────────────────────────
 
 def _get_inputs_list(monitor) -> list:
+    """Return input list for the UI dropdown.
+    'device' is the raw device_index / URL used to decide whether the
+    IcecastStreamThread should use a direct URL or the _stream_buffer tap.
+    """
     try:
         inputs = getattr(monitor.app_cfg, "inputs", []) or []
-        return [
-            {
-                "name":   getattr(inp, "name", "") or "",
-                "device": getattr(inp, "device_index", "") or getattr(inp, "url", "") or "",
-            }
-            for inp in inputs
-        ]
+        result = []
+        for inp in inputs:
+            name   = getattr(inp, "name", "") or ""
+            device = (getattr(inp, "device_index", "") or
+                      getattr(inp, "url", "") or "")
+            buf    = getattr(inp, "_stream_buffer", None)
+            result.append({
+                "name":       name,
+                "device":     device,
+                "has_buffer": buf is not None,
+            })
+        return result
     except Exception:
         return []
 
@@ -761,11 +870,11 @@ tr:hover td{background:#0f1e30}
       <thead>
         <tr>
           <th>Name</th><th>Input</th><th>Mount</th><th>Format</th>
-          <th>Kbps</th><th>Status</th><th>Listeners</th><th>URL</th><th>Actions</th>
+          <th>Kbps</th><th>Ch</th><th>Status</th><th>Listeners</th><th>URL</th><th>Actions</th>
         </tr>
       </thead>
       <tbody id="streams-tbody">
-        <tr><td colspan="9" style="color:#8a9bae;text-align:center">Loading…</td></tr>
+        <tr><td colspan="10" style="color:#8a9bae;text-align:center">Loading…</td></tr>
       </tbody>
     </table>
   </div>
@@ -813,7 +922,11 @@ tr:hover td{background:#0f1e30}
       </div>
       <div class="field" style="justify-content:flex-end">
         <label>&nbsp;</label>
-        <div style="display:flex;gap:8px;align-items:center">
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <label style="font-size:12px;color:#8a9bae;display:flex;gap:5px;align-items:center"
+                 title="HTTP inputs: native stereo preserved. FM/DAB/ALSA/RTP: mono is upmixed to dual-mono L=R.">
+            <input type="checkbox" id="add-stereo"> Stereo
+          </label>
           <label style="font-size:12px;color:#8a9bae;display:flex;gap:5px;align-items:center">
             <input type="checkbox" id="add-public"> Public
           </label>
@@ -891,12 +1004,14 @@ function _render(d){
       ? '<span class="badge badge-green">On Air</span>'
       : (s.enabled?'<span class="badge badge-grey">Idle</span>':'<span class="badge badge-red">Disabled</span>');
     var streamUrl='http://'+(_cfg.hostname||'localhost')+':'+_cfg.port+s.mount;
+    var chLabel=s.stereo?'<span title="Stereo" style="color:#34d399">2</span>':'<span title="Mono" style="color:#8a9bae">1</span>';
     html+='<tr>'
       +'<td>'+_esc(s.name)+'</td>'
       +'<td style="font-size:12px;color:#8a9bae">'+_esc(s.input_name||'')+'</td>'
       +'<td style="font-family:monospace;font-size:12px">'+_esc(s.mount)+'</td>'
       +'<td>'+_esc(s.format.toUpperCase())+'</td>'
       +'<td>'+s.bitrate+'</td>'
+      +'<td style="text-align:center">'+chLabel+'</td>'
       +'<td>'+stBadge+'</td>'
       +'<td style="text-align:center">'+(s.connected?s.listeners:'–')+'</td>'
       +'<td><a class="url-link" href="'+streamUrl+'" target="_blank">'+_esc(streamUrl)+'</a></td>'
@@ -925,7 +1040,9 @@ function _loadInputs(){
     (d.inputs||[]).forEach(function(inp){
       var opt=document.createElement('option');
       opt.value=inp.device;
-      opt.textContent=inp.name+(inp.device?' ('+inp.device+')':'');
+      var isUrl=inp.device&&(inp.device.startsWith('http://')||inp.device.startsWith('https://'));
+      var hint=isUrl?' [URL — native stereo]':(inp.has_buffer?' [PCM tap]':' [no buffer]');
+      opt.textContent=inp.name+hint;
       opt.dataset.name=inp.name;
       sel.appendChild(opt);
     });
@@ -981,11 +1098,12 @@ document.body.addEventListener('click',function(e){
     var genre=document.getElementById('add-genre').value.trim()||'Radio';
     var desc=document.getElementById('add-desc').value.trim();
     var pub=document.getElementById('add-public').checked;
+    var stereo=document.getElementById('add-stereo').checked;
     if(!name){_showMsg('Name is required',false);return;}
     if(!mount){_showMsg('Mount point is required',false);return;}
     _post('/api/icecast/stream/add',{name:name,input_device:device,
       input_name:inputName,mount:mount,format:fmt,bitrate:br,
-      genre:genre,description:desc,public:pub,enabled:true},function(err,d){
+      stereo:stereo,genre:genre,description:desc,public:pub,enabled:true},function(err,d){
       if(err||!d.ok){_showMsg((d&&d.error)||'Add failed',false);}
       else{_showMsg('Stream added',true);_refresh();}
     });
@@ -1122,6 +1240,12 @@ tr:hover td{background:#0f1e30}
     </div>
     <div class="field"><label>Genre</label><input type="text" id="modal-genre" value="Radio"></div>
     <div class="field"><label>Description</label><input type="text" id="modal-desc"></div>
+    <div class="field">
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer"
+             title="HTTP inputs: native stereo. FM/DAB/ALSA/RTP: mono upmixed to dual-mono.">
+        <input type="checkbox" id="modal-stereo"> Stereo output
+      </label>
+    </div>
     <div class="modal-actions">
       <button class="btn" id="modal-cancel">Cancel</button>
       <button class="btn btn-primary" id="modal-add">Add Stream</button>
@@ -1299,6 +1423,7 @@ document.body.addEventListener('click',function(e){
     document.getElementById('modal-mount').value='';
     document.getElementById('modal-genre').value='Radio';
     document.getElementById('modal-desc').value='';
+    document.getElementById('modal-stereo').checked=false;
     // load inputs for this site from stored status
     fetch('/api/hub/icecast/overview',{credentials:'same-origin'})
     .then(function(r){return r.json();})
@@ -1308,7 +1433,10 @@ document.body.addEventListener('click',function(e){
       sel.innerHTML='<option value="">— select input —</option>';
       inputs.forEach(function(inp){
         var opt=document.createElement('option');
-        opt.value=inp.device; opt.textContent=inp.name+(inp.device?' ('+inp.device+')':'');
+        opt.value=inp.device;
+        var isUrl=inp.device&&(inp.device.startsWith('http://')||inp.device.startsWith('https://'));
+        var hint=isUrl?' [URL — native stereo]':(inp.has_buffer?' [PCM tap]':' [no buffer]');
+        opt.textContent=inp.name+hint;
         opt.dataset.name=inp.name; sel.appendChild(opt);
       });
     });
@@ -1338,6 +1466,7 @@ document.getElementById('modal-add').addEventListener('click',function(){
   var br=parseInt(document.getElementById('modal-bitrate').value,10);
   var genre=document.getElementById('modal-genre').value.trim()||'Radio';
   var desc=document.getElementById('modal-desc').value.trim();
+  var stereo=document.getElementById('modal-stereo').checked;
   if(!name||!site){_showMsg('Name and site are required',false);return;}
   if(!mount){_showMsg('Mount point is required',false);return;}
   _post('/api/hub/icecast/cmd',{
@@ -1345,7 +1474,7 @@ document.getElementById('modal-add').addEventListener('click',function(){
     stream:{
       id:Math.random().toString(36).slice(2,10),
       name:name, input_device:device, input_name:inputName,
-      mount:mount, format:fmt, bitrate:br, genre:genre,
+      mount:mount, format:fmt, bitrate:br, stereo:stereo, genre:genre,
       description:desc, enabled:true, public:false
     }
   },function(err,d){
@@ -1402,7 +1531,7 @@ def register(app, ctx):
         running = _icecast_running()
         with _lock:
             st_copy = dict(_stream_status)
-            sp_copy = {k: (v.poll() is None) for k, v in _stream_procs.items()}
+            sp_copy = {k: v.is_alive() for k, v in _stream_threads.items()}
 
         streams_out = []
         for s in ice_cfg.get("streams", []):
@@ -1415,6 +1544,7 @@ def register(app, ctx):
                 "mount":      s.get("mount", ""),
                 "format":     s.get("format", "mp3"),
                 "bitrate":    s.get("bitrate", 128),
+                "stereo":     s.get("stereo", False),
                 "enabled":    s.get("enabled", True),
                 "running":    sp_copy.get(sid, False),
                 "listeners":  st.get("listeners", 0),
@@ -1460,17 +1590,18 @@ def register(app, ctx):
             return jsonify({"ok": False, "error": "Name required"}), 400
 
         stream = {
-            "id":          uuid.uuid4().hex[:8],
-            "name":        name,
+            "id":           uuid.uuid4().hex[:8],
+            "name":         name,
             "input_device": str(body.get("input_device", "")),
-            "input_name":  str(body.get("input_name", "")),
-            "mount":       mount,
-            "bitrate":     int(body.get("bitrate", 128)),
-            "format":      "ogg" if body.get("format") == "ogg" else "mp3",
-            "enabled":     bool(body.get("enabled", True)),
-            "description": str(body.get("description", "")),
-            "genre":       str(body.get("genre", "Radio")),
-            "public":      bool(body.get("public", False)),
+            "input_name":   str(body.get("input_name", "")),
+            "mount":        mount,
+            "bitrate":      int(body.get("bitrate", 128)),
+            "format":       "ogg" if body.get("format") == "ogg" else "mp3",
+            "stereo":       bool(body.get("stereo", False)),
+            "enabled":      bool(body.get("enabled", True)),
+            "description":  str(body.get("description", "")),
+            "genre":        str(body.get("genre", "Radio")),
+            "public":       bool(body.get("public", False)),
         }
         with _cfg_lock:
             _cfg.setdefault("streams", []).append(stream)
@@ -1509,6 +1640,8 @@ def register(app, ctx):
                         s["description"] = str(body["description"])
                     if "public" in body:
                         s["public"] = bool(body["public"])
+                    if "stereo" in body:
+                        s["stereo"] = bool(body["stereo"])
                     if "input_device" in body:
                         s["input_device"] = str(body["input_device"])
                     if "input_name" in body:
@@ -1708,7 +1841,7 @@ def register(app, ctx):
             port     = ice_cfg.get("port", 8000)
             with _lock:
                 st_copy = dict(_stream_status)
-                sp_copy = {k: (v.poll() is None) for k, v in _stream_procs.items()}
+                sp_copy = {k: v.is_alive() for k, v in _stream_threads.items()}
             for s in ice_cfg.get("streams", []):
                 sid = s.get("id", "")
                 st  = st_copy.get(sid, {})
