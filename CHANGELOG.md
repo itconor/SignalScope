@@ -2966,3 +2966,14 @@ Full composite alert matrix:
 - **H-4**: Nonce generation replaced `md5(os.urandom(8))[:16]` with `os.urandom(16).hex()` — stronger entropy, no unnecessary MD5
 - **H-5**: `/api/dab/scan` now validates `channel` against `_VALID_DAB_CHANNELS` whitelist — previously raw value passed to welle-cli subprocess
 - **H-6**: 500 error handler no longer includes raw Python exception in HTML response — logged server-side only
+
+## SignalScope-3.4.68
+### Security fixes (medium / low)
+- **M-4**: XOR fallback encryption now appends a 32-byte HMAC-SHA256 MAC — ciphertext integrity is verified before decryption when `cryptography` package is not installed
+- **M-5**: `sdr.py` spectrum push endpoint now verifies HMAC signature when a shared secret is configured; unknown slot_ids return 404 instead of silently accepting data
+- **M-6**: `_safe_name` collision registry prevents two streams with different names but identical stripped forms from sharing the same alert clip directory (colliding names get `_2`, `_3` suffix)
+- **M-7**: `hub_clip_upload` now rejects bodies over 10 MB with HTTP 413 before reading request data
+- **L-1**: `lwai_config.json` permissions set to 0o600 after backup restore (save_config already did this; restore path was missing it)
+- **L-3**: CSRF token helpers now read `<meta name="csrf-token">` before cookie fallback (correct priority — meta tag is server-rendered and always fresh)
+- **L-4**: 404 error handler HTML-escapes `request.path` — fixes reflected XSS via crafted URLs
+- **L-6**: SDR serial numbers validated against configured device registry in sdr.py before being passed to rtl_sdr/rtl_power subprocess

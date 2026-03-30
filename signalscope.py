@@ -32,7 +32,7 @@ input[type=text],input[type=number],input[type=password],input[type=email]{width
 function _csrfFetch(url,opts){
   opts=opts||{};
   if(!opts.headers)opts.headers={};
-  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||"";
+  var t=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||"";
   opts.headers["X-CSRFToken"]=t;
   return fetch(url,opts);
 }
@@ -1083,7 +1083,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <script nonce="{{csp_nonce()}}">
-function _csrf(){return document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';}
+function _csrf(){return (document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||'';}
 
 function checkForUpdates(){
   var btn=document.getElementById('upd-check-btn');
@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.67"
+BUILD                  = "SignalScope-3.4.68"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2526,8 +2526,27 @@ def _true_peak_dbtp(data: np.ndarray) -> float:
     except Exception:
         return 20.0 * math.log10(max(float(np.max(np.abs(data))), 1e-12))
 
+# Registry mapping raw stream/site names to their safe directory names.
+# Prevents different raw names that produce the same stripped string from
+# colliding on disk (e.g. "BBC Radio 1" and "BBC.Radio.1" → both "BBCRadio1").
+_safe_name_registry: dict = {}   # raw_name → safe_name
+
 def _safe_name(name: str) -> str:
-    return "".join(c for c in name if c.isalnum() or c in "-_").strip() or "stream"
+    global _safe_name_registry
+    # Return cached mapping if this name was already registered
+    if name in _safe_name_registry:
+        return _safe_name_registry[name]
+    base = "".join(c for c in name if c.isalnum() or c in "-_").strip() or "stream"
+    # Check for collision with an existing registration from a different raw name
+    used = set(_safe_name_registry.values())
+    candidate = base
+    if candidate in used:
+        for suffix in range(2, 10):
+            candidate = f"{base}_{suffix}"
+            if candidate not in used:
+                break
+    _safe_name_registry[name] = candidate
+    return candidate
 
 def _model_path(name: str) -> str:
     return os.path.join(MODELS_DIR, f"{_safe_name(name)}.onnx")
@@ -8936,7 +8955,7 @@ def hub_encrypt_payload(secret: str, plaintext: bytes) -> bytes:
     """
     Encrypt payload using AES-256-GCM (preferred) or SHA-256 keystream XOR (fallback).
     Format: [1-byte version][12-byte nonce][ciphertext+16-byte GCM tag]  (AES-GCM)
-         or [1-byte version][16-byte salt][ciphertext]                   (legacy XOR)
+         or [1-byte version][16-byte salt][ciphertext][32-byte HMAC-SHA256 tag] (XOR)
     """
     key = _derive_key(secret, "encryption")
     try:
@@ -8945,10 +8964,12 @@ def hub_encrypt_payload(secret: str, plaintext: bytes) -> bytes:
         ct    = AESGCM(key).encrypt(nonce, plaintext, None)
         return _HUB_CRYPTO_VERSION_AES + nonce + ct
     except ImportError:
-        # Fall back to legacy XOR — still provides confidentiality, just not
-        # with a standard AEAD primitive
+        # Fall back to legacy XOR with HMAC-SHA256 authentication tag
         salt = os.urandom(16)
-        return _HUB_CRYPTO_VERSION_XOR + salt + _keystream_xor(key, salt, plaintext)
+        ciphertext = _keystream_xor(key, salt, plaintext)
+        mac_key = _derive_key(secret, "mac")
+        tag = _hmac.new(mac_key, ciphertext, hashlib.sha256).digest()
+        return _HUB_CRYPTO_VERSION_XOR + salt + ciphertext + tag
 
 
 def hub_decrypt_payload(secret: str, data: bytes) -> bytes:
@@ -8968,9 +8989,15 @@ def hub_decrypt_payload(secret: str, data: bytes) -> bytes:
         except ImportError:
             raise RuntimeError("cryptography package required to decrypt AES-GCM payload")
     elif version == _HUB_CRYPTO_VERSION_XOR:
-        if len(data) < 18:
+        if len(data) < 50:   # 1 + 16 + 1 + 32 minimum (version + salt + 1 byte ct + MAC)
             raise ValueError("XOR payload too short")
-        return _keystream_xor(key, data[1:17], data[17:])
+        mac_key = _derive_key(secret, "mac")
+        ciphertext = data[17:-32]
+        tag        = data[-32:]
+        expected   = _hmac.new(mac_key, ciphertext, hashlib.sha256).digest()
+        if not _hmac.compare_digest(expected, tag):
+            raise ValueError("MAC mismatch")
+        return _keystream_xor(key, data[1:17], ciphertext)
     else:
         # Pre-versioned legacy format (no prefix byte) — treat whole thing as XOR
         if len(data) < 17:
@@ -14842,7 +14869,7 @@ var running={{running|lower}};
 function _csrfFetch(url,opts){
   opts=opts||{};
   if(!opts.headers)opts.headers={};
-  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var t=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||'';
   opts.headers['X-CSRFToken']=t;
   return fetch(url,opts);
 }
@@ -15153,13 +15180,13 @@ refresh();
 // ── Toggles ─────────────────────────────────────────────────────────────────
 // CSRF helper — reads token from meta tag injected by server
 function _csrfHeaders(){
-  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||"";
+  var t=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||"";
   return {"X-CSRFToken": t, "Content-Type": "application/json"};
 }
 function _csrfFetch(url, opts){
   opts = opts || {};
   if(!opts.headers) opts.headers = {};
-  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||"";
+  var t=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||"";
   opts.headers["X-CSRFToken"] = t;
   return fetch(url, opts);
 }
@@ -16150,7 +16177,7 @@ var _currentStep = 0;
 function _csrfFetch(url, opts){
   opts = opts || {};
   if(!opts.headers) opts.headers = {};
-  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var t=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||'';
   opts.headers['X-CSRFToken'] = t;
   return fetch(url, opts);
 }
@@ -16542,7 +16569,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
   function _csrfFetch(url,opts){
     opts=opts||{};
     if(!opts.headers)opts.headers={};
-    var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||"";
+    var t=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||"";
     opts.headers["X-CSRFToken"]=t;
     return fetch(url,opts);
   }
@@ -18233,6 +18260,10 @@ def settings_restore():
                     continue
                 with open(CONFIG_PATH, "wb") as fh:
                     fh.write(raw)
+                try:
+                    os.chmod(CONFIG_PATH, 0o600)
+                except OSError:
+                    pass
                 restored_config = True
 
             elif entry_path.startswith("ai_models" + os.sep) or entry_path.startswith("ai_models/"):
@@ -20274,6 +20305,10 @@ def hub_clip_upload():
 
     if not secret:
         return jsonify({"error": "forbidden"}), 403
+
+    _MAX_CLIP_BYTES = 10 * 1024 * 1024  # 10 MB
+    if request.content_length and request.content_length > _MAX_CLIP_BYTES:
+        return jsonify({"error": "payload too large"}), 413
 
     raw_body = request.get_data()
     if secret:
@@ -22317,7 +22352,7 @@ var _chainData={
 <footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer>
 
 <script nonce="{{csp_nonce()}}">
-var _csrf=(document.cookie.match(/csrf_token=([^;]+)/)||[])[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+var _csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||(document.cookie.match(/csrf_token=([^;]+)/)||[])[1]||'';
 var _opts=[];
 
 // Collapsible section toggle
@@ -27754,7 +27789,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 <script nonce="{{csp_nonce()}}">
 // ── Remote start/stop command ─────────────────────────────────────────────────
 function sendSiteCommand(site, command, btn){
-  var csrfToken=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var csrfToken=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||'';
   btn.disabled = true;
   btn.textContent = 'Sending…';
   fetch('/api/hub/site/' + encodeURIComponent(site) + '/command', {
@@ -27821,11 +27856,11 @@ document.addEventListener('click', function(e){
 });
 
 // ── Source management ─────────────────────────────────────────────────────────
-function _hubCsrf(){return document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';}
+function _hubCsrf(){return (document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||'';}
 function hubPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_hubCsrf()},body:JSON.stringify(body)}).then(function(r){return r.json();});}
 function setExpectedName(site,stream,field,value,btn){
   if(btn){btn.disabled=true;btn.textContent='...';}
-  var csrfTok=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var csrfTok=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||'';
   fetch('/api/hub/site/'+encodeURIComponent(site)+'/set_expected_name',{
     method:'POST',
     headers:{'Content-Type':'application/json','X-CSRFToken':csrfTok},
@@ -28192,7 +28227,7 @@ function setRelayBitrate(sel){
   var bitrate = parseInt(sel.value, 10);
   var orig    = sel.value;
   sel.disabled = true;
-  var csrfToken=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var csrfToken=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||'';
   fetch('/api/hub/site/' + encodeURIComponent(site) + '/relay_bitrate', {
     method: 'POST',
     headers: {'Content-Type':'application/json','X-CSRFToken': csrfToken},
@@ -29121,7 +29156,7 @@ function agoJS(s){ s=Math.round(s||0); if(s<5)return'just now'; if(s<60)return s
 function _csrfFetch(url,opts){
   opts=opts||{};
   if(!opts.headers) opts.headers={};
-  var t=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||"";
+  var t=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||"";
   opts.headers["X-CSRFToken"]=t;
   return fetch(url,opts);
 }
@@ -29181,7 +29216,7 @@ function initDragGrid(gridId, storageKey, itemSelector){
   });
 }
 function sendSiteCommand(site, command, btn){
-  var csrfToken=document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  var csrfToken=(document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||'';
   btn.disabled = true;
   btn.textContent = '…';
   fetch('/api/hub/site/' + encodeURIComponent(site) + '/command', {
@@ -30054,8 +30089,9 @@ setInterval(_loadTrends, 300000);
 def _err_404(e):
     if request.path.startswith("/api/"):
         return jsonify({"error": "Not found"}), 404
+    _safe_path = request.path.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
     return f"<html><body style='font-family:sans-serif;background:#06121e;color:#e2e8f0;padding:40px'>" \
-           f"<h2>404 — Page not found</h2><p>{request.path}</p>" \
+           f"<h2>404 — Page not found</h2><p>{_safe_path}</p>" \
            f"<a href='/' style='color:#17a8ff'>← Dashboard</a></body></html>", 404
 
 @app.errorhandler(500)

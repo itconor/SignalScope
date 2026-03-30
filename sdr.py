@@ -233,10 +233,44 @@ def register(app, ctx):
         return jsonify({"cmd": cmd} if cmd else {})
 
     # ── Client: receives spectrum frames pushed from the SDR worker ──────────
-    # Authenticated by slot_id (treated as a bearer token, set by hub at start)
+    # Authenticated by HMAC-SHA256 (X-Hub-Sig / X-Hub-Ts) when a secret is set.
     @app.post("/api/hub/sdr/spectrum/<slot_id>")
     def websdr_spectrum_push(slot_id):
-        d = request.get_json(silent=True) or {}
+        # Validate that this is a known active slot before accepting data
+        if slot_id not in _sdr_spectrum and slot_id not in {
+            s.get("slot_id", "") for s in _hub_sessions.values()
+        }:
+            # Also allow pushes from the local _client_sess slot
+            local_slot = _client_sess.get("slot_id", "")
+            if slot_id != local_slot:
+                return jsonify({"error": "unknown slot"}), 404
+
+        # HMAC authentication — verify when a secret is configured
+        cfg    = monitor.app_cfg
+        secret = cfg.hub.secret_key
+        if secret:
+            raw_body = request.get_data()
+            sig  = request.headers.get("X-Hub-Sig", "")
+            ts_h = request.headers.get("X-Hub-Ts", "0")
+            try:
+                ts = float(ts_h)
+            except ValueError:
+                return jsonify({"error": "invalid timestamp"}), 403
+            if abs(time.time() - ts) > 300:
+                return jsonify({"error": "timestamp out of window"}), 403
+            key = hashlib.sha256(f"{secret}:signing".encode()).digest()
+            msg = f"{ts:.0f}:".encode() + raw_body
+            expected = _hmac.new(key, msg, hashlib.sha256).hexdigest()
+            if not _hmac.compare_digest(expected, sig):
+                return jsonify({"error": "forbidden"}), 403
+            import json as _json
+            try:
+                d = _json.loads(raw_body) if raw_body else {}
+            except Exception:
+                return jsonify({"error": "bad json"}), 400
+        else:
+            d = request.get_json(silent=True) or {}
+
         if d:
             d["ts"] = time.time()
             _sdr_spectrum[slot_id] = d
@@ -408,6 +442,13 @@ def _run_band_scan(cmd, hub_url, cfg):
     sdr_serial = str(cmd.get("sdr_serial", "") or "")
     site       = (cfg.hub.site_name or "").strip()
 
+    # Validate serial against registered SDR devices before passing to subprocess
+    if sdr_serial:
+        known_serials = [d.serial for d in cfg.sdr_devices]
+        if sdr_serial not in known_serials:
+            _log(f"[WebSDR] Band scan rejected: serial {sdr_serial!r} not in registered devices")
+            return
+
     rtl_power = shutil.which("rtl_power")
     if not rtl_power:
         _log("[WebSDR] rtl_power not found — band scan unavailable")
@@ -559,6 +600,14 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
     if not rtl_sdr_bin:
         _log("[WebSDR] rtl_sdr not found in PATH — install rtl-sdr package")
         return
+
+    # Validate serial against registered SDR devices before passing to subprocess
+    if sdr_serial and _monitor:
+        cfg_now = _monitor.app_cfg
+        known_serials = [d.serial for d in cfg_now.sdr_devices]
+        if sdr_serial not in known_serials:
+            _log(f"[WebSDR] SDR capture rejected: serial {sdr_serial!r} not in registered devices")
+            return
 
     gain_arg = "0" if str(gain).lower() == "auto" else str(int(float(gain) * 10))
 
