@@ -2,6 +2,15 @@
 
 ---
 
+## [SignalScope 3.4.70] - 2026-03-30
+
+### Changed
+- **Plugins moved to `plugins/` subdirectory** — all plugin `.py` files now live in a dedicated `plugins/` directory alongside `signalscope.py` instead of cluttering the app root. On first startup after upgrading from an older version, any plugin files found in the app root are automatically moved to `plugins/` (including their associated `.json` config files) — no manual action required. Install and remove routes updated to target `plugins/`.
+- **Icecast plugin: universal input via `_stream_buffer` PCM tap** — replaced the old device-type-detection approach (which only worked for HTTP inputs) with the same snapshot+anchor `_stream_buffer` drain loop used by the Logger plugin. Every input type SignalScope monitors (FM/RTL-SDR, DAB, ALSA, RTP, HTTP) now works as an Icecast source. Stream management refactored from subprocesses to self-restarting `IcecastStreamThread` instances.
+- **Icecast plugin: stereo support** — new per-stream `Stereo` toggle. HTTP inputs: native stereo preserved by passing the URL directly to ffmpeg. FM/DAB/ALSA/RTP inputs: mono PCM tap with optional `-ac 2` dual-mono upmix (L=R). Input dropdown shows `[URL — native stereo]` or `[PCM tap]` hint so the source capability is visible before configuring.
+
+---
+
 ## [Logger 1.5.9] - 2026-03-29
 
 ### Fixed
