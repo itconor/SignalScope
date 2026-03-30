@@ -34,6 +34,7 @@ ENABLE_SDR=""
 ENABLE_SERVICE=""
 ENABLE_NGINX=""
 ENABLE_LIVEWIRE=""
+ENABLE_ICECAST=""
 FORCE_RETUNE=0
 NGINX_FQDN=""
 NGINX_FQDN_DEFAULT=""   # pre-filled from a broken/existing config during repair
@@ -84,6 +85,8 @@ Options:
   --no-sdr                  Skip SDR support
   --livewire                Apply Livewire/AES67 UDP kernel tuning (2× standard buffer sizes)
   --no-livewire             Apply standard UDP tuning only
+  --icecast                 Install Icecast2 (for the Icecast Streaming plugin)
+  --no-icecast              Skip Icecast2 installation
   --retune                  Re-apply kernel network tuning even on an update (combine with --livewire)
   --nginx                   Install and configure nginx reverse proxy
   --no-nginx                Skip nginx setup
@@ -241,6 +244,8 @@ parse_args() {
       --force) FORCE_OVERWRITE=1; shift ;;
       --livewire) ENABLE_LIVEWIRE=1; shift ;;
       --no-livewire) ENABLE_LIVEWIRE=0; shift ;;
+      --icecast) ENABLE_ICECAST=1; shift ;;
+      --no-icecast) ENABLE_ICECAST=0; shift ;;
       --retune) FORCE_RETUNE=1; shift ;;
       --pi-overclock) ENABLE_OVERCLOCK=1; shift ;;
       --no-pi-overclock) ENABLE_OVERCLOCK=0; shift ;;
@@ -1037,6 +1042,16 @@ main() {
         ENABLE_LIVEWIRE=0
       fi
     fi
+
+    if [[ -z "${ENABLE_ICECAST}" ]]; then
+      echo
+      info "The Icecast plugin lets you re-stream any monitored input as a live Icecast2 stream."
+      if ask_yes_no "Install Icecast2 (for the Icecast Streaming plugin)?" "n"; then
+        ENABLE_ICECAST=1
+      else
+        ENABLE_ICECAST=0
+      fi
+    fi
   fi
 
   EXISTING_PROXY=0
@@ -1209,6 +1224,17 @@ main() {
         libsndfile1 libsndfile1-dev libliquid-dev libfftw3-dev nlohmann-json3-dev \
         meson ninja-build || true
       ensure_rtlsdr_blacklist
+    fi
+
+    if [[ "${ENABLE_ICECAST}" == "1" ]]; then
+      step "Installing Icecast2"
+      # Pre-answer the debconf questions so apt doesn't open an interactive dialog
+      echo "icecast2 icecast2/icecast-setup boolean false" | ${SUDO} debconf-set-selections 2>/dev/null || true
+      if ${SUDO} apt-get install -y icecast2; then
+        ok "Icecast2 installed — configure via SignalScope Plugins → Icecast Streaming"
+      else
+        warn "Icecast2 install failed — you can install it later with: sudo apt install icecast2"
+      fi
     fi
 
   fi
