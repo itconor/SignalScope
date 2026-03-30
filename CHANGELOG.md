@@ -2,6 +2,13 @@
 
 ---
 
+## [Listener 1.0.1] - 2026-03-30
+
+### Fixed
+- **Wrong stream played when clicking a station card** — `/hub/data` re-sorts streams by alert priority before returning them, so the `forEach` array position (used as the stream index in the audio URL) no longer matched the actual config index. Fix: use `_client_idx` from the stream object (set by the client at heartbeat time, survives all hub-side sorting) instead of the loop counter.
+
+---
+
 ## [3.4.82] - 2026-03-30
 
 ### Fixed

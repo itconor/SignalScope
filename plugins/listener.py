@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/listener",
     "icon":     "🎧",
     "hub_only": True,
-    "version":  "1.0.0",
+    "version":  "1.0.1",
 }
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -318,7 +318,7 @@ function loadStreams(initial){
           if(!s.enabled) return;
           var obj = {
             site:    sname,
-            idx:     idx,
+            idx:     (s._client_idx !== undefined ? s._client_idx : idx),
             name:    s.name || ('Stream '+(idx+1)),
             level:   s.level_dbfs,
             status:  s.ai_status || 'OK',
