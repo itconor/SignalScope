@@ -54,29 +54,36 @@ def _find_ffmpeg() -> str:
     found = shutil.which("ffmpeg")
     if found:
         return found
-    # macOS — Homebrew Apple Silicon, Homebrew Intel, MacPorts
-    _mac_paths = [
-        "/opt/homebrew/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
-        "/opt/local/bin/ffmpeg",
-    ]
-    # Linux — common system locations not always on PATH when run as a service
-    _linux_paths = [
-        "/usr/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
-        "/snap/bin/ffmpeg",
-    ]
-    # Windows — common user install directories
-    _win_paths = [
-        r"C:\ffmpeg\bin\ffmpeg.exe",
-        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
-    ]
-    _candidates = (_mac_paths + _linux_paths + _win_paths
-                   if _sys.platform != "win32"
-                   else _win_paths + _linux_paths)
+
+    if _sys.platform == "win32":
+        # Dynamic per-user paths (Scoop, some standalone installers)
+        _user = os.environ.get("USERPROFILE", "")
+        _appdata = os.environ.get("APPDATA", "")
+        _candidates = [
+            # Manual download — most common Windows install that skips PATH setup
+            r"C:\ffmpeg\bin\ffmpeg.exe",
+            r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+            r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+            r"C:\tools\ffmpeg\bin\ffmpeg.exe",          # Chocolatey default
+            r"C:\ProgramData\chocolatey\bin\ffmpeg.exe", # Chocolatey shim
+            # Scoop (user-profile install)
+            os.path.join(_user, r"scoop\apps\ffmpeg\current\bin\ffmpeg.exe"),
+            # Some standalone GUI installers drop into AppData
+            os.path.join(_appdata, r"ffmpeg\bin\ffmpeg.exe"),
+        ]
+    else:
+        _candidates = [
+            # macOS — Homebrew Apple Silicon, Homebrew Intel, MacPorts
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/opt/local/bin/ffmpeg",
+            # Linux — common system locations not always on PATH when run as a service
+            "/usr/bin/ffmpeg",
+            "/snap/bin/ffmpeg",
+        ]
+
     for _p in _candidates:
-        if os.path.isfile(_p) and os.access(_p, os.X_OK):
+        if _p and os.path.isfile(_p) and os.access(_p, os.X_OK):
             return _p
     return ""
 
