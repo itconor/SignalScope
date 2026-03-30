@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.9",
+    "version": "1.5.10",
 }
 
 import datetime
@@ -39,6 +39,47 @@ _DEFAULT_RETAIN   = 90      # days before deletion
 _CONFIG_FILE   = "logger_config.json"
 _REC_DIR       = "logger_recordings"
 _DB_FILE       = "logger_index.db"
+
+def _find_ffmpeg() -> str:
+    """Locate the ffmpeg binary, checking PATH and well-known install locations.
+
+    GUI-launched processes on macOS and Windows often have a minimal PATH that
+    doesn't include Homebrew (/opt/homebrew/bin) or user-installed binaries
+    (C:\\ffmpeg\\bin).  This helper tries common locations so clip export and
+    recording work regardless of how SignalScope was started.
+
+    Returns the full path to ffmpeg, or an empty string if not found.
+    """
+    import sys as _sys
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    # macOS — Homebrew Apple Silicon, Homebrew Intel, MacPorts
+    _mac_paths = [
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/opt/local/bin/ffmpeg",
+    ]
+    # Linux — common system locations not always on PATH when run as a service
+    _linux_paths = [
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/snap/bin/ffmpeg",
+    ]
+    # Windows — common user install directories
+    _win_paths = [
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+    ]
+    _candidates = (_mac_paths + _linux_paths + _win_paths
+                   if _sys.platform != "win32"
+                   else _win_paths + _linux_paths)
+    for _p in _candidates:
+        if os.path.isfile(_p) and os.access(_p, os.X_OK):
+            return _p
+    return ""
+
 
 # Recording format definitions: fmt → (codec_args, ffmpeg_container, file_ext)
 _REC_FORMATS = {
@@ -163,7 +204,7 @@ def _push_file_to_relay(hub_url, slot_id, slug, date, filename, cfg, seek_s=0.0)
             # container regardless of the source format (OGG, MP3, FLAC…).
             # QMediaPlayer's FFmpeg backend handles MKV natively.
             import shutil as _shutil
-            ffmpeg_bin = _shutil.which("ffmpeg") or "ffmpeg"
+            ffmpeg_bin = __find_ffmpeg() or "ffmpeg"
             cmd = [ffmpeg_bin, "-hide_banner", "-loglevel", "error",
                    "-ss", str(seek_s), "-i", str(path),
                    "-c", "copy", "-f", "matroska", "pipe:1"]
@@ -208,7 +249,7 @@ def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
         _log(f"[Logger] AudioPush: file not found: {path}")
         return
 
-    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    ffmpeg = _find_ffmpeg() or "ffmpeg"
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
            "-ss", str(seek_s), "-i", str(path),
            "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1"]
@@ -1256,9 +1297,9 @@ def register(app, ctx):
         path = _stream_rec_root_by_slug(_safe(slug)) / _safe(slug) / date / filename
         if not path.exists():
             return ("", 404)
-        ffmpeg_bin = shutil.which("ffmpeg")
+        ffmpeg_bin = _find_ffmpeg()
         if not ffmpeg_bin:
-            return jsonify({"error": "ffmpeg not installed"}), 500
+            return jsonify({"error": "ffmpeg not found — install ffmpeg and ensure it is in PATH"}), 500
         cmd = [ffmpeg_bin, "-hide_banner", "-loglevel", "error",
                "-ss", str(max(0.0, seek_s)), "-i", str(path),
                "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1"]
@@ -2090,7 +2131,7 @@ class _RecorderThread(threading.Thread):
 
     def run(self):
         _log(f"[Logger] Started recording: {self.stream_name}")
-        ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+        ffmpeg = _find_ffmpeg() or "ffmpeg"
         if not ffmpeg:
             self.last_error = "ffmpeg not found"
             _log(f"[Logger] ffmpeg not found — cannot record {self.stream_name}")
@@ -2375,7 +2416,7 @@ def _maintenance_loop():
         time.sleep(3600)
 
 def _run_maintenance():
-    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    ffmpeg = _find_ffmpeg() or "ffmpeg"
     today  = datetime.date.today()
     seen_stream_dirs: set = set()
 
@@ -2490,7 +2531,14 @@ def _export_clip(slug, date, start_s, end_s, fmt="mp3"):
     day_dir = root / slug / date
     if not day_dir.exists():
         return jsonify({"error": "no recordings"}), 404
-    ffmpeg  = shutil.which("ffmpeg") or "ffmpeg"
+    ffmpeg  = _find_ffmpeg()
+    if not ffmpeg:
+        return jsonify({"error": (
+            "ffmpeg not found. Install ffmpeg and ensure it is in your PATH.\n"
+            "macOS: brew install ffmpeg\n"
+            "Linux: sudo apt install ffmpeg\n"
+            "Windows: download from https://ffmpeg.org/download.html"
+        )}), 500
     segs    = _get_segments(slug, date, base_root=root)
 
     audio_args, container, mime, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
@@ -2559,6 +2607,13 @@ def _export_clip(slug, date, start_s, end_s, fmt="mp3"):
             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
     except subprocess.TimeoutExpired:
         return jsonify({"error": "export timeout"}), 500
+    except FileNotFoundError:
+        return jsonify({"error": (
+            "ffmpeg not found. Install ffmpeg and ensure it is in your PATH.\n"
+            "macOS: brew install ffmpeg\n"
+            "Linux: sudo apt install ffmpeg\n"
+            "Windows: download from https://ffmpeg.org/download.html"
+        )}), 500
     finally:
         if tf_name:
             try:

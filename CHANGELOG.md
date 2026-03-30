@@ -2,6 +2,14 @@
 
 ---
 
+## [Logger 1.5.10] - 2026-03-30
+
+### Fixed
+- **Clip export / playback broken when ffmpeg is not in PATH** — `shutil.which("ffmpeg")` returns `None` when SignalScope runs as a launchd service or the desktop app is launched from Finder/Dock (minimal PATH). All ffmpeg lookup calls now go through a new `_find_ffmpeg()` helper that additionally checks `/opt/homebrew/bin` (macOS Apple Silicon), `/usr/local/bin` (macOS Intel/Homebrew), `/opt/local/bin` (MacPorts), `/snap/bin` (Linux snap), and `C:\ffmpeg\bin` / `C:\Program Files\ffmpeg\bin` (Windows). The old `shutil.which("ffmpeg") or "ffmpeg"` fallback pattern would silently pass bare `"ffmpeg"` to subprocess, causing `[Errno 2] No such file or directory: 'ffmpeg'`.
+- **Export endpoint now returns a human-readable error instead of an exception** — `_export_clip()` now checks for ffmpeg before building the command and catches `FileNotFoundError`, returning a 500 JSON with install instructions rather than an unhandled Python traceback.
+
+---
+
 ## [SignalScope 3.4.73] - 2026-03-30
 
 ### Fixed
