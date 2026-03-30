@@ -2,6 +2,13 @@
 
 ---
 
+## [Listener 1.0.0] - 2026-03-30
+
+### New Plugin
+- **Listener** — live stream monitoring page designed for presenters and producers. Station cards with coloured avatars, animated level meters, live/alert/offline badges, and a single-tap 🎧 Listen button. Auto-reconnects on stream interruption with retry counter. Animated equalizer + volume control in a slide-up now-playing bar. Screen wake-lock while listening. Streams are filtered by the logged-in user's site access permissions. Step-by-step help guide built in. Mobile-responsive.
+
+---
+
 ## [3.4.80] - 2026-03-30
 
 ### Improved / Fixed
