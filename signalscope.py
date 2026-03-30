@@ -1852,7 +1852,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.78"
+BUILD                  = "SignalScope-3.4.79"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30651,8 +30651,8 @@ def api_hub_site_names():
     """Return sorted list of known site names for the user-form site-access checkboxes."""
     if hub_server is None:
         return jsonify({"sites": []})
-    sites = sorted(s["site_name"] for s in hub_server.get_sites()
-                   if s.get("site_name"))
+    sites = sorted(s["site"] for s in hub_server.get_sites()
+                   if s.get("site"))
     return jsonify({"sites": sites})
 
 # ─── User Management API (admin only) ─────────────────────────────────────────

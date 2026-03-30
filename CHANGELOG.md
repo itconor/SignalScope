@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.79] - 2026-03-30
+
+### Fixed
+- **User form — site checkboxes always show "No sites registered"** — `api_hub_site_names` was looking for `s["site_name"]` but `get_sites()` stores the site name under `s["site"]`. Every site was silently filtered out.
+
+---
+
 ## [3.4.78] - 2026-03-30
 
 ### Fixed
