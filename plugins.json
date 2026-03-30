@@ -130,6 +130,16 @@
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/listener.py"
   },
   {
+    "id": "presenter",
+    "name": "Presenter",
+    "file": "presenter.py",
+    "icon": "🎙",
+    "description": "Simplified hub view for presenters and producers. Shows station status cards with live level indicators and a plain-English fault/recovery history. Site-filtered to only show stations assigned to the user. All-clear banner when no active faults. Integrates with the plugin-role user system (SignalScope 3.4.84+) — users assigned the Presenter role are forwarded directly here on login. Hub-only.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/presenter.py"
+  },
+  {
     "id": "azuracast",
     "name": "AzuraCast",
     "file": "azuracast.py",

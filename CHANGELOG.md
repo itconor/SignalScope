@@ -2,6 +2,15 @@
 
 ---
 
+## [Presenter 1.0.0] - 2026-03-30
+
+### Added
+- **Presenter plugin** — simplified hub view for presenters and producers. Shows station status cards (On Air / Signal Issue / Not Available) with live level indicators, and a plain-English fault/recovery history drawn from the alert log. Site-filtered: presenters only see stations assigned to their user account. All-clear banner when no active faults. Auto-refreshes every 30 seconds.
+- **Plugin-role integration** — declaring `user_role=True` + `role_label="Presenter"` in `SIGNALSCOPE_PLUGIN` causes the role to appear in Settings → Users dropdown (requires SignalScope 3.4.84+). Users assigned the Presenter role are forwarded directly to `/presenter` on login and cannot access the main hub.
+- **Plain-English fault labels** — technical event types (CHAIN_FAULT, SILENCE, STL_FAULT, TX_DOWN, etc.) are translated to plain language: "Signal chain fault", "audio silence", "STL link fault", "transmitter fault", etc.
+
+---
+
 ## [Listener 1.1.1] - 2026-03-30
 
 ### Fixed
