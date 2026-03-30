@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.5.13] - 2026-03-30
+
+### Fixed
+- **Hub clip export still produced 0-byte files** — `ListenSlot.SLOT_TIMEOUT` is 30 seconds. The slot reaper evicts slots where `last_chunk` hasn't been updated within that window. The export download generator was waiting up to 60 s for the client to start pushing, but not touching `last_chunk` during that wait. After ~40 s the slot was removed from the registry; the client's next `audio_chunk` POST returned 404; `_audio_post` returned False; the client thread stopped. Fix: the generator now sets `slot.last_chunk = time.time()` on every `queue.Empty` timeout, keeping the slot alive in the registry for as long as the browser's download connection is open.
+
+---
+
 ## [Logger 1.5.12] - 2026-03-30
 
 ### Fixed

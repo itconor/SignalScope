@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.12",
+    "version": "1.5.13",
 }
 
 import datetime
@@ -1163,6 +1163,11 @@ def register(app, ctx):
                             got_data  = True
                             yield chunk
                         except queue.Empty:
+                            # Touch last_chunk so the hub's slot reaper doesn't
+                            # evict the slot before the client starts pushing.
+                            # Without this the 30-second SLOT_TIMEOUT fires,
+                            # audio_chunk returns 404, and the client stops.
+                            slot.last_chunk = time.time()
                             if not got_data:
                                 # Waiting for client to receive command + start ffmpeg
                                 if time.monotonic() - start_time > 60.0:
