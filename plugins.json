@@ -118,5 +118,15 @@
     "version": "1.1.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/icecast.py"
+  },
+  {
+    "id": "azuracast",
+    "name": "AzuraCast",
+    "file": "azuracast.py",
+    "icon": "\ud83c\udf99",
+    "description": "AzuraCast web radio integration. Polls configured AzuraCast servers for live now-playing data, listener counts, and station health. Station cards show current track, artist, progress bar, next track, live/AutoDJ status, and listener count. Fires AZURACAST_FAULT and AZURACAST_RECOVERY alerts when stations go offline or recover. Optionally cross-references with SignalScope silence detection \u2014 fires AZURACAST_SILENCE if a station is broadcasting but its linked input is silent. Hub overview aggregates all stations from all connected sites.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/azuracast.py"
   }
 ]

@@ -2,6 +2,20 @@
 
 ---
 
+## [AzuraCast 1.0.0] - 2026-03-30
+
+### Added
+- **New plugin: AzuraCast integration** — polls AzuraCast web radio servers for live station data. Station cards show current track, artist, album art URL, live progress bar (updates every second client-side), next track, live/AutoDJ status, listener count, and linked SignalScope input. Fires `AZURACAST_FAULT` / `AZURACAST_RECOVERY` alerts on station online/offline transitions. Optionally fires `AZURACAST_SILENCE` when a station is broadcasting but its linked SignalScope input is in silence. Hub overview aggregates all stations across all connected sites. Supports multiple AzuraCast servers, optional Bearer API key auth. No extra pip packages required.
+
+---
+
+## [SignalScope 3.4.72] - 2026-03-30
+
+### Changed
+- **AzuraCast plugin added** to plugins.json registry — installable from Settings → Plugins.
+
+---
+
 ## [SignalScope 3.4.71] - 2026-03-30
 
 ### Changed
