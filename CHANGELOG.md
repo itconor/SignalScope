@@ -2,6 +2,26 @@
 
 ---
 
+## [Listener 1.1.0] - 2026-03-30
+
+### Added
+- **⭐ My Stations (favourites)** — tap the star on any card to pin it to a permanent "My Stations" row at the top of the page, persisted to localStorage. Survives page reloads and browser restarts.
+- **Search bar** — instant text filter; type any part of a station name to narrow the list. "No stations match" message shown if search finds nothing.
+- **Resume last station** — on page load, a banner offers to resume whichever station was playing when the tab was last closed. Dismiss with "Not now" to clear the suggestion.
+
+### Changed
+- **Simplified status language** — "● On Air" / "⚠ Signal Issue" / "⚡ Caution" / "○ Not Available" replacing technical badge text.
+- **Larger touch targets** — Listen/Stop button padding increased, font size 15 px, height ~52 px for easy tapping in studio environments.
+- **Now-playing bar** shows live RDS/DAB "what's on" text alongside station name, updates every 10 s.
+- **Badge updates in-place** — status badge text and colour update on each poll cycle without a full card re-render.
+
+### Fixed
+- **Streams not playing (regression from 1.0.1)** — `_client_idx` could be JSON `null`, which passed the `!== undefined` check and was stored as `null`; the audio URL became `/stream/null/live` (404). Changed to `!= null` which correctly catches both `null` and `undefined`.
+- **Level / status / online state not updating** — `pollLevels` was still matching streams by sorted array position instead of `_client_idx`, so no stream ever matched and all poll updates were silently dropped. Fixed to use `_safeIdx(s, i)` matching `loadStreams`.
+- **Click handler accumulation** — `renderContent` was re-attaching `_onCardClick` on every render without removing the old one. Content node is now replaced (cloneNode) on each render to cleanly strip listeners before re-attaching once.
+
+---
+
 ## [Listener 1.0.1] - 2026-03-30
 
 ### Fixed
