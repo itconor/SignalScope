@@ -25,7 +25,7 @@ import time
 import urllib.request as _urllib_req
 import uuid
 
-from flask import abort, jsonify, render_template_string, request
+from flask import abort, jsonify, redirect, render_template_string, request
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 _CONFIG_FILE  = "icecast_config.json"
@@ -788,149 +788,154 @@ _CLIENT_TPL = """<!DOCTYPE html>
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>Icecast Streaming — SignalScope</title>
 <style nonce="{{csp_nonce()}}">
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0d1b2a;color:#cdd6e0;font-family:system-ui,sans-serif;font-size:14px}
-a{color:#38bdf8;text-decoration:none}
-.topbar{background:#0a1628;border-bottom:1px solid #1e3a5f;padding:10px 18px;display:flex;align-items:center;gap:14px}
-.topbar h1{font-size:16px;font-weight:600;color:#e0eaf4;flex:1}
-.topbar a{color:#38bdf8;font-size:13px}
-.main{padding:20px 24px;max-width:1200px}
-.card{background:#111d2e;border:1px solid #1e3a5f;border-radius:8px;padding:16px;margin-bottom:16px}
-.card-title{font-size:13px;font-weight:600;color:#7ecfff;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px}
+body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-family:system-ui,sans-serif;font-size:14px;min-height:100vh}
+a{color:var(--acc);text-decoration:none}
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:12px}
+header h1{font-size:16px;font-weight:600;color:var(--tx);flex:1}
+.main{padding:20px 24px;max-width:1200px;margin:0 auto}
+.card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;margin-bottom:16px}
+.ch{padding:9px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54);font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em}
+.cb{padding:14px}
 .status-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600}
-.badge-green{background:#0d3323;color:#34d399;border:1px solid #065f46}
-.badge-red{background:#2d1010;color:#f87171;border:1px solid #7f1d1d}
-.badge-grey{background:#1e2d3d;color:#8a9bae;border:1px solid #2d4060}
-.btn{padding:6px 14px;border-radius:5px;border:1px solid #2d4060;background:#152235;color:#cdd6e0;cursor:pointer;font-size:13px}
-.btn:hover{background:#1e3a5f}
-.btn-primary{background:#1e4d7a;border-color:#2d6fa8;color:#fff}
-.btn-primary:hover{background:#2560a0}
-.btn-danger{background:#7f1d1d;border-color:#b91c1c;color:#fff}
-.btn-danger:hover{background:#991b1b}
-.btn-sm{padding:3px 9px;font-size:12px}
-details summary{cursor:pointer;color:#7ecfff;font-size:13px;padding:4px 0}
-details summary:hover{color:#38bdf8}
-.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.badge{font-size:11px;padding:2px 8px;border-radius:999px}
+.b-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
+.b-al{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
+.b-mu{background:var(--bor);color:var(--mu)}
+.btn{border:none;border-radius:8px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.btn:hover{filter:brightness(1.15)}
+.bp{background:var(--acc);color:#fff}
+.bd{background:var(--al);color:#fff}
+.bg{background:var(--bor);color:var(--tx)}
+.bs{padding:3px 9px;font-size:12px}
+details>summary{list-style:none}
+details>summary::-webkit-details-marker{display:none}
 .field{display:flex;flex-direction:column;gap:4px}
-.field label{font-size:12px;color:#8a9bae}
-.field input,.field select{background:#0d1b2a;border:1px solid #2d4060;border-radius:4px;color:#cdd6e0;padding:5px 8px;font-size:13px}
-.field input:focus,.field select:focus{outline:none;border-color:#38bdf8}
+.field label{font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+input,select{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;outline:none;font-family:inherit}
+input:focus,select:focus{border-color:var(--acc)}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{background:#0a1628;color:#7ecfff;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #1e3a5f}
-td{padding:8px 10px;border-bottom:1px solid #162033;vertical-align:middle}
-tr:hover td{background:#0f1e30}
-.url-link{font-size:12px;color:#38bdf8;font-family:monospace}
-.add-form{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:12px}
-.add-form .field-full{grid-column:1/-1}
-#msg{padding:8px 14px;border-radius:5px;margin-bottom:10px;display:none;font-size:13px}
-.msg-ok{background:#0d3323;color:#34d399;border:1px solid #065f46}
-.msg-err{background:#2d1010;color:#f87171;border:1px solid #7f1d1d}
+th{padding:7px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mu);border-bottom:1px solid var(--bor)}
+td{padding:8px 10px;border-bottom:1px solid var(--bor);vertical-align:middle}
+tr:hover td{background:rgba(23,52,95,.35)}
+.url-link{font-size:12px;color:var(--acc);font-family:monospace}
+#msg{padding:8px 14px;border-radius:8px;margin-bottom:12px;display:none;font-size:13px}
+.msg-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
+.msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
 </style>
 </head>
 <body>
-<div class="topbar">
+<header>
   <h1>📡 Icecast Streaming</h1>
-  <a href="/">← Dashboard</a>
-</div>
+  <a href="/" class="btn bg bs">← Dashboard</a>
+</header>
 <div class="main">
   <div id="msg"></div>
 
-  <!-- Server Status Bar -->
+  <!-- Server Status Card -->
   <div class="card">
-    <div class="status-bar">
-      <span class="card-title" style="margin:0">Server</span>
-      <span id="srv-badge" class="badge badge-grey">Checking…</span>
-      <span id="srv-port" style="font-size:12px;color:#8a9bae"></span>
-      <button class="btn btn-primary btn-sm" data-action="server-start">Start</button>
-      <button class="btn btn-danger btn-sm" data-action="server-stop">Stop</button>
+    <div class="ch">Server</div>
+    <div class="cb">
+      <div class="status-bar">
+        <span id="srv-badge" class="badge b-mu">Checking…</span>
+        <span id="srv-port" style="font-size:12px;color:var(--mu)"></span>
+        <button class="btn bp bs" data-action="server-start">Start</button>
+        <button class="btn bd bs" data-action="server-stop">Stop</button>
+      </div>
     </div>
   </div>
 
-  <!-- Server settings -->
+  <!-- Server Settings Card (collapsible) -->
   <div class="card">
     <details>
-      <summary class="card-title" style="margin:0">Server Settings</summary>
-      <div class="settings-grid" style="margin-top:12px">
-        <div class="field"><label>Port</label><input type="number" id="cfg-port" min="1024" max="65535"></div>
-        <div class="field"><label>Hostname</label><input type="text" id="cfg-hostname"></div>
-        <div class="field"><label>Source Password</label><input type="text" id="cfg-srcpw"></div>
-        <div class="field"><label>Admin Password</label><input type="text" id="cfg-admpw"></div>
-      </div>
-      <div style="margin-top:10px">
-        <button class="btn btn-primary btn-sm" data-action="save-config">Save Settings</button>
+      <summary class="ch" style="cursor:pointer">Server Settings</summary>
+      <div class="cb">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="field"><label>Port</label><input type="number" id="cfg-port" min="1024" max="65535"></div>
+          <div class="field"><label>Hostname</label><input type="text" id="cfg-hostname"></div>
+          <div class="field"><label>Source Password</label><input type="text" id="cfg-srcpw"></div>
+          <div class="field"><label>Admin Password</label><input type="text" id="cfg-admpw"></div>
+        </div>
+        <div style="margin-top:10px">
+          <button class="btn bp bs" data-action="save-config">Save Settings</button>
+        </div>
       </div>
     </details>
   </div>
 
-  <!-- Streams table -->
+  <!-- Streams Table Card -->
   <div class="card">
-    <div class="card-title">Streams</div>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th><th>Input</th><th>Mount</th><th>Format</th>
-          <th>Kbps</th><th>Ch</th><th>Status</th><th>Listeners</th><th>URL</th><th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="streams-tbody">
-        <tr><td colspan="10" style="color:#8a9bae;text-align:center">Loading…</td></tr>
-      </tbody>
-    </table>
+    <div class="ch">Streams</div>
+    <div class="cb" style="padding:0">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th><th>Input</th><th>Mount</th><th>Format</th>
+            <th>Kbps</th><th>Ch</th><th>Status</th><th>Listeners</th><th>URL</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="streams-tbody">
+          <tr><td colspan="10" style="color:var(--mu);text-align:center;padding:14px">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 
-  <!-- Add stream form -->
+  <!-- Add Stream Card -->
   <div class="card">
-    <div class="card-title">Add Stream</div>
-    <div class="add-form" id="add-form">
-      <div class="field">
-        <label>Name</label>
-        <input type="text" id="add-name" placeholder="Cool FM">
-      </div>
-      <div class="field">
-        <label>Input</label>
-        <select id="add-input"></select>
-      </div>
-      <div class="field">
-        <label>Mount Point</label>
-        <input type="text" id="add-mount" placeholder="/coolfm">
-      </div>
-      <div class="field">
-        <label>Format</label>
-        <select id="add-format">
-          <option value="mp3">MP3</option>
-          <option value="ogg">OGG/Opus</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Bitrate (kbps)</label>
-        <select id="add-bitrate">
-          <option value="64">64</option>
-          <option value="96">96</option>
-          <option value="128" selected>128</option>
-          <option value="192">192</option>
-          <option value="320">320</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Genre</label>
-        <input type="text" id="add-genre" placeholder="Radio" value="Radio">
-      </div>
-      <div class="field">
-        <label>Description</label>
-        <input type="text" id="add-desc" placeholder="">
-      </div>
-      <div class="field" style="justify-content:flex-end">
-        <label>&nbsp;</label>
-        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-          <label style="font-size:12px;color:#8a9bae;display:flex;gap:5px;align-items:center"
-                 title="HTTP inputs: native stereo preserved. FM/DAB/ALSA/RTP: mono is upmixed to dual-mono L=R.">
-            <input type="checkbox" id="add-stereo"> Stereo
-          </label>
-          <label style="font-size:12px;color:#8a9bae;display:flex;gap:5px;align-items:center">
-            <input type="checkbox" id="add-public"> Public
-          </label>
-          <button class="btn btn-primary" data-action="add-stream">Add Stream</button>
+    <div class="ch">Add Stream</div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px" id="add-form">
+        <div class="field">
+          <label>Name</label>
+          <input type="text" id="add-name" placeholder="Cool FM">
+        </div>
+        <div class="field">
+          <label>Input</label>
+          <select id="add-input"></select>
+        </div>
+        <div class="field">
+          <label>Mount Point</label>
+          <input type="text" id="add-mount" placeholder="/coolfm">
+        </div>
+        <div class="field">
+          <label>Format</label>
+          <select id="add-format">
+            <option value="mp3">MP3</option>
+            <option value="ogg">OGG/Opus</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Bitrate (kbps)</label>
+          <select id="add-bitrate">
+            <option value="64">64</option>
+            <option value="96">96</option>
+            <option value="128" selected>128</option>
+            <option value="192">192</option>
+            <option value="320">320</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Genre</label>
+          <input type="text" id="add-genre" placeholder="Radio" value="Radio">
+        </div>
+        <div class="field">
+          <label>Description</label>
+          <input type="text" id="add-desc" placeholder="">
+        </div>
+        <div class="field" style="justify-content:flex-end">
+          <label>&nbsp;</label>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <label style="font-size:12px;color:var(--mu);display:flex;gap:5px;align-items:center"
+                   title="HTTP inputs: native stereo preserved. FM/DAB/ALSA/RTP: mono is upmixed to dual-mono L=R.">
+              <input type="checkbox" id="add-stereo"> Stereo
+            </label>
+            <label style="font-size:12px;color:var(--mu);display:flex;gap:5px;align-items:center">
+              <input type="checkbox" id="add-public"> Public
+            </label>
+            <button class="btn bp" data-action="add-stream">Add Stream</button>
+          </div>
         </div>
       </div>
     </div>
@@ -977,9 +982,9 @@ function _render(d){
   var badge=document.getElementById('srv-badge');
   var portEl=document.getElementById('srv-port');
   if(d.running){
-    badge.className='badge badge-green'; badge.textContent='Running';
+    badge.className='badge b-ok'; badge.textContent='Running';
   } else {
-    badge.className='badge badge-red'; badge.textContent='Stopped';
+    badge.className='badge b-al'; badge.textContent='Stopped';
   }
   portEl.textContent=d.running?'Port '+d.port:'Port '+d.port+' (not listening)';
   _cfg.port=d.port; _cfg.hostname=d.hostname||'localhost';
@@ -995,31 +1000,31 @@ function _render(d){
   // streams table
   var tbody=document.getElementById('streams-tbody');
   if(!d.streams||d.streams.length===0){
-    tbody.innerHTML='<tr><td colspan="9" style="color:#8a9bae;text-align:center">No streams configured</td></tr>';
+    tbody.innerHTML='<tr><td colspan="9" style="color:var(--mu);text-align:center;padding:14px">No streams configured</td></tr>';
     return;
   }
   var html='';
   d.streams.forEach(function(s){
     var stBadge=s.running
-      ? '<span class="badge badge-green">On Air</span>'
-      : (s.enabled?'<span class="badge badge-grey">Idle</span>':'<span class="badge badge-red">Disabled</span>');
+      ? '<span class="badge b-ok">On Air</span>'
+      : (s.enabled?'<span class="badge b-mu">Idle</span>':'<span class="badge b-al">Disabled</span>');
     var streamUrl='http://'+(_cfg.hostname||'localhost')+':'+_cfg.port+s.mount;
-    var chLabel=s.stereo?'<span title="Stereo" style="color:#34d399">2</span>':'<span title="Mono" style="color:#8a9bae">1</span>';
+    var chLabel=s.stereo?'<span title="Stereo" style="color:var(--ok)">2</span>':'<span title="Mono" style="color:var(--mu)">1</span>';
     html+='<tr>'
       +'<td>'+_esc(s.name)+'</td>'
-      +'<td style="font-size:12px;color:#8a9bae">'+_esc(s.input_name||'')+'</td>'
+      +'<td style="font-size:12px;color:var(--mu)">'+_esc(s.input_name||'')+'</td>'
       +'<td style="font-family:monospace;font-size:12px">'+_esc(s.mount)+'</td>'
       +'<td>'+_esc(s.format.toUpperCase())+'</td>'
       +'<td>'+s.bitrate+'</td>'
       +'<td style="text-align:center">'+chLabel+'</td>'
       +'<td>'+stBadge+'</td>'
-      +'<td style="text-align:center">'+(s.connected?s.listeners:'–')+'</td>'
+      +'<td style="text-align:center">'+(s.connected?s.listeners:'\u2013')+'</td>'
       +'<td><a class="url-link" href="'+streamUrl+'" target="_blank">'+_esc(streamUrl)+'</a></td>'
       +'<td style="white-space:nowrap">'
       +(s.running
-        ? '<button class="btn btn-danger btn-sm stream-stop-btn" data-id="'+_esc(s.id)+'">Stop</button>'
-        : '<button class="btn btn-primary btn-sm stream-start-btn" data-id="'+_esc(s.id)+'">Start</button>')
-      +' <button class="btn btn-sm stream-del-btn" data-id="'+_esc(s.id)+'" data-name="'+_esc(s.name)+'">Del</button>'
+        ? '<button class="btn bd bs stream-stop-btn" data-id="'+_esc(s.id)+'">Stop</button>'
+        : '<button class="btn bp bs stream-start-btn" data-id="'+_esc(s.id)+'">Start</button>')
+      +' <button class="btn bg bs stream-del-btn" data-id="'+_esc(s.id)+'" data-name="'+_esc(s.name)+'">Del</button>'
       +'</td>'
       +'</tr>';
   });
@@ -1041,7 +1046,7 @@ function _loadInputs(){
       var opt=document.createElement('option');
       opt.value=inp.device;
       var isUrl=inp.device&&(inp.device.startsWith('http://')||inp.device.startsWith('https://'));
-      var hint=isUrl?' [URL — native stereo]':(inp.has_buffer?' [PCM tap]':' [no buffer]');
+      var hint=isUrl?' [URL \u2014 native stereo]':(inp.has_buffer?' [PCM tap]':' [no buffer]');
       opt.textContent=inp.name+hint;
       opt.dataset.name=inp.name;
       sel.appendChild(opt);
@@ -1152,72 +1157,76 @@ _HUB_TPL = """<!DOCTYPE html>
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>Icecast Overview — SignalScope</title>
 <style nonce="{{csp_nonce()}}">
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0d1b2a;color:#cdd6e0;font-family:system-ui,sans-serif;font-size:14px}
-a{color:#38bdf8;text-decoration:none}
-.topbar{background:#0a1628;border-bottom:1px solid #1e3a5f;padding:10px 18px;display:flex;align-items:center;gap:14px}
-.topbar h1{font-size:16px;font-weight:600;color:#e0eaf4;flex:1}
-.main{padding:20px 24px;max-width:1400px}
-.card{background:#111d2e;border:1px solid #1e3a5f;border-radius:8px;padding:16px;margin-bottom:16px}
-.card-title{font-size:13px;font-weight:600;color:#7ecfff;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px}
-.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600}
-.badge-green{background:#0d3323;color:#34d399;border:1px solid #065f46}
-.badge-red{background:#2d1010;color:#f87171;border:1px solid #7f1d1d}
-.badge-grey{background:#1e2d3d;color:#8a9bae;border:1px solid #2d4060}
-.btn{padding:6px 14px;border-radius:5px;border:1px solid #2d4060;background:#152235;color:#cdd6e0;cursor:pointer;font-size:13px}
-.btn:hover{background:#1e3a5f}
-.btn-primary{background:#1e4d7a;border-color:#2d6fa8;color:#fff}
-.btn-primary:hover{background:#2560a0}
-.btn-danger{background:#7f1d1d;border-color:#b91c1c;color:#fff}
-.btn-danger:hover{background:#991b1b}
-.btn-sm{padding:3px 9px;font-size:12px}
+body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-family:system-ui,sans-serif;font-size:14px;min-height:100vh}
+a{color:var(--acc);text-decoration:none}
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:12px}
+header h1{font-size:16px;font-weight:600;color:var(--tx);flex:1}
+.main{padding:20px 24px;max-width:1400px;margin:0 auto}
+.card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;margin-bottom:16px}
+.ch{padding:9px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54);font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em}
+.cb{padding:14px}
+.badge{font-size:11px;padding:2px 8px;border-radius:999px}
+.b-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
+.b-al{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
+.b-mu{background:var(--bor);color:var(--mu)}
+.btn{border:none;border-radius:8px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.btn:hover{filter:brightness(1.15)}
+.bp{background:var(--acc);color:#fff}
+.bd{background:var(--al);color:#fff}
+.bg{background:var(--bor);color:var(--tx)}
+.bs{padding:3px 9px;font-size:12px}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{background:#0a1628;color:#7ecfff;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #1e3a5f}
-td{padding:8px 10px;border-bottom:1px solid #162033;vertical-align:middle}
-tr:hover td{background:#0f1e30}
-.detail-row{background:#0a1628!important;display:none}
+th{padding:7px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mu);border-bottom:1px solid var(--bor)}
+td{padding:8px 10px;border-bottom:1px solid var(--bor);vertical-align:middle}
+tr:hover td{background:rgba(23,52,95,.35)}
+.detail-row{background:rgba(7,20,43,.6)!important;display:none}
 .detail-row.open{display:table-row}
 .sub-table{width:100%;border-collapse:collapse;font-size:12px;margin:4px 0}
-.sub-table th{background:#0d1b2a;padding:5px 8px;color:#7ecfff;font-size:11px}
-.sub-table td{padding:5px 8px;border-bottom:1px solid #162033}
+.sub-table th{padding:5px 8px;color:var(--mu);font-size:11px;border-bottom:1px solid var(--bor)}
+.sub-table td{padding:5px 8px;border-bottom:1px solid var(--bor)}
 .modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
 .modal-bg.open{display:flex}
-.modal{background:#111d2e;border:1px solid #1e3a5f;border-radius:10px;padding:20px;min-width:360px;max-width:500px;width:100%}
-.modal h2{font-size:15px;color:#7ecfff;margin-bottom:14px}
+.modal{background:var(--sur);border:1px solid var(--bor);border-radius:12px;padding:20px;min-width:360px;max-width:500px;width:90%}
+.modal h2{font-size:12px;color:var(--acc);margin-bottom:14px;text-transform:uppercase;letter-spacing:.06em;font-weight:700}
 .field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
-.field label{font-size:12px;color:#8a9bae}
-.field input,.field select{background:#0d1b2a;border:1px solid #2d4060;border-radius:4px;color:#cdd6e0;padding:5px 8px;font-size:13px}
+.field label{font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+input,select{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;outline:none;font-family:inherit}
+input:focus,select:focus{border-color:var(--acc)}
 .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
-#msg{padding:8px 14px;border-radius:5px;margin-bottom:10px;display:none;font-size:13px}
-.msg-ok{background:#0d3323;color:#34d399;border:1px solid #065f46}
-.msg-err{background:#2d1010;color:#f87171;border:1px solid #7f1d1d}
+#msg{padding:8px 14px;border-radius:8px;margin-bottom:12px;display:none;font-size:13px}
+.msg-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
+.msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
 </style>
 </head>
 <body>
-<div class="topbar">
+<header>
   <h1>📡 Icecast Overview</h1>
-  <a href="/">← Dashboard</a>
-</div>
+  <a href="/" class="btn bg bs">← Dashboard</a>
+</header>
 <div class="main">
   <div id="msg"></div>
   <div class="card">
-    <div class="card-title">All Sites</div>
-    <table>
-      <thead>
-        <tr>
-          <th></th>
-          <th>Site</th>
-          <th>Server</th>
-          <th>Streams</th>
-          <th>Total Listeners</th>
-          <th>Last Updated</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="sites-tbody">
-        <tr><td colspan="7" style="color:#8a9bae;text-align:center">Loading…</td></tr>
-      </tbody>
-    </table>
+    <div class="ch">All Sites</div>
+    <div class="cb" style="padding:0">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Site</th>
+            <th>Server</th>
+            <th>Streams</th>
+            <th>Total Listeners</th>
+            <th>Last Updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="sites-tbody">
+          <tr><td colspan="7" style="color:var(--mu);text-align:center;padding:14px">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 
@@ -1241,14 +1250,14 @@ tr:hover td{background:#0f1e30}
     <div class="field"><label>Genre</label><input type="text" id="modal-genre" value="Radio"></div>
     <div class="field"><label>Description</label><input type="text" id="modal-desc"></div>
     <div class="field">
-      <label style="display:flex;gap:6px;align-items:center;cursor:pointer"
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer;text-transform:none;font-size:12px"
              title="HTTP inputs: native stereo. FM/DAB/ALSA/RTP: mono upmixed to dual-mono.">
         <input type="checkbox" id="modal-stereo"> Stereo output
       </label>
     </div>
     <div class="modal-actions">
-      <button class="btn" id="modal-cancel">Cancel</button>
-      <button class="btn btn-primary" id="modal-add">Add Stream</button>
+      <button class="btn bg bs" id="modal-cancel">Cancel</button>
+      <button class="btn bp bs" id="modal-add">Add Stream</button>
     </div>
   </div>
 </div>
@@ -1279,7 +1288,7 @@ function _esc(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function _ago(ts){
-  if(!ts) return '—';
+  if(!ts) return '\u2014';
   var d=Math.round(Date.now()/1000-ts);
   if(d<5) return 'just now';
   if(d<60) return d+'s ago';
@@ -1298,7 +1307,7 @@ function _render(sites){
   var tbody=document.getElementById('sites-tbody');
   var keys=Object.keys(sites);
   if(!keys.length){
-    tbody.innerHTML='<tr><td colspan="7" style="color:#8a9bae;text-align:center">No client sites reporting Icecast status</td></tr>';
+    tbody.innerHTML='<tr><td colspan="7" style="color:var(--mu);text-align:center;padding:14px">No client sites reporting Icecast status</td></tr>';
     return;
   }
   var html='';
@@ -1308,21 +1317,21 @@ function _render(sites){
     var streams=s.streams||[];
     var totalListeners=streams.reduce(function(a,st){return a+(st.listeners||0);},0);
     var srvBadge=running
-      ?'<span class="badge badge-green">Running</span>'
-      :'<span class="badge badge-red">Stopped</span>';
+      ?'<span class="badge b-ok">Running</span>'
+      :'<span class="badge b-al">Stopped</span>';
     var rowId='dr-'+site.replace(/[^a-z0-9]/gi,'_');
     html+='<tr>'
-      +'<td><button class="btn btn-sm expand-btn" data-site="'+_esc(site)+'" data-row="'+rowId+'">▶</button></td>'
+      +'<td><button class="btn bg bs expand-btn" data-site="'+_esc(site)+'" data-row="'+rowId+'">\u25b6</button></td>'
       +'<td><strong>'+_esc(site)+'</strong></td>'
       +'<td>'+srvBadge+'</td>'
       +'<td>'+streams.length+'</td>'
       +'<td>'+totalListeners+'</td>'
-      +'<td style="font-size:12px;color:#8a9bae">'+_ago(s.ts)+'</td>'
+      +'<td style="font-size:12px;color:var(--mu)">'+_ago(s.ts)+'</td>'
       +'<td style="white-space:nowrap">'
       +(running
-        ?'<button class="btn btn-danger btn-sm hub-stop-srv" data-site="'+_esc(site)+'">Stop Server</button> '
-        :'<button class="btn btn-primary btn-sm hub-start-srv" data-site="'+_esc(site)+'">Start Server</button> ')
-      +'<button class="btn btn-primary btn-sm hub-add-stream" data-site="'+_esc(site)+'">+ Stream</button>'
+        ?'<button class="btn bd bs hub-stop-srv" data-site="'+_esc(site)+'">Stop Server</button> '
+        :'<button class="btn bp bs hub-start-srv" data-site="'+_esc(site)+'">Start Server</button> ')
+      +'<button class="btn bp bs hub-add-stream" data-site="'+_esc(site)+'">+ Stream</button>'
       +'</td>'
       +'</tr>'
       +'<tr class="detail-row" id="'+rowId+'">'
@@ -1334,16 +1343,16 @@ function _render(sites){
 }
 
 function _renderStreams(site,streams,port,hostname){
-  if(!streams.length) return '<em style="color:#8a9bae;font-size:12px">No streams</em>';
+  if(!streams.length) return '<em style="color:var(--mu);font-size:12px">No streams</em>';
   var html='<table class="sub-table"><thead><tr>'
     +'<th>Name</th><th>Mount</th><th>Format</th><th>Kbps</th>'
     +'<th>Status</th><th>Listeners</th><th>URL</th><th>Actions</th>'
     +'</tr></thead><tbody>';
   streams.forEach(function(s){
     var stBadge=s.running
-      ?'<span class="badge badge-green" style="font-size:11px">On Air</span>'
-      :(s.enabled?'<span class="badge badge-grey" style="font-size:11px">Idle</span>'
-        :'<span class="badge badge-red" style="font-size:11px">Disabled</span>');
+      ?'<span class="badge b-ok">On Air</span>'
+      :(s.enabled?'<span class="badge b-mu">Idle</span>'
+        :'<span class="badge b-al">Disabled</span>');
     var url='http://'+hostname+':'+port+s.mount;
     html+='<tr>'
       +'<td>'+_esc(s.name)+'</td>'
@@ -1351,12 +1360,12 @@ function _renderStreams(site,streams,port,hostname){
       +'<td>'+_esc(s.format.toUpperCase())+'</td>'
       +'<td>'+s.bitrate+'</td>'
       +'<td>'+stBadge+'</td>'
-      +'<td style="text-align:center">'+(s.connected?s.listeners:'–')+'</td>'
-      +'<td><a href="'+url+'" target="_blank" style="font-size:11px;font-family:monospace">'+_esc(url)+'</a></td>'
+      +'<td style="text-align:center">'+(s.connected?s.listeners:'\u2013')+'</td>'
+      +'<td><a href="'+url+'" target="_blank" style="font-size:11px;font-family:monospace;color:var(--acc)">'+_esc(url)+'</a></td>'
       +'<td style="white-space:nowrap">'
       +(s.running
-        ?'<button class="btn btn-danger btn-sm hub-stop-str" data-site="'+_esc(site)+'" data-id="'+_esc(s.id)+'">Stop</button>'
-        :'<button class="btn btn-primary btn-sm hub-start-str" data-site="'+_esc(site)+'" data-id="'+_esc(s.id)+'">Start</button>')
+        ?'<button class="btn bd bs hub-stop-str" data-site="'+_esc(site)+'" data-id="'+_esc(s.id)+'">Stop</button>'
+        :'<button class="btn bp bs hub-start-str" data-site="'+_esc(site)+'" data-id="'+_esc(s.id)+'">Start</button>')
       +'</td>'
       +'</tr>';
   });
@@ -1375,7 +1384,7 @@ document.body.addEventListener('click',function(e){
     if(row){
       var isOpen=row.classList.contains('open');
       row.classList.toggle('open',!isOpen);
-      expBtn.textContent=isOpen?'▶':'▼';
+      expBtn.textContent=isOpen?'\u25b6':'\u25bc';
     }
     return;
   }
@@ -1435,7 +1444,7 @@ document.body.addEventListener('click',function(e){
         var opt=document.createElement('option');
         opt.value=inp.device;
         var isUrl=inp.device&&(inp.device.startsWith('http://')||inp.device.startsWith('https://'));
-        var hint=isUrl?' [URL — native stereo]':(inp.has_buffer?' [PCM tap]':' [no buffer]');
+        var hint=isUrl?' [URL \u2014 native stereo]':(inp.has_buffer?' [PCM tap]':' [no buffer]');
         opt.textContent=inp.name+hint;
         opt.dataset.name=inp.name; sel.appendChild(opt);
       });
@@ -1522,6 +1531,8 @@ def register(app, ctx):
     @app.get("/icecast")
     @login_required
     def icecast_page():
+        if hub_server is not None and mode == "hub":
+            return redirect("/hub/icecast")
         return render_template_string(_CLIENT_TPL)
 
     @app.get("/api/icecast/status")

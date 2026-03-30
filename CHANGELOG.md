@@ -2,6 +2,14 @@
 
 ---
 
+## [SignalScope 3.4.71] - 2026-03-30
+
+### Changed
+- **Icecast plugin: rethemed to match app design system** — replaces all bespoke colours and button classes with the app's CSS variables (`--bg`, `--sur`, `--bor`, `--acc`, etc.), card structure (`.ch` header + `.cb` body), button classes (`.btn.bp`, `.btn.bd`, `.btn.bg`, `.btn.bs`), and badge classes (`.b-ok`, `.b-al`, `.b-mu`). Background, header gradient, tables, forms, and modal all match the rest of the app.
+- **Icecast plugin: hub mode no longer shows local server controls** — on a pure hub node the `/icecast` route now redirects to `/hub/icecast` (the overview page). Hub operators see status and stream management for all connected client sites; they cannot accidentally start a local Icecast server on the hub machine.
+
+---
+
 ## [SignalScope 3.4.70] - 2026-03-30
 
 ### Changed
