@@ -13522,11 +13522,21 @@ listen_registry = ListenSlotRegistry()
 #   url     – href for the nav link
 #   icon    – (optional) emoji / short prefix  e.g. "📡"
 _plugins: list[dict] = []
+_PLUGINS_SUBDIR = "plugins"  # plugin files live here, relative to the app directory
+
 
 def _load_plugins():
-    """Scan the app directory for *.py files that export SIGNALSCOPE_PLUGIN.
+    """Discover, migrate, and load all plugins from the plugins/ subdirectory.
 
-    A plugin file just needs two things:
+    Plugin files live in the ``plugins/`` subdirectory alongside signalscope.py:
+
+        plugins/
+            sdr.py
+            logger.py
+            icecast.py
+            ...
+
+    A plugin just needs two things:
 
         SIGNALSCOPE_PLUGIN = {
             "id":    "websdr",       # unique slug
@@ -13543,13 +13553,55 @@ def _load_plugins():
             def sdr_page():
                 return "<h1>Web SDR</h1>"
 
-    Files are discovered by scanning the directory that contains signalscope.py.
-    Any *.py file (except signalscope.py itself) that contains the string
-    'SIGNALSCOPE_PLUGIN' is imported and registered.
+    **Migration from older versions**: If any plugin .py files are found in the
+    app root directory on startup, they are automatically moved to plugins/ so
+    that upgrading from a version that stored plugins in the root is seamless.
+    Associated config files (e.g. icecast_config.json for icecast.py) are moved
+    at the same time.
     """
-    import importlib.util, pathlib
-    _app_dir = pathlib.Path(__file__).parent
-    _self    = pathlib.Path(__file__).name
+    import importlib.util, pathlib, shutil as _shutil
+
+    app_dir     = pathlib.Path(__file__).parent
+    plugins_dir = app_dir / _PLUGINS_SUBDIR
+    self_name   = pathlib.Path(__file__).name
+
+    plugins_dir.mkdir(exist_ok=True)
+
+    # ── Auto-migrate root-level plugin files to plugins/ ─────────────────────
+    # This runs once after upgrading from an older SignalScope that kept plugins
+    # alongside signalscope.py.  Safe to run on every startup — no-ops once done.
+    migrated: list[str] = []
+    for py in sorted(app_dir.glob("*.py")):
+        if py.name == self_name:
+            continue
+        try:
+            src = py.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "SIGNALSCOPE_PLUGIN" not in src:
+            continue
+        dest_py = plugins_dir / py.name
+        try:
+            if dest_py.exists():
+                # Already in plugins/ — remove the stale root copy
+                py.unlink()
+                migrated.append(f"{py.name} (root copy removed)")
+            else:
+                _shutil.move(str(py), str(dest_py))
+                migrated.append(py.name)
+            # Also migrate any associated config/data files ({stem}*.json)
+            for cfg in sorted(app_dir.glob(f"{py.stem}*.json")):
+                dest_cfg = plugins_dir / cfg.name
+                if not dest_cfg.exists():
+                    _shutil.move(str(cfg), str(dest_cfg))
+        except Exception as exc:
+            monitor.log(f"[Plugin] Migration failed for {py.name}: {exc}")
+            print(f"[Plugin] WARNING: migration failed for {py.name}: {exc}")
+    if migrated:
+        monitor.log(f"[Plugin] Migrated to {_PLUGINS_SUBDIR}/: {', '.join(migrated)}")
+        print(f"[Plugin] Migrated to {_PLUGINS_SUBDIR}/: {', '.join(migrated)}")
+
+    # ── Load plugins from plugins/ ────────────────────────────────────────────
     ctx = {
         "app":                  app,
         "monitor":              monitor,
@@ -13560,9 +13612,7 @@ def _load_plugins():
         "mobile_api_required":  mobile_api_required,
         "BUILD":                BUILD,
     }
-    for py in sorted(_app_dir.glob("*.py")):
-        if py.name == _self:
-            continue
+    for py in sorted(plugins_dir.glob("*.py")):
         # Pre-flight: only import files that declare the plugin marker
         try:
             src = py.read_text(encoding="utf-8", errors="ignore")
@@ -13585,8 +13635,8 @@ def _load_plugins():
             if hasattr(mod, "register"):
                 mod.register(app, ctx)
             _plugins.append(info)
-            monitor.log(f"[Plugin] Loaded '{info['label']}' from {py.name}")
-            print(f"[Plugin] {info['label']} loaded from {py.name}")
+            monitor.log(f"[Plugin] Loaded '{info['label']}' from {_PLUGINS_SUBDIR}/{py.name}")
+            print(f"[Plugin] {info['label']} loaded from {_PLUGINS_SUBDIR}/{py.name}")
         except Exception as e:
             monitor.log(f"[Plugin] Failed to load {py.name}: {e}")
             print(f"[Plugin] WARNING: failed to load {py.name}: {e}")
@@ -13600,18 +13650,16 @@ _PLUGIN_ALLOWED_BASE = "https://raw.githubusercontent.com/itconor/SignalScope/"
 
 
 def _scan_installed_plugins() -> list:
-    """Return a list of dicts for every *.py plugin file found in the app dir.
+    """Return a list of dicts for every *.py plugin file found in plugins/.
     Each dict has at least: file, id, active, name, icon, description.
     'active' is True if the plugin was successfully loaded this session.
     """
     import pathlib
-    app_dir    = pathlib.Path(__file__).parent
-    self_name  = pathlib.Path(__file__).name
-    active_ids = {p.get("id", "") for p in _plugins}
-    result     = []
-    for py in sorted(app_dir.glob("*.py")):
-        if py.name == self_name:
-            continue
+    plugins_dir = pathlib.Path(__file__).parent / _PLUGINS_SUBDIR
+    result      = []
+    if not plugins_dir.is_dir():
+        return result
+    for py in sorted(plugins_dir.glob("*.py")):
         try:
             src = py.read_text(encoding="utf-8", errors="ignore")
         except OSError:
@@ -18750,9 +18798,9 @@ def api_plugins_available():
 @login_required
 @csrf_protect
 def api_plugins_install():
-    """Download a plugin file from the official GitHub repo and save it locally.
-    Only URLs under the allowed base path are accepted.
-    A restart is required to activate the plugin.
+    """Download a plugin file from the official GitHub repo and save it to
+    the plugins/ subdirectory.  Only URLs under the allowed base path are
+    accepted.  A restart is required to activate the plugin.
     """
     import pathlib, urllib.request as _ur
     data    = request.get_json(silent=True) or {}
@@ -18765,7 +18813,9 @@ def api_plugins_install():
     if not fname.endswith(".py") or "/" in fname or ".." in fname:
         return jsonify({"ok": False, "error": "Invalid filename"}), 400
 
-    dest = pathlib.Path(__file__).parent / fname
+    plugins_dir = pathlib.Path(__file__).parent / _PLUGINS_SUBDIR
+    plugins_dir.mkdir(exist_ok=True)
+    dest = plugins_dir / fname
     try:
         req = _ur.Request(url, headers={"User-Agent": f"SignalScope/{BUILD}"})
         with _ur.urlopen(req, timeout=20) as resp:
@@ -18774,9 +18824,9 @@ def api_plugins_install():
             return jsonify({"ok": False,
                             "error": "Downloaded file does not appear to be a SignalScope plugin"}), 400
         dest.write_bytes(content)
-        monitor.log(f"[Plugin] Installed {fname} from {url}")
+        monitor.log(f"[Plugin] Installed {_PLUGINS_SUBDIR}/{fname} from {url}")
         return jsonify({"ok": True, "file": fname,
-                        "message": f"{fname} saved — restart SignalScope to activate"})
+                        "message": f"{fname} saved to plugins/ — restart SignalScope to activate"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
 
@@ -18785,7 +18835,7 @@ def api_plugins_install():
 @login_required
 @csrf_protect
 def api_plugins_remove():
-    """Delete a plugin file from the app directory.
+    """Delete a plugin file from the plugins/ subdirectory.
     A restart is required to fully unload the plugin.
     """
     import pathlib
@@ -18793,15 +18843,16 @@ def api_plugins_remove():
     fname = str(data.get("file", "")).strip()
     if not fname.endswith(".py") or "/" in fname or ".." in fname:
         return jsonify({"ok": False, "error": "Invalid filename"}), 400
-    dest = pathlib.Path(__file__).parent / fname
+    plugins_dir = pathlib.Path(__file__).parent / _PLUGINS_SUBDIR
+    dest = plugins_dir / fname
     if not dest.exists():
         return jsonify({"ok": False, "error": "File not found"}), 404
-    # Safety check: don't delete the main app
+    # Safety check: never delete the main app (belt-and-braces)
     if dest.resolve() == pathlib.Path(__file__).resolve():
         return jsonify({"ok": False, "error": "Cannot remove the main application"}), 400
     try:
         dest.unlink()
-        monitor.log(f"[Plugin] Removed {fname}")
+        monitor.log(f"[Plugin] Removed {_PLUGINS_SUBDIR}/{fname}")
         return jsonify({"ok": True, "message": f"{fname} removed — restart to fully unload"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

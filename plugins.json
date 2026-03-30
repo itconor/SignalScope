@@ -3,102 +3,101 @@
     "id": "scanner",
     "name": "FM Scanner",
     "file": "scanner.py",
-    "icon": "📻",
+    "icon": "\ud83d\udcfb",
     "description": "Live FM radio receiver with RDS display, frequency history, presets, and band scan. Streams audio from a remote site's RTL-SDR dongle (role=scanner) to the browser in real time.",
     "version": "1.0.3",
     "requirements": "",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/scanner.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/scanner.py"
   },
   {
     "id": "sdr",
     "name": "Web SDR",
     "file": "sdr.py",
-    "icon": "📡",
+    "icon": "\ud83d\udce1",
     "description": "Browser-based software defined radio with scrolling waterfall display. Tune any frequency within the capture bandwidth. WFM, NFM, and AM demodulation modes. Requires an RTL-SDR dongle on the client machine.",
     "version": "1.2.0",
     "requirements": "numpy scipy",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/sdr.py"
-  }
-  ,
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/sdr.py"
+  },
   {
     "id": "dab",
     "name": "DAB Scanner",
     "file": "dab.py",
-    "icon": "📻",
+    "icon": "\ud83d\udcfb",
     "description": "DAB digital radio browser. Scans all Band III channels to discover services, streams selected services as MP3 audio via welle-cli and ffmpeg. Displays DLS (Dynamic Label Segment) scrolling text. Requires welle-cli and ffmpeg on the client machine.",
     "version": "1.0.28",
     "requirements": "welle-cli ffmpeg",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/dab.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/dab.py"
   },
   {
     "id": "logger",
     "name": "Logger",
     "file": "logger.py",
-    "icon": "🎙",
-    "description": "Compliance logger for continuous 24/7 recording of monitored streams. Hub mode aggregates recorded streams from all connected sites for remote playback — browse timelines and play audio from any site directly on the hub. Unified full-day seekable timeline, wall-clock timestamps, cross-block mark in/out, automatic segment stitching on export, auto-advance playback. Now-playing metadata integration: polls Planet Radio, Triton, or any JSON API every 30 s; falls back to DLS/RDS. Show-name band above timeline, per-song track band showing exact start/end times, track blocks highlighted in amber. Requires ffmpeg.",
+    "icon": "\ud83c\udf99",
+    "description": "Compliance logger for continuous 24/7 recording of monitored streams. Hub mode aggregates recorded streams from all connected sites for remote playback \u2014 browse timelines and play audio from any site directly on the hub. Unified full-day seekable timeline, wall-clock timestamps, cross-block mark in/out, automatic segment stitching on export, auto-advance playback. Now-playing metadata integration: polls Planet Radio, Triton, or any JSON API every 30 s; falls back to DLS/RDS. Show-name band above timeline, per-song track band showing exact start/end times, track blocks highlighted in amber. Requires ffmpeg.",
     "version": "1.5.9",
     "requirements": "ffmpeg",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/logger.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/logger.py"
   },
   {
     "id": "meterwall",
     "name": "Meter Wall",
     "file": "meterwall.py",
-    "icon": "📊",
+    "icon": "\ud83d\udcca",
     "description": "Full-screen audio meter wall showing live PPM-style level bars for every monitored stream across all connected sites. Peak hold with decay, LUFS-I readout, alert flash, RDS/DLS now-playing, site grouping, configurable grid density, and auto-hiding fullscreen kiosk mode.",
     "version": "1.0.1",
     "requirements": "",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/meterwall.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/meterwall.py"
   },
   {
     "id": "zetta",
     "name": "Zetta Integration",
     "file": "zetta.py",
-    "icon": "📻",
-    "description": "RCS Zetta broadcast automation integration. Polls the Zetta SOAP service to show live now-playing data for each station — title, artist, cart number, category. Detects commercial/spot blocks in real time. Provides /api/zetta/status for chain and external integration. Includes WSDL discovery and a raw SOAP debug console. No extra pip packages required.",
+    "icon": "\ud83d\udcfb",
+    "description": "RCS Zetta broadcast automation integration. Polls the Zetta SOAP service to show live now-playing data for each station \u2014 title, artist, cart number, category. Detects commercial/spot blocks in real time. Provides /api/zetta/status for chain and external integration. Includes WSDL discovery and a raw SOAP debug console. No extra pip packages required.",
     "version": "1.0.3",
     "requirements": "",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/zetta.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/zetta.py"
   },
   {
     "id": "morning_report",
     "name": "Morning Report",
     "file": "morning_report.py",
-    "icon": "📰",
+    "icon": "\ud83d\udcf0",
     "description": "Daily morning briefing for broadcast engineers. Auto-generates at 06:00 (configurable) covering the previous calendar day: at-a-glance fault summary, per-chain health table, hourly fault heatmap, auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks), and stream quality summary. Hub-only.",
     "version": "1.0.2",
     "requirements": "",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/morning_report.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/morning_report.py"
   },
   {
     "id": "latency",
     "name": "Signal Path Latency",
     "file": "latency.py",
-    "icon": "⏱",
+    "icon": "\u23f1",
     "description": "Signal path latency tracking for broadcast chains. Polls all connected sites for comparator delay measurements every 30 seconds, stores 90 days of history in SQLite, and computes rolling baselines. Displays per-comparator SVG sparklines, stable/drifting/alert status badges, and configurable alert thresholds per comparator pair. Hub-only.",
     "version": "1.0.1",
     "requirements": "",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/latency.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/latency.py"
   },
   {
     "id": "codec",
     "name": "Codec Monitor",
     "file": "codec.py",
-    "icon": "📡",
-    "description": "Real-time connection monitor for broadcast contribution codecs — Comrex ACCESS/BRIC-Link, Tieline Gateway/ViA, Prodys Quantum ST, and APT/WorldCast Quantum. Polls each device via HTTP status-page scraping or SNMP and tracks connected/idle/offline state. Fires CODEC_FAULT and CODEC_RECOVERY alerts into the SignalScope Reports page on state changes. Mobile API at /api/mobile/codecs/status for the iOS app. Runs on hub and client nodes.",
+    "icon": "\ud83d\udce1",
+    "description": "Real-time connection monitor for broadcast contribution codecs \u2014 Comrex ACCESS/BRIC-Link, Tieline Gateway/ViA, Prodys Quantum ST, and APT/WorldCast Quantum. Polls each device via HTTP status-page scraping or SNMP and tracks connected/idle/offline state. Fires CODEC_FAULT and CODEC_RECOVERY alerts into the SignalScope Reports page on state changes. Mobile API at /api/mobile/codecs/status for the iOS app. Runs on hub and client nodes.",
     "version": "1.0.5",
     "requirements": "pysnmp",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/codec.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/codec.py"
   },
   {
     "id": "push",
     "name": "Push Server",
     "file": "push.py",
-    "icon": "📡",
+    "icon": "\ud83d\udce1",
     "description": "Turns this SignalScope hub into a centralised push notification server for iOS and Android. Holds APNs (.p8 key) and FCM (service account JSON) credentials and delivers notifications on behalf of any SignalScope installation that points its Push Server URL here. Includes one-click migration from existing Settings credentials. Hub-only.",
     "version": "1.0.5",
     "requirements": "cryptography httpx[http2]",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/push.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/push.py"
   },
   {
     "id": "ptpclock",
@@ -108,16 +107,16 @@
     "description": "Full-screen GPS-accurate wall clock for broadcast studios. Two display modes: digital (large HH:MM:SS with tenths) and analog studio clock (sweep second hand). Shows live PTP sync status, offset, and jitter. Custom branding via URL parameter. Time served from the GPS-disciplined server clock, accurate on any browser.",
     "version": "1.4.1",
     "requirements": "",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/ptpclock.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/ptpclock.py"
   },
   {
     "id": "icecast",
     "name": "Icecast Streaming",
     "file": "icecast.py",
-    "icon": "📡",
+    "icon": "\ud83d\udce1",
     "description": "Manage Icecast2 streaming servers on client nodes. Re-stream any monitored input to Icecast with live listener counts and hub-side overview.",
     "version": "1.0.0",
     "requirements": "",
-    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/icecast.py"
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/icecast.py"
   }
 ]

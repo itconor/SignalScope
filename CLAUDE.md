@@ -12,14 +12,30 @@ SignalScope is a broadcast signal intelligence platform. Single Python file (`si
 
 ## Plugin System
 
+### Directory layout
+```
+SignalScope/
+├── signalscope.py          ← main app (never moved)
+├── plugins/                ← ALL plugin files live here
+│   ├── sdr.py
+│   ├── logger.py
+│   ├── icecast.py
+│   └── ...
+├── plugins.json            ← public registry (GitHub)
+└── ...
+```
+
 ### How it works
-On startup, `_load_plugins()` scans the app directory for any `*.py` file (except `signalscope.py` itself) that contains the string `SIGNALSCOPE_PLUGIN`. Matching files are imported and their `register(app, ctx)` function is called. A nav bar item is injected automatically between hub links and Settings.
+On startup, `_load_plugins()` scans the `plugins/` subdirectory for any `*.py` file that contains `SIGNALSCOPE_PLUGIN`. Matching files are imported and their `register(app, ctx)` function is called. A nav bar item is injected automatically between hub links and Settings.
+
+**Migration**: On first run after upgrade from an older SignalScope that stored plugins alongside `signalscope.py`, any plugin `.py` files found in the root are automatically moved to `plugins/`. Associated config files (e.g. `icecast_config.json`) are moved at the same time. This is silent and logged.
 
 Key code locations in `signalscope.py`:
-- `_plugins: list[dict]` — module-level registry (line ~11340)
-- `_load_plugins()` — discovery and import (line ~11350)
-- `_scan_installed_plugins()` — settings page helper (line ~11416)
-- `_PLUGIN_REGISTRY_URL` — GitHub `plugins.json` URL (line ~11450)
+- `_plugins: list[dict]` — module-level registry
+- `_PLUGINS_SUBDIR = "plugins"` — subdirectory name constant
+- `_load_plugins()` — migration + discovery + import
+- `_scan_installed_plugins()` — settings page helper (scans `plugins/`)
+- `_PLUGIN_REGISTRY_URL` — GitHub `plugins.json` URL
 - Plugin API routes: `/api/plugins`, `/api/plugins/available`, `/api/plugins/install`, `/api/plugins/remove`
 - Settings nav button: `b-plugins` / panel: `p-plugins` — outside the `<form>` tag
 
@@ -32,7 +48,7 @@ Key code locations in `signalscope.py`:
 
 ### Minimal skeleton
 ```python
-# myplugin.py — drop alongside signalscope.py
+# myplugin.py — drop into the plugins/ subdirectory
 
 SIGNALSCOPE_PLUGIN = {
     "id":    "myplugin",       # unique slug, matches filename stem
@@ -222,7 +238,7 @@ function connectAudio(url){
 
 ### Adding a plugin to the public registry
 
-Add an entry to `plugins.json` at the repo root:
+Plugin source files live in `plugins/` in the repo. Add an entry to `plugins.json` at the repo root (the `url` field points to the raw GitHub URL under `plugins/`):
 ```json
 {
   "id":           "myplugin",
@@ -232,7 +248,7 @@ Add an entry to `plugins.json` at the repo root:
   "description":  "What it does.",
   "version":      "1.0.0",
   "requirements": "numpy scipy",
-  "url":          "https://raw.githubusercontent.com/itconor/SignalScope/main/myplugin.py"
+  "url":          "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/myplugin.py"
 }
 ```
 
