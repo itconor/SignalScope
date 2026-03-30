@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.2.1",
+    "version":    "1.2.2",
 }
 
 import json, os, time, urllib.parse
@@ -205,6 +205,21 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 .hdr-user{font-size:12px;color:var(--mu);background:rgba(23,52,95,.6);padding:5px 12px;border-radius:20px;border:1px solid var(--bor)}
 .hdr-signout{font-size:12px;color:var(--mu);background:rgba(23,52,95,.35);padding:5px 12px;border-radius:20px;border:1px solid var(--bor);text-decoration:none;transition:color .2s}
 .hdr-signout:hover{color:var(--tx)}
+.hdr-listen{font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#1a7fe8,#17a8ff);padding:8px 18px;border-radius:20px;text-decoration:none;display:flex;align-items:center;gap:7px;box-shadow:0 2px 12px rgba(23,168,255,.35);transition:filter .2s,box-shadow .2s}
+.hdr-listen:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
+
+/* ── Listen banner ── */
+.listen-banner{margin:16px 24px 0;max-width:1400px;margin-left:auto;margin-right:auto;background:linear-gradient(135deg,rgba(23,168,255,.12),rgba(23,168,255,.06));border:1px solid rgba(23,168,255,.3);border-radius:16px;padding:18px 24px;display:flex;align-items:center;gap:18px}
+.listen-banner-icon{font-size:36px;flex-shrink:0}
+.listen-banner-body{flex:1;min-width:0}
+.listen-banner-title{font-size:15px;font-weight:700;color:var(--tx);margin-bottom:3px}
+.listen-banner-sub{font-size:12px;color:var(--mu)}
+.listen-banner-btn{flex-shrink:0;background:linear-gradient(135deg,#1a7fe8,#17a8ff);color:#fff;font-weight:700;font-size:14px;padding:11px 22px;border-radius:12px;text-decoration:none;display:flex;align-items:center;gap:8px;box-shadow:0 2px 12px rgba(23,168,255,.35);transition:filter .2s,box-shadow .2s;white-space:nowrap}
+.listen-banner-btn:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
+@media(max-width:640px){
+  .listen-banner{margin:12px 16px 0;padding:14px 16px;flex-wrap:wrap}
+  .listen-banner-btn{width:100%;justify-content:center;margin-top:10px}
+}
 
 /* ── Greeting ── */
 .greeting{padding:28px 24px 6px;max-width:1400px;margin:0 auto}
@@ -313,6 +328,7 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
     <div class="hdr-sub" id="hdr-station-count">Loading…</div>
   </div>
   <div class="hdr-right">
+    {% if has_listener %}<a href="/listener" class="hdr-listen">🎧 Listen Live</a>{% endif %}
     {% if username %}<div class="hdr-user">👤 {{username}}</div>{% endif %}
     <a href="/logout" class="hdr-signout" onclick="return confirm('Sign out?')">Sign out</a>
   </div>
@@ -322,6 +338,17 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
   <div class="greeting-title" id="greeting-text">Good day 👋</div>
   <div class="greeting-sub">Here is a live overview of your stations.</div>
 </div>
+
+{% if has_listener %}
+<div class="listen-banner">
+  <div class="listen-banner-icon">🎧</div>
+  <div class="listen-banner-body">
+    <div class="listen-banner-title">Listen to your stations live</div>
+    <div class="listen-banner-sub">Open the Listener to hear any station in real time, right in your browser.</div>
+  </div>
+  <a href="/listener" class="listen-banner-btn">🎧 Open Listener</a>
+</div>
+{% endif %}
 
 <div class="refresh-row">
   <div class="refresh-dot" id="refresh-dot"></div>
@@ -581,7 +608,15 @@ def register(app, ctx):
     @login_required
     def producer_page():
         username = session.get("username", "")
-        return render_template_string(_PRODUCER_TPL, BUILD=BUILD, username=username)
+        # Check if the Listener plugin is installed by looking for its route
+        has_listener = any(
+            str(rule) == "/listener"
+            for rule in app.url_map.iter_rules()
+        )
+        return render_template_string(
+            _PRODUCER_TPL, BUILD=BUILD, username=username,
+            has_listener=has_listener,
+        )
 
     @app.get("/api/producer/faults")
     @login_required
