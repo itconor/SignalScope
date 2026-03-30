@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.65"
+BUILD                  = "SignalScope-3.4.66"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -10832,7 +10832,7 @@ class HubClient:
                 "X-Hub-Version":   HUB_API_VERSION,
             }, method="POST")
         try:
-            resp_obj = urllib.request.urlopen(req, timeout=5)
+            resp_obj = urllib.request.urlopen(req, timeout=10)
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 raise RateLimitError("Hub rate limited (429) — backing off")
@@ -11044,6 +11044,22 @@ class HubClient:
                     print(f"[HubClient] Hub unreachable — retrying in {next_wait:.0f}s "
                           f"(consecutive: {self._backoff}/10, "
                           f"error: {self.last_error})")
+                # If stuck at max backoff for a long time (>10 min), log a
+                # prominent warning — this is the "client didn't self-heal"
+                # scenario where a monitor restart would fix it.
+                _stuck_since = getattr(self, "_max_backoff_since", 0)
+                if self._backoff >= 10:
+                    if not _stuck_since:
+                        self._max_backoff_since = time.time()
+                    elif time.time() - _stuck_since > 600:
+                        print(f"[HubClient] WARNING: stuck at max backoff for "
+                              f"{(time.time()-_stuck_since)/60:.0f} min — hub URL "
+                              f"{cfg.hub.hub_url!r} may need checking. "
+                              f"Last error: {self.last_error}. "
+                              f"If hub is reachable, restarting the monitor will force reconnect.")
+                        self._max_backoff_since = time.time()  # reset so it logs every 10 min
+                else:
+                    self._max_backoff_since = 0
 
             _eff_low_bw2 = getattr(self, '_low_bw', False) or getattr(cfg.hub, 'low_bw', False)
             _base = 30 if _eff_low_bw2 else BASE_WAIT

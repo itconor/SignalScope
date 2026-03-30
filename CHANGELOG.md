@@ -2951,3 +2951,7 @@ Full composite alert matrix:
 - Fixed setup wizard authentication bug
 - Improved session handling
 - Better fresh-install startup reliability
+
+## SignalScope-3.4.66
+- **Fix**: Heartbeat timeout raised 5s → 10s — prevents "stuck at max backoff" after hub restart when response is marginally slow (TLS handshake + cold start). Root cause of one client needing a monitor restart after a hub outage while others self-healed.
+- **Fix**: Log a clear WARNING after 10 minutes at max backoff with a hint to restart the monitor, so the condition is visible in logs rather than silently retrying.
