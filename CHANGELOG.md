@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.82] - 2026-03-30
+
+### Fixed
+- **Edit/Delete chain buttons and ⚙ Sources panel still visible for non-admin users** — the API endpoints were protected by `@admin_required` (3.4.81) but the Broadcast Chains and Hub Dashboard templates still rendered the `✎ Edit`, `✕ Delete`, and `⚙ Sources` buttons plus the full Source Management panel for all authenticated users. Now passes `is_admin` to both templates and wraps those controls in `{% if is_admin %}` so non-admin users see a clean read-only view.
+
+---
+
 ## [3.4.81] - 2026-03-30
 
 ### Fixed

@@ -1878,7 +1878,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.81"
+BUILD                  = "SignalScope-3.4.82"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -21822,6 +21822,7 @@ def hub_dashboard():
         wall_mode=wall_mode, problems_only=problems_only,
         offline_count=offline_count, alert_site_count=alert_site_count,
         warn_site_count=warn_site_count, stale_count=stale_count, hub_cpu=hub_cpu, hub_mem=hub_mem,
+        is_admin=_is_admin(),
     )
 
 @app.post(f"/api/{HUB_API_VERSION}/audio_chunk/<slot_id>")
@@ -22807,8 +22808,10 @@ var _chainData={
     <span style="font-size:12px;color:var(--al)" id="fault_label_{{c.id|e}}"></span>
     <div class="chain-actions">
       <button class="btn bs chain-maint-btn" data-chain-id="{{c.id|e}}" data-chain-name="{{c.name|e}}" style="background:#1e3a8a;border-color:#3b82f6;color:#bfdbfe" title="Set maintenance mode for the entire chain">🔧 Maint</button>
+      {% if is_admin %}
       <button class="btn bg bs chain-edit-btn" data-chain-id="{{c.id|e}}">✎ Edit</button>
       <button class="btn bd bs chain-delete-btn" data-id="{{c.id|e}}" data-name="{{c.name|e}}">✕ Delete</button>
+      {% endif %}
     </div>
   </div>
   <div class="chain-visual" id="visual_{{c.id|e}}">
@@ -24429,7 +24432,8 @@ def broadcast_chains():
     return render_template_string(BROADCAST_CHAINS_TPL,
                                   chains=chains,
                                   ab_groups=ab_groups_with_names,
-                                  all_chains=chains)
+                                  all_chains=chains,
+                                  is_admin=_is_admin())
 
 
 @app.get("/api/chains/streams")
@@ -27899,7 +27903,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% else %}
       <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="start" style="background:#1e3a1e;color:#86efac;font-size:11px;padding:2px 10px">▶ Start</button>
       {% endif %}
-      <button class="btn" data-action="hub-mgr-toggle" data-site="{{site.site|e}}" style="background:#1a3050;color:var(--acc);font-size:11px;padding:2px 10px">⚙ Sources</button>
+      {% if is_admin %}<button class="btn" data-action="hub-mgr-toggle" data-site="{{site.site|e}}" style="background:#1a3050;color:var(--acc);font-size:11px;padding:2px 10px">⚙ Sources</button>{% endif %}
       <button class="btn site-log-btn" data-site="{{site.site|e}}" style="background:#1a2a3a;color:#93c5fd;font-size:11px;padding:2px 10px">📋 Log</button>
       {% if site.running %}
       <button class="btn site-restart-btn" data-site="{{site.site|e}}" style="background:#2a1e3a;color:#c4b5fd;font-size:11px;padding:2px 10px">🔄 Restart</button>
@@ -28202,7 +28206,8 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% endfor %}
     </div>
 
-    <!-- ── Source management panel (hidden by default) ──────────────────── -->
+    <!-- ── Source management panel (admin only) ──────────────────── -->
+    {% if is_admin %}
     <div id="hub-mgr-{{site.site|e}}" style="display:none;border-top:2px solid var(--acc);background:#080f1f;padding:12px 16px">
       <div style="font-size:12px;font-weight:700;color:var(--acc);margin-bottom:10px">⚙ Source Management — {{site.site}}</div>
       <!-- Add source form -->
@@ -28281,6 +28286,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         <div class="hub-mgr-msg" data-site="{{site.site|e}}" style="font-size:12px;margin-top:6px;display:none"></div>
       </div>
     </div>
+    {% endif %}
 
     {% set _cmps = site.get('comparators', []) or [] %}
     {% if _cmps %}
