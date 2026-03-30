@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.78] - 2026-03-30
+
+### Fixed
+- **Bad gateway / 502 on all pages after 3.4.75 upgrade** — the CSP response header had grown to several KB due to ~60 SHA-256 hashes for every `onclick=` attribute across all templates. nginx's header buffer (`proxy_buffer_size`, default 4 KB) could not fit the header and returned 502 to browsers. Fixed by replacing `script-src-attr 'unsafe-hashes' [60+ hashes]` with `script-src-attr 'unsafe-inline'`. The nonce-protected `<script>` blocks remain the primary XSS defence. Removed the `_compute_csp_hashes()` startup function (no longer needed).
+
+---
+
 ## [3.4.77] - 2026-03-30
 
 ### Fixed

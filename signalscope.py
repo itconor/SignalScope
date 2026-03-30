@@ -1852,7 +1852,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.77"
+BUILD                  = "SignalScope-3.4.78"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -3941,28 +3941,6 @@ def _dispatch_push(title: str, body: str, data: "dict|None" = None,
 
 
 # ── Per-request CSP nonce ────────────────────────────────────────────────────
-def _compute_csp_hashes() -> str:
-    """Compute SHA-256 hashes of all inline event handler values found in
-    all templates. Called once at startup so the CSP hash list is always
-    in sync with the actual template content — no manual updates needed.
-    Uses two passes: double-quoted attributes (may contain single quotes)
-    and single-quoted attributes (no single quotes inside)."""
-    import re as _re, hashlib as _hl, base64 as _b64
-    src_text = open(__file__, encoding="utf-8").read()
-    hashes = set()
-    for tpl in _re.findall(r'[A-Z_]+_TPL\s*=\s*r"""(.*?)"""', src_text, _re.DOTALL):
-        # Double-quoted: onclick="st('notif')" — single quotes allowed inside
-        for handler in _re.findall(r'on(?:click|change)="([^"]+)"', tpl):
-            digest = _hl.sha256(handler.encode()).digest()
-            hashes.add(f"'sha256-{_b64.b64encode(digest).decode()}'")
-        # Single-quoted: onclick='simpleFunc()' — no inner single quotes
-        for handler in _re.findall(r"on(?:click|change)='([^']+)'", tpl):
-            digest = _hl.sha256(handler.encode()).digest()
-            hashes.add(f"'sha256-{_b64.b64encode(digest).decode()}'")
-    return " ".join(sorted(hashes))
-
-_CSP_HANDLER_HASHES = _compute_csp_hashes()
-
 
 def _csp_nonce() -> str:
     """Return (or generate) the CSP nonce for the current request.
@@ -3990,7 +3968,7 @@ def _apply_security_headers(response):
             f"script-src 'self' 'nonce-{nonce}'; "
             "style-src 'self' 'unsafe-inline'; "
             # unsafe-inline for style= attributes; nonce covers <style nonce="{{csp_nonce()}}"> blocks
-            f"script-src-attr 'unsafe-hashes' {_CSP_HANDLER_HASHES}; "
+            "script-src-attr 'unsafe-inline'; "
             "img-src 'self' data: https://listenapi.planetradio.co.uk; "
             "media-src 'self' blob:; "
             "connect-src 'self'; "
