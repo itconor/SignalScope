@@ -799,11 +799,12 @@ document.addEventListener('DOMContentLoaded',function(){
         <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Username</th>
         <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Role</th>
         <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Sites</th>
+        <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Chains</th>
         <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Plugins</th>
         <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Status</th>
         <th style="padding:5px 8px;border-bottom:1px solid var(--bor)"></th>
       </tr></thead>
-      <tbody id="users-tbody"><tr><td colspan="6" style="padding:12px 8px;color:var(--mu)">Loading…</td></tr></tbody>
+      <tbody id="users-tbody"><tr><td colspan="7" style="padding:12px 8px;color:var(--mu)">Loading…</td></tr></tbody>
     </table>
   </div>
   <button class="btn bp bs" type="button" id="user-add-btn" onclick="userShowForm()">＋ Add User</button>
@@ -837,6 +838,13 @@ document.addEventListener('DOMContentLoaded',function(){
       <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Site Access <span style="font-weight:400;text-transform:none">(tick sites to restrict; none ticked = all sites)</span></label>
         <div id="uf-sites-wrap" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;max-height:130px;overflow-y:auto;font-size:12px">
           <span style="color:var(--mu)">Loading sites\u2026</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-bottom:10px">
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Chain Access <span style="font-weight:400;text-transform:none">(tick chains to restrict; none ticked = all chains)</span></label>
+        <div id="uf-chains-wrap" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;max-height:130px;overflow-y:auto;font-size:12px">
+          <span style="color:var(--mu)">Loading chains\u2026</span>
         </div>
       </div>
     </div>
@@ -1335,9 +1343,10 @@ function userLoad(){
   fetch('/api/users',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
     var tb=document.getElementById('users-tbody');
     if(!tb)return;
-    if(!d.users||!d.users.length){tb.innerHTML='<tr><td colspan="6" style="padding:12px 8px;color:var(--mu)">No users found.</td></tr>';return;}
+    if(!d.users||!d.users.length){tb.innerHTML='<tr><td colspan="7" style="padding:12px 8px;color:var(--mu)">No users found.</td></tr>';return;}
     tb.innerHTML=d.users.map(function(u){
       var sites=u.sites&&u.sites.length?u.sites.join(', '):'<span style="color:var(--mu)">All</span>';
+      var chains=u.chains&&u.chains.length?u.chains.join(', '):'<span style="color:var(--mu)">All</span>';
       var plugins=u.plugins&&u.plugins.length?u.plugins.join(', '):'<span style="color:var(--mu)">All</span>';
       var status=u.enabled?'<span style="color:var(--ok)">✓ Active</span>':'<span style="color:var(--mu)">Suspended</span>';
       if(u.first_login) status+=' <span style="color:var(--wn);font-size:11px">(first login)</span>';
@@ -1345,6 +1354,7 @@ function userLoad(){
         +'<td style="padding:7px 8px;font-weight:600">'+u.username+'</td>'
         +'<td style="padding:7px 8px">'+_userRoleBadge(u.role)+'</td>'
         +'<td style="padding:7px 8px;font-size:11px;color:var(--tx)">'+sites+'</td>'
+        +'<td style="padding:7px 8px;font-size:11px;color:var(--tx)">'+chains+'</td>'
         +'<td style="padding:7px 8px;font-size:11px;color:var(--tx)">'+plugins+'</td>'
         +'<td style="padding:7px 8px">'+status+'</td>'
         +'<td style="padding:7px 8px;text-align:right">'
@@ -1352,7 +1362,7 @@ function userLoad(){
         +'<button class="btn bd bs user-del-btn" data-username="'+u.username+'">Delete</button>'
         +'</td></tr>';
     }).join('');
-  }).catch(function(e){var tb=document.getElementById('users-tbody');if(tb)tb.innerHTML='<tr><td colspan="6" style="color:var(--al);padding:8px">Error loading users: '+e+'</td></tr>';});
+  }).catch(function(e){var tb=document.getElementById('users-tbody');if(tb)tb.innerHTML='<tr><td colspan="7" style="color:var(--al);padding:8px">Error loading users: '+e+'</td></tr>';});
 }
 (function(){
   var tbl=document.getElementById('users-table');
@@ -1400,6 +1410,7 @@ function userEditLoad(username){
     document.getElementById('uf-enabled').value=u.enabled?'1':'0';
     _loadRoleOptions(u.role);
     _loadSiteChecks(u.sites||[]);
+    _loadChainChecks(u.chains||[]);
     _loadPluginChecks(u.plugins||[]);
     document.getElementById('user-form-msg').textContent='';
     document.getElementById('user-form').style.display='';
@@ -1415,6 +1426,7 @@ function userShowForm(){
   document.getElementById('uf-enabled').value='1';
   _loadRoleOptions('viewer');
   _loadSiteChecks([]);
+  _loadChainChecks([]);
   _loadPluginChecks([]);
   document.getElementById('user-form-msg').textContent='';
   document.getElementById('user-form').style.display='';
@@ -1467,6 +1479,26 @@ function _collectPluginChecks(){
   var boxes=document.querySelectorAll('#uf-plugins-wrap .uf-plugin-chk:checked');
   return Array.prototype.slice.call(boxes).map(function(b){return b.value;});
 }
+function _loadChainChecks(selectedChains){
+  var wrap=document.getElementById('uf-chains-wrap');
+  if(!wrap) return;
+  wrap.innerHTML='<span style="color:var(--mu)">Loading\u2026</span>';
+  fetch('/api/hub/chain_names',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var names=d.chains||[];
+    if(!names.length){wrap.innerHTML='<span style="color:var(--mu)">No chains configured \u2014 all chains permitted by default</span>';return;}
+    wrap.innerHTML=names.map(function(n){
+      var checked=(selectedChains&&selectedChains.indexOf(n)>=0);
+      var ne=n.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+      return '<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer">'
+        +'<input type="checkbox" class="uf-chain-chk" value="'+ne+'"'+(checked?' checked':'')+' style="accent-color:var(--acc);width:14px;height:14px">'
+        +'<span>'+n.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</span></label>';
+    }).join('');
+  }).catch(function(){wrap.innerHTML='<span style="color:var(--al)">Could not load chains</span>';});
+}
+function _collectChainChecks(){
+  var boxes=document.querySelectorAll('#uf-chains-wrap .uf-chain-chk:checked');
+  return Array.prototype.slice.call(boxes).map(function(b){return b.value;});
+}
 function userSave(){
   var orig=document.getElementById('uf-orig-username').value;
   var isEdit=!!orig;
@@ -1475,6 +1507,7 @@ function userSave(){
   var password=document.getElementById('uf-password').value;
   var enabled=document.getElementById('uf-enabled').value==='1';
   var sites=_collectSiteChecks();
+  var chains=_collectChainChecks();
   var plugins=_collectPluginChecks();
   var msg=document.getElementById('user-form-msg');
   msg.style.color='var(--mu)'; msg.textContent='Saving\u2026';
@@ -1483,7 +1516,7 @@ function userSave(){
   fetch(url,{method:method,credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
     body:JSON.stringify({username:username,role:role,password:password,
-      enabled:enabled,sites:sites,plugins:plugins})
+      enabled:enabled,sites:sites,chains:chains,plugins:plugins})
   }).then(function(r){return r.json();}).then(function(d){
     if(d.ok){msg.style.color='var(--ok)';msg.textContent='\u2713 Saved';userLoad();setTimeout(userCancelForm,1200);}
     else{msg.style.color='var(--al)';msg.textContent='\u2717 '+(d.error||'Error');}
@@ -1904,7 +1937,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.84"
+BUILD                  = "SignalScope-3.4.85"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2293,6 +2326,7 @@ class UserAccount:
     role:          str  = "admin"    # "admin" | "operator" | "viewer"
     sites:         list = field(default_factory=list)   # [] = all sites; [...] = whitelist
     plugins:       list = field(default_factory=list)   # [] = all plugins; [...] = whitelist
+    chains:        list = field(default_factory=list)   # [] = all chains; [...] = whitelist
     enabled:       bool = True
     first_login:   bool = False
 
@@ -2320,6 +2354,7 @@ class UserManager:
                             role          = u.get("role", "admin"),
                             sites         = u.get("sites", []),
                             plugins       = u.get("plugins", []),
+                            chains        = u.get("chains", []),
                             enabled       = u.get("enabled", True),
                             first_login   = u.get("first_login", False),
                         )
@@ -2348,6 +2383,7 @@ class UserManager:
         users_list = [
             {"username": u.username, "password_hash": u.password_hash,
              "role": u.role, "sites": u.sites, "plugins": u.plugins,
+             "chains": u.chains,
              "enabled": u.enabled, "first_login": u.first_login}
             for u in self._users.values()
         ]
@@ -20290,6 +20326,7 @@ def api_setup_auth():
         session["role"]            = "admin"
         session["allowed_sites"]   = []
         session["allowed_plugins"] = []
+        session["allowed_chains"]  = []
 
     return jsonify({"ok": True})
 
@@ -20335,6 +20372,7 @@ def login():
             session["role"]            = user.role
             session["allowed_sites"]   = user.sites   or []
             session["allowed_plugins"] = user.plugins or []
+            session["allowed_chains"]  = user.chains  or []
 
         # Look up user in user manager
         user = user_manager.get(uname) if user_manager else None
@@ -24483,6 +24521,10 @@ def broadcast_chains():
     if cfg.hub.mode not in ("hub", "both"):
         return "Not a hub", 404
     chains    = cfg.signal_chains or []
+    # Filter chains by user's allowed_chains (empty list = all chains)
+    _allowed_chains = session.get("allowed_chains", [])
+    if _allowed_chains and not _is_admin():
+        chains = [c for c in chains if c.get("name", "") in _allowed_chains]
     ab_groups = cfg.ab_groups or []
     # Resolve chain names for template
     chains_by_id = {c.get("id"): c.get("name", c.get("id","")) for c in chains}
@@ -25045,8 +25087,14 @@ def api_chains_status():
             else:
                 node["live_url"] = _live_url(node)
 
+    # Filter chains by user's allowed_chains permission (empty = all chains)
+    _allowed_chains = session.get("allowed_chains", [])
+    _chain_list = cfg.signal_chains
+    if _allowed_chains and not _is_admin():
+        _chain_list = [c for c in _chain_list if c.get("name", "") in _allowed_chains]
+
     results = []
-    for chain in cfg.signal_chains:
+    for chain in _chain_list:
         try:
             cid   = chain.get("id", "")
             maint = hub_server._chain_maintenance.get(cid, {})
@@ -30758,6 +30806,18 @@ def api_hub_site_names():
         sites = sorted(hub_server._sites.keys())
     return jsonify({"sites": sites})
 
+@app.get("/api/hub/chain_names")
+@login_required
+@admin_required
+def api_hub_chain_names():
+    """Return sorted list of chain names for the user-form chain-access checkboxes."""
+    cfg = monitor.app_cfg
+    chains = sorted(
+        c.get("name", "") for c in (cfg.signal_chains or []) if c.get("name")
+    )
+    return jsonify({"chains": chains})
+
+
 # ─── User Management API (admin only) ─────────────────────────────────────────
 
 @app.get("/api/users")
@@ -30769,7 +30829,8 @@ def api_users_list():
         return jsonify({"error": "User manager not available"}), 503
     users = [
         {"username": u.username, "role": u.role, "sites": u.sites,
-         "plugins": u.plugins, "enabled": u.enabled, "first_login": u.first_login}
+         "plugins": u.plugins, "chains": u.chains,
+         "enabled": u.enabled, "first_login": u.first_login}
         for u in user_manager.all()
     ]
     return jsonify({"users": users})
@@ -30788,27 +30849,30 @@ def api_users_create():
     username = str(body.get("username", "")).strip()
     password = str(body.get("password", "")).strip()
     role     = str(body.get("role", "viewer")).strip()
-    sites    = [s.strip() for s in body.get("sites", []) if str(s).strip()]
+    sites    = [s.strip() for s in body.get("sites",   []) if str(s).strip()]
     plugins  = [p.strip() for p in body.get("plugins", []) if str(p).strip()]
+    chains   = [c.strip() for c in body.get("chains",  []) if str(c).strip()]
     enabled  = bool(body.get("enabled", True))
 
     if not username or not _re.match(r"^[\w\-\.@]+$", username):
         return jsonify({"error": "Invalid username (letters, numbers, -_.@ only)"}), 400
     if len(username) > 64:
         return jsonify({"error": "Username too long (max 64 chars)"}), 400
-    if role not in ("admin", "operator", "viewer"):
+    _valid_roles = {"admin", "operator", "viewer"} | {pr["id"] for pr in _get_plugin_roles()}
+    if role not in _valid_roles:
         return jsonify({"error": "Invalid role"}), 400
     if user_manager.get(username):
         return jsonify({"error": "Username already exists"}), 409
     if not password:
         # Create account with first_login = True (user sets password on first login)
         ua = UserAccount(username=username, password_hash="", role=role,
-                         sites=sites, plugins=plugins, enabled=enabled, first_login=True)
+                         sites=sites, plugins=plugins, chains=chains,
+                         enabled=enabled, first_login=True)
     else:
         if len(password) < 8:
             return jsonify({"error": "Password must be at least 8 characters"}), 400
         ua = UserAccount(username=username, password_hash=_hash_password(password),
-                         role=role, sites=sites, plugins=plugins,
+                         role=role, sites=sites, plugins=plugins, chains=chains,
                          enabled=enabled, first_login=False)
     user_manager.add_or_update(ua)
     _log_security(f"User '{username}' created (role={role}) by '{session.get('username','?')}'")
@@ -30831,6 +30895,7 @@ def api_users_update(username):
     new_role    = str(body.get("role",    ua.role)).strip()
     new_sites   = [s.strip() for s in body.get("sites",   ua.sites)   if str(s).strip()]
     new_plugins = [p.strip() for p in body.get("plugins", ua.plugins) if str(p).strip()]
+    new_chains  = [c.strip() for c in body.get("chains",  ua.chains)  if str(c).strip()]
     new_enabled = bool(body.get("enabled", ua.enabled))
     new_pw      = str(body.get("password", "")).strip()
 
@@ -30846,6 +30911,7 @@ def api_users_update(username):
     ua.role    = new_role
     ua.sites   = new_sites
     ua.plugins = new_plugins
+    ua.chains  = new_chains
     ua.enabled = new_enabled
 
     if new_pw:
@@ -30909,6 +30975,7 @@ def api_users_me_password():
     session["role"]            = ua.role
     session["allowed_sites"]   = ua.sites
     session["allowed_plugins"] = ua.plugins
+    session["allowed_chains"]  = ua.chains
     _log_security(f"User '{uname}' changed their own password")
     return jsonify({"ok": True})
 

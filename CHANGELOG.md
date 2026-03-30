@@ -2,6 +2,28 @@
 
 ---
 
+## [3.4.85] - 2026-03-30
+
+### Added
+- **Chain access control per user** — `UserAccount` gains a `chains` whitelist field alongside `sites` and `plugins`. Assign specific chains to a user in Settings → Users; empty list = all chains permitted. On login, `allowed_chains` is stored in the session. `broadcast_chains()` and `api_chains_status()` both filter chain lists by `allowed_chains` for non-admin users, so operators only see the chains they're responsible for.
+- **`/api/hub/chain_names` endpoint** — returns the sorted list of configured chain names for the Settings Users form chain-access checkboxes.
+- **Chain column in Users table** — Settings → Users table now shows each user's chain whitelist (or "All" if unrestricted).
+- **Chain access checkboxes in user form** — tick individual chains to restrict a user; none ticked = all chains.
+
+---
+
+## [Producer View 1.1.0] - 2026-03-30
+
+### Changed
+- **Renamed** — plugin label is now "Producer View"; role label is "Producer".
+- **Chain-only events** — fault history now shows only `CHAIN_FAULT`, `CHAIN_RECOVERED`, and `CHAIN_FLAPPING` events. Silence, RTP, STL, and other stream-level alerts are filtered out — producers see only chain-level signal faults.
+- **Deduplication** — if the same chain fires the same fault type multiple times within a 5-minute window, only the most recent occurrence is shown. Eliminates the repeated-fault noise visible in the previous version.
+- **Chain filtering** — events are filtered by the user's `allowed_chains` permission (set in Settings → Users). If the user has no chain restrictions, all chains are shown.
+- **Clip play buttons** — events that have an associated audio clip now show a "▶ Play clip" button. Tap to play inline; tap again to stop. Shows elapsed/total time while playing.
+- **All-clear copy** — updated to "All signal chains are running normally" to match the chain-only scope.
+
+---
+
 ## [Presenter 1.0.0] - 2026-03-30
 
 ### Added

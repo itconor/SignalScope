@@ -1,43 +1,41 @@
 # presenter.py — drop into the plugins/ subdirectory
-# Presenter / Producer view — simplified status and fault summary, hub-only
+# Producer / Presenter view — simplified chain status and fault summary, hub-only
 
 SIGNALSCOPE_PLUGIN = {
     "id":         "presenter",
-    "label":      "Presenter",
+    "label":      "Producer View",
     "url":        "/presenter",
     "icon":       "🎙",
     "hub_only":   True,
     "user_role":  True,
-    "role_label": "Presenter",
-    "version":    "1.0.0",
+    "role_label": "Producer",
+    "version":    "1.1.0",
 }
 
-import json, os, time
+import json, os, time, urllib.parse
 from datetime import datetime
 
 # ─── Alert log helpers ────────────────────────────────────────────────────────
 
 _ALERT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'alert_log.json')
 
-_SHOW_TYPES = {
-    'CHAIN_FAULT', 'CHAIN_RECOVERED', 'CHAIN_FLAPPING',
-    'SILENCE', 'STUDIO_FAULT', 'STL_FAULT',
-    'TX_DOWN', 'DAB_AUDIO_FAULT', 'RTP_FAULT',
-}
-_FAULT_TYPES    = _SHOW_TYPES - {'CHAIN_RECOVERED'}
-_RECOVERY_TYPES = {'CHAIN_RECOVERED'}
+# Only chain-level events are relevant for producers
+_SHOW_TYPES  = {'CHAIN_FAULT', 'CHAIN_RECOVERED', 'CHAIN_FLAPPING'}
+_FAULT_TYPES = {'CHAIN_FAULT', 'CHAIN_FLAPPING'}
+
+# Dedup window: if the same chain fires the same fault type within this many
+# seconds, only keep the most recent occurrence.
+_DEDUP_WINDOW_S = 300   # 5 minutes
 
 
-def _read_recent_events(allowed_streams=None, max_age_h=24, limit=40):
-    """Read alert_log.json (newline-delimited JSON) and return recent significant events."""
+def _read_recent_events(allowed_chains=None, max_age_h=24, limit=60):
+    """Read alert_log.json, filter to chain events, deduplicate, return list."""
     try:
         cutoff = time.time() - max_age_h * 3600
-        results = []
+        raw = []
         with open(_ALERT_LOG, 'r', encoding='utf-8') as f:
             lines = f.readlines()
         for line in reversed(lines):
-            if len(results) >= limit:
-                break
             line = line.strip()
             if not line:
                 continue
@@ -48,18 +46,42 @@ def _read_recent_events(allowed_streams=None, max_age_h=24, limit=40):
             etype = ev.get('type', '')
             if etype not in _SHOW_TYPES:
                 continue
-            # ts is a string "2026-03-30 14:32:05"
             try:
                 ev_ts = datetime.strptime(ev['ts'], '%Y-%m-%d %H:%M:%S').timestamp()
             except Exception:
                 continue
             if ev_ts < cutoff:
-                continue
-            if allowed_streams is not None and ev.get('stream', '') not in allowed_streams:
-                continue
+                break   # file is chronological; once past cutoff we're done
             ev['_ts_unix'] = ev_ts
-            results.append(ev)
-        return results
+
+            # Filter by allowed chains (empty = all chains)
+            chain_name = ev.get('stream', '')
+            if allowed_chains is not None and chain_name not in allowed_chains:
+                continue
+
+            raw.append(ev)
+            if len(raw) >= limit * 3:   # over-read so dedup can pick best ones
+                break
+
+        # Deduplicate: for each (stream, type) keep only the most recent event
+        # within a 5-minute sliding window.  This collapses rapid repeat faults
+        # on the same chain into a single entry.
+        seen = {}     # (stream, type) → latest ts_unix so far
+        deduped = []
+        for ev in raw:
+            key = (ev.get('stream', ''), ev.get('type', ''))
+            prev_ts = seen.get(key)
+            ev_ts   = ev['_ts_unix']
+            if prev_ts is None or (prev_ts - ev_ts) > _DEDUP_WINDOW_S:
+                # This event is outside the dedup window of the already-kept one
+                # (or is the first we've seen) — keep it
+                seen[key] = ev_ts
+                deduped.append(ev)
+            # else: same chain+type within 5 min of a newer event — drop it
+
+        return deduped[:limit]
+    except FileNotFoundError:
+        return []
     except Exception:
         return []
 
@@ -85,29 +107,35 @@ def _friendly_time(ts_str):
 def _plain_english(ev):
     """Return (kind, text) — kind is 'fault', 'recovery', or 'warn'."""
     etype  = ev.get('type', '')
-    stream = ev.get('stream', '') or 'Unknown station'
+    stream = ev.get('stream', '') or 'Unknown chain'
     labels = {
         'CHAIN_FAULT':     ('fault',    f'Signal chain fault — {stream}'),
         'CHAIN_RECOVERED': ('recovery', f'Signal chain recovered — {stream}'),
         'CHAIN_FLAPPING':  ('warn',     f'Unstable signal — {stream}'),
-        'SILENCE':         ('fault',    f'{stream} — audio silence'),
-        'STUDIO_FAULT':    ('fault',    f'{stream} — studio feed lost'),
-        'STL_FAULT':       ('fault',    f'{stream} — STL link fault'),
-        'TX_DOWN':         ('fault',    f'{stream} — transmitter fault'),
-        'DAB_AUDIO_FAULT': ('fault',    f'{stream} — DAB audio fault'),
-        'RTP_FAULT':       ('fault',    f'{stream} — signal lost'),
     }
     return labels.get(etype, ('fault', f'{stream} — issue detected'))
 
 
+def _clip_url(ev):
+    """Build the playback URL for an alert clip, or return None."""
+    clip = ev.get('clip', '')
+    stream = ev.get('stream', '')
+    if not clip or not stream:
+        return None
+    # Chain fault clips are generated on the hub itself → site = "(hub)"
+    enc_stream = urllib.parse.quote(stream, safe='')
+    enc_clip   = urllib.parse.quote(clip,   safe='')
+    return f"/hub/site/(hub)/alerts/clip/{enc_stream}/{enc_clip}"
+
+
 # ─── Template ─────────────────────────────────────────────────────────────────
 
-_PRESENTER_TPL = r"""<!doctype html>
+_PRODUCER_TPL = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Presenter View — SignalScope</title>
+<title>Producer View — SignalScope</title>
 <meta name="csrf-token" content="{{csrf_token()}}">
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
 <style nonce="{{csp_nonce()}}">
@@ -160,7 +188,14 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 .event-card.recovery .event-text{color:#86efac}
 .event-card.warn .event-text{color:#fde68a}
 .event-time{font-size:12px;color:var(--mu)}
-.loading-events{color:var(--mu);font-size:13px;padding:16px 24px;max-width:1400px;margin:0 auto}
+
+/* ── Clip player ── */
+.clip-row{margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.clip-btn{background:rgba(23,168,255,.12);border:1px solid rgba(23,168,255,.3);border-radius:8px;color:var(--acc);font-size:12px;font-weight:600;padding:5px 12px;cursor:pointer;display:flex;align-items:center;gap:6px;font-family:inherit;transition:background .2s}
+.clip-btn:hover{background:rgba(23,168,255,.22)}
+.clip-btn.playing{background:rgba(34,197,94,.14);border-color:rgba(34,197,94,.35);color:var(--ok)}
+.clip-progress{font-size:11px;color:var(--mu);display:none}
+.clip-progress.visible{display:block}
 
 /* ── Station grid ── */
 .station-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;padding:0 24px 28px;max-width:1400px;margin:0 auto}
@@ -222,7 +257,7 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 <header class="hdr">
   <span class="hdr-logo">🎙</span>
   <div>
-    <div class="hdr-title">Presenter View</div>
+    <div class="hdr-title">Producer View</div>
     <div class="hdr-sub" id="hdr-station-count">Loading…</div>
   </div>
   <div class="hdr-right">
@@ -233,7 +268,7 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 
 <div class="greeting">
   <div class="greeting-title" id="greeting-text">Good day 👋</div>
-  <div class="greeting-sub">Here is a live overview of your stations.</div>
+  <div class="greeting-sub">Here is a live overview of your signal chains.</div>
 </div>
 
 <div class="refresh-row">
@@ -243,7 +278,7 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 
 <!-- ── Events section ── -->
 <div class="section" style="padding-bottom:0">
-  <div class="section-title">Recent Events <span>last 24 hours</span></div>
+  <div class="section-title">Chain Faults <span>last 24 hours</span></div>
 </div>
 <div id="events-wrap">
   <div class="loading-events skeleton" style="height:70px;border-radius:14px;margin:0 24px;max-width:1352px"></div>
@@ -281,7 +316,7 @@ var AVATAR_COLORS=[
 ];
 var REFRESH_MS=30000;
 var _statusTimer=null, _faultsTimer=null;
-var _lastStatus=null, _lastFaults=null;
+var _clipAudio=null, _clipPlayingBtn=null;
 
 // ── Greeting ──────────────────────────────────────────────────────────────
 (function(){
@@ -297,19 +332,63 @@ function _colorFor(name){
   var h=0;for(var i=0;i<name.length;i++)h=(h*31+name.charCodeAt(i))&0x7fffffff;
   return AVATAR_COLORS[h%AVATAR_COLORS.length];
 }
-function _dbPct(db){return isNaN(parseFloat(db))?0:Math.max(0,Math.min(100,(parseFloat(db)+60)/60*100));}
 function _setRefresh(live,label){
   var dot=document.getElementById('refresh-dot');
   dot.className='refresh-dot'+(live?' live':'');
   document.getElementById('refresh-label').textContent=label;
 }
 
+// ── Clip audio player ─────────────────────────────────────────────────────
+function _stopClip(){
+  if(_clipAudio){_clipAudio.pause();_clipAudio.src='';_clipAudio=null;}
+  if(_clipPlayingBtn){
+    _clipPlayingBtn.className='clip-btn';
+    _clipPlayingBtn.innerHTML='▶ Play clip';
+    var prog=_clipPlayingBtn.parentNode&&_clipPlayingBtn.parentNode.querySelector('.clip-progress');
+    if(prog){prog.className='clip-progress';}
+    _clipPlayingBtn=null;
+  }
+}
+function _playClip(url,btn){
+  if(_clipAudio){
+    _stopClip();
+    if(_clipPlayingBtn===btn) return; // toggle off
+  }
+  _clipAudio=new Audio(url);
+  _clipPlayingBtn=btn;
+  btn.className='clip-btn playing';
+  btn.innerHTML='⏹ Stop';
+  var prog=btn.parentNode&&btn.parentNode.querySelector('.clip-progress');
+  _clipAudio.addEventListener('timeupdate',function(){
+    if(prog){
+      var t=_clipAudio.currentTime;
+      var d=_clipAudio.duration||0;
+      var mm=Math.floor(t/60),ss=Math.floor(t%60);
+      prog.className='clip-progress visible';
+      prog.textContent=(d?(Math.floor(t)+'/'+Math.floor(d)+'s'):mm+':'+(ss<10?'0':'')+ss);
+    }
+  });
+  _clipAudio.addEventListener('ended',_stopClip);
+  _clipAudio.addEventListener('error',function(){
+    _stopClip();
+    if(prog){prog.className='clip-progress visible';prog.textContent='Could not load clip';}
+  });
+  _clipAudio.play().catch(function(){});
+}
+// Delegate clip button clicks from the event list
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.clip-btn');
+  if(!btn) return;
+  var url=btn.dataset.clipUrl;
+  if(!url) return;
+  _playClip(url,btn);
+});
+
 // ── Station status ────────────────────────────────────────────────────────
 function loadStatus(){
   fetch('/hub/data',{credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      _lastStatus=d;
       renderStations(d.sites||[]);
       clearTimeout(_statusTimer);
       _statusTimer=setTimeout(loadStatus,REFRESH_MS);
@@ -341,17 +420,14 @@ function renderStations(sites){
   var onair=streams.filter(function(s){return s.online&&s.status==='OK';}).length;
   var issues=streams.filter(function(s){return s.online&&s.status!=='OK';}).length;
   var offline=streams.filter(function(s){return !s.online;}).length;
-  var total=streams.length;
 
-  // Header sub-line
   var parts=[];
   if(onair)   parts.push(onair+' on air');
   if(issues)  parts.push(issues+' issue'+(issues>1?'s':''));
   if(offline) parts.push(offline+' offline');
   document.getElementById('hdr-station-count').textContent=parts.join(' · ')||'No stations';
 
-  var now=new Date();
-  _setRefresh(true,'Live · Updated at '+_fmtTime(now));
+  _setRefresh(true,'Live · Updated at '+_fmtTime(new Date()));
 
   if(!streams.length){
     document.getElementById('stations-wrap').innerHTML=
@@ -389,12 +465,11 @@ function renderCard(s){
     +'</div>';
 }
 
-// ── Fault events ──────────────────────────────────────────────────────────
+// ── Chain fault events ────────────────────────────────────────────────────
 function loadFaults(){
-  fetch('/api/presenter/faults',{credentials:'same-origin'})
+  fetch('/api/producer/faults',{credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      _lastFaults=d;
       renderEvents(d.events||[]);
       clearTimeout(_faultsTimer);
       _faultsTimer=setTimeout(loadFaults,REFRESH_MS);
@@ -410,8 +485,8 @@ function renderEvents(events){
     document.getElementById('events-wrap').innerHTML=
       '<div class="all-clear">'
       +'<div class="all-clear-icon">✅</div>'
-      +'<div><div class="all-clear-title">Everything is running normally</div>'
-      +'<div class="all-clear-sub">No faults or signal issues have been detected in the last 24 hours.<br>If you have any concerns, contact your broadcast engineer.</div>'
+      +'<div><div class="all-clear-title">All signal chains are running normally</div>'
+      +'<div class="all-clear-sub">No chain faults or signal issues in the last 24 hours.<br>If you have a concern, contact your broadcast engineer.</div>'
       +'</div></div>';
     return;
   }
@@ -419,11 +494,19 @@ function renderEvents(events){
   var icons={fault:'⚠️',recovery:'✅',warn:'⚡'};
   var html='<div class="event-list">';
   events.forEach(function(ev){
+    var clipHtml='';
+    if(ev.clip_url){
+      clipHtml='<div class="clip-row">'
+        +'<button class="clip-btn" data-clip-url="'+_esc(ev.clip_url)+'">▶ Play clip</button>'
+        +'<span class="clip-progress"></span>'
+        +'</div>';
+    }
     html+='<div class="event-card '+_esc(ev.kind)+'">'
       +'<div class="event-icon">'+icons[ev.kind||'fault']+'</div>'
       +'<div class="event-body">'
       +'<div class="event-text">'+_esc(ev.text)+'</div>'
       +'<div class="event-time">'+_esc(ev.time)+'</div>'
+      +clipHtml
       +'</div></div>';
   });
   html+='</div>';
@@ -457,39 +540,26 @@ def register(app, ctx):
 
     @app.get("/presenter")
     @login_required
-    def presenter_page():
+    def producer_page():
         username = session.get("username", "")
-        return render_template_string(_PRESENTER_TPL, BUILD=BUILD, username=username)
+        return render_template_string(_PRODUCER_TPL, BUILD=BUILD, username=username)
 
-    @app.get("/api/presenter/faults")
+    @app.get("/api/producer/faults")
     @login_required
-    def presenter_faults():
-        allowed_sites = session.get("allowed_sites", [])
+    def producer_faults():
+        # Determine allowed chains from session
+        allowed_chains = session.get("allowed_chains", [])
+        _filter = set(allowed_chains) if allowed_chains else None
 
-        # Build set of allowed stream/chain names from the user's permitted sites
-        allowed_streams = None
-        if allowed_sites and hub_server:
-            allowed_streams = set()
-            for site in hub_server.get_sites():
-                sname = site.get("site", "")
-                if sname not in allowed_sites:
-                    continue
-                # Stream names
-                for s in site.get("streams", []):
-                    if s.get("name"):
-                        allowed_streams.add(s["name"])
-                # Site name itself may appear as chain stream field
-                if sname:
-                    allowed_streams.add(sname)
-
-        events = _read_recent_events(allowed_streams=allowed_streams)
+        events = _read_recent_events(allowed_chains=_filter)
         result = []
         for ev in events:
             kind, text = _plain_english(ev)
             result.append({
-                "kind": kind,
-                "text": text,
-                "time": _friendly_time(ev.get("ts", "")),
-                "type": ev.get("type", ""),
+                "kind":     kind,
+                "text":     text,
+                "time":     _friendly_time(ev.get("ts", "")),
+                "type":     ev.get("type", ""),
+                "clip_url": _clip_url(ev),
             })
         return jsonify({"events": result, "ok": True})
