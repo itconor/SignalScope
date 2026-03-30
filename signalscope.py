@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.72"
+BUILD                  = "SignalScope-3.4.73"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -4480,22 +4480,31 @@ def _try_encode_mp3(pcm_int16: "np.ndarray") -> "Optional[bytes]":
 
 
 def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
-                    _skip_hub_queue: bool = False) -> Optional[str]:
+                    _skip_hub_queue: bool = False,
+                    _chunks: Optional[list] = None) -> Optional[str]:
     """Save an alert audio clip to disk as WAV.
 
     Local clips are always saved as WAV for maximum compatibility.
     Upload compression (WAV→MP3) is handled automatically by ``_upload_clip_inner``
     when the file exceeds the size threshold.
     Returns the saved file path, or None if the buffer was empty.
+
+    ``_chunks`` — optional pre-captured list of float32 arrays to use instead of
+    ``cfg._audio_buffer``.  Pass ``list(cfg._stream_buffer)`` at the moment of
+    silence detection to include pre-fault audio so the fault point is audible
+    rather than the clip starting mid-silence.
     """
     # Prune old clips before saving a new one
     threading.Thread(target=_clip_cleanup, args=(cfg.name,), daemon=True).start()
     out = os.path.join(BASE_DIR, "alert_snippets", _safe_name(cfg.name))
     os.makedirs(out, exist_ok=True)
     duration = max(1.0, float(duration or getattr(cfg, "alert_wav_duration", ALERT_BUFFER_SECONDS)))
-    _ensure_alert_buffer_capacity(cfg, duration)
-    if not cfg._audio_buffer: return None
-    chunks = list(cfg._audio_buffer)
+    if _chunks is None:
+        _ensure_alert_buffer_capacity(cfg, duration)
+        if not cfg._audio_buffer: return None
+        chunks = list(cfg._audio_buffer)
+    else:
+        chunks = _chunks
     if not chunks: return None
     audio = np.concatenate(chunks)[-int(SAMPLE_RATE * duration):]
     safe_lbl    = _safe_label(label)
@@ -5420,7 +5429,11 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
             alert_key, alert_title, alert_msg = _classify_silence_alert(cfg, lev)
             if now-cfg._last_alerts.get(alert_key,0)>=ALERT_COOLDOWN:
                 cfg._last_alerts[alert_key]=now
-                clip=_save_alert_wav(cfg,"silence",cfg.alert_wav_duration)
+                # Use _stream_buffer snapshot so the clip starts with pre-fault
+                # audio rather than mid-silence — makes the fault point audible.
+                _sb_chunks = list(cfg._stream_buffer) if cfg._stream_buffer else None
+                clip=_save_alert_wav(cfg,"silence",cfg.alert_wav_duration,
+                                     _chunks=_sb_chunks)
                 _add_history(cfg,alert_key,alert_msg,clip_path=clip or "")
                 # If this stream is covered by a broadcast chain, suppress the
                 # individual notification — the CHAIN_FAULT alert provides
@@ -12799,8 +12812,10 @@ class HubServer:
             ts_start    = float(fault_entry.get("ts_start") or time.time())
             ts_recovered = float(fault_entry.get("ts_recovered") or time.time())
             fault_dur   = max(0.0, ts_recovered - ts_start)
+            _chain_clip_min = float(chain.get("clip_seconds") or CHAIN_CLIP_MIN_SECS)
+            _chain_clip_min = max(CHAIN_CLIP_MIN_SECS, min(_chain_clip_min, CHAIN_CLIP_MAX_SECS))
             clip_dur    = min(fault_dur + tail_secs + 10.0, CHAIN_CLIP_MAX_SECS)
-            clip_dur    = max(clip_dur, CHAIN_CLIP_MIN_SECS)
+            clip_dur    = max(clip_dur, _chain_clip_min)
             nodes       = chain.get("nodes", [])
             chain_label = chain.get("name", "")
             chain_id    = chain.get("id", "")
@@ -13019,9 +13034,11 @@ class HubServer:
                         # Expand buffer NOW so we accumulate full fault audio
                         # from this point; recovery clip will cover the whole event.
                         _ensure_alert_buffer_capacity(_lc, CHAIN_CLIP_MAX_SECS)
-                        # Onset clip: fixed lead-in only — full fault duration
-                        # captured at recovery by _schedule_chain_recovery_clips.
-                        _clip = _save_alert_wav(_lc, _clbl, CHAIN_CLIP_MIN_SECS, _skip_hub_queue=True)
+                        # Onset clip: use chain-configured duration (default CHAIN_CLIP_MIN_SECS).
+                        # Captured at fault time; recovery clip covers the full event.
+                        _onset_dur = float(chain.get("clip_seconds") or CHAIN_CLIP_MIN_SECS)
+                        _onset_dur = max(CHAIN_CLIP_MIN_SECS, min(_onset_dur, CHAIN_CLIP_MAX_SECS))
+                        _clip = _save_alert_wav(_lc, _clbl, _onset_dur, _skip_hub_queue=True)
                         _lc_msg = (
                             f"Chain '{chain_label}' — '{_node_label}' "
                             f"({_pos_label.replace('_', ' ')}) clip."
@@ -13040,6 +13057,8 @@ class HubServer:
                             })
                 else:
                     # ── Remote stream: ask the client to save and upload ───
+                    _rem_dur = float(chain.get("clip_seconds") or CHAIN_CLIP_MIN_SECS)
+                    _rem_dur = max(CHAIN_CLIP_MIN_SECS, min(_rem_dur, CHAIN_CLIP_MAX_SECS))
                     self.push_pending_command(_site, {
                         "type": "save_clip",
                         "payload": {
@@ -13051,7 +13070,7 @@ class HubServer:
                             "node_label": _node_label,
                             "pos":        _ci,
                             "status":     _pos_status,
-                            "duration":   CHAIN_CLIP_MIN_SECS,
+                            "duration":   _rem_dur,
                         },
                     })
 
@@ -22247,6 +22266,11 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
           <input type="number" id="builder_adbreak_gap_tol" min="0" max="30" step="1" value="5" style="width:90px">
           <div class="field-hint">5 s default; 0 = off</div>
         </div>
+        <div class="adv-field">
+          <label title="Duration of onset and recovery audio clips saved for this chain. Longer clips give more context but use more storage. 0 = use system default (10 s).">Clip duration (s)</label>
+          <input type="number" id="builder_clip_seconds" min="0" max="300" step="5" value="0" style="width:90px">
+          <div class="field-hint">0 = default (10 s) · max 300 s</div>
+        </div>
       </div>
     </div>
   </div>
@@ -22696,6 +22720,7 @@ function showBuilder(chain){
     document.getElementById('builder_min_recovery').value=chain.min_recovery_seconds||0;
     document.getElementById('builder_min_alert_interval').value=chain.min_alert_interval_minutes||0;
     document.getElementById('builder_trend_alert').value=chain.trend_alert_dbfs_per_min||0;
+    document.getElementById('builder_clip_seconds').value=chain.clip_seconds||0;
     // Populate upstream chain dropdown
     var ucs=document.getElementById('builder_upstream_chain');
     if(ucs){
@@ -22729,6 +22754,7 @@ function showBuilder(chain){
     document.getElementById('builder_min_recovery').value=0;
     document.getElementById('builder_min_alert_interval').value=0;
     document.getElementById('builder_trend_alert').value=0;
+    document.getElementById('builder_clip_seconds').value=0;
     var ucs2=document.getElementById('builder_upstream_chain');
     if(ucs2){
       ucs2.innerHTML='<option value="">— None —</option>';
@@ -22748,6 +22774,7 @@ function showBuilder(chain){
     parseInt(document.getElementById('builder_min_alert_interval').value||'0') > 0 ||
     parseFloat(document.getElementById('builder_trend_alert').value||'0') !== 0 ||
     parseInt(document.getElementById('builder_fault_shift_grace').value||'0') > 0 ||
+    parseFloat(document.getElementById('builder_clip_seconds').value||'0') > 0 ||
     (document.getElementById('builder_mixin_idx').value || '') !== '' ||
     (document.getElementById('builder_upstream_chain').value || '') !== ''
   );
@@ -22858,7 +22885,8 @@ function saveChain(){
   var minAlertInterval=parseInt(document.getElementById('builder_min_alert_interval').value||'0',10)||0;
   var trendAlert=parseFloat(document.getElementById('builder_trend_alert').value||'0')||0;
   var upstreamChainId=(document.getElementById('builder_upstream_chain')||{}).value||'';
-  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_shift_grace_seconds:shiftGrace,adbreak_gap_tolerance_seconds:adbreakGapTol,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId};
+  var clipSeconds=parseFloat(document.getElementById('builder_clip_seconds').value||'0')||0;
+  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_shift_grace_seconds:shiftGrace,adbreak_gap_tolerance_seconds:adbreakGapTol,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId,clip_seconds:clipSeconds};
   if(cid)payload.id=cid;
   st.style.color='var(--mu)';st.textContent='Saving…';
   _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
@@ -26638,6 +26666,17 @@ def api_chains_save():
         trend_alert_dbfs_per_min = 0.0
     # upstream_chain_id: suppress notifications if upstream chain is faulted (Change 7)
     upstream_chain_id = str(data.get("upstream_chain_id", "") or "").strip()
+    # clip_seconds: duration for onset fault/recovery clips for this chain.
+    # 0 / None = use CHAIN_CLIP_MIN_SECS default. Clamped to [10, 300].
+    _clip_sec_raw = data.get("clip_seconds")
+    try:
+        clip_seconds = float(_clip_sec_raw) if _clip_sec_raw not in (None, "", 0) else 0.0
+        if clip_seconds < 1:
+            clip_seconds = 0.0   # treat as "use default"
+        else:
+            clip_seconds = max(CHAIN_CLIP_MIN_SECS, min(CHAIN_CLIP_MAX_SECS, clip_seconds))
+    except (TypeError, ValueError):
+        clip_seconds = 0.0
     chain_dict = {"id": cid if cid else "", "name": name,
                   "nodes": clean_nodes, "comparators": clean_comps,
                   "min_fault_seconds": min_fault_seconds,
@@ -26649,7 +26688,8 @@ def api_chains_save():
                   "min_recovery_seconds": min_recovery_seconds,
                   "min_alert_interval_minutes": min_alert_interval_minutes,
                   "trend_alert_dbfs_per_min": trend_alert_dbfs_per_min,
-                  "upstream_chain_id": upstream_chain_id}
+                  "upstream_chain_id": upstream_chain_id,
+                  "clip_seconds": clip_seconds}
     if cid:
         # Update existing
         for i, c in enumerate(chains):

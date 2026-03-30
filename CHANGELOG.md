@@ -2,6 +2,14 @@
 
 ---
 
+## [SignalScope 3.4.73] - 2026-03-30
+
+### Fixed
+- **Silence clips no longer start mid-silence** — onset alert clips for silence faults now use a snapshot of `_stream_buffer` (20 s rolling buffer) instead of `_audio_buffer`. At the moment silence is confirmed, `_stream_buffer` contains ~17 s of pre-fault audio followed by the silence onset, so the clip starts with normal programme audio and you can hear the exact moment signal was lost.
+- **Chain clips now have a consistent, configurable duration** — added a **Clip duration** field to the chain builder (Timing & Behaviour panel, default 0 = system default 10 s, max 300 s). Onset clips, recovery clips, and remote `save_clip` commands all use the chain-configured value. Previously the onset clip was always hard-coded to 10 s regardless of fault duration or chain preference. The auto-expand logic for the Timing panel now also triggers when clip duration is non-zero.
+
+---
+
 ## [AzuraCast 1.0.0] - 2026-03-30
 
 ### Added
