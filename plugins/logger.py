@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.13",
+    "version": "1.5.14",
 }
 
 import datetime
@@ -3036,6 +3036,10 @@ select:focus,input:focus{border-color:var(--acc)}
 /* Export bar */
 .export-bar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mu)}
 .inout-lbl{color:var(--acc);font-weight:600;font-size:12px}
+#export-status{font-size:11px;color:var(--mu);margin-top:4px;min-height:15px;transition:color .2s}
+#export-status.es-active{color:var(--acc)}
+#export-status.es-ok{color:var(--ok)}
+#export-status.es-err{color:var(--al)}
 /* Settings */
 .settings-content{flex:1;overflow-y:auto;padding:18px 22px;max-width:780px}
 .settings-content h2{font-size:16px;font-weight:700;color:var(--tx);margin-bottom:4px}
@@ -3208,6 +3212,7 @@ select:focus,input:focus{border-color:var(--acc)}
           </select>
           <button class="btn bp bs" id="export-btn" disabled>⬇ Export Clip</button>
         </div>
+        <div id="export-status"></div>
       </div>
     </div>
 
@@ -4095,47 +4100,108 @@ function updateScrubMarkers(){
 }
 
 // ── Export ────────────────────────────────────────────────────────────────
+function _exportStatus(msg, cls){
+  var el=document.getElementById('export-status');
+  if(!el) return;
+  el.textContent=msg;
+  el.className=cls||'';
+}
+
 document.getElementById('export-btn').addEventListener('click', function(){
   if(_markIn===null||_markOut===null||!_currentSlug||!_currentDate) return;
-  var btn=this; btn.disabled=true; btn.textContent='⏳ Exporting…';
+  var btn=this; btn.disabled=true; btn.textContent='⏳ Requesting…';
+  _exportStatus('Contacting server…','es-active');
   var fmt=(document.getElementById('export-fmt')||{}).value||'mp3';
   var extMap={mp3:'.mp3',aac:'.m4a',opus:'.webm'};
   var ext=extMap[fmt]||'.mp3';
 
+  function _exportDone(){ btn.disabled=false; btn.textContent='⬇ Export Clip'; }
+  function _exportFail(msg){ _exportStatus(msg,'es-err'); _exportDone(); }
+
   if(_hubSite){
     // Hub mode: ask hub to queue export command to client node, then
-    // open the relay-backed download URL which streams the result.
+    // stream the relay-backed download URL so we can show live progress.
     _post('/api/logger/hub/export',{
       site:_hubSite, slug:_currentSlug, date:_currentDate,
       start_s:_markIn, end_s:_markOut, fmt:fmt
     }).then(function(r){
-      if(!r||!r.ok){ alert('Export failed: '+(r&&r.error)||'unknown error'); btn.disabled=false; btn.textContent='⬇ Export Clip'; return; }
+      if(!r||!r.ok){ _exportFail('Export failed: '+((r&&r.error)||'unknown error')); return; }
+      btn.textContent='⏳ Connecting…';
+      _exportStatus('Waiting for client node to start encoding…','es-active');
       var dlUrl='/api/logger/hub/export_download/'+r.slot_id
         +'?filename='+encodeURIComponent(r.filename)
         +'&mime='+encodeURIComponent(r.mime);
-      var a=document.createElement('a');
-      a.href=dlUrl; a.download=r.filename;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      // Re-enable after a moment — download has started in background
-      setTimeout(function(){ btn.disabled=false; btn.textContent='⬇ Export Clip'; }, 2000);
-    }).catch(function(e){
-      alert('Export failed: '+e);
-      btn.disabled=false; btn.textContent='⬇ Export Clip';
-    });
+      // Stream-fetch so we can count bytes and show live progress
+      fetch(dlUrl,{credentials:'same-origin'}).then(function(resp){
+        if(!resp.ok){ _exportFail('Download failed (HTTP '+resp.status+')'); return; }
+        btn.textContent='⏳ Receiving…';
+        _exportStatus('Receiving encoded audio…','es-active');
+        var chunks=[], total=0;
+        var reader=resp.body.getReader();
+        function _pump(){
+          return reader.read().then(function(d){
+            if(d.done){
+              // All bytes received — assemble blob and trigger save
+              var blob=new Blob(chunks,{type:r.mime||'audio/mpeg'});
+              var url=URL.createObjectURL(blob);
+              var a=document.createElement('a');
+              a.href=url; a.download=r.filename;
+              document.body.appendChild(a); a.click();
+              document.body.removeChild(a);
+              setTimeout(function(){ URL.revokeObjectURL(url); },10000);
+              btn.textContent='✅ Done!';
+              _exportStatus(_fmtBytes(total)+' saved','es-ok');
+              setTimeout(_exportDone,2500);
+              setTimeout(function(){ _exportStatus(''); },4000);
+              return;
+            }
+            chunks.push(d.value);
+            total+=d.value.byteLength;
+            btn.textContent='⏳ '+_fmtBytes(total);
+            _exportStatus('Receiving encoded audio… '+_fmtBytes(total),'es-active');
+            return _pump();
+          });
+        }
+        return _pump();
+      }).catch(function(e){ _exportFail('Stream error: '+e); });
+    }).catch(function(e){ _exportFail('Export failed: '+e); });
   } else {
     // Direct / single-node mode: server runs ffmpeg and returns blob
+    _exportStatus('Running ffmpeg on server…','es-active');
     fetch('/api/logger/export',{method:'POST',credentials:'same-origin',
       headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
       body:JSON.stringify({stream:_currentSlug,date:_currentDate,start_s:_markIn,end_s:_markOut,fmt:fmt})
-    }).then(function(r){
-      if(!r.ok){ return r.json().then(function(d){ alert('Export failed: '+(d.error||r.status)); }); }
-      return r.blob().then(function(blob){
-        var a=document.createElement('a');
-        a.href=URL.createObjectURL(blob);
-        a.download=_currentSlug+'_'+_currentDate+'_clip'+ext;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      });
-    }).finally(function(){ btn.disabled=false; btn.textContent='⬇ Export Clip'; });
+    }).then(function(resp){
+      if(!resp.ok){ return resp.json().then(function(d){ _exportFail('Export failed: '+(d.error||resp.status)); }); }
+      // Stream response for live byte count even in direct mode
+      btn.textContent='⏳ Receiving…';
+      var chunks=[], total=0;
+      var reader=resp.body.getReader();
+      function _pump(){
+        return reader.read().then(function(d){
+          if(d.done){
+            var blob=new Blob(chunks,{type:'audio/mpeg'});
+            var url=URL.createObjectURL(blob);
+            var a=document.createElement('a');
+            a.href=url; a.download=_currentSlug+'_'+_currentDate+'_clip'+ext;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            setTimeout(function(){ URL.revokeObjectURL(url); },10000);
+            btn.textContent='✅ Done!';
+            _exportStatus(_fmtBytes(total)+' saved','es-ok');
+            setTimeout(_exportDone,2500);
+            setTimeout(function(){ _exportStatus(''); },4000);
+            return;
+          }
+          chunks.push(d.value);
+          total+=d.value.byteLength;
+          btn.textContent='⏳ '+_fmtBytes(total);
+          _exportStatus('Receiving encoded audio… '+_fmtBytes(total),'es-active');
+          return _pump();
+        });
+      }
+      return _pump();
+    }).catch(function(e){ _exportFail('Export error: '+e); });
   }
 });
 

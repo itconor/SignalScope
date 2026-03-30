@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.5.14] - 2026-03-30
+
+### Improved
+- **Export clip shows live progress** — the Export Clip button now cycles through clear phase labels: "⏳ Requesting…" → "⏳ Connecting…" → "⏳ Receiving… 1.2 MB" (live byte count) → "✅ Done!". A status line below the export bar mirrors the same state. Works in both direct and hub modes. The save dialog now appears only after all bytes have been received (Blob URL approach) so the browser never downloads an empty or partial file.
+
+---
+
 ## [Logger 1.5.13] - 2026-03-30
 
 ### Fixed
