@@ -821,6 +821,7 @@ document.addEventListener('DOMContentLoaded',function(){
           <option value="admin">admin — full access</option>
           <option value="operator">operator — view + acknowledge, no settings</option>
           <option value="viewer" selected>viewer — read-only</option>
+          <!-- plugin roles injected by _loadRoleOptions() -->
         </select></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
@@ -1362,6 +1363,31 @@ function userLoad(){
     if(db){userDelete(db.dataset.username);}
   });
 })();
+function _loadRoleOptions(selectedRole, cb){
+  // Remove any previously injected plugin-role options
+  var sel=document.getElementById('uf-role');
+  sel.querySelectorAll('.plugin-role-opt,.plugin-role-sep').forEach(function(o){o.remove();});
+  fetch('/api/hub/plugin_roles',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var roles=d.roles||[];
+      if(roles.length){
+        var sep=document.createElement('option');
+        sep.disabled=true; sep.className='plugin-role-sep';
+        sep.textContent='── Plugin Roles ──';
+        sel.appendChild(sep);
+        roles.forEach(function(pr){
+          var o=document.createElement('option');
+          o.value=pr.id; o.className='plugin-role-opt';
+          o.textContent=pr.label+' — presenter/producer view';
+          sel.appendChild(o);
+        });
+      }
+      sel.value=selectedRole||'viewer';
+      if(cb) cb();
+    })
+    .catch(function(){ sel.value=selectedRole||'viewer'; if(cb) cb(); });
+}
 function userEditLoad(username){
   fetch('/api/users',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
     var u=(d.users||[]).find(function(x){return x.username===username;});
@@ -1370,9 +1396,9 @@ function userEditLoad(username){
     document.getElementById('uf-orig-username').value=u.username;
     document.getElementById('uf-username').value=u.username;
     document.getElementById('uf-username').disabled=true;
-    document.getElementById('uf-role').value=u.role;
     document.getElementById('uf-password').value='';
     document.getElementById('uf-enabled').value=u.enabled?'1':'0';
+    _loadRoleOptions(u.role);
     _loadSiteChecks(u.sites||[]);
     _loadPluginChecks(u.plugins||[]);
     document.getElementById('user-form-msg').textContent='';
@@ -1385,9 +1411,9 @@ function userShowForm(){
   document.getElementById('uf-orig-username').value='';
   document.getElementById('uf-username').value='';
   document.getElementById('uf-username').disabled=false;
-  document.getElementById('uf-role').value='viewer';
   document.getElementById('uf-password').value='';
   document.getElementById('uf-enabled').value='1';
+  _loadRoleOptions('viewer');
   _loadSiteChecks([]);
   _loadPluginChecks([]);
   document.getElementById('user-form-msg').textContent='';
@@ -1878,7 +1904,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.83"
+BUILD                  = "SignalScope-3.4.84"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -3395,13 +3421,13 @@ def admin_required(f):
 
 
 def _rbac_enforce_readonly():
-    """Block viewer-role users from all write operations."""
+    """Block viewer-role and plugin-role users from all write operations."""
     cfg = monitor.app_cfg
     if not cfg.auth.enabled:
         return None
     if not session.get("logged_in"):
         return None
-    if _current_user_role() != "viewer":
+    if not _is_viewer():   # covers "viewer" + all plugin roles
         return None
     if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
         return None
@@ -14129,7 +14155,27 @@ def _is_admin() -> bool:
     return _current_user_role() == "admin"
 
 def _is_viewer() -> bool:
-    return _current_user_role() == "viewer"
+    role = _current_user_role()
+    return role == "viewer" or _plugin_role_url(role) is not None
+
+def _get_plugin_roles() -> list:
+    """Return [{id, label, url}] for every loaded plugin that declares user_role=True."""
+    return [
+        {
+            "id":    p["id"],
+            "label": p.get("role_label", p.get("label", p["id"])),
+            "url":   p.get("url", "/"),
+        }
+        for p in _plugins
+        if p.get("user_role")
+    ]
+
+def _plugin_role_url(role: str):
+    """If role matches a plugin role id, return its URL. Otherwise None."""
+    for pr in _get_plugin_roles():
+        if pr["id"] == role:
+            return pr["url"]
+    return None
 
 def _allowed_sites() -> list:
     """Returns the site whitelist for the current user. Empty list = all sites."""
@@ -18023,6 +18069,10 @@ def privacy_policy():
 @app.get("/")
 @login_required
 def index():
+    # Plugin-role users go straight to their designated page
+    _pr = _plugin_role_url(_current_user_role())
+    if _pr:
+        return redirect(_pr)
     # Redirect to setup wizard on first run
     if not monitor.app_cfg.wizard_done:
         return redirect(url_for("setup_wizard"))
@@ -19244,6 +19294,13 @@ def api_plugins_installed():
     return jsonify({"ok": True, "plugins": _scan_installed_plugins()})
 
 
+@app.get("/api/hub/plugin_roles")
+@login_required
+def api_hub_plugin_roles():
+    """Return plugin roles available for user assignment."""
+    return jsonify({"roles": _get_plugin_roles()})
+
+
 @app.get("/api/plugins/available")
 @login_required
 def api_plugins_available():
@@ -20305,7 +20362,8 @@ def login():
                     user_manager.add_or_update(user)
                     _set_session(user)
                     flash("Password set. Welcome!")
-                    return redirect(_safe_next())
+                    _pr_url = _plugin_role_url(user.role)
+                    return redirect(_pr_url if _pr_url else _safe_next())
         else:
             if not _check_password(pw, user.password_hash):
                 error = _fail("Invalid username or password.")
@@ -20317,7 +20375,8 @@ def login():
                     user_manager.add_or_update(user)
                     _log_security(f"Upgraded password hash for '{uname}'")
                 _set_session(user)
-                return redirect(_safe_next())
+                _pr_url = _plugin_role_url(user.role)
+                return redirect(_pr_url if _pr_url else _safe_next())
 
     _site = (cfg.hub.site_name or socket.gethostname()) if cfg.hub else socket.gethostname()
     return render_template_string(LOGIN_TPL, error=error, first_login=first,
@@ -21709,6 +21768,10 @@ def hub_site_ping_result(site_name):
 @app.get("/hub")
 @login_required
 def hub_dashboard():
+    # Plugin-role users are not permitted on the hub dashboard
+    _pr = _plugin_role_url(_current_user_role())
+    if _pr:
+        return redirect(_pr)
     cfg = monitor.app_cfg
     if cfg.hub.mode not in ("hub","both"):
         return "This instance is not configured as a hub. Set mode to 'hub' or 'both' in Settings.", 404
@@ -30771,7 +30834,8 @@ def api_users_update(username):
     new_enabled = bool(body.get("enabled", ua.enabled))
     new_pw      = str(body.get("password", "")).strip()
 
-    if new_role not in ("admin", "operator", "viewer"):
+    _valid_roles = {"admin", "operator", "viewer"} | {pr["id"] for pr in _get_plugin_roles()}
+    if new_role not in _valid_roles:
         return jsonify({"error": "Invalid role"}), 400
 
     # Prevent removing the last admin

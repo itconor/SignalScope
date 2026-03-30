@@ -42,6 +42,13 @@
 
 ---
 
+## [3.4.84] - 2026-03-30
+
+### Added
+- **Plugin-role user accounts** — plugins can now declare themselves as a user role by adding `"user_role": True` and `"role_label": "Presenter"` to their `SIGNALSCOPE_PLUGIN` dict. When any such plugin is installed, its role appears automatically in the Role dropdown on the Settings → Users form (under a "── Plugin Roles ──" separator). Users assigned a plugin role are subject to full site-access filtering (same `allowed_sites` whitelist as viewer accounts). On login, plugin-role users are forwarded directly to the plugin's URL — they never see the hub dashboard or client view. Navigating to `/` or `/hub` while logged in as a plugin role also redirects immediately to the plugin. All write operations are blocked (same `_rbac_enforce_readonly` path as viewer role). New `/api/hub/plugin_roles` endpoint returns the list of role-capable plugins for Settings page JS.
+
+---
+
 ## [3.4.83] - 2026-03-30
 
 ### Fixed
