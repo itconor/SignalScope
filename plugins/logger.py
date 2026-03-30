@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.11",
+    "version": "1.5.12",
 }
 
 import datetime
@@ -15,6 +15,7 @@ import hashlib as _hashlib
 import hmac as _hmac_mod
 import json
 import os
+import queue
 import re
 import shutil
 import sqlite3
@@ -1155,18 +1156,20 @@ def register(app, ctx):
                 try:
                     while not getattr(slot, "closed", False):
                         try:
+                            # slot.get() raises queue.Empty on timeout — never returns None.
+                            # Use a short timeout so the loop stays responsive.
                             chunk = slot.get(timeout=0.5)
-                            if chunk is not None:
-                                last_data = time.monotonic()
-                                got_data  = True
-                                yield chunk
-                            elif not got_data:
-                                # Waiting for client to start pushing after receiving command
+                            last_data = time.monotonic()
+                            got_data  = True
+                            yield chunk
+                        except queue.Empty:
+                            if not got_data:
+                                # Waiting for client to receive command + start ffmpeg
                                 if time.monotonic() - start_time > 60.0:
                                     _log(f"[Logger] HubExportDL: timed out waiting for data (slot={slot_id})")
                                     break
                             else:
-                                # Client finished — inactivity means EOF
+                                # Data was flowing; inactivity means ffmpeg finished
                                 if time.monotonic() - last_data > 30.0:
                                     break
                         except Exception:

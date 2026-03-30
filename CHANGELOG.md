@@ -2,6 +2,13 @@
 
 ---
 
+## [Logger 1.5.12] - 2026-03-30
+
+### Fixed
+- **Hub clip export produced 0-byte files** — `ListenSlot.get()` raises `queue.Empty` on timeout rather than returning `None`. The download generator caught this as a generic `Exception` and broke out of the loop immediately, before the client had time to receive the command and start ffmpeg. Fixed by catching `queue.Empty` explicitly and continuing to wait (up to 60 s for first byte, 30 s inactivity after that). Added `import queue` to the module-level imports.
+
+---
+
 ## [Logger 1.5.11] - 2026-03-30
 
 ### Added
