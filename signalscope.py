@@ -791,6 +791,76 @@ document.addEventListener('DOMContentLoaded',function(){
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-sec">
+  <div class="sec">👥 Users &amp; Roles</div>
+  <p class="help" style="margin-bottom:10px">Manage user accounts. Roles: <strong>admin</strong> = full access · <strong>operator</strong> = view + acknowledge alerts, no settings · <strong>viewer</strong> = read-only. Site/plugin restrictions only apply in hub mode.</p>
+  <div id="users-table-wrap" style="overflow-x:auto;margin-bottom:12px">
+    <table style="width:100%;border-collapse:collapse;font-size:12px" id="users-table">
+      <thead><tr>
+        <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Username</th>
+        <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Role</th>
+        <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Sites</th>
+        <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Plugins</th>
+        <th style="text-align:left;padding:5px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Status</th>
+        <th style="padding:5px 8px;border-bottom:1px solid var(--bor)"></th>
+      </tr></thead>
+      <tbody id="users-tbody"><tr><td colspan="6" style="padding:12px 8px;color:var(--mu)">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <button class="btn bp bs" type="button" id="user-add-btn" onclick="userShowForm()">＋ Add User</button>
+  <span id="users-msg" style="font-size:12px;margin-left:12px"></span>
+
+  <!-- Add/Edit form (hidden by default) -->
+  <div id="user-form" style="display:none;background:var(--sur);border:1px solid var(--bor);border-radius:10px;padding:16px;margin-top:14px">
+    <div style="font-size:13px;font-weight:700;color:var(--acc);margin-bottom:12px" id="user-form-title">Add User</div>
+    <input type="hidden" id="uf-orig-username">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Username</label>
+        <input type="text" id="uf-username" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px" placeholder="username" autocomplete="off"></div>
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Role</label>
+        <select id="uf-role" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px">
+          <option value="admin">admin — full access</option>
+          <option value="operator">operator — view + acknowledge, no settings</option>
+          <option value="viewer" selected>viewer — read-only</option>
+        </select></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Password <span style="font-weight:400;text-transform:none">(leave blank → user sets on first login)</span></label>
+        <input type="password" id="uf-password" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px" placeholder="Min 8 characters" autocomplete="new-password"></div>
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Enabled</label>
+        <select id="uf-enabled" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px">
+          <option value="1" selected>Yes</option>
+          <option value="0">No (suspended)</option>
+        </select></div>
+    </div>
+    <div style="margin-bottom:10px">
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Site Access <span style="font-weight:400;text-transform:none">(tick sites to restrict; none ticked = all sites)</span></label>
+        <div id="uf-sites-wrap" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;max-height:130px;overflow-y:auto;font-size:12px">
+          <span style="color:var(--mu)">Loading sites\u2026</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-bottom:14px">
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Plugin Access <span style="font-weight:400;text-transform:none">(blank = all plugins; comma-separated plugin IDs to restrict)</span></label>
+        <input type="text" id="uf-plugins" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;width:100%" placeholder="e.g. logger, sdr (blank = all plugins)"></div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn bp bs" type="button" id="user-save-btn" onclick="userSave()">Save User</button>
+      <button class="btn bg bs" type="button" onclick="userCancelForm()">Cancel</button>
+      <span id="user-form-msg" style="font-size:12px;margin-left:8px;align-self:center"></span>
+    </div>
+  </div>
+
+  <div class="sec" style="margin-top:20px">🔑 My Account</div>
+  <p class="help" style="margin-bottom:10px">Change your own password.</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:end">
+    <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Current Password</label>
+      <input type="password" id="my-current-pw" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px" autocomplete="current-password"></div>
+    <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">New Password</label>
+      <input type="password" id="my-new-pw" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px" autocomplete="new-password" placeholder="Min 8 characters"></div>
+    <button class="btn bg bs" type="button" onclick="myPwSave()">Update Password</button>
+  </div>
+  <span id="my-pw-msg" style="font-size:12px;margin-top:6px;display:block"></span>
+
   <div class="sec">🔐 Web UI Authentication</div>
           <div class="cr"><input type="checkbox" name="auth_enabled" value="1" {{'checked' if cfg.auth.enabled}}><label style="margin:0;text-transform:none">Require login to access dashboard</label></div>
           <label>Username<input type="text" name="auth_username" value="{{cfg.auth.username}}"></label>
@@ -1251,6 +1321,152 @@ function adminRestart(){
       setTimeout(function(){window.location.reload();},6000);
     });
 }
+
+// ── User Management ──────────────────────────────────────────────────────────
+function _userRoleBadge(role){
+  var col=role==='admin'?'var(--acc)':role==='operator'?'var(--wn)':'var(--mu)';
+  return '<span style="background:#173a69;border:1px solid '+col+';border-radius:4px;padding:1px 6px;font-size:11px;color:'+col+'">'+role+'</span>';
+}
+function userLoad(){
+  fetch('/api/users',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var tb=document.getElementById('users-tbody');
+    if(!tb)return;
+    if(!d.users||!d.users.length){tb.innerHTML='<tr><td colspan="6" style="padding:12px 8px;color:var(--mu)">No users found.</td></tr>';return;}
+    tb.innerHTML=d.users.map(function(u){
+      var sites=u.sites&&u.sites.length?u.sites.join(', '):'<span style="color:var(--mu)">All</span>';
+      var plugins=u.plugins&&u.plugins.length?u.plugins.join(', '):'<span style="color:var(--mu)">All</span>';
+      var status=u.enabled?'<span style="color:var(--ok)">✓ Active</span>':'<span style="color:var(--mu)">Suspended</span>';
+      if(u.first_login) status+=' <span style="color:var(--wn);font-size:11px">(first login)</span>';
+      return '<tr style="border-bottom:1px solid #0d2346">'
+        +'<td style="padding:7px 8px;font-weight:600">'+u.username+'</td>'
+        +'<td style="padding:7px 8px">'+_userRoleBadge(u.role)+'</td>'
+        +'<td style="padding:7px 8px;font-size:11px;color:var(--tx)">'+sites+'</td>'
+        +'<td style="padding:7px 8px;font-size:11px;color:var(--tx)">'+plugins+'</td>'
+        +'<td style="padding:7px 8px">'+status+'</td>'
+        +'<td style="padding:7px 8px;text-align:right">'
+        +'<button class="btn bg bs user-edit-btn" data-username="'+u.username+'" style="margin-right:4px">Edit</button>'
+        +'<button class="btn bd bs user-del-btn" data-username="'+u.username+'">Delete</button>'
+        +'</td></tr>';
+    }).join('');
+  }).catch(function(e){var tb=document.getElementById('users-tbody');if(tb)tb.innerHTML='<tr><td colspan="6" style="color:var(--al);padding:8px">Error loading users: '+e+'</td></tr>';});
+}
+(function(){
+  var tbl=document.getElementById('users-table');
+  if(tbl)tbl.addEventListener('click',function(e){
+    var eb=e.target.closest('.user-edit-btn');
+    if(eb){userEditLoad(eb.dataset.username);return;}
+    var db=e.target.closest('.user-del-btn');
+    if(db){userDelete(db.dataset.username);}
+  });
+})();
+function userEditLoad(username){
+  fetch('/api/users',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var u=(d.users||[]).find(function(x){return x.username===username;});
+    if(!u){alert('User not found');return;}
+    document.getElementById('user-form-title').textContent='Edit User: '+u.username;
+    document.getElementById('uf-orig-username').value=u.username;
+    document.getElementById('uf-username').value=u.username;
+    document.getElementById('uf-username').disabled=true;
+    document.getElementById('uf-role').value=u.role;
+    document.getElementById('uf-password').value='';
+    document.getElementById('uf-enabled').value=u.enabled?'1':'0';
+    _loadSiteChecks(u.sites||[]);
+    document.getElementById('uf-plugins').value=(u.plugins||[]).join(', ');
+    document.getElementById('user-form-msg').textContent='';
+    document.getElementById('user-form').style.display='';
+    document.getElementById('user-form').scrollIntoView({behavior:'smooth',block:'nearest'});
+  });
+}
+function userShowForm(){
+  document.getElementById('user-form-title').textContent='Add User';
+  document.getElementById('uf-orig-username').value='';
+  document.getElementById('uf-username').value='';
+  document.getElementById('uf-username').disabled=false;
+  document.getElementById('uf-role').value='viewer';
+  document.getElementById('uf-password').value='';
+  document.getElementById('uf-enabled').value='1';
+  _loadSiteChecks([]);
+  document.getElementById('uf-plugins').value='';
+  document.getElementById('user-form-msg').textContent='';
+  document.getElementById('user-form').style.display='';
+  document.getElementById('user-form').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function userCancelForm(){
+  document.getElementById('user-form').style.display='none';
+}
+function _parseCsv(s){return s.split(',').map(function(x){return x.trim();}).filter(Boolean);}
+function _loadSiteChecks(selectedSites){
+  var wrap=document.getElementById('uf-sites-wrap');
+  if(!wrap) return;
+  wrap.innerHTML='<span style="color:var(--mu)">Loading\u2026</span>';
+  fetch('/api/hub/site_names',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var names=d.sites||[];
+    if(!names.length){wrap.innerHTML='<span style="color:var(--mu)">No sites registered yet \u2014 all sites permitted by default</span>';return;}
+    wrap.innerHTML=names.map(function(s){
+      var checked=(selectedSites&&selectedSites.indexOf(s)>=0);
+      var se=s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+      return '<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer">'
+        +'<input type="checkbox" class="uf-site-chk" value="'+se+'"'+(checked?' checked':'')+' style="accent-color:var(--acc);width:14px;height:14px">'
+        +'<span>'+s.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</span></label>';
+    }).join('');
+  }).catch(function(){wrap.innerHTML='<span style="color:var(--al)">Could not load sites</span>';});
+}
+function _collectSiteChecks(){
+  var boxes=document.querySelectorAll('#uf-sites-wrap .uf-site-chk:checked');
+  return Array.prototype.slice.call(boxes).map(function(b){return b.value;});
+}
+function userSave(){
+  var orig=document.getElementById('uf-orig-username').value;
+  var isEdit=!!orig;
+  var username=document.getElementById('uf-username').value.trim();
+  var role=document.getElementById('uf-role').value;
+  var password=document.getElementById('uf-password').value;
+  var enabled=document.getElementById('uf-enabled').value==='1';
+  var sites=_collectSiteChecks();
+  var plugins=_parseCsv(document.getElementById('uf-plugins').value);
+  var msg=document.getElementById('user-form-msg');
+  msg.style.color='var(--mu)'; msg.textContent='Saving\u2026';
+  var url=isEdit?'/api/users/'+encodeURIComponent(orig):'/api/users';
+  var method=isEdit?'PUT':'POST';
+  fetch(url,{method:method,credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
+    body:JSON.stringify({username:username,role:role,password:password,
+      enabled:enabled,sites:sites,plugins:plugins})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(d.ok){msg.style.color='var(--ok)';msg.textContent='\u2713 Saved';userLoad();setTimeout(userCancelForm,1200);}
+    else{msg.style.color='var(--al)';msg.textContent='\u2717 '+(d.error||'Error');}
+  }).catch(function(e){msg.style.color='var(--al)';msg.textContent='\u2717 '+e;});
+}
+function userDelete(username){
+  if(!confirm('Delete user "'+username+'"? This cannot be undone.')) return;
+  fetch('/api/users/'+encodeURIComponent(username),{method:'DELETE',credentials:'same-origin',
+    headers:{'X-CSRFToken':_csrf()}
+  }).then(function(r){return r.json();}).then(function(d){
+    var msg=document.getElementById('users-msg');
+    if(d.ok){msg.style.color='var(--ok)';msg.textContent='\u2713 User deleted';userLoad();setTimeout(function(){msg.textContent='';},3000);}
+    else{msg.style.color='var(--al)';msg.textContent='\u2717 '+(d.error||'Error');}
+  }).catch(function(e){var msg=document.getElementById('users-msg');if(msg)msg.textContent='\u2717 '+e;});
+}
+function myPwSave(){
+  var cur=document.getElementById('my-current-pw').value;
+  var nw=document.getElementById('my-new-pw').value;
+  var msg=document.getElementById('my-pw-msg');
+  msg.style.color='var(--mu)';msg.textContent='Saving\u2026';
+  fetch('/api/users/me/password',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
+    body:JSON.stringify({current_password:cur,new_password:nw})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(d.ok){msg.style.color='var(--ok)';msg.textContent='\u2713 Password updated';document.getElementById('my-current-pw').value='';document.getElementById('my-new-pw').value='';}
+    else{msg.style.color='var(--al)';msg.textContent='\u2717 '+(d.error||'Error');}
+  }).catch(function(e){msg.style.color='var(--al)';msg.textContent='\u2717 '+e;});
+}
+// Load users when security tab is opened
+(function(){
+  var secBtn=document.getElementById('b-sec');
+  if(secBtn)secBtn.addEventListener('click',function(){setTimeout(userLoad,50);});
+  // Also load immediately in case this tab is already active on page load
+  userLoad();
+})();
 </script>
 </form>
 
@@ -1617,7 +1833,7 @@ from typing import Optional, List, Dict, Tuple, Any
 
 import uuid
 import numpy as np
-from flask import Flask, jsonify, request, render_template_string, redirect, url_for, flash, Response, send_from_directory, make_response, current_app
+from flask import Flask, jsonify, request, render_template_string, redirect, url_for, flash, Response, send_from_directory, make_response, current_app, session
 
 # ─── Optional deps — checked at runtime ───────────────────────────────────────
 
@@ -1636,7 +1852,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.74"
+BUILD                  = "SignalScope-3.4.76"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2015,6 +2231,110 @@ class AuthConfig:
     username:       str  = "admin"
     password_hash:  str  = ""   # werkzeug pbkdf2 hash (legacy: plain sha256 hex)
     first_login:    bool = True  # force password change on first login
+
+
+@dataclass
+class UserAccount:
+    """A user account with role and optional site/plugin restrictions."""
+    username:      str
+    password_hash: str
+    role:          str  = "admin"    # "admin" | "operator" | "viewer"
+    sites:         list = field(default_factory=list)   # [] = all sites; [...] = whitelist
+    plugins:       list = field(default_factory=list)   # [] = all plugins; [...] = whitelist
+    enabled:       bool = True
+    first_login:   bool = False
+
+class UserManager:
+    """Loads and saves user accounts to signalscope_users.json."""
+    _FILE = "signalscope_users.json"
+
+    def __init__(self, base_dir: str):
+        self._path = os.path.join(base_dir, self._FILE)
+        self._users: Dict[str, UserAccount] = {}
+        self._lock  = threading.Lock()
+
+    def load(self, fallback_auth=None):
+        """Load users from disk. If no file exists, migrate from fallback AuthConfig."""
+        if os.path.exists(self._path):
+            try:
+                with open(self._path) as fh:
+                    raw = json.load(fh)
+                with self._lock:
+                    self._users = {}
+                    for u in raw.get("users", []):
+                        ua = UserAccount(
+                            username      = u.get("username", ""),
+                            password_hash = u.get("password_hash", ""),
+                            role          = u.get("role", "admin"),
+                            sites         = u.get("sites", []),
+                            plugins       = u.get("plugins", []),
+                            enabled       = u.get("enabled", True),
+                            first_login   = u.get("first_login", False),
+                        )
+                        if ua.username:
+                            self._users[ua.username] = ua
+                print(f"[UserManager] Loaded {len(self._users)} user(s)")
+            except Exception as e:
+                print(f"[UserManager] Load error: {e}")
+        elif fallback_auth is not None:
+            ua = UserAccount(
+                username      = fallback_auth.username or "admin",
+                password_hash = fallback_auth.password_hash or "",
+                role          = "admin",
+                sites         = [],
+                plugins       = [],
+                enabled       = True,
+                first_login   = fallback_auth.first_login,
+            )
+            with self._lock:
+                self._users[ua.username] = ua
+            self._save_locked()
+            print("[UserManager] Migrated single-user auth config → users file")
+
+    def _save_locked(self):
+        """Save without acquiring lock (caller must hold it or be single-threaded)."""
+        users_list = [
+            {"username": u.username, "password_hash": u.password_hash,
+             "role": u.role, "sites": u.sites, "plugins": u.plugins,
+             "enabled": u.enabled, "first_login": u.first_login}
+            for u in self._users.values()
+        ]
+        with open(self._path, "w") as fh:
+            json.dump({"users": users_list}, fh, indent=2)
+        try:
+            os.chmod(self._path, 0o600)
+        except Exception:
+            pass
+
+    def save(self):
+        with self._lock:
+            self._save_locked()
+
+    def get(self, username: str):
+        with self._lock:
+            return self._users.get(username)
+
+    def all(self):
+        with self._lock:
+            return list(self._users.values())
+
+    def add_or_update(self, user: UserAccount):
+        with self._lock:
+            self._users[user.username] = user
+            self._save_locked()
+
+    def delete(self, username: str) -> bool:
+        with self._lock:
+            if username not in self._users:
+                return False
+            del self._users[username]
+            self._save_locked()
+        return True
+
+    def count_admins(self) -> int:
+        with self._lock:
+            return sum(1 for u in self._users.values()
+                       if u.role == "admin" and u.enabled)
 
 
 @dataclass
@@ -3029,6 +3349,45 @@ def login_required(f):
             return redirect(url_for("login", next=request.path))
         return f(*args, **kwargs)
     return decorated
+
+
+def admin_required(f):
+    """Restrict route to admin-role users only."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        cfg = monitor.app_cfg
+        if cfg.auth.enabled:
+            if not session.get("logged_in"):
+                return redirect(url_for("login", next=request.path))
+            if _current_user_role() != "admin":
+                if request.path.startswith("/api/") or request.is_json:
+                    return jsonify({"error": "Administrator access required"}), 403
+                flash("Administrator access required.")
+                return redirect(url_for("index"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.before_request
+def _rbac_enforce_readonly():
+    """Block viewer-role users from all write operations."""
+    cfg = monitor.app_cfg
+    if not cfg.auth.enabled:
+        return None
+    if not session.get("logged_in"):
+        return None
+    if _current_user_role() != "viewer":
+        return None
+    if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
+        return None
+    # Viewers may always POST to /logout
+    if request.path in ("/logout",):
+        return None
+    # Block all other writes
+    if request.path.startswith("/api/") or request.is_json:
+        return jsonify({"error": "Read-only access — contact your administrator"}), 403
+    flash("This action requires write access. Your account is view-only.")
+    return redirect(request.referrer or url_for("index"))
 
 
 def _mobile_api_token() -> str:
@@ -13742,12 +14101,57 @@ class LoginLimiter:
 
 
 login_limiter = LoginLimiter()
+user_manager: "UserManager | None" = None
 
 
 def _log_security(msg: str):
     print(f"[Security] {msg}", flush=True)
 
 
+# ─── RBAC helpers ─────────────────────────────────────────────────────────────
+
+def _current_user() -> "UserAccount | None":
+    """Return the UserAccount for the currently logged-in user."""
+    from flask import session
+    uname = session.get("username", "")
+    if not uname or not user_manager:
+        return None
+    return user_manager.get(uname)
+
+def _current_user_role() -> str:
+    from flask import session
+    return session.get("role", "admin")
+
+def _is_admin() -> bool:
+    return _current_user_role() == "admin"
+
+def _is_viewer() -> bool:
+    return _current_user_role() == "viewer"
+
+def _allowed_sites() -> list:
+    """Returns the site whitelist for the current user. Empty list = all sites."""
+    from flask import session
+    return session.get("allowed_sites", [])
+
+def _allowed_plugins() -> list:
+    """Returns the plugin whitelist for the current user. Empty list = all plugins."""
+    from flask import session
+    return session.get("allowed_plugins", [])
+
+def _site_permitted(site_name: str) -> bool:
+    allowed = _allowed_sites()
+    return not allowed or site_name in allowed
+
+def _plugin_permitted(plugin_id: str) -> bool:
+    allowed = _allowed_plugins()
+    return not allowed or plugin_id in allowed
+
+def _filter_sites(sites: list) -> list:
+    """Filter a list of site dicts by the current user's site whitelist."""
+    allowed = _allowed_sites()
+    if not allowed:
+        return sites
+    return [s for s in sites if s.get("site", "") in allowed]
 
 
 # ─── SDR Device Registry ──────────────────────────────────────────────────────
@@ -14118,6 +14522,9 @@ def _inject_nav():
         mode = "client"; build_ = BUILD; running_ = False
 
     def topnav(active=""):
+        import html as _html
+        from flask import session
+        _esc = _html.escape
         show_hub    = mode in ("hub", "both")
         hub_only    = (mode == "hub")
         csrf        = _csrf_token()
@@ -14166,7 +14573,9 @@ def _inject_nav():
                          if show_hub else "")
 
         # ── Plugins dropdown ──────────────────────────────────────────────
-        _vis_plugins = [p for p in _plugins if not p.get("hub_only") or show_hub]
+        _vis_plugins = [p for p in _plugins
+                        if (not p.get("hub_only") or show_hub)
+                        and _plugin_permitted(p.get("id", ""))]
         plugin_links = ""
         if _vis_plugins:
             _active_plugin = any(p.get("id") == active for p in _vis_plugins)
@@ -14324,7 +14733,13 @@ def _inject_nav():
             + reports_group
             + hub_group
             + plugin_links
-            + _a("settings", "Settings", "/settings")
+            + (f'<span style="font-size:11px;color:var(--mu);padding:0 6px;white-space:nowrap">'
+               f'{_esc(session.get("username",""))} '
+               f'<span style="background:#173a69;border:1px solid var(--bor);border-radius:4px;'
+               f'padding:1px 5px;font-size:10px;color:#b7d8ff">'
+               f'{_esc(_current_user_role())}</span></span>'
+               if session.get("username") else "")
+            + (_a("settings", "Settings", "/settings") if _is_admin() else "")
             + f'<form method="post" action="/logout" style="margin:0">'
               f'<input type="hidden" name="_csrf_token" value="{csrf}">'
               f'<button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
@@ -14363,6 +14778,9 @@ monitor=MonitorManager()
 # The call in HubServer.__init__ silently skipped because monitor wasn't ready.
 hub_server._load_fault_log_from_db()
 _load_acks()
+# Initialise user manager — migrates single-user auth config if first run
+user_manager = UserManager(BASE_DIR)
+user_manager.load(fallback_auth=monitor.app_cfg.auth)
 threading.Thread(target=_version_check_loop, daemon=True, name="VersionCheck").start()
 
 @app.get("/api/version_check")
@@ -14378,6 +14796,7 @@ def api_version_check():
 
 @app.post("/api/version_check/refresh")
 @login_required
+@admin_required
 @csrf_protect
 def api_version_check_refresh():
     """Manually trigger an immediate version check."""
@@ -14394,6 +14813,7 @@ def api_version_check_refresh():
 
 @app.post("/api/update/apply")
 @login_required
+@admin_required
 @csrf_protect
 def api_update_apply():
     """Download the latest signalscope.py from GitHub, validate, replace, and restart.
@@ -18064,6 +18484,7 @@ def settings_test_notify():
 
 @app.route("/settings", methods=["GET","POST"])
 @login_required
+@admin_required
 @csrf_protect
 def settings():
     cfg=monitor.app_cfg
@@ -18261,6 +18682,7 @@ def api_settings_log():
 
 @app.get("/settings/backup")
 @login_required
+@admin_required
 def settings_backup():
     """Stream a ZIP containing config, AI models, metrics DB, SLA data, alert log and hub state."""
     import zipfile, io as _io
@@ -18317,6 +18739,7 @@ def settings_backup():
 
 @app.post("/settings/restore")
 @login_required
+@admin_required
 @csrf_protect
 def settings_restore():
     """Restore config + AI models from an uploaded backup ZIP."""
@@ -19797,8 +20220,12 @@ def api_setup_auth():
     # If auth was enabled during setup, keep this browser session authenticated
     # so the final wizard POST can complete without interruption.
     if cfg.auth.enabled:
-        session["logged_in"] = True
-        session["login_ts"]  = time.time()
+        session["logged_in"]       = True
+        session["login_ts"]        = time.time()
+        session["username"]        = cfg.auth.username
+        session["role"]            = "admin"
+        session["allowed_sites"]   = []
+        session["allowed_plugins"] = []
 
     return jsonify({"ok": True})
 
@@ -19814,7 +20241,7 @@ def login():
 
     ip    = request.remote_addr or "unknown"
     error = None
-    first = cfg.auth.first_login
+    first = False   # first_login is now per-user; handled in POST block below
 
     # Check lockout
     locked_secs = login_limiter.is_locked(ip)
@@ -19835,41 +20262,54 @@ def login():
             _log_security(f"Failed login for '{uname}' from {ip}")
             return msg
 
-        if uname != cfg.auth.username:
+        def _set_session(user: UserAccount):
+            login_limiter.clear(ip)
+            _log_security(f"Successful login for '{uname}' ({user.role}) from {ip}")
+            session["logged_in"]       = True
+            session["login_ts"]        = time.time()
+            session["username"]        = user.username
+            session["role"]            = user.role
+            session["allowed_sites"]   = user.sites   or []
+            session["allowed_plugins"] = user.plugins or []
+
+        # Look up user in user manager
+        user = user_manager.get(uname) if user_manager else None
+        if user is None or not user.enabled:
             error = _fail("Invalid username or password.")
-        elif first:
-            if cfg.auth.password_hash and not _check_password(pw, cfg.auth.password_hash):
+        elif user.first_login:
+            # Must set a password on first login
+            if user.password_hash and not _check_password(pw, user.password_hash):
                 error = _fail("Invalid username or password.")
             else:
                 np = f.get("new_password","")
                 cp = f.get("confirm_password","")
-                if len(np) < 8:
+                if not np:
+                    # Show the first-login form (need to re-render with first=True)
+                    first = True
+                elif len(np) < 8:
                     error = "New password must be at least 8 characters."
+                    first = True
                 elif np != cp:
                     error = "Passwords do not match."
+                    first = True
                 else:
-                    cfg.auth.password_hash = _hash_password(np)
-                    cfg.auth.first_login   = False
-                    save_config(cfg)
-                    login_limiter.clear(ip)
-                    session["logged_in"] = True
-                    session["login_ts"]  = time.time()
+                    user.password_hash = _hash_password(np)
+                    user.first_login   = False
+                    user_manager.add_or_update(user)
+                    _set_session(user)
                     flash("Password set. Welcome!")
                     return redirect(_safe_next())
         else:
-            if not _check_password(pw, cfg.auth.password_hash):
+            if not _check_password(pw, user.password_hash):
                 error = _fail("Invalid username or password.")
             else:
-                login_limiter.clear(ip)
-                _log_security(f"Successful login for '{uname}' from {ip}")
-                # Transparently upgrade legacy SHA-256 hash to pbkdf2 on login
-                if (len(cfg.auth.password_hash) == 64 and
-                        all(c in "0123456789abcdef" for c in cfg.auth.password_hash)):
-                    cfg.auth.password_hash = _hash_password(pw)
-                    save_config(cfg)
-                    _log_security(f"Upgraded password hash to pbkdf2 for '{uname}'")
-                session["logged_in"] = True
-                session["login_ts"]  = time.time()
+                # Upgrade legacy hash transparently
+                if (len(user.password_hash) == 64 and
+                        all(c in "0123456789abcdef" for c in user.password_hash)):
+                    user.password_hash = _hash_password(pw)
+                    user_manager.add_or_update(user)
+                    _log_security(f"Upgraded password hash for '{uname}'")
+                _set_session(user)
                 return redirect(_safe_next())
 
     _site = (cfg.hub.site_name or socket.gethostname()) if cfg.hub else socket.gethostname()
@@ -21265,6 +21705,7 @@ def hub_dashboard():
     wall_mode = str(request.args.get("wall", "")).strip().lower() in ("1", "true", "yes", "on")
     problems_only = str(request.args.get("problems", "")).strip().lower() in ("1", "true", "yes", "on")
     sites = hub_server.get_sites()
+    sites = _filter_sites(sites)
     for s in sites:
         streams = s.get("streams", [])
         if not s.get("_approved", True):
@@ -21461,6 +21902,7 @@ def hub_data():
         return jsonify({"error":"not a hub"}), 404
     hub_server.set_secret(cfg.hub.secret_key)
     sites = hub_server.get_sites()
+    sites = _filter_sites(sites)
     _site_rules = cfg.hub_site_rules if isinstance(getattr(cfg, "hub_site_rules", None), dict) else {}
     for s in sites:
         s["low_bw"] = bool(_site_rules.get(s.get("site", ""), {}).get("low_bw", False)) or bool(s.get("low_bw", False))
@@ -30220,6 +30662,173 @@ def _err_500(e):
     return f"<html><body style='font-family:sans-serif;background:#06121e;color:#e2e8f0;padding:40px'>" \
            f"<h2>500 — Internal server error</h2><p>An internal error occurred.</p>" \
            f"<a href='/' style='color:#17a8ff'>← Dashboard</a></body></html>", 500
+
+# ─── Hub site names (for user form checkboxes) ────────────────────────────────
+
+@app.get("/api/hub/site_names")
+@login_required
+@admin_required
+def api_hub_site_names():
+    """Return sorted list of known site names for the user-form site-access checkboxes."""
+    if hub_server is None:
+        return jsonify({"sites": []})
+    sites = sorted(s["site_name"] for s in hub_server.get_sites()
+                   if s.get("site_name"))
+    return jsonify({"sites": sites})
+
+# ─── User Management API (admin only) ─────────────────────────────────────────
+
+@app.get("/api/users")
+@login_required
+@admin_required
+def api_users_list():
+    """List all user accounts (admin only). Password hashes are omitted."""
+    if not user_manager:
+        return jsonify({"error": "User manager not available"}), 503
+    users = [
+        {"username": u.username, "role": u.role, "sites": u.sites,
+         "plugins": u.plugins, "enabled": u.enabled, "first_login": u.first_login}
+        for u in user_manager.all()
+    ]
+    return jsonify({"users": users})
+
+
+@app.post("/api/users")
+@login_required
+@admin_required
+@csrf_protect
+def api_users_create():
+    """Create a new user account (admin only)."""
+    import re as _re
+    if not user_manager:
+        return jsonify({"error": "User manager not available"}), 503
+    body     = request.get_json(force=True) or {}
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", "")).strip()
+    role     = str(body.get("role", "viewer")).strip()
+    sites    = [s.strip() for s in body.get("sites", []) if str(s).strip()]
+    plugins  = [p.strip() for p in body.get("plugins", []) if str(p).strip()]
+    enabled  = bool(body.get("enabled", True))
+
+    if not username or not _re.match(r"^[\w\-\.@]+$", username):
+        return jsonify({"error": "Invalid username (letters, numbers, -_.@ only)"}), 400
+    if len(username) > 64:
+        return jsonify({"error": "Username too long (max 64 chars)"}), 400
+    if role not in ("admin", "operator", "viewer"):
+        return jsonify({"error": "Invalid role"}), 400
+    if user_manager.get(username):
+        return jsonify({"error": "Username already exists"}), 409
+    if not password:
+        # Create account with first_login = True (user sets password on first login)
+        ua = UserAccount(username=username, password_hash="", role=role,
+                         sites=sites, plugins=plugins, enabled=enabled, first_login=True)
+    else:
+        if len(password) < 8:
+            return jsonify({"error": "Password must be at least 8 characters"}), 400
+        ua = UserAccount(username=username, password_hash=_hash_password(password),
+                         role=role, sites=sites, plugins=plugins,
+                         enabled=enabled, first_login=False)
+    user_manager.add_or_update(ua)
+    _log_security(f"User '{username}' created (role={role}) by '{session.get('username','?')}'")
+    return jsonify({"ok": True, "username": username})
+
+
+@app.put("/api/users/<username>")
+@login_required
+@admin_required
+@csrf_protect
+def api_users_update(username):
+    """Update an existing user account (admin only)."""
+    if not user_manager:
+        return jsonify({"error": "User manager not available"}), 503
+    ua = user_manager.get(username)
+    if not ua:
+        return jsonify({"error": "User not found"}), 404
+
+    body    = request.get_json(force=True) or {}
+    new_role    = str(body.get("role",    ua.role)).strip()
+    new_sites   = [s.strip() for s in body.get("sites",   ua.sites)   if str(s).strip()]
+    new_plugins = [p.strip() for p in body.get("plugins", ua.plugins) if str(p).strip()]
+    new_enabled = bool(body.get("enabled", ua.enabled))
+    new_pw      = str(body.get("password", "")).strip()
+
+    if new_role not in ("admin", "operator", "viewer"):
+        return jsonify({"error": "Invalid role"}), 400
+
+    # Prevent removing the last admin
+    if ua.role == "admin" and new_role != "admin":
+        if user_manager.count_admins() <= 1:
+            return jsonify({"error": "Cannot demote the only admin account"}), 400
+
+    ua.role    = new_role
+    ua.sites   = new_sites
+    ua.plugins = new_plugins
+    ua.enabled = new_enabled
+
+    if new_pw:
+        if len(new_pw) < 8:
+            return jsonify({"error": "Password must be at least 8 characters"}), 400
+        ua.password_hash = _hash_password(new_pw)
+        ua.first_login   = False
+
+    user_manager.add_or_update(ua)
+    _log_security(f"User '{username}' updated by '{session.get('username','?')}'")
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/users/<username>")
+@login_required
+@admin_required
+@csrf_protect
+def api_users_delete(username):
+    """Delete a user account (admin only). Cannot delete yourself or the last admin."""
+    if not user_manager:
+        return jsonify({"error": "User manager not available"}), 503
+    if username == session.get("username"):
+        return jsonify({"error": "Cannot delete your own account"}), 400
+    ua = user_manager.get(username)
+    if not ua:
+        return jsonify({"error": "User not found"}), 404
+    if ua.role == "admin" and user_manager.count_admins() <= 1:
+        return jsonify({"error": "Cannot delete the only admin account"}), 400
+    user_manager.delete(username)
+    _log_security(f"User '{username}' deleted by '{session.get('username','?')}'")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/users/me/password")
+@login_required
+@csrf_protect
+def api_users_me_password():
+    """Allow any user to change their own password."""
+    if not user_manager:
+        return jsonify({"error": "User manager not available"}), 503
+    uname = session.get("username", "")
+    ua    = user_manager.get(uname)
+    if not ua:
+        return jsonify({"error": "User not found"}), 404
+
+    body    = request.get_json(force=True) or {}
+    current = str(body.get("current_password", "")).strip()
+    new_pw  = str(body.get("new_password", "")).strip()
+
+    # Require current password unless this is a first_login password set
+    if not ua.first_login:
+        if not current or not _check_password(current, ua.password_hash):
+            return jsonify({"error": "Current password is incorrect"}), 403
+    if len(new_pw) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+
+    ua.password_hash = _hash_password(new_pw)
+    ua.first_login   = False
+    user_manager.add_or_update(ua)
+    # Update session so the user doesn't get logged out
+    session["role"]            = ua.role
+    session["allowed_sites"]   = ua.sites
+    session["allowed_plugins"] = ua.plugins
+    _log_security(f"User '{uname}' changed their own password")
+    return jsonify({"ok": True})
+
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 

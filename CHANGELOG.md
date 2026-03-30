@@ -2,7 +2,21 @@
 
 ---
 
-## [3.4.74] - 2026-03-30
+## [Logger 1.5.16] - 2026-03-30
+
+### Fixed
+- **Syntax error on load** — orphaned `except Exception: pass` fragment at line 385 (remnant from an earlier edit) caused a Python `unexpected indent` error, preventing logger.py from loading entirely. Removed the stray fragment; the surrounding `try/except/finally` block is now structurally correct.
+
+---
+
+## [3.4.76] - 2026-03-30
+
+### Improved
+- **User management — site access checkboxes** — the Site Access field in the add/edit user form is now a scrollable checkbox list showing all connected hub sites. Sites are loaded live from the hub on form open; pre-existing site restrictions are pre-ticked. Saving collects the ticked site names directly. "No sites ticked" still means unrestricted access to all sites. Requires hub mode (standalone nodes show "No sites registered yet").
+
+---
+
+## [3.4.75] - 2026-03-30
 
 ### Fixed
 - **Updater not offering newer versions to users on 3.1.x** — the updater used the GitHub `/releases/latest` API endpoint which only returns non-pre-release releases. If any releases between the user's installed version and the current version were published as "pre-release" on GitHub, the API would silently return an older version as "latest stable" — causing users to be incorrectly told they are up to date. Fixed by switching to the `/releases?per_page=50` list endpoint which returns all releases including pre-releases, then selecting the highest semver tag found regardless of pre-release status.

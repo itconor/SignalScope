@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.15",
+    "version": "1.5.16",
 }
 
 import datetime
@@ -382,8 +382,6 @@ def _hub_export_clip(slot_id: str, slug: str, date: str,
         # Signal EOF so the hub generator exits immediately instead of
         # waiting for the 30-second inactivity timeout.
         _audio_post(chunk_url, b"", secret)
-            except Exception:
-                pass
 
 
 def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
