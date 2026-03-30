@@ -2955,3 +2955,14 @@ Full composite alert matrix:
 ## SignalScope-3.4.66
 - **Fix**: Heartbeat timeout raised 5s → 10s — prevents "stuck at max backoff" after hub restart when response is marginally slow (TLS handshake + cold start). Root cause of one client needing a monitor restart after a hub outage while others self-healed.
 - **Fix**: Log a clear WARNING after 10 minutes at max backoff with a hint to restart the monitor, so the condition is visible in logs rather than silently retrying.
+
+## SignalScope-3.4.67
+### Security fixes
+- **C-1**: `GET /hub/update/download` now returns 403 immediately when no shared secret is configured — previously served full source code to any unauthenticated caller
+- **C-2**: `hub_clip_upload`, `hub_backup_upload`, `hub_ping_result`, `hub_log_data` now return 403 when no secret configured — previously all were unauthenticated when secret_key was empty
+- **C-2 (replay)**: Added nonce replay protection to `hub_backup_upload`, `hub_ping_result`, `hub_log_data` — previously captured signed requests could be replayed within the 30s HMAC window
+- **H-1**: CSRF check now enforced unconditionally on all state-changing requests — previously skipped entirely when `auth.enabled = False`
+- **H-3**: `hub_backup_upload` now verifies `X-Hub-Site` is a known approved site before writing — previously any caller could overwrite any site's backup
+- **H-4**: Nonce generation replaced `md5(os.urandom(8))[:16]` with `os.urandom(16).hex()` — stronger entropy, no unnecessary MD5
+- **H-5**: `/api/dab/scan` now validates `channel` against `_VALID_DAB_CHANNELS` whitelist — previously raw value passed to welle-cli subprocess
+- **H-6**: 500 error handler no longer includes raw Python exception in HTML response — logged server-side only

@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.66"
+BUILD                  = "SignalScope-3.4.67"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2973,7 +2973,7 @@ def csrf_protect(f):
         # Only enforce when auth is enabled — unauthenticated instances are
         # LAN-only so CSRF is less critical, but still generate tokens
         if request.method in ("POST","PUT","DELETE","PATCH"):
-            if cfg.auth.enabled and not _csrf_valid():
+            if not _csrf_valid():
                 _log_security(f"CSRF validation failed for {request.path} from {request.remote_addr}")
                 return jsonify({"error": "CSRF validation failed"}), 403
         return f(*args, **kwargs)
@@ -9625,7 +9625,7 @@ class HubClient:
         monitor.log(f"[Update] Downloading update from {hub_url}/hub/update/download …")
         try:
             ts    = time.time()
-            nonce = hashlib.md5(os.urandom(8)).hexdigest()[:16]
+            nonce = os.urandom(16).hex()
             sig   = hub_sign_payload(secret, b"", ts) if secret else ""
             headers = {
                 "X-Hub-Sig":   sig,
@@ -10245,7 +10245,7 @@ class HubClient:
 
         ts_c    = time.time()
         t0      = time.monotonic()
-        nonce_c = hashlib.md5(os.urandom(8)).hexdigest()[:16]
+        nonce_c = os.urandom(16).hex()
         sig_c   = hub_sign_payload(cfg.hub.secret_key, data, ts_c) if cfg.hub.secret_key else ""
         headers = {
             "Content-Type":  "application/octet-stream",
@@ -10815,7 +10815,7 @@ class HubClient:
     def _do_send(self, url: str, payload_bytes: bytes, secret: str = "") -> dict:
         """Internal: sign, encrypt and POST one payload."""
         ts    = time.time()
-        nonce = hashlib.md5(os.urandom(8)).hexdigest()[:16]
+        nonce = os.urandom(16).hex()
         sig   = hub_sign_payload(secret, payload_bytes, ts) if secret else ""
         if secret:
             body_to_send = hub_encrypt_payload(secret, payload_bytes)
@@ -19255,6 +19255,14 @@ def api_dab_scan():
     if not channel:
         return jsonify({"error": "channel parameter required"}), 400
 
+    _VALID_DAB_CHANNELS = {
+        "5A","5B","5C","5D","6A","6B","6C","6D","7A","7B","7C","7D",
+        "8A","8B","8C","8D","9A","9B","9C","9D","10A","10B","10C","10D",
+        "11A","11B","11C","11D","12A","12B","12C","12D","13A","13B","13C","13D","13E","13F",
+    }
+    if channel not in _VALID_DAB_CHANNELS:
+        return jsonify({"error": "invalid channel"}), 400
+
     if not _find_binary("welle-cli"):
         return jsonify({"error": "welle-cli not found — install welle.io"}), 503
 
@@ -20264,6 +20272,9 @@ def hub_clip_upload():
     if cfg.hub.mode not in ("hub", "both"):
         return jsonify({"error": "not a hub"}), 404
 
+    if not secret:
+        return jsonify({"error": "forbidden"}), 403
+
     raw_body = request.get_data()
     if secret:
         sig  = request.headers.get("X-Hub-Sig", "")
@@ -20512,22 +20523,31 @@ def hub_backup_upload():
     if cfg.hub.mode not in ("hub", "both"):
         return jsonify({"error": "not a hub"}), 404
 
+    if not secret:
+        return jsonify({"error": "forbidden"}), 403
+
     raw_body = request.get_data()
     site_name = request.headers.get("X-Hub-Site", "").strip()
 
     if secret:
-        sig  = request.headers.get("X-Hub-Sig", "")
-        ts_h = request.headers.get("X-Hub-Ts", "0")
+        sig   = request.headers.get("X-Hub-Sig", "")
+        ts_h  = request.headers.get("X-Hub-Ts", "0")
+        nonce = request.headers.get("X-Hub-Nonce", "")
         try:
             ts = float(ts_h)
         except ValueError:
             return jsonify({"error": "invalid timestamp"}), 403
+        if not hub_nonce_store.check_and_store(nonce):
+            return jsonify({"error": "replay detected"}), 403
         ok, reason = hub_verify_signature(secret, raw_body, sig, ts)
         if not ok:
             return jsonify({"error": "forbidden", "reason": reason}), 403
 
     if not site_name:
         return jsonify({"error": "missing X-Hub-Site header"}), 400
+
+    if not hub_server or not hub_server._sites.get(site_name, {}).get("_approved"):
+        return jsonify({"error": "forbidden"}), 403
 
     # Cap per-site backup at 200 MB
     MAX_BACKUP_BYTES = 200 * 1024 * 1024
@@ -20547,14 +20567,20 @@ def hub_ping_result():
     if cfg.hub.mode not in ("hub", "both"):
         return jsonify({"error": "not a hub"}), 404
 
+    if not secret:
+        return jsonify({"error": "forbidden"}), 403
+
     raw_body = request.get_data()
     if secret:
-        sig  = request.headers.get("X-Hub-Sig", "")
-        ts_h = request.headers.get("X-Hub-Ts", "0")
+        sig   = request.headers.get("X-Hub-Sig", "")
+        ts_h  = request.headers.get("X-Hub-Ts", "0")
+        nonce = request.headers.get("X-Hub-Nonce", "")
         try:
             ts = float(ts_h)
         except ValueError:
             return jsonify({"error": "invalid timestamp"}), 403
+        if not hub_nonce_store.check_and_store(nonce):
+            return jsonify({"error": "replay detected"}), 403
         ct = request.content_type or ""
         if "octet-stream" in ct:
             try:
@@ -20595,14 +20621,20 @@ def hub_log_data():
     if cfg.hub.mode not in ("hub", "both"):
         return jsonify({"error": "not a hub"}), 404
 
+    if not secret:
+        return jsonify({"error": "forbidden"}), 403
+
     raw_body = request.get_data()
     if secret:
-        sig  = request.headers.get("X-Hub-Sig", "")
-        ts_h = request.headers.get("X-Hub-Ts", "0")
+        sig   = request.headers.get("X-Hub-Sig", "")
+        ts_h  = request.headers.get("X-Hub-Ts", "0")
+        nonce = request.headers.get("X-Hub-Nonce", "")
         try:
             ts = float(ts_h)
         except ValueError:
             return jsonify({"error": "invalid timestamp"}), 403
+        if not hub_nonce_store.check_and_store(nonce):
+            return jsonify({"error": "replay detected"}), 403
         ct = request.content_type or ""
         if "octet-stream" in ct:
             try:
@@ -20644,6 +20676,9 @@ def hub_update_download():
     secret = cfg.hub.secret_key
     if cfg.hub.mode not in ("hub", "both"):
         return jsonify({"error": "not a hub"}), 404
+
+    if not secret:
+        return jsonify({"error": "forbidden"}), 403
 
     # Auth — HMAC over an empty body for this GET request
     if secret:
@@ -30029,7 +30064,7 @@ def _err_500(e):
     if request.path.startswith("/api/"):
         return jsonify({"error": "Internal server error"}), 500
     return f"<html><body style='font-family:sans-serif;background:#06121e;color:#e2e8f0;padding:40px'>" \
-           f"<h2>500 — Internal server error</h2><p>{e}</p>" \
+           f"<h2>500 — Internal server error</h2><p>An internal error occurred.</p>" \
            f"<a href='/' style='color:#17a8ff'>← Dashboard</a></body></html>", 500
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
