@@ -2,6 +2,14 @@
 
 ---
 
+## [3.4.80] - 2026-03-30
+
+### Improved / Fixed
+- **User form — site checkboxes now load correctly** — switched from `get_sites()` (which builds a heavyweight result dict) to directly reading `hub_server._sites.keys()` under the lock, which is guaranteed to contain all registered site names.
+- **User form — plugin access is now checkboxes** — replaced the comma-separated plugin text input with a scrollable checkbox list of installed + active plugins (loaded from `/api/plugins`), matching the same UX as site access. Plugin icon and name shown on each checkbox.
+
+---
+
 ## [3.4.79] - 2026-03-30
 
 ### Fixed

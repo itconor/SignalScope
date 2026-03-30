@@ -840,8 +840,11 @@ document.addEventListener('DOMContentLoaded',function(){
       </div>
     </div>
     <div style="margin-bottom:14px">
-      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Plugin Access <span style="font-weight:400;text-transform:none">(blank = all plugins; comma-separated plugin IDs to restrict)</span></label>
-        <input type="text" id="uf-plugins" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;width:100%" placeholder="e.g. logger, sdr (blank = all plugins)"></div>
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Plugin Access <span style="font-weight:400;text-transform:none">(tick plugins to restrict; none ticked = all plugins)</span></label>
+        <div id="uf-plugins-wrap" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;max-height:130px;overflow-y:auto;font-size:12px">
+          <span style="color:var(--mu)">Loading plugins\u2026</span>
+        </div>
+      </div>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn bp bs" type="button" id="user-save-btn" onclick="userSave()">Save User</button>
@@ -1371,7 +1374,7 @@ function userEditLoad(username){
     document.getElementById('uf-password').value='';
     document.getElementById('uf-enabled').value=u.enabled?'1':'0';
     _loadSiteChecks(u.sites||[]);
-    document.getElementById('uf-plugins').value=(u.plugins||[]).join(', ');
+    _loadPluginChecks(u.plugins||[]);
     document.getElementById('user-form-msg').textContent='';
     document.getElementById('user-form').style.display='';
     document.getElementById('user-form').scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -1386,7 +1389,7 @@ function userShowForm(){
   document.getElementById('uf-password').value='';
   document.getElementById('uf-enabled').value='1';
   _loadSiteChecks([]);
-  document.getElementById('uf-plugins').value='';
+  _loadPluginChecks([]);
   document.getElementById('user-form-msg').textContent='';
   document.getElementById('user-form').style.display='';
   document.getElementById('user-form').scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -1415,6 +1418,29 @@ function _collectSiteChecks(){
   var boxes=document.querySelectorAll('#uf-sites-wrap .uf-site-chk:checked');
   return Array.prototype.slice.call(boxes).map(function(b){return b.value;});
 }
+function _loadPluginChecks(selectedPlugins){
+  var wrap=document.getElementById('uf-plugins-wrap');
+  if(!wrap) return;
+  wrap.innerHTML='<span style="color:var(--mu)">Loading\u2026</span>';
+  fetch('/api/plugins',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var plugins=(d.plugins||[]).filter(function(p){return p.active;});
+    if(!plugins.length){wrap.innerHTML='<span style="color:var(--mu)">No plugins installed \u2014 all plugins permitted by default</span>';return;}
+    wrap.innerHTML=plugins.map(function(p){
+      var id=p.id||p.file||'';
+      var label=(p.icon?p.icon+' ':'')+((p.name||p.label||id));
+      var checked=(selectedPlugins&&selectedPlugins.indexOf(id)>=0);
+      var ie=id.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+      var le=label.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      return '<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer">'
+        +'<input type="checkbox" class="uf-plugin-chk" value="'+ie+'"'+(checked?' checked':'')+' style="accent-color:var(--acc);width:14px;height:14px">'
+        +'<span>'+le+'</span></label>';
+    }).join('');
+  }).catch(function(){wrap.innerHTML='<span style="color:var(--al)">Could not load plugins</span>';});
+}
+function _collectPluginChecks(){
+  var boxes=document.querySelectorAll('#uf-plugins-wrap .uf-plugin-chk:checked');
+  return Array.prototype.slice.call(boxes).map(function(b){return b.value;});
+}
 function userSave(){
   var orig=document.getElementById('uf-orig-username').value;
   var isEdit=!!orig;
@@ -1423,7 +1449,7 @@ function userSave(){
   var password=document.getElementById('uf-password').value;
   var enabled=document.getElementById('uf-enabled').value==='1';
   var sites=_collectSiteChecks();
-  var plugins=_parseCsv(document.getElementById('uf-plugins').value);
+  var plugins=_collectPluginChecks();
   var msg=document.getElementById('user-form-msg');
   msg.style.color='var(--mu)'; msg.textContent='Saving\u2026';
   var url=isEdit?'/api/users/'+encodeURIComponent(orig):'/api/users';
@@ -1852,7 +1878,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.79"
+BUILD                  = "SignalScope-3.4.80"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30651,8 +30677,8 @@ def api_hub_site_names():
     """Return sorted list of known site names for the user-form site-access checkboxes."""
     if hub_server is None:
         return jsonify({"sites": []})
-    sites = sorted(s["site"] for s in hub_server.get_sites()
-                   if s.get("site"))
+    with hub_server._lock:
+        sites = sorted(hub_server._sites.keys())
     return jsonify({"sites": sites})
 
 # ─── User Management API (admin only) ─────────────────────────────────────────
