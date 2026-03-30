@@ -42,6 +42,13 @@
 
 ---
 
+## [3.4.83] - 2026-03-30
+
+### Fixed
+- **Hiss detection too sensitive — constant false alerts** — default `hiss_rise_db` raised from 12 dB to 20 dB, and `hiss_min_duration` raised from 3 s to 10 s. The old defaults fired on normal bright broadcast content (sibilance, cymbals, high-energy music). The new defaults require a sustained 20 dB HF spike lasting at least 10 seconds — a genuine fault condition. Existing inputs that have already been saved with the old values are unaffected; only inputs created from scratch use the new defaults.
+
+---
+
 ## [3.4.82] - 2026-03-30
 
 ### Fixed

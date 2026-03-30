@@ -1878,7 +1878,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.82"
+BUILD                  = "SignalScope-3.4.83"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2109,8 +2109,8 @@ class InputConfig:
     silence_threshold_dbfs: float = -55.0
     silence_min_duration:   float = 3.0
     hiss_hf_band_hz:        float = 6000.0
-    hiss_rise_db:           float = 12.0
-    hiss_min_duration:      float = 3.0
+    hiss_rise_db:           float = 20.0
+    hiss_min_duration:      float = 10.0
     clip_threshold_dbfs:    float = -1.0
     clip_window_seconds:    float = 2.0
     clip_count_threshold:   int   = 3
@@ -2578,8 +2578,8 @@ def load_config() -> AppConfig:
             silence_threshold_dbfs=item.get("silence_threshold_dbfs", -55.0),
             silence_min_duration=item.get("silence_min_duration", 3.0),
             hiss_hf_band_hz=item.get("hiss_hf_band_hz", 6000.0),
-            hiss_rise_db=item.get("hiss_rise_db", 12.0),
-            hiss_min_duration=item.get("hiss_min_duration", 3.0),
+            hiss_rise_db=item.get("hiss_rise_db", 20.0),
+            hiss_min_duration=item.get("hiss_min_duration", 10.0),
             clip_threshold_dbfs=item.get("clip_threshold_dbfs", -1.0),
             clip_window_seconds=item.get("clip_window_seconds", 2.0),
             clip_count_threshold=item.get("clip_count_threshold", 3),
