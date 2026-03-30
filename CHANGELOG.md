@@ -2,6 +2,15 @@
 
 ---
 
+## [Logger 1.5.15] - 2026-03-30
+
+### Added / Fixed
+- **Raw export (hub mode)** — new "Raw (fast)" format option. The client node streams raw segment files (no ffmpeg required on client), the hub pipes them through its own ffmpeg for precise mark-in/out trimming using stream-copy (no re-encoding on either side). Output is in the stream's native recording format (MP3/AAC/Opus). Cross-segment marks work correctly — all overlapping segments are included and trimmed to the exact mark range.
+- **Fixed: zero-byte export files** — the relay download generator previously exited immediately when the client sent an EOF signal (`slot.closed = True`) before the generator had drained the queue. Changed to an unconditional loop that breaks only when the queue is empty AND the slot is closed.
+- **Fixed: EOF not signalled** — `_hub_export_clip` now always sends an empty-body POST after finishing (raw or ffmpeg path), signalling EOF to the relay slot so the download generator exits immediately rather than waiting 30 seconds.
+
+---
+
 ## [Logger 1.5.14] - 2026-03-30
 
 ### Improved

@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.14",
+    "version": "1.5.15",
 }
 
 import datetime
@@ -253,6 +253,11 @@ def _hub_export_clip(slot_id: str, slug: str, date: str,
     Called in a background thread when the HubPoller receives an
     'export_clip' command.  The hub streams the relay slot bytes back to
     the browser as a file download.
+
+    When fmt == "raw", segment files are streamed as-is (no ffmpeg needed).
+    All other formats transcode via ffmpeg.  In both cases an empty-body POST
+    is sent at the end so the hub relay slot closes immediately instead of
+    waiting for the 30-second inactivity timeout.
     """
     secret    = (getattr(cfg.hub, "secret_key", None) or "").strip()
     chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
@@ -261,15 +266,10 @@ def _hub_export_clip(slot_id: str, slug: str, date: str,
     day_dir = root / _safe(slug) / date
     if not day_dir.exists():
         _log(f"[Logger] HubExport: no recordings for {slug}/{date}")
-        return
-
-    ffmpeg = _find_ffmpeg()
-    if not ffmpeg:
-        _log("[Logger] HubExport: ffmpeg not found")
+        _audio_post(chunk_url, b"", secret)   # close slot so browser doesn't hang
         return
 
     segs = _get_segments(_safe(slug), date, base_root=root)
-    audio_args, container, _, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
 
     relevant = []
     for seg in segs:
@@ -286,12 +286,44 @@ def _hub_export_clip(slot_id: str, slug: str, date: str,
 
     if not relevant:
         _log(f"[Logger] HubExport: no segments in range {start_s:.0f}–{end_s:.0f}")
+        _audio_post(chunk_url, b"", secret)
         return
+
+    # ── Raw mode: stream segment files directly without re-encoding ───────────
+    if fmt == "raw":
+        _log(f"[Logger] HubExport: raw push {len(relevant)} segment(s) "
+             f"{slug}/{date} slot={slot_id}")
+        try:
+            for _, seg_path in relevant:
+                with open(seg_path, "rb") as fh:
+                    while True:
+                        chunk = fh.read(65536)
+                        if not chunk:
+                            break
+                        if not _audio_post(chunk_url, chunk, secret):
+                            _log("[Logger] HubExport: relay slot gone — stopping")
+                            return
+        except Exception as e:
+            _log(f"[Logger] HubExport: raw read error: {e}")
+        finally:
+            # Signal EOF so the hub generator exits immediately
+            _audio_post(chunk_url, b"", secret)
+        _log(f"[Logger] HubExport: raw finished {slug}/{date} slot={slot_id}")
+        return
+
+    # ── Transcode mode: re-encode via ffmpeg ──────────────────────────────────
+    audio_args, container, _, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
 
     # Stream-copy optimisation — only when source and target are both MP3
     _src_ext = relevant[0][1].suffix.lstrip(".")
     if fmt == "mp3" and _src_ext == "mp3":
         audio_args = ["-c", "copy"]
+
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        _log("[Logger] HubExport: ffmpeg not found — cannot transcode")
+        _audio_post(chunk_url, b"", secret)
+        return
 
     tf_name = None
     proc    = None
@@ -319,7 +351,7 @@ def _hub_export_clip(slot_id: str, slug: str, date: str,
                    *audio_args, "-f", container, "pipe:1"]
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        _log(f"[Logger] HubExport: started {slug}/{date} "
+        _log(f"[Logger] HubExport: started ffmpeg {slug}/{date} "
              f"{start_s:.0f}–{end_s:.0f}s fmt={fmt} slot={slot_id}")
 
         while True:
@@ -332,7 +364,7 @@ def _hub_export_clip(slot_id: str, slug: str, date: str,
                 break
 
         proc.wait()
-        _log(f"[Logger] HubExport: finished {slug}/{date} slot={slot_id}")
+        _log(f"[Logger] HubExport: ffmpeg finished {slug}/{date} slot={slot_id}")
 
     except Exception as e:
         _log(f"[Logger] HubExport: error: {e}")
@@ -345,6 +377,11 @@ def _hub_export_clip(slot_id: str, slug: str, date: str,
         if tf_name:
             try:
                 os.unlink(tf_name)
+            except Exception:
+                pass
+        # Signal EOF so the hub generator exits immediately instead of
+        # waiting for the 30-second inactivity timeout.
+        _audio_post(chunk_url, b"", secret)
             except Exception:
                 pass
 
@@ -1097,7 +1134,7 @@ def register(app, ctx):
             start_s = float(body.get("start_s", 0))
             end_s   = float(body.get("end_s",   60))
             fmt     = str(body.get("fmt",     "mp3")).strip()
-            if fmt not in ("mp3", "aac", "opus"):
+            if fmt not in ("mp3", "aac", "opus", "raw"):
                 fmt = "mp3"
             if not (site and slug and date):
                 return jsonify({"error": "missing fields"}), 400
@@ -1122,7 +1159,22 @@ def register(app, ctx):
                 "fmt":     fmt,
             })
 
-            _, _, mime, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
+            if fmt == "raw":
+                # Derive file extension from the stream's recorded format in the hub catalog.
+                # Falls back to mp3 if unknown.
+                with _hub_logger_lock:
+                    cat_entry = _hub_logger_catalog.get(site, {}).get(slug, {})
+                rec_fmt    = cat_entry.get("rec_format", "mp3") or "mp3"
+                # Raw mode outputs in the source format (stream-copy on hub).
+                # AAC uses ADTS container (.aac) which is pipe-streamable.
+                # Opus uses OGG container (.opus).
+                _ext_map   = {"mp3": ".mp3", "aac": ".aac", "opus": ".opus"}
+                _mime_map  = {"mp3": "audio/mpeg", "aac": "audio/aac", "opus": "audio/ogg"}
+                ext  = _ext_map.get(rec_fmt, ".mp3")
+                mime = _mime_map.get(rec_fmt, "audio/mpeg")
+            else:
+                rec_fmt = ""
+                _, _, mime, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
             h    = int(start_s) // 3600
             m    = (int(start_s) % 3600) // 60
             dur  = int(end_s - start_s)
@@ -1130,15 +1182,23 @@ def register(app, ctx):
             _log(f"[Logger] Hub export queued: site={site} {slug}/{date} "
                  f"{start_s:.0f}–{end_s:.0f}s fmt={fmt} slot={slot.slot_id}")
             return jsonify({"ok": True, "slot_id": slot.slot_id,
-                            "filename": fname, "mime": mime})
+                            "filename": fname, "mime": mime,
+                            "rec_fmt": rec_fmt, "start_s": start_s, "end_s": end_s})
 
         @app.get("/api/logger/hub/export_download/<slot_id>")
         @login_req
         def api_logger_hub_export_download(slot_id):
             """Stream relay slot bytes back to the browser as a file download.
 
-            The generator waits up to 60 s for the client to start pushing,
-            then streams until 30 s of inactivity (EOF after ffmpeg finishes).
+            Two modes:
+            - fmt == "raw": client pushed raw segment files; hub pipes them through
+              ffmpeg (stream-copy, precise trim) and streams the output to the browser.
+              Hub ffmpeg is used so the client needs no encoding capability.
+            - Other fmt (mp3/aac/opus): client ran ffmpeg; relay bytes are streamed
+              directly to the browser.
+
+            In both modes the generator drains the relay queue completely after the
+            client signals EOF (slot.closed = True) before exiting.
             """
             if not _listen_registry:
                 return ("", 503)
@@ -1148,33 +1208,186 @@ def register(app, ctx):
 
             filename = request.args.get("filename", "export.mp3")
             mime     = request.args.get("mime", "audio/mpeg")
+            fmt      = request.args.get("fmt", "mp3")
+            rec_fmt  = request.args.get("rec_fmt", "mp3") or "mp3"
+            start_s  = float(request.args.get("start_s",  0))
+            end_s    = float(request.args.get("end_s",    60))
 
+            if fmt == "raw":
+                # ── Raw mode: pipe relay data through hub-side ffmpeg ──────────
+                # The client sends whole segment files (stream-copy, no decode).
+                # Hub ffmpeg does the precise time-trim using -ss / -t flags, then
+                # stream-copies to the output container.  No re-encoding on either side.
+                #
+                # The first_seg_start_s offset is computed from the 5-minute segment
+                # boundary: floor(start_s / 300) * 300.  This is always accurate for
+                # a continuously-running compliance recorder.
+                ffmpeg_path = _find_ffmpeg()
+                _raw_in_fmt = {"mp3": "mp3", "aac": "aac", "opus": "ogg"}
+                _raw_out_fmt = {
+                    "mp3":  ("mp3",  ["-c", "copy"],          "audio/mpeg",  ".mp3"),
+                    "aac":  ("adts", ["-c", "copy"],          "audio/aac",   ".aac"),
+                    "opus": ("ogg",  ["-c", "copy"],          "audio/ogg",   ".opus"),
+                }
+                out_container, audio_args, out_mime, _ = _raw_out_fmt.get(
+                    rec_fmt, _raw_out_fmt["mp3"])
+                in_fmt  = _raw_in_fmt.get(rec_fmt, "mp3")
+
+                first_seg_start_s = (int(start_s) // _SEG_SECS) * _SEG_SECS
+                ss  = max(0.0, start_s - first_seg_start_s)
+                dur = max(1.0, end_s - start_s)
+
+                if ffmpeg_path:
+                    cmd = [ffmpeg_path, "-hide_banner", "-loglevel", "error",
+                           "-ss", f"{ss:.3f}",
+                           "-f", in_fmt, "-i", "pipe:0",
+                           "-t", f"{dur:.3f}",
+                           *audio_args, "-f", out_container, "pipe:1"]
+                    try:
+                        proc = subprocess.Popen(
+                            cmd,
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+                    except Exception as e:
+                        _log(f"[Logger] HubExportDL: failed to start ffmpeg: {e}")
+                        _file_relay_slots.discard(slot_id)
+                        return ("", 500)
+
+                    # Feeder thread: relay slot → ffmpeg stdin
+                    def _feed(proc=proc, slot=slot):
+                        got_data   = False
+                        start_time = time.monotonic()
+                        last_data  = time.monotonic()
+                        try:
+                            while True:
+                                try:
+                                    chunk = slot.get(timeout=0.5)
+                                    got_data  = True
+                                    last_data = time.monotonic()
+                                    proc.stdin.write(chunk)
+                                except queue.Empty:
+                                    slot.last_chunk = time.time()
+                                    if getattr(slot, "closed", False):
+                                        # EOF received; drain residual queue items
+                                        while True:
+                                            try:
+                                                chunk = slot.get(timeout=0.05)
+                                                proc.stdin.write(chunk)
+                                            except queue.Empty:
+                                                break
+                                        break
+                                    if not got_data and time.monotonic() - start_time > 60.0:
+                                        break
+                                    if got_data and time.monotonic() - last_data > 15.0:
+                                        break
+                                except Exception:
+                                    break
+                        finally:
+                            try:
+                                proc.stdin.close()
+                            except Exception:
+                                pass
+
+                    feeder = threading.Thread(
+                        target=_feed, daemon=True, name="HubExportFeed")
+                    feeder.start()
+
+                    def _gen():
+                        try:
+                            while True:
+                                chunk = proc.stdout.read(65536)
+                                if not chunk:
+                                    break
+                                yield chunk
+                            proc.wait()
+                            _log(f"[Logger] HubExportDL: raw+trim finished slot={slot_id}")
+                        except GeneratorExit:
+                            pass
+                        except Exception as e:
+                            _log(f"[Logger] HubExportDL: raw gen error: {e}")
+                        finally:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                            feeder.join(timeout=5)
+                            _file_relay_slots.discard(slot_id)
+
+                    return Response(
+                        _gen(), mimetype=out_mime,
+                        headers={
+                            "Content-Disposition": f'attachment; filename="{filename}"',
+                            "X-Accel-Buffering":   "no",
+                            "Cache-Control":       "no-cache",
+                        })
+                else:
+                    # No ffmpeg on hub — stream raw bytes untrimmed as fallback
+                    _log("[Logger] HubExportDL: no ffmpeg on hub, streaming raw untrimmed")
+
+                    def _gen_raw():
+                        got_data   = False
+                        start_time = time.monotonic()
+                        last_data  = time.monotonic()
+                        try:
+                            while True:
+                                timeout = 0.1 if getattr(slot, "closed", False) else 0.5
+                                try:
+                                    chunk = slot.get(timeout=timeout)
+                                    got_data  = True
+                                    last_data = time.monotonic()
+                                    yield chunk
+                                except queue.Empty:
+                                    slot.last_chunk = time.time()
+                                    if getattr(slot, "closed", False):
+                                        break
+                                    if not got_data and time.monotonic() - start_time > 60.0:
+                                        break
+                                    if got_data and time.monotonic() - last_data > 15.0:
+                                        break
+                                except Exception:
+                                    break
+                        finally:
+                            _file_relay_slots.discard(slot_id)
+
+                    return Response(
+                        _gen_raw(), mimetype=mime,
+                        headers={
+                            "Content-Disposition": f'attachment; filename="{filename}"',
+                            "X-Accel-Buffering":   "no",
+                            "Cache-Control":       "no-cache",
+                        })
+
+            # ── Transcode mode: client ran ffmpeg, stream relay bytes to browser ──
+            # Critical: the loop must drain the queue even after slot.closed is set.
+            # Using "while not slot.closed" exits immediately when the client sends
+            # EOF, before the queued data is read.  Instead we loop unconditionally
+            # and break only when the queue is empty AND the slot is closed.
             def _gen():
                 last_data  = time.monotonic()
                 start_time = time.monotonic()
                 got_data   = False
                 try:
-                    while not getattr(slot, "closed", False):
+                    while True:
+                        closed  = getattr(slot, "closed", False)
+                        timeout = 0.1 if closed else 0.5
                         try:
-                            # slot.get() raises queue.Empty on timeout — never returns None.
-                            # Use a short timeout so the loop stays responsive.
-                            chunk = slot.get(timeout=0.5)
+                            chunk = slot.get(timeout=timeout)
                             last_data = time.monotonic()
                             got_data  = True
                             yield chunk
                         except queue.Empty:
-                            # Touch last_chunk so the hub's slot reaper doesn't
-                            # evict the slot before the client starts pushing.
-                            # Without this the 30-second SLOT_TIMEOUT fires,
-                            # audio_chunk returns 404, and the client stops.
+                            # Touch last_chunk so the SlotReaper doesn't evict the slot
+                            # while the client is still starting up or encoding.
                             slot.last_chunk = time.time()
+                            if closed:
+                                break   # EOF received and queue drained — done
                             if not got_data:
-                                # Waiting for client to receive command + start ffmpeg
                                 if time.monotonic() - start_time > 60.0:
-                                    _log(f"[Logger] HubExportDL: timed out waiting for data (slot={slot_id})")
+                                    _log(f"[Logger] HubExportDL: timed out waiting "
+                                         f"for data (slot={slot_id})")
                                     break
                             else:
-                                # Data was flowing; inactivity means ffmpeg finished
                                 if time.monotonic() - last_data > 30.0:
                                     break
                         except Exception:
@@ -3206,6 +3419,7 @@ select:focus,input:focus{border-color:var(--acc)}
           <span class="inout-lbl" id="inout-lbl"></span>
           <div style="flex:1"></div>
           <select id="export-fmt" title="Export format" style="background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:4px 7px;border-radius:6px;font-size:12px;outline:none;cursor:pointer">
+            <option value="raw">Raw (fast)</option>
             <option value="mp3">MP3</option>
             <option value="aac">AAC</option>
             <option value="opus">Opus</option>
@@ -4127,15 +4341,21 @@ document.getElementById('export-btn').addEventListener('click', function(){
     }).then(function(r){
       if(!r||!r.ok){ _exportFail('Export failed: '+((r&&r.error)||'unknown error')); return; }
       btn.textContent='⏳ Connecting…';
-      _exportStatus('Waiting for client node to start encoding…','es-active');
+      var _waitMsg = fmt==='raw' ? 'Fetching raw audio from site…' : 'Waiting for client node to start encoding…';
+      _exportStatus(_waitMsg,'es-active');
       var dlUrl='/api/logger/hub/export_download/'+r.slot_id
         +'?filename='+encodeURIComponent(r.filename)
-        +'&mime='+encodeURIComponent(r.mime);
+        +'&mime='+encodeURIComponent(r.mime)
+        +'&fmt='+encodeURIComponent(fmt)
+        +'&rec_fmt='+encodeURIComponent(r.rec_fmt||'mp3')
+        +'&start_s='+encodeURIComponent(r.start_s||_markIn)
+        +'&end_s='+encodeURIComponent(r.end_s||_markOut);
       // Stream-fetch so we can count bytes and show live progress
       fetch(dlUrl,{credentials:'same-origin'}).then(function(resp){
         if(!resp.ok){ _exportFail('Download failed (HTTP '+resp.status+')'); return; }
         btn.textContent='⏳ Receiving…';
-        _exportStatus('Receiving encoded audio…','es-active');
+        var _recvMsg = fmt==='raw' ? 'Trimming and receiving audio…' : 'Receiving encoded audio…';
+        _exportStatus(_recvMsg,'es-active');
         var chunks=[], total=0;
         var reader=resp.body.getReader();
         function _pump(){
@@ -4158,7 +4378,7 @@ document.getElementById('export-btn').addEventListener('click', function(){
             chunks.push(d.value);
             total+=d.value.byteLength;
             btn.textContent='⏳ '+_fmtBytes(total);
-            _exportStatus('Receiving encoded audio… '+_fmtBytes(total),'es-active');
+            _exportStatus(_recvMsg+' '+_fmtBytes(total),'es-active');
             return _pump();
           });
         }
