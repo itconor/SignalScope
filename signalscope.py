@@ -1878,7 +1878,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.80"
+BUILD                  = "SignalScope-3.4.81"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -18367,6 +18367,7 @@ def input_add():
 
 @app.post("/inputs/add_dab_bulk")
 @login_required
+@admin_required
 @csrf_protect
 def inputs_add_dab_bulk():
     """Add multiple DAB services from one mux scan in a single request."""
@@ -18430,6 +18431,7 @@ def input_edit(idx):
 
 @app.post("/inputs/<int:idx>/delete")
 @login_required
+@admin_required
 @csrf_protect
 def input_delete(idx):
     inps=monitor.app_cfg.inputs
@@ -21397,6 +21399,7 @@ def _hub_site_guard(site_name: str):
 
 @app.post("/api/hub/site/<path:site_name>/input/add")
 @login_required
+@admin_required
 @csrf_protect
 def hub_input_add(site_name):
     """Hub admin: send an add_input command to a client site."""
@@ -21425,6 +21428,7 @@ def hub_input_add(site_name):
 
 @app.post("/api/hub/site/<path:site_name>/input/remove")
 @login_required
+@admin_required
 @csrf_protect
 def hub_input_remove(site_name):
     """Hub admin: send a remove_input command to a client site."""
@@ -21440,6 +21444,7 @@ def hub_input_remove(site_name):
 
 @app.post("/api/hub/site/<path:site_name>/input/enable")
 @login_required
+@admin_required
 @csrf_protect
 def hub_input_enable(site_name):
     _, err = _hub_site_guard(site_name)
@@ -21453,6 +21458,7 @@ def hub_input_enable(site_name):
 
 @app.post("/api/hub/site/<path:site_name>/input/disable")
 @login_required
+@admin_required
 @csrf_protect
 def hub_input_disable(site_name):
     _, err = _hub_site_guard(site_name)
@@ -27023,6 +27029,7 @@ def api_chains_apns_status():
 
 @app.post("/api/chains")
 @login_required
+@admin_required
 @csrf_protect
 def api_chains_save():
     """Create or update a signal chain."""
@@ -27175,6 +27182,7 @@ def api_chains_save():
 
 @app.delete("/api/chains/<chain_id>")
 @login_required
+@admin_required
 @csrf_protect
 def api_chains_delete(chain_id):
     """Delete a signal chain by id."""

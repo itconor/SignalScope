@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.81] - 2026-03-30
+
+### Fixed
+- **Viewer and operator accounts could still edit broadcast chains and add/remove sources** — the following write endpoints only had `@login_required` with no role check, so non-admin users could reach them despite the `_rbac_enforce_readonly` before-request hook. Added `@admin_required` to all eight structural write routes: `POST /api/chains`, `DELETE /api/chains/<id>`, `POST /api/hub/site/.../input/add|remove|enable|disable`, `POST /inputs/add_dab_bulk`, `POST /inputs/<idx>/delete`.
+
+---
+
 ## [Listener 1.0.0] - 2026-03-30
 
 ### New Plugin
