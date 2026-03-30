@@ -114,8 +114,8 @@
     "name": "Icecast Streaming",
     "file": "icecast.py",
     "icon": "\ud83d\udce1",
-    "description": "Manage Icecast2 streaming servers on client nodes. Re-stream any monitored input to Icecast with live listener counts and hub-side overview.",
-    "version": "1.0.0",
+    "description": "Manage Icecast2 streaming servers on client nodes. Re-streams any monitored input type (FM/RTL-SDR, DAB, ALSA, RTP, HTTP) to Icecast2 via the same PCM buffer tap used by the Logger plugin. Per-stream stereo toggle: HTTP inputs preserve native stereo; all others upmix mono to dual-mono. Hub overview shows live listener counts and stream status from all connected sites; create and manage streams on any client from the hub. Requires ffmpeg; Icecast2 installed separately.",
+    "version": "1.1.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/icecast.py"
   }
