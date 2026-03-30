@@ -2977,3 +2977,9 @@ Full composite alert matrix:
 - **L-3**: CSRF token helpers now read `<meta name="csrf-token">` before cookie fallback (correct priority — meta tag is server-rendered and always fresh)
 - **L-4**: 404 error handler HTML-escapes `request.path` — fixes reflected XSS via crafted URLs
 - **L-6**: SDR serial numbers validated against configured device registry in sdr.py before being passed to rtl_sdr/rtl_power subprocess
+
+## SignalScope-3.4.69
+### Backward-compatibility fixes for 3.4.68 security changes
+- **M-4 fix**: XOR fallback now uses version byte `\x03` (new) instead of `\x01` (legacy). Old `\x01` payloads from pre-3.4.68 clients are still decrypted without MAC verification (read-only compat). Prevents MAC mismatch errors during rolling upgrades for the rare case where `cryptography` package is not installed.
+- **M-5 fix (hub)**: Spectrum push endpoint now only rejects a *wrong* HMAC signature — an *absent* signature is allowed through during the upgrade window. Prevents 403 errors from old sdr.py clients that don't yet send `X-Hub-Sig` for spectrum frames.
+- **M-5 fix (client)**: `_sdr_worker` now includes `X-Hub-Sig` / `X-Hub-Ts` headers when pushing spectrum frames to the hub, when a shared secret is configured.

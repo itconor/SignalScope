@@ -245,12 +245,16 @@ def register(app, ctx):
             if slot_id != local_slot:
                 return jsonify({"error": "unknown slot"}), 404
 
-        # HMAC authentication — verify when a secret is configured
+        # HMAC authentication — verify when a secret is configured AND the
+        # caller included a signature header.  If sig is absent we allow the
+        # request through (backward compat with pre-3.4.68 sdr.py clients
+        # that don't yet send X-Hub-Sig for spectrum frames); if sig is
+        # present but wrong we reject immediately.
         cfg    = monitor.app_cfg
         secret = cfg.hub.secret_key
-        if secret:
-            raw_body = request.get_data()
-            sig  = request.headers.get("X-Hub-Sig", "")
+        raw_body = request.get_data()
+        sig  = request.headers.get("X-Hub-Sig", "")
+        if secret and sig:
             ts_h = request.headers.get("X-Hub-Ts", "0")
             try:
                 ts = float(ts_h)
@@ -263,13 +267,11 @@ def register(app, ctx):
             expected = _hmac.new(key, msg, hashlib.sha256).hexdigest()
             if not _hmac.compare_digest(expected, sig):
                 return jsonify({"error": "forbidden"}), 403
-            import json as _json
-            try:
-                d = _json.loads(raw_body) if raw_body else {}
-            except Exception:
-                return jsonify({"error": "bad json"}), 400
-        else:
-            d = request.get_json(silent=True) or {}
+        import json as _json
+        try:
+            d = _json.loads(raw_body) if raw_body else {}
+        except Exception:
+            return jsonify({"error": "bad json"}), 400
 
         if d:
             d["ts"] = time.time()
@@ -805,9 +807,16 @@ def _sdr_worker(slot_id, freq_mhz, mode, gain, sdr_serial, hub_url, secret, stop
                              "bw": _SAMPLE_RATE / 1e6, "n": n,
                              "level": round(_level_db, 1) if _level_db is not None else None}
                     data  = _json.dumps(frame).encode()
+                    _spec_hdrs = {"Content-Type": "application/json"}
+                    if secret:
+                        _ts  = time.time()
+                        _key = hashlib.sha256(f"{secret}:signing".encode()).digest()
+                        _msg = f"{_ts:.0f}:".encode() + data
+                        _spec_hdrs["X-Hub-Sig"] = _hmac.new(_key, _msg, hashlib.sha256).hexdigest()
+                        _spec_hdrs["X-Hub-Ts"]  = f"{_ts:.0f}"
                     req   = urllib.request.Request(
                         spectrum_url, data=data,
-                        headers={"Content-Type": "application/json"},
+                        headers=_spec_hdrs,
                         method="POST",
                     )
                     urllib.request.urlopen(req, timeout=2).close()

@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.68"
+BUILD                  = "SignalScope-3.4.69"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -8948,7 +8948,8 @@ def hub_verify_signature(secret: str, payload_bytes: bytes,
 # replacing the previous custom SHA-256 keystream XOR.
 # Falls back to the keystream XOR if cryptography is not installed.
 _HUB_CRYPTO_VERSION_AES = b"\x02"   # prefix byte: 0x02 = AES-GCM
-_HUB_CRYPTO_VERSION_XOR = b"\x01"   # prefix byte: 0x01 = legacy XOR
+_HUB_CRYPTO_VERSION_XOR = b"\x01"   # prefix byte: 0x01 = legacy XOR (no MAC — read-only compat)
+_HUB_CRYPTO_VERSION_XOR_MAC = b"\x03"  # prefix byte: 0x03 = XOR + HMAC-SHA256 MAC
 
 
 def hub_encrypt_payload(secret: str, plaintext: bytes) -> bytes:
@@ -8964,12 +8965,14 @@ def hub_encrypt_payload(secret: str, plaintext: bytes) -> bytes:
         ct    = AESGCM(key).encrypt(nonce, plaintext, None)
         return _HUB_CRYPTO_VERSION_AES + nonce + ct
     except ImportError:
-        # Fall back to legacy XOR with HMAC-SHA256 authentication tag
+        # Fall back to XOR + HMAC-SHA256 authentication tag.
+        # Uses version \x03 so old hubs/clients (which used \x01 without MAC)
+        # can still communicate during rolling upgrades — \x01 is decrypt-only.
         salt = os.urandom(16)
         ciphertext = _keystream_xor(key, salt, plaintext)
         mac_key = _derive_key(secret, "mac")
         tag = _hmac.new(mac_key, ciphertext, hashlib.sha256).digest()
-        return _HUB_CRYPTO_VERSION_XOR + salt + ciphertext + tag
+        return _HUB_CRYPTO_VERSION_XOR_MAC + salt + ciphertext + tag
 
 
 def hub_decrypt_payload(secret: str, data: bytes) -> bytes:
@@ -8988,7 +8991,8 @@ def hub_decrypt_payload(secret: str, data: bytes) -> bytes:
             return AESGCM(key).decrypt(nonce, ct, None)
         except ImportError:
             raise RuntimeError("cryptography package required to decrypt AES-GCM payload")
-    elif version == _HUB_CRYPTO_VERSION_XOR:
+    elif version == _HUB_CRYPTO_VERSION_XOR_MAC:
+        # \x03 — XOR + HMAC-SHA256 MAC (produced by 3.4.68+)
         if len(data) < 50:   # 1 + 16 + 1 + 32 minimum (version + salt + 1 byte ct + MAC)
             raise ValueError("XOR payload too short")
         mac_key = _derive_key(secret, "mac")
@@ -8998,6 +9002,11 @@ def hub_decrypt_payload(secret: str, data: bytes) -> bytes:
         if not _hmac.compare_digest(expected, tag):
             raise ValueError("MAC mismatch")
         return _keystream_xor(key, data[1:17], ciphertext)
+    elif version == _HUB_CRYPTO_VERSION_XOR:
+        # \x01 — legacy XOR without MAC (pre-3.4.68) — decrypt-only, no integrity check
+        if len(data) < 18:
+            raise ValueError("XOR payload too short")
+        return _keystream_xor(key, data[1:17], data[17:])
     else:
         # Pre-versioned legacy format (no prefix byte) — treat whole thing as XOR
         if len(data) < 17:
