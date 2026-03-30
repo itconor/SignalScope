@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.1.0",
+    "version":    "1.2.1",
 }
 
 import json, os, time, urllib.parse
@@ -19,20 +19,18 @@ from datetime import datetime
 
 _ALERT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'alert_log.json')
 
-# Only chain-level events are relevant for producers
 _SHOW_TYPES  = {'CHAIN_FAULT', 'CHAIN_RECOVERED', 'CHAIN_FLAPPING'}
 _FAULT_TYPES = {'CHAIN_FAULT', 'CHAIN_FLAPPING'}
 
-# Dedup window: if the same chain fires the same fault type within this many
-# seconds, only keep the most recent occurrence.
-_DEDUP_WINDOW_S = 300   # 5 minutes
+# Events within this window are considered the same incident (mass outage grouping)
+_INCIDENT_WINDOW_S = 120   # 2 minutes
 
 
-def _read_recent_events(allowed_chains=None, max_age_h=24, limit=60):
-    """Read alert_log.json, filter to chain events, deduplicate, return list."""
+def _read_raw(allowed_chains=None, max_age_h=24, limit=200):
+    """Read alert_log.json and return raw chain events, newest-first."""
     try:
         cutoff = time.time() - max_age_h * 3600
-        raw = []
+        results = []
         with open(_ALERT_LOG, 'r', encoding='utf-8') as f:
             lines = f.readlines()
         for line in reversed(lines):
@@ -51,39 +49,68 @@ def _read_recent_events(allowed_chains=None, max_age_h=24, limit=60):
             except Exception:
                 continue
             if ev_ts < cutoff:
-                break   # file is chronological; once past cutoff we're done
+                break
             ev['_ts_unix'] = ev_ts
-
-            # Filter by allowed chains (empty = all chains)
             chain_name = ev.get('stream', '')
             if allowed_chains is not None and chain_name not in allowed_chains:
                 continue
-
-            raw.append(ev)
-            if len(raw) >= limit * 3:   # over-read so dedup can pick best ones
+            results.append(ev)
+            if len(results) >= limit:
                 break
-
-        # Deduplicate: for each (stream, type) keep only the most recent event
-        # within a 5-minute sliding window.  This collapses rapid repeat faults
-        # on the same chain into a single entry.
-        seen = {}     # (stream, type) → latest ts_unix so far
-        deduped = []
-        for ev in raw:
-            key = (ev.get('stream', ''), ev.get('type', ''))
-            prev_ts = seen.get(key)
-            ev_ts   = ev['_ts_unix']
-            if prev_ts is None or (prev_ts - ev_ts) > _DEDUP_WINDOW_S:
-                # This event is outside the dedup window of the already-kept one
-                # (or is the first we've seen) — keep it
-                seen[key] = ev_ts
-                deduped.append(ev)
-            # else: same chain+type within 5 min of a newer event — drop it
-
-        return deduped[:limit]
+        return results
     except FileNotFoundError:
         return []
     except Exception:
         return []
+
+
+def _common_prefix(names):
+    """Find the longest common prefix of a list of chain names, stripped of trailing separators."""
+    if not names:
+        return 'Unknown'
+    if len(names) == 1:
+        return names[0]
+    prefix = ''
+    for i in range(len(min(names, key=len))):
+        ch = names[0][i]
+        if all(n[i] == ch for n in names):
+            prefix += ch
+        else:
+            break
+    # Strip trailing " - ", " — ", " / ", spaces, dashes
+    return prefix.rstrip(' \t-—/') or names[0]
+
+
+def _group_by_incident(events):
+    """Group events that fall within _INCIDENT_WINDOW_S of each other into incidents.
+
+    Returns list of incident dicts:
+      { '_ts_unix', '_events': [ev, ...] }
+    Events are expected newest-first; incidents are built newest-first as well.
+    """
+    incidents = []
+    for ev in events:
+        ev_ts = ev['_ts_unix']
+        merged = False
+        for inc in incidents:
+            # Incidents are anchored to the newest event already merged
+            if abs(inc['_ts_unix'] - ev_ts) <= _INCIDENT_WINDOW_S:
+                inc['_events'].append(ev)
+                # Anchor stays at the newest timestamp
+                merged = True
+                break
+        if not merged:
+            incidents.append({'_ts_unix': ev_ts, '_events': [ev]})
+    return incidents
+
+
+def _clip_url(ev):
+    """Build the playback URL for an alert clip, or return None."""
+    clip   = ev.get('clip', '')
+    stream = ev.get('stream', '')
+    if not clip or not stream:
+        return None
+    return f"/hub/site/(hub)/alerts/clip/{urllib.parse.quote(stream, safe='')}/{urllib.parse.quote(clip, safe='')}"
 
 
 def _friendly_time(ts_str):
@@ -101,31 +128,57 @@ def _friendly_time(ts_str):
         else:
             return t.strftime('%A') + f' at {tstr}'
     except Exception:
-        return ts_str or 'Unknown time'
+        return ts_str or ''
 
 
-def _plain_english(ev):
-    """Return (kind, text) — kind is 'fault', 'recovery', or 'warn'."""
-    etype  = ev.get('type', '')
-    stream = ev.get('stream', '') or 'Unknown chain'
-    labels = {
-        'CHAIN_FAULT':     ('fault',    f'Signal chain fault — {stream}'),
-        'CHAIN_RECOVERED': ('recovery', f'Signal chain recovered — {stream}'),
-        'CHAIN_FLAPPING':  ('warn',     f'Unstable signal — {stream}'),
-    }
-    return labels.get(etype, ('fault', f'{stream} — issue detected'))
+def _build_incidents(allowed_chains=None, max_age_h=24):
+    """Return grouped chain incidents, newest-first, ready for the API response."""
+    raw = _read_raw(allowed_chains=allowed_chains, max_age_h=max_age_h)
 
+    faults     = [e for e in raw if e.get('type') in _FAULT_TYPES]
+    recoveries = [e for e in raw if e.get('type') == 'CHAIN_RECOVERED']
 
-def _clip_url(ev):
-    """Build the playback URL for an alert clip, or return None."""
-    clip = ev.get('clip', '')
-    stream = ev.get('stream', '')
-    if not clip or not stream:
-        return None
-    # Chain fault clips are generated on the hub itself → site = "(hub)"
-    enc_stream = urllib.parse.quote(stream, safe='')
-    enc_clip   = urllib.parse.quote(clip,   safe='')
-    return f"/hub/site/(hub)/alerts/clip/{enc_stream}/{enc_clip}"
+    result = []
+
+    for kind_label, evs, ev_kind in (
+        ('fault',    faults,     'fault'),
+        ('recovery', recoveries, 'recovery'),
+    ):
+        for inc in _group_by_incident(evs):
+            inc_evs   = inc['_events']
+            names     = [e.get('stream', '') for e in inc_evs]
+            # Representative event = newest (first in list since we read newest-first)
+            rep_ev    = inc_evs[0]
+            count     = len(inc_evs)
+            prefix    = _common_prefix(names)
+
+            if count == 1:
+                label = names[0]
+            else:
+                label = f"{prefix} ({count} chains affected)"
+
+            # Pick the first clip that exists
+            clip = next((c for c in (_clip_url(e) for e in inc_evs) if c), None)
+
+            if ev_kind == 'fault':
+                text = f"Station fault — {label}"
+            else:
+                text = f"Station recovered — {label}"
+
+            result.append({
+                '_ts_unix':    inc['_ts_unix'],
+                'kind':        ev_kind,
+                'text':        text,
+                'time':        _friendly_time(rep_ev.get('ts', '')),
+                'type':        rep_ev.get('type', ''),
+                'clip_url':    clip,
+                'chain_count': count,
+                # Pass individual chain names for the expandable detail row
+                'chains':      names if count > 1 else [],
+            })
+
+    result.sort(key=lambda e: e['_ts_unix'], reverse=True)
+    return result[:30]
 
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -177,10 +230,13 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 
 /* ── Event list ── */
 .event-list{display:flex;flex-direction:column;gap:10px;margin:0 24px;max-width:1400px;margin-left:auto;margin-right:auto}
-.event-card{display:flex;align-items:flex-start;gap:14px;padding:14px 18px;border-radius:14px;border:1px solid}
+.event-card{padding:14px 18px;border-radius:14px;border:1px solid}
 .event-card.fault{background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.3)}
 .event-card.recovery{background:rgba(34,197,94,.07);border-color:rgba(34,197,94,.25)}
 .event-card.warn{background:rgba(245,158,11,.06);border-color:rgba(245,158,11,.2)}
+
+/* ── Event top row ── */
+.event-top{display:flex;align-items:flex-start;gap:14px}
 .event-icon{font-size:20px;line-height:1;flex-shrink:0;margin-top:1px}
 .event-body{flex:1;min-width:0}
 .event-text{font-size:14px;font-weight:600;line-height:1.3;margin-bottom:3px}
@@ -189,13 +245,21 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 .event-card.warn .event-text{color:#fde68a}
 .event-time{font-size:12px;color:var(--mu)}
 
+/* ── Chain detail expand ── */
+.chain-detail-btn{background:none;border:none;color:var(--mu);font-size:11px;cursor:pointer;padding:4px 0 0;text-decoration:underline;font-family:inherit;display:inline-block}
+.chain-detail-btn:hover{color:var(--tx)}
+.chain-detail{display:none;margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:8px;border:1px solid rgba(255,255,255,.05)}
+.chain-detail.open{display:block}
+.chain-detail li{font-size:12px;color:var(--mu);padding:2px 0;list-style:none}
+.chain-detail li::before{content:'• ';color:var(--wn)}
+.event-card.recovery .chain-detail li::before{color:var(--ok)}
+
 /* ── Clip player ── */
-.clip-row{margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.clip-btn{background:rgba(23,168,255,.12);border:1px solid rgba(23,168,255,.3);border-radius:8px;color:var(--acc);font-size:12px;font-weight:600;padding:5px 12px;cursor:pointer;display:flex;align-items:center;gap:6px;font-family:inherit;transition:background .2s}
+.clip-row{margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.clip-btn{background:rgba(23,168,255,.12);border:1px solid rgba(23,168,255,.3);border-radius:8px;color:var(--acc);font-size:12px;font-weight:600;padding:5px 14px;cursor:pointer;display:flex;align-items:center;gap:6px;font-family:inherit;transition:background .2s,border-color .2s}
 .clip-btn:hover{background:rgba(23,168,255,.22)}
 .clip-btn.playing{background:rgba(34,197,94,.14);border-color:rgba(34,197,94,.35);color:var(--ok)}
-.clip-progress{font-size:11px;color:var(--mu);display:none}
-.clip-progress.visible{display:block}
+.clip-time{font-size:11px;color:var(--mu)}
 
 /* ── Station grid ── */
 .station-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;padding:0 24px 28px;max-width:1400px;margin:0 auto}
@@ -206,19 +270,13 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 .station-card.status-ok{border-color:rgba(34,197,94,.25)}
 .station-card.status-alert{border-color:rgba(245,158,11,.4);background:linear-gradient(160deg,#0d2346,#2a1e08)}
 .station-card.status-offline{opacity:.5}
-
-/* ── Avatar ── */
 .s-avatar{width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:#fff;flex-shrink:0;box-shadow:0 4px 12px rgba(0,0,0,.3);transition:transform .2s;text-shadow:0 1px 3px rgba(0,0,0,.3)}
 .station-card:hover .s-avatar{transform:scale(1.06) rotate(-2deg)}
-
-/* ── Card content ── */
 .s-top{display:flex;align-items:flex-start;gap:13px;margin-bottom:16px}
 .s-meta{flex:1;min-width:0}
 .s-name{font-size:15px;font-weight:700;line-height:1.25;margin-bottom:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
 .s-site{font-size:11px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px}
 .s-onair{font-size:11px;color:var(--acc);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:14px;font-style:italic}
-
-/* ── Status badge (large, card-bottom) ── */
 .s-status{display:flex;align-items:center;justify-content:center;padding:10px;border-radius:12px;font-size:14px;font-weight:700;gap:7px;letter-spacing:.01em}
 .s-status.ok{background:rgba(34,197,94,.12);color:var(--ok);border:1px solid rgba(34,197,94,.3)}
 .s-status.alert{background:rgba(245,158,11,.12);color:var(--wn);border:1px solid rgba(245,158,11,.3)}
@@ -227,18 +285,14 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 /* ── Skeleton ── */
 .skeleton{animation:pulse 1.5s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:.4}50%{opacity:.7}}
-.skel-ev{height:70px;background:var(--sur);border-radius:14px;margin-bottom:10px}
 .skel-card{height:170px;background:var(--sur);border:1.5px solid var(--bor);border-radius:18px}
 .skel-row{background:rgba(23,52,95,.55);border-radius:6px;margin-bottom:8px}
 
-/* ── Scrollbar ── */
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bor);border-radius:3px}
 
-/* ── Responsive ── */
 @media(max-width:640px){
   .station-grid{grid-template-columns:1fr 1fr;gap:10px;padding:0 14px 20px}
-  .greeting{padding:18px 16px 6px}
-  .section{padding:16px 16px 4px}
+  .greeting,.section{padding-left:16px;padding-right:16px}
   .hdr{padding:12px 16px}
   .greeting-title{font-size:20px}
   .all-clear{margin:0 16px 4px;padding:20px}
@@ -247,9 +301,7 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
   .event-list{margin:0 16px}
   .refresh-row{padding:8px 16px 0}
 }
-@media(max-width:400px){
-  .station-grid{grid-template-columns:1fr}
-}
+@media(max-width:400px){.station-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -268,7 +320,7 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 
 <div class="greeting">
   <div class="greeting-title" id="greeting-text">Good day 👋</div>
-  <div class="greeting-sub">Here is a live overview of your signal chains.</div>
+  <div class="greeting-sub">Here is a live overview of your stations.</div>
 </div>
 
 <div class="refresh-row">
@@ -276,28 +328,23 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
   <span id="refresh-label">Connecting…</span>
 </div>
 
-<!-- ── Events section ── -->
 <div class="section" style="padding-bottom:0">
-  <div class="section-title">Chain Faults <span>last 24 hours</span></div>
+  <div class="section-title">Station Faults <span>last 24 hours</span></div>
 </div>
 <div id="events-wrap">
-  <div class="loading-events skeleton" style="height:70px;border-radius:14px;margin:0 24px;max-width:1352px"></div>
+  <div style="height:70px;border-radius:14px;margin:0 24px;max-width:1352px" class="skeleton"></div>
 </div>
 
-<!-- ── Stations section ── -->
 <div class="section" style="margin-top:12px">
   <div class="section-title">Your Stations</div>
 </div>
 <div id="stations-wrap">
-  <div class="station-grid skeleton" id="skel-grid">
-    {% for _ in range(6) %}
+  <div class="station-grid">
+    {% for _ in range(4) %}
     <div class="skel-card skeleton">
       <div style="display:flex;gap:12px;padding:20px 20px 0">
         <div class="skel-row" style="width:52px;height:52px;border-radius:14px;flex-shrink:0"></div>
-        <div style="flex:1">
-          <div class="skel-row" style="height:14px;width:70%"></div>
-          <div class="skel-row" style="height:11px;width:45%;margin-top:4px"></div>
-        </div>
+        <div style="flex:1"><div class="skel-row" style="height:14px;width:70%"></div><div class="skel-row" style="height:11px;width:45%;margin-top:4px"></div></div>
       </div>
       <div class="skel-row" style="height:44px;border-radius:12px;margin:16px 20px 20px"></div>
     </div>
@@ -315,8 +362,8 @@ var AVATAR_COLORS=[
   ['#c2440f','#f97316'],['#c81e1e','#ef4444'],
 ];
 var REFRESH_MS=30000;
-var _statusTimer=null, _faultsTimer=null;
-var _clipAudio=null, _clipPlayingBtn=null;
+var _statusTimer=null,_faultsTimer=null;
+var _clipAudio=null,_clipBtn=null,_clipTimeEl=null;
 
 // ── Greeting ──────────────────────────────────────────────────────────────
 (function(){
@@ -337,52 +384,99 @@ function _setRefresh(live,label){
   dot.className='refresh-dot'+(live?' live':'');
   document.getElementById('refresh-label').textContent=label;
 }
+function _fmtTime(d){
+  var h=d.getHours()%12||12,m=d.getMinutes(),ap=d.getHours()<12?'AM':'PM';
+  return h+':'+(m<10?'0':'')+m+' '+ap;
+}
 
-// ── Clip audio player ─────────────────────────────────────────────────────
+// ── Clip player ───────────────────────────────────────────────────────────
 function _stopClip(){
   if(_clipAudio){_clipAudio.pause();_clipAudio.src='';_clipAudio=null;}
-  if(_clipPlayingBtn){
-    _clipPlayingBtn.className='clip-btn';
-    _clipPlayingBtn.innerHTML='▶ Play clip';
-    var prog=_clipPlayingBtn.parentNode&&_clipPlayingBtn.parentNode.querySelector('.clip-progress');
-    if(prog){prog.className='clip-progress';}
-    _clipPlayingBtn=null;
-  }
+  if(_clipBtn){_clipBtn.className='clip-btn';_clipBtn.innerHTML='▶ Play clip';_clipBtn=null;}
+  if(_clipTimeEl){_clipTimeEl.textContent='';_clipTimeEl=null;}
 }
-function _playClip(url,btn){
-  if(_clipAudio){
-    _stopClip();
-    if(_clipPlayingBtn===btn) return; // toggle off
-  }
+function _playClip(url,btn,timeEl){
+  var same=(_clipBtn===btn);
+  _stopClip();
+  if(same) return;   // toggle off
   _clipAudio=new Audio(url);
-  _clipPlayingBtn=btn;
-  btn.className='clip-btn playing';
-  btn.innerHTML='⏹ Stop';
-  var prog=btn.parentNode&&btn.parentNode.querySelector('.clip-progress');
+  _clipBtn=btn; _clipTimeEl=timeEl;
+  btn.className='clip-btn playing'; btn.innerHTML='⏹ Stop';
   _clipAudio.addEventListener('timeupdate',function(){
-    if(prog){
-      var t=_clipAudio.currentTime;
-      var d=_clipAudio.duration||0;
-      var mm=Math.floor(t/60),ss=Math.floor(t%60);
-      prog.className='clip-progress visible';
-      prog.textContent=(d?(Math.floor(t)+'/'+Math.floor(d)+'s'):mm+':'+(ss<10?'0':'')+ss);
-    }
+    if(!_clipTimeEl) return;
+    var t=_clipAudio.currentTime,d=_clipAudio.duration||0;
+    _clipTimeEl.textContent=d?Math.floor(t)+'s / '+Math.floor(d)+'s':Math.floor(t)+'s';
   });
   _clipAudio.addEventListener('ended',_stopClip);
   _clipAudio.addEventListener('error',function(){
     _stopClip();
-    if(prog){prog.className='clip-progress visible';prog.textContent='Could not load clip';}
+    if(timeEl) timeEl.textContent='Could not load clip';
   });
   _clipAudio.play().catch(function(){});
 }
-// Delegate clip button clicks from the event list
-document.addEventListener('click',function(e){
-  var btn=e.target.closest('.clip-btn');
-  if(!btn) return;
-  var url=btn.dataset.clipUrl;
-  if(!url) return;
-  _playClip(url,btn);
+
+// ── Event rendering ───────────────────────────────────────────────────────
+document.getElementById('events-wrap').addEventListener('click',function(e){
+  // Clip play button
+  var cb=e.target.closest('.clip-btn');
+  if(cb){
+    var url=cb.dataset.url;
+    var timeEl=cb.parentNode.querySelector('.clip-time');
+    if(url) _playClip(url,cb,timeEl||null);
+    return;
+  }
+  // Chain detail expand/collapse
+  var db=e.target.closest('.chain-detail-btn');
+  if(db){
+    var det=db.parentNode.querySelector('.chain-detail');
+    if(det){
+      var open=det.classList.toggle('open');
+      db.textContent=open?'▴ Hide stations':'▾ Show affected stations';
+    }
+  }
 });
+
+function renderEvents(events){
+  var wrap=document.getElementById('events-wrap');
+  if(!events.length){
+    wrap.innerHTML=
+      '<div class="all-clear">'
+      +'<div class="all-clear-icon">✅</div>'
+      +'<div><div class="all-clear-title">All stations are running normally</div>'
+      +'<div class="all-clear-sub">No station faults in the last 24 hours.<br>If you have any concerns, contact your broadcast engineer.</div>'
+      +'</div></div>';
+    return;
+  }
+  var icons={fault:'⚠️',recovery:'✅',warn:'⚡'};
+  var html='<div class="event-list">';
+  events.forEach(function(ev){
+    var kind=_esc(ev.kind||'fault');
+    var detailHtml='';
+    if(ev.chains&&ev.chains.length>1){
+      var items=ev.chains.map(function(n){return '<li>'+_esc(n)+'</li>';}).join('');
+      detailHtml='<button class="chain-detail-btn">▾ Show affected stations</button>'
+        +'<ul class="chain-detail">'+items+'</ul>';
+    }
+    var clipHtml='';
+    if(ev.clip_url){
+      clipHtml='<div class="clip-row">'
+        +'<button class="clip-btn" data-url="'+_esc(ev.clip_url)+'">▶ Play clip</button>'
+        +'<span class="clip-time"></span>'
+        +'</div>';
+    }
+    html+='<div class="event-card '+kind+'">'
+      +'<div class="event-top">'
+      +'<div class="event-icon">'+icons[ev.kind||'fault']+'</div>'
+      +'<div class="event-body">'
+      +'<div class="event-text">'+_esc(ev.text)+'</div>'
+      +'<div class="event-time">'+_esc(ev.time)+'</div>'
+      +detailHtml
+      +clipHtml
+      +'</div></div></div>';
+  });
+  html+='</div>';
+  wrap.innerHTML=html;
+}
 
 // ── Station status ────────────────────────────────────────────────────────
 function loadStatus(){
@@ -405,67 +499,51 @@ function renderStations(sites){
   sites.forEach(function(site){
     (site.streams||[]).forEach(function(s){
       if(!s.enabled) return;
-      streams.push({
-        name:   s.name||'Stream',
-        site:   site.site||'',
-        status: s.ai_status||'OK',
-        online: !!site.online,
-        rds:    s.fm_rds_ps||'',
-        dab:    s.dab_service||'',
-        label:  s.label||'',
-      });
+      streams.push({name:s.name||'Stream',site:site.site||'',
+        status:s.ai_status||'OK',online:!!site.online,
+        rds:s.fm_rds_ps||'',dab:s.dab_service||'',label:s.label||''});
     });
   });
-
   var onair=streams.filter(function(s){return s.online&&s.status==='OK';}).length;
   var issues=streams.filter(function(s){return s.online&&s.status!=='OK';}).length;
   var offline=streams.filter(function(s){return !s.online;}).length;
-
   var parts=[];
   if(onair)   parts.push(onair+' on air');
   if(issues)  parts.push(issues+' issue'+(issues>1?'s':''));
   if(offline) parts.push(offline+' offline');
   document.getElementById('hdr-station-count').textContent=parts.join(' · ')||'No stations';
-
   _setRefresh(true,'Live · Updated at '+_fmtTime(new Date()));
-
   if(!streams.length){
     document.getElementById('stations-wrap').innerHTML=
-      '<div style="text-align:center;padding:40px 24px;color:var(--mu);font-size:14px">No stations available</div>';
+      '<div style="text-align:center;padding:40px 24px;color:var(--mu)">No stations available</div>';
     return;
   }
-
   var html='<div class="station-grid">';
-  streams.forEach(function(s){html+=renderCard(s);});
+  streams.forEach(function(s){
+    var col=_colorFor(s.name);
+    var init=(s.name.match(/[A-Z0-9]/i)||[s.name[0]||'?'])[0].toUpperCase();
+    var sub=s.rds||s.dab||s.label||'';
+    var cls,badge;
+    if(!s.online){
+      cls='status-offline';badge='<div class="s-status offline">○ &nbsp;Not Available</div>';
+    } else if(s.status==='ALERT'||s.status==='WARN'){
+      cls='status-alert';badge='<div class="s-status alert">⚠ &nbsp;Signal Issue</div>';
+    } else {
+      cls='status-ok';badge='<div class="s-status ok">● &nbsp;On Air</div>';
+    }
+    html+='<div class="station-card '+cls+'">'
+      +'<div class="s-top">'
+      +'<div class="s-avatar" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_esc(init)+'</div>'
+      +'<div class="s-meta"><div class="s-name">'+_esc(s.name)+'</div>'
+      +'<div class="s-site">'+_esc(s.site)+'</div>'
+      +'<div class="s-onair">'+_esc(sub)+'</div>'
+      +'</div></div>'+badge+'</div>';
+  });
   html+='</div>';
   document.getElementById('stations-wrap').innerHTML=html;
 }
 
-function renderCard(s){
-  var col=_colorFor(s.name);
-  var init=(s.name.match(/[A-Z0-9]/i)||[s.name[0]||'?'])[0].toUpperCase();
-  var sub=s.rds||s.dab||s.label||'';
-  var cls,badge;
-  if(!s.online){
-    cls='status-offline'; badge='<div class="s-status offline">○ &nbsp;Not Available</div>';
-  } else if(s.status==='ALERT'||s.status==='WARN'){
-    cls='status-alert'; badge='<div class="s-status alert">⚠ &nbsp;Signal Issue</div>';
-  } else {
-    cls='status-ok'; badge='<div class="s-status ok">● &nbsp;On Air</div>';
-  }
-  return '<div class="station-card '+cls+'">'
-    +'<div class="s-top">'
-    +'<div class="s-avatar" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_esc(init)+'</div>'
-    +'<div class="s-meta">'
-    +'<div class="s-name">'+_esc(s.name)+'</div>'
-    +'<div class="s-site">'+_esc(s.site)+'</div>'
-    +'<div class="s-onair">'+_esc(sub)+'</div>'
-    +'</div></div>'
-    +badge
-    +'</div>';
-}
-
-// ── Chain fault events ────────────────────────────────────────────────────
+// ── Fault events ──────────────────────────────────────────────────────────
 function loadFaults(){
   fetch('/api/producer/faults',{credentials:'same-origin'})
     .then(function(r){return r.json();})
@@ -478,45 +556,6 @@ function loadFaults(){
       clearTimeout(_faultsTimer);
       _faultsTimer=setTimeout(loadFaults,15000);
     });
-}
-
-function renderEvents(events){
-  if(!events.length){
-    document.getElementById('events-wrap').innerHTML=
-      '<div class="all-clear">'
-      +'<div class="all-clear-icon">✅</div>'
-      +'<div><div class="all-clear-title">All signal chains are running normally</div>'
-      +'<div class="all-clear-sub">No chain faults or signal issues in the last 24 hours.<br>If you have a concern, contact your broadcast engineer.</div>'
-      +'</div></div>';
-    return;
-  }
-
-  var icons={fault:'⚠️',recovery:'✅',warn:'⚡'};
-  var html='<div class="event-list">';
-  events.forEach(function(ev){
-    var clipHtml='';
-    if(ev.clip_url){
-      clipHtml='<div class="clip-row">'
-        +'<button class="clip-btn" data-clip-url="'+_esc(ev.clip_url)+'">▶ Play clip</button>'
-        +'<span class="clip-progress"></span>'
-        +'</div>';
-    }
-    html+='<div class="event-card '+_esc(ev.kind)+'">'
-      +'<div class="event-icon">'+icons[ev.kind||'fault']+'</div>'
-      +'<div class="event-body">'
-      +'<div class="event-text">'+_esc(ev.text)+'</div>'
-      +'<div class="event-time">'+_esc(ev.time)+'</div>'
-      +clipHtml
-      +'</div></div>';
-  });
-  html+='</div>';
-  document.getElementById('events-wrap').innerHTML=html;
-}
-
-// ── Time helper ───────────────────────────────────────────────────────────
-function _fmtTime(d){
-  var h=d.getHours()%12||12,m=d.getMinutes(),ap=d.getHours()<12?'AM':'PM';
-  return h+':'+(m<10?'0':'')+m+' '+ap;
 }
 
 // ── Kick off ──────────────────────────────────────────────────────────────
@@ -547,19 +586,11 @@ def register(app, ctx):
     @app.get("/api/producer/faults")
     @login_required
     def producer_faults():
-        # Determine allowed chains from session
         allowed_chains = session.get("allowed_chains", [])
         _filter = set(allowed_chains) if allowed_chains else None
 
-        events = _read_recent_events(allowed_chains=_filter)
-        result = []
-        for ev in events:
-            kind, text = _plain_english(ev)
-            result.append({
-                "kind":     kind,
-                "text":     text,
-                "time":     _friendly_time(ev.get("ts", "")),
-                "type":     ev.get("type", ""),
-                "clip_url": _clip_url(ev),
-            })
+        incidents = _build_incidents(allowed_chains=_filter)
+        # Strip internal _ts_unix before sending to client
+        result = [{k: v for k, v in inc.items() if k != '_ts_unix'}
+                  for inc in incidents]
         return jsonify({"events": result, "ok": True})

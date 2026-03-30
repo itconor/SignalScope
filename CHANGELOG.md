@@ -2,6 +2,23 @@
 
 ---
 
+## [Producer View 1.2.1] - 2026-03-30
+
+### Changed
+- **Language** — "signal chains" renamed to "stations" throughout the producer view. Section heading, greeting subtitle, all-clear banner, expand button, and fault/recovery event text all say "station" instead of "chain". Producers don't need to know what a signal chain is.
+
+---
+
+## [Producer View 1.2.0] - 2026-03-30
+
+### Changed
+- **Incident grouping** — fault events that occur within a 2-minute window are now collapsed into a single card. When an outage hits multiple chains simultaneously (e.g. 3 encoders + a DAB chain all failing at 4:28 PM), the producer sees one entry — "Station fault — London - Livewire / Downtown Radio (3 stations affected)" — instead of a wall of individual chain entries. Recoveries are grouped the same way.
+- **Common-prefix naming** — the grouped entry label is the longest common prefix of all affected chain names, so "London - Livewire / Downtown Radio - LONCTAXZC03, LONCTAXMQ05, Quant C2" becomes "London - Livewire / Downtown Radio (3 stations affected)".
+- **Expandable detail** — producers can tap "▾ Show affected stations" to see the full list of individual chain names within an incident group.
+- **One clip per incident** — only the first available clip in a group is shown; no more multiple play buttons for the same outage.
+
+---
+
 ## [3.4.85] - 2026-03-30
 
 ### Added
