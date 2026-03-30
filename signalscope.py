@@ -1852,7 +1852,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.76"
+BUILD                  = "SignalScope-3.4.77"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -3368,7 +3368,6 @@ def admin_required(f):
     return decorated
 
 
-@app.before_request
 def _rbac_enforce_readonly():
     """Block viewer-role users from all write operations."""
     cfg = monitor.app_cfg
@@ -14376,6 +14375,8 @@ app.jinja_env.filters["enumerate"] = enumerate
 
 # Apply security headers to every response
 app.after_request(_apply_security_headers)
+# Enforce read-only access for viewer-role users
+app.before_request(_rbac_enforce_readonly)
 
 def _set_csrf_cookie(response):
     """Set a JS-readable csrf_token cookie on every response so any page's JS

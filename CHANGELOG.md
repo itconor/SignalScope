@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.77] - 2026-03-30
+
+### Fixed
+- **Service fails to start after 3.4.75/3.4.76 update** — `@app.before_request` was placed on `_rbac_enforce_readonly` at module level before `app = Flask(__name__)` was defined (line 3371 vs 14367), causing an immediate `NameError: name 'app' is not defined` on startup. Fixed by removing the decorator from the function definition and registering it with `app.before_request(_rbac_enforce_readonly)` after the Flask app is created.
+
+---
+
 ## [Logger 1.5.16] - 2026-03-30
 
 ### Fixed
