@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.74] - 2026-03-30
+
+### Fixed
+- **Updater not offering newer versions to users on 3.1.x** — the updater used the GitHub `/releases/latest` API endpoint which only returns non-pre-release releases. If any releases between the user's installed version and the current version were published as "pre-release" on GitHub, the API would silently return an older version as "latest stable" — causing users to be incorrectly told they are up to date. Fixed by switching to the `/releases?per_page=50` list endpoint which returns all releases including pre-releases, then selecting the highest semver tag found regardless of pre-release status.
+
+---
+
 ## [Logger 1.5.15] - 2026-03-30
 
 ### Added / Fixed

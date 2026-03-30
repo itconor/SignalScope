@@ -1636,7 +1636,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.73"
+BUILD                  = "SignalScope-3.4.74"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -1740,7 +1740,7 @@ _SVG: dict[str, str] = {
 #   to client; client runs subprocess ping -c 4 and POSTs RTT output to /hub/ping_result;
 #   dashboard polls result and shows pass/fail badge + full output in modal.
 _PROCESS_START         = time.time()
-_GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases/latest"
+_GH_API_RELEASES_URL   = "https://api.github.com/repos/itconor/SignalScope/releases?per_page=50"
 _GH_RAW_VER_URL        = "https://raw.githubusercontent.com/itconor/SignalScope/main/signalscope.py"
 SAMPLE_RATE            = 48000
 CHUNK_DURATION         = 0.5
@@ -14017,8 +14017,12 @@ def _fetch_latest_version() -> tuple:
     version_str is '' on failure.  error_str is '' on success.
 
     Strategy:
-    1. GitHub releases API — tag_name like 'SignalScope-2.6.59'
-    2. Fallback: parse first 8 KB of raw signalscope.py (tries main then master)
+    1. GitHub releases list API — scans ALL releases (including pre-releases)
+       and returns the highest semver tag found.  Using /releases/latest would
+       silently skip any release tagged as pre-release on GitHub, causing users
+       on older builds to be told they are already up-to-date when a newer
+       version exists only as a "pre-release".
+    2. Fallback: parse first 256 KB of raw signalscope.py (tries main then master)
     """
     import re as _re
     try:
@@ -14027,7 +14031,7 @@ def _fetch_latest_version() -> tuple:
         return "", "requests library not installed"
     errors = []
 
-    # ── Try releases API ──────────────────────────────────────────────────────
+    # ── Try releases list API (includes pre-releases) ─────────────────────────
     try:
         resp = _requests.get(
             _GH_API_RELEASES_URL,
@@ -14036,10 +14040,24 @@ def _fetch_latest_version() -> tuple:
                      "User-Agent": f"SignalScope/{BUILD}"},
         )
         if resp.status_code == 200:
-            tag = resp.json().get("tag_name", "")
-            m = _re.search(r"(\d+\.\d+\.\d+)", tag)
-            if m:
-                return m.group(1), ""
+            releases = resp.json()
+            if isinstance(releases, list):
+                # Pick the release with the highest semver — ignore pre-release flag.
+                best = (0, 0, 0)
+                best_str = ""
+                for rel in releases:
+                    tag = rel.get("tag_name", "")
+                    m = _re.search(r"(\d+\.\d+\.\d+)", tag)
+                    if m:
+                        vt = _ver_tuple(m.group(1))
+                        if vt > best:
+                            best = vt
+                            best_str = m.group(1)
+                if best_str:
+                    return best_str, ""
+                errors.append("GitHub releases API: no semver tags found in releases")
+            else:
+                errors.append("GitHub releases API: unexpected response format")
         elif resp.status_code == 404:
             errors.append("GitHub: no releases published yet")
         else:
@@ -14048,7 +14066,7 @@ def _fetch_latest_version() -> tuple:
         errors.append(f"GitHub releases API: {e}")
 
     # ── Fallback: raw file (try main then master) ─────────────────────────────
-    # BUILD is past the HTML templates so we scan up to 256 KB to find it.
+    # BUILD is near the top of the file; scanning 256 KB is more than enough.
     for branch in ("main", "master"):
         raw_url = f"https://raw.githubusercontent.com/itconor/SignalScope/{branch}/signalscope.py"
         try:
