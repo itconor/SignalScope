@@ -2,6 +2,19 @@
 
 ---
 
+## [Listener 1.1.1] - 2026-03-30
+
+### Fixed
+- **Station names truncating** — card name was single-line with ellipsis; changed to `-webkit-line-clamp:2` so full names like "CoolFM - LONCTAXMQ05" wrap to two lines instead of being cut off.
+
+### Added
+- **Connecting state feedback** — tapping Listen immediately shows "⏳ Connecting…" with a pulsing blue button and animated border ring so presenters know something is happening. At 10 s a hint appears below the button: "Starting up… tap Stop if you want to cancel". At 10 s the button changes to "⏳ Still loading…" and the hint updates to "This can take up to 30 seconds — tap Stop to cancel". The button remains tappable throughout so presenters can cancel.
+
+### Changed
+- **Visual polish** — richer card hover effect (subtle blue glow overlay), avatar scales and tilts slightly on hover, now-playing bar has a green glowing top border, listen/stop buttons have improved depth and active-press feedback.
+
+---
+
 ## [Listener 1.1.0] - 2026-03-30
 
 ### Added

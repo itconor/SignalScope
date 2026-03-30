@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/listener",
     "icon":     "🎧",
     "hub_only": True,
-    "version":  "1.1.0",
+    "version":  "1.1.1",
 }
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -85,10 +85,14 @@ a{color:var(--acc);text-decoration:none}
 .stream-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;padding:0 24px 8px;max-width:1400px;margin:0 auto}
 
 /* ── Stream card ── */
-.stream-card{background:var(--sur);border:1.5px solid var(--bor);border-radius:18px;padding:22px;cursor:pointer;transition:border-color .2s,box-shadow .2s,transform .15s;position:relative;overflow:hidden;-webkit-tap-highlight-color:transparent}
-.stream-card:hover{border-color:var(--acc);transform:translateY(-2px);box-shadow:0 10px 32px rgba(0,0,0,.45)}
-.stream-card:active{transform:translateY(0)}
-.stream-card.playing{border-color:var(--ok);box-shadow:0 0 0 1px var(--ok),0 10px 32px rgba(34,197,94,.18);background:linear-gradient(135deg,#0d2346,#0a2a18)}
+.stream-card{background:var(--sur);border:1.5px solid var(--bor);border-radius:20px;padding:22px;cursor:pointer;transition:border-color .25s,box-shadow .25s,transform .15s,background .25s;position:relative;overflow:hidden;-webkit-tap-highlight-color:transparent}
+.stream-card::after{content:"";position:absolute;inset:0;border-radius:20px;background:transparent;transition:background .2s;pointer-events:none}
+.stream-card:hover{border-color:var(--acc);transform:translateY(-3px);box-shadow:0 14px 36px rgba(0,0,0,.5)}
+.stream-card:hover::after{background:rgba(23,168,255,.04)}
+.stream-card:active{transform:translateY(-1px)}
+.stream-card.playing{border-color:var(--ok);box-shadow:0 0 0 1px var(--ok),0 12px 36px rgba(34,197,94,.22);background:linear-gradient(160deg,#0d2346 0%,#092a16 100%)}
+.stream-card.connecting{border-color:var(--acc);animation:card-connect 1.8s ease-in-out infinite;box-shadow:0 0 0 1px rgba(23,168,255,.4)}
+@keyframes card-connect{0%,100%{box-shadow:0 0 0 1px rgba(23,168,255,.3),0 6px 24px rgba(23,168,255,.1)}50%{box-shadow:0 0 0 2px rgba(23,168,255,.6),0 8px 28px rgba(23,168,255,.25)}}
 .stream-card.offline{opacity:.5}
 .stream-card.offline:hover{transform:none;border-color:var(--bor);box-shadow:none;cursor:not-allowed}
 
@@ -98,12 +102,13 @@ a{color:var(--acc);text-decoration:none}
 .fav-btn.active{opacity:1}
 
 /* ── Avatar ── */
-.avatar{width:56px;height:56px;border-radius:15px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:#fff;flex-shrink:0;text-shadow:0 1px 3px rgba(0,0,0,.3)}
+.avatar{width:58px;height:58px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:23px;font-weight:800;color:#fff;flex-shrink:0;text-shadow:0 1px 4px rgba(0,0,0,.4);box-shadow:0 4px 14px rgba(0,0,0,.3);transition:transform .2s}
+.stream-card:hover .avatar{transform:scale(1.06) rotate(-2deg)}
 
 /* ── Card text ── */
 .card-top{display:flex;align-items:flex-start;gap:14px;margin-bottom:14px}
-.card-meta{flex:1;min-width:0;padding-right:24px}
-.card-name{font-size:16px;font-weight:700;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px}
+.card-meta{flex:1;min-width:0;padding-right:22px}
+.card-name{font-size:16px;font-weight:700;line-height:1.25;margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
 .card-site{font-size:12px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px}
 .card-on-air{font-size:12px;color:var(--acc);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:16px;font-style:italic}
 
@@ -122,12 +127,18 @@ a{color:var(--acc);text-decoration:none}
 @keyframes eq8{0%,100%{height:4px}55%{height:18px}}
 
 /* ── Listen button ── */
-.listen-btn{width:100%;padding:14px;border-radius:14px;border:none;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:10px;letter-spacing:.01em}
-.listen-btn.start{background:linear-gradient(135deg,#1a7fe8,var(--acc));color:#fff;box-shadow:0 3px 14px rgba(23,168,255,.35)}
-.listen-btn.start:hover{box-shadow:0 5px 20px rgba(23,168,255,.55);transform:translateY(-1px)}
-.listen-btn.stop{background:linear-gradient(135deg,#178a48,var(--ok));color:#fff;box-shadow:0 3px 14px rgba(34,197,94,.3)}
-.listen-btn.stop:hover{box-shadow:0 5px 20px rgba(34,197,94,.5);transform:translateY(-1px)}
+.listen-btn{width:100%;padding:14px;border-radius:14px;border:none;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:10px;letter-spacing:.01em;position:relative;overflow:hidden}
+.listen-btn::after{content:"";position:absolute;inset:0;background:rgba(255,255,255,0);transition:background .15s}
+.listen-btn:active::after{background:rgba(255,255,255,.12)}
+.listen-btn.start{background:linear-gradient(135deg,#1565d8,var(--acc));color:#fff;box-shadow:0 4px 16px rgba(23,168,255,.4)}
+.listen-btn.start:hover{box-shadow:0 6px 22px rgba(23,168,255,.6);transform:translateY(-2px)}
+.listen-btn.stop{background:linear-gradient(135deg,#157a42,var(--ok));color:#fff;box-shadow:0 4px 16px rgba(34,197,94,.35)}
+.listen-btn.stop:hover{box-shadow:0 6px 22px rgba(34,197,94,.55);transform:translateY(-2px)}
+.listen-btn.connecting{background:linear-gradient(135deg,#1a3566,#1e4a8a);color:var(--acc);box-shadow:none;cursor:default;animation:btn-pulse 1.4s ease-in-out infinite}
+@keyframes btn-pulse{0%,100%{opacity:.75}50%{opacity:1}}
 .listen-btn:disabled{opacity:.4;cursor:not-allowed;transform:none!important;box-shadow:none!important;background:#1a3050}
+/* ── Connection hint ── */
+.conn-hint{font-size:12px;color:var(--mu);text-align:center;margin-top:9px;min-height:16px;line-height:1.4;transition:opacity .3s}
 
 /* ── Badge ── */
 .badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;white-space:nowrap;flex-shrink:0}
@@ -137,7 +148,7 @@ a{color:var(--acc);text-decoration:none}
 .b-mu{background:rgba(138,164,200,.08);color:var(--mu);border:1px solid rgba(138,164,200,.2)}
 
 /* ── Now-playing bar ── */
-#now-bar{position:fixed;bottom:0;left:0;right:0;background:linear-gradient(0deg,rgba(5,16,31,.99) 0%,rgba(10,28,58,.98) 100%);border-top:1px solid var(--bor);padding:0 24px;display:flex;align-items:center;gap:18px;height:76px;transform:translateY(100%);transition:transform .3s cubic-bezier(.4,0,.2,1);z-index:100;backdrop-filter:blur(12px)}
+#now-bar{position:fixed;bottom:0;left:0;right:0;background:linear-gradient(0deg,rgba(5,16,31,.99) 0%,rgba(9,26,54,.98) 100%);border-top:2px solid var(--ok);padding:0 24px;display:flex;align-items:center;gap:18px;height:78px;transform:translateY(100%);transition:transform .35s cubic-bezier(.4,0,.2,1);z-index:100;backdrop-filter:blur(16px);box-shadow:0 -4px 30px rgba(34,197,94,.12)}
 #now-bar.up{transform:translateY(0)}
 .np-eq{display:flex;align-items:flex-end;gap:3px;height:24px;width:32px;flex-shrink:0}
 .np-bar{width:4px;border-radius:2px;background:var(--ok)}
@@ -293,16 +304,19 @@ var LS_FAVS  = 'ss_listener_favs';
 var LS_LAST  = 'ss_listener_last';
 
 // ── State ──────────────────────────────────────────────────────────────────
-var _audio       = null;
-var _playing     = null;   // {site, idx, name, url}
-var _streams     = [];     // flat list, idx = real config index
-var _lastBySite  = null;   // last rendered bySite map
-var _pollTimer   = null;
-var _retryTimer  = null;
-var _retryCount  = 0;
-var _helpOpen    = false;
-var _searchText  = '';
-var _favs        = {};     // keyed by site+'|'+idx
+var _audio            = null;
+var _playing          = null;   // {site, idx, name, url}
+var _connecting       = false;  // true between startAudio and first 'playing' event
+var _connectSlow      = false;  // true after 10s without audio
+var _connectSlowTimer = null;
+var _streams          = [];     // flat list, idx = real config index
+var _lastBySite       = null;   // last rendered bySite map
+var _pollTimer        = null;
+var _retryTimer       = null;
+var _retryCount       = 0;
+var _helpOpen         = false;
+var _searchText       = '';
+var _favs             = {};     // keyed by site+'|'+idx
 
 // ── Favourites persistence ─────────────────────────────────────────────────
 function _loadFavs(){
@@ -598,6 +612,7 @@ function renderCard(s){
     +'</div>'
     +'<div class="level-wrap">'+bars+'</div>'
     +'<button class="listen-btn '+btnClass+'"'+disabled+' data-action="listen">'+btnText+'</button>'
+    +'<div class="conn-hint"></div>'
     +'</div>';
 }
 
@@ -629,14 +644,32 @@ function startAudio(site,idx,name){
 
   var url='/hub/site/'+_encodeSite(site)+'/stream/'+idx+'/live';
   _playing={site:site,idx:idx,name:name,url:url};
+  _connecting=true;
+  _connectSlow=false;
   _storeLastPlaying(_playing);
+
+  // "Still loading" after 10 s
+  _connectSlowTimer=setTimeout(function(){
+    if(_connecting&&_playing&&_playing.site===site&&_playing.idx===idx){
+      _connectSlow=true;
+      refreshCards();
+      showMsg('⏳ Still loading — hang on, this can take up to 30 seconds…','warn');
+    }
+  },10000);
 
   _audio=new Audio();
   _audio.preload='none';
   _audio.volume=parseFloat(document.getElementById('vol-slider').value);
   _audio.addEventListener('error',_onAudioError);
   _audio.addEventListener('ended',_onAudioEnded);
-  _audio.addEventListener('playing',function(){ hideRetry(); _retryCount=0; });
+  _audio.addEventListener('playing',function(){
+    clearTimeout(_connectSlowTimer);
+    _connecting=false;
+    _connectSlow=false;
+    hideRetry();
+    _retryCount=0;
+    refreshCards();
+  });
   _audio.src=url;
   _audio.play().catch(function(){});
 
@@ -664,6 +697,9 @@ function _onAudioEnded(){ if(_playing) _onAudioError(); }
 // ── Stop audio ─────────────────────────────────────────────────────────────
 function stopAudio(silent){
   clearRetry();
+  clearTimeout(_connectSlowTimer);
+  _connecting=false;
+  _connectSlow=false;
   if(_audio){
     _audio.removeEventListener('error',_onAudioError);
     _audio.removeEventListener('ended',_onAudioEnded);
@@ -729,18 +765,37 @@ function refreshCards(){
   _streams.forEach(function(s){
     var card=document.querySelector('.stream-card[data-site="'+s.site.replace(/"/g,'&quot;')+'"][data-idx="'+s.idx+'"]');
     if(!card) return;
-    var isPlaying=_playing&&_playing.site===s.site&&_playing.idx===s.idx;
+    var isConnecting=_connecting&&_playing&&_playing.site===s.site&&_playing.idx===s.idx;
+    var isPlaying=!_connecting&&_playing&&_playing.site===s.site&&_playing.idx===s.idx;
     card.classList.toggle('playing',isPlaying);
+    card.classList.toggle('connecting',isConnecting);
     var btn=card.querySelector('.listen-btn');
     if(btn){
-      btn.className='listen-btn '+(isPlaying?'stop':'start');
-      btn.innerHTML=isPlaying?'⏹&nbsp;&nbsp;Stop':'🎧&nbsp;&nbsp;Listen';
+      if(isPlaying){
+        btn.className='listen-btn stop';
+        btn.innerHTML='⏹&nbsp;&nbsp;Stop';
+        btn.disabled=false;
+      } else if(isConnecting){
+        btn.className='listen-btn connecting';
+        btn.innerHTML=_connectSlow?'⏳&nbsp;&nbsp;Still loading…':'⏳&nbsp;&nbsp;Connecting…';
+        btn.disabled=false; // allow tap-to-cancel
+      } else {
+        btn.className='listen-btn start';
+        btn.innerHTML='🎧&nbsp;&nbsp;Listen';
+        btn.disabled=!s.online;
+      }
+    }
+    var hint=card.querySelector('.conn-hint');
+    if(hint){
+      if(isConnecting&&_connectSlow) hint.textContent='This can take up to 30 seconds — tap Stop to cancel';
+      else if(isConnecting) hint.textContent='Starting up… tap Stop if you want to cancel';
+      else hint.textContent='';
     }
     var bars=card.querySelectorAll('.lv');
     var pct=_dbPct(s.level);
     var col=_colorFor(s.name)[1];
     bars.forEach(function(bar,b){
-      if(isPlaying){
+      if(isPlaying||isConnecting){
         bar.style.animation='eq'+(b+1)+' '+(0.55+b*0.07).toFixed(2)+'s infinite ease-in-out';
         bar.style.background=col;
         bar.style.height='4px';
