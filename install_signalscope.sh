@@ -950,6 +950,10 @@ User=${SERVICE_USER}
 Group=${SERVICE_GROUP}
 EnvironmentFile=/etc/default/${SERVICE_NAME}
 WorkingDirectory=${INSTALL_ROOT}
+# Apply USB buffer fix before starting (runs as root regardless of User=).
+# Removes the 16 MB usbfs limit that causes RTL-SDR zero-copy failures
+# when multiple dongles are in use. No-op on non-Linux or if already set.
+ExecStartPre=+/bin/sh -c 'echo 0 > /sys/module/usbcore/parameters/usbfs_memory_mb 2>/dev/null || true'
 ExecStart=${VENV_DIR}/bin/python ${TARGET_APP}
 Restart=always
 RestartSec=5
@@ -1483,6 +1487,18 @@ SIGNALSCOPE_LOG_DIR=${LOG_ROOT_DEFAULT}
 EOF
 
     [[ "${ENABLE_SERVICE}" == "1" ]] && create_service
+  fi
+
+  # ── Patch existing service file with ExecStartPre usbfs fix (updates) ───────
+  # If the service file already exists but does not yet contain the ExecStartPre
+  # usbfs fix, rewrite it so existing installs get the fix without needing --service.
+  local _svc_file="/etc/systemd/system/${SERVICE_NAME}.service"
+  if [[ -f "${_svc_file}" ]] && ! grep -q "usbfs_memory_mb" "${_svc_file}" 2>/dev/null; then
+    ${SUDO} sed -i \
+      '/^ExecStart=/i ExecStartPre=+\/bin\/sh -c '"'"'echo 0 > \/sys\/module\/usbcore\/parameters\/usbfs_memory_mb 2>\/dev\/null || true'"'" \
+      "${_svc_file}"
+    ${SUDO} systemctl daemon-reload
+    ok "Patched ${_svc_file} with usbfs ExecStartPre fix"
   fi
 
   # ── linuxptp — monitor-only PTP slave (fresh install and updates) ────────────
