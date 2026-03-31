@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.3.1",
+    "version":    "1.3.2",
 }
 
 import json, os, time, urllib.parse
@@ -315,19 +315,6 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
   .sh-badge{display:none}
 }
 
-/* ── Listen banner ── */
-.listen-banner{margin:16px 24px 0;max-width:1400px;margin-left:auto;margin-right:auto;background:linear-gradient(135deg,rgba(23,168,255,.12),rgba(23,168,255,.06));border:1px solid rgba(23,168,255,.3);border-radius:16px;padding:18px 24px;display:flex;align-items:center;gap:18px}
-.listen-banner-icon{font-size:36px;flex-shrink:0}
-.listen-banner-body{flex:1;min-width:0}
-.listen-banner-title{font-size:15px;font-weight:700;color:var(--tx);margin-bottom:3px}
-.listen-banner-sub{font-size:12px;color:var(--mu)}
-.listen-banner-btn{flex-shrink:0;background:linear-gradient(135deg,#1a7fe8,#17a8ff);color:#fff;font-weight:700;font-size:14px;padding:11px 22px;border-radius:12px;text-decoration:none;display:flex;align-items:center;gap:8px;box-shadow:0 2px 12px rgba(23,168,255,.35);transition:filter .2s,box-shadow .2s;white-space:nowrap}
-.listen-banner-btn:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
-@media(max-width:640px){
-  .listen-banner{margin:12px 16px 0;padding:14px 16px;flex-wrap:wrap}
-  .listen-banner-btn{width:100%;justify-content:center;margin-top:10px}
-}
-
 /* ── Ticket banner ── */
 .ticket-banner{margin:16px 24px 0;max-width:1400px;margin-left:auto;margin-right:auto;background:linear-gradient(135deg,rgba(34,197,94,.10),rgba(34,197,94,.05));border:1px solid rgba(34,197,94,.25);border-radius:16px;padding:18px 24px;display:flex;align-items:center;gap:18px}
 .ticket-banner-icon{font-size:36px;flex-shrink:0}
@@ -471,17 +458,6 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
   </div>
   <div class="sh-badge" id="sh-badge"></div>
 </div>
-
-{% if has_listener %}
-<div class="listen-banner">
-  <div class="listen-banner-icon">🎧</div>
-  <div class="listen-banner-body">
-    <div class="listen-banner-title">Listen to your stations live</div>
-    <div class="listen-banner-sub">Open the Listener to hear any station in real time, right in your browser.</div>
-  </div>
-  <a href="/listener" class="listen-banner-btn">🎧 Open Listener</a>
-</div>
-{% endif %}
 
 {% if ticket_url %}
 <div class="ticket-banner">
