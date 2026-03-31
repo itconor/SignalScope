@@ -20,6 +20,13 @@
 
 ---
 
+## [Producer View 1.3.0] - 2026-03-31
+
+### Changed
+- **Pending/adbreak states no longer shown as faults** — the status hero and station cards previously flagged chains in `pending` or `adbreak` (the countdown confirmation window) as "Signal Issue". Producer View now only raises an alert when a chain is in full `fault` state. During the confirmation window the chain shows as "On Air" — producers are only notified once the engineer-configured fault delay has expired and a real fault is confirmed.
+
+---
+
 ## [Producer View 1.2.9] - 2026-03-31
 
 ### Changed

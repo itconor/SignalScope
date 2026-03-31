@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.2.9",
+    "version":    "1.3.0",
 }
 
 import json, os, time, urllib.parse
@@ -624,8 +624,8 @@ function loadChainStatus(){
 
 function renderChainCards(chains){
   // Update header count
-  var ok      = chains.filter(function(c){var ds=c.display_status||c.status;return ds==='ok';}).length;
-  var faulted = chains.filter(function(c){var ds=c.display_status||c.status;return ds==='fault'||ds==='pending'||ds==='adbreak';}).length;
+  var ok      = chains.filter(function(c){var ds=c.display_status||c.status;return ds!=='fault';}).length;
+  var faulted = chains.filter(function(c){return (c.display_status||c.status)==='fault';}).length;
   var parts=[];
   if(ok)      parts.push(ok+' on air');
   if(faulted) parts.push(faulted+' issue'+(faulted>1?'s':''));
@@ -650,9 +650,7 @@ function renderChainCards(chains){
     var cls,badge;
     if(ds==='fault'){
       cls='status-alert';badge='<div class="s-status alert">⚠ &nbsp;Signal Issue</div>';
-    } else if(ds==='pending'||ds==='adbreak'){
-      cls='status-alert';badge='<div class="s-status alert">⏳ &nbsp;Checking…</div>';
-    } else if(ds==='ok'){
+    } else if(ds==='ok'||ds==='pending'||ds==='adbreak'){
       cls='status-ok';badge='<div class="s-status ok">● &nbsp;On Air</div>';
     } else {
       cls='status-offline';badge='<div class="s-status offline">○ &nbsp;Unknown</div>';
@@ -683,8 +681,7 @@ function updateHero(chains){
     return;
   }
   var faulted=chains.filter(function(c){
-    var ds=c.display_status||c.status;
-    return ds==='fault'||ds==='pending'||ds==='adbreak';
+    return (c.display_status||c.status)==='fault';
   });
   if(faulted.length===0){
     hero.className  ='status-hero ok';
