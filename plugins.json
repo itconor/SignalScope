@@ -135,7 +135,7 @@
     "file": "presenter.py",
     "icon": "🎙",
     "description": "Simplified hub view for producers and presenters. Shows station status cards with live level indicators and a plain-English chain fault history. Shows only CHAIN_FAULT/CHAIN_RECOVERED events, deduplicated — no noise from rapid repeats. Clip play buttons on events that have recordings. Chain-filtered and site-filtered to only show what the user has permission to see. All-clear banner when everything is running normally. Integrates with the plugin-role user system (SignalScope 3.4.85+) — users assigned the Producer role go directly here on login. Hub-only.",
-    "version": "1.2.7",
+    "version": "1.2.8",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/presenter.py"
   },

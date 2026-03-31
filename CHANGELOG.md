@@ -2,6 +2,13 @@
 
 ---
 
+## [Producer View 1.2.8] - 2026-03-31
+
+### Changed
+- **Clip buttons now labelled by type** — clips on fault cards show **▶ Fault clip** and clips on recovery cards show **▶ Recovery clip**, so producers can immediately see whether they're about to hear audio going off-air or audio coming back. The label is restored when the clip is stopped.
+
+---
+
 ## [Producer View 1.2.7] - 2026-03-31
 
 ### Fixed

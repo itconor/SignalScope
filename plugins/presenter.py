@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.2.7",
+    "version":    "1.2.8",
 }
 
 import json, os, time, urllib.parse
@@ -227,15 +227,18 @@ def _build_incidents(allowed_chains=None, max_age_h=24):
             # Only show the detail list if there are genuinely multiple stations
             detail_stations = seen_stations if len(seen_stations) > 1 else []
 
+            clip_label = '▶ Recovery clip' if ev_kind == 'recovery' else '▶ Fault clip'
+
             result.append({
-                '_ts_unix': inc['_ts_unix'],
-                'kind':     ev_kind,
-                'text':     text,
-                'time':     _friendly_time(rep_ev.get('ts', '')),
-                'type':     rep_ev.get('type', ''),
-                'clip_url': clip,
+                '_ts_unix':  inc['_ts_unix'],
+                'kind':      ev_kind,
+                'text':      text,
+                'time':      _friendly_time(rep_ev.get('ts', '')),
+                'type':      rep_ev.get('type', ''),
+                'clip_url':  clip,
+                'clip_label': clip_label,
                 # Cleaned, de-duped station names for the expandable list
-                'chains':   detail_stations,
+                'chains':    detail_stations,
             })
 
     result.sort(key=lambda e: e['_ts_unix'], reverse=True)
@@ -514,7 +517,7 @@ function _fmtTime(d){
 // ── Clip player ───────────────────────────────────────────────────────────
 function _stopClip(){
   if(_clipAudio){_clipAudio.pause();_clipAudio.src='';_clipAudio=null;}
-  if(_clipBtn){_clipBtn.className='clip-btn';_clipBtn.innerHTML='▶ Play clip';_clipBtn=null;}
+  if(_clipBtn){_clipBtn.className='clip-btn';_clipBtn.innerHTML=_clipBtn.dataset.label||'▶ Play clip';_clipBtn=null;}
   if(_clipTimeEl){_clipTimeEl.textContent='';_clipTimeEl=null;}
 }
 function _playClip(url,btn,timeEl){
@@ -581,8 +584,9 @@ function renderEvents(events){
     }
     var clipHtml='';
     if(ev.clip_url){
+      var clipLbl=_esc(ev.clip_label||'▶ Play clip');
       clipHtml='<div class="clip-row">'
-        +'<button class="clip-btn" data-url="'+_esc(ev.clip_url)+'">▶ Play clip</button>'
+        +'<button class="clip-btn" data-url="'+_esc(ev.clip_url)+'" data-label="'+clipLbl+'">'+clipLbl+'</button>'
         +'<span class="clip-time"></span>'
         +'</div>';
     }
