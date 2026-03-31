@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.112] - 2026-03-31
+
+### Fixed
+- **Producer View — no audio for remote-node chain faults (root cause)** — `_fire_chain_fault` always generated a fresh `uuid.uuid4()` for the CHAIN_FAULT alert log entry, regardless of the `entry_id` argument (the fault-log UUID). The `save_clip` command sent to the client uses `entry_id`, and `hub_clip_upload` writes the uploaded clip to the alert log with `id = entry_id`. Because the two UUIDs never matched, `_build_clip_index` could not find the uploaded clip by event ID and the play button never appeared in Producer View. Fix: alert log entry now uses `entry_id if entry_id else str(uuid.uuid4())` so the IDs are consistent end-to-end.
+
+---
+
 ## [3.4.111] - 2026-03-31
 
 ### Added

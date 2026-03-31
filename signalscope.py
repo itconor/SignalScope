@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.111"
+BUILD                  = "SignalScope-3.4.112"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -13744,8 +13744,13 @@ class HubServer:
                 monitor.log(f"[Chain] '{chain_label}' alert suppressed (cooldown {cooldown_mins}m)")
 
         # ── Write to alert log (always — even for hub-only chains with no local nodes) ──
+        # Use entry_id (the fault-log UUID) when provided so that hub_clip_upload can
+        # back-patch this entry by ID when the remote clip arrives asynchronously.
+        # Previously a fresh UUID was generated here, which never matched the entry_id
+        # sent in the save_clip command — so _build_clip_index could never find clips
+        # for remote-node faults by ID.
         _alert_log_append({
-            "id":            str(uuid.uuid4()),
+            "id":            entry_id if entry_id else str(uuid.uuid4()),
             "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
             "stream":        chain_label,
             "type":          "CHAIN_FAULT",
