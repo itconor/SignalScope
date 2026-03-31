@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.107] - 2026-03-31
+
+### Fixed
+- **Chain fault clips too short (e.g. 6 s when set to 30 s)** — onset clips in `_fire_chain_fault` were calling `_save_alert_wav` with no `_chunks` argument, causing it to read from `_audio_buffer`. That buffer is sized to the stream's `alert_wav_duration` (default 5 s), so clips were always limited to ~5–6 s regardless of the chain's `clip_seconds` setting. Fixed by passing `_chunks=list(_lc._stream_buffer)` (the 60 s rolling buffer) as the audio source — the same approach used by silence onset clips. `STREAM_BUFFER_SECONDS` raised from 20 s to 60 s so clips configured up to 60 s get their full duration.
+
+- **Producer (presenter) plugin — fault clips showing no audio** — the `CHAIN_FAULT` alert log entry stores `stream = chain_label` (the chain name) rather than the actual stream name. The clip URL built by the presenter used the chain name as the folder, but local hub clips are saved under `alert_snippets/{safe_stream_name}/` — no site prefix, stream name only. `hub_proxy_alert_clip` constructed `_safe_key = "_hub__<chain_name>"` which never matched the real folder. Fixed by adding a fallback scan of all `alert_snippets/` subdirectories when the initial key lookup returns no data for the `(hub)` pseudo-site — the clip is found by filename regardless of which subfolder it lives in.
+
+---
+
 ## [3.4.106] - 2026-03-31
 
 ### Fixed

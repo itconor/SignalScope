@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.106"
+BUILD                  = "SignalScope-3.4.107"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2092,7 +2092,7 @@ CHAIN_FLAP_COUNT         = 3      # fault transitions in window = flapping
 CHAIN_TREND_WINDOW       = 60     # minutes of level history used for predictive trend
 CHAIN_TREND_THRESH       = -0.3   # dBFS/min — slope steeper than this triggers amber warning
 CHAIN_SHARED_FAULT_WINDOW = 5.0   # seconds — window for shared-fault aggregation (Change 5)
-STREAM_BUFFER_SECONDS  = 20.0
+STREAM_BUFFER_SECONDS  = 60.0  # raised from 20 s — chain clips can be up to 60 s
 ALERT_BUFFER_SECONDS   = 10.0
 CHAIN_CLIP_MIN_SECS    = 10.0  # minimum clip duration for chain fault recordings
 CHAIN_CLIP_MAX_SECS    = 300.0 # cap — don't try to save more than 5 min
@@ -13592,7 +13592,13 @@ class HubServer:
                         # Captured at fault time; recovery clip covers the full event.
                         _onset_dur = float(chain.get("clip_seconds") or CHAIN_CLIP_MIN_SECS)
                         _onset_dur = max(CHAIN_CLIP_MIN_SECS, min(_onset_dur, CHAIN_CLIP_MAX_SECS))
-                        _clip = _save_alert_wav(_lc, _clbl, _onset_dur, _skip_hub_queue=True)
+                        # Use _stream_buffer snapshot (60 s rolling) as audio source so the
+                        # clip starts with pre-fault programme audio.  Same pattern as silence
+                        # onset clips — _audio_buffer is only sized to alert_wav_duration (5 s
+                        # default) and would give a far shorter clip than configured.
+                        _sb_chunks = list(_lc._stream_buffer) if getattr(_lc, "_stream_buffer", None) else None
+                        _clip = _save_alert_wav(_lc, _clbl, _onset_dur, _skip_hub_queue=True,
+                                                _chunks=_sb_chunks)
                         _lc_msg = (
                             f"Chain '{chain_label}' — '{_node_label}' "
                             f"({_pos_label.replace('_', ' ')}) clip."
@@ -22786,6 +22792,29 @@ def hub_proxy_alert_clip(site_name, stream_filename):
             except Exception as _e:
                 monitor.log(f"[HubProxy] Local clip read failed, falling back: {_e}")
             break
+
+    # 0b. (hub) fallback scan — chain fault clips are stored in alert_snippets/{stream}/
+    # but the CHAIN_FAULT alert log entry uses the chain name (not the stream name) as
+    # the "stream" field, so the safe_key lookup above will miss them.  Scan every
+    # subdirectory for the filename as a reliable fallback.
+    if not wav_data and _is_hub_site:
+        for _subdir in sorted(os.listdir(_snip_root)):
+            _sub_path = os.path.realpath(os.path.join(_snip_root, _subdir))
+            if not os.path.isdir(_sub_path):
+                continue
+            for _try_fn in (_safe_fname, _stem_req + _alt_ext):
+                _cand = os.path.realpath(os.path.join(_sub_path, _try_fn))
+                if _cand.startswith(_snip_root + os.sep) and os.path.isfile(_cand):
+                    try:
+                        with open(_cand, "rb") as _lf:
+                            wav_data = _lf.read()
+                        _clip_mime  = "audio/mpeg" if _try_fn.lower().endswith(".mp3") else "audio/wav"
+                        _safe_fname = _try_fn
+                    except Exception as _se:
+                        monitor.log(f"[HubProxy] Fallback scan read failed: {_se}")
+                    break
+            if wav_data:
+                break
 
     if not wav_data and client_addr and not _hub_client_addr_is_private(client_addr):
         url = f"{client_addr}/clips/{urllib.parse.quote(stream_name)}/{urllib.parse.quote(filename)}"
