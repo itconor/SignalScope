@@ -2,6 +2,14 @@
 
 ---
 
+## [3.4.98] - 2026-03-31
+
+### Fixed
+- **Hub dashboard level bar missing after 3.4.97** — the new `.lbar-outer` wrapper div was added to the hub dashboard stream card HTML but the corresponding CSS was only added to the hub replica page stylesheet (a separate template). The hub dashboard has its own `<style>` block; `.lbar-outer` and `.lbar-peak` CSS rules are now correctly added there too.
+- **Raw float values written back by `hubRefresh`** — every 5–15 s, `hubRefresh` called `lval.textContent = lev + ' dB'` where `lev` is a raw float from the JSON API, overwriting the nicely rounded live-poll value with e.g. `-14.41819217610082 dB`. Fixed to `lev.toFixed(1)`.
+
+---
+
 ## [3.4.97] - 2026-03-31
 
 ### Changed

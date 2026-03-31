@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.97"
+BUILD                  = "SignalScope-3.4.98"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30005,9 +30005,11 @@ body.wall-mode .sc{}
 .rtp-ok{color:var(--ok)}.rtp-wn{color:var(--wn)}.rtp-al{color:var(--al)}
 .ai-ok{color:var(--ok)}.ai-wn{color:var(--wn)}.ai-al{color:var(--al)}
 .lbar-wrap{display:flex;align-items:center;gap:6px}
-.lbar-track{flex:1;height:6px;background:var(--bor);border-radius:3px;overflow:hidden}
-.lbar-fill{height:6px;border-radius:3px;transition:width .4s}
-.lbar-val{font-size:12px;font-weight:600;width:64px;text-align:right}
+.lbar-outer{flex:1;position:relative;height:6px}
+.lbar-track{position:absolute;inset:0;background:linear-gradient(90deg,#0a1828 0,#0a1828 31%,#0d2244 31%,#0d2244 75%,#2d1a00 75%,#2d1a00 89%,#2a0f0f 89%,#2a0f0f 100%);border-radius:3px;overflow:hidden;border:1px solid rgba(255,255,255,.06)}
+.lbar-fill{height:100%;min-width:1px;max-width:100%}
+.lbar-peak{position:absolute;top:-1px;bottom:-1px;width:3px;background:rgba(255,255,255,.85);border-radius:2px;transform:translateX(-1px);pointer-events:none;transition:left 1.5s ease-in}
+.lbar-val{font-size:12px;font-weight:600;width:64px;text-align:right;font-variant-numeric:tabular-nums}
 .aib{margin:6px 10px;padding:5px 8px;border-radius:5px;font-size:12px}
 .aok{background:#1e3a1e;color:var(--ok)}.awn{background:#3a2a0f;color:var(--wn)}.aal{background:#3a0f0f;color:var(--al)}.alr{background:#1e2a3a;color:var(--acc)}.aid{background:var(--bor);color:var(--mu)}
 .pb{height:4px;background:var(--bor);margin:0 10px 4px;border-radius:2px}
@@ -30185,8 +30187,8 @@ function hubRefresh(){
         var lev = (_levelMode==='peak') ? pkLev : rmsLev;
         var lpct = Math.min(Math.max((lev+80)/80*100,0),100);
         var lcol = lev<=-55?'var(--al)':lev<=-20?'var(--wn)':'var(--ok)';
-        var lbar = sc.querySelector('.sc-lbar'); if(lbar){lbar.style.width=lpct+'%';lbar.style.background=lcol;}
-        var lval = sc.querySelector('.sc-level'); if(lval){lval.textContent=lev+' dB';lval.style.color=lcol;}
+        var lbar = sc.querySelector('.sc-lbar'); if(lbar){lbar.style.width=lpct.toFixed(1)+'%';lbar.style.background=lcol;}
+        var lval = sc.querySelector('.sc-level'); if(lval){lval.textContent=(typeof lev==='number'?lev.toFixed(1):lev)+' dB';lval.style.color=lcol;}
         var fmt = sc.querySelector('.sc-fmt'); if(fmt) fmt.textContent=s.format||'—';
         var rtRow = sc.querySelector('.sc-rt-row');
         var rtWrap = sc.querySelector('.sc-rt-wrap');
