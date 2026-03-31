@@ -9,11 +9,29 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.3.0",
+    "version":    "1.3.1",
 }
 
 import json, os, time, urllib.parse
 from datetime import datetime
+
+# ─── Plugin config (ticket URL etc.) ─────────────────────────────────────────
+
+_PRESENTER_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'presenter_config.json')
+
+def _read_cfg():
+    try:
+        with open(_PRESENTER_CFG) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _write_cfg(data):
+    try:
+        with open(_PRESENTER_CFG, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
 
 # ─── Alert log helpers ────────────────────────────────────────────────────────
 
@@ -310,6 +328,23 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
   .listen-banner-btn{width:100%;justify-content:center;margin-top:10px}
 }
 
+/* ── Ticket banner ── */
+.ticket-banner{margin:16px 24px 0;max-width:1400px;margin-left:auto;margin-right:auto;background:linear-gradient(135deg,rgba(34,197,94,.10),rgba(34,197,94,.05));border:1px solid rgba(34,197,94,.25);border-radius:16px;padding:18px 24px;display:flex;align-items:center;gap:18px}
+.ticket-banner-icon{font-size:36px;flex-shrink:0}
+.ticket-banner-body{flex:1;min-width:0}
+.ticket-banner-title{font-size:15px;font-weight:700;color:var(--tx);margin-bottom:3px}
+.ticket-banner-sub{font-size:12px;color:var(--mu)}
+.ticket-banner-btn{flex-shrink:0;background:linear-gradient(135deg,#166534,#22c55e);color:#fff;font-weight:700;font-size:14px;padding:11px 22px;border-radius:12px;text-decoration:none;display:flex;align-items:center;gap:8px;box-shadow:0 2px 12px rgba(34,197,94,.3);transition:filter .2s,box-shadow .2s;white-space:nowrap}
+.ticket-banner-btn:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(34,197,94,.45)}
+/* ── Admin config panel ── */
+.admin-cfg{margin:24px 24px 0;max-width:1400px;margin-left:auto;margin-right:auto;background:rgba(23,52,95,.35);border:1px solid var(--bor);border-radius:14px;padding:16px 20px}
+.admin-cfg-title{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--mu);margin-bottom:10px}
+@media(max-width:640px){
+  .ticket-banner{margin:12px 16px 0;padding:14px 16px;flex-wrap:wrap}
+  .ticket-banner-btn{width:100%;justify-content:center;margin-top:10px}
+  .admin-cfg{margin:16px 16px 0}
+}
+
 /* ── Greeting ── */
 .greeting{padding:28px 24px 6px;max-width:1400px;margin:0 auto}
 .greeting-title{font-size:24px;font-weight:700;letter-spacing:-.02em;margin-bottom:4px}
@@ -445,6 +480,31 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
     <div class="listen-banner-sub">Open the Listener to hear any station in real time, right in your browser.</div>
   </div>
   <a href="/listener" class="listen-banner-btn">🎧 Open Listener</a>
+</div>
+{% endif %}
+
+{% if ticket_url %}
+<div class="ticket-banner">
+  <div class="ticket-banner-icon">🎫</div>
+  <div class="ticket-banner-body">
+    <div class="ticket-banner-title">Have a concern or need to report an issue?</div>
+    <div class="ticket-banner-sub">Your broadcast engineering team can be reached via the support ticket system.</div>
+  </div>
+  <a href="{{ticket_url|e}}" target="_blank" rel="noopener" class="ticket-banner-btn">🎫 Open a Ticket</a>
+</div>
+{% endif %}
+
+{% if is_admin %}
+<div class="admin-cfg">
+  <div class="admin-cfg-title">⚙ Admin — Ticket System URL</div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <input id="ticket-url-input" type="url" placeholder="https://helpdesk.example.com/new-ticket"
+      value="{{ticket_url|e}}"
+      style="flex:1;min-width:260px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:7px 10px;font-size:13px">
+    <button type="button" id="ticket-save-btn" class="btn bp bs">Save URL</button>
+    <span id="ticket-save-status" style="font-size:12px;color:var(--mu)"></span>
+  </div>
+  <p style="font-size:11px;color:var(--mu);margin:6px 0 0">Leave blank to hide the ticket banner from producers.</p>
 </div>
 {% endif %}
 
@@ -721,6 +781,31 @@ function loadFaults(){
     });
 }
 
+// ── Admin ticket URL save ─────────────────────────────────────────────────
+(function(){
+  var btn=document.getElementById('ticket-save-btn');
+  if(!btn) return;
+  btn.addEventListener('click',function(){
+    var url=(document.getElementById('ticket-url-input').value||'').trim();
+    var st=document.getElementById('ticket-save-status');
+    st.textContent='Saving…'; st.style.color='var(--mu)';
+    fetch('/api/producer/config',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json',
+               'X-CSRFToken':(document.querySelector('meta[name="csrf-token"]')||{}).content||''},
+      body:JSON.stringify({ticket_url:url})})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(d.ok){
+          st.textContent='Saved ✓'; st.style.color='var(--ok)';
+          setTimeout(function(){window.location.reload();},800);
+        } else {
+          st.textContent='Error: '+(d.error||'?'); st.style.color='var(--al)';
+        }
+      })
+      .catch(function(){st.textContent='Network error'; st.style.color='var(--al)';});
+  });
+})();
+
 // ── Kick off ──────────────────────────────────────────────────────────────
 loadChainStatus();
 loadFaults();
@@ -734,9 +819,10 @@ loadFaults();
 # ─── Plugin registration ───────────────────────────────────────────────────
 
 def register(app, ctx):
-    from flask import render_template_string, session, jsonify
+    from flask import render_template_string, session, jsonify, request
 
-    login_required = ctx["login_required"]
+    login_required  = ctx["login_required"]
+    csrf_protect    = ctx["csrf_protect"]
     hub_server      = ctx["hub_server"]
     BUILD           = ctx["BUILD"]
 
@@ -744,15 +830,30 @@ def register(app, ctx):
     @login_required
     def producer_page():
         username = session.get("username", "")
-        # Check if the Listener plugin is installed by looking for its route
+        is_admin = session.get("role", "") == "admin"
         has_listener = any(
             str(rule) == "/listener"
             for rule in app.url_map.iter_rules()
         )
+        ticket_url = _read_cfg().get("ticket_url", "")
         return render_template_string(
             _PRODUCER_TPL, BUILD=BUILD, username=username,
             has_listener=has_listener,
+            ticket_url=ticket_url,
+            is_admin=is_admin,
         )
+
+    @app.post("/api/producer/config")
+    @login_required
+    @csrf_protect
+    def producer_config_save():
+        if session.get("role", "") != "admin":
+            return jsonify({"ok": False, "error": "Admin only"}), 403
+        data = request.get_json(silent=True) or {}
+        cfg  = _read_cfg()
+        cfg["ticket_url"] = (data.get("ticket_url") or "").strip()
+        _write_cfg(cfg)
+        return jsonify({"ok": True})
 
     @app.get("/api/producer/faults")
     @login_required

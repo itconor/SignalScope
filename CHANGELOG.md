@@ -20,6 +20,13 @@
 
 ---
 
+## [Producer View 1.3.1] - 2026-03-31
+
+### Added
+- **Ticket system banner** — a persistent "Have a concern? Open a Ticket" banner is shown on every Producer View page when a ticket URL is configured. Tapping the button opens the URL in a new tab. Admins see a URL input field below the banners to set or clear the URL; it is saved to `presenter_config.json` and takes effect on next page load. Leaving the URL blank hides the banner entirely.
+
+---
+
 ## [Producer View 1.3.0] - 2026-03-31
 
 ### Changed
