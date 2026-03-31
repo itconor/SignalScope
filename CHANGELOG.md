@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.94] - 2026-03-31
+
+### Fixed
+- **Hub dashboard — all cards pulsing, buttons unresponsive, update button missing (regression since 3.4.90)** — the live-view IIFE added in 3.4.90 ran at script-parse time while the `<script>` block is still inside `<head>`. At that point `document.body` is `null`; accessing `.getAttribute(...)` on it threw a `TypeError` that aborted execution of the rest of the script block — meaning: DOMContentLoaded listener never registered, `hubRefresh()` never called, skeleton class never removed, no button event listeners attached. Fixed by moving the `data-live-view` attribute read inside a `window.addEventListener('load', ...)` handler where `document.body` is always available.
+
+---
+
 ## [3.4.93] - 2026-03-31
 
 ### Added

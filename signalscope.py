@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.93"
+BUILD                  = "SignalScope-3.4.94"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30273,15 +30273,14 @@ function _applyLiveFrame(frame) {
   });
 }
 
-// Auto-start live view if the server has it enabled
-(function() {
-  var liveEnabled = document.body.getAttribute('data-live-view') === '1';
-  if (liveEnabled) {
-    window.addEventListener('load', function() {
-      setTimeout(_startLiveView, 1000);
-    });
+// Auto-start live view if the server has it enabled.
+// IMPORTANT: this script is in <head>, so document.body is null here.
+// Read the attribute inside the load handler where body is guaranteed available.
+window.addEventListener('load', function() {
+  if (document.body && document.body.getAttribute('data-live-view') === '1') {
+    setTimeout(_startLiveView, 1000);
   }
-})();
+});
 function agoJS(s){ s=Math.round(s||0); if(s<5)return'just now'; if(s<60)return s+'s ago'; return Math.round(s/60)+'m ago'; }
 function _csrfFetch(url,opts){
   opts=opts||{};
