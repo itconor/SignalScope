@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.109"
+BUILD                  = "SignalScope-3.4.110"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -7180,6 +7180,12 @@ class MonitorManager:
             for t in self._threads: t.join(timeout=2.0)
             self._threads.clear(); self._stop_flags.clear()
             self._comparators.clear()
+            # Force-release all SDR dongle claims.  FM/DAB threads release
+            # their leases in finally blocks, but the 2 s join timeout may
+            # expire before the subprocess (rtl_fm / welle-cli) has fully
+            # terminated.  Any claim left in the registry would cause every
+            # subsequent FM start to fail with "already in use".
+            sdr_manager.release_all()
             self._running=False; self.log("[Monitor] Stopped.")
             # Reset per-input metrics so the hub heartbeat immediately reports
             # silence/down for all streams rather than keeping stale healthy levels.
@@ -14590,6 +14596,17 @@ class SdrDeviceManager:
         """Release a DAB device claim by device index."""
         with self._lock:
             self._dab_owners.pop(idx, None)
+
+    def release_all(self):
+        """Force-release every dongle claim and DAB device registration.
+
+        Called by AppMonitor.stop_monitoring() after thread joins so that
+        any FM/DAB thread that didn't finish within the join timeout doesn't
+        leave stale claims that block the next monitor start.
+        """
+        with self._lock:
+            self._owners.clear()
+            self._dab_owners.clear()
 
     def status(self) -> Dict[str, str]:
         """Return dict of serial → current owner for all claimed dongles."""

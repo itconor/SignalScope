@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.110] - 2026-03-31
+
+### Fixed
+- **FM inputs fail to start after monitor restart — "Dongle already in use"** — `AppMonitor.stop_monitoring()` joins each stream thread with a 2 s timeout. If the `rtl_fm` subprocess (or `welle-cli`) hasn't fully terminated within that window, the FM thread's `finally: lease.__exit__()` call hasn't run yet, leaving the dongle serial registered in `sdr_manager._owners`. On the next monitor start every FM stream immediately sees its assigned dongle as "already in use by FM:..." (its own previous claim) and fails to connect. Added `SdrDeviceManager.release_all()` which clears `_owners` and `_dab_owners` under the registry lock, and called it unconditionally in `stop_monitoring()` immediately after the thread-join loop. Since all stop flags have already been set and all joins have been waited on, this is safe — any thread still running will attempt to `release()` again when it eventually finishes, which is a no-op on an already-empty dict.
+
+---
+
 ## [3.4.109] - 2026-03-31
 
 ### Fixed
