@@ -2,6 +2,31 @@
 
 ---
 
+## [3.4.88] - 2026-03-31
+
+### Fixed
+- **Settings → Users — "tick to restrict" labels were backwards** — Site Access, Chain Access, and Plugin Access fields all said "tick to restrict" but the actual behaviour is "tick to allow" (checked = permitted, unchecked = not permitted; none checked = all permitted). Labels now correctly read "tick to allow; none ticked = all allowed". Users who were set up under the old labelling will have their permissions reversed from what was intended — re-check their settings.
+
+### Changed
+- **Producer View station cards now driven by broadcast chains** — "Your Stations" section no longer reads from `/hub/data` (all streams, all sites). It now reads from `/api/chains/status` which already filters to the user's allowed chains. Each card represents one broadcast chain. Site shown is the last (RX) node's site. Removes the `/hub/data` fetch from Producer View entirely.
+- **Listener stream filtering by chain nodes** — when a user has site or chain access restrictions, the Listener now fetches `/api/chains/status` alongside `/hub/data` and filters to only streams that appear as nodes in the user's allowed chains. Users with no restrictions continue to see all streams as before.
+
+---
+
+## [Producer View 1.2.9] - 2026-03-31
+
+### Changed
+- **Station cards driven by chain status** — replaced stream-based cards (from `/hub/data`) with chain-based cards (from `/api/chains/status`). Shows only chains the logged-in user has access to. Each card is one broadcast chain; status (On Air / Signal Issue / Checking) reflects `display_status`. Site shown is taken from the last leaf node in the chain.
+
+---
+
+## [Listener 1.1.3] - 2026-03-31
+
+### Fixed
+- **Stream list filtered to allowed chains when user has restrictions** — users with site or chain access restrictions now see only the streams that are nodes in their permitted chains. Users with full access (no restrictions) continue to see everything.
+
+---
+
 ## [3.4.87] - 2026-03-31
 
 ### Added

@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.2.8",
+    "version":    "1.2.9",
 }
 
 import json, os, time, urllib.parse
@@ -487,7 +487,7 @@ var AVATAR_COLORS=[
   ['#c2440f','#f97316'],['#c81e1e','#ef4444'],
 ];
 var REFRESH_MS=30000;
-var _statusTimer=null,_faultsTimer=null,_chainTimer=null;
+var _faultsTimer=null,_chainTimer=null;
 var _clipAudio=null,_clipBtn=null,_clipTimeEl=null;
 
 // ── Greeting ──────────────────────────────────────────────────────────────
@@ -604,76 +604,68 @@ function renderEvents(events){
   wrap.innerHTML=html;
 }
 
-// ── Station status ────────────────────────────────────────────────────────
-function loadStatus(){
-  fetch('/hub/data',{credentials:'same-origin'})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      renderStations(d.sites||[]);
-      clearTimeout(_statusTimer);
-      _statusTimer=setTimeout(loadStatus,REFRESH_MS);
-    })
-    .catch(function(){
-      _setRefresh(false,'Could not reach server — retrying…');
-      clearTimeout(_statusTimer);
-      _statusTimer=setTimeout(loadStatus,10000);
-    });
-}
-
-function renderStations(sites){
-  var streams=[];
-  sites.forEach(function(site){
-    (site.streams||[]).forEach(function(s){
-      if(!s.enabled) return;
-      streams.push({name:s.name||'Stream',site:site.site||'',
-        status:s.ai_status||'OK',online:!!site.online,
-        rds:s.fm_rds_ps||'',dab:s.dab_service||'',label:s.label||''});
-    });
-  });
-  _setRefresh(true,'Live · Updated at '+_fmtTime(new Date()));
-  if(!streams.length){
-    document.getElementById('stations-wrap').innerHTML=
-      '<div style="text-align:center;padding:40px 24px;color:var(--mu)">No stations available</div>';
-    return;
-  }
-  var html='<div class="station-grid">';
-  streams.forEach(function(s){
-    var col=_colorFor(s.name);
-    var init=(s.name.match(/[A-Z0-9]/i)||[s.name[0]||'?'])[0].toUpperCase();
-    var sub=s.rds||s.dab||s.label||'';
-    var cls,badge;
-    if(!s.online){
-      cls='status-offline';badge='<div class="s-status offline">○ &nbsp;Not Available</div>';
-    } else if(s.status==='ALERT'||s.status==='WARN'){
-      cls='status-alert';badge='<div class="s-status alert">⚠ &nbsp;Signal Issue</div>';
-    } else {
-      cls='status-ok';badge='<div class="s-status ok">● &nbsp;On Air</div>';
-    }
-    html+='<div class="station-card '+cls+'">'
-      +'<div class="s-top">'
-      +'<div class="s-avatar" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_esc(init)+'</div>'
-      +'<div class="s-meta"><div class="s-name">'+_esc(s.name)+'</div>'
-      +'<div class="s-site">'+_esc(s.site)+'</div>'
-      +'<div class="s-onair">'+_esc(sub)+'</div>'
-      +'</div></div>'+badge+'</div>';
-  });
-  html+='</div>';
-  document.getElementById('stations-wrap').innerHTML=html;
-}
-
-// ── Chain status hero ─────────────────────────────────────────────────────
+// ── Chain status + station cards ──────────────────────────────────────────
 function loadChainStatus(){
   fetch('/api/chains/status',{credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      updateHero(d.results||[]);
+      var chains=d.results||[];
+      updateHero(chains);
+      renderChainCards(chains);
       clearTimeout(_chainTimer);
       _chainTimer=setTimeout(loadChainStatus,REFRESH_MS);
     })
     .catch(function(){
+      _setRefresh(false,'Could not reach server — retrying…');
       clearTimeout(_chainTimer);
       _chainTimer=setTimeout(loadChainStatus,15000);
     });
+}
+
+function renderChainCards(chains){
+  // Update header count
+  var ok      = chains.filter(function(c){var ds=c.display_status||c.status;return ds==='ok';}).length;
+  var faulted = chains.filter(function(c){var ds=c.display_status||c.status;return ds==='fault'||ds==='pending'||ds==='adbreak';}).length;
+  var parts=[];
+  if(ok)      parts.push(ok+' on air');
+  if(faulted) parts.push(faulted+' issue'+(faulted>1?'s':''));
+  document.getElementById('hdr-station-count').textContent=parts.join(' · ')||'No chains';
+  _setRefresh(true,'Live · Updated at '+_fmtTime(new Date()));
+
+  var wrap=document.getElementById('stations-wrap');
+  if(!chains.length){
+    wrap.innerHTML='<div style="text-align:center;padding:40px 24px;color:var(--mu)">No chains available</div>';
+    return;
+  }
+  var html='<div class="station-grid">';
+  chains.forEach(function(c){
+    var name=c.name||'Unknown';
+    var ds=c.display_status||c.status||'unknown';
+    var col=_colorFor(name);
+    var init=(name.match(/[A-Z0-9]/i)||[name[0]||'?'])[0].toUpperCase();
+    // Site from the last leaf node (has site field)
+    var site='';
+    var nodes=c.nodes||[];
+    for(var i=nodes.length-1;i>=0;i--){if(nodes[i].site){site=nodes[i].site;break;}}
+    var cls,badge;
+    if(ds==='fault'){
+      cls='status-alert';badge='<div class="s-status alert">⚠ &nbsp;Signal Issue</div>';
+    } else if(ds==='pending'||ds==='adbreak'){
+      cls='status-alert';badge='<div class="s-status alert">⏳ &nbsp;Checking…</div>';
+    } else if(ds==='ok'){
+      cls='status-ok';badge='<div class="s-status ok">● &nbsp;On Air</div>';
+    } else {
+      cls='status-offline';badge='<div class="s-status offline">○ &nbsp;Unknown</div>';
+    }
+    html+='<div class="station-card '+cls+'">'
+      +'<div class="s-top">'
+      +'<div class="s-avatar" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_esc(init)+'</div>'
+      +'<div class="s-meta"><div class="s-name">'+_esc(name)+'</div>'
+      +'<div class="s-site">'+_esc(site)+'</div>'
+      +'</div></div>'+badge+'</div>';
+  });
+  html+='</div>';
+  wrap.innerHTML=html;
 }
 
 function updateHero(chains){
@@ -733,7 +725,6 @@ function loadFaults(){
 }
 
 // ── Kick off ──────────────────────────────────────────────────────────────
-loadStatus();
 loadChainStatus();
 loadFaults();
 

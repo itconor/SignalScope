@@ -835,21 +835,21 @@ document.addEventListener('DOMContentLoaded',function(){
         </select></div>
     </div>
     <div style="margin-bottom:10px">
-      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Site Access <span style="font-weight:400;text-transform:none">(tick sites to restrict; none ticked = all sites)</span></label>
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Site Access <span style="font-weight:400;text-transform:none">(tick sites to allow; none ticked = all sites allowed)</span></label>
         <div id="uf-sites-wrap" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;max-height:130px;overflow-y:auto;font-size:12px">
           <span style="color:var(--mu)">Loading sites\u2026</span>
         </div>
       </div>
     </div>
     <div style="margin-bottom:10px">
-      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Chain Access <span style="font-weight:400;text-transform:none">(tick chains to restrict; none ticked = all chains)</span></label>
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Chain Access <span style="font-weight:400;text-transform:none">(tick chains to allow; none ticked = all chains allowed)</span></label>
         <div id="uf-chains-wrap" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;max-height:130px;overflow-y:auto;font-size:12px">
           <span style="color:var(--mu)">Loading chains\u2026</span>
         </div>
       </div>
     </div>
     <div style="margin-bottom:14px">
-      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Plugin Access <span style="font-weight:400;text-transform:none">(tick plugins to restrict; none ticked = all plugins)</span></label>
+      <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Plugin Access <span style="font-weight:400;text-transform:none">(tick plugins to allow; none ticked = all plugins allowed)</span></label>
         <div id="uf-plugins-wrap" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;max-height:130px;overflow-y:auto;font-size:12px">
           <span style="color:var(--mu)">Loading plugins\u2026</span>
         </div>
@@ -1927,7 +1927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.87"
+BUILD                  = "SignalScope-3.4.88"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
