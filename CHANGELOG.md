@@ -2,6 +2,26 @@
 
 ---
 
+## [3.4.93] - 2026-03-31
+
+### Added
+- **Hub replica page — Live View toggle** — admins can now enable or disable the 1 Hz live metric push on any remote client directly from that client's replica page, without needing to log into the client machine. The button shows the current state (⚡ Live View: ON / 💤 Live View: OFF) reported by the client in its heartbeat. Clicking it queues a `set_live_view` command delivered on the next heartbeat cycle (~5 s). The client persists the change to its local config so it survives restarts. Toggle is admin-only and only shown when the site is online.
+- **`set_live_view` hub command** — new client command type processed by `HubClient._cmd_set_live_view`. Updates `cfg.hub.live_view` and saves config. The `_live_loop` picks up the change within 5 s.
+- **`live_view` field in client heartbeat** — clients now report their current `live_view` setting in every heartbeat payload, so the hub can display the correct toggle state on the replica page.
+
+---
+
+## [3.4.92] - 2026-03-31
+
+### Fixed
+- **Hub dashboard — update button slow to appear after hub restart** — when Live View SSE was enabled, the `onopen` handler delayed `hubRefresh` by 30 seconds, meaning the ⬆ Update button didn't appear until 30 s after sites came back online post-restart. Fixed: SSE `onopen` now triggers a structural refresh after 1.5 s. Subsequent structural polls use 15 s when live view is active (down from the accidental 5 s after the first 30 s fire) — still materially less load than the 5 s default, but fast enough that online-state and version-badge changes appear promptly.
+- **Producer View — station cards stuck pulsing after hub restart** — if the first `loadChainStatus` fetch failed (hub briefly unavailable during restart), the `.catch` handler only updated the refresh dot label and left the skeleton placeholder divs pulsing indefinitely (next retry in 15 s). Fixed: on catch, skeleton containers are immediately replaced with a plain "retrying in 15 s…" message so the user sees a human-readable state rather than stuck loading animation.
+
+### Plugin: Producer View 1.3.5
+- Skeleton cards cleared on API error (see above).
+
+---
+
 ## [3.4.91] - 2026-03-31
 
 ### Changed

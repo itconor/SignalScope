@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.91"
+BUILD                  = "SignalScope-3.4.93"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -10176,6 +10176,19 @@ class HubClient:
             os.execv(sys.executable, [sys.executable] + sys.argv)
         threading.Thread(target=_do_restart, daemon=True, name="RemoteRestart").start()
 
+    def _cmd_set_live_view(self, payload: dict):
+        """Hub command: enable or disable high-bandwidth live metric push on this client.
+
+        Updates cfg.hub.live_view and persists the change to disk so the
+        setting survives a process restart. The live_loop polls the setting
+        every 5 s, so the change takes effect within one poll cycle.
+        """
+        enabled = bool(payload.get("enabled", False))
+        cfg_obj = monitor.app_cfg
+        cfg_obj.hub.live_view = enabled
+        save_config(cfg_obj)
+        monitor.log(f"[Hub] Remote set_live_view: live_view = {enabled}")
+
     def _cmd_chain_note(self, payload: dict):
         """Apply an engineer note pushed from the hub.
 
@@ -10706,6 +10719,8 @@ class HubClient:
             # Including self._low_bw would create a feedback loop: hub pushes
             # true → client echoes true back → hub stores true forever.
             "low_bw":          getattr(cfg.hub, "low_bw", False),
+            # Report live_view state so the hub replica page can show a toggle.
+            "live_view":       getattr(cfg.hub, "live_view", False),
         }
 
     def _handle_listen_requests(self, cfg, listen_requests: list):
@@ -11498,6 +11513,8 @@ class HubClient:
                         self._cmd_scanner_band_scan(cmd_payload)
                     elif cmd_type == "cmp_pair":
                         self._cmd_cmp_pair(cmd_payload)
+                    elif cmd_type == "set_live_view":
+                        self._cmd_set_live_view(cmd_payload)
                 # Drain auto-clip-upload queue — clips saved since the last
                 # heartbeat are uploaded to the hub for the Reports page.
                 # Cap at 2 per heartbeat cycle to avoid spawning a burst of
@@ -21913,6 +21930,23 @@ def hub_site_restart(site_name):
     return jsonify({"ok": True})
 
 
+@app.post("/api/hub/site/<path:site_name>/live_view")
+@login_required
+@csrf_protect
+def hub_site_set_live_view(site_name):
+    """Hub admin: remotely enable or disable live metric push on a client site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data    = request.get_json(silent=True) or {}
+    enabled = bool(data.get("enabled", False))
+    hub_server.push_pending_command(
+        site_name,
+        {"type": "set_live_view", "payload": {"enabled": enabled}},
+    )
+    monitor.log(f"[Hub] set_live_view({enabled}) pushed to site '{site_name}'")
+    return jsonify({"ok": True, "enabled": enabled})
+
+
 @app.post("/api/hub/site/<path:site_name>/retrain")
 @login_required
 @csrf_protect
@@ -22526,8 +22560,11 @@ def hub_site_replica(site_name):
         if p >= 0.5: return "rtp-wn"
         return "rtp-ok"
 
+    site_live_view = bool(raw_site.get("live_view", False))
     return render_template_string(HUB_SITE_TPL, site=site, build=BUILD, now=time.time(),
-                                  ago=_ago, rtpClass=_rtp_class, direct_url=direct_url)
+                                  ago=_ago, rtpClass=_rtp_class, direct_url=direct_url,
+                                  site_live_view=site_live_view,
+                                  is_admin=_is_admin())
 
 @app.get("/hub/site/<path:site_name>/stream/<int:sidx>/live")
 @login_required
@@ -28325,6 +28362,15 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% if site._ping_result %}
       <span class="badge" style="background:{{'#163a1a' if site._ping_result.success else '#3a1616'}};color:{{'#86efac' if site._ping_result.success else '#fca5a5'}};font-size:10px" title="{{site._ping_result.target}} at {{fmt(site._ping_result.ts)}}">{{ '✓' if site._ping_result.success else '✗' }} {{site._ping_result.target}}</span>
       {% endif %}
+      {% if is_admin %}
+      <button class="btn live-view-toggle-btn"
+              data-site="{{site.site|e}}"
+              data-enabled="{{'1' if site_live_view else '0'}}"
+              style="background:{{'#1a3420' if site_live_view else '#1a2040'}};color:{{'#4ade80' if site_live_view else '#94a3b8'}};border:1px solid {{'#166534' if site_live_view else 'var(--bor)'}};font-size:11px;padding:2px 10px"
+              title="{{'Live view is ON — 1 Hz metric push active. Click to disable.' if site_live_view else 'Live view is OFF — click to enable 1 Hz metric push for real-time chain evaluation.'}}">
+        {{'⚡ Live View: ON' if site_live_view else '💤 Live View: OFF'}}
+      </button>
+      {% endif %}
       {% endif %}
       {% if site.build %}
       {% set _build_match = (site.build == build) %}
@@ -29181,6 +29227,35 @@ document.addEventListener('click',function(e){
   if(input)input.addEventListener('keydown',function(e){if(e.key==='Enter')doPing();});
 })();
 
+// ── Live View toggle ──────────────────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.live-view-toggle-btn');if(!btn)return;
+  var site=btn.dataset.site;
+  var curEnabled=btn.dataset.enabled==='1';
+  var newEnabled=!curEnabled;
+  btn.disabled=true;btn.textContent='⏳ Updating…';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/live_view',{enabled:newEnabled})
+  .then(function(d){
+    if(d.ok){
+      btn.dataset.enabled=newEnabled?'1':'0';
+      btn.textContent=newEnabled?'⚡ Live View: ON':'💤 Live View: OFF';
+      btn.style.background=newEnabled?'#1a3420':'#1a2040';
+      btn.style.color=newEnabled?'#4ade80':'#94a3b8';
+      btn.style.border='1px solid '+(newEnabled?'#166534':'var(--bor)');
+      btn.title=newEnabled
+        ?'Live view is ON — 1 Hz metric push active. Click to disable.'
+        :'Live view is OFF — click to enable 1 Hz metric push for real-time chain evaluation.';
+    } else {
+      alert('Failed to set live view: '+(d.error||'unknown'));
+    }
+    btn.disabled=false;
+  }).catch(function(err){
+    btn.disabled=false;
+    btn.textContent=curEnabled?'⚡ Live View: ON':'💤 Live View: OFF';
+    alert('Error: '+(err.message||err));
+  });
+});
+
 // ── Retrain AI button ─────────────────────────────────────────────────────────
 document.addEventListener('click',function(e){
   var btn=e.target.closest('.hub-retrain-btn');if(!btn)return;
@@ -29985,7 +30060,10 @@ function toggleLive(siteIdx,streamIdx,btn){
 }// ── Hub AJAX refresh ──────────────────────────────────────────
 var _hubTimer = null;
 var _hubLastReload = 0; // epoch ms — guard against reload loops
-function _hubSchedule(){ _hubTimer = setTimeout(hubRefresh, 5000); }
+// Use a longer structural poll interval when live view SSE is active (fast
+// metrics come via SSE; we only need structural refreshes for online status,
+// version badges, and update buttons — every 15 s is plenty).
+function _hubSchedule(){ _hubTimer = setTimeout(hubRefresh, _liveActive ? 15000 : 5000); }
 function hubRefresh(){
   clearTimeout(_hubTimer);
   fetch('/hub/data?_='+Date.now(),{cache:'no-store'}).then(r=>r.json()).then(data=>{
@@ -30147,9 +30225,11 @@ function _startLiveView() {
   _liveES = new EventSource('/hub/stream/events');
   _liveES.onopen = function() {
     _liveActive = true;
-    // Slow down structural poll — live view handles fast updates
+    // Run a structural refresh quickly so online status and update buttons are
+    // current (e.g. after a hub restart where sites were briefly offline).
+    // After that first refresh _hubSchedule() takes over at 15 s intervals.
     clearTimeout(_hubTimer);
-    _hubTimer = setTimeout(hubRefresh, 30000);
+    _hubTimer = setTimeout(hubRefresh, 1500);
   };
   _liveES.onmessage = function(e) {
     try {

@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.3.4",
+    "version":    "1.3.5",
 }
 
 import json, os, time, urllib.parse
@@ -658,6 +658,16 @@ function loadChainStatus(){
     })
     .catch(function(){
       _setRefresh(false,'Could not reach server — retrying…');
+      // Replace any skeleton placeholders so the user sees a message instead
+      // of indefinitely pulsing white boxes (e.g. immediately after hub restart).
+      var sw=document.getElementById('stations-wrap');
+      if(sw && sw.querySelector('.skeleton')){
+        sw.innerHTML='<div style="text-align:center;padding:40px 24px;color:var(--mu)">Could not reach server — retrying in 15 s…</div>';
+      }
+      var ew=document.getElementById('events-wrap');
+      if(ew && ew.querySelector('.skeleton')){
+        ew.innerHTML='<div style="padding:12px 24px;color:var(--mu);font-size:12px">—</div>';
+      }
       clearTimeout(_chainTimer);
       _chainTimer=setTimeout(loadChainStatus,15000);
     });
