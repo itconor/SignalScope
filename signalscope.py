@@ -1585,6 +1585,13 @@ function myPwSave(){
     <span id="avail-status" style="font-size:12px;color:var(--mu)"></span>
   </div>
   <div id="avail-list" style="margin-top:4px"></div>
+
+  <!-- Restart -->
+  <hr style="border:none;border-top:1px solid var(--bor);margin:22px 0 16px">
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <button type="button" class="btn bd" id="plugin-restart-btn">↺ Restart SignalScope</button>
+    <span id="plugin-restart-status" style="font-size:12px;color:var(--mu)">Required after installing or removing a plugin.</span>
+  </div>
 </div>
 
 <script nonce="{{csp_nonce()}}">
@@ -1736,14 +1743,24 @@ window.pluginRemove = function(file){
     .catch(function(){ alert('Network error'); });
 };
 
-// Event delegation — handles plugin-rm-btn, plugin-install-btn, plugin-update-btn
+// Event delegation — handles plugin-rm-btn, plugin-install-btn, plugin-update-btn, plugin-restart-btn
 document.getElementById('p-plugins').addEventListener('click', function(e){
   var rm = e.target.closest('.plugin-rm-btn');
   if(rm){ pluginRemove(rm.dataset.file); return; }
   var inst = e.target.closest('.plugin-install-btn');
   if(inst){ pluginInstall(inst.dataset.id, inst.dataset.url, inst.dataset.file); return; }
   var upd = e.target.closest('.plugin-update-btn');
-  if(upd){ pluginUpdate(upd.dataset.id, upd.dataset.url, upd.dataset.file, upd.dataset.newver||'?'); }
+  if(upd){ pluginUpdate(upd.dataset.id, upd.dataset.url, upd.dataset.file, upd.dataset.newver||'?'); return; }
+  if(e.target.closest('#plugin-restart-btn')){
+    if(!confirm('Restart SignalScope now?\n\nAll active streams will disconnect briefly.')) return;
+    var btn = document.getElementById('plugin-restart-btn');
+    var st  = document.getElementById('plugin-restart-status');
+    if(btn){ btn.disabled=true; btn.textContent='Restarting…'; }
+    if(st){ st.style.color='var(--mu)'; st.textContent='Restarting — page will reload in 8 s…'; }
+    _csrfPost('/api/admin/restart', {})
+      .catch(function(){/* server went away — normal */})
+      .finally(function(){ setTimeout(function(){ window.location.reload(); }, 8000); });
+  }
 });
 })();
 </script>
@@ -1910,7 +1927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.86"
+BUILD                  = "SignalScope-3.4.87"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global

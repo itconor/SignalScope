@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.87] - 2026-03-31
+
+### Added
+- **Restart button on Plugins page** — a **↺ Restart SignalScope** button now appears at the bottom of Settings → Plugins. Calls `/api/admin/restart`, disables itself with a "Restarting…" label, and reloads the page after 8 seconds. Removes the need to go to Process Controls just to restart after installing or removing a plugin.
+
+---
+
 ## [Listener 1.1.2] - 2026-03-31
 
 ### Added
