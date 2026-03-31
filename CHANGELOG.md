@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.114] - 2026-03-31
+
+### Fixed
+- **Chain fault clip captures post-fault silence instead of fault onset** — `_cmd_save_clip` for "fault" clips previously waited `clip_dur` seconds then saved from `_audio_buffer`. By that point the fault onset had scrolled off the buffer and the clip contained only post-fault silence or recovery audio. Fixed identically to the 3.4.73 silence clip fix: for "fault" status clips, `_stream_buffer` is snapshotted immediately on command receipt (before any delay) and passed as `_chunks` to `_save_alert_wav`. The clip now contains ~20 s of pre-fault programme audio followed by the fault onset. The per-position upload stagger is preserved; the `clip_dur` wait is removed for fault clips since the pre-fault data is already in the snapshot.
+
+---
+
 ## [3.4.113] - 2026-03-31
 
 ### Fixed

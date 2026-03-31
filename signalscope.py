@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.113"
+BUILD                  = "SignalScope-3.4.114"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -9822,19 +9822,28 @@ class HubClient:
         _clip_dur = (max(float(inp.alert_wav_duration or 0), duration, CHAIN_CLIP_MIN_SECS)
                      if duration else max(float(inp.alert_wav_duration or 0), CHAIN_CLIP_MIN_SECS))
 
-        # Fault clips need a delay; all other clip types (last_good, etc.) save immediately.
-        # Add a per-position stagger so multiple chain nodes don't all compress and
-        # upload at the same instant — that CPU burst can cause RTP packet loss which
-        # triggers further faults and creates a cascade.
+        # Fault clips: snapshot _stream_buffer NOW (before any delay) so the clip
+        # captures pre-fault audio + fault onset rather than post-fault silence.
+        # The old approach waited clip_dur seconds then saved from _audio_buffer —
+        # by that point the fault onset had scrolled off the buffer and the clip
+        # only contained silence/recovery (same problem as silence clips, fixed
+        # in 3.4.73 for silence alerts).
+        # All other clip types (last_good, recovery) save from _audio_buffer as before.
+        _fault_chunks = (list(getattr(inp, '_stream_buffer', []))
+                         if status == "fault" else None)
+
+        # Stagger uploads per chain position so multiple nodes don't compress
+        # and upload simultaneously (CPU burst can cause RTP packet loss).
+        # Fault clips no longer add clip_dur to the delay — they use the snapshot.
         _pos_int = int(pos) if pos is not None else 0
         _stagger = _pos_int * _CLIP_SAVE_STAGGER
-        _delay   = (_clip_dur + _stagger) if status == "fault" else _stagger
+        _delay   = _stagger
 
         def _do_save():
             if _delay:
                 if status == "fault":
                     monitor.log(f"[Hub] save_clip: waiting {_delay:.1f}s "
-                                f"(clip_dur={_clip_dur:.0f}s + pos{_pos_int} stagger) "
+                                f"(pos{_pos_int} stagger) "
                                 f"for '{stream}' label={label!r}")
                 time.sleep(_delay)
             # Re-fetch config in case it was updated during the delay
@@ -9847,7 +9856,8 @@ class HubClient:
                    + (f" ('{node_label}')" if node_label else "")
                    + f" during chain fault"
                    + (f" in {repr(chain_name)}" if chain_name else "") + ".")
-            clip_path = _save_alert_wav(_inp, label, _clip_dur, _skip_hub_queue=True)
+            clip_path = _save_alert_wav(_inp, label, _clip_dur, _skip_hub_queue=True,
+                                        _chunks=_fault_chunks)
             _add_history(_inp, "CHAIN_FAULT", msg, clip_path=clip_path or "")
             if clip_path:
                 monitor.log(f"[Hub] save_clip: saved '{label}' for '{stream}' → "
