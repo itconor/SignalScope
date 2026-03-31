@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.105"
+BUILD                  = "SignalScope-3.4.106"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -7347,11 +7347,19 @@ class MonitorManager:
                     #  SyncOnEndNull failed  — null-symbol timing missed
                     #  Failed to send audio for — HTTP push when no consumer
                     #  Removing mp3 sender   — welle-cli housekeeping on drop
+                    #  libmpg123 layer1.c    — per-frame MPEG Layer I decode errors
+                    #    under marginal signal; "Illegal bit allocation value" and
+                    #    "Aborting layer I decoding" are per-frame, not fatal —
+                    #    welle-cli continues and recovers on the next good frame.
                     if (
                         "synconphase failed"    in lower or
                         "syncOnEndNull failed".lower() in lower or
                         "failed to send audio for" in lower or
-                        "removing mp3 sender"   in lower
+                        "removing mp3 sender"   in lower or
+                        "layer1.c"              in lower or
+                        "illegal bit allocation" in lower or
+                        "aborting layer i decoding" in lower or
+                        "int123_do_layer1"      in lower
                     ):
                         continue
                     if "error" in lower or "failed" in lower or "pll not locked" in lower:

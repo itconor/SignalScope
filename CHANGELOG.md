@@ -2,6 +2,16 @@
 
 ---
 
+## [3.4.106] - 2026-03-31
+
+### Fixed
+- **DAB — libmpg123 Layer I decode errors flooding the log** — `[src/libmpg123/layer1.c:check_balloc():30] error: Illegal bit allocation value` and `Aborting layer I decoding after step one` are per-frame MPEG Layer I decode errors produced by welle-cli's internal mpg123 decoder under marginal signal conditions. They are not fatal — welle-cli recovers on the next good frame — but they match the `"error"` filter in the welle-cli stderr reader and were appearing in the log at high frequency. Added `layer1.c`, `illegal bit allocation`, `aborting layer i decoding`, and `int123_do_layer1` to the existing noise-suppression list (same treatment as `SyncOnPhase failed` etc.). The log now stays clean; welle-cli continues normal operation.
+
+### Notes
+- **Codec plugin 404 on hub** — if `[Codec] Push to hub failed: HTTP Error 404: NOT FOUND` appears on a client node, the Codec Monitor plugin is not installed on the hub. Install it on the hub via **Settings → Plugins → Check GitHub for plugins**. The plugin must be present on both the hub and client nodes for cross-site codec status aggregation to work.
+
+---
+
 ## [3.4.105] - 2026-03-31
 
 ### Fixed
