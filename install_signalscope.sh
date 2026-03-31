@@ -341,6 +341,40 @@ EOF
   fi
 }
 
+ensure_usbfs_unlimited() {
+  # Running multiple RTL-SDR dongles simultaneously requires more USB kernel
+  # buffer memory than the Linux default (16 MB).  Without this, rtl_fm prints
+  # "Failed to allocate zero-copy buffer" and "Failed to submit transfer 0"
+  # and the dongle produces no audio.  Setting usbfs_memory_mb=0 removes the
+  # cap entirely (matches the official rtl-sdr / Raspberry Pi guidance).
+  #
+  # 1. Apply immediately (takes effect now, before any reboot).
+  if [[ -f /sys/module/usbcore/parameters/usbfs_memory_mb ]]; then
+    echo 0 | ${SUDO} tee /sys/module/usbcore/parameters/usbfs_memory_mb > /dev/null
+  fi
+
+  # 2. Persist across reboots via /etc/rc.local (works on Pi OS / Debian).
+  local rc="/etc/rc.local"
+  local marker="usbfs_memory_mb"
+  if ! grep -q "${marker}" "${rc}" 2>/dev/null; then
+    if [[ -f "${rc}" ]]; then
+      # Insert before the final 'exit 0' line
+      ${SUDO} sed -i "/^exit 0/i echo 0 > /sys/module/usbcore/parameters/usbfs_memory_mb" "${rc}"
+    else
+      ${SUDO} tee "${rc}" > /dev/null <<'EOF'
+#!/bin/sh -e
+# Set unlimited USB buffer memory — required for multiple RTL-SDR dongles
+echo 0 > /sys/module/usbcore/parameters/usbfs_memory_mb
+exit 0
+EOF
+      ${SUDO} chmod +x "${rc}"
+    fi
+    ok "usbfs_memory_mb=0 written to ${rc} (persists across reboots)"
+  else
+    ok "usbfs_memory_mb already configured in ${rc}"
+  fi
+}
+
 detect_pi_model() {
   PI_MODEL_STR=""
   PI_GEN=0
@@ -1224,6 +1258,7 @@ main() {
         libsndfile1 libsndfile1-dev libliquid-dev libfftw3-dev nlohmann-json3-dev \
         meson ninja-build || true
       ensure_rtlsdr_blacklist
+      ensure_usbfs_unlimited
     fi
 
     if [[ "${ENABLE_ICECAST}" == "1" ]]; then
