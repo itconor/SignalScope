@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/meterwall",
     "icon":     "📊",
     "hub_only": False,
-    "version":  "1.0.1",
+    "version":  "1.1.0",
 }
 
 
@@ -316,6 +316,7 @@ body{
 (function(){
   /* ── Config ─────────────────────────────────────────────────────────────── */
   var POLL_MS    = 1000;
+  var LIVE_MS    = 150;    // fast-poll interval for live level bars (5 Hz)
   var PEAK_HOLD  = 2500;   // ms to hold peak before decay starts
   var PEAK_RATE  = 0.45;   // dBFS decay per 100 ms after hold expires
   var DB_FLOOR   = -80.0;  // lower bound of meter scale
@@ -324,7 +325,8 @@ body{
   var _peaks    = {};      // key → {val, ts}
   var _sortLev  = false;
   var _curSize  = 'md';
-  var _lastData = null;
+  var _lastData   = null;
+  var _liveActive = false; // true once /api/hub/live_levels responds successfully
   var _sizes    = {sm: 100, md: 140, lg: 200};
 
   /* ── Clock ──────────────────────────────────────────────────────────────── */
@@ -452,21 +454,23 @@ body{
     el.classList.toggle('mc-warn',   !isAlert && isWarn);
     el.classList.toggle('mc-offline', !true); // online always true for local; site handles it
 
-    /* Bar fill */
-    var fill = el.querySelector('.mtr-fill');
-    if (fill) fill.style.height = levToH(lev) + '%';
+    /* Bar fill / peak / level text — only update here if live poll is not active.
+       When _liveActive, livePoll() drives these at 5 Hz; updating from the
+       slower 1 s metadata poll would cause a visible stale-value flicker. */
+    if (!_liveActive) {
+      var fill = el.querySelector('.mtr-fill');
+      if (fill) fill.style.height = levToH(lev) + '%';
 
-    /* Peak hold */
-    var pkEl = el.querySelector('.mtr-peak');
-    if (pkEl) {
-      var pkH = levToH(peak);
-      pkEl.style.bottom  = pkH + '%';
-      pkEl.style.opacity = peak > DB_FLOOR ? '0.82' : '0';
+      var pkEl = el.querySelector('.mtr-peak');
+      if (pkEl) {
+        var pkH = levToH(peak);
+        pkEl.style.bottom  = pkH + '%';
+        pkEl.style.opacity = peak > DB_FLOOR ? '0.82' : '0';
+      }
+
+      var levEl = el.querySelector('.mc-lev');
+      if (levEl) { levEl.textContent = fmtLev(lev); levEl.className = 'mc-lev ' + levCls(lev); }
     }
-
-    /* Level text */
-    var levEl = el.querySelector('.mc-lev');
-    if (levEl) { levEl.textContent = fmtLev(lev); levEl.className = 'mc-lev ' + levCls(lev); }
 
     /* LUFS-I */
     var lufsEl = el.querySelector('.mc-lufs');
@@ -634,7 +638,7 @@ body{
     return sec;
   }
 
-  /* ── Poll ───────────────────────────────────────────────────────────────── */
+  /* ── Metadata poll (1 Hz) ──────────────────────────────────────────────── */
   function poll() {
     fetch('/api/meterwall/data', {credentials: 'same-origin'})
       .then(function(r) { return r.json(); })
@@ -643,6 +647,51 @@ body{
   }
   poll();
   setInterval(poll, POLL_MS);
+
+  /* ── Live level fast-poll (5 Hz) ────────────────────────────────────────
+     Fetches /api/hub/live_levels (hub push data, updated every ~200 ms)
+     and updates only the bar height, peak marker, and dB text on each
+     card.  Metadata (now playing, LUFS-I, AI status, RTP loss) continues
+     to come from the 1 s metadata poll above.
+  ──────────────────────────────────────────────────────────────────────── */
+  function livePoll() {
+    fetch('/api/hub/live_levels', {credentials: 'same-origin'})
+      .then(function(r) { return r.ok ? r.json() : Promise.reject(); })
+      .then(function(data) {
+        _liveActive = true;
+        var now = Date.now();
+        Object.keys(data).forEach(function(siteName) {
+          (data[siteName] || []).forEach(function(s) {
+            var key  = siteName + '|' + s.name;
+            /* querySelector attribute value — escape any \ or " in the key */
+            var esc  = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            var card = document.querySelector('.mc[data-key="' + esc + '"]');
+            if (!card) return;
+
+            var lev = (s.level_dbfs == null) ? DB_FLOOR : s.level_dbfs;
+            var pk  = _updatePeak(key, lev, now);
+
+            /* Bar */
+            var fill = card.querySelector('.mtr-fill');
+            if (fill) fill.style.height = levToH(lev) + '%';
+
+            /* Peak */
+            var pkEl = card.querySelector('.mtr-peak');
+            if (pkEl) {
+              pkEl.style.bottom  = levToH(pk) + '%';
+              pkEl.style.opacity = pk > DB_FLOOR ? '0.82' : '0';
+            }
+
+            /* Level text */
+            var levEl = card.querySelector('.mc-lev');
+            if (levEl) { levEl.textContent = fmtLev(lev); levEl.className = 'mc-lev ' + levCls(lev); }
+          });
+        });
+      })
+      .catch(function() {});
+  }
+  livePoll();
+  setInterval(livePoll, LIVE_MS);
 
   /* ── Init ───────────────────────────────────────────────────────────────── */
   (function init() {

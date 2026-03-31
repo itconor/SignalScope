@@ -44,8 +44,8 @@
     "name": "Meter Wall",
     "file": "meterwall.py",
     "icon": "\ud83d\udcca",
-    "description": "Full-screen audio meter wall showing live PPM-style level bars for every monitored stream across all connected sites. Peak hold with decay, LUFS-I readout, alert flash, RDS/DLS now-playing, site grouping, configurable grid density, and auto-hiding fullscreen kiosk mode.",
-    "version": "1.0.1",
+    "description": "Full-screen audio meter wall showing live PPM-style level bars for every monitored stream across all connected sites. Peak hold with decay at 5 Hz real-time update, LUFS-I readout, alert flash, RDS/DLS now-playing, site grouping, configurable grid density, and auto-hiding fullscreen kiosk mode.",
+    "version": "1.1.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/meterwall.py"
   },
@@ -134,8 +134,8 @@
     "name": "Producer View",
     "file": "presenter.py",
     "icon": "🎙",
-    "description": "Simplified hub view for producers and presenters. Shows station status cards with live level indicators and a plain-English chain fault history. Shows only CHAIN_FAULT/CHAIN_RECOVERED events, deduplicated — no noise from rapid repeats. Clip play buttons on events that have recordings. Chain-filtered and site-filtered to only show what the user has permission to see. All-clear banner when everything is running normally. Integrates with the plugin-role user system (SignalScope 3.4.85+) — users assigned the Producer role go directly here on login. Hub-only.",
-    "version": "1.3.5",
+    "description": "Simplified hub view for producers and presenters. Shows station status cards with live level indicators and a plain-English chain fault history. Shows only CHAIN_FAULT/CHAIN_RECOVERED events, deduplicated — no noise from rapid repeats. Clip play buttons on events that have recordings, including clips uploaded asynchronously from remote client sites. Chain-filtered and site-filtered to only show what the user has permission to see. All-clear banner when everything is running normally. Integrates with the plugin-role user system (SignalScope 3.4.85+) — users assigned the Producer role go directly here on login. Hub-only.",
+    "version": "1.3.6",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/presenter.py"
   },

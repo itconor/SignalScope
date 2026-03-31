@@ -2,6 +2,22 @@
 
 ---
 
+## [3.4.109] - 2026-03-31
+
+### Fixed
+- **Producer View — no audio for remote-node chain faults (presenter.py v1.3.6)** — the original `CHAIN_FAULT` alert log entry has `clip: ""` when the faulty node is on a client site rather than the hub (the clip is saved asynchronously via a `save_clip` command). The uploaded clip creates a second alert log entry with the same event `id` but `stream = f"{site} / {stream}"` — which may not match the `allowed_chains` filter used by producer users when the chain label includes an equipment suffix (e.g. `"NI DAB / Downtown Radio - MIXXA01"` vs `"NI DAB / Downtown Radio"`). Result: the filtered incident event list had no clip URL and no play button appeared.
+
+  Fix: `_build_clip_index()` reads the **full** alert log (bypassing `allowed_chains`) and builds a dict of `event_id → clip URL`. `_build_incidents()` now calls this once per request and uses it as a fallback: if none of the filtered incident events have a clip URL, it looks up each event's `id` in the index and uses the first match found. This finds uploaded clips regardless of whether the stream name in the uploaded entry exactly matches the chain label used in the `allowed_chains` filter.
+
+---
+
+## [3.4.108] - 2026-03-31
+
+### Changed
+- **Meter Wall plugin v1.1.0 — real-time bar animation** — the Meter Wall was polling `/api/meterwall/data` (heartbeat data, updated every ~10 s) once per second, so bar movement was visually sluggish. Added a secondary fast-poll of `/api/hub/live_levels` at 150 ms (5 Hz) that updates only the bar height, peak-hold marker, and dB text on each card. Metadata (now playing, LUFS-I, AI status, RTP loss) continues to come from the 1 s metadata poll. When the live poll is active (`_liveActive = true`), `updateCard` skips bar/peak/level writes to prevent the slower metadata cycle from flickering stale heartbeat values over the live data. The card key scheme (`site|stream`) matches directly between the two data sources so no mapping layer is needed.
+
+---
+
 ## [3.4.107] - 2026-03-31
 
 ### Fixed

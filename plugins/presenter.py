@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.3.5",
+    "version":    "1.3.6",
 }
 
 import json, os, time, urllib.parse
@@ -97,6 +97,47 @@ def _common_prefix(names):
             break
     # Strip trailing " - ", " — ", " / ", spaces, dashes
     return prefix.rstrip(' \t-—/') or names[0]
+
+
+def _build_clip_index(max_age_h=24):
+    """Read the FULL alert log (no chain filter) and return a dict of event_id → clip URL.
+
+    Remote-node chain faults have clip="" in the original CHAIN_FAULT entry.
+    The clip arrives asynchronously via hub_clip_upload, which writes a SECOND
+    alert log entry with the same event id but stream = f"{site} / {stream}".
+    That entry may not pass the allowed_chains filter in _read_raw, so the
+    filtered incident event list has no clip URL.
+
+    This index is keyed by event id so we can do a second-pass lookup:
+    if a fault event has no clip URL, check whether another log entry with
+    the same id does — and use that URL instead.
+    """
+    index: dict = {}
+    try:
+        cutoff = time.time() - max_age_h * 3600
+        with open(_ALERT_LOG, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                if not ev.get('clip') or not ev.get('id'):
+                    continue
+                try:
+                    ev_ts = datetime.strptime(ev['ts'], '%Y-%m-%d %H:%M:%S').timestamp()
+                except Exception:
+                    continue
+                if ev_ts < cutoff:
+                    continue
+                url = _clip_url(ev)
+                if url:
+                    index.setdefault(ev['id'], url)
+    except Exception:
+        pass
+    return index
 
 
 def _group_by_incident(events):
@@ -195,6 +236,15 @@ def _build_incidents(allowed_chains=None, max_age_h=24):
     faults     = [e for e in raw if e.get('type') in _FAULT_TYPES]
     recoveries = [e for e in raw if e.get('type') == 'CHAIN_RECOVERED']
 
+    # Build an unfiltered clip index keyed by event id.
+    # Remote-node chain faults have clip="" in the original CHAIN_FAULT entry.
+    # The uploaded clip arrives later and creates a second log entry with the
+    # same id but stream=f"{site} / {stream}" — which may not pass the
+    # allowed_chains filter (e.g. chain label has an equipment suffix the
+    # uploaded stream name lacks).  This index finds those uploaded clips by
+    # id so we can attach them to their parent fault incident.
+    _clip_idx = _build_clip_index(max_age_h=max_age_h)
+
     result = []
 
     for kind_label, evs, ev_kind in (
@@ -234,8 +284,19 @@ def _build_incidents(allowed_chains=None, max_age_h=24):
             else:
                 label = f"{seen_stations[0]} and {len(seen_stations) - 1} other stations"
 
-            # Pick the first clip that exists
+            # Pick the first clip URL from the filtered incident events.
             clip = next((c for c in (_clip_url(e) for e in inc_evs) if c), None)
+
+            # Fallback: look up by event id in the unfiltered clip index.
+            # This catches uploaded clips whose stream name didn't match the
+            # allowed_chains filter (e.g. equipment suffix in chain label vs
+            # bare "site / stream" in the upload entry).
+            if clip is None:
+                for _inc_ev in inc_evs:
+                    _eid = _inc_ev.get('id', '')
+                    if _eid and _eid in _clip_idx:
+                        clip = _clip_idx[_eid]
+                        break
 
             if ev_kind == 'fault':
                 text = f"Station fault — {label}"
