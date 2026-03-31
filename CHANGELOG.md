@@ -2,6 +2,14 @@
 
 ---
 
+## [3.4.96] - 2026-03-31
+
+### Fixed
+- **Live View level display showing excessive decimal places** — `_applyLiveFrame` was setting the level value span to the raw float (e.g. `-13.9211857 dB`). Fixed: JS now uses `.toFixed(1)` so values display as e.g. `-13.9 dB`. The static heartbeat render in the hub template was also unrounded (`{{lev}} dB`); fixed to `{{lev|round(1)}} dB`.
+- **Live View indicator hard to notice** — `⚡ Live` pill in summary bar was dim grey when not flashing. Now always green; flashes white→green on each received frame. Level value spans also flash briefly bright on update, making 1 Hz updates visually obvious.
+
+---
+
 ## [3.4.95] - 2026-03-31
 
 ### Fixed
