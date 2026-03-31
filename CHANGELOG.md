@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.100] - 2026-03-31
+
+### Fixed
+- **Hub dashboard live meters never updated — root cause** — `_live_loop` on the client was gated behind `cfg.hub.live_view`. If that setting wasn't explicitly enabled on the client machine, no live frames were ever pushed regardless of what was configured on the hub. The gate has been removed: clients now always push live metric frames at 5 Hz whenever a `hub_url` is configured. Low-bandwidth mode clients remain exempt. At ~200 bytes × 5 pushes/s this is under 1 KB/s — trivial for any normal connection.
+
+---
+
 ## [3.4.99] - 2026-03-31
 
 ### Fixed

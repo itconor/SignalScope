@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.99"
+BUILD                  = "SignalScope-3.4.100"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -11601,14 +11601,16 @@ class HubClient:
             self._stop.wait(BASE_WAIT)
 
     def _live_loop(self, stop_evt: threading.Event) -> None:
-        """Push slim metric frames to the hub at ~1 Hz for live view mode."""
+        """Push slim metric frames to the hub at 5 Hz for live level meters.
+
+        Always-on for any client that has a hub_url configured (not just when
+        live_view is True). At ~200 bytes × 5/s this is < 1 KB/s — trivial.
+        Low-bandwidth mode clients are exempt.
+        """
         import urllib.request as _ur
         while not stop_evt.is_set():
             try:
                 cfg = monitor.app_cfg
-                if not getattr(getattr(cfg, 'hub', None), 'live_view', False):
-                    stop_evt.wait(5.0)
-                    continue
                 if self._low_bw:
                     stop_evt.wait(5.0)
                     continue
