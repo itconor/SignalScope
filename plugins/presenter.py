@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.2.4",
+    "version":    "1.2.5",
 }
 
 import json, os, time, urllib.parse
@@ -252,6 +252,31 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 .hdr-listen{font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#1a7fe8,#17a8ff);padding:8px 18px;border-radius:20px;text-decoration:none;display:flex;align-items:center;gap:7px;box-shadow:0 2px 12px rgba(23,168,255,.35);transition:filter .2s,box-shadow .2s}
 .hdr-listen:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
 
+/* ── Live status hero ── */
+.status-hero{margin:20px 24px 0;max-width:1400px;margin-left:auto;margin-right:auto;border-radius:20px;padding:28px 32px;display:flex;align-items:center;gap:24px;transition:background .4s,border-color .4s}
+.status-hero.ok{background:linear-gradient(135deg,rgba(34,197,94,.13),rgba(34,197,94,.07));border:1.5px solid rgba(34,197,94,.4)}
+.status-hero.fault{background:linear-gradient(135deg,rgba(245,158,11,.13),rgba(245,158,11,.07));border:1.5px solid rgba(245,158,11,.45)}
+.status-hero.loading{background:rgba(23,52,95,.4);border:1.5px solid var(--bor)}
+.sh-icon{font-size:52px;line-height:1;flex-shrink:0;transition:transform .3s}
+.status-hero.ok    .sh-icon{animation:none}
+.status-hero.fault .sh-icon{animation:sh-pulse 2s ease-in-out infinite}
+@keyframes sh-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
+.sh-body{flex:1;min-width:0}
+.sh-title{font-size:22px;font-weight:800;letter-spacing:-.02em;margin-bottom:5px;line-height:1.2}
+.status-hero.ok    .sh-title{color:var(--ok)}
+.status-hero.fault .sh-title{color:var(--wn)}
+.status-hero.loading .sh-title{color:var(--mu)}
+.sh-sub{font-size:13px;color:var(--mu);line-height:1.5}
+.sh-badge{flex-shrink:0;font-size:13px;font-weight:700;padding:8px 18px;border-radius:12px;text-align:center;min-width:80px}
+.status-hero.ok    .sh-badge{background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3)}
+.status-hero.fault .sh-badge{background:rgba(245,158,11,.15);color:var(--wn);border:1px solid rgba(245,158,11,.3)}
+@media(max-width:640px){
+  .status-hero{margin:14px 16px 0;padding:20px;gap:16px}
+  .sh-icon{font-size:40px}
+  .sh-title{font-size:18px}
+  .sh-badge{display:none}
+}
+
 /* ── Listen banner ── */
 .listen-banner{margin:16px 24px 0;max-width:1400px;margin-left:auto;margin-right:auto;background:linear-gradient(135deg,rgba(23,168,255,.12),rgba(23,168,255,.06));border:1px solid rgba(23,168,255,.3);border-radius:16px;padding:18px 24px;display:flex;align-items:center;gap:18px}
 .listen-banner-icon{font-size:36px;flex-shrink:0}
@@ -381,6 +406,15 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 <div class="greeting">
   <div class="greeting-title" id="greeting-text">Good day 👋</div>
   <div class="greeting-sub">Here is a live overview of your stations.</div>
+</div>
+
+<div class="status-hero loading" id="status-hero">
+  <div class="sh-icon" id="sh-icon">⏳</div>
+  <div class="sh-body">
+    <div class="sh-title" id="sh-title">Checking station status…</div>
+    <div class="sh-sub" id="sh-sub">Connecting to hub, please wait.</div>
+  </div>
+  <div class="sh-badge" id="sh-badge"></div>
 </div>
 
 {% if has_listener %}
@@ -575,15 +609,49 @@ function renderStations(sites){
         rds:s.fm_rds_ps||'',dab:s.dab_service||'',label:s.label||''});
     });
   });
-  var onair=streams.filter(function(s){return s.online&&s.status==='OK';}).length;
-  var issues=streams.filter(function(s){return s.online&&s.status!=='OK';}).length;
-  var offline=streams.filter(function(s){return !s.online;}).length;
+  var onair  = streams.filter(function(s){return s.online&&s.status==='OK';});
+  var faulted= streams.filter(function(s){return s.online&&s.status!=='OK';});
+  var offline= streams.filter(function(s){return !s.online;});
   var parts=[];
-  if(onair)   parts.push(onair+' on air');
-  if(issues)  parts.push(issues+' issue'+(issues>1?'s':''));
-  if(offline) parts.push(offline+' offline');
+  if(onair.length)    parts.push(onair.length+' on air');
+  if(faulted.length)  parts.push(faulted.length+' issue'+(faulted.length>1?'s':''));
+  if(offline.length)  parts.push(offline.length+' offline');
   document.getElementById('hdr-station-count').textContent=parts.join(' · ')||'No stations';
   _setRefresh(true,'Live · Updated at '+_fmtTime(new Date()));
+
+  // ── Status hero block ──────────────────────────────────────────────────
+  var hero  = document.getElementById('status-hero');
+  var icon  = document.getElementById('sh-icon');
+  var title = document.getElementById('sh-title');
+  var sub   = document.getElementById('sh-sub');
+  var badge = document.getElementById('sh-badge');
+  if(faulted.length || offline.length){
+    var affected = faulted.concat(offline);
+    hero.className  = 'status-hero fault';
+    icon.textContent= '⚠️';
+    if(affected.length===1){
+      title.textContent = affected[0].name+' has a signal issue';
+      sub.textContent   = 'Your broadcast engineer has been alerted. Check the fault history below for details.';
+    } else {
+      var names=affected.slice(0,2).map(function(s){return s.name;}).join(', ');
+      if(affected.length>2) names+=' and '+(affected.length-2)+' more';
+      title.textContent = 'Signal issue — '+names;
+      sub.textContent   = affected.length+' station'+(affected.length>1?'s':'')+' affected. Your broadcast engineer has been alerted.';
+    }
+    badge.textContent = faulted.length+offline.length+' issue'+(faulted.length+offline.length>1?'s':'');
+  } else if(!streams.length){
+    hero.className  = 'status-hero loading';
+    icon.textContent= '📡';
+    title.textContent='No stations connected';
+    sub.textContent  ='No station data is available. Check your hub connection.';
+    badge.textContent='';
+  } else {
+    hero.className  = 'status-hero ok';
+    icon.textContent= '✅';
+    title.textContent='All stations are on air';
+    sub.textContent  = streams.length+' station'+(streams.length>1?'s':'')+' running normally. No action needed.';
+    badge.textContent='All clear';
+  }
   if(!streams.length){
     document.getElementById('stations-wrap').innerHTML=
       '<div style="text-align:center;padding:40px 24px;color:var(--mu)">No stations available</div>';
