@@ -2,6 +2,15 @@
 
 ---
 
+## [Producer View 1.2.3] - 2026-03-31
+
+### Changed
+- **Equipment names stripped from headlines** — chain names like "London - Livewire / Downtown Radio - LONCTAXMQ05" now display as "London - Livewire / Downtown Radio". Equipment suffixes (codec serials, processor names, etc.) are removed before showing to producers. Recognises all-caps serials and keywords like Processor, Primary, Secondary, Backup, Encoder, Codec, STL, DAB, FM, TX, Mux, Transmitter, Receiver, etc.
+- **De-duplicated station list** — when multiple chains for the same station fault at once, the "affected stations" list shows each unique station name once, not every chain. The "(N chains affected)" count is gone from headlines.
+- **Expand only shown when genuinely needed** — "▾ Show affected stations" only appears when a single incident genuinely spans more than one distinct station after de-duplication.
+
+---
+
 ## [Producer View 1.2.1] - 2026-03-30
 
 ### Changed

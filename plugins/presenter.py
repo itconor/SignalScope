@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.2.2",
+    "version":    "1.2.3",
 }
 
 import json, os, time, urllib.parse
@@ -104,6 +104,39 @@ def _group_by_incident(events):
     return incidents
 
 
+def _station_name(chain_name):
+    """Strip the equipment suffix from a chain name to get the station name.
+
+    Chain naming convention: "[Site] / [Station] - [Equipment]"
+    e.g. "London - Livewire / Downtown Radio - LONCTAXMQ05"
+          → "London - Livewire / Downtown Radio"
+
+    If there's no recognisable equipment suffix the full name is returned.
+    An equipment suffix is defined as the last " - <word>" segment where the
+    segment is either ALL-CAPS/digits (codec serial like LONCTAXMQ05) or
+    contains typical equipment keywords (Processor, Primary, Secondary,
+    Backup, Encoder, DAB, FM, TX, RX, Codec, Quant, STL, C1, C2 etc.)
+    """
+    import re as _re
+    # Split on last " - "
+    parts = chain_name.rsplit(' - ', 1)
+    if len(parts) != 2:
+        return chain_name
+    base, suffix = parts
+    # Consider it an equipment name if it:
+    # - is all uppercase letters/digits (serial number style: LONCTAXMQ05)
+    # - or matches known equipment keywords
+    _EQUIPMENT_PAT = _re.compile(
+        r'^([A-Z0-9]{4,}|.*\b(Processor|Primary|Secondary|Backup|Encoder|'
+        r'Codec|Quant|STL|DAB|FM|TX|RX|C[0-9]+|Mux|Multiplexer|Router|'
+        r'Switch|Amp|Satellite|MPX|AES|SDI|Livebox|Transmitter|Receiver)\b.*)$',
+        _re.IGNORECASE,
+    )
+    if _EQUIPMENT_PAT.match(suffix.strip()):
+        return base.strip()
+    return chain_name
+
+
 def _clip_url(ev):
     """Build the playback URL for an alert clip, or return None."""
     clip   = ev.get('clip', '')
@@ -145,17 +178,25 @@ def _build_incidents(allowed_chains=None, max_age_h=24):
         ('recovery', recoveries, 'recovery'),
     ):
         for inc in _group_by_incident(evs):
-            inc_evs   = inc['_events']
-            names     = [e.get('stream', '') for e in inc_evs]
-            # Representative event = newest (first in list since we read newest-first)
-            rep_ev    = inc_evs[0]
-            count     = len(inc_evs)
-            prefix    = _common_prefix(names)
+            inc_evs = inc['_events']
+            rep_ev  = inc_evs[0]
 
-            if count == 1:
-                label = names[0]
+            # Clean raw chain names → station names (strip equipment suffixes)
+            raw_names     = [e.get('stream', '') for e in inc_evs]
+            station_names = [_station_name(n) for n in raw_names]
+
+            # De-duplicate station names (many chains → same station after stripping)
+            seen_stations = []
+            for sn in station_names:
+                if sn not in seen_stations:
+                    seen_stations.append(sn)
+
+            # Headline label: common prefix of unique station names, or single name
+            if len(seen_stations) == 1:
+                label = seen_stations[0]
             else:
-                label = f"{prefix} ({count} chains affected)"
+                prefix = _common_prefix(seen_stations)
+                label  = prefix if prefix else seen_stations[0]
 
             # Pick the first clip that exists
             clip = next((c for c in (_clip_url(e) for e in inc_evs) if c), None)
@@ -165,16 +206,18 @@ def _build_incidents(allowed_chains=None, max_age_h=24):
             else:
                 text = f"Station recovered — {label}"
 
+            # Only show the detail list if there are genuinely multiple stations
+            detail_stations = seen_stations if len(seen_stations) > 1 else []
+
             result.append({
-                '_ts_unix':    inc['_ts_unix'],
-                'kind':        ev_kind,
-                'text':        text,
-                'time':        _friendly_time(rep_ev.get('ts', '')),
-                'type':        rep_ev.get('type', ''),
-                'clip_url':    clip,
-                'chain_count': count,
-                # Pass individual chain names for the expandable detail row
-                'chains':      names if count > 1 else [],
+                '_ts_unix': inc['_ts_unix'],
+                'kind':     ev_kind,
+                'text':     text,
+                'time':     _friendly_time(rep_ev.get('ts', '')),
+                'type':     rep_ev.get('type', ''),
+                'clip_url': clip,
+                # Cleaned, de-duped station names for the expandable list
+                'chains':   detail_stations,
             })
 
     result.sort(key=lambda e: e['_ts_unix'], reverse=True)
