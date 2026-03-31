@@ -2,6 +2,17 @@
 
 ---
 
+## [3.4.90] - 2026-03-31
+
+### Added
+- **High-bandwidth live view mode** — new opt-in hub setting that pushes slim metric frames (level_dbfs, peak, LUFS, silence, AI status) from each client to the hub at 1 Hz. The hub fans these out to authenticated browsers via SSE (`GET /hub/stream/events`), enabling sub-second level bar and status updates without waiting for the 5s heartbeat + 5s browser poll cycle. The existing heartbeat is unchanged — it continues to carry full payloads, commands, and ACKs. Live view automatically falls back to normal 5s polling if the SSE connection fails. Disabled automatically when `low_bw` mode is active for a site.
+- **`HubLiveFanout`** — new thread-safe fan-out class using `threading.Condition` per site; negligible memory footprint.
+- **`HubClient._live_loop()`** — lightweight background thread pushing ~200-byte JSON frames at 1 Hz, using the same HMAC signing as the heartbeat.
+- **`POST /api/v1/live_push`** — new hub route with a separate 180 RPM rate limiter (vs 60 RPM for heartbeat). Signature verification and nonce replay protection identical to heartbeat.
+- **`GET /hub/stream/events`** — SSE endpoint with `X-Accel-Buffering: no` for nginx compatibility. Respects per-user site access controls. Falls back to keepalive comments every ~5s when no updates arrive.
+
+---
+
 ## [3.4.89] - 2026-03-31
 
 ### Fixed

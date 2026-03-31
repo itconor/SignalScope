@@ -515,6 +515,15 @@ document.addEventListener('DOMContentLoaded',function(){
                 </span>
               </label>
             </div>
+            <div style="margin-bottom:10px">
+              <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+                <input type="checkbox" name="hub_live_view" value="1" {{'checked' if cfg.hub.live_view}} style="margin-top:2px;accent-color:var(--acc)">
+                <span>
+                  <span style="font-size:13px;font-weight:600">High-bandwidth live view</span><br>
+                  <span style="font-size:12px;color:var(--mu)">Push live metrics to hub at 1 Hz (sub-second updates in browser). Disable on metered or slow links.</span>
+                </span>
+              </label>
+            </div>
           </div>
 
           <script nonce="{{csp_nonce()}}">
@@ -748,6 +757,24 @@ document.addEventListener('DOMContentLoaded',function(){
                 <span>
                   <span style="font-size:13px;font-weight:600">Periodic clip sync</span><br>
                   <span style="font-size:12px;color:var(--mu)">Re-upload any clips every ~100 s that failed to reach the hub. Disable to manage uploads manually or minimise background traffic.</span>
+                </span>
+              </label>
+            </div>
+            <div style="margin-bottom:10px">
+              <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+                <input type="checkbox" name="hub_low_bw" value="1" {{'checked' if cfg.hub.low_bw}} style="margin-top:2px;accent-color:var(--acc)">
+                <span>
+                  <span style="font-size:13px;font-weight:600">Low-bandwidth mode</span><br>
+                  <span style="font-size:12px;color:var(--mu)">Reduces heartbeat frequency to ~30 s and disables automatic clip uploads. Clips are still delivered to the hub on demand when viewed in Reports or fault replay. Use on sites with data caps.</span>
+                </span>
+              </label>
+            </div>
+            <div style="margin-bottom:10px">
+              <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+                <input type="checkbox" name="hub_live_view" value="1" {{'checked' if cfg.hub.live_view}} style="margin-top:2px;accent-color:var(--acc)">
+                <span>
+                  <span style="font-size:13px;font-weight:600">High-bandwidth live view</span><br>
+                  <span style="font-size:12px;color:var(--mu)">Push live metrics to hub at 1 Hz (sub-second updates in browser). Disable on metered or slow links.</span>
                 </span>
               </label>
             </div>
@@ -1927,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.89"
+BUILD                  = "SignalScope-3.4.90"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2099,6 +2126,8 @@ COMPARE_SILENCE_THRESH  = -55.0         # dBFS below which stream counts as sile
 
 HUB_HEARTBEAT_INTERVAL  = 5.0           # seconds between client→hub pushes
 HUB_SITE_TIMEOUT        = 30.0          # seconds before a site is marked offline
+HUB_LIVE_PUSH_INTERVAL  = 1.0           # seconds between live metric pushes
+HUB_LIVE_RATE_LIMIT_RPM = 180           # max live push frames per minute per site
 HUB_PORT                = 5001          # hub dashboard port
 HUB_API_VERSION         = "v1"
 HUB_TIMESTAMP_TOLERANCE = 30    # max age (s) of a signed request
@@ -2528,6 +2557,7 @@ class HubConfig:
     clip_auto_upload: bool = True      # auto-upload clips to hub as they are saved
     clip_sync:        bool = True      # periodic background re-upload of any missed clips
     low_bw:           bool = False     # low-bandwidth mode: slow heartbeat (~30 s), disable auto-upload
+    live_view:        bool = False     # enable high-bandwidth live metric push
 
 
 @dataclass
@@ -2708,6 +2738,7 @@ def load_config() -> AppConfig:
             clip_auto_upload=bool(h.get("clip_auto_upload", True)),
             clip_sync=bool(h.get("clip_sync", True)),
             low_bw=bool(h.get("low_bw", False)),
+            live_view=bool(h.get("live_view", False)),
         ),
         auth=AuthConfig(
             enabled=au.get("enabled",False), username=au.get("username","admin"),
@@ -2853,6 +2884,7 @@ def save_config(cfg: AppConfig):
             "clip_auto_upload": cfg.hub.clip_auto_upload,
             "clip_sync": cfg.hub.clip_sync,
             "low_bw": cfg.hub.low_bw,
+            "live_view": cfg.hub.live_view,
         },
         "auth": {
             "enabled": cfg.auth.enabled, "username": cfg.auth.username,
@@ -9471,15 +9503,17 @@ class HubRateLimiter:
     Keyed by site_name when available (reliable across NAT/proxies),
     falling back to IP. Allows HUB_RATE_LIMIT_RPM per minute per key.
     """
-    def __init__(self):
+    def __init__(self, rpm: int = 0):
         self._hits: Dict[str, list] = {}
         self._lock = threading.Lock()
+        self._rpm  = rpm  # 0 → use global HUB_RATE_LIMIT_RPM
 
     def allow(self, key: str) -> bool:
         now = time.time()
+        limit = self._rpm or HUB_RATE_LIMIT_RPM
         with self._lock:
             hits = [t for t in self._hits.get(key, []) if now - t < 60.0]
-            if len(hits) >= HUB_RATE_LIMIT_RPM:
+            if len(hits) >= limit:
                 self._hits[key] = hits
                 return False
             hits.append(now)
@@ -9531,8 +9565,9 @@ def _find_binary(name: str) -> str:
     return ""
 
 
-hub_rate_limiter = HubRateLimiter()
-hub_nonce_store  = HubNonceStore()
+hub_rate_limiter      = HubRateLimiter()
+hub_live_rate_limiter = HubRateLimiter(HUB_LIVE_RATE_LIMIT_RPM)
+hub_nonce_store       = HubNonceStore()
 
 # Background cleanup
 def _security_cleanup():
@@ -10476,6 +10511,9 @@ class HubClient:
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="HubClient")
         self._thread.start()
+        _live_stop = threading.Event()
+        threading.Thread(target=self._live_loop, args=(_live_stop,),
+                         daemon=True, name="HubLivePush").start()
 
     def stop(self):
         self._stop.set()
@@ -11544,6 +11582,61 @@ class HubClient:
                   f"(will retry in {BASE_WAIT}s): {_top_e}")
             import traceback as _tb; _tb.print_exc()
             self._stop.wait(BASE_WAIT)
+
+    def _live_loop(self, stop_evt: threading.Event) -> None:
+        """Push slim metric frames to the hub at ~1 Hz for live view mode."""
+        import urllib.request as _ur
+        while not stop_evt.is_set():
+            try:
+                cfg = monitor.app_cfg
+                if not getattr(getattr(cfg, 'hub', None), 'live_view', False):
+                    stop_evt.wait(5.0)
+                    continue
+                if self._low_bw:
+                    stop_evt.wait(5.0)
+                    continue
+                hub_url = cfg.hub.hub_url.rstrip('/')
+                site    = cfg.hub.site_name
+                secret  = cfg.hub.secret_key
+                if not hub_url or not site:
+                    stop_evt.wait(5.0)
+                    continue
+
+                # Build slim frame — only fast-changing metric fields
+                streams_snap = []
+                for inp in (cfg.inputs or []):
+                    streams_snap.append({
+                        "name":           inp.name,
+                        "level_dbfs":     getattr(inp, '_level_dbfs', None),
+                        "peak_dbfs":      getattr(inp, '_peak_dbfs', None),
+                        "silence_active": bool(getattr(inp, '_silence_active', False)),
+                        "ai_status":      getattr(inp, '_ai_status', '') or '',
+                        "lufs_m":         getattr(inp, '_lufs_m', None),
+                        "lufs_s":         getattr(inp, '_lufs_s', None),
+                    })
+
+                frame = {"type": "live", "site": site,
+                         "ts": time.time(), "streams": streams_snap}
+                payload = json.dumps(frame, separators=(',', ':')).encode()
+
+                ts  = time.time()
+                sig = hub_sign_payload(secret, payload, ts) if secret else ""
+                req = _ur.Request(
+                    f"{hub_url}/api/v1/live_push",
+                    data=payload,
+                    method="POST",
+                    headers={
+                        "Content-Type":  "application/json",
+                        "X-Hub-Sig":     sig,
+                        "X-Hub-Ts":      f"{ts:.0f}",
+                        "X-Hub-Nonce":   hashlib.md5(os.urandom(8)).hexdigest()[:16],
+                        "X-Site":        site,
+                    },
+                )
+                _ur.urlopen(req, timeout=5).close()
+            except Exception:
+                pass
+            stop_evt.wait(HUB_LIVE_PUSH_INTERVAL)
 
 
 # ─── Hub server — aggregates heartbeats from all clients ──────────────────────
@@ -13884,6 +13977,58 @@ class ListenSlot:
         return time.time() - self.last_chunk > self.SLOT_TIMEOUT
 
 
+class HubLiveFanout:
+    """Fan-out hub for live metric frames pushed by clients at ~1 Hz.
+    Notifies waiting SSE generators when a new frame arrives for a site."""
+
+    def __init__(self):
+        self._lock        = threading.Lock()
+        self._live_state  = {}   # site → latest slim frame dict
+        self._conditions  = {}   # site → threading.Condition
+        self._subscribers = {}   # site → int (active SSE connection count)
+
+    def _ensure_site(self, site: str):
+        if site not in self._conditions:
+            self._conditions[site]  = threading.Condition(self._lock)
+            self._live_state[site]  = {}
+            self._subscribers[site] = 0
+
+    def push(self, site: str, frame: dict):
+        """Store latest frame for site and wake all waiting SSE generators."""
+        with self._lock:
+            self._ensure_site(site)
+            self._live_state[site] = frame
+            self._conditions[site].notify_all()
+
+    def wait_for_update(self, site: str, since_ts: float, timeout: float = 5.0):
+        """Block until a new frame for site arrives (ts > since_ts) or timeout.
+        Returns the frame dict, or None on timeout."""
+        with self._lock:
+            self._ensure_site(site)
+            self._subscribers[site] += 1
+            try:
+                cond = self._conditions[site]
+                deadline = time.monotonic() + timeout
+                while True:
+                    frame = self._live_state.get(site, {})
+                    if frame and frame.get("ts", 0) > since_ts:
+                        return frame
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    cond.wait(timeout=min(remaining, 1.0))
+            finally:
+                self._subscribers[site] = max(0, self._subscribers[site] - 1)
+
+    def subscriber_count(self, site: str) -> int:
+        with self._lock:
+            return self._subscribers.get(site, 0)
+
+    def latest(self, site: str) -> dict:
+        with self._lock:
+            return self._live_state.get(site, {})
+
+
 class ListenSlotRegistry:
     """Thread-safe registry of active listen slots."""
 
@@ -13953,7 +14098,8 @@ class ListenSlotRegistry:
                 print(f"[SlotReaper] Reaped {len(stale)} stale slot(s)")
 
 
-listen_registry = ListenSlotRegistry()
+listen_registry  = ListenSlotRegistry()
+hub_live_fanout  = HubLiveFanout()
 
 # ─── Flask + templates ────────────────────────────────────────────────────────
 
@@ -18631,6 +18777,7 @@ def settings():
         cfg.hub.clip_auto_upload = bool(f.get("hub_clip_auto_upload"))
         cfg.hub.clip_sync        = bool(f.get("hub_clip_sync"))
         cfg.hub.low_bw           = bool(f.get("hub_low_bw"))
+        cfg.hub.live_view        = bool(f.get("hub_live_view"))
         # Auth
         cfg.auth.enabled  = bool(f.get("auth_enabled"))
         cfg.auth.username = f.get("auth_username","admin").strip() or "admin"
@@ -20930,6 +21077,55 @@ def hub_heartbeat():
         return Response(enc, content_type="application/octet-stream")
     return jsonify(ack)
 
+@app.post("/api/v1/live_push")
+def hub_live_push():
+    """Receive slim live metric frames from clients at ~1 Hz."""
+    if not hub_server:
+        return jsonify({"ok": False, "error": "not a hub"}), 404
+
+    site = request.headers.get("X-Site", "").strip()
+    if not site:
+        return jsonify({"ok": False, "error": "missing site"}), 400
+
+    # Rate limit (separate higher limit from heartbeat)
+    if not hub_live_rate_limiter.allow(site):
+        return jsonify({"ok": False, "error": "rate limited"}), 429
+
+    # Verify HMAC signature if a secret is configured
+    cfg    = monitor.app_cfg
+    secret = cfg.hub.secret_key or ""
+    if secret:
+        sig   = request.headers.get("X-Hub-Sig", "")
+        ts_h  = request.headers.get("X-Hub-Ts", "0")
+        nonce = request.headers.get("X-Hub-Nonce", "")
+        body  = request.get_data()
+        try:
+            ts = float(ts_h)
+        except ValueError:
+            return jsonify({"ok": False, "error": "invalid timestamp"}), 403
+        ok, reason = hub_verify_signature(secret, body, sig, ts)
+        if not ok:
+            return jsonify({"ok": False, "error": "invalid signature"}), 403
+        if not hub_nonce_store.check_and_store(nonce):
+            return jsonify({"ok": False, "error": "replay"}), 403
+        payload_bytes = body
+    else:
+        payload_bytes = request.get_data()
+
+    # Check site is approved
+    sdata = hub_server._sites.get(site, {})
+    if not sdata.get("_approved"):
+        return jsonify({"ok": False, "error": "not approved"}), 403
+
+    try:
+        frame = json.loads(payload_bytes)
+    except Exception:
+        return jsonify({"ok": False, "error": "invalid json"}), 400
+
+    frame["ts"] = frame.get("ts") or time.time()
+    hub_live_fanout.push(site, frame)
+    return jsonify({"ok": True})
+
 @app.post("/hub/clip_upload")
 def hub_clip_upload():
     """Receive a WAV clip (base64) uploaded from a client.
@@ -21923,6 +22119,7 @@ def hub_dashboard():
         offline_count=offline_count, alert_site_count=alert_site_count,
         warn_site_count=warn_site_count, stale_count=stale_count, hub_cpu=hub_cpu, hub_mem=hub_mem,
         is_admin=_is_admin(),
+        live_view='1' if cfg.hub.live_view else '0',
     )
 
 @app.post(f"/api/{HUB_API_VERSION}/audio_chunk/<slot_id>")
@@ -22182,6 +22379,68 @@ def _hub_prepare_site(site: dict) -> dict:
     s["ok_count"] = max(0, len(streams) - s["alert_count"] - s["warn_count"])
     s["problem_count"] = s["alert_count"] + s["warn_count"]
     return s
+
+@app.get("/hub/stream/events")
+@login_required
+def hub_stream_events():
+    """SSE endpoint — pushes live metric frames to authenticated browser clients."""
+    if not hub_server:
+        return jsonify({"error": "not a hub"}), 404
+
+    allowed = _allowed_sites()
+    site_filter = request.args.get("site", "").strip() or None
+
+    def _generate():
+        # Send an initial snapshot of all sites the user can see
+        sites_snap = hub_server.get_sites()
+        sites_snap = _filter_sites(sites_snap)
+        yield f"data: {json.dumps({'type': 'snapshot', 'sites': sites_snap})}\n\n"
+
+        # Per-site last-seen timestamps for change detection
+        last_ts = {}
+        idle = 0
+        while True:
+            try:
+                sites = [s.get("site", "") for s in hub_server.get_sites()
+                         if not allowed or s.get("site", "") in allowed]
+                if site_filter:
+                    sites = [s for s in sites if s == site_filter]
+
+                updated = False
+                for site in sites:
+                    frame = hub_live_fanout.latest(site)
+                    if not frame:
+                        continue
+                    ts = frame.get("ts", 0)
+                    if ts > last_ts.get(site, 0):
+                        last_ts[site] = ts
+                        yield f"data: {json.dumps(frame)}\n\n"
+                        updated = True
+
+                if not updated:
+                    idle += 1
+                    if idle >= 5:   # keepalive every ~5s
+                        yield ": keepalive\n\n"
+                        idle = 0
+                    # Wait for any site update
+                    if sites:
+                        hub_live_fanout.wait_for_update(sites[0], last_ts.get(sites[0], 0), timeout=1.0)
+                    else:
+                        time.sleep(1.0)
+                else:
+                    idle = 0
+                    time.sleep(0.1)
+            except GeneratorExit:
+                return
+            except Exception:
+                time.sleep(1.0)
+
+    resp = Response(_generate(), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no",
+                             "Cache-Control": "no-cache",
+                             "Connection": "keep-alive"})
+    resp.direct_passthrough = True
+    return resp
 
 @app.get("/hub/site/<path:site_name>/open")
 @login_required
@@ -29841,6 +30100,70 @@ function hubRefresh(){
     if(_si && _si._searchApply && ((_si.value||'').trim())) _si._searchApply();
   }).catch(function(e){console.warn('[hubRefresh]',e);}).finally(function(){ _hubSchedule(); });
 }
+// ── Live view SSE ─────────────────────────────────────────────────────────
+var _liveES = null;
+var _liveActive = false;
+
+function _startLiveView() {
+  if (_liveES) return;
+  _liveES = new EventSource('/hub/stream/events');
+  _liveES.onopen = function() {
+    _liveActive = true;
+    // Slow down structural poll — live view handles fast updates
+    clearTimeout(_hubTimer);
+    _hubTimer = setTimeout(hubRefresh, 30000);
+  };
+  _liveES.onmessage = function(e) {
+    try {
+      var frame = JSON.parse(e.data);
+      if (frame.type === 'live') _applyLiveFrame(frame);
+      else if (frame.type === 'snapshot') { /* initial snapshot already rendered */ }
+    } catch(err) {}
+  };
+  _liveES.onerror = function() {
+    _stopLiveView();
+    // Fall back to normal polling
+    clearTimeout(_hubTimer);
+    _hubSchedule();
+  };
+}
+
+function _stopLiveView() {
+  if (_liveES) { try { _liveES.close(); } catch(e) {} _liveES = null; }
+  _liveActive = false;
+}
+
+function _applyLiveFrame(frame) {
+  var site = frame.site;
+  var streams = frame.streams || [];
+  streams.forEach(function(s) {
+    // Find the level bar element for this site+stream if rendered
+    var key = (site + '|' + s.name).replace(/[^a-zA-Z0-9|]/g, '_');
+    var lvlEl = document.getElementById('lvl_' + key);
+    if (lvlEl && s.level_dbfs != null) {
+      // Map -60..0 dBFS to 0..100%
+      var pct = Math.max(0, Math.min(100, ((s.level_dbfs + 60) / 60) * 100));
+      lvlEl.style.width = pct.toFixed(1) + '%';
+      // Colour by level
+      lvlEl.style.background = s.level_dbfs > -6 ? '#ef4444'
+                              : s.level_dbfs > -18 ? '#22c55e' : '#17a8ff';
+    }
+    var statusEl = document.getElementById('ai_' + key);
+    if (statusEl && s.ai_status) {
+      statusEl.textContent = s.ai_status;
+    }
+  });
+}
+
+// Auto-start live view if the server has it enabled
+(function() {
+  var liveEnabled = document.body.getAttribute('data-live-view') === '1';
+  if (liveEnabled) {
+    window.addEventListener('load', function() {
+      setTimeout(_startLiveView, 1000);
+    });
+  }
+})();
 function agoJS(s){ s=Math.round(s||0); if(s<5)return'just now'; if(s<60)return s+'s ago'; return Math.round(s/60)+'m ago'; }
 function _csrfFetch(url,opts){
   opts=opts||{};
@@ -30313,7 +30636,7 @@ setInterval(_loadTrends, 300000);
   };
 })();
 </script>
-<link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
+<link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body data-live-view="{{live_view}}">
 {{ topnav("hub") }}
 <div class="hub-topbar" style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;gap:7px;align-items:center">
   <span style="font-size:13px;font-weight:600">🛰 Hub Dashboard</span>
