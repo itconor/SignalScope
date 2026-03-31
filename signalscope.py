@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.98"
+BUILD                  = "SignalScope-3.4.99"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -28487,8 +28487,11 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         </div>
         <div class="lbar-wrap">
           <span style="font-size:11px;color:var(--mu);width:28px">Lvl</span>
-          <div class="lbar-track"><div class="lbar-fill" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
-          <span class="lbar-val" style="color:{{lcol}}">{{lev}} dB</span>
+          <div class="lbar-outer">
+            <div class="lbar-track"><div class="lbar-fill" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
+            <div class="lbar-peak" style="left:{{lpct}}%"></div>
+          </div>
+          <span class="lbar-val" style="color:{{lcol}}">{{lev|round(1)}} dB</span>
         </div>
         {% if s.lufs_m is not none and s.lufs_m > -69 %}
         {% set tpcol = 'var(--al)' if s.lufs_tp > -1 else ('var(--wn)' if s.lufs_tp > -3 else 'var(--mu)') %}
@@ -30353,14 +30356,18 @@ function _livePoll() {
         });
       });
 
-      // Pulse ⚡ indicator
-      if (gotData) {
-        var ind = document.getElementById('live-ind');
-        if (ind) {
+      // Show/pulse ⚡ indicator when live data is flowing
+      var ind = document.getElementById('live-ind');
+      if (ind) {
+        if (gotData) {
+          ind.style.display = '';
           ind.style.transition = 'none';
           ind.style.color = '#ffffff';
           clearTimeout(ind._t);
+          clearTimeout(ind._hide);
           ind._t = setTimeout(function(){ ind.style.transition = 'color .5s'; ind.style.color = '#4ade80'; }, 80);
+          // Hide the pill if no data arrives for 5 s (client disconnected)
+          ind._hide = setTimeout(function(){ ind.style.display = 'none'; }, 5000);
         }
       }
     })
@@ -30370,13 +30377,12 @@ function _livePoll() {
     });
 }
 
-// Auto-start live view if the server has it enabled.
-// IMPORTANT: this script is in <head>, so document.body is null here.
-// Read the attribute inside the load handler where body is guaranteed available.
+// Always start live level polling on hub dashboard load.
+// The poll returns {} if no sites are pushing live data — harmless.
+// Showing live updates does not require any per-hub setting; only the client
+// needs live_view enabled (via the replica page toggle) to push frames.
 window.addEventListener('load', function() {
-  if (document.body && document.body.getAttribute('data-live-view') === '1') {
-    setTimeout(_startLiveView, 500);
-  }
+  setTimeout(_startLiveView, 500);
 });
 function agoJS(s){ s=Math.round(s||0); if(s<5)return'just now'; if(s<60)return s+'s ago'; return Math.round(s/60)+'m ago'; }
 function _csrfFetch(url,opts){
@@ -30867,7 +30873,7 @@ setInterval(_loadTrends, 300000);
     <div id="alertTicker" style="width:100%;margin-top:6px;font-size:12px;color:var(--wn)"></div>
     <span class="sum-pill">🕒 <span id="wallClock">{{fmt(now)}}</span></span>
     <span class="sum-pill">🏗 {{build}}</span>
-    {% if live_view == '1' %}<span class="sum-pill" id="live-ind" style="color:#4ade80;transition:color .3s;font-weight:700" title="Live View active — level bars update at 1 Hz">⚡ Live</span>{% endif %}
+    <span class="sum-pill" id="live-ind" style="color:var(--mu);transition:color .5s;font-weight:700;display:none" title="Live View active — level bars updating in real time">⚡ Live</span>
     <span class="sum-pill">📡 {{sites|length}} site{{"s" if sites|length!=1 else ""}}</span>
     <span class="sum-pill" style="color:var(--al)">⛔ {{offline_count}} offline</span>
     <span class="sum-pill" style="color:var(--al)">🚨 {{alert_site_count}} alert</span>

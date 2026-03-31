@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.99] - 2026-03-31
+
+### Fixed
+- **Replica page solid green (regression from 3.4.97)** — the replica page CSS changed `.lbar-track` to `position:absolute;inset:0` but the replica page HTML had no `.lbar-outer` positioned parent. The absolutely positioned track expanded to fill the whole page. Fixed by wrapping the replica page level bar in `.lbar-outer` (same structure as hub dashboard).
+- **Hub dashboard live levels not updating** — polling only started when the hub's own `live_view` setting was `True`. This is the wrong gate: the HUB machine doesn't need its own setting; it just needs client sites to be pushing. Live polling now always starts on page load. If no sites are pushing, the poll returns empty JSON and nothing animates (no harm done).
+- **⚡ Live pill** — removed the `{% if live_view %}` server-side condition. The pill is always in the DOM but hidden; JS shows it the moment live data arrives and hides it again if no data is received for 5 s (client disconnected).
+
+---
+
 ## [3.4.98] - 2026-03-31
 
 ### Fixed
