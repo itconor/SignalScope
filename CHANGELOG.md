@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.113] - 2026-03-31
+
+### Fixed
+- **Producer View — clips now reliably shown for all chain faults (presenter.py v1.4.0)** — rewrote the data layer to read from the SQLite fault log DB (same source as the Broadcast Chains fault viewer) instead of parsing alert_log.json. The DB already has correct clip paths back-patched when clips arrive from remote nodes, so no alert-log ID matching is needed. Also reverted the 3.4.112 `_fire_chain_fault` UUID change which would have broken hub_reports clip deduplication. `metrics_db` is now exposed in the plugin context (`ctx["metrics_db"]`).
+
+---
+
 ## [3.4.112] - 2026-03-31
 
 ### Fixed

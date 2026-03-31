@@ -9,11 +9,16 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.3.6",
+    "version":    "1.4.0",
 }
 
 import json, os, time, urllib.parse
 from datetime import datetime
+
+# Module-level references set by register() — avoids passing them into every helper
+_metrics_db  = None
+_hub_server  = None
+_monitor_ref = None
 
 # ─── Plugin config (ticket URL etc.) ─────────────────────────────────────────
 
@@ -33,53 +38,9 @@ def _write_cfg(data):
     except Exception:
         pass
 
-# ─── Alert log helpers ────────────────────────────────────────────────────────
-
-_ALERT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'alert_log.json')
-
-_SHOW_TYPES  = {'CHAIN_FAULT', 'CHAIN_RECOVERED', 'CHAIN_FLAPPING'}
-_FAULT_TYPES = {'CHAIN_FAULT', 'CHAIN_FLAPPING'}
-
-# Events within this window are considered the same incident (mass outage grouping)
-_INCIDENT_WINDOW_S = 120   # 2 minutes
-
-
-def _read_raw(allowed_chains=None, max_age_h=24, limit=200):
-    """Read alert_log.json and return raw chain events, newest-first."""
-    try:
-        cutoff = time.time() - max_age_h * 3600
-        results = []
-        with open(_ALERT_LOG, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        for line in reversed(lines):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                ev = json.loads(line)
-            except Exception:
-                continue
-            etype = ev.get('type', '')
-            if etype not in _SHOW_TYPES:
-                continue
-            try:
-                ev_ts = datetime.strptime(ev['ts'], '%Y-%m-%d %H:%M:%S').timestamp()
-            except Exception:
-                continue
-            if ev_ts < cutoff:
-                break
-            ev['_ts_unix'] = ev_ts
-            chain_name = ev.get('stream', '')
-            if allowed_chains is not None and chain_name not in allowed_chains:
-                continue
-            results.append(ev)
-            if len(results) >= limit:
-                break
-        return results
-    except FileNotFoundError:
-        return []
-    except Exception:
-        return []
+# ─── Fault log DB helpers ─────────────────────────────────────────────────────
+# Reads from the same SQLite fault log that Broadcast Chains uses.
+# Clips are already correctly resolved in the DB (back-patched when uploaded).
 
 
 def _common_prefix(names):
@@ -99,68 +60,33 @@ def _common_prefix(names):
     return prefix.rstrip(' \t-—/') or names[0]
 
 
-def _build_clip_index(max_age_h=24):
-    """Read the FULL alert log (no chain filter) and return a dict of event_id → clip URL.
+def _fault_clip_url(clips, prefer_recovery=False):
+    """Pick the best clip URL from a fault log clips list.
 
-    Remote-node chain faults have clip="" in the original CHAIN_FAULT entry.
-    The clip arrives asynchronously via hub_clip_upload, which writes a SECOND
-    alert log entry with the same event id but stream = f"{site} / {stream}".
-    That entry may not pass the allowed_chains filter in _read_raw, so the
-    filtered incident event list has no clip URL.
-
-    This index is keyed by event id so we can do a second-pass lookup:
-    if a fault event has no clip URL, check whether another log entry with
-    the same id does — and use that URL instead.
+    Fault log clips: [{key, fname, label, node_label, pos, status}, ...]
+    URL pattern: /api/chains/clip/{key}/{fname}
     """
-    index: dict = {}
-    try:
-        cutoff = time.time() - max_age_h * 3600
-        with open(_ALERT_LOG, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except Exception:
-                    continue
-                if not ev.get('clip') or not ev.get('id'):
-                    continue
-                try:
-                    ev_ts = datetime.strptime(ev['ts'], '%Y-%m-%d %H:%M:%S').timestamp()
-                except Exception:
-                    continue
-                if ev_ts < cutoff:
-                    continue
-                url = _clip_url(ev)
-                if url:
-                    index.setdefault(ev['id'], url)
-    except Exception:
-        pass
-    return index
-
-
-def _group_by_incident(events):
-    """Group events that fall within _INCIDENT_WINDOW_S of each other into incidents.
-
-    Returns list of incident dicts:
-      { '_ts_unix', '_events': [ev, ...] }
-    Events are expected newest-first; incidents are built newest-first as well.
-    """
-    incidents = []
-    for ev in events:
-        ev_ts = ev['_ts_unix']
-        merged = False
-        for inc in incidents:
-            # Incidents are anchored to the newest event already merged
-            if abs(inc['_ts_unix'] - ev_ts) <= _INCIDENT_WINDOW_S:
-                inc['_events'].append(ev)
-                # Anchor stays at the newest timestamp
-                merged = True
-                break
-        if not merged:
-            incidents.append({'_ts_unix': ev_ts, '_events': [ev]})
-    return incidents
+    if not clips:
+        return None
+    # For recovery rows prefer last_good/recovery labels; for fault rows prefer fault
+    preferred = ('last_good', 'recovery') if prefer_recovery else ('fault',)
+    chosen = None
+    for cl in clips:
+        key   = cl.get('key',   '')
+        fname = cl.get('fname', '')
+        if not key or not fname:
+            continue
+        label = cl.get('label', '') or cl.get('status', '')
+        if label in preferred:
+            chosen = cl
+            break
+    if chosen is None:
+        # Fall back to any clip with key+fname
+        chosen = next((cl for cl in clips if cl.get('key') and cl.get('fname')), None)
+    if chosen is None:
+        return None
+    return (f"/api/chains/clip/{urllib.parse.quote(chosen['key'], safe='')}/"
+            f"{urllib.parse.quote(chosen['fname'], safe='')}")
 
 
 def _station_name(chain_name):
@@ -202,18 +128,9 @@ def _station_name(chain_name):
     return name
 
 
-def _clip_url(ev):
-    """Build the playback URL for an alert clip, or return None."""
-    clip   = ev.get('clip', '')
-    stream = ev.get('stream', '')
-    if not clip or not stream:
-        return None
-    return f"/hub/site/(hub)/alerts/clip/{urllib.parse.quote(stream, safe='')}/{urllib.parse.quote(clip, safe='')}"
-
-
-def _friendly_time(ts_str):
+def _friendly_time_unix(ts: float) -> str:
     try:
-        t = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+        t = datetime.fromtimestamp(ts)
         today = datetime.now().date()
         delta = (today - t.date()).days
         h = t.hour % 12 or 12
@@ -226,102 +143,85 @@ def _friendly_time(ts_str):
         else:
             return t.strftime('%A') + f' at {tstr}'
     except Exception:
+        return ''
+
+
+def _friendly_time(ts_str):
+    try:
+        return _friendly_time_unix(datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S').timestamp())
+    except Exception:
         return ts_str or ''
 
 
 def _build_incidents(allowed_chains=None, max_age_h=24):
-    """Return grouped chain incidents, newest-first, ready for the API response."""
-    raw = _read_raw(allowed_chains=allowed_chains, max_age_h=max_age_h)
+    """Return chain incidents from the fault log DB, newest-first.
 
-    faults     = [e for e in raw if e.get('type') in _FAULT_TYPES]
-    recoveries = [e for e in raw if e.get('type') == 'CHAIN_RECOVERED']
+    Reads from the same SQLite source as the Broadcast Chains fault viewer.
+    Clips are already correctly resolved in the DB so no alert-log scanning needed.
+    """
+    chains_cfg = getattr(getattr(_monitor_ref, 'app_cfg', None), 'signal_chains', None) or []
+    cutoff     = time.time() - max_age_h * 3600
+    result     = []
 
-    # Build an unfiltered clip index keyed by event id.
-    # Remote-node chain faults have clip="" in the original CHAIN_FAULT entry.
-    # The uploaded clip arrives later and creates a second log entry with the
-    # same id but stream=f"{site} / {stream}" — which may not pass the
-    # allowed_chains filter (e.g. chain label has an equipment suffix the
-    # uploaded stream name lacks).  This index finds those uploaded clips by
-    # id so we can attach them to their parent fault incident.
-    _clip_idx = _build_clip_index(max_age_h=max_age_h)
+    for chain in chains_cfg:
+        cid   = chain.get('id', '')
+        cname = chain.get('name', '')
+        if not cid or not cname:
+            continue
+        if allowed_chains is not None and cname not in allowed_chains:
+            continue
 
-    result = []
+        entries = _metrics_db.fault_log_load(cid, limit=15)
 
-    for kind_label, evs, ev_kind in (
-        ('fault',    faults,     'fault'),
-        ('recovery', recoveries, 'recovery'),
-    ):
-        for inc in _group_by_incident(evs):
-            inc_evs = inc['_events']
-            rep_ev  = inc_evs[0]
+        # Overlay in-memory entries for freshness — clips arrive asynchronously
+        if _hub_server:
+            mem_entries = _hub_server._chain_fault_log.get(cid, [])
+            if mem_entries:
+                mem_by_id = {e['id']: e for e in mem_entries if e.get('id')}
+                for entry in entries:
+                    fid = entry.get('id', '')
+                    if fid and fid in mem_by_id:
+                        mem_clips = mem_by_id[fid].get('clips') or []
+                        db_clips  = entry.get('clips') or []
+                        entry['clips'] = mem_clips if len(mem_clips) >= len(db_clips) else db_clips
 
-            # Clean raw chain names → station brand names.
-            # _station_name() strips equipment suffix then extracts brand after "/".
-            raw_names     = [e.get('stream', '') for e in inc_evs]
-            station_names = [_station_name(n) for n in raw_names]
+        station = _station_name(cname)
 
-            # Suppress infrastructure/site chains (raw name has no "/") when branded
-            # station chains (raw name contains "/") exist in the same incident.
-            # e.g. a site-level feeder "London" that cascades to
-            # "NI DAB / Downtown Radio" should be hidden — producers only care about
-            # the station brand, not the infrastructure chain that fed it.
-            has_branded = any('/' in rn for rn in raw_names)
-            if has_branded:
-                station_names = [sn for sn, rn in zip(station_names, raw_names)
-                                 if '/' in rn]
+        for entry in entries:
+            ts_start     = entry.get('ts_start') or 0
+            ts_recovered = entry.get('ts_recovered')
+            clips        = entry.get('clips') or []
 
-            # De-duplicate (many chains → same brand after extraction)
-            seen_stations = []
-            for sn in station_names:
-                if sn not in seen_stations:
-                    seen_stations.append(sn)
+            if ts_start < cutoff:
+                continue
 
-            # Headline label: use the station name(s) directly — no prefix guessing
-            if len(seen_stations) == 1:
-                label = seen_stations[0]
-            elif len(seen_stations) == 2:
-                label = f"{seen_stations[0]} and {seen_stations[1]}"
-            else:
-                label = f"{seen_stations[0]} and {len(seen_stations) - 1} other stations"
-
-            # Pick the first clip URL from the filtered incident events.
-            clip = next((c for c in (_clip_url(e) for e in inc_evs) if c), None)
-
-            # Fallback: look up by event id in the unfiltered clip index.
-            # This catches uploaded clips whose stream name didn't match the
-            # allowed_chains filter (e.g. equipment suffix in chain label vs
-            # bare "site / stream" in the upload entry).
-            if clip is None:
-                for _inc_ev in inc_evs:
-                    _eid = _inc_ev.get('id', '')
-                    if _eid and _eid in _clip_idx:
-                        clip = _clip_idx[_eid]
-                        break
-
-            if ev_kind == 'fault':
-                text = f"Station fault — {label}"
-            else:
-                text = f"Station recovered — {label}"
-
-            # Only show the detail list if there are genuinely multiple stations
-            detail_stations = seen_stations if len(seen_stations) > 1 else []
-
-            clip_label = '▶ Recovery clip' if ev_kind == 'recovery' else '▶ Fault clip'
-
+            # Fault row
             result.append({
-                '_ts_unix':  inc['_ts_unix'],
-                'kind':      ev_kind,
-                'text':      text,
-                'time':      _friendly_time(rep_ev.get('ts', '')),
-                'type':      rep_ev.get('type', ''),
-                'clip_url':  clip,
-                'clip_label': clip_label,
-                # Cleaned, de-duped station names for the expandable list
-                'chains':    detail_stations,
+                '_ts_unix':  ts_start,
+                'kind':      'fault',
+                'text':      f"Station fault — {station}",
+                'time':      _friendly_time_unix(ts_start),
+                'type':      'CHAIN_FAULT',
+                'clip_url':  _fault_clip_url(clips, prefer_recovery=False),
+                'clip_label': '▶ Fault clip',
+                'chains':    [],
             })
 
+            # Recovery row (only when recovered)
+            if ts_recovered and ts_recovered >= cutoff:
+                result.append({
+                    '_ts_unix':  ts_recovered,
+                    'kind':      'recovery',
+                    'text':      f"Station recovered — {station}",
+                    'time':      _friendly_time_unix(ts_recovered),
+                    'type':      'CHAIN_RECOVERED',
+                    'clip_url':  _fault_clip_url(clips, prefer_recovery=True),
+                    'clip_label': '▶ Recovery clip',
+                    'chains':    [],
+                })
+
     result.sort(key=lambda e: e['_ts_unix'], reverse=True)
-    return result[:30]
+    return result[:40]
 
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -871,12 +771,17 @@ loadFaults();
 # ─── Plugin registration ───────────────────────────────────────────────────
 
 def register(app, ctx):
+    global _metrics_db, _hub_server, _monitor_ref
     from flask import render_template_string, session, jsonify, request
 
     login_required  = ctx["login_required"]
     csrf_protect    = ctx["csrf_protect"]
     hub_server      = ctx["hub_server"]
     BUILD           = ctx["BUILD"]
+
+    _metrics_db  = ctx["metrics_db"]
+    _hub_server  = hub_server
+    _monitor_ref = ctx["monitor"]
 
     @app.get("/producer")
     @login_required
