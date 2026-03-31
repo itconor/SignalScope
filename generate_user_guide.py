@@ -93,7 +93,7 @@ def draw_cover_page(c, doc):
     # Version
     c.setFillColor(colors.HexColor("#5a7fa0"))
     c.setFont("Helvetica", 10)
-    c.drawCentredString(w / 2, h * 0.46, "Current as of build  SignalScope-3.4.58")
+    c.drawCentredString(w / 2, h * 0.46, "Current as of build  SignalScope-3.4.105")
 
     # Lower rule
     c.setStrokeColor(colors.HexColor("#1a3a6a"))
@@ -591,6 +591,33 @@ def ch4_dashboard(styles):
         "Clicking 🎧 Listen on any card opens the sticky mini-player at the bottom of the page. "
         "The mini-player shows the stream name and level while playing. Audio uses the browser's Web Audio API "
         "and remains active while you navigate between dashboard tabs. Click the × button to close the player."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Hub Dashboard — Live Level Meters")
+    elems.append(body(styles,
+        "The hub dashboard shows a <b>PPM-style bouncing level bar</b> for every stream on every connected "
+        "site. These bars update at <b>5 Hz</b> — independently of the 10-second heartbeat cycle — so you "
+        "see smooth real-time level animation without waiting for the next full data refresh."))
+    elems.append(spacer(4))
+    elems.append(body(styles,
+        "Each bar has three colour zones matching standard broadcast PPM practice:"))
+    elems.append(data_table(styles,
+        ["Zone", "Range", "Colour"],
+        [
+            ["Programme", "–80 dBFS to –20 dBFS", "Green"],
+            ["Near-clip warning", "–20 dBFS to –9 dBFS", "Amber"],
+            ["Clip zone", "–9 dBFS to 0 dBFS", "Red"],
+        ],
+        col_widths=[120, 160, 90]))
+    elems.append(spacer(4))
+    elems.append(body(styles,
+        "A <b>peak-hold marker</b> tracks the highest recent level and decays slowly after 2 seconds, "
+        "making transient peaks easy to spot at a glance."))
+    elems.append(spacer(4))
+    elems.append(body(styles,
+        "On page load the bars immediately show the last-known levels (restored from hub state on "
+        "restart) and begin animating as soon as live data arrives — typically within one to two "
+        "seconds of a stream connecting to audio."))
     return elems
 
 
@@ -1531,7 +1558,9 @@ def ch20_hub(styles):
     elems += h1(styles, "Hub Architecture & Security")
     elems.append(body(styles,
         "Each client monitors local RF/IP sources and reports via HMAC-signed, AES-256-GCM encrypted "
-        "heartbeats every ~10 seconds. The hub issues commands back on heartbeat ACKs (listen_requests, "
+        "heartbeats every ~10 seconds. In addition, clients push slim live metric frames (level, peak, "
+        "silence state) to the hub at <b>5 Hz</b> so that level bars and broadcast chain evaluation "
+        "update in sub-second time. The hub issues commands back on heartbeat ACKs (listen_requests, "
         "commands). Clients cannot be directly called by the hub (NAT traversal is not required — clients "
         "always initiate outbound connections to the hub)."))
     return elems
@@ -1769,13 +1798,18 @@ def ch28_plugins(styles):
     elems += chapter_header(styles, 28, "Plugin Development")
     elems.append(body(styles,
         "SignalScope's plugin system allows you to extend the application with custom pages and "
-        "functionality. Plugins are single Python files placed alongside <b>signalscope.py</b> that "
-        "are automatically discovered and loaded at startup."))
+        "functionality. Plugins are single Python files placed in the <b>plugins/</b> subdirectory "
+        "that are automatically discovered and loaded at startup."))
+    elems.append(spacer(4))
+    elems.append(body(styles,
+        "<i>Note: older releases stored plugins alongside signalscope.py in the root directory. "
+        "On first run after upgrading, SignalScope automatically migrates any root-level plugin files "
+        "and their associated config files into the plugins/ subdirectory.</i>"))
     elems.append(spacer(8))
 
     elems += h1(styles, "Minimal Plugin Skeleton")
     elems.append(code_block(styles, [
-        "# myplugin.py — drop alongside signalscope.py",
+        "# plugins/myplugin.py",
         "",
         "SIGNALSCOPE_PLUGIN = {",
         '    "id":    "myplugin",       # unique slug, matches filename stem',
@@ -1808,9 +1842,10 @@ def ch28_plugins(styles):
             ["monitor", "AppMonitor", "Access monitor.app_cfg (config dataclass), monitor.log(), etc."],
             ["hub_server", "HubServer | None", "Hub state: _sites, _scanner_sessions, etc. None on client-only nodes."],
             ["listen_registry", "ListenSlotRegistry", "Create and get audio relay slots"],
-            ["login_required", "decorator", "Apply to routes that require an authenticated session"],
+            ["login_required", "decorator", "Apply to routes that require an authenticated browser session"],
+            ["mobile_api_required", "decorator", "Apply to /api/mobile/... routes — accepts Bearer token auth from the iOS app. Always obtain as: ctx.get(\"mobile_api_required\", ctx[\"login_required\"])"],
             ["csrf_protect", "decorator", "Apply to POST routes to validate CSRF token"],
-            ["BUILD", "str", "Current build string e.g. 'SignalScope-3.4.58'"],
+            ["BUILD", "str", "Current build string e.g. 'SignalScope-3.4.105'"],
         ],
         col_widths=[120, 110, 240]))
     elems.append(spacer(8))
@@ -1835,7 +1870,7 @@ def ch28_plugins(styles):
         '  "description":  "What it does.",',
         '  "version":      "1.0.0",',
         '  "requirements": "numpy scipy",',
-        '  "url":          "https://raw.githubusercontent.com/itconor/SignalScope/main/myplugin.py"',
+        '  "url":          "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/myplugin.py"',
         "}",
     ]))
     elems.append(spacer(6))
@@ -1989,7 +2024,7 @@ def build_pdf():
         pageTemplates=[cover_template, content_template],
         title="SignalScope User Guide",
         author="SignalScope",
-        subject="Comprehensive User Guide — SignalScope-3.4.58",
+        subject="Comprehensive User Guide — SignalScope-3.4.105",
     )
 
     styles = make_styles()
