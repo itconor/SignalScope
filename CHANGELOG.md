@@ -19,6 +19,17 @@
 
 ---
 
+## [3.4.86] - 2026-03-31
+
+### Fixed
+- **Edit User button submits the page** — Edit and Delete buttons in the Users table are generated dynamically via JS and were missing `type="button"`. Inside a `<form>`, a `<button>` without an explicit type defaults to `type="submit"`, so every click reloaded the page instead of opening the edit form. Fixed by adding `type="button"` to both buttons.
+
+### Changed
+- **Security tab renamed to "Users & Roles"** — the Settings sidebar button now reads `👥 Users & Roles` to match the section heading that was already inside the panel.
+- **Web UI Authentication section cleaned up** — the old single-user username/password form fields have been removed from Settings. User credentials are now managed exclusively through Settings → Users & Roles. The "Require login" checkbox and the lockout/session settings remain. The orphaned `chkPwMatch()` JS validation function (which referenced the removed inputs) has also been removed.
+
+---
+
 ## [3.4.85] - 2026-03-30
 
 ### Added

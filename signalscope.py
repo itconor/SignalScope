@@ -153,7 +153,7 @@ document.addEventListener('DOMContentLoaded',function(){
 <nav class="sb">
   <button class="tb" id="b-notif" onclick="st('notif')">🔔 Notifications</button>
   <button class="tb" id="b-hub"   onclick="st('hub')"  >🛰 Hub &amp; Network</button>
-  <button class="tb" id="b-sec"   onclick="st('sec')"  >🔐 Security</button>
+  <button class="tb" id="b-sec"   onclick="st('sec')"  >👥 Users &amp; Roles</button>
   <button class="tb" id="b-gen"   onclick="st('gen')"  >⚙ General</button>
   <button class="tb" id="b-maint" onclick="st('maint')">🗂 Maintenance</button>
   <button class="tb" id="b-mobile" onclick="st('mobile')">📱 Mobile API</button>
@@ -873,13 +873,9 @@ document.addEventListener('DOMContentLoaded',function(){
   </div>
   <span id="my-pw-msg" style="font-size:12px;margin-top:6px;display:block"></span>
 
-  <div class="sec">🔐 Web UI Authentication</div>
-          <div class="cr"><input type="checkbox" name="auth_enabled" value="1" {{'checked' if cfg.auth.enabled}}><label style="margin:0;text-transform:none">Require login to access dashboard</label></div>
-          <label>Username<input type="text" name="auth_username" value="{{cfg.auth.username}}"></label>
-          <label>New Password (leave blank to keep current)<input type="password" name="auth_password" id="auth_password" placeholder="Minimum 8 characters" oninput="chkPwMatch()"></label>
-          <label>Confirm Password<input type="password" name="auth_password_confirm" id="auth_password_confirm" placeholder="Re-enter new password" oninput="chkPwMatch()"></label>
-          <p id="pw-match-msg" style="font-size:12px;margin-top:4px;display:none"></p>
-          <p class="help">Password is stored as a salted PBKDF2-SHA256 hash (260,000 rounds). After enabling auth, reload the page and you will be prompted to log in.</p>
+  <div class="sec" style="margin-top:24px">🔐 Login Settings</div>
+          <div class="cr" style="margin-bottom:10px"><input type="checkbox" name="auth_enabled" value="1" {{'checked' if cfg.auth.enabled}}><label style="margin:0;text-transform:none">Require login to access dashboard</label></div>
+          <p class="help" style="margin-bottom:12px">User accounts and passwords are managed in the <strong>Users &amp; Roles</strong> section above. Use the settings below to control lockout and session behaviour.</p>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px">
             <label>Max login attempts
               <input type="number" name="login_max_attempts" value="{{cfg.login_max_attempts}}" min="3" max="100">
@@ -1262,30 +1258,7 @@ document.addEventListener('click', function(e){
 // Wire up the update check button
 document.getElementById('upd-check-btn').addEventListener('click', checkForUpdates);
 
-// Password confirm validation
-function chkPwMatch(){
-  var pw=document.getElementById('auth_password');
-  var cf=document.getElementById('auth_password_confirm');
-  var msg=document.getElementById('pw-match-msg');
-  if(!pw||!cf||!msg) return;
-  if(!pw.value && !cf.value){ msg.style.display='none'; return; }
-  msg.style.display='block';
-  if(pw.value===cf.value){
-    msg.style.color='var(--ok)'; msg.textContent='✓ Passwords match';
-  } else {
-    msg.style.color='var(--al)'; msg.textContent='✗ Passwords do not match';
-  }
-}
-// Block form submit if passwords are filled but don't match
-document.querySelector('form[method=post]').addEventListener('submit', function(e){
-  var pw=document.getElementById('auth_password');
-  var cf=document.getElementById('auth_password_confirm');
-  if(pw && cf && pw.value && pw.value!==cf.value){
-    e.preventDefault();
-    chkPwMatch();
-    cf.focus();
-  }
-});
+// (Password confirm validation removed — credentials managed via Users & Roles)
 
 // Restore upload via fetch — avoids nested-form HTML issues
 document.getElementById('restore-upload-btn').addEventListener('click', function(){
@@ -1358,8 +1331,8 @@ function userLoad(){
         +'<td style="padding:7px 8px;font-size:11px;color:var(--tx)">'+plugins+'</td>'
         +'<td style="padding:7px 8px">'+status+'</td>'
         +'<td style="padding:7px 8px;text-align:right">'
-        +'<button class="btn bg bs user-edit-btn" data-username="'+u.username+'" style="margin-right:4px">Edit</button>'
-        +'<button class="btn bd bs user-del-btn" data-username="'+u.username+'">Delete</button>'
+        +'<button type="button" class="btn bg bs user-edit-btn" data-username="'+u.username+'" style="margin-right:4px">Edit</button>'
+        +'<button type="button" class="btn bd bs user-del-btn" data-username="'+u.username+'">Delete</button>'
         +'</td></tr>';
     }).join('');
   }).catch(function(e){var tb=document.getElementById('users-tbody');if(tb)tb.innerHTML='<tr><td colspan="7" style="color:var(--al);padding:8px">Error loading users: '+e+'</td></tr>';});
@@ -1937,7 +1910,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.85"
+BUILD                  = "SignalScope-3.4.86"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
