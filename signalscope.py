@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.103"
+BUILD                  = "SignalScope-3.4.104"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30198,8 +30198,13 @@ function hubRefresh(){
         var lev = (_levelMode==='peak') ? pkLev : rmsLev;
         var lpct = Math.min(Math.max((lev+80)/80*100,0),100);
         var lcol = lev<=-55?'var(--al)':lev<=-20?'var(--wn)':'var(--ok)';
-        var lbar = sc.querySelector('.sc-lbar'); if(lbar){lbar.style.width=lpct.toFixed(1)+'%';lbar.style.background=lcol;}
-        var lval = sc.querySelector('.sc-level'); if(lval){lval.textContent=(typeof lev==='number'?lev.toFixed(1):lev)+' dB';lval.style.color=lcol;}
+        // Level bar and value are owned by _livePoll when live is active —
+        // skip here to avoid fighting the 150 ms live updates with stale
+        // heartbeat values from this structural refresh.
+        if (!_liveActive) {
+          var lbar = sc.querySelector('.sc-lbar'); if(lbar){lbar.style.width=lpct.toFixed(1)+'%';lbar.style.background=lcol;}
+          var lval = sc.querySelector('.sc-level'); if(lval){lval.textContent=(typeof lev==='number'?lev.toFixed(1):lev)+' dB';lval.style.color=lcol;}
+        }
         var fmt = sc.querySelector('.sc-fmt'); if(fmt) fmt.textContent=s.format||'—';
         var rtRow = sc.querySelector('.sc-rt-row');
         var rtWrap = sc.querySelector('.sc-rt-wrap');
@@ -30630,10 +30635,12 @@ document.addEventListener('DOMContentLoaded', function(){
   document.querySelectorAll('.site-card').forEach(function(sc){ _syncExpandAllBtn(sc); });
   tickClock();
   setInterval(tickClock, 1000);
-  // Remove skeleton and fetch fresh data immediately — server already renders
-  // valid heartbeat data so there is no need to hide it behind a delay.
+  // Show server-rendered cards immediately (no skeleton delay).
+  // Delay the first structural hubRefresh by 3 s so _livePoll has sole
+  // ownership of the level bars from the moment the page appears.
+  // After that first refresh the normal 5/15 s cadence takes over.
   document.querySelectorAll('.site-card').forEach(function(el){el.classList.remove('skeleton');});
-  hubRefresh(); // starts the self-rescheduling loop via .finally()
+  _hubTimer = setTimeout(hubRefresh, 3000);
   // When the tab becomes visible again after being hidden, fire immediately
   document.addEventListener('visibilitychange', function(){
     if(!document.hidden){
