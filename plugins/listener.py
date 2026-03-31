@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/listener",
     "icon":     "🎧",
     "hub_only": True,
-    "version":  "1.1.3",
+    "version":  "1.1.2",
 }
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -417,38 +417,12 @@ function showMsg(text,type){
 // ── Load streams ───────────────────────────────────────────────────────────
 _loadFavs();
 
-var _HAS_RESTRICTIONS = {{has_restrictions|tojson}};
-
 function loadStreams(initial){
   if(initial) showSkeleton();
-  // When the user has site/chain access restrictions, fetch chain status too so
-  // we can filter to only streams that appear as nodes in their allowed chains.
-  var fetches=[fetch('/hub/data',{credentials:'same-origin'})];
-  if(_HAS_RESTRICTIONS) fetches.push(fetch('/api/chains/status',{credentials:'same-origin'}).then(function(r){return r.json();}).catch(function(){return {results:[]};}));
-  Promise.all(fetches)
-    .then(function(results){
-      var d=results[0];
-      if(!d.ok) throw new Error(d.status);
-      return d.json().then(function(hub){return {hub:hub,chains:results[1]||null};});
-    })
-    .then(function(data){
-      var sites=data.hub.sites||[];
-
-      // Build allowed (site|stream) set from chain nodes when restricted
-      var allowedPairs=null;
-      if(_HAS_RESTRICTIONS && data.chains){
-        allowedPairs=new Set();
-        (data.chains.results||[]).forEach(function(chain){
-          (chain.nodes||[]).forEach(function(node){
-            if(node.site&&node.stream) allowedPairs.add(node.site+'|'+node.stream);
-            // Stack nodes contain sub-nodes
-            (node.nodes||[]).forEach(function(sub){
-              if(sub.site&&sub.stream) allowedPairs.add(sub.site+'|'+sub.stream);
-            });
-          });
-        });
-      }
-
+  fetch('/hub/data',{credentials:'same-origin'})
+    .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function(d){
+      var sites=d.sites||[];
       _streams=[];
       var bySite={};
       sites.forEach(function(site){
@@ -456,8 +430,6 @@ function loadStreams(initial){
         bySite[sname]={online:site.online,streams:[]};
         (site.streams||[]).forEach(function(s,i){
           if(!s.enabled) return;
-          // Filter to chain nodes when user has restrictions
-          if(allowedPairs && !allowedPairs.has(sname+'|'+(s.name||''))) return;
           var ci=_safeIdx(s,i);
           var obj={
             site:   sname,
@@ -473,8 +445,6 @@ function loadStreams(initial){
           _streams.push(obj);
           bySite[sname].streams.push(obj);
         });
-        // Remove empty sites from display
-        if(!bySite[sname].streams.length) delete bySite[sname];
       });
       _lastBySite=bySite;
       renderContent(bySite);
@@ -957,14 +927,9 @@ def register(app, ctx):
             str(rule) == "/presenter"
             for rule in app.url_map.iter_rules()
         )
-        # Tell the JS whether to filter streams to chain nodes only
-        allowed_sites  = session.get("allowed_sites",  [])
-        allowed_chains = session.get("allowed_chains", [])
-        has_restrictions = bool(allowed_sites or allowed_chains)
         return render_template_string(
             _LISTENER_TPL,
-            BUILD             = BUILD,
-            username          = username,
-            has_presenter     = has_presenter,
-            has_restrictions  = has_restrictions,
+            BUILD         = BUILD,
+            username      = username,
+            has_presenter = has_presenter,
         )
