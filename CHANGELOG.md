@@ -2,6 +2,17 @@
 
 ---
 
+## [3.4.95] - 2026-03-31
+
+### Fixed
+- **Hub dashboard 500 when Live View is enabled** — `_live_loop` used `_level_dbfs` / `_peak_dbfs` attribute names, but `InputConfig` stores them as `_last_level_dbfs` / `_last_peak_dbfs`. The `getattr` fallback returned `None`, which was merged into `hub_server._sites` via the live push path and then caused `TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'` in the hub template level-bar calculation `(lev + 80)`. Fixed: `_live_loop` now uses the correct attribute names matching `_build_payload`. Additionally, the live push merger now guards against `None` values so a future attribute mismatch can never overwrite valid heartbeat data.
+
+### Added
+- **Hub dashboard — level bars update at 1 Hz when Live View is active** — hub site card level bar fills and dB values now update in real time via `_applyLiveFrame`. ID attributes (`lvl_*`, `lvlv_*`) added to the level bar elements in the hub template using the same key scheme as the JS updater.
+- **Hub dashboard — ⚡ Live indicator** — when Live View is enabled, a `⚡ Live` badge appears in the hub summary bar and flashes green briefly each time a live frame is received, confirming that data is flowing.
+
+---
+
 ## [3.4.94] - 2026-03-31
 
 ### Fixed

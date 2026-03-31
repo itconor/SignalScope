@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.94"
+BUILD                  = "SignalScope-3.4.95"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -11619,13 +11619,15 @@ class HubClient:
                     stop_evt.wait(5.0)
                     continue
 
-                # Build slim frame — only fast-changing metric fields
+                # Build slim frame — only fast-changing metric fields.
+                # Use the same attribute names as _build_payload so the hub
+                # template never receives None for level_dbfs / peak_dbfs.
                 streams_snap = []
                 for inp in (cfg.inputs or []):
                     streams_snap.append({
                         "name":           inp.name,
-                        "level_dbfs":     getattr(inp, '_level_dbfs', None),
-                        "peak_dbfs":      getattr(inp, '_peak_dbfs', None),
+                        "level_dbfs":     getattr(inp, '_last_level_dbfs', None),
+                        "peak_dbfs":      getattr(inp, '_last_peak_dbfs', None),
                         "silence_active": bool(getattr(inp, '_silence_active', False)),
                         "ai_status":      getattr(inp, '_ai_status', '') or '',
                         "lufs_m":         getattr(inp, '_lufs_m', None),
@@ -21166,7 +21168,9 @@ def hub_live_push():
                             # Update in-place — preserve all other fields
                             tgt = existing[_idx[sname]]
                             for _f in _LIVE_STREAM_FIELDS:
-                                if _f in live_st:
+                                # Never overwrite a valid numeric field with None —
+                                # that would crash the hub template's arithmetic.
+                                if _f in live_st and live_st[_f] is not None:
                                     tgt[_f] = live_st[_f]
                         else:
                             # Stream appeared in live push but not yet in
@@ -30251,26 +30255,35 @@ function _stopLiveView() {
   _liveActive = false;
 }
 
+function _liveKey(site, stream) {
+  return (site + '|' + stream).replace(/[^a-zA-Z0-9|]/g, '_');
+}
 function _applyLiveFrame(frame) {
   var site = frame.site;
   var streams = frame.streams || [];
+  var gotData = false;
   streams.forEach(function(s) {
-    // Find the level bar element for this site+stream if rendered
-    var key = (site + '|' + s.name).replace(/[^a-zA-Z0-9|]/g, '_');
-    var lvlEl = document.getElementById('lvl_' + key);
-    if (lvlEl && s.level_dbfs != null) {
-      // Map -60..0 dBFS to 0..100%
-      var pct = Math.max(0, Math.min(100, ((s.level_dbfs + 60) / 60) * 100));
-      lvlEl.style.width = pct.toFixed(1) + '%';
-      // Colour by level
-      lvlEl.style.background = s.level_dbfs > -6 ? '#ef4444'
-                              : s.level_dbfs > -18 ? '#22c55e' : '#17a8ff';
+    var key = _liveKey(site, s.name);
+    if (s.level_dbfs != null) {
+      gotData = true;
+      // Map -80..0 dBFS to 0..100% (matches template: (lev+80)/80*100)
+      var pct = Math.max(0, Math.min(100, (s.level_dbfs + 80) / 80 * 100));
+      var col = s.level_dbfs <= -55 ? 'var(--al)' : s.level_dbfs <= -20 ? 'var(--wn)' : 'var(--ok)';
+      var bar = document.getElementById('lvl_' + key);
+      if (bar) { bar.style.width = pct.toFixed(1) + '%'; bar.style.background = col; }
+      var val = document.getElementById('lvlv_' + key);
+      if (val) { val.textContent = s.level_dbfs + ' dB'; val.style.color = col; }
     }
     var statusEl = document.getElementById('ai_' + key);
     if (statusEl && s.ai_status) {
       statusEl.textContent = s.ai_status;
     }
   });
+  // Flash ⚡ live indicator green briefly to confirm data is flowing
+  if (gotData) {
+    var ind = document.getElementById('live-ind');
+    if (ind) { ind.style.color = '#4ade80'; clearTimeout(ind._t); ind._t = setTimeout(function(){ ind.style.color = 'var(--mu)'; }, 800); }
+  }
 }
 
 // Auto-start live view if the server has it enabled.
@@ -30770,6 +30783,7 @@ setInterval(_loadTrends, 300000);
     <div id="alertTicker" style="width:100%;margin-top:6px;font-size:12px;color:var(--wn)"></div>
     <span class="sum-pill">🕒 <span id="wallClock">{{fmt(now)}}</span></span>
     <span class="sum-pill">🏗 {{build}}</span>
+    {% if live_view == '1' %}<span class="sum-pill" id="live-ind" style="color:var(--mu);transition:color .3s" title="Live View active — level bars update at 1 Hz">⚡ Live</span>{% endif %}
     <span class="sum-pill">📡 {{sites|length}} site{{"s" if sites|length!=1 else ""}}</span>
     <span class="sum-pill" style="color:var(--al)">⛔ {{offline_count}} offline</span>
     <span class="sum-pill" style="color:var(--al)">🚨 {{alert_site_count}} alert</span>
@@ -30888,11 +30902,12 @@ setInterval(_loadTrends, 300000);
         <button class="sc-expand-btn" data-action="sc-expand" data-sc-key="{{site.site|replace(' ','_')|replace('.','_')|replace('-','_')}}__{{i}}" title="Expand / Collapse">&#9662;</button>
       </div>
 
-      {# Level bar #}
+      {# Level bar — id used by _applyLiveFrame for 1 Hz live updates #}
+      {% set _lkey = (site.site + '|' + s.name)|replace(' ','_')|replace('/','_')|replace('.','_')|replace('-','_')|replace('(','_')|replace(')','_') %}
       <div class="lbar-wrap" style="padding:4px 10px" data-rms="{{lev}}" data-peak="{{s.get('peak_dbfs', lev)}}">
         <span class="sc-lbar-label" style="font-size:11px;color:var(--acc);width:28px;cursor:pointer;user-select:none" title="Click to toggle RMS / Peak">RMS</span>
-        <div class="lbar-track"><div class="lbar-fill sc-lbar" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
-        <span class="sc-level lbar-val" style="color:{{lcol}}">{{lev}} dB</span>
+        <div class="lbar-track"><div class="lbar-fill sc-lbar" id="lvl_{{_lkey}}" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
+        <span class="sc-level lbar-val" id="lvlv_{{_lkey}}" style="color:{{lcol}}">{{lev}} dB</span>
       </div>
       <div class="sc-tl-wrap" style="display:flex;align-items:center;gap:5px;padding:0 10px 4px">
         <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">24h</span>
