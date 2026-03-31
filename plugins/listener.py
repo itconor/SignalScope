@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/listener",
     "icon":     "🎧",
     "hub_only": True,
-    "version":  "1.1.1",
+    "version":  "1.1.2",
 }
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -35,6 +35,8 @@ a{color:var(--acc);text-decoration:none}
 .hdr-user{font-size:12px;color:var(--mu);background:rgba(23,52,95,.6);padding:5px 12px;border-radius:20px;border:1px solid var(--bor)}
 .hdr-back{font-size:12px;color:var(--mu);background:rgba(23,52,95,.4);padding:5px 12px;border-radius:20px;border:1px solid var(--bor);text-decoration:none;transition:color .2s}
 .hdr-back:hover{color:var(--tx)}
+.hdr-producer{font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#1a7fe8,#17a8ff);padding:8px 18px;border-radius:20px;text-decoration:none;display:flex;align-items:center;gap:7px;box-shadow:0 2px 12px rgba(23,168,255,.35);transition:filter .2s,box-shadow .2s}
+.hdr-producer:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
 
 /* ── Greeting ── */
 .greeting{padding:28px 24px 6px;max-width:1400px;margin:0 auto}
@@ -205,6 +207,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
     <div class="hdr-sub">Live streams</div>
   </div>
   <div class="hdr-right">
+    {% if has_presenter %}<a href="/presenter" class="hdr-producer">🎙 Producer View</a>{% endif %}
     {% if username %}<div class="hdr-user">👤 {{username}}</div>{% endif %}
     <a href="/" class="hdr-back">← Back</a>
   </div>
@@ -920,8 +923,13 @@ def register(app, ctx):
     @login_required
     def listener_page():
         username = session.get("username", "")
+        has_presenter = any(
+            str(rule) == "/presenter"
+            for rule in app.url_map.iter_rules()
+        )
         return render_template_string(
             _LISTENER_TPL,
-            BUILD    = BUILD,
-            username = username,
+            BUILD         = BUILD,
+            username      = username,
+            has_presenter = has_presenter,
         )

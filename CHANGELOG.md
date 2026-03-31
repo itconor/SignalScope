@@ -2,6 +2,13 @@
 
 ---
 
+## [Listener 1.1.2] - 2026-03-31
+
+### Added
+- **Producer View button in header** — when the Producer View plugin is installed, a **🎙 Producer View** button appears in the Listener header (matching the style of the Listen Live button in Producer View). Only shown when the `/presenter` route exists.
+
+---
+
 ## [Producer View 1.2.8] - 2026-03-31
 
 ### Changed
