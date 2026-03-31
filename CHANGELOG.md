@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.116] - 2026-03-31
+
+### Fixed
+- **Hub site cards disappear on hover / reject confirmation unclickable** — CSS `columns` layout clips `transform: translateY(-1px)` at column boundaries, causing cards to vanish on hover. The same clipping hid the reject confirmation bar when the user moved the mouse to click "Yes, Remove". Removed the `transform` from `.site-card:hover`; box-shadow change alone gives sufficient hover feedback and is not affected by column clipping.
+
+---
+
 ## [3.4.115] - 2026-03-31
 
 ### Fixed

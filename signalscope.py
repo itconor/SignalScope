@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.115"
+BUILD                  = "SignalScope-3.4.116"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30137,8 +30137,8 @@ body.wall-mode main{padding:10px;max-width:none}
 .search{min-width:280px;flex:1;max-width:460px;padding:9px 11px;background:#12305c;border:1px solid var(--bor);border-radius:8px;color:var(--tx)}
 .site-grid{columns:420px;column-gap:16px}
 body.wall-mode .site-grid{columns:480px;column-gap:14px}
-.site-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;break-inside:avoid;margin-bottom:16px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.18);transition:transform .14s, box-shadow .14s}
-.site-card:hover{transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.24)}
+.site-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;break-inside:avoid;margin-bottom:16px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.18);transition:box-shadow .14s}
+.site-card:hover{box-shadow:0 10px 28px rgba(0,0,0,.32)}
 .site-card.site-ok{border-left:4px solid var(--ok)}.site-card.site-warn{border-left:4px solid var(--wn)}.site-card.site-alert{border-left:4px solid var(--al)}.site-card.site-offline{border-left:4px solid var(--mu)}
 .site-header{padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--bor);flex-wrap:wrap}
 .site-name{font-size:16px;font-weight:700}
