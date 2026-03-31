@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.96"
+BUILD                  = "SignalScope-3.4.97"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2126,8 +2126,8 @@ COMPARE_SILENCE_THRESH  = -55.0         # dBFS below which stream counts as sile
 
 HUB_HEARTBEAT_INTERVAL  = 5.0           # seconds between client→hub pushes
 HUB_SITE_TIMEOUT        = 30.0          # seconds before a site is marked offline
-HUB_LIVE_PUSH_INTERVAL  = 1.0           # seconds between live metric pushes
-HUB_LIVE_RATE_LIMIT_RPM = 180           # max live push frames per minute per site
+HUB_LIVE_PUSH_INTERVAL  = 0.2           # seconds between live metric pushes (5 Hz)
+HUB_LIVE_RATE_LIMIT_RPM = 600           # max live push frames per minute per site (10/s headroom for 5 Hz)
 HUB_PORT                = 5001          # hub dashboard port
 HUB_API_VERSION         = "v1"
 HUB_TIMESTAMP_TOLERANCE = 30    # max age (s) of a signed request
@@ -21185,6 +21185,41 @@ def hub_live_push():
 
     return jsonify({"ok": True})
 
+@app.get("/api/hub/live_levels")
+@login_required
+def hub_live_levels():
+    """Return the latest cached live metric snapshot for all approved sites.
+
+    Called by the browser every ~150 ms to drive PPM-style level meters on the
+    hub dashboard without requiring SSE or long-lived connections.
+    Returns: {site_name: [{name, level_dbfs, peak_dbfs, silence_active}, ...], ...}
+    Only includes sites that have received at least one live push frame.
+    """
+    if not hub_server:
+        return jsonify({}), 404
+    allowed = _allowed_sites()
+    out: dict = {}
+    with hub_live_fanout._lock:
+        for site, frame in hub_live_fanout._live_state.items():
+            if not frame:
+                continue
+            if allowed and site not in allowed:
+                continue
+            streams = frame.get("streams")
+            if not streams:
+                continue
+            out[site] = [
+                {
+                    "name":           s.get("name", ""),
+                    "level_dbfs":     s.get("level_dbfs"),
+                    "peak_dbfs":      s.get("peak_dbfs"),
+                    "silence_active": bool(s.get("silence_active")),
+                }
+                for s in streams
+                if s.get("name")
+            ]
+    return jsonify(out)
+
 @app.post("/hub/clip_upload")
 def hub_clip_upload():
     """Receive a WAV clip (base64) uploaded from a client.
@@ -28288,8 +28323,11 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 .dok{background:var(--ok)}.dwn{background:var(--wn)}.dal{background:var(--al)}.dlr{background:#60a5fa}.dot-off{background:#64748b}
 .sc-name{padding:9px 10px;border-bottom:1px solid var(--bor);display:flex;align-items:center;gap:7px}
 .lbar-wrap{display:flex;align-items:center;gap:7px;padding:6px 10px}
-.lbar-track{flex:1;height:8px;background:linear-gradient(180deg,#12305c,#10284f);border-radius:999px;overflow:hidden;border:1px solid var(--bor)}
-.lbar-fill{height:100%}.lbar-val{font-size:11px;min-width:62px;text-align:right}
+.lbar-outer{flex:1;position:relative;height:8px}
+.lbar-track{position:absolute;inset:0;background:linear-gradient(90deg,#0a1828 0,#0a1828 31%,#0d2244 31%,#0d2244 75%,#2d1a00 75%,#2d1a00 89%,#2a0f0f 89%,#2a0f0f 100%);border-radius:4px;overflow:hidden;border:1px solid var(--bor)}
+.lbar-fill{height:100%;min-width:2px;max-width:100%}
+.lbar-peak{position:absolute;top:-1px;bottom:-1px;width:3px;background:rgba(255,255,255,.85);border-radius:2px;transform:translateX(-1px);pointer-events:none;transition:left 1.5s ease-in}
+.lbar-val{font-size:11px;min-width:62px;text-align:right;font-variant-numeric:tabular-nums}
 .sc-row{display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(255,255,255,.04)}
 .sc-row:last-child{border-bottom:none}
 .alert-badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.04em;margin-left:4px}
@@ -30220,83 +30258,114 @@ function hubRefresh(){
     if(_si && _si._searchApply && ((_si.value||'').trim())) _si._searchApply();
   }).catch(function(e){console.warn('[hubRefresh]',e);}).finally(function(){ _hubSchedule(); });
 }
-// ── Live view SSE ─────────────────────────────────────────────────────────
-var _liveES = null;
-var _liveActive = false;
-
-function _startLiveView() {
-  if (_liveES) return;
-  _liveES = new EventSource('/hub/stream/events');
-  _liveES.onopen = function() {
-    _liveActive = true;
-    // Run a structural refresh quickly so online status and update buttons are
-    // current (e.g. after a hub restart where sites were briefly offline).
-    // After that first refresh _hubSchedule() takes over at 15 s intervals.
-    clearTimeout(_hubTimer);
-    _hubTimer = setTimeout(hubRefresh, 1500);
-  };
-  _liveES.onmessage = function(e) {
-    try {
-      var frame = JSON.parse(e.data);
-      if (frame.type === 'live') _applyLiveFrame(frame);
-      else if (frame.type === 'snapshot') { /* initial snapshot already rendered */ }
-    } catch(err) {}
-  };
-  _liveES.onerror = function() {
-    _stopLiveView();
-    // Fall back to normal polling
-    clearTimeout(_hubTimer);
-    _hubSchedule();
-  };
-}
-
-function _stopLiveView() {
-  if (_liveES) { try { _liveES.close(); } catch(e) {} _liveES = null; }
-  _liveActive = false;
-}
+// ── Live view — polling-based PPM meters ──────────────────────────────────
+// Replaces SSE with a simple GET poll every 150 ms. Works through any nginx
+// proxy without buffering concerns. Client pushes at 5 Hz; browser polls at
+// ~7 Hz so bars always have fresh data.
+var _livePollTimer = null;
+var _liveActive    = false;
+var _livePeaks     = {};    // key → {pct, col, timer}
+var _livePrevPct   = {};    // key → last pct, for attack vs decay detection
 
 function _liveKey(site, stream) {
   return (site + '|' + stream).replace(/[^a-zA-Z0-9|]/g, '_');
 }
-function _applyLiveFrame(frame) {
-  var site = frame.site;
-  var streams = frame.streams || [];
-  var gotData = false;
-  streams.forEach(function(s) {
-    var key = _liveKey(site, s.name);
-    if (s.level_dbfs != null) {
-      gotData = true;
-      // Map -80..0 dBFS to 0..100% (matches template: (lev+80)/80*100)
-      var pct = Math.max(0, Math.min(100, (s.level_dbfs + 80) / 80 * 100));
-      var col = s.level_dbfs <= -55 ? 'var(--al)' : s.level_dbfs <= -20 ? 'var(--wn)' : 'var(--ok)';
-      var bar = document.getElementById('lvl_' + key);
-      if (bar) { bar.style.width = pct.toFixed(1) + '%'; bar.style.background = col; }
-      var val = document.getElementById('lvlv_' + key);
-      if (val) {
-        val.textContent = s.level_dbfs.toFixed(1) + ' dB';
-        val.style.color = col;
-        // Brief brightness flash so it's visually obvious the value is live
-        val.style.transition = 'none';
-        val.style.filter = 'brightness(2)';
-        clearTimeout(val._liveT);
-        val._liveT = setTimeout(function(){ val.style.filter = ''; val.style.transition = 'filter .4s'; }, 80);
+
+function _startLiveView() {
+  if (_liveActive) return;
+  _liveActive = true;
+  // Quick structural refresh so online status / update buttons are current
+  clearTimeout(_hubTimer);
+  _hubTimer = setTimeout(hubRefresh, 1500);
+  _livePoll();
+}
+
+function _stopLiveView() {
+  clearTimeout(_livePollTimer);
+  _livePollTimer = null;
+  _liveActive = false;
+}
+
+function _livePoll() {
+  if (!_liveActive) return;
+  fetch('/api/hub/live_levels', {credentials: 'same-origin'})
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(data) {
+      if (!data) return;
+      var gotData = false;
+      Object.keys(data).forEach(function(site) {
+        var streams = data[site] || [];
+        streams.forEach(function(s) {
+          if (s.level_dbfs == null) return;
+          gotData = true;
+          var key = _liveKey(site, s.name);
+          var lev  = s.level_dbfs;
+          var pk   = (s.peak_dbfs != null) ? s.peak_dbfs : lev;
+          var pct  = Math.max(0, Math.min(100, (lev + 80) / 80 * 100));
+          var pkPct= Math.max(0, Math.min(100, (pk  + 80) / 80 * 100));
+          var col  = lev <= -55 ? 'var(--al)' : lev <= -20 ? 'var(--wn)' : 'var(--ok)';
+
+          // ── PPM fill: instant attack, slow exponential decay ──
+          var bar = document.getElementById('lvl_' + key);
+          if (bar) {
+            var prev = _livePrevPct[key] != null ? _livePrevPct[key] : pct;
+            if (pct >= prev) {
+              bar.style.transition = 'none';           // instant attack
+            } else {
+              bar.style.transition = 'width 0.6s ease-out';  // slow decay
+            }
+            bar.style.width = pct.toFixed(1) + '%';
+            bar.style.background = col;
+            _livePrevPct[key] = pct;
+          }
+
+          // ── dB readout ──
+          var val = document.getElementById('lvlv_' + key);
+          if (val) { val.textContent = lev.toFixed(1) + ' dB'; val.style.color = col; }
+
+          // ── Peak-hold marker ──
+          var pkEl = document.getElementById('lvlp_' + key);
+          if (pkEl) {
+            var prev = _livePeaks[key] || {pct: 0};
+            if (pkPct >= prev.pct) {
+              // New peak: snap immediately, hold 2 s then decay
+              pkEl.style.transition = 'none';
+              pkEl.style.left = pkPct.toFixed(1) + '%';
+              var pkCol = pkPct >= 89 ? '#ef4444' : (pkPct >= 75 ? '#f59e0b' : 'rgba(255,255,255,.9)');
+              pkEl.style.background = pkCol;
+              clearTimeout(prev.timer);
+              _livePeaks[key] = {
+                pct: pkPct,
+                timer: (function(_k){ return setTimeout(function(){
+                  var el = document.getElementById('lvlp_' + _k);
+                  if (el) { el.style.transition = 'left 1.5s ease-in'; el.style.left = '0%'; }
+                  if (_livePeaks[_k]) _livePeaks[_k].pct = 0;
+                }, 2000); }(key))
+              };
+            }
+          }
+
+          // AI status
+          var aiEl = document.getElementById('ai_' + key);
+          if (aiEl && s.ai_status) aiEl.textContent = s.ai_status;
+        });
+      });
+
+      // Pulse ⚡ indicator
+      if (gotData) {
+        var ind = document.getElementById('live-ind');
+        if (ind) {
+          ind.style.transition = 'none';
+          ind.style.color = '#ffffff';
+          clearTimeout(ind._t);
+          ind._t = setTimeout(function(){ ind.style.transition = 'color .5s'; ind.style.color = '#4ade80'; }, 80);
+        }
       }
-    }
-    var statusEl = document.getElementById('ai_' + key);
-    if (statusEl && s.ai_status) {
-      statusEl.textContent = s.ai_status;
-    }
-  });
-  // Pulse ⚡ live indicator white on each frame, settle back to green
-  if (gotData) {
-    var ind = document.getElementById('live-ind');
-    if (ind) {
-      ind.style.transition = 'none';
-      ind.style.color = '#ffffff';
-      clearTimeout(ind._t);
-      ind._t = setTimeout(function(){ ind.style.transition = 'color .5s'; ind.style.color = '#4ade80'; }, 80);
-    }
-  }
+    })
+    .catch(function(){})
+    .finally(function(){
+      if (_liveActive) _livePollTimer = setTimeout(_livePoll, 150);
+    });
 }
 
 // Auto-start live view if the server has it enabled.
@@ -30304,7 +30373,7 @@ function _applyLiveFrame(frame) {
 // Read the attribute inside the load handler where body is guaranteed available.
 window.addEventListener('load', function() {
   if (document.body && document.body.getAttribute('data-live-view') === '1') {
-    setTimeout(_startLiveView, 1000);
+    setTimeout(_startLiveView, 500);
   }
 });
 function agoJS(s){ s=Math.round(s||0); if(s<5)return'just now'; if(s<60)return s+'s ago'; return Math.round(s/60)+'m ago'; }
@@ -30918,8 +30987,11 @@ setInterval(_loadTrends, 300000);
       {# Level bar — id used by _applyLiveFrame for 1 Hz live updates #}
       {% set _lkey = (site.site + '|' + s.name)|replace(' ','_')|replace('/','_')|replace('.','_')|replace('-','_')|replace('(','_')|replace(')','_') %}
       <div class="lbar-wrap" style="padding:4px 10px" data-rms="{{lev}}" data-peak="{{s.get('peak_dbfs', lev)}}">
-        <span class="sc-lbar-label" style="font-size:11px;color:var(--acc);width:28px;cursor:pointer;user-select:none" title="Click to toggle RMS / Peak">RMS</span>
-        <div class="lbar-track"><div class="lbar-fill sc-lbar" id="lvl_{{_lkey}}" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
+        <span class="sc-lbar-label" style="font-size:11px;color:var(--acc);width:28px;cursor:pointer;user-select:none" title="RMS level">RMS</span>
+        <div class="lbar-outer">
+          <div class="lbar-track"><div class="lbar-fill sc-lbar" id="lvl_{{_lkey}}" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
+          <div class="lbar-peak" id="lvlp_{{_lkey}}" style="left:{{lpct}}%;background:{{'#ef4444' if lpct>=89 else ('#f59e0b' if lpct>=75 else 'rgba(255,255,255,.85)')}}"></div>
+        </div>
         <span class="sc-level lbar-val" id="lvlv_{{_lkey}}" style="color:{{lcol}}">{{lev|round(1)}} dB</span>
       </div>
       <div class="sc-tl-wrap" style="display:flex;align-items:center;gap:5px;padding:0 10px 4px">

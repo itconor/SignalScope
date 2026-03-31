@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.97] - 2026-03-31
+
+### Changed
+- **Live View — replaced SSE with polling for reliable real-time meters** — SSE connections can be buffered or dropped by nginx proxies. The browser now polls a new `GET /api/hub/live_levels` endpoint every 150 ms instead, which is a plain HTTP GET and works through any proxy configuration.
+- **Live View — push rate increased from 1 Hz to 5 Hz** — client `_live_loop` now pushes every 0.2 s. `HUB_LIVE_RATE_LIMIT_RPM` raised to 600 to match.
+- **Hub dashboard — PPM-style level meters** — level bar now has proper broadcast-style behaviour: instant attack (bar snaps up immediately), slow exponential decay (0.6 s ease-out when falling), 2-second peak-hold white marker that decays after hold expires. Track background shows colour zones (normal / warning −20 dBFS / clip −9 dBFS) for at-a-glance headroom reading.
+
+---
+
 ## [3.4.96] - 2026-03-31
 
 ### Fixed
