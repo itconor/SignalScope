@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.90"
+BUILD                  = "SignalScope-3.4.91"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -21124,6 +21124,44 @@ def hub_live_push():
 
     frame["ts"] = frame.get("ts") or time.time()
     hub_live_fanout.push(site, frame)
+
+    # Option B — merge slim frame stream fields directly into hub_server._sites
+    # so that api_chains_status evaluates against sub-second live data rather
+    # than waiting for the next 5 s heartbeat.
+    # Only the fast-changing per-stream metrics are touched; all other fields
+    # (history, comparators, system info, _approved, etc.) are left intact.
+    _LIVE_STREAM_FIELDS = ("level_dbfs", "peak_dbfs", "silence_active",
+                           "ai_status", "lufs_m", "lufs_s")
+    live_streams = frame.get("streams")
+    if live_streams and isinstance(live_streams, list):
+        with hub_server._lock:
+            sdata = hub_server._sites.get(site)
+            if sdata and sdata.get("_approved"):
+                # Build name→index map once for O(1) lookup
+                existing = sdata.get("streams")
+                if isinstance(existing, list):
+                    _idx = {s.get("name"): i for i, s in enumerate(existing)}
+                    for live_st in live_streams:
+                        sname = live_st.get("name")
+                        if sname is None:
+                            continue
+                        if sname in _idx:
+                            # Update in-place — preserve all other fields
+                            tgt = existing[_idx[sname]]
+                            for _f in _LIVE_STREAM_FIELDS:
+                                if _f in live_st:
+                                    tgt[_f] = live_st[_f]
+                        else:
+                            # Stream appeared in live push but not yet in
+                            # heartbeat payload — add a minimal entry so chain
+                            # evaluation can see it immediately.
+                            new_st = {"name": sname, "enabled": True}
+                            for _f in _LIVE_STREAM_FIELDS:
+                                if _f in live_st:
+                                    new_st[_f] = live_st[_f]
+                            existing.append(new_st)
+                            _idx[sname] = len(existing) - 1
+
     return jsonify({"ok": True})
 
 @app.post("/hub/clip_upload")

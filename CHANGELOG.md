@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.91] - 2026-03-31
+
+### Changed
+- **Broadcast chains now evaluate against sub-second live data** — when live view mode is enabled, the hub previously stored live metric frames only in `HubLiveFanout` (used for SSE delivery to browsers), leaving `api_chains_status` to read from `hub_server._sites` which is only updated by the 5 s heartbeat. `POST /api/v1/live_push` now also merges the slim frame's stream-level fields (`level_dbfs`, `peak_dbfs`, `silence_active`, `ai_status`, `lufs_m`, `lufs_s`) directly into `hub_server._sites[site]["streams"]` under the write lock on every 1 Hz push. Chain fault evaluation in `api_chains_status` now reacts to silence, AI status changes, and level drops within ~1 second rather than waiting up to 10 s. All other fields in `_sites` (history, comparators, system info, `_approved`, etc.) are untouched.
+
+---
+
 ## [3.4.90] - 2026-03-31
 
 ### Added
