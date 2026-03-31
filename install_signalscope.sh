@@ -1047,7 +1047,16 @@ main() {
   if [[ "${IS_UPDATE}" -eq 1 ]]; then
     info "Update mode: ${INSTALLED_VER} → ${WINNING_VER}"
     [[ -z "${ENABLE_SERVICE}" ]] && ENABLE_SERVICE=0
-    [[ -z "${ENABLE_SDR}" ]]     && ENABLE_SDR=0
+    if [[ -z "${ENABLE_SDR}" ]]; then
+      # Default to yes if rtl-sdr tools are already present on this machine
+      local _sdr_default="n"
+      command -v rtl_fm &>/dev/null && _sdr_default="y"
+      if ask_yes_no "Apply SDR kernel fixes (usbfs buffer, rtlsdr blacklist)?" "${_sdr_default}"; then
+        ENABLE_SDR=1
+      else
+        ENABLE_SDR=0
+      fi
+    fi
   else
     info "Fresh install mode${LEGACY_INSTALL_DETECTED:+ (migrating from LivewireAIMonitor)}"
 
