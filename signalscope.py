@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.104"
+BUILD                  = "SignalScope-3.4.105"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2288,6 +2288,7 @@ class InputConfig:
     _last_alerts:       Dict[str,float] = field(default_factory=dict, init=False, repr=False)
     _last_level_dbfs:   float = field(default=-120.0, init=False, repr=False)
     _last_peak_dbfs:    float = field(default=-120.0, init=False, repr=False)
+    _has_real_level:    bool  = field(default=False,  init=False, repr=False)
     _history:           List[Dict] = field(default_factory=list, init=False, repr=False)
     _audio_buffer:      Optional[object] = field(default=None, init=False, repr=False)
     _stream_buffer:     Optional[object] = field(default=None, init=False, repr=False)
@@ -5849,6 +5850,7 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
     rms=float(np.sqrt(np.mean(data**2))); lev=dbfs(rms)
     cfg._last_level_dbfs=lev
     cfg._last_peak_dbfs=dbfs(float(np.max(np.abs(data))))
+    cfg._has_real_level=True
     if not cfg.enabled: return
     in_alert = lev <= cfg.silence_threshold_dbfs
     _sla_update(cfg, elapsed, in_alert)
@@ -7183,6 +7185,7 @@ class MonitorManager:
             # silence/down for all streams rather than keeping stale healthy levels.
             for _inp in self.app_cfg.inputs:
                 _inp._last_level_dbfs  = -120.0
+                _inp._has_real_level   = False
                 _inp._silence_secs     = 0.0
                 _inp._silence_active   = False
                 _inp._silence_alert_key= ""
@@ -11626,10 +11629,16 @@ class HubClient:
                 # template never receives None for level_dbfs / peak_dbfs.
                 streams_snap = []
                 for inp in (cfg.inputs or []):
+                    # Only send real level values once the monitoring loop has
+                    # actually processed audio.  Until then, send None so the
+                    # hub merger does NOT overwrite the last-known values that
+                    # were restored from hub_state.json on restart — prevents
+                    # the ~60 s "bars at zero" window after a restart.
+                    _has_lvl = getattr(inp, '_has_real_level', False)
                     streams_snap.append({
                         "name":           inp.name,
-                        "level_dbfs":     getattr(inp, '_last_level_dbfs', None),
-                        "peak_dbfs":      getattr(inp, '_last_peak_dbfs', None),
+                        "level_dbfs":     getattr(inp, '_last_level_dbfs', None) if _has_lvl else None,
+                        "peak_dbfs":      getattr(inp, '_last_peak_dbfs', None)  if _has_lvl else None,
                         "silence_active": bool(getattr(inp, '_silence_active', False)),
                         "ai_status":      getattr(inp, '_ai_status', '') or '',
                         "lufs_m":         getattr(inp, '_lufs_m', None),

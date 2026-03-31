@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.105] - 2026-03-31
+
+### Fixed
+- **Hub live meters zero for ~60 s after restart** — on restart the monitoring loop's per-stream `_last_level_dbfs` starts at the field default (`-120.0`). The `_live_loop` was sending that default immediately, and the hub's live-push merger stored it over the valid levels that had been restored from `hub_state.json`, dropping all bars to 0 %. Added `_has_real_level` flag to `InputConfig` (default `False`). `analyse_chunk` sets it `True` on the first real measurement; the monitor-stop reset path clears it alongside `_last_level_dbfs`. `_live_loop` now sends `null` for streams where `_has_real_level` is still `False` — the hub merger ignores `null`, so restored state is preserved until the monitoring loop produces its first real level, which is typically within one or two seconds of stream connect.
+
+---
+
 ## [3.4.101] - 2026-03-31
 
 ### Fixed
