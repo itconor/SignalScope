@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/meterwall",
     "icon":     "📊",
     "hub_only": False,
-    "version":  "1.1.0",
+    "version":  "1.1.1",
 }
 
 
@@ -233,14 +233,14 @@ body{
     #f59e0b 77.5% 88.75%,
     #ef4444 88.75% 100%
   );
-  transition:height .09s linear;
+  /* no CSS transition — rAF loop handles smooth animation */
   border-radius:4px 4px 0 0;
 }
 /* Peak hold line */
 .mtr-peak{
   position:absolute;left:-1px;right:-1px;height:2px;
   background:#fff;border-radius:1px;opacity:.82;
-  transition:bottom .09s linear;
+  /* no CSS transition — rAF loop handles smooth animation */
 }
 
 /* Level readout */
@@ -315,19 +315,24 @@ body{
 <script nonce="{{csp_nonce()}}">
 (function(){
   /* ── Config ─────────────────────────────────────────────────────────────── */
-  var POLL_MS    = 1000;
-  var LIVE_MS    = 150;    // fast-poll interval for live level bars (5 Hz)
-  var PEAK_HOLD  = 2500;   // ms to hold peak before decay starts
-  var PEAK_RATE  = 0.45;   // dBFS decay per 100 ms after hold expires
-  var DB_FLOOR   = -80.0;  // lower bound of meter scale
+  var POLL_MS      = 1000;
+  var LIVE_MS      = 150;    // fast-poll interval for live level bars
+  var PEAK_HOLD    = 2500;   // ms to hold peak before decay starts
+  var PEAK_RATE    = 0.45;   // dBFS decay per 100 ms after hold expires
+  var DB_FLOOR     = -80.0;  // lower bound of meter scale
+  var ATTACK_RATE  = 600;    // dBFS/s — fast attack (practically instant)
+  var DECAY_RATE   = 30;     // dBFS/s — smooth decay (~2 s over full 60 dB range)
 
   /* ── State ──────────────────────────────────────────────────────────────── */
-  var _peaks    = {};      // key → {val, ts}
-  var _sortLev  = false;
-  var _curSize  = 'md';
+  var _peaks      = {};      // key → {val, ts}
+  var _sortLev    = false;
+  var _curSize    = 'md';
   var _lastData   = null;
-  var _liveActive = false; // true once /api/hub/live_levels responds successfully
-  var _sizes    = {sm: 100, md: 140, lg: 200};
+  var _liveActive = false;   // true once /api/hub/live_levels responds successfully
+  var _sizes      = {sm: 100, md: 140, lg: 200};
+  var _targetLev  = {};      // key → raw dBFS from live poll
+  var _dispLev    = {};      // key → currently displayed dBFS (smoothed)
+  var _rafTs      = null;    // timestamp of last rAF frame
 
   /* ── Clock ──────────────────────────────────────────────────────────────── */
   function _tick() {
@@ -454,22 +459,15 @@ body{
     el.classList.toggle('mc-warn',   !isAlert && isWarn);
     el.classList.toggle('mc-offline', !true); // online always true for local; site handles it
 
-    /* Bar fill / peak / level text — only update here if live poll is not active.
-       When _liveActive, livePoll() drives these at 5 Hz; updating from the
-       slower 1 s metadata poll would cause a visible stale-value flicker. */
+    /* Bar fill / peak / level text — feed _targetLev so the rAF loop animates
+       smoothly. When _liveActive the faster livePoll() is already updating
+       _targetLev at 150 ms; skip here to avoid overwriting with stale data. */
     if (!_liveActive) {
-      var fill = el.querySelector('.mtr-fill');
-      if (fill) fill.style.height = levToH(lev) + '%';
-
-      var pkEl = el.querySelector('.mtr-peak');
-      if (pkEl) {
-        var pkH = levToH(peak);
-        pkEl.style.bottom  = pkH + '%';
-        pkEl.style.opacity = peak > DB_FLOOR ? '0.82' : '0';
+      var key = el.dataset.key;
+      if (key) {
+        _targetLev[key] = lev;
+        _updatePeak(key, lev, Date.now());
       }
-
-      var levEl = el.querySelector('.mc-lev');
-      if (levEl) { levEl.textContent = fmtLev(lev); levEl.className = 'mc-lev ' + levCls(lev); }
     }
 
     /* LUFS-I */
@@ -654,6 +652,44 @@ body{
      card.  Metadata (now playing, LUFS-I, AI status, RTP loss) continues
      to come from the 1 s metadata poll above.
   ──────────────────────────────────────────────────────────────────────── */
+  /* ── rAF meter animation loop ───────────────────────────────────────────── */
+  /* Fast attack, smooth decay — like a broadcast PPM meter.
+     _targetLev is updated by livePoll(); _dispLev is smoothed here at 60 fps.
+     Peak hold tracks the raw target, not the smoothed display. */
+  function _meterRaf(ts) {
+    var dt = _rafTs ? Math.min((ts - _rafTs) / 1000, 0.1) : 0;
+    _rafTs = ts;
+    Object.keys(_targetLev).forEach(function(key) {
+      var target = _targetLev[key];
+      var cur    = (_dispLev[key] != null) ? _dispLev[key] : target;
+      if (target > cur) {
+        cur = Math.min(target, cur + ATTACK_RATE * dt);   // fast attack
+      } else {
+        cur = Math.max(target, cur - DECAY_RATE  * dt);   // smooth decay
+      }
+      _dispLev[key] = cur;
+
+      var esc  = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      var card = document.querySelector('.mc[data-key="' + esc + '"]');
+      if (!card) return;
+
+      var fill = card.querySelector('.mtr-fill');
+      if (fill) fill.style.height = levToH(cur) + '%';
+
+      var pk   = _peaks[key] ? _peaks[key].val : DB_FLOOR;
+      var pkEl = card.querySelector('.mtr-peak');
+      if (pkEl) {
+        pkEl.style.bottom  = levToH(pk) + '%';
+        pkEl.style.opacity = pk > DB_FLOOR ? '0.82' : '0';
+      }
+
+      var levEl = card.querySelector('.mc-lev');
+      if (levEl) { levEl.textContent = fmtLev(cur); levEl.className = 'mc-lev ' + levCls(cur); }
+    });
+    requestAnimationFrame(_meterRaf);
+  }
+  requestAnimationFrame(_meterRaf);
+
   function livePoll() {
     fetch('/api/hub/live_levels', {credentials: 'same-origin'})
       .then(function(r) { return r.ok ? r.json() : Promise.reject(); })
@@ -662,29 +698,10 @@ body{
         var now = Date.now();
         Object.keys(data).forEach(function(siteName) {
           (data[siteName] || []).forEach(function(s) {
-            var key  = siteName + '|' + s.name;
-            /* querySelector attribute value — escape any \ or " in the key */
-            var esc  = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-            var card = document.querySelector('.mc[data-key="' + esc + '"]');
-            if (!card) return;
-
+            var key = siteName + '|' + s.name;
             var lev = (s.level_dbfs == null) ? DB_FLOOR : s.level_dbfs;
-            var pk  = _updatePeak(key, lev, now);
-
-            /* Bar */
-            var fill = card.querySelector('.mtr-fill');
-            if (fill) fill.style.height = levToH(lev) + '%';
-
-            /* Peak */
-            var pkEl = card.querySelector('.mtr-peak');
-            if (pkEl) {
-              pkEl.style.bottom  = levToH(pk) + '%';
-              pkEl.style.opacity = pk > DB_FLOOR ? '0.82' : '0';
-            }
-
-            /* Level text */
-            var levEl = card.querySelector('.mc-lev');
-            if (levEl) { levEl.textContent = fmtLev(lev); levEl.className = 'mc-lev ' + levCls(lev); }
+            _targetLev[key] = lev;          // rAF loop drives DOM from here
+            _updatePeak(key, lev, now);     // peak tracks raw signal, not display
           });
         });
       })
