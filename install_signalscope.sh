@@ -1281,6 +1281,12 @@ main() {
     ${SUDO} apt-get install -y libportaudio2 || warn "Could not install libportaudio2 (sound device input may not work)"
   fi
 
+  # ── SDR kernel fixes — always applied (idempotent) ───────────────────────────
+  if [[ "${ENABLE_SDR}" == "1" ]]; then
+    ensure_rtlsdr_blacklist
+    ensure_usbfs_unlimited
+  fi
+
   # ── Directories ──────────────────────────────────────────────────────────────
   step "Preparing directories"
   ${SUDO} mkdir -p "${INSTALL_ROOT}" "${DATA_ROOT_DEFAULT}" "${LOG_ROOT_DEFAULT}"
