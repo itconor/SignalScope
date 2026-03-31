@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.101"
+BUILD                  = "SignalScope-3.4.102"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -28333,7 +28333,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 .lbar-wrap{display:flex;align-items:center;gap:7px;padding:6px 10px}
 .lbar-outer{flex:1;position:relative;height:8px}
 .lbar-track{position:absolute;inset:0;background:linear-gradient(90deg,#0a1828 0,#0a1828 31%,#0d2244 31%,#0d2244 75%,#2d1a00 75%,#2d1a00 89%,#2a0f0f 89%,#2a0f0f 100%);border-radius:4px;overflow:hidden;border:1px solid var(--bor)}
-.lbar-fill{height:100%;min-width:2px;max-width:100%}
+.lbar-fill{height:100%;min-width:2px;max-width:100%;transition:width 180ms ease-out,background 180ms}
 .lbar-peak{position:absolute;top:-1px;bottom:-1px;width:3px;background:rgba(255,255,255,.85);border-radius:2px;transform:translateX(-1px);pointer-events:none;transition:left 1.5s ease-in}
 .lbar-val{font-size:11px;min-width:62px;text-align:right;font-variant-numeric:tabular-nums}
 .sc-row{display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(255,255,255,.04)}
@@ -30018,7 +30018,7 @@ body.wall-mode .sc{}
 .lbar-wrap{display:flex;align-items:center;gap:6px}
 .lbar-outer{flex:1;position:relative;height:6px}
 .lbar-track{position:absolute;inset:0;background:linear-gradient(90deg,#0a1828 0,#0a1828 31%,#0d2244 31%,#0d2244 75%,#2d1a00 75%,#2d1a00 89%,#2a0f0f 89%,#2a0f0f 100%);border-radius:3px;overflow:hidden;border:1px solid rgba(255,255,255,.06)}
-.lbar-fill{height:100%;min-width:1px;max-width:100%}
+.lbar-fill{height:100%;min-width:1px;max-width:100%;transition:width 180ms ease-out,background 180ms}
 .lbar-peak{position:absolute;top:-1px;bottom:-1px;width:3px;background:rgba(255,255,255,.85);border-radius:2px;transform:translateX(-1px);pointer-events:none;transition:left 1.5s ease-in}
 .lbar-val{font-size:12px;font-weight:600;width:64px;text-align:right;font-variant-numeric:tabular-nums}
 .aib{margin:6px 10px;padding:5px 8px;border-radius:5px;font-size:12px}
@@ -30277,8 +30277,7 @@ function hubRefresh(){
 // ~7 Hz so bars always have fresh data.
 var _livePollTimer = null;
 var _liveActive    = false;
-var _livePeaks     = {};    // key → {pct, col, timer}
-var _livePrevPct   = {};    // key → last pct, for attack vs decay detection
+var _livePeaks     = {};    // key → {pct, timer} — peak-hold state
 
 function _liveKey(site, stream) {
   return (site + '|' + stream).replace(/[^a-zA-Z0-9|]/g, '_');
@@ -30318,18 +30317,12 @@ function _livePoll() {
           var pkPct= Math.max(0, Math.min(100, (pk  + 80) / 80 * 100));
           var col  = lev <= -55 ? 'var(--al)' : lev <= -20 ? 'var(--wn)' : 'var(--ok)';
 
-          // ── PPM fill: instant attack, slow exponential decay ──
+          // ── Smooth bar: uniform 180 ms ease-out so transitions complete
+          //    between 200 ms updates without snap or jitter ──
           var bar = document.getElementById('lvl_' + key);
           if (bar) {
-            var prev = _livePrevPct[key] != null ? _livePrevPct[key] : pct;
-            if (pct >= prev) {
-              bar.style.transition = 'none';           // instant attack
-            } else {
-              bar.style.transition = 'width 0.6s ease-out';  // slow decay
-            }
             bar.style.width = pct.toFixed(1) + '%';
             bar.style.background = col;
-            _livePrevPct[key] = pct;
           }
 
           // ── dB readout ──
