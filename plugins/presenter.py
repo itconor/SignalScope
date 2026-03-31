@@ -4,12 +4,12 @@
 SIGNALSCOPE_PLUGIN = {
     "id":         "presenter",
     "label":      "Producer View",
-    "url":        "/presenter",
+    "url":        "/producer",
     "icon":       "🎙",
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.3.3",
+    "version":    "1.3.4",
 }
 
 import json, os, time, urllib.parse
@@ -807,7 +807,7 @@ def register(app, ctx):
     hub_server      = ctx["hub_server"]
     BUILD           = ctx["BUILD"]
 
-    @app.get("/presenter")
+    @app.get("/producer")
     @login_required
     def producer_page():
         username = session.get("username", "")
@@ -823,6 +823,12 @@ def register(app, ctx):
             ticket_url=ticket_url,
             is_admin=is_admin,
         )
+
+    @app.get("/presenter")
+    @login_required
+    def producer_page_legacy():
+        from flask import redirect
+        return redirect("/producer", code=301)
 
     @app.post("/api/producer/config")
     @login_required

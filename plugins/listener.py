@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/listener",
     "icon":     "🎧",
     "hub_only": True,
-    "version":  "1.1.3",
+    "version":  "1.1.4",
 }
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -212,7 +212,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
   <div style="flex:1"></div>
   <a href="/" class="hdr-powered">Powered by SignalScope</a>
   <div class="hdr-right">
-    {% if has_presenter %}<a href="/presenter" class="hdr-producer">🎙 Producer View</a>{% endif %}
+    {% if has_presenter %}<a href="/producer" class="hdr-producer">🎙 Producer View</a>{% endif %}
     {% if username %}<div class="hdr-user">👤 {{username}}</div>{% endif %}
     <a href="/" class="hdr-back">← Back</a>
   </div>
@@ -929,7 +929,7 @@ def register(app, ctx):
     def listener_page():
         username = session.get("username", "")
         has_presenter = any(
-            str(rule) == "/presenter"
+            str(rule) == "/producer"
             for rule in app.url_map.iter_rules()
         )
         return render_template_string(
