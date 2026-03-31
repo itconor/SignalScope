@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.2.5",
+    "version":    "1.2.6",
 }
 
 import json, os, time, urllib.parse
@@ -467,7 +467,7 @@ var AVATAR_COLORS=[
   ['#c2440f','#f97316'],['#c81e1e','#ef4444'],
 ];
 var REFRESH_MS=30000;
-var _statusTimer=null,_faultsTimer=null;
+var _statusTimer=null,_faultsTimer=null,_chainTimer=null;
 var _clipAudio=null,_clipBtn=null,_clipTimeEl=null;
 
 // ── Greeting ──────────────────────────────────────────────────────────────
@@ -609,49 +609,7 @@ function renderStations(sites){
         rds:s.fm_rds_ps||'',dab:s.dab_service||'',label:s.label||''});
     });
   });
-  var onair  = streams.filter(function(s){return s.online&&s.status==='OK';});
-  var faulted= streams.filter(function(s){return s.online&&s.status!=='OK';});
-  var offline= streams.filter(function(s){return !s.online;});
-  var parts=[];
-  if(onair.length)    parts.push(onair.length+' on air');
-  if(faulted.length)  parts.push(faulted.length+' issue'+(faulted.length>1?'s':''));
-  if(offline.length)  parts.push(offline.length+' offline');
-  document.getElementById('hdr-station-count').textContent=parts.join(' · ')||'No stations';
   _setRefresh(true,'Live · Updated at '+_fmtTime(new Date()));
-
-  // ── Status hero block ──────────────────────────────────────────────────
-  var hero  = document.getElementById('status-hero');
-  var icon  = document.getElementById('sh-icon');
-  var title = document.getElementById('sh-title');
-  var sub   = document.getElementById('sh-sub');
-  var badge = document.getElementById('sh-badge');
-  if(faulted.length || offline.length){
-    var affected = faulted.concat(offline);
-    hero.className  = 'status-hero fault';
-    icon.textContent= '⚠️';
-    if(affected.length===1){
-      title.textContent = affected[0].name+' has a signal issue';
-      sub.textContent   = 'Your broadcast engineer has been alerted. Check the fault history below for details.';
-    } else {
-      var names=affected.slice(0,2).map(function(s){return s.name;}).join(', ');
-      if(affected.length>2) names+=' and '+(affected.length-2)+' more';
-      title.textContent = 'Signal issue — '+names;
-      sub.textContent   = affected.length+' station'+(affected.length>1?'s':'')+' affected. Your broadcast engineer has been alerted.';
-    }
-    badge.textContent = faulted.length+offline.length+' issue'+(faulted.length+offline.length>1?'s':'');
-  } else if(!streams.length){
-    hero.className  = 'status-hero loading';
-    icon.textContent= '📡';
-    title.textContent='No stations connected';
-    sub.textContent  ='No station data is available. Check your hub connection.';
-    badge.textContent='';
-  } else {
-    hero.className  = 'status-hero ok';
-    icon.textContent= '✅';
-    title.textContent='All stations are on air';
-    sub.textContent  = streams.length+' station'+(streams.length>1?'s':'')+' running normally. No action needed.';
-    badge.textContent='All clear';
-  }
   if(!streams.length){
     document.getElementById('stations-wrap').innerHTML=
       '<div style="text-align:center;padding:40px 24px;color:var(--mu)">No stations available</div>';
@@ -682,6 +640,62 @@ function renderStations(sites){
   document.getElementById('stations-wrap').innerHTML=html;
 }
 
+// ── Chain status hero ─────────────────────────────────────────────────────
+function loadChainStatus(){
+  fetch('/api/chains/status',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      updateHero(d.results||[]);
+      clearTimeout(_chainTimer);
+      _chainTimer=setTimeout(loadChainStatus,REFRESH_MS);
+    })
+    .catch(function(){
+      clearTimeout(_chainTimer);
+      _chainTimer=setTimeout(loadChainStatus,15000);
+    });
+}
+
+function updateHero(chains){
+  var hero  = document.getElementById('status-hero');
+  var icon  = document.getElementById('sh-icon');
+  var title = document.getElementById('sh-title');
+  var sub   = document.getElementById('sh-sub');
+  var badge = document.getElementById('sh-badge');
+  if(!chains.length){
+    hero.className  ='status-hero loading';
+    icon.textContent='📡';
+    title.textContent='No chains configured';
+    sub.textContent  ='No chain data is available. Check your hub connection.';
+    badge.textContent='';
+    return;
+  }
+  var faulted=chains.filter(function(c){
+    var ds=c.display_status||c.status;
+    return ds==='fault'||ds==='pending'||ds==='adbreak';
+  });
+  if(faulted.length===0){
+    hero.className  ='status-hero ok';
+    icon.textContent='✅';
+    title.textContent='All stations are on air';
+    sub.textContent  =chains.length+' chain'+(chains.length>1?'s':'')+' running normally. No action needed.';
+    badge.textContent='All clear';
+  } else if(faulted.length===1){
+    hero.className  ='status-hero fault';
+    icon.textContent='⚠️';
+    title.textContent=faulted[0].name+' has a signal issue';
+    sub.textContent  ='Your broadcast engineer has been alerted. Check the fault history below for details.';
+    badge.textContent='1 issue';
+  } else {
+    hero.className  ='status-hero fault';
+    icon.textContent='⚠️';
+    var names=faulted.slice(0,2).map(function(c){return c.name;}).join(' and ');
+    if(faulted.length>2) names=faulted[0].name+' and '+(faulted.length-1)+' other chains';
+    title.textContent=names+' have a signal issue';
+    sub.textContent  =faulted.length+' chains affected. Your broadcast engineer has been alerted.';
+    badge.textContent=faulted.length+' issues';
+  }
+}
+
 // ── Fault events ──────────────────────────────────────────────────────────
 function loadFaults(){
   fetch('/api/producer/faults',{credentials:'same-origin'})
@@ -699,6 +713,7 @@ function loadFaults(){
 
 // ── Kick off ──────────────────────────────────────────────────────────────
 loadStatus();
+loadChainStatus();
 loadFaults();
 
 })();

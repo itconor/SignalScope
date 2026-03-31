@@ -2,6 +2,14 @@
 
 ---
 
+## [Producer View 1.2.6] - 2026-03-31
+
+### Fixed
+- **Status hero now checks chain status, not stream status** — the "All stations are on air / signal issue" block at the top of the Producer View now fetches `/api/chains/status` directly instead of reading stream-level data from `/hub/data`. It only shows chains the logged-in user has permission to see (filtered by their `allowed_chains` assignment). Previously it read all streams from all sites on the hub regardless of the user's chain permissions, causing it to show unrelated alerts.
+- **Hero shows faulted chain name(s) directly** — when a chain is in fault, pending, or adbreak state the headline names the specific chain(s) affected. Single fault: "CoolFM has a signal issue". Two faults: "CoolFM and Downtown Radio have a signal issue". More: "CoolFM and N other chains".
+
+---
+
 ## [Producer View 1.2.3] - 2026-03-31
 
 ### Changed
