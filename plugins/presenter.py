@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.3.2",
+    "version":    "1.3.3",
 }
 
 import json, os, time, urllib.parse
@@ -287,6 +287,9 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 .hdr-user{font-size:12px;color:var(--mu);background:rgba(23,52,95,.6);padding:5px 12px;border-radius:20px;border:1px solid var(--bor)}
 .hdr-signout{font-size:12px;color:var(--mu);background:rgba(23,52,95,.35);padding:5px 12px;border-radius:20px;border:1px solid var(--bor);text-decoration:none;transition:color .2s}
 .hdr-signout:hover{color:var(--tx)}
+.hdr-powered{font-size:11px;color:var(--mu);opacity:.55;text-decoration:none;letter-spacing:.03em;white-space:nowrap;transition:opacity .2s}
+.hdr-powered:hover{opacity:.9}
+@media(max-width:700px){.hdr-powered{display:none}}
 .hdr-listen{font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#1a7fe8,#17a8ff);padding:8px 18px;border-radius:20px;text-decoration:none;display:flex;align-items:center;gap:7px;box-shadow:0 2px 12px rgba(23,168,255,.35);transition:filter .2s,box-shadow .2s}
 .hdr-listen:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
 
@@ -438,6 +441,8 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
     <div class="hdr-title">Producer View</div>
     <div class="hdr-sub" id="hdr-station-count">Loading…</div>
   </div>
+  <div style="flex:1"></div>
+  <a href="/" class="hdr-powered">Powered by SignalScope</a>
   <div class="hdr-right">
     {% if has_listener %}<a href="/listener" class="hdr-listen">🎧 Listen Live</a>{% endif %}
     {% if username %}<div class="hdr-user">👤 {{username}}</div>{% endif %}

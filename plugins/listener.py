@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/listener",
     "icon":     "🎧",
     "hub_only": True,
-    "version":  "1.1.2",
+    "version":  "1.1.3",
 }
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -35,6 +35,9 @@ a{color:var(--acc);text-decoration:none}
 .hdr-user{font-size:12px;color:var(--mu);background:rgba(23,52,95,.6);padding:5px 12px;border-radius:20px;border:1px solid var(--bor)}
 .hdr-back{font-size:12px;color:var(--mu);background:rgba(23,52,95,.4);padding:5px 12px;border-radius:20px;border:1px solid var(--bor);text-decoration:none;transition:color .2s}
 .hdr-back:hover{color:var(--tx)}
+.hdr-powered{font-size:11px;color:var(--mu);opacity:.55;text-decoration:none;letter-spacing:.03em;white-space:nowrap;transition:opacity .2s}
+.hdr-powered:hover{opacity:.9}
+@media(max-width:700px){.hdr-powered{display:none}}
 .hdr-producer{font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#1a7fe8,#17a8ff);padding:8px 18px;border-radius:20px;text-decoration:none;display:flex;align-items:center;gap:7px;box-shadow:0 2px 12px rgba(23,168,255,.35);transition:filter .2s,box-shadow .2s}
 .hdr-producer:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
 
@@ -206,6 +209,8 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
     <div class="hdr-title">Listener</div>
     <div class="hdr-sub">Live streams</div>
   </div>
+  <div style="flex:1"></div>
+  <a href="/" class="hdr-powered">Powered by SignalScope</a>
   <div class="hdr-right">
     {% if has_presenter %}<a href="/presenter" class="hdr-producer">🎙 Producer View</a>{% endif %}
     {% if username %}<div class="hdr-user">👤 {{username}}</div>{% endif %}
