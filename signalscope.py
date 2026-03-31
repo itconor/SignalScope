@@ -1927,7 +1927,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.88"
+BUILD                  = "SignalScope-3.4.89"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -3425,6 +3425,15 @@ def login_required(f):
             session.clear()
             flash(f"Session expired after {timeout_hrs}h. Please log in again.")
             return redirect(url_for("login", next=request.path))
+        # Refresh site/chain/plugin permissions from the live user account so
+        # that admin edits take effect immediately without requiring re-login.
+        _uname = session.get("username", "")
+        if user_manager and _uname:
+            _ua = user_manager.get(_uname)
+            if _ua:
+                session["allowed_sites"]   = _ua.sites   or []
+                session["allowed_plugins"] = _ua.plugins or []
+                session["allowed_chains"]  = _ua.chains  or []
         return f(*args, **kwargs)
     return decorated
 

@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.89] - 2026-03-31
+
+### Fixed
+- **User permission changes now take effect immediately** — site, chain, and plugin access lists were only written to the session at login time, so editing a user's permissions required them to log out and back in before anything changed. `login_required` now refreshes these three fields from the live user account on every authenticated request. The legacy admin account (not in the user manager) is unaffected.
+
+---
+
 ## [3.4.88] - 2026-03-31
 
 ### Fixed
