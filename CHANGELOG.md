@@ -2,6 +2,16 @@
 
 ---
 
+## [3.4.111] - 2026-03-31
+
+### Added
+- **Auto-detect and fix USB buffer limit for multi-dongle RTL-SDR setups** — when multiple RTL-SDR dongles are in use on Linux, the default `usbfs_memory_mb=16` kernel limit causes rtl_fm to fail with "Failed to allocate zero-copy buffer". SignalScope now detects and fixes this automatically in three ways:
+  1. **Auto-fix on error**: the rtl_fm stderr reader detects the zero-copy/usbfs error message and immediately attempts to write `0` to `/sys/module/usbcore/parameters/usbfs_memory_mb`. Succeeds when SignalScope runs as root (typical service install).
+  2. **Settings → SDR Devices warning banner**: when Scan for Dongles is clicked, the response now includes the current `usbfs_memory_mb` value. If it is non-zero a warning banner appears with a **Fix Now** button that calls `POST /api/sdr/usbfs_fix`. On success the banner turns green; on permission failure the exact manual command is shown.
+  3. **`/api/sdr/usbfs_fix` endpoint**: can also be called directly. Returns `{ok, message}`.
+
+---
+
 ## [3.4.110] - 2026-03-31
 
 ### Fixed

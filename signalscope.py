@@ -1101,6 +1101,11 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
     <button type="button" class="btn bg bs" onclick="sdrScan()">🔍 Scan for dongles</button>
     <span id="sdr-scan-result" style="margin-left:8px"></span>
   </div>
+  <div id="sdr-usbfs-warn" style="display:none;padding:10px 14px;background:#2a1a0f;border-left:3px solid var(--wn);border-radius:6px;margin-bottom:10px;font-size:12px">
+    ⚠ <b>USB buffer limit active</b> — multiple RTL-SDR dongles may fail with "Failed to allocate zero-copy buffer".
+    <button type="button" class="btn bg bs" id="sdr-usbfs-fix-btn" style="margin-left:10px">Fix Now</button>
+    <span id="sdr-usbfs-fix-result" style="margin-left:8px"></span>
+  </div>
   <table style="width:100%;border-collapse:collapse;font-size:13px" id="sdr-table">
     <thead><tr style="color:var(--mu);font-size:11px;text-transform:uppercase">
       <th style="padding:4px 8px;text-align:left">Serial</th>
@@ -1162,6 +1167,13 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
       }
       el.textContent=d.devices.length+' dongle(s) found.';
       el.style.color='var(--ok)';
+      // usbfs buffer warning — show when limit is active (>0), hide when OK (0 or null)
+      var uw=document.getElementById('sdr-usbfs-warn');
+      if(d.usbfs_limit != null && d.usbfs_limit > 0){
+        uw.style.display='';
+      } else {
+        uw.style.display='none';
+      }
       // Show unregistered dongle warnings
       var regSerials=Array.from(document.querySelectorAll('[name=sdr_serial]')).map(function(i){return i.value.trim();});
       warn.innerHTML='';
@@ -1183,6 +1195,21 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
       }
     }).catch(function(e){el.textContent='Scan failed: '+e; el.style.color='var(--al)';});
   }
+  document.getElementById('sdr-usbfs-fix-btn').addEventListener('click', function(){
+    var btn=this;
+    var res=document.getElementById('sdr-usbfs-fix-result');
+    btn.disabled=true; btn.textContent='Applying…';
+    _csrfFetch('/api/sdr/usbfs_fix',{method:'POST'}).then(function(r){return r.json();}).then(function(d){
+      btn.disabled=false; btn.textContent='Fix Now';
+      if(d.ok){
+        res.style.color='var(--ok)'; res.textContent='✓ '+d.message;
+        document.getElementById('sdr-usbfs-warn').style.background='#0f2318';
+        document.getElementById('sdr-usbfs-warn').style.borderColor='var(--ok)';
+      } else {
+        res.style.color='var(--wn)'; res.textContent='⚠ '+d.message;
+      }
+    }).catch(function(e){btn.disabled=false;btn.textContent='Fix Now';res.style.color='var(--al)';res.textContent='Error: '+e;});
+  });
   </script>
 
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
@@ -1954,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.110"
+BUILD                  = "SignalScope-3.4.111"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -8505,6 +8532,15 @@ class MonitorManager:
                     line = raw.decode(errors="ignore").strip()
                     if line:
                         self.log(f"[{name}] FM rtl_fm: {line}")
+                        # Detect USB buffer exhaustion and try to fix automatically
+                        _ll = line.lower()
+                        if "usbfs" in _ll or "zero-copy" in _ll:
+                            _ok, _msg = _apply_usbfs_fix()
+                            if _ok:
+                                self.log(f"[{name}] Auto-applied usbfs fix: {_msg}")
+                            else:
+                                self.log(f"[{name}] usbfs fix failed (permission denied) — "
+                                         "go to Settings → SDR Devices and click Fix.")
             except Exception:
                 pass
         threading.Thread(target=_log_rtlsdr_stderr, daemon=True,
@@ -14655,6 +14691,40 @@ class SdrNotFoundError(RuntimeError):
 sdr_manager = SdrDeviceManager()
 
 
+# ── usbfs buffer helpers ──────────────────────────────────────────────────────
+_USBFS_PATH = "/sys/module/usbcore/parameters/usbfs_memory_mb"
+
+def _usbfs_memory_mb() -> "int | None":
+    """Return current usbfs_memory_mb value (0 = unlimited), or None if not applicable."""
+    try:
+        import pathlib
+        p = pathlib.Path(_USBFS_PATH)
+        if p.exists():
+            return int(p.read_text().strip())
+    except Exception:
+        pass
+    return None
+
+
+def _apply_usbfs_fix() -> "tuple[bool, str]":
+    """Try to set usbfs_memory_mb=0. Returns (success, message)."""
+    try:
+        import pathlib
+        p = pathlib.Path(_USBFS_PATH)
+        if not p.exists():
+            return True, "Not applicable on this system."
+        p.write_text("0\n")
+        return True, "USB buffer limit removed — usbfs_memory_mb=0."
+    except PermissionError:
+        return False, (
+            "Permission denied. Run manually: "
+            "echo 0 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb"
+        )
+    except Exception as exc:
+        return False, str(exc)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 app=Flask(__name__)
 from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -19649,8 +19719,17 @@ def api_sdr_scan():
         "devices":    result,
         "rtl_test":   bool(__import__("shutil").which("rtl_test")),
         "welle_cli":  bool(__import__("shutil").which("welle-cli")),
+        "usbfs_limit": _usbfs_memory_mb(),   # None=N/A, 0=OK, >0=limit active
     })
 
+
+@app.post("/api/sdr/usbfs_fix")
+@login_required
+@csrf_protect
+def api_sdr_usbfs_fix():
+    """Attempt to remove the usbfs memory limit for RTL-SDR multi-dongle setups."""
+    ok, msg = _apply_usbfs_fix()
+    return jsonify({"ok": ok, "message": msg})
 
 
 @app.get("/api/sound_devices")
