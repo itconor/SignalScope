@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.101] - 2026-03-31
+
+### Fixed
+- **Hub live level meters — wrong data source** — `/api/hub/live_levels` was reading from `hub_live_fanout._live_state` (a separate fan-out cache written only by SSE push frames) instead of `hub_server._sites` (the dict that the broadcast chain engine reads from, updated by both 10 s heartbeats and the 5 Hz live-push Option B merge). Changed to read directly from `hub_server._sites` under its own lock — the exact same source that makes chain fault detection real-time.
+
+---
+
 ## [3.4.100] - 2026-03-31
 
 ### Fixed

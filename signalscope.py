@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.100"
+BUILD                  = "SignalScope-3.4.101"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -21190,27 +21190,31 @@ def hub_live_push():
 @app.get("/api/hub/live_levels")
 @login_required
 def hub_live_levels():
-    """Return the latest cached live metric snapshot for all approved sites.
+    """Return current stream levels for all approved sites.
 
-    Called by the browser every ~150 ms to drive PPM-style level meters on the
-    hub dashboard without requiring SSE or long-lived connections.
-    Returns: {site_name: [{name, level_dbfs, peak_dbfs, silence_active}, ...], ...}
-    Only includes sites that have received at least one live push frame.
+    Reads directly from hub_server._sites — the same dict that chain
+    evaluation uses — so values are always current regardless of whether
+    a separate live-push fanout frame has been received.  Level fields are
+    updated both by heartbeats (~10 s) and by the 5 Hz live-push Option B
+    merge, whichever is more recent.
+
+    Called by the browser every 150 ms to drive PPM-style level meters.
+    Returns: {site_name: [{name, level_dbfs, peak_dbfs, silence_active}, ...]}
     """
     if not hub_server:
         return jsonify({}), 404
     allowed = _allowed_sites()
     out: dict = {}
-    with hub_live_fanout._lock:
-        for site, frame in hub_live_fanout._live_state.items():
-            if not frame:
+    with hub_server._lock:
+        for site_name, sdata in hub_server._sites.items():
+            if not sdata.get("_approved"):
                 continue
-            if allowed and site not in allowed:
+            if allowed and site_name not in allowed:
                 continue
-            streams = frame.get("streams")
-            if not streams:
+            streams = sdata.get("streams")
+            if not isinstance(streams, list):
                 continue
-            out[site] = [
+            entries = [
                 {
                     "name":           s.get("name", ""),
                     "level_dbfs":     s.get("level_dbfs"),
@@ -21218,8 +21222,10 @@ def hub_live_levels():
                     "silence_active": bool(s.get("silence_active")),
                 }
                 for s in streams
-                if s.get("name")
+                if s.get("name") and s.get("level_dbfs") is not None
             ]
+            if entries:
+                out[site_name] = entries
     return jsonify(out)
 
 @app.post("/hub/clip_upload")
