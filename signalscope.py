@@ -1954,7 +1954,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.102"
+BUILD                  = "SignalScope-3.4.103"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30286,9 +30286,6 @@ function _liveKey(site, stream) {
 function _startLiveView() {
   if (_liveActive) return;
   _liveActive = true;
-  // Quick structural refresh so online status / update buttons are current
-  clearTimeout(_hubTimer);
-  _hubTimer = setTimeout(hubRefresh, 1500);
   _livePoll();
 }
 
@@ -30378,12 +30375,11 @@ function _livePoll() {
     });
 }
 
-// Always start live level polling on hub dashboard load.
-// The poll returns {} if no sites are pushing live data — harmless.
-// Showing live updates does not require any per-hub setting; only the client
-// needs live_view enabled (via the replica page toggle) to push frames.
-window.addEventListener('load', function() {
-  setTimeout(_startLiveView, 500);
+// Start live level polling immediately on DOMContentLoaded so meters are
+// animated as soon as the page is interactive, without waiting for all
+// resources to finish loading (window.load fires much later).
+document.addEventListener('DOMContentLoaded', function() {
+  _startLiveView();
 });
 function agoJS(s){ s=Math.round(s||0); if(s<5)return'just now'; if(s<60)return s+'s ago'; return Math.round(s/60)+'m ago'; }
 function _csrfFetch(url,opts){
@@ -30634,10 +30630,10 @@ document.addEventListener('DOMContentLoaded', function(){
   document.querySelectorAll('.site-card').forEach(function(sc){ _syncExpandAllBtn(sc); });
   tickClock();
   setInterval(tickClock, 1000);
-  setTimeout(function(){
-    document.querySelectorAll('.site-card').forEach(function(el){el.classList.remove('skeleton');});
-    hubRefresh(); // starts the self-rescheduling loop via .finally()
-  }, 800);
+  // Remove skeleton and fetch fresh data immediately — server already renders
+  // valid heartbeat data so there is no need to hide it behind a delay.
+  document.querySelectorAll('.site-card').forEach(function(el){el.classList.remove('skeleton');});
+  hubRefresh(); // starts the self-rescheduling loop via .finally()
   // When the tab becomes visible again after being hidden, fire immediately
   document.addEventListener('visibilitychange', function(){
     if(!document.hidden){
