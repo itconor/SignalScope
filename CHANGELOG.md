@@ -2,6 +2,15 @@
 
 ---
 
+## [Producer View 1.2.7] - 2026-03-31
+
+### Fixed
+- **Station name extraction now strips distribution path** — chain names like `"Northern Ireland DAB / Downtown Radio"` and `"London - Livewire / Downtown Radio"` now both resolve to `"Downtown Radio"` (the part after the last ` / `). Previously only the equipment serial suffix was stripped, so the full chain name was shown verbatim, giving each distribution path a separate line in the fault detail.
+- **Infrastructure/feeder chains suppressed from incident labels** — when a site-level feeder chain (e.g. `"London"`, no ` / ` in its name) faults at the same time as downstream station chains (e.g. `"London - Livewire / Downtown Radio"`), the feeder is hidden from the incident label. The producer sees only the station brand that went off air, not the cascade of infrastructure nodes that triggered with it.
+- Combined effect: a fault that previously showed "London and 2 other stations" → "London / Northern Ireland DAB / Downtown Radio / London - Livewire / Downtown Radio" now correctly shows "Downtown Radio has a signal issue".
+
+---
+
 ## [Producer View 1.2.6] - 2026-03-31
 
 ### Fixed

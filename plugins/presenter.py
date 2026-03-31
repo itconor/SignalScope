@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.2.6",
+    "version":    "1.2.7",
 }
 
 import json, os, time, urllib.parse
@@ -105,36 +105,42 @@ def _group_by_incident(events):
 
 
 def _station_name(chain_name):
-    """Strip the equipment suffix from a chain name to get the station name.
+    """Extract the station brand from a chain name.
 
-    Chain naming convention: "[Site] / [Station] - [Equipment]"
+    Chain naming convention: "[Site/Distribution] / [Station Brand] - [Equipment]"
     e.g. "London - Livewire / Downtown Radio - LONCTAXMQ05"
-          → "London - Livewire / Downtown Radio"
+          → step 1 (strip equipment): "London - Livewire / Downtown Radio"
+          → step 2 (extract brand after /): "Downtown Radio"
 
-    If there's no recognisable equipment suffix the full name is returned.
-    An equipment suffix is defined as the last " - <word>" segment where the
-    segment is either ALL-CAPS/digits (codec serial like LONCTAXMQ05) or
-    contains typical equipment keywords (Processor, Primary, Secondary,
-    Backup, Encoder, DAB, FM, TX, RX, Codec, Quant, STL, C1, C2 etc.)
+    e.g. "Northern Ireland DAB / Downtown Radio"
+          → step 1 (no equipment suffix): "Northern Ireland DAB / Downtown Radio"
+          → step 2 (extract brand after /): "Downtown Radio"
+
+    e.g. "CoolFM - Primary"
+          → step 1 (strip equipment): "CoolFM"
+          → step 2 (no /): "CoolFM"
+
+    If there's no recognisable equipment suffix and no '/', the full name is returned.
     """
     import re as _re
-    # Split on last " - "
-    parts = chain_name.rsplit(' - ', 1)
-    if len(parts) != 2:
-        return chain_name
-    base, suffix = parts
-    # Consider it an equipment name if it:
-    # - is all uppercase letters/digits (serial number style: LONCTAXMQ05)
-    # - or matches known equipment keywords
+    # Step 1 — strip equipment suffix (last " - <equipment>" segment)
     _EQUIPMENT_PAT = _re.compile(
         r'^([A-Z0-9]{4,}|.*\b(Processor|Primary|Secondary|Backup|Encoder|'
         r'Codec|Quant|STL|DAB|FM|TX|RX|C[0-9]+|Mux|Multiplexer|Router|'
         r'Switch|Amp|Satellite|MPX|AES|SDI|Livebox|Transmitter|Receiver)\b.*)$',
         _re.IGNORECASE,
     )
-    if _EQUIPMENT_PAT.match(suffix.strip()):
-        return base.strip()
-    return chain_name
+    parts = chain_name.rsplit(' - ', 1)
+    if len(parts) == 2 and _EQUIPMENT_PAT.match(parts[1].strip()):
+        name = parts[0].strip()
+    else:
+        name = chain_name
+
+    # Step 2 — extract station brand from "[Distribution] / [Brand]"
+    if ' / ' in name:
+        name = name.rsplit(' / ', 1)[1].strip()
+
+    return name
 
 
 def _clip_url(ev):
@@ -181,11 +187,22 @@ def _build_incidents(allowed_chains=None, max_age_h=24):
             inc_evs = inc['_events']
             rep_ev  = inc_evs[0]
 
-            # Clean raw chain names → station names (strip equipment suffixes)
+            # Clean raw chain names → station brand names.
+            # _station_name() strips equipment suffix then extracts brand after "/".
             raw_names     = [e.get('stream', '') for e in inc_evs]
             station_names = [_station_name(n) for n in raw_names]
 
-            # De-duplicate station names (many chains → same station after stripping)
+            # Suppress infrastructure/site chains (raw name has no "/") when branded
+            # station chains (raw name contains "/") exist in the same incident.
+            # e.g. a site-level feeder "London" that cascades to
+            # "NI DAB / Downtown Radio" should be hidden — producers only care about
+            # the station brand, not the infrastructure chain that fed it.
+            has_branded = any('/' in rn for rn in raw_names)
+            if has_branded:
+                station_names = [sn for sn, rn in zip(station_names, raw_names)
+                                 if '/' in rn]
+
+            # De-duplicate (many chains → same brand after extraction)
             seen_stations = []
             for sn in station_names:
                 if sn not in seen_stations:
