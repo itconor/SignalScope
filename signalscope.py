@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.114"
+BUILD                  = "SignalScope-3.4.115"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -12108,6 +12108,11 @@ class HubServer:
             prev = self._sites.get(site, {})
             is_new = not prev
 
+            # ── Denied site: silently ignore, don't re-add to pending list ───
+            if prev.get("_denied"):
+                self._sites[site]["_received"] = now
+                return "pending"
+
             # ── New site: create a pending stub, don't process data ────────────
             if is_new:
                 self._sites[site] = {
@@ -13979,6 +13984,8 @@ class HubServer:
         with self._lock:
             result = []
             for name, data in self._sites.items():
+                if data.get("_denied"):
+                    continue
                 age    = now - data.get("_received", 0)
                 _timeout = 90 if data.get("low_bw") else HUB_SITE_TIMEOUT
                 online = age < _timeout
@@ -22502,7 +22509,13 @@ def hub_remove_site(site_name):
     removed = False
     with hub_server._lock:
         if site_name in hub_server._sites:
-            hub_server._sites.pop(site_name, None)
+            # Mark denied rather than deleting — so the site doesn't reappear
+            # in the pending banner when it next heartbeats in.
+            hub_server._sites[site_name] = {
+                "site":     site_name,
+                "_denied":  True,
+                "_received": time.time(),
+            }
             removed = True
         snapshot = dict(hub_server._sites)
     threading.Thread(target=hub_server._save_snapshot, args=(snapshot,),
@@ -30122,14 +30135,14 @@ body.wall-mode main{padding:10px;max-width:none}
 .sum-pill{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border-radius:999px;background:linear-gradient(180deg,#143766,#102b54);border:1px solid var(--bor);font-size:12px}
 .hub-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
 .search{min-width:280px;flex:1;max-width:460px;padding:9px 11px;background:#12305c;border:1px solid var(--bor);border-radius:8px;color:var(--tx)}
-.site-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;align-items:start}
-body.wall-mode .site-grid{grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:14px}
-.site-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;margin-bottom:0;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.18);transition:transform .14s, box-shadow .14s}
+.site-grid{columns:420px;column-gap:16px}
+body.wall-mode .site-grid{columns:480px;column-gap:14px}
+.site-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;break-inside:avoid;margin-bottom:16px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.18);transition:transform .14s, box-shadow .14s}
 .site-card:hover{transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.24)}
 .site-card.site-ok{border-left:4px solid var(--ok)}.site-card.site-warn{border-left:4px solid var(--wn)}.site-card.site-alert{border-left:4px solid var(--al)}.site-card.site-offline{border-left:4px solid var(--mu)}
 .site-header{padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--bor);flex-wrap:wrap}
 .site-name{font-size:16px;font-weight:700}
-body.wall-mode .site-card{border-radius:10px}
+body.wall-mode .site-card{border-radius:10px;margin-bottom:14px}
 body.wall-mode .site-header{padding:10px 14px;background:linear-gradient(180deg,#143766,#102b54)}
 body.wall-mode .site-name{font-size:18px}
 body.wall-mode .site-meta{font-size:13px}

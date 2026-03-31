@@ -2,6 +2,14 @@
 
 ---
 
+## [3.4.115] - 2026-03-31
+
+### Fixed
+- **Denied/rejected sites reappear on next heartbeat** — `hub_remove_site` previously deleted the site from `_sites` entirely. When the client sent its next heartbeat, `ingest()` treated it as a brand-new site and created a fresh pending entry, making the site reappear. Fix: instead of deleting, mark with `_denied: True` (minimal stub saved to hub_state.json). `ingest()` now detects denied sites and silently returns 'pending' without creating a new pending entry. `get_sites()` skips denied sites so they never appear in the hub dashboard. Denial persists across hub restarts.
+- **Hub dashboard layout — tall site cards push subsequent sites far down** — the site grid used `display:grid` with `repeat(auto-fit, minmax(420px, 1fr))`. With an even number of columns, a tall card in row 1 forced the next card into row 2, leaving empty space to the right of shorter cards. Switched to CSS `columns: 420px` (column layout) so cards flow top-to-bottom within each column before starting the next, packing short cards neatly under tall ones without gaps.
+
+---
+
 ## [3.4.114] - 2026-03-31
 
 ### Fixed
