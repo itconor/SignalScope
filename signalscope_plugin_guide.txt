@@ -1,0 +1,270 @@
+SIGNALSCOPE PLUGIN INTEGRATION GUIDE
+=====================================
+
+You are building a SignalScope plugin. SignalScope is a single-file Flask app
+(signalscope.py). Plugins are .py files placed in the plugins/ subdirectory. At
+startup SignalScope scans plugins/ for files containing the string
+SIGNALSCOPE_PLUGIN and calls their register(app, ctx) function.
+
+Directory layout:
+
+    SignalScope/
+    ├── signalscope.py
+    ├── plugins/
+    │   ├── myplugin.py     ← your plugin goes here
+    │   └── ...
+    └── plugins.json        ← public registry (optional)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PLUGIN SKELETON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    # myplugin.py — place in plugins/ subdirectory
+
+    SIGNALSCOPE_PLUGIN = {
+        "id":       "myplugin",    # unique slug, matches filename stem
+        "label":    "My Plugin",   # nav bar label
+        "url":      "/hub/myplugin", # nav bar href
+        "icon":     "🔧",          # optional emoji
+        # "hub_only": True,        # suppress nav item in client-only mode
+    }
+
+    def register(app, ctx):
+        login_required    = ctx["login_required"]
+        csrf_protect      = ctx["csrf_protect"]
+        monitor           = ctx["monitor"]   # AppMonitor
+        hub_server        = ctx["hub_server"]          # HubServer or None
+        listen_registry   = ctx["listen_registry"]     # ListenSlotRegistry
+        mobile_api_req    = ctx.get("mobile_api_required", ctx["login_required"])
+        BUILD             = ctx["BUILD"]     # e.g. "SignalScope-3.4.105"
+
+        @app.get("/hub/myplugin")
+        @login_required
+        def myplugin_page():
+            from flask import render_template_string
+            return render_template_string(_TPL)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CSP RULES — CRITICAL, BREAKS SILENTLY IF WRONG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Every <script> and <style> tag in a template MUST have nonce="{{csp_nonce()}}".
+Every page MUST have <meta name="csrf-token" content="{{csrf_token()}}"> in <head>.
+Without the nonce the browser blocks the entire script/style block with no visible error.
+
+    <head>
+      <meta charset="utf-8">
+      <meta name="csrf-token" content="{{csrf_token()}}">
+    </head>
+    <style nonce="{{csp_nonce()}}">
+      /* your CSS */
+    </style>
+    <script nonce="{{csp_nonce()}}">
+      function _getCsrf(){
+        return (document.querySelector('meta[name="csrf-token"]')||{}).content
+            || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+      }
+    </script>
+
+NEVER put onclick="..." on elements where the handler text contains a variable.
+Use data-* attributes and a delegated listener inside the nonce'd <script> block instead.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AUDIO PIPELINE — _stream_buffer
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Each enabled input (InputConfig) has a _stream_buffer attribute — a
+collections.deque of numpy float32 arrays. The monitor writes new chunks
+continuously; old ones are evicted automatically.
+
+Audio format:
+  Encoding:    f32le (32-bit float, little-endian)
+  Sample rate: 48 000 Hz
+  Channels:    1 (mono)
+  Chunk size:  24 000 samples = 0.5 s per chunk
+  To pipe to ffmpeg stdin: chunk.astype(np.float32).tobytes()
+
+Helper to get the buffer for a named stream:
+
+    def _get_buffer(stream_name):
+        try:
+            for inp in monitor.app_cfg.inputs:
+                if inp.name == stream_name and inp.enabled:
+                    return getattr(inp, "_stream_buffer", None)
+        except Exception:
+            pass
+        return None
+
+Correct pattern for reading chunks in a background thread:
+
+    import threading, time
+    import numpy as np
+
+    stop_evt = threading.Event()
+
+    def _audio_worker(stream_name):
+        last_ref = None   # identity-track the last chunk processed
+
+        while not stop_evt.is_set():
+            buf = _get_buffer(stream_name)
+            if not buf:
+                time.sleep(1)
+                continue
+
+            chunks = list(buf)   # thread-safe snapshot of the deque
+            if not chunks:
+                time.sleep(0.2)
+                continue
+
+            if last_ref is None:
+                last_ref = chunks[-1]   # anchor to latest, don't replay history
+                new_chunks = []
+            else:
+                idx = next((i for i, c in enumerate(chunks) if c is last_ref), None)
+                if idx is None:
+                    new_chunks = chunks   # anchor evicted — catch up
+                else:
+                    new_chunks = chunks[idx + 1:]
+                if new_chunks:
+                    last_ref = new_chunks[-1]
+
+            for chunk in new_chunks:
+                _process(chunk)   # chunk is numpy float32, 48 kHz mono, 0.5 s
+
+            time.sleep(0.2)
+
+    # Start from register():
+    # threading.Thread(target=_audio_worker, args=("My Stream",), daemon=True).start()
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ACCESSING CONFIG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    cfg = monitor.app_cfg        # AppConfig dataclass
+    for inp in cfg.inputs:
+        inp.name          # stream display name (str)
+        inp.enabled       # bool
+        inp.device_index  # URL / device string / frequency
+
+    def _available_streams():
+        try:
+            return [inp.name for inp in monitor.app_cfg.inputs if inp.enabled]
+        except Exception:
+            return []
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FLASK ROUTE SAFETY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Any route parameter that may contain "/" (stream names, site names) MUST use
+<path:param>. Split on the last "/" to separate compound segments:
+
+    @app.get("/hub/myplugin/clip/<path:stream_filename>")
+    @login_required
+    def serve_clip(stream_filename):
+        stream_name, filename = stream_filename.rsplit('/', 1)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CSRF ON POST ROUTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    @app.post("/api/myplugin/action")
+    @login_required
+    @csrf_protect
+    def my_action():
+        ...
+
+In JS, always read the token fresh at POST time (never cache it at page-load):
+
+    fetch('/api/myplugin/action', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-CSRFToken':_getCsrf()},
+      body: JSON.stringify({...})
+    });
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FULL ctx REFERENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  monitor               AppMonitor          .app_cfg -> config dataclass, .log(msg) -> app log
+  login_required        decorator           Require authenticated browser session on a route
+  csrf_protect          decorator           Validate CSRF token on POST routes
+  mobile_api_required   decorator           Require valid mobile API Bearer token
+  hub_server            HubServer|None      Hub state, ._sites, ._scanner_sessions; None on client-only nodes
+  listen_registry       ListenSlotRegistry  Create/get audio relay slots (for streaming to browser)
+  BUILD                 str                 e.g. "SignalScope-3.4.105"
+
+IMPORTANT — mobile API routes:
+  Any route under /api/mobile/... MUST use mobile_api_required, not login_required.
+  Always obtain it safely: mobile_api_req = ctx.get("mobile_api_required", ctx["login_required"])
+
+IMPORTANT — hub_only plugins:
+  Set "hub_only": True in SIGNALSCOPE_PLUGIN to suppress the nav bar item when
+  the node is running in client-only mode. The register() function still runs;
+  only the nav bar entry is hidden.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MINIMAL WORKING EXAMPLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    # plugins/myplugin.py
+
+    SIGNALSCOPE_PLUGIN = {"id":"myplugin","label":"My Plugin","url":"/hub/myplugin","icon":"🔧"}
+
+    _TPL = """<!doctype html><html><head>
+    <meta charset="utf-8">
+    <meta name="csrf-token" content="{{csrf_token()}}">
+    <style nonce="{{csp_nonce()}}">
+    body{background:#0a1628;color:#e2e8f0;font-family:sans-serif;padding:24px}
+    </style>
+    </head><body>
+    <h2>My Plugin</h2>
+    <div id="streams"></div>
+    <script nonce="{{csp_nonce()}}">
+    function _getCsrf(){
+      return (document.querySelector('meta[name="csrf-token"]')||{}).content
+          || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+    }
+    fetch('/api/myplugin/streams').then(r=>r.json()).then(d=>{
+      document.getElementById('streams').textContent = JSON.stringify(d);
+    });
+    </script>
+    </body></html>"""
+
+    def register(app, ctx):
+        import threading, time
+        monitor   = ctx["monitor"]
+        login_req = ctx["login_required"]
+
+        def _get_buffer(name):
+            try:
+                for inp in monitor.app_cfg.inputs:
+                    if inp.name == name and inp.enabled:
+                        return getattr(inp, "_stream_buffer", None)
+            except Exception:
+                pass
+            return None
+
+        @app.get("/hub/myplugin")
+        @login_req
+        def myplugin_page():
+            from flask import render_template_string
+            return render_template_string(_TPL)
+
+        @app.get("/api/myplugin/streams")
+        @login_req
+        def myplugin_streams():
+            from flask import jsonify
+            try:
+                names = [i.name for i in monitor.app_cfg.inputs if i.enabled]
+            except Exception:
+                names = []
+            return jsonify(names)

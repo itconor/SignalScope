@@ -118,6 +118,8 @@ Cards are drag-to-reorder. Alert cards sort to the top automatically.
 
 The hub dashboard aggregates all connected sites in one view. A **search bar** at the top filters site cards in real time — type any site name, stream name, format (`DAB`, `FM`), alert text, device ID or AI status. The filter searches all card content including collapsed stream detail panels.
 
+**Live level meters** — each stream card on the hub dashboard shows a PPM-style bouncing level bar that updates in real time at 5 Hz, independent of the 10-second heartbeat cycle. A peak-hold marker tracks the highest recent level with a slow decay. The bar uses colour zones (green / amber / red) to indicate programme, near-clip, and clip levels. Meters start immediately on page load using the last-known levels restored from state, and begin animating within one or two seconds of the monitoring loop connecting to audio.
+
 Cards can be drag-reordered; the order persists across page reloads via localStorage.
 
 ---
@@ -352,7 +354,9 @@ On first launch a connection dialog appears. Enter the hub URL and mobile API to
 
 ## Plugin System
 
-SignalScope supports drop-in plugins. Any `.py` file placed alongside `signalscope.py` that contains the string `SIGNALSCOPE_PLUGIN` is loaded automatically at startup and can register new Flask routes and nav bar items.
+SignalScope supports drop-in plugins. Any `.py` file in the `plugins/` subdirectory that contains the string `SIGNALSCOPE_PLUGIN` is loaded automatically at startup and can register new Flask routes and nav bar items.
+
+> **Note:** Older releases stored plugins alongside `signalscope.py` in the root directory. On first run after upgrading, SignalScope automatically migrates any root-level plugin files (and their associated config files) into the `plugins/` subdirectory.
 
 ### Installing Plugins
 
@@ -446,15 +450,15 @@ Latency tracking for broadcast chains at `/hub/latency`:
 
 ### Writing a Plugin
 
-Drop a `.py` file alongside `signalscope.py`:
+Drop a `.py` file into the `plugins/` subdirectory:
 
 ```python
 SIGNALSCOPE_PLUGIN = {
-    "id":    "myplugin",
-    "label": "My Plugin",
-    "url":   "/hub/myplugin",
-    "icon":  "🔧",
-    # "hub_only": True,   # hide nav item in client-only mode
+    "id":      "myplugin",
+    "label":   "My Plugin",
+    "url":     "/hub/myplugin",
+    "icon":    "🔧",
+    # "hub_only": True,   # hide nav item when node is in client-only mode
 }
 
 def register(app, ctx):
@@ -467,7 +471,9 @@ def register(app, ctx):
         return "<h1>My Plugin</h1>"
 ```
 
-See `CLAUDE.md` in the repository for full plugin authoring documentation including audio relay integration, hub↔client command patterns, SDR IQ capture recipes, and the browser audio pump JS.
+Any route under `/api/mobile/...` must use `ctx["mobile_api_required"]` (not `login_required`) so it accepts Bearer token authentication from the iOS app.
+
+See `CLAUDE.md` in the repository for full plugin authoring documentation including audio relay integration, hub↔client command patterns, SDR IQ capture recipes, the browser audio pump JS, and the complete `ctx` key reference.
 
 ---
 
@@ -669,7 +675,7 @@ flowchart LR
     F --> G
 ```
 
-Each client monitors local RF or IP audio sources and reports status, metadata, and alert data to the hub via HMAC-signed, AES-256-GCM encrypted heartbeats. The hub issues commands back to clients on heartbeat ACKs.
+Each client monitors local RF or IP audio sources and reports status, metadata, and alert data to the hub via HMAC-signed, AES-256-GCM encrypted heartbeats every ~10 seconds. In addition, clients push slim live metric frames (level, peak, silence state) to the hub at 5 Hz so that level bars and chain evaluation update in sub-second time. The hub issues commands back to clients on heartbeat ACKs.
 
 ---
 
