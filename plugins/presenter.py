@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.2.3",
+    "version":    "1.2.4",
 }
 
 import json, os, time, urllib.parse
@@ -191,12 +191,13 @@ def _build_incidents(allowed_chains=None, max_age_h=24):
                 if sn not in seen_stations:
                     seen_stations.append(sn)
 
-            # Headline label: common prefix of unique station names, or single name
+            # Headline label: use the station name(s) directly — no prefix guessing
             if len(seen_stations) == 1:
                 label = seen_stations[0]
+            elif len(seen_stations) == 2:
+                label = f"{seen_stations[0]} and {seen_stations[1]}"
             else:
-                prefix = _common_prefix(seen_stations)
-                label  = prefix if prefix else seen_stations[0]
+                label = f"{seen_stations[0]} and {len(seen_stations) - 1} other stations"
 
             # Pick the first clip that exists
             clip = next((c for c in (_clip_url(e) for e in inc_evs) if c), None)
