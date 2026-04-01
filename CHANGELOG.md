@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.122] - 2026-04-01
+
+### Fixed
+- **Broadcast chain clips inconsistent length — recovery and last_good clips short** — `_schedule_chain_recovery_clips` (local nodes) called `_save_alert_wav` without a `_chunks` argument, falling back to `_audio_buffer` which defaults to 10 s. Recovery clips therefore captured however much audio happened to be in that 10 s ring at save time — giving 5 s, 14 s, or occasionally 30 s clips at random. Root cause: the `_audio_buffer` expansion (`_ensure_alert_buffer_capacity`) only changes the `maxlen`; it cannot backfill audio that wasn't recorded into it before the fault. Fix: `_schedule_chain_recovery_clips` now snapshots `_stream_buffer` (60 s rolling, always full after the first minute) and passes it as `_chunks`, guaranteeing the full configured clip duration. The same bug existed in `_cmd_save_clip` for remote `last_good` and `recovery` clips (`_fault_chunks` was `None` for any non-fault status); fixed by snapshotting `_stream_buffer` for all clip types unconditionally.
+
+---
+
 ## [3.4.121] - 2026-04-01
 
 ### Added

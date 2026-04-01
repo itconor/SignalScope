@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.121"
+BUILD                  = "SignalScope-3.4.122"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -9866,15 +9866,14 @@ class HubClient:
         _clip_dur = (max(float(inp.alert_wav_duration or 0), duration, CHAIN_CLIP_MIN_SECS)
                      if duration else max(float(inp.alert_wav_duration or 0), CHAIN_CLIP_MIN_SECS))
 
-        # Fault clips: snapshot _stream_buffer NOW (before any delay) so the clip
-        # captures pre-fault audio + fault onset rather than post-fault silence.
-        # The old approach waited clip_dur seconds then saved from _audio_buffer —
-        # by that point the fault onset had scrolled off the buffer and the clip
-        # only contained silence/recovery (same problem as silence clips, fixed
-        # in 3.4.73 for silence alerts).
-        # All other clip types (last_good, recovery) save from _audio_buffer as before.
-        _fault_chunks = (list(getattr(inp, '_stream_buffer', []))
-                         if status == "fault" else None)
+        # Snapshot _stream_buffer NOW for ALL clip types (fault, last_good, recovery).
+        # Using _stream_buffer (60 s rolling) guarantees the full configured duration
+        # is available regardless of _audio_buffer size (which defaults to only 10 s).
+        # Snapshot is taken immediately so it captures the audio at command-receipt
+        # time — for fault clips this is pre-fault content; for recovery/last_good
+        # it is the most recent audio including the fault event.
+        _sb = getattr(inp, '_stream_buffer', None)
+        _fault_chunks = list(_sb) if (_sb is not None) else None
 
         # Stagger uploads per chain position so multiple nodes don't compress
         # and upload simultaneously (CPU burst can cause RTP packet loss).
@@ -13524,10 +13523,14 @@ class HubServer:
                     if not _site or _site == "local":
                         _lc = next((i for i in cfg.inputs if i.name == _stream and i.enabled), None)
                         if _lc:
-                            _ensure_alert_buffer_capacity(_lc, clip_dur)
-                            _clip = _save_alert_wav(_lc, _clbl, clip_dur, _skip_hub_queue=True)
-                            # Shrink buffer back to normal after saving
-                            _ensure_alert_buffer_capacity(_lc, None)
+                            # Use _stream_buffer snapshot (60 s rolling) so the recovery
+                            # clip always has the full configured duration regardless of
+                            # _audio_buffer size.  Same approach as fault onset clips.
+                            _rc_chunks = (list(_lc._stream_buffer)
+                                          if getattr(_lc, "_stream_buffer", None) is not None
+                                          else None)
+                            _clip = _save_alert_wav(_lc, _clbl, clip_dur, _skip_hub_queue=True,
+                                                    _chunks=_rc_chunks)
                             if _clip:
                                 new_clips.append({
                                     "key":        _safe_name(_stream),
