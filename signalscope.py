@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.122"
+BUILD                  = "SignalScope-3.4.123"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -7096,6 +7096,7 @@ class MonitorManager:
         self._metrics_last_prune: str   = ""    # date string "YYYY-MM-DD" of last prune
         self._hub_client: Optional[HubClient]=None
         self._dab_sessions: Dict[tuple, DabSharedSession]={}
+        self._local_maint_clear_ts: float = 0.0  # version stamp; 0 = no pending clear
         self._dab_sessions_lock=threading.Lock()
         # Per-device USB backoff: when usb_claim_interface error is seen, all
         # streams for that device index wait until this timestamp before retrying.
@@ -7203,9 +7204,14 @@ class MonitorManager:
             self.log(f"[Monitor] Started — {sum(1 for i in self.app_cfg.inputs if i.enabled)} stream(s).")
             # Clear auto-maintenance for local chain nodes after 60s settle so that
             # streams have time to connect and audio levels to stabilise before
-            # chain evaluation resumes.
-            def _clear_local_maint(_self=self):
+            # chain evaluation resumes.  The version stamp prevents a clear thread
+            # from a previous start cycle wiping maintenance set by a subsequent stop.
+            _lm_ts = time.time()
+            self._local_maint_clear_ts = _lm_ts
+            def _clear_local_maint(_self=self, ts=_lm_ts):
                 time.sleep(60)
+                if _self._local_maint_clear_ts != ts:
+                    return   # superseded by a later stop or restart — do nothing
                 try:
                     _set_site_chain_maintenance("local", 0)
                     _self.log("[Chain] Auto-maintenance CLEARED for local nodes (60s settle complete)")
@@ -7236,6 +7242,8 @@ class MonitorManager:
             # Auto-maintenance for local chain nodes (hub-as-both mode).
             # Prevents the chain monitor from firing CHAIN_FAULT alerts while
             # monitoring is intentionally stopped on this machine.
+            # Cancel any pending 60s clear timer from a previous start cycle.
+            self._local_maint_clear_ts = 0.0
             try:
                 _set_site_chain_maintenance("local", 86400)
                 self.log("[Chain] Auto-maintenance SET for local nodes (monitor stopped)")
@@ -8555,19 +8563,21 @@ class MonitorManager:
         # we can log anything useful (device errors, USB failures, etc.)
         def _log_rtlsdr_stderr():
             try:
+                _usbfs_fix_attempted = False   # only attempt once per stream connection
                 for raw in proc.stderr:
                     line = raw.decode(errors="ignore").strip()
                     if line:
                         self.log(f"[{name}] FM rtl_fm: {line}")
                         # Detect USB buffer exhaustion and try to fix automatically
+                        # (once per process launch — rtl_fm prints several matching lines)
                         _ll = line.lower()
-                        if "usbfs" in _ll or "zero-copy" in _ll:
+                        if not _usbfs_fix_attempted and ("usbfs" in _ll or "zero-copy" in _ll):
+                            _usbfs_fix_attempted = True
                             _ok, _msg = _apply_usbfs_fix()
                             if _ok:
                                 self.log(f"[{name}] Auto-applied usbfs fix: {_msg}")
                             else:
-                                self.log(f"[{name}] usbfs fix failed (permission denied) — "
-                                         "go to Settings → SDR Devices and click Fix.")
+                                self.log(f"[{name}] usbfs fix failed — {_msg}")
             except Exception:
                 pass
         threading.Thread(target=_log_rtlsdr_stderr, daemon=True,
@@ -11824,6 +11834,10 @@ class HubServer:
         # rather than a genuine fault).  Used to exclude these events from the
         # health-score fault-frequency count and from SLA downtime writes.
         self._chain_fault_adbreak: dict = {}
+        # Universal fault hold-off — cid → epoch ts when fault was first seen
+        # Used for fault_holdoff_seconds: delays ALL fault types (including post-mixin)
+        # before firing CHAIN_FAULT.  Cleared on recovery.
+        self._chain_fault_holdoff_since: dict = {}
         # API-layer pre-pending fault onset — cid → epoch seconds
         # Tracks when api_chains_status first saw a fault BEFORE the monitor loop
         # had a chance to set _chain_fault_state to "pending".  Used so the
@@ -12892,6 +12906,7 @@ class HubServer:
                     min_fault_secs       = max(0, int(chain.get("min_fault_seconds", 0) or 0))
                     fault_shift_grace    = max(0, int(chain.get("fault_shift_grace_seconds", 0) or 0))
                     adbreak_gap_tol      = max(0, int(chain.get("adbreak_gap_tolerance_seconds", 5) or 5))
+                    fault_holdoff_secs   = max(0, int(chain.get("fault_holdoff_seconds", 0) or 0))
 
                     # Work out whether the confirmation window should apply.
                     #
@@ -12964,6 +12979,35 @@ class HubServer:
                         continue
 
                     prev = self._chain_fault_state.get(cid, "ok")
+
+                    # ── Universal fault hold-off ──────────────────────────────
+                    # fault_holdoff_seconds delays ALL CHAIN_FAULT alerts for this
+                    # chain — including post-mixin faults that bypass the ad-break
+                    # confirmation window.  Useful for chains where brief on-air
+                    # silences (e.g. poorly-segued songs) should not alert unless
+                    # the outage persists for at least N seconds.
+                    if curr == "fault" and fault_holdoff_secs > 0 and prev != "alerted":
+                        _ho_since = self._chain_fault_holdoff_since.get(cid)
+                        if _ho_since is None:
+                            # First detection — start the hold-off clock
+                            self._chain_fault_holdoff_since[cid] = now
+                            self._chain_fault_state[cid] = "pending"
+                            self._set_pending_fault_meta(cid, result.get("fault_index"),
+                                                         result.get("adbreak_candidate", False))
+                            monitor.log(f"[Chain] '{result['name']}' fault detected — "
+                                        f"holding off {fault_holdoff_secs}s before alerting.")
+                            continue
+                        elif now - _ho_since < fault_holdoff_secs:
+                            # Still within hold-off — keep showing pending
+                            self._chain_fault_state[cid] = "pending"
+                            self._set_pending_fault_meta(cid, result.get("fault_index"),
+                                                         result.get("adbreak_candidate", False))
+                            continue
+                        # Hold-off expired — clear and fall through to normal alert logic
+                        self._chain_fault_holdoff_since.pop(cid, None)
+                    elif curr != "fault":
+                        # Clear hold-off whenever chain is not faulted
+                        self._chain_fault_holdoff_since.pop(cid, None)
 
                     # ── Fault detection ──────────────────────────────────────
                     if curr == "fault":
@@ -13196,6 +13240,7 @@ class HubServer:
                             self._chain_fault_state[cid] = "ok"
                             self._chain_fault_since.pop(cid, None)
                             self._chain_fault_index.pop(cid, None)
+                            self._chain_fault_holdoff_since.pop(cid, None)
                         # prev == "ok": already ok, nothing to do
 
                     # ── pending_recovery → fault: abort recovery ─────────────
@@ -13493,6 +13538,7 @@ class HubServer:
                     data={"chain_id": cid, "event": "recovered"},
                 )
         self._chain_fault_state[cid] = "ok"
+        self._chain_fault_holdoff_since.pop(cid, None)
 
     def _schedule_chain_recovery_clips(self, chain: dict, fault_entry: dict,
                                         cfg, tail_secs: float = 20.0):
@@ -14809,21 +14855,40 @@ def _usbfs_memory_mb() -> "int | None":
 
 
 def _apply_usbfs_fix() -> "tuple[bool, str]":
-    """Try to set usbfs_memory_mb=0. Returns (success, message)."""
+    """Try to set usbfs_memory_mb=0. Returns (success, message).
+
+    Attempts in order:
+      1. Direct write (works when running as root / cap_sys_admin).
+      2. `sudo -n tee` (works when NOPASSWD sudo is configured for the user).
+    """
+    import pathlib, subprocess
+    p = pathlib.Path(_USBFS_PATH)
+    if not p.exists():
+        return True, "Not applicable on this system."
+    # 1. Direct write
     try:
-        import pathlib
-        p = pathlib.Path(_USBFS_PATH)
-        if not p.exists():
-            return True, "Not applicable on this system."
         p.write_text("0\n")
         return True, "USB buffer limit removed — usbfs_memory_mb=0."
     except PermissionError:
-        return False, (
-            "Permission denied. Run manually: "
-            "echo 0 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb"
-        )
+        pass
     except Exception as exc:
         return False, str(exc)
+    # 2. sudo -n tee (non-interactive; succeeds only if NOPASSWD sudo is configured)
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "tee", str(p)],
+            input=b"0\n",
+            capture_output=True,
+            timeout=5,
+        )
+        if r.returncode == 0:
+            return True, "USB buffer limit removed via sudo — usbfs_memory_mb=0."
+    except Exception:
+        pass
+    return False, (
+        "Permission denied. To fix permanently run: "
+        "echo 0 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb"
+    )
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -23428,9 +23493,14 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
     <div id="adv_body" style="display:none">
       <div class="adv-grid">
         <div class="adv-field">
-          <label title="How long the chain must stay in fault before an alert fires.">Fault confirmation (s)</label>
+          <label title="How long the chain must stay in fault before an alert fires. Only applies to pre-mix-in (ad-break candidate) faults.">Fault confirmation (s)</label>
           <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:90px">
           <div class="field-hint">0 = immediate · 180 = 3 min</div>
+        </div>
+        <div class="adv-field">
+          <label title="Universal hold-off before any CHAIN_FAULT fires — applies to ALL fault types including post-mix-in. Use this to prevent alerts from brief on-air silences (e.g. poorly-segued songs). 0 = off.">Fault hold-off (s)</label>
+          <input type="number" id="builder_fault_holdoff" min="0" max="300" step="5" value="0" style="width:90px">
+          <div class="field-hint">0 = off · applies to all faults</div>
         </div>
         <div class="adv-field">
           <label title="Mark the node where ad audio is injected. Silent here = real fault.">Ad mix-in node</label>
@@ -23922,6 +23992,7 @@ function showBuilder(chain){
     document.getElementById('builder_id').value=chain.id||'';
     document.getElementById('builder_name').value=chain.name||'';
     document.getElementById('builder_min_fault').value=chain.min_fault_seconds||0;
+    document.getElementById('builder_fault_holdoff').value=chain.fault_holdoff_seconds||0;
     document.getElementById('builder_fault_shift_grace').value=chain.fault_shift_grace_seconds||0;
     document.getElementById('builder_adbreak_gap_tol').value=(chain.adbreak_gap_tolerance_seconds!==undefined?chain.adbreak_gap_tolerance_seconds:5);
     document.getElementById('builder_min_recovery').value=chain.min_recovery_seconds||0;
@@ -23956,6 +24027,7 @@ function showBuilder(chain){
     document.getElementById('builder_id').value='';
     document.getElementById('builder_name').value='';
     document.getElementById('builder_min_fault').value=0;
+    document.getElementById('builder_fault_holdoff').value=0;
     document.getElementById('builder_fault_shift_grace').value=0;
     document.getElementById('builder_adbreak_gap_tol').value=5;
     document.getElementById('builder_min_recovery').value=0;
@@ -23977,6 +24049,7 @@ function showBuilder(chain){
   // Auto-expand Timing & Behaviour if any timing value is non-zero
   var _hasTimingVals = (
     parseInt(document.getElementById('builder_min_fault').value||'0') > 0 ||
+    parseInt(document.getElementById('builder_fault_holdoff').value||'0') > 0 ||
     parseInt(document.getElementById('builder_min_recovery').value||'0') > 0 ||
     parseInt(document.getElementById('builder_min_alert_interval').value||'0') > 0 ||
     parseFloat(document.getElementById('builder_trend_alert').value||'0') !== 0 ||
@@ -24084,6 +24157,7 @@ function saveChain(){
     }
   });
   var minFault=parseInt(document.getElementById('builder_min_fault').value||'0',10)||0;
+  var faultHoldoff=parseInt(document.getElementById('builder_fault_holdoff').value||'0',10)||0;
   var shiftGrace=parseInt(document.getElementById('builder_fault_shift_grace').value||'0',10)||0;
   var adbreakGapTol=parseInt(document.getElementById('builder_adbreak_gap_tol').value||'5',10);if(isNaN(adbreakGapTol))adbreakGapTol=5;
   var mixinRaw=document.getElementById('builder_mixin_idx').value;
@@ -24093,7 +24167,7 @@ function saveChain(){
   var trendAlert=parseFloat(document.getElementById('builder_trend_alert').value||'0')||0;
   var upstreamChainId=(document.getElementById('builder_upstream_chain')||{}).value||'';
   var clipSeconds=parseFloat(document.getElementById('builder_clip_seconds').value||'0')||0;
-  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_shift_grace_seconds:shiftGrace,adbreak_gap_tolerance_seconds:adbreakGapTol,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId,clip_seconds:clipSeconds};
+  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_holdoff_seconds:faultHoldoff,fault_shift_grace_seconds:shiftGrace,adbreak_gap_tolerance_seconds:adbreakGapTol,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId,clip_seconds:clipSeconds};
   if(cid)payload.id=cid;
   st.style.color='var(--mu)';st.textContent='Saving…';
   _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
@@ -27836,6 +27910,12 @@ def api_chains_save():
         min_fault_seconds = max(0, min(3600, int(data.get("min_fault_seconds", 0) or 0)))
     except (TypeError, ValueError):
         min_fault_seconds = 0
+    # fault_holdoff_seconds: universal pre-alert delay — applies to ALL fault types
+    # including post-mixin.  Prevents alerts from brief silences (e.g. segue gaps).
+    try:
+        fault_holdoff_seconds = max(0, min(300, int(data.get("fault_holdoff_seconds", 0) or 0)))
+    except (TypeError, ValueError):
+        fault_holdoff_seconds = 0
     # Ad mix-in point — node index whose silence proves the fault is real (not an ad break)
     mixin_raw = data.get("mixin_node_idx")
     if mixin_raw is not None and mixin_raw != "":
@@ -27899,6 +27979,7 @@ def api_chains_save():
     chain_dict = {"id": cid if cid else "", "name": name,
                   "nodes": clean_nodes, "comparators": clean_comps,
                   "min_fault_seconds": min_fault_seconds,
+                  "fault_holdoff_seconds": fault_holdoff_seconds,
                   "mixin_node_idx": mixin_node_idx,
                   "fault_tail_secs": fault_tail_secs,
                   "record_all_nodes": record_all_nodes,

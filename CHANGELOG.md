@@ -2,6 +2,17 @@
 
 ---
 
+## [3.4.123] - 2026-04-01
+
+### Added
+- **Broadcast chains: Fault hold-off (s)** — new per-chain setting that delays ALL CHAIN_FAULT alerts by a configurable number of seconds, regardless of fault position. Unlike the existing "Fault confirmation" (which only applies to pre-mix-in / ad-break candidate faults), the hold-off applies universally — including post-mix-in faults that would otherwise fire immediately. Useful for chains where brief on-air silences from poorly-segued songs should not trigger alerts unless the outage persists. Found in the chain builder under Timing & Behaviour. 0 = off (default).
+
+### Fixed
+- **Auto-maintenance clear race condition** — the 60-second settle timer started by `start_monitoring()` could fire and clear maintenance even if `stop_monitoring()` had run again in the meantime (e.g. stop → start → stop in quick succession). Fixed by versioning the timer with a timestamp; the clear thread silently aborts if the timestamp no longer matches.
+- **usbfs fix log spam** — when `rtl_fm` encountered USB buffer allocation errors it printed multiple "usbfs" and "zero-copy" stderr lines, each triggering a separate fix attempt and "usbfs fix failed" log entry. The fix is now attempted only once per stream connection, producing a single log line.
+
+---
+
 ## [3.4.122] - 2026-04-01
 
 ### Fixed
