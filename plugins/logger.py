@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.17",
+    "version": "1.5.18",
 }
 
 import datetime
@@ -780,6 +780,10 @@ def register(app, ctx):
                 _cfg["base_dirs"] = new_base_dirs
             new_mic_key = str(data.get("mic_api_key", "")).strip()
             _cfg["mic_api_key"] = new_mic_key
+            try:
+                _cfg["utc_offset_hours"] = max(-12, min(14, int(data.get("utc_offset_hours", 0))))
+            except (ValueError, TypeError):
+                pass
             _save_config()
 
         # Ensure all configured roots exist
@@ -867,7 +871,8 @@ def register(app, ctx):
         rec_root = _rec_root()
         return jsonify({"recorders": active, "disk_bytes": total,
                         "rec_root": str(rec_root),
-                        "server_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")})
+                        "server_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "utc_offset_hours": _cfg.get("utc_offset_hours", 0)})
 
     @app.get("/api/logger/days/<stream_slug>")
     @login_req
@@ -1915,6 +1920,7 @@ def _load_config():
     _cfg.setdefault("rec_dir", "")
     _cfg.setdefault("base_dirs", [])   # list of {"name": str, "path": str}
     _cfg.setdefault("mic_api_key", "")  # Bearer token for /api/logger/mic REST API
+    _cfg.setdefault("utc_offset_hours", 0)  # display offset: recordings stored in UTC, UI shifts by this many hours
 
 def _save_config():
     try:
@@ -3454,6 +3460,17 @@ select:focus,input:focus{border-color:var(--acc)}
         </div>
       </div>
 
+      <!-- Display timezone offset -->
+      <div style="margin-bottom:18px;padding:14px 16px;background:var(--sur);border:1px solid var(--bor);border-radius:10px">
+        <label style="font-size:12px;font-weight:700;color:var(--mu);letter-spacing:.6px;text-transform:uppercase;display:block;margin-bottom:6px">Display UTC Offset (hours)</label>
+        <input type="number" id="utc-offset-input" min="-12" max="14" step="1" value="0"
+               style="width:120px;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:7px 10px;border-radius:6px;font-size:12px;outline:none">
+        <div style="margin-top:5px;font-size:11px;color:var(--mu)">
+          Recordings are stored in UTC. Set this to your local UTC offset so times display correctly — e.g. <strong>+1</strong> for BST (Ireland/UK summer), <strong>0</strong> for GMT/UTC.
+          Changes take effect immediately on the timeline without restarting.
+        </div>
+      </div>
+
       <!-- Mic API Key -->
       <div style="margin-bottom:18px;padding:14px 16px;background:var(--sur);border:1px solid var(--bor);border-radius:10px">
         <label style="font-size:12px;font-weight:700;color:var(--mu);letter-spacing:.6px;text-transform:uppercase;display:block;margin-bottom:6px">Mic API Key</label>
@@ -3491,7 +3508,7 @@ function _post(u,b){
 function _esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function _fmt(s){ s=isNaN(s)?0:s; var m=Math.floor(s/60),ss=Math.floor(s%60); return m+':'+(ss<10?'0':'')+ss; }
 function _fmtAbs(s){ var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=Math.floor(s%60); return (h>0?h+':':'')+(m<10&&h>0?'0':'')+m+':'+(sc<10?'0':'')+sc; }
-function _fmtWall(s){ s=s||0; var h=Math.floor(s/3600)%24,m=Math.floor((s%3600)/60),sc=Math.floor(s%60); return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sc).padStart(2,'0'); }
+function _fmtWall(s){ s=(s||0)+_utcOffsetS; s=((s%86400)+86400)%86400; var h=Math.floor(s/3600)%24,m=Math.floor((s%3600)/60),sc=Math.floor(s%60); return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sc).padStart(2,'0'); }
 function _fmtBytes(b){ if(b<1048576) return (b/1024).toFixed(1)+'KB'; if(b<1073741824) return (b/1048576).toFixed(1)+'MB'; return (b/1073741824).toFixed(2)+'GB'; }
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -3505,6 +3522,9 @@ var _selSeg      = null;
 var _serverEpochMs  = Date.now();
 var _serverSyncedAt = Date.now();
 function _serverNow(){ return new Date(_serverEpochMs + (Date.now() - _serverSyncedAt)); }
+// Display UTC offset in seconds — recordings are stored in UTC, this shifts all
+// displayed times so the timeline matches local clock (e.g. 3600 for BST/UTC+1).
+var _utcOffsetS = 0;
 var _segsAll     = [];
 var _markIn      = null;
 var _markOut     = null;
@@ -3615,8 +3635,10 @@ document.getElementById('notice-settings-link').addEventListener('click', functi
 _get('/api/logger/status').then(function(data){
   var serverUtc = data.server_utc;
   if(serverUtc){ _serverEpochMs = new Date(serverUtc).getTime(); _serverSyncedAt = Date.now(); }
-  var today = _serverNow();
-  _currentDate = today.toISOString().slice(0,10);
+  if(data.utc_offset_hours != null){ _utcOffsetS = parseInt(data.utc_offset_hours, 10) * 3600 || 0; }
+  // Use server UTC + offset to determine the local "today" date
+  var localNow = new Date(_serverNow().getTime() + _utcOffsetS * 1000);
+  _currentDate = localNow.toISOString().slice(0,10);
   document.getElementById('date-lbl').textContent = _currentDate;
   loadStreams();
 }).catch(function(){
@@ -3994,13 +4016,16 @@ function buildTimeline(segs){
   var lookup = {};
   segs.forEach(function(s){ lookup[s.start_s] = s; });
   var now = _serverNow();
-  var todayStr = now.toISOString().slice(0,10);
-  var nowSecs  = now.getUTCHours()*3600 + now.getUTCMinutes()*60;
+  var localNow = new Date(now.getTime() + _utcOffsetS * 1000);
+  var todayStr = localNow.toISOString().slice(0,10);
+  var nowSecs  = now.getUTCHours()*3600 + now.getUTCMinutes()*60;  // UTC position in day
 
   for(var h=0; h<24; h++){
     var lbl = document.createElement('div');
     lbl.className = 'tl-hour-lbl';
-    lbl.textContent = String(h).padStart(2,'0')+':00';
+    // Display label shifted by UTC offset, but data-startS stays UTC-based
+    var displayH = (h + Math.round(_utcOffsetS / 3600) + 24) % 24;
+    lbl.textContent = String(displayH).padStart(2,'0')+':00';
     grid.appendChild(lbl);
     var row = document.createElement('div');
     row.className = 'tl-row';
@@ -4442,6 +4467,7 @@ document.getElementById('export-btn').addEventListener('click', function(){
 function loadStatus(){
   _get('/api/logger/status').then(function(data){
     if(data.server_utc){ _serverEpochMs = new Date(data.server_utc).getTime(); _serverSyncedAt = Date.now(); }
+    if(data.utc_offset_hours != null){ _utcOffsetS = parseInt(data.utc_offset_hours, 10) * 3600 || 0; }
     var recs      = data.recorders||{};
     var recList   = Object.values(recs);
     var running   = recList.filter(function(r){ return r.running; });
@@ -4492,6 +4518,8 @@ function loadSettingsPanel(){
     rdRes.textContent = st.rec_root ? '→ ' + st.rec_root : '';
     var mkInput = document.getElementById('mic-api-key-input');
     if(mkInput) mkInput.value = _cfg.mic_api_key || '';
+    var tzInput = document.getElementById('utc-offset-input');
+    if(tzInput) tzInput.value = _cfg.utc_offset_hours != null ? _cfg.utc_offset_hours : 0;
     // Fetch Planet Radio stations — non-critical, re-render rows with dropdown if available
     _get('/api/nowplaying_stations').then(function(stations){
       if(Array.isArray(stations) && stations.length){
@@ -4661,12 +4689,14 @@ document.getElementById('save-settings-btn').addEventListener('click', function(
   var recDir    = document.getElementById('rec-dir-input').value.trim();
   var baseDirs  = _getBaseDirsFromForm();
   var micKey    = (document.getElementById('mic-api-key-input')||{}).value||'';
+  var tzOffset  = parseInt((document.getElementById('utc-offset-input')||{}).value||'0', 10) || 0;
   var saveMsg   = document.getElementById('save-msg');
   var saveErr   = document.getElementById('save-err');
   saveMsg.style.display='none'; saveErr.style.display='none';
-  _post('/api/logger/config',{streams:streams, rec_dir:recDir, base_dirs:baseDirs, mic_api_key:micKey}).then(function(r){
+  _post('/api/logger/config',{streams:streams, rec_dir:recDir, base_dirs:baseDirs, mic_api_key:micKey, utc_offset_hours:tzOffset}).then(function(r){
     if(r.ok){
       _cfg.streams=streams; _cfg.rec_dir=recDir; _cfg.base_dirs=baseDirs; _cfg.mic_api_key=micKey;
+      _cfg.utc_offset_hours=tzOffset; _utcOffsetS=tzOffset*3600;
       fetch('/api/logger/status').then(function(res){ return res.json(); }).then(function(st){
         var rdRes=document.getElementById('rec-dir-resolved');
         rdRes.textContent = st.rec_root ? '→ '+st.rec_root : '';
