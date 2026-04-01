@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.121] - 2026-04-01
+
+### Added
+- **Auto-maintenance when monitor is stopped** — when a client (or the hub itself) deliberately stops monitoring, all chain nodes belonging to that site are automatically placed in maintenance mode so the chain monitor does not fire false CHAIN_FAULT alerts while monitoring is intentionally off. When monitoring restarts, maintenance is cleared automatically after a 60-second settle so streams have time to connect and audio levels to stabilise before chain evaluation resumes. The settle timer is versioned — a rapid stop → restart → stop cycle cannot leave nodes unprotected.
+  - Remote clients: detected via the `running` field in heartbeats (`True → False` sets maintenance; `False → True` triggers the 60-second settle then clears)
+  - Local hub nodes (hub-as-both mode): hooked directly into `stop_monitoring()` and `start_monitoring()`
+
+---
+
 ## [3.4.120] - 2026-04-01
 
 ### Improved

@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.120"
+BUILD                  = "SignalScope-3.4.121"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -7201,6 +7201,18 @@ class MonitorManager:
             for t in self._threads: t.start()
             self._running=True
             self.log(f"[Monitor] Started — {sum(1 for i in self.app_cfg.inputs if i.enabled)} stream(s).")
+            # Clear auto-maintenance for local chain nodes after 60s settle so that
+            # streams have time to connect and audio levels to stabilise before
+            # chain evaluation resumes.
+            def _clear_local_maint(_self=self):
+                time.sleep(60)
+                try:
+                    _set_site_chain_maintenance("local", 0)
+                    _self.log("[Chain] Auto-maintenance CLEARED for local nodes (60s settle complete)")
+                except Exception:
+                    pass
+            threading.Thread(target=_clear_local_maint, daemon=True,
+                             name="AutoMaintClear").start()
             # Hub client runs independently of monitoring — started at app startup
             # and kept alive across stop/start cycles. Only launch it here if it
             # somehow never got started (e.g. app_cfg wasn't ready at boot time).
@@ -7221,6 +7233,14 @@ class MonitorManager:
             # subsequent FM start to fail with "already in use".
             sdr_manager.release_all()
             self._running=False; self.log("[Monitor] Stopped.")
+            # Auto-maintenance for local chain nodes (hub-as-both mode).
+            # Prevents the chain monitor from firing CHAIN_FAULT alerts while
+            # monitoring is intentionally stopped on this machine.
+            try:
+                _set_site_chain_maintenance("local", 86400)
+                self.log("[Chain] Auto-maintenance SET for local nodes (monitor stopped)")
+            except Exception:
+                pass
             # Reset per-input metrics so the hub heartbeat immediately reports
             # silence/down for all streams rather than keeping stale healthy levels.
             for _inp in self.app_cfg.inputs:
@@ -11845,6 +11865,10 @@ class HubServer:
         self._ping_results: Dict[str, dict] = {}
         # On-demand log dumps — site_name → {"lines": [...], "ts": float}
         self._log_dumps: Dict[str, dict] = {}
+        # Auto-maintenance restart settle timers — site_name → ts (epoch float)
+        # Used to prevent a rapid stop→restart→stop cycle from clearing maintenance
+        # prematurely: the clear thread only fires if the stored ts still matches.
+        self._monitor_restart_pending: dict = {}
         self._load_state()            # restore hub sites across restarts
         self._load_fault_log_from_db()  # restore chain fault history from SQLite
         self._load_backup_index()       # load backup metadata from disk
@@ -12174,6 +12198,9 @@ class HubServer:
                 consecutive_missed = prev.get("_consecutive_missed", 0)
                 consecutive_missed = consecutive_missed + missed if missed else 0
 
+                prev_running = bool(prev.get("running", True))
+                new_running  = bool(payload.get("running", True))
+
                 stored = {k: v for k, v in payload.items() if k != "secret"}
                 stored.update({
                     "_approved":           True,
@@ -12195,6 +12222,36 @@ class HubServer:
         # Persist asynchronously
         threading.Thread(target=self._save_snapshot, args=(snapshot,),
                          daemon=True, name="HubSave").start()
+
+        # ── Auto-maintenance on monitor stop/restart ──────────────────────────
+        # When a remote client deliberately stops its monitor (running: True →
+        # False) put all its chain nodes in maintenance so the chain monitor
+        # doesn't fire false CHAIN_FAULT alerts while monitoring is intentionally
+        # off.  When monitoring restarts (False → True) clear maintenance after a
+        # 60-second settle so streams have time to connect and audio levels to
+        # stabilise before chain evaluation resumes.
+        if not is_new and approved and not (prev.get("_denied")):
+            try:
+                if prev_running and not new_running:
+                    def _do_set_maint(sn=site):
+                        _set_site_chain_maintenance(sn, 86400)
+                        monitor.log(f"[Chain] Auto-maintenance SET for site '{sn}' — monitor stopped")
+                    threading.Thread(target=_do_set_maint, daemon=True,
+                                     name="AutoMaint").start()
+                elif not prev_running and new_running:
+                    _restart_ts = time.time()
+                    self._monitor_restart_pending[site] = _restart_ts
+                    def _do_clear_maint(sn=site, ts=_restart_ts):
+                        time.sleep(60)
+                        if self._monitor_restart_pending.get(sn) == ts:
+                            _set_site_chain_maintenance(sn, 0)
+                            self._monitor_restart_pending.pop(sn, None)
+                            monitor.log(f"[Chain] Auto-maintenance CLEARED for site '{sn}' "
+                                        f"— 60s settle after monitor restart")
+                    threading.Thread(target=_do_clear_maint, daemon=True,
+                                     name="AutoMaintClear").start()
+            except Exception as _ame:
+                monitor.log(f"[Chain] Auto-maintenance error for '{site}': {_ame}")
 
         if not approved:
             return "pending"
@@ -21848,7 +21905,8 @@ def _iter_chain_leaf_nodes(chain: dict):
             yield node
 
 
-def _set_site_chain_maintenance(site_name: str, duration: int) -> None:
+def _set_site_chain_maintenance(site_name: str, duration: int,
+                                reason: str = "") -> None:
     """Set (duration > 0) or clear (duration = 0) maintenance on every chain
     node that belongs to *site_name*.  Thread-safe: reads chains from
     monitor.app_cfg and writes to hub_server._chain_maintenance."""
@@ -21856,6 +21914,7 @@ def _set_site_chain_maintenance(site_name: str, duration: int) -> None:
         return
     chains = (monitor.app_cfg.signal_chains or []) if monitor.app_cfg else []
     expiry = time.time() + duration if duration > 0 else 0
+    _reason = f" ({reason})" if reason else ""
     for chain in chains:
         cid = chain.get("id", "")
         if not cid:
@@ -21866,10 +21925,10 @@ def _set_site_chain_maintenance(site_name: str, duration: int) -> None:
                 mkey = f"{site_name}|{node.get('stream', '')}"
                 if duration > 0:
                     maint[mkey] = expiry
-                    monitor.log(f"[Chain] Auto-maintenance SET for {mkey} in chain {cid!r} (update in progress)")
+                    monitor.log(f"[Chain] Auto-maintenance SET for {mkey} in '{cid}'{_reason}")
                 else:
                     maint.pop(mkey, None)
-                    monitor.log(f"[Chain] Auto-maintenance CLEARED for {mkey} in chain {cid!r} (update complete)")
+                    monitor.log(f"[Chain] Auto-maintenance CLEARED for {mkey} in '{cid}'{_reason}")
 
 
 @app.post("/api/hub/site/<path:site_name>/update")
@@ -21893,7 +21952,7 @@ def hub_trigger_update(site_name):
     # Put all chain nodes for this site into maintenance (15-minute window
     # covers download + restart + 60-second post-restart settle cooldown).
     if hub_server:
-        _set_site_chain_maintenance(site_name, duration=900)
+        _set_site_chain_maintenance(site_name, duration=900, reason="update in progress")
         hub_server._pending_updates[site_name] = time.time()
 
     hub_server.push_pending_command(site_name, {
