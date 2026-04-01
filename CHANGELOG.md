@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.128] - 2026-04-01
+
+### Fixed
+- **Hub "Play" button produces no audio for stereo streams** — two code paths both had the same root cause: sending mono PCM data to an ffmpeg process started with `-ac 2` (stereo). When ffmpeg receives half the expected bytes per time unit it either plays at half speed or produces a corrupt MP3 stream that browsers silently refuse to decode.
+  - **`stream_live` (`/stream/<idx>/live`)**: `_live_buf()` fell back to `_stream_buffer` (mono chunks) whenever `_audio_buffer` was momentarily empty, even though ffmpeg was already running with `-ac 2`. Fix: when `_live_n_ch == 2`, `_live_buf()` now always returns `_audio_buffer` regardless of whether it is currently empty. The writer loop simply waits for the first stereo chunk to arrive — this is safe because `_audio_buffer` fills within one CHUNK_DURATION (0.5 s) of stream connect.
+  - **Hub relay (`kind="live"` in `_push_audio_request`)**: the relay writer always read from `_stream_buffer` (mono) with `ffmpeg -ac 1`, regardless of whether the stream was configured for stereo. Hub-relayed audio was always mono — browsers playing a stream tagged as stereo received a mono MP3 but the audio element sometimes stalled on MIME/format inconsistency. Fix: relay now checks `inp.stereo and inp._audio_channels == 2`; if true, reads from `_audio_buffer` with `ffmpeg -ac 2 -b:a 256k` (mirrors `stream_live`). Added `_relay_live_buf()` helper that — like the fixed `_live_buf()` — never mixes channel counts.
+
+---
+
 ## [3.4.127] - 2026-04-01
 
 ### Fixed

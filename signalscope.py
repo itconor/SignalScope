@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.127"
+BUILD                  = "SignalScope-3.4.128"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -11029,11 +11029,26 @@ class HubClient:
                     print(f"[HubRelay] ffmpeg not found, cannot relay live audio")
                     return
 
-                sr      = SAMPLE_RATE
-                bitrate = f"{self._hub_relay_bitrate or cfg.hub.relay_bitrate}k"
+                sr = SAMPLE_RATE
+                # Mirror the stream_live stereo logic: use _audio_buffer (stereo
+                # interleaved) when the input is configured for stereo AND has
+                # already started receiving stereo data (_audio_channels == 2).
+                # Never fall back to _stream_buffer (mono) when expecting stereo
+                # — that would feed the wrong channel count to ffmpeg, producing
+                # half-speed PCM that the browser decoder cannot handle.
+                _relay_stereo = (
+                    getattr(inp, 'stereo', False) and
+                    getattr(inp, '_audio_channels', 1) == 2
+                )
+                _relay_n_ch  = 2 if _relay_stereo else 1
+                bitrate = (
+                    "256k" if _relay_stereo
+                    else f"{self._hub_relay_bitrate or cfg.hub.relay_bitrate}k"
+                )
                 cmd = [
                     "ffmpeg", "-hide_banner", "-loglevel", "error",
-                    "-f", "s16le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
+                    "-f", "s16le", "-ar", str(sr), "-ac", str(_relay_n_ch),
+                    "-i", "pipe:0",
                     "-f", "mp3", "-b:a", bitrate, "-reservoir", "0", "pipe:1",
                 ]
                 proc = subprocess.Popen(cmd,
@@ -11045,19 +11060,29 @@ class HubClient:
                 def _pcm(c):
                     return (np.clip(c, -1., 1.) * 32767).astype(np.int16).tobytes()
 
+                def _relay_live_buf():
+                    # When stereo, use _audio_buffer; when mono, use _stream_buffer.
+                    # Never mix: sending mono chunks to a stereo ffmpeg process (or
+                    # vice-versa) produces silent / half-speed output.
+                    if _relay_n_ch == 2:
+                        return inp._audio_buffer
+                    return inp._stream_buffer
+
                 def writer():
                     try:
-                        if inp._stream_buffer:
+                        src = _relay_live_buf()
+                        if src:
                             seed_n = int(3.0 / CHUNK_DURATION)
-                            for c in list(inp._stream_buffer)[-seed_n:]:
+                            for c in list(src)[-seed_n:]:
                                 proc.stdin.write(_pcm(c))
                         sent_seq = getattr(inp, "_live_chunk_seq", 0)
                         while not stop_event.is_set():
                             cur = getattr(inp, "_live_chunk_seq", 0)
                             if cur > sent_seq:
                                 n = min(cur - sent_seq, 50)
-                                if inp._stream_buffer:
-                                    for c in list(inp._stream_buffer)[-n:]:
+                                src = _relay_live_buf()
+                                if src:
+                                    for c in list(src)[-n:]:
                                         proc.stdin.write(_pcm(c))
                                 sent_seq = cur
                             else:
@@ -19597,7 +19622,16 @@ def stream_live(idx):
     # Stereo streams: pull interleaved chunks from _audio_buffer.
     # Mono streams: pull from _stream_buffer as before.
     def _live_buf():
-        return inp._audio_buffer if (_live_n_ch == 2 and inp._audio_buffer) else inp._stream_buffer
+        # When stereo mode is active, always return _audio_buffer (never fall
+        # back to _stream_buffer which is mono).  Falling back would send
+        # 24 000-sample mono chunks to an ffmpeg process started with -ac 2,
+        # causing half-speed playback that confuses the browser decoder and
+        # produces silence.  If _audio_buffer is momentarily empty the writer
+        # loop simply waits for the first stereo chunk — that is the correct
+        # behaviour.
+        if _live_n_ch == 2:
+            return inp._audio_buffer
+        return inp._stream_buffer
 
     if not has_ffmpeg:
         # WAV fallback (works in most browsers on a LAN, may stall in Chrome)
