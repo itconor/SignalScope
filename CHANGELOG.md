@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.119] - 2026-03-31
+
+### Improved
+- **Diagnostic logging for short chain fault clips** — `_save_alert_wav` now logs a warning when the actual clip duration is more than 0.5s shorter than requested. The log message (visible in the server log panel) names the stream and shows the available vs requested duration. Short clips occur when `_stream_buffer` hasn't yet accumulated enough audio — most commonly in the first 30 seconds after monitoring starts, after an HTTP stream reconnect, or if ffmpeg took several seconds to establish the initial connection. The clip is still saved; only its length is affected.
+
+---
+
 ## [3.4.118] - 2026-04-01
 
 ### Fixed

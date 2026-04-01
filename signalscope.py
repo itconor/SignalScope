@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.118"
+BUILD                  = "SignalScope-3.4.119"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -4990,6 +4990,13 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
         chunks = _chunks
     if not chunks: return None
     audio = np.concatenate(chunks)[-int(SAMPLE_RATE * duration):]
+    _actual_secs = len(audio) / SAMPLE_RATE
+    if _actual_secs < duration - 0.5:
+        try:
+            monitor.log(f"[Clip] WARNING: '{cfg.name}' clip requested {duration:.0f}s but only "
+                        f"{_actual_secs:.1f}s of audio in buffer — stream may have started recently.")
+        except Exception:
+            pass
     safe_lbl    = _safe_label(label)
     safe_stream = _safe_name(cfg.name)
     ts_str      = time.strftime("%Y%m%d-%H%M%S")
