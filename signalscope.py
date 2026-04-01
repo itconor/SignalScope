@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.125"
+BUILD                  = "SignalScope-3.4.126"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -7808,10 +7808,11 @@ class MonitorManager:
                 return
 
             ffmpeg_bin = _find_binary("ffmpeg") or "ffmpeg"
+            _dab_n_ch = 2 if cfg.stereo else 1
             ff_cmd = [ffmpeg_bin, "-loglevel", "warning", "-i", audio_url,
                       "-f", "s16le", "-ar", str(SAMPLE_RATE),
-                      "-ac", "1", "-"]
-            CHUNK_BYTES = int(SAMPLE_RATE * CHUNK_DURATION) * 2
+                      "-ac", str(_dab_n_ch), "-"]
+            CHUNK_BYTES = int(SAMPLE_RATE * CHUNK_DURATION) * 2 * _dab_n_ch
 
             # ── Outer reconnect loop — retries ffmpeg when the audio stream drops ─
             # welle-cli may briefly remove an MP3 sender during signal loss/SyncOnPhase
@@ -7886,15 +7887,35 @@ class MonitorManager:
                             raw = bytes(buf[:CHUNK_BYTES])
                             del buf[:CHUNK_BYTES]
                             samp = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-                            samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
-                            cfg._stream_buffer.append(samp.copy())
-                            cfg._audio_buffer.append(samp.copy())
-                            cfg._live_chunk_seq = getattr(cfg, "_live_chunk_seq", 0) + 1
-                            analyse_chunk(cfg, sender,
-                                          lambda m, n=name: self.log(f"[{n}] {m}"),
-                                          samp, CHUNK_DURATION,
-                                          cfg.alert_wav_duration,
-                                          self.app_cfg.inputs)
+                            if cfg.stereo and _dab_n_ch == 2 and samp.size % 2 == 0:
+                                _fr = samp.reshape(-1, 2)
+                                _L = np.clip(_fr[:, 0] - np.mean(_fr[:, 0]), -1.0, 1.0)
+                                _R = np.clip(_fr[:, 1] - np.mean(_fr[:, 1]), -1.0, 1.0)
+                                cfg._level_dbfs_l = dbfs(float(np.sqrt(np.mean(_L**2))))
+                                cfg._level_dbfs_r = dbfs(float(np.sqrt(np.mean(_R**2))))
+                                cfg._audio_channels = 2
+                                _sti = np.empty(_L.size * 2, dtype=np.float32)
+                                _sti[0::2] = _L; _sti[1::2] = _R
+                                mono = (_L + _R) * 0.5
+                                cfg._stream_buffer.append(_sti.copy())
+                                cfg._audio_buffer.append(_sti.copy())
+                                cfg._live_chunk_seq = getattr(cfg, "_live_chunk_seq", 0) + 1
+                                analyse_chunk(cfg, sender,
+                                              lambda m, n=name: self.log(f"[{n}] {m}"),
+                                              mono, CHUNK_DURATION,
+                                              cfg.alert_wav_duration,
+                                              self.app_cfg.inputs)
+                            else:
+                                samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
+                                cfg._audio_channels = 1
+                                cfg._stream_buffer.append(samp.copy())
+                                cfg._audio_buffer.append(samp.copy())
+                                cfg._live_chunk_seq = getattr(cfg, "_live_chunk_seq", 0) + 1
+                                analyse_chunk(cfg, sender,
+                                              lambda m, n=name: self.log(f"[{n}] {m}"),
+                                              samp, CHUNK_DURATION,
+                                              cfg.alert_wav_duration,
+                                              self.app_cfg.inputs)
                         if int(time.time()) % 10 == 0:
                             mux = session.mux or {}
                             self._copy_dab_metrics_from_mux(cfg, mux, service)
@@ -17621,6 +17642,11 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       <button type="button" class="btn bw" onclick="killDabOrphans()" title="Kill any stray welle-cli processes left over from a scan — frees a dongle that can no longer be opened without restarting">🔌 Free dongle</button>
       <span id="dab_scan_status" style="font-size:12px;color:var(--mu)"></span>
     </div>
+    <div class="cr" style="margin-top:10px">
+      <input type="checkbox" name="stereo" id="inp_stereo_dab" value="1" {{'checked' if inp.stereo}}>
+      <label for="inp_stereo_dab" style="margin:0;text-transform:none;font-size:13px;font-weight:500;color:var(--tx)">Enable stereo capture</label>
+    </div>
+    <p class="help">If the DAB service is broadcast in stereo, welle-cli will deliver both channels — tick this to capture L and R separately.</p>
     <!-- Channel scan results panel -->
     <div id="dab_ch_scan_panel" style="display:none;margin-top:12px;padding:10px 12px;background:var(--sur);border:1px solid var(--bor);border-radius:8px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">

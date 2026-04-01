@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.126] - 2026-04-01
+
+### Added
+- **Stereo capture for DAB streams** — "Enable stereo capture" checkbox now appears in DAB stream settings. When ticked, ffmpeg requests 2-channel output from welle-cli's MP3 endpoint; the pipeline splits L/R, applies per-channel DC removal, and stores interleaved stereo in buffers for clips. Mono mix passed to alerting unchanged. L/R bars appear on hub stream cards and client status page. Services broadcast in mono are unaffected — enabling stereo on a mono service just produces identical L and R channels.
+
+---
+
 ## [3.4.125] - 2026-04-01
 
 ### Added
