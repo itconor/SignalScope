@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.116"
+BUILD                  = "SignalScope-3.4.117"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -8809,19 +8809,35 @@ class MonitorManager:
         ]
 
         CHUNK_BYTES = int(SAMPLE_RATE * CHUNK_DURATION) * 2   # s16le = 2 bytes/sample
+        _HTTP_STALL_SECS = 10.0   # clear hub levels after this long without data
+
+        import select as _sel
 
         while not stop_evt.is_set():
             proc = None
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                        bufsize=CHUNK_BYTES * 4)
+                                        bufsize=0)
                 self.log(f"[{name}] ffmpeg connected → {url}")
                 buf = bytearray()
+                last_data_ts = time.monotonic()
 
                 while not stop_evt.is_set():
+                    # Poll with 1 s timeout so we can detect stalls without
+                    # blocking forever on a dead-but-open connection.
+                    try:
+                        readable, _, _ = _sel.select([proc.stdout], [], [], 1.0)
+                    except (ValueError, OSError):
+                        break   # fd closed — exit inner loop, reconnect
+                    if not readable:
+                        # No data arrived this second — check stall timeout
+                        if time.monotonic() - last_data_ts > _HTTP_STALL_SECS:
+                            cfg._has_real_level = False   # hub shows null levels
+                        continue
                     chunk = proc.stdout.read(4096)
                     if not chunk:
-                        time.sleep(0.05); continue
+                        break   # EOF — ffmpeg exited
+                    last_data_ts = time.monotonic()
                     buf.extend(chunk)
                     while len(buf) >= CHUNK_BYTES:
                         raw = bytes(buf[:CHUNK_BYTES])
@@ -8846,6 +8862,7 @@ class MonitorManager:
                     proc.wait()
 
             if not stop_evt.is_set():
+                cfg._has_real_level = False   # clear stale levels during reconnect wait
                 self.log(f"[{name}] Disconnected — reconnecting in 5s…")
                 stop_evt.wait(5)
 

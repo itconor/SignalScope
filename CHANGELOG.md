@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.117] - 2026-03-31
+
+### Fixed
+- **HTTP stream stall shows frozen stale levels on hub** — `proc.stdout.read(4096)` blocked indefinitely when a stream connection stayed open but sent no audio (e.g. dead Icecast source). `_has_real_level` remained `True` so the hub displayed the last measured level rather than clearing to null. Fixed with `select.select` polling at 1s intervals: if no data arrives for 10 s, `_has_real_level` is set `False` so the hub reverts to null levels. Also clears `_has_real_level` immediately on disconnect before the 5 s reconnect wait, so levels don't stay frozen during the gap. Popen `bufsize` changed to 0 (unbuffered) so `select` accurately reflects OS-level data availability.
+
+---
+
 ## [3.4.116] - 2026-03-31
 
 ### Fixed
