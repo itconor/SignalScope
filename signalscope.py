@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.126"
+BUILD                  = "SignalScope-3.4.127"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -4854,11 +4854,11 @@ def _metrics_flush(inputs: list):
         metrics_db.write(rows)
 
 
-def _make_wav_bytes(audio: np.ndarray) -> bytes:
+def _make_wav_bytes(audio: np.ndarray, n_ch: int = 1) -> bytes:
     pcm = (np.clip(audio.astype(np.float32), -1.0, 1.0) * 32767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1); wf.setsampwidth(2)
+        wf.setnchannels(n_ch); wf.setsampwidth(2)
         wf.setframerate(SAMPLE_RATE); wf.writeframes(pcm.tobytes())
     return buf.getvalue()
 
@@ -4998,7 +4998,10 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
     else:
         chunks = _chunks
     if not chunks: return None
-    _n_ch = getattr(cfg, '_audio_channels', 1)
+    # _audio_channels reflects what _audio_buffer holds (stereo or mono).
+    # When _chunks was supplied by the caller it always comes from _stream_buffer,
+    # which is guaranteed mono — never treat it as stereo.
+    _n_ch = getattr(cfg, '_audio_channels', 1) if _chunks is None else 1
     audio = np.concatenate(chunks)
     if _n_ch == 2:
         # audio is interleaved L,R — slice in frame units, then re-flatten
@@ -7897,8 +7900,8 @@ class MonitorManager:
                                 _sti = np.empty(_L.size * 2, dtype=np.float32)
                                 _sti[0::2] = _L; _sti[1::2] = _R
                                 mono = (_L + _R) * 0.5
-                                cfg._stream_buffer.append(_sti.copy())
-                                cfg._audio_buffer.append(_sti.copy())
+                                cfg._stream_buffer.append(mono.copy())   # mono — relay/comparator/chain clips
+                                cfg._audio_buffer.append(_sti.copy())    # stereo interleaved — alert WAV clips + listen
                                 cfg._live_chunk_seq = getattr(cfg, "_live_chunk_seq", 0) + 1
                                 analyse_chunk(cfg, sender,
                                               lambda m, n=name: self.log(f"[{n}] {m}"),
@@ -8941,8 +8944,8 @@ class MonitorManager:
                             _sti = np.empty(_L.size * 2, dtype=np.float32)
                             _sti[0::2] = _L; _sti[1::2] = _R
                             mono = (_L + _R) * 0.5
-                            cfg._stream_buffer.append(_sti.copy())
-                            cfg._audio_buffer.append(_sti.copy())
+                            cfg._stream_buffer.append(mono.copy())   # mono — relay/comparator/chain clips
+                            cfg._audio_buffer.append(_sti.copy())    # stereo interleaved — alert WAV clips + listen
                             cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
                             analyse_chunk(cfg, sender,
                                           lambda m, n=name: self.log(f"[{n}] {m}"),
@@ -9108,8 +9111,8 @@ class MonitorManager:
                     _sti = np.empty(_L.size * 2, dtype=np.float32)
                     _sti[0::2] = _L; _sti[1::2] = _R
                     mono = (_L + _R) * 0.5
-                    cfg._stream_buffer.append(_sti.copy())
-                    cfg._audio_buffer.append(_sti.copy())
+                    cfg._stream_buffer.append(mono.copy())   # mono — relay/comparator/chain clips
+                    cfg._audio_buffer.append(_sti.copy())    # stereo interleaved — alert WAV clips + listen
                     cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
                     analyse_chunk(cfg, sender, lambda m, n=name: self.log(f"[{n}] {m}"),
                                   mono, CHUNK_DURATION, cfg.alert_wav_duration, self.app_cfg.inputs)
@@ -19543,7 +19546,12 @@ def stream_audio(idx):
     if idx<0 or idx>=len(inps): return "Not found",404
     inp=inps[idx]
     if not inp._stream_buffer: return "No data — stream not yet receiving audio",503
-    chunks=list(inp._stream_buffer)
+    _wav_n_ch = inp._audio_channels if inp.stereo else 1
+    # Stereo: read interleaved data from _audio_buffer; mono: use _stream_buffer
+    if _wav_n_ch == 2 and inp._audio_buffer:
+        chunks = list(inp._audio_buffer)
+    else:
+        chunks = list(inp._stream_buffer)
     if not chunks: return "No data — buffer empty",503
 
     # ?seconds=N controls how much audio to return (max 20s = buffer size)
@@ -19551,13 +19559,17 @@ def stream_audio(idx):
     except: secs = 10.0
     secs = max(1.0, secs)
 
-    audio = np.concatenate(chunks)[-int(SAMPLE_RATE * secs):]
+    audio = np.concatenate(chunks)
+    if _wav_n_ch == 2:
+        audio = audio.reshape(-1, 2)[-int(SAMPLE_RATE * secs):].flatten()
+    else:
+        audio = audio[-int(SAMPLE_RATE * secs):]
     safe  = _safe_name(inp.name)
     ts    = time.strftime("%Y%m%d-%H%M%S")
     fname = f"{safe}_{ts}_{int(secs)}s.wav"
 
     return Response(
-        _make_wav_bytes(audio.astype(np.float32)),
+        _make_wav_bytes(audio.astype(np.float32), n_ch=_wav_n_ch),
         mimetype="audio/wav",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
@@ -19581,11 +19593,17 @@ def stream_live(idx):
     # Fallback to WAV streaming if ffmpeg isn't available
     has_ffmpeg = _find_binary("ffmpeg") is not None
 
+    _live_n_ch = inp._audio_channels if inp.stereo else 1
+    # Stereo streams: pull interleaved chunks from _audio_buffer.
+    # Mono streams: pull from _stream_buffer as before.
+    def _live_buf():
+        return inp._audio_buffer if (_live_n_ch == 2 and inp._audio_buffer) else inp._stream_buffer
+
     if not has_ffmpeg:
         # WAV fallback (works in most browsers on a LAN, may stall in Chrome)
         def gen_wav():
             import struct as _struct, collections as _collections
-            sr = SAMPLE_RATE; ch = 1; bps = 2
+            sr = SAMPLE_RATE; ch = _live_n_ch; bps = 2
             yield (
                 b'RIFF' + _struct.pack('<I', 0xFFFFFFFF) +
                 b'WAVE' +
@@ -19596,9 +19614,10 @@ def stream_live(idx):
 
             prefill_n = max(2, int(LIVE_PLAYOUT_BUFFER_SECS / CHUNK_DURATION))
             q = _collections.deque()
-            if inp._stream_buffer:
+            src = _live_buf()
+            if src:
                 seed_n = max(prefill_n, int(3.0 / CHUNK_DURATION))
-                for c in list(inp._stream_buffer)[-seed_n:]:
+                for c in list(src)[-seed_n:]:
                     q.append(c.copy())
 
             seen_seq = getattr(inp, '_live_chunk_seq', 0)
@@ -19606,9 +19625,10 @@ def stream_live(idx):
 
             while True:
                 cur = getattr(inp, '_live_chunk_seq', 0)
-                if cur > seen_seq and inp._stream_buffer:
+                src = _live_buf()
+                if cur > seen_seq and src:
                     n = min(cur - seen_seq, 50)
-                    for c in list(inp._stream_buffer)[-n:]:
+                    for c in list(src)[-n:]:
                         q.append(c.copy())
                     seen_seq = cur
 
@@ -19632,10 +19652,11 @@ def stream_live(idx):
 
     def generate_mp3():
         sr = SAMPLE_RATE
+        _mp3_bitrate = "256k" if _live_n_ch == 2 else "128k"
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-f", "s16le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
-            "-f", "mp3", "-b:a", "128k", "-reservoir", "0", "pipe:1",
+            "-f", "s16le", "-ar", str(sr), "-ac", str(_live_n_ch), "-i", "pipe:0",
+            "-f", "mp3", "-b:a", _mp3_bitrate, "-reservoir", "0", "pipe:1",
         ]
         proc = subprocess.Popen(cmd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -19652,9 +19673,10 @@ def stream_live(idx):
 
                 # seed backlog so browser decoder starts immediately and playback stays
                 # slightly behind the live edge, masking bursty packet arrival timing.
-                if inp._stream_buffer:
+                src = _live_buf()
+                if src:
                     seed_n = max(prefill_n, int(3.0 / CHUNK_DURATION))
-                    for c in list(inp._stream_buffer)[-seed_n:]:
+                    for c in list(src)[-seed_n:]:
                         q.append(c.copy())
 
                 seen_seq = getattr(inp, '_live_chunk_seq', 0)
@@ -19662,9 +19684,10 @@ def stream_live(idx):
 
                 while True:
                     cur = getattr(inp, '_live_chunk_seq', 0)
-                    if cur > seen_seq and inp._stream_buffer:
+                    src = _live_buf()
+                    if cur > seen_seq and src:
                         n = min(cur - seen_seq, 50)
-                        for c in list(inp._stream_buffer)[-n:]:
+                        for c in list(src)[-n:]:
                             q.append(c.copy())
                         seen_seq = cur
 

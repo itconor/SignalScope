@@ -2,6 +2,17 @@
 
 ---
 
+## [3.4.127] - 2026-04-01
+
+### Fixed
+- **Stereo stream listen plays at half speed** — the live stream relay (`/stream/<idx>/live`) and WAV download (`/stream/<idx>/audio.wav`) read from `_stream_buffer`, which now stores stereo interleaved chunks (2× the samples). The browser / ffmpeg received those chunks with `-ac 1` and played them at half speed — classic "tape running out of batteries" symptom. Fix: `_stream_buffer` is now always **mono** (safe for relay, comparators, AI, chain clips). Stereo interleaved data is stored only in `_audio_buffer` (alert WAV clips). `stream_live` and `stream_audio` read from `_audio_buffer` when `cfg.stereo=True` and tell ffmpeg `-ac 2`, serving correct stereo MP3/WAV.
+- **`_save_alert_wav` stereo framing wrong when called with external `_chunks`** — chain clips pass `_chunks=list(cfg._stream_buffer)` (now always mono), but `_audio_channels` could still be 2 for a stereo stream, causing the mono chain clip data to be mistreated as stereo. Fix: `_n_ch` is now forced to 1 whenever `_chunks` is supplied by the caller.
+
+### Added
+- **Stereo live listening** — the `/stream/<idx>/live` MP3 stream is now served at 256 kbps stereo when the stream has stereo enabled, giving full left/right separation in the browser audio player.
+
+---
+
 ## [3.4.126] - 2026-04-01
 
 ### Added
