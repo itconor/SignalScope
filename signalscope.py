@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.123"
+BUILD                  = "SignalScope-3.4.124"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2296,6 +2296,8 @@ class InputConfig:
     _fm_rds_last_good:  float = field(default=0.0, init=False, repr=False)
     # Name-change tracking (runtime)
     _fm_rds_ps_prev:    str   = field(default="",   init=False, repr=False)
+    _fm_deviation_peak_khz: float = field(default=0.0,  init=False, repr=False)
+    _fm_over_ofcom:     bool  = field(default=False, init=False, repr=False)
     _dab_service_prev:  str   = field(default="",   init=False, repr=False)
     # SLA tracking (runtime)
     _sla_monitored_s:   float = field(default=0.0,  init=False, repr=False)
@@ -8737,6 +8739,13 @@ class MonitorManager:
                 pilot_db = 20.0 * np.log10((pilot + 1e-12) / (noise + 1e-12))
                 cfg._fm_snr_db = float(max(0.0, pilot_db))
                 cfg._fm_stereo = bool(pilot_db >= 8.0)
+
+                # FM frequency deviation — Ofcom limit: ±75 kHz
+                # samples_f32 is discriminator output: ±1.0 = ±(IN_RATE/2) Hz
+                _DEV_SCALE_KHZ = IN_RATE / 2000.0   # = 85.5 kHz at ±1.0 for 171 kHz
+                peak_dev = float(np.max(np.abs(x))) * _DEV_SCALE_KHZ
+                cfg._fm_deviation_peak_khz = round(peak_dev, 1)
+                cfg._fm_over_ofcom = peak_dev > 75.0
             except Exception:
                 pass
 
@@ -10738,6 +10747,8 @@ class HubClient:
                 "fm_rds_rt":         getattr(inp, "_fm_rds_rt", ""),
                 "fm_rds_ok":         inp._fm_rds_ok,
                 "fm_rds_status":     getattr(inp, "_fm_rds_status", "No lock"),
+                "fm_deviation_peak_khz": round(inp._fm_deviation_peak_khz, 1),
+                "fm_over_ofcom":     inp._fm_over_ofcom,
                 "fm_rds_valid":      int(getattr(inp, "_fm_rds_valid_groups", 0)),
                 "history":           list(inp._history)[-8:],
                 "nowplaying_station_id": inp.nowplaying_station_id,
@@ -12355,11 +12366,11 @@ class HubServer:
 
             # FM-specific
             if dev.startswith("fm://"):
-                for metric in ("fm_signal_dbm", "fm_snr_db"):
+                for metric in ("fm_signal_dbm", "fm_snr_db", "fm_deviation_peak_khz"):
                     val = st.get(metric)
                     if val is not None:
                         rows.append((name, metric, now, float(val)))
-                for bool_metric in ("fm_stereo", "fm_rds_ok"):
+                for bool_metric in ("fm_stereo", "fm_rds_ok", "fm_over_ofcom"):
                     val = st.get(bool_metric)
                     if val is not None:
                         rows.append((name, bool_metric, now, 1.0 if val else 0.0))
@@ -15653,6 +15664,9 @@ main{padding:16px;max-width:1440px;margin:0 auto}
             <span class="rv" id="fm_snr_{{idx}}" style="color:{%if inp._fm_snr_db>=12%}var(--ok){%elif inp._fm_snr_db>=6%}var(--wn){%else%}var(--al){%endif%}">{{inp._fm_snr_db|round(1)}} dB</span></div>
           <div class="row"><span class="rl">Stereo</span>
             <span class="rv" id="fm_stereo_{{idx}}" style="color:{%if inp._fm_stereo%}var(--ok){%else%}var(--mu){%endif%}">{%if inp._fm_stereo%}✓ Stereo{%else%}Mono{%endif%}</span></div>
+          <div class="row"><span class="rl">Deviation</span>
+            <span class="rv" id="fm_dev_{{idx}}" style="color:{%if inp._fm_over_ofcom%}var(--al){%elif inp._fm_deviation_peak_khz>=70%}var(--wn){%else%}var(--ok){%endif%}">
+              {{inp._fm_deviation_peak_khz|round(1)}} kHz{%if inp._fm_over_ofcom%} ⚠ OFCOM{%endif%}</span></div>
           <div class="row"><span class="rl">RDS</span>
             <span class="rv" id="fm_rds_{{idx}}" style="color:{% if inp._fm_rds_ok %}var(--ok){% else %}var(--mu){% endif %};font-size:11px">{{ inp._fm_rds_ps or (inp._fm_rds_status|default('No lock', true)) }}</span></div>
           <div class="row"><span class="rl">Text</span>
@@ -16060,6 +16074,12 @@ function updateCards(inputs){
       if(fmSt){
         fmSt.textContent=inp.fm_stereo?'✓ Stereo':'Mono';
         fmSt.style.color=inp.fm_stereo?'var(--ok)':'var(--mu)';
+      }
+      var fmDev=document.getElementById('fm_dev_'+idx);
+      if(fmDev && inp.fm_deviation_peak_khz != null){
+        var dv=inp.fm_deviation_peak_khz;
+        fmDev.textContent=dv.toFixed(1)+' kHz'+(inp.fm_over_ofcom?' ⚠ OFCOM':'');
+        fmDev.style.color=inp.fm_over_ofcom?'var(--al)':dv>=70?'var(--wn)':'var(--ok)';
       }
       var fmRds=document.getElementById('fm_rds_'+idx);
       if(fmRds){
@@ -18646,6 +18666,8 @@ def status_json():
             "fm_rds_ok":    i._fm_rds_ok,
             "fm_rds_status": getattr(i, "_fm_rds_status", "No lock"),
             "fm_rds_valid": int(getattr(i, "_fm_rds_valid_groups", 0)),
+            "fm_deviation_peak_khz": round(i._fm_deviation_peak_khz, 1),
+            "fm_over_ofcom":i._fm_over_ofcom,
             "sla_pct":      round(sla_pct(i), 3),
             "history":      _history_with_acks(i._history[-5:]),
             "lufs_m":       round(i._lufs_m, 1),

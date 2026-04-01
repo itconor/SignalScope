@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.124] - 2026-04-01
+
+### Added
+- **FM frequency deviation monitoring** — every FM stream now measures peak deviation (kHz) from the raw MPX discriminator output at 171 kHz. Shown in the FM / RDS stats panel on the stream card. Colour-coded: green < 70 kHz, amber 70–75 kHz, red > 75 kHz with a ⚠ OFCOM badge when the Ofcom limit is exceeded. Updated live on each poll cycle. Also stored in the metrics database for trending.
+
+---
+
 ## [3.4.123] - 2026-04-01
 
 ### Added
