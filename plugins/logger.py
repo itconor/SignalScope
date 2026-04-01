@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.16",
+    "version": "1.5.17",
 }
 
 import datetime
@@ -866,7 +866,8 @@ def register(app, ctx):
             _log(f"[Logger] Status disk scan failed: {e}")
         rec_root = _rec_root()
         return jsonify({"recorders": active, "disk_bytes": total,
-                        "rec_root": str(rec_root)})
+                        "rec_root": str(rec_root),
+                        "server_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")})
 
     @app.get("/api/logger/days/<stream_slug>")
     @login_req
@@ -3499,6 +3500,11 @@ var _streams     = [];
 var _currentSlug = '';
 var _currentDate = '';
 var _selSeg      = null;
+// Server-synced UTC epoch ms — set on init from /api/logger/status so the UI
+// uses server time even if the client clock is wrong (e.g. after DST change).
+var _serverEpochMs  = Date.now();
+var _serverSyncedAt = Date.now();
+function _serverNow(){ return new Date(_serverEpochMs + (Date.now() - _serverSyncedAt)); }
 var _segsAll     = [];
 var _markIn      = null;
 var _markOut     = null;
@@ -3604,11 +3610,20 @@ document.getElementById('sidebar').addEventListener('click', function(e){
 document.getElementById('notice-settings-link').addEventListener('click', function(){ showTab('settings'); });
 
 // ── Init ──────────────────────────────────────────────────────────────────
-var today = new Date();
-_currentDate = today.toISOString().slice(0,10);
-document.getElementById('date-lbl').textContent = _currentDate;
-
-loadStreams();
+// Use server UTC time for "today" so a client with a wrong clock (e.g. after
+// DST change) still loads the correct date's recordings.
+_get('/api/logger/status').then(function(data){
+  var serverUtc = data.server_utc;
+  if(serverUtc){ _serverEpochMs = new Date(serverUtc).getTime(); _serverSyncedAt = Date.now(); }
+  var today = _serverNow();
+  _currentDate = today.toISOString().slice(0,10);
+  document.getElementById('date-lbl').textContent = _currentDate;
+  loadStreams();
+}).catch(function(){
+  _currentDate = _serverNow().toISOString().slice(0,10);
+  document.getElementById('date-lbl').textContent = _currentDate;
+  loadStreams();
+});
 loadStatus();
 setInterval(loadStatus, 10000);
 setupAudio();
@@ -3978,7 +3993,7 @@ function buildTimeline(segs){
   grid.innerHTML = '';
   var lookup = {};
   segs.forEach(function(s){ lookup[s.start_s] = s; });
-  var now = new Date();
+  var now = _serverNow();
   var todayStr = now.toISOString().slice(0,10);
   var nowSecs  = now.getUTCHours()*3600 + now.getUTCMinutes()*60;
 
@@ -4426,6 +4441,7 @@ document.getElementById('export-btn').addEventListener('click', function(){
 // ── Status ────────────────────────────────────────────────────────────────
 function loadStatus(){
   _get('/api/logger/status').then(function(data){
+    if(data.server_utc){ _serverEpochMs = new Date(data.server_utc).getTime(); _serverSyncedAt = Date.now(); }
     var recs      = data.recorders||{};
     var recList   = Object.values(recs);
     var running   = recList.filter(function(r){ return r.running; });
