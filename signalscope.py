@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.124"
+BUILD                  = "SignalScope-3.4.125"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2226,6 +2226,7 @@ class InputConfig:
     compare_role:            str           = ""
     compare_gain_alert_db:   float         = 3.0   # alert if gain drifts more than this from baseline
     nowplaying_station_id:   str           = ""   # Planet Radio station rpuid
+    stereo:                  bool          = False # enable stereo capture (Livewire/RTP/HTTP sources)
 
     # EBU R128 / loudness alerting
     alert_on_lufs_tp:         bool  = False
@@ -2318,6 +2319,9 @@ class InputConfig:
     _last_level_dbfs:   float = field(default=-120.0, init=False, repr=False)
     _last_peak_dbfs:    float = field(default=-120.0, init=False, repr=False)
     _has_real_level:    bool  = field(default=False,  init=False, repr=False)
+    _level_dbfs_l:      float = field(default=-120.0, init=False, repr=False)
+    _level_dbfs_r:      float = field(default=-120.0, init=False, repr=False)
+    _audio_channels:    int   = field(default=1,      init=False, repr=False)
     _history:           List[Dict] = field(default_factory=list, init=False, repr=False)
     _audio_buffer:      Optional[object] = field(default=None, init=False, repr=False)
     _stream_buffer:     Optional[object] = field(default=None, init=False, repr=False)
@@ -2723,6 +2727,7 @@ def load_config() -> AppConfig:
             glitch_min_drop_rate_dbfs_s=float(item.get("glitch_min_drop_rate_dbfs_s", 22.0)),
             glitch_floor_db=float(item.get("glitch_floor_db", 15.0)),
             glitch_pre_trend_db=float(item.get("glitch_pre_trend_db", 4.0)),
+            stereo=bool(item.get("stereo", False)),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
     return AppConfig(
@@ -2876,6 +2881,7 @@ def save_config(cfg: AppConfig):
             "glitch_min_drop_rate_dbfs_s": i.glitch_min_drop_rate_dbfs_s,
             "glitch_floor_db": i.glitch_floor_db,
             "glitch_pre_trend_db": i.glitch_pre_trend_db,
+            "stereo": i.stereo,
         } for i in cfg.inputs],
         "email": {
             "enabled": cfg.email.enabled, "smtp_host": cfg.email.smtp_host,
@@ -4927,19 +4933,20 @@ def _ensure_alert_buffer_capacity(cfg: InputConfig, seconds: Optional[float] = N
         cfg._audio_buffer = collections.deque(list(cur)[-maxlen:], maxlen=maxlen)
 
 
-def _try_encode_mp3(pcm_int16: "np.ndarray") -> "Optional[bytes]":
-    """Encode 16-bit signed mono PCM to MP3 bytes.
+def _try_encode_mp3(pcm_int16: "np.ndarray", n_ch: int = 1) -> "Optional[bytes]":
+    """Encode 16-bit signed PCM to MP3 bytes (mono or stereo).
 
     Tries lameenc (pure Python, ``pip install lameenc``) first, then falls
     back to spawning ffmpeg.  Returns None if neither encoder is available.
+    ``n_ch`` should be 1 (mono) or 2 (stereo interleaved).
     """
     # --- lameenc ---
     try:
         import lameenc  # type: ignore
         enc = lameenc.Encoder()
-        enc.set_bit_rate(96)
+        enc.set_bit_rate(96 * n_ch)   # 96 kbps mono, 192 kbps stereo
         enc.set_in_sample_rate(SAMPLE_RATE)
-        enc.set_channels(1)
+        enc.set_channels(n_ch)
         enc.set_quality(7)   # 2 = highest quality, 7 = fastest
         return enc.encode(pcm_int16.tobytes()) + enc.flush()
     except ImportError:
@@ -4951,7 +4958,7 @@ def _try_encode_mp3(pcm_int16: "np.ndarray") -> "Optional[bytes]":
         import subprocess as _sp
         result = _sp.run(
             ["ffmpeg", "-y",
-             "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "pipe:0",
+             "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(n_ch), "-i", "pipe:0",
              "-codec:a", "libmp3lame", "-q:a", "4", "-f", "mp3", "pipe:1"],
             input=pcm_int16.tobytes(), capture_output=True, timeout=30,
         )
@@ -4991,8 +4998,16 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
     else:
         chunks = _chunks
     if not chunks: return None
-    audio = np.concatenate(chunks)[-int(SAMPLE_RATE * duration):]
-    _actual_secs = len(audio) / SAMPLE_RATE
+    _n_ch = getattr(cfg, '_audio_channels', 1)
+    audio = np.concatenate(chunks)
+    if _n_ch == 2:
+        # audio is interleaved L,R — slice in frame units, then re-flatten
+        _frames = audio.reshape(-1, 2)
+        _frames = _frames[-int(SAMPLE_RATE * duration):]
+        audio = _frames.flatten()
+    else:
+        audio = audio[-int(SAMPLE_RATE * duration):]
+    _actual_secs = len(audio) / (SAMPLE_RATE * _n_ch)
     if _actual_secs < duration - 0.5:
         try:
             monitor.log(f"[Clip] WARNING: '{cfg.name}' clip requested {duration:.0f}s but only "
@@ -5011,7 +5026,7 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
     path = os.path.join(out, f"{base_name}.wav")
     try:
         with wave.open(path, "wb") as wf:
-            wf.setnchannels(1); wf.setsampwidth(2)
+            wf.setnchannels(_n_ch); wf.setsampwidth(2)
             wf.setframerate(SAMPLE_RATE); wf.writeframes(pcm.tobytes())
     except Exception as e:
         print(f"[WARN] Could not save alert WAV: {e}")
@@ -6306,7 +6321,7 @@ def _detect_fmt(psz,pt):
     if psz%2==0: return "L16",2,2,"L16 (inferred)"
     return "LIVEWIRE",3,2,"Unknown (defaulted)"
 
-def _decode(payload,fmt,ch):
+def _decode(payload, fmt, ch, want_stereo=False):
     try:
         if fmt in ("LIVEWIRE","L24","AES67"):
             raw=bytearray(payload); ns=len(raw)//(3*ch); vals=[]
@@ -6320,6 +6335,8 @@ def _decode(payload,fmt,ch):
             samp=np.frombuffer(payload,dtype=">i2").astype(np.float32)/32768.0
         if ch>1:
             if samp.size%ch!=0: return None
+            if want_stereo:
+                return samp   # return raw interleaved L,R,L,R,… samples
             samp=samp.reshape(-1,ch).mean(axis=1)
         return samp
     except: return None
@@ -7256,6 +7273,9 @@ class MonitorManager:
             for _inp in self.app_cfg.inputs:
                 _inp._last_level_dbfs  = -120.0
                 _inp._has_real_level   = False
+                _inp._level_dbfs_l     = -120.0
+                _inp._level_dbfs_r     = -120.0
+                _inp._audio_channels   = 1
                 _inp._silence_secs     = 0.0
                 _inp._silence_active   = False
                 _inp._silence_alert_key= ""
@@ -8845,16 +8865,17 @@ class MonitorManager:
             cfg._livewire_mode = "HTTP (ffmpeg missing)"
             return
 
-        # ffmpeg: read URL → raw signed-16 LE PCM, mono, 48 kHz on stdout
+        # ffmpeg: read URL → raw signed-16 LE PCM, 48 kHz on stdout
+        _http_n_ch = 2 if cfg.stereo else 1
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-reconnect", "1", "-reconnect_streamed", "1",
             "-reconnect_delay_max", "10",
             "-i", url,
-            "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "pipe:1",
+            "-vn", "-ac", str(_http_n_ch), "-ar", str(SAMPLE_RATE), "-f", "s16le", "pipe:1",
         ]
 
-        CHUNK_BYTES = int(SAMPLE_RATE * CHUNK_DURATION) * 2   # s16le = 2 bytes/sample
+        CHUNK_BYTES = int(SAMPLE_RATE * CHUNK_DURATION) * 2 * _http_n_ch   # s16le = 2 bytes/sample/ch
         _HTTP_STALL_SECS = 10.0   # clear hub levels after this long without data
 
         import select as _sel
@@ -8889,15 +8910,35 @@ class MonitorManager:
                         raw = bytes(buf[:CHUNK_BYTES])
                         del buf[:CHUNK_BYTES]
                         samp = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-                        samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
-                        cfg._stream_buffer.append(samp.copy())
-                        cfg._audio_buffer.append(samp.copy())
-                        cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
-                        analyse_chunk(cfg, sender,
-                                      lambda m, n=name: self.log(f"[{n}] {m}"),
-                                      samp, CHUNK_DURATION,
-                                      cfg.alert_wav_duration,
-                                      self.app_cfg.inputs)
+                        if cfg.stereo and _http_n_ch == 2 and samp.size % 2 == 0:
+                            _fr = samp.reshape(-1, 2)
+                            _L = np.clip(_fr[:, 0] - np.mean(_fr[:, 0]), -1.0, 1.0)
+                            _R = np.clip(_fr[:, 1] - np.mean(_fr[:, 1]), -1.0, 1.0)
+                            cfg._level_dbfs_l = dbfs(float(np.sqrt(np.mean(_L**2))))
+                            cfg._level_dbfs_r = dbfs(float(np.sqrt(np.mean(_R**2))))
+                            cfg._audio_channels = 2
+                            _sti = np.empty(_L.size * 2, dtype=np.float32)
+                            _sti[0::2] = _L; _sti[1::2] = _R
+                            mono = (_L + _R) * 0.5
+                            cfg._stream_buffer.append(_sti.copy())
+                            cfg._audio_buffer.append(_sti.copy())
+                            cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
+                            analyse_chunk(cfg, sender,
+                                          lambda m, n=name: self.log(f"[{n}] {m}"),
+                                          mono, CHUNK_DURATION,
+                                          cfg.alert_wav_duration,
+                                          self.app_cfg.inputs)
+                        else:
+                            samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
+                            cfg._audio_channels = 1
+                            cfg._stream_buffer.append(samp.copy())
+                            cfg._audio_buffer.append(samp.copy())
+                            cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
+                            analyse_chunk(cfg, sender,
+                                          lambda m, n=name: self.log(f"[{n}] {m}"),
+                                          samp, CHUNK_DURATION,
+                                          cfg.alert_wav_duration,
+                                          self.app_cfg.inputs)
 
             except Exception as e:
                 self.log(f"[{name}] HTTP stream error: {e}")
@@ -9031,16 +9072,34 @@ class MonitorManager:
                 self.log(f"[{name}] {mode} (PT={rtp_pt}, {len(payload)}B)")
             st['buf'].extend(payload)
             while len(st['buf']) >= st['needed']:
-                samp = _decode(bytes(st['buf'][:st['needed']]), st['fmt'], st['ch'])
+                samp = _decode(bytes(st['buf'][:st['needed']]), st['fmt'], st['ch'],
+                               want_stereo=cfg.stereo)
                 del st['buf'][:st['needed']]
                 if samp is None:
                     continue
-                samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
-                cfg._stream_buffer.append(samp.copy())
-                cfg._audio_buffer.append(samp.copy())
-                cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
-                analyse_chunk(cfg, sender, lambda m, n=name: self.log(f"[{n}] {m}"),
-                              samp, CHUNK_DURATION, cfg.alert_wav_duration, self.app_cfg.inputs)
+                if cfg.stereo and st['ch'] == 2 and samp.size % 2 == 0:
+                    _fr = samp.reshape(-1, 2)
+                    _L = np.clip(_fr[:, 0] - np.mean(_fr[:, 0]), -1.0, 1.0)
+                    _R = np.clip(_fr[:, 1] - np.mean(_fr[:, 1]), -1.0, 1.0)
+                    cfg._level_dbfs_l = dbfs(float(np.sqrt(np.mean(_L**2))))
+                    cfg._level_dbfs_r = dbfs(float(np.sqrt(np.mean(_R**2))))
+                    cfg._audio_channels = 2
+                    _sti = np.empty(_L.size * 2, dtype=np.float32)
+                    _sti[0::2] = _L; _sti[1::2] = _R
+                    mono = (_L + _R) * 0.5
+                    cfg._stream_buffer.append(_sti.copy())
+                    cfg._audio_buffer.append(_sti.copy())
+                    cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
+                    analyse_chunk(cfg, sender, lambda m, n=name: self.log(f"[{n}] {m}"),
+                                  mono, CHUNK_DURATION, cfg.alert_wav_duration, self.app_cfg.inputs)
+                else:
+                    samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
+                    cfg._audio_channels = 1
+                    cfg._stream_buffer.append(samp.copy())
+                    cfg._audio_buffer.append(samp.copy())
+                    cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
+                    analyse_chunk(cfg, sender, lambda m, n=name: self.log(f"[{n}] {m}"),
+                                  samp, CHUNK_DURATION, cfg.alert_wav_duration, self.app_cfg.inputs)
 
         # Drain contiguous packets in sequence order.
         while st['expected_seq'] in reorder:
@@ -10034,8 +10093,9 @@ class HubClient:
                 import wave as _wave, io as _io
                 with _wave.open(_io.BytesIO(clip_bytes)) as _wv:
                     _pcm_frames = _wv.readframes(_wv.getnframes())
+                    _wv_nch = _wv.getnchannels()
                 _pcm = np.frombuffer(_pcm_frames, dtype=np.int16)
-                _mp3 = _try_encode_mp3(_pcm)
+                _mp3 = _try_encode_mp3(_pcm, n_ch=_wv_nch)
                 if _mp3:
                     _prev_kb = len(clip_bytes) // 1024
                     clip_bytes = _mp3
@@ -10714,6 +10774,9 @@ class HubClient:
                 "device_index":      inp.device_index,
                 "level_dbfs":        round(inp._last_level_dbfs, 1),
                 "peak_dbfs":         round(inp._last_peak_dbfs, 1),
+                "level_dbfs_l":      round(inp._level_dbfs_l, 1) if inp._audio_channels == 2 else None,
+                "level_dbfs_r":      round(inp._level_dbfs_r, 1) if inp._audio_channels == 2 else None,
+                "stereo":            inp.stereo,
                 "silence_threshold_dbfs": inp.silence_threshold_dbfs,
                 "silence_active":    bool(inp._silence_secs >= inp.silence_min_duration),
                 "ai_status":         inp._ai_status,
@@ -15590,6 +15653,15 @@ main{padding:16px;max-width:1440px;margin:0 auto}
         </div>
         <span class="lbar-val" id="lval_{{idx}}" style="color:{{lcol}}">{{lev|round(1)}} dB</span>
       </div>
+      {%- if inp.stereo %}
+      <div class="lbar-wrap" id="lbar_lr_wrap_{{idx}}" style="gap:4px">
+        <span style="font-size:10px;color:var(--mu);width:28px;text-align:right;flex-shrink:0">L</span>
+        <div class="lbar-track" style="flex:1"><div class="lbar-fill" id="lbar_l_{{idx}}" style="width:0%;background:{{lcol}}"></div></div>
+        <span style="font-size:10px;color:var(--mu);width:10px;text-align:right;flex-shrink:0">R</span>
+        <div class="lbar-track" style="flex:1"><div class="lbar-fill" id="lbar_r_{{idx}}" style="width:0%;background:{{lcol}}"></div></div>
+        <span style="font-size:10px;color:var(--mu);width:46px;text-align:right;flex-shrink:0" id="lval_lr_{{idx}}">L/R</span>
+      </div>
+      {%- endif %}
 
       {# ── Collapsible detail ── #}
       <div class="card-detail" id="detail_{{idx}}">
@@ -15996,6 +16068,17 @@ function updateCards(inputs){
     setStyle('lbar_'+idx,'background',col);
     setStyle('lval_'+idx,'color',col);
     setEl('lval_'+idx, db.toFixed(1)+' dB');
+
+    // L/R stereo bars (client status page)
+    if (inp.level_dbfs_l != null && inp.level_dbfs_r != null) {
+      var lPct = Math.min(Math.max((inp.level_dbfs_l + 80) / 80 * 100, 0), 100);
+      var rPct = Math.min(Math.max((inp.level_dbfs_r + 80) / 80 * 100, 0), 100);
+      setStyle('lbar_l_'+idx,'width',lPct.toFixed(1)+'%');
+      setStyle('lbar_l_'+idx,'background',col);
+      setStyle('lbar_r_'+idx,'width',rPct.toFixed(1)+'%');
+      setStyle('lbar_r_'+idx,'background',col);
+      setEl('lval_lr_'+idx, 'L'+inp.level_dbfs_l.toFixed(0)+' R'+inp.level_dbfs_r.toFixed(0));
+    }
 
     // Format / mode
     setEl('fmt_'+idx, inp.livewire_mode||'—');
@@ -17475,6 +17558,11 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       <input type="text" id="device_index_other" placeholder="21811  or  239.192.85.19:5004  or  http://stream.example.com/live.mp3">
     </label>
     <p class="help">Livewire stream ID (auto-maps to multicast), raw IP:port, or HTTP/HTTPS URL. HTTP requires ffmpeg on PATH.</p>
+    <div class="cr" style="margin-top:8px">
+      <input type="checkbox" name="stereo" id="inp_stereo" value="1" {{'checked' if inp.stereo}}>
+      <label for="inp_stereo" style="margin:0;text-transform:none;font-size:13px;font-weight:500;color:var(--tx)">Enable stereo capture</label>
+    </div>
+    <p class="help">Livewire and HTTP sources provide stereo — L/R bars will appear on hub stream cards and clips will be saved as 2-channel WAV.</p>
   </div>
 
   <!-- DAB picker -->
@@ -18668,6 +18756,9 @@ def status_json():
             "fm_rds_valid": int(getattr(i, "_fm_rds_valid_groups", 0)),
             "fm_deviation_peak_khz": round(i._fm_deviation_peak_khz, 1),
             "fm_over_ofcom":i._fm_over_ofcom,
+            "stereo":       i.stereo,
+            "level_dbfs_l": round(i._level_dbfs_l, 1) if i._audio_channels == 2 else None,
+            "level_dbfs_r": round(i._level_dbfs_r, 1) if i._audio_channels == 2 else None,
             "sla_pct":      round(sla_pct(i), 3),
             "history":      _history_with_acks(i._history[-5:]),
             "lufs_m":       round(i._lufs_m, 1),
@@ -18903,6 +18994,7 @@ def _inp_from_form(f):
         glitch_min_drop_rate_dbfs_s=float(f.get("glitch_min_drop_rate_dbfs_s") or 12.0),
         glitch_floor_db=float(f.get("glitch_floor_db") or 0.0),
         glitch_pre_trend_db=float(f.get("glitch_pre_trend_db") or 0.0),
+        stereo=bool(f.get("stereo")),
     )
 
 @app.route("/inputs/add", methods=["GET","POST"])
@@ -21528,6 +21620,9 @@ def hub_live_levels():
                     "level_dbfs":     s.get("level_dbfs"),
                     "peak_dbfs":      s.get("peak_dbfs"),
                     "silence_active": bool(s.get("silence_active")),
+                    "level_dbfs_l":   s.get("level_dbfs_l"),
+                    "level_dbfs_r":   s.get("level_dbfs_r"),
+                    "stereo":         bool(s.get("stereo")),
                 }
                 for s in streams
                 if s.get("name") and s.get("level_dbfs") is not None
@@ -30173,6 +30268,15 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
         <div class="sw-bar-track"><div class="sw-bar-fill" id="lvl_{{_wlkey}}" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
         <div class="sw-bar-val" id="lvlv_{{_wlkey}}" style="color:{{lcol}}">{{lev}} dB</div>
       </div>
+      {% if st.get('stereo') %}
+      <div class="sw-bar-wrap" style="gap:3px">
+        <span style="font-size:10px;color:var(--mu);width:9px;flex-shrink:0;text-align:right">L</span>
+        <div class="sw-bar-track"><div class="sw-bar-fill" id="lvl_l_{{_wlkey}}" style="width:0%;background:{{lcol}}"></div></div>
+        <span style="font-size:10px;color:var(--mu);width:9px;flex-shrink:0;text-align:right">R</span>
+        <div class="sw-bar-track"><div class="sw-bar-fill" id="lvl_r_{{_wlkey}}" style="width:0%;background:{{lcol}}"></div></div>
+        <span class="sw-bar-val" style="font-size:10px;color:var(--mu);width:46px" id="lvlv_lr_{{_wlkey}}">L/R</span>
+      </div>
+      {% endif %}
       <div class="sw-meta">
         <span class="sw-type {{dtype}}">{{dtype|upper}}</span>
         {% if dtype=='dab' and st.get('dab_service') %}{{st.dab_service}}{% endif %}
@@ -30239,6 +30343,17 @@ function _wLivePoll() {
           if (fillEl) { fillEl.style.width = pct + '%'; fillEl.style.background = col; }
           var valEl  = document.getElementById('lvlv_' + lkSafe);
           if (valEl)  { valEl.textContent = lev.toFixed(1) + ' dB'; valEl.style.color = col; }
+          // L/R stereo bars
+          if (s.level_dbfs_l != null && s.level_dbfs_r != null) {
+            var lPct = Math.max(0, Math.min(100, (s.level_dbfs_l + 80) / 80 * 100)).toFixed(1);
+            var rPct = Math.max(0, Math.min(100, (s.level_dbfs_r + 80) / 80 * 100)).toFixed(1);
+            var lFill = document.getElementById('lvl_l_' + lkSafe);
+            var rFill = document.getElementById('lvl_r_' + lkSafe);
+            var lrVal = document.getElementById('lvlv_lr_' + lkSafe);
+            if (lFill) { lFill.style.width = lPct + '%'; lFill.style.background = col; }
+            if (rFill) { rFill.style.width = rPct + '%'; rFill.style.background = col; }
+            if (lrVal) lrVal.textContent = 'L' + s.level_dbfs_l.toFixed(0) + ' R' + s.level_dbfs_r.toFixed(0);
+          }
           // Chain node mini-bars — may appear in multiple chains
           var nodeKey = site + '|' + s.name;
           (_wNodeMap[nodeKey] || []).forEach(function(el) {
@@ -30772,6 +30887,18 @@ function _livePoll() {
 
           var aiEl = document.getElementById('ai_' + key);
           if (aiEl && s.ai_status) aiEl.textContent = s.ai_status;
+
+          // L/R stereo bars (hub overview)
+          if (s.level_dbfs_l != null && s.level_dbfs_r != null) {
+            var lPct = Math.max(0, Math.min(100, (s.level_dbfs_l + 80) / 80 * 100));
+            var rPct = Math.max(0, Math.min(100, (s.level_dbfs_r + 80) / 80 * 100));
+            var lFill = document.getElementById('lvl_l_' + key);
+            var rFill = document.getElementById('lvl_r_' + key);
+            var lrVal = document.getElementById('lvlv_lr_' + key);
+            if (lFill) { lFill.style.width = lPct.toFixed(1) + '%'; lFill.style.background = col; }
+            if (rFill) { rFill.style.width = rPct.toFixed(1) + '%'; rFill.style.background = col; }
+            if (lrVal) lrVal.textContent = 'L' + s.level_dbfs_l.toFixed(0) + ' R' + s.level_dbfs_r.toFixed(0);
+          }
         });
       });
 
@@ -31422,6 +31549,15 @@ setInterval(_loadTrends, 300000);
         </div>
         <span class="sc-level lbar-val" id="lvlv_{{_lkey}}" style="color:{{lcol}}">{{lev|round(1)}} dB</span>
       </div>
+      {% if s.get('stereo') %}
+      <div class="lbar-wrap" id="lvl_lr_wrap_{{_lkey}}" style="padding:0 10px 4px;gap:4px">
+        <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">L</span>
+        <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" id="lvl_l_{{_lkey}}" style="width:0%;background:{{lcol}}"></div></div></div>
+        <span style="font-size:9px;color:var(--mu);width:10px;flex-shrink:0;text-align:right">R</span>
+        <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" id="lvl_r_{{_lkey}}" style="width:0%;background:{{lcol}}"></div></div></div>
+        <span style="font-size:9px;color:var(--mu);width:46px;text-align:right;flex-shrink:0" id="lvlv_lr_{{_lkey}}">L/R</span>
+      </div>
+      {% endif %}
       <div class="sc-tl-wrap" style="display:flex;align-items:center;gap:5px;padding:0 10px 4px">
         <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">24h</span>
         <canvas class="sc-tl" data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-hours="24"

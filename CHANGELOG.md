@@ -2,6 +2,21 @@
 
 ---
 
+## [3.4.125] - 2026-04-01
+
+### Added
+- **Stereo capture for Livewire / RTP / HTTP streams** — per-stream toggle in stream settings. When enabled, 2-channel sources deliver separate L and R audio rather than being downmixed to mono. Changes throughout the pipeline:
+  - `_decode()` gains a `want_stereo` flag: returns raw interleaved L,R samples instead of the mono average.
+  - Livewire/RTP path and HTTP/ffmpeg path both detect stereo, compute per-channel RMS (`_level_dbfs_l/r`), apply per-channel DC removal, store interleaved frames in `_stream_buffer` / `_audio_buffer`, and pass `(L+R)/2` mono mix to `analyse_chunk` (alerting unchanged).
+  - `_save_alert_wav` detects stereo frames via `_audio_channels` and writes a proper 2-channel WAV.
+  - `_try_encode_mp3` gains an `n_ch` parameter so WAV→MP3 pre-compression works for stereo clips.
+  - `_upload_clip_inner` reads channel count from the WAV header before encoding, passing it to `_try_encode_mp3`.
+  - Heartbeat and live-levels API expose `level_dbfs_l`, `level_dbfs_r`, and `stereo` for each stream.
+  - Hub stream wall and hub overview stream cards show an inline L/R bar pair below the main RMS bar when stereo is active; updated at live-poll rate (150 ms).
+  - Client status page also shows L/R bars for stereo streams.
+
+---
+
 ## [3.4.124] - 2026-04-01
 
 ### Added
