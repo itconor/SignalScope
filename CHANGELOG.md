@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.118] - 2026-04-01
+
+### Fixed
+- **Hub page meters take ~2 s to settle on load — peak drops to zero then jumps back** — `_livePeaks` started empty on page load, so the first live poll always set `prev.pct = 0`. After the 2 s hold timer fired it slid the peak marker to `left: 0%` via a CSS `ease-in` animation. The next poll (150 ms later) snapped it back, causing a visible drop-to-bottom-then-recover cycle every 2 s until audio settled. Fixed: (1) peak state is seeded from the server-rendered bar position on first sight so there is no reset; (2) decay is now JS-driven inside the poll loop (smooth 8%/s ramp toward the current level, not to zero), removing the CSS `transition: left 1.5s ease-in` entirely; (3) decay floor is the current RMS level, not zero — the peak marker never drops below the live bar.
+
+---
+
 ## [3.4.117] - 2026-03-31
 
 ### Fixed

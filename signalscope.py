@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.117"
+BUILD                  = "SignalScope-3.4.118"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30202,7 +30202,7 @@ body.wall-mode .sc{}
 .lbar-outer{flex:1;position:relative;height:6px}
 .lbar-track{position:absolute;inset:0;background:linear-gradient(90deg,#0a1828 0,#0a1828 31%,#0d2244 31%,#0d2244 75%,#2d1a00 75%,#2d1a00 89%,#2a0f0f 89%,#2a0f0f 100%);border-radius:3px;overflow:hidden;border:1px solid rgba(255,255,255,.06)}
 .lbar-fill{height:100%;min-width:1px;max-width:100%;transition:width 180ms ease-out,background 180ms}
-.lbar-peak{position:absolute;top:-1px;bottom:-1px;width:3px;background:rgba(255,255,255,.85);border-radius:2px;transform:translateX(-1px);pointer-events:none;transition:left 1.5s ease-in}
+.lbar-peak{position:absolute;top:-1px;bottom:-1px;width:3px;background:rgba(255,255,255,.85);border-radius:2px;transform:translateX(-1px);pointer-events:none}
 .lbar-val{font-size:12px;font-weight:600;width:64px;text-align:right;font-variant-numeric:tabular-nums}
 .aib{margin:6px 10px;padding:5px 8px;border-radius:5px;font-size:12px}
 .aok{background:#1e3a1e;color:var(--ok)}.awn{background:#3a2a0f;color:var(--wn)}.aal{background:#3a0f0f;color:var(--al)}.alr{background:#1e2a3a;color:var(--acc)}.aid{background:var(--bor);color:var(--mu)}
@@ -30465,7 +30465,10 @@ function hubRefresh(){
 // ~7 Hz so bars always have fresh data.
 var _livePollTimer = null;
 var _liveActive    = false;
-var _livePeaks     = {};    // key → {pct, timer} — peak-hold state
+var _livePeaks     = {};    // key → {pct, heldUntil} — peak hold+decay state
+var _PEAK_HOLD_MS  = 2000;  // ms to hold before decaying
+var _PEAK_DECAY    = 8;     // pct/s decay rate after hold expires
+var _liveLastTs    = 0;     // timestamp of last _livePoll call (for decay dt)
 
 function _liveKey(site, stream) {
   return (site + '|' + stream).replace(/[^a-zA-Z0-9|]/g, '_');
@@ -30485,6 +30488,10 @@ function _stopLiveView() {
 
 function _livePoll() {
   if (!_liveActive) return;
+  var now = Date.now();
+  var dt  = _liveLastTs ? Math.min((now - _liveLastTs) / 1000, 0.5) : 0;
+  _liveLastTs = now;
+
   fetch('/api/hub/live_levels', {credentials: 'same-origin'})
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(data) {
@@ -30502,41 +30509,34 @@ function _livePoll() {
           var pkPct= Math.max(0, Math.min(100, (pk  + 80) / 80 * 100));
           var col  = lev <= -55 ? 'var(--al)' : lev <= -20 ? 'var(--wn)' : 'var(--ok)';
 
-          // ── Smooth bar: uniform 180 ms ease-out so transitions complete
-          //    between 200 ms updates without snap or jitter ──
           var bar = document.getElementById('lvl_' + key);
-          if (bar) {
-            bar.style.width = pct.toFixed(1) + '%';
-            bar.style.background = col;
-          }
+          if (bar) { bar.style.width = pct.toFixed(1) + '%'; bar.style.background = col; }
 
-          // ── dB readout ──
           var val = document.getElementById('lvlv_' + key);
           if (val) { val.textContent = lev.toFixed(1) + ' dB'; val.style.color = col; }
 
-          // ── Peak-hold marker ──
+          // ── Peak hold + JS decay (no CSS timer/animation) ──
           var pkEl = document.getElementById('lvlp_' + key);
           if (pkEl) {
-            var prev = _livePeaks[key] || {pct: 0};
-            if (pkPct >= prev.pct) {
-              // New peak: snap immediately, hold 2 s then decay
-              pkEl.style.transition = 'none';
-              pkEl.style.left = pkPct.toFixed(1) + '%';
-              var pkCol = pkPct >= 89 ? '#ef4444' : (pkPct >= 75 ? '#f59e0b' : 'rgba(255,255,255,.9)');
-              pkEl.style.background = pkCol;
-              clearTimeout(prev.timer);
-              _livePeaks[key] = {
-                pct: pkPct,
-                timer: (function(_k){ return setTimeout(function(){
-                  var el = document.getElementById('lvlp_' + _k);
-                  if (el) { el.style.transition = 'left 1.5s ease-in'; el.style.left = '0%'; }
-                  if (_livePeaks[_k]) _livePeaks[_k].pct = 0;
-                }, 2000); }(key))
-              };
+            var prev = _livePeaks[key];
+            if (!prev) {
+              // Seed from server-rendered position on first sight so no reset
+              var initPct = parseFloat(pkEl.style.left) || pct;
+              prev = {pct: initPct, heldUntil: now + _PEAK_HOLD_MS};
+              _livePeaks[key] = prev;
             }
+            if (pkPct >= prev.pct) {
+              prev.pct = pkPct;
+              prev.heldUntil = now + _PEAK_HOLD_MS;
+            } else if (now > prev.heldUntil) {
+              // Decay smoothly toward current level (not to zero)
+              prev.pct = Math.max(pct, prev.pct - _PEAK_DECAY * dt);
+            }
+            pkEl.style.left = prev.pct.toFixed(1) + '%';
+            var pkCol = prev.pct >= 89 ? '#ef4444' : (prev.pct >= 75 ? '#f59e0b' : 'rgba(255,255,255,.9)');
+            pkEl.style.background = pkCol;
           }
 
-          // AI status
           var aiEl = document.getElementById('ai_' + key);
           if (aiEl && s.ai_status) aiEl.textContent = s.ai_status;
         });
