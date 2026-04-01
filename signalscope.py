@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.119"
+BUILD                  = "SignalScope-3.4.120"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -29751,7 +29751,7 @@ HUB_WALL_TPL = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
 <style>
-:root{--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--mu:#6b7280;--bg:#060d1a;--bg2:#0d1629;--bg3:#111f35;--bor:#1e3048;--tx:#f0f4ff;--acc:#3b82f6}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8;--bg2:#0d2346;--bg3:#0a1a38}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;overflow-x:hidden}
 /* ── Header ─────────────────────────────────────────────── */
@@ -29780,7 +29780,7 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
 .site-pill .sdot{width:8px;height:8px;border-radius:50%;background:currentColor;flex-shrink:0}
 .site-pill .sc-cnt{font-size:10px;opacity:.7;margin-left:2px}
 /* ── Broadcast Chains ────────────────────────────────────── */
-.chains-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));gap:12px}
+.chains-grid{display:flex;flex-direction:column;gap:12px}
 .chain-card{background:var(--bg2);border:2px solid var(--bor);border-radius:12px;overflow:hidden;transition:border-color .5s,box-shadow .5s}
 .chain-card.ok{border-color:rgba(34,197,94,.35)}
 .chain-card.fault{border-color:rgba(239,68,68,.7);box-shadow:0 0 22px rgba(239,68,68,.14)}
@@ -29814,7 +29814,7 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
 .wc-node-lbl{font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:108px;line-height:1.2}
 .wc-node-site{font-size:9px;opacity:.55;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:108px}
 .wc-node-bar{width:100%;height:3px;background:rgba(255,255,255,.08);border-radius:2px;margin-top:5px;overflow:hidden}
-.wc-node-fill{height:100%;border-radius:2px;transition:width .9s}
+.wc-node-fill{height:100%;border-radius:2px;transition:width .2s}
 .wc-node-lev{font-size:9px;margin-top:2px;font-variant-numeric:tabular-nums;opacity:.85}
 .wc-fault-tag{position:absolute;top:-9px;left:50%;transform:translateX(-50%);background:var(--al);color:#fff;font-size:8px;font-weight:800;padding:1px 5px;border-radius:3px;white-space:nowrap;letter-spacing:.3px}
 /* Stack group (redundancy position) */
@@ -29835,7 +29835,7 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
 .wc-srow-lbl{font-size:11px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
 .wc-srow-site{font-size:9px;opacity:.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;max-width:60px}
 .wc-srow-bar{flex:0 0 44px;height:4px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden;flex-shrink:0}
-.wc-srow-fill{height:100%;border-radius:2px;transition:width .9s}
+.wc-srow-fill{height:100%;border-radius:2px;transition:width .2s}
 .wc-srow-lev{font-size:9px;font-variant-numeric:tabular-nums;opacity:.82;white-space:nowrap;flex-shrink:0;width:38px;text-align:right}
 /* Animations */
 @keyframes nodePulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0)}50%{box-shadow:0 0 12px 3px rgba(239,68,68,.3)}}
@@ -29857,7 +29857,7 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
 .sw-site{font-size:10px;color:var(--mu);margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px;text-align:right}
 .sw-bar-wrap{display:flex;align-items:center;gap:6px}
 .sw-bar-track{flex:1;height:7px;background:var(--bg3);border-radius:4px;overflow:hidden}
-.sw-bar-fill{height:100%;border-radius:4px}
+.sw-bar-fill{height:100%;border-radius:4px;transition:width .2s}
 .sw-bar-val{font-size:11px;font-variant-numeric:tabular-nums;width:46px;text-align:right;flex-shrink:0}
 .sw-meta{font-size:11px;color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:5px}
 .sw-type{display:inline-block;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:.5px;flex-shrink:0}
@@ -29918,14 +29918,16 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
   <div class="wall-section-hdr">Broadcast Chains</div>
   <div class="chains-grid">
     {% for chain in chains %}
-    {% set cs = 'ok' if chain.status=='ok' else ('fault' if chain.status=='fault' else 'unknown') %}
+    {% set _ds = chain.get('display_status') or chain.status %}
+    {% set cs = 'ok' if chain.status=='ok' else ('adbreak' if _ds in ('adbreak','pending') else ('fault' if chain.status=='fault' else 'unknown')) %}
+    {% if chain.get('has_maintenance') %}{% set cs = 'maintenance' %}{% endif %}
     <div class="chain-card {{cs}}" id="wc_card_{{chain.id|e}}">
       <div class="chain-card-hdr">
         <div class="chain-card-dot {{cs}}" id="wc_dot_{{chain.id|e}}"></div>
         <div class="chain-card-name" title="{{chain.name|e}}">{{chain.name|e}}</div>
-        {% if chain.has_maintenance %}<span style="font-size:10px;color:#93c5fd;flex-shrink:0">🔧</span>{% endif %}
+        {% if chain.get('has_maintenance') %}<span style="font-size:10px;color:#93c5fd;flex-shrink:0">🔧</span>{% endif %}
         <div class="chain-card-badge {{cs}}" id="wc_badge_{{chain.id|e}}">
-          {{'ALL OK' if chain.status=='ok' else ('FAULT' if chain.status=='fault' else '…')}}
+          {{'ALL OK' if chain.status=='ok' else ('AD BREAK' if _ds in ('adbreak','pending') else ('FAULT' if chain.status=='fault' else '…'))}}
         </div>
       </div>
       <div class="chain-flow" id="wc_flow_{{chain.id|e}}">
@@ -29943,8 +29945,8 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
               <div class="wc-srow-dot"></div>
               <div class="wc-srow-lbl" title="{{(sub.get('label') or sub.get('stream',''))|e}}">{{(sub.get('label') or sub.get('stream',''))|e}}</div>
               {% if sub.get('site') %}<div class="wc-srow-site" title="{{sub.get('site','')|e}}">{{sub.get('site','')|e}}</div>{% endif %}
-              <div class="wc-srow-bar"><div class="wc-srow-fill" style="width:0%;background:currentColor"></div></div>
-              <div class="wc-srow-lev">…</div>
+              <div class="wc-srow-bar"><div class="wc-srow-fill" data-wlkey="{{sub.get('site','')|e}}|{{sub.get('stream','')|e}}" style="width:0%;background:currentColor"></div></div>
+              <div class="wc-srow-lev" data-wlkey="{{sub.get('site','')|e}}|{{sub.get('stream','')|e}}">…</div>
             </div>
             {% endfor %}
           </div>
@@ -29952,8 +29954,8 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
           <div class="wc-node unknown" id="wc_node_{{chain.id|e}}_{{ni}}">
             <div class="wc-node-lbl" title="{{(node.get('label') or node.get('stream',''))|e}}">{{(node.get('label') or node.get('stream',''))|e}}</div>
             <div class="wc-node-site">{{node.get('site','')|e}}</div>
-            <div class="wc-node-bar"><div class="wc-node-fill" style="width:0%;background:var(--ok)"></div></div>
-            <div class="wc-node-lev">…</div>
+            <div class="wc-node-bar"><div class="wc-node-fill" data-wlkey="{{node.get('site','')|e}}|{{node.get('stream','')|e}}" style="width:0%;background:var(--ok)"></div></div>
+            <div class="wc-node-lev" data-wlkey="{{node.get('site','')|e}}|{{node.get('stream','')|e}}">…</div>
           </div>
           {% endif %}
         </div>
@@ -29995,6 +29997,7 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
     {% elif dev.startswith('fm://') %}{% set dtype='fm' %}
     {% elif dev.startswith('rtp://') or dev.startswith('livewire') or dev|int(-1) >= 0 %}{% set dtype='lw' %}
     {% else %}{% set dtype='other' %}{% endif %}
+    {% set _wlkey = (s.site + '|' + st.name)|replace(' ','_')|replace('/','_')|replace('.','_')|replace('-','_')|replace('(','_')|replace(')','_') %}
     <div class="sw-card {{card_cls}}">
       <div class="sw-top">
         <div class="sw-dot {{dot_cls}}"></div>
@@ -30002,8 +30005,8 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
         <div class="sw-site" title="{{s.site|e}}">{{s.site|e}}</div>
       </div>
       <div class="sw-bar-wrap">
-        <div class="sw-bar-track"><div class="sw-bar-fill" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
-        <div class="sw-bar-val" style="color:{{lcol}}">{{lev}} dB</div>
+        <div class="sw-bar-track"><div class="sw-bar-fill" id="lvl_{{_wlkey}}" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
+        <div class="sw-bar-val" id="lvlv_{{_wlkey}}" style="color:{{lcol}}">{{lev}} dB</div>
       </div>
       <div class="sw-meta">
         <span class="sw-type {{dtype}}">{{dtype|upper}}</span>
@@ -30029,6 +30032,64 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
   if(el)el.textContent=pad(n.getHours())+':'+pad(n.getMinutes())+':'+pad(n.getSeconds());
   setTimeout(tick,1000);
 })();
+
+// ── Live level poll (150 ms) ───────────────────────────────────────
+// Updates stream card bars and chain node mini-bars from /api/hub/live_levels.
+// Chain node status (ok/fault/adbreak class) is left to pollChains() at 5 s.
+var _wLiveLastTs = 0;
+var _wNodeMap    = null;  // "site|stream" → [{fill,lev}, ...] — built on first poll
+
+function _wBuildNodeMap() {
+  _wNodeMap = {};
+  document.querySelectorAll('[data-wlkey]').forEach(function(el) {
+    var k = el.dataset.wlkey;
+    if (!k) return;
+    if (!_wNodeMap[k]) _wNodeMap[k] = [];
+    _wNodeMap[k].push(el);
+  });
+}
+
+function _wLiveKey(site, stream) {
+  return (site + '|' + stream).replace(/[^a-zA-Z0-9|]/g, '_');
+}
+
+function _wLivePoll() {
+  var now = Date.now();
+  _wLiveLastTs = now;
+  fetch('/api/hub/live_levels', {credentials: 'same-origin'})
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(data) {
+      if (!data) return;
+      if (!_wNodeMap) _wBuildNodeMap();
+      Object.keys(data).forEach(function(site) {
+        var streams = data[site] || [];
+        streams.forEach(function(s) {
+          if (s.level_dbfs == null) return;
+          var lev  = s.level_dbfs;
+          var pct  = Math.max(0, Math.min(100, (lev + 80) / 80 * 100)).toFixed(1);
+          var col  = lev <= -55 ? 'var(--al)' : lev <= -20 ? 'var(--wn)' : 'var(--ok)';
+          var lkSafe = _wLiveKey(site, s.name);
+          // Stream status card — unique ID elements
+          var fillEl = document.getElementById('lvl_' + lkSafe);
+          if (fillEl) { fillEl.style.width = pct + '%'; fillEl.style.background = col; }
+          var valEl  = document.getElementById('lvlv_' + lkSafe);
+          if (valEl)  { valEl.textContent = lev.toFixed(1) + ' dB'; valEl.style.color = col; }
+          // Chain node mini-bars — may appear in multiple chains
+          var nodeKey = site + '|' + s.name;
+          (_wNodeMap[nodeKey] || []).forEach(function(el) {
+            if (el.classList.contains('wc-node-fill') || el.classList.contains('wc-srow-fill')) {
+              el.style.width = pct + '%';
+            } else if (el.classList.contains('wc-node-lev') || el.classList.contains('wc-srow-lev')) {
+              el.textContent = lev.toFixed(1) + ' dB';
+            }
+          });
+        });
+      });
+    })
+    .catch(function(){})
+    .finally(function(){ setTimeout(_wLivePoll, 150); });
+}
+_wLivePoll();
 
 // ── Chain status polling ───────────────────────────────────────────
 var _wcFaultSince={};  // chain id -> epoch ms when fault first seen client-side

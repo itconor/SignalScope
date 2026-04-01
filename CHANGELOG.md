@@ -2,6 +2,16 @@
 
 ---
 
+## [3.4.120] - 2026-04-01
+
+### Improved
+- **Wall mode: 150 ms live level updates** — stream status card bars and chain node mini-bars now poll `/api/hub/live_levels` at 150 ms (same as the hub dashboard), replacing the heartbeat-stale 5 s chain-poll or 60 s page-reload update cycle. CSS transitions on node bars reduced from 0.9 s to 0.2 s.
+- **Wall mode: broadcast chains stacked vertically** — chains display in a single column so the full left-to-right node flow is always visible without adjacent chains competing for horizontal space.
+- **Wall mode: ad-break countdown no longer shows FAULT** — server-rendered chain cards now use `display_status` (same field the JS poll uses) so chains in ad-break confirmation show "AD BREAK" rather than "FAULT" from the moment the page loads.
+- **Wall mode: SignalScope styling** — CSS variables updated to match the main app (`--bg`, `--sur`, `--bor`, `--acc`, `--tx`, `--mu`).
+
+---
+
 ## [3.4.119] - 2026-03-31
 
 ### Improved
