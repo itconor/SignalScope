@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.21",
+    "version": "1.5.23",
 }
 
 import datetime
@@ -3250,7 +3250,7 @@ select:focus,input:focus{border-color:var(--acc)}
 .tl-grid{display:grid;grid-template-columns:38px 1fr;gap:3px;align-items:center}
 .tl-hour-lbl{text-align:right;font-size:10px;color:var(--mu);padding-right:7px;line-height:1}
 .tl-row{display:grid;grid-template-columns:repeat(12,1fr);gap:2px}
-.tl-block{height:22px;border-radius:3px;cursor:pointer;transition:opacity .1s,outline .1s;position:relative}
+.tl-block{height:26px;border-radius:3px;cursor:pointer;transition:opacity .1s,outline .1s;position:relative}
 .tl-block:hover{opacity:.75;outline:2px solid var(--acc)}
 .tl-block.selected{outline:2px solid #fff}
 .tl-block.playing{outline:2px solid var(--ok)}
@@ -3275,7 +3275,7 @@ select:focus,input:focus{border-color:var(--acc)}
 .tl-scroll-wrap::-webkit-scrollbar-thumb:hover{background:var(--mu)}
 #tl-zoom-content{min-width:100%;width:100%;transition:width .22s}
 /* Expanded heights — day-bar grows, bands grow, hour grid stays the same */
-.tl-wrap.tl-exp .day-bar{height:80px}
+.tl-wrap.tl-exp .day-bar{height:104px}
 .tl-wrap.tl-exp #show-band{height:30px}
 .tl-wrap.tl-exp .show-span{height:28px;font-size:11px}
 .tl-wrap.tl-exp #track-band{height:30px}
@@ -3285,7 +3285,7 @@ select:focus,input:focus{border-color:var(--acc)}
 /* Separator between zoomed overview and the hour grid */
 #tl-grid{margin-top:8px;padding-top:6px;border-top:1px solid var(--bor)}
 /* Day bar */
-.day-bar{width:100%;height:30px;position:relative;background:#0a1828;border-radius:6px;overflow:hidden;cursor:pointer;margin-bottom:12px;flex-shrink:0;border:1px solid var(--bor);user-select:none}
+.day-bar{width:100%;height:72px;position:relative;background:#0a1828;border-radius:6px;overflow:hidden;cursor:pointer;margin-bottom:12px;flex-shrink:0;border:1px solid var(--bor);user-select:none}
 .day-bar-bg{display:flex;height:100%;width:100%}
 .day-bar-blk{height:100%;flex:1}
 .day-bar-head{position:absolute;top:0;bottom:0;width:2px;background:var(--ok);pointer-events:none;z-index:4;transform:translateX(-50%)}
@@ -3363,6 +3363,17 @@ select:focus,input:focus{border-color:var(--acc)}
 .tl-block.has-track[data-status="none"]{background:#3d2000}
 /* Now playing URL input in settings */
 .np-url-row{padding-top:10px;border-top:1px solid var(--bor);margin-top:10px}
+/* ── Day bar hover time tip ─────────────────────────────────────────── */
+.day-bar-time-tip{position:absolute;top:4px;padding:3px 7px;background:rgba(0,0,0,.75);border-radius:4px;font-size:12px;font-weight:600;color:#fff;pointer-events:none;z-index:6;font-variant-numeric:tabular-nums;white-space:nowrap;transition:opacity .1s}
+/* ── Explainer hint strip ───────────────────────────────────────────── */
+.tl-hint{display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(23,168,255,.06);border:1px solid rgba(23,168,255,.18);border-radius:7px;font-size:12px;color:var(--mu);margin-bottom:10px;flex-shrink:0}
+.tl-hint b{color:var(--acc)}
+.tl-hint-close{margin-left:auto;background:none;border:none;color:var(--mu);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;flex-shrink:0}
+.tl-hint-close:hover{color:var(--tx)}
+/* ── Large wall-clock timestamp in player ───────────────────────────── */
+.player-clock{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--ok);letter-spacing:.02em;min-width:110px;text-align:center;flex-shrink:0}
+/* Hide scrub bar — day bar is now the visual scrubber ──────────────── */
+.scrub-wrap{display:none}
 </style>
 </head>
 <body>
@@ -3422,11 +3433,10 @@ select:focus,input:focus{border-color:var(--acc)}
         <div class="tl-head">
           <div class="tl-title" id="tl-title">Select a stream</div>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto">
-            <div class="zoom-grp">
-              <button class="zoom-btn zact" data-z="1">1×</button>
-              <button class="zoom-btn" data-z="2">2×</button>
-              <button class="zoom-btn" data-z="4">4×</button>
-              <button class="zoom-btn" data-z="8">8×</button>
+            <div class="zoom-grp" id="zoom-grp" title="Scroll the timeline to zoom in/out">
+              <button class="zoom-btn" id="btn-zoom-out" title="Zoom out">−</button>
+              <span id="zoom-lbl" style="padding:3px 10px;font-size:11px;color:var(--mu);min-width:38px;text-align:center;line-height:1.4;font-weight:600">1×</span>
+              <button class="zoom-btn" id="btn-zoom-in" title="Zoom in">+</button>
             </div>
             <button class="zoom-btn" id="exp-btn" title="Expand rows" style="border-radius:5px">↕ Expand</button>
             <div class="tl-legend">
@@ -3450,6 +3460,7 @@ select:focus,input:focus{border-color:var(--acc)}
               <div class="day-bar-in hidden" id="day-bar-in"></div>
               <div class="day-bar-out hidden" id="day-bar-out"></div>
               <div class="day-bar-hover" id="day-bar-hover"></div>
+              <div class="day-bar-time-tip hidden" id="day-bar-time-tip"></div>
             </div>
             <div id="tl-time-axis" style="display:flex;justify-content:space-between;font-size:10px;color:var(--mu);margin-bottom:4px;padding:0 1px">
               <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:55</span>
@@ -3459,35 +3470,35 @@ select:focus,input:focus{border-color:var(--acc)}
             <div id="track-band"></div>
           </div>
         </div>
+        <div class="tl-hint" id="tl-hint">
+          <span>💡 <b>Click</b> the bar above to jump to any time &nbsp;·&nbsp; <b>Right-click</b> on the bar to set a clip start/end marker &nbsp;·&nbsp; <b>Scroll</b> to zoom in/out</span>
+          <button class="tl-hint-close" id="tl-hint-close" title="Dismiss">✕</button>
+        </div>
         <div id="tl-grid" class="tl-grid"></div>
       </div>
 
       <div class="player">
         <audio id="audio-el" preload="none"></audio>
+        <!-- Hidden scrub elements — kept so JS references remain valid -->
+        <div style="display:none">
+          <div id="scrub"><div class="scrub-track"><div id="scrub-fill"></div><div id="scrub-thumb"></div><div id="scrub-in"></div><div id="scrub-out"></div></div></div>
+        </div>
         <div class="player-top">
           <button class="play-btn" id="play-btn">▶</button>
           <div class="player-info">
-            <div class="p-title" id="p-title">No segment selected</div>
-            <div class="p-sub" id="p-sub">Click a block on the timeline to play</div>
+            <div class="p-title" id="p-title">Select a stream and click the timeline to play</div>
+            <div class="p-sub" id="p-sub"></div>
           </div>
-          <span class="time-lbl" id="time-lbl">--:--:--</span>
-        </div>
-        <div class="scrub-wrap" id="scrub">
-          <div class="scrub-track">
-            <div class="scrub-fill" id="scrub-fill" style="width:0%"></div>
-            <div class="scrub-thumb" id="scrub-thumb" style="left:0%"></div>
-            <div class="scrub-in hidden" id="scrub-in"></div>
-            <div class="scrub-out hidden" id="scrub-out"></div>
-          </div>
+          <span class="player-clock" id="time-lbl">--:--:--</span>
         </div>
         <div class="export-bar">
-          <button class="btn bg bs" id="mark-in-btn">⬥ Mark In</button>
-          <button class="btn bg bs" id="mark-out-btn">⬥ Mark Out</button>
+          <button class="btn bg bs" id="mark-in-btn" title="Set clip start to current playback position">⬥ Mark Start</button>
+          <button class="btn bg bs" id="mark-out-btn" title="Set clip end to current playback position">⬥ Mark End</button>
           <span class="inout-lbl" id="inout-lbl"></span>
           <div style="flex:1"></div>
           <select id="export-fmt" title="Export format" style="background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:4px 7px;border-radius:6px;font-size:12px;outline:none;cursor:pointer">
-            <option value="raw">Raw (fast)</option>
             <option value="mp3">MP3</option>
+            <option value="raw">Raw (fast)</option>
             <option value="aac">AAC</option>
             <option value="opus">Opus</option>
           </select>
@@ -3978,9 +3989,11 @@ function _applyMeta(events){
     if(tracks.length){
       blk.classList.add('has-track');
       var trackLines = tracks.map(function(t){
-        var th = Math.floor(t.ts_s / 3600);
-        var tm = Math.floor((t.ts_s % 3600) / 60);
-        var ts = Math.floor(t.ts_s % 60);
+        // Apply UTC offset so track times match local clock shown on timeline labels
+        var localS = ((t.ts_s + _utcOffsetS) % 86400 + 86400) % 86400;
+        var th = Math.floor(localS / 3600);
+        var tm = Math.floor((localS % 3600) / 60);
+        var ts = Math.floor(localS % 60);
         var tstr = ('0'+th).slice(-2)+':'+('0'+tm).slice(-2)+':'+('0'+ts).slice(-2);
         return '\U0001F3B5 '+tstr+' '+(t.artist ? t.artist+' \u2014 ' : '')+t.title;
       }).join(' | ');
@@ -4038,9 +4051,10 @@ function _renderMicBand(events){
     var w = (end - start) / 86400 * 100;
     var l = start / 86400 * 100;
     if(w < 0.01) return;
-    var th = Math.floor(start / 3600);
-    var tm = Math.floor((start % 3600) / 60);
-    var ts = Math.floor(start % 60);
+    var localStart = ((start + _utcOffsetS) % 86400 + 86400) % 86400;
+    var th = Math.floor(localStart / 3600);
+    var tm = Math.floor((localStart % 3600) / 60);
+    var ts = Math.floor(localStart % 60);
     var tstr = ('0'+th).slice(-2)+':'+('0'+tm).slice(-2)+':'+('0'+ts).slice(-2);
     var sp = document.createElement('div');
     sp.className = 'mic-span'+(live?' mic-live':'');
@@ -4071,9 +4085,10 @@ function _renderTrackBand(events){
     var w = (end - start) / 86400 * 100;
     var l = start / 86400 * 100;
     if(w < 0.02) continue;
-    var th = Math.floor(start / 3600);
-    var tm = Math.floor((start % 3600) / 60);
-    var ts = Math.floor(start % 60);
+    var localStart = ((start + _utcOffsetS) % 86400 + 86400) % 86400;
+    var th = Math.floor(localStart / 3600);
+    var tm = Math.floor((localStart % 3600) / 60);
+    var ts = Math.floor(localStart % 60);
     var tstr = ('0'+th).slice(-2)+':'+('0'+tm).slice(-2)+':'+('0'+ts).slice(-2);
     var sp = document.createElement('div');
     sp.className = 'track-span';
@@ -4113,18 +4128,20 @@ function buildTimeline(segs){
       blk.dataset.startS = String(ss);
       var seg = lookup[ss];
       var future = (_currentDate===todayStr && ss>nowSecs);
+      // Tooltip time label: apply same UTC offset as the hour label so it matches local clock
+      var dispM = m;  // minutes never shift — only hours do
+      var tipTime = String(displayH).padStart(2,'0')+':'+String(dispM).padStart(2,'0');
       if(future){
         blk.dataset.status='future';
-        blk.dataset.tip=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+' — future';
+        blk.dataset.tip=tipTime+' — future';
       } else if(seg){
         var sp = seg.silence_pct||0;
         blk.dataset.status = sp>80?'silent':sp>10?'warn':'ok';
-        blk.dataset.tip = String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')
-          +' · '+seg.quality+' · '+sp.toFixed(0)+'% silence';
+        blk.dataset.tip = tipTime+' · '+seg.quality+' · '+sp.toFixed(0)+'% silence';
         (function(s,b){ b.addEventListener('click', function(){ playSeg(s,b); }); })(seg,blk);
       } else {
         blk.dataset.status='none';
-        blk.dataset.tip=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+' — no recording';
+        blk.dataset.tip=tipTime+' — no recording';
       }
       row.appendChild(blk);
     }
@@ -4354,9 +4371,18 @@ document.getElementById('day-bar').addEventListener('mousemove',function(e){
   var pct=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
   var hv=document.getElementById('day-bar-hover');
   hv.style.left=(pct*100)+'%'; hv.style.display='block';
+  var tip=document.getElementById('day-bar-time-tip');
+  if(tip){
+    tip.textContent=_fmtWall(pct*86400);
+    var tipPct = Math.min(pct*100, 86);  // keep tip from going off right edge
+    tip.style.left=tipPct+'%';
+    tip.classList.remove('hidden');
+  }
 });
 document.getElementById('day-bar').addEventListener('mouseleave',function(){
   document.getElementById('day-bar-hover').style.display='none';
+  var tip=document.getElementById('day-bar-time-tip');
+  if(tip) tip.classList.add('hidden');
 });
 
 // ── Right-click on timeline overview: set mark-in / mark-out ─────────────
@@ -4821,19 +4847,19 @@ document.getElementById('save-settings-btn').addEventListener('click', function(
 });
 
 // ── Timeline zoom & expand ─────────────────────────────────────────────────
-function _setTlZoom(z){
+function _setTlZoom(z, anchorRatio){
+  z = Math.max(1, Math.min(16, z));
   _tlZoom = z;
   var content = document.getElementById('tl-zoom-content');
-  if(content) content.style.width = (z === 1 ? '100%' : (z * 100) + '%');
-  document.querySelectorAll('.zoom-btn[data-z]').forEach(function(b){
-    b.classList.toggle('zact', parseInt(b.dataset.z, 10) === z);
-  });
-  // After zoom, scroll to keep the current playhead or selection roughly centred
+  if(content) content.style.width = (z <= 1 ? '100%' : (z * 100) + '%');
+  var lbl = document.getElementById('zoom-lbl');
+  if(lbl) lbl.textContent = (z === Math.round(z) ? Math.round(z) : z.toFixed(1)) + '×';
+  // After zoom, scroll to keep the anchor position (or playhead) stable
   var wrap = document.querySelector('.tl-scroll-wrap');
-  if(wrap && z > 1){
-    // Scroll to keep the current view position proportional
-    var ratio = wrap.scrollLeft / (wrap.scrollWidth || 1);
-    wrap.scrollLeft = ratio * wrap.scrollWidth;
+  if(wrap && z > 1 && anchorRatio != null){
+    requestAnimationFrame(function(){
+      wrap.scrollLeft = anchorRatio * wrap.scrollWidth;
+    });
   }
 }
 
@@ -4845,10 +4871,15 @@ function _setTlExp(v){
   if(btn) btn.classList.toggle('zact', v);
 }
 
-document.querySelector('.zoom-grp').addEventListener('click', function(e){
-  var btn = e.target.closest('.zoom-btn[data-z]');
-  if(!btn) return;
-  _setTlZoom(parseInt(btn.dataset.z, 10));
+document.getElementById('btn-zoom-in').addEventListener('click', function(){
+  var wrap = document.querySelector('.tl-scroll-wrap');
+  var ratio = wrap ? (wrap.scrollLeft + wrap.clientWidth/2) / (wrap.scrollWidth||1) : 0.5;
+  _setTlZoom(_tlZoom * 1.5, ratio - wrap.clientWidth/2 / (wrap.scrollWidth||1));
+});
+document.getElementById('btn-zoom-out').addEventListener('click', function(){
+  var wrap = document.querySelector('.tl-scroll-wrap');
+  var ratio = wrap ? (wrap.scrollLeft + wrap.clientWidth/2) / (wrap.scrollWidth||1) : 0.5;
+  _setTlZoom(_tlZoom / 1.5, ratio - wrap.clientWidth/2 / (wrap.scrollWidth||1));
 });
 
 document.getElementById('exp-btn').addEventListener('click', function(){
@@ -4897,6 +4928,57 @@ document.getElementById('exp-btn').addEventListener('click', function(){
   }, {passive: true});
 
   wrap.addEventListener('touchend', function(){ _dn = false; });
+})();
+
+// ── Scroll-wheel zoom ─────────────────────────────────────────────────────
+(function(){
+  var wrap = document.querySelector('.tl-scroll-wrap');
+  if(!wrap) return;
+  wrap.addEventListener('wheel', function(e){
+    // Only intercept if zoomed in already, or zooming in
+    if(_tlZoom <= 1 && e.deltaY >= 0) return;  // at 1× and scrolling out → ignore
+    e.preventDefault();
+    var rect = wrap.getBoundingClientRect();
+    var mouseX = e.clientX - rect.left;
+    // Current pixel position under mouse in content coordinates
+    var contentX = wrap.scrollLeft + mouseX;
+    var oldWidth = wrap.scrollWidth;
+    var factor = e.deltaY > 0 ? (1/1.2) : 1.2;
+    _setTlZoom(_tlZoom * factor, null);
+    // Restore mouse position after DOM update
+    requestAnimationFrame(function(){
+      var newWidth = wrap.scrollWidth;
+      var scale = newWidth / (oldWidth || 1);
+      wrap.scrollLeft = contentX * scale - mouseX;
+    });
+  }, {passive: false});
+})();
+
+// ── Hint strip dismiss ────────────────────────────────────────────────────
+(function(){
+  var hintEl = document.getElementById('tl-hint');
+  var closeBtn = document.getElementById('tl-hint-close');
+  if(!closeBtn || !hintEl) return;
+  // Dismiss on close button
+  closeBtn.addEventListener('click', function(){
+    hintEl.style.display = 'none';
+    try{ sessionStorage.setItem('logger_hint_dismissed','1'); }catch(e){}
+  });
+  // Auto-dismiss after 20 seconds
+  var _hintTimer = setTimeout(function(){
+    if(hintEl.style.display !== 'none'){
+      hintEl.style.transition = 'opacity .6s';
+      hintEl.style.opacity = '0';
+      setTimeout(function(){ hintEl.style.display = 'none'; }, 700);
+    }
+  }, 20000);
+  // Restore dismissed state
+  try{
+    if(sessionStorage.getItem('logger_hint_dismissed') === '1'){
+      hintEl.style.display = 'none';
+      clearTimeout(_hintTimer);
+    }
+  }catch(e){}
 })();
 
 })();
