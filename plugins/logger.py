@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.19",
+    "version": "1.5.20",
 }
 
 import datetime
@@ -384,13 +384,21 @@ def _hub_export_clip(slot_id: str, slug: str, date: str,
         _audio_post(chunk_url, b"", secret)
 
 
-def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
+def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg, n_ch=1):
     """Push PCM audio to a hub relay slot by transcoding a recorded segment with ffmpeg.
 
     Batches 16 raw PCM blocks (1.6 s of audio) per HTTP POST to amortise
     WAN round-trip cost.  Pushes at 3× real-time so the relay buffer stays
     4–8 s ahead of playback; the browser's 5 s pre-buffer absorbs jitter.
+
+    n_ch: 1 = mono (9600 bytes/block), 2 = stereo interleaved (19200 bytes/block).
+    Must match the channel count used when the segment was recorded so the
+    browser audio pump decodes correctly.
     """
+    n_ch = 2 if n_ch == 2 else 1
+    _chunk_bytes = _CHUNK_BYTES * n_ch   # bytes per 0.1 s block
+    _batch_bytes = _chunk_bytes * _BATCH_CHUNKS
+
     path = _stream_rec_root_by_slug(_safe(slug)) / _safe(slug) / date / filename
     if not path.exists():
         _log(f"[Logger] AudioPush: file not found: {path}")
@@ -399,7 +407,7 @@ def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
     ffmpeg = _find_ffmpeg() or "ffmpeg"
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error",
            "-ss", str(seek_s), "-i", str(path),
-           "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1"]
+           "-ac", str(n_ch), "-ar", "48000", "-f", "s16le", "pipe:1"]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except Exception as e:
@@ -417,16 +425,16 @@ def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
     try:
         buf = b""
         while True:
-            piece = proc.stdout.read(_CHUNK_BYTES)
+            piece = proc.stdout.read(_chunk_bytes)
             if not piece:
                 # Flush any remaining partial batch
                 if buf:
                     _audio_post(chunk_url, buf, secret)
-                    total_chunks += len(buf) // _CHUNK_BYTES
+                    total_chunks += len(buf) // _chunk_bytes
                 break
 
             buf += piece
-            if len(buf) < _BATCH_BYTES:
+            if len(buf) < _batch_bytes:
                 continue   # keep accumulating
 
             batch_n += 1
@@ -444,7 +452,7 @@ def _push_audio_to_relay(hub_url, slot_id, slug, date, filename, seek_s, cfg):
             buf = b""
 
     finally:
-        _log(f"[Logger] AudioPush: finished {total_chunks} chunks ({total_chunks*_CHUNK_DUR:.1f}s) for {slug}/{date}/{filename}")
+        _log(f"[Logger] AudioPush: finished {total_chunks} chunks ({total_chunks*_CHUNK_DUR:.1f}s) {'stereo' if n_ch==2 else 'mono'} for {slug}/{date}/{filename}")
         try:
             proc.kill()
         except Exception:
@@ -580,10 +588,13 @@ def _hub_logger_poller():
                         date     = cmd.get("date", "")
                         filename = cmd.get("filename", "")
                         seek_s   = float(cmd.get("seek_s", 0))
-                        _log(f"[Logger] HubPoller: play {slug}/{date}/{filename} seek={seek_s:.1f}s slot={slot_id}")
+                        n_ch     = int(cmd.get("n_ch", 1) or 1)
+                        n_ch     = 2 if n_ch == 2 else 1
+                        _log(f"[Logger] HubPoller: play {slug}/{date}/{filename} seek={seek_s:.1f}s slot={slot_id} ch={n_ch}")
                         threading.Thread(
                             target=_push_audio_to_relay,
                             args=(hub_url, slot_id, slug, date, filename, seek_s, cfg),
+                            kwargs={"n_ch": n_ch},
                             daemon=True, name="LoggerAudioPush").start()
 
                     elif ctype == "stream_file":
@@ -1012,6 +1023,7 @@ def register(app, ctx):
                                 "site": site,
                                 "owner": info.get("owner", site),
                                 "rec_format": info.get("rec_format", "mp3"),
+                                "n_ch": int(info.get("n_ch", 1) or 1),
                             })
                             seen.add(slug)
             result.sort(key=lambda x: x["name"].lower())
@@ -1087,8 +1099,12 @@ def register(app, ctx):
                 return jsonify({"error": "no listen_registry"}), 500
             slot = _listen_registry.create(
                 site, 0, kind="scanner", mimetype="application/octet-stream")
+            # Look up channel count from stored catalog so the client pushes
+            # the right PCM format and the browser pump decodes it correctly.
             with _hub_logger_lock:
                 _hub_logger_active[site] = slot.slot_id
+                _n_ch = int((_hub_logger_catalog.get(site, {}).get(slug, {}) or {}).get("n_ch", 1) or 1)
+            _n_ch = 2 if _n_ch == 2 else 1
             _hub_set_pending(site, {
                 "type": "play",
                 "slot_id": slot.slot_id,
@@ -1096,11 +1112,13 @@ def register(app, ctx):
                 "date": date,
                 "filename": filename,
                 "seek_s": seek_s,
+                "n_ch": _n_ch,
             })
             return jsonify({
                 "ok": True,
                 "slot_id": slot.slot_id,
                 "stream_url": f"/hub/scanner/stream/{slot.slot_id}",
+                "n_ch": _n_ch,
             })
 
         @app.get("/api/logger/hub/metadata/<path:site_slug_date>")
@@ -2017,7 +2035,7 @@ def _catalog_read(root: Path) -> dict:
             if now - info.get("updated", 0) < _CATALOG_STALE_S}
 
 
-def _catalog_write(root: Path, slug: str, name: str, rec_format: str):
+def _catalog_write(root: Path, slug: str, name: str, rec_format: str, n_ch: int = 1):
     """Add or update our entry in the shared catalog (atomic with flock)."""
     p = _catalog_path(root)
     try:
@@ -2041,6 +2059,7 @@ def _catalog_write(root: Path, slug: str, name: str, rec_format: str):
                 "name":       name,
                 "owner":      _my_owner(),
                 "rec_format": rec_format,
+                "n_ch":       int(n_ch) if n_ch in (1, 2) else 1,
                 "updated":    time.time(),
             }
             # Write atomically via tmp + rename
@@ -2801,7 +2820,7 @@ class _RecorderThread(threading.Thread):
             self.last_error = None
             self.last_ok_ts = time.time()
             self.seg_count += 1
-            _catalog_write(rec_root, self.slug, self.stream_name, scfg["rec_format"])
+            _catalog_write(rec_root, self.slug, self.stream_name, scfg["rec_format"], n_ch=_n_ch)
             _log(f"[Logger] Segment saved: {self.stream_name}/{date_str}/{filename}")
 
         # Wait for next 5-minute boundary
@@ -3577,6 +3596,7 @@ var _hubPlayStart   = null;
 var _hubPlayOffset  = 0;
 var _hubIsPlaying   = false; // true while PCM stream is active
 var _hubPlayPending = false; // true while startHubPlay POST is in-flight (prevents double-start)
+var _currentNch     = 1;     // channel count for currently selected stream (1=mono, 2=stereo)
 
 // ── PCM audio pump (for hub mode playback) ─────────────────────────────────
 var _audioCtx=null,_gainNode=null,_pcmReader=null,_nextTime=0;
@@ -3611,7 +3631,9 @@ function _stopHubAudio(){
   var pb=document.getElementById('play-btn');
   pb.textContent='▶'; pb.disabled=false;
 }
-function connectAudio(url){
+function connectAudio(url, n_ch){
+  n_ch = (n_ch === 2) ? 2 : 1;
+  var blk_b = _BLK_B * n_ch;   // bytes per block: 9600 mono, 19200 stereo
   if(_pcmReader){try{_pcmReader.cancel();}catch(e){}_pcmReader=null;}
   _pcmBuf=new Uint8Array(0);
   _initAudio(); if(_audioCtx.state==='suspended')_audioCtx.resume();
@@ -3627,12 +3649,20 @@ function connectAudio(url){
       if(d.done||!_pcmReader)return;
       var tmp=new Uint8Array(_pcmBuf.length+d.value.length);
       tmp.set(_pcmBuf);tmp.set(d.value,_pcmBuf.length);_pcmBuf=tmp;
-      while(_pcmBuf.length>=_BLK_B){
-        var blk=_pcmBuf.slice(0,_BLK_B);_pcmBuf=_pcmBuf.slice(_BLK_B);
-        var buf=_audioCtx.createBuffer(1,_BLK_S,_SR);
-        var ch=buf.getChannelData(0);
+      while(_pcmBuf.length>=blk_b){
+        var blk=_pcmBuf.slice(0,blk_b);_pcmBuf=_pcmBuf.slice(blk_b);
+        var buf=_audioCtx.createBuffer(n_ch,_BLK_S,_SR);
         var dv=new DataView(blk.buffer,blk.byteOffset,blk.byteLength);
-        for(var i=0;i<_BLK_S;i++)ch[i]=dv.getInt16(i*2,true)/32768.0;
+        if(n_ch===2){
+          var chL=buf.getChannelData(0), chR=buf.getChannelData(1);
+          for(var i=0;i<_BLK_S;i++){
+            chL[i]=dv.getInt16(i*4,  true)/32768.0;
+            chR[i]=dv.getInt16(i*4+2,true)/32768.0;
+          }
+        } else {
+          var ch=buf.getChannelData(0);
+          for(var i=0;i<_BLK_S;i++)ch[i]=dv.getInt16(i*2,true)/32768.0;
+        }
         var src=_audioCtx.createBufferSource();
         src.buffer=buf;src.connect(_gainNode);
         var t=Math.max(_nextTime,_audioCtx.currentTime+0.05);
@@ -3717,7 +3747,8 @@ function checkHubMode(){
       var o = document.createElement('option');
       o.value = s.slug;
       o.dataset.site = s.site;
-      o.textContent = s.name + ' (' + s.site + ')';
+      o.dataset.nch  = s.n_ch || 1;
+      o.textContent = s.name + ' (' + s.site + ')' + (s.n_ch === 2 ? ' ◈' : '');
       sel.appendChild(o);
     });
   }).catch(function(){});
@@ -3807,9 +3838,10 @@ function _hubStatusMsg(msg){
 // ── Stream selector ───────────────────────────────────────────────────────
 document.getElementById('stream-sel').addEventListener('change', function(){
   _currentSlug = this.value;
-  // Auto-set _hubSite from catalog entry (or clear for local streams)
+  // Auto-set _hubSite and _currentNch from catalog entry
   var opt = this.options[this.selectedIndex];
-  _hubSite = (opt && opt.dataset.site) ? opt.dataset.site : '';
+  _hubSite    = (opt && opt.dataset.site) ? opt.dataset.site : '';
+  _currentNch = (opt && opt.dataset.nch === '2') ? 2 : 1;
   _selSeg = null; _segsAll = []; _markIn = _markOut = null;
   _stopHubAudio();
   _hubStatusMsg('');
@@ -4118,7 +4150,7 @@ function startHubPlay(seg, offset){
   var seekSecs = offset;
   _post('/api/logger/hub/play', {
     site: _hubSite, slug: _currentSlug, date: _currentDate,
-    filename: seg.filename, seek_s: seekSecs
+    filename: seg.filename, seek_s: seekSecs, n_ch: _currentNch
   }).then(function(r){
     if(gen !== _playGen){
       // Superseded by a later click — discard but re-enable button if nothing else pending
@@ -4128,7 +4160,7 @@ function startHubPlay(seg, offset){
     _hubPlayPending = false;
     document.getElementById('play-btn').disabled=false;
     if(!r || !r.ok){ document.getElementById('play-btn').textContent='▶'; return; }
-    connectAudio(r.stream_url);
+    connectAudio(r.stream_url, r.n_ch || 1);
     _selSeg = seg;
     _hubIsPlaying  = true;
     _hubPlayStart  = Date.now();
