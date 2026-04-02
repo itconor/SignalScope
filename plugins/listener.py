@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/listener",
     "icon":     "🎧",
     "hub_only": True,
-    "version":  "1.1.4",
+    "version":  "1.1.5",
 }
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -181,6 +181,9 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
 
 /* ── Retry banner ── */
 .retry-banner{background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:10px 16px;font-size:13px;color:var(--wn);display:flex;align-items:center;gap:10px;margin:0 24px 12px;max-width:1400px;margin-left:auto;margin-right:auto}
+
+/* ── Stereo tag ── */
+.stereo-tag{font-size:10px;font-weight:700;color:var(--acc);background:rgba(23,168,255,.12);border:1px solid rgba(23,168,255,.3);border-radius:10px;padding:2px 7px;white-space:nowrap;letter-spacing:.04em;flex-shrink:0;text-align:center}
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bor);border-radius:3px}
@@ -443,6 +446,7 @@ function loadStreams(initial){
             level:  s.level_dbfs,
             status: s.ai_status||'OK',
             online: !!site.online,
+            stereo: !!s.stereo,
             rds:    s.fm_rds_ps||'',
             dab:    s.dab_service||'',
             label:  s.label||'',
@@ -580,6 +584,8 @@ function renderCard(s){
   } else {
     badge='<span class="badge b-ok">● On Air</span>';
   }
+  var badgeGroup='<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;flex-shrink:0">'
+    +badge+(s.stereo?'<span class="stereo-tag">◈ STEREO</span>':'')+'</div>';
 
   // What's on air line
   var sub=s.rds||s.dab||s.label||'';
@@ -616,7 +622,7 @@ function renderCard(s){
     +'<div class="card-site">'+_esc(s.site)+'</div>'
     +'<div class="card-on-air">'+_esc(sub)+'</div>'
     +'</div>'
-    +badge
+    +badgeGroup
     +'</div>'
     +'<div class="level-wrap">'+bars+'</div>'
     +'<button class="listen-btn '+btnClass+'"'+disabled+' data-action="listen">'+btnText+'</button>'
@@ -684,7 +690,8 @@ function startAudio(site,idx,name){
   // Find on-air text for now-playing bar
   var match=_streams.find(function(x){ return x.site===site&&x.idx===idx; });
   var sub=match?(match.rds||match.dab||match.label||''):'';
-  showNowPlaying(name,site,sub);
+  var stereo=match?!!match.stereo:false;
+  showNowPlaying(name,site,sub,stereo);
   refreshCards();
   showMsg('▶ Connecting to '+name+'…','ok');
 }
@@ -728,9 +735,10 @@ function clearRetry(){
 
 // ── Now-playing bar ────────────────────────────────────────────────────────
 var _eqRaf=null;
-function showNowPlaying(name,site,sub){
+function showNowPlaying(name,site,sub,stereo){
   document.getElementById('np-name').textContent=name;
-  document.getElementById('np-meta').textContent=(sub?sub+' · ':'')+site;
+  var meta=(sub?sub+' · ':'')+site+(stereo?' · ◈ STEREO':'');
+  document.getElementById('np-meta').textContent=meta;
   document.getElementById('now-bar').classList.add('up');
   _startEqAnim();
   _acquireWakeLock();
