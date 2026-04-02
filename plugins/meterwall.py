@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/meterwall",
     "icon":     "📊",
     "hub_only": False,
-    "version":  "1.1.1",
+    "version":  "1.1.2",
 }
 
 
@@ -38,6 +38,7 @@ def register(app, ctx):
                 streams_out = []
                 for st in s.get("streams", []):
                     np_ = (st.get("fm_rds_ps") or st.get("dab_dls") or "")
+                    stereo = bool(st.get("stereo", False))
                     streams_out.append({
                         "name":         st.get("name", "?"),
                         "level_dbfs":   st.get("level_dbfs", -90.0),
@@ -46,6 +47,9 @@ def register(app, ctx):
                         "rtp_loss_pct": st.get("rtp_loss_pct", 0.0),
                         "lufs_i":       st.get("lufs_i", -70.0),
                         "now_playing":  np_[:40] if np_ else "",
+                        "stereo":       stereo,
+                        "level_dbfs_l": st.get("level_dbfs_l") if stereo else None,
+                        "level_dbfs_r": st.get("level_dbfs_r") if stereo else None,
                     })
                 sites_out.append({
                     "site":    s.get("site", "?"),
@@ -62,6 +66,10 @@ def register(app, ctx):
                 for inp in inputs:
                     np_ = (getattr(inp, "_fm_rds_ps", "")
                            or getattr(inp, "_dab_dls",   "") or "")
+                    stereo = (getattr(inp, "stereo", False)
+                              and getattr(inp, "_audio_channels", 1) == 2)
+                    lev_l = round(getattr(inp, "_last_level_dbfs_l", -90.0), 1) if stereo else None
+                    lev_r = round(getattr(inp, "_last_level_dbfs_r", -90.0), 1) if stereo else None
                     local.append({
                         "name":         getattr(inp, "name", "?"),
                         "level_dbfs":   round(getattr(inp, "_last_level_dbfs", -90.0), 1),
@@ -70,6 +78,9 @@ def register(app, ctx):
                         "rtp_loss_pct": round(getattr(inp, "_rtp_loss_pct", 0.0), 1),
                         "lufs_i":       round(getattr(inp, "_lufs_i", -70.0), 1),
                         "now_playing":  np_[:40] if np_ else "",
+                        "stereo":       bool(stereo),
+                        "level_dbfs_l": lev_l,
+                        "level_dbfs_r": lev_r,
                     })
                 if local:
                     label = cfg.hub.site_name or "Local"
@@ -242,6 +253,47 @@ body{
   background:#fff;border-radius:1px;opacity:.82;
   /* no CSS transition — rAF loop handles smooth animation */
 }
+
+/* ── Stereo L/R bars ──────────────────────────────────────────────────────── */
+/* Container: two narrow bars side by side, same height as mono wrap */
+.mtr-stereo{
+  display:flex;gap:5px;
+  width:100%;max-width:52px;
+  flex:1;min-height:130px;
+}
+/* Each channel column: bar + label stacked */
+.mtr-ch{
+  display:flex;flex-direction:column;
+  align-items:center;flex:1;gap:2px;
+}
+/* Narrow L/R bar track — reuses same zone tints */
+.mtr-lr{
+  position:relative;
+  width:100%;flex:1;
+  background:linear-gradient(to top,
+    rgba(34,197,94,.1)  0%   77.5%,
+    rgba(245,158,11,.1) 77.5% 88.75%,
+    rgba(239,68,68,.1)  88.75% 100%
+  );
+  border-radius:4px;overflow:hidden;
+}
+.mtr-lr::after{
+  content:'';position:absolute;top:0;right:0;bottom:0;width:2px;
+  background:linear-gradient(to top,
+    #22c55e 0% 77.5%,
+    #f59e0b 77.5% 88.75%,
+    #ef4444 88.75% 100%
+  );
+  opacity:.35;pointer-events:none;
+}
+/* Channel label */
+.mtr-ch-label{
+  font-size:9px;font-weight:700;color:var(--mu);
+  line-height:1;letter-spacing:.04em;
+}
+/* Mono bar hidden when stereo; stereo bars hidden when mono */
+.mc:not([data-stereo="1"]) .mtr-stereo{display:none}
+.mc[data-stereo="1"] .mtr-mono{display:none}
 
 /* Level readout */
 .mc-lev{
@@ -438,9 +490,27 @@ body{
       + '<div class="mc-sub">' + _esc(site) + '</div>'
       + '</div>'
       + '<div class="mc-body">'
-      +   '<div class="mtr-wrap">'
+      /* Mono bar — hidden when data-stereo="1" */
+      +   '<div class="mtr-wrap mtr-mono">'
       +     '<div class="mtr-fill" style="height:0%"></div>'
       +     '<div class="mtr-peak" style="bottom:0%;opacity:0"></div>'
+      +   '</div>'
+      /* Stereo L/R bars — hidden when no data-stereo */
+      +   '<div class="mtr-stereo">'
+      +     '<div class="mtr-ch">'
+      +       '<div class="mtr-lr" data-ch="L">'
+      +         '<div class="mtr-fill" style="height:0%"></div>'
+      +         '<div class="mtr-peak" style="bottom:0%;opacity:0"></div>'
+      +       '</div>'
+      +       '<div class="mtr-ch-label">L</div>'
+      +     '</div>'
+      +     '<div class="mtr-ch">'
+      +       '<div class="mtr-lr" data-ch="R">'
+      +         '<div class="mtr-fill" style="height:0%"></div>'
+      +         '<div class="mtr-peak" style="bottom:0%;opacity:0"></div>'
+      +       '</div>'
+      +       '<div class="mtr-ch-label">R</div>'
+      +     '</div>'
       +   '</div>'
       +   '<div class="mc-lev lc-low">— dB</div>'
       +   '<div class="mc-lufs">LUFS-I —</div>'
@@ -459,14 +529,28 @@ body{
     el.classList.toggle('mc-warn',   !isAlert && isWarn);
     el.classList.toggle('mc-offline', !true); // online always true for local; site handles it
 
+    /* Stereo flag — shows/hides L/R bars via CSS */
+    if (st.stereo) el.dataset.stereo = '1';
+    else delete el.dataset.stereo;
+
     /* Bar fill / peak / level text — feed _targetLev so the rAF loop animates
        smoothly. When _liveActive the faster livePoll() is already updating
        _targetLev at 150 ms; skip here to avoid overwriting with stale data. */
     if (!_liveActive) {
       var key = el.dataset.key;
       if (key) {
+        var now = Date.now();
         _targetLev[key] = lev;
-        _updatePeak(key, lev, Date.now());
+        _updatePeak(key, lev, now);
+        /* Also seed L/R targets from API data if available */
+        if (st.stereo && st.level_dbfs_l != null) {
+          _targetLev[key + '|L'] = st.level_dbfs_l;
+          _updatePeak(key + '|L', st.level_dbfs_l, now);
+        }
+        if (st.stereo && st.level_dbfs_r != null) {
+          _targetLev[key + '|R'] = st.level_dbfs_r;
+          _updatePeak(key + '|R', st.level_dbfs_r, now);
+        }
       }
     }
 
@@ -669,15 +753,41 @@ body{
       }
       _dispLev[key] = cur;
 
+      /* ── Stereo L/R channel bars ─────────────────────────────────────── */
+      var chSuffix = '';
+      if (key.length > 2 && key.charAt(key.length - 2) === '|') {
+        chSuffix = key.charAt(key.length - 1);   // 'L' or 'R'
+      }
+      if (chSuffix === 'L' || chSuffix === 'R') {
+        var baseKey = key.slice(0, -2);
+        var escB = baseKey.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        var card = document.querySelector('.mc[data-key="' + escB + '"]');
+        if (!card) return;
+        var lrBar = card.querySelector('.mtr-lr[data-ch="' + chSuffix + '"]');
+        if (!lrBar) return;
+        var fill = lrBar.querySelector('.mtr-fill');
+        if (fill) fill.style.height = levToH(cur) + '%';
+        var pk   = _peaks[key] ? _peaks[key].val : DB_FLOOR;
+        var pkEl = lrBar.querySelector('.mtr-peak');
+        if (pkEl) {
+          pkEl.style.bottom  = levToH(pk) + '%';
+          pkEl.style.opacity = pk > DB_FLOOR ? '0.82' : '0';
+        }
+        return;
+      }
+
+      /* ── Main (mono) bar ─────────────────────────────────────────────── */
       var esc  = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       var card = document.querySelector('.mc[data-key="' + esc + '"]');
       if (!card) return;
 
-      var fill = card.querySelector('.mtr-fill');
+      /* Use .mtr-mono to avoid touching the hidden L/R bars */
+      var monoWrap = card.querySelector('.mtr-mono');
+      var fill = monoWrap ? monoWrap.querySelector('.mtr-fill') : null;
       if (fill) fill.style.height = levToH(cur) + '%';
 
       var pk   = _peaks[key] ? _peaks[key].val : DB_FLOOR;
-      var pkEl = card.querySelector('.mtr-peak');
+      var pkEl = monoWrap ? monoWrap.querySelector('.mtr-peak') : null;
       if (pkEl) {
         pkEl.style.bottom  = levToH(pk) + '%';
         pkEl.style.opacity = pk > DB_FLOOR ? '0.82' : '0';
@@ -702,6 +812,21 @@ body{
             var lev = (s.level_dbfs == null) ? DB_FLOOR : s.level_dbfs;
             _targetLev[key] = lev;          // rAF loop drives DOM from here
             _updatePeak(key, lev, now);     // peak tracks raw signal, not display
+
+            /* Stereo L/R */
+            var isStereo = (s.level_dbfs_l != null && s.level_dbfs_r != null);
+            if (isStereo) {
+              var levL = s.level_dbfs_l;
+              var levR = s.level_dbfs_r;
+              _targetLev[key + '|L'] = levL;
+              _updatePeak(key + '|L', levL, now);
+              _targetLev[key + '|R'] = levR;
+              _updatePeak(key + '|R', levR, now);
+              /* Mark card as stereo so CSS shows L/R bars */
+              var esc  = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+              var card = document.querySelector('.mc[data-key="' + esc + '"]');
+              if (card) card.dataset.stereo = '1';
+            }
           });
         });
       })

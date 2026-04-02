@@ -44,8 +44,8 @@
     "name": "Meter Wall",
     "file": "meterwall.py",
     "icon": "\ud83d\udcca",
-    "description": "Full-screen audio meter wall showing live PPM-style level bars for every monitored stream across all connected sites. Peak hold with decay at 5 Hz real-time update, LUFS-I readout, alert flash, RDS/DLS now-playing, site grouping, configurable grid density, and auto-hiding fullscreen kiosk mode.",
-    "version": "1.1.1",
+    "description": "Full-screen audio meter wall showing live PPM-style level bars for every monitored stream across all connected sites. Peak hold with decay at 5 Hz real-time update, LUFS-I readout, alert flash, RDS/DLS now-playing, site grouping, configurable grid density, auto-hiding fullscreen kiosk mode. Stereo streams show split L/R bars at 150 ms update rate.",
+    "version": "1.1.2",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/meterwall.py"
   },

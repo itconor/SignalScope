@@ -7,6 +7,11 @@
 ### Fixed
 - **HTTP stream inputs freeze permanently on stream loss** — when an HTTP/HTTPS input stream dropped, ffmpeg entered its internal reconnect retry loop and held the stdout pipe open indefinitely without producing audio. The monitoring loop's `select()` returned no data each second, but since ffmpeg never exited there was no EOF to break the inner loop. The result was levels permanently frozen at the last real measurement until the monitor was manually restarted. The existing `_HTTP_STALL_SECS` detection correctly identified the stall and cleared `_has_real_level`, but then just issued `continue` — waiting forever for either data or ffmpeg to exit, neither of which came. Fix: when the stall threshold (now 8 s) is exceeded, the stuck ffmpeg process is killed and the inner loop is broken. The outer reconnect loop then waits 5 s and starts a fresh ffmpeg process. Total worst-case downtime: ~13 s. Also reduced `-reconnect_delay_max` from 10 to 5 since application-level restart now takes over before ffmpeg's own retry would complete.
 
+### Plugins
+- **Meter Wall v1.1.2** — stereo streams now show split L and R level bars side by side. Stereo flag and per-channel dBFS values are read from `/api/hub/live_levels` at the 150 ms fast-poll cadence — same rate as the main RMS bar. Cards switch between mono and stereo layouts automatically as live data arrives. Peak hold and decay are tracked independently per channel. `/api/meterwall/data` also returns `stereo`, `level_dbfs_l`, `level_dbfs_r` for the initial render.
+- **Listener v1.1.5** — station cards show a `◈ STEREO` badge for stereo streams; the now-playing bar appends `· ◈ STEREO` to the metadata line.
+- **Logger v1.5.20** — records stereo MP3 when the stream is configured for stereo and reporting `_audio_channels == 2` at segment start; channel count locked for the full segment. Catalog stores `n_ch`; hub play route passes it to the relay pusher which uses the correct ffmpeg channel flags and per-channel chunk sizing. Hub browser PCM pump decodes stereo interleaved data correctly. Stereo streams marked `◈` in the stream selector dropdown.
+
 ---
 
 ## [3.4.129] - 2026-04-02
