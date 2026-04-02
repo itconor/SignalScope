@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.20",
+    "version": "1.5.21",
 }
 
 import datetime
@@ -791,10 +791,7 @@ def register(app, ctx):
                 _cfg["base_dirs"] = new_base_dirs
             new_mic_key = str(data.get("mic_api_key", "")).strip()
             _cfg["mic_api_key"] = new_mic_key
-            try:
-                _cfg["utc_offset_hours"] = max(-12, min(14, int(data.get("utc_offset_hours", 0))))
-            except (ValueError, TypeError):
-                pass
+            # utc_offset_hours is no longer stored — derived from server system clock automatically
             _save_config()
 
         # Ensure all configured roots exist
@@ -880,10 +877,20 @@ def register(app, ctx):
         except Exception as e:
             _log(f"[Logger] Status disk scan failed: {e}")
         rec_root = _rec_root()
+        # Compute local UTC offset from the server's system clock — respects DST automatically.
+        # Never use the stored config value: it would go stale after a DST transition.
+        try:
+            _local_dt      = datetime.datetime.now().astimezone()
+            _offset_s      = _local_dt.utcoffset().total_seconds()
+            _offset_h      = _offset_s / 3600
+            _tz_name       = _local_dt.strftime("%Z")          # e.g. "BST", "GMT", "CET"
+        except Exception:
+            _offset_h, _tz_name = 0.0, "UTC"
         return jsonify({"recorders": active, "disk_bytes": total,
                         "rec_root": str(rec_root),
                         "server_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "utc_offset_hours": _cfg.get("utc_offset_hours", 0)})
+                        "utc_offset_hours": _offset_h,
+                        "tz_name": _tz_name})
 
     @app.get("/api/logger/days/<stream_slug>")
     @login_req
@@ -3515,14 +3522,15 @@ select:focus,input:focus{border-color:var(--acc)}
         </div>
       </div>
 
-      <!-- Display timezone offset -->
+      <!-- Display timezone — auto-detected from server system clock -->
       <div style="margin-bottom:18px;padding:14px 16px;background:var(--sur);border:1px solid var(--bor);border-radius:10px">
-        <label style="font-size:12px;font-weight:700;color:var(--mu);letter-spacing:.6px;text-transform:uppercase;display:block;margin-bottom:6px">Display UTC Offset (hours)</label>
-        <input type="number" id="utc-offset-input" min="-12" max="14" step="1" value="0"
-               style="width:120px;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:7px 10px;border-radius:6px;font-size:12px;outline:none">
+        <label style="font-size:12px;font-weight:700;color:var(--mu);letter-spacing:.6px;text-transform:uppercase;display:block;margin-bottom:6px">Display Timezone</label>
+        <div id="tz-auto-info" style="font-size:13px;font-weight:600;color:var(--tx);padding:4px 0">
+          Detecting…
+        </div>
         <div style="margin-top:5px;font-size:11px;color:var(--mu)">
-          Recordings are stored in UTC. Set this to your local UTC offset so times display correctly — e.g. <strong>+1</strong> for BST (Ireland/UK summer), <strong>0</strong> for GMT/UTC.
-          Changes take effect immediately on the timeline without restarting.
+          Automatically read from the server system clock — shifts with daylight saving time without any manual adjustment.
+          Recordings are stored in UTC internally.
         </div>
       </div>
 
@@ -3577,8 +3585,8 @@ var _selSeg      = null;
 var _serverEpochMs  = Date.now();
 var _serverSyncedAt = Date.now();
 function _serverNow(){ return new Date(_serverEpochMs + (Date.now() - _serverSyncedAt)); }
-// Display UTC offset in seconds — recordings are stored in UTC, this shifts all
-// displayed times so the timeline matches local clock (e.g. 3600 for BST/UTC+1).
+// Display UTC offset in seconds — auto-detected from server system clock (respects DST).
+// Recordings are stored in UTC; this shifts all displayed times to local clock.
 var _utcOffsetS = 0;
 var _segsAll     = [];
 var _markIn      = null;
@@ -3701,7 +3709,8 @@ document.getElementById('notice-settings-link').addEventListener('click', functi
 _get('/api/logger/status').then(function(data){
   var serverUtc = data.server_utc;
   if(serverUtc){ _serverEpochMs = new Date(serverUtc).getTime(); _serverSyncedAt = Date.now(); }
-  if(data.utc_offset_hours != null){ _utcOffsetS = parseInt(data.utc_offset_hours, 10) * 3600 || 0; }
+  if(data.utc_offset_hours != null){ _utcOffsetS = Math.round(parseFloat(data.utc_offset_hours) * 3600) || 0; }
+  _updateTzDisplay(data);
   // Use server UTC + offset to determine the local "today" date
   var localNow = new Date(_serverNow().getTime() + _utcOffsetS * 1000);
   _currentDate = localNow.toISOString().slice(0,10);
@@ -4532,10 +4541,23 @@ document.getElementById('export-btn').addEventListener('click', function(){
 });
 
 // ── Status ────────────────────────────────────────────────────────────────
+function _updateTzDisplay(data){
+  var el = document.getElementById('tz-auto-info');
+  if(!el) return;
+  var h = parseFloat(data.utc_offset_hours) || 0;
+  var sign = h >= 0 ? '+' : '−';
+  var abs  = Math.abs(h);
+  var hh   = Math.floor(abs);
+  var mm   = Math.round((abs - hh) * 60);
+  var label = 'UTC' + sign + hh + (mm ? ':' + String(mm).padStart(2,'0') : '');
+  if(data.tz_name && data.tz_name !== 'UTC') label += ' (' + data.tz_name + ')';
+  el.textContent = label;
+}
 function loadStatus(){
   _get('/api/logger/status').then(function(data){
     if(data.server_utc){ _serverEpochMs = new Date(data.server_utc).getTime(); _serverSyncedAt = Date.now(); }
-    if(data.utc_offset_hours != null){ _utcOffsetS = parseInt(data.utc_offset_hours, 10) * 3600 || 0; }
+    if(data.utc_offset_hours != null){ _utcOffsetS = Math.round(parseFloat(data.utc_offset_hours) * 3600) || 0; }
+    _updateTzDisplay(data);
     var recs      = data.recorders||{};
     var recList   = Object.values(recs);
     var running   = recList.filter(function(r){ return r.running; });
@@ -4586,8 +4608,6 @@ function loadSettingsPanel(){
     rdRes.textContent = st.rec_root ? '→ ' + st.rec_root : '';
     var mkInput = document.getElementById('mic-api-key-input');
     if(mkInput) mkInput.value = _cfg.mic_api_key || '';
-    var tzInput = document.getElementById('utc-offset-input');
-    if(tzInput) tzInput.value = _cfg.utc_offset_hours != null ? _cfg.utc_offset_hours : 0;
     // Fetch Planet Radio stations — non-critical, re-render rows with dropdown if available
     _get('/api/nowplaying_stations').then(function(stations){
       if(Array.isArray(stations) && stations.length){
@@ -4757,14 +4777,12 @@ document.getElementById('save-settings-btn').addEventListener('click', function(
   var recDir    = document.getElementById('rec-dir-input').value.trim();
   var baseDirs  = _getBaseDirsFromForm();
   var micKey    = (document.getElementById('mic-api-key-input')||{}).value||'';
-  var tzOffset  = parseInt((document.getElementById('utc-offset-input')||{}).value||'0', 10) || 0;
   var saveMsg   = document.getElementById('save-msg');
   var saveErr   = document.getElementById('save-err');
   saveMsg.style.display='none'; saveErr.style.display='none';
-  _post('/api/logger/config',{streams:streams, rec_dir:recDir, base_dirs:baseDirs, mic_api_key:micKey, utc_offset_hours:tzOffset}).then(function(r){
+  _post('/api/logger/config',{streams:streams, rec_dir:recDir, base_dirs:baseDirs, mic_api_key:micKey}).then(function(r){
     if(r.ok){
       _cfg.streams=streams; _cfg.rec_dir=recDir; _cfg.base_dirs=baseDirs; _cfg.mic_api_key=micKey;
-      _cfg.utc_offset_hours=tzOffset; _utcOffsetS=tzOffset*3600;
       fetch('/api/logger/status').then(function(res){ return res.json(); }).then(function(st){
         var rdRes=document.getElementById('rec-dir-resolved');
         rdRes.textContent = st.rec_root ? '→ '+st.rec_root : '';
