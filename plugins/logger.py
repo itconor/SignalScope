@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.25",
+    "version": "1.5.26",
 }
 
 import datetime
@@ -3771,24 +3771,67 @@ setInterval(function(){
 }, 200);
 
 // ── Hub mode ───────────────────────────────────────────────────────────────
-var _catalogStreams = [];  // [{slug, name, site, owner, rec_format}]
+var _catalogStreams = [];          // [{slug, name, site, owner, rec_format}]
+var _isHubCatalogPopulated = false; // true once hub catalog has at least one entry
 
-function checkHubMode(){
+function _populateCatalogSel(entries){
+  var sel = document.getElementById('stream-sel');
+  var prevSlug = _currentSlug;
+  sel.innerHTML = '<option value="">— select stream —</option>';
+  entries.forEach(function(s){
+    var o = document.createElement('option');
+    o.value = s.slug;
+    o.dataset.site = s.site;
+    o.dataset.nch  = s.n_ch || 1;
+    o.textContent  = s.name + ' (' + s.site + ')' + (s.n_ch === 2 ? ' ◈' : '');
+    sel.appendChild(o);
+  });
+  // Restore previous selection if it's still in the list
+  if(prevSlug){ sel.value = prevSlug; }
+  // Auto-select first stream when nothing is selected yet
+  if(!sel.value && sel.options.length > 1){
+    sel.selectedIndex = 1;
+    var opt = sel.options[1];
+    _currentSlug = opt.value;
+    _hubSite     = opt.dataset.site || '';
+    _currentNch  = (opt.dataset.nch === '2') ? 2 : 1;
+    loadDays();
+  }
+}
+
+function _refreshCatalog(){
   _get('/api/logger/hub/catalog').then(function(entries){
-    if(!Array.isArray(entries) || !entries.length) return;
+    if(!Array.isArray(entries) || !entries.length){ setTimeout(_refreshCatalog, 30000); return; }
     _catalogStreams = entries;
-    // Populate stream selector directly from catalog — no site selection needed
-    var sel = document.getElementById('stream-sel');
-    sel.innerHTML = '<option value="">— select stream —</option>';
-    entries.forEach(function(s){
-      var o = document.createElement('option');
-      o.value = s.slug;
-      o.dataset.site = s.site;
-      o.dataset.nch  = s.n_ch || 1;
-      o.textContent = s.name + ' (' + s.site + ')' + (s.n_ch === 2 ? ' ◈' : '');
-      sel.appendChild(o);
-    });
-  }).catch(function(){});
+    _isHubCatalogPopulated = true;
+    _populateCatalogSel(entries);
+    setTimeout(_refreshCatalog, 30000);
+  }).catch(function(){ setTimeout(_refreshCatalog, 30000); });
+}
+
+function checkHubMode(retryCount){
+  retryCount = retryCount || 0;
+  _get('/api/logger/hub/catalog').then(function(entries){
+    if(!Array.isArray(entries) || !entries.length){
+      // Catalog empty — client sites may not have registered yet.
+      // Retry with increasing delays (first heartbeat arrives within ~10s).
+      var delays = [3000, 5000, 8000, 15000, 30000];
+      if(retryCount < delays.length){
+        setTimeout(function(){ checkHubMode(retryCount + 1); }, delays[retryCount]);
+      }
+      return;
+    }
+    _catalogStreams = entries;
+    _isHubCatalogPopulated = true;
+    _populateCatalogSel(entries);
+    // Keep catalog fresh so newly connecting sites appear without a page reload
+    setTimeout(_refreshCatalog, 30000);
+  }).catch(function(){
+    var delays = [3000, 5000, 8000, 15000, 30000];
+    if(retryCount < delays.length){
+      setTimeout(function(){ checkHubMode(retryCount + 1); }, delays[retryCount]);
+    }
+  });
 }
 
 document.getElementById('site-sel').addEventListener('change', function(){
@@ -3892,6 +3935,8 @@ document.getElementById('stream-sel').addEventListener('change', function(){
 
 function loadStreams(){
   _get('/api/logger/streams').then(function(data){
+    // Hub catalog owns the stream selector — don't overwrite it with local streams
+    if(_isHubCatalogPopulated) return;
     _streams = data;
     var sel = document.getElementById('stream-sel');
     sel.innerHTML = '<option value="">— select stream —</option>';
