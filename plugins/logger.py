@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.18",
+    "version": "1.5.19",
 }
 
 import datetime
@@ -2553,13 +2553,14 @@ def _get_segments(slug, date, base_root=None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _RecorderThread(threading.Thread):
-    """Records one SignalScope input by tapping its internal _stream_buffer.
+    """Records one SignalScope input by tapping its internal audio buffer.
 
-    SignalScope stores decoded PCM for every input as np.float32 chunks
-    (48 kHz, mono, 24000 samples = 0.5 s each) in a rolling deque.  We
-    drain that deque into an ffmpeg process via stdin so that FM, DAB,
-    HTTP, AoIP, sound-device — anything SignalScope monitors — can be
-    logged without re-opening the source.
+    For mono streams: reads float32 chunks from _stream_buffer (48 kHz,
+    mono, 24000 samples = 0.5 s each).
+    For stereo streams: reads interleaved float32 chunks from _audio_buffer
+    (48 kHz, stereo, 48000 floats = 0.5 s each) and encodes with -ac 2.
+    Channel count is detected once at segment start and locked for the
+    entire 5-minute segment so the ffmpeg channel count stays consistent.
     """
 
     # SignalScope constants (must match signalscope.py)
@@ -2575,11 +2576,28 @@ class _RecorderThread(threading.Thread):
         self.last_ok_ts  = None   # time.time() of last successful segment
         self.seg_count   = 0      # total segments successfully written
 
-    def _get_buf(self):
-        """Return the live _stream_buffer deque for this input, or None."""
+    def _detect_channels(self):
+        """Return 2 if this input is currently streaming stereo, else 1."""
         try:
             for inp in _monitor.app_cfg.inputs:
                 if inp.name == self.stream_name:
+                    if getattr(inp, 'stereo', False) and getattr(inp, '_audio_channels', 1) == 2:
+                        return 2
+        except Exception:
+            pass
+        return 1
+
+    def _get_buf(self, n_ch=1):
+        """Return the correct audio buffer deque for this input.
+
+        n_ch=2 → _audio_buffer (stereo interleaved float32)
+        n_ch=1 → _stream_buffer (mono float32)
+        """
+        try:
+            for inp in _monitor.app_cfg.inputs:
+                if inp.name == self.stream_name:
+                    if n_ch == 2:
+                        return getattr(inp, "_audio_buffer", None)
                     return getattr(inp, "_stream_buffer", None)
         except Exception:
             pass
@@ -2645,21 +2663,39 @@ class _RecorderThread(threading.Thread):
                 self.stop_evt.wait(wait)
             return
 
+        # Detect stereo once at segment start and lock for the entire segment.
+        # Never switch mid-segment — changing channel count mid-stream would
+        # corrupt the ffmpeg process's audio framing.
+        _n_ch = self._detect_channels()
+
         # Wait up to 10 s for SignalScope to populate the buffer
         waited = 0
-        while self._get_buf() is None and waited < 10 and not self.stop_evt.is_set():
+        while self._get_buf(_n_ch) is None and waited < 10 and not self.stop_evt.is_set():
             self.stop_evt.wait(1)
             waited += 1
         if self.stop_evt.is_set():
             return
 
+        _bitrate = scfg["hq_bitrate"]
+        if _n_ch == 2:
+            # Stereo: bump bitrate if the configured value is too low for 2 ch
+            try:
+                _br_k = int(_bitrate.rstrip("k"))
+                if _br_k < 192:
+                    _bitrate = "192k"
+            except ValueError:
+                pass
+            _log(f"[Logger] Recording '{self.stream_name}' in STEREO @ {_bitrate}")
+        else:
+            _log(f"[Logger] Recording '{self.stream_name}' in mono @ {_bitrate}")
+
         # Launch ffmpeg reading raw float32 PCM from stdin.
         # silencedetect runs as an audio filter so we keep that metadata.
         cmd = [ffmpeg, "-hide_banner", "-loglevel", "warning",
-               "-f", "f32le", "-ar", str(self._SR), "-ac", "1", "-i", "pipe:0",
+               "-f", "f32le", "-ar", str(self._SR), "-ac", str(_n_ch), "-i", "pipe:0",
                "-af", f"silencedetect=n={_SILENCE_DB:.1f}dB:d={_SILENCE_DUR}",
-               "-vn", "-ac", "1", "-ar", _ar,
-               *_codec_args, "-b:a", scfg["hq_bitrate"],
+               "-vn", "-ac", str(_n_ch), "-ar", _ar,
+               *_codec_args, "-b:a", _bitrate,
                "-f", _container, str(out_path)]
 
         silence_ranges = []
@@ -2686,7 +2722,7 @@ class _RecorderThread(threading.Thread):
         stderr_thr = threading.Thread(target=_read_stderr, daemon=True)
         stderr_thr.start()
 
-        # Drain _stream_buffer → ffmpeg stdin until segment end.
+        # Drain audio buffer → ffmpeg stdin until segment end.
         # We track the last chunk object we've written; if it disappears from
         # the deque (buffer wrapped) we log a warning and catch up.
         last_ref = None
@@ -2696,7 +2732,7 @@ class _RecorderThread(threading.Thread):
                 if datetime.datetime.utcnow() >= seg_end:
                     break
 
-                buf = self._get_buf()
+                buf = self._get_buf(_n_ch)
                 if not buf:
                     self.stop_evt.wait(0.3)
                     continue
