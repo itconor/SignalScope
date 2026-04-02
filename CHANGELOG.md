@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.132] - 2026-04-02
+
+### Fixed
+- **Livewire/AES67 jitter reads worse after adding more streams** — the shared multicast socket receiver batches packets from all groups together. When 5+ streams send packets simultaneously they queue in the kernel buffer; `time.monotonic()` was called when userspace processed each packet, not when it arrived. For the last packet in a batch, the measured inter-arrival time included the processing delay of all the packets before it, inflating the jitter EWMA even though the network was fine and no audio was affected. Fix: `SO_TIMESTAMPNS` (Linux kernel timestamping) is now enabled on the shared multicast socket. The nanosecond receive timestamp is extracted from the `recvmsg` ancillary data alongside the existing `IP_PKTINFO` group demux. `_handle_udp_packet` uses the kernel timestamp when provided, falling back to `time.monotonic()` for unicast sockets and non-Linux kernels. Also added a clock-domain reset guard so the first packet after the switch from monotonic to wall-clock doesn't produce a spurious huge inter-arrival value.
+
+---
+
 ## [3.4.131] - 2026-04-02
 
 ### Fixed

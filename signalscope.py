@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.131"
+BUILD                  = "SignalScope-3.4.132"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -9020,14 +9020,24 @@ class MonitorManager:
             self.log(f"[{name}] Socket failed: {e}")
             return None
 
-    def _handle_udp_packet(self, st, packet, sender):
+    def _handle_udp_packet(self, st, packet, sender, kernel_ts=None):
         cfg = st['cfg']
         name = cfg.name
         if len(packet) <= 12:
             return
 
-        # RTP jitter — inter-arrival time variance (RFC 3550 style, wall-clock)
-        _arr_now = time.monotonic()
+        # RTP jitter — inter-arrival time variance (RFC 3550 style).
+        # Use kernel receive timestamp when available (SO_TIMESTAMPNS on the shared
+        # multicast socket) — this reflects when the packet actually hit the kernel,
+        # not when userspace got around to reading it.  On a shared socket serving
+        # multiple streams, packets from all groups queue up together; time.monotonic()
+        # at read time inflates jitter by the processing delay of earlier packets in
+        # the same batch.  Kernel timestamps are immune to this.
+        _arr_now = kernel_ts if kernel_ts is not None else time.monotonic()
+        # Guard against the clock domain changing mid-stream (e.g. first packet had
+        # no kernel_ts, next one does): reset the baseline so the difference is valid.
+        if kernel_ts is not None and cfg._rtp_last_arrival > 0.0 and cfg._rtp_last_arrival < 1e9:
+            cfg._rtp_last_arrival = 0.0   # was monotonic, now switching to wall-clock
         if cfg._rtp_last_arrival > 0.0:
             _iat_ms = (_arr_now - cfg._rtp_last_arrival) * 1000.0
             if cfg._rtp_jitter_acc == 0.0:
@@ -9203,9 +9213,20 @@ class MonitorManager:
                             sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
                         except Exception:
                             pass
+                        # Kernel receive timestamps — eliminates processing-queue delay from
+                        # jitter measurements on the shared socket.  SO_TIMESTAMPNS=35 gives
+                        # nanosecond-precision wall-clock time stamped when the packet hit the
+                        # NIC, not when userspace got around to calling recvmsg.  Falls back
+                        # silently to time.monotonic() on non-Linux or older kernels.
+                        _SO_TIMESTAMPNS = getattr(socket, 'SO_TIMESTAMPNS', 35)
+                        try:
+                            sock.setsockopt(socket.SOL_SOCKET, _SO_TIMESTAMPNS, 1)
+                        except Exception:
+                            _SO_TIMESTAMPNS = None
                         sock.bind(("", port))
                         sock.setblocking(False)
-                        entry = {'sock': sock, 'port': port, 'by_group': {}}
+                        entry = {'sock': sock, 'port': port, 'by_group': {},
+                                 'ts_cmsg': _SO_TIMESTAMPNS}
                         shared_by_port[port] = entry
                         selector.register(sock, selectors.EVENT_READ, ('shared-mcast', entry))
                         active += 1
@@ -9272,11 +9293,22 @@ class MonitorManager:
                             break
 
                         dst_ip = None
+                        kernel_ts = None
+                        _ts_type = entry.get('ts_cmsg')
                         for level, ctype, cdata in ancdata:
                             if level == socket.IPPROTO_IP and ctype == getattr(socket, 'IP_PKTINFO', -1) and len(cdata) >= 12:
                                 try:
                                     _ifindex, _spec, addr = struct.unpack('I4s4s', cdata[:12])
                                     dst_ip = socket.inet_ntoa(addr)
+                                except Exception:
+                                    pass
+                            elif (_ts_type is not None and level == socket.SOL_SOCKET
+                                  and ctype == _ts_type and len(cdata) >= 16):
+                                # SO_TIMESTAMPNS: struct timespec {time_t tv_sec, long tv_nsec}
+                                # On 64-bit Linux both fields are 8 bytes.
+                                try:
+                                    tv_sec, tv_nsec = struct.unpack('@qq', cdata[:16])
+                                    kernel_ts = tv_sec + tv_nsec * 1e-9
                                 except Exception:
                                     pass
                         if not dst_ip:
@@ -9285,7 +9317,8 @@ class MonitorManager:
                                 dst_ip = next(iter(entry['by_group']))
                         st = entry['by_group'].get(dst_ip)
                         if st is not None:
-                            self._handle_udp_packet(st, memoryview(recvbuf)[:nbytes], sender)
+                            self._handle_udp_packet(st, memoryview(recvbuf)[:nbytes], sender,
+                                                    kernel_ts=kernel_ts)
                         drained += 1
                 else:
                     st = data
