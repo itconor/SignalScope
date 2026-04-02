@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.129] - 2026-04-02
+
+### Fixed
+- **Hub L/R stereo bars don't live-update** — `level_dbfs_l` and `level_dbfs_r` were absent from the slim 5 Hz live-push frame that the client POSTs to `/api/v1/live_push`, and absent from the `_LIVE_STREAM_FIELDS` merger list on the hub. L/R values only arrived via the 10-second heartbeat, so the bars appeared frozen between heartbeats. Fix: both fields are now included in the `_live_loop` frame (sent only when `_has_real_level` and `_audio_channels == 2`) and in `_LIVE_STREAM_FIELDS` so the merger updates `hub_server._sites` on every live push. L/R bars now update at the same 150 ms cadence as the main RMS bar.
+
+---
+
 ## [3.4.128] - 2026-04-01
 
 ### Fixed

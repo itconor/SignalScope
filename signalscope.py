@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.128"
+BUILD                  = "SignalScope-3.4.129"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -11871,6 +11871,7 @@ class HubClient:
                     # were restored from hub_state.json on restart — prevents
                     # the ~60 s "bars at zero" window after a restart.
                     _has_lvl = getattr(inp, '_has_real_level', False)
+                    _is_stereo = getattr(inp, '_audio_channels', 1) == 2
                     streams_snap.append({
                         "name":           inp.name,
                         "level_dbfs":     getattr(inp, '_last_level_dbfs', None) if _has_lvl else None,
@@ -11879,6 +11880,8 @@ class HubClient:
                         "ai_status":      getattr(inp, '_ai_status', '') or '',
                         "lufs_m":         getattr(inp, '_lufs_m', None),
                         "lufs_s":         getattr(inp, '_lufs_s', None),
+                        "level_dbfs_l":   round(getattr(inp, '_level_dbfs_l', -120.0), 1) if (_has_lvl and _is_stereo) else None,
+                        "level_dbfs_r":   round(getattr(inp, '_level_dbfs_r', -120.0), 1) if (_has_lvl and _is_stereo) else None,
                     })
 
                 frame = {"type": "live", "site": site,
@@ -21635,7 +21638,8 @@ def hub_live_push():
     # Only the fast-changing per-stream metrics are touched; all other fields
     # (history, comparators, system info, _approved, etc.) are left intact.
     _LIVE_STREAM_FIELDS = ("level_dbfs", "peak_dbfs", "silence_active",
-                           "ai_status", "lufs_m", "lufs_s")
+                           "ai_status", "lufs_m", "lufs_s",
+                           "level_dbfs_l", "level_dbfs_r")
     live_streams = frame.get("streams")
     if live_streams and isinstance(live_streams, list):
         with hub_server._lock:
