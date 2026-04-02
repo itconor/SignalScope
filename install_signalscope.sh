@@ -1192,7 +1192,7 @@ main() {
   info "Install SDR: $([[ "${ENABLE_SDR}" == "1" ]] && echo yes || echo no)"
   info "Install nginx: $([[ "${ENABLE_NGINX}" == "1" ]] && echo yes || echo no)"
   if [[ "${IS_UPDATE}" -ne 1 ]]; then
-    info "UDP tuning: $([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo "Livewire/AES67 (1.5 GB default, ~2 GB burst)" || echo "standard")"
+    info "UDP tuning: $([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo "Livewire/AES67 (1.5 GB default, ~2 GB burst, IGMP limit → 512)" || echo "standard")"
   else
     # On updates the tuning block is skipped — report what is currently live on disk.
     _sysctl_conf="/etc/sysctl.d/99-signalscope-network.conf"
@@ -1463,6 +1463,16 @@ EOF
     ${SUDO} sysctl -w net.ipv4.udp_wmem_min="${_udp_wmin}" 2>/dev/null \
       && echo "net.ipv4.udp_wmem_min=${_udp_wmin}" | ${SUDO} tee -a /etc/sysctl.d/99-signalscope-network.conf >/dev/null \
       || warn "net.ipv4.udp_wmem_min not supported on this kernel — skipping"
+    # Livewire/AES67: raise the per-socket IGMP multicast group membership limit.
+    # Linux default is 20 — one join per stream, so this hard-caps you at 20 Livewire
+    # inputs per socket.  512 comfortably covers any realistic deployment.
+    # Written to sysctl.d so it survives reboots; applied live so no reboot is needed.
+    if [[ "${ENABLE_LIVEWIRE}" == "1" ]]; then
+      ${SUDO} sysctl -w net.ipv4.igmp_max_memberships=512 2>/dev/null \
+        && echo "net.ipv4.igmp_max_memberships=512" | ${SUDO} tee -a /etc/sysctl.d/99-signalscope-network.conf >/dev/null \
+        || warn "net.ipv4.igmp_max_memberships not settable on this kernel — skipping"
+      ok "IGMP membership limit raised to 512 (supports up to ~512 simultaneous Livewire/AES67 multicast streams)"
+    fi
     ${SUDO} sysctl --system >/dev/null || true
     ok "Network tuning applied live (no reboot needed)"
 
