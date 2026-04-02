@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.23",
+    "version": "1.5.24",
 }
 
 import datetime
@@ -1918,7 +1918,10 @@ def register(app, ctx):
         date        = data.get("date", "")
         start_s     = float(data.get("start_s", 0))
         end_s       = float(data.get("end_s", 60))
-        fmt         = data.get("fmt", "mp3")
+        fmt         = data.get("fmt", "raw")
+        # "raw" in direct mode means stream-copy (no re-encode, fastest)
+        if fmt == "raw":
+            fmt = "mp3"
         if fmt not in ("mp3", "aac", "opus"):
             fmt = "mp3"
         if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
@@ -3116,7 +3119,10 @@ def _export_clip(slug, date, start_s, end_s, fmt="mp3"):
 
         proc = subprocess.run(cmd, capture_output=True, timeout=120)
         if proc.returncode != 0:
-            return jsonify({"error": "ffmpeg failed"}), 500
+            err_detail = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+            _log(f"[Logger] Export ffmpeg rc={proc.returncode}: {err_detail}")
+            short = err_detail[-300:] if err_detail else "check server logs for details"
+            return jsonify({"error": f"ffmpeg failed — {short}"}), 500
         h   = int(start_s) // 3600
         m   = (int(start_s) % 3600) // 60
         dur = int(end_s - start_s)
@@ -3288,7 +3294,9 @@ select:focus,input:focus{border-color:var(--acc)}
 .day-bar{width:100%;height:72px;position:relative;background:#0a1828;border-radius:6px;overflow:hidden;cursor:pointer;margin-bottom:12px;flex-shrink:0;border:1px solid var(--bor);user-select:none}
 .day-bar-bg{display:flex;height:100%;width:100%}
 .day-bar-blk{height:100%;flex:1}
-.day-bar-head{position:absolute;top:0;bottom:0;width:2px;background:var(--ok);pointer-events:none;z-index:4;transform:translateX(-50%)}
+.day-bar-head{position:absolute;top:0;bottom:0;width:16px;background:transparent;z-index:6;transform:translateX(-50%);cursor:ew-resize}
+.day-bar-head::before{content:'';position:absolute;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);background:var(--ok);pointer-events:none}
+.day-bar-head::after{content:'';position:absolute;top:50%;left:50%;width:10px;height:10px;border-radius:50%;background:var(--ok);transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 0 5px rgba(34,197,94,.6)}
 .day-bar-in{position:absolute;top:0;bottom:0;width:2px;background:var(--acc);pointer-events:none;z-index:3;transform:translateX(-50%)}
 .day-bar-out{position:absolute;top:0;bottom:0;width:2px;background:#f59e0b;pointer-events:none;z-index:3;transform:translateX(-50%)}
 .day-bar-range{position:absolute;top:0;bottom:0;background:rgba(23,168,255,.18);pointer-events:none;z-index:2}
@@ -3497,8 +3505,8 @@ select:focus,input:focus{border-color:var(--acc)}
           <span class="inout-lbl" id="inout-lbl"></span>
           <div style="flex:1"></div>
           <select id="export-fmt" title="Export format" style="background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:4px 7px;border-radius:6px;font-size:12px;outline:none;cursor:pointer">
-            <option value="mp3">MP3</option>
             <option value="raw">Raw (fast)</option>
+            <option value="mp3">MP3</option>
             <option value="aac">AAC</option>
             <option value="opus">Opus</option>
           </select>
@@ -4384,6 +4392,40 @@ document.getElementById('day-bar').addEventListener('mouseleave',function(){
   var tip=document.getElementById('day-bar-time-tip');
   if(tip) tip.classList.add('hidden');
 });
+
+// ── Playhead drag — grab the green head and drag to seek ──────────────────
+(function(){
+  var head = document.getElementById('day-bar-head');
+  if(!head) return;
+  head.addEventListener('mousedown', function(e){
+    if(e.button !== 0) return;
+    e.stopPropagation();   // don't also fire the day-bar click
+    e.preventDefault();
+    // Seek immediately on press so a simple click on the head also works
+    var bar  = document.getElementById('day-bar');
+    var rect = bar.getBoundingClientRect();
+    var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    _seekToSecs(Math.floor(pct * 86400));
+    var _dragging = true;
+    document.body.style.cursor = 'ew-resize';
+    function onMove(ev){
+      if(!_dragging) return;
+      var r = bar.getBoundingClientRect();
+      var p = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+      _seekToSecs(Math.floor(p * 86400));
+    }
+    function onUp(){
+      _dragging = false;
+      document.body.style.cursor = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+  // Stop click from bubbling to the day-bar (which would double-seek)
+  head.addEventListener('click', function(e){ e.stopPropagation(); });
+})();
 
 // ── Right-click on timeline overview: set mark-in / mark-out ─────────────
 // Attached to document so Safari honours preventDefault reliably
