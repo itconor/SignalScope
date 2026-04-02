@@ -124,8 +124,8 @@
     "name": "Listener",
     "file": "listener.py",
     "icon": "🎧",
-    "description": "Live stream listener for presenters and producers. Shows all streams the user has access to as polished station cards with live level meters and one-tap audio playback. Designed for non-technical users — auto-reconnects, animated equalizer, volume control, mobile-friendly. Hub-only.",
-    "version": "1.1.4",
+    "description": "Live stream listener for presenters and producers. Shows all streams the user has access to as polished station cards with live level meters and one-tap audio playback. Stereo streams are indicated with a STEREO badge on the card and in the now-playing bar. Designed for non-technical users — auto-reconnects, animated equalizer, volume control, mobile-friendly. Hub-only.",
+    "version": "1.1.5",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/listener.py"
   },
