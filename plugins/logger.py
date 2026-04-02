@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.26",
+    "version": "1.5.27",
 }
 
 import datetime
@@ -3774,6 +3774,30 @@ setInterval(function(){
 var _catalogStreams = [];          // [{slug, name, site, owner, rec_format}]
 var _isHubCatalogPopulated = false; // true once hub catalog has at least one entry
 
+// Spinner shown while waiting for client sites to register
+var _catSpinTimer = null;
+var _catSpinFrames = ['◐','◓','◑','◒'];
+var _catSpinIdx   = 0;
+function _startCatalogSpinner(msg){
+  var statusEl = document.getElementById('hub-status');
+  var sel      = document.getElementById('stream-sel');
+  if(sel && sel.options.length <= 1) sel.options[0].textContent = '— finding streams… —';
+  if(_catSpinTimer) return;
+  _catSpinTimer = setInterval(function(){
+    _catSpinIdx = (_catSpinIdx + 1) % _catSpinFrames.length;
+    if(statusEl) statusEl.textContent = _catSpinFrames[_catSpinIdx] + '  ' + msg;
+  }, 200);
+  if(statusEl) statusEl.textContent = _catSpinFrames[0] + '  ' + msg;
+}
+function _stopCatalogSpinner(){
+  if(_catSpinTimer){ clearInterval(_catSpinTimer); _catSpinTimer = null; }
+  var el = document.getElementById('hub-status');
+  if(el) el.textContent = '';
+  var sel = document.getElementById('stream-sel');
+  if(sel && sel.options[0] && sel.options[0].textContent.indexOf('finding') !== -1)
+    sel.options[0].textContent = '— select stream —';
+}
+
 function _populateCatalogSel(entries){
   var sel = document.getElementById('stream-sel');
   var prevSlug = _currentSlug;
@@ -3811,25 +3835,37 @@ function _refreshCatalog(){
 
 function checkHubMode(retryCount){
   retryCount = retryCount || 0;
+  // Show spinner on first attempt and update message on retries
+  if(retryCount === 0){
+    _startCatalogSpinner('Connecting to recording sites\u2026');
+  } else {
+    _startCatalogSpinner('Waiting for sites to connect\u2026 (' + retryCount + ')');
+  }
   _get('/api/logger/hub/catalog').then(function(entries){
     if(!Array.isArray(entries) || !entries.length){
       // Catalog empty — client sites may not have registered yet.
-      // Retry with increasing delays (first heartbeat arrives within ~10s).
-      var delays = [3000, 5000, 8000, 15000, 30000];
+      // Retry with increasing delays; first heartbeat arrives within ~10s.
+      var delays = [2000, 3000, 5000, 10000, 20000];
       if(retryCount < delays.length){
         setTimeout(function(){ checkHubMode(retryCount + 1); }, delays[retryCount]);
+      } else {
+        _stopCatalogSpinner();
+        _hubStatusMsg('No connected sites found. Check client nodes are running.');
       }
       return;
     }
+    _stopCatalogSpinner();
     _catalogStreams = entries;
     _isHubCatalogPopulated = true;
     _populateCatalogSel(entries);
     // Keep catalog fresh so newly connecting sites appear without a page reload
     setTimeout(_refreshCatalog, 30000);
   }).catch(function(){
-    var delays = [3000, 5000, 8000, 15000, 30000];
+    var delays = [2000, 3000, 5000, 10000, 20000];
     if(retryCount < delays.length){
       setTimeout(function(){ checkHubMode(retryCount + 1); }, delays[retryCount]);
+    } else {
+      _stopCatalogSpinner();
     }
   });
 }
