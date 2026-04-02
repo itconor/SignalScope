@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.129"
+BUILD                  = "SignalScope-3.4.130"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -8894,13 +8894,13 @@ class MonitorManager:
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-reconnect", "1", "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "10",
+            "-reconnect_delay_max", "5",
             "-i", url,
             "-vn", "-ac", str(_http_n_ch), "-ar", str(SAMPLE_RATE), "-f", "s16le", "pipe:1",
         ]
 
         CHUNK_BYTES = int(SAMPLE_RATE * CHUNK_DURATION) * 2 * _http_n_ch   # s16le = 2 bytes/sample/ch
-        _HTTP_STALL_SECS = 10.0   # clear hub levels after this long without data
+        _HTTP_STALL_SECS = 8.0   # kill & restart ffmpeg after this long without audio data
 
         import select as _sel
 
@@ -8924,6 +8924,10 @@ class MonitorManager:
                         # No data arrived this second — check stall timeout
                         if time.monotonic() - last_data_ts > _HTTP_STALL_SECS:
                             cfg._has_real_level = False   # hub shows null levels
+                            self.log(f"[{name}] No audio for {_HTTP_STALL_SECS:.0f}s — killing ffmpeg and restarting")
+                            try: proc.kill()
+                            except Exception: pass
+                            break   # fall into finally → outer loop restarts ffmpeg
                         continue
                     chunk = proc.stdout.read(4096)
                     if not chunk:
