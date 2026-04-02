@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.24",
+    "version": "1.5.25",
 }
 
 import datetime
@@ -1919,10 +1919,7 @@ def register(app, ctx):
         start_s     = float(data.get("start_s", 0))
         end_s       = float(data.get("end_s", 60))
         fmt         = data.get("fmt", "raw")
-        # "raw" in direct mode means stream-copy (no re-encode, fastest)
-        if fmt == "raw":
-            fmt = "mp3"
-        if fmt not in ("mp3", "aac", "opus"):
+        if fmt not in ("mp3", "aac", "opus", "raw"):
             fmt = "mp3"
         if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
             return jsonify({"error": "bad date"}), 400
@@ -3038,13 +3035,21 @@ def _ffmpeg_concat_escape(p: Path) -> str:
 
 _EXPORT_FMTS = {
     # fmt: (ffmpeg_audio_args, container_flag, mime, ext)
-    # MP3  — stream-copy existing segments (no re-encode, instant)
-    "mp3":  (["-c", "copy"],                                   "mp3",  "audio/mpeg",         ".mp3"),
+    # MP3  — transcode by default; stream-copy applied in _export_clip when src is already MP3
+    "mp3":  (["-c:a", "libmp3lame", "-b:a", "128k"],           "mp3",  "audio/mpeg",         ".mp3"),
     # AAC  — ~half the size of MP3 at equal perceived quality; fragmented MP4 for pipe
     "aac":  (["-c:a", "aac", "-b:a", "128k",
               "-movflags", "frag_keyframe+empty_moov"],        "mp4",  "audio/mp4",           ".m4a"),
     # Opus — most efficient; WebM container plays in all modern browsers
     "opus": (["-c:a", "libopus", "-b:a", "96k"],               "webm", "audio/webm",          ".webm"),
+}
+
+# Raw-mode container map: source extension → (ffmpeg container, mime, file ext)
+# Used when fmt="raw" to stream-copy into the matching container without re-encoding.
+_RAW_CONTAINER_MAP = {
+    "mp3":  ("mp3",  "audio/mpeg", ".mp3"),
+    "aac":  ("adts", "audio/aac",  ".aac"),
+    "opus": ("ogg",  "audio/ogg",  ".opus"),
 }
 
 def _export_clip(slug, date, start_s, end_s, fmt="mp3"):
@@ -3062,12 +3067,7 @@ def _export_clip(slug, date, start_s, end_s, fmt="mp3"):
         )}), 500
     segs    = _get_segments(slug, date, base_root=root)
 
-    audio_args, container, mime, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
-    # Stream-copy optimisation only works when source and target are both MP3;
-    # for any other combination always re-encode via the codec args.
-    _src_ext = None  # determined after relevant list is built
-
-    # Build list of relevant segments, validating each path stays within rec root
+    # Build list of relevant segments first — needed to detect actual source format
     relevant = []
     for seg in segs:
         if not (seg["start_s"] + _SEG_SECS > start_s and seg["start_s"] < end_s):
@@ -3084,10 +3084,19 @@ def _export_clip(slug, date, start_s, end_s, fmt="mp3"):
     if not relevant:
         return jsonify({"error": "no segments in range"}), 404
 
-    # Use stream-copy only when source segments are MP3 and target format is MP3
     _src_ext = relevant[0][1].suffix.lstrip(".")
-    if fmt == "mp3" and _src_ext == "mp3":
+
+    if fmt == "raw":
+        # Stream-copy into a container that matches the recorded format exactly.
+        # No transcoding — instant and lossless regardless of source codec.
+        container, mime, ext = _RAW_CONTAINER_MAP.get(
+            _src_ext, ("mp3", "audio/mpeg", ".mp3"))
         audio_args = ["-c", "copy"]
+    else:
+        audio_args, container, mime, ext = _EXPORT_FMTS.get(fmt, _EXPORT_FMTS["mp3"])
+        # Stream-copy optimisation: skip re-encode when source and target are both MP3
+        if fmt == "mp3" and _src_ext == "mp3":
+            audio_args = ["-c", "copy"]
 
     tf_name = None
     try:
