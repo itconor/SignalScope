@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.131] - 2026-04-02
+
+### Fixed
+- **Fault holdoff cancels ad break timer** — `fault_holdoff_seconds` was applied unconditionally to all chain faults including ad break candidates. Because the holdoff fires first and delays the fault entering the ad break confirmation window (`min_fault_secs`), the ad break timer only started counting after the holdoff expired — effectively adding the two values together and breaking ad break learning/p95 logic. Fix: ad break candidates (where a mixin node is healthy downstream) bypass the holdoff entirely so the confirmation window starts immediately as it always did. The holdoff only applies to genuine non-ad-break faults such as brief segue silences.
+
+---
+
 ## [3.4.130] - 2026-04-02
 
 ### Fixed

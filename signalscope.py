@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.130"
+BUILD                  = "SignalScope-3.4.131"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -13111,12 +13111,13 @@ class HubServer:
                     prev = self._chain_fault_state.get(cid, "ok")
 
                     # ── Universal fault hold-off ──────────────────────────────
-                    # fault_holdoff_seconds delays ALL CHAIN_FAULT alerts for this
-                    # chain — including post-mixin faults that bypass the ad-break
-                    # confirmation window.  Useful for chains where brief on-air
-                    # silences (e.g. poorly-segued songs) should not alert unless
-                    # the outage persists for at least N seconds.
-                    if curr == "fault" and fault_holdoff_secs > 0 and prev != "alerted":
+                    # fault_holdoff_seconds delays CHAIN_FAULT alerts for genuine
+                    # faults (e.g. poorly-segued songs).  Ad-break candidates bypass
+                    # this entirely so the ad-break confirmation window (min_fault_secs)
+                    # starts counting immediately — fault holdoff must not eat into
+                    # the ad-break timer or delay its learning/p95 logic.
+                    if (curr == "fault" and fault_holdoff_secs > 0 and prev != "alerted"
+                            and not result.get("adbreak_candidate", False)):
                         _ho_since = self._chain_fault_holdoff_since.get(cid)
                         if _ho_since is None:
                             # First detection — start the hold-off clock
