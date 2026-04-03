@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.29",
+    "version": "1.5.30",
 }
 
 import datetime
@@ -3781,7 +3781,7 @@ _get('/api/logger/status').then(function(data){
 loadStatus();
 setInterval(loadStatus, 10000);
 setupAudio();
-if(_IS_HUB_NODE){ checkHubMode(); }
+if(_IS_HUB_NODE){ try{ checkHubMode(); }catch(e){ console.warn('[Logger] checkHubMode error',e); } }
 // Hub playback time tracking interval
 setInterval(function(){
   if(!_hubSite || !_hubPlayStart || !_selSeg) return;
@@ -3810,7 +3810,7 @@ var _catSpinIdx   = 0;
 function _startCatalogSpinner(msg){
   var statusEl = document.getElementById('hub-status');
   var sel      = document.getElementById('stream-sel');
-  if(sel && sel.options.length <= 1) sel.options[0].textContent = '— finding streams… —';
+  if(sel && sel.options[0]) sel.options[0].textContent = '— finding streams… —';
   if(_catSpinTimer) return;
   _catSpinTimer = setInterval(function(){
     _catSpinIdx = (_catSpinIdx + 1) % _catSpinFrames.length;
