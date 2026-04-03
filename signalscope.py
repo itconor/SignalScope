@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.158"
+BUILD                  = "SignalScope-3.4.159"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2603,8 +2603,7 @@ class UserManager:
              "enabled": u.enabled, "first_login": u.first_login}
             for u in self._users.values()
         ]
-        with open(self._path, "w") as fh:
-            json.dump({"users": users_list}, fh, indent=2)
+        _atomic_json_write(self._path, {"users": users_list})
         try:
             os.chmod(self._path, 0o600)
         except Exception:
@@ -2983,6 +2982,22 @@ def load_config() -> AppConfig:
     )
 
 
+def _atomic_json_write(path, data):
+    """Write JSON atomically: temp file → os.rename (POSIX-safe)."""
+    import tempfile as _tf, os as _os
+    path = str(path)
+    dir_ = _os.path.dirname(path) or "."
+    fd, tmp = _tf.mkstemp(dir=dir_, suffix=".tmp")
+    try:
+        with _os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        _os.replace(tmp, path)   # atomic on POSIX
+    except Exception:
+        try: _os.unlink(tmp)
+        except Exception: pass
+        raise
+
+
 def save_config(cfg: AppConfig):
     data = {
         "alert_wav_duration": cfg.alert_wav_duration,
@@ -3112,8 +3127,7 @@ def save_config(cfg: AppConfig):
         "signal_chains": cfg.signal_chains,
         "ab_groups": cfg.ab_groups,
     }
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_write(CONFIG_PATH, data)
     _harden_config_permissions()
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -3317,8 +3331,7 @@ def _save_ack(alert_id: str, ack_by: str) -> dict:
         _alert_acks[alert_id] = record
         snapshot = dict(_alert_acks)
     try:
-        with open(ALERT_ACKS_PATH, "w", encoding="utf-8") as f:
-            json.dump(snapshot, f)
+        _atomic_json_write(ALERT_ACKS_PATH, snapshot)
     except Exception:
         pass
     return record
@@ -3340,8 +3353,7 @@ def _load_alert_feedback() -> dict:
 def _save_alert_feedback_map(fb_map: dict):
     """Persist the full feedback map to disk (thread-safe)."""
     with _alert_feedback_lock:
-        with open(ALERT_FEEDBACK_PATH, "w", encoding="utf-8") as f:
-            json.dump(fb_map, f)
+        _atomic_json_write(ALERT_FEEDBACK_PATH, fb_map)
 
 
 def _load_chain_notes() -> dict:
@@ -3374,8 +3386,7 @@ def _save_chain_note(fault_log_id: str, text: str, by: str = "admin") -> dict:
         else:
             record = {"text": text, "by": by, "ts": now_str, "edited_at": None}
         notes[fault_log_id] = record
-        with open(CHAIN_NOTES_PATH, "w", encoding="utf-8") as f:
-            json.dump(notes, f)
+        _atomic_json_write(CHAIN_NOTES_PATH, notes)
         return record
 
 
@@ -4452,7 +4463,7 @@ def _sla_load() -> dict:
 
 def _sla_save(data: dict):
     try:
-        with open(SLA_PATH,"w") as f: json.dump(data, f, indent=2)
+        _atomic_json_write(SLA_PATH, data)
     except: pass
 
 def _sla_update(cfg: InputConfig, elapsed_s: float, in_alert: bool):
@@ -4509,6 +4520,28 @@ class MetricsDB:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
+
+    def _db_execute(self, sql, params=()):
+        """Execute with retry on 'database is locked'."""
+        for attempt in range(5):
+            try:
+                return self._conn.execute(sql, params)
+            except _sqlite3.OperationalError as e:
+                if "locked" in str(e) and attempt < 4:
+                    time.sleep(0.1 * (2 ** attempt))
+                    continue
+                raise
+
+    def _db_executemany(self, sql, params_seq):
+        """executemany with retry on 'database is locked'."""
+        for attempt in range(5):
+            try:
+                return self._conn.executemany(sql, params_seq)
+            except _sqlite3.OperationalError as e:
+                if "locked" in str(e) and attempt < 4:
+                    time.sleep(0.1 * (2 ** attempt))
+                    continue
+                raise
 
     def _init_db(self):
         try:
@@ -4589,7 +4622,7 @@ class MetricsDB:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
-                self._conn.execute(
+                self._db_execute(
                     "INSERT OR IGNORE INTO chain_fault_log"
                     "(id, chain_id, ts_start, fault_node_label, fault_site,"
                     " fault_stream, rtp_loss_pct, ts_recovered, clips,"
@@ -4621,7 +4654,7 @@ class MetricsDB:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
-                self._conn.execute(
+                self._db_execute(
                     "UPDATE chain_fault_log SET ts_recovered=? WHERE id=?",
                     (ts_recovered, entry_id),
                 )
@@ -4636,7 +4669,7 @@ class MetricsDB:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
-                self._conn.execute(
+                self._db_execute(
                     "UPDATE chain_fault_log SET clips=? WHERE id=?",
                     (json.dumps(clips), entry_id),
                 )
@@ -4652,7 +4685,7 @@ class MetricsDB:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
-                self._conn.execute(
+                self._db_execute(
                     "UPDATE chain_fault_log SET message=?, cascaded_from=?, adbreak_overshoot=? WHERE id=?",
                     (message, cascaded_from, 1 if adbreak_overshoot else 0, entry_id),
                 )
@@ -4724,7 +4757,7 @@ class MetricsDB:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
-                cur = self._conn.execute(
+                cur = self._db_execute(
                     "SELECT id, chain_id, ts_start, fault_node_label, fault_site,"
                     " fault_stream, rtp_loss_pct, ts_recovered, clips,"
                     " adbreak_overshoot, cascaded_from, message"
@@ -4766,7 +4799,7 @@ class MetricsDB:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
-                self._conn.execute(
+                self._db_execute(
                     "DELETE FROM chain_fault_log WHERE ts_start<?", (cutoff,)
                 )
                 self._conn.commit()
@@ -4782,7 +4815,7 @@ class MetricsDB:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
-                self._conn.executemany(
+                self._db_executemany(
                     "INSERT INTO metric_history(stream, metric, ts, value) VALUES(?,?,?,?)",
                     rows
                 )
@@ -4798,7 +4831,7 @@ class MetricsDB:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
-                cur = self._conn.execute(
+                cur = self._db_execute(
                     "SELECT ts, value FROM metric_history "
                     "WHERE stream=? AND metric=? AND ts>=? ORDER BY ts ASC",
                     (stream, metric, since)
@@ -4815,7 +4848,7 @@ class MetricsDB:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
-                cur = self._conn.execute(
+                cur = self._db_execute(
                     "SELECT DISTINCT metric FROM metric_history WHERE stream=?",
                     (stream,)
                 )
@@ -4832,13 +4865,13 @@ class MetricsDB:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
-                self._conn.execute(
+                self._db_execute(
                     "DELETE FROM metric_history WHERE ts<?", (cutoff,)
                 )
-                self._conn.execute(
+                self._db_execute(
                     "DELETE FROM chain_fault_log WHERE ts_start<?", (cutoff,)
                 )
-                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                self._db_execute("PRAGMA wal_checkpoint(PASSIVE)")
                 self._conn.commit()
         except Exception as e:
             print(f"[MetricsDB] Prune error: {e}")
@@ -5496,7 +5529,7 @@ def _retrain_model(stream_name: str, clean_samples: np.ndarray):
         fb["retrain_sample_count"]     = len(all_samples)
         fb["retrain_count"]            = fb.get("retrain_count", 0) + 1
         try:
-            with open(fp, "w") as f: json.dump(fb, f)
+            _atomic_json_write(fp, fb)
         except Exception:
             pass
 
@@ -7274,6 +7307,26 @@ class DabSharedSession:
     poll_thread: Any = None
 
 
+def _guarded_thread(target, args=(), kwargs=None, name=None, restart_delay=5.0, stop_evt=None):
+    """Wrap `target` so that if it raises, the exception is logged and the
+    thread restarts after `restart_delay` seconds.  Returns a started Thread.
+    If stop_evt is provided, the wrapper will not restart once it is set."""
+    import traceback as _tb
+    def _wrapper():
+        while True:
+            try:
+                target(*args, **(kwargs or {}))
+            except Exception:
+                print(f"[guarded_thread] {name or target.__name__} crashed — restarting in {restart_delay}s\n{_tb.format_exc()}")
+            # If a stop event was provided and is set, exit the restart loop cleanly.
+            if stop_evt is not None and stop_evt.is_set():
+                return
+            time.sleep(restart_delay)
+    t = threading.Thread(target=_wrapper, name=name or target.__name__, daemon=True)
+    t.start()
+    return t
+
+
 class MonitorManager:
     def __init__(self):
         self.app_cfg=load_config()
@@ -7356,18 +7409,20 @@ class MonitorManager:
                 dev=(cfg.device_index or '').strip().lower()
                 if dev.startswith('dab://') or dev.startswith('fm://') or dev.startswith('http://') or dev.startswith('https://') or dev.startswith('sound://'):
                     stop=threading.Event(); self._stop_flags.append(stop)
-                    t=threading.Thread(target=self._run_input,args=(cfg,sender,stop),daemon=True)
+                    t=_guarded_thread(self._run_input,args=(cfg,sender,stop),
+                                      name=f"Monitor-{cfg.name}",stop_evt=stop)
                     self._threads.append(t)
                 else:
                     udp_inputs.append(cfg)
 
             if udp_inputs:
                 udp_stop=threading.Event(); self._stop_flags.append(udp_stop)
-                udp_t=threading.Thread(target=self._run_udp_inputs,args=(udp_inputs,sender,udp_stop),daemon=True)
+                udp_t=_guarded_thread(self._run_udp_inputs,args=(udp_inputs,sender,udp_stop),
+                                      name="UDPInputs",stop_evt=udp_stop)
                 self._threads.append(udp_t)
 
             ai_stop=threading.Event(); self._stop_flags.append(ai_stop)
-            ai_t=threading.Thread(target=self._ai_loop,args=(ai_stop,),daemon=True)
+            ai_t=_guarded_thread(self._ai_loop,args=(ai_stop,),name="AILoop",stop_evt=ai_stop)
             self._threads.append(ai_t)
             # PTP monitor thread
             sender2=AlertSender(self.app_cfg,self.log)
@@ -7392,7 +7447,8 @@ class MonitorManager:
                     elif _peer is None:
                         self.log(f"[CMP] Warning: peer '{cfg.compare_peer}' for '{cfg.name}' not found or disabled — comparator skipped")
 
-            for t in self._threads: t.start()
+            for t in self._threads:
+                if not t.is_alive(): t.start()
             self._running=True
             self.log(f"[Monitor] Started — {sum(1 for i in self.app_cfg.inputs if i.enabled)} stream(s).")
             # Clear auto-maintenance for local chain nodes after 60s settle so that
@@ -7996,6 +8052,7 @@ class MonitorManager:
             # back up.
             _MAX_AUDIO_FAILURES = 8
             _audio_fail_count = 0
+            _dab_fail_delay = 0.0   # exponential backoff for consecutive reconnect failures
 
             while not stop_evt.is_set():
                 # ── Check welle-cli is still alive ───────────────────────────────
@@ -8015,7 +8072,9 @@ class MonitorManager:
                     if _audio_fail_count >= _MAX_AUDIO_FAILURES:
                         self.log(f"[{name}] DAB: too many ffmpeg failures, giving up")
                         break
-                    time.sleep(3)
+                    # Exponential backoff on consecutive failures — don't hammer offline sources
+                    _dab_fail_delay = min(300.0, _dab_fail_delay * 2) if _dab_fail_delay else 5.0
+                    time.sleep(_dab_fail_delay)
                     continue
 
                 def _read_ffmpeg_stderr(proc=ff_proc):
@@ -8034,6 +8093,8 @@ class MonitorManager:
                 pcm_started = False
                 pcm_deadline = time.time() + 15
                 audio_lost = False
+                # ff_proc is now live — ensure it is cleaned up no matter how we exit
+                _ff_proc_ref = ff_proc
 
                 # ── Inner audio read loop ────────────────────────────────────────
                 while not stop_evt.is_set():
@@ -8056,6 +8117,7 @@ class MonitorManager:
                             continue
                         pcm_started = True
                         _audio_fail_count = 0   # reset on successful data
+                        _dab_fail_delay   = 0.0  # reset backoff on successful audio
                         buf.extend(chunk)
                         while len(buf) >= CHUNK_BYTES:
                             raw = bytes(buf[:CHUNK_BYTES])
@@ -8145,13 +8207,13 @@ class MonitorManager:
 
                 # ── Clean up this ffmpeg instance ────────────────────────────────
                 try:
-                    ff_proc.terminate()
-                    ff_proc.wait(timeout=2)
+                    _ff_proc_ref.kill()
                 except Exception:
-                    try:
-                        ff_proc.kill()
-                    except Exception:
-                        pass
+                    pass
+                try:
+                    _ff_proc_ref.wait(timeout=3)
+                except Exception:
+                    pass
 
                 if stop_evt.is_set():
                     break
@@ -9210,6 +9272,7 @@ class MonitorManager:
 
         CHUNK_BYTES = int(SAMPLE_RATE * CHUNK_DURATION) * 2 * _http_n_ch   # s16le = 2 bytes/sample/ch
         _HTTP_STALL_SECS = 8.0   # kill & restart ffmpeg after this long without audio data
+        _fail_delay = 5.0   # exponential backoff — reset on successful audio, max 300 s
 
         import select as _sel
 
@@ -9221,6 +9284,7 @@ class MonitorManager:
                 self.log(f"[{name}] ffmpeg connected → {url}")
                 buf = bytearray()
                 last_data_ts = time.monotonic()
+                _fail_delay = 0.0   # reset backoff — connection succeeded
 
                 while not stop_evt.is_set():
                     # Poll with 1 s timeout so we can detect stalls without
@@ -9287,8 +9351,10 @@ class MonitorManager:
 
             if not stop_evt.is_set():
                 cfg._has_real_level = False   # clear stale levels during reconnect wait
-                self.log(f"[{name}] Disconnected — reconnecting in 5s…")
-                stop_evt.wait(5)
+                # Exponential backoff on consecutive failures — don't hammer offline sources
+                _fail_delay = min(300.0, _fail_delay * 2) if _fail_delay else 5.0
+                self.log(f"[{name}] Disconnected — reconnecting in {_fail_delay:.0f}s…")
+                stop_evt.wait(_fail_delay)
 
         self.log(f"[{name}] HTTP stream thread stopped.")
 
@@ -9644,7 +9710,7 @@ class MonitorManager:
                         self._handle_udp_packet(st, memoryview(recvbuf)[:nbytes], sender)
                         drained += 1
 
-        # Cleanup
+        # Cleanup — runs whether the loop exits normally or via exception
         for sock, st in list(states.items()):
             try:
                 selector.unregister(sock)
@@ -11079,11 +11145,10 @@ class HubClient:
     def start(self):
         self.state = self.STATE_CONNECTING
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="HubClient")
-        self._thread.start()
+        self._thread = _guarded_thread(self._loop, name="HubClient", stop_evt=self._stop)
         _live_stop = threading.Event()
-        threading.Thread(target=self._live_loop, args=(_live_stop,),
-                         daemon=True, name="HubLivePush").start()
+        _guarded_thread(self._live_loop, args=(_live_stop,),
+                        name="HubLivePush", stop_evt=_live_stop)
 
     def stop(self):
         self._stop.set()
@@ -11970,8 +12035,13 @@ class HubClient:
           try:
             cfg = self._cfg_fn()
             if not cfg.hub.hub_url:
-                self._stop.wait(BASE_WAIT)
+                if not getattr(self, '_hub_url_warned', False):
+                    print("[HubClient] hub_url not configured — heartbeat paused")
+                    self._hub_url_warned = True
+                self._stop.wait(30)
                 continue
+            else:
+                self._hub_url_warned = False
 
             url = self._normalise_url(cfg.hub.hub_url).rstrip("/") + f"/api/{HUB_API_VERSION}/heartbeat"
 
@@ -33097,9 +33167,9 @@ if __name__=="__main__":
         label  = "HUB" if mode == "hub" else "CLIENT+HUB"
         print(f"[{BUILD}] {label} mode — http://0.0.0.0:5000{suffix}")
         _chains_stop = threading.Event()
-        _chains_t = threading.Thread(target=hub_server._chains_monitor_loop,
-                                     args=(_chains_stop,), daemon=True)
-        _chains_t.start()
+        _chains_t = _guarded_thread(hub_server._chains_monitor_loop,
+                                    args=(_chains_stop,), name="ChainsMonitor",
+                                    stop_evt=_chains_stop)
     else:
         print(f"[{BUILD}] CLIENT mode — http://0.0.0.0:5000")
 

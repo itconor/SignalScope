@@ -2,6 +2,18 @@
 
 ---
 
+## [3.4.159] - 2026-04-03
+
+### Fixed / Improved
+- **Atomic config writes** — `save_config`, alert-ack, alert-feedback, chain-notes, SLA, AI-feedback, and user-manager writes now use `_atomic_json_write` (temp file + `os.replace`) to prevent partial writes from corrupting persistent JSON state files.
+- **Guarded thread auto-restart** — `_guarded_thread` wrapper added; `_run_input`, `_run_udp_inputs`, `_ai_loop`, `HubClient._loop`, `HubClient._live_loop`, and `_chains_monitor_loop` now restart automatically after an unexpected crash instead of dying silently.
+- **Stream reconnect backoff** — HTTP stream reconnect sleep replaced with exponential backoff (5 s → 10 → 20 → … → 300 s cap), reset on first successful audio. DAB ffmpeg-launch failures also back off exponentially.
+- **ffmpeg/subprocess cleanup** — DAB ffmpeg instance cleanup now uses `kill` + `wait(timeout=3)` via a `_ff_proc_ref` guard to ensure the subprocess is always reaped. FM and HTTP already had `try/finally` cleanup.
+- **SQLite retry-with-backoff** — `MetricsDB._db_execute` and `_db_executemany` methods added; all execute calls in write/update/query paths now retry up to 5 times on "database is locked", with exponential sleep (0.1 s, 0.2 s, 0.4 s, 0.8 s) before propagating.
+- **Hub heartbeat silent-spin fix** — `HubClient._loop` now logs a warning once when `hub_url` is not configured and sleeps 30 s per iteration (was `BASE_WAIT` = 5 s with no log). The existing outer catch-all exception handler already meets spec requirements.
+
+---
+
 ## [3.4.158] - 2026-04-03
 
 ### Added
