@@ -98,6 +98,16 @@ Connection details are saved to `~/.signalscope_player.json` and restored on nex
 
 ## Changelog
 
+### 1.1.3
+- SSL: global monkey-patch (`ssl._create_default_https_context`) replaces per-call context — fixes hub login in PyInstaller bundles on macOS/Windows where no system CA store is available
+- Direct mode: removed 24-hour `updated` filter from catalog — recordings archives older than one day now appear correctly
+- Connection dialog: removed fixed height so all elements fit without clipping; status label word-wraps long error messages
+
+### 1.1.1
+- Hub mode: pass `site=` parameter to `/days`, `/segments`, `/metadata` — fixes empty stream lists when hub proxies a remote client node
+- Direct mode: read `meta_*.json` sidecar files as primary metadata source (logger v1.5.5+); falls back to `logger_index.db` in multiple candidate paths including `plugins/` subdirectory
+- SSL fix for PyInstaller bundles
+
 ### 1.1.0
 - Silence ranges visualised on scrub bar (dark red zones)
 - Stereo stream detection via `n_ch` from logger catalog
