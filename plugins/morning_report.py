@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.0.2",
+    "version":  "1.1.0",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -188,6 +188,18 @@ def _generate_report(hub_server, monitor) -> dict:
 
     all_chains_db = _query_all_chains()
 
+    # ── Live chain names from monitor config (catches chains with no fault history) ──
+    live_chain_names = set()
+    if monitor is not None:
+        try:
+            cfg_ss = monitor.app_cfg
+            for c in (cfg_ss.signal_chains or []) if cfg_ss else []:
+                n = (c.get("name") or "").strip()
+                if n:
+                    live_chain_names.add(n)
+        except Exception:
+            pass
+
     # ── At a glance ────────────────────────────────────────────────────────────
     total_faults = len(fault_events_y) + len(chain_faults_y)
 
@@ -207,7 +219,8 @@ def _generate_report(hub_server, monitor) -> dict:
     chain_names_db = set(all_chains_db)
     # Also pull from 30-day history to get all chains seen recently
     chain_names_30 = set(r["chain_name"] for r in chain_faults_30)
-    all_chain_names = chain_names_db | chain_names_30 | chain_names_alert
+    # Include ALL live-configured chains so chains with no fault history still appear
+    all_chain_names = chain_names_db | chain_names_30 | chain_names_alert | live_chain_names
 
     # Faults per chain yesterday (combine alert log + chain_fault_log)
     faults_per_chain_y = defaultdict(int)
@@ -226,6 +239,22 @@ def _generate_report(hub_server, monitor) -> dict:
     else:
         cleanest = None
         worst    = None
+
+    # Plain-English headline for non-technical users
+    _chains_with_faults = len([c for c in all_chain_names if faults_per_chain_y.get(c, 0) > 0])
+    if total_faults == 0:
+        headline = f"✅ Clean day — all {total_chains} audio chain{'s' if total_chains != 1 else ''} ran without interruption yesterday."
+        headline_color = "ok"
+    elif _chains_with_faults == 1:
+        headline = (f"⚠️ {total_faults} audio interruption{'s' if total_faults != 1 else ''} "
+                    f"detected on 1 chain yesterday"
+                    + (f" — {total_downtime_min} min off-air." if total_downtime_min > 0 else "."))
+        headline_color = "wn"
+    else:
+        headline = (f"🔴 {total_faults} audio interruption{'s' if total_faults != 1 else ''} "
+                    f"across {_chains_with_faults} chains yesterday"
+                    + (f" — {total_downtime_min} min total off-air time." if total_downtime_min > 0 else "."))
+        headline_color = "al"
 
     at_a_glance = {
         "total_faults":        total_faults,
@@ -269,10 +298,16 @@ def _generate_report(hub_server, monitor) -> dict:
         # Trend: compare yesterday vs avg7
         if fault_count_y > avg7 * 1.3 and fault_count_y > 0:
             trend = "↑"
+            trend_label = "Worse than usual"
+            trend_color = "al"
         elif fault_count_y < avg7 * 0.7 and avg7 > 0:
             trend = "↓"
+            trend_label = "Better than usual"
+            trend_color = "ok"
         else:
             trend = "→"
+            trend_label = "Normal"
+            trend_color = "mu"
 
         # Longest single outage
         longest_s = 0.0
@@ -282,14 +317,36 @@ def _generate_report(hub_server, monitor) -> dict:
                 if dur > longest_s:
                     longest_s = dur
 
+        # Human-readable longest outage
+        if longest_s >= 3600:
+            _lh = int(longest_s // 3600)
+            _lm = int((longest_s % 3600) // 60)
+            longest_hms = f"{_lh}h {_lm}m"
+        elif longest_s >= 60:
+            _lm = int(longest_s // 60)
+            _ls = int(longest_s % 60)
+            longest_hms = f"{_lm}m {_ls}s" if _ls else f"{_lm} min"
+        elif longest_s > 0:
+            longest_hms = f"{int(longest_s)}s"
+        else:
+            longest_hms = ""
+
+        # Uptime percentage (based on 24-hour day)
+        day_s = 86400.0
+        uptime_pct = round(100.0 * max(0.0, day_s - dt_y) / day_s, 2)
+
         chain_health_rows.append({
             "name":         chain,
             "faults_y":     fault_count_y,
             "downtime_min": round(dt_y / 60, 1),
+            "uptime_pct":   uptime_pct,
             "sla_y":        sla_y,
             "avg7":         avg7,
             "trend":        trend,
+            "trend_label":  trend_label,
+            "trend_color":  trend_color,
             "longest_min":  round(longest_s / 60, 1),
+            "longest_hms":  longest_hms,
         })
 
     # ── Hourly heatmap ─────────────────────────────────────────────────────────
@@ -322,7 +379,7 @@ def _generate_report(hub_server, monitor) -> dict:
         if streak >= 3:
             patterns.append({
                 "type":  "streak_broken",
-                "text":  f"{chain} clean run broken after {streak} consecutive clean days",
+                "text":  f"⚠️ {chain} — clean run ended after {streak} fault-free days in a row",
                 "color": "amber",
             })
 
@@ -334,7 +391,7 @@ def _generate_report(hub_server, monitor) -> dict:
             ratio = round(fy / avg7, 1)
             patterns.append({
                 "type":  "above_average",
-                "text":  f"{row['name']} had {fy} faults ({ratio}× above its 7-day average of {avg7}/day)",
+                "text":  f"🔴 {row['name']} had {fy} interruptions yesterday — {ratio}× more than its usual {avg7}/day average",
                 "color": "red",
             })
 
@@ -364,8 +421,8 @@ def _generate_report(hub_server, monitor) -> dict:
                 h_end = (h_start + 3) % 24
                 patterns.append({
                     "type":  "clustering",
-                    "text":  (f"{window_count} of {total_chain_faults} {chain} faults were "
-                              f"between {h_start:02d}:00\u2013{h_end:02d}:00"),
+                    "text":  (f"🕐 {chain} — {window_count} of {total_chain_faults} interruptions "
+                              f"clustered between {h_start:02d}:00\u2013{h_end:02d}:00 (possible recurring issue)"),
                     "color": "amber",
                 })
                 break
@@ -391,22 +448,22 @@ def _generate_report(hub_server, monitor) -> dict:
             if days_with_fault >= 3:
                 patterns.append({
                     "type":  "recurring",
-                    "text":  (f"{chain} has faulted around {h:02d}:00 on {days_with_fault} "
-                              f"of the last 7 days \u2014 possible recurring issue"),
+                    "text":  (f"🔁 {chain} has had audio issues around {h:02d}:00 on {days_with_fault} "
+                              f"of the last 7 days \u2014 worth investigating"),
                     "color": "blue",
                 })
 
     # Chains with 0 faults all day
     clean_chains = [c for c in all_chain_names if faults_per_chain_y.get(c, 0) == 0]
     for c in clean_chains:
-        patterns.append({"type": "clean_day", "text": f"{c} \u2014 clean day", "color": "green"})
+        patterns.append({"type": "clean_day", "text": f"✅ {c} — no interruptions all day", "color": "green"})
 
     # Overnight clean (00:00-06:00)
     overnight_faults = sum(hourly_counts[0:6])
     if overnight_faults == 0 and total_faults > 0:
         patterns.append({
             "type":  "overnight_clean",
-            "text":  "Overnight window (00:00\u201306:00) was fault-free",
+            "text":  "✅ Overnight window (midnight–6 AM) was fault-free",
             "color": "green",
         })
 
@@ -454,6 +511,8 @@ def _generate_report(hub_server, monitor) -> dict:
         "covers_date":     yesterday.strftime("%Y-%m-%d"),
         "covers_label":    yesterday.strftime("%A, %-d %B %Y"),
         "next_gen":        next_gen.strftime("%Y-%m-%d %H:%M"),
+        "headline":        headline,
+        "headline_color":  headline_color,
         "at_a_glance":     at_a_glance,
         "chain_health":    chain_health_rows,
         "hourly_counts":   hourly_counts,
@@ -673,6 +732,20 @@ tr:hover td{background:rgba(255,255,255,.03)}
 .no-data{color:var(--mu);font-style:italic;font-size:12px}
 /* Toast */
 #toast{position:fixed;bottom:24px;right:24px;background:var(--ok);color:#fff;padding:9px 18px;border-radius:8px;font-size:13px;font-weight:600;display:none;z-index:999}
+/* Headline banner */
+.headline{border-radius:10px;padding:14px 18px;font-size:14px;font-weight:600;margin-bottom:20px;line-height:1.4}
+.headline.hl-ok{background:rgba(34,197,94,.12);border:1px solid var(--ok);color:var(--ok)}
+.headline.hl-wn{background:rgba(245,158,11,.1);border:1px solid var(--wn);color:var(--wn)}
+.headline.hl-al{background:rgba(239,68,68,.1);border:1px solid var(--al);color:var(--al)}
+/* Trend pill */
+.trend-pill{display:inline-block;border-radius:12px;padding:2px 8px;font-size:10px;font-weight:700}
+.trend-ok{background:rgba(34,197,94,.15);color:var(--ok)}
+.trend-al{background:rgba(239,68,68,.15);color:var(--al)}
+.trend-wn{background:rgba(245,158,11,.15);color:var(--wn)}
+.trend-mu{background:rgba(138,164,200,.12);color:var(--mu)}
+/* Uptime bar */
+.upt-bar{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
+.upt-pct{font-weight:700;font-size:12px}
 </style>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
 </head>
@@ -698,36 +771,39 @@ tr:hover td{background:rgba(255,255,255,.03)}
 </div>
 {% else %}
 
+{# ── Headline banner ── #}
+<div class="headline hl-{{report.headline_color}}">{{report.headline}}</div>
+
 {# ── At a Glance ── #}
 <div class="sec">
-  <div class="sec-hdr">At a Glance — {{report.covers_label}}</div>
+  <div class="sec-hdr">Yesterday at a Glance — {{report.covers_label}}</div>
   <div class="aag-grid">
     <div class="aag-card">
       <div class="aag-val" style="color:{% if report.at_a_glance.total_faults > 0 %}var(--al){% else %}var(--ok){% endif %}">
         {{report.at_a_glance.total_faults}}
       </div>
-      <div class="aag-lbl">Total Faults</div>
+      <div class="aag-lbl">Audio Interruptions</div>
     </div>
     <div class="aag-card">
       <div class="aag-val">{{report.at_a_glance.total_chains}}</div>
-      <div class="aag-lbl">Chains Monitored</div>
+      <div class="aag-lbl">Audio Chains Monitored</div>
     </div>
     <div class="aag-card">
-      <div class="aag-val" style="color:{% if report.at_a_glance.total_downtime_min > 0 %}var(--wa){% else %}var(--ok){% endif %}">
+      <div class="aag-val" style="color:{% if report.at_a_glance.total_downtime_min > 0 %}var(--wn){% else %}var(--ok){% endif %}">
         {{report.at_a_glance.total_downtime_min}}
       </div>
-      <div class="aag-lbl">Downtime Minutes</div>
+      <div class="aag-lbl">Minutes Off-Air (total)</div>
     </div>
     {% if report.at_a_glance.cleanest_chain %}
     <div class="aag-card">
       <div class="aag-val" style="font-size:15px;color:var(--ok)">{{report.at_a_glance.cleanest_chain}}</div>
-      <div class="aag-lbl">Cleanest Chain</div>
+      <div class="aag-lbl">Best Performing Chain</div>
     </div>
     {% endif %}
     {% if report.at_a_glance.worst_chain %}
     <div class="aag-card">
       <div class="aag-val" style="font-size:15px;color:var(--al)">{{report.at_a_glance.worst_chain}}</div>
-      <div class="aag-lbl">Worst Chain ({{report.at_a_glance.worst_chain_faults}} faults)</div>
+      <div class="aag-lbl">Most Issues ({{report.at_a_glance.worst_chain_faults}} interruption{% if report.at_a_glance.worst_chain_faults != 1 %}s{% endif %})</div>
     </div>
     {% endif %}
   </div>
@@ -735,19 +811,20 @@ tr:hover td{background:rgba(255,255,255,.03)}
 
 {# ── Chain Health Table ── #}
 <div class="sec">
-  <div class="sec-hdr">Chain Health</div>
+  <div class="sec-hdr">Audio Chain Health</div>
+  <p style="font-size:11px;color:var(--mu);margin-bottom:10px">Each row is one audio path monitored by SignalScope. <b style="color:var(--tx)">On-Air %</b> = percentage of yesterday the chain was transmitting normally.</p>
   {% if report.chain_health %}
   <div class="tbl-wrap">
     <table>
       <thead>
         <tr>
-          <th>Chain</th>
-          <th>Faults Yesterday</th>
-          <th>Downtime</th>
-          <th>SLA Yesterday</th>
-          <th>7-day Avg/day</th>
-          <th>Trend</th>
-          <th>Longest Outage</th>
+          <th>Chain Name</th>
+          <th>Interruptions</th>
+          <th>Time Off-Air</th>
+          <th>On-Air %</th>
+          <th>Usual Daily Avg</th>
+          <th>Compared to Usual</th>
+          <th>Longest Gap</th>
         </tr>
       </thead>
       <tbody>
@@ -755,30 +832,32 @@ tr:hover td{background:rgba(255,255,255,.03)}
         <tr>
           <td><b>{{row.name}}</b></td>
           <td>
-            <span style="color:{% if row.faults_y > 0 %}var(--al){% else %}var(--ok){% endif %}">
-              {{row.faults_y}}
-            </span>
+            {% if row.faults_y == 0 %}
+              <span style="color:var(--ok)">✓ None</span>
+            {% else %}
+              <span style="color:var(--al);font-weight:700">{{row.faults_y}}</span>
+            {% endif %}
           </td>
           <td style="font-variant-numeric:tabular-nums">
             {% if row.downtime_min > 0 %}
-              <span style="color:var(--wa)">{{row.downtime_min}} min</span>
-            {% else %}—{% endif %}
+              <span style="color:var(--wn)">{{row.downtime_min}} min</span>
+            {% else %}<span style="color:var(--ok)">—</span>{% endif %}
           </td>
           <td>
-            {% if row.sla_y is not none %}
-              <span class="{% if row.sla_y >= 99.9 %}sla-ok{% elif row.sla_y >= 99.0 %}sla-na{% else %}sla-bad{% endif %}">
-                {{row.sla_y}}%
-              </span>
-            {% else %}<span class="sla-na">—</span>{% endif %}
+            <span class="{% if row.uptime_pct >= 99.9 %}sla-ok{% elif row.uptime_pct >= 99.0 %}sla-na{% else %}sla-bad{% endif %}" title="{{row.uptime_pct}}% of the day on-air">
+              {{row.uptime_pct}}%
+            </span>
           </td>
-          <td style="font-variant-numeric:tabular-nums;color:var(--mu)">{{row.avg7}}</td>
-          <td class="{% if row.trend == '↑' %}trend-up{% elif row.trend == '↓' %}trend-dn{% else %}trend-eq{% endif %}">
-            {{row.trend}}
+          <td style="font-variant-numeric:tabular-nums;color:var(--mu)">
+            {% if row.avg7 > 0 %}{{row.avg7}}/day{% else %}<span style="color:var(--ok)">No history</span>{% endif %}
+          </td>
+          <td>
+            <span class="trend-pill trend-{{row.trend_color}}">{{row.trend_label}}</span>
           </td>
           <td style="font-variant-numeric:tabular-nums">
-            {% if row.longest_min > 0 %}
-              <span style="color:var(--wa)">{{row.longest_min}} min</span>
-            {% else %}—{% endif %}
+            {% if row.longest_hms %}
+              <span style="color:var(--wn)">{{row.longest_hms}}</span>
+            {% else %}<span style="color:var(--ok)">—</span>{% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -786,13 +865,14 @@ tr:hover td{background:rgba(255,255,255,.03)}
     </table>
   </div>
   {% else %}
-  <div class="no-data">No chains found.</div>
+  <div class="no-data">No audio chains found.</div>
   {% endif %}
 </div>
 
 {# ── Fault Timeline Heatmap ── #}
 <div class="sec">
-  <div class="sec-hdr">Fault Timeline — Hourly</div>
+  <div class="sec-hdr">Audio Interruptions by Hour of Day</div>
+  <p style="font-size:11px;color:var(--mu);margin-bottom:10px">Each block = one hour. Darker red = more interruptions in that hour.</p>
   <div class="heatmap">
     {% for h in range(24) %}
     {% set cnt = report.hourly_counts[h] %}
@@ -818,7 +898,7 @@ tr:hover td{background:rgba(255,255,255,.03)}
 {# ── Notable Patterns ── #}
 {% if report.patterns %}
 <div class="sec">
-  <div class="sec-hdr">Notable Patterns</div>
+  <div class="sec-hdr">What Stood Out Yesterday</div>
   <div class="pattern-list">
     {% for p in report.patterns %}
     <div class="pattern-item color-{{p.color}}">{{p.text}}</div>
@@ -830,20 +910,21 @@ tr:hover td{background:rgba(255,255,255,.03)}
 {# ── Stream Quality Summary ── #}
 {% if report.stream_quality %}
 <div class="sec">
-  <div class="sec-hdr">Stream Quality Summary</div>
+  <div class="sec-hdr">Live Stream Quality</div>
+  <p style="font-size:11px;color:var(--mu);margin-bottom:10px"><b style="color:var(--tx)">Loudness</b> = how loud the audio sounds on average (target: −14 to −23 LUFS). <b style="color:var(--tx)">Packet Loss</b> = network dropouts for IP streams (0% is ideal). <b style="color:var(--tx)">Silence Events</b> = times the stream went silent.</p>
   <div class="sq-grid">
     {% for st in report.stream_quality %}
     <div class="sq-card">
       <div class="sq-name" title="{{st.name}}">{{st.name}}</div>
       <div class="sq-site">{{st.site}}</div>
-      <div class="sq-row"><span>Glitches</span><span>{{st.glitch_count}}</span></div>
-      <div class="sq-row"><span>LUFS-I</span>
-        <span>{% if st.lufs_i is not none and st.lufs_i > -70 %}{{st.lufs_i | round(1)}} LUFS{% else %}—{% endif %}</span>
+      <div class="sq-row"><span>Audio glitches</span><span>{% if st.glitch_count == 0 %}<span style="color:var(--ok)">None</span>{% else %}<span style="color:var(--wn)">{{st.glitch_count}}</span>{% endif %}</span></div>
+      <div class="sq-row"><span>Loudness level</span>
+        <span>{% if st.lufs_i is not none and st.lufs_i > -70 %}{{st.lufs_i | round(1)}} LUFS{% else %}<span style="color:var(--mu)">—</span>{% endif %}</span>
       </div>
-      <div class="sq-row"><span>RTP Loss</span>
-        <span>{% if st.rtp_loss_pct is not none %}{{st.rtp_loss_pct | round(2)}}%{% else %}—{% endif %}</span>
+      <div class="sq-row"><span>Network packet loss</span>
+        <span>{% if st.rtp_loss_pct is not none %}{%if st.rtp_loss_pct < 0.1 %}<span style="color:var(--ok)">{{st.rtp_loss_pct | round(2)}}%</span>{% else %}<span style="color:var(--wn)">{{st.rtp_loss_pct | round(2)}}%</span>{% endif %}{% else %}<span style="color:var(--mu)">—</span>{% endif %}</span>
       </div>
-      <div class="sq-row"><span>Silence Events</span><span>{{st.silence_count}}</span></div>
+      <div class="sq-row"><span>Silence events</span><span>{% if st.silence_count == 0 %}<span style="color:var(--ok)">None</span>{% else %}<span style="color:var(--al)">{{st.silence_count}}</span>{% endif %}</span></div>
     </div>
     {% endfor %}
   </div>

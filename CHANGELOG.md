@@ -2,6 +2,24 @@
 
 ---
 
+## [3.4.141] - 2026-04-03
+
+### Fixed
+- **Morning Report only showing chains that have had historical faults** — `all_chain_names` was built from `chain_fault_log` (SQLite) and `alert_log` events only. A newly-configured chain, or one that has been running cleanly with no faults, had zero entries in either source and was completely absent from every section of the report. Fix: `_generate_report()` now also reads `monitor.app_cfg.signal_chains` (the live Broadcast Chains configuration) and adds every configured chain name to `all_chain_names`. Chains with no fault history appear in the health table as "✓ None — 100% on-air" as expected.
+
+### Improved (Morning Report plugin v1.1.0 — non-technical UX)
+- **Plain-English headline banner** added at the top of the report: green "Clean day" banner when there are no faults; amber/red summary with interruption count and total off-air time when faults exist.
+- **Plain-language section and column headers**: "Audio Interruptions" (was "Total Faults"), "Time Off-Air" (was "Downtime"), "On-Air %" (was "SLA Yesterday"), "Usual Daily Avg" (was "7-day Avg/day"), "Compared to Usual" (was "Trend"), "Longest Gap" (was "Longest Outage").
+- **Traffic-light trend indicators**: the "↑/→/↓" arrows are replaced with colour-coded pill badges — 🔴 "Worse than usual", 🟢 "Better than usual", ⚪ "Normal".
+- **Uptime percentage** replaces raw downtime minutes in the chain table — shows "100.0%" for clean chains and a red percentage for chains with outages. Tooltip shows the exact percentage.
+- **Human-readable longest outage** — "3m 12s" / "1h 4m" instead of raw minutes.
+- **Plain-English pattern messages** with emoji indicators (✅ clean, ⚠️ streak broken, 🔴 above average, 🕐 clustering, 🔁 recurring, ✅ overnight clean).
+- **Stream Quality section** retitled "Live Stream Quality"; field labels translated — "Loudness level" (was "LUFS-I"), "Network packet loss" (was "RTP Loss"), "Audio glitches" (was "Glitches"); zero values shown in green, problem values in amber/red.
+- **Tooltip guide** added under each section explaining the metrics in plain English for non-technical readers (loudness target range, what packet loss means, etc.).
+- **At a Glance** card labels updated: "Audio Interruptions", "Audio Chains Monitored", "Minutes Off-Air (total)", "Best Performing Chain", "Most Issues".
+
+---
+
 ## [3.4.140] - 2026-04-03
 
 ### Fixed
