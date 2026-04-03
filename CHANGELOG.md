@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.140] - 2026-04-03
+
+### Fixed
+- **Soundcard (ALSA) inputs stuck in AI training forever** — `_run_sound()` wrote every audio chunk to `_stream_buffer` but never to `_audio_buffer`. The AI loop reads exclusively from `_audio_buffer`, so for soundcard inputs it always found an empty deque, skipped the input, and `ai.feed()` was never called. After 24 hours `_finish_learn()` ran with zero accumulated samples, failed the `MIN_TRAINING_SAMPLES` check, and called `_begin_learn()` again — resetting the timer and repeating indefinitely. Fix: one line added to `_run_sound()` to append each chunk to `_audio_buffer` alongside the existing `_stream_buffer` append. All other input types (FM, DAB, HTTP, RTP) already populated both buffers.
+
+---
+
 ## [3.4.139] - 2026-04-03
 
 ### Fixed

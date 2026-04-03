@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.139"
+BUILD                  = "SignalScope-3.4.140"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -9489,6 +9489,8 @@ class MonitorManager:
                         if cfg._stream_buffer is not None:
                             cfg._stream_buffer.append(chunk.copy())
                             cfg._live_chunk_seq = getattr(cfg, '_live_chunk_seq', 0) + 1
+                        if cfg._audio_buffer is not None:
+                            cfg._audio_buffer.append(chunk.copy())
                     else:
                         time.sleep(0.05)
         except Exception as e:
