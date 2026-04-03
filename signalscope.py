@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.152"
+BUILD                  = "SignalScope-3.4.153"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -19924,6 +19924,10 @@ def _run_backup_job(job_id: str, out_path: str, filename: str, include_audio: bo
             if os.path.isfile(_logger_db):
                 _safe_db_backup(_logger_db, "logger_index.db", zf)
 
+            _users_path = os.path.join(BASE_DIR, "signalscope_users.json")
+            if os.path.isfile(_users_path):
+                zf.write(_users_path, "signalscope_users.json")
+
             for src, arc in [(SLA_PATH, "sla_data.json"),
                              (ALERT_LOG_PATH, "alert_log.json"),
                              (HUB_STATE_PATH, "hub_state.json")]:
@@ -20088,6 +20092,7 @@ def _do_restore_from_zip(zip_path: str, progress_cb=None) -> tuple:
             progress_cb(msg, done, total)
 
     restored_config     = False
+    restored_users      = False
     restored_models     = 0
     restored_db         = False
     restored_logger_db  = False
@@ -20125,6 +20130,18 @@ def _do_restore_from_zip(zip_path: str, progress_cb=None) -> tuple:
                 try:   os.chmod(CONFIG_PATH, 0o600)
                 except OSError: pass
                 restored_config = True
+
+            elif entry_path == "signalscope_users.json":
+                raw = zf.read(entry)
+                try:   json.loads(raw)
+                except Exception:
+                    errors.append("signalscope_users.json is not valid JSON — skipped.")
+                    continue
+                _users_dest = os.path.join(BASE_DIR, "signalscope_users.json")
+                with open(_users_dest, "wb") as fh: fh.write(raw)
+                try:   os.chmod(_users_dest, 0o600)
+                except OSError: pass
+                restored_users = True
 
             elif entry_path.startswith("ai_models" + os.sep) or entry_path.startswith("ai_models/"):
                 dest = os.path.normpath(os.path.join(BASE_DIR, entry_path))
@@ -20202,6 +20219,12 @@ def _do_restore_from_zip(zip_path: str, progress_cb=None) -> tuple:
                     _prog(f"Restoring logger recordings: {restored_recordings:,} / {n_audio:,} ({pct}%)",
                           audio_done, n_audio)
 
+    if restored_users:
+        try:
+            user_manager.load()
+        except Exception as e:
+            errors.append(f"Users file written but reload failed: {e}")
+
     if restored_config:
         try:
             new_cfg = load_config()
@@ -20213,6 +20236,7 @@ def _do_restore_from_zip(zip_path: str, progress_cb=None) -> tuple:
 
     parts = []
     if restored_config:     parts.append("config restored")
+    if restored_users:      parts.append("users restored")
     if restored_models:     parts.append(f"{restored_models} AI model file(s) restored")
     if restored_db:         parts.append("metrics history DB restored")
     if restored_logger_db:  parts.append("logger index DB restored")

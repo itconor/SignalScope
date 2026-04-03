@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.153] - 2026-04-03
+
+### Fixed
+- **Users missing from backup/restore** — `signalscope_users.json` (all user accounts, roles, password hashes) is now included in every backup ZIP (config-only and full). On restore, the file is written with `chmod 600` and `user_manager.load()` is called immediately so the running instance picks up the restored accounts without a restart. Restore summary now includes "users restored" in the completion message.
+
+---
+
 ## [3.4.152] - 2026-04-03
 
 ### Fixed
