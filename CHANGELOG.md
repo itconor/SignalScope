@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.158] - 2026-04-03
+
+### Added
+- **Stereo L/R Signal History charts** — `level_dbfs_l` and `level_dbfs_r` are now recorded in the metrics database at every flush, both for local streams (`_metrics_flush`, when `_audio_channels == 2`) and hub-relayed remote streams (`_flush_site_metrics`). The metric API allowlist includes both fields. Signal History dropdowns on the hub overview and replica page now show **L Channel dBFS** and **R Channel dBFS** options for FM and stereo streams, rendered in sky-blue and slate-blue.
+- **Hub Reports L/R level column** — alert log entries now store `level_dbfs_l` / `level_dbfs_r` (when a stereo stream is active). The Level column in Hub Reports and the client status page alert history panel show the channel breakdown (`L -18 / R -19 dB`) below the mono bar for any event recorded on a stereo stream.
+- **Listener plugin stereo L/R bars** (v1.1.6) — stream cards for stereo FM feeds now render a compact L / R dual-bar strip beneath the equaliser bars. Bars animate during poll updates at the normal poll cadence. The `stereo` flag in stream objects now also activates for `fm://` device-index streams (matching the behaviour added for hub cards in 3.4.136). L/R fill colours follow the same `_lvColor` scheme as the mono bars.
+
+---
+
 ## [3.4.157] - 2026-04-03
 
 ### Fixed

@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.157"
+BUILD                  = "SignalScope-3.4.158"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -3279,6 +3279,8 @@ def _add_history(cfg: InputConfig, kind: str, msg: str, clip_path: str = ""):
         "type":          kind,
         "message":       msg,
         "level_dbfs":    round(cfg._last_level_dbfs, 1),
+        "level_dbfs_l":  round(cfg._level_dbfs_l, 1) if cfg._audio_channels == 2 else None,
+        "level_dbfs_r":  round(cfg._level_dbfs_r, 1) if cfg._audio_channels == 2 else None,
         "rtp_loss_pct":  round(cfg._rtp_loss_pct, 2),
         "rtp_jitter_ms": round(cfg._rtp_jitter_ms, 2),
         "clip":          os.path.basename(clip_path) if clip_path else "",
@@ -4980,6 +4982,9 @@ def _metrics_flush(inputs: list):
 
         # Universal metrics — every stream type
         rows.append((name, "level_dbfs",    now, cfg._last_level_dbfs))
+        if cfg._audio_channels == 2:
+            rows.append((name, "level_dbfs_l", now, cfg._level_dbfs_l))
+            rows.append((name, "level_dbfs_r", now, cfg._level_dbfs_r))
         rows.append((name, "lufs_m",        now, cfg._lufs_m))
         rows.append((name, "lufs_s",        now, cfg._lufs_s))
         rows.append((name, "lufs_i",        now, cfg._lufs_i))
@@ -12807,6 +12812,11 @@ class HubServer:
                 val = st.get(metric)
                 if val is not None:
                     rows.append((name, metric, now, float(val)))
+            # Stereo L/R channels
+            for metric in ("level_dbfs_l", "level_dbfs_r"):
+                val = st.get(metric)
+                if val is not None:
+                    rows.append((name, metric, now, float(val)))
             # silence_flag and clip_count
             lv = st.get("level_dbfs")
             if lv is not None:
@@ -17198,6 +17208,9 @@ function rowHTML(e){
     var lc=e.level_dbfs<=-55?'var(--al)':'var(--ok)';
     lvl='<span style="font-size:12px;color:'+lc+'">'+e.level_dbfs+' dB</span>'
        +'<span class="level-bar"><span class="level-fill" style="width:'+Math.round(pct)+'%;background:'+lc+'"></span></span>';
+    if(e.level_dbfs_l!=null&&e.level_dbfs_r!=null){
+      lvl+='<div style="font-size:10px;color:var(--mu);margin-top:2px">L\u00a0'+e.level_dbfs_l+'\u00a0/\u00a0R\u00a0'+e.level_dbfs_r+'\u00a0dB</div>';
+    }
   }
   var rtp='—';
   if(e.rtp_loss_pct>0){
@@ -28485,7 +28498,8 @@ def api_mobile_metrics_history():
     hours   : history window in hours — 1, 6, or 24 (default: 6, clamped)
     """
     _ALLOWED_METRICS = {
-        "level_dbfs", "lufs_m", "lufs_s", "lufs_i",
+        "level_dbfs", "level_dbfs_l", "level_dbfs_r",
+        "lufs_m", "lufs_s", "lufs_i",
         "rtp_loss_pct", "rtp_jitter_ms",
         "fm_signal_dbm", "fm_snr_db",
         "dab_snr", "dab_sig", "dab_bitrate",
@@ -29465,6 +29479,9 @@ tr:hover td{background:#123764}
         {% if e.level_dbfs and e.level_dbfs > -120 %}
         <span style="font-size:12px;color:{{'var(--al)' if e.level_dbfs<=-55 else 'var(--ok)'}}">{{e.level_dbfs}} dB</span>
         <span class="level-bar"><span class="level-fill" style="width:{{[(e.level_dbfs+80)/80*100,100]|min|int}}%;background:{{'var(--al)' if e.level_dbfs<=-55 else 'var(--ok)'}}"></span></span>
+        {% if e.get('level_dbfs_l') is not none and e.get('level_dbfs_r') is not none %}
+        <div style="font-size:10px;color:var(--mu);margin-top:2px">L&nbsp;{{e.level_dbfs_l}}&nbsp;/&nbsp;R&nbsp;{{e.level_dbfs_r}}&nbsp;dB</div>
+        {% endif %}
         {% else %}—{% endif %}
       </td>
       <td>
@@ -30084,6 +30101,8 @@ main{padding:18px;max-width:1500px;margin:0 auto}
               <button class="btn sc-hr" data-h="24" style="font-size:10px;padding:1px 7px">24h</button>
               <select class="sc-hm" style="margin-left:8px;font-size:11px;background:#0d1117;border:1px solid var(--bor);border-radius:4px;color:var(--tx);padding:2px 4px">
                 <option value="level_dbfs">Level dBFS</option>
+                {%if s.get('stereo') or _sdev.startswith('fm://')%}<option value="level_dbfs_l">L Channel dBFS</option>{%endif%}
+                {%if s.get('stereo') or _sdev.startswith('fm://')%}<option value="level_dbfs_r">R Channel dBFS</option>{%endif%}
                 <option value="silence_flag">Silence Flag</option>
                 <option value="clip_count">Clip Count</option>
                 {%if _sdev.startswith('fm://')%}<option value="fm_signal_dbm">FM Signal dBm</option>{%endif%}
@@ -30881,7 +30900,7 @@ function _scHistLoad(section) {
   var metric=section.querySelector('.sc-hm').value;
   var hours=parseFloat((section.querySelector('.sc-hr.active')||{dataset:{h:1}}).dataset.h);
   var site=section.dataset.site, stream=section.dataset.stream;
-  var colorMap={fm_signal_dbm:'#34d399',fm_snr_db:'#6ee7b7',fm_stereo:'#a7f3d0',fm_rds_ok:'#34d399',dab_snr:'#a78bfa',dab_sig:'#c4b5fd',dab_bitrate:'#818cf8',lufs_m:'#fbbf24',lufs_s:'#fb923c',lufs_i:'#f87171',rtp_jitter_ms:'#e879f9',rtp_loss_pct:'#f472b6',silence_flag:'#64748b',clip_count:'#ef4444'};
+  var colorMap={level_dbfs_l:'#38bdf8',level_dbfs_r:'#818cf8',fm_signal_dbm:'#34d399',fm_snr_db:'#6ee7b7',fm_stereo:'#a7f3d0',fm_rds_ok:'#34d399',dab_snr:'#a78bfa',dab_sig:'#c4b5fd',dab_bitrate:'#818cf8',lufs_m:'#fbbf24',lufs_s:'#fb923c',lufs_i:'#f87171',rtp_jitter_ms:'#e879f9',rtp_loss_pct:'#f472b6',silence_flag:'#64748b',clip_count:'#ef4444'};
   status.textContent='Loading…'; status.style.display='block';
   fetch('/api/metrics/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream)+'?metric='+encodeURIComponent(metric)+'&hours='+hours)
     .then(function(r){return r.json();})
@@ -32698,6 +32717,8 @@ setInterval(_loadTrends, 300000);
             <button class="btn sc-hr" data-h="24" style="font-size:10px;padding:1px 7px">24h</button>
             <select class="sc-hm" style="margin-left:8px;font-size:11px;background:#0d1117;border:1px solid var(--bor);border-radius:4px;color:var(--tx);padding:2px 4px">
               <option value="level_dbfs">Level dBFS</option>
+              {%if s.get('stereo') or _sdev.startswith('fm://')%}<option value="level_dbfs_l">L Channel dBFS</option>{%endif%}
+              {%if s.get('stereo') or _sdev.startswith('fm://')%}<option value="level_dbfs_r">R Channel dBFS</option>{%endif%}
               <option value="silence_flag">Silence Flag</option>
               <option value="clip_count">Clip Count</option>
               {%if _sdev.startswith('fm://')%}<option value="fm_signal_dbm">FM Signal dBm</option>{%endif%}

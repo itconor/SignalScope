@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/listener",
     "icon":     "🎧",
     "hub_only": True,
-    "version":  "1.1.5",
+    "version":  "1.1.6",
 }
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -440,16 +440,18 @@ function loadStreams(initial){
           if(!s.enabled) return;
           var ci=_safeIdx(s,i);
           var obj={
-            site:   sname,
-            idx:    ci,
-            name:   s.name||('Stream '+(i+1)),
-            level:  s.level_dbfs,
-            status: s.ai_status||'OK',
-            online: !!site.online,
-            stereo: !!s.stereo,
-            rds:    s.fm_rds_ps||'',
-            dab:    s.dab_service||'',
-            label:  s.label||'',
+            site:    sname,
+            idx:     ci,
+            name:    s.name||('Stream '+(i+1)),
+            level:   s.level_dbfs,
+            level_l: s.level_dbfs_l!=null ? s.level_dbfs_l : null,
+            level_r: s.level_dbfs_r!=null ? s.level_dbfs_r : null,
+            status:  s.ai_status||'OK',
+            online:  !!site.online,
+            stereo:  !!(s.stereo || (s.device_index||'').toLowerCase().startsWith('fm://')),
+            rds:     s.fm_rds_ps||'',
+            dab:     s.dab_service||'',
+            label:   s.label||'',
           };
           _streams.push(obj);
           bySite[sname].streams.push(obj);
@@ -605,6 +607,25 @@ function renderCard(s){
     bars+='<div class="lv" style="'+style+'"></div>';
   }
 
+  // L/R bars for stereo streams
+  var lrBars='';
+  if(s.stereo){
+    var lPct=s.level_l!=null?Math.min(Math.max((s.level_l+80)/80*100,0),100):0;
+    var rPct=s.level_r!=null?Math.min(Math.max((s.level_r+80)/80*100,0),100):0;
+    var lCol=s.level_l!=null?_lvColor(lPct):'#334155';
+    var rCol=s.level_r!=null?_lvColor(rPct):'#334155';
+    lrBars='<div class="lr-wrap" style="display:flex;align-items:center;gap:4px;padding:0 4px 6px;min-height:14px">'
+      +'<span style="font-size:9px;color:#8aa4c8;width:10px;flex-shrink:0">L</span>'
+      +'<div style="flex:1;height:5px;background:#1a2f50;border-radius:3px;overflow:hidden">'
+      +'<div class="lr-fill" data-ch="L" style="height:100%;width:'+lPct.toFixed(1)+'%;background:'+lCol+';border-radius:3px;transition:width 0.15s"></div>'
+      +'</div>'
+      +'<span style="font-size:9px;color:#8aa4c8;width:10px;flex-shrink:0;text-align:right">R</span>'
+      +'<div style="flex:1;height:5px;background:#1a2f50;border-radius:3px;overflow:hidden">'
+      +'<div class="lr-fill" data-ch="R" style="height:100%;width:'+rPct.toFixed(1)+'%;background:'+rCol+';border-radius:3px;transition:width 0.15s"></div>'
+      +'</div>'
+      +'</div>';
+  }
+
   var btnClass=isPlaying?'stop':'start';
   var btnText =isPlaying?'⏹&nbsp;&nbsp;Stop':'🎧&nbsp;&nbsp;Listen';
   var disabled=(!s.online&&!isPlaying)?' disabled':'';
@@ -625,6 +646,7 @@ function renderCard(s){
     +badgeGroup
     +'</div>'
     +'<div class="level-wrap">'+bars+'</div>'
+    +lrBars
     +'<button class="listen-btn '+btnClass+'"'+disabled+' data-action="listen">'+btnText+'</button>'
     +'<div class="conn-hint"></div>'
     +'</div>';
@@ -840,11 +862,14 @@ function pollLevels(){
           var ci=_safeIdx(s,i);  // use real config index, matching loadStreams
           var match=_streams.find(function(x){ return x.site===sname&&x.idx===ci; });
           if(match){
-            match.level =s.level_dbfs;
-            match.status=s.ai_status||'OK';
-            match.online=!!site.online;
-            match.rds   =s.fm_rds_ps||'';
-            match.dab   =s.dab_service||'';
+            match.level  =s.level_dbfs;
+            match.level_l=s.level_dbfs_l!=null ? s.level_dbfs_l : null;
+            match.level_r=s.level_dbfs_r!=null ? s.level_dbfs_r : null;
+            match.stereo =!!(s.stereo || (s.device_index||'').toLowerCase().startsWith('fm://'));
+            match.status =s.ai_status||'OK';
+            match.online =!!site.online;
+            match.rds    =s.fm_rds_ps||'';
+            match.dab    =s.dab_service||'';
             // Update now-playing meta if this is the active stream
             if(_playing&&_playing.site===sname&&_playing.idx===ci){
               var sub=match.rds||match.dab||match.label||'';
@@ -870,6 +895,18 @@ function refreshLevelBars(){
       bar.style.height=(s.online?Math.max(2,pct/100*20*(1-b*0.09)):2).toFixed(1)+'px';
       bar.style.background=_lvColor(pct);
     });
+    // L/R bars
+    if(s.stereo && s.level_l!=null && s.level_r!=null){
+      var lrFills=card.querySelectorAll('.lr-fill');
+      if(lrFills.length===2){
+        var lPct2=Math.min(Math.max((s.level_l+80)/80*100,0),100);
+        var rPct2=Math.min(Math.max((s.level_r+80)/80*100,0),100);
+        lrFills[0].style.width=lPct2.toFixed(1)+'%';
+        lrFills[0].style.background=_lvColor(lPct2);
+        lrFills[1].style.width=rPct2.toFixed(1)+'%';
+        lrFills[1].style.background=_lvColor(rPct2);
+      }
+    }
     var rdsEl=card.querySelector('.card-on-air');
     if(rdsEl) rdsEl.textContent=s.rds||s.dab||s.label||'';
     // Update badge
