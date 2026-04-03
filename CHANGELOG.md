@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.136] - 2026-04-03
+
+### Fixed
+- **FM stereo L/R bars now appear on hub dashboard, Watch view, and client status page** — All three dashboard templates previously gated the L/R bar DOM elements with `{% if inp.stereo %}` / `{% if s.get('stereo') %}`. FM RTL-SDR inputs never set the `stereo` config flag (it's a user checkbox only used by ALSA/DAB/HTTP/RTP inputs), so the DOM elements were never rendered even after the stereo decoder produced real L/R data. Fix: each template condition now also fires for FM inputs (`inp.device_index.lower().startswith('fm://')` / `dtype == 'fm'`). The L/R bar wrapper starts `display:none` and is made visible by the live-update JS as soon as the first real L/R measurement arrives — so the bars only appear once the stereo decoder has actually locked onto the pilot tone.
+
+---
+
 ## [3.4.135] - 2026-04-03
 
 ### Added

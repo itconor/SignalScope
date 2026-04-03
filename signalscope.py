@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.135"
+BUILD                  = "SignalScope-3.4.136"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -15844,8 +15844,8 @@ main{padding:16px;max-width:1440px;margin:0 auto}
         </div>
         <span class="lbar-val" id="lval_{{idx}}" style="color:{{lcol}}">{{lev|round(1)}} dB</span>
       </div>
-      {%- if inp.stereo %}
-      <div class="lbar-wrap" id="lbar_lr_wrap_{{idx}}" style="gap:4px">
+      {%- if inp.stereo or inp.device_index.lower().startswith('fm://') %}
+      <div class="lbar-wrap" id="lbar_lr_wrap_{{idx}}" style="gap:4px;display:{{'flex' if inp.stereo else 'none'}}" data-fm-lr="1">
         <span style="font-size:10px;color:var(--mu);width:28px;text-align:right;flex-shrink:0">L</span>
         <div class="lbar-track" style="flex:1"><div class="lbar-fill" id="lbar_l_{{idx}}" style="width:0%;background:{{lcol}}"></div></div>
         <span style="font-size:10px;color:var(--mu);width:10px;text-align:right;flex-shrink:0">R</span>
@@ -16269,6 +16269,9 @@ function updateCards(inputs){
       setStyle('lbar_r_'+idx,'width',rPct.toFixed(1)+'%');
       setStyle('lbar_r_'+idx,'background',col);
       setEl('lval_lr_'+idx, 'L'+inp.level_dbfs_l.toFixed(0)+' R'+inp.level_dbfs_r.toFixed(0));
+      // Show wrapper for FM inputs that start hidden (display:none until stereo detected)
+      var lrWrap = document.getElementById('lbar_lr_wrap_'+idx);
+      if (lrWrap && lrWrap.dataset.fmLr === '1') lrWrap.style.display = 'flex';
     }
 
     // Format / mode
@@ -30494,8 +30497,8 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
         <div class="sw-bar-track"><div class="sw-bar-fill" id="lvl_{{_wlkey}}" style="width:{{lpct}}%;background:{{lcol}}"></div></div>
         <div class="sw-bar-val" id="lvlv_{{_wlkey}}" style="color:{{lcol}}">{{lev}} dB</div>
       </div>
-      {% if st.get('stereo') %}
-      <div class="sw-bar-wrap" style="gap:3px">
+      {% if st.get('stereo') or dtype == 'fm' %}
+      <div class="sw-bar-wrap" id="lvl_lr_wrap_{{_wlkey}}" style="gap:3px;display:{{'flex' if st.get('stereo') else 'none'}}" data-fm-lr="1">
         <span style="font-size:10px;color:var(--mu);width:9px;flex-shrink:0;text-align:right">L</span>
         <div class="sw-bar-track"><div class="sw-bar-fill" id="lvl_l_{{_wlkey}}" style="width:0%;background:{{lcol}}"></div></div>
         <span style="font-size:10px;color:var(--mu);width:9px;flex-shrink:0;text-align:right">R</span>
@@ -30579,6 +30582,9 @@ function _wLivePoll() {
             if (lFill) { lFill.style.width = lPct + '%'; lFill.style.background = col; }
             if (rFill) { rFill.style.width = rPct + '%'; rFill.style.background = col; }
             if (lrVal) lrVal.textContent = 'L' + s.level_dbfs_l.toFixed(0) + ' R' + s.level_dbfs_r.toFixed(0);
+            // Show wrapper for FM inputs that start hidden until stereo is detected
+            var lrWrap = document.getElementById('lvl_lr_wrap_' + lkSafe);
+            if (lrWrap && lrWrap.dataset.fmLr === '1') lrWrap.style.display = 'flex';
           }
           // Chain node mini-bars — may appear in multiple chains
           var nodeKey = site + '|' + s.name;
@@ -31138,6 +31144,9 @@ function _livePoll() {
             if (lFill) { lFill.style.width = lPct.toFixed(1) + '%'; lFill.style.background = col; }
             if (rFill) { rFill.style.width = rPct.toFixed(1) + '%'; rFill.style.background = col; }
             if (lrVal) lrVal.textContent = 'L' + s.level_dbfs_l.toFixed(0) + ' R' + s.level_dbfs_r.toFixed(0);
+            // Show wrapper for FM inputs that start hidden until stereo is detected
+            var lrWrap = document.getElementById('lvl_lr_wrap_' + key);
+            if (lrWrap && lrWrap.dataset.fmLr === '1') lrWrap.style.display = 'flex';
           }
         });
       });
@@ -31789,8 +31798,8 @@ setInterval(_loadTrends, 300000);
         </div>
         <span class="sc-level lbar-val" id="lvlv_{{_lkey}}" style="color:{{lcol}}">{{lev|round(1)}} dB</span>
       </div>
-      {% if s.get('stereo') %}
-      <div class="lbar-wrap" id="lvl_lr_wrap_{{_lkey}}" style="padding:0 10px 4px;gap:4px">
+      {% if s.get('stereo') or s.get('device_index','').lower().startswith('fm://') %}
+      <div class="lbar-wrap" id="lvl_lr_wrap_{{_lkey}}" style="padding:0 10px 4px;gap:4px;display:{{'flex' if s.get('stereo') else 'none'}}" data-fm-lr="1">
         <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">L</span>
         <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" id="lvl_l_{{_lkey}}" style="width:0%;background:{{lcol}}"></div></div></div>
         <span style="font-size:9px;color:var(--mu);width:10px;flex-shrink:0;text-align:right">R</span>
