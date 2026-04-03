@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.30",
+    "version": "1.5.31",
 }
 
 import datetime
@@ -2034,7 +2034,7 @@ def _all_rec_roots() -> set:
 
 # ─── Shared catalog ──────────────────────────────────────────────────────────
 _CATALOG_FILE    = "catalog.json"
-_CATALOG_STALE_S = 7200   # 2 hours — entries older than this are stale
+_CATALOG_STALE_S = 86400 * 30  # 30 days — entries written on each segment save and on startup seeding
 
 
 def _my_owner() -> str:
@@ -3810,7 +3810,7 @@ var _catSpinIdx   = 0;
 function _startCatalogSpinner(msg){
   var statusEl = document.getElementById('hub-status');
   var sel      = document.getElementById('stream-sel');
-  if(sel && sel.options[0]) sel.options[0].textContent = '— finding streams… —';
+  if(sel && sel.options && sel.options[0]) sel.options[0].textContent = '— finding streams… —';
   if(_catSpinTimer) return;
   _catSpinTimer = setInterval(function(){
     _catSpinIdx = (_catSpinIdx + 1) % _catSpinFrames.length;
