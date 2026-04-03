@@ -2,6 +2,16 @@
 
 ---
 
+## [3.4.155] - 2026-04-03
+
+### Fixed
+- **Replica page play buttons playing the wrong card** — the click handler looked up the audio element by ID (`rep_live_{{ci}}`) but the element's ID used the loop index (`rep_live_{{i}}`). When `_client_idx` and the loop position differed, it found a neighbouring card's audio element and played that instead.
+
+### Improved
+- **Site-wide persistent mini-player** — `toggleLive`, `_closeHubMiniPlayer`, `_hubGuardPlay` and `_hmpActive` moved from the hub overview template into `topnav()` so they are globally available on every hub page. The replica page play buttons now use `data-action="live"` (same as hub overview) and route directly into the shared mini-player rather than per-card inline `<audio>` elements. Navigating from the replica page to Broadcast Chains, Reports, or any other hub page while audio is playing no longer stops playback — the mini-player persists via `sessionStorage` across all navigation. The replica page per-card `<audio>` elements and the `data-rep-live` click handler have been removed; the auto-refresh now checks the mini-player instead.
+
+---
+
 ## [3.4.154] - 2026-04-03
 
 ### Fixed

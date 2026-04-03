@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.154"
+BUILD                  = "SignalScope-3.4.155"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -15672,23 +15672,65 @@ def _inject_nav():
         )
         _hmp_script = (
             f'<script nonce="{nonce}">'
-            # Self-contained close — works on any hub page.
-            # On the hub dashboard _closeHubMiniPlayer() is also called via
-            # the delegated click listener; both are idempotent so no conflict.
-            '(function(){'
-            'var _HMP="hmp_live";'
-            'function _hmpCloseBasic(){'
-            'var au=document.getElementById("hmp-audio");'
-            'if(au){au.pause();au.src="";au.load();}'
-            'var pl=document.getElementById("hub-mini-player");'
-            'if(pl)pl.style.display="none";'
+            # ── Global mini-player API ───────────────────────────────────────
+            # Defined in topnav so they work on EVERY hub page (not just the
+            # hub overview).  The hub overview no longer re-defines these.
+            'window._hmpActive=null;'
+            'function _hubGuardPlay(fn){'
+            'fetch("/api/auth_ping",{credentials:"same-origin"}).then(function(r){'
+            'if(r.status===401){window.location.href="/login?next="+encodeURIComponent(window.location.pathname);return;}'
+            'fn();}).catch(function(){fn();});}'
+            'function _closeHubMiniPlayer(){'
+            'var mp=document.getElementById("hub-mini-player");'
+            'if(mp)mp.style.display="none";'
+            'var audio=document.getElementById("hmp-audio");'
+            'if(audio){audio.pause();audio.src="";}'
+            'if(window._hmpActive){'
+            'window._hmpActive.textContent=window._hmpActive.dataset._origText||"\u25b6 Live";'
+            'window._hmpActive.className=window._hmpActive.dataset._origClass||"btn bp bs";'
+            'window._hmpActive=null;}'
             'document.body.style.paddingBottom="";'
-            'try{sessionStorage.removeItem(_HMP);}catch(e){}'
+            'try{sessionStorage.removeItem("hmp_live");}catch(e){}'
             '}'
-            'var _cb=document.getElementById("hmp-close");'
-            'if(_cb)_cb.addEventListener("click",_hmpCloseBasic);'
-            # Restore any in-progress stream from sessionStorage
-            'var s;try{s=JSON.parse(sessionStorage.getItem(_HMP)||"null");}catch(e){}'
+            'function toggleLive(siteIdx,streamIdx,btn){'
+            'if(window._hmpActive===btn){_closeHubMiniPlayer();return;}'
+            'if(window._hmpActive){'
+            'window._hmpActive.textContent=window._hmpActive.dataset._origText||"\u25b6 Live";'
+            'window._hmpActive.className=window._hmpActive.dataset._origClass||"btn bp bs";'
+            'window._hmpActive=null;}'
+            'var mp=document.getElementById("hub-mini-player");'
+            'var audio=document.getElementById("hmp-audio");'
+            'if(!mp||!audio)return;'
+            'var url=btn.dataset.url;'
+            'var name=btn.dataset.name||(streamIdx!=null?"Stream "+streamIdx:"Live");'
+            'var site=btn.dataset.siteName||"";'
+            '_hubGuardPlay(function(){'
+            'var _hmpt=document.getElementById("hmp-title");'
+            'if(_hmpt){_hmpt.textContent=name;_hmpt.title=name;}'
+            'var _hmps=document.getElementById("hmp-sub");'
+            'if(_hmps){_hmps.textContent=site;_hmps.title=site;}'
+            'audio.src=url;audio.type="audio/mpeg";audio.load();audio.play().catch(function(){});'
+            'mp.style.display="flex";'
+            'document.body.style.paddingBottom="72px";'
+            'btn.dataset._origClass=btn.className;'
+            'btn.dataset._origText=btn.textContent;'
+            'btn.textContent="\u23f9 Stop";btn.className=btn.className.replace(/\\bbp\\b/,"bd");'
+            'window._hmpActive=btn;'
+            'try{sessionStorage.setItem("hmp_live",JSON.stringify({url:url,title:name,sub:site}));}catch(e){}'
+            '});}'
+            # ── Global delegated click — data-action="live" + #hmp-close ────
+            # Works on ALL hub pages that include topnav (hub overview, replica,
+            # watch, plugins, etc.) without any per-page wiring.
+            'document.addEventListener("click",function(e){'
+            'if(e.target.closest("#hmp-close")){_closeHubMiniPlayer();return;}'
+            'var btn=e.target.closest("[data-action=\\"live\\"]");'
+            'if(!btn)return;'
+            'e.preventDefault();'
+            'toggleLive(btn.dataset.sidx,btn.dataset.site,btn);'
+            '});'
+            # ── Restore in-progress stream from sessionStorage ───────────────
+            '(function(){'
+            'var s;try{s=JSON.parse(sessionStorage.getItem("hmp_live")||"null");}catch(e){}'
             'if(!s||!s.url)return;'
             'var pl=document.getElementById("hub-mini-player");'
             'var au=document.getElementById("hmp-audio");'
@@ -15701,9 +15743,8 @@ def _inject_nav():
             'au.play().catch(function(){});'
             'pl.style.display="flex";'
             'document.body.style.paddingBottom="72px";'
-            # Clear state if relay slot has expired (audio errors or ends)
-            'au.addEventListener("error",_hmpCloseBasic);'
-            'au.addEventListener("ended",_hmpCloseBasic);'
+            'au.addEventListener("error",_closeHubMiniPlayer);'
+            'au.addEventListener("ended",_closeHubMiniPlayer);'
             '})();'
             '</script>'
         )
@@ -29999,8 +30040,9 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           </select>
           {% set ci = s._client_idx if s._client_idx is not none else i %}
           <a class="btn bg" href="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/clip?seconds=10" download>⬇ Clip</a>
-          <button class="btn bp" data-rep-live="{{ci}}" data-url="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/live">▶ Live</button>
-          <audio id="rep_live_{{i}}" style="display:none;flex:1;min-width:0;height:24px" controls></audio>
+          <button class="btn bp" data-action="live"
+            data-url="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/live"
+            data-name="{{s.name|e}}" data-site-name="{{site.site|e}}">▶ Live</button>
         </div>
         {% if s.history %}
         <div class="hist-wrap">
@@ -30705,26 +30747,8 @@ function setRelayBitrate(sel){
     if(!d.ok){ sel.value = orig; alert('Failed to set relay bitrate: ' + (d.error||'unknown error')); }
   }).catch(function(){ sel.disabled = false; sel.value = orig; });
 }
-// ── Live audio toggle ────────────────────────────────────────────────────────
-document.addEventListener('click', function(ev){
-  var btn = ev.target.closest('button[data-rep-live]');
-  if(!btn) return;
-  var idx = btn.getAttribute('data-rep-live');
-  var url = btn.getAttribute('data-url');
-  var audio = document.getElementById('rep_live_'+idx);
-  if(!audio) return;
-  if(audio.style.display === 'none'){
-    audio.src = url;
-    audio.style.display = 'block';
-    audio.play().catch(function(){});
-    btn.textContent = '⏹ Stop';
-  }else{
-    audio.pause(); audio.removeAttribute('src'); audio.load();
-    audio.style.display = 'none';
-    btn.textContent = '▶ Live';
-  }
-});
 // ── Clip duration selector updates URL ──────────────────────────────────────
+// (Live audio is now handled by the topnav global toggleLive / data-action="live")
 document.addEventListener('change', function(ev){
   var sel = ev.target;
   if(!sel.id || !sel.id.startsWith('rhdur_')) return;
@@ -30739,8 +30763,9 @@ document.addEventListener('change', function(ev){
     countdown--;
     if(label) label.textContent = 'Refreshing in ' + countdown + 's';
     if(countdown <= 0){
-      var anyPlaying = false;
-      document.querySelectorAll('audio').forEach(function(a){ if(!a.paused) anyPlaying = true; });
+      // Check the shared mini-player (per-card audio elements removed in 3.4.155)
+      var _hmpAu = document.getElementById('hmp-audio');
+      var anyPlaying = _hmpAu && !_hmpAu.paused;
       // Pause if a source management panel or modal is open
       var panelOpen = false;
       document.querySelectorAll('[id^="hub-mgr-"]').forEach(function(p){
@@ -31519,52 +31544,7 @@ document.addEventListener('click',function(e){
   localStorage.setItem('ss_level_mode',_levelMode);
   document.querySelectorAll('.sc-lbar-label').forEach(function(el){el.textContent=_levelMode==='peak'?'Peak':'RMS';});
 });
-var _hmpActive = null; // currently active Live button
-function _closeHubMiniPlayer(){
-  var mp=document.getElementById('hub-mini-player');
-  if(mp) mp.style.display='none';
-  var audio=document.getElementById('hmp-audio');
-  if(audio){audio.pause();audio.src='';}
-  if(_hmpActive){_hmpActive.textContent='▶ Live';_hmpActive.className='btn bp bs';_hmpActive=null;}
-  document.body.style.paddingBottom='';
-  try{sessionStorage.removeItem('hmp_live');}catch(e){}
-}
-// Auth pre-flight for hub audio: <audio> silently follows login redirects and
-// gets back HTML — no status code is exposed via onerror.  Check /api/auth_ping
-// first; redirect to login if not authenticated rather than loading forever.
-function _hubGuardPlay(fn){
-  fetch('/api/auth_ping',{credentials:'same-origin'}).then(function(r){
-    if(r.status===401){
-      window.location.href='/login?next='+encodeURIComponent(window.location.pathname);
-      return;
-    }
-    fn();
-  }).catch(function(){ fn(); });
-}
-function toggleLive(siteIdx,streamIdx,btn){
-  // Tapping the active button again stops playback
-  if(_hmpActive===btn){_closeHubMiniPlayer();return;}
-  // Stop any previous stream
-  if(_hmpActive){_hmpActive.textContent='▶ Live';_hmpActive.className='btn bp bs';}
-  var mp=document.getElementById('hub-mini-player');
-  var audio=document.getElementById('hmp-audio');
-  if(!mp||!audio) return;
-  var url=btn.dataset.url;
-  var name=btn.dataset.name||('Stream '+streamIdx);
-  var site=btn.dataset.siteName||'';
-  _hubGuardPlay(function(){
-    var _hmpt=document.getElementById('hmp-title');
-    _hmpt.textContent=name; _hmpt.title=name;
-    var _hmps=document.getElementById('hmp-sub');
-    _hmps.textContent=site; _hmps.title=site;
-    audio.src=url;audio.type='audio/mpeg';audio.load();audio.play().catch(function(){});
-    mp.style.display='flex';
-    document.body.style.paddingBottom='72px';
-    btn.textContent='⏹ Stop';btn.className='btn bd bs';
-    _hmpActive=btn;
-    try{sessionStorage.setItem('hmp_live',JSON.stringify({url:url,title:name,sub:site}));}catch(e){}
-  });
-}// ── Hub AJAX refresh ──────────────────────────────────────────
+// ── Hub AJAX refresh ──────────────────────────────────────────
 var _hubTimer = null;
 var _hubLastReload = 0; // epoch ms — guard against reload loops
 // Use a longer structural poll interval when live view SSE is active (fast
@@ -32048,9 +32028,9 @@ function _syncExpandAllBtn(siteCard){
   allBtn.textContent = allOpen ? '⊟ Collapse All' : '⊞ Expand All';
 }
 
-// CSP-safe button wiring for hub listen buttons + mini-player close
+// CSP-safe button wiring for hub stream-card expand/collapse actions
+// (#hmp-close and data-action="live" are handled by the topnav global listener)
 document.addEventListener('click', function(e){
-  if(e.target.closest('#hmp-close')){ _closeHubMiniPlayer(); return; }
   var btn = e.target.closest('[data-action]');
   if(!btn) return;
   if(btn.dataset.action === 'sc-expand'){
@@ -32084,9 +32064,8 @@ document.addEventListener('click', function(e){
     _syncExpandAllBtn(siteCard);
     return;
   }
-  if(btn.dataset.action !== 'live') return;
-  e.preventDefault();
-  toggleLive(btn.dataset.sidx, btn.dataset.site, btn);
+  // Other data-action values (hub-remove-site, hub-approve-site, sc-cmd-btn, etc.)
+  // are handled by their own dedicated listeners elsewhere in this template.
 });
 
 // Only start polling after the DOM is fully rendered
