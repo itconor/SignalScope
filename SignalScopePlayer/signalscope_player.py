@@ -27,7 +27,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor, QPainter, QFont, QFontMetrics, QPen, QBrush, QLinearGradient,
-    QIcon, QPalette, QAction,
+    QIcon, QPalette, QAction, QKeySequence,
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QVBoxLayout, QHBoxLayout,
@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # ─── Color scheme (matches SignalScope logger web UI) ─────────────────────────
 C = {
@@ -56,6 +56,7 @@ C = {
     "seg_ok":     "#166534",
     "seg_warn":   "#78350f",
     "seg_silent": "#7f1d1d",
+    "seg_gap":    "#1e3a8a",   # dark blue — recording gap / interrupted
     "seg_none":   "#0e2040",
     "seg_future": "#0a1828",
     "hdr_bg":     "#0a1f41",
@@ -66,7 +67,7 @@ SEG_SECS = 300  # 5-minute segments
 
 SETTINGS_PATH = Path.home() / ".signalscope_player.json"
 
-AUDIO_EXTS = (".mp3", ".aac", ".opus")
+AUDIO_EXTS = (".mp3", ".aac", ".opus", ".wav")
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -76,11 +77,13 @@ def _fmt_time(secs: float) -> str:
 
 
 def _seg_color(seg: dict) -> str:
-    sil = seg.get("silence_pct", 0.0)
     if seg.get("_none"):
         return C["seg_none"]
     if seg.get("_future"):
         return C["seg_future"]
+    if seg.get("quality") == "gap":
+        return C["seg_gap"]
+    sil = seg.get("silence_pct", 0.0)
     if sil > 80:
         return C["seg_silent"]
     if sil > 10:
@@ -109,7 +112,7 @@ def _save_settings(data: dict):
 class DataSource(ABC):
     @abstractmethod
     def catalog(self) -> list:
-        """Return [{"slug", "name", "site", "owner", "rec_format"}, ...]"""
+        """Return [{"slug", "name", "site", "owner", "rec_format", "n_ch"}, ...]"""
 
     @abstractmethod
     def days(self, slug: str) -> list:
@@ -117,7 +120,8 @@ class DataSource(ABC):
 
     @abstractmethod
     def segments(self, slug: str, date: str) -> list:
-        """Return [{"filename", "start_s", "silence_pct", "has_silence", ...}, ...]"""
+        """Return [{"filename", "start_s", "silence_pct", "silence_ranges",
+                    "has_silence", "quality", ...}, ...]"""
 
     @abstractmethod
     def metadata(self, slug: str, date: str) -> list:
@@ -147,12 +151,22 @@ class HubDataSource(DataSource):
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
 
+    def _post(self, path: str, body: dict) -> dict:
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            f"{self._url}{path}", data=data, method="POST",
+            headers={"Authorization": f"Bearer {self._token}",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+
     def catalog(self) -> list:
         data = self._get("/api/mobile/logger/catalog")
         return data.get("catalog", [])
 
     def days(self, slug: str) -> list:
         # Poll until pending clears (up to 30s)
+        data = {}
         for _ in range(10):
             data = self._get("/api/mobile/logger/days", {"slug": slug})
             if not data.get("pending"):
@@ -161,15 +175,24 @@ class HubDataSource(DataSource):
         return data.get("days", [])
 
     def segments(self, slug: str, date: str) -> list:
+        data = {}
         for _ in range(10):
             data = self._get("/api/mobile/logger/segments",
                              {"slug": slug, "date": date})
             if not data.get("pending"):
-                return data.get("segments", [])
+                segs = data.get("segments", [])
+                for s in segs:
+                    try:
+                        s["silence_ranges"] = json.loads(
+                            s.get("silence_ranges") or "[]")
+                    except Exception:
+                        s["silence_ranges"] = []
+                return segs
             time.sleep(3)
         return data.get("segments", [])
 
     def metadata(self, slug: str, date: str) -> list:
+        data = {}
         for _ in range(10):
             data = self._get("/api/mobile/logger/metadata",
                              {"slug": slug, "date": date})
@@ -180,6 +203,22 @@ class HubDataSource(DataSource):
 
     def audio_url(self, slug: str, date: str, filename: str,
                   seek_s: float = 0) -> str:
+        """POST to play_file to get a relay stream URL with native codec.
+        Falls back to stream_pcm if play_file is unavailable."""
+        try:
+            data = self._post("/api/mobile/logger/play_file", {
+                "slug": slug, "date": date,
+                "filename": filename, "seek_s": seek_s,
+            })
+            stream_url = data.get("stream_url", "")
+            if stream_url:
+                if not stream_url.startswith("http"):
+                    stream_url = self._url + stream_url
+                sep = "&" if "?" in stream_url else "?"
+                return f"{stream_url}{sep}token={urllib.parse.quote(self._token)}"
+        except Exception:
+            pass
+        # Fallback: raw PCM stream
         qs = urllib.parse.urlencode({
             "slug": slug, "date": date, "filename": filename,
             "seek_s": seek_s, "token": self._token,
@@ -204,16 +243,18 @@ class DirectDataSource(DataSource):
                     result.append({
                         "slug": d.name, "name": d.name,
                         "site": "local", "owner": "local",
-                        "rec_format": "mp3",
+                        "rec_format": "mp3", "n_ch": 1,
                     })
             return result
         try:
             data = json.loads(cat_path.read_text())
             now = time.time()
-            return [{"slug": slug, "name": info.get("name", slug),
-                     "site": info.get("owner", "local"),
-                     "owner": info.get("owner", "local"),
-                     "rec_format": info.get("rec_format", "mp3")}
+            return [{"slug": slug,
+                     "name":       info.get("name", slug),
+                     "site":       info.get("owner", "local"),
+                     "owner":      info.get("owner", "local"),
+                     "rec_format": info.get("rec_format", "mp3"),
+                     "n_ch":       int(info.get("n_ch", 1) or 1)}
                     for slug, info in data.items()
                     if now - info.get("updated", 0) < 86400]  # 24h for direct
         except Exception:
@@ -461,8 +502,8 @@ class SegmentGrid(QWidget):
         p.setFont(font)
 
         import datetime as _dt
-        now_s = (_dt.datetime.utcnow().hour * 3600 +
-                 _dt.datetime.utcnow().minute * 60)
+        now_s = (_dt.datetime.now().hour * 3600 +
+                 _dt.datetime.now().minute * 60)
 
         for hour in range(24):
             # Hour label
@@ -486,6 +527,13 @@ class SegmentGrid(QWidget):
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(color))
                 p.drawRoundedRect(rect, 3, 3)
+
+                # Silence sub-bar — thin red strip at bottom of block
+                if seg and seg.get("silence_pct", 0) > 0:
+                    sil_w = max(1, int(rect.width() * min(1.0,
+                                seg["silence_pct"] / 100.0)))
+                    p.fillRect(rect.x(), rect.bottom() - 3,
+                               sil_w, 3, QColor(C["al"]))
 
                 # Selection / playing outlines
                 if start_s == self._playing_s:
@@ -523,9 +571,19 @@ class SegmentGrid(QWidget):
                     start_s = hour * 3600 + slot * SEG_SECS
                     seg = self._segments.get(start_s)
                     if seg:
-                        tip = (f"{_fmt_time(start_s)} — "
-                               f"silence: {seg.get('silence_pct', 0):.0f}%  "
-                               f"quality: {seg.get('quality', 'high')}")
+                        q = seg.get("quality", "high")
+                        sil = seg.get("silence_pct", 0)
+                        sil_ranges = seg.get("silence_ranges", [])
+                        n_sil = len(sil_ranges)
+                        tip = f"{_fmt_time(start_s)}"
+                        if q == "gap":
+                            tip += "  ⚠ Gap / incomplete recording"
+                        elif sil > 0:
+                            tip += f"  silence: {sil:.0f}%"
+                            if n_sil:
+                                tip += f" ({n_sil} event{'s' if n_sil != 1 else ''})"
+                        else:
+                            tip += "  quality: OK"
                     else:
                         tip = f"{_fmt_time(start_s)} — no recording"
                     QToolTip.showText(event.globalPosition().toPoint(), tip, self)
@@ -583,12 +641,117 @@ class MetaBand(QWidget):
             label = ev.get("title") or ev.get("show_name") or ""
             if ev.get("artist"):
                 label = f"{ev['artist']} — {label}" if label else ev["artist"]
+            if self._type == "mic" and ev.get("presenter"):
+                label = ev["presenter"]
             if label and sw > 30:
                 p.setPen(text_col)
                 p.drawText(QRect(x1 + 4, 0, sw - 6, h),
                            Qt.AlignLeft | Qt.AlignVCenter, label)
 
         p.end()
+
+
+class ScrubBar(QWidget):
+    """Scrub bar with silence range visualization.
+
+    Draws silence zones as dark red bands within the track.
+    Replaces QSlider — same programmatic interface (setValue/value/blockSignals)
+    plus a seeked(float) signal that fires only on user interaction.
+    """
+    seeked = Signal(float)   # segment-relative seconds, fires on mouse release
+
+    def __init__(self):
+        super().__init__()
+        self._duration = float(SEG_SECS)
+        self._position = 0.0
+        self._silence_ranges = []  # [[start_s, end_s], ...] within segment
+        self._dragging = False
+        self._block = False
+        self.setFixedHeight(20)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+
+    # ── Public interface (mirrors QSlider enough for drop-in use) ────────────
+
+    def set_silence_ranges(self, ranges: list):
+        """ranges = [[start_s, end_s], ...] relative to segment start (0–300s)."""
+        self._silence_ranges = ranges or []
+        self.update()
+
+    def value(self) -> int:
+        return int(self._position)
+
+    def setValue(self, v: int):
+        self._position = max(0.0, min(float(v), self._duration))
+        self.update()
+
+    def blockSignals(self, block: bool):  # noqa: N802
+        self._block = block
+
+    # ── Painting ─────────────────────────────────────────────────────────────
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        track_h = 4
+        track_y = (h - track_h) // 2
+        handle_r = 7
+
+        # Track background
+        p.setBrush(QColor(C["seg_none"]))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(0, track_y, w, track_h, 2, 2)
+
+        # Silence zones
+        for s, e in self._silence_ranges:
+            x1 = int(max(0.0, s) / self._duration * w)
+            x2 = int(min(self._duration, e) / self._duration * w)
+            if x2 > x1:
+                p.fillRect(x1, track_y, x2 - x1, track_h, QColor("#7f1d1d"))
+
+        # Progress fill
+        prog_w = int(self._position / self._duration * w)
+        if prog_w > 0:
+            p.setBrush(QColor(C["ok"]))
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(0, track_y, prog_w, track_h, 2, 2)
+
+        # Handle circle
+        hx = int(self._position / self._duration * w)
+        p.setBrush(QColor(C["ok"]))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(hx - handle_r, (h - handle_r * 2) // 2,
+                      handle_r * 2, handle_r * 2)
+
+        p.end()
+
+    # ── Mouse interaction ────────────────────────────────────────────────────
+
+    def _pos_from_x(self, x: float) -> float:
+        return max(0.0, min(self._duration, x / self.width() * self._duration))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._dragging = True
+            self._position = self._pos_from_x(event.position().x())
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            self._position = self._pos_from_x(event.position().x())
+            self.update()
+        frac = event.position().x() / self.width()
+        QToolTip.showText(event.globalPosition().toPoint(),
+                          _fmt_time(frac * self._duration), self)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._dragging:
+            self._dragging = False
+            self._position = self._pos_from_x(event.position().x())
+            self.update()
+            if not self._block:
+                self.seeked.emit(self._position)
 
 
 # ─── Styled push button helper ────────────────────────────────────────────────
@@ -615,7 +778,7 @@ class ConnectionDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("SignalScope Player — Connect")
-        self.setFixedSize(420, 260)
+        self.setFixedSize(420, 270)
         self.setStyleSheet(f"""
             QDialog {{ background: {C['bg']}; color: {C['tx']}; }}
             QLabel {{ color: {C['tx']}; font-size: 13px; }}
@@ -649,6 +812,11 @@ class ConnectionDialog(QDialog):
         title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {C['acc']};")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
+
+        ver = QLabel(f"v{__version__}")
+        ver.setStyleSheet(f"font-size: 10px; color: {C['mu']};")
+        ver.setAlignment(Qt.AlignCenter)
+        layout.addWidget(ver)
 
         tabs = QTabWidget()
         layout.addWidget(tabs)
@@ -719,7 +887,7 @@ class ConnectionDialog(QDialog):
         QApplication.processEvents()
         try:
             ds = HubDataSource(url, token)
-            cat = ds.catalog()
+            ds.catalog()
             self.data_source = ds
             _save_settings({
                 "hub_url": url, "hub_token": token,
@@ -760,6 +928,7 @@ class MainWindow(QMainWindow):
         self._ds = ds
         self._current_slug = ""
         self._current_date = ""
+        self._current_n_ch = 1          # channel count for current stream
         self._segments = []
         self._meta = []
         self._playing_seg = None
@@ -767,9 +936,9 @@ class MainWindow(QMainWindow):
         self._mark_in = -1
         self._mark_out = -1
 
-        self.setWindowTitle(f"SignalScope Player — {ds.mode()} mode")
-        self.setMinimumSize(900, 600)
-        self.resize(1100, 720)
+        self.setWindowTitle(f"SignalScope Player  v{__version__}  —  {ds.mode()} mode")
+        self.setMinimumSize(920, 620)
+        self.resize(1120, 740)
 
         self._setup_style()
         self._build_ui()
@@ -806,11 +975,11 @@ class MainWindow(QMainWindow):
                 background: {C['seg_none']}; height: 4px; border-radius: 2px;
             }}
             QSlider::handle:horizontal {{
-                background: {C['ok']}; width: 14px; height: 14px;
+                background: {C['mu']}; width: 14px; height: 14px;
                 margin: -5px 0; border-radius: 7px;
             }}
             QSlider::sub-page:horizontal {{
-                background: {C['ok']}; border-radius: 2px;
+                background: {C['acc']}; border-radius: 2px;
             }}
             QComboBox {{
                 background: {C['input_bg']}; color: {C['tx']};
@@ -849,14 +1018,20 @@ class MainWindow(QMainWindow):
         hdr_l.addWidget(logo)
 
         title = QLabel("SignalScope Player")
-        title.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {C['tx']}; background: transparent;")
+        title.setStyleSheet(
+            f"font-size: 15px; font-weight: bold; color: {C['tx']}; background: transparent;")
         hdr_l.addWidget(title)
 
-        self._conn_label = QLabel(
-            f"● {self._ds.mode().title()} mode")
+        self._conn_label = QLabel(f"● {self._ds.mode().title()} mode")
         self._conn_label.setStyleSheet(
             f"font-size: 11px; color: {C['ok']}; background: transparent;")
         hdr_l.addStretch()
+
+        # Keyboard hints
+        hints = QLabel("Space: play/pause  ·  ← → seek 10s  ·  ↑ ↓ prev/next segment")
+        hints.setStyleSheet(f"font-size: 10px; color: {C['mu']}; background: transparent;")
+        hdr_l.addWidget(hints)
+        hdr_l.addSpacing(16)
         hdr_l.addWidget(self._conn_label)
 
         main_layout.addWidget(header)
@@ -869,10 +1044,8 @@ class MainWindow(QMainWindow):
 
         # ── Sidebar ──
         sidebar = QWidget()
-        sidebar.setFixedWidth(210)
-        sidebar.setStyleSheet(f"""
-            QWidget {{ background: {C['sur']}; }}
-        """)
+        sidebar.setFixedWidth(220)
+        sidebar.setStyleSheet(f"QWidget {{ background: {C['sur']}; }}")
         sb_layout = QVBoxLayout(sidebar)
         sb_layout.setContentsMargins(10, 10, 10, 10)
         sb_layout.setSpacing(8)
@@ -890,18 +1063,20 @@ class MainWindow(QMainWindow):
         # Legend
         legend = QWidget()
         legend.setStyleSheet(f"background: {C['sur']};")
-        leg_l = QHBoxLayout(legend)
+        leg_l = QGridLayout(legend)
         leg_l.setContentsMargins(0, 4, 0, 4)
-        leg_l.setSpacing(6)
-        for label, col in [("OK", C["seg_ok"]), ("Warn", C["seg_warn"]),
-                           ("Silent", C["seg_silent"]), ("None", C["seg_none"])]:
+        leg_l.setSpacing(4)
+        items = [("OK",     C["seg_ok"]),   ("Warn",  C["seg_warn"]),
+                 ("Silent", C["seg_silent"]), ("Gap",  C["seg_gap"]),
+                 ("None",   C["seg_none"])]
+        for i, (label, col) in enumerate(items):
             dot = QLabel("■")
             dot.setStyleSheet(f"color: {col}; font-size: 10px; background: transparent;")
-            leg_l.addWidget(dot)
             lbl = QLabel(label)
             lbl.setStyleSheet(f"font-size: 10px; color: {C['mu']}; background: transparent;")
-            leg_l.addWidget(lbl)
-        leg_l.addStretch()
+            row, c2 = divmod(i, 3)
+            leg_l.addWidget(dot, row, c2 * 2)
+            leg_l.addWidget(lbl, row, c2 * 2 + 1)
         sb_layout.addWidget(legend)
 
         body.addWidget(sidebar)
@@ -952,7 +1127,7 @@ class MainWindow(QMainWindow):
         player_l.setContentsMargins(14, 10, 14, 10)
         player_l.setSpacing(6)
 
-        # Top row: play + info + time
+        # Top row: play + info + stereo badge + time + volume
         top_row = QHBoxLayout()
         top_row.setSpacing(10)
 
@@ -982,6 +1157,17 @@ class MainWindow(QMainWindow):
         info_col.addWidget(self._p_sub)
         top_row.addLayout(info_col)
 
+        # Stereo badge — visible only for stereo streams
+        self._stereo_badge = QLabel("◈ STEREO")
+        self._stereo_badge.setStyleSheet(f"""
+            font-size: 10px; font-weight: 700; color: {C['acc']};
+            background: rgba(23,168,255,0.12);
+            border: 1px solid rgba(23,168,255,0.3);
+            border-radius: 4px; padding: 1px 6px;
+        """)
+        self._stereo_badge.setVisible(False)
+        top_row.addWidget(self._stereo_badge)
+
         top_row.addStretch()
 
         self._time_label = QLabel("00:00:00")
@@ -990,13 +1176,25 @@ class MainWindow(QMainWindow):
             font-size: 12px; color: {C['mu']}; background: transparent;
         """)
         top_row.addWidget(self._time_label)
+
+        # Volume
+        vol_icon = QLabel("🔊")
+        vol_icon.setStyleSheet("font-size: 12px; background: transparent;")
+        top_row.addWidget(vol_icon)
+        self._vol_slider = QSlider(Qt.Horizontal)
+        self._vol_slider.setRange(0, 100)
+        self._vol_slider.setValue(100)
+        self._vol_slider.setFixedWidth(80)
+        self._vol_slider.setToolTip("Volume")
+        self._vol_slider.valueChanged.connect(
+            lambda v: self._audio_out.setVolume(v / 100.0))
+        top_row.addWidget(self._vol_slider)
+
         player_l.addLayout(top_row)
 
-        # Scrub bar
-        self._scrub = QSlider(Qt.Horizontal)
-        self._scrub.setRange(0, SEG_SECS)
-        self._scrub.setValue(0)
-        self._scrub.sliderReleased.connect(self._on_scrub_seek)
+        # Scrub bar (with silence range visualization)
+        self._scrub = ScrubBar()
+        self._scrub.seeked.connect(self._on_scrub_seek)
         player_l.addWidget(self._scrub)
 
         # Export row
@@ -1031,7 +1229,7 @@ class MainWindow(QMainWindow):
         content_l.addWidget(player_wrap)
 
         body.addWidget(content)
-        body.setSizes([210, 890])
+        body.setSizes([220, 900])
 
         # ── Playback timer ──
         self._play_timer = QTimer()
@@ -1046,6 +1244,54 @@ class MainWindow(QMainWindow):
         self._player.mediaStatusChanged.connect(self._on_media_status)
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.errorOccurred.connect(self._on_player_error)
+
+    # ── Keyboard shortcuts ────────────────────────────────────────────────────
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == Qt.Key_Space:
+            self._toggle_play()
+        elif key == Qt.Key_Left:
+            self._seek_relative(-10)
+        elif key == Qt.Key_Right:
+            self._seek_relative(10)
+        elif key == Qt.Key_Up:
+            self._prev_segment()
+        elif key == Qt.Key_Down:
+            self._next_segment()
+        else:
+            super().keyPressEvent(event)
+
+    def _seek_relative(self, delta_s: float):
+        if not self._playing_seg:
+            return
+        new_pos = max(0, min(SEG_SECS, self._scrub.value() + delta_s))
+        self._scrub.setValue(int(new_pos))
+        if self._ds.mode() == "direct":
+            self._player.setPosition(int(new_pos * 1000))
+        else:
+            self._play_segment(self._playing_seg, seek_s=float(new_pos))
+
+    def _prev_segment(self):
+        if not self._playing_seg or not self._segments:
+            return
+        cur_s = int(self._playing_seg.get("start_s", -1))
+        prev_seg = None
+        for seg in reversed(self._segments):
+            if int(seg.get("start_s", 0)) < cur_s:
+                prev_seg = seg
+                break
+        if prev_seg:
+            self._play_segment(prev_seg)
+
+    def _next_segment(self):
+        if not self._playing_seg or not self._segments:
+            return
+        cur_s = int(self._playing_seg.get("start_s", -1))
+        for seg in self._segments:
+            if int(seg.get("start_s", 0)) > cur_s:
+                self._play_segment(seg)
+                return
 
     # ── Data loading ──────────────────────────────────────────────────────────
 
@@ -1066,6 +1312,10 @@ class MainWindow(QMainWindow):
             self._populate_segments(result)
         elif task == "metadata":
             self._apply_metadata(result)
+        elif task == "play_url":
+            # Hub mode: async audio_url fetch returned a URL → start playback
+            if self._playing_seg and result:
+                self._start_playback(str(result))
         # Cleanup finished workers
         self._workers = [w for w in self._workers if w.isRunning()]
 
@@ -1074,6 +1324,8 @@ class MainWindow(QMainWindow):
         self._conn_label.setText(f"● Error: {error}")
         self._conn_label.setStyleSheet(
             f"font-size: 11px; color: {C['al']}; background: transparent;")
+        if task == "play_url":
+            self._p_sub.setText(f"Playback error: {error}")
         self._workers = [w for w in self._workers if w.isRunning()]
 
     def _load_catalog(self):
@@ -1084,9 +1336,13 @@ class MainWindow(QMainWindow):
         for entry in catalog:
             name = entry.get("name", entry.get("slug", "?"))
             site = entry.get("site", "")
-            label = f"{name}  ({site})" if site else name
+            n_ch = int(entry.get("n_ch", 1) or 1)
+            stereo_prefix = "◈ " if n_ch == 2 else ""
+            label = f"{stereo_prefix}{name}  ({site})" if site else f"{stereo_prefix}{name}"
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, entry)
+            if n_ch == 2:
+                item.setForeground(QColor(C["acc"]))
             self._stream_list.addItem(item)
 
     def _on_stream_selected(self, current, previous):
@@ -1094,6 +1350,7 @@ class MainWindow(QMainWindow):
             return
         entry = current.data(Qt.UserRole)
         self._current_slug = entry.get("slug", "")
+        self._current_n_ch = int(entry.get("n_ch", 1) or 1)
         self._current_date = ""
         self._segments = []
         self._seg_grid.set_segments([])
@@ -1134,7 +1391,6 @@ class MainWindow(QMainWindow):
         self._play_segment(seg)
 
     def _on_daybar_click(self, secs: int):
-        # Find the segment at this time
         target_start = (secs // SEG_SECS) * SEG_SECS
         for seg in self._segments:
             if int(seg.get("start_s", -1)) == target_start:
@@ -1146,23 +1402,58 @@ class MainWindow(QMainWindow):
         self._playing_seg = seg
         start_s = seg.get("start_s", 0)
         filename = seg.get("filename", "")
+        silence_ranges = seg.get("silence_ranges", [])
+        sil_pct = seg.get("silence_pct", 0.0)
+        quality = seg.get("quality", "high")
 
         self._seg_grid.set_playing(int(start_s))
         self._p_title.setText(f"{_fmt_time(start_s)}  —  {filename}")
-        self._p_sub.setText(f"{self._current_slug} · {self._current_date}")
+
+        sub_parts = [self._current_slug, self._current_date]
+        if quality == "gap":
+            sub_parts.append("⚠ Gap recording")
+        elif sil_pct > 0:
+            sub_parts.append(f"silence: {sil_pct:.0f}%")
+        self._p_sub.setText("  ·  ".join(sub_parts))
+
+        # Update stereo badge
+        self._stereo_badge.setVisible(self._current_n_ch == 2)
+
+        # Update scrub bar with silence ranges
+        self._scrub.set_silence_ranges(silence_ranges)
+        self._scrub.setValue(0)
         self._play_btn.setEnabled(True)
 
-        url = self._ds.audio_url(
-            self._current_slug, self._current_date, filename, seek_s)
+        if self._ds.mode() == "direct":
+            url = self._ds.audio_url(
+                self._current_slug, self._current_date, filename, seek_s)
+            self._start_playback(url)
+        else:
+            # Hub mode: fetch relay URL asynchronously (POST to play_file)
+            self._p_sub.setText("  ·  ".join(sub_parts) + "  —  connecting…")
+            self._fetch("play_url", self._ds.audio_url,
+                        self._current_slug, self._current_date, filename, seek_s)
 
+    def _start_playback(self, url: str):
         if self._ds.mode() == "direct":
             self._player.setSource(QUrl.fromLocalFile(url))
         else:
             self._player.setSource(QUrl(url))
-
         self._player.play()
         self._play_btn.setText("⏸")
         self._play_timer.start()
+        # Restore sub label (clear the "connecting…" notice)
+        if self._playing_seg:
+            seg = self._playing_seg
+            start_s = seg.get("start_s", 0)
+            sil_pct = seg.get("silence_pct", 0.0)
+            quality = seg.get("quality", "high")
+            sub_parts = [self._current_slug, self._current_date]
+            if quality == "gap":
+                sub_parts.append("⚠ Gap recording")
+            elif sil_pct > 0:
+                sub_parts.append(f"silence: {sil_pct:.0f}%")
+            self._p_sub.setText("  ·  ".join(sub_parts))
 
     def _toggle_play(self):
         if self._player.playbackState() == QMediaPlayer.PlayingState:
@@ -1182,7 +1473,9 @@ class MainWindow(QMainWindow):
         self._playing_seg = None
         self._seg_grid.set_playing(-1)
         self._scrub.setValue(0)
+        self._scrub.set_silence_ranges([])
         self._time_label.setText("00:00:00")
+        self._stereo_badge.setVisible(False)
 
     def _on_media_status(self, status):
         if status == QMediaPlayer.EndOfMedia:
@@ -1209,16 +1502,16 @@ class MainWindow(QMainWindow):
     def _on_player_error(self, error, msg=""):
         self._p_sub.setText(f"Playback error: {error}")
 
-    def _on_scrub_seek(self):
-        if self._playing_seg and self._ds.mode() == "direct":
-            pos_ms = self._scrub.value() * 1000
-            self._player.setPosition(pos_ms)
-        elif self._playing_seg and self._ds.mode() == "hub":
-            # Hub mode: restart with seek offset
-            self._play_segment(self._playing_seg, seek_s=self._scrub.value())
+    def _on_scrub_seek(self, pos_s: float):
+        if not self._playing_seg:
+            return
+        if self._ds.mode() == "direct":
+            self._player.setPosition(int(pos_s * 1000))
+        else:
+            self._play_segment(self._playing_seg, seek_s=pos_s)
 
     def _update_playback_position(self):
-        # Handled by _on_position_changed for direct mode
+        # Position is handled by _on_position_changed
         pass
 
     # ── Mark In/Out & Export ──────────────────────────────────────────────────
@@ -1305,6 +1598,9 @@ class MainWindow(QMainWindow):
                 cmd += ["-c:a", "aac", "-b:a", "192k"]
             elif fmt == "opus":
                 cmd += ["-c:a", "libopus", "-b:a", "128k"]
+            # Preserve stereo if source is stereo
+            if self._current_n_ch == 2:
+                cmd += ["-ac", "2"]
             cmd.append(save_path)
 
             subprocess.run(cmd, check=True, capture_output=True)
