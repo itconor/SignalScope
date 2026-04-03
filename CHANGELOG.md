@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.157] - 2026-04-03
+
+### Fixed
+- **Replica page missing L/R audio level bars** — stereo and FM streams showed only the mono RMS bar on the replica page; the L/R bar present on the hub overview and watch view was never added. The replica page now renders an L/R bar row beneath the main level bar for any stream where `level_dbfs_l` / `level_dbfs_r` are present (stereo inputs and FM inputs with pilot lock). Values refresh with the 15 s page auto-reload.
+
+---
+
 ## [3.4.156] - 2026-04-03
 
 ### Fixed

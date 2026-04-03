@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.156"
+BUILD                  = "SignalScope-3.4.157"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -29896,6 +29896,22 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           </div>
           <span class="lbar-val" style="color:{{lcol}}">{{lev|round(1)}} dB</span>
         </div>
+        {% set _ldev = (s.device_index or '').lower() %}
+        {% if s.get('stereo') or _ldev.startswith('fm://') %}
+        {% set _ll = s.get('level_dbfs_l') %}
+        {% set _lr = s.get('level_dbfs_r') %}
+        {% if _ll is not none and _lr is not none %}
+        {% set _llpct = [(_ll+80)/80*100, 100]|min|max(0)|int %}
+        {% set _lrpct = [(_lr+80)/80*100, 100]|min|max(0)|int %}
+        <div class="lbar-wrap" style="gap:4px;padding-top:0">
+          <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">L</span>
+          <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" style="width:{{_llpct}}%;background:{{lcol}}"></div></div></div>
+          <span style="font-size:9px;color:var(--mu);width:10px;flex-shrink:0;text-align:right">R</span>
+          <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" style="width:{{_lrpct}}%;background:{{lcol}}"></div></div></div>
+          <span style="font-size:9px;color:var(--mu);width:46px;text-align:right;flex-shrink:0">{{_ll|round(1)}} / {{_lr|round(1)}}</span>
+        </div>
+        {% endif %}
+        {% endif %}
         {% if s.lufs_m is not none and s.lufs_m > -69 %}
         {% set tpcol = 'var(--al)' if s.lufs_tp > -1 else ('var(--wn)' if s.lufs_tp > -3 else 'var(--mu)') %}
         <div class="lbar-wrap" style="padding-bottom:2px">
