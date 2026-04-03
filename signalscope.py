@@ -1368,8 +1368,16 @@ function bkPollJob(jobId, btn, res){
   fetch('/settings/backup/job/'+jobId).then(function(r){return r.json();}).then(function(d){
     if(!d.ok){res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Poll error');btn.disabled=false;btn.textContent='💾 Save to disk (SSH)';return;}
     if(d.status==='running'){
-      res.textContent='⏳ '+d.progress;
-      setTimeout(function(){bkPollJob(jobId,btn,res);},2000);
+      // Build rich progress display
+      var pct = (d.files_total && d.files_done!=null) ? Math.round(100*d.files_done/d.files_total) : null;
+      var bar = pct!==null
+        ? '<div style="margin:6px 0 2px;height:6px;background:#0d2346;border-radius:3px;overflow:hidden">'
+          +'<div style="width:'+pct+'%;height:100%;background:var(--acc);transition:width .4s"></div></div>'
+        : '';
+      var zipLine = d.zip_mb ? '<span style="color:var(--mu);font-size:11px">ZIP on disk: '+d.zip_mb+' MB</span>' : '';
+      res.style.color='var(--acc)';
+      res.innerHTML='⏳ '+d.progress+bar+zipLine;
+      setTimeout(function(){bkPollJob(jobId,btn,res);},1000);
     } else if(d.status==='done'){
       res.style.color='var(--ok)';
       res.innerHTML='✓ Saved <strong>'+d.filename+'</strong> ('+d.size_mb+' MB)<br>'
@@ -2064,7 +2072,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.149"
+BUILD                  = "SignalScope-3.4.150"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -19786,7 +19794,7 @@ def _resolve_logger_rec_root() -> str:
 
 def _run_backup_job(job_id: str, out_path: str, filename: str, include_audio: bool):
     """Background thread: build the backup ZIP, then mark job done."""
-    import zipfile, tempfile as _tf, sqlite3 as _sq3
+    import zipfile, tempfile as _tf, sqlite3 as _sq3, time as _time
 
     def _safe_db_backup(src_path, arc_name, zf):
         tmp_db = _tf.NamedTemporaryFile(suffix=".db", delete=False)
@@ -19802,12 +19810,34 @@ def _run_backup_job(job_id: str, out_path: str, filename: str, include_audio: bo
             try: os.unlink(tmp_db.name)
             except: pass
 
-    def _set_progress(msg):
+    def _fmt_size(n):
+        """Human-readable byte size."""
+        if n < 1024 * 1024:          return f"{n / 1024:.0f} KB"
+        if n < 1024 * 1024 * 1024:   return f"{n / (1024 * 1024):.1f} MB"
+        return f"{n / (1024 * 1024 * 1024):.2f} GB"
+
+    def _update(msg, files_done=None, files_total=None):
+        upd = {"progress": msg}
+        if files_done  is not None: upd["files_done"]  = files_done
+        if files_total is not None: upd["files_total"] = files_total
+        try:   upd["zip_mb"] = round(os.path.getsize(out_path) / (1024 * 1024), 1)
+        except: pass
         with _backup_jobs_lock:
-            _backup_jobs[job_id]["progress"] = msg
+            _backup_jobs[job_id].update(upd)
+
+    def _scan_dir(directory):
+        """Walk directory → list of (full_path, file_size). Fast pre-scan."""
+        entries = []
+        for root, _dirs, files in os.walk(directory):
+            for fname in files:
+                full = os.path.join(root, fname)
+                try:   sz = os.path.getsize(full)
+                except: sz = 0
+                entries.append((full, sz))
+        return entries
 
     try:
-        _set_progress("Writing config and AI models…")
+        _update("Writing config and AI models…")
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
             if os.path.isfile(CONFIG_PATH):
                 zf.write(CONFIG_PATH, "lwai_config.json")
@@ -19817,7 +19847,7 @@ def _run_backup_job(job_id: str, out_path: str, filename: str, include_audio: bo
                         full = os.path.join(root, fname)
                         zf.write(full, os.path.relpath(full, BASE_DIR))
 
-            _set_progress("Snapshotting metrics database…")
+            _update("Snapshotting metrics database…")
             if os.path.isfile(METRICS_DB_PATH):
                 _safe_db_backup(METRICS_DB_PATH, "metrics_history.db", zf)
 
@@ -19832,34 +19862,64 @@ def _run_backup_job(job_id: str, out_path: str, filename: str, include_audio: bo
                     zf.write(src, arc)
 
             if include_audio:
-                # --- Alert clips (always relative to BASE_DIR) ---
+                # ── Alert clips ────────────────────────────────────────────
                 snip_dir = os.path.join(BASE_DIR, "alert_snippets")
                 if os.path.isdir(snip_dir):
-                    _set_progress("Adding alert clips…")
-                    for root, _dirs, files in os.walk(snip_dir):
-                        for fname in files:
-                            full = os.path.join(root, fname)
-                            arc  = os.path.relpath(full, BASE_DIR)
-                            zf.write(full, arc, compress_type=zipfile.ZIP_STORED)
+                    _update("Scanning alert clips…")
+                    snip_entries = _scan_dir(snip_dir)
+                    snip_total   = len(snip_entries)
+                    snip_bytes   = sum(s for _, s in snip_entries)
+                    _update(f"Adding alert clips: 0 / {snip_total:,}  ({_fmt_size(snip_bytes)} total)",
+                            0, snip_total)
+                    last_upd = _time.monotonic(); done_bytes = 0
+                    for i, (full, sz) in enumerate(snip_entries, 1):
+                        arc = os.path.relpath(full, BASE_DIR)
+                        zf.write(full, arc, compress_type=zipfile.ZIP_STORED)
+                        done_bytes += sz
+                        now = _time.monotonic()
+                        if now - last_upd >= 1.0 or i == snip_total:
+                            pct = round(100 * i / snip_total) if snip_total else 100
+                            _update(
+                                f"Adding alert clips: {i:,} / {snip_total:,} ({pct}%)  "
+                                f"· {_fmt_size(done_bytes)} of {_fmt_size(snip_bytes)}",
+                                i, snip_total,
+                            )
+                            last_upd = now
 
-                # --- Logger recordings ---
+                # ── Logger recordings ──────────────────────────────────────
                 rec_root = _resolve_logger_rec_root()
                 if os.path.isdir(rec_root):
-                    _set_progress("Adding logger recordings (this may take a while)…")
-                    # Store the original path so restore knows where to put them back
+                    _update("Scanning logger recordings…")
+                    rec_entries = _scan_dir(rec_root)
+                    rec_total   = len(rec_entries)
+                    rec_bytes   = sum(s for _, s in rec_entries)
                     meta = json.dumps({"logger_rec_root": rec_root}).encode()
                     zf.writestr("_backup_meta.json", meta)
-                    for root, _dirs, files in os.walk(rec_root):
-                        for fname in files:
-                            full = os.path.join(root, fname)
-                            rel  = os.path.relpath(full, rec_root)
-                            arc  = "logger_recordings/" + rel.replace(os.sep, "/")
-                            zf.write(full, arc, compress_type=zipfile.ZIP_STORED)
+                    _update(
+                        f"Adding logger recordings: 0 / {rec_total:,}  ({_fmt_size(rec_bytes)} total)",
+                        0, rec_total,
+                    )
+                    last_upd = _time.monotonic(); done_bytes = 0
+                    for i, (full, sz) in enumerate(rec_entries, 1):
+                        rel = os.path.relpath(full, rec_root)
+                        arc = "logger_recordings/" + rel.replace(os.sep, "/")
+                        zf.write(full, arc, compress_type=zipfile.ZIP_STORED)
+                        done_bytes += sz
+                        now = _time.monotonic()
+                        if now - last_upd >= 1.0 or i == rec_total:
+                            pct = round(100 * i / rec_total) if rec_total else 100
+                            _update(
+                                f"Adding logger recordings: {i:,} / {rec_total:,} ({pct}%)  "
+                                f"· {_fmt_size(done_bytes)} of {_fmt_size(rec_bytes)}",
+                                i, rec_total,
+                            )
+                            last_upd = now
 
         size_mb = round(os.path.getsize(out_path) / (1024 * 1024), 1)
         with _backup_jobs_lock:
-            _backup_jobs[job_id].update({"status": "done", "size_mb": size_mb,
-                                          "path": out_path, "filename": filename})
+            _backup_jobs[job_id].update({"status": "done", "size_mb": size_mb, "zip_mb": size_mb,
+                                          "path": out_path, "filename": filename,
+                                          "files_done": None, "files_total": None})
     except Exception as exc:
         try: os.unlink(out_path)
         except: pass

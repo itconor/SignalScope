@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.150] - 2026-04-03
+
+### Improved
+- **Richer backup progress for audio phases** — the save-to-disk job now pre-scans each audio directory before adding files, so it knows both the file count and total bytes in advance. Progress messages show exact counts and data volumes: `Adding logger recordings: 1,234 / 8,640 (14%) · 4.21 GB of 31.50 GB`. A live progress bar appears below the message and grows as files are written. Current ZIP size on disk is shown at all times (`ZIP on disk: 3.8 GB`). Progress updates every 1 second (was: one static message per phase). Poll interval reduced from 2 s to 1 s for snappier feedback.
+
+---
+
 ## [3.4.149] - 2026-04-03
 
 ### Added
