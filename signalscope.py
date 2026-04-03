@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.137"
+BUILD                  = "SignalScope-3.4.138"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -31627,13 +31627,7 @@ function _loadTrends() {
       .catch(function(){});
   });
 }
-// Re-apply cached trends after each hubRefresh (survives AJAX card updates)
-var _origHubRefresh = hubRefresh;
-hubRefresh = function(){
-  return _origHubRefresh.apply(this, arguments).then
-    ? _origHubRefresh.apply(this, arguments)
-    : _origHubRefresh.apply(this, arguments);
-};
+// (trend re-apply is handled by the wrapper below via .finally)
 // Load trends once on page ready, then every 5 minutes
 setTimeout(_loadTrends, 1200);
 setInterval(_loadTrends, 300000);
@@ -31651,12 +31645,6 @@ setInterval(_loadTrends, 300000);
     return p;
   };
 })();
-// Start live polling immediately — don't wait for DOMContentLoaded.
-// _livePoll guards every getElementById with if(el), so calling before body
-// elements exist is safe: the first response arrives while the body is still
-// parsing, subsequent 150 ms ticks pick up elements as they appear.
-// The DOMContentLoaded listener below is a no-op if _liveActive is already true.
-_startLiveView();
 </script>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body data-live-view="{{live_view}}">
 {{ topnav("hub") }}

@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.138] - 2026-04-03
+
+### Fixed
+- **Hub Play button broken after 3.4.137** — Two regressions introduced by the previous commit:
+  1. The `_startLiveView()` call added to the `<head>` script fired 150 ms live-level polls before any HTML was in the DOM. On page load this flooded the browser connection pool with concurrent fetches, so the `_hubGuardPlay` auth pre-flight fetch queued behind them and never resolved — the player callback never fired. Reverted: `_startLiveView()` is called only in `DOMContentLoaded` where it was before.
+  2. The trend-reapply `hubRefresh` wrapper (`var _origHubRefresh = hubRefresh; hubRefresh = function(){ return _origHubRefresh.apply(this,arguments).then ? … }`) called `.then` directly on the return value of `hubRefresh`, which returns `undefined`. This threw `TypeError: Cannot read properties of undefined (reading 'then')` on every single structural refresh, generating a noisy exception storm in the console. The broken wrapper was removed — the second wrapper (lines below) already handles trend reapplication correctly via `.finally`.
+
+---
+
 ## [3.4.137] - 2026-04-03
 
 ### Fixed
