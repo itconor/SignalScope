@@ -1349,6 +1349,7 @@ function _bkGetCsrf(){
   return (document.querySelector('meta[name="csrf-token"]')||{}).content
       || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
 }
+var _bkRestoreResult = null;  // shared result div for restore feedback
 function bkLoadList(){
   fetch('/settings/backup/list').then(function(r){return r.json();}).then(function(d){
     var wrap=document.getElementById('bk-list-wrap');
@@ -1359,10 +1360,39 @@ function bkLoadList(){
       return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bor);flex-wrap:wrap">'
         +'<span style="flex:1;font-family:monospace;font-size:11px;color:var(--acc);word-break:break-all">'+f.path+'</span>'
         +'<span style="font-size:11px;color:var(--mu);white-space:nowrap">'+f.size_mb+' MB &nbsp; '+f.mtime+'</span>'
+        +'<button class="btn bg bs bk-restore-btn" data-filename="'+f.filename+'">↩ Restore</button>'
         +'<button class="btn bd bs bk-del-btn" data-filename="'+f.filename+'">🗑</button>'
         +'</div>';
-    }).join('');
+    }).join('')
+    +'<div id="bk-restore-result" style="display:none;margin-top:10px;padding:12px 14px;background:#0a1e3a;border:1px solid var(--bor);border-radius:8px;font-size:12px"></div>';
   }).catch(function(){});
+}
+function bkPollRestore(jobId, btn){
+  var res = document.getElementById('bk-restore-result');
+  if(!res) return;
+  fetch('/settings/restore/job/'+jobId).then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){
+      res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Poll error');
+      if(btn){btn.disabled=false;btn.textContent='↩ Restore';}return;
+    }
+    if(d.status==='running'){
+      var pct=(d.files_total&&d.files_done!=null)?Math.round(100*d.files_done/d.files_total):null;
+      var bar=pct!==null
+        ?'<div style="margin:6px 0 2px;height:6px;background:#0d2346;border-radius:3px;overflow:hidden">'
+          +'<div style="width:'+pct+'%;height:100%;background:var(--ok);transition:width .4s"></div></div>':' ';
+      res.style.color='var(--acc)';res.innerHTML='⏳ '+d.progress+bar;
+      setTimeout(function(){bkPollRestore(jobId,btn);},1000);
+    } else if(d.status==='done'){
+      res.style.color='var(--ok)';res.textContent='✓ '+d.message;
+      if(btn){btn.disabled=false;btn.textContent='↩ Restore';}
+    } else {
+      res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Unknown error');
+      if(btn){btn.disabled=false;btn.textContent='↩ Restore';}
+    }
+  }).catch(function(e){
+    if(res){res.style.color='var(--al)';res.textContent='✗ Poll failed: '+e.message;}
+    if(btn){btn.disabled=false;btn.textContent='↩ Restore';}
+  });
 }
 function bkPollJob(jobId, btn, res){
   fetch('/settings/backup/job/'+jobId).then(function(r){return r.json();}).then(function(d){
@@ -1411,6 +1441,33 @@ document.getElementById('bk-save-btn').addEventListener('click', function(){
   .catch(function(e){res.style.color='var(--al)';res.textContent='✗ Request failed: '+e.message;btn.disabled=false;btn.textContent='💾 Save to disk (SSH)';});
 });
 document.getElementById('bk-list-wrap').addEventListener('click', function(e){
+  // Restore button
+  var rbtn=e.target.closest('.bk-restore-btn');
+  if(rbtn){
+    var fname=rbtn.dataset.filename;
+    if(!confirm('Restore from '+fname+'?\n\nThis will overwrite your current config, databases and any audio files included in this backup. Monitoring will restart automatically.')) return;
+    rbtn.disabled=true; rbtn.textContent='⏳ Restoring…';
+    // Show/clear result area
+    var res=document.getElementById('bk-restore-result');
+    if(res){res.style.display='block';res.style.color='var(--acc)';res.textContent='Starting restore…';}
+    fetch('/settings/restore/from_disk',{method:'POST',
+      headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'},
+      body:JSON.stringify({filename:fname})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){ bkPollRestore(d.job_id, rbtn); }
+      else {
+        if(res){res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Failed to start');}
+        rbtn.disabled=false; rbtn.textContent='↩ Restore';
+      }
+    })
+    .catch(function(e){
+      if(res){res.style.color='var(--al)';res.textContent='✗ Request failed: '+e.message;}
+      rbtn.disabled=false; rbtn.textContent='↩ Restore';
+    });
+    return;
+  }
+  // Delete button
   var btn=e.target.closest('.bk-del-btn');
   if(!btn) return;
   if(!confirm('Delete '+btn.dataset.filename+'?')) return;
@@ -2072,7 +2129,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.150"
+BUILD                  = "SignalScope-3.4.151"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -20009,155 +20066,131 @@ def settings_backup_delete():
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
-@app.post("/settings/restore")
-@login_required
-@admin_required
-@csrf_protect
-def settings_restore():
-    """Restore config + AI models + DBs from an uploaded backup ZIP.
-    The upload is saved to a temp file first so large ZIPs don't exhaust RAM."""
-    import zipfile, tempfile as _tf
-    f = request.files.get("backup_zip")
-    if not f or not f.filename:
-        flash("No file uploaded."); return redirect(url_for("settings"))
+def _do_restore_from_zip(zip_path: str, progress_cb=None) -> tuple:
+    """Core restore logic. Reads zip_path (already on disk), returns (parts, errors).
+    progress_cb(msg, done, total) is called periodically if provided."""
+    import zipfile as _zf
 
-    # Save the upload to disk — avoids reading multi-GB archives into RAM
-    tmp_zip = _tf.NamedTemporaryFile(suffix=".zip", delete=False, dir=BASE_DIR)
-    try:
-        f.save(tmp_zip.name)
+    def _prog(msg, done=None, total=None):
+        if progress_cb:
+            progress_cb(msg, done, total)
 
-        if not zipfile.is_zipfile(tmp_zip.name):
-            flash("Uploaded file is not a valid ZIP.")
-            return redirect(url_for("settings"))
+    restored_config     = False
+    restored_models     = 0
+    restored_db         = False
+    restored_logger_db  = False
+    restored_sla        = False
+    restored_alerts     = False
+    restored_hub        = False
+    restored_clips      = 0
+    restored_recordings = 0
+    errors = []
 
-        restored_config    = False
-        restored_models    = 0
-        restored_db        = False
-        restored_logger_db = False
-        restored_sla       = False
-        restored_alerts    = False
-        restored_hub       = False
-        restored_clips     = 0
-        restored_recordings = 0
-        errors = []
+    with _zf.ZipFile(zip_path) as zf:
+        entries   = zf.infolist()
+        n_entries = len(entries)
+        # Count audio entries upfront for progress
+        audio_entries = [e for e in entries
+                         if os.path.normpath(e.filename).startswith(("alert_snippets", "logger_recordings"))]
+        n_audio = len(audio_entries)
+        audio_done = 0
 
-        with zipfile.ZipFile(tmp_zip.name) as zf:
-            for entry in zf.infolist():
-                # Zip-slip guard: reject any entry with path traversal
-                entry_path = os.path.normpath(entry.filename)
-                if entry_path.startswith("..") or os.path.isabs(entry_path):
-                    errors.append(f"Skipped unsafe path: {entry.filename}")
+        _prog("Restoring config, models and databases…")
+
+        for i, entry in enumerate(entries):
+            entry_path = os.path.normpath(entry.filename)
+            if entry_path.startswith("..") or os.path.isabs(entry_path):
+                errors.append(f"Skipped unsafe path: {entry.filename}")
+                continue
+
+            if entry_path == "lwai_config.json":
+                raw = zf.read(entry)
+                try:   json.loads(raw)
+                except Exception:
+                    errors.append("lwai_config.json is not valid JSON — skipped.")
                     continue
+                with open(CONFIG_PATH, "wb") as fh: fh.write(raw)
+                try:   os.chmod(CONFIG_PATH, 0o600)
+                except OSError: pass
+                restored_config = True
 
-                if entry_path == "lwai_config.json":
-                    raw = zf.read(entry)
-                    try:
-                        json.loads(raw)  # validate JSON before writing
-                    except Exception:
-                        errors.append("lwai_config.json is not valid JSON — skipped.")
-                        continue
-                    with open(CONFIG_PATH, "wb") as fh:
-                        fh.write(raw)
-                    try:
-                        os.chmod(CONFIG_PATH, 0o600)
-                    except OSError:
-                        pass
-                    restored_config = True
+            elif entry_path.startswith("ai_models" + os.sep) or entry_path.startswith("ai_models/"):
+                dest = os.path.normpath(os.path.join(BASE_DIR, entry_path))
+                if not dest.startswith(os.path.abspath(BASE_DIR) + os.sep):
+                    errors.append(f"Skipped unsafe model path: {entry.filename}"); continue
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                if not entry.is_dir():
+                    with open(dest, "wb") as fh: fh.write(zf.read(entry))
+                    restored_models += 1
 
-                elif entry_path.startswith("ai_models" + os.sep) or entry_path.startswith("ai_models/"):
-                    dest = os.path.join(BASE_DIR, entry_path)
-                    dest = os.path.normpath(dest)
-                    # Confirm still inside BASE_DIR after normalization
-                    if not dest.startswith(os.path.abspath(BASE_DIR) + os.sep):
-                        errors.append(f"Skipped unsafe model path: {entry.filename}")
-                        continue
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    if not entry.is_dir():
-                        with open(dest, "wb") as fh:
-                            fh.write(zf.read(entry))
-                        restored_models += 1
+            elif entry_path == "metrics_history.db":
+                try:
+                    metrics_db._conn = None
+                    zf.extract(entry, BASE_DIR)
+                    restored_db = True
+                except Exception as e:
+                    errors.append(f"metrics_history.db restore failed: {e}")
 
-                elif entry_path == "metrics_history.db":
-                    try:
-                        # Close shared metrics_db connection before overwriting
-                        metrics_db._conn = None
-                        zf.extract(entry, BASE_DIR)   # extract directly to disk
-                        restored_db = True
-                    except Exception as e:
-                        errors.append(f"metrics_history.db restore failed: {e}")
+            elif entry_path == "logger_index.db":
+                _ldb_dir = os.path.join(BASE_DIR, _PLUGINS_SUBDIR)
+                os.makedirs(_ldb_dir, exist_ok=True)
+                try:
+                    zf.extract(entry, _ldb_dir)
+                    restored_logger_db = True
+                except Exception as e:
+                    errors.append(f"logger_index.db restore failed: {e}")
 
-                elif entry_path == "logger_index.db":
-                    _logger_db_dir = os.path.join(BASE_DIR, _PLUGINS_SUBDIR)
-                    os.makedirs(_logger_db_dir, exist_ok=True)
-                    try:
-                        zf.extract(entry, _logger_db_dir)
-                        restored_logger_db = True
-                    except Exception as e:
-                        errors.append(f"logger_index.db restore failed: {e}")
+            elif entry_path == "sla_data.json":
+                raw = zf.read(entry)
+                try:   json.loads(raw)
+                except Exception:
+                    errors.append("sla_data.json is not valid JSON — skipped."); continue
+                with open(SLA_PATH, "wb") as fh: fh.write(raw)
+                restored_sla = True
 
-                elif entry_path == "sla_data.json":
-                    raw = zf.read(entry)
-                    try:
-                        json.loads(raw)
-                    except Exception:
-                        errors.append("sla_data.json is not valid JSON — skipped.")
-                        continue
-                    with open(SLA_PATH, "wb") as fh:
-                        fh.write(raw)
-                    restored_sla = True
+            elif entry_path == "alert_log.json":
+                raw = zf.read(entry)
+                with _alert_log_lock:
+                    with open(ALERT_LOG_PATH, "wb") as fh: fh.write(raw)
+                restored_alerts = True
 
-                elif entry_path == "alert_log.json":
-                    raw = zf.read(entry)
-                    with _alert_log_lock:
-                        with open(ALERT_LOG_PATH, "wb") as fh:
-                            fh.write(raw)
-                    restored_alerts = True
+            elif entry_path == "hub_state.json":
+                raw = zf.read(entry)
+                try:   json.loads(raw)
+                except Exception:
+                    errors.append("hub_state.json is not valid JSON — skipped."); continue
+                with open(HUB_STATE_PATH, "wb") as fh: fh.write(raw)
+                restored_hub = True
 
-                elif entry_path == "hub_state.json":
-                    raw = zf.read(entry)
-                    try:
-                        json.loads(raw)
-                    except Exception:
-                        errors.append("hub_state.json is not valid JSON — skipped.")
-                        continue
-                    with open(HUB_STATE_PATH, "wb") as fh:
-                        fh.write(raw)
-                    restored_hub = True
+            elif entry_path.startswith("alert_snippets/") or entry_path.startswith("alert_snippets" + os.sep):
+                if entry.is_dir(): continue
+                dest = os.path.normpath(os.path.join(BASE_DIR, entry_path))
+                if not dest.startswith(os.path.abspath(BASE_DIR) + os.sep):
+                    errors.append(f"Skipped unsafe path: {entry.filename}"); continue
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as fh: fh.write(zf.read(entry))
+                restored_clips += 1
+                audio_done += 1
+                if n_audio:
+                    _prog(f"Restoring alert clips: {restored_clips:,} files…", audio_done, n_audio)
 
-                elif entry_path.startswith("alert_snippets/") or entry_path.startswith("alert_snippets" + os.sep):
-                    if entry.is_dir():
-                        continue
-                    dest = os.path.normpath(os.path.join(BASE_DIR, entry_path))
-                    if not dest.startswith(os.path.abspath(BASE_DIR) + os.sep):
-                        errors.append(f"Skipped unsafe path: {entry.filename}")
-                        continue
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    with open(dest, "wb") as fh:
-                        fh.write(zf.read(entry))
-                    restored_clips += 1
-
-                elif entry_path.startswith("logger_recordings/") or entry_path.startswith("logger_recordings" + os.sep):
-                    if entry.is_dir():
-                        continue
-                    # Resolve the target recording root from current logger config
-                    _lr_root = _resolve_logger_rec_root()
-                    rel = entry_path[len("logger_recordings/"):]
-                    dest = os.path.normpath(os.path.join(_lr_root, rel))
-                    # Safety: must stay within the resolved rec_root
-                    if not dest.startswith(os.path.abspath(_lr_root) + os.sep):
-                        errors.append(f"Skipped unsafe recording path: {entry.filename}")
-                        continue
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    with open(dest, "wb") as fh:
-                        fh.write(zf.read(entry))
-                    restored_recordings += 1
-
-    finally:
-        try: os.unlink(tmp_zip.name)
-        except: pass
+            elif entry_path.startswith("logger_recordings/") or entry_path.startswith("logger_recordings" + os.sep):
+                if entry.is_dir(): continue
+                _lr_root = _resolve_logger_rec_root()
+                rel  = entry_path[len("logger_recordings/"):]
+                dest = os.path.normpath(os.path.join(_lr_root, rel))
+                if not dest.startswith(os.path.abspath(_lr_root) + os.sep):
+                    errors.append(f"Skipped unsafe recording path: {entry.filename}"); continue
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as fh: fh.write(zf.read(entry))
+                restored_recordings += 1
+                audio_done += 1
+                if n_audio:
+                    pct = round(100 * audio_done / n_audio)
+                    _prog(f"Restoring logger recordings: {restored_recordings:,} / {n_audio:,} ({pct}%)",
+                          audio_done, n_audio)
 
     if restored_config:
-        # Reload config and restart monitoring with restored settings
         try:
             new_cfg = load_config()
             monitor.app_cfg = new_cfg
@@ -20167,18 +20200,109 @@ def settings_restore():
             errors.append(f"Config reloaded but monitor restart failed: {e}")
 
     parts = []
-    if restored_config:       parts.append("config restored")
-    if restored_models:       parts.append(f"{restored_models} AI model file(s) restored")
-    if restored_db:           parts.append("metrics history DB restored")
-    if restored_logger_db:    parts.append("logger index DB restored")
-    if restored_sla:          parts.append("SLA data restored")
-    if restored_alerts:       parts.append("alert log restored")
-    if restored_hub:          parts.append("hub state restored")
-    if restored_clips:        parts.append(f"{restored_clips} alert clip(s) restored")
-    if restored_recordings:   parts.append(f"{restored_recordings} logger recording(s) restored")
-    if not parts:             parts.append("nothing recognised in ZIP")
+    if restored_config:     parts.append("config restored")
+    if restored_models:     parts.append(f"{restored_models} AI model file(s) restored")
+    if restored_db:         parts.append("metrics history DB restored")
+    if restored_logger_db:  parts.append("logger index DB restored")
+    if restored_sla:        parts.append("SLA data restored")
+    if restored_alerts:     parts.append("alert log restored")
+    if restored_hub:        parts.append("hub state restored")
+    if restored_clips:      parts.append(f"{restored_clips} alert clip(s) restored")
+    if restored_recordings: parts.append(f"{restored_recordings} logger recording(s) restored")
+    if not parts:           parts.append("nothing recognised in ZIP")
+    return parts, errors
+
+# Restore jobs (disk-based restore runs in background — full audio restores can take minutes)
+_restore_jobs: dict = {}
+_restore_jobs_lock = threading.Lock()
+
+def _run_restore_job(job_id: str, zip_path: str):
+    import time as _time
+    last_upd = [_time.monotonic()]
+
+    def _prog(msg, done=None, total=None):
+        now = _time.monotonic()
+        if now - last_upd[0] >= 1.0 or done == total:
+            upd = {"progress": msg}
+            if done  is not None: upd["files_done"]  = done
+            if total is not None: upd["files_total"] = total
+            with _restore_jobs_lock:
+                _restore_jobs[job_id].update(upd)
+            last_upd[0] = now
+
+    try:
+        parts, errors = _do_restore_from_zip(zip_path, progress_cb=_prog)
+        msg = "Restore complete: " + ", ".join(parts) + "."
+        if errors: msg += " Warnings: " + "; ".join(errors)
+        with _restore_jobs_lock:
+            _restore_jobs[job_id].update({"status": "done", "message": msg,
+                                           "files_done": None, "files_total": None})
+    except Exception as exc:
+        with _restore_jobs_lock:
+            _restore_jobs[job_id].update({"status": "error", "error": str(exc)})
+
+@app.post("/settings/restore/from_disk")
+@login_required
+@admin_required
+@csrf_protect
+def settings_restore_from_disk():
+    """Start a background restore from a saved backup in BACKUPS_DIR."""
+    import uuid as _uuid
+    filename = (request.json or {}).get("filename", "")
+    if not filename or "/" in filename or "\\" in filename or not filename.endswith(".zip"):
+        return jsonify({"ok": False, "error": "invalid filename"}), 400
+    zip_path = os.path.join(BACKUPS_DIR, filename)
+    if not os.path.isfile(zip_path):
+        return jsonify({"ok": False, "error": "file not found"}), 404
+
+    import zipfile as _zf
+    if not _zf.is_zipfile(zip_path):
+        return jsonify({"ok": False, "error": "not a valid ZIP"}), 400
+
+    job_id = _uuid.uuid4().hex
+    with _restore_jobs_lock:
+        _restore_jobs[job_id] = {"status": "running", "progress": "Starting restore…",
+                                  "files_done": None, "files_total": None,
+                                  "message": "", "error": ""}
+
+    threading.Thread(target=_run_restore_job, args=(job_id, zip_path),
+                     daemon=True, name=f"Restore-{job_id[:8]}").start()
+    return jsonify({"ok": True, "job_id": job_id})
+
+@app.get("/settings/restore/job/<job_id>")
+@login_required
+@admin_required
+def settings_restore_job(job_id):
+    with _restore_jobs_lock:
+        job = _restore_jobs.get(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "job not found"}), 404
+    return jsonify({"ok": True, **job})
+
+@app.post("/settings/restore")
+@login_required
+@admin_required
+@csrf_protect
+def settings_restore():
+    """Restore from an uploaded backup ZIP (browser upload path)."""
+    import zipfile as _zf, tempfile as _tf
+    f = request.files.get("backup_zip")
+    if not f or not f.filename:
+        flash("No file uploaded."); return redirect(url_for("settings"))
+
+    tmp_zip = _tf.NamedTemporaryFile(suffix=".zip", delete=False, dir=BASE_DIR)
+    try:
+        f.save(tmp_zip.name)
+        if not _zf.is_zipfile(tmp_zip.name):
+            flash("Uploaded file is not a valid ZIP.")
+            return redirect(url_for("settings"))
+        parts, errors = _do_restore_from_zip(tmp_zip.name)
+    finally:
+        try: os.unlink(tmp_zip.name)
+        except: pass
+
     msg = "Restore complete: " + ", ".join(parts) + "."
-    if errors:             msg += " Warnings: " + "; ".join(errors)
+    if errors: msg += " Warnings: " + "; ".join(errors)
     flash(msg)
     return redirect(url_for("settings"))
 

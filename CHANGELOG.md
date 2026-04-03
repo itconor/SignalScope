@@ -2,6 +2,14 @@
 
 ---
 
+## [3.4.151] - 2026-04-03
+
+### Added
+- **Restore from saved backup** — each saved backup in the on-disk list now has an "↩ Restore" button. Clicking it starts a background restore job (same polling pattern as the backup job) with live progress: "Restoring logger recordings: 1,234 / 8,640 (14%)". A confirmation dialog warns that config, databases and audio files will be overwritten and monitoring will restart. Progress bar and result message appear inline below the list.
+- Core restore logic extracted into `_do_restore_from_zip(zip_path, progress_cb)` helper — both the browser-upload path (`POST /settings/restore`) and the new disk path (`POST /settings/restore/from_disk`) call it, eliminating duplicated code. New routes: `POST /settings/restore/from_disk`, `GET /settings/restore/job/<job_id>`.
+
+---
+
 ## [3.4.150] - 2026-04-03
 
 ### Improved
