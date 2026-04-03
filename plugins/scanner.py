@@ -14,7 +14,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/scanner",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.3",
+    "version":  "1.0.4",
 }
 
 import hashlib
@@ -466,8 +466,19 @@ function doTune(freq){
       setStatus('connecting', 'Waiting for ' + fmt(freq) + ' MHz\u2026');
       _lastHistPs = ''; _lastHistFreq = freq;
       _saveHistory(freq, '');
-    } else { freqSub.textContent = 'Tune failed'; }
-  }).catch(function(){ freqSub.textContent = 'Network error'; });
+    } else {
+      // Tune failed — stop cleanly and restart the stream to the requested
+      // frequency.  This is equivalent to what the user would do manually
+      // (disconnect → connect) but happens automatically.
+      freqSub.textContent = 'Tune failed \u2014 restarting\u2026';
+      doStop();
+      setTimeout(function(){ if(siteSel.value) doStart(freq); }, 800);
+    }
+  }).catch(function(){
+    freqSub.textContent = 'Network error \u2014 restarting\u2026';
+    doStop();
+    setTimeout(function(){ if(siteSel.value) doStart(freq); }, 800);
+  });
 }
 
 function doStop(){
@@ -847,17 +858,28 @@ scanBtn.addEventListener('click', function(){
   }).then(function(r){ return r.json(); }).then(function(d){
     if(!d.ok){
       stopScanPoll();
-      scanBtn.disabled = _scanPending || !siteSel.value;
-      document.getElementById('scan-status').style.display = 'none';
-      alert('Band scan failed: ' + (d.error || '?'));
+      var scanStatus = document.getElementById('scan-status');
+      scanStatus.style.display = 'block';
+      scanStatus.textContent = 'Scan failed: ' + (d.error || 'unknown error') + ' — press Connect to resume.';
+      scanStatus.style.color = 'var(--al)';
+      setTimeout(function(){
+        scanStatus.style.display = 'none';
+        scanStatus.style.color = '';
+      }, 6000);
       return;
     }
     _scanPoll = setInterval(function(){ _pollScan(site); }, 3000);
     setTimeout(function(){ _pollScan(site); }, 1000);
   }).catch(function(){
     stopScanPoll();
-    scanBtn.disabled = _scanPending || !siteSel.value;
-    document.getElementById('scan-status').style.display = 'none';
+    var scanStatus = document.getElementById('scan-status');
+    scanStatus.style.display = 'block';
+    scanStatus.textContent = 'Scan failed: network error — press Connect to resume.';
+    scanStatus.style.color = 'var(--al)';
+    setTimeout(function(){
+      scanStatus.style.display = 'none';
+      scanStatus.style.color = '';
+    }, 6000);
   });
 });
 function _pollScan(site){

@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.133] - 2026-04-02
+
+### Plugins
+- **FM Scanner v1.0.4** — fixed two state-machine stuck states that required disconnect/reconnect to recover: (1) Re-tune failure (`doTune()` returning `!ok`) only set `freqSub` to "Tune failed" but left `_state` in `'streaming'`/`'connecting'` with a stale audio slot — the stream appeared live but no audio was flowing. Fix: on any tune failure, call `doStop()` then auto-restart to the requested frequency after 800 ms (mirrors what the user was doing manually). (2) Band scan failure showed a blocking `alert()` then left the status as "Idle — pick a site and connect" with no indication of why or what to do next. Fix: replaced `alert()` with an inline red message in the scan-status area ("Scan failed: … — press Connect to resume") that auto-clears after 6 seconds.
+
+---
+
 ## [3.4.132] - 2026-04-02
 
 ### Fixed
