@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.146"
+BUILD                  = "SignalScope-3.4.147"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -2257,6 +2257,9 @@ class InputConfig:
     glitch_min_drop_rate_dbfs_s:  float = 22.0  # minimum dBFS/s fall rate to count as a glitch (onset AND recovery)
     glitch_floor_db:              float = 15.0   # dip must reach within this many dB of silence threshold (0=disabled)
     glitch_pre_trend_db:          float = 4.0    # reject if level already fell this many dB in 2-5 s before onset (0=disabled)
+
+    # FM output options
+    fm_force_mono:        bool = False  # always output mono regardless of pilot SNR
 
     # Expected identity — alert when actual name differs or changes
     expected_fm_rds_ps:   str = ""   # expected RDS Programme Service name; blank = alert on any change
@@ -2728,6 +2731,7 @@ def load_config() -> AppConfig:
             glitch_floor_db=float(item.get("glitch_floor_db", 15.0)),
             glitch_pre_trend_db=float(item.get("glitch_pre_trend_db", 4.0)),
             stereo=bool(item.get("stereo", False)),
+            fm_force_mono=bool(item.get("fm_force_mono", False)),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
     return AppConfig(
@@ -2882,6 +2886,7 @@ def save_config(cfg: AppConfig):
             "glitch_floor_db": i.glitch_floor_db,
             "glitch_pre_trend_db": i.glitch_pre_trend_db,
             "stereo": i.stereo,
+            "fm_force_mono": i.fm_force_mono,
         } for i in cfg.inputs],
         "email": {
             "enabled": cfg.email.enabled, "smtp_host": cfg.email.smtp_host,
@@ -8738,9 +8743,7 @@ class MonitorManager:
         cfg._fm_stereo        = bool(getattr(cfg,  "_fm_stereo",        False))
         cfg._fm_stereo_blend  = float(getattr(cfg, "_fm_stereo_blend",  0.0)    or 0.0)
         cfg._fm_rds_ok        = bool(getattr(cfg,  "_fm_rds_ok",        False))
-        # _fm_force_mono: user-toggled flag to suppress stereo output regardless of pilot
-        if not hasattr(cfg, "_fm_force_mono"):
-            cfg._fm_force_mono = False
+        # fm_force_mono is a persisted InputConfig field — no runtime init needed
         # Stereo blend thresholds (pilot SNR in dB)
         # Below _BLEND_LO → mono; above _BLEND_HI → full stereo; linear fade between.
         _BLEND_LO_DB = 14.0   # dB: enter full-mono below this
@@ -8913,7 +8916,7 @@ class MonitorManager:
                     # contaminating the L-R channel with L+R content (R-channel distortion).
                     # Blend is applied EXTERNALLY after the call using mono_48 as reference.
                     _stereo_blend = float(getattr(cfg, "_fm_stereo_blend", 0.0))
-                    _force_mono   = bool(getattr(cfg, "_fm_force_mono", False))
+                    _force_mono   = bool(cfg.fm_force_mono)
                     if cfg._fm_stereo and _stereo_zi is not None:
                         try:
                             L_48, R_48 = _mpx_to_stereo(samp)
@@ -11008,7 +11011,7 @@ class HubClient:
                 "fm_signal_dbm":     round(inp._fm_signal_dbm, 1),
                 "fm_snr_db":         round(inp._fm_snr_db, 1),
                 "fm_stereo":         inp._fm_stereo,
-                "fm_force_mono":     bool(getattr(inp, "_fm_force_mono", False)),
+                "fm_force_mono":     bool(inp.fm_force_mono),
                 "fm_rds_ps":         inp._fm_rds_ps,
                 "expected_fm_rds_ps": inp.expected_fm_rds_ps,
                 "fm_rds_rt":         getattr(inp, "_fm_rds_rt", ""),
@@ -15987,14 +15990,11 @@ main{padding:16px;max-width:1440px;margin:0 auto}
             <span class="rv" id="fm_rds_{{idx}}" style="color:{% if inp._fm_rds_ok %}var(--ok){% else %}var(--mu){% endif %};font-size:11px">{{ inp._fm_rds_ps or (inp._fm_rds_status|default('No lock', true)) }}</span></div>
           <div class="row"><span class="rl">Text</span>
             <span class="rv" id="fm_rt_{{idx}}" style="font-size:11px">{{ inp._fm_rds_rt or '—' }}</span></div>
-          <div class="row" style="margin-top:6px">
-            <button class="btn {%if inp._fm_force_mono|default(False)%}bd{%else%}bg{%endif%} bs fm-force-mono-btn"
-                    data-idx="{{idx}}"
-                    id="fm_fmono_{{idx}}"
-                    title="Force all stereo FM output to mono (runtime only, resets on monitor restart)">
-              {%if inp._fm_force_mono|default(False)%}🔇 Mono forced{%else%}⇌ Force Mono{%endif%}
-            </button>
+          {%if inp.fm_force_mono%}
+          <div class="row" style="margin-top:4px">
+            <span style="font-size:11px;color:var(--wn)">🔇 Force Mono active — <a href="/inputs/{{idx}}/edit" style="color:var(--acc)">change in input config</a></span>
           </div>
+          {%endif%}
         </details>
         {% endif %}
       </div>
@@ -16426,13 +16426,6 @@ function updateCards(inputs){
         if(fmRt){ fmRt.textContent = inp.fm_rds_rt || '—'; }
         fmRds.style.color = inp.fm_rds_ok ? 'var(--ok)' : (inp.fm_rds_status && inp.fm_rds_status.indexOf('Detect')===0 ? 'var(--wn)' : 'var(--mu)');
       }
-      // Sync force-mono button state from server
-      var fmMono = document.getElementById('fm_fmono_'+idx);
-      if(fmMono && inp.fm_force_mono !== undefined && !fmMono.disabled){
-        var on = inp.fm_force_mono;
-        fmMono.textContent = on ? '🔇 Mono forced' : '⇌ Force Mono';
-        fmMono.className = 'btn ' + (on ? 'bd' : 'bg') + ' bs fm-force-mono-btn';
-      }
     }
 
     // AI badge
@@ -16631,25 +16624,6 @@ function toggleClips(idx){
   if(arrow) arrow.textContent=open?'▼':'▶';
   if(open) loadClips(idx,streamName);
 }
-
-// ── Force Mono toggle (FM inputs) ──────────────────────────────────────────
-document.addEventListener('click', function(e){
-  var fmBtn = e.target.closest('.fm-force-mono-btn');
-  if(!fmBtn) return;
-  var idx = fmBtn.dataset.idx;
-  fmBtn.disabled = true;
-  _csrfFetch('/api/fm/force_mono/'+idx, {method:'POST'})
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      if(d.ok){
-        var on = d.force_mono;
-        fmBtn.textContent = on ? '🔇 Mono forced' : '⇌ Force Mono';
-        fmBtn.className = 'btn ' + (on ? 'bd' : 'bg') + ' bs fm-force-mono-btn';
-      }
-    })
-    .catch(function(){})
-    .finally(function(){ fmBtn.disabled = false; });
-});
 
 // ── Event delegation for data-action buttons (CSP-safe, no inline onclick) ──
 document.addEventListener('click', function(e){
@@ -17981,6 +17955,11 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
         <input type="text" name="expected_fm_rds_ps" value="{{inp.expected_fm_rds_ps}}" maxlength="8" placeholder="e.g. COOL FM" style="width:180px;margin-top:4px;padding:6px 10px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:13px;text-transform:uppercase" oninput="this.value=this.value.toUpperCase()">
       </label>
       <p class="help">Up to 8 characters — the station name shown on car radios. Leave blank to alert on any name change without requiring a specific name.</p>
+      <div class="cr" style="margin-top:10px">
+        <input type="checkbox" name="fm_force_mono" id="inp_fm_force_mono" value="1" {{'checked' if inp.fm_force_mono}}>
+        <label for="inp_fm_force_mono" style="margin:0;text-transform:none;font-size:13px;font-weight:500;color:var(--tx)">Force mono output</label>
+      </div>
+      <p class="help">Always output mono regardless of pilot SNR. Useful for marginal-coverage or multipath-affected dongles where blended stereo remains audibly distorted.</p>
     </div>
   </div>
 
@@ -19281,6 +19260,7 @@ def _inp_from_form(f):
         glitch_floor_db=float(f.get("glitch_floor_db") or 0.0),
         glitch_pre_trend_db=float(f.get("glitch_pre_trend_db") or 0.0),
         stereo=bool(f.get("stereo")),
+        fm_force_mono=bool(f.get("fm_force_mono")),
     )
 
 @app.route("/inputs/add", methods=["GET","POST"])
@@ -19383,21 +19363,6 @@ def ai_retrain(idx):
         else:
             flash(f"Retrain flagged for '{name}' — starts on next monitoring start.")
     return redirect(url_for("index"))
-
-@app.post("/api/fm/force_mono/<int:idx>")
-@login_required
-@csrf_protect
-def fm_force_mono_toggle(idx):
-    """Toggle force-mono mode for an FM input (runtime flag, not persisted)."""
-    inps = monitor.app_cfg.inputs
-    if 0 <= idx < len(inps):
-        cfg = inps[idx]
-        if not hasattr(cfg, "_fm_force_mono"):
-            cfg._fm_force_mono = False
-        cfg._fm_force_mono = not cfg._fm_force_mono
-        state = bool(cfg._fm_force_mono)
-        return jsonify({"ok": True, "force_mono": state})
-    return jsonify({"ok": False, "error": "bad index"}), 400
 
 @app.post("/settings/test-notify")
 @login_required

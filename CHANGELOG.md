@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.147] - 2026-04-03
+
+### Changed
+- **FM Force Mono is now a persisted input config option** — moved from a runtime-only toggle button (lost on restart) to a proper checkbox in the input configuration page (Settings → Inputs → Edit). The setting is saved to `config.json` and applied permanently on every monitoring start. When active, a small notice ("🔇 Force Mono active") appears on the client status page with a link to the input config to change it. The runtime API endpoint (`POST /api/fm/force_mono/<idx>`) and its JS toggle handler have been removed.
+
+---
+
 ## [3.4.146] - 2026-04-03
 
 ### Fixed
