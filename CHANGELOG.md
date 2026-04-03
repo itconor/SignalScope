@@ -2,6 +2,19 @@
 
 ---
 
+## [3.4.144] - 2026-04-03
+
+### Fixed
+- **FM stereo right channel distorted on weak/marginal signals** — on fringe coverage or multipath conditions the pilot SNR is low, producing a noisy `sub38` 38 kHz carrier (via `2·cos²(θ)−1` frequency doubling). That noise gets multiplied through the full MPX and is *subtracted* in the R channel matrix (`L+R − noisy·L-R`). Because subtraction amplifies relative noise more than addition, the R channel becomes a distorted mess while the L channel still sounds like programme. This is a known FM tuner problem; the standard solution is **stereo blend/fade**:
+  - `_fm_stereo_blend` — new per-stream attribute (0.0 = full mono, 1.0 = full stereo) updated each MPX block from the pilot FFT SNR measurement
+  - Below 14 dB pilot SNR: blend = 0.0 → pure mono (L channel copy to both sides)
+  - Above 26 dB pilot SNR: blend = 1.0 → full stereo
+  - 14–26 dB: blend rises linearly — smooth fade, no hard switching
+  - Block-level pilot amplitude threshold raised from 0.005 to 0.02 (requires a cleaner pilot before attempting sub38 generation)
+  - `_mpx_to_stereo` now accepts a `blend` parameter and scales the L-R component by it before the matrix; when blend reaches 0.0 both channels receive the identical L+R mono signal
+
+---
+
 ## [3.4.143] - 2026-04-03
 
 ### Fixed

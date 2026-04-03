@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.143"
+BUILD                  = "SignalScope-3.4.144"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -8733,10 +8733,15 @@ class MonitorManager:
         out_buf   = np.empty(0, dtype=np.float32)
         out_buf_L = np.empty(0, dtype=np.float32)   # stereo L channel (parallel to out_buf)
         out_buf_R = np.empty(0, dtype=np.float32)   # stereo R channel
-        cfg._fm_signal_dbm = float(getattr(cfg, "_fm_signal_dbm", -120.0) or -120.0)
-        cfg._fm_snr_db = float(getattr(cfg, "_fm_snr_db", 0.0) or 0.0)
-        cfg._fm_stereo = bool(getattr(cfg, "_fm_stereo", False))
-        cfg._fm_rds_ok = bool(getattr(cfg, "_fm_rds_ok", False))
+        cfg._fm_signal_dbm    = float(getattr(cfg, "_fm_signal_dbm",    -120.0) or -120.0)
+        cfg._fm_snr_db        = float(getattr(cfg, "_fm_snr_db",        0.0)    or 0.0)
+        cfg._fm_stereo        = bool(getattr(cfg,  "_fm_stereo",        False))
+        cfg._fm_stereo_blend  = float(getattr(cfg, "_fm_stereo_blend",  0.0)    or 0.0)
+        cfg._fm_rds_ok        = bool(getattr(cfg,  "_fm_rds_ok",        False))
+        # Stereo blend thresholds (pilot SNR in dB)
+        # Below _BLEND_LO → mono; above _BLEND_HI → full stereo; linear fade between.
+        _BLEND_LO_DB = 14.0   # dB: enter full-mono below this
+        _BLEND_HI_DB = 26.0   # dB: full stereo above this
 
         try:
             from scipy.signal import resample_poly
@@ -8766,35 +8771,44 @@ class MonitorManager:
                 self.log(f"[{name}] FM stereo decoder init failed ({_ste}) — mono only")
                 _stereo_zi = None
 
-        def _mpx_to_stereo(samp: np.ndarray):
+        def _mpx_to_stereo(samp: np.ndarray, blend: float = 1.0):
             """Decode FM stereo from 171 kHz float32 MPX → (L_48k, R_48k).
+
+            blend: 0.0 = mono (suppress L-R entirely), 1.0 = full stereo.
+            Intermediate values smoothly reduce stereo separation so that weak-
+            pilot / marginal-signal conditions fade gracefully to mono rather than
+            producing a distorted right channel.
 
             Steps:
               1. Low-pass 0–15 kHz  → L+R
               2. Band-pass 17–21 kHz → 19 kHz pilot
               3. Normalise pilot; freq-double → 38 kHz subcarrier
               4. Multiply MPX × sub38; low-pass → L-R
-              5. Matrix: L=(L+R)+(L-R), R=(L+R)-(L-R)
-              6. Resample 171 kHz → 48 kHz via resample_poly(16, 57)
+              5. Scale L-R by blend factor
+              6. Matrix: L=(L+R)+(L-R), R=(L+R)-(L-R)
+              7. Resample 171 kHz → 48 kHz via resample_poly(16, 57)
             """
             from scipy.signal import sosfilt as _sosf, resample_poly as _rp
             st = _stereo_zi
             lpr,   st["zi_lpr"]   = _sosf(st["sos_lpr"],   samp, zi=st["zi_lpr"])
             pilot, st["zi_pilot"] = _sosf(st["sos_pilot"],  samp, zi=st["zi_pilot"])
             pilot_peak = float(np.max(np.abs(pilot)))
-            if pilot_peak > 0.005:
+            if pilot_peak > 0.02:   # ≥0.02 (was 0.005) — require a reasonably clean pilot
                 # cos(2θ) = 2·cos²(θ) − 1 — doubles pilot freq to 38 kHz subcarrier
                 pilot_n = pilot / (pilot_peak + 1e-9)
                 sub38   = 2.0 * pilot_n ** 2 - 1.0
                 lmr_raw = samp * sub38
                 lmr, st["zi_lmr"] = _sosf(st["sos_lmr"], lmr_raw, zi=st["zi_lmr"])
             else:
-                # No pilot — dual-mono; advance zi to keep state valid
+                # Pilot too weak/noisy — dual-mono; advance zi to keep state valid
                 _, st["zi_lmr"] = _sosf(st["sos_lmr"], np.zeros_like(samp), zi=st["zi_lmr"])
                 lmr = np.zeros_like(lpr)
-            # ×2 compensates for DSB-SC demod amplitude halving
-            L_171 = np.clip(lpr + lmr * 2.0, -1.0, 1.0).astype(np.float32)
-            R_171 = np.clip(lpr - lmr * 2.0, -1.0, 1.0).astype(np.float32)
+                blend = 0.0   # force mono if block-level pilot is absent
+            # ×2 compensates for DSB-SC demod amplitude halving.
+            # blend scales L-R toward zero as signal quality drops.
+            lmr_scaled = lmr * (2.0 * blend)
+            L_171 = np.clip(lpr + lmr_scaled, -1.0, 1.0).astype(np.float32)
+            R_171 = np.clip(lpr - lmr_scaled, -1.0, 1.0).astype(np.float32)
             L_48  = _rp(L_171, 16, 57).astype(np.float32)
             R_48  = _rp(R_171, 16, 57).astype(np.float32)
             return L_48, R_48
@@ -8840,6 +8854,12 @@ class MonitorManager:
                 pilot_db = 20.0 * np.log10((pilot + 1e-12) / (noise + 1e-12))
                 cfg._fm_snr_db = float(max(0.0, pilot_db))
                 cfg._fm_stereo = bool(pilot_db >= 8.0)
+                # Stereo blend: 0.0 (mono) → 1.0 (full stereo), linear between thresholds.
+                # This causes the decoder to fade gracefully toward mono on weak signals
+                # rather than producing a noisy, distorted R channel.
+                _blend = max(0.0, min(1.0,
+                    (pilot_db - _BLEND_LO_DB) / max(1.0, _BLEND_HI_DB - _BLEND_LO_DB)))
+                cfg._fm_stereo_blend = float(_blend)
 
                 # FM frequency deviation — Ofcom limit: ±75 kHz
                 # samples_f32 is discriminator output: ±1.0 = ±(IN_RATE/2) Hz
@@ -8879,9 +8899,10 @@ class MonitorManager:
                     _update_mpx_metrics(samp)   # sets cfg._fm_stereo based on pilot level
 
                     # ── Stereo MPX decode (when pilot detected + scipy available) ──
-                    if cfg._fm_stereo and _stereo_zi is not None:
+                    _stereo_blend = float(getattr(cfg, "_fm_stereo_blend", 0.0))
+                    if cfg._fm_stereo and _stereo_zi is not None and _stereo_blend > 0.0:
                         try:
-                            L_48, R_48 = _mpx_to_stereo(samp)
+                            L_48, R_48 = _mpx_to_stereo(samp, blend=_stereo_blend)
                             mono_48 = ((L_48 + R_48) * 0.5).astype(np.float32)
                             # DC removal + clip (mirrors _mpx_to_audio)
                             L_48    = np.clip(L_48    - np.mean(L_48),    -1.0, 1.0)
