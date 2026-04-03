@@ -2,6 +2,16 @@
 
 ---
 
+## [3.4.149] - 2026-04-03
+
+### Added
+- **Full backup with audio** — "Include audio" checkbox next to the "Save to disk (SSH)" button. When checked, the backup ZIP also includes `alert_snippets/` (all alert WAV/MP3 clips) and the logger recordings directory (resolved from `plugins/logger_config.json` → `rec_dir`, defaulting to `plugins/logger_recordings/`). Audio files are stored uncompressed (`ZIP_STORED`) for speed. A full backup with months of recordings can be many GB and take several minutes.
+- **Background job with progress polling** — the save-to-disk backup now runs in a background thread. The browser receives a `job_id` immediately and polls `GET /settings/backup/job/<id>` every 2 seconds, showing live progress ("Writing config…", "Snapshotting metrics database…", "Adding logger recordings…"). The button stays disabled with a spinner until the job completes or errors.
+- **Restore includes audio** — `settings_restore` now recognises `alert_snippets/` and `logger_recordings/` entries in a full backup ZIP and restores them to the correct locations (alert clips → `BASE_DIR/alert_snippets/`; recordings → the current `rec_dir` configured in `logger_config.json`). The restore summary reports counts: "N alert clip(s) restored", "N logger recording(s) restored".
+- New route: `GET /settings/backup/job/<job_id>` — returns `{status, progress, filename, path, size_mb, error}`.
+
+---
+
 ## [3.4.148] - 2026-04-03
 
 ### Added

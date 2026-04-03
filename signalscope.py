@@ -974,7 +974,11 @@ document.addEventListener('DOMContentLoaded',function(){
   <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
     <a href="/settings/backup" class="btn bp" style="font-size:13px">⬇ Download Backup</a>
     <button type="button" id="bk-save-btn" class="btn bg" style="font-size:13px">💾 Save to disk (SSH)</button>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mu);margin:0;cursor:pointer">
+      <input type="checkbox" id="bk-full-chk"> Include audio (alert clips + logger recordings)
+    </label>
   </div>
+  <p class="help" style="margin-bottom:8px">A full backup with audio can be very large (many GB). The ZIP is built on the server — it may take several minutes for large recording archives. Progress is shown below.</p>
   <div id="bk-save-result" style="display:none;margin:10px 0;padding:12px 14px;background:#0a1e3a;border:1px solid var(--bor);border-radius:8px;font-size:12px"></div>
   <div id="bk-list-wrap" style="margin-top:14px;display:none">
     <div style="font-size:12px;color:var(--mu);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Saved backups on server</div>
@@ -1360,27 +1364,43 @@ function bkLoadList(){
     }).join('');
   }).catch(function(){});
 }
+function bkPollJob(jobId, btn, res){
+  fetch('/settings/backup/job/'+jobId).then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Poll error');btn.disabled=false;btn.textContent='💾 Save to disk (SSH)';return;}
+    if(d.status==='running'){
+      res.textContent='⏳ '+d.progress;
+      setTimeout(function(){bkPollJob(jobId,btn,res);},2000);
+    } else if(d.status==='done'){
+      res.style.color='var(--ok)';
+      res.innerHTML='✓ Saved <strong>'+d.filename+'</strong> ('+d.size_mb+' MB)<br>'
+        +'<span style="font-family:monospace;font-size:11px;color:var(--acc)">'+d.path+'</span><br>'
+        +'<span style="color:var(--mu);font-size:11px">scp server:'+d.path+' .</span>';
+      btn.disabled=false;btn.textContent='💾 Save to disk (SSH)';
+      bkLoadList();
+    } else {
+      res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Unknown error');
+      btn.disabled=false;btn.textContent='💾 Save to disk (SSH)';
+    }
+  }).catch(function(e){
+    res.style.color='var(--al)';res.textContent='✗ Poll failed: '+e.message;
+    btn.disabled=false;btn.textContent='💾 Save to disk (SSH)';
+  });
+}
 document.getElementById('bk-save-btn').addEventListener('click', function(){
   var btn=this, res=document.getElementById('bk-save-result');
-  btn.disabled=true; btn.textContent='⏳ Generating…';
+  var full=document.getElementById('bk-full-chk').checked;
+  btn.disabled=true; btn.textContent='⏳ Starting…';
   res.style.display='block'; res.style.color='var(--acc)';
-  res.textContent='Building ZIP — this may take a minute for large databases…';
-  fetch('/settings/backup/save',{method:'POST',headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'}})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if(d.ok){
-        res.style.color='var(--ok)';
-        res.innerHTML='✓ Saved <strong>'+d.filename+'</strong> ('+d.size_mb+' MB)<br>'
-          +'<span style="font-family:monospace;font-size:11px;color:var(--acc)">'+d.path+'</span><br>'
-          +'<span style="color:var(--mu);font-size:11px">scp server:'+d.path+' .</span>';
-        bkLoadList();
-      } else {
-        res.style.color='var(--al)';
-        res.textContent='✗ '+(d.error||'Unknown error');
-      }
-    })
-    .catch(function(e){res.style.color='var(--al)';res.textContent='✗ Request failed: '+e.message;})
-    .finally(function(){btn.disabled=false;btn.textContent='💾 Save to disk (SSH)';});
+  res.textContent='Submitting backup job…';
+  fetch('/settings/backup/save',{method:'POST',
+    headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'},
+    body:JSON.stringify({include_audio:full})})
+  .then(function(r){return r.json();})
+  .then(function(d){
+    if(d.ok){ bkPollJob(d.job_id,btn,res); }
+    else { res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Start failed');btn.disabled=false;btn.textContent='💾 Save to disk (SSH)'; }
+  })
+  .catch(function(e){res.style.color='var(--al)';res.textContent='✗ Request failed: '+e.message;btn.disabled=false;btn.textContent='💾 Save to disk (SSH)';});
 });
 document.getElementById('bk-list-wrap').addEventListener('click', function(e){
   var btn=e.target.closest('.bk-del-btn');
@@ -2044,7 +2064,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.148"
+BUILD                  = "SignalScope-3.4.149"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -19742,29 +19762,38 @@ def settings_backup():
         download_name=dl_name,
     )
 
-@app.post("/settings/backup/save")
-@login_required
-@admin_required
-@csrf_protect
-def settings_backup_save():
-    """Generate a backup ZIP on disk in BASE_DIR/backups/ — no browser download needed.
-    Returns JSON {ok, path, filename, size_mb} so the user can scp it off the server.
-    Avoids nginx proxy timeouts that occur when streaming large ZIPs to the browser."""
-    import zipfile, tempfile as _tf, sqlite3 as _sq3, datetime as _dt
-    os.makedirs(BACKUPS_DIR, exist_ok=True)
+# In-progress backup jobs: job_id → {status, path, filename, size_mb, error, progress}
+_backup_jobs: dict = {}
+_backup_jobs_lock = threading.Lock()
 
-    ts       = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"signalscope_backup_{ts}.zip"
-    out_path = os.path.join(BACKUPS_DIR, filename)
+def _resolve_logger_rec_root() -> str:
+    """Return the absolute path to the logger recordings directory.
+    Reads logger_config.json from the plugins/ subdir; falls back to default."""
+    cfg_path = os.path.join(BASE_DIR, _PLUGINS_SUBDIR, "logger_config.json")
+    try:
+        with open(cfg_path) as fh:
+            lcfg = json.load(fh)
+        raw = lcfg.get("rec_dir", "").strip()
+        if raw:
+            from pathlib import Path as _P
+            p = _P(raw)
+            if p.is_absolute():
+                return str(p)
+            return str((_P(BASE_DIR) / _PLUGINS_SUBDIR / p).resolve())
+    except Exception:
+        pass
+    return os.path.join(BASE_DIR, _PLUGINS_SUBDIR, "logger_recordings")
+
+def _run_backup_job(job_id: str, out_path: str, filename: str, include_audio: bool):
+    """Background thread: build the backup ZIP, then mark job done."""
+    import zipfile, tempfile as _tf, sqlite3 as _sq3
 
     def _safe_db_backup(src_path, arc_name, zf):
         tmp_db = _tf.NamedTemporaryFile(suffix=".db", delete=False)
         tmp_db.close()
         try:
-            src = _sq3.connect(src_path)
-            dst = _sq3.connect(tmp_db.name)
-            src.backup(dst)
-            dst.close(); src.close()
+            src = _sq3.connect(src_path); dst = _sq3.connect(tmp_db.name)
+            src.backup(dst); dst.close(); src.close()
             zf.write(tmp_db.name, arc_name)
         except Exception:
             try: zf.write(src_path, arc_name)
@@ -19773,7 +19802,12 @@ def settings_backup_save():
             try: os.unlink(tmp_db.name)
             except: pass
 
+    def _set_progress(msg):
+        with _backup_jobs_lock:
+            _backup_jobs[job_id]["progress"] = msg
+
     try:
+        _set_progress("Writing config and AI models…")
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
             if os.path.isfile(CONFIG_PATH):
                 zf.write(CONFIG_PATH, "lwai_config.json")
@@ -19782,24 +19816,95 @@ def settings_backup_save():
                     for fname in files:
                         full = os.path.join(root, fname)
                         zf.write(full, os.path.relpath(full, BASE_DIR))
+
+            _set_progress("Snapshotting metrics database…")
             if os.path.isfile(METRICS_DB_PATH):
                 _safe_db_backup(METRICS_DB_PATH, "metrics_history.db", zf)
+
             _logger_db = os.path.join(BASE_DIR, _PLUGINS_SUBDIR, "logger_index.db")
             if os.path.isfile(_logger_db):
                 _safe_db_backup(_logger_db, "logger_index.db", zf)
-            if os.path.isfile(SLA_PATH):
-                zf.write(SLA_PATH, "sla_data.json")
-            if os.path.isfile(ALERT_LOG_PATH):
-                zf.write(ALERT_LOG_PATH, "alert_log.json")
-            if os.path.isfile(HUB_STATE_PATH):
-                zf.write(HUB_STATE_PATH, "hub_state.json")
+
+            for src, arc in [(SLA_PATH, "sla_data.json"),
+                             (ALERT_LOG_PATH, "alert_log.json"),
+                             (HUB_STATE_PATH, "hub_state.json")]:
+                if os.path.isfile(src):
+                    zf.write(src, arc)
+
+            if include_audio:
+                # --- Alert clips (always relative to BASE_DIR) ---
+                snip_dir = os.path.join(BASE_DIR, "alert_snippets")
+                if os.path.isdir(snip_dir):
+                    _set_progress("Adding alert clips…")
+                    for root, _dirs, files in os.walk(snip_dir):
+                        for fname in files:
+                            full = os.path.join(root, fname)
+                            arc  = os.path.relpath(full, BASE_DIR)
+                            zf.write(full, arc, compress_type=zipfile.ZIP_STORED)
+
+                # --- Logger recordings ---
+                rec_root = _resolve_logger_rec_root()
+                if os.path.isdir(rec_root):
+                    _set_progress("Adding logger recordings (this may take a while)…")
+                    # Store the original path so restore knows where to put them back
+                    meta = json.dumps({"logger_rec_root": rec_root}).encode()
+                    zf.writestr("_backup_meta.json", meta)
+                    for root, _dirs, files in os.walk(rec_root):
+                        for fname in files:
+                            full = os.path.join(root, fname)
+                            rel  = os.path.relpath(full, rec_root)
+                            arc  = "logger_recordings/" + rel.replace(os.sep, "/")
+                            zf.write(full, arc, compress_type=zipfile.ZIP_STORED)
+
+        size_mb = round(os.path.getsize(out_path) / (1024 * 1024), 1)
+        with _backup_jobs_lock:
+            _backup_jobs[job_id].update({"status": "done", "size_mb": size_mb,
+                                          "path": out_path, "filename": filename})
     except Exception as exc:
         try: os.unlink(out_path)
         except: pass
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        with _backup_jobs_lock:
+            _backup_jobs[job_id].update({"status": "error", "error": str(exc)})
 
-    size_mb = round(os.path.getsize(out_path) / (1024 * 1024), 1)
-    return jsonify({"ok": True, "path": out_path, "filename": filename, "size_mb": size_mb})
+@app.post("/settings/backup/save")
+@login_required
+@admin_required
+@csrf_protect
+def settings_backup_save():
+    """Start a backup job (background thread).  Returns {job_id} immediately.
+    Poll GET /settings/backup/job/<job_id> for status."""
+    import datetime as _dt, uuid as _uuid
+    os.makedirs(BACKUPS_DIR, exist_ok=True)
+
+    data          = request.get_json(silent=True) or {}
+    include_audio = bool(data.get("include_audio", False))
+
+    ts       = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    suffix   = "_full" if include_audio else ""
+    filename = f"signalscope_backup{suffix}_{ts}.zip"
+    out_path = os.path.join(BACKUPS_DIR, filename)
+    job_id   = _uuid.uuid4().hex
+
+    with _backup_jobs_lock:
+        _backup_jobs[job_id] = {"status": "running", "progress": "Starting…",
+                                 "filename": filename, "path": out_path,
+                                 "size_mb": 0, "error": ""}
+
+    threading.Thread(target=_run_backup_job, args=(job_id, out_path, filename, include_audio),
+                     daemon=True, name=f"Backup-{job_id[:8]}").start()
+
+    return jsonify({"ok": True, "job_id": job_id})
+
+@app.get("/settings/backup/job/<job_id>")
+@login_required
+@admin_required
+def settings_backup_job(job_id):
+    """Poll the status of a running backup job."""
+    with _backup_jobs_lock:
+        job = _backup_jobs.get(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "job not found"}), 404
+    return jsonify({"ok": True, **job})
 
 @app.get("/settings/backup/list")
 @login_required
@@ -19872,6 +19977,8 @@ def settings_restore():
         restored_sla       = False
         restored_alerts    = False
         restored_hub       = False
+        restored_clips     = 0
+        restored_recordings = 0
         errors = []
 
         with zipfile.ZipFile(tmp_zip.name) as zf:
@@ -19957,6 +20064,34 @@ def settings_restore():
                         fh.write(raw)
                     restored_hub = True
 
+                elif entry_path.startswith("alert_snippets/") or entry_path.startswith("alert_snippets" + os.sep):
+                    if entry.is_dir():
+                        continue
+                    dest = os.path.normpath(os.path.join(BASE_DIR, entry_path))
+                    if not dest.startswith(os.path.abspath(BASE_DIR) + os.sep):
+                        errors.append(f"Skipped unsafe path: {entry.filename}")
+                        continue
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with open(dest, "wb") as fh:
+                        fh.write(zf.read(entry))
+                    restored_clips += 1
+
+                elif entry_path.startswith("logger_recordings/") or entry_path.startswith("logger_recordings" + os.sep):
+                    if entry.is_dir():
+                        continue
+                    # Resolve the target recording root from current logger config
+                    _lr_root = _resolve_logger_rec_root()
+                    rel = entry_path[len("logger_recordings/"):]
+                    dest = os.path.normpath(os.path.join(_lr_root, rel))
+                    # Safety: must stay within the resolved rec_root
+                    if not dest.startswith(os.path.abspath(_lr_root) + os.sep):
+                        errors.append(f"Skipped unsafe recording path: {entry.filename}")
+                        continue
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with open(dest, "wb") as fh:
+                        fh.write(zf.read(entry))
+                    restored_recordings += 1
+
     finally:
         try: os.unlink(tmp_zip.name)
         except: pass
@@ -19972,14 +20107,16 @@ def settings_restore():
             errors.append(f"Config reloaded but monitor restart failed: {e}")
 
     parts = []
-    if restored_config:    parts.append("config restored")
-    if restored_models:    parts.append(f"{restored_models} AI model file(s) restored")
-    if restored_db:        parts.append("metrics history DB restored")
-    if restored_logger_db: parts.append("logger index DB restored")
-    if restored_sla:       parts.append("SLA data restored")
-    if restored_alerts:    parts.append("alert log restored")
-    if restored_hub:       parts.append("hub state restored")
-    if not parts:          parts.append("nothing recognised in ZIP")
+    if restored_config:       parts.append("config restored")
+    if restored_models:       parts.append(f"{restored_models} AI model file(s) restored")
+    if restored_db:           parts.append("metrics history DB restored")
+    if restored_logger_db:    parts.append("logger index DB restored")
+    if restored_sla:          parts.append("SLA data restored")
+    if restored_alerts:       parts.append("alert log restored")
+    if restored_hub:          parts.append("hub state restored")
+    if restored_clips:        parts.append(f"{restored_clips} alert clip(s) restored")
+    if restored_recordings:   parts.append(f"{restored_recordings} logger recording(s) restored")
+    if not parts:             parts.append("nothing recognised in ZIP")
     msg = "Restore complete: " + ", ".join(parts) + "."
     if errors:             msg += " Warnings: " + "; ".join(errors)
     flash(msg)
