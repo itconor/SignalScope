@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.152] - 2026-04-03
+
+### Fixed
+- **Backup/restore poll error hardening** — all four fetch calls in the backup/restore panel (start backup, poll backup, start restore, poll restore) now check `r.redirected || !r.ok` before calling `r.json()`. If the server redirects to the login page (session expired) or returns a non-2xx status, the error message now reads "Session expired — reload page" or "HTTP 404" instead of Safari's cryptic "The string did not match the expected pattern." JSON parse error.
+
+---
+
 ## [3.4.151] - 2026-04-03
 
 ### Added

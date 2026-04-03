@@ -1370,7 +1370,10 @@ function bkLoadList(){
 function bkPollRestore(jobId, btn){
   var res = document.getElementById('bk-restore-result');
   if(!res) return;
-  fetch('/settings/restore/job/'+jobId).then(function(r){return r.json();}).then(function(d){
+  fetch('/settings/restore/job/'+jobId).then(function(r){
+    if(r.redirected||!r.ok) throw new Error(r.redirected?'Session expired — reload page':'HTTP '+r.status);
+    return r.json();
+  }).then(function(d){
     if(!d.ok){
       res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Poll error');
       if(btn){btn.disabled=false;btn.textContent='↩ Restore';}return;
@@ -1395,7 +1398,10 @@ function bkPollRestore(jobId, btn){
   });
 }
 function bkPollJob(jobId, btn, res){
-  fetch('/settings/backup/job/'+jobId).then(function(r){return r.json();}).then(function(d){
+  fetch('/settings/backup/job/'+jobId).then(function(r){
+    if(r.redirected||!r.ok) throw new Error(r.redirected?'Session expired — reload page':'HTTP '+r.status);
+    return r.json();
+  }).then(function(d){
     if(!d.ok){res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Poll error');btn.disabled=false;btn.textContent='💾 Save to disk (SSH)';return;}
     if(d.status==='running'){
       // Build rich progress display
@@ -1433,7 +1439,10 @@ document.getElementById('bk-save-btn').addEventListener('click', function(){
   fetch('/settings/backup/save',{method:'POST',
     headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'},
     body:JSON.stringify({include_audio:full})})
-  .then(function(r){return r.json();})
+  .then(function(r){
+    if(r.redirected||!r.ok) throw new Error(r.redirected?'Session expired — reload page':'HTTP '+r.status);
+    return r.json();
+  })
   .then(function(d){
     if(d.ok){ bkPollJob(d.job_id,btn,res); }
     else { res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Start failed');btn.disabled=false;btn.textContent='💾 Save to disk (SSH)'; }
@@ -1453,7 +1462,10 @@ document.getElementById('bk-list-wrap').addEventListener('click', function(e){
     fetch('/settings/restore/from_disk',{method:'POST',
       headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'},
       body:JSON.stringify({filename:fname})})
-    .then(function(r){return r.json();})
+    .then(function(r){
+      if(r.redirected||!r.ok) throw new Error(r.redirected?'Session expired — reload page':'HTTP '+r.status);
+      return r.json();
+    })
     .then(function(d){
       if(d.ok){ bkPollRestore(d.job_id, rbtn); }
       else {
@@ -2129,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.151"
+BUILD                  = "SignalScope-3.4.152"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
