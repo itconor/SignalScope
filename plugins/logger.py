@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.31",
+    "version": "1.5.32",
 }
 
 import datetime
@@ -3781,8 +3781,8 @@ _get('/api/logger/status').then(function(data){
 loadStatus();
 setInterval(loadStatus, 10000);
 setupAudio();
-if(_IS_HUB_NODE){ try{ checkHubMode(); }catch(e){ console.warn('[Logger] checkHubMode error',e); } }
 // Hub playback time tracking interval
+// Note: checkHubMode() is called after all hub-mode variables are declared (below).
 setInterval(function(){
   if(!_hubSite || !_hubPlayStart || !_selSeg) return;
   var wallPos = _hubPlayOffset + (Date.now() - _hubPlayStart) / 1000;
@@ -3898,6 +3898,8 @@ function checkHubMode(retryCount){
     }
   });
 }
+// All hub-mode variables and functions are now declared — safe to call checkHubMode().
+if(_IS_HUB_NODE){ try{ checkHubMode(); }catch(e){ console.warn('[Logger] checkHubMode error',e); } }
 
 document.getElementById('site-sel').addEventListener('change', function(){
   _hubSite = this.value;
