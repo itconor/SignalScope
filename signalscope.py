@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.153"
+BUILD                  = "SignalScope-3.4.154"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -19820,6 +19820,12 @@ def settings_backup():
             # Hub state
             if os.path.isfile(HUB_STATE_PATH):
                 zf.write(HUB_STATE_PATH, "hub_state.json")
+            # Chain notes / alert acks / alert feedback
+            for _src, _arc in [(CHAIN_NOTES_PATH,    "chain_notes.json"),
+                                (ALERT_ACKS_PATH,     "alert_acks.json"),
+                                (ALERT_FEEDBACK_PATH, "alert_feedback.json")]:
+                if os.path.isfile(_src):
+                    zf.write(_src, _arc)
     except Exception as exc:
         try: os.unlink(tmp_zip.name)
         except: pass
@@ -19928,9 +19934,12 @@ def _run_backup_job(job_id: str, out_path: str, filename: str, include_audio: bo
             if os.path.isfile(_users_path):
                 zf.write(_users_path, "signalscope_users.json")
 
-            for src, arc in [(SLA_PATH, "sla_data.json"),
-                             (ALERT_LOG_PATH, "alert_log.json"),
-                             (HUB_STATE_PATH, "hub_state.json")]:
+            for src, arc in [(SLA_PATH,            "sla_data.json"),
+                             (ALERT_LOG_PATH,       "alert_log.json"),
+                             (HUB_STATE_PATH,       "hub_state.json"),
+                             (CHAIN_NOTES_PATH,     "chain_notes.json"),
+                             (ALERT_ACKS_PATH,      "alert_acks.json"),
+                             (ALERT_FEEDBACK_PATH,  "alert_feedback.json")]:
                 if os.path.isfile(src):
                     zf.write(src, arc)
 
@@ -20154,7 +20163,19 @@ def _do_restore_from_zip(zip_path: str, progress_cb=None) -> tuple:
 
             elif entry_path == "metrics_history.db":
                 try:
-                    metrics_db._conn = None
+                    # Close the live connection properly before overwriting the file
+                    with metrics_db._lock:
+                        if metrics_db._conn is not None:
+                            try: metrics_db._conn.close()
+                            except Exception: pass
+                            metrics_db._conn = None
+                        # Remove WAL/SHM journals so SQLite doesn't apply stale
+                        # transactions on top of the restored DB on next open
+                        for _suf in ("-wal", "-shm"):
+                            _jf = METRICS_DB_PATH + _suf
+                            try:
+                                if os.path.exists(_jf): os.unlink(_jf)
+                            except Exception: pass
                     zf.extract(entry, BASE_DIR)
                     restored_db = True
                 except Exception as e:
@@ -20190,6 +20211,27 @@ def _do_restore_from_zip(zip_path: str, progress_cb=None) -> tuple:
                     errors.append("hub_state.json is not valid JSON — skipped."); continue
                 with open(HUB_STATE_PATH, "wb") as fh: fh.write(raw)
                 restored_hub = True
+
+            elif entry_path == "chain_notes.json":
+                raw = zf.read(entry)
+                try:   json.loads(raw)
+                except Exception:
+                    errors.append("chain_notes.json is not valid JSON — skipped."); continue
+                with open(CHAIN_NOTES_PATH, "wb") as fh: fh.write(raw)
+
+            elif entry_path == "alert_acks.json":
+                raw = zf.read(entry)
+                try:   json.loads(raw)
+                except Exception:
+                    errors.append("alert_acks.json is not valid JSON — skipped."); continue
+                with open(ALERT_ACKS_PATH, "wb") as fh: fh.write(raw)
+
+            elif entry_path == "alert_feedback.json":
+                raw = zf.read(entry)
+                try:   json.loads(raw)
+                except Exception:
+                    errors.append("alert_feedback.json is not valid JSON — skipped."); continue
+                with open(ALERT_FEEDBACK_PATH, "wb") as fh: fh.write(raw)
 
             elif entry_path.startswith("alert_snippets/") or entry_path.startswith("alert_snippets" + os.sep):
                 if entry.is_dir(): continue

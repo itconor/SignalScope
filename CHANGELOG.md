@@ -2,6 +2,14 @@
 
 ---
 
+## [3.4.154] - 2026-04-03
+
+### Fixed
+- **Chain fault log and annotations missing from backup/restore** — three JSON files (`chain_notes.json`, `alert_acks.json`, `alert_feedback.json`) were never included in any backup ZIP. All three are now backed up in both the legacy browser-download route and the background save-to-disk job, and restored correctly.
+- **metrics_history.db restore silently discarding fault log rows** — the restore code set `metrics_db._conn = None` without calling `.close()`, leaving the SQLite WAL and SHM journal files on disk. On next open SQLite applied the stale old-database WAL on top of the freshly restored file, rolling back or corrupting the chain fault log table. Fix: acquire `metrics_db._lock`, call `.close()` on the live connection, then delete any `-wal` and `-shm` journal files before extracting the restored DB.
+
+---
+
 ## [3.4.153] - 2026-04-03
 
 ### Fixed
