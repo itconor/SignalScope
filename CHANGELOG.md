@@ -5,6 +5,7 @@
 ## [3.4.134] - 2026-04-03
 
 ### Plugins
+- **Logger v1.5.29** — fixed two regressions introduced in v1.5.28: (1) `var _IS_HUB_NODE` was declared 20 lines after `if(_IS_HUB_NODE){ checkHubMode(); }` — JavaScript hoisting meant the variable was `undefined` at the point of the check, so `checkHubMode()` never ran even on hub nodes, causing the hub to always show "Select a stream." (2) `checkHubMode()` was still called unconditionally on every node — now correctly gated on `_IS_HUB_NODE` (server-rendered `true`/`false` via Jinja2), so local/client nodes never fire the catalog spinner at all.
 - **Logger v1.5.28** — fixed hub Logger opening with "Select a stream" and never populating. Two bugs: (1) `checkHubMode()` was called on every node type — on a non-hub node the `/api/logger/hub/catalog` endpoint returns 404 which was previously treated as a retryable error, spinning for up to 40 seconds before giving up. Fixed by inspecting the HTTP status code before parsing JSON — 404 exits immediately. (2) `_hub_logger_catalog` was in-memory only; after a hub restart the catalog was empty until all clients re-registered (up to 60 s). Fixed by persisting the catalog to `hub_catalog_cache.json` in the plugin directory on every client registration and loading it at startup — the catalog is available immediately on the first page visit after a hub restart. Retry window also extended from 40 s to 90 s to safely cover the 60 s client re-registration interval.
 
 ---

@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.28",
+    "version": "1.5.29",
 }
 
 import datetime
@@ -716,7 +716,7 @@ def register(app, ctx):
     @app.route("/hub/logger")
     @login_req
     def logger_page():
-        return render_template_string(_TPL)
+        return render_template_string(_TPL, is_hub=(hub_server is not None))
 
     @app.get("/api/logger/streams")
     @login_req
@@ -3758,6 +3758,9 @@ document.getElementById('sidebar').addEventListener('click', function(e){
 document.getElementById('notice-settings-link').addEventListener('click', function(){ showTab('settings'); });
 
 // ── Init ──────────────────────────────────────────────────────────────────
+// Server-rendered flag — true only on hub nodes.  Avoids calling checkHubMode()
+// on client/standalone nodes where /api/logger/hub/catalog is not registered.
+var _IS_HUB_NODE = {{ is_hub|tojson }};
 // Use server UTC time for "today" so a client with a wrong clock (e.g. after
 // DST change) still loads the correct date's recordings.
 _get('/api/logger/status').then(function(data){
@@ -3778,7 +3781,7 @@ _get('/api/logger/status').then(function(data){
 loadStatus();
 setInterval(loadStatus, 10000);
 setupAudio();
-checkHubMode();
+if(_IS_HUB_NODE){ checkHubMode(); }
 // Hub playback time tracking interval
 setInterval(function(){
   if(!_hubSite || !_hubPlayStart || !_selSeg) return;
@@ -3867,32 +3870,32 @@ function checkHubMode(retryCount){
   } else {
     _startCatalogSpinner('Waiting for sites to connect\u2026 (' + retryCount + ')');
   }
-  // Use raw fetch so we can inspect HTTP status before parsing JSON.
-  // A 404 means this node is not a hub — stop immediately, don't spin.
-  fetch('/api/logger/hub/catalog',{credentials:'same-origin'}).then(function(r){
-    if(r.status === 404){ _stopCatalogSpinner(); return; }
-    return r.json().then(function(entries){
-      if(!Array.isArray(entries) || !entries.length){
-        // Catalog empty — client sites may not have registered yet.
-        // Retry with increasing delays up to 90 s; clients register every 60 s.
-        var delays = [2000, 3000, 5000, 10000, 20000, 30000, 20000];
-        if(retryCount < delays.length){
-          setTimeout(function(){ checkHubMode(retryCount + 1); }, delays[retryCount]);
-        } else {
-          _stopCatalogSpinner();
-          _hubStatusMsg('No connected sites found. Check client nodes are running.');
-        }
-        return;
+  _get('/api/logger/hub/catalog').then(function(entries){
+    if(!Array.isArray(entries) || !entries.length){
+      // Catalog empty — client sites may not have registered yet.
+      // Retry with increasing delays up to 90 s; clients register every 60 s.
+      var delays = [2000, 3000, 5000, 10000, 20000, 30000, 20000];
+      if(retryCount < delays.length){
+        setTimeout(function(){ checkHubMode(retryCount + 1); }, delays[retryCount]);
+      } else {
+        _stopCatalogSpinner();
+        _hubStatusMsg('No connected sites found. Check client nodes are running.');
       }
-      _stopCatalogSpinner();
-      _catalogStreams = entries;
-      _isHubCatalogPopulated = true;
-      _populateCatalogSel(entries);
-      // Keep catalog fresh so newly connecting sites appear without a page reload
-      setTimeout(_refreshCatalog, 30000);
-    });
-  }).catch(function(){
+      return;
+    }
     _stopCatalogSpinner();
+    _catalogStreams = entries;
+    _isHubCatalogPopulated = true;
+    _populateCatalogSel(entries);
+    // Keep catalog fresh so newly connecting sites appear without a page reload
+    setTimeout(_refreshCatalog, 30000);
+  }).catch(function(){
+    var delays = [2000, 3000, 5000, 10000, 20000, 30000, 20000];
+    if(retryCount < delays.length){
+      setTimeout(function(){ checkHubMode(retryCount + 1); }, delays[retryCount]);
+    } else {
+      _stopCatalogSpinner();
+    }
   });
 }
 
