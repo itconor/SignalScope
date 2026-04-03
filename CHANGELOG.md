@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.148] - 2026-04-03
+
+### Added
+- **Save backup to disk (SSH)** — new "💾 Save to disk (SSH)" button in Settings → Maintenance alongside the existing Download button. Clicking it generates the backup ZIP on the server itself (in `BASE_DIR/backups/`) without sending it through the browser, completely avoiding nginx proxy timeouts that occur when streaming large archives. On completion the UI shows the full server path and an `scp` command to copy it off. A list of previously saved backup files (path, size, date) is shown below with delete buttons. Three new routes: `POST /settings/backup/save`, `GET /settings/backup/list`, `POST /settings/backup/delete`.
+
+---
+
 ## [3.4.147] - 2026-04-03
 
 ### Changed

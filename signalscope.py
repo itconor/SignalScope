@@ -971,7 +971,15 @@ document.addEventListener('DOMContentLoaded',function(){
 
   <div class="sec" style="margin-top:24px">⬇ Backup &amp; Restore</div>
   <p class="help" style="margin-bottom:12px">Download a ZIP archive containing your configuration, AI models, signal history database, SLA data, alert log and hub state. Use this to back up your setup or migrate to a new server.</p>
-  <a href="/settings/backup" class="btn bp" style="font-size:13px">⬇ Download Backup (config + AI models + DB)</a>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+    <a href="/settings/backup" class="btn bp" style="font-size:13px">⬇ Download Backup</a>
+    <button type="button" id="bk-save-btn" class="btn bg" style="font-size:13px">💾 Save to disk (SSH)</button>
+  </div>
+  <div id="bk-save-result" style="display:none;margin:10px 0;padding:12px 14px;background:#0a1e3a;border:1px solid var(--bor);border-radius:8px;font-size:12px"></div>
+  <div id="bk-list-wrap" style="margin-top:14px;display:none">
+    <div style="font-size:12px;color:var(--mu);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Saved backups on server</div>
+    <div id="bk-list"></div>
+  </div>
   <hr style="border:none;border-top:1px solid var(--bor);margin:18px 0">
   <p class="help" style="margin-bottom:8px">Restore from a previously downloaded backup ZIP. Config, AI models, metrics DB, SLA data, alert log and hub state will be overwritten and monitoring will restart automatically.</p>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -1331,6 +1339,61 @@ document.getElementById('restore-upload-btn').addEventListener('click', function
     })
     .catch(function(e){ st.style.color='var(--al)'; st.textContent='Request failed: '+e.message; });
 });
+
+// ── Save backup to disk ──────────────────────────────────────────────────────
+function _bkGetCsrf(){
+  return (document.querySelector('meta[name="csrf-token"]')||{}).content
+      || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+}
+function bkLoadList(){
+  fetch('/settings/backup/list').then(function(r){return r.json();}).then(function(d){
+    var wrap=document.getElementById('bk-list-wrap');
+    var listEl=document.getElementById('bk-list');
+    if(!d.files||!d.files.length){wrap.style.display='none';return;}
+    wrap.style.display='block';
+    listEl.innerHTML=d.files.map(function(f){
+      return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bor);flex-wrap:wrap">'
+        +'<span style="flex:1;font-family:monospace;font-size:11px;color:var(--acc);word-break:break-all">'+f.path+'</span>'
+        +'<span style="font-size:11px;color:var(--mu);white-space:nowrap">'+f.size_mb+' MB &nbsp; '+f.mtime+'</span>'
+        +'<button class="btn bd bs bk-del-btn" data-filename="'+f.filename+'">🗑</button>'
+        +'</div>';
+    }).join('');
+  }).catch(function(){});
+}
+document.getElementById('bk-save-btn').addEventListener('click', function(){
+  var btn=this, res=document.getElementById('bk-save-result');
+  btn.disabled=true; btn.textContent='⏳ Generating…';
+  res.style.display='block'; res.style.color='var(--acc)';
+  res.textContent='Building ZIP — this may take a minute for large databases…';
+  fetch('/settings/backup/save',{method:'POST',headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'}})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){
+        res.style.color='var(--ok)';
+        res.innerHTML='✓ Saved <strong>'+d.filename+'</strong> ('+d.size_mb+' MB)<br>'
+          +'<span style="font-family:monospace;font-size:11px;color:var(--acc)">'+d.path+'</span><br>'
+          +'<span style="color:var(--mu);font-size:11px">scp server:'+d.path+' .</span>';
+        bkLoadList();
+      } else {
+        res.style.color='var(--al)';
+        res.textContent='✗ '+(d.error||'Unknown error');
+      }
+    })
+    .catch(function(e){res.style.color='var(--al)';res.textContent='✗ Request failed: '+e.message;})
+    .finally(function(){btn.disabled=false;btn.textContent='💾 Save to disk (SSH)';});
+});
+document.getElementById('bk-list-wrap').addEventListener('click', function(e){
+  var btn=e.target.closest('.bk-del-btn');
+  if(!btn) return;
+  if(!confirm('Delete '+btn.dataset.filename+'?')) return;
+  fetch('/settings/backup/delete',{method:'POST',
+    headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'},
+    body:JSON.stringify({filename:btn.dataset.filename})})
+  .then(function(r){return r.json();})
+  .then(function(d){ if(d.ok) bkLoadList(); })
+  .catch(function(){});
+});
+bkLoadList();
 
 function killDabOrphans(){
   var st=document.getElementById('proc-ctrl-status');
@@ -1981,7 +2044,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.147"
+BUILD                  = "SignalScope-3.4.148"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -3050,6 +3113,7 @@ _alert_feedback_lock = threading.Lock()
 HUB_STATE_PATH  = os.path.join(BASE_DIR, "hub_state.json")  # persists site data across hub restarts
 METRICS_DB_PATH  = os.path.join(BASE_DIR, "metrics_history.db")
 HUB_BACKUP_DIR   = os.path.join(BASE_DIR, "hub_backups")   # one sub-dir per site
+BACKUPS_DIR      = os.path.join(BASE_DIR, "backups")       # user-generated backup ZIPs (scp-able)
 _alert_log_lock = threading.Lock()
 _alert_acks: Dict[str, dict] = {}
 _alert_acks_lock = threading.Lock()
@@ -19677,6 +19741,108 @@ def settings_backup():
         as_attachment=True,
         download_name=dl_name,
     )
+
+@app.post("/settings/backup/save")
+@login_required
+@admin_required
+@csrf_protect
+def settings_backup_save():
+    """Generate a backup ZIP on disk in BASE_DIR/backups/ — no browser download needed.
+    Returns JSON {ok, path, filename, size_mb} so the user can scp it off the server.
+    Avoids nginx proxy timeouts that occur when streaming large ZIPs to the browser."""
+    import zipfile, tempfile as _tf, sqlite3 as _sq3, datetime as _dt
+    os.makedirs(BACKUPS_DIR, exist_ok=True)
+
+    ts       = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"signalscope_backup_{ts}.zip"
+    out_path = os.path.join(BACKUPS_DIR, filename)
+
+    def _safe_db_backup(src_path, arc_name, zf):
+        tmp_db = _tf.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp_db.close()
+        try:
+            src = _sq3.connect(src_path)
+            dst = _sq3.connect(tmp_db.name)
+            src.backup(dst)
+            dst.close(); src.close()
+            zf.write(tmp_db.name, arc_name)
+        except Exception:
+            try: zf.write(src_path, arc_name)
+            except Exception: pass
+        finally:
+            try: os.unlink(tmp_db.name)
+            except: pass
+
+    try:
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            if os.path.isfile(CONFIG_PATH):
+                zf.write(CONFIG_PATH, "lwai_config.json")
+            if os.path.isdir(MODELS_DIR):
+                for root, _dirs, files in os.walk(MODELS_DIR):
+                    for fname in files:
+                        full = os.path.join(root, fname)
+                        zf.write(full, os.path.relpath(full, BASE_DIR))
+            if os.path.isfile(METRICS_DB_PATH):
+                _safe_db_backup(METRICS_DB_PATH, "metrics_history.db", zf)
+            _logger_db = os.path.join(BASE_DIR, _PLUGINS_SUBDIR, "logger_index.db")
+            if os.path.isfile(_logger_db):
+                _safe_db_backup(_logger_db, "logger_index.db", zf)
+            if os.path.isfile(SLA_PATH):
+                zf.write(SLA_PATH, "sla_data.json")
+            if os.path.isfile(ALERT_LOG_PATH):
+                zf.write(ALERT_LOG_PATH, "alert_log.json")
+            if os.path.isfile(HUB_STATE_PATH):
+                zf.write(HUB_STATE_PATH, "hub_state.json")
+    except Exception as exc:
+        try: os.unlink(out_path)
+        except: pass
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    size_mb = round(os.path.getsize(out_path) / (1024 * 1024), 1)
+    return jsonify({"ok": True, "path": out_path, "filename": filename, "size_mb": size_mb})
+
+@app.get("/settings/backup/list")
+@login_required
+@admin_required
+def settings_backup_list():
+    """List backup ZIPs saved on disk in BASE_DIR/backups/."""
+    import datetime as _dt
+    if not os.path.isdir(BACKUPS_DIR):
+        return jsonify({"files": []})
+    files = []
+    for fname in sorted(os.listdir(BACKUPS_DIR), reverse=True):
+        if not fname.endswith(".zip"):
+            continue
+        full = os.path.join(BACKUPS_DIR, fname)
+        try:
+            stat = os.stat(full)
+            files.append({
+                "filename": fname,
+                "path":     full,
+                "size_mb":  round(stat.st_size / (1024 * 1024), 1),
+                "mtime":    _dt.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+            })
+        except Exception:
+            pass
+    return jsonify({"files": files})
+
+@app.post("/settings/backup/delete")
+@login_required
+@admin_required
+@csrf_protect
+def settings_backup_delete():
+    """Delete a previously saved backup ZIP from BACKUPS_DIR."""
+    filename = (request.json or {}).get("filename", "")
+    if not filename or "/" in filename or not filename.endswith(".zip"):
+        return jsonify({"ok": False, "error": "invalid filename"}), 400
+    target = os.path.join(BACKUPS_DIR, filename)
+    if not os.path.isfile(target):
+        return jsonify({"ok": False, "error": "file not found"}), 404
+    try:
+        os.unlink(target)
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 @app.post("/settings/restore")
 @login_required
