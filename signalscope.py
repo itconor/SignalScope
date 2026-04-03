@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.136"
+BUILD                  = "SignalScope-3.4.137"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30768,7 +30768,7 @@ body.wall-mode .sc{}
 .stats-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;color:var(--mu);font-size:11px;padding:4px 0;cursor:pointer}
 .stats-toggle:hover{color:var(--tx)}
 .site-card.dragging{opacity:.55}.site-card.skeleton{position:relative}
-.site-card.skeleton::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.05),transparent);transform:translateX(-100%);animation:hubshimmer 1.2s infinite}
+.site-card.skeleton::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.05),transparent);transform:translateX(-100%);animation:hubshimmer 1.2s infinite;pointer-events:none}
 @keyframes hubshimmer{100%{transform:translateX(100%)}}
 .sc-name{font-weight:600;font-size:13px;padding:10px 10px 4px;display:flex;align-items:center;gap:6px}
 .sc-dev{font-size:10px;color:var(--mu);margin-left:auto;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap}
@@ -31651,6 +31651,12 @@ setInterval(_loadTrends, 300000);
     return p;
   };
 })();
+// Start live polling immediately — don't wait for DOMContentLoaded.
+// _livePoll guards every getElementById with if(el), so calling before body
+// elements exist is safe: the first response arrives while the body is still
+// parsing, subsequent 150 ms ticks pick up elements as they appear.
+// The DOMContentLoaded listener below is a no-op if _liveActive is already true.
+_startLiveView();
 </script>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body data-live-view="{{live_view}}">
 {{ topnav("hub") }}
@@ -31937,9 +31943,9 @@ setInterval(_loadTrends, 300000);
       {% endif %}
       {% endif %}
 
-      {# Now Playing — fetched from remote site's API via hub proxy #}
+      {# Now Playing — fetched via hub proxy; polled by _initNowPlaying() below #}
       {% if s.nowplaying_station_id %}
-      <div class="np-strip" id="np_{{loop.index0}}_{{i}}">
+      <div class="np-strip" id="np_{{loop.index0}}_{{i}}" data-rpuid="{{s.nowplaying_station_id|e}}">
         <img class="np-art" id="npa_{{loop.index0}}_{{i}}" src="" alt="" style="display:none">
         <div class="np-text">
           <div class="np-title" id="npt_{{loop.index0}}_{{i}}">Loading…</div>
@@ -31947,17 +31953,6 @@ setInterval(_loadTrends, 300000);
           <div class="np-sub"   id="nps_{{loop.index0}}_{{i}}" style="color:var(--acc)"></div>
         </div>
       </div>
-      <script nonce="{{csp_nonce()}}">(function(){
-        var sid='{{loop.index0}}',si='{{i}}',rpuid='{{s.nowplaying_station_id}}';
-        function fnp(){fetch('/api/nowplaying/'+rpuid).then(r=>r.json()).then(function(d){
-          document.getElementById('npt_'+sid+'_'+si).textContent=d.title||'—';
-          document.getElementById('npar_'+sid+'_'+si).textContent=d.artist||'';
-          document.getElementById('nps_'+sid+'_'+si).textContent=d.show||'';
-          var a=document.getElementById('npa_'+sid+'_'+si);
-          if(d.artwork){a.src='/api/nowplaying_art/'+encodeURIComponent(rpuid)+'?ts='+Date.now();a.style.display='block';} else { a.removeAttribute('src'); a.style.display='none'; }
-        }).catch(()=>{});}
-        fnp();setInterval(fnp,30000);
-      })();</script>
       {% endif %}
 
       {# Listen / Clip strip #}
@@ -32123,7 +32118,36 @@ setInterval(_loadTrends, 300000);
 {% endfor %}
 </div>
 {% endif %}
-</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer></body></html>"""
+</main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer>
+<script nonce="{{csp_nonce()}}">
+// Single batched now-playing poller — replaces per-stream inline <script> blocks.
+// Runs after body is parsed so getElementById calls succeed immediately.
+(function(){
+  function _pollNp(strip){
+    var rpuid=strip.dataset.rpuid;
+    var id=strip.id.slice(3); // strip "np_" prefix → "sidx_i"
+    var parts=id.split('_'), sid=parts[0], si=parts[1];
+    function fnp(){
+      fetch('/api/nowplaying/'+rpuid).then(function(r){return r.json();}).then(function(d){
+        var t=document.getElementById('npt_'+sid+'_'+si);
+        var ar=document.getElementById('npar_'+sid+'_'+si);
+        var sh=document.getElementById('nps_'+sid+'_'+si);
+        var a=document.getElementById('npa_'+sid+'_'+si);
+        if(t) t.textContent=d.title||'—';
+        if(ar) ar.textContent=d.artist||'';
+        if(sh) sh.textContent=d.show||'';
+        if(a){
+          if(d.artwork){a.src='/api/nowplaying_art/'+encodeURIComponent(rpuid)+'?ts='+Date.now();a.style.display='block';}
+          else{a.removeAttribute('src');a.style.display='none';}
+        }
+      }).catch(function(){});
+    }
+    fnp(); setInterval(fnp,30000);
+  }
+  document.querySelectorAll('.np-strip[data-rpuid]').forEach(_pollNp);
+})();
+</script>
+</body></html>"""
 
 # ─── Error handlers ──────────────────────────────────────────────────────────
 

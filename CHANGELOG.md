@@ -2,6 +2,16 @@
 
 ---
 
+## [3.4.137] - 2026-04-03
+
+### Fixed
+- **Hub dashboard Play button and level meters now work immediately on page load** — Three issues were delaying interactivity until the entire page had finished loading:
+  1. `.site-card.skeleton::after` covered the full card with `inset:0` and no `pointer-events:none`, physically blocking all clicks (including the ▶ Live Play button) until `DOMContentLoaded` removed the skeleton class. Fixed by adding `pointer-events:none` to the skeleton overlay — clicks now pass through immediately.
+  2. `_startLiveView()` was only called from `DOMContentLoaded`, so level bar polling never started until every last byte of HTML was parsed. Fixed by calling `_startLiveView()` immediately at the end of the `<head>` script block — polling fires during page parse, meters animate as soon as elements are painted. The `DOMContentLoaded` call is harmlessly no-op'd by the `if (_liveActive) return` guard.
+  3. Every stream with a `nowplaying_station_id` emitted its own inline `<script>` block inside the body HTML, each one pausing the HTML parser to compile and execute JS. With many streams these added up. Fixed by replacing all per-stream inline scripts with a single `data-rpuid` attribute on the `.np-strip` div, and one batched `<script>` at the end of the body that queries all `[data-rpuid]` elements and starts their polling loops in a single pass.
+
+---
+
 ## [3.4.136] - 2026-04-03
 
 ### Fixed
