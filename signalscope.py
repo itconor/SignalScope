@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.134"
+BUILD                  = "SignalScope-3.4.135"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -8729,8 +8729,10 @@ class MonitorManager:
         OUT_RATE = SAMPLE_RATE
         READ_BYTES = 4096
         BLOCK_BYTES = 17100 * 2  # ~100 ms of S16LE MPX
-        mux_buf = bytearray()
-        out_buf = np.empty(0, dtype=np.float32)
+        mux_buf   = bytearray()
+        out_buf   = np.empty(0, dtype=np.float32)
+        out_buf_L = np.empty(0, dtype=np.float32)   # stereo L channel (parallel to out_buf)
+        out_buf_R = np.empty(0, dtype=np.float32)   # stereo R channel
         cfg._fm_signal_dbm = float(getattr(cfg, "_fm_signal_dbm", -120.0) or -120.0)
         cfg._fm_snr_db = float(getattr(cfg, "_fm_snr_db", 0.0) or 0.0)
         cfg._fm_stereo = bool(getattr(cfg, "_fm_stereo", False))
@@ -8741,6 +8743,61 @@ class MonitorManager:
             _have_scipy_resampler = True
         except Exception:
             _have_scipy_resampler = False
+
+        # ── FM stereo MPX decoder setup ───────────────────────────────────────
+        # Requires scipy (same dep as resample_poly).  Uses stateful SOS
+        # Butterworth filters so block boundaries produce no audible glitch.
+        # Falls back silently to mono if scipy is unavailable.
+        _stereo_zi: dict | None = None
+        if _have_scipy_resampler:
+            try:
+                from scipy.signal import butter as _sbut, sosfilt_zi as _sfzi
+                _nyq        = IN_RATE / 2.0
+                _sos_lpr    = _sbut(4, 15000 / _nyq, btype="low",      output="sos")  # L+R  0–15 kHz
+                _sos_pilot  = _sbut(4, [17000 / _nyq, 21000 / _nyq], btype="bandpass", output="sos")  # pilot 17–21 kHz
+                _sos_lmr    = _sbut(4, 15000 / _nyq, btype="low",      output="sos")  # L-R  0–15 kHz
+                _stereo_zi  = {
+                    "sos_lpr":   _sos_lpr,   "zi_lpr":   _sfzi(_sos_lpr)   * 0.0,
+                    "sos_pilot": _sos_pilot,  "zi_pilot": _sfzi(_sos_pilot) * 0.0,
+                    "sos_lmr":   _sos_lmr,   "zi_lmr":   _sfzi(_sos_lmr)   * 0.0,
+                }
+                self.log(f"[{name}] FM stereo MPX decoder ready")
+            except Exception as _ste:
+                self.log(f"[{name}] FM stereo decoder init failed ({_ste}) — mono only")
+                _stereo_zi = None
+
+        def _mpx_to_stereo(samp: np.ndarray):
+            """Decode FM stereo from 171 kHz float32 MPX → (L_48k, R_48k).
+
+            Steps:
+              1. Low-pass 0–15 kHz  → L+R
+              2. Band-pass 17–21 kHz → 19 kHz pilot
+              3. Normalise pilot; freq-double → 38 kHz subcarrier
+              4. Multiply MPX × sub38; low-pass → L-R
+              5. Matrix: L=(L+R)+(L-R), R=(L+R)-(L-R)
+              6. Resample 171 kHz → 48 kHz via resample_poly(16, 57)
+            """
+            from scipy.signal import sosfilt as _sosf, resample_poly as _rp
+            st = _stereo_zi
+            lpr,   st["zi_lpr"]   = _sosf(st["sos_lpr"],   samp, zi=st["zi_lpr"])
+            pilot, st["zi_pilot"] = _sosf(st["sos_pilot"],  samp, zi=st["zi_pilot"])
+            pilot_peak = float(np.max(np.abs(pilot)))
+            if pilot_peak > 0.005:
+                # cos(2θ) = 2·cos²(θ) − 1 — doubles pilot freq to 38 kHz subcarrier
+                pilot_n = pilot / (pilot_peak + 1e-9)
+                sub38   = 2.0 * pilot_n ** 2 - 1.0
+                lmr_raw = samp * sub38
+                lmr, st["zi_lmr"] = _sosf(st["sos_lmr"], lmr_raw, zi=st["zi_lmr"])
+            else:
+                # No pilot — dual-mono; advance zi to keep state valid
+                _, st["zi_lmr"] = _sosf(st["sos_lmr"], np.zeros_like(samp), zi=st["zi_lmr"])
+                lmr = np.zeros_like(lpr)
+            # ×2 compensates for DSB-SC demod amplitude halving
+            L_171 = np.clip(lpr + lmr * 2.0, -1.0, 1.0).astype(np.float32)
+            R_171 = np.clip(lpr - lmr * 2.0, -1.0, 1.0).astype(np.float32)
+            L_48  = _rp(L_171, 16, 57).astype(np.float32)
+            R_48  = _rp(R_171, 16, 57).astype(np.float32)
+            return L_48, R_48
 
         def _mpx_to_audio(samples_f32: np.ndarray) -> np.ndarray:
             x = np.asarray(samples_f32, dtype=np.float32)
@@ -8819,21 +8876,54 @@ class MonitorManager:
                     del mux_buf[:BLOCK_BYTES]
 
                     samp = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-                    _update_mpx_metrics(samp)
-                    audio = _mpx_to_audio(samp)
-                    if not audio.size:
-                        continue
+                    _update_mpx_metrics(samp)   # sets cfg._fm_stereo based on pilot level
 
-                    if out_buf.size:
-                        out_buf = np.concatenate((out_buf, audio))
+                    # ── Stereo MPX decode (when pilot detected + scipy available) ──
+                    if cfg._fm_stereo and _stereo_zi is not None:
+                        try:
+                            L_48, R_48 = _mpx_to_stereo(samp)
+                            mono_48 = ((L_48 + R_48) * 0.5).astype(np.float32)
+                            # DC removal + clip (mirrors _mpx_to_audio)
+                            L_48    = np.clip(L_48    - np.mean(L_48),    -1.0, 1.0)
+                            R_48    = np.clip(R_48    - np.mean(R_48),    -1.0, 1.0)
+                            mono_48 = np.clip(mono_48 - np.mean(mono_48), -1.0, 1.0)
+                            out_buf   = np.concatenate((out_buf,   mono_48))
+                            out_buf_L = np.concatenate((out_buf_L, L_48))
+                            out_buf_R = np.concatenate((out_buf_R, R_48))
+                        except Exception as _se:
+                            self.log(f"[{name}] FM stereo decode error: {_se}")
+                            audio = _mpx_to_audio(samp)
+                            out_buf   = np.concatenate((out_buf, audio)) if out_buf.size else audio
+                            out_buf_L = np.empty(0, dtype=np.float32)
+                            out_buf_R = np.empty(0, dtype=np.float32)
                     else:
-                        out_buf = audio
+                        # Mono path — clear L/R buffers so they stay synchronised
+                        audio = _mpx_to_audio(samp)
+                        if not audio.size:
+                            continue
+                        out_buf   = np.concatenate((out_buf, audio)) if out_buf.size else audio
+                        out_buf_L = np.empty(0, dtype=np.float32)
+                        out_buf_R = np.empty(0, dtype=np.float32)
 
                     while out_buf.size >= CHUNK_SIZE:
-                        frame = out_buf[:CHUNK_SIZE].copy()
+                        frame   = out_buf[:CHUNK_SIZE].copy()
                         out_buf = out_buf[CHUNK_SIZE:]
-                        cfg._stream_buffer.append(frame.copy())
-                        cfg._audio_buffer.append(frame.copy())
+                        if out_buf_L.size >= CHUNK_SIZE and out_buf_R.size >= CHUNK_SIZE:
+                            # Full stereo chunk: separate L/R into _audio_buffer,
+                            # mix into _stream_buffer for relay/comparator/chain clips.
+                            L_fr      = out_buf_L[:CHUNK_SIZE].copy(); out_buf_L = out_buf_L[CHUNK_SIZE:]
+                            R_fr      = out_buf_R[:CHUNK_SIZE].copy(); out_buf_R = out_buf_R[CHUNK_SIZE:]
+                            cfg._level_dbfs_l   = dbfs(float(np.sqrt(np.mean(L_fr ** 2))))
+                            cfg._level_dbfs_r   = dbfs(float(np.sqrt(np.mean(R_fr ** 2))))
+                            cfg._audio_channels = 2
+                            _sti = np.empty(CHUNK_SIZE * 2, dtype=np.float32)
+                            _sti[0::2] = L_fr; _sti[1::2] = R_fr
+                            cfg._stream_buffer.append(frame.copy())   # mono mix
+                            cfg._audio_buffer.append(_sti.copy())     # stereo interleaved
+                        else:
+                            cfg._audio_channels = 1
+                            cfg._stream_buffer.append(frame.copy())
+                            cfg._audio_buffer.append(frame.copy())
                         cfg._live_chunk_seq = getattr(cfg, "_live_chunk_seq", 0) + 1
                         analyse_chunk(
                             cfg, sender,
@@ -11074,7 +11164,7 @@ class HubClient:
                 # — that would feed the wrong channel count to ffmpeg, producing
                 # half-speed PCM that the browser decoder cannot handle.
                 _relay_stereo = (
-                    getattr(inp, 'stereo', False) and
+                    (getattr(inp, 'stereo', False) or getattr(inp, '_fm_stereo', False)) and
                     getattr(inp, '_audio_channels', 1) == 2
                 )
                 _relay_n_ch  = 2 if _relay_stereo else 1
@@ -19623,7 +19713,7 @@ def stream_audio(idx):
     if idx<0 or idx>=len(inps): return "Not found",404
     inp=inps[idx]
     if not inp._stream_buffer: return "No data — stream not yet receiving audio",503
-    _wav_n_ch = inp._audio_channels if inp.stereo else 1
+    _wav_n_ch = inp._audio_channels if (inp.stereo or getattr(inp, '_fm_stereo', False)) else 1
     # Stereo: read interleaved data from _audio_buffer; mono: use _stream_buffer
     if _wav_n_ch == 2 and inp._audio_buffer:
         chunks = list(inp._audio_buffer)
@@ -19670,7 +19760,7 @@ def stream_live(idx):
     # Fallback to WAV streaming if ffmpeg isn't available
     has_ffmpeg = _find_binary("ffmpeg") is not None
 
-    _live_n_ch = inp._audio_channels if inp.stereo else 1
+    _live_n_ch = inp._audio_channels if (inp.stereo or getattr(inp, '_fm_stereo', False)) else 1
     # Stereo streams: pull interleaved chunks from _audio_buffer.
     # Mono streams: pull from _stream_buffer as before.
     def _live_buf():

@@ -2,6 +2,14 @@
 
 ---
 
+## [3.4.135] - 2026-04-03
+
+### Added
+- **FM input stereo decoding** — RTL-SDR FM monitoring inputs now decode true stereo audio when a stereo pilot tone is detected (pilot SNR ≥ 8 dB). A stateful 4th-order Butterworth SOS filter chain bandpasses the 19 kHz pilot, frequency-doubles it to a 38 kHz subcarrier (cos(2θ) = 2cos²(θ)−1), demodulates the DSB-SC L-R signal, and matrices it with L+R to recover L and R. L/R are resampled to 48 kHz and stored in `_audio_buffer` as stereo-interleaved chunks; `_stream_buffer` receives the mono mix for relay/comparator/chain clips. L/R PPM levels are computed and sent at 5 Hz. Falls back to mono when no pilot or scipy unavailable.
+- **FM stereo live streaming and relay** — `stream_live()`, the hub relay writer, and the WAV clip download now all stream stereo for FM inputs when a pilot is detected. No config change needed — stereo is automatic.
+
+---
+
 ## [3.4.134] - 2026-04-03
 
 ### Plugins
