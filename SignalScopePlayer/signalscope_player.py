@@ -23,10 +23,10 @@ import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-# SSL: accept self-signed / private CA certs (common for self-hosted hubs).
-# The global monkey-patch is required for PyInstaller bundles on macOS/Windows
-# which have no system CA store available to urllib.
-ssl._create_default_https_context = ssl._create_unverified_context
+# SSL: accept self-signed / private CA certs (common for self-hosted SignalScope hubs)
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
 
 from PySide6.QtCore import (
     Qt, QTimer, QUrl, Signal, Slot, QThread, QSize, QRect, QPoint,
@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-__version__ = "1.1.3"
+__version__ = "1.1.1"
 
 # ─── Color scheme (matches SignalScope logger web UI) ─────────────────────────
 C = {
@@ -154,7 +154,7 @@ class HubDataSource(DataSource):
         req = urllib.request.Request(url, headers={
             "Authorization": f"Bearer {self._token}",
         })
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
             return json.loads(resp.read())
 
     def _post(self, path: str, body: dict) -> dict:
@@ -163,7 +163,7 @@ class HubDataSource(DataSource):
             f"{self._url}{path}", data=data, method="POST",
             headers={"Authorization": f"Bearer {self._token}",
                      "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
             return json.loads(resp.read())
 
     def catalog(self) -> list:
@@ -262,8 +262,7 @@ class DirectDataSource(DataSource):
             return result
         try:
             data = json.loads(cat_path.read_text())
-            # In direct mode include all streams regardless of age —
-            # recordings archives may be days, weeks or months old.
+            now = time.time()
             return [{"slug": slug,
                      "name":       info.get("name", slug),
                      "site":       info.get("owner", "local"),
@@ -271,7 +270,7 @@ class DirectDataSource(DataSource):
                      "rec_format": info.get("rec_format", "mp3"),
                      "n_ch":       int(info.get("n_ch", 1) or 1)}
                     for slug, info in data.items()
-                    if isinstance(info, dict)]
+                    if now - info.get("updated", 0) < 86400]  # 24h for direct
         except Exception:
             return []
 
@@ -828,8 +827,7 @@ class ConnectionDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("SignalScope Player — Connect")
-        self.setMinimumWidth(460)
-        self.setSizeGripEnabled(False)
+        self.setFixedSize(420, 270)
         self.setStyleSheet(f"""
             QDialog {{ background: {C['bg']}; color: {C['tx']}; }}
             QLabel {{ color: {C['tx']}; font-size: 13px; }}
@@ -921,7 +919,6 @@ class ConnectionDialog(QDialog):
         self._status = QLabel("")
         self._status.setStyleSheet(f"color: {C['al']}; font-size: 11px;")
         self._status.setAlignment(Qt.AlignCenter)
-        self._status.setWordWrap(True)
         layout.addWidget(self._status)
 
         # Restore last tab
