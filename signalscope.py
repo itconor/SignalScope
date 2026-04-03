@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.138"
+BUILD                  = "SignalScope-3.4.139"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -31385,6 +31385,8 @@ document.addEventListener('click', function(e){
     var open = detail.classList.toggle('open');
     btn.classList.toggle('open', open);
     try{ localStorage.setItem('hub_sc_expand_'+key, open ? '1' : '0'); }catch(ex){}
+    // Lazy-load timelines and trend for this stream when first opened
+    if(open) _loadDetailResources(detail);
     // Keep the "Expand All" button label in sync
     var siteCard = btn.closest('.site-card');
     if(siteCard) _syncExpandAllBtn(siteCard);
@@ -31396,7 +31398,10 @@ document.addEventListener('click', function(e){
     var details = siteCard.querySelectorAll('.sc-detail');
     var expandBtns = siteCard.querySelectorAll('[data-action="sc-expand"]');
     var anyCollapsed = Array.from(details).some(function(d){ return !d.classList.contains('open'); });
-    details.forEach(function(d){ d.classList.toggle('open', anyCollapsed); });
+    details.forEach(function(d){
+      d.classList.toggle('open', anyCollapsed);
+      if(anyCollapsed) _loadDetailResources(d);
+    });
     expandBtns.forEach(function(b){
       b.classList.toggle('open', anyCollapsed);
       try{ localStorage.setItem('hub_sc_expand_'+b.dataset.scKey, anyCollapsed ? '1' : '0'); }catch(ex){}
@@ -31425,6 +31430,8 @@ document.addEventListener('DOMContentLoaded', function(){
   });
   // Sync Expand All button labels after restore
   document.querySelectorAll('.site-card').forEach(function(sc){ _syncExpandAllBtn(sc); });
+  // Lazy-load resources for any detail sections that were restored as open
+  document.querySelectorAll('.sc-detail.open').forEach(_loadDetailResources);
   tickClock();
   setInterval(tickClock, 1000);
   // Show server-rendered cards immediately (no skeleton delay).
@@ -31590,7 +31597,7 @@ document.addEventListener('click',function(e){
   c.dataset.hours=_TL_HOURS[(_TL_HOURS.indexOf(cur)+1)%_TL_HOURS.length];
   _tlLoad(c);
 });
-setTimeout(function(){ document.querySelectorAll('canvas.sc-tl').forEach(_tlLoad); }, 600);
+// Timelines are loaded lazily on expand — no eager bulk load here.
 // ── Trend / pattern indicators ────────────────────────────────────────────────
 var _trendCache = {};  // keyed by "site/stream"
 function _applyTrend(site, stream, data) {
@@ -31617,19 +31624,41 @@ function _applyTrend(site, stream, data) {
     }
   });
 }
+function _fetchTrend(site, stream){
+  fetch('/api/trend/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream))
+    .then(function(r){return r.json();})
+    .then(function(d){ _applyTrend(site, stream, d); })
+    .catch(function(){});
+}
 function _loadTrends() {
-  document.querySelectorAll('.sc[data-site][data-stream]').forEach(function(sc){
-    var site=sc.dataset.site, stream=sc.dataset.stream;
-    if(!site || !stream) return;
-    fetch('/api/trend/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream))
-      .then(function(r){return r.json();})
-      .then(function(d){ _applyTrend(site, stream, d); })
-      .catch(function(){});
+  // Staggered serial load — one request every 800 ms to avoid saturating the
+  // connection pool and blocking live-level polls and Play button auth pings.
+  var scs = Array.from(document.querySelectorAll('.sc[data-site][data-stream]'));
+  scs.forEach(function(sc, i){
+    setTimeout(function(){
+      var site=sc.dataset.site, stream=sc.dataset.stream;
+      if(site && stream) _fetchTrend(site, stream);
+    }, i * 800);
   });
 }
+// Load detail section resources (timelines + trend) lazily when a stream card
+// is expanded — avoids firing 60+ fetches on page load.
+function _loadDetailResources(detail){
+  // Timeline canvases — only load once (guard with data-loaded attribute)
+  detail.querySelectorAll('canvas.sc-tl:not([data-loaded])').forEach(function(c){
+    c.dataset.loaded = '1';
+    _tlLoad(c);
+  });
+  // Trend for this stream — load fresh when the user opens the card
+  var sc = detail.closest('.sc[data-site][data-stream]');
+  if(sc && sc.dataset.site && sc.dataset.stream){
+    _fetchTrend(sc.dataset.site, sc.dataset.stream);
+  }
+}
 // (trend re-apply is handled by the wrapper below via .finally)
-// Load trends once on page ready, then every 5 minutes
-setTimeout(_loadTrends, 1200);
+// Load trends staggered — start 8 s after DOMContentLoaded so live polls,
+// auth pings, and hub data fetches all have clear runway first.
+setTimeout(_loadTrends, 8000);
 setInterval(_loadTrends, 300000);
 // Re-apply cached values immediately after each hubRefresh completes
 (function(){

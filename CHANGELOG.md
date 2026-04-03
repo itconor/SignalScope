@@ -2,6 +2,18 @@
 
 ---
 
+## [3.4.139] - 2026-04-03
+
+### Fixed
+- **Hub Play button and level meters blocked by fetch storm on page load** — Root cause identified via browser performance profiling: `DOMContentLoaded` fires at ~1.6 s but immediately triggers two bulk fetch blasts: 30 timeline canvas loads (`setTimeout(forEach(_tlLoad), 600ms)`) and 30 trend API calls (`setTimeout(_loadTrends, 1200ms)`). With 60+ concurrent requests hitting the server, the browser's connection pool is saturated. Any subsequent `fetch()` call — including the `_hubGuardPlay` auth pre-flight needed to start the player — queues behind them and takes 75–106 seconds to complete. The page shows `window.load` at ~91 seconds, confirming the fetch storm.
+
+  Three changes:
+  1. **Timeline canvases are now lazy** — the `setTimeout(forEach(_tlLoad), 600)` bulk load is removed. Timelines now load only when a stream's detail section is opened (`_loadDetailResources()` called in the expand click handler and for any already-open sections on DOMContentLoaded).
+  2. **Trend loads are now staggered** — `_loadTrends()` no longer fires all 30 fetches simultaneously. It schedules them 800 ms apart (stream 0 at t=8 s, stream 1 at t=8.8 s, etc.), giving the live polls and Play button plenty of clear runway. The 5-minute refresh interval is unchanged.
+  3. **`_loadDetailResources(detail)`** — new helper called on expand/expand-all. Loads all unloaded `canvas.sc-tl` (guarded by `data-loaded` attribute) and fetches trend for that stream.
+
+---
+
 ## [3.4.138] - 2026-04-03
 
 ### Fixed
