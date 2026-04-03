@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.143] - 2026-04-03
+
+### Fixed
+- **Backup button fails for large databases** — the backup route built the entire ZIP archive in a `BytesIO` buffer in RAM. A large `metrics_history.db` (e.g. 500 MB+) caused the process to exhaust available memory and the download to fail silently. Fix: the ZIP is now written to a named temp file on disk using `zipfile.ZipFile(tmp_path, "w", ...)`, then streamed to the browser via `send_file` with an `after_this_request` cleanup hook. There is no practical size limit.
+- **logger_index.db not included in backup/restore** — the Logger plugin's SQLite database (`plugins/logger_index.db`, containing all segment metadata, SHA-256 checksums, export audit log, and metadata) was not included in the Settings → Backup ZIP. It is now backed up using the same WAL-safe `sqlite3.backup()` hot-copy as `metrics_history.db`. Restore now also handles `logger_index.db` from the ZIP.
+- **Restore reads entire ZIP into RAM** — `settings_restore` did `f.read(512 * 1024 * 1024)` before inspecting the ZIP, loading the whole file into memory. Fix: the upload is saved to a temp disk file via `f.save(tmp_path)` first, then opened with `zipfile.ZipFile(tmp_path)`. Database entries within the ZIP are extracted directly to disk via `zf.extract()` rather than `zf.read()`.
+
+---
+
 ## [3.4.142] - 2026-04-03
 
 ### Improved (Logger plugin v1.6.0 — compliance hardening)

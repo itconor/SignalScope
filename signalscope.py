@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.142"
+BUILD                  = "SignalScope-3.4.143"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -19536,57 +19536,81 @@ def api_settings_log():
 @login_required
 @admin_required
 def settings_backup():
-    """Stream a ZIP containing config, AI models, metrics DB, SLA data, alert log and hub state."""
-    import zipfile, io as _io
-    buf = _io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Config file
-        if os.path.isfile(CONFIG_PATH):
-            zf.write(CONFIG_PATH, "lwai_config.json")
-        # AI models directory
-        if os.path.isdir(MODELS_DIR):
-            for root, _dirs, files in os.walk(MODELS_DIR):
-                for fname in files:
-                    full = os.path.join(root, fname)
-                    arc  = os.path.relpath(full, BASE_DIR)
-                    zf.write(full, arc)
-        # Metrics history SQLite database
-        if os.path.isfile(METRICS_DB_PATH):
-            try:
-                # Read via a fresh connection so WAL is checkpointed cleanly
-                import sqlite3 as _sq3, tempfile as _tf, shutil as _sh
-                tmp = _tf.NamedTemporaryFile(suffix=".db", delete=False)
-                tmp.close()
-                try:
-                    src = _sq3.connect(METRICS_DB_PATH)
-                    dst = _sq3.connect(tmp.name)
-                    src.backup(dst)
-                    dst.close()
-                    src.close()
-                    zf.write(tmp.name, "metrics_history.db")
-                finally:
-                    try: os.unlink(tmp.name)
-                    except: pass
-            except Exception:
-                # Fallback: just include the file directly
-                zf.write(METRICS_DB_PATH, "metrics_history.db")
-        # SLA data
-        if os.path.isfile(SLA_PATH):
-            zf.write(SLA_PATH, "sla_data.json")
-        # Alert log
-        if os.path.isfile(ALERT_LOG_PATH):
-            zf.write(ALERT_LOG_PATH, "alert_log.json")
-        # Hub state
-        if os.path.isfile(HUB_STATE_PATH):
-            zf.write(HUB_STATE_PATH, "hub_state.json")
-    buf.seek(0)
-    import datetime as _dt
-    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    """Download a ZIP containing config, AI models, metrics DB, logger DB, SLA data, alert log
+    and hub state.  The ZIP is written to a temp file on disk so large databases do not exhaust
+    RAM — there is no practical size limit."""
+    import zipfile, tempfile as _tf, sqlite3 as _sq3, datetime as _dt
+    from flask import send_file, after_this_request
+
+    ts      = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     dl_name = f"signalscope_backup_{ts}.zip"
-    return Response(
-        buf.read(),
+
+    # Write to a named temp file so we never hold the whole archive in RAM
+    tmp_zip = _tf.NamedTemporaryFile(suffix=".zip", delete=False, dir=BASE_DIR)
+    tmp_zip.close()
+
+    def _safe_db_backup(src_path, arc_name, zf):
+        """Hot-snapshot a live SQLite DB via the .backup() API and add to ZIP."""
+        tmp_db = _tf.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp_db.close()
+        try:
+            src = _sq3.connect(src_path)
+            dst = _sq3.connect(tmp_db.name)
+            src.backup(dst)          # consistent hot copy, WAL-safe
+            dst.close(); src.close()
+            zf.write(tmp_db.name, arc_name)
+        except Exception:
+            try: zf.write(src_path, arc_name)   # last-resort: copy file directly
+            except Exception: pass
+        finally:
+            try: os.unlink(tmp_db.name)
+            except: pass
+
+    try:
+        with zipfile.ZipFile(tmp_zip.name, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Config file
+            if os.path.isfile(CONFIG_PATH):
+                zf.write(CONFIG_PATH, "lwai_config.json")
+            # AI models directory
+            if os.path.isdir(MODELS_DIR):
+                for root, _dirs, files in os.walk(MODELS_DIR):
+                    for fname in files:
+                        full = os.path.join(root, fname)
+                        arc  = os.path.relpath(full, BASE_DIR)
+                        zf.write(full, arc)
+            # Metrics history SQLite database (hot backup)
+            if os.path.isfile(METRICS_DB_PATH):
+                _safe_db_backup(METRICS_DB_PATH, "metrics_history.db", zf)
+            # Logger index SQLite database (hot backup — lives in plugins/ subdir)
+            _logger_db = os.path.join(BASE_DIR, _PLUGINS_SUBDIR, "logger_index.db")
+            if os.path.isfile(_logger_db):
+                _safe_db_backup(_logger_db, "logger_index.db", zf)
+            # SLA data
+            if os.path.isfile(SLA_PATH):
+                zf.write(SLA_PATH, "sla_data.json")
+            # Alert log
+            if os.path.isfile(ALERT_LOG_PATH):
+                zf.write(ALERT_LOG_PATH, "alert_log.json")
+            # Hub state
+            if os.path.isfile(HUB_STATE_PATH):
+                zf.write(HUB_STATE_PATH, "hub_state.json")
+    except Exception as exc:
+        try: os.unlink(tmp_zip.name)
+        except: pass
+        return Response(f"Backup failed: {exc}", status=500)
+
+    # Delete temp file after Flask finishes streaming it to the browser
+    @after_this_request
+    def _cleanup(response):
+        try: os.unlink(tmp_zip.name)
+        except: pass
+        return response
+
+    return send_file(
+        tmp_zip.name,
         mimetype="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
+        as_attachment=True,
+        download_name=dl_name,
     )
 
 @app.post("/settings/restore")
@@ -19594,99 +19618,117 @@ def settings_backup():
 @admin_required
 @csrf_protect
 def settings_restore():
-    """Restore config + AI models from an uploaded backup ZIP."""
-    import zipfile, io as _io
+    """Restore config + AI models + DBs from an uploaded backup ZIP.
+    The upload is saved to a temp file first so large ZIPs don't exhaust RAM."""
+    import zipfile, tempfile as _tf
     f = request.files.get("backup_zip")
     if not f or not f.filename:
         flash("No file uploaded."); return redirect(url_for("settings"))
 
-    data = f.read(512 * 1024 * 1024)  # cap at 512 MB (metrics DB can be large)
-    if not zipfile.is_zipfile(_io.BytesIO(data)):
-        flash("Uploaded file is not a valid ZIP."); return redirect(url_for("settings"))
+    # Save the upload to disk — avoids reading multi-GB archives into RAM
+    tmp_zip = _tf.NamedTemporaryFile(suffix=".zip", delete=False, dir=BASE_DIR)
+    try:
+        f.save(tmp_zip.name)
 
-    restored_config  = False
-    restored_models  = 0
-    restored_db      = False
-    restored_sla     = False
-    restored_alerts  = False
-    restored_hub     = False
-    errors = []
+        if not zipfile.is_zipfile(tmp_zip.name):
+            flash("Uploaded file is not a valid ZIP.")
+            return redirect(url_for("settings"))
 
-    with zipfile.ZipFile(_io.BytesIO(data)) as zf:
-        for entry in zf.infolist():
-            # Zip-slip guard: reject any entry with path traversal
-            entry_path = os.path.normpath(entry.filename)
-            if entry_path.startswith("..") or os.path.isabs(entry_path):
-                errors.append(f"Skipped unsafe path: {entry.filename}")
-                continue
+        restored_config    = False
+        restored_models    = 0
+        restored_db        = False
+        restored_logger_db = False
+        restored_sla       = False
+        restored_alerts    = False
+        restored_hub       = False
+        errors = []
 
-            if entry_path == "lwai_config.json":
-                raw = zf.read(entry)
-                try:
-                    json.loads(raw)  # validate JSON before writing
-                except Exception:
-                    errors.append("lwai_config.json is not valid JSON — skipped.")
+        with zipfile.ZipFile(tmp_zip.name) as zf:
+            for entry in zf.infolist():
+                # Zip-slip guard: reject any entry with path traversal
+                entry_path = os.path.normpath(entry.filename)
+                if entry_path.startswith("..") or os.path.isabs(entry_path):
+                    errors.append(f"Skipped unsafe path: {entry.filename}")
                     continue
-                with open(CONFIG_PATH, "wb") as fh:
-                    fh.write(raw)
-                try:
-                    os.chmod(CONFIG_PATH, 0o600)
-                except OSError:
-                    pass
-                restored_config = True
 
-            elif entry_path.startswith("ai_models" + os.sep) or entry_path.startswith("ai_models/"):
-                dest = os.path.join(BASE_DIR, entry_path)
-                dest = os.path.normpath(dest)
-                # Confirm still inside BASE_DIR after normalization
-                if not dest.startswith(os.path.abspath(BASE_DIR) + os.sep):
-                    errors.append(f"Skipped unsafe model path: {entry.filename}")
-                    continue
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                if not entry.is_dir():
-                    with open(dest, "wb") as fh:
-                        fh.write(zf.read(entry))
-                    restored_models += 1
-
-            elif entry_path == "metrics_history.db":
-                try:
+                if entry_path == "lwai_config.json":
                     raw = zf.read(entry)
-                    # Close the shared metrics_db connection before overwriting
-                    metrics_db._conn = None
-                    with open(METRICS_DB_PATH, "wb") as fh:
+                    try:
+                        json.loads(raw)  # validate JSON before writing
+                    except Exception:
+                        errors.append("lwai_config.json is not valid JSON — skipped.")
+                        continue
+                    with open(CONFIG_PATH, "wb") as fh:
                         fh.write(raw)
-                    restored_db = True
-                except Exception as e:
-                    errors.append(f"metrics_history.db restore failed: {e}")
+                    try:
+                        os.chmod(CONFIG_PATH, 0o600)
+                    except OSError:
+                        pass
+                    restored_config = True
 
-            elif entry_path == "sla_data.json":
-                raw = zf.read(entry)
-                try:
-                    json.loads(raw)
-                except Exception:
-                    errors.append("sla_data.json is not valid JSON — skipped.")
-                    continue
-                with open(SLA_PATH, "wb") as fh:
-                    fh.write(raw)
-                restored_sla = True
+                elif entry_path.startswith("ai_models" + os.sep) or entry_path.startswith("ai_models/"):
+                    dest = os.path.join(BASE_DIR, entry_path)
+                    dest = os.path.normpath(dest)
+                    # Confirm still inside BASE_DIR after normalization
+                    if not dest.startswith(os.path.abspath(BASE_DIR) + os.sep):
+                        errors.append(f"Skipped unsafe model path: {entry.filename}")
+                        continue
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    if not entry.is_dir():
+                        with open(dest, "wb") as fh:
+                            fh.write(zf.read(entry))
+                        restored_models += 1
 
-            elif entry_path == "alert_log.json":
-                raw = zf.read(entry)
-                with _alert_log_lock:
-                    with open(ALERT_LOG_PATH, "wb") as fh:
+                elif entry_path == "metrics_history.db":
+                    try:
+                        # Close shared metrics_db connection before overwriting
+                        metrics_db._conn = None
+                        zf.extract(entry, BASE_DIR)   # extract directly to disk
+                        restored_db = True
+                    except Exception as e:
+                        errors.append(f"metrics_history.db restore failed: {e}")
+
+                elif entry_path == "logger_index.db":
+                    _logger_db_dir = os.path.join(BASE_DIR, _PLUGINS_SUBDIR)
+                    os.makedirs(_logger_db_dir, exist_ok=True)
+                    try:
+                        zf.extract(entry, _logger_db_dir)
+                        restored_logger_db = True
+                    except Exception as e:
+                        errors.append(f"logger_index.db restore failed: {e}")
+
+                elif entry_path == "sla_data.json":
+                    raw = zf.read(entry)
+                    try:
+                        json.loads(raw)
+                    except Exception:
+                        errors.append("sla_data.json is not valid JSON — skipped.")
+                        continue
+                    with open(SLA_PATH, "wb") as fh:
                         fh.write(raw)
-                restored_alerts = True
+                    restored_sla = True
 
-            elif entry_path == "hub_state.json":
-                raw = zf.read(entry)
-                try:
-                    json.loads(raw)
-                except Exception:
-                    errors.append("hub_state.json is not valid JSON — skipped.")
-                    continue
-                with open(HUB_STATE_PATH, "wb") as fh:
-                    fh.write(raw)
-                restored_hub = True
+                elif entry_path == "alert_log.json":
+                    raw = zf.read(entry)
+                    with _alert_log_lock:
+                        with open(ALERT_LOG_PATH, "wb") as fh:
+                            fh.write(raw)
+                    restored_alerts = True
+
+                elif entry_path == "hub_state.json":
+                    raw = zf.read(entry)
+                    try:
+                        json.loads(raw)
+                    except Exception:
+                        errors.append("hub_state.json is not valid JSON — skipped.")
+                        continue
+                    with open(HUB_STATE_PATH, "wb") as fh:
+                        fh.write(raw)
+                    restored_hub = True
+
+    finally:
+        try: os.unlink(tmp_zip.name)
+        except: pass
 
     if restored_config:
         # Reload config and restart monitoring with restored settings
@@ -19699,15 +19741,16 @@ def settings_restore():
             errors.append(f"Config reloaded but monitor restart failed: {e}")
 
     parts = []
-    if restored_config:  parts.append("config restored")
-    if restored_models:  parts.append(f"{restored_models} AI model file(s) restored")
-    if restored_db:      parts.append("metrics history DB restored")
-    if restored_sla:     parts.append("SLA data restored")
-    if restored_alerts:  parts.append("alert log restored")
-    if restored_hub:     parts.append("hub state restored")
-    if not parts:        parts.append("nothing recognised in ZIP")
+    if restored_config:    parts.append("config restored")
+    if restored_models:    parts.append(f"{restored_models} AI model file(s) restored")
+    if restored_db:        parts.append("metrics history DB restored")
+    if restored_logger_db: parts.append("logger index DB restored")
+    if restored_sla:       parts.append("SLA data restored")
+    if restored_alerts:    parts.append("alert log restored")
+    if restored_hub:       parts.append("hub state restored")
+    if not parts:          parts.append("nothing recognised in ZIP")
     msg = "Restore complete: " + ", ".join(parts) + "."
-    if errors:           msg += " Warnings: " + "; ".join(errors)
+    if errors:             msg += " Warnings: " + "; ".join(errors)
     flash(msg)
     return redirect(url_for("settings"))
 
