@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sqlite3
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,11 @@ import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
+
+# SSL: accept self-signed / private CA certs (common for self-hosted SignalScope hubs)
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
 
 from PySide6.QtCore import (
     Qt, QTimer, QUrl, Signal, Slot, QThread, QSize, QRect, QPoint,
@@ -38,7 +44,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 # ─── Color scheme (matches SignalScope logger web UI) ─────────────────────────
 C = {
@@ -148,7 +154,7 @@ class HubDataSource(DataSource):
         req = urllib.request.Request(url, headers={
             "Authorization": f"Bearer {self._token}",
         })
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
             return json.loads(resp.read())
 
     def _post(self, path: str, body: dict) -> dict:
@@ -157,28 +163,33 @@ class HubDataSource(DataSource):
             f"{self._url}{path}", data=data, method="POST",
             headers={"Authorization": f"Bearer {self._token}",
                      "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
             return json.loads(resp.read())
 
     def catalog(self) -> list:
         data = self._get("/api/mobile/logger/catalog")
         return data.get("catalog", [])
 
-    def days(self, slug: str) -> list:
+    def days(self, slug: str, site: str = "") -> list:
         # Poll until pending clears (up to 30s)
+        params = {"slug": slug}
+        if site:
+            params["site"] = site
         data = {}
         for _ in range(10):
-            data = self._get("/api/mobile/logger/days", {"slug": slug})
+            data = self._get("/api/mobile/logger/days", params)
             if not data.get("pending"):
                 return data.get("days", [])
             time.sleep(3)
         return data.get("days", [])
 
-    def segments(self, slug: str, date: str) -> list:
+    def segments(self, slug: str, date: str, site: str = "") -> list:
+        params = {"slug": slug, "date": date}
+        if site:
+            params["site"] = site
         data = {}
         for _ in range(10):
-            data = self._get("/api/mobile/logger/segments",
-                             {"slug": slug, "date": date})
+            data = self._get("/api/mobile/logger/segments", params)
             if not data.get("pending"):
                 segs = data.get("segments", [])
                 for s in segs:
@@ -191,25 +202,28 @@ class HubDataSource(DataSource):
             time.sleep(3)
         return data.get("segments", [])
 
-    def metadata(self, slug: str, date: str) -> list:
+    def metadata(self, slug: str, date: str, site: str = "") -> list:
+        params = {"slug": slug, "date": date}
+        if site:
+            params["site"] = site
         data = {}
         for _ in range(10):
-            data = self._get("/api/mobile/logger/metadata",
-                             {"slug": slug, "date": date})
+            data = self._get("/api/mobile/logger/metadata", params)
             if not data.get("pending"):
                 return data.get("events", [])
             time.sleep(3)
         return data.get("events", [])
 
     def audio_url(self, slug: str, date: str, filename: str,
-                  seek_s: float = 0) -> str:
+                  seek_s: float = 0, site: str = "") -> str:
         """POST to play_file to get a relay stream URL with native codec.
         Falls back to stream_pcm if play_file is unavailable."""
         try:
-            data = self._post("/api/mobile/logger/play_file", {
-                "slug": slug, "date": date,
-                "filename": filename, "seek_s": seek_s,
-            })
+            body = {"slug": slug, "date": date,
+                    "filename": filename, "seek_s": seek_s}
+            if site:
+                body["site"] = site
+            data = self._post("/api/mobile/logger/play_file", body)
             stream_url = data.get("stream_url", "")
             if stream_url:
                 if not stream_url.startswith("http"):
@@ -260,7 +274,7 @@ class DirectDataSource(DataSource):
         except Exception:
             return []
 
-    def days(self, slug: str) -> list:
+    def days(self, slug: str, site: str = "") -> list:
         sdir = self._root / slug
         if not sdir.exists():
             return []
@@ -269,7 +283,7 @@ class DirectDataSource(DataSource):
              if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", d.name)],
             reverse=True)
 
-    def segments(self, slug: str, date: str) -> list:
+    def segments(self, slug: str, date: str, site: str = "") -> list:
         day_dir = self._root / slug / date
         result = {}
         # Try SQLite metadata first
@@ -307,13 +321,49 @@ class DirectDataSource(DataSource):
                     }
         return sorted(result.values(), key=lambda x: x.get("start_s", 0))
 
-    def metadata(self, slug: str, date: str) -> list:
-        for db_path in [self._root / "logger_index.db",
-                        self._root.parent / "logger_index.db"]:
+    def metadata(self, slug: str, date: str, site: str = "") -> list:
+        import datetime as _dt
+
+        # ── Primary: sidecar JSON files written alongside recordings ──────────
+        # Logger writes {rec_root}/{slug}/{date}/meta_*.json (JSON arrays).
+        # This works without access to logger_index.db.
+        day_dir = self._root / slug / date
+        if day_dir.is_dir():
+            midnight_utc = _dt.datetime.strptime(date, "%Y-%m-%d").replace(
+                tzinfo=_dt.timezone.utc).timestamp()
+            seen: dict = {}
+            for meta_file in sorted(day_dir.glob("meta_*.json")):
+                try:
+                    entries = json.loads(meta_file.read_text(encoding="utf-8"))
+                    for e in entries:
+                        ts    = float(e.get("ts", 0))
+                        etype = e.get("type", "")
+                        key   = (round(ts, 1), etype)
+                        if key not in seen:
+                            seen[key] = {
+                                "ts_s":      ts - midnight_utc,
+                                "type":      etype,
+                                "title":     e.get("title",     ""),
+                                "artist":    e.get("artist",    ""),
+                                "show_name": e.get("show_name", ""),
+                                "presenter": e.get("presenter", ""),
+                            }
+                except Exception:
+                    pass
+            if seen:
+                return sorted(seen.values(), key=lambda e: e["ts_s"])
+
+        # ── Fallback: logger_index.db (various likely locations) ──────────────
+        db_candidates = [
+            self._root / "logger_index.db",
+            self._root.parent / "logger_index.db",
+            self._root.parent / "plugins" / "logger_index.db",
+            self._root / "plugins" / "logger_index.db",
+        ]
+        midnight = _dt.datetime.strptime(date, "%Y-%m-%d").timestamp()
+        for db_path in db_candidates:
             if db_path.exists():
                 try:
-                    import datetime as _dt
-                    midnight = _dt.datetime.strptime(date, "%Y-%m-%d").timestamp()
                     conn = sqlite3.connect(str(db_path), timeout=5)
                     conn.row_factory = sqlite3.Row
                     rows = conn.execute(
@@ -328,11 +378,10 @@ class DirectDataSource(DataSource):
                             for r in rows]
                 except Exception:
                     pass
-                break
         return []
 
     def audio_url(self, slug: str, date: str, filename: str,
-                  seek_s: float = 0) -> str:
+                  seek_s: float = 0, site: str = "") -> str:
         return str(self._root / slug / date / filename)
 
     def mode(self) -> str:
@@ -927,6 +976,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._ds = ds
         self._current_slug = ""
+        self._current_site = ""
         self._current_date = ""
         self._current_n_ch = 1          # channel count for current stream
         self._segments = []
@@ -1350,6 +1400,7 @@ class MainWindow(QMainWindow):
             return
         entry = current.data(Qt.UserRole)
         self._current_slug = entry.get("slug", "")
+        self._current_site = entry.get("site", entry.get("owner", ""))
         self._current_n_ch = int(entry.get("n_ch", 1) or 1)
         self._current_date = ""
         self._segments = []
@@ -1357,7 +1408,7 @@ class MainWindow(QMainWindow):
         self._daybar.set_segments([])
         self._date_list.clear()
         self._stop_playback()
-        self._fetch("days", self._ds.days, self._current_slug)
+        self._fetch("days", self._ds.days, self._current_slug, self._current_site)
 
     def _populate_dates(self, days: list):
         self._date_list.clear()
@@ -1370,9 +1421,9 @@ class MainWindow(QMainWindow):
         self._current_date = current.text()
         self._stop_playback()
         self._fetch("segments", self._ds.segments,
-                    self._current_slug, self._current_date)
+                    self._current_slug, self._current_date, self._current_site)
         self._fetch("metadata", self._ds.metadata,
-                    self._current_slug, self._current_date)
+                    self._current_slug, self._current_date, self._current_site)
 
     def _populate_segments(self, segs: list):
         self._segments = segs
@@ -1426,13 +1477,15 @@ class MainWindow(QMainWindow):
 
         if self._ds.mode() == "direct":
             url = self._ds.audio_url(
-                self._current_slug, self._current_date, filename, seek_s)
+                self._current_slug, self._current_date, filename, seek_s,
+                self._current_site)
             self._start_playback(url)
         else:
             # Hub mode: fetch relay URL asynchronously (POST to play_file)
             self._p_sub.setText("  ·  ".join(sub_parts) + "  —  connecting…")
             self._fetch("play_url", self._ds.audio_url,
-                        self._current_slug, self._current_date, filename, seek_s)
+                        self._current_slug, self._current_date, filename, seek_s,
+                        self._current_site)
 
     def _start_playback(self, url: str):
         if self._ds.mode() == "direct":
