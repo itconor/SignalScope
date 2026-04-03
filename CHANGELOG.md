@@ -4,6 +4,9 @@
 
 ## [3.4.133] - 2026-04-02
 
+### Fixed
+- **Live audio Play button silently fails when not logged in** — when accessing the hub from outside and not authenticated, clicking any Play button caused the `<audio>` element to silently follow the login redirect, receive an HTML page instead of audio, and fail with no feedback. The user saw a working Play button but heard nothing and was never prompted to log in. Root cause: `<audio src=...>` follows 302 redirects automatically and cannot surface the resulting HTTP status code via `onerror`. Fix: added `/api/auth_ping` (returns 200/401 JSON, never redirects) and a `_guardPlay(fn)` helper that pre-checks auth before starting audio. If the user is not logged in, `_guardPlay` redirects them to `/login?next=<current page>` instead of silently failing. Applied to both `toggleLive` (main monitor page) and `_startListen` (chains/hub mini-player).
+
 ### Plugins
 - **FM Scanner v1.0.4** — fixed two state-machine stuck states that required disconnect/reconnect to recover: (1) Re-tune failure (`doTune()` returning `!ok`) only set `freqSub` to "Tune failed" but left `_state` in `'streaming'`/`'connecting'` with a stale audio slot — the stream appeared live but no audio was flowing. Fix: on any tune failure, call `doStop()` then auto-restart to the requested frequency after 800 ms (mirrors what the user was doing manually). (2) Band scan failure showed a blocking `alert()` then left the status as "Idle — pick a site and connect" with no indication of why or what to do next. Fix: replaced `alert()` with an inline red message in the scan-status area ("Scan failed: … — press Connect to resume") that auto-clears after 6 seconds.
 

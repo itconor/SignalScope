@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.132"
+BUILD                  = "SignalScope-3.4.133"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -15477,6 +15477,17 @@ user_manager = UserManager(BASE_DIR)
 user_manager.load(fallback_auth=monitor.app_cfg.auth)
 threading.Thread(target=_version_check_loop, daemon=True, name="VersionCheck").start()
 
+@app.get("/api/auth_ping")
+def api_auth_ping():
+    """Lightweight auth status check — returns 200 if authenticated (or auth disabled),
+    401 JSON if not.  Never issues a redirect, so browser fetch() / XHR can detect
+    the unauthenticated state and redirect to the login page themselves rather than
+    silently following a 302 to the login HTML (which breaks <audio> src loading)."""
+    cfg = monitor.app_cfg
+    if cfg.auth.enabled and not session.get("logged_in"):
+        return jsonify({"ok": False, "error": "login required"}), 401
+    return jsonify({"ok": True})
+
 @app.get("/api/version_check")
 @login_required
 def api_version_check():
@@ -16427,14 +16438,31 @@ function _csrfFetch(url, opts){
   opts.headers["X-CSRFToken"] = t;
   return fetch(url, opts);
 }
+// Pre-flight auth check before starting any live audio stream.
+// <audio> elements silently follow login redirects and get back HTML instead
+// of audio — the element fires onerror with no status code exposed.
+// _guardPlay() fetches /api/auth_ping first; if the user isn't logged in it
+// redirects them to the login page (with ?next= pointing back here) instead
+// of leaving them staring at a broken Play button.
+function _guardPlay(fn){
+  fetch('/api/auth_ping',{credentials:'same-origin'}).then(function(r){
+    if(r.status===401){
+      window.location.href='/login?next='+encodeURIComponent(window.location.pathname);
+      return;
+    }
+    fn();
+  }).catch(function(){ fn(); }); // network error — try the stream anyway
+}
 function toggleLive(idx,btn){
   var audio=document.getElementById('live_'+idx);
   if(!audio) return;
   if(audio.style.display==='none'||!audio.src){
-    audio.src='/stream/'+idx+'/live';
-    audio.style.display='block';
-    audio.play().catch(function(){});
-    btn.textContent='⏹ Stop'; btn.style.background='var(--al)';
+    _guardPlay(function(){
+      audio.src='/stream/'+idx+'/live';
+      audio.style.display='block';
+      audio.play().catch(function(){});
+      btn.textContent='⏹ Stop'; btn.style.background='var(--al)';
+    });
   } else {
     audio.pause(); audio.src=''; audio.style.display='none';
     btn.textContent='▶ Live'; btn.style.background='';
@@ -24919,16 +24947,19 @@ function _startListen(nodeEl, url){
   var siteName   = (nodeEl.querySelector('.node-sub')||{}).textContent   || '';
   var chainCard  = nodeEl.closest('.chain-card');
   var chainName  = chainCard ? (chainCard.querySelector('.chain-name')||{}).textContent || '' : '';
-  title.textContent = streamName;
-  sub.textContent   = (siteName ? siteName + (chainName ? ' · ' + chainName : '') : chainName);
-  audio.src  = url;
-  audio.type = 'audio/mpeg';
-  audio.load();
-  audio.play().catch(function(){ _stopListen(); });
-  mp.style.display = 'flex';
-  document.body.style.paddingBottom = '72px';
-  window._chainAudioEl = nodeEl;
-  nodeEl.classList.add('listening');
+  // Guard against silent login-redirect failure on <audio> elements
+  (typeof _guardPlay === 'function' ? _guardPlay : function(fn){ fn(); })(function(){
+    title.textContent = streamName;
+    sub.textContent   = (siteName ? siteName + (chainName ? ' · ' + chainName : '') : chainName);
+    audio.src  = url;
+    audio.type = 'audio/mpeg';
+    audio.load();
+    audio.play().catch(function(){ _stopListen(); });
+    mp.style.display = 'flex';
+    document.body.style.paddingBottom = '72px';
+    window._chainAudioEl = nodeEl;
+    nodeEl.classList.add('listening');
+  });
 }
 
 // Wire ended/error on the DOM element (cannot do this until DOM is ready;
