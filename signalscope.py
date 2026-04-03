@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.145"
+BUILD                  = "SignalScope-3.4.146"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -8738,6 +8738,9 @@ class MonitorManager:
         cfg._fm_stereo        = bool(getattr(cfg,  "_fm_stereo",        False))
         cfg._fm_stereo_blend  = float(getattr(cfg, "_fm_stereo_blend",  0.0)    or 0.0)
         cfg._fm_rds_ok        = bool(getattr(cfg,  "_fm_rds_ok",        False))
+        # _fm_force_mono: user-toggled flag to suppress stereo output regardless of pilot
+        if not hasattr(cfg, "_fm_force_mono"):
+            cfg._fm_force_mono = False
         # Stereo blend thresholds (pilot SNR in dB)
         # Below _BLEND_LO → mono; above _BLEND_HI → full stereo; linear fade between.
         _BLEND_LO_DB = 14.0   # dB: enter full-mono below this
@@ -8771,42 +8774,45 @@ class MonitorManager:
                 self.log(f"[{name}] FM stereo decoder init failed ({_ste}) — mono only")
                 _stereo_zi = None
 
-        def _mpx_to_stereo(samp: np.ndarray, blend: float = 1.0):
+        def _mpx_to_stereo(samp: np.ndarray):
             """Decode FM stereo from 171 kHz float32 MPX → (L_48k, R_48k).
 
-            blend: 0.0 = mono (suppress L-R entirely), 1.0 = full stereo.
-            Intermediate values smoothly reduce stereo separation so that weak-
-            pilot / marginal-signal conditions fade gracefully to mono rather than
-            producing a distorted right channel.
+            Always called whenever cfg._fm_stereo is True, even when the caller
+            intends to output mono.  This keeps the SOS filter states (zi_lpr,
+            zi_pilot, zi_lmr) continuously updated so that re-entry after a
+            mono period does not produce a transient spike in pilot_peak that
+            would shrink pilot_n amplitude, add DC offset to sub38, and
+            contaminate lmr with L+R content (causing R-channel distortion).
+
+            Blending toward mono is applied EXTERNALLY by the caller using
+            mono_48 = (L_48 + R_48) / 2 as the clean reference.
 
             Steps:
               1. Low-pass 0–15 kHz  → L+R
               2. Band-pass 17–21 kHz → 19 kHz pilot
               3. Normalise pilot; freq-double → 38 kHz subcarrier
               4. Multiply MPX × sub38; low-pass → L-R
-              5. Scale L-R by blend factor
-              6. Matrix: L=(L+R)+(L-R), R=(L+R)-(L-R)
-              7. Resample 171 kHz → 48 kHz via resample_poly(16, 57)
+              5. Matrix: L=(L+R)+(L-R)×2, R=(L+R)-(L-R)×2
+              6. Resample 171 kHz → 48 kHz via resample_poly(16, 57)
             """
             from scipy.signal import sosfilt as _sosf, resample_poly as _rp
             st = _stereo_zi
             lpr,   st["zi_lpr"]   = _sosf(st["sos_lpr"],   samp, zi=st["zi_lpr"])
             pilot, st["zi_pilot"] = _sosf(st["sos_pilot"],  samp, zi=st["zi_pilot"])
             pilot_peak = float(np.max(np.abs(pilot)))
-            if pilot_peak > 0.02:   # ≥0.02 (was 0.005) — require a reasonably clean pilot
+            if pilot_peak > 0.02:   # ≥0.02 — require a reasonably clean pilot
                 # cos(2θ) = 2·cos²(θ) − 1 — doubles pilot freq to 38 kHz subcarrier
                 pilot_n = pilot / (pilot_peak + 1e-9)
                 sub38   = 2.0 * pilot_n ** 2 - 1.0
                 lmr_raw = samp * sub38
                 lmr, st["zi_lmr"] = _sosf(st["sos_lmr"], lmr_raw, zi=st["zi_lmr"])
             else:
-                # Pilot too weak/noisy — dual-mono; advance zi to keep state valid
+                # Pilot too weak/noisy — advance zi with zeros to keep state valid
                 _, st["zi_lmr"] = _sosf(st["sos_lmr"], np.zeros_like(samp), zi=st["zi_lmr"])
                 lmr = np.zeros_like(lpr)
-                blend = 0.0   # force mono if block-level pilot is absent
             # ×2 compensates for DSB-SC demod amplitude halving.
-            # blend scales L-R toward zero as signal quality drops.
-            lmr_scaled = lmr * (2.0 * blend)
+            # Blending is handled externally — never applied here.
+            lmr_scaled = lmr * 2.0
             L_171 = np.clip(lpr + lmr_scaled, -1.0, 1.0).astype(np.float32)
             R_171 = np.clip(lpr - lmr_scaled, -1.0, 1.0).astype(np.float32)
             L_48  = _rp(L_171, 16, 57).astype(np.float32)
@@ -8899,18 +8905,41 @@ class MonitorManager:
                     _update_mpx_metrics(samp)   # sets cfg._fm_stereo based on pilot level
 
                     # ── Stereo MPX decode (when pilot detected + scipy available) ──
+                    # IMPORTANT: _mpx_to_stereo is called whenever cfg._fm_stereo is True,
+                    # even if the final output will be blended to mono.  This keeps the
+                    # SOS filter states continuously updated — skipping calls when blend=0
+                    # leaves stale state that causes a transient spike on re-entry,
+                    # inflating pilot_peak, shrinking pilot_n, adding DC to sub38, and
+                    # contaminating the L-R channel with L+R content (R-channel distortion).
+                    # Blend is applied EXTERNALLY after the call using mono_48 as reference.
                     _stereo_blend = float(getattr(cfg, "_fm_stereo_blend", 0.0))
-                    if cfg._fm_stereo and _stereo_zi is not None and _stereo_blend > 0.0:
+                    _force_mono   = bool(getattr(cfg, "_fm_force_mono", False))
+                    if cfg._fm_stereo and _stereo_zi is not None:
                         try:
-                            L_48, R_48 = _mpx_to_stereo(samp, blend=_stereo_blend)
+                            L_48, R_48 = _mpx_to_stereo(samp)
                             mono_48 = ((L_48 + R_48) * 0.5).astype(np.float32)
                             # DC removal + clip (mirrors _mpx_to_audio)
                             L_48    = np.clip(L_48    - np.mean(L_48),    -1.0, 1.0)
                             R_48    = np.clip(R_48    - np.mean(R_48),    -1.0, 1.0)
                             mono_48 = np.clip(mono_48 - np.mean(mono_48), -1.0, 1.0)
-                            out_buf   = np.concatenate((out_buf,   mono_48))
-                            out_buf_L = np.concatenate((out_buf_L, L_48))
-                            out_buf_R = np.concatenate((out_buf_R, R_48))
+                            # External blend: fade L/R toward mono_48 as pilot SNR drops.
+                            # Force-mono bypasses stereo output entirely (user override).
+                            _b = 0.0 if _force_mono else _stereo_blend
+                            if _b <= 0.0:
+                                # Full mono — don't populate L/R buffers
+                                out_buf   = np.concatenate((out_buf, mono_48))
+                                out_buf_L = np.empty(0, dtype=np.float32)
+                                out_buf_R = np.empty(0, dtype=np.float32)
+                            else:
+                                if _b < 1.0:
+                                    L_out = (_b * L_48 + (1.0 - _b) * mono_48).astype(np.float32)
+                                    R_out = (_b * R_48 + (1.0 - _b) * mono_48).astype(np.float32)
+                                else:
+                                    L_out = L_48
+                                    R_out = R_48
+                                out_buf   = np.concatenate((out_buf,   mono_48))
+                                out_buf_L = np.concatenate((out_buf_L, L_out))
+                                out_buf_R = np.concatenate((out_buf_R, R_out))
                         except Exception as _se:
                             self.log(f"[{name}] FM stereo decode error: {_se}")
                             audio = _mpx_to_audio(samp)
@@ -10979,6 +11008,7 @@ class HubClient:
                 "fm_signal_dbm":     round(inp._fm_signal_dbm, 1),
                 "fm_snr_db":         round(inp._fm_snr_db, 1),
                 "fm_stereo":         inp._fm_stereo,
+                "fm_force_mono":     bool(getattr(inp, "_fm_force_mono", False)),
                 "fm_rds_ps":         inp._fm_rds_ps,
                 "expected_fm_rds_ps": inp.expected_fm_rds_ps,
                 "fm_rds_rt":         getattr(inp, "_fm_rds_rt", ""),
@@ -15957,6 +15987,14 @@ main{padding:16px;max-width:1440px;margin:0 auto}
             <span class="rv" id="fm_rds_{{idx}}" style="color:{% if inp._fm_rds_ok %}var(--ok){% else %}var(--mu){% endif %};font-size:11px">{{ inp._fm_rds_ps or (inp._fm_rds_status|default('No lock', true)) }}</span></div>
           <div class="row"><span class="rl">Text</span>
             <span class="rv" id="fm_rt_{{idx}}" style="font-size:11px">{{ inp._fm_rds_rt or '—' }}</span></div>
+          <div class="row" style="margin-top:6px">
+            <button class="btn {%if inp._fm_force_mono|default(False)%}bd{%else%}bg{%endif%} bs fm-force-mono-btn"
+                    data-idx="{{idx}}"
+                    id="fm_fmono_{{idx}}"
+                    title="Force all stereo FM output to mono (runtime only, resets on monitor restart)">
+              {%if inp._fm_force_mono|default(False)%}🔇 Mono forced{%else%}⇌ Force Mono{%endif%}
+            </button>
+          </div>
         </details>
         {% endif %}
       </div>
@@ -16362,13 +16400,13 @@ function updateCards(inputs){
     if(inp.fm_freq_mhz){
       var fmSig=document.getElementById('fm_sig_'+idx);
       if(fmSig){
-        fmSig.textContent=inp.fm_signal_dbm.toFixed(1)+' dBm';
-        fmSig.style.color=inp.fm_signal_dbm>=-70?'var(--ok)':inp.fm_signal_dbm>=-85?'var(--wn)':'var(--al)';
+        fmSig.textContent=inp.fm_signal_dbm.toFixed(1)+' dBFS';
+        fmSig.style.color=inp.fm_signal_dbm>=-18?'var(--ok)':inp.fm_signal_dbm>=-28?'var(--wn)':'var(--al)';
       }
       var fmSnr=document.getElementById('fm_snr_'+idx);
       if(fmSnr){
         fmSnr.textContent=inp.fm_snr_db.toFixed(1)+' dB';
-        fmSnr.style.color=inp.fm_snr_db>=20?'var(--ok)':inp.fm_snr_db>=10?'var(--wn)':'var(--al)';
+        fmSnr.style.color=inp.fm_snr_db>=12?'var(--ok)':inp.fm_snr_db>=6?'var(--wn)':'var(--al)';
       }
       var fmSt=document.getElementById('fm_stereo_'+idx);
       if(fmSt){
@@ -16387,6 +16425,13 @@ function updateCards(inputs){
         var fmRt=document.getElementById('fm_rt_'+idx);
         if(fmRt){ fmRt.textContent = inp.fm_rds_rt || '—'; }
         fmRds.style.color = inp.fm_rds_ok ? 'var(--ok)' : (inp.fm_rds_status && inp.fm_rds_status.indexOf('Detect')===0 ? 'var(--wn)' : 'var(--mu)');
+      }
+      // Sync force-mono button state from server
+      var fmMono = document.getElementById('fm_fmono_'+idx);
+      if(fmMono && inp.fm_force_mono !== undefined && !fmMono.disabled){
+        var on = inp.fm_force_mono;
+        fmMono.textContent = on ? '🔇 Mono forced' : '⇌ Force Mono';
+        fmMono.className = 'btn ' + (on ? 'bd' : 'bg') + ' bs fm-force-mono-btn';
       }
     }
 
@@ -16586,6 +16631,25 @@ function toggleClips(idx){
   if(arrow) arrow.textContent=open?'▼':'▶';
   if(open) loadClips(idx,streamName);
 }
+
+// ── Force Mono toggle (FM inputs) ──────────────────────────────────────────
+document.addEventListener('click', function(e){
+  var fmBtn = e.target.closest('.fm-force-mono-btn');
+  if(!fmBtn) return;
+  var idx = fmBtn.dataset.idx;
+  fmBtn.disabled = true;
+  _csrfFetch('/api/fm/force_mono/'+idx, {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(d.ok){
+        var on = d.force_mono;
+        fmBtn.textContent = on ? '🔇 Mono forced' : '⇌ Force Mono';
+        fmBtn.className = 'btn ' + (on ? 'bd' : 'bg') + ' bs fm-force-mono-btn';
+      }
+    })
+    .catch(function(){})
+    .finally(function(){ fmBtn.disabled = false; });
+});
 
 // ── Event delegation for data-action buttons (CSP-safe, no inline onclick) ──
 document.addEventListener('click', function(e){
@@ -19319,6 +19383,21 @@ def ai_retrain(idx):
         else:
             flash(f"Retrain flagged for '{name}' — starts on next monitoring start.")
     return redirect(url_for("index"))
+
+@app.post("/api/fm/force_mono/<int:idx>")
+@login_required
+@csrf_protect
+def fm_force_mono_toggle(idx):
+    """Toggle force-mono mode for an FM input (runtime flag, not persisted)."""
+    inps = monitor.app_cfg.inputs
+    if 0 <= idx < len(inps):
+        cfg = inps[idx]
+        if not hasattr(cfg, "_fm_force_mono"):
+            cfg._fm_force_mono = False
+        cfg._fm_force_mono = not cfg._fm_force_mono
+        state = bool(cfg._fm_force_mono)
+        return jsonify({"ok": True, "force_mono": state})
+    return jsonify({"ok": False, "error": "bad index"}), 400
 
 @app.post("/settings/test-notify")
 @login_required

@@ -2,6 +2,18 @@
 
 ---
 
+## [3.4.146] - 2026-04-03
+
+### Fixed
+- **FM stereo R-channel distortion (stale SOS filter state on blend re-entry)** — the 3.4.144 stereo blend fix introduced a deeper regression: `_mpx_to_stereo` was only called when `_stereo_blend > 0.0`. When blend was 0 (poor signal), the SOS filter states (`zi_lpr`, `zi_pilot`, `zi_lmr`) were never updated. On the first call after blend rose above 0 the stale state produced a transient spike in `pilot_peak`, causing `pilot_n = pilot / pilot_peak` to have a very small amplitude, adding a DC offset to `sub38 = 2·pilot_n²−1`. That DC term contaminated `lmr` with L+R content via `lmr_raw = samp * sub38`, so the R channel (`lpr − lmr×2`) received distorted programme. This explains why one dongle "worked for a bit then went bad again" after 3.4.144 was deployed.
+  - **Fix**: `_mpx_to_stereo` now takes **no** `blend` parameter and always computes raw `lmr * 2.0`. It is called on **every** MPX block whenever `cfg._fm_stereo` is True, keeping all filter states continuously updated regardless of pilot quality. Blending toward mono is applied **externally** in the calling code: `L_out = blend*L_48 + (1−blend)*mono_48`, `R_out = blend*R_48 + (1−blend)*mono_48`. `mono_48 = (L+R)/2` is the perfect noise-cancelling blend reference because L-R noise terms cancel in the sum.
+
+### Added
+- **Force Mono button** on the FM / RDS stats panel (client status page). Pressing it sets `cfg._fm_force_mono = True`, bypassing stereo output entirely regardless of pilot SNR — both channels receive the clean L+R mono mix. Press again to re-enable stereo auto-detection. State resets when monitoring is restarted. Useful for marginal-coverage dongles where even blended stereo remains audibly noisy. The button appears red (🔇 Mono forced) when active.
+- **FM Level display fixed to dBFS scale** — the JavaScript poll update was incorrectly displaying the FM signal level in dBm units with dBm-appropriate colour thresholds (−70/−85). Corrected to dBFS label and thresholds (−18/−28) to match the Jinja2 template and the 3.4.145 log-message fix.
+
+---
+
 ## [3.4.145] - 2026-04-03
 
 ### Fixed
