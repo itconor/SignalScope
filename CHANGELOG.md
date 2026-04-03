@@ -4,6 +4,13 @@
 
 ## [3.4.134] - 2026-04-03
 
+### Plugins
+- **Logger v1.5.28** — fixed hub Logger opening with "Select a stream" and never populating. Two bugs: (1) `checkHubMode()` was called on every node type — on a non-hub node the `/api/logger/hub/catalog` endpoint returns 404 which was previously treated as a retryable error, spinning for up to 40 seconds before giving up. Fixed by inspecting the HTTP status code before parsing JSON — 404 exits immediately. (2) `_hub_logger_catalog` was in-memory only; after a hub restart the catalog was empty until all clients re-registered (up to 60 s). Fixed by persisting the catalog to `hub_catalog_cache.json` in the plugin directory on every client registration and loading it at startup — the catalog is available immediately on the first page visit after a hub restart. Retry window also extended from 40 s to 90 s to safely cover the 60 s client re-registration interval.
+
+---
+
+## [3.4.134] - 2026-04-03
+
 ### Fixed
 - **Hub Play button loads forever when not logged in** — `<audio>` elements silently follow login redirects and receive HTML with no error feedback. Added `/api/auth_ping` (returns 200/401 JSON, never redirects) and `_hubGuardPlay(fn)` on the hub dashboard. Unauthenticated users clicking Play are now redirected to `/login?next=<current page>` instead of seeing an infinite loading state. Main monitor page and Broadcast Chains audio are unaffected.
 

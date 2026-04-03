@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.27",
+    "version": "1.5.28",
 }
 
 import datetime
@@ -132,6 +132,7 @@ _rec_lock  = threading.Lock()
 # ─── Hub aggregation state (hub-only) ────────────────────────────────────────
 _hub_logger_streams  = {}   # site → [{"slug":..., "name":...}]
 _hub_logger_catalog  = {}   # site → {slug: {name, owner, rec_format, updated}}
+_HUB_CATALOG_CACHE   = None  # Path — set in register() to <app_dir>/hub_catalog_cache.json
 _hub_logger_pending  = {}   # site → pending cmd dict or None
 _hub_logger_days     = {}   # "{site}:{slug}" → [date_str, ...]
 _hub_logger_segs     = {}   # "{site}:{slug}:{date}" → [seg_dict, ...]
@@ -677,11 +678,27 @@ def _hub_result_post(hub_url, secret, site, payload_dict):
 def register(app, ctx):
     global _monitor, _app_dir, _listen_registry
     _monitor       = ctx["monitor"]
+    global _HUB_CATALOG_CACHE
     login_req      = ctx["login_required"]
     csrf_dec       = ctx["csrf_protect"]
     mobile_api_req = ctx.get("mobile_api_required", login_req)  # Bearer-token auth for /api/mobile/*
     _app_dir       = Path(__file__).parent
     hub_server     = ctx.get("hub_server")
+
+    # On hub nodes, persist the catalog to disk so it survives restarts
+    # and is available immediately on the next page load.
+    if hub_server is not None:
+        _HUB_CATALOG_CACHE = _app_dir / "hub_catalog_cache.json"
+        if _HUB_CATALOG_CACHE.exists():
+            try:
+                with open(_HUB_CATALOG_CACHE) as _f:
+                    _loaded = json.load(_f)
+                if isinstance(_loaded, dict):
+                    with _hub_logger_lock:
+                        _hub_logger_catalog.update(_loaded)
+                    _log(f"[Logger] Hub: loaded catalog cache ({sum(len(v) for v in _loaded.values())} entries)")
+            except Exception as _e:
+                _log(f"[Logger] Hub: could not load catalog cache: {_e}")
 
     _load_config()
     _init_db()
@@ -948,7 +965,16 @@ def register(app, ctx):
                 _hub_logger_streams[site] = streams
                 if isinstance(catalog, dict) and catalog:
                     _hub_logger_catalog[site] = catalog
+                _catalog_snapshot = dict(_hub_logger_catalog)
             _log(f"[Logger] Hub: site '{site}' registered {len(streams)} stream(s), {len(catalog)} catalog entries")
+            # Persist catalog so it survives hub restarts
+            if _HUB_CATALOG_CACHE is not None:
+                try:
+                    import json as _json2
+                    with open(_HUB_CATALOG_CACHE, "w") as _f:
+                        _json2.dump(_catalog_snapshot, _f)
+                except Exception as _e:
+                    _log(f"[Logger] Hub: could not save catalog cache: {_e}")
             return jsonify({"ok": True})
 
         @app.get("/api/logger/hub/poll/<path:site>")
@@ -3841,32 +3867,32 @@ function checkHubMode(retryCount){
   } else {
     _startCatalogSpinner('Waiting for sites to connect\u2026 (' + retryCount + ')');
   }
-  _get('/api/logger/hub/catalog').then(function(entries){
-    if(!Array.isArray(entries) || !entries.length){
-      // Catalog empty — client sites may not have registered yet.
-      // Retry with increasing delays; first heartbeat arrives within ~10s.
-      var delays = [2000, 3000, 5000, 10000, 20000];
-      if(retryCount < delays.length){
-        setTimeout(function(){ checkHubMode(retryCount + 1); }, delays[retryCount]);
-      } else {
-        _stopCatalogSpinner();
-        _hubStatusMsg('No connected sites found. Check client nodes are running.');
+  // Use raw fetch so we can inspect HTTP status before parsing JSON.
+  // A 404 means this node is not a hub — stop immediately, don't spin.
+  fetch('/api/logger/hub/catalog',{credentials:'same-origin'}).then(function(r){
+    if(r.status === 404){ _stopCatalogSpinner(); return; }
+    return r.json().then(function(entries){
+      if(!Array.isArray(entries) || !entries.length){
+        // Catalog empty — client sites may not have registered yet.
+        // Retry with increasing delays up to 90 s; clients register every 60 s.
+        var delays = [2000, 3000, 5000, 10000, 20000, 30000, 20000];
+        if(retryCount < delays.length){
+          setTimeout(function(){ checkHubMode(retryCount + 1); }, delays[retryCount]);
+        } else {
+          _stopCatalogSpinner();
+          _hubStatusMsg('No connected sites found. Check client nodes are running.');
+        }
+        return;
       }
-      return;
-    }
-    _stopCatalogSpinner();
-    _catalogStreams = entries;
-    _isHubCatalogPopulated = true;
-    _populateCatalogSel(entries);
-    // Keep catalog fresh so newly connecting sites appear without a page reload
-    setTimeout(_refreshCatalog, 30000);
-  }).catch(function(){
-    var delays = [2000, 3000, 5000, 10000, 20000];
-    if(retryCount < delays.length){
-      setTimeout(function(){ checkHubMode(retryCount + 1); }, delays[retryCount]);
-    } else {
       _stopCatalogSpinner();
-    }
+      _catalogStreams = entries;
+      _isHubCatalogPopulated = true;
+      _populateCatalogSel(entries);
+      // Keep catalog fresh so newly connecting sites appear without a page reload
+      setTimeout(_refreshCatalog, 30000);
+    });
+  }).catch(function(){
+    _stopCatalogSpinner();
   });
 }
 
