@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.5.32",
+    "version": "1.6.0",
 }
 
 import datetime
@@ -40,6 +40,9 @@ _DEFAULT_RETAIN   = 90      # days before deletion
 _CONFIG_FILE   = "logger_config.json"
 _REC_DIR       = "logger_recordings"
 _DB_FILE       = "logger_index.db"
+_WATCHDOG_SECS    = 30      # kill ffmpeg if no stdin writes for this long
+_DISK_WARN_GB     = 5.0     # warn when free space drops below this
+_DISK_CRIT_GB     = 0.5     # pause recording when free space drops below this
 
 def _find_ffmpeg() -> str:
     """Locate the ffmpeg binary, checking PATH and well-known install locations.
@@ -128,6 +131,9 @@ _cfg       = {}
 _cfg_lock  = threading.Lock()
 _recorders = {}   # slug → _RecorderThread
 _rec_lock  = threading.Lock()
+_disk_critical    = False      # set True when disk critically full (pauses recording)
+_disk_free_bytes  = -1         # last known minimum free bytes across all roots
+_disk_warn_ts     = {}         # str(rec_root) → last warning time.time()
 
 # ─── Hub aggregation state (hub-only) ────────────────────────────────────────
 _hub_logger_streams  = {}   # site → [{"slug":..., "name":...}]
@@ -484,9 +490,14 @@ def _audio_post(chunk_url: str, data: bytes, secret: str) -> bool:
 
 
 def _hub_logger_poller():
-    """Background thread: registers local streams with the hub and handles playback commands."""
+    """Background thread: registers local streams with the hub and handles playback commands.
+
+    Never exits — uses exponential backoff (2 → 4 → 8 → … → 60 s) on errors,
+    resetting to 2 s on any successful poll response.
+    """
     _registered_ts = 0.0
     _last_hub_url  = None
+    _backoff       = 2   # seconds; reset to 2 on success, capped at 60
 
     while True:
         try:
@@ -643,12 +654,16 @@ def _hub_logger_poller():
                         _log(f"[Logger] HubPoller: unknown command type '{ctype}'")
 
             except Exception as e:
-                _log(f"[Logger] HubPoller: poll failed: {e}")
-                time.sleep(2)  # back-off only on error to avoid hammering on network failure
+                _log(f"[Logger] HubPoller: poll failed ({e}) — retrying in {_backoff}s")
+                time.sleep(_backoff)
+                _backoff = min(_backoff * 2, 60)
+                continue
+            _backoff = 2   # reset backoff on successful poll cycle
 
         except Exception as e:
             _log(f"[Logger] HubPoller: outer error: {e}")
-            time.sleep(2)
+            time.sleep(_backoff)
+            _backoff = min(_backoff * 2, 60)
 
 
 def _hub_result_post(hub_url, secret, site, payload_dict):
@@ -904,6 +919,9 @@ def register(app, ctx):
         except Exception:
             _offset_h, _tz_name = 0.0, "UTC"
         return jsonify({"recorders": active, "disk_bytes": total,
+                        "disk_free_bytes": _disk_free_bytes,
+                        "disk_warning": _disk_free_bytes >= 0 and _disk_free_bytes < int(_DISK_WARN_GB * 1024**3),
+                        "disk_critical": _disk_critical,
                         "rec_root": str(rec_root),
                         "server_utc": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "utc_offset_hours": _offset_h,
@@ -1234,6 +1252,7 @@ def register(app, ctx):
             m    = (int(start_s) % 3600) // 60
             dur  = int(end_s - start_s)
             fname = f"{slug}_{date}_{h:02d}h{m:02d}m_{dur}s{ext}"
+            _log_export_audit(slug, date, start_s, end_s, fmt, hub_mode=True)
             _log(f"[Logger] Hub export queued: site={site} {slug}/{date} "
                  f"{start_s:.0f}–{end_s:.0f}s fmt={fmt} slot={slot.slot_id}")
             return jsonify({"ok": True, "slot_id": slot.slot_id,
@@ -1935,6 +1954,21 @@ def register(app, ctx):
                 pass
         return jsonify({"ok": True})
 
+    @app.get("/api/logger/audit")
+    @login_req
+    def api_logger_audit():
+        """Return recent export audit log entries."""
+        limit = min(int(request.args.get("limit", 200)), 1000)
+        try:
+            db   = _get_db()
+            rows = db.execute(
+                "SELECT id, ts, user, stream, date, start_s, end_s, fmt, remote_addr, hub_mode "
+                "FROM export_audit ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+            db.close()
+            return jsonify([dict(r) for r in rows])
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     @app.post("/api/logger/export")
     @login_req
     @csrf_dec
@@ -1951,6 +1985,7 @@ def register(app, ctx):
             return jsonify({"error": "bad date"}), 400
         if end_s <= start_s or end_s - start_s > 7200:
             return jsonify({"error": "invalid range (max 2h)"}), 400
+        _log_export_audit(_safe(stream_slug), date, start_s, end_s, fmt, hub_mode=False)
         return _export_clip(_safe(stream_slug), date, start_s, end_s, fmt=fmt)
 
 
@@ -2349,15 +2384,25 @@ def _stream_cfg(stream_name):
     fmt = s.get("rec_format", "mp3")
     if fmt not in _REC_FORMATS:
         fmt = "mp3"
+    try:
+        sil_db = float(s.get("silence_threshold_dbfs") or _SILENCE_DB)
+    except (TypeError, ValueError):
+        sil_db = _SILENCE_DB
+    try:
+        sil_dur = float(s.get("silence_min_duration_s") or _SILENCE_DUR)
+    except (TypeError, ValueError):
+        sil_dur = _SILENCE_DUR
     return {
-        "enabled":        bool(s.get("enabled", False)),
-        "hq_bitrate":     hq if hq in _ALLOWED_BITRATES else _DEFAULT_HQ,
-        "lq_bitrate":     lq if lq in _ALLOWED_BITRATES else _DEFAULT_LQ,
-        "lq_after_days":  int(s.get("lq_after_days", _DEFAULT_LQ_AFTER)),
-        "retain_days":    int(s.get("retain_days", _DEFAULT_RETAIN)),
-        "base_dir":       s.get("base_dir", ""),
-        "nowplaying_url": str(s.get("nowplaying_url", "") or "").strip(),
-        "rec_format":     fmt,
+        "enabled":                bool(s.get("enabled", False)),
+        "hq_bitrate":             hq if hq in _ALLOWED_BITRATES else _DEFAULT_HQ,
+        "lq_bitrate":             lq if lq in _ALLOWED_BITRATES else _DEFAULT_LQ,
+        "lq_after_days":          int(s.get("lq_after_days", _DEFAULT_LQ_AFTER)),
+        "retain_days":            int(s.get("retain_days", _DEFAULT_RETAIN)),
+        "base_dir":               s.get("base_dir", ""),
+        "nowplaying_url":         str(s.get("nowplaying_url", "") or "").strip(),
+        "rec_format":             fmt,
+        "silence_threshold_dbfs": sil_db,
+        "silence_min_duration_s": sil_dur,
     }
 
 def _available_streams():
@@ -2397,9 +2442,16 @@ def _init_db():
             silence_pct   REAL    DEFAULT 0.0,
             silence_ranges TEXT   DEFAULT '[]',
             quality       TEXT    DEFAULT 'high',
+            sha256        TEXT    DEFAULT '',
             PRIMARY KEY (stream, date, filename)
         )
     """)
+    # Migration: add sha256 column to existing installations
+    try:
+        db.execute("ALTER TABLE segments ADD COLUMN sha256 TEXT DEFAULT ''")
+        db.commit()
+    except Exception:
+        pass  # column already exists
     db.execute("""
         CREATE TABLE IF NOT EXISTS metadata_log (
             stream    TEXT NOT NULL,
@@ -2413,6 +2465,25 @@ def _init_db():
             PRIMARY KEY (stream, ts, type)
         )
     """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS export_audit (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          REAL    NOT NULL,
+            user        TEXT    DEFAULT '',
+            stream      TEXT    NOT NULL,
+            date        TEXT    NOT NULL,
+            start_s     REAL    NOT NULL,
+            end_s       REAL    NOT NULL,
+            fmt         TEXT    NOT NULL,
+            remote_addr TEXT    DEFAULT '',
+            hub_mode    INTEGER DEFAULT 0
+        )
+    """)
+    try:
+        db.execute("CREATE INDEX IF NOT EXISTS idx_export_audit_ts ON export_audit(ts)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_segments_gap ON segments(quality) WHERE quality='gap'")
+    except Exception:
+        pass
     db.commit()
     db.close()
 
@@ -2548,18 +2619,53 @@ def _meta_query(slug: str, midnight: float) -> list:
     except Exception:
         return []
 
-def _upsert_segment(slug, date, filename, start_s, silence_ranges, quality="high"):
-    total_sil = sum(e - s for s, e in silence_ranges)
+def _compute_sha256(path: Path) -> str:
+    """Compute SHA-256 hex digest of a file, or '' on any error."""
+    try:
+        h = _hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _log_export_audit(stream: str, date: str, start_s: float, end_s: float,
+                      fmt: str, hub_mode: bool = False):
+    """Write an export event to the audit log table."""
+    try:
+        user = addr = ""
+        try:
+            from flask import session as _fsess, request as _freq
+            user = str(_fsess.get("user", "") or "")
+            addr = _freq.remote_addr or ""
+        except Exception:
+            pass
+        db = _get_db()
+        db.execute(
+            "INSERT INTO export_audit "
+            "(ts, user, stream, date, start_s, end_s, fmt, remote_addr, hub_mode) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (time.time(), user, stream, date, start_s, end_s, fmt, addr, 1 if hub_mode else 0))
+        db.commit()
+        db.close()
+    except Exception as e:
+        _log(f"[Logger] Export audit log failed: {e}")
+
+
+def _upsert_segment(slug, date, filename, start_s, silence_ranges, quality="high", sha256=""):
+    total_sil = sum(e - s for s, e in silence_ranges) if quality != "gap" else 0
     has_sil   = 1 if total_sil > 0.5 else 0
-    sil_pct   = min(100.0, total_sil / _SEG_SECS * 100)
+    sil_pct   = min(100.0, total_sil / _SEG_SECS * 100) if quality != "gap" else 0.0
     try:
         db = _get_db()
         db.execute("""
             INSERT OR REPLACE INTO segments
-            (stream, date, filename, start_s, has_silence, silence_pct, silence_ranges, quality)
-            VALUES (?,?,?,?,?,?,?,?)
+            (stream, date, filename, start_s, has_silence, silence_pct, silence_ranges, quality, sha256)
+            VALUES (?,?,?,?,?,?,?,?,?)
         """, (slug, date, filename, start_s, has_sil, sil_pct,
-              json.dumps(silence_ranges), quality))
+              json.dumps(silence_ranges), quality, sha256))
         db.commit()
         db.close()
     except Exception as e:
@@ -2592,10 +2698,13 @@ def _get_segments(slug, date, base_root=None):
         for f in sorted(found, key=lambda x: x.name):
             if f.name not in result:
                 ss = float(_fname_to_secs(f.name) or 0)
+                # Try to read sidecar checksum
+                _sha_path = f.with_name(f.name + ".sha256")
+                _sha = _sha_path.read_text().strip() if _sha_path.exists() else ""
                 result[f.name] = {
                     "stream": slug, "date": date, "filename": f.name,
                     "start_s": ss, "has_silence": 0, "silence_pct": 0.0,
-                    "silence_ranges": [], "quality": "high"
+                    "silence_ranges": [], "quality": "high", "sha256": _sha
                 }
     return sorted(result.values(), key=lambda x: x["start_s"])
 
@@ -2681,6 +2790,13 @@ class _RecorderThread(threading.Thread):
             self.stop_evt.set()
             return
 
+        # ── Disk space guard ────────────────────────────────────────────
+        if _disk_critical:
+            self.last_error = "Disk critically full — recording paused"
+            _log(f"[Logger] Skipping '{self.stream_name}' segment — disk critically full")
+            self.stop_evt.wait(60)
+            return
+
         # ── Catalog ownership check ─────────────────────────────────────
         rec_root = _stream_rec_root(self.stream_name)
         try:
@@ -2703,6 +2819,27 @@ class _RecorderThread(threading.Thread):
         _codec_args, _container, _ext, _ar = _REC_FORMATS[rec_fmt]
         filename  = f"{time_str}.{_ext}"
         start_s   = seg_start.hour * 3600 + seg_start.minute * 60
+
+        # ── Gap detection ───────────────────────────────────────────────
+        # If we've already recorded at least one segment this session,
+        # check that the immediately preceding slot exists in the DB.
+        # If it doesn't, record a gap marker for it.
+        if self.seg_count > 0 and start_s >= _SEG_SECS:
+            prev_s   = start_s - _SEG_SECS
+            prev_h   = int(prev_s) // 3600
+            prev_m   = (int(prev_s) % 3600) // 60
+            prev_fn  = f"{prev_h:02d}-{prev_m:02d}.{_ext}"
+            try:
+                _db_chk = _get_db()
+                _row_chk = _db_chk.execute(
+                    "SELECT quality FROM segments WHERE stream=? AND date=? AND filename=?",
+                    (self.slug, date_str, prev_fn)).fetchone()
+                _db_chk.close()
+                if not _row_chk:
+                    _log(f"[Logger] Gap detected: {self.stream_name}/{date_str}/{prev_fn}")
+                    _upsert_segment(self.slug, date_str, prev_fn, float(prev_s), [], quality="gap")
+            except Exception:
+                pass
 
         out_dir  = rec_root / self.slug / date_str
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -2743,9 +2880,11 @@ class _RecorderThread(threading.Thread):
 
         # Launch ffmpeg reading raw float32 PCM from stdin.
         # silencedetect runs as an audio filter so we keep that metadata.
+        _sil_db  = scfg["silence_threshold_dbfs"]
+        _sil_dur = scfg["silence_min_duration_s"]
         cmd = [ffmpeg, "-hide_banner", "-loglevel", "warning",
                "-f", "f32le", "-ar", str(self._SR), "-ac", str(_n_ch), "-i", "pipe:0",
-               "-af", f"silencedetect=n={_SILENCE_DB:.1f}dB:d={_SILENCE_DUR}",
+               "-af", f"silencedetect=n={_sil_db:.1f}dB:d={_sil_dur}",
                "-vn", "-ac", str(_n_ch), "-ar", _ar,
                *_codec_args, "-b:a", _bitrate,
                "-f", _container, str(out_path)]
@@ -2766,13 +2905,35 @@ class _RecorderThread(threading.Thread):
             return
 
         # Read stderr on a background thread so it never blocks the write loop.
-        # stdin must stay binary (float32 PCM) so we can't use text=True on the
-        # whole Popen — decode stderr lines explicitly instead.
         def _read_stderr():
             for raw in proc.stderr:
                 stderr_lines.append(raw.rstrip().decode("utf-8", errors="replace"))
         stderr_thr = threading.Thread(target=_read_stderr, daemon=True)
         stderr_thr.start()
+
+        # Watchdog: kill ffmpeg if no audio data is written for _WATCHDOG_SECS.
+        # This handles the case where ffmpeg hangs (network stall, codec deadlock)
+        # while holding stdin open — without a watchdog the recorder would block forever.
+        _wdog_alive = [True]
+        _wdog_last  = [time.monotonic()]
+
+        def _watchdog(proc=proc, alive=_wdog_alive, last_w=_wdog_last):
+            while alive[0]:
+                time.sleep(5)
+                if not alive[0]:
+                    break
+                if time.monotonic() - last_w[0] > _WATCHDOG_SECS:
+                    _log(f"[Logger] Watchdog: ffmpeg hung on '{self.stream_name}' "
+                         f"— no audio data for {_WATCHDOG_SECS}s, killing")
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    break
+
+        _wdog_thr = threading.Thread(target=_watchdog, daemon=True,
+                                     name=f"LoggerWdog-{self.slug}")
+        _wdog_thr.start()
 
         # Drain audio buffer → ffmpeg stdin until segment end.
         # We track the last chunk object we've written; if it disappears from
@@ -2815,12 +2976,14 @@ class _RecorderThread(threading.Thread):
                     raw = b"".join(c.astype(np.float32).tobytes() for c in new_chunks)
                     try:
                         proc.stdin.write(raw)
+                        _wdog_last[0] = time.monotonic()  # feed watchdog
                     except (BrokenPipeError, OSError):
                         break
 
                 self.stop_evt.wait(0.2)
 
         finally:
+            _wdog_alive[0] = False   # stop watchdog
             try:
                 proc.stdin.close()
             except Exception:
@@ -2849,12 +3012,18 @@ class _RecorderThread(threading.Thread):
             return
 
         if out_path.exists() and out_path.stat().st_size > 1000:
-            _upsert_segment(self.slug, date_str, filename, start_s, silence_ranges)
+            # Compute and store SHA-256 checksum for integrity verification
+            _sha256 = _compute_sha256(out_path)
+            try:
+                (out_dir / (filename + ".sha256")).write_text(_sha256 + "\n", encoding="utf-8")
+            except Exception:
+                pass
+            _upsert_segment(self.slug, date_str, filename, start_s, silence_ranges, sha256=_sha256)
             self.last_error = None
             self.last_ok_ts = time.time()
             self.seg_count += 1
             _catalog_write(rec_root, self.slug, self.stream_name, scfg["rec_format"], n_ch=_n_ch)
-            _log(f"[Logger] Segment saved: {self.stream_name}/{date_str}/{filename}")
+            _log(f"[Logger] Segment saved: {self.stream_name}/{date_str}/{filename} sha256={_sha256[:12]}…")
 
         # Wait for next 5-minute boundary
         if not self.stop_evt.is_set():
@@ -2913,10 +3082,71 @@ def _seed_shared_meta_dbs():
             _log(f"[Logger] Metadata seed error for '{slug}': {e}")
 
 
+def _recover_startup_segments():
+    """After a crash or restart, register any segments on disk missing from the DB,
+    and write GAP markers for expected slots that have no file."""
+    now_utc  = datetime.datetime.utcnow()
+    today    = now_utc.strftime("%Y-%m-%d")
+    now_secs = now_utc.hour * 3600 + now_utc.minute * 60
+
+    for s in _available_streams():
+        slug  = s["slug"]
+        scfg  = _stream_cfg(s["name"])
+        if not scfg["enabled"]:
+            continue
+        root    = _stream_rec_root(s["name"])
+        day_dir = root / slug / today
+        if not day_dir.exists():
+            continue
+
+        rec_fmt = scfg["rec_format"]
+        _, _, _ext, _ = _REC_FORMATS[rec_fmt]
+
+        # Get existing DB entries for today
+        try:
+            db_r  = _get_db()
+            rows  = db_r.execute(
+                "SELECT filename FROM segments WHERE stream=? AND date=?",
+                (slug, today)).fetchall()
+            db_r.close()
+            db_files = {r["filename"] for r in rows}
+        except Exception:
+            db_files = set()
+
+        # Register audio files on disk that are missing from DB
+        for pat in _AUDIO_GLOBS:
+            for af in sorted(day_dir.glob(pat)):
+                if af.name not in db_files:
+                    ss = _fname_to_secs(af.name)
+                    if ss is not None and af.stat().st_size > 1000:
+                        _log(f"[Logger] Startup recovery: registering missing segment "
+                             f"{slug}/{today}/{af.name}")
+                        _sha = _compute_sha256(af)
+                        _upsert_segment(slug, today, af.name, float(ss), [], sha256=_sha)
+                        db_files.add(af.name)
+
+        # Write GAP markers for expected slots (boundary times before now)
+        # that have no audio file — these represent actual recording outages
+        slot = 0
+        while slot + _SEG_SECS <= now_secs:
+            h    = slot // 3600
+            m    = (slot % 3600) // 60
+            fn   = f"{h:02d}-{m:02d}.{_ext}"
+            if fn not in db_files:
+                expected = day_dir / fn
+                if not expected.exists():
+                    _log(f"[Logger] Startup gap: {slug}/{today}/{fn} missing — writing gap marker")
+                    _upsert_segment(slug, today, fn, float(slot), [], quality="gap")
+                    db_files.add(fn)
+            slot += _SEG_SECS
+
+
 def _delayed_start():
     time.sleep(3)
     _reconcile_recorders()
     _seed_shared_meta_dbs()
+    threading.Thread(target=_recover_startup_segments,
+                     daemon=True, name="LoggerStartupRecovery").start()
 
 def _reconcile_recorders():
     streams = _available_streams()
@@ -2960,9 +3190,43 @@ def _maintenance_loop():
         time.sleep(3600)
 
 def _run_maintenance():
+    global _disk_critical, _disk_free_bytes
     ffmpeg = _find_ffmpeg() or "ffmpeg"
     today  = datetime.date.today()
     seen_stream_dirs: set = set()
+
+    # ── Disk space check ──────────────────────────────────────────────────────
+    min_free = float("inf")
+    for rec_root in _all_rec_roots():
+        try:
+            free_b  = shutil.disk_usage(str(rec_root)).free
+            free_gb = free_b / (1024 ** 3)
+            if free_b < min_free:
+                min_free = free_b
+            root_key  = str(rec_root)
+            last_warn = _disk_warn_ts.get(root_key, 0)
+            if free_gb < _DISK_CRIT_GB:
+                _disk_critical = True
+                if time.time() - last_warn > 3600:
+                    _log(f"[Logger] ⛔ CRITICAL: Disk almost full at {rec_root} — "
+                         f"{free_gb:.2f} GB free. Recording PAUSED until space is freed.")
+                    _disk_warn_ts[root_key] = time.time()
+            elif free_gb < _DISK_WARN_GB:
+                _disk_critical = False
+                if time.time() - last_warn > 3600:
+                    _log(f"[Logger] ⚠ WARNING: Low disk space at {rec_root} — "
+                         f"{free_gb:.1f} GB free. Consider clearing old recordings.")
+                    _disk_warn_ts[root_key] = time.time()
+            else:
+                _disk_critical = False
+                _disk_warn_ts.pop(root_key, None)
+        except Exception as e:
+            _log(f"[Logger] Disk check failed for {rec_root}: {e}")
+    if min_free != float("inf"):
+        _disk_free_bytes = int(min_free)
+
+    # ── Per-stream maintenance: quality downgrade + retention + metadata pruning ──
+    meta_pruned_slugs: set = set()
 
     for rec_root in _all_rec_roots():
         if not rec_root.exists():
@@ -2978,6 +3242,8 @@ def _run_maintenance():
             if name is None:
                 continue
             scfg = _stream_cfg(name)
+            slug = stream_dir.name
+
             for day_dir in stream_dir.iterdir():
                 if not day_dir.is_dir():
                     continue
@@ -3001,6 +3267,22 @@ def _run_maintenance():
                         for af in day_dir.glob(pat):
                             _maybe_downgrade(af, stream_dir.name, day_dir.name,
                                              scfg["lq_bitrate"], ffmpeg)
+
+            # ── Prune metadata_log for this stream ──────────────────────
+            if slug not in meta_pruned_slugs and scfg["retain_days"] > 0:
+                meta_pruned_slugs.add(slug)
+                try:
+                    cutoff_ts = time.time() - scfg["retain_days"] * 86400
+                    _db_m = _get_db()
+                    deleted  = _db_m.execute(
+                        "DELETE FROM metadata_log WHERE stream=? AND ts < ?",
+                        (slug, cutoff_ts)).rowcount
+                    _db_m.commit()
+                    _db_m.close()
+                    if deleted:
+                        _log(f"[Logger] Pruned {deleted} old metadata_log entries for '{slug}'")
+                except Exception as e:
+                    _log(f"[Logger] metadata_log prune error for '{slug}': {e}")
 
 def _maybe_downgrade(path, slug, date, lq_br, ffmpeg):
     try:
@@ -3300,6 +3582,7 @@ select:focus,input:focus{border-color:var(--acc)}
 .tl-block[data-status="warn"]{background:#78350f}
 .tl-block[data-status="silent"]{background:#7f1d1d}
 .tl-block[data-status="future"]{background:#0a1828}
+.tl-block[data-status="gap"]{background:rgba(239,68,68,.25);border:1px dashed rgba(239,68,68,.6)}
 .tl-block::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 5px);left:50%;transform:translateX(-50%);background:#0d2346;border:1px solid var(--bor);padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;color:var(--tx);pointer-events:none;opacity:0;transition:opacity .12s;z-index:10}
 .tl-block:hover::after{opacity:1}
 .tl-block.in-range::before{content:'';position:absolute;inset:0;background:rgba(23,168,255,.30);border-radius:3px;pointer-events:none}
@@ -3431,6 +3714,7 @@ select:focus,input:focus{border-color:var(--acc)}
     <a href="/" class="btn bg bs">← SignalScope</a>
   </div>
 </header>
+<div id="disk-warn" style="display:none;padding:8px 18px;font-size:12px;font-weight:600;border-bottom:1px solid;"></div>
 <div id="hdr-errors" style="padding:0 18px"></div>
 
 <div class="app-wrap">
@@ -4265,9 +4549,14 @@ function buildTimeline(segs){
         blk.dataset.tip=tipTime+' — future';
       } else if(seg){
         var sp = seg.silence_pct||0;
-        blk.dataset.status = sp>80?'silent':sp>10?'warn':'ok';
-        blk.dataset.tip = tipTime+' · '+seg.quality+' · '+sp.toFixed(0)+'% silence';
-        (function(s,b){ b.addEventListener('click', function(){ playSeg(s,b); }); })(seg,blk);
+        if(seg.quality === 'gap'){
+          blk.dataset.status = 'gap';
+          blk.dataset.tip = tipTime+' — recording gap';
+        } else {
+          blk.dataset.status = sp>80?'silent':sp>10?'warn':'ok';
+          blk.dataset.tip = tipTime+' · '+seg.quality+' · '+sp.toFixed(0)+'% silence';
+          (function(s,b){ b.addEventListener('click', function(){ playSeg(s,b); }); })(seg,blk);
+        }
       } else {
         blk.dataset.status='none';
         blk.dataset.tip=tipTime+' — no recording';
@@ -4777,6 +5066,27 @@ function loadStatus(){
     if(di) di.textContent = 'Disk: '+_fmtBytes(data.disk_bytes||0)
       +(running.length ? ' · '+running.length+' recording' : ' · idle')
       +(errored.length ? ' · '+errored.length+' error(s)' : '');
+    // Disk warning banner
+    var diskWarn = document.getElementById('disk-warn');
+    if(diskWarn) {
+      if(data.disk_critical) {
+        diskWarn.style.display='block';
+        diskWarn.style.background='rgba(239,68,68,.15)';
+        diskWarn.style.borderColor='var(--al)';
+        diskWarn.style.color='var(--al)';
+        var free_gb = data.disk_free_bytes > 0 ? (data.disk_free_bytes/1073741824).toFixed(2) : '?';
+        diskWarn.textContent = '⛔ Recording PAUSED — disk critically full (' + free_gb + ' GB free). Free up space immediately.';
+      } else if(data.disk_warning) {
+        diskWarn.style.display='block';
+        diskWarn.style.background='rgba(245,158,11,.12)';
+        diskWarn.style.borderColor='var(--wn)';
+        diskWarn.style.color='var(--wn)';
+        var free_gb2 = data.disk_free_bytes > 0 ? (data.disk_free_bytes/1073741824).toFixed(1) : '?';
+        diskWarn.textContent = '⚠ Low disk space — ' + free_gb2 + ' GB remaining. Consider freeing space.';
+      } else {
+        diskWarn.style.display='none';
+      }
+    }
   });
 }
 

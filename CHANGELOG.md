@@ -2,6 +2,21 @@
 
 ---
 
+## [3.4.142] - 2026-04-03
+
+### Improved (Logger plugin v1.6.0 — compliance hardening)
+- **ffmpeg watchdog** — a background watchdog thread monitors each recorder's stdin write timestamp. If no audio data is written for 30 seconds (hung ffmpeg, codec deadlock, network stall) the process is killed and the recording loop restarts cleanly. Previously a hung ffmpeg would block a recorder thread forever with no alarm.
+- **Gap detection** — at the start of each 5-minute segment, the recorder checks whether the immediately preceding slot exists in the database. If it doesn't (and this recorder has previously written segments), a `quality='gap'` sentinel row is written. On startup/restart, `_recover_startup_segments()` scans today's expected slots and writes gap markers for any that have no audio file on disk. Gap blocks appear red (dashed border) on the timeline so engineers immediately see coverage holes.
+- **Disk space alerts** — the maintenance loop now checks free disk space on every recording root. Below 5 GB free: warning logged every hour. Below 500 MB free: `_disk_critical` flag set, recording paused with a critical log entry, and the Logger UI shows a prominent red banner. The status API (`/api/logger/status`) now returns `disk_free_bytes`, `disk_warning`, and `disk_critical`.
+- **SHA-256 segment checksums** — after each 5-minute segment is successfully written, a SHA-256 hex digest is computed and stored in the `segments` DB table (`sha256` column, added via `ALTER TABLE` migration for existing installations) and written as a `.sha256` sidecar file alongside the audio. The filesystem fallback in `_get_segments()` reads `.sha256` sidecars for segments not yet in the DB.
+- **Export audit log** — every export (local, hub, and mobile) is recorded in a new `export_audit` SQLite table with timestamp, username (from Flask session), stream, date, time range, format, client IP, and hub/local flag. New route `GET /api/logger/audit` returns the log as JSON (default 200 entries, max 1000).
+- **Per-stream silence detection config** — `silence_threshold_dbfs` (default −55 dBFS) and `silence_min_duration_s` (default 1.0 s) are now configurable per stream in `logger_config.json` and exposed via the settings API. Enables tuning sensitivity for talk-radio vs music streams.
+- **`metadata_log` auto-pruning** — the maintenance loop now deletes `metadata_log` rows older than each stream's `retain_days`. Previously the table grew indefinitely; on a busy station with 30-second polling it accumulates ~2,880 rows/day/stream.
+- **Hub reconnect resilience** — `_hub_logger_poller` now uses exponential backoff (2 → 4 → 8 → … → 60 s) on connection errors and resets to 2 s on the first successful poll. The thread never exits regardless of hub availability, so local recording always continues and hub sync resumes automatically.
+- **Startup segment recovery** — `_recover_startup_segments()` runs 3 seconds after startup in a background thread. It registers any audio files present on disk that are not in the DB (written during a previous crash) and inserts gap markers for expected time slots that have no corresponding file.
+
+---
+
 ## [3.4.141] - 2026-04-03
 
 ### Fixed
