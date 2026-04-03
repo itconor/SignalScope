@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.155"
+BUILD                  = "SignalScope-3.4.156"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -29975,6 +29975,9 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             <div class="sc-row">Signal <span>📶 {{s.fm_signal_dbm}} dBFS</span></div>
             <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
             <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
+            {% if s.fm_deviation_peak_khz is defined and s.fm_deviation_peak_khz is not none %}
+            <div class="sc-row">Deviation <span style="color:{{'var(--al)' if s.fm_over_ofcom else ('var(--wn)' if s.fm_deviation_peak_khz>=70 else 'var(--ok)')}}">{{s.fm_deviation_peak_khz}} kHz{%if s.fm_over_ofcom%} ⚠ OFCOM{%endif%}</span></div>
+            {% endif %}
             <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}};display:flex;align-items:center;gap:5px">
               {% if s.fm_rds_ok %}
                 <span>📡 {{s.fm_rds_ps or 'Locked'}}</span>
@@ -32575,6 +32578,9 @@ setInterval(_loadTrends, 300000);
           </span></div>
           <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
           <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
+          {% if s.fm_deviation_peak_khz is defined and s.fm_deviation_peak_khz is not none %}
+          <div class="sc-row">Deviation <span style="color:{{'var(--al)' if s.fm_over_ofcom else ('var(--wn)' if s.fm_deviation_peak_khz>=70 else 'var(--ok)')}}">{{s.fm_deviation_peak_khz}} kHz{%if s.fm_over_ofcom%} ⚠ OFCOM{%endif%}</span></div>
+          {% endif %}
           <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}};display:flex;align-items:center;gap:5px">
             {% if s.fm_rds_ok %}
               <span>📡 {{s.fm_rds_ps or 'Locked'}}</span>

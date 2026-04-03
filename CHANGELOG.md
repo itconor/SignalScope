@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.156] - 2026-04-03
+
+### Fixed
+- **FM deviation not shown on hub cards** — `fm_deviation_peak_khz` and `fm_over_ofcom` were included in the client heartbeat payload but never rendered in the hub overview stream card or the replica page FM/RDS stats block. Both templates now show a **Deviation** row (e.g. `±45.2 kHz`) in green/amber/red, with an ⚠ OFCOM warning when peak deviation exceeds ±75 kHz.
+
+---
+
 ## [3.4.155] - 2026-04-03
 
 ### Fixed
