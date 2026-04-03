@@ -16438,31 +16438,14 @@ function _csrfFetch(url, opts){
   opts.headers["X-CSRFToken"] = t;
   return fetch(url, opts);
 }
-// Pre-flight auth check before starting any live audio stream.
-// <audio> elements silently follow login redirects and get back HTML instead
-// of audio — the element fires onerror with no status code exposed.
-// _guardPlay() fetches /api/auth_ping first; if the user isn't logged in it
-// redirects them to the login page (with ?next= pointing back here) instead
-// of leaving them staring at a broken Play button.
-function _guardPlay(fn){
-  fetch('/api/auth_ping',{credentials:'same-origin'}).then(function(r){
-    if(r.status===401){
-      window.location.href='/login?next='+encodeURIComponent(window.location.pathname);
-      return;
-    }
-    fn();
-  }).catch(function(){ fn(); }); // network error — try the stream anyway
-}
 function toggleLive(idx,btn){
   var audio=document.getElementById('live_'+idx);
   if(!audio) return;
   if(audio.style.display==='none'||!audio.src){
-    _guardPlay(function(){
-      audio.src='/stream/'+idx+'/live';
-      audio.style.display='block';
-      audio.play().catch(function(){});
-      btn.textContent='⏹ Stop'; btn.style.background='var(--al)';
-    });
+    audio.src='/stream/'+idx+'/live';
+    audio.style.display='block';
+    audio.play().catch(function(){});
+    btn.textContent='⏹ Stop'; btn.style.background='var(--al)';
   } else {
     audio.pause(); audio.src=''; audio.style.display='none';
     btn.textContent='▶ Live'; btn.style.background='';
@@ -24947,19 +24930,16 @@ function _startListen(nodeEl, url){
   var siteName   = (nodeEl.querySelector('.node-sub')||{}).textContent   || '';
   var chainCard  = nodeEl.closest('.chain-card');
   var chainName  = chainCard ? (chainCard.querySelector('.chain-name')||{}).textContent || '' : '';
-  // Guard against silent login-redirect failure on <audio> elements
-  (typeof _guardPlay === 'function' ? _guardPlay : function(fn){ fn(); })(function(){
-    title.textContent = streamName;
-    sub.textContent   = (siteName ? siteName + (chainName ? ' · ' + chainName : '') : chainName);
-    audio.src  = url;
-    audio.type = 'audio/mpeg';
-    audio.load();
-    audio.play().catch(function(){ _stopListen(); });
-    mp.style.display = 'flex';
-    document.body.style.paddingBottom = '72px';
-    window._chainAudioEl = nodeEl;
-    nodeEl.classList.add('listening');
-  });
+  title.textContent = streamName;
+  sub.textContent   = (siteName ? siteName + (chainName ? ' · ' + chainName : '') : chainName);
+  audio.src  = url;
+  audio.type = 'audio/mpeg';
+  audio.load();
+  audio.play().catch(function(){ _stopListen(); });
+  mp.style.display = 'flex';
+  document.body.style.paddingBottom = '72px';
+  window._chainAudioEl = nodeEl;
+  nodeEl.classList.add('listening');
 }
 
 // Wire ended/error on the DOM element (cannot do this until DOM is ready;
@@ -30778,6 +30758,18 @@ function _closeHubMiniPlayer(){
   document.body.style.paddingBottom='';
   try{sessionStorage.removeItem('hmp_live');}catch(e){}
 }
+// Auth pre-flight for hub audio: <audio> silently follows login redirects and
+// gets back HTML — no status code is exposed via onerror.  Check /api/auth_ping
+// first; redirect to login if not authenticated rather than loading forever.
+function _hubGuardPlay(fn){
+  fetch('/api/auth_ping',{credentials:'same-origin'}).then(function(r){
+    if(r.status===401){
+      window.location.href='/login?next='+encodeURIComponent(window.location.pathname);
+      return;
+    }
+    fn();
+  }).catch(function(){ fn(); });
+}
 function toggleLive(siteIdx,streamIdx,btn){
   // Tapping the active button again stops playback
   if(_hmpActive===btn){_closeHubMiniPlayer();return;}
@@ -30789,16 +30781,18 @@ function toggleLive(siteIdx,streamIdx,btn){
   var url=btn.dataset.url;
   var name=btn.dataset.name||('Stream '+streamIdx);
   var site=btn.dataset.siteName||'';
-  var _hmpt=document.getElementById('hmp-title');
-  _hmpt.textContent=name; _hmpt.title=name;
-  var _hmps=document.getElementById('hmp-sub');
-  _hmps.textContent=site; _hmps.title=site;
-  audio.src=url;audio.type='audio/mpeg';audio.load();audio.play().catch(function(){});
-  mp.style.display='flex';
-  document.body.style.paddingBottom='72px';
-  btn.textContent='⏹ Stop';btn.className='btn bd bs';
-  _hmpActive=btn;
-  try{sessionStorage.setItem('hmp_live',JSON.stringify({url:url,title:name,sub:site}));}catch(e){}
+  _hubGuardPlay(function(){
+    var _hmpt=document.getElementById('hmp-title');
+    _hmpt.textContent=name; _hmpt.title=name;
+    var _hmps=document.getElementById('hmp-sub');
+    _hmps.textContent=site; _hmps.title=site;
+    audio.src=url;audio.type='audio/mpeg';audio.load();audio.play().catch(function(){});
+    mp.style.display='flex';
+    document.body.style.paddingBottom='72px';
+    btn.textContent='⏹ Stop';btn.className='btn bd bs';
+    _hmpActive=btn;
+    try{sessionStorage.setItem('hmp_live',JSON.stringify({url:url,title:name,sub:site}));}catch(e){}
+  });
 }// ── Hub AJAX refresh ──────────────────────────────────────────
 var _hubTimer = null;
 var _hubLastReload = 0; // epoch ms — guard against reload loops
