@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.145] - 2026-04-03
+
+### Fixed
+- **FM fault log messages showed "dBm" instead of "dBFS"** — `_fm_signal_dbm` is the RMS of the normalised float32 MPX samples (range 0→full scale = 0 dBFS), not an absolute RF power reading. Three alert log messages for STUDIO_FAULT, STL_FAULT and TX_DOWN incorrectly appended "dBm"; corrected to "dBFS". The on-screen dashboard display already showed "dBFS" correctly.
+
+---
+
 ## [3.4.144] - 2026-04-03
 
 ### Fixed

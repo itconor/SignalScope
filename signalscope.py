@@ -1981,7 +1981,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.144"
+BUILD                  = "SignalScope-3.4.145"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -5863,17 +5863,17 @@ def _classify_silence_alert(cfg, lev: float):
             key = "STUDIO_FAULT"
             msg = (f"Studio fault on '{name}' — silence {sil_s:.1f}s, "
                    f"carrier and RDS active (PS: {cfg._fm_rds_ps}, "
-                   f"RSSI {cfg._fm_signal_dbm:.0f} dBm)")
+                   f"RSSI {cfg._fm_signal_dbm:.0f} dBFS)")
             return key, f"STUDIO FAULT — {name}", msg
         elif carrier_ok:
             key = "STL_FAULT"
             msg = (f"STL fault on '{name}' — silence {sil_s:.1f}s, "
-                   f"RDS absent, carrier OK ({cfg._fm_signal_dbm:.0f} dBm)")
+                   f"RDS absent, carrier OK ({cfg._fm_signal_dbm:.0f} dBFS)")
             return key, f"STL FAULT — {name}", msg
         else:
             key = "TX_DOWN"
             msg = (f"TX down on '{name}' — silence {sil_s:.1f}s, "
-                   f"no RDS, weak/no carrier ({cfg._fm_signal_dbm:.0f} dBm)")
+                   f"no RDS, weak/no carrier ({cfg._fm_signal_dbm:.0f} dBFS)")
             return key, f"TX DOWN — {name}", msg
     # DAB composite: mux locked and SNR healthy but audio is silent → studio/playout fault
     if cfg._dab_ensemble and cfg._dab_ok and cfg._dab_snr >= 5.0:
