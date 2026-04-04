@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.28",
+    "version":  "1.0.29",
 }
 
 import hashlib
@@ -1700,13 +1700,21 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, gain, ppm,
         post_err_count = 0
         stream_opened  = False
         open_deadline  = time.time() + 35.0
+        # Chunks received before the stream is considered "stable".
+        # During welle-cli startup it decodes all services simultaneously,
+        # which can cause brief OFDM resync pauses that stall the HTTP read
+        # (seen as "timed out" after only a few chunks).  We allow reconnects
+        # until this threshold is passed to survive those startup stalls.
+        _STABLE_CHUNKS = 20
 
         while not stop.is_set():
             if proc_welle.poll() is not None:
                 _log(f"[DAB] welle-cli exited (rc={proc_welle.returncode}) after {chunks_sent} chunks")
                 return
             try:
-                with urllib.request.urlopen(audio_url, timeout=10) as audio_r:
+                # 45 s read timeout — covers welle-cli OFDM resync stalls
+                # (~6–10 s) that occur when all services start simultaneously.
+                with urllib.request.urlopen(audio_url, timeout=45) as audio_r:
                     _log(f"[DAB] Audio stream connected — relaying to hub")
                     stream_opened = True
                     while not stop.is_set():
@@ -1739,9 +1747,16 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, gain, ppm,
                             if post_err_count == 1 or post_err_count % 20 == 0:
                                 _log(f"[DAB] Chunk POST failed ({post_err_count}x): {e}")
             except Exception as e:
-                if stream_opened:
+                if stream_opened and chunks_sent >= _STABLE_CHUNKS:
+                    # Stream was running stably — treat error as fatal
                     _log(f"[DAB] Audio stream error after {chunks_sent} chunks: {e}")
                     return
+                if stream_opened:
+                    # Stalled during startup turbulence — reconnect
+                    _log(f"[DAB] Audio stream stall during startup ({chunks_sent} chunks): {e} — reconnecting")
+                    stream_opened = False
+                    time.sleep(1.0)
+                    continue
                 if time.time() > open_deadline:
                     _log(f"[DAB] Audio endpoint not ready after 35 s: {e}")
                     return

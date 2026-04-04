@@ -24,8 +24,8 @@
     "name": "DAB Scanner",
     "file": "dab.py",
     "icon": "\ud83d\udcfb",
-    "description": "DAB digital radio browser. Scans all Band III channels to discover services, streams selected services as MP3 audio via welle-cli and ffmpeg. Displays DLS (Dynamic Label Segment) scrolling text. Requires welle-cli and ffmpeg on the client machine.",
-    "version": "1.0.28",
+    "description": "DAB digital radio browser. Scans all Band III channels to discover services, streams selected services as MP3 audio via welle-cli and ffmpeg. Displays DLS (Dynamic Label Segment) scrolling text. Requires welle-cli and ffmpeg on the client machine. v1.0.29: survive welle-cli OFDM resync stalls on startup (timeout 10s→45s, reconnect on early-stream stalls).",
+    "version": "1.0.29",
     "requirements": "welle-cli ffmpeg",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/dab.py"
   },
