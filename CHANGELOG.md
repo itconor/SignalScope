@@ -2,6 +2,17 @@
 
 ---
 
+## [3.5.21] - 2026-04-04
+
+### Changed
+- **Toast notifications** — settings saves now show a slide-up toast (bottom-right, auto-dismisses after 3.5 s) in addition to the existing banner. Green left-border for success, red for errors.
+- **Reports table** — Level (dBFS) and RTP Loss columns hidden by default to reduce density. Click any event row to expand a detail panel showing those values alongside other event metadata.
+- **Nav bar icons** — Dashboard (📊), Inputs (🎚), Reports (📋), SLA (📈), Hub (🌐), Broadcast Chains (🔗), Settings (⚙) now have icons for quicker scanning.
+- **Settings tabs** — confirmed already have icons; SDR Devices (📻), Plugins (🔌), Hub & Network (🛰), Users & Roles (👥), etc.
+- **Main dashboard** — confirmed already uses card grid layout.
+
+---
+
 ## [3.5.20] - 2026-04-04
 
 ### Added

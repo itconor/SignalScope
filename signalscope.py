@@ -36,6 +36,12 @@ input[type=text],input[type=number],input[type=password],input[type=email]{width
 .tip{position:relative;display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:rgba(23,168,255,.18);color:var(--acc);font-size:10px;font-weight:700;cursor:help;vertical-align:middle;margin-left:4px;flex-shrink:0}
 .tip::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#0a1e3d;color:var(--tx);font-size:11px;font-weight:400;line-height:1.45;padding:7px 10px;border-radius:7px;border:1px solid var(--bor);white-space:normal;width:220px;text-align:left;pointer-events:none;opacity:0;transition:opacity .15s;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.5)}
 .tip:hover::after{opacity:1}
+#toast-wrap{position:fixed;bottom:24px;right:24px;display:flex;flex-direction:column;gap:8px;z-index:10000;pointer-events:none}
+.toast{background:#0d2346;border:1px solid var(--bor);border-radius:10px;padding:11px 16px;font-size:13px;color:var(--tx);display:flex;align-items:center;gap:10px;box-shadow:0 4px 20px rgba(0,0,0,.5);pointer-events:all;animation:toastIn .25s ease;max-width:340px}
+.toast.t-ok{border-left:3px solid var(--ok)}
+.toast.t-err{border-left:3px solid var(--al)}
+.toast.t-info{border-left:3px solid var(--acc)}
+@keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body class="{{'wall-mode' if wall_mode else ''}}">
 <script nonce="{{csp_nonce()}}">
 function _csrfFetch(url,opts){
@@ -152,9 +158,29 @@ function updateAlertTicker(data){
   }
 }
 
+function showToast(msg, type){
+  type = type || 'info';
+  var w = document.getElementById('toast-wrap');
+  if(!w) return;
+  var t = document.createElement('div');
+  t.className = 'toast t-' + type;
+  t.innerHTML = (type==='ok'?'✓ ':type==='err'?'✕ ':'') + msg;
+  w.appendChild(t);
+  setTimeout(function(){
+    t.style.opacity='0'; t.style.transform='translateY(8px)'; t.style.transition='all .3s';
+    setTimeout(function(){ if(t.parentNode) t.parentNode.removeChild(t); }, 300);
+  }, 3500);
+}
+
 document.addEventListener('DOMContentLoaded',function(){
   st(location.hash.replace('#','')||'notif');
   if(typeof updateHubPanels==='function')updateHubPanels();
+  // Show flash messages as toasts
+  document.querySelectorAll('.fl li').forEach(function(li){
+    var txt = li.textContent.trim();
+    var type = (txt.toLowerCase().indexOf('error')>=0||txt.toLowerCase().indexOf('fail')>=0) ? 'err' : 'ok';
+    showToast(txt, type);
+  });
 });
 </script>
 {{ topnav("settings") }}
@@ -2109,6 +2135,7 @@ document.getElementById('p-plugins').addEventListener('click', function(e){
 
 </div></div>
 
+<div id="toast-wrap"></div>
 </body></html>"""#!/usr/bin/env python3
 """
 SignalScope
@@ -2150,7 +2177,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.20"
+BUILD                  = "SignalScope-3.5.21"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -15861,14 +15888,14 @@ def _inject_nav():
 
         # ── Nav groups ────────────────────────────────────────────────────
         monitor_group = ("" if hub_only else
-                         _group("Monitor", [("dashboard", "Dashboard", "/"),
-                                            ("inputs",    "Inputs",    "/inputs")]))
+                         _group("📊\u202fMonitor", [("dashboard", "📊\u202fDashboard", "/"),
+                                                    ("inputs",    "🎚\u202fInputs",    "/inputs")]))
         reports_group = ("" if hub_only else
-                         _group("Reports", [("reports", "Reports", "/reports"),
-                                            ("sla",     "SLA",     "/sla")]))
-        hub_group     = (_group("Hub", [("hub",         "Hub",              "/hub"),
-                                        ("hub_reports", "Hub Reports",      "/hub/reports"),
-                                        ("chains",      "Broadcast Chains", "/chains")])
+                         _group("📋\u202fReports", [("reports", "📋\u202fReports", "/reports"),
+                                                    ("sla",     "📈\u202fSLA",     "/sla")]))
+        hub_group     = (_group("🌐\u202fHub", [("hub",         "🌐\u202fHub",                "/hub"),
+                                               ("hub_reports", "📋\u202fHub Reports",      "/hub/reports"),
+                                               ("chains",      "🔗\u202fBroadcast Chains", "/chains")])
                          if show_hub else "")
 
         # ── Plugins dropdown ──────────────────────────────────────────────
@@ -16104,7 +16131,7 @@ def _inject_nav():
                f'padding:1px 5px;font-size:10px;color:#b7d8ff">'
                f'{_esc(_current_user_role())}</span></span>'
                if session.get("username") else "")
-            + (_a("settings", "Settings", "/settings") if _is_admin() else "")
+            + (_a("settings", "⚙\u202fSettings", "/settings") if _is_admin() else "")
             + f'<form method="post" action="/logout" style="margin:0">'
               f'<input type="hidden" name="_csrf_token" value="{csrf}">'
               f'<button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
@@ -17427,6 +17454,15 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 .tab-bar{display:flex;gap:0;margin:0 0 0 0}
 .tab-btn{padding:6px 16px;border-radius:8px 8px 0 0;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;background:transparent;color:var(--mu);transition:background .12s,color .12s}
 .tab-btn.tab-active{background:var(--sur);color:var(--tx);border-color:var(--bor);border-bottom-color:var(--sur)}
+/* Collapsed columns — Level and RTP Loss hidden by default, shown in detail row */
+.col-level,.col-rtp{display:none}
+.detail-row td{padding:8px 14px 12px 28px;background:#07152a;border-bottom:1px solid var(--bor);font-size:12px}
+.detail-row .detail-grid{display:flex;gap:18px;flex-wrap:wrap}
+.detail-row .detail-item{display:flex;flex-direction:column;gap:2px;min-width:90px}
+.detail-row .detail-lbl{font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em}
+.detail-row .detail-val{color:var(--tx)}
+tr.data-row{cursor:pointer}
+tr.data-row.expanded td{background:#0d1e40}
 </style>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("reports") }}
@@ -17486,8 +17522,8 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
         <th style="width:130px">Stream</th>
         <th style="width:100px">Type</th>
         <th>Detail</th>
-        <th style="width:80px">Level</th>
-        <th style="width:75px">RTP Loss</th>
+        <th class="col-level" style="width:80px">Level</th>
+        <th class="col-rtp" style="width:75px">RTP Loss</th>
         <th>PTP @ Alert</th>
         <th style="width:220px">Clip</th>
       </tr>
@@ -17497,18 +17533,18 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
     {% set tl = e.type.lower() %}
     {% set tc = 't-silence' if tl=='silence' else ('t-clip' if tl=='clip' else ('t-hiss' if tl=='hiss' else ('t-rtp' if 'rtp' in tl else ('t-ai_alert' if tl=='ai_alert' else ('t-ai_warn' if tl=='ai_warn' else ('t-ptp' if 'ptp' in tl else ('t-cmp' if 'cmp' in tl else 't-other'))))))) %}
     {% set _is_log = e.type in ('DAB_AVAILABLE','DAB_UNAVAILABLE') %}
-    <tr data-id="{{e.id}}" data-stream="{{e.stream}}" data-type="{{e.type}}" data-ts="{{e.ts}}" data-clip="{{e.clip}}" data-category="{{'log' if _is_log else 'alert'}}">
+    <tr class="data-row" data-id="{{e.id}}" data-stream="{{e.stream}}" data-type="{{e.type}}" data-ts="{{e.ts}}" data-clip="{{e.clip}}" data-category="{{'log' if _is_log else 'alert'}}" data-level="{{e.level_dbfs if e.level_dbfs and e.level_dbfs > -120 else ''}}" data-rtp="{{e.rtp_loss_pct if e.rtp_loss_pct > 0 else ''}}">
       <td style="color:var(--mu);font-size:12px;white-space:nowrap">{{e.ts}}</td>
       <td><strong>{{e.stream}}</strong></td>
       <td><span class="type-badge {{tc}}">{{e.type}}</span></td>
       <td style="font-size:12px">{{e.message}}</td>
-      <td>
+      <td class="col-level">
         {% if e.level_dbfs and e.level_dbfs > -120 %}
         <span style="font-size:12px;color:{{'var(--al)' if e.level_dbfs<=-55 else 'var(--ok)'}}">{{e.level_dbfs}} dB</span>
         <span class="level-bar"><span class="level-fill" style="width:{{[(e.level_dbfs+80)/80*100,100]|min|int}}%;background:{{'var(--al)' if e.level_dbfs<=-55 else 'var(--ok)'}}"></span></span>
         {% else %}—{% endif %}
       </td>
-      <td>
+      <td class="col-rtp">
         {% if e.rtp_loss_pct > 0 %}
         <span style="color:{{'var(--al)' if e.rtp_loss_pct>=2 else 'var(--wn)'}}">{{e.rtp_loss_pct}}%</span>
         {% else %}—{% endif %}
@@ -17648,13 +17684,15 @@ function rowHTML(e){
       +fbLbl+'</div>';
   }
   var cat=LOG_TYPES[e.type||'']?'log':'alert';
-  return '<tr data-id="'+escAttr(e.id||'')+'" data-stream="'+escAttr(e.stream)+'" data-type="'+escAttr(e.type)+'" data-ts="'+escAttr(e.ts||'')+'" data-clip="'+escAttr(e.clip||'')+'" data-category="'+cat+'">'
+  var lvlAttr=e.level_dbfs&&e.level_dbfs>-120?escAttr(String(e.level_dbfs)):'';
+  var rtpAttr=e.rtp_loss_pct>0?escAttr(String(e.rtp_loss_pct)):'';
+  return '<tr class="data-row" data-id="'+escAttr(e.id||'')+'" data-stream="'+escAttr(e.stream)+'" data-type="'+escAttr(e.type)+'" data-ts="'+escAttr(e.ts||'')+'" data-clip="'+escAttr(e.clip||'')+'" data-category="'+cat+'" data-level="'+lvlAttr+'" data-rtp="'+rtpAttr+'">'
     +'<td style="color:var(--mu);font-size:12px;white-space:nowrap">'+escHTML(e.ts||'')+'</td>'
     +'<td><strong>'+escHTML(e.stream||'')+'</strong></td>'
     +'<td><span class="type-badge '+tc+'">'+escHTML(e.type||'')+'</span></td>'
     +'<td style="font-size:12px">'+escHTML(e.message||'')+'</td>'
-    +'<td>'+lvl+'</td>'
-    +'<td>'+rtp+'</td>'
+    +'<td class="col-level">'+lvl+'</td>'
+    +'<td class="col-rtp">'+rtp+'</td>'
     +'<td>'+ptp+'</td>'
     +'<td>'+clip+fbHtml+'</td>'
     +'</tr>';
@@ -17697,9 +17735,33 @@ function sendFeedback(btn){
     }
   }).catch(function(){btn.disabled=false;});
 }
+// ── Row expand / collapse (shows Level + RTP Loss in a detail row) ──────────
+function toggleDetailRow(row){
+  var next=row.nextElementSibling;
+  if(next && next.classList.contains('detail-row')){
+    next.remove();
+    row.classList.remove('expanded');
+    return;
+  }
+  row.classList.add('expanded');
+  var lvl=row.dataset.level||'';
+  var rtp=row.dataset.rtp||'';
+  var items='';
+  if(lvl) items+='<div class="detail-item"><span class="detail-lbl">Level (dBFS)</span><span class="detail-val" style="color:'+(parseFloat(lvl)<=-55?'var(--al)':'var(--ok)')+'">'+escHTML(lvl)+' dB</span></div>';
+  if(rtp) items+='<div class="detail-item"><span class="detail-lbl">RTP Loss</span><span class="detail-val" style="color:'+(parseFloat(rtp)>=2?'var(--al)':'var(--wn)')+'">'+escHTML(rtp)+'%</span></div>';
+  if(!items) items='<span style="color:var(--mu);font-size:11px">No extra detail for this event.</span>';
+  var td=document.createElement('tr');
+  td.className='detail-row';
+  td.innerHTML='<td colspan="8"><div class="detail-grid">'+items+'</div></td>';
+  row.parentNode.insertBefore(td, row.nextSibling);
+}
 document.addEventListener('click',function(e){
   var btn=e.target.closest('.fb-btn[data-fb-id]');
-  if(btn) sendFeedback(btn);
+  if(btn){ sendFeedback(btn); return; }
+  var row=e.target.closest('tr.data-row');
+  if(row && !e.target.closest('audio') && !e.target.closest('.fb-btn') && !e.target.closest('.fb-wrap')){
+    toggleDetailRow(row);
+  }
 });
 
 function refreshReports(){
