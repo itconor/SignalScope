@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.32",
+    "version":  "1.0.33",
 }
 
 import hashlib
@@ -1622,21 +1622,26 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, gain, ppm,
     #     saves meaningful CPU on Raspberry Pi, not needed for audio playback.
     #     On a Pi decoding all services on a large mux (e.g. BBC National, 12+
     #     services) this is the single biggest CPU reduction available.
-    # -C 1 (Pi only) limits simultaneous service decoding to 1 at a time.
-    #     welle-cli stays locked on whichever service has an active HTTP consumer,
-    #     so this does not interrupt playback — it just prevents all ~12 BBC
-    #     National services from being decoded in parallel and overwhelming the Pi.
+    # -C 1 (Pi only, no serial) limits simultaneous service decoding to 1 at a
+    #     time. welle-cli stays locked on whichever service has an active HTTP
+    #     consumer, so this does not interrupt playback.
+    #     IMPORTANT: welle-cli rejects -C and -D together ("Cannot select both
+    #     -C and -D"). -D is required when an SDR serial is specified, so -C 1
+    #     is only added when no serial is set (single-dongle Pi setups).
     _on_pi = _is_raspberry_pi()
     welle_cmd = [welle_bin, "-w", str(_WELLE_STREAM_PORT), "-c", channel,
-                 "-T",
                  "-g", str(gain if gain is not None else -1)]
-    if _on_pi:
-        welle_cmd += ["-C", "1"]
-        _log("[DAB] Raspberry Pi detected — using -C 1 (single-service decode) to limit CPU")
     if ppm:
         welle_cmd += ["-p", str(ppm)]
     if sdr_serial:
         welle_cmd += ["-D", f"driver=rtlsdr,serial={sdr_serial}"]
+    if _on_pi:
+        welle_cmd += ["-T"]
+        if not sdr_serial:
+            welle_cmd += ["-C", "1"]
+            _log("[DAB] Raspberry Pi detected — using -T -C 1 to limit CPU")
+        else:
+            _log("[DAB] Raspberry Pi detected — using -T to limit CPU (-C skipped, incompatible with -D)")
 
     _log(f"[DAB] Starting stream: ch={channel} service='{service}' "
          f"serial={sdr_serial or 'auto'} gain={gain} ppm={ppm}")

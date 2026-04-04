@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.10] - 2026-04-04
+
+### Fixed
+- **DAB Scanner plugin — `--C` and `-D` conflict on Raspberry Pi with SDR serial set (dab.py v1.0.33)** — welle-cli rejects `-C` and `-D` together (`Cannot select both -C and -D`). `-D driver=rtlsdr,serial=XXXXX` is required when a specific dongle serial is configured. The v1.0.32 Pi fix unconditionally added `-C 1` before the serial check, causing welle-cli to exit with rc=1 on any Pi with a serial set. Fixed: `-T` is always added on Pi (compatible with `-D`); `-C 1` is only added when no serial is set (single-dongle Pi setups where `-D` is not needed). Multi-dongle Pi setups with a serial get `-T` only — still a meaningful CPU reduction.
+
+---
+
 ## [3.5.9] - 2026-04-04
 
 ### Fixed
