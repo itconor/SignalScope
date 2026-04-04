@@ -92,6 +92,16 @@ stereo setting. For stereo streams the interleaved L/R data is in _audio_buffer.
 Use _stream_buffer for analysis, mixing, comparison, and relay. Use _audio_buffer
 only when you need true L/R separation (e.g. building a stereo MP3 relay).
 
+STEREO DEINTERLEAVE: If you read from _audio_buffer on a stereo stream
+(cfg._audio_channels == 2), the samples are interleaved L, R, L, R, ...
+Deinterleave like this:
+    raw = np.concatenate(list(cfg._audio_buffer))
+    L = raw[0::2]   # left channel
+    R = raw[1::2]   # right channel
+    mid = (L + R) * 0.5   # mono mix-down
+Never pass interleaved stereo audio to spectral analysis expecting mono — you
+will get double-speed audio and completely wrong frequency content.
+
 Helper to get the buffer for a named stream:
 
     def _get_buffer(stream_name):

@@ -66,7 +66,7 @@ Once complete, open `http://localhost:5000`. The setup wizard will guide you thr
 | **Rule alerts** | Silence, clipping, hiss, LUFS true peak, LUFS integrated loudness |
 | **Composite fault alerts** | STUDIO_FAULT, STL_FAULT, TX_DOWN (FM); DAB_AUDIO_FAULT, DAB_SERVICE_MISSING (DAB); RTP_FAULT (Livewire/AES67) |
 | **Name mismatch alerts** | FM_RDS_MISMATCH, DAB_SERVICE_MISMATCH |
-| **AI anomaly detection** | Per-stream ONNX autoencoder, 24 h learning phase, adaptive baseline, feedback-driven retraining (👍/👎 in Reports or Hub Reports) |
+| **AI anomaly detection** | Per-stream ONNX autoencoder, 24 h learning phase, adaptive baseline, feedback-driven retraining (👍/👎 in Reports or Hub Reports). Stereo streams use 16-feature models (adds L–R correlation and L/R level imbalance) to detect dead-channel and phase faults that mono analysis misses |
 | **Broadcast Chains** | Visual signal path builder with fault location, node stacking, ad break handling (including pass-through router topologies), maintenance bypass, flap detection, A/B group failover monitoring, chain health score, chain SLA, fault history with colour-coded audio replay timeline, all-node clip capture, predictive level trend, shared fault detection, historical time-travel view |
 | **Stream comparator** | Cross-correlate pre/post processing pairs; detect processor failure, gain drift, dropout |
 | **Metric history** | SQLite time-series, 90-day retention, signal history charts (15+ metrics), availability timeline, trend analysis |
@@ -447,9 +447,10 @@ RCS Zetta broadcast automation integration at `/hub/zetta`:
 #### Morning Report (`morning_report.py`)
 Daily broadcast engineering briefing at `/hub/morning_report`:
 - Auto-generates at 06:00 (configurable) covering the previous calendar day
-- At-a-glance fault summary, per-chain health table, hourly fault heatmap
+- At-a-glance fault summary, per-chain health table with on-air %, hourly fault heatmap
+- Traffic-light trend pills, human-readable outage durations, plain-English column headers
 - Auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks)
-- Stream quality summary
+- Stream quality summary. All configured chains appear even with no fault history
 - Hub-only
 
 #### Signal Path Latency (`latency.py`)
@@ -644,6 +645,13 @@ New connections wait in **Pending Approval** until a hub admin approves them. Si
 
 From the hub dashboard, operators can start/stop monitoring, add or remove sources (including DAB scan-and-bulk-add), and view aggregated hub reports — all without logging into individual client nodes.
 
+Each stream card on the hub overview includes inline controls queued to the client on the next heartbeat (~10 s):
+
+| Control | Available for |
+|---|---|
+| **✅ Enable / ⏸ Disable** | All source types |
+| **🔊 Stereo ON / 🔈 OFF** | DAB, HTTP, ALSA, RTP — not FM (FM stereo is auto-detected via pilot tone) |
+
 ### Hub Notification Delegation
 
 Configure a client to suppress its own notifications and delegate to the hub, which can apply per-site forwarding rules and deduplication by event UUID.
@@ -779,12 +787,27 @@ SignalScope builds an hour-of-day baseline (14-day rolling) and a day-of-week ba
 
 ## AI Anomaly Detection
 
-Each stream has its own ONNX autoencoder model trained on 14 audio features:
+Each stream has its own ONNX autoencoder model that learns a baseline of normal audio behaviour:
 
 - **Learning phase** — trains continuously for 24 hours after a stream is added; no anomaly alerts during this period
 - **Detection** — after the learning phase, reconstruction error is compared to a learned baseline; 3 consecutive anomalous windows trigger `AI_ALERT` or `AI_WARN`
 - **Adaptive baseline** — the model continuously tracks slow long-term changes via exponential moving average
 - **Feedback-driven retraining** — click 👍 (false alarm) or 👎 (confirmed fault) on any AI event in Reports; 5 false-alarm labels trigger an automatic retrain using the full original 24 h corpus plus all corrected samples
+
+### Mono vs Stereo Models
+
+Mono streams use **14 audio features** (level, peak, crest factor, DC offset, clipping, short-term level variance, spectral flatness, rolloff, noise floor, hum, HF energy, zero-crossing rate, and a signal sanity composite).
+
+Stereo streams automatically use **16-feature models** with two additional channel-relationship features:
+
+| Feature | What it detects |
+|---|---|
+| **L–R correlation** | Dead channel (one side silent), severe phase inversion, or unexpected L/R decorrelation |
+| **L/R RMS imbalance** | Channel level imbalance — one side significantly quieter or louder than the other |
+
+Stereo streams produce distinct AI fault labels: `stereo channel imbalance` and `stereo phase / channel fault`, in addition to all the standard mono labels.
+
+If a stream's stereo mode changes (e.g. you enable stereo capture on a DAB feed that previously had a mono-trained model), the model dimension mismatch is detected automatically and a new 16-feature learning phase begins.
 
 ---
 
