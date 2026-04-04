@@ -2,6 +2,24 @@
 
 ---
 
+## [3.5.0] - 2026-04-04
+
+### Visual overhaul — look & feel
+
+- **Alert card glow** — site cards in ALERT state have a pulsing red glow (`alertCardPulse` animation); WARN cards have a static amber glow; OFFLINE cards fade to 82% opacity. Stream cards in alert/warn state gain matching subtle glows. Left border widened to 5px across all states.
+- **Silence animation** — when a stream is silent, the level bar fill turns amber and pulses (`silencePulse` keyframe); the dB value text turns amber in sync. Applied in both hub dashboard and site replica page via `sc-silence` CSS class toggled by the live poll.
+- **Uniform 8px level bars** — level bar track height normalised to 8px across all templates (was 6–7px, inconsistent). Visibly easier to read on high-DPI displays.
+- **Primary button elevation** — `.btn.bp` gains `box-shadow: 0 2px 8px rgba(23,168,255,.25)` at rest, deepening on hover. All button definitions unified with `transition: filter .15s, box-shadow .15s`.
+- **Tabular-nums globally** — `.sc-row span`, `.lbar-val`, `.sc-level` all get `font-variant-numeric: tabular-nums` so metric values don't shift width as they update. Level value and dB text gain `transition: color 200ms` for smooth colour changes.
+- **Stream card hover lift** — `transform: translateY(-1px)` and deeper shadow on hover; transition added for border-colour, box-shadow, and transform.
+- **Site card header depth** — subtle top-to-transparent gradient added to site card headers. Site name letter-spacing tightened (`-.01em`) for a cleaner headline feel.
+- **AI status bar accent stripe** — `.aib` gains a 3px left border in the state colour (green/amber/red/blue/muted) instead of a plain background fill, giving a VS Code terminal-style indicator.
+- **Settings tab active indicator** — active settings tab now shows a 2px accent-blue bottom border pseudo-element in addition to the background change.
+- **Reports table** — alternating row backgrounds (`nth-child(even)`), hover highlight, and per-event-type left border colouring (red for alerts/faults/silence, blue for info events, green for recoveries).
+- **`.btn-loading` shimmer** — new reusable CSS class adds an animated shimmer to any button during async operations (start/stop/approve/update). Used in `sendSiteCommand` and `pushSiteUpdate`.
+
+---
+
 ## [3.4.167] - 2026-04-04
 
 ### Fixed
