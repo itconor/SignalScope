@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.17"
+BUILD                  = "SignalScope-3.5.18"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8098,12 +8098,15 @@ class MonitorManager:
                 return
 
             # ── Initial probe: wait for the audio endpoint to serve data ────────
-            # 120s deadline for safety.  The threshold is intentionally low (128
-            # bytes): welle-cli sends the ID3 header and first MP3 frames in small
-            # chunks.  The old ≥4096 check silently failed on every probe (no
-            # exception — just a small read that didn't hit the threshold) causing a
-            # ~52 s busy-loop before a large-enough burst finally arrived.  Any
-            # non-trivial response body means the encoder has started.
+            # 120s deadline.  We want ≥4096 bytes (≈0.25 s of 128 kbps MP3) to
+            # confirm the encoder is producing sustained audio — not just an ID3
+            # header — which matters on weak signals where welle-cli may send a
+            # few bytes and stall.  The previous single read(4096) silently failed
+            # because welle-cli sends frames one-at-a-time (≈480 bytes each) and
+            # a single read() on a streaming HTTP socket returns as soon as ANY
+            # data is in the buffer.  Fix: accumulate across reads within a 5 s
+            # window per probe attempt, so we collect ≥4096 bytes even when the
+            # server sends individual MP3 frames.
             stream_ready = False
             ready_deadline = time.time() + 120
             while time.time() < ready_deadline and not stop_evt.is_set():
@@ -8112,10 +8115,16 @@ class MonitorManager:
                     return
                 try:
                     with _ur.urlopen(audio_url, timeout=5) as _trig:
-                        probe = _trig.read(4096)
-                        if probe and len(probe) >= 128:
+                        _probe_data = b""
+                        _probe_end  = time.monotonic() + 4.5
+                        while len(_probe_data) < 4096 and time.monotonic() < _probe_end:
+                            _chunk = _trig.read(4096)
+                            if not _chunk:
+                                break
+                            _probe_data += _chunk
+                        if len(_probe_data) >= 4096:
                             stream_ready = True
-                            self.log(f"[{name}] DAB: audio endpoint ready ({len(probe)} bytes)")
+                            self.log(f"[{name}] DAB: audio endpoint ready ({len(_probe_data)} bytes)")
                             break
                 except Exception as e:
                     self.log(f"[{name}] DAB: waiting for audio endpoint: {e}")
@@ -8325,8 +8334,14 @@ class MonitorManager:
                             break
                         try:
                             with _ur.urlopen(audio_url, timeout=5) as _trig:
-                                probe = _trig.read(4096)
-                                if probe and len(probe) >= 128:
+                                _rd = b""
+                                _re = time.monotonic() + 4.5
+                                while len(_rd) < 4096 and time.monotonic() < _re:
+                                    _c = _trig.read(4096)
+                                    if not _c:
+                                        break
+                                    _rd += _c
+                                if len(_rd) >= 4096:
                                     recovered = True
                                     break
                         except Exception:

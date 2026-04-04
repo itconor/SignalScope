@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.18] - 2026-04-04
+
+### Fixed
+- **DAB audio probe — restore ≥4096 byte threshold with accumulated reads** — 3.5.17 lowered the threshold to ≥128 bytes which would have broken weak-signal detection (welle-cli may send a few bytes and stall on a poor signal; ≥128 would falsely declare ready). Root cause was not the threshold itself but how Python reads from streaming HTTP: a single `read(4096)` on a chunked HTTP stream returns as soon as *any* data is in the socket buffer, typically one MP3 frame (~480 bytes), never accumulating to 4096 in one call. Fix: per probe attempt, accumulate reads in a 4.5 s loop until ≥4096 bytes are collected (or the window expires). The ≥4096 threshold is preserved — on a good signal at 128 kbps the loop fills in ~0.25 s; on a weak/stalled signal it exhausts the window and retries.
+
+---
+
 ## [3.5.17] - 2026-04-04
 
 ### Fixed
