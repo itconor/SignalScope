@@ -2,6 +2,32 @@
 
 ---
 
+## [3.4.167] - 2026-04-04
+
+### Fixed
+- **Hub site replica — stereo input 500 error** — `|min|max(0)|int` Jinja2 filter chain failed when applied to a float (Jinja2 `max` filter requires an iterable). Fixed to `[[val, 100]|min, 0]|max|int`. Stereo inputs with L/R data no longer crash the replica page.
+
+### Improved
+- **Hub dashboard — first-time onboarding empty state** — replaced bare "Waiting for sites" placeholder with a 4-step numbered getting-started guide: configure hub mode, install clients, set shared secret, wait for heartbeat.
+- **Hub dashboard — pending approval redesign** — approval banner now shows "🔔 New site requesting access" heading, names the connecting site, explains what approving means, and has full-size Approve/Reject buttons.
+- **Hub dashboard — alert CTA** — "🔍 View alerts →" pill appears in the summary bar when any sites are in alert state; links directly to Hub Reports.
+- **Hub dashboard — status tooltips** — STALE pill, site health %, and latency all get descriptive `title=` tooltips.
+- **Hub dashboard — "Open Dashboard" renamed to "📋 View Site"** — clearer label for the site replica link.
+- **Hub dashboard — status badge tooltip** — OK/WARN/ALERT/OFFLINE badge explains each state.
+- **Hub dashboard — drag hint hidden with one site** — "Drag site cards to reorder" only shown when 2+ sites are connected.
+- **Hub dashboard — STALE badge tooltip** — explains the badge means heartbeat delayed, not necessarily down.
+- **Hub dashboard — Wall Mode tooltip** — explains the mode is for large monitoring screens.
+- **Hub dashboard — version mismatch tooltip** — explains client/hub version difference and suggests using Update.
+- **Hub dashboard — always-visible stream mini-status** — AI ALERT/WARN/Learning pills, SIL/HISS/CLIP alert badges, and 🔇 Silent indicator shown on collapsed stream cards without needing to expand.
+- **Hub dashboard — last event one-liner** — most recent history event shown below the level bar on each stream card.
+- **Hub dashboard — search `/` shortcut** — pressing `/` anywhere on the hub page focuses the search input.
+- **Hub dashboard — problems-only filter visual state** — "Show only problem sites" button turns amber when the filter is active.
+- **Hub dashboard — comparator "FIND" renamed** — displays "Searching…" with an explanatory tooltip instead of the opaque "FIND" status.
+- **Hub dashboard — Start/Stop button tooltips** — hover text explains what each command does.
+- **Hub dashboard — alert ticker clickable** — clicking the alert ticker navigates to Hub Reports.
+
+---
+
 ## [3.4.166] - 2026-04-04
 
 ### Improved

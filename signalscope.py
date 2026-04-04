@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.166"
+BUILD                  = "SignalScope-3.4.167"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30238,8 +30238,8 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         {% set _ll = s.get('level_dbfs_l') %}
         {% set _lr = s.get('level_dbfs_r') %}
         {% if _ll is not none and _lr is not none %}
-        {% set _llpct = [(_ll+80)/80*100, 100]|min|max(0)|int %}
-        {% set _lrpct = [(_lr+80)/80*100, 100]|min|max(0)|int %}
+        {% set _llpct = [[(_ll+80)/80*100, 100]|min, 0]|max|int %}
+        {% set _lrpct = [[(_lr+80)/80*100, 100]|min, 0]|max|int %}
         <div class="lbar-wrap sc-lr-bar" style="gap:4px;padding-top:0">
           <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">L</span>
           <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" style="width:{{_llpct}}%;background:{{lcol}}"></div></div></div>
@@ -32698,6 +32698,13 @@ document.addEventListener('click', function(e){
 // Only start polling after the DOM is fully rendered
 document.addEventListener('DOMContentLoaded', function(){
   initCardSearch('hubSearch', 'site-grid', '.site-card');
+  document.addEventListener('keydown', function(e) {
+    if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+      e.preventDefault();
+      var s = document.getElementById('hubSearch');
+      if (s) { s.focus(); s.select(); }
+    }
+  });
   initDragGrid('site-grid', 'signalscope.hub.order', '.site-card');
   // Restore sc-detail expand state from localStorage
   document.querySelectorAll('[data-action="sc-expand"]').forEach(function(btn){
@@ -32962,37 +32969,57 @@ setInterval(_loadTrends, 300000);
   <span style="font-size:13px;font-weight:600">🛰 Hub Dashboard</span>
   <span class="badge">{{sites|length}} site{{"s" if sites|length!=1 else ""}}</span>
   <div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-    <a href="/hub?wall={{'0' if wall_mode else '1'}}{% if problems_only %}&problems=1{% endif %}" class="btn bg bs">{{'🧰 Normal Mode' if wall_mode else '🖥 Wall Mode'}}</a>
+    <a href="/hub?wall={{'0' if wall_mode else '1'}}{% if problems_only %}&problems=1{% endif %}" class="btn bg bs" title="Full-screen display mode — hides navigation, enlarges cards, suitable for monitoring screens">{{'🧰 Normal Mode' if wall_mode else '🖥 Wall Mode'}}</a>
     <button type="button" class="btn bg bs" onclick="toggleFullscreen()">⛶ Fullscreen</button>
-    <a href="/hub?{% if wall_mode %}wall=1&{% endif %}problems={{'0' if problems_only else '1'}}" class="btn bg bs">{{'Show all sites' if problems_only else 'Show only problem sites'}}</a>
+    <a href="/hub?{% if wall_mode %}wall=1&{% endif %}problems={{'0' if problems_only else '1'}}" class="btn bg bs" {% if problems_only %}style="background:#451a03;color:var(--wn);border:1px solid rgba(245,158,11,.3)"{% endif %}>{{'Show all sites' if problems_only else 'Show only problem sites'}}</a>
     <a href="/hub/reports" class="btn bp bs">📋 Hub Reports</a>
   </div>
 </div>
 <main>
   <div class="hub-summary">
-    <div id="alertTicker" style="width:100%;margin-top:6px;font-size:12px;color:var(--wn)"></div>
+    <div id="alertTicker" style="width:100%;margin-top:6px;font-size:12px;color:var(--wn);cursor:pointer" onclick="window.location='/hub/reports'" title="Click to open Hub Reports"></div>
     <span class="sum-pill">🕒 <span id="wallClock">{{fmt(now)}}</span></span>
     <span class="sum-pill">🏗 {{build}}</span>
     <span class="sum-pill" id="live-ind" style="color:var(--mu);transition:color .5s;font-weight:700;display:none" title="Live View active — level bars updating in real time">⚡ Live</span>
     <span class="sum-pill">📡 {{sites|length}} site{{"s" if sites|length!=1 else ""}}</span>
     <span class="sum-pill" style="color:var(--al)">⛔ {{offline_count}} offline</span>
     <span class="sum-pill" style="color:var(--al)">🚨 {{alert_site_count}} alert</span>
+    {% if alert_site_count > 0 %}<a href="/hub/reports" class="sum-pill" style="color:var(--al);text-decoration:none;border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:2px 8px" title="Open Hub Reports filtered to recent alerts">🔍 View alerts →</a>{% endif %}
     <span class="sum-pill" style="color:var(--wn)">⚠ {{warn_site_count}} warn</span>
-    <span class="sum-pill" style="color:var(--acc)">⏳ {{stale_count}} stale</span>
+    <span class="sum-pill" style="color:var(--acc)" title="Heartbeat delayed — site is still considered online but hasn't reported recently">⏳ {{stale_count}} stale</span>
     {%- if hub_cpu is not none %}<span class="sum-pill" style="color:var(--mu)">🖥 CPU {{hub_cpu}}%</span>{% endif %}
     {%- if hub_mem is not none %}<span class="sum-pill" style="color:var(--mu)">💾 RAM {{hub_mem}}%</span>{% endif %}
   </div>
 
   <div class="hub-toolbar">
-    <input id="hubSearch" class="search" type="text" placeholder="Search sites, streams, FM, DAB, alerts…">
-    <span class="badge">Drag site cards to reorder</span>
+    <input id="hubSearch" class="search" type="text" placeholder="Search sites, streams, FM, DAB… (press / to focus)">
+    {% if sites|length > 1 %}<span class="badge">Drag site cards to reorder</span>{% endif %}
   </div>
 {% if not sites %}
-  <div class="no-sites">
-    <div style="font-size:48px;margin-bottom:12px">📡</div>
-    <div style="font-size:18px;font-weight:600;margin-bottom:8px">Waiting for sites</div>
-    <div>No heartbeats received yet. Configure each site to point to this hub and enable hub reporting in their Settings.</div>
-  </div>
+    <div style="max-width:560px;margin:60px auto;text-align:center">
+      <div style="font-size:48px;margin-bottom:12px">📡</div>
+      <h2 style="font-size:18px;color:var(--tx);margin:0 0 6px">No sites connected yet</h2>
+      <p style="font-size:13px;color:var(--mu);margin:0 0 24px">Follow these steps to connect your first monitoring node.</p>
+      <div style="background:var(--sur);border:1px solid var(--bor);border-radius:12px;text-align:left;overflow:hidden">
+        <div style="background:linear-gradient(180deg,#143766,#102b54);padding:10px 16px;font-size:11px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em">Getting Started</div>
+        <div style="padding:16px">
+          {% for step, desc in [
+            ('Configure this hub', 'Go to <a href="/settings" style="color:var(--acc)">⚙ Settings → Hub</a>, set <strong>Mode</strong> to <strong>Hub</strong> and note the Hub URL shown there.'),
+            ('Install on client nodes', 'Install SignalScope on each machine you want to monitor. Open its settings, set <strong>Mode</strong> to <strong>Client</strong>, and paste the Hub URL.'),
+            ('Set a shared secret', 'In both Settings → Hub, enter the same <strong>Secret Key</strong> so heartbeats are authenticated. Leave blank to skip (less secure).'),
+            ('Wait for heartbeat', 'Client nodes send a heartbeat every ~10 s. A pending approval card will appear here — click <strong>Approve</strong> to start receiving data.')
+          ] %}
+          <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:{{'0' if loop.last else '14px'}}">
+            <div style="width:24px;height:24px;border-radius:999px;background:var(--acc);color:#000;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">{{loop.index}}</div>
+            <div>
+              <div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:2px">{{step}}</div>
+              <div style="font-size:12px;color:var(--mu)">{{desc}}</div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
 {% else %}
 <div class="site-grid" id="site-grid">
 {% for site in sites %}
@@ -33001,7 +33028,7 @@ setInterval(_loadTrends, 300000);
 <div class="site-card site-{{'ok' if st=='OK' else 'warn' if st=='WARN' else 'alert' if st=='ALERT' else 'offline'}} skeleton" draggable="true" id="site-{{site.site|replace(' ','_')|replace('.','_')|replace('-','_')}}">
   {% if _pending %}
   {% set _nu = site.get('_needs_update', False) %}
-  <div style="padding:10px 16px;background:{{'#2a1a00' if _nu else '#1a2a10'}};border-bottom:2px solid var(--wn);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <div style="padding:10px 16px;background:{{'#2a1a00' if _nu else 'linear-gradient(135deg,#1a2a00,#2a1a00)'}};border-bottom:2px solid var(--wn){%if not _nu%};font-size:12px{%endif%}">
     {% if _nu %}
     <span style="color:#fb923c;font-weight:700;font-size:13px">⚠ Update Required</span>
     <span style="font-size:12px;color:var(--mu)">
@@ -33010,11 +33037,15 @@ setInterval(_loadTrends, 300000);
     </span>
     <button class="btn bd bs" data-action="hub-remove-site" data-site="{{site.site|e}}" style="margin-left:auto">✕ Dismiss</button>
     {% else %}
-    <span style="color:#fde68a;font-weight:700;font-size:13px">⏳ Pending Approval</span>
-    <span style="font-size:12px;color:var(--mu)">{{site.site}} is requesting to connect from {{site.get('_client_addr') or site.get('_verified_ip','unknown')}}</span>
-    <button class="btn" style="background:#166534;color:#fff;font-size:12px;padding:3px 12px;margin-left:auto"
-            data-action="hub-approve-site" data-site="{{site.site|e}}">✓ Approve</button>
-    <button class="btn bd bs" data-action="hub-remove-site" data-site="{{site.site|e}}">✕ Reject</button>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+      <span style="font-size:16px">🔔</span>
+      <span style="color:var(--wn);font-weight:700;font-size:13px">New site requesting access</span>
+    </div>
+    <div style="color:var(--mu);margin-bottom:8px">Approving allows <strong style="color:var(--tx)">{{site.site}}</strong> to send monitoring data to this hub. Reject if you don't recognise this site.</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn bp" data-action="hub-approve-site" data-site="{{site.site|e}}" style="font-size:12px;padding:4px 14px">✓ Approve</button>
+      <button class="btn bd" data-action="hub-remove-site" data-site="{{site.site|e}}">✕ Reject</button>
+    </div>
     {% endif %}
   </div>
   {% endif %}
@@ -33024,35 +33055,35 @@ setInterval(_loadTrends, 300000);
     {% if _pending %}
       <span class="badge" style="background:#3a3010;color:#fde68a">PENDING</span>
     {% elif site.online %}
-      <span class="badge" style="background:{{'#1e3a5f' if st=='OK' else '#3a2a0f' if st=='WARN' else '#3a0f0f'}}">
+      <span class="badge" style="background:{{'#1e3a5f' if st=='OK' else '#3a2a0f' if st=='WARN' else '#3a0f0f'}}" title="ALERT = stream alarm active · WARN = anomaly detected · OK = all streams healthy · OFFLINE = no heartbeat received">
         {{st}}
       </span>
       {% if site.running %}
       <span class="badge" style="background:#1e2a1e">▶ Running</span>
-      <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="stop" style="background:#3a1e1e;color:#fca5a5;font-size:10px;padding:2px 8px">⏹ Stop</button>
+      <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="stop" style="background:#3a1e1e;color:#fca5a5;font-size:10px;padding:2px 8px" title="Stop monitoring — streams will pause">⏹ Stop</button>
       {% else %}
       <span class="badge" style="background:#2a2a1e;color:var(--mu)">⏸ Stopped</span>
-      <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="start" style="background:#1e3a1e;color:#86efac;font-size:10px;padding:2px 8px">▶ Start</button>
+      <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="start" style="background:#1e3a1e;color:#86efac;font-size:10px;padding:2px 8px" title="Start monitoring on this site">▶ Start</button>
       {% endif %}
       {% if site.build %}
       <span class="badge site-version-badge" style="background:{{' #1e2433' if site.build==build else '#3a2a0f'}};font-size:10px"
-            title="{{'Version match' if site.build==build else 'Version mismatch — hub is '+build}}">{{site.build}}</span>
+            title="{{'Version match' if site.build==build else 'Client version doesn\'t match hub — features may differ. Use Update to sync.'}}">{{site.build}}</span>
       {% endif %}
     {% else %}
       <span class="badge" style="background:#2a1e1e;color:var(--al)">OFFLINE</span>
     {% endif %}
     <span class="site-meta">Last seen: {{ago(site.age_s)}}</span>
-    {% if site.latency_ms is not none %}<span class="site-meta site-meta-latency" title="Heartbeat latency">Latency: {{site.latency_ms}} ms</span>{% endif %}
-    {% if not _pending %}<a class="btn bg bs" href="/hub/site/{{site.site|urlencode}}/open">Open Dashboard</a>{% endif %}
+    {% if site.latency_ms is not none %}<span class="site-meta site-meta-latency" title="Round-trip time for the last heartbeat from this site to the hub">Latency: {{site.latency_ms}} ms</span>{% endif %}
+    {% if not _pending %}<a class="btn bg bs" href="/hub/site/{{site.site|urlencode}}/open" title="Open the hub-side replica of this site's dashboard">📋 View Site</a>{% endif %}
     <button class="btn bd bs" data-action="hub-remove-site" data-site="{{site.site|e}}">✕ Remove</button>
     {% if site.health_pct is defined %}
-    <span class="site-meta" style="margin-left:8px;color:{{'var(--ok)' if site.health_pct>=99 else ('var(--wn)' if site.health_pct>=95 else 'var(--al)')}}" title="Heartbeat reliability">⚡ {{site.health_pct}}%</span>
+    <span class="site-meta" style="margin-left:8px;color:{{'var(--ok)' if site.health_pct>=99 else ('var(--wn)' if site.health_pct>=95 else 'var(--al)')}}" title="Percentage of heartbeat cycles where all streams were healthy — last 24 h">⚡ {{site.health_pct}}%</span>
     {% endif %}
     {% if site.consecutive_missed > 0 %}
     <span class="site-meta" style="color:var(--wn);margin-left:4px" title="Consecutive missed heartbeats">⚠ {{site.consecutive_missed}} missed</span>
     {% endif %}
     {% if site.online and site.age_s >= (60 if site.low_bw else 10) %}
-    <span class="badge" style="background:#2a2412;color:var(--wn)">STALE</span>
+    <span class="badge" style="background:#2a2412;color:var(--wn)" title="Heartbeat has been delayed — not necessarily down">STALE</span>
     {% endif %}
     {% if site.low_bw %}
     <span class="badge site-lowbw-badge" title="Low-bandwidth mode — heartbeat every 30 s, clips on demand" style="background:#1a2a1a;color:#6ee7b7;border:1px solid #166534">📶 Low BW</span>
@@ -33120,6 +33151,25 @@ setInterval(_loadTrends, 300000);
           <span style="color:#22c55e">■</span> <span style="color:#ef4444">■</span> <span style="color:#f59e0b">■</span> <span style="color:#374151">■</span>
         </span>
       </div>
+
+      {# Mini status row — always visible #}
+        <div class="sc-mini-status" style="display:flex;align-items:center;gap:4px;padding:2px 8px 4px;flex-wrap:wrap">
+          {%- set _mini_ai = s.ai_status or '' %}
+          {%- if '[ALERT]' in _mini_ai %}<span style="font-size:10px;background:#3a0f0f;color:var(--al);padding:1px 5px;border-radius:3px">🤖 ALERT</span>
+          {%- elif '[WARN]' in _mini_ai %}<span style="font-size:10px;background:#3a2a0f;color:var(--wn);padding:1px 5px;border-radius:3px">🤖 WARN</span>
+          {%- elif s.ai_phase == 'learning' %}<span style="font-size:10px;background:#1e2a3a;color:var(--acc);padding:1px 5px;border-radius:3px">🤖 Learning</span>
+          {%- endif %}
+          {%- if s.alert_on_silence %}<span style="font-size:10px;padding:1px 4px;border-radius:3px;background:#1a1a2a;color:var(--mu)">SIL</span>{%- endif %}
+          {%- if s.alert_on_hiss %}<span style="font-size:10px;padding:1px 4px;border-radius:3px;background:#1a1a2a;color:var(--mu)">HISS</span>{%- endif %}
+          {%- if s.alert_on_clip %}<span style="font-size:10px;padding:1px 4px;border-radius:3px;background:#1a1a2a;color:var(--mu)">CLIP</span>{%- endif %}
+          {%- if s.get('silence_active') %}<span style="font-size:10px;background:#451a03;color:#fbbf24;padding:1px 5px;border-radius:3px;animation:alertPulse 1.5s infinite">🔇 Silent</span>{%- endif %}
+        </div>
+        {%- if s.get('history') %}
+        {%- set _ev = s.history[-1] %}
+        <div style="font-size:10px;color:var(--mu);padding:0 8px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{{_ev.get('message','')}}">
+          📋 {{_ev.get('ts','')[-8:]}} — [{{_ev.get('type','')}}] {{_ev.get('message','')|truncate(50, true, '…')}}
+        </div>
+        {%- endif %}
 
       {# Collapsible detail #}
       <div class="sc-detail" id="sc_detail_{{site.site|replace(' ','_')|replace('.','_')|replace('-','_')}}__{{i}}">
@@ -33360,7 +33410,7 @@ setInterval(_loadTrends, 300000);
           <strong style="color:var(--tx)">{{c.pre_name}}</strong>
           <span style="color:var(--mu);font-size:11px">→</span>
           <strong style="color:var(--tx)">{{c.post_name}}</strong>
-          <span style="margin-left:auto;font-size:11px;color:{{c_col}};white-space:nowrap">{{c.status}}</span>
+          <span style="margin-left:auto;font-size:11px;color:{{c_col}};white-space:nowrap" {%- if c_find %} title="Comparator is scanning audio for a matching position — may take up to 60 s on first run"{%- endif %}>{{- 'Searching…' if c_find else c.status}}</span>
         </div>
         {# Stats grid #}
         <div style="padding:8px 12px">
