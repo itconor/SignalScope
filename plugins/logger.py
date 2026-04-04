@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.6.0",
+    "version": "1.6.1",
 }
 
 import datetime
@@ -2915,14 +2915,14 @@ class _RecorderThread(threading.Thread):
         # This handles the case where ffmpeg hangs (network stall, codec deadlock)
         # while holding stdin open — without a watchdog the recorder would block forever.
         _wdog_alive = [True]
-        _wdog_last  = [time.monotonic()]
+        _wdog_last  = [None]  # None = no data written yet; countdown only starts after first write
 
         def _watchdog(proc=proc, alive=_wdog_alive, last_w=_wdog_last):
             while alive[0]:
                 time.sleep(5)
                 if not alive[0]:
                     break
-                if time.monotonic() - last_w[0] > _WATCHDOG_SECS:
+                if last_w[0] is not None and time.monotonic() - last_w[0] > _WATCHDOG_SECS:
                     _log(f"[Logger] Watchdog: ffmpeg hung on '{self.stream_name}' "
                          f"— no audio data for {_WATCHDOG_SECS}s, killing")
                     try:

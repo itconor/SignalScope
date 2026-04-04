@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.2"
+BUILD                  = "SignalScope-3.5.4"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -8024,13 +8024,15 @@ class MonitorManager:
                 return
 
             # ── Initial probe: wait for the audio endpoint to serve data ────────
-            # 35s deadline: welle-cli initialises individual service endpoints
-            # after the mux is declared ready, and slower/heavier services (e.g.
-            # Absolute 80s) can take 20-25s after mux ready before their /mp3/
-            # endpoint serves enough bytes.  The 3.3.55 stability-poll change
-            # caused mux ready to fire ~3s earlier, which compounded this.
+            # 120s deadline: welle-cli initialises individual service /mp3/sid
+            # endpoints lazily (on first HTTP connection).  In a large ensemble
+            # (e.g. 9 services on 12D) the encoders start one-at-a-time; slower
+            # services can take 90-160s after mux-ready before their endpoint
+            # serves 4 KB.  The previous 35s limit caused all streams to cycle
+            # through probe→fail→5s-restart repeatedly, spreading readiness over
+            # 3+ minutes.  120s covers even the slowest service in a single pass.
             stream_ready = False
-            ready_deadline = time.time() + 35
+            ready_deadline = time.time() + 120
             while time.time() < ready_deadline and not stop_evt.is_set():
                 if session.proc.poll() is not None:
                     self.log(f"[{name}] DAB: welle-cli exited before audio stream became ready")

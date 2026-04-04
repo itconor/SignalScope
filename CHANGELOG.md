@@ -2,6 +2,20 @@
 
 ---
 
+## [3.5.4] - 2026-04-04
+
+### Fixed
+- **DAB slow startup — audio endpoint probe deadline too short** — each service on a shared DAB multiplex is encoded lazily by welle-cli (encoder starts on first HTTP connection). In a large ensemble (9 services on 12D NI) the encoders start sequentially; the slowest service can take 90–160 s after mux-ready before its `/mp3/<sid>` endpoint delivers 4 KB. The 35 s probe window caused every stream to cycle probe→fail→5 s restart, producing 3+ minutes of cascading retries with services becoming ready one per cycle. Probe deadline raised to **120 s**, covering even the slowest encoder in a single pass. All services in the NI 12D ensemble now become ready within one probe window instead of spreading across 4+ restart cycles.
+
+---
+
+## [3.5.3] - 2026-04-04
+
+### Fixed
+- **Logger plugin — spurious watchdog fires on DAB/slow streams (v1.6.1)** — watchdog countdown started immediately at recording session start (`_wdog_last = time.monotonic()`). For DAB streams still initialising (welle-cli mux enumeration can take 45+ seconds), no audio chunks were written for > 30 s and the watchdog killed the recording ffmpeg — producing an empty file and log noise on every segment. Fixed: `_wdog_last` now initialises to `None`; the watchdog only checks the timeout after the first successful write. A stream that never produces audio within a segment exits naturally when the segment ends, not via watchdog.
+
+---
+
 ## [3.5.2] - 2026-04-04
 
 ### Fixed
