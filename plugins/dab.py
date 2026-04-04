@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.29",
+    "version":  "1.0.30",
 }
 
 import hashlib
@@ -1779,6 +1779,20 @@ def _dls_reader(stderr_stream, stop, monitor=None):
     Drain welle-cli stderr and log every line.
     DLS is extracted from mux.json by _dls_poller, not from stderr.
     """
+    _SUPPRESS = (
+        "note:",
+        "trying to resync",
+        "hit end of (available)",
+        "skipped ",
+        "synconphase failed",
+        "synconendnull failed",
+        "failed to send audio for",
+        "removing mp3 sender",
+        "layer1.c",
+        "illegal bit allocation",
+        "aborting layer i decoding",
+        "int123_do_layer1",
+    )
     try:
         for raw_line in stderr_stream:
             if stop.is_set():
@@ -1787,7 +1801,12 @@ def _dls_reader(stderr_stream, stop, monitor=None):
                 line = raw_line.decode("utf-8", errors="replace").strip()
             except Exception:
                 continue
-            if line and monitor:
+            if not line:
+                continue
+            lower = line.lower()
+            if any(s in lower for s in _SUPPRESS):
+                continue
+            if monitor:
                 monitor.log(f"[DAB welle] {line}")
     except Exception:
         pass
