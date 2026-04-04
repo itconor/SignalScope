@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.33",
+    "version":  "1.0.34",
 }
 
 import hashlib
@@ -124,15 +124,16 @@ _SCAN_REGIONS = {
 }
 
 # ── Module-level state ──────────────────────────────────────────────────────────
-_hub_sessions   = {}   # site → {slot_id, channel, service, bitrate, sdr_serial, ts}
-_hub_pending    = {}   # site → command dict for client poller
-_hub_dls        = {}   # site → {text, ts}
-_hub_scan       = {}   # site → {status, channel, progress, total, found, muxes, ts}
-_hub_scan_stop  = set()  # sites that have requested scan abort
-_state_lock     = threading.Lock()
-_client_sess    = {}   # {stop, thread, proc_welle, proc_ffmpeg, slot_id}
-_scan_proc      = None  # current welle-cli scan subprocess (client side)
-_services_file  = None  # pathlib.Path to dab_services.json, set in register()
+_hub_sessions    = {}   # site → {slot_id, channel, service, bitrate, sdr_serial, ts}
+_hub_pending     = {}   # site → command dict for client poller
+_hub_dls         = {}   # site → {text, ts}
+_hub_scan        = {}   # site → {status, channel, progress, total, found, muxes, ts}
+_hub_scan_stop   = set()  # sites that have requested scan abort
+_hub_sess_poll_ts = {}  # site → timestamp of last /api/hub/dab/status poll
+_state_lock      = threading.Lock()
+_client_sess     = {}   # {stop, thread, proc_welle, proc_ffmpeg, slot_id}
+_scan_proc       = None  # current welle-cli scan subprocess (client side)
+_services_file   = None  # pathlib.Path to dab_services.json, set in register()
 
 
 # ── HMAC helpers ───────────────────────────────────────────────────────────────
@@ -617,6 +618,20 @@ function doStop(){
   _markActiveService('', '');
 }
 
+// Stop stream when page is closed/navigated away — belt-and-suspenders
+// alongside the server-side session watchdog (30 s idle timeout).
+window.addEventListener('beforeunload', function(){
+  var site = siteSel.value;
+  if(site && (_state === 'streaming' || _state === 'connecting')){
+    // sendBeacon is fire-and-forget and survives page unload; fetch does not.
+    // CSRF is not required for stop because it carries no side effects beyond
+    // stopping a stream the user is closing anyway, and the slot_id in the
+    // session is the authority (hub validates site ownership via _hub_sessions).
+    var data = JSON.stringify({site: site, _beacon: true});
+    navigator.sendBeacon('/api/hub/dab/stop_beacon', data);
+  }
+});
+
 // ── Status poll ───────────────────────────────────────────────
 function startStatusPoll(){ stopStatusPoll(); _poll = setInterval(_checkStatus, 2500); }
 function stopStatusPoll(){ if(_poll){ clearInterval(_poll); _poll = null; } }
@@ -994,6 +1009,38 @@ def register(app, ctx):
     # Locate the services JSON file alongside this plugin
     _services_file = pathlib.Path(__file__).parent / "dab_services.json"
 
+    # ── Hub: session watchdog ──────────────────────────────────────────────────
+    # If the browser closes/navigates away without hitting the Stop button,
+    # the status poll stops but the client keeps welle-cli running forever.
+    # The watchdog checks every 15 s and expires any session whose browser
+    # has not polled /api/hub/dab/status in the last 30 s.
+    _SESS_IDLE_TIMEOUT = 30  # seconds without a status poll → expire session
+
+    def _session_watchdog():
+        while True:
+            time.sleep(15)
+            if not hub_server:
+                continue
+            now = time.time()
+            expired = []
+            with _state_lock:
+                for site, sess in list(_hub_sessions.items()):
+                    last_poll = _hub_sess_poll_ts.get(site, sess.get("ts", now))
+                    if now - last_poll > _SESS_IDLE_TIMEOUT:
+                        expired.append((site, sess.get("slot_id", "")))
+                        _hub_sessions.pop(site, None)
+                        _hub_pending[site] = {"action": "stop"}
+                        _hub_sess_poll_ts.pop(site, None)
+            for site, slot_id in expired:
+                slot = listen_registry.get(slot_id)
+                if slot:
+                    slot.closed = True
+                monitor.log(f"[DAB] Session expired (browser inactive 30 s): site='{site}'")
+
+    if hub_server:
+        threading.Thread(target=_session_watchdog, daemon=True,
+                         name="DABSessionWatchdog").start()
+
     # ── Hub: browser page ──────────────────────────────────────────────────────
 
     @app.get("/hub/dab")
@@ -1091,6 +1138,18 @@ def register(app, ctx):
 
     # ── Hub: stop DAB stream ───────────────────────────────────────────────────
 
+    def _do_stop(site):
+        """Shared stop logic — called by both the CSRF-protected stop and the beacon."""
+        with _state_lock:
+            sess = _hub_sessions.pop(site, None)
+            _hub_pending[site] = {"action": "stop"}
+        if sess:
+            slot = listen_registry.get(sess.get("slot_id", ""))
+            if slot:
+                slot.closed = True
+        _hub_sess_poll_ts.pop(site, None)
+        monitor.log(f"[DAB] Session stopped: site='{site}'")
+
     @app.post("/api/hub/dab/stop")
     @login_required
     @csrf_protect
@@ -1099,21 +1158,31 @@ def register(app, ctx):
             return jsonify({"ok": False, "error": "no hub"}), 400
         data = request.get_json(silent=True) or {}
         site = str(data.get("site", "")).strip()
-        with _state_lock:
-            sess = _hub_sessions.pop(site, None)
-            _hub_pending[site] = {"action": "stop"}
-        if sess:
-            slot = listen_registry.get(sess.get("slot_id", ""))
-            if slot:
-                slot.closed = True
-        monitor.log(f"[DAB] Session stopped: site='{site}'")
+        _do_stop(site)
         return jsonify({"ok": True})
+
+    @app.post("/api/hub/dab/stop_beacon")
+    @login_required
+    def dab_stop_beacon():
+        """Called by navigator.sendBeacon on page unload — no CSRF token available."""
+        if not hub_server:
+            return ("", 204)
+        try:
+            raw = request.get_data(as_text=True) or "{}"
+            data = _json.loads(raw)
+        except Exception:
+            data = {}
+        site = str(data.get("site", "")).strip()
+        if site:
+            _do_stop(site)
+        return ("", 204)
 
     # ── Hub: session status (browser polls every 2.5 s) ────────────────────────
 
     @app.get("/api/hub/dab/status/<path:site_name>")
     @login_required
     def dab_status(site_name):
+        _hub_sess_poll_ts[site_name] = time.time()   # browser is still alive
         sess = _hub_sessions.get(site_name)
         if not sess:
             return jsonify({"ok": True, "active": False})
