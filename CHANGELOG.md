@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.11] - 2026-04-04
+
+### Fixed
+- **Reverted 3.5.9 `_start_dab_session` Pi changes** — the 3.5.9 release incorrectly modified `_start_dab_session` (DAB monitoring inputs) as a side-effect of DAB Scanner plugin work. Plugin changes must not affect main app behaviour. Reverted `_start_dab_session` to its 3.5.6 state. Also removed the `_is_raspberry_pi()` helper added to `signalscope.py` — Pi detection belongs in the plugin only.
+
+---
+
 ## [3.5.10] - 2026-04-04
 
 ### Fixed
