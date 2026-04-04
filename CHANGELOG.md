@@ -2,6 +2,18 @@
 
 ---
 
+## [3.4.166] - 2026-04-04
+
+### Improved
+- **Hub site replica — silence indicator** — pulsing amber 🔇 SILENCE badge appears on stream cards in real-time (via the 150 ms live-levels poll) when a stream is in silence; hides automatically when audio resumes.
+- **Hub site replica — refined sync indicator** — replaced "Updating in Xs" countdown text with a colour-coded pulse dot: green/normal while live, fast-pulse blue while syncing, amber when audio is paused, red if sync fails; "⚠ Live data paused" badge appears after 3 consecutive live-level poll failures.
+- **Hub site replica — input enable/disable toggle** — each stream card now has an inline "✅ Enabled / ⏸ Disabled" toggle in the card body, queuing `enable_input` or `disable_input` commands to the remote client on the next heartbeat; state stays in sync via the 10 s metadata poll.
+- **Hub site replica — stereo toggle** — inline 🔊 ON / 🔈 OFF stereo toggle on stream cards for HTTP/RTP/ALSA/Livewire inputs; queues `set_input_field` command to the remote client; both enable and stereo toggles update in `siteDataUpdate()`.
+- **New `set_input_field` remote command** — generic hub→client command to set any whitelisted boolean field (`stereo`, `fm_force_mono`, `alert_on_silence`, `alert_on_hiss`, `alert_on_clip`, `ai_monitor`, `enabled`) on a named input; saves config and restarts monitoring. New hub endpoint: `POST /api/hub/site/<name>/input/set_field`.
+- **Group 5 — SMTP port help text** — `<small>` help text added beneath the SMTP Port field in Settings: 587 STARTTLS (recommended) · 465 SSL · 25 plain (avoid).
+
+---
+
 ## [3.4.165] - 2026-04-04
 
 ### Improved

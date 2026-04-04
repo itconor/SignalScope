@@ -168,7 +168,7 @@ document.addEventListener('DOMContentLoaded',function(){
   <div class="sec">📧 Email Alerts</div>
           <div class="cr"><input type="checkbox" name="email_enabled" value="1" {{'checked' if cfg.email.enabled}}><label style="margin:0;text-transform:none">Enable email alerts</label></div>
           <label>SMTP Host<input type="text" name="smtp_host" value="{{cfg.email.smtp_host}}"></label>
-          <label title="587 for STARTTLS (recommended), 465 for SSL/TLS, 25 for plain SMTP">SMTP Port<input type="number" name="smtp_port" value="{{cfg.email.smtp_port}}"></label>
+          <label title="587 for STARTTLS (recommended), 465 for SSL/TLS, 25 for plain SMTP">SMTP Port<input type="number" name="smtp_port" value="{{cfg.email.smtp_port}}"><small style="color:var(--mu);font-size:11px;margin-top:3px">587 STARTTLS (recommended) · 465 SSL · 25 plain (avoid)</small></label>
           <div class="cr"><input type="checkbox" name="use_tls" value="1" {{'checked' if cfg.email.use_tls}}><label style="margin:0;text-transform:none">Use TLS</label></div>
           <label>Username<input type="text" name="email_user" value="{{cfg.email.username}}"></label>
           <label>Password<input type="password" name="email_pass" value="{{cfg.email.password}}"></label>
@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.165"
+BUILD                  = "SignalScope-3.4.166"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -10293,6 +10293,31 @@ class HubClient:
                 return
         monitor.log(f"[Hub] toggle_input: '{name}' not found — ignored")
 
+    # Whitelisted boolean fields that hub admins may set remotely.
+    _REMOTE_BOOL_FIELDS = frozenset({
+        "stereo", "fm_force_mono",
+        "alert_on_silence", "alert_on_hiss", "alert_on_clip",
+        "ai_monitor", "enabled",
+    })
+
+    def _cmd_set_input_field(self, payload: dict):
+        """Remote: set a single whitelisted field on an input and save config."""
+        name  = str(payload.get("name", "")).strip()
+        field = str(payload.get("field", "")).strip()
+        value = payload.get("value")
+        if field not in self._REMOTE_BOOL_FIELDS:
+            monitor.log(f"[Hub] set_input_field: field '{field}' not in whitelist — ignored")
+            return
+        cfg = self._cfg_fn()
+        for inp in cfg.inputs:
+            if inp.name == name:
+                setattr(inp, field, bool(value))
+                save_config(cfg)
+                monitor.log(f"[Hub] Remote set_input_field: '{name}'.{field} = {bool(value)}")
+                self._restart_if_running()
+                return
+        monitor.log(f"[Hub] set_input_field: '{name}' not found — ignored")
+
     def _cmd_dab_scan(self, payload: dict):
         channel = str(payload.get("channel", "")).strip().upper()
         ppm     = int(payload.get("ppm", 0))
@@ -12173,6 +12198,8 @@ class HubClient:
                         self._cmd_cmp_pair(cmd_payload)
                     elif cmd_type == "set_live_view":
                         self._cmd_set_live_view(cmd_payload)
+                    elif cmd_type == "set_input_field":
+                        self._cmd_set_input_field(cmd_payload)
                 # Drain auto-clip-upload queue — clips saved since the last
                 # heartbeat are uploaded to the hub for the Reports page.
                 # Cap at 2 per heartbeat cycle to avoid spawning a burst of
@@ -23476,6 +23503,29 @@ def hub_input_disable(site_name):
     return jsonify({"ok": True})
 
 
+@app.post("/api/hub/site/<path:site_name>/input/set_field")
+@login_required
+@csrf_protect
+def hub_input_set_field(site_name):
+    """Hub admin: remotely set a whitelisted boolean field on a client input."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data  = request.get_json(silent=True) or {}
+    name  = str(data.get("name", "")).strip()
+    field = str(data.get("field", "")).strip()
+    value = data.get("value")
+    _allowed = {"stereo", "fm_force_mono", "alert_on_silence", "alert_on_hiss",
+                "alert_on_clip", "ai_monitor", "enabled"}
+    if not name:  return jsonify({"error": "name is required"}), 400
+    if field not in _allowed:
+        return jsonify({"error": f"field '{field}' not allowed; must be one of: {sorted(_allowed)}"}), 400
+    hub_server.push_pending_command(site_name, {
+        "type": "set_input_field",
+        "payload": {"name": name, "field": field, "value": bool(value)},
+    })
+    return jsonify({"ok": True, "note": "set_input_field queued for next heartbeat"})
+
+
 @app.post("/api/hub/site/<path:site_name>/set_expected_name")
 @login_required
 @csrf_protect
@@ -30040,6 +30090,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 .alert-row{padding:5px 16px;border-bottom:1px solid rgba(255,255,255,.04);display:flex;gap:10px;align-items:flex-start}
 .alert-row-time{color:var(--mu);white-space:nowrap;flex-shrink:0}.alert-row-msg{flex:1;word-break:break-word}
 .clip-badge{font-size:10px;padding:1px 6px;border-radius:999px;background:#381414;color:#fca5a5;margin-left:4px}
+.sil-live-badge{font-size:10px;padding:2px 7px;border-radius:999px;background:#451a03;color:#fbbf24;margin-left:4px;animation:rpulse 1.5s infinite}
 .refresh-bar{font-size:11px;color:var(--mu);display:flex;align-items:center;gap:8px}
 .refresh-dot{width:7px;height:7px;border-radius:999px;background:var(--ok);display:inline-block;animation:rpulse 2s infinite}
 @keyframes rpulse{0%,100%{opacity:1}50%{opacity:.3}}
@@ -30050,7 +30101,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
     <a class="btn bg" href="/hub">← Back to Hub</a>
     <span class="badge">Live replica</span>
     {% if direct_url %}<a class="btn bg" id="direct-link" href="{{direct_url}}" target="_blank" rel="noopener">Open Direct</a>{% endif %}
-    <span class="refresh-bar" id="refresh-bar"><span class="refresh-dot"></span> <span id="refresh-countdown">Refreshing in 15s</span></span>
+    <span class="refresh-bar" id="refresh-bar"><span class="refresh-dot" id="refresh-dot"></span> <span id="refresh-countdown" style="opacity:.6">Live</span> <span id="live-pause-badge" style="display:none;font-size:10px;color:var(--wn);padding:1px 6px;border-radius:4px;background:#451a03">⚠ Live data paused</span></span>
   </div>
   {% if direct_url %}
   <div class="direct-banner" id="direct-banner">
@@ -30170,6 +30221,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         <div class="sc-name">
           <span class="dot sc-ai-dot {{dc}}"></span>
           <strong>{{s.name}}</strong>
+          {%- if s.get('silence_active') %}<span class="sil-live-badge">🔇 SILENCE</span>{%- endif %}
           {% if s.get('clip_count') %}<span class="clip-badge" title="Saved alert clips">{{s.get('clip_count')}} clips</span>{% endif %}
           <span class="sc-dev">{{s.device_index or ''}}</span>
         </div>
@@ -30238,6 +30290,23 @@ main{padding:18px;max-width:1500px;margin:0 auto}
               {%if s.ai_monitor%}<span class="alert-badge badge-ai">AI</span>{%endif%}
             </span>
           </div>
+          {%- set _sdev2 = (s.device_index or '').lower() %}
+          <div class="sc-row" title="Enable or disable this input on the remote client — queued on next heartbeat (~10 s)">Input
+            <button class="btn bs sc-enabled-btn"
+                    data-site="{{site.site|e}}" data-name="{{s.name|e}}" data-enabled="{{'1' if s.get('enabled', True) else '0'}}"
+                    style="font-size:11px;padding:2px 8px;background:{{'#0f2318' if s.get('enabled', True) else '#2a1010'}};color:{{'var(--ok)' if s.get('enabled', True) else 'var(--mu)'}}">
+              {{'✅ Enabled' if s.get('enabled', True) else '⏸ Disabled'}}
+            </button>
+          </div>
+          {%- if not _sdev2.startswith('dab://') and not _sdev2.startswith('fm://') %}
+          <div class="sc-row" title="Toggle stereo capture — queued to the client on next heartbeat (~10 s)">Stereo
+            <button class="btn bg bs sc-stereo-btn"
+                    data-site="{{site.site|e}}" data-name="{{s.name|e}}" data-stereo="{{'1' if s.get('stereo') else '0'}}"
+                    style="font-size:11px;padding:2px 8px;color:{{'var(--ok)' if s.get('stereo') else 'var(--mu)'}}">
+              {{'🔊 ON' if s.get('stereo') else '🔈 OFF'}}
+            </button>
+          </div>
+          {%- endif %}
           {% if s.device_index and s.device_index.lower().startswith('dab://') %}
           <details class="stats-block">
             <summary class="stats-toggle">DAB stats <span>▼</span></summary>
@@ -30397,13 +30466,6 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         <div style="padding:4px 10px 6px;display:flex;gap:6px;border-top:1px solid var(--bor);background:#080f1f">
           <button class="btn" data-action="hub-remove-input" data-site="{{site.site|e}}" data-name="{{s.name|e}}"
                   style="font-size:10px;padding:2px 8px;background:#2a1010;color:#fca5a5">🗑 Remove</button>
-          {% if s.enabled %}
-          <button class="btn" data-action="hub-disable-input" data-site="{{site.site|e}}" data-name="{{s.name|e}}"
-                  style="font-size:10px;padding:2px 8px;background:#1a2a10;color:#86efac">⏸ Disable</button>
-          {% else %}
-          <button class="btn" data-action="hub-enable-input" data-site="{{site.site|e}}" data-name="{{s.name|e}}"
-                  style="font-size:10px;padding:2px 8px;background:#2a2a10;color:#fde68a">▶ Enable</button>
-          {% endif %}
           <button class="btn hub-retrain-btn" data-site="{{site.site|e}}" data-stream="{{s.name|e}}"
                   style="font-size:10px;padding:2px 8px;background:#1a2a3a;color:#93c5fd">🔄 Retrain AI</button>
           <button class="btn hub-calibrate-btn" data-site="{{site.site|e}}" data-stream="{{s.name|e}}"
@@ -30675,6 +30737,49 @@ document.addEventListener('click',function(e){
   var btn=e.target.closest('.set-expected-btn');
   if(!btn)return;
   setExpectedName(btn.dataset.site,btn.dataset.stream,btn.dataset.field,btn.dataset.value,btn);
+});
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.sc-enabled-btn');
+  if(!btn)return;
+  var site=btn.dataset.site, name=btn.dataset.name;
+  var current=btn.dataset.enabled==='1';
+  var ep=current?'disable':'enable';
+  btn.disabled=true;btn.textContent='⏳';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/input/'+ep,{name:name})
+  .then(function(d){
+    btn.disabled=false;
+    if(d.ok){
+      var newEnabled=!current;
+      btn.dataset.enabled=newEnabled?'1':'0';
+      btn.textContent=newEnabled?'✅ Enabled':'⏸ Disabled';
+      btn.style.background=newEnabled?'#0f2318':'#2a1010';
+      btn.style.color=newEnabled?'var(--ok)':'var(--mu)';
+      btn.title='Queued — takes effect on next heartbeat (~10 s)';
+    } else { alert('Failed: '+(d.error||'unknown error')); }
+  })
+  .catch(function(err){btn.disabled=false;alert('Error: '+(err.message||err));});
+});
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.sc-stereo-btn');
+  if(!btn)return;
+  var site=btn.dataset.site, name=btn.dataset.name;
+  var current=btn.dataset.stereo==='1';
+  var newVal=!current;
+  btn.disabled=true;
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/input/set_field',
+    {name:name, field:'stereo', value:newVal})
+  .then(function(d){
+    btn.disabled=false;
+    if(d.ok){
+      btn.dataset.stereo=newVal?'1':'0';
+      btn.textContent=newVal?'🔊 ON':'🔈 OFF';
+      btn.style.color=newVal?'var(--ok)':'var(--mu)';
+      btn.title='Change takes effect on next heartbeat (~10 s) — restart monitoring on client to apply immediately';
+    } else {
+      alert('Failed: '+(d.error||'unknown error'));
+    }
+  })
+  .catch(function(err){btn.disabled=false;alert('Error: '+(err.message||err));});
 });
 function hubMgrMsg(site,txt,ok){var el=document.querySelector('.hub-mgr-msg[data-site="'+site+'"]');if(!el)return;el.style.display='';el.style.color=ok?'var(--ok)':'var(--al)';el.textContent=txt;if(ok)setTimeout(function(){el.style.display='none';},5000);}
 
@@ -31076,6 +31181,7 @@ function _scByName(name){
 (function(){
   var _peakHold={};  // stream name → {val, ts}
   var PEAK_HOLD_MS=2000;
+  var _liveFails=0;
 
   function _livePoll(){
     fetch('/api/hub/live_levels',{credentials:'same-origin'})
@@ -31116,9 +31222,18 @@ function _scByName(name){
             if(lrTxt)lrTxt.textContent=s.level_dbfs_l.toFixed(1)+' / '+s.level_dbfs_r.toFixed(1);
           }
         }
+        // Silence badge (live)
+        var silBadge=sc.querySelector('.sil-live-badge');
+        if(silBadge)silBadge.style.display=s.silence_active?'':'none';
       });
+      _liveFails=0;
+      var _lpb=document.getElementById('live-pause-badge');if(_lpb)_lpb.style.display='none';
     })
-    .catch(function(){})
+    .catch(function(){
+      _liveFails++;
+      var _lpb=document.getElementById('live-pause-badge');
+      if(_lpb)_lpb.style.display=_liveFails>=3?'':'none';
+    })
     .finally(function(){setTimeout(_livePoll,150);});
   }
   _livePoll();
@@ -31247,20 +31362,51 @@ function _scByName(name){
         slaSp.textContent=s.sla_pct+'%';
         slaSp.style.color=parseFloat(s.sla_pct)>=99?'var(--ok)':'var(--wn)';
       }
+
+      // Enabled toggle
+      var enBtn=sc.querySelector('.sc-enabled-btn');
+      if(enBtn&&!enBtn.disabled){
+        var en=s.enabled!==false;
+        enBtn.dataset.enabled=en?'1':'0';
+        enBtn.textContent=en?'✅ Enabled':'⏸ Disabled';
+        enBtn.style.background=en?'#0f2318':'#2a1010';
+        enBtn.style.color=en?'var(--ok)':'var(--mu)';
+      }
+
+      // Stereo toggle
+      var stBtn=sc.querySelector('.sc-stereo-btn');
+      if(stBtn&&!stBtn.disabled){
+        var st2=!!s.stereo;
+        stBtn.dataset.stereo=st2?'1':'0';
+        stBtn.textContent=st2?'🔊 ON':'🔈 OFF';
+        stBtn.style.color=st2?'var(--ok)':'var(--mu)';
+      }
     });
   }
 
+  var _rdot=document.getElementById('refresh-dot');
+  function _dotState(s){
+    // s: 'live'|'syncing'|'paused'|'error'
+    if(!_rdot)return;
+    _rdot.style.background=s==='error'?'var(--al)':s==='paused'?'var(--wn)':'var(--ok)';
+    _rdot.style.animationDuration=s==='syncing'?'0.4s':'2s';
+    if(label){
+      label.style.opacity='0.6';
+      label.textContent=s==='syncing'?'Syncing\u2026':s==='paused'?'Paused (audio)':s==='error'?'\u26A0 Sync failed':'Live';
+    }
+  }
   function doUpdate(){
+    _dotState('syncing');
     fetch(_dataUrl,{credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
       if(d.ok)siteDataUpdate(d.site);
       countdown=10;
-      if(label)label.textContent='Updating in 10s';
+      _dotState('live');
     })
     .catch(function(){
       countdown=10;
-      if(label)label.textContent='Update failed — retrying';
+      _dotState('error');
     });
   }
 
@@ -31268,8 +31414,7 @@ function _scByName(name){
     countdown--;
     var _hmpAu=document.getElementById('hmp-audio');
     var anyPlaying=_hmpAu&&!_hmpAu.paused;
-    if(anyPlaying){if(label)label.textContent='Paused (audio playing)';countdown=0;return;}
-    if(label)label.textContent='Updating in '+countdown+'s';
+    if(anyPlaying){_dotState('paused');countdown=0;return;}
     if(countdown<=0){countdown=10;doUpdate();}
   }
   setInterval(tick,1000);
