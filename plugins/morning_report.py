@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.1.0",
+    "version":  "1.2.0",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -98,51 +98,97 @@ def _load_sla() -> dict:
 
 # ── Metrics DB helpers ─────────────────────────────────────────────────────────
 
-def _query_chain_faults(day_start: float, day_end: float) -> list:
+def _chain_id_to_name_map(monitor) -> dict:
+    """Return {chain_id: chain_name} from the live SignalScope config.
+    Falls back to chain_id itself when no match is found."""
+    mapping = {}
+    try:
+        if monitor is not None:
+            for c in (monitor.app_cfg.signal_chains or []):
+                cid = c.get("id", "")
+                name = c.get("name", cid)
+                if cid:
+                    mapping[cid] = name
+    except Exception:
+        pass
+    return mapping
+
+
+def _normalise_fault_row(row: dict, id_map: dict) -> dict:
+    """Translate DB column names to the field names used by the report.
+
+    The chain_fault_log table uses:
+      chain_id, ts_start, ts_recovered, fault_node_label, fault_site
+    The report code expects:
+      chain_name, fault_ts, recovery_ts, duration_s, fault_node, site
+    """
+    cid  = row.get("chain_id", "")
+    ts_s = row.get("ts_start") or 0
+    ts_r = row.get("ts_recovered")
+    dur  = (ts_r - ts_s) if (ts_r and ts_s and ts_r > ts_s) else 0.0
+    return {
+        "chain_name":   id_map.get(cid, cid),   # UUID → readable name, fallback UUID
+        "fault_ts":     ts_s,
+        "recovery_ts":  ts_r,
+        "duration_s":   dur,
+        "fault_node":   row.get("fault_node_label", ""),
+        "site":         row.get("fault_site", ""),
+    }
+
+
+def _query_chain_faults(day_start: float, day_end: float, id_map: dict = None) -> list:
     """Return chain_fault_log rows for the given epoch window."""
+    if id_map is None:
+        id_map = {}
     if not os.path.exists(_METRICS_DB):
         return []
     try:
         with sqlite3.connect(_METRICS_DB, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.execute(
-                """SELECT chain_name, fault_ts, recovery_ts, duration_s, fault_node, site
+                """SELECT chain_id, ts_start, ts_recovered, fault_node_label, fault_site
                    FROM chain_fault_log
-                   WHERE fault_ts >= ? AND fault_ts < ?
-                   ORDER BY fault_ts""",
+                   WHERE ts_start >= ? AND ts_start < ?
+                   ORDER BY ts_start""",
                 (day_start, day_end)
             )
-            return [dict(r) for r in cur.fetchall()]
+            return [_normalise_fault_row(dict(r), id_map) for r in cur.fetchall()]
     except Exception:
         return []
 
 
-def _query_chain_faults_range(start: float, end: float) -> list:
+def _query_chain_faults_range(start: float, end: float, id_map: dict = None) -> list:
+    if id_map is None:
+        id_map = {}
     if not os.path.exists(_METRICS_DB):
         return []
     try:
         with sqlite3.connect(_METRICS_DB, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.execute(
-                """SELECT chain_name, fault_ts, recovery_ts, duration_s, fault_node, site
+                """SELECT chain_id, ts_start, ts_recovered, fault_node_label, fault_site
                    FROM chain_fault_log
-                   WHERE fault_ts >= ? AND fault_ts < ?
-                   ORDER BY fault_ts""",
+                   WHERE ts_start >= ? AND ts_start < ?
+                   ORDER BY ts_start""",
                 (start, end)
             )
-            return [dict(r) for r in cur.fetchall()]
+            return [_normalise_fault_row(dict(r), id_map) for r in cur.fetchall()]
     except Exception:
         return []
 
 
-def _query_all_chains() -> list:
-    """Return all distinct chain_names from the fault log."""
+def _query_all_chains(id_map: dict = None) -> list:
+    """Return all distinct chain names (resolved via id_map) from the fault log."""
+    if id_map is None:
+        id_map = {}
     if not os.path.exists(_METRICS_DB):
         return []
     try:
         with sqlite3.connect(_METRICS_DB, timeout=10) as conn:
-            cur = conn.execute("SELECT DISTINCT chain_name FROM chain_fault_log ORDER BY chain_name")
-            return [r[0] for r in cur.fetchall()]
+            cur = conn.execute(
+                "SELECT DISTINCT chain_id FROM chain_fault_log ORDER BY chain_id"
+            )
+            return [id_map.get(r[0], r[0]) for r in cur.fetchall()]
     except Exception:
         return []
 
@@ -161,6 +207,9 @@ def _generate_report(hub_server, monitor) -> dict:
     # Load data sources
     all_events = _load_alert_events(days=30)
     sla_data   = _load_sla()
+
+    # Build chain_id → chain_name map for resolving UUIDs from the fault log DB
+    _id_map = _chain_id_to_name_map(monitor)
 
     # Yesterday's events only (from alert_log)
     y_events = [e for e in all_events if ystart_e <= e.get("_ts_epoch", 0) <= yend_e]
@@ -182,11 +231,11 @@ def _generate_report(hub_server, monitor) -> dict:
     )]
 
     # Chain fault log from SQLite for yesterday
-    chain_faults_y = _query_chain_faults(ystart_e, yend_e)
+    chain_faults_y = _query_chain_faults(ystart_e, yend_e, _id_map)
     # Last 30 days chain faults (for averages)
-    chain_faults_30 = _query_chain_faults_range(time.time() - 30 * 86400, ystart_e)
+    chain_faults_30 = _query_chain_faults_range(time.time() - 30 * 86400, ystart_e, _id_map)
 
-    all_chains_db = _query_all_chains()
+    all_chains_db = _query_all_chains(_id_map)
 
     # ── Live chain names from monitor config (catches chains with no fault history) ──
     live_chain_names = set()
@@ -438,7 +487,7 @@ def _generate_report(hub_server, monitor) -> dict:
                 d = yesterday - datetime.timedelta(days=i)
                 d_start = datetime.datetime.combine(d, datetime.time(0)).timestamp()
                 d_end   = d_start + 86400
-                d_faults = _query_chain_faults(d_start, d_end)
+                d_faults = _query_chain_faults(d_start, d_end, _id_map)
                 for row in d_faults:
                     if row["chain_name"] == chain:
                         fh = datetime.datetime.fromtimestamp(row["fault_ts"]).hour
