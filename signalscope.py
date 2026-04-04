@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.162"
+BUILD                  = "SignalScope-3.4.163"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -24231,6 +24231,19 @@ def hub_site_replica(site_name):
                                   site_live_view=site_live_view,
                                   is_admin=_is_admin())
 
+@app.get("/api/hub/site/<path:site_name>/data")
+@login_required
+def hub_site_data_api(site_name):
+    """JSON data endpoint polled by the hub site replica page for live updates."""
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"ok": False, "error": "Not a hub"}), 404
+    raw_site = hub_server.get_site(site_name)
+    if not raw_site:
+        return jsonify({"ok": False, "error": "Site not found"}), 404
+    site = _hub_prepare_site(raw_site)
+    return jsonify({"ok": True, "site": site})
+
 @app.get("/hub/site/<path:site_name>/stream/<int:sidx>/live")
 @login_required
 def hub_proxy_live(site_name, sidx):
@@ -30046,11 +30059,11 @@ main{padding:18px;max-width:1500px;margin:0 auto}
   </div>
   {% endif %}
 
-  <div class="site-card site-{{'ok' if site.site_status=='OK' else 'warn' if site.site_status=='WARN' else 'alert' if site.site_status=='ALERT' else 'offline'}}">
+  <div id="ss-site-card" class="site-card site-{{'ok' if site.site_status=='OK' else 'warn' if site.site_status=='WARN' else 'alert' if site.site_status=='ALERT' else 'offline'}}">
     <div class="site-header">
-      <span class="dot {{'dok' if site.site_status=='OK' else 'dwn' if site.site_status=='WARN' else 'dal' if site.site_status=='ALERT' else 'dot-off'}}"></span>
+      <span id="ss-site-dot" class="dot {{'dok' if site.site_status=='OK' else 'dwn' if site.site_status=='WARN' else 'dal' if site.site_status=='ALERT' else 'dot-off'}}"></span>
       <span class="site-name">{{site.site}}</span>
-      <span class="badge">{{site.site_status}}</span>
+      <span id="ss-site-status" class="badge">{{site.site_status}}</span>
       {% if site.running %}<span class="badge" style="background:#1e2a1e;color:#86efac">▶ Running</span>{% else %}<span class="badge" style="background:#2a2a1e;color:var(--mu)">⏸ Stopped</span>{% endif %}
       {% if site.online %}
       {% if site.running %}
@@ -30094,23 +30107,23 @@ main{padding:18px;max-width:1500px;margin:0 auto}
               title="Push update to this site">⬆ Update</button>
       {% endif %}
       {% endif %}
-      <span class="site-meta">Last seen: {{ago(site.age_s)}}</span>
-      {% if site.latency_ms is not none %}<span class="site-meta">Latency: {{site.latency_ms}} ms</span>{% endif %}
+      <span id="ss-last-seen" class="site-meta">Last seen: {{ago(site.age_s)}}</span>
+      <span id="ss-latency" class="site-meta"{% if site.latency_ms is none %} style="display:none"{% endif %}>Latency: {{site.latency_ms}} ms</span>
       {% if site.health_pct is defined %}<span class="site-meta" style="color:{{'var(--ok)' if site.health_pct>=99 else ('var(--wn)' if site.health_pct>=95 else 'var(--al)')}}">⚡ {{site.health_pct}}%</span>{% endif %}
     </div>
     <div style="padding:8px 16px;border-bottom:1px solid var(--bor);display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:linear-gradient(180deg,#12305c,#10284f)">
       <span class="sum-pill">🎚 {{site.streams|length}} streams</span>
-      <span class="sum-pill" style="color:var(--al)">🚨 {{site.alert_count}} alert</span>
-      <span class="sum-pill" style="color:var(--wn)">⚠ {{site.warn_count}} warn</span>
-      <span class="sum-pill" style="color:var(--ok)">✅ {{site.ok_count}} ok</span>
+      <span id="ss-alert-ct" class="sum-pill" style="color:var(--al)">🚨 {{site.alert_count}} alert</span>
+      <span id="ss-warn-ct" class="sum-pill" style="color:var(--wn)">⚠ {{site.warn_count}} warn</span>
+      <span id="ss-ok-ct" class="sum-pill" style="color:var(--ok)">✅ {{site.ok_count}} ok</span>
       {% set _sys = site.get('system') or {} %}
       {% if _sys %}
       {% set _dpct = _sys.get('disk_pct', 0)|float %}
-      <span class="sum-pill" style="color:{{'#ef4444' if _dpct>=90 else ('#f59e0b' if _dpct>=70 else 'var(--ok)')}}">💾 {{_sys.get('disk_free_gb','?')}}GB free</span>
-      {% if _sys.get('cpu_pct') is not none %}<span class="sum-pill" style="color:var(--mu)">CPU: {{_sys.get('cpu_pct')}}%</span>{% endif %}
-      {% if _sys.get('ram_pct') is not none %}<span class="sum-pill" style="color:var(--mu)">RAM: {{_sys.get('ram_pct')}}%</span>{% endif %}
+      <span id="ss-disk-stat" class="sum-pill" style="color:{{'#ef4444' if _dpct>=90 else ('#f59e0b' if _dpct>=70 else 'var(--ok)')}}">💾 {{_sys.get('disk_free_gb','?')}}GB free</span>
+      {% if _sys.get('cpu_pct') is not none %}<span id="ss-cpu-stat" class="sum-pill" style="color:var(--mu)">CPU: {{_sys.get('cpu_pct')}}%</span>{% endif %}
+      {% if _sys.get('ram_pct') is not none %}<span id="ss-ram-stat" class="sum-pill" style="color:var(--mu)">RAM: {{_sys.get('ram_pct')}}%</span>{% endif %}
       {% set _upt = _sys.get('proc_uptime_s', 0)|int %}
-      <span class="sum-pill" style="color:var(--mu)">⏱ {{(_upt//3600)}}h {{((_upt%3600)//60)}}m</span>
+      <span id="ss-uptime-stat" class="sum-pill" style="color:var(--mu)">⏱ {{(_upt//3600)}}h {{((_upt%3600)//60)}}m</span>
       {% endif %}
       <span class="sum-pill" style="margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--mu)">
         📡 Relay
@@ -30147,9 +30160,9 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% set ph = s.ai_phase or '' %}
       {% set dc = 'dok' %}
       {% if '[ALERT]' in ai %}{% set dc='dal' %}{% elif '[WARN]' in ai %}{% set dc='dwn' %}{% elif ph=='learning' %}{% set dc='dlr' %}{% endif %}
-      <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}">
+      <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}" data-sn="{{s.name|e}}">
         <div class="sc-name">
-          <span class="dot {{dc}}"></span>
+          <span class="dot sc-ai-dot {{dc}}"></span>
           <strong>{{s.name}}</strong>
           {% if s.get('clip_count') %}<span class="clip-badge" title="Saved alert clips">{{s.get('clip_count')}} clips</span>{% endif %}
           <span class="sc-dev">{{s.device_index or ''}}</span>
@@ -30169,18 +30182,18 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         {% if _ll is not none and _lr is not none %}
         {% set _llpct = [(_ll+80)/80*100, 100]|min|max(0)|int %}
         {% set _lrpct = [(_lr+80)/80*100, 100]|min|max(0)|int %}
-        <div class="lbar-wrap" style="gap:4px;padding-top:0">
+        <div class="lbar-wrap sc-lr-bar" style="gap:4px;padding-top:0">
           <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">L</span>
           <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" style="width:{{_llpct}}%;background:{{lcol}}"></div></div></div>
           <span style="font-size:9px;color:var(--mu);width:10px;flex-shrink:0;text-align:right">R</span>
           <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" style="width:{{_lrpct}}%;background:{{lcol}}"></div></div></div>
-          <span style="font-size:9px;color:var(--mu);width:46px;text-align:right;flex-shrink:0">{{_ll|round(1)}} / {{_lr|round(1)}}</span>
+          <span class="sc-lr-txt" style="font-size:9px;color:var(--mu);width:46px;text-align:right;flex-shrink:0">{{_ll|round(1)}} / {{_lr|round(1)}}</span>
         </div>
         {% endif %}
         {% endif %}
         {% if s.lufs_m is not none and s.lufs_m > -69 %}
         {% set tpcol = 'var(--al)' if s.lufs_tp > -1 else ('var(--wn)' if s.lufs_tp > -3 else 'var(--mu)') %}
-        <div class="lbar-wrap" style="padding-bottom:2px">
+        <div class="lbar-wrap sc-lufs-bar" style="padding-bottom:2px">
           <span style="font-size:11px;color:var(--mu);width:28px">LUFS</span>
           <span style="font-size:11px;font-family:monospace;color:var(--tx)">
             M&nbsp;<b>{{s.lufs_m}}</b>&nbsp;
@@ -30210,7 +30223,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           <div class="sc-row" style="display:none">RTP Jitter <span class="sc-jitter">0 ms</span></div>
           {% endif %}
           {% endif %}
-          {% if s.sla_pct is not none %}<div class="sc-row">SLA <span style="color:{{'var(--ok)' if s.sla_pct>=99 else 'var(--wn)'}}">{{s.sla_pct}}%</span></div>{% endif %}
+          {% if s.sla_pct is not none %}<div class="sc-row">SLA <span class="sc-sla-val" style="color:{{'var(--ok)' if s.sla_pct>=99 else 'var(--wn)'}}">{{s.sla_pct}}%</span></div>{% endif %}
           <div class="sc-row">Alerts
             <span style="font-size:12px">
               {%if s.alert_on_silence%}<span class="alert-badge badge-silence">SIL</span>{%endif%}
@@ -31042,44 +31055,189 @@ document.addEventListener('change', function(ev){
   var a = sel.parentElement.querySelector('a[href*="/clip?seconds="]');
   if(a){ a.href = a.href.replace(/seconds=\d+/, 'seconds=' + encodeURIComponent(sel.value)); }
 });
-// ── Auto-refresh: reload the page every 15s unless something needs keeping ───
+// ── Live data update (AJAX — no page reload) ─────────────────────────────────
 (function(){
-  var countdown = 15;
+  var _site = {{site.site|tojson}};
+  var _dataUrl = '/api/hub/site/' + encodeURIComponent(_site) + '/data';
+  var countdown = 10;
   var label = document.getElementById('refresh-countdown');
+
+  function _ssAgo(s){
+    s=Math.floor(s||0);
+    if(s<5)return'just now';
+    if(s<60)return s+'s ago';
+    return Math.floor(s/60)+'m ago';
+  }
+  function _tx(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}
+  function _scByName(name){
+    var all=document.querySelectorAll('.sc[data-sn]'),c=null;
+    all.forEach(function(el){if(el.dataset.sn===name)c=el;});
+    return c;
+  }
+
+  function siteDataUpdate(site){
+    // ── Site card / dot / status ─────────────────────────────────────────────
+    var ss=site.site_status||'offline';
+    var card=document.getElementById('ss-site-card');
+    if(card)card.className='site-card site-'+(ss==='OK'?'ok':ss==='WARN'?'warn':ss==='ALERT'?'alert':'offline');
+    var dot=document.getElementById('ss-site-dot');
+    if(dot)dot.className='dot '+(ss==='OK'?'dok':ss==='WARN'?'dwn':ss==='ALERT'?'dal':'dot-off');
+    _tx('ss-site-status',ss);
+
+    // ── Counts ───────────────────────────────────────────────────────────────
+    _tx('ss-alert-ct','\uD83D\uDEA8 '+(site.alert_count||0)+' alert');
+    _tx('ss-warn-ct','\u26A0 '+(site.warn_count||0)+' warn');
+    _tx('ss-ok-ct','\u2705 '+(site.ok_count||0)+' ok');
+
+    // ── System stats ─────────────────────────────────────────────────────────
+    var sys=site.system||{};
+    var dsk=document.getElementById('ss-disk-stat');
+    if(dsk&&sys.disk_free_gb!==undefined){
+      var dp=parseFloat(sys.disk_pct||0);
+      dsk.style.color=dp>=90?'#ef4444':dp>=70?'#f59e0b':'var(--ok)';
+      dsk.textContent='\uD83D\uDCBE '+(sys.disk_free_gb||'?')+'GB free';
+    }
+    var cpuEl=document.getElementById('ss-cpu-stat');
+    if(cpuEl&&sys.cpu_pct!=null)cpuEl.textContent='CPU: '+sys.cpu_pct+'%';
+    var ramEl=document.getElementById('ss-ram-stat');
+    if(ramEl&&sys.ram_pct!=null)ramEl.textContent='RAM: '+sys.ram_pct+'%';
+    var uptEl=document.getElementById('ss-uptime-stat');
+    if(uptEl&&sys.proc_uptime_s!=null){
+      var u=parseInt(sys.proc_uptime_s||0);
+      uptEl.textContent='\u23F1 '+Math.floor(u/3600)+'h '+Math.floor((u%3600)/60)+'m';
+    }
+
+    // ── Last seen / latency / offline banner ─────────────────────────────────
+    var lsEl=document.getElementById('ss-last-seen');
+    if(lsEl)lsEl.textContent='Last seen: '+_ssAgo(site.age_s);
+    var latEl=document.getElementById('ss-latency');
+    if(latEl){
+      if(site.latency_ms!=null){latEl.textContent='Latency: '+site.latency_ms+' ms';latEl.style.display='';}
+      else latEl.style.display='none';
+    }
+    var offBanner=document.querySelector('.offline-banner');
+    if(offBanner){
+      offBanner.style.display=site.online?'none':'';
+      if(!site.online)offBanner.textContent='\u26A0 No heartbeat received for '+site.age_s+'s \u2014 site may be down';
+    }
+
+    // ── Per-stream ────────────────────────────────────────────────────────────
+    (site.streams||[]).forEach(function(s){
+      var sc=_scByName(s.name);
+      if(!sc)return;
+
+      var ai=s.ai_status||'',ph=s.ai_phase||'';
+      // Card class
+      sc.className='sc'+(ai.indexOf('[ALERT]')>=0?' stats-alert':ai.indexOf('[WARN]')>=0?' stats-warn':'');
+      sc.dataset.sn=s.name; // keep attribute after class reset
+
+      // AI dot
+      var aiDot=sc.querySelector('.sc-ai-dot');
+      if(aiDot)aiDot.className='dot sc-ai-dot '+(ai.indexOf('[ALERT]')>=0?'dal':ai.indexOf('[WARN]')>=0?'dwn':ph==='learning'?'dlr':'dok');
+
+      // Main level bar
+      var lev=parseFloat(s.level_dbfs);
+      if(!isNaN(lev)){
+        var lpct=Math.min(100,Math.max(0,(lev+80)/80*100));
+        var lcol=lev<=-55?'var(--al)':lev<=-20?'var(--wn)':'var(--ok)';
+        var fill=sc.querySelector('.lbar-outer .lbar-fill');
+        var peak=sc.querySelector('.lbar-peak');
+        var val=sc.querySelector('.lbar-val');
+        if(fill){fill.style.width=lpct+'%';fill.style.background=lcol;}
+        if(peak)peak.style.left=lpct+'%';
+        if(val){val.textContent=lev.toFixed(1)+' dB';val.style.color=lcol;}
+      }
+
+      // L/R bars
+      var lrWrap=sc.querySelector('.sc-lr-bar');
+      if(lrWrap){
+        var ll=s.level_dbfs_l,lr=s.level_dbfs_r;
+        if(ll!=null&&lr!=null){
+          lrWrap.style.display='';
+          var lcol2=parseFloat(s.level_dbfs)<=-55?'var(--al)':parseFloat(s.level_dbfs)<=-20?'var(--wn)':'var(--ok)';
+          var fills=lrWrap.querySelectorAll('.lbar-fill');
+          if(fills[0]){fills[0].style.width=Math.min(100,Math.max(0,(parseFloat(ll)+80)/80*100))+'%';fills[0].style.background=lcol2;}
+          if(fills[1]){fills[1].style.width=Math.min(100,Math.max(0,(parseFloat(lr)+80)/80*100))+'%';fills[1].style.background=lcol2;}
+          var lrTxt=lrWrap.querySelector('.sc-lr-txt');
+          if(lrTxt)lrTxt.textContent=parseFloat(ll).toFixed(1)+' / '+parseFloat(lr).toFixed(1);
+        }else{lrWrap.style.display='none';}
+      }
+
+      // LUFS
+      var lufsWrap=sc.querySelector('.sc-lufs-bar');
+      if(lufsWrap){
+        var lm=s.lufs_m;
+        if(lm!=null&&parseFloat(lm)>-69){
+          lufsWrap.style.display='';
+          var bs=lufsWrap.querySelectorAll('b');
+          if(bs[0])bs[0].textContent=s.lufs_m;
+          if(bs[1])bs[1].textContent=s.lufs_s;
+          if(bs[2])bs[2].textContent=s.lufs_i;
+          if(bs[3]){bs[3].textContent=s.lufs_tp;var tp=parseFloat(s.lufs_tp);bs[3].style.color=tp>-1?'var(--al)':tp>-3?'var(--wn)':'var(--mu)';}
+        }else{lufsWrap.style.display='none';}
+      }
+
+      // AI status bar
+      var aiDiv=sc.querySelector('.aib');
+      if(aiDiv){
+        var ac2=ph==='learning'?'alr':ai.indexOf('[ALERT]')>=0?'aal':ai.indexOf('[WARN]')>=0?'awn':ai.indexOf('[OK]')>=0?'aok':'aid';
+        aiDiv.className='aib '+ac2;
+        aiDiv.textContent='\uD83E\uDD16 '+(ai||'Waiting\u2026');
+      }
+
+      // RTP loss
+      var rtpSp=sc.querySelector('.sc-rtp');
+      if(rtpSp){
+        var rtp=parseFloat(s.rtp_loss_pct)||0;
+        var rcl=rtp>=2?'rtp-al':rtp>=0.5?'rtp-wn':'rtp-ok';
+        rtpSp.className='sc-rtp '+rcl;
+        rtpSp.innerHTML=rtp+'% <span style="color:var(--mu);font-size:11px">'+(s.rtp_total||0)+' pkts</span>';
+      }
+
+      // RTP jitter
+      var jitSp=sc.querySelector('.sc-jitter');
+      if(jitSp){
+        var jit=parseFloat(s.rtp_jitter_ms||0);
+        jitSp.textContent=jit+' ms';
+        jitSp.style.color=jit>5?'var(--wn)':'var(--ok)';
+        var jitRow=jitSp.closest('.sc-row');
+        if(jitRow)jitRow.style.display=jit>0?'':'none';
+      }
+
+      // SLA
+      var slaSp=sc.querySelector('.sc-sla-val');
+      if(slaSp&&s.sla_pct!=null){
+        slaSp.textContent=s.sla_pct+'%';
+        slaSp.style.color=parseFloat(s.sla_pct)>=99?'var(--ok)':'var(--wn)';
+      }
+    });
+  }
+
+  function doUpdate(){
+    fetch(_dataUrl,{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok)siteDataUpdate(d.site);
+      countdown=10;
+      if(label)label.textContent='Updating in 10s';
+    })
+    .catch(function(){
+      countdown=10;
+      if(label)label.textContent='Update failed — retrying';
+    });
+  }
+
   function tick(){
     countdown--;
-    if(label) label.textContent = 'Refreshing in ' + countdown + 's';
-    if(countdown <= 0){
-      // Check the shared mini-player (per-card audio elements removed in 3.4.155)
-      var _hmpAu = document.getElementById('hmp-audio');
-      var anyPlaying = _hmpAu && !_hmpAu.paused;
-      // Pause if a source management panel or modal is open
-      var panelOpen = false;
-      document.querySelectorAll('[id^="hub-mgr-"]').forEach(function(p){
-        if(p.style.display && p.style.display !== 'none') panelOpen = true;
-      });
-      var pingModal=document.getElementById('hub-ping-modal');
-      if(pingModal && pingModal.style.display && pingModal.style.display !== 'none') panelOpen=true;
-      // Pause if the user has typed something into a management input
-      var inputDirty = false;
-      document.querySelectorAll('.hub-mgr-name,.hub-mgr-dev,.hub-mgr-fm-freq,.hub-mgr-dab-serial').forEach(function(i){
-        if(i.value && i.value.trim()) inputDirty = true;
-      });
-      // Pause if any stats accordion (DAB/FM details) is open
-      var detailsOpen = false;
-      document.querySelectorAll('details').forEach(function(d){ if(d.open) detailsOpen = true; });
-      if(!anyPlaying && !panelOpen && !inputDirty && !detailsOpen){
-        location.reload();
-      } else {
-        countdown = 15;
-        if(label){
-          if(anyPlaying) label.textContent = 'Paused (audio playing)';
-          else label.textContent = 'Paused (panel open)';
-        }
-      }
-    }
+    var _hmpAu=document.getElementById('hmp-audio');
+    var anyPlaying=_hmpAu&&!_hmpAu.paused;
+    if(anyPlaying){if(label)label.textContent='Paused (audio playing)';countdown=0;return;}
+    if(label)label.textContent='Updating in '+countdown+'s';
+    if(countdown<=0){countdown=10;doUpdate();}
   }
-  setInterval(tick, 1000);
+  setInterval(tick,1000);
+  // Immediate first update after 2s to populate fresh data fast
+  setTimeout(doUpdate,2000);
 })();
 // ── Direct access probe: check if client URL is reachable from this browser ──
 (function(){

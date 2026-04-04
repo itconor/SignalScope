@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.163] - 2026-04-04
+
+### Improved
+- **Hub site replica page — live AJAX update** — replaced `location.reload()` every 15 s with a fetch-based in-place update. Stream level bars, L/R bars, LUFS, AI status, RTP loss/jitter, SLA, site status dot/badge, alert/warn/ok counts, system stats (disk/CPU/RAM/uptime), and "Last seen" all update without a page reload. Scroll position, open accordions (DAB/FM stats), audio playback, and open source-management panels are no longer disrupted. New `/api/hub/site/<name>/data` JSON endpoint powers the updates (10 s interval; pauses while audio is playing).
+
+---
+
 ## [3.4.162] - 2026-04-04
 
 ### Fixed
