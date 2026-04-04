@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.163"
+BUILD                  = "SignalScope-3.4.164"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -31055,9 +31055,68 @@ document.addEventListener('change', function(ev){
   var a = sel.parentElement.querySelector('a[href*="/clip?seconds="]');
   if(a){ a.href = a.href.replace(/seconds=\d+/, 'seconds=' + encodeURIComponent(sel.value)); }
 });
-// ── Live data update (AJAX — no page reload) ─────────────────────────────────
+// ── Shared helpers ────────────────────────────────────────────────────────────
+var _site = {{site.site|tojson}};
+function _scByName(name){
+  var all=document.querySelectorAll('.sc[data-sn]'),c=null;
+  all.forEach(function(el){if(el.dataset.sn===name)c=el;});
+  return c;
+}
+
+// ── 150 ms live level bars (same source as hub dashboard) ─────────────────────
 (function(){
-  var _site = {{site.site|tojson}};
+  var _peakHold={};  // stream name → {val, ts}
+  var PEAK_HOLD_MS=2000;
+
+  function _livePoll(){
+    fetch('/api/hub/live_levels',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(data){
+      if(!data)return;
+      var streams=data[_site]||[];
+      streams.forEach(function(s){
+        if(s.level_dbfs==null)return;
+        var sc=_scByName(s.name);
+        if(!sc)return;
+        var lev=s.level_dbfs;
+        var pct=Math.max(0,Math.min(100,(lev+80)/80*100));
+        var col=lev<=-55?'var(--al)':lev<=-20?'var(--wn)':'var(--ok)';
+        // Level fill
+        var fill=sc.querySelector('.lbar-outer .lbar-fill');
+        if(fill){fill.style.width=pct.toFixed(1)+'%';fill.style.background=col;}
+        // Level value
+        var val=sc.querySelector('.lbar-val');
+        if(val){val.textContent=lev.toFixed(1)+' dB';val.style.color=col;}
+        // Peak hold
+        var now=Date.now();
+        var ph=_peakHold[s.name];
+        if(!ph||lev>=ph.val||now-ph.ts>PEAK_HOLD_MS){_peakHold[s.name]={val:lev,ts:now};}
+        var peak=sc.querySelector('.lbar-peak');
+        if(peak){var pp=Math.max(0,Math.min(100,(_peakHold[s.name].val+80)/80*100));peak.style.left=pp.toFixed(1)+'%';}
+        // L/R bars
+        var lrWrap=sc.querySelector('.sc-lr-bar');
+        if(lrWrap){
+          if(s.level_dbfs_l!=null&&s.level_dbfs_r!=null){
+            lrWrap.style.display='';
+            var fills=lrWrap.querySelectorAll('.lbar-fill');
+            var lp=Math.max(0,Math.min(100,(s.level_dbfs_l+80)/80*100));
+            var rp=Math.max(0,Math.min(100,(s.level_dbfs_r+80)/80*100));
+            if(fills[0]){fills[0].style.width=lp.toFixed(1)+'%';fills[0].style.background=col;}
+            if(fills[1]){fills[1].style.width=rp.toFixed(1)+'%';fills[1].style.background=col;}
+            var lrTxt=lrWrap.querySelector('.sc-lr-txt');
+            if(lrTxt)lrTxt.textContent=s.level_dbfs_l.toFixed(1)+' / '+s.level_dbfs_r.toFixed(1);
+          }
+        }
+      });
+    })
+    .catch(function(){})
+    .finally(function(){setTimeout(_livePoll,150);});
+  }
+  _livePoll();
+})();
+
+// ── 10 s metadata update (AJAX — no page reload) ──────────────────────────────
+(function(){
   var _dataUrl = '/api/hub/site/' + encodeURIComponent(_site) + '/data';
   var countdown = 10;
   var label = document.getElementById('refresh-countdown');
@@ -31069,11 +31128,6 @@ document.addEventListener('change', function(ev){
     return Math.floor(s/60)+'m ago';
   }
   function _tx(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}
-  function _scByName(name){
-    var all=document.querySelectorAll('.sc[data-sn]'),c=null;
-    all.forEach(function(el){if(el.dataset.sn===name)c=el;});
-    return c;
-  }
 
   function siteDataUpdate(site){
     // ── Site card / dot / status ─────────────────────────────────────────────
@@ -31135,33 +31189,7 @@ document.addEventListener('change', function(ev){
       var aiDot=sc.querySelector('.sc-ai-dot');
       if(aiDot)aiDot.className='dot sc-ai-dot '+(ai.indexOf('[ALERT]')>=0?'dal':ai.indexOf('[WARN]')>=0?'dwn':ph==='learning'?'dlr':'dok');
 
-      // Main level bar
-      var lev=parseFloat(s.level_dbfs);
-      if(!isNaN(lev)){
-        var lpct=Math.min(100,Math.max(0,(lev+80)/80*100));
-        var lcol=lev<=-55?'var(--al)':lev<=-20?'var(--wn)':'var(--ok)';
-        var fill=sc.querySelector('.lbar-outer .lbar-fill');
-        var peak=sc.querySelector('.lbar-peak');
-        var val=sc.querySelector('.lbar-val');
-        if(fill){fill.style.width=lpct+'%';fill.style.background=lcol;}
-        if(peak)peak.style.left=lpct+'%';
-        if(val){val.textContent=lev.toFixed(1)+' dB';val.style.color=lcol;}
-      }
-
-      // L/R bars
-      var lrWrap=sc.querySelector('.sc-lr-bar');
-      if(lrWrap){
-        var ll=s.level_dbfs_l,lr=s.level_dbfs_r;
-        if(ll!=null&&lr!=null){
-          lrWrap.style.display='';
-          var lcol2=parseFloat(s.level_dbfs)<=-55?'var(--al)':parseFloat(s.level_dbfs)<=-20?'var(--wn)':'var(--ok)';
-          var fills=lrWrap.querySelectorAll('.lbar-fill');
-          if(fills[0]){fills[0].style.width=Math.min(100,Math.max(0,(parseFloat(ll)+80)/80*100))+'%';fills[0].style.background=lcol2;}
-          if(fills[1]){fills[1].style.width=Math.min(100,Math.max(0,(parseFloat(lr)+80)/80*100))+'%';fills[1].style.background=lcol2;}
-          var lrTxt=lrWrap.querySelector('.sc-lr-txt');
-          if(lrTxt)lrTxt.textContent=parseFloat(ll).toFixed(1)+' / '+parseFloat(lr).toFixed(1);
-        }else{lrWrap.style.display='none';}
-      }
+      // Level bars driven by 150ms live poller — skip here
 
       // LUFS
       var lufsWrap=sc.querySelector('.sc-lufs-bar');

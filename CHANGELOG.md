@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.164] - 2026-04-04
+
+### Improved
+- **Hub site replica — live level bars at 150 ms** — level bars on the hub site replica page now update at the same 150 ms cadence as the main hub dashboard, using `/api/hub/live_levels`. Includes peak-hold decay and L/R stereo bars. The 10 s metadata poll still handles AI status, RTP, SLA, counts, and system stats.
+
+---
+
 ## [3.4.163] - 2026-04-04
 
 ### Improved
