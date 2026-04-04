@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.6"
+BUILD                  = "SignalScope-3.5.7"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -14997,12 +14997,22 @@ def _make_isolated_app(real_app, plugin_name: str):
     a 500 JSON response instead of crashing the Waitress worker thread."""
     import functools, traceback as _tb
 
+    # Cache wrappers by original function id so that stacked route decorators
+    # (e.g. @app.post("/a") / @app.post("/b") on the same def) always produce
+    # the SAME wrapper object.  Without this, each decorator call creates a new
+    # closure; Flask sees two different view_func objects for the same endpoint
+    # name and raises AssertionError, silently preventing the plugin from loading.
+    _wrap_cache: dict = {}
+
     class _PluginAppProxy:
         """Minimal Flask-app proxy that intercepts add_url_rule."""
         def __getattr__(self, name):
             return getattr(real_app, name)
 
         def _wrap_view(self, view_fn):
+            fn_id = id(view_fn)
+            if fn_id in _wrap_cache:
+                return _wrap_cache[fn_id]
             @functools.wraps(view_fn)
             def _safe(*args, **kwargs):
                 try:
@@ -15019,6 +15029,7 @@ def _make_isolated_app(real_app, plugin_name: str):
                     monitor.log(msg)
                     return jsonify({"ok": False, "error": "Plugin internal error",
                                     "plugin": plugin_name}), 500
+            _wrap_cache[fn_id] = _safe
             return _safe
 
         def add_url_rule(self, rule, endpoint=None, view_func=None, **opts):

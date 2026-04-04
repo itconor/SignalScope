@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.7] - 2026-04-04
+
+### Fixed
+- **PTP Clock (and any plugin using stacked route decorators) always shows "Restart needed"** — `_make_isolated_app._wrap_view` created a new closure on every call. When a plugin used stacked route decorators on the same function (e.g. `@app.post("/api/ptpclock/mic") / @app.post("/api/ptpclock/mic/<preset_id>")` on one `def`), two different wrapper objects were produced. Flask's `add_url_rule` checks `old_func != new_func` for the same endpoint name and raises `AssertionError`. That exception was caught by `_load_plugins`'s outer `except`, so `_plugins.append(info)` never ran — the plugin was permanently absent from `_plugins` and `_scan_installed_plugins()` always returned `active=False`. Fixed: `_wrap_view` now caches by `id(original_fn)` in a closure-level `_wrap_cache` dict. Stacked decorators on the same function always return the same wrapper object, so Flask sees no endpoint conflict.
+
+**Rule**: `_wrap_view` must cache wrappers by `id(view_fn)`. Never create a new closure per call — doing so breaks stacked route decorators.
+
+---
+
 ## [3.5.6] - 2026-04-04
 
 ### Fixed
