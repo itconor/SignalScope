@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.28] - 2026-04-04
+
+### Fixed
+- **FM stereo broken by de-emphasis (regression from 3.5.27)** — `_apply_deemph` passed `zi` as shape `(1, 1)` to `scipy.signal.lfilter` but the function expects `(1,)` for a 1D signal. The resulting `ValueError` was caught by the stereo path's `except Exception` block, which silently fell back to mono `_mpx_to_audio()` on every chunk. Fixed: `zi=np.array([zi[0]])` (shape `(1,)`) and `zi_new[0]` instead of `zi_new[0, 0]`.
+
+---
+
 ## [3.5.27] - 2026-04-04
 
 ### Added

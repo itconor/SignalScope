@@ -2249,7 +2249,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.27"
+BUILD                  = "SignalScope-3.5.28"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -9240,8 +9240,8 @@ class MonitorManager:
             from scipy.signal import lfilter as _lf
             b = np.array([1.0 - alpha], dtype=np.float64)
             a = np.array([1.0, -alpha], dtype=np.float64)
-            y, zi_new = _lf(b, a, x.astype(np.float64), zi=np.array([[zi[0]]]))
-            zi[0] = float(zi_new[0, 0])
+            y, zi_new = _lf(b, a, x.astype(np.float64), zi=np.array([zi[0]]))
+            zi[0] = float(zi_new[0])
             return y.astype(np.float32)
 
         def _mpx_to_stereo(samp: np.ndarray):
