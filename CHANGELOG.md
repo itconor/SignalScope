@@ -2,6 +2,15 @@
 
 ---
 
+## [3.4.160] - 2026-04-04
+
+### Added
+- **`/api/health` endpoint** — machine-readable subsystem status (database, monitor threads, hub heartbeat, plugins, disk). Returns `{"status":"ok"|"degraded"|"error", "issues":[...], "subsystems":{...}}`. Returns HTTP 503 when degraded/error, compatible with uptime-monitoring tools (UptimeRobot, Nagios, etc.)
+- **Dashboard health banner** — all pages poll `/api/health` every 60 s and show a red banner listing active issues (stale streams, DB errors, hub disconnected, plugin errors). Clears automatically when resolved.
+- **Plugin runtime isolation** — plugin route handlers wrapped in a per-plugin exception catcher. Unhandled errors return `500 {"ok":false}` JSON instead of crashing the Waitress worker thread. Errors logged to `_plugin_runtime_errors` and surfaced in `/api/health`.
+
+---
+
 ## [3.4.159] - 2026-04-03
 
 ### Fixed / Improved

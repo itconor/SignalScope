@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.159"
+BUILD                  = "SignalScope-3.4.160"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -14894,7 +14894,64 @@ hub_live_fanout  = HubLiveFanout()
 #   url     – href for the nav link
 #   icon    – (optional) emoji / short prefix  e.g. "📡"
 _plugins: list[dict] = []
+# Rolling log of runtime errors from plugin route handlers (last 50).
+# Populated by the plugin isolation wrapper; read by /api/health.
+_plugin_runtime_errors: collections.deque = collections.deque(maxlen=50)
 _PLUGINS_SUBDIR = "plugins"  # plugin files live here, relative to the app directory
+
+
+def _make_isolated_app(real_app, plugin_name: str):
+    """Return a proxy of the Flask app whose route/get/post decorators wrap
+    every registered view function in an exception handler.  Unhandled errors
+    in plugin routes are caught, logged to _plugin_runtime_errors, and return
+    a 500 JSON response instead of crashing the Waitress worker thread."""
+    import functools, traceback as _tb
+
+    class _PluginAppProxy:
+        """Minimal Flask-app proxy that intercepts add_url_rule."""
+        def __getattr__(self, name):
+            return getattr(real_app, name)
+
+        def _wrap_view(self, view_fn):
+            @functools.wraps(view_fn)
+            def _safe(*args, **kwargs):
+                try:
+                    return view_fn(*args, **kwargs)
+                except Exception:
+                    tb = _tb.format_exc()
+                    msg = f"[Plugin:{plugin_name}] {view_fn.__name__}: {tb}"
+                    _plugin_runtime_errors.append({
+                        "plugin": plugin_name,
+                        "fn":     view_fn.__name__,
+                        "error":  tb.strip().splitlines()[-1],
+                        "ts":     round(time.time()),
+                    })
+                    monitor.log(msg)
+                    return jsonify({"ok": False, "error": "Plugin internal error",
+                                    "plugin": plugin_name}), 500
+            return _safe
+
+        def add_url_rule(self, rule, endpoint=None, view_func=None, **opts):
+            if view_func is not None:
+                view_func = self._wrap_view(view_func)
+            return real_app.add_url_rule(rule, endpoint=endpoint,
+                                         view_func=view_func, **opts)
+
+        # Support @app.get / @app.post / @app.route decorator style
+        def route(self, rule, **opts):
+            def decorator(fn):
+                self.add_url_rule(rule, view_func=fn,
+                                  methods=opts.pop("methods", ["GET"]), **opts)
+                return fn
+            return decorator
+
+        def get(self, rule, **opts):
+            return self.route(rule, methods=["GET"], **opts)
+
+        def post(self, rule, **opts):
+            return self.route(rule, methods=["POST"], **opts)
+
+    return _PluginAppProxy()
 
 
 def _load_plugins():
@@ -15006,7 +15063,7 @@ def _load_plugins():
             info.setdefault("icon", "")
             info["_src"] = py.name              # source filename — used by _scan_installed_plugins
             if hasattr(mod, "register"):
-                mod.register(app, ctx)
+                mod.register(_make_isolated_app(app, py.name), ctx)
             _plugins.append(info)
             monitor.log(f"[Plugin] Loaded '{info['label']}' from {_PLUGINS_SUBDIR}/{py.name}")
             print(f"[Plugin] {info['label']} loaded from {_PLUGINS_SUBDIR}/{py.name}")
@@ -15697,6 +15754,31 @@ def _inject_nav():
                 f'{{var b=document.getElementById("ss-update-banner");if(b)b.remove();}}}})();</script>'
             )
 
+        # ── Health-status banner (polls /api/health every 60 s) ──────────
+        health_banner_html = (
+            f'<div id="ss-health-banner" style="display:none;padding:7px 20px;'
+            f'align-items:center;gap:14px;font-size:13px;flex-wrap:wrap;'
+            f'border-bottom:1px solid #991b1b;background:#2a0a0a;color:#fca5a5"></div>'
+            f'<script nonce="{nonce}">'
+            f'(function(){{'
+            f'function _checkHealth(){{'
+            f'  fetch("/api/health",{{credentials:"same-origin"}}).then(function(r){{return r.json();}}).then(function(d){{'
+            f'    var b=document.getElementById("ss-health-banner");'
+            f'    if(!b)return;'
+            f'    if(d.status==="ok"){{b.style.display="none";b.innerHTML="";return;}}'
+            f'    var icon=d.status==="error"?"&#9888;":"&#9888;";'
+            f'    var issues=(d.issues||[]).join(" &bull; ");'
+            f'    b.innerHTML=icon+" <strong>System "+d.status+"</strong>: "+issues'
+            f'      +"<span style=\\"margin-left:auto;font-size:11px;color:#f87171\\">Check Settings &rsaquo; Log for details</span>";'
+            f'    b.style.display="flex";'
+            f'  }}).catch(function(){{}});'
+            f'}}'
+            f'_checkHealth();'
+            f'setInterval(_checkHealth,60000);'
+            f'}})();'
+            f'</script>'
+        )
+
         # ── Dropdown CSS (shared by all groups) ───────────────────────────
         dropdown_css = (
             f'<style nonce="{nonce}">'
@@ -15867,6 +15949,7 @@ def _inject_nav():
               f'<button class="btn bg bs" style="color:var(--mu)">Logout</button></form>'
             + '</nav></header>'
             + update_banner
+            + health_banner_html
             + _hmp_html
             + _hmp_script
         )
@@ -15926,6 +16009,95 @@ def api_version_check():
                     "update_available": update,
                     "checked_at": _UPDATE_STATE.get("checked_at"),
                     "error": _UPDATE_STATE.get("error")})
+
+@app.get("/api/health")
+@login_required
+def api_health():
+    """Machine-readable subsystem health check.
+
+    Returns a JSON object with an overall 'status' of 'ok', 'degraded', or
+    'error', plus per-subsystem details.  Suitable for uptime-monitoring tools
+    (UptimeRobot, Nagios, etc.) as well as the dashboard status banner.
+    """
+    issues: list[str] = []
+    subsystems: dict = {}
+
+    # ── Database ──────────────────────────────────────────────────────────
+    db_ok = False
+    try:
+        metrics_db.query("level_dbfs",
+                         time.time() - 10, time.time(),
+                         "__health_check__")
+        db_ok = True
+    except Exception as e:
+        issues.append(f"Database: {e}")
+    subsystems["database"] = "ok" if db_ok else "error"
+
+    # ── Monitor threads ───────────────────────────────────────────────────
+    running = monitor.is_running()
+    cfg     = monitor.app_cfg
+    stream_issues = []
+    for inp in cfg.inputs:
+        # A stream that hasn't produced a real level measurement in >60 s
+        # while the monitor is running is likely a dead thread.
+        age = time.time() - getattr(inp, "_last_level_ts", 0)
+        if running and getattr(inp, "_has_real_level", False) and age > 120:
+            stream_issues.append(inp.name)
+    if stream_issues:
+        issues.append(f"Stale streams: {', '.join(stream_issues)}")
+    subsystems["monitor"]  = "running" if running else "stopped"
+    subsystems["streams"]  = "ok" if not stream_issues else f"{len(stream_issues)} stale"
+
+    # ── Hub heartbeat ─────────────────────────────────────────────────────
+    hc = monitor._hub_client
+    hub_status = "disabled"
+    if hc is not None:
+        hub_status = hc.state
+        if hc.state not in (HubClient.STATE_CONNECTED, HubClient.STATE_CONNECTING):
+            issues.append(f"Hub: {hc.state} — {hc.last_error or 'no detail'}")
+        elif hc.last_ack and time.time() - hc.last_ack > 120:
+            issues.append("Hub: no ACK for >120 s")
+            hub_status = "stale"
+    subsystems["hub"] = hub_status
+
+    # ── Plugin errors ─────────────────────────────────────────────────────
+    plugin_errors = list(_plugin_runtime_errors)
+    if plugin_errors:
+        issues.append(f"Plugin errors: {len(plugin_errors)}")
+    subsystems["plugins"] = "ok" if not plugin_errors else f"{len(plugin_errors)} error(s)"
+    subsystems["plugin_errors"] = plugin_errors[-10:]  # last 10
+
+    # ── Disk ─────────────────────────────────────────────────────────────
+    try:
+        import shutil as _shu
+        du = _shu.disk_usage(BASE_DIR)
+        pct = du.used / max(du.total, 1) * 100
+        disk_status = "ok" if pct < 90 else ("warning" if pct < 98 else "critical")
+        if pct >= 90:
+            issues.append(f"Disk {pct:.0f}% full")
+        subsystems["disk"] = {"status": disk_status, "used_pct": round(pct, 1),
+                              "free_gb": round(du.free / 1073741824, 2)}
+    except Exception:
+        subsystems["disk"] = {"status": "unknown"}
+
+    # ── Overall status ────────────────────────────────────────────────────
+    if not issues:
+        overall = "ok"
+    elif any(s in ("error", "critical") for s in
+             [subsystems.get("database"), subsystems.get("disk", {}).get("status")]):
+        overall = "error"
+    else:
+        overall = "degraded"
+
+    return jsonify({
+        "status":     overall,
+        "issues":     issues,
+        "subsystems": subsystems,
+        "build":      BUILD,
+        "uptime_s":   round(time.time() - _PROCESS_START),
+        "ts":         round(time.time()),
+    }), (200 if overall == "ok" else 503)
+
 
 @app.post("/api/version_check/refresh")
 @login_required
