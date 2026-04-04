@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.30",
+    "version":  "1.0.31",
 }
 
 import hashlib
@@ -1792,6 +1792,8 @@ def _dls_reader(stderr_stream, stop, monitor=None):
         "illegal bit allocation",
         "aborting layer i decoding",
         "int123_do_layer1",
+        "frankenstein stream",
+        "big change from first",
     )
     try:
         for raw_line in stderr_stream:
