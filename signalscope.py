@@ -168,7 +168,7 @@ document.addEventListener('DOMContentLoaded',function(){
   <div class="sec">📧 Email Alerts</div>
           <div class="cr"><input type="checkbox" name="email_enabled" value="1" {{'checked' if cfg.email.enabled}}><label style="margin:0;text-transform:none">Enable email alerts</label></div>
           <label>SMTP Host<input type="text" name="smtp_host" value="{{cfg.email.smtp_host}}"></label>
-          <label>SMTP Port<input type="number" name="smtp_port" value="{{cfg.email.smtp_port}}"></label>
+          <label title="587 for STARTTLS (recommended), 465 for SSL/TLS, 25 for plain SMTP">SMTP Port<input type="number" name="smtp_port" value="{{cfg.email.smtp_port}}"></label>
           <div class="cr"><input type="checkbox" name="use_tls" value="1" {{'checked' if cfg.email.use_tls}}><label style="margin:0;text-transform:none">Use TLS</label></div>
           <label>Username<input type="text" name="email_user" value="{{cfg.email.username}}"></label>
           <label>Password<input type="password" name="email_pass" value="{{cfg.email.password}}"></label>
@@ -223,11 +223,11 @@ document.addEventListener('DOMContentLoaded',function(){
                 <option value="teams" {{'selected' if r.teams_style}}>Teams Card</option>
                 <option value="slack" {{'selected' if not r.teams_style}}>Plain text</option>
               </select>
-              <input type="text" name="wr_streams_{{i}}" value="{{r.filter_streams | join(', ')}}" placeholder="blank = all"
+              <input type="text" name="wr_streams_{{i}}" value="{{r.filter_streams | join(', ')}}" placeholder="all streams (comma-separated names)"
                      style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
-              <input type="text" name="wr_types_{{i}}"   value="{{r.filter_types | join(', ')}}"   placeholder="blank = all"
+              <input type="text" name="wr_types_{{i}}"   value="{{r.filter_types | join(', ')}}"   placeholder="all types (e.g. SILENCE,CHAIN_FAULT)"
                      style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
-              <input type="text" name="wr_sites_{{i}}"   value="{{r.filter_sites | join(', ')}}"   placeholder="blank = all"
+              <input type="text" name="wr_sites_{{i}}"   value="{{r.filter_sites | join(', ')}}"   placeholder="all sites (comma-separated names)"
                      style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
               <select name="wr_severity_{{i}}" style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
                 <option value=""      {{'selected' if not r.filter_severity}}>Both</option>
@@ -271,9 +271,9 @@ document.addEventListener('DOMContentLoaded',function(){
               '<input type="text" name="wr_name_'+i+'" placeholder="e.g. Engineering" style="'+inp+'">'
               +'<input type="text" name="wr_url_'+i+'" placeholder="https://…" style="'+inp+'">'
               +'<select name="wr_style_'+i+'" style="'+inp+'"><option value="teams">Teams Card</option><option value="slack">Plain text</option></select>'
-              +'<input type="text" name="wr_streams_'+i+'" placeholder="blank = all" style="'+inp+'">'
-              +'<input type="text" name="wr_types_'+i+'"   placeholder="blank = all" style="'+inp+'">'
-              +'<input type="text" name="wr_sites_'+i+'"   placeholder="blank = all" style="'+inp+'">'
+              +'<input type="text" name="wr_streams_'+i+'" placeholder="all streams (comma-separated names)" style="'+inp+'">'
+              +'<input type="text" name="wr_types_'+i+'"   placeholder="all types (e.g. SILENCE,CHAIN_FAULT)" style="'+inp+'">'
+              +'<input type="text" name="wr_sites_'+i+'"   placeholder="all sites (comma-separated names)" style="'+inp+'">'
               +'<select name="wr_severity_'+i+'" style="'+inp+'"><option value="">Both</option><option value="ALERT">Alert</option><option value="WARN">Warn</option></select>'
               +'<button type="button" onclick="this.closest(\'.wh-row\').remove()" style="padding:5px 9px;background:#7c2d12;color:#fca5a5;border:none;border-radius:5px;cursor:pointer;font-size:13px">\u2715</button>';
             document.getElementById('wh-routes').appendChild(row);
@@ -508,7 +508,7 @@ document.addEventListener('DOMContentLoaded',function(){
             </div>
             <div style="margin-bottom:10px">
               <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-                <input type="checkbox" name="hub_low_bw" value="1" {{'checked' if cfg.hub.low_bw}} style="margin-top:2px;accent-color:var(--acc)">
+                <input type="checkbox" name="hub_low_bw" value="1" {{'checked' if cfg.hub.low_bw}} style="margin-top:2px;accent-color:var(--acc)" title="Sends heartbeat every 30 s instead of 10 s and fetches clips on demand — reduces bandwidth but increases alert latency">
                 <span>
                   <span style="font-size:13px;font-weight:600">Low-bandwidth mode</span><br>
                   <span style="font-size:12px;color:var(--mu)">Reduces heartbeat frequency to ~30 s and disables automatic clip uploads. Clips are still delivered to the hub on demand when viewed in Reports or fault replay. Use on sites with data caps.</span>
@@ -762,7 +762,7 @@ document.addEventListener('DOMContentLoaded',function(){
             </div>
             <div style="margin-bottom:10px">
               <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-                <input type="checkbox" name="hub_low_bw" value="1" {{'checked' if cfg.hub.low_bw}} style="margin-top:2px;accent-color:var(--acc)">
+                <input type="checkbox" name="hub_low_bw" value="1" {{'checked' if cfg.hub.low_bw}} style="margin-top:2px;accent-color:var(--acc)" title="Sends heartbeat every 30 s instead of 10 s and fetches clips on demand — reduces bandwidth but increases alert latency">
                 <span>
                   <span style="font-size:13px;font-weight:600">Low-bandwidth mode</span><br>
                   <span style="font-size:12px;color:var(--mu)">Reduces heartbeat frequency to ~30 s and disables automatic clip uploads. Clips are still delivered to the hub on demand when viewed in Reports or fault replay. Use on sites with data caps.</span>
@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.164"
+BUILD                  = "SignalScope-3.4.165"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -30024,7 +30024,8 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 .listen-strip{padding:7px 13px;border-top:1px solid var(--bor);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .listen-strip audio{flex:1;min-width:0;height:28px}
 .hist-wrap{border-top:1px solid var(--bor)} .hist-toggle{width:100%;padding:5px 13px;background:none;border:none;color:var(--mu);font-size:11px;text-align:left;cursor:pointer;display:flex;justify-content:space-between}
-.hist-toggle:hover{background:#123764} .hist{max-height:90px;overflow-y:auto;font-size:11px;color:var(--mu)} .hev{padding:3px 13px;border-bottom:1px solid var(--bor)}
+.hist-toggle:hover{background:#123764} .hist{max-height:0;overflow:hidden;transition:max-height .22s ease-out;font-size:11px;color:var(--mu)} .hist-wrap.open .hist{max-height:180px;overflow-y:auto} .hev{padding:3px 13px;border-bottom:1px solid var(--bor)}
+.hist-toggle .arr,.alerts-toggle .arr{display:inline-block;transition:transform .2s} .hist-wrap.open .hist-toggle .arr,.alerts-section.open .alerts-toggle .arr{transform:rotate(180deg)}
 .rtp-ok{color:var(--ok)}.rtp-wn{color:var(--wn)}.rtp-al{color:var(--al)}
 .direct-banner{display:none;align-items:center;gap:12px;padding:10px 16px;background:linear-gradient(90deg,#0f3a1a,#0e2e14);border:1px solid #22c55e44;border-radius:10px;margin-bottom:12px;color:#86efac;font-size:13px}
 .direct-banner a{color:#fff;background:var(--ok);padding:5px 12px;border-radius:6px;font-weight:600;text-decoration:none}
@@ -30035,7 +30036,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 .cmp-title{font-size:12px;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:6px}
 .alerts-section{border-top:1px solid var(--bor)}
 .alerts-toggle{width:100%;padding:8px 16px;background:none;border:none;color:var(--mu);font-size:12px;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
-.alerts-toggle:hover{background:#0f2845}.alerts-list{max-height:220px;overflow-y:auto;font-size:11px}
+.alerts-toggle:hover{background:#0f2845}.alerts-list{max-height:0;overflow:hidden;transition:max-height .25s ease-out;font-size:11px} .alerts-section.open .alerts-list{max-height:280px;overflow-y:auto}
 .alert-row{padding:5px 16px;border-bottom:1px solid rgba(255,255,255,.04);display:flex;gap:10px;align-items:flex-start}
 .alert-row-time{color:var(--mu);white-space:nowrap;flex-shrink:0}.alert-row-msg{flex:1;word-break:break-word}
 .clip-badge{font-size:10px;padding:1px 6px;border-radius:999px;background:#381414;color:#fca5a5;margin-left:4px}
@@ -30108,7 +30109,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% endif %}
       {% endif %}
       <span id="ss-last-seen" class="site-meta">Last seen: {{ago(site.age_s)}}</span>
-      <span id="ss-latency" class="site-meta"{% if site.latency_ms is none %} style="display:none"{% endif %}>Latency: {{site.latency_ms}} ms</span>
+      <span id="ss-latency" class="site-meta" title="Round-trip time for the last hub heartbeat"{% if site.latency_ms is none %} style="display:none"{% endif %}>Latency: {{site.latency_ms}} ms</span>
       {% if site.health_pct is defined %}<span class="site-meta" style="color:{{'var(--ok)' if site.health_pct>=99 else ('var(--wn)' if site.health_pct>=95 else 'var(--al)')}}">⚡ {{site.health_pct}}%</span>{% endif %}
     </div>
     <div style="padding:8px 16px;border-bottom:1px solid var(--bor);display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:linear-gradient(180deg,#12305c,#10284f)">
@@ -30149,6 +30150,11 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 
     {% if not site.online %}
     <div class="offline-banner">⚠ No heartbeat received for {{site.age_s}}s — site may be down</div>
+    {% else %}
+    {% if not site.get('streams', []) %}
+    <div style="padding:28px 20px;text-align:center;color:var(--mu);font-size:13px">
+      No streams configured — use <strong style="color:var(--tx)">⚙ Sources</strong> to add one
+    </div>
     {% else %}
     <div class="streams">
       {% for s in site.get('streams', []) %}
@@ -30216,14 +30222,14 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           <div class="sc-row">Format <span style="font-size:11px;color:var(--mu)">{{s.format or '—'}}</span></div>
           {% set _sdev = (s.device_index or '').lower() %}
           {% if not (_sdev.startswith('dab://') or _sdev.startswith('fm://') or _sdev.startswith('http://') or _sdev.startswith('https://')) %}
-          <div class="sc-row">RTP Loss <span class="sc-rtp {{rtpClass(s.rtp_loss_pct)}}">{{s.rtp_loss_pct}}% <span style="color:var(--mu);font-size:11px">{{s.rtp_total or 0}} pkts</span></span></div>
+          <div class="sc-row" title="Packet loss — Good: &lt;0.5%, Marginal: 0.5–2%, Alert: ≥2%">RTP Loss <span class="sc-rtp {{rtpClass(s.rtp_loss_pct)}}">{{s.rtp_loss_pct}}% <span style="color:var(--mu);font-size:11px">{{s.rtp_total or 0}} pkts</span></span></div>
           {% if s.rtp_jitter_ms and s.rtp_jitter_ms > 0 %}
-          <div class="sc-row">RTP Jitter <span class="sc-jitter" style="color:{{'var(--wn)' if s.rtp_jitter_ms > 5 else 'var(--ok)'}}">{{s.rtp_jitter_ms}} ms</span></div>
+          <div class="sc-row" title="Inter-packet arrival jitter — values &gt;5 ms may cause audio artefacts">RTP Jitter <span class="sc-jitter" style="color:{{'var(--wn)' if s.rtp_jitter_ms > 5 else 'var(--ok)'}}">{{s.rtp_jitter_ms}} ms</span></div>
           {% else %}
           <div class="sc-row" style="display:none">RTP Jitter <span class="sc-jitter">0 ms</span></div>
           {% endif %}
           {% endif %}
-          {% if s.sla_pct is not none %}<div class="sc-row">SLA <span class="sc-sla-val" style="color:{{'var(--ok)' if s.sla_pct>=99 else 'var(--wn)'}}">{{s.sla_pct}}%</span></div>{% endif %}
+          {% if s.sla_pct is not none %}<div class="sc-row" title="Signal uptime since monitoring began — silence-free on-air time as a percentage">SLA <span class="sc-sla-val" style="color:{{'var(--ok)' if s.sla_pct>=99 else 'var(--wn)'}}">{{s.sla_pct}}%</span></div>{% endif %}
           <div class="sc-row">Alerts
             <span style="font-size:12px">
               {%if s.alert_on_silence%}<span class="alert-badge badge-silence">SIL</span>{%endif%}
@@ -30235,8 +30241,8 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           {% if s.device_index and s.device_index.lower().startswith('dab://') %}
           <details class="stats-block">
             <summary class="stats-toggle">DAB stats <span>▼</span></summary>
-            <div class="sc-row">SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">{{s.dab_snr}} dB</span></div>
-            <div class="sc-row">Signal <span>{{s.dab_sig}} dBm</span></div>
+            <div class="sc-row" title="DAB signal-to-noise ratio — Good: ≥12 dB, Marginal: 6–11 dB, Poor: &lt;6 dB">SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">{{s.dab_snr}} dB</span></div>
+            <div class="sc-row" title="Received signal power from welle-cli">Signal <span>{{s.dab_sig}} dBm</span></div>
             <div class="sc-row">Ensemble <span style="font-size:11px">{{s.dab_ensemble or '—'}}</span></div>
             <div class="sc-row">Service <span style="font-size:11px;display:flex;align-items:center;gap:5px">
               <span>{{s.dab_service or '—'}}</span>
@@ -30267,11 +30273,11 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           {% if s.device_index and s.device_index.lower().startswith('fm://') %}
           <details class="stats-block">
             <summary class="stats-toggle">FM / RDS stats <span>▼</span></summary>
-            <div class="sc-row">Signal <span>📶 {{s.fm_signal_dbm}} dBFS</span></div>
-            <div class="sc-row">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
+            <div class="sc-row" title="FM carrier level reported by the RTL-SDR receiver">Signal <span>📶 {{s.fm_signal_dbm}} dBFS</span></div>
+            <div class="sc-row" title="FM 19 kHz stereo pilot SNR — Good: ≥12 dB, Marginal: 6–11 dB, Poor: &lt;6 dB">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
             <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
             {% if s.fm_deviation_peak_khz is defined and s.fm_deviation_peak_khz is not none %}
-            <div class="sc-row">Deviation <span style="color:{{'var(--al)' if s.fm_over_ofcom else ('var(--wn)' if s.fm_deviation_peak_khz>=70 else 'var(--ok)')}}">{{s.fm_deviation_peak_khz}} kHz{%if s.fm_over_ofcom%} ⚠ OFCOM{%endif%}</span></div>
+            <div class="sc-row" title="Peak FM deviation — Ofcom UK limit is ±75 kHz; values above this are flagged">Deviation <span style="color:{{'var(--al)' if s.fm_over_ofcom else ('var(--wn)' if s.fm_deviation_peak_khz>=70 else 'var(--ok)')}}">{{s.fm_deviation_peak_khz}} kHz{%if s.fm_over_ofcom%} ⚠ OFCOM{%endif%}</span></div>
             {% endif %}
             <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}};display:flex;align-items:center;gap:5px">
               {% if s.fm_rds_ok %}
@@ -30305,10 +30311,10 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         </div>
         {% if s.ai_monitor %}
         {% set ac = 'alr' if ph=='learning' else ('aal' if '[ALERT]' in ai else ('awn' if '[WARN]' in ai else ('aok' if '[OK]' in ai else 'aid'))) %}
-        <div class="aib {{ac}}">🤖 {{ai if ai else ('Waiting…' if site.running else 'Not running')}}</div>
+        <div class="aib {{ac}}" title="AI audio monitor — OK: normal programme, WARN: anomaly detected, ALERT: active fault, Learning: building baseline (do not restart)">🤖 {{ai if ai else ('Waiting…' if site.running else 'Not running')}}</div>
         {% if ph=='learning' and s.ai_learn_start %}
           {% set pct = [(now - s.ai_learn_start) / site.learn_dur * 100, 100]|min|int %}
-          <div class="pb"><div class="pbi" style="width:{{pct}}%"></div></div>
+          <div class="pb" title="AI is learning what normal audio sounds like — alerting begins when this reaches 100%"><div class="pbi" style="width:{{pct}}%"></div></div>
         {% endif %}
         {% endif %}
         {% if s.nowplaying_station_id %}
@@ -30344,8 +30350,8 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         </div>
         {% if s.history %}
         <div class="hist-wrap">
-          <button class="hist-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='block'?'none':'block'">Recent events <span>▼</span></button>
-          <div class="hist" style="display:none">
+          <button class="hist-toggle" onclick="this.closest('.hist-wrap').classList.toggle('open')">Recent events <span class="arr">▼</span></button>
+          <div class="hist">
             {% for h in s.history[:8] %}
             <div class="hev">{{h.ts or ''}} — {{h.msg or h.text or h.type or 'Event'}}</div>
             {% endfor %}
@@ -30407,6 +30413,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       </div>
       {% endfor %}
     </div>
+    {% endif %}
 
     <!-- ── Source management panel (admin only) ──────────────────── -->
     {% if is_admin %}
@@ -30515,12 +30522,12 @@ main{padding:18px;max-width:1500px;margin:0 auto}
     {% endif %}
 
     {% set _alerts = site.get('recent_alerts', []) or [] %}
-    {% if _alerts %}
     <div class="alerts-section">
-      <button class="alerts-toggle" onclick="var d=this.nextElementSibling;d.style.display=d.style.display==='block'?'none':'block'">
-        Recent Alerts ({{_alerts|length}}) <span>▼</span>
+      <button class="alerts-toggle" onclick="this.closest('.alerts-section').classList.toggle('open')" {{'disabled style="opacity:.5;cursor:default"' if not _alerts}}>
+        Recent Alerts ({{_alerts|length if _alerts else 'none'}}) <span class="arr">▼</span>
       </button>
-      <div class="alerts-list" style="display:none">
+      <div class="alerts-list">
+        {% if _alerts %}
         {% for a in _alerts %}
         <div class="alert-row">
           <span class="alert-row-time">{{a.get('ts_str') or a.get('ts','')[:19] or '—'}}</span>
@@ -30529,9 +30536,11 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           </span>
         </div>
         {% endfor %}
+        {% else %}
+        <div style="padding:10px 16px;color:var(--mu);font-size:11px;font-style:italic">No recent alerts recorded</div>
+        {% endif %}
       </div>
     </div>
-    {% endif %}
 
     {% endif %}
   </div>
@@ -32976,14 +32985,14 @@ setInterval(_loadTrends, 300000);
         <div class="sc-row sc-trend-row" style="display:none">Trend <span class="sc-trend-val" style="font-size:11px"></span></div>
         {% set _edev = (s.device_index or '').lower() %}
         {% if not (_edev.startswith('dab://') or _edev.startswith('fm://') or _edev.startswith('http://') or _edev.startswith('https://')) %}
-        <div class="sc-row">RTP Loss
+        <div class="sc-row" title="Packet loss — Good: &lt;0.5%, Marginal: 0.5–2%, Alert: ≥2%">RTP Loss
           <span class="sc-rtp {{rtpClass(s.rtp_loss_pct)}}">{{s.rtp_loss_pct}}%
             <span style="color:var(--mu);font-size:11px"> {{s.rtp_total or 0}} pkts</span>
           </span>
         </div>
         {% endif %}
         {% if s.sla_pct is not none %}
-        <div class="sc-row">SLA <span class="sc-sla" style="color:{{'var(--ok)' if s.sla_pct>=99 else 'var(--wn)'}}">{{s.sla_pct}}%</span></div>
+        <div class="sc-row" title="Signal uptime since monitoring began — silence-free on-air time as a percentage">SLA <span class="sc-sla" style="color:{{'var(--ok)' if s.sla_pct>=99 else 'var(--wn)'}}">{{s.sla_pct}}%</span></div>
         {% endif %}
         <div class="sc-row">Alerts
           <span style="font-size:12px">
@@ -33083,7 +33092,7 @@ setInterval(_loadTrends, 300000);
       {# AI status bar #}
       {% if s.ai_monitor %}
       {% set ac = 'alr' if ph=='learning' else ('aal' if '[ALERT]' in ai else ('awn' if '[WARN]' in ai else ('aok' if '[OK]' in ai else 'aid'))) %}
-      <div class="aib {{ac}} sc-ai">🤖 {{ai if ai else ('Waiting…' if site.running else 'Not running')}}</div>
+      <div class="aib {{ac}} sc-ai" title="AI audio monitor — OK: normal programme, WARN: anomaly detected, ALERT: active fault, Learning: building baseline (do not restart)">🤖 {{ai if ai else ('Waiting…' if site.running else 'Not running')}}</div>
       {% if ph=='learning' and s.ai_learn_start %}
         {% set pct = [(now - s.ai_learn_start) / site.learn_dur * 100, 100]|min|int %}
         <div class="pb"><div class="pbi" style="width:{{pct}}%"></div></div>

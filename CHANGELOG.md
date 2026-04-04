@@ -2,6 +2,18 @@
 
 ---
 
+## [3.4.165] - 2026-04-04
+
+### Improved
+- **Hub site replica — tooltip annotations** — added descriptive `title=` tooltips to latency, RTP loss/jitter, SLA, DAB SNR, FM pilot/signal/deviation, AI status bar, and AI learning progress bar on the replica page.
+- **Hub overview — tooltips** — SLA %, RTP Loss, and AI status bar on the main hub dashboard now carry `title=` tooltips consistent with the replica page.
+- **Settings — tooltips** — SMTP port field, webhook severity filter, and Low Bandwidth checkbox now have descriptive tooltips.
+- **Smooth accordion transitions** — stream history and recent-alerts accordions animate open/close via CSS `max-height` transition instead of instant `display:none/block` toggling. Arrow indicator rotates 180° when expanded.
+- **Always-visible alerts section** — recent-alerts accordion is always rendered; shows "No recent alerts recorded" empty state when empty. Toggle button is faded and disabled when there are no alerts.
+- **No-streams empty state** — site replica and hub stream cards show a centred placeholder message when no streams are configured, rather than an empty card body.
+
+---
+
 ## [3.4.164] - 2026-04-04
 
 ### Improved
