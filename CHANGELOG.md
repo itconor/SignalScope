@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.15] - 2026-04-04
+
+### Fixed
+- **Revert prewarm to exact 3.5.5 state** — the 3.5.13 retry loop change to `_warm_one` was incorrect and broke the prewarm behaviour that had been working in 3.5.5. Restored to single-attempt, `timeout=5`, no retry — exactly the 3.5.5 code.
+
+---
+
 ## [3.5.14] - 2026-04-04
 
 ### Fixed
