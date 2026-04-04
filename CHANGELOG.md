@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.8] - 2026-04-04
+
+### Fixed
+- **DAB Scanner plugin — CPU overload on Raspberry Pi with large muxes** — on a Raspberry Pi, a large multiplex such as BBC National (~12 services) caused welle-cli to decode all services simultaneously, saturating the Pi's CPU. This corrupted the audio output and prevented playback. **Fixed (dab.py v1.0.32):** `_stream_worker` now auto-detects Raspberry Pi hardware by reading `/proc/device-tree/model` and conditionally adds `-C 1` (single-service decode mode) to the welle-cli command. On a Pi, welle-cli decodes only the one service that has an active HTTP consumer rather than the entire mux in parallel. Non-Pi hardware is unaffected — full parallel decode continues on x86/x64 servers.
+
+---
+
 ## [3.5.7] - 2026-04-04
 
 ### Fixed

@@ -24,8 +24,8 @@
     "name": "DAB Scanner",
     "file": "dab.py",
     "icon": "\ud83d\udcfb",
-    "description": "DAB digital radio browser. Scans all Band III channels to discover services, streams selected services as MP3 audio via welle-cli and ffmpeg. Displays DLS (Dynamic Label Segment) scrolling text. Requires welle-cli and ffmpeg on the client machine. v1.0.30: suppress welle-cli stderr noise (Note:/resync lines) from log; v1.0.29: survive OFDM resync stalls on startup.",
-    "version": "1.0.31",
+    "description": "DAB digital radio browser. Scans all Band III channels to discover services, streams selected services as MP3 audio via welle-cli and ffmpeg. Displays DLS (Dynamic Label Segment) scrolling text. Requires welle-cli and ffmpeg on the client machine. v1.0.32: auto-detect Raspberry Pi and use -C 1 (single-service decode) to prevent CPU overload on large muxes; v1.0.30: suppress welle-cli stderr noise (Note:/resync lines) from log; v1.0.29: survive OFDM resync stalls on startup.",
+    "version": "1.0.32",
     "requirements": "welle-cli ffmpeg",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/dab.py"
   },

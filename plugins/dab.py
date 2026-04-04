@@ -26,7 +26,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/dab",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "1.0.31",
+    "version":  "1.0.32",
 }
 
 import hashlib
@@ -1575,6 +1575,21 @@ def _stop_stream():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Hardware detection helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _is_raspberry_pi() -> bool:
+    """Return True if this machine is a Raspberry Pi."""
+    for path in ("/proc/device-tree/model", "/sys/firmware/devicetree/base/model"):
+        try:
+            with open(path, "rb") as fh:
+                return b"raspberry pi" in fh.read().lower()
+        except Exception:
+            pass
+    return False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Client-side: DAB audio streaming worker
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1602,9 +1617,22 @@ def _stream_worker(slot_id, channel, service, bitrate, sdr_serial, gain, ppm,
 
     chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
 
-    # welle-cli HTTP server mode — no -A flag, no -s flag
+    # welle-cli HTTP server mode.
+    # -T  disables TII (Transmitter Identification Information) decoding —
+    #     saves meaningful CPU on Raspberry Pi, not needed for audio playback.
+    #     On a Pi decoding all services on a large mux (e.g. BBC National, 12+
+    #     services) this is the single biggest CPU reduction available.
+    # -C 1 (Pi only) limits simultaneous service decoding to 1 at a time.
+    #     welle-cli stays locked on whichever service has an active HTTP consumer,
+    #     so this does not interrupt playback — it just prevents all ~12 BBC
+    #     National services from being decoded in parallel and overwhelming the Pi.
+    _on_pi = _is_raspberry_pi()
     welle_cmd = [welle_bin, "-w", str(_WELLE_STREAM_PORT), "-c", channel,
+                 "-T",
                  "-g", str(gain if gain is not None else -1)]
+    if _on_pi:
+        welle_cmd += ["-C", "1"]
+        _log("[DAB] Raspberry Pi detected — using -C 1 (single-service decode) to limit CPU")
     if ppm:
         welle_cmd += ["-p", str(ppm)]
     if sdr_serial:
