@@ -42,6 +42,8 @@ input[type=text],input[type=number],input[type=password],input[type=email]{width
 .toast.t-err{border-left:3px solid var(--al)}
 .toast.t-info{border-left:3px solid var(--acc)}
 @keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.ic-bar{display:flex;align-items:center;gap:8px;padding:7px 12px;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;margin-top:6px;animation:toastIn .2s ease}
+.ic-msg{flex:1;font-size:12px;color:var(--mu)}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body class="{{'wall-mode' if wall_mode else ''}}">
 <script nonce="{{csp_nonce()}}">
 function _csrfFetch(url,opts){
@@ -61,11 +63,16 @@ document.addEventListener('change', function(e){
 });
 
 function st(id){
+  // Save scroll position for the tab we're leaving
+  var curBtn=document.querySelector('.tb.on');
+  if(curBtn){ try{ localStorage.setItem('ss_st_sy_'+curBtn.id.replace('b-',''), window.scrollY); }catch(_e){} }
   document.querySelectorAll('.pn').forEach(function(p){p.classList.remove('on');});
   document.querySelectorAll('.tb').forEach(function(b){b.classList.remove('on');});
   var p=document.getElementById('p-'+id),b=document.getElementById('b-'+id);
   if(p)p.classList.add('on');if(b)b.classList.add('on');
   history.replaceState(null,'','#'+id);
+  // Restore scroll position for the tab we're entering
+  try{ window.scrollTo(0, parseInt(localStorage.getItem('ss_st_sy_'+id))||0); }catch(_e){ window.scrollTo(0,0); }
   if(id==='mobile') loadMobileApiStatus();
   if(id==='plugins' && typeof window.pluginFetchAvail==='function') window.pluginFetchAvail(true);
   if(id==='log' && typeof window.logViewerActivate==='function') window.logViewerActivate();
@@ -113,7 +120,12 @@ async function rotateMobileApiToken(){
 
 async function disableMobileApiToken(){
   var meta=document.getElementById('mobile-api-meta');
-  if(!confirm('Disable the current mobile API token? The iPhone app will stop connecting until you rotate a new one.')) return;
+  var btn=document.getElementById('mobile-disable-btn');
+  if(btn){ _inlineConfirm(btn,'Disable the mobile API token? The iPhone app will stop connecting until a new one is rotated.',function(){ _doDisableMobileApiToken(); }); return; }
+  _doDisableMobileApiToken();
+}
+async function _doDisableMobileApiToken(){
+  var meta=document.getElementById('mobile-api-meta');
   if(meta) meta.textContent='Disabling token…';
   try{
     var r=await _csrfFetch('/api/mobile/token/disable',{method:'POST',headers:{'Accept':'application/json'}});
@@ -170,6 +182,39 @@ function showToast(msg, type){
     t.style.opacity='0'; t.style.transform='translateY(8px)'; t.style.transition='all .3s';
     setTimeout(function(){ if(t.parentNode) t.parentNode.removeChild(t); }, 300);
   }, 3500);
+}
+function _relTime(epochSecs){
+  var s=Math.floor(Date.now()/1000)-(epochSecs||0);
+  if(s<5)    return 'just now';
+  if(s<60)   return s+'s ago';
+  if(s<3600) return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
+}
+function _relTimeStr(str){
+  // Parse "YYYY-MM-DD HH:MM:SS" → relative time; falls back to original for >24 h
+  if(!str) return str;
+  var d=new Date(str.replace(' ','T'));
+  if(isNaN(d)) return str;
+  var s=Math.floor((Date.now()-d.getTime())/1000);
+  if(s<0)    return str;
+  if(s<5)    return 'just now';
+  if(s<60)   return s+'s ago';
+  if(s<3600) return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';
+  return str;
+}
+function _inlineConfirm(triggerEl, msg, onConfirm){
+  var existing=triggerEl.nextElementSibling;
+  if(existing && existing.classList.contains('ic-bar')){ existing.remove(); return; }
+  var bar=document.createElement('div');
+  bar.className='ic-bar';
+  bar.innerHTML='<span class="ic-msg">'+msg+'</span>'
+    +'<button class="btn bg bs ic-cancel">Cancel</button>'
+    +'<button class="btn bd bs ic-ok">Confirm</button>';
+  triggerEl.insertAdjacentElement('afterend',bar);
+  bar.querySelector('.ic-cancel').onclick=function(e){ e.stopPropagation(); bar.remove(); };
+  bar.querySelector('.ic-ok').onclick=function(e){ e.stopPropagation(); bar.remove(); onConfirm(); };
 }
 
 document.addEventListener('DOMContentLoaded',function(){
@@ -1366,7 +1411,12 @@ document.getElementById('restore-upload-btn').addEventListener('click', function
   var fi=document.getElementById('restore-file-input');
   var st=document.getElementById('restore-status');
   if(!fi.files.length){st.style.color='var(--wn)';st.textContent='Select a backup ZIP first.';return;}
-  if(!confirm('This will overwrite your current config and AI models. Continue?')) return;
+  _inlineConfirm(this,'Overwrite current config and AI models with this backup?',function(){_doRestoreUpload();});
+  return;
+});
+function _doRestoreUpload(){
+  var fi=document.getElementById('restore-file-input');
+  var st=document.getElementById('restore-status');
   var fd=new FormData();
   fd.append('backup_zip', fi.files[0]);
   fd.append('_csrf_token', _csrf());
@@ -1377,7 +1427,7 @@ document.getElementById('restore-upload-btn').addEventListener('click', function
       else { return r.text().then(function(t){ st.style.color='var(--al)'; st.textContent='Restore failed (HTTP '+r.status+').'; }); }
     })
     .catch(function(e){ st.style.color='var(--al)'; st.textContent='Request failed: '+e.message; });
-});
+}
 
 // ── Save backup to disk ──────────────────────────────────────────────────────
 function _bkGetCsrf(){
@@ -1489,7 +1539,7 @@ document.getElementById('bk-list-wrap').addEventListener('click', function(e){
   var rbtn=e.target.closest('.bk-restore-btn');
   if(rbtn){
     var fname=rbtn.dataset.filename;
-    if(!confirm('Restore from '+fname+'?\n\nThis will overwrite your current config, databases and any audio files included in this backup. Monitoring will restart automatically.')) return;
+    _inlineConfirm(rbtn,'Restore "'+fname+'"? This overwrites config, databases and audio. Monitoring will restart.',function(){
     rbtn.disabled=true; rbtn.textContent='⏳ Restoring…';
     // Show/clear result area
     var res=document.getElementById('bk-restore-result');
@@ -1512,19 +1562,20 @@ document.getElementById('bk-list-wrap').addEventListener('click', function(e){
       if(res){res.style.color='var(--al)';res.textContent='✗ Request failed: '+e.message;}
       rbtn.disabled=false; rbtn.textContent='↩ Restore';
     });
+    }); // end _inlineConfirm
     return;
   }
   // Delete button
   var btn=e.target.closest('.bk-del-btn');
   if(!btn) return;
-  if(!confirm('Delete '+btn.dataset.filename+'?')) return;
+  _inlineConfirm(btn,'Delete '+btn.dataset.filename+'? This cannot be undone.',function(){
   fetch('/settings/backup/delete',{method:'POST',
     headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'},
     body:JSON.stringify({filename:btn.dataset.filename})})
   .then(function(r){return r.json();})
   .then(function(d){ if(d.ok) bkLoadList(); })
   .catch(function(){});
-});
+  }); // end _inlineConfirm
 bkLoadList();
 
 function killDabOrphans(){
@@ -1540,8 +1591,8 @@ function killDabOrphans(){
     .catch(function(e){if(st){st.style.color='#f87171';st.textContent='Request failed: '+e;}});
 }
 
-function adminRestart(){
-  if(!confirm('Restart SignalScope now?\n\nAll active streams will disconnect briefly.')) return;
+function adminRestart(btn){
+  _inlineConfirm(btn||document.getElementById('admin-restart-btn'),'Restart SignalScope? All active streams will disconnect briefly.',function(){
   var st=document.getElementById('proc-ctrl-status');
   if(st){st.style.color='var(--mu)';st.textContent='Restarting…';}
   fetch('/api/admin/restart',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'}})
@@ -1554,6 +1605,7 @@ function adminRestart(){
       if(st){st.style.color='#86efac';st.textContent='Restarting — page will reload in 6 s…';}
       setTimeout(function(){window.location.reload();},6000);
     });
+  }); // end _inlineConfirm
 }
 
 // ── User Management ──────────────────────────────────────────────────────────
@@ -1745,7 +1797,11 @@ function userSave(){
   }).catch(function(e){msg.style.color='var(--al)';msg.textContent='\u2717 '+e;});
 }
 function userDelete(username){
-  if(!confirm('Delete user "'+username+'"? This cannot be undone.')) return;
+  var db=document.querySelector('.user-del-btn[data-username="'+username.replace(/"/g,'\\\"')+'"]');
+  if(db){ _inlineConfirm(db,'Delete user "'+username+'"? This cannot be undone.',function(){ _doUserDelete(username); }); return; }
+  _doUserDelete(username);
+}
+function _doUserDelete(username){
   fetch('/api/users/'+encodeURIComponent(username),{method:'DELETE',credentials:'same-origin',
     headers:{'X-CSRFToken':_csrf()}
   }).then(function(r){return r.json();}).then(function(d){
@@ -1942,9 +1998,15 @@ window.pluginFetchAvail = function(silentIfDone){
 };
 
 window.pluginInstall = function(id, url, file){
-  if(!confirm('Install plugin "'+id+'" from GitHub?\n\nThe file will be saved to the SignalScope directory. A restart is required to activate it.')) return;
   var lst = document.getElementById('avail-list');
-  var btn = lst.querySelector('[data-id='+JSON.stringify(id)+']');
+  var btn = lst ? lst.querySelector('[data-id='+JSON.stringify(id)+']') : null;
+  _inlineConfirm(btn||document.getElementById('p-plugins'),'Install "'+id+'" from GitHub? A restart is required to activate it.',function(){
+  _doPluginInstall(id,url,file,btn);
+  }); return;
+};
+function _doPluginInstall(id, url, file, btn){
+  var lst = document.getElementById('avail-list');
+  if(!btn && lst) btn = lst.querySelector('[data-id='+JSON.stringify(id)+']');
   if(btn){ btn.disabled=true; btn.textContent='Installing…'; }
   _csrfPost('/api/plugins/install', {id:id, url:url, file:file})
     .then(function(r){return r.json();})
@@ -1962,9 +2024,15 @@ window.pluginInstall = function(id, url, file){
 };
 
 window.pluginUpdate = function(id, url, file, newVer){
-  if(!confirm('Update plugin "'+id+'" to v'+newVer+' from GitHub?\n\nThe local file will be overwritten. A restart is required to apply the update.')) return;
   var lst = document.getElementById('avail-list');
-  var btn = lst.querySelector('.plugin-update-btn[data-id='+JSON.stringify(id)+']');
+  var btn = lst ? lst.querySelector('.plugin-update-btn[data-id='+JSON.stringify(id)+']') : null;
+  _inlineConfirm(btn||document.getElementById('p-plugins'),'Update "'+id+'" to v'+newVer+'? Local file will be overwritten. Restart required.',function(){
+  _doPluginUpdate(id,url,file,newVer,btn);
+  }); return;
+};
+function _doPluginUpdate(id, url, file, newVer, btn){
+  var lst = document.getElementById('avail-list');
+  if(!btn && lst) btn = lst.querySelector('.plugin-update-btn[data-id='+JSON.stringify(id)+']');
   if(btn){ btn.disabled=true; btn.textContent='Updating…'; }
   _csrfPost('/api/plugins/install', {id:id, url:url, file:file})
     .then(function(r){return r.json();})
@@ -1982,7 +2050,8 @@ window.pluginUpdate = function(id, url, file, newVer){
 };
 
 window.pluginRemove = function(file){
-  if(!confirm('Remove plugin file "'+file+'"?\n\nA restart is required to fully unload it.')) return;
+  var btn=document.querySelector('.plugin-rm-btn[data-file="'+file.replace(/"/g,'\\"')+'"]');
+  _inlineConfirm(btn||document.getElementById('p-plugins'),'Remove "'+file+'"? A restart is required to fully unload it.',function(){
   _csrfPost('/api/plugins/remove', {file:file})
     .then(function(r){return r.json();})
     .then(function(d){
@@ -1990,6 +2059,7 @@ window.pluginRemove = function(file){
       else { alert('Remove failed: '+(d.error||'?')); }
     })
     .catch(function(){ alert('Network error'); });
+  }); // end _inlineConfirm
 };
 
 // Event delegation — handles plugin-rm-btn, plugin-install-btn, plugin-update-btn, plugin-restart-btn
@@ -2001,14 +2071,15 @@ document.getElementById('p-plugins').addEventListener('click', function(e){
   var upd = e.target.closest('.plugin-update-btn');
   if(upd){ pluginUpdate(upd.dataset.id, upd.dataset.url, upd.dataset.file, upd.dataset.newver||'?'); return; }
   if(e.target.closest('#plugin-restart-btn')){
-    if(!confirm('Restart SignalScope now?\n\nAll active streams will disconnect briefly.')) return;
     var btn = document.getElementById('plugin-restart-btn');
-    var st  = document.getElementById('plugin-restart-status');
-    if(btn){ btn.disabled=true; btn.textContent='Restarting…'; }
-    if(st){ st.style.color='var(--mu)'; st.textContent='Restarting — page will reload in 8 s…'; }
-    _csrfPost('/api/admin/restart', {})
-      .catch(function(){/* server went away — normal */})
-      .finally(function(){ setTimeout(function(){ window.location.reload(); }, 8000); });
+    _inlineConfirm(btn,'Restart SignalScope? All active streams will disconnect briefly.',function(){
+      var st  = document.getElementById('plugin-restart-status');
+      if(btn){ btn.disabled=true; btn.textContent='Restarting…'; }
+      if(st){ st.style.color='var(--mu)'; st.textContent='Restarting — page will reload in 8 s…'; }
+      _csrfPost('/api/admin/restart', {})
+        .catch(function(){/* server went away — normal */})
+        .finally(function(){ setTimeout(function(){ window.location.reload(); }, 8000); });
+    });
   }
 });
 })();
@@ -2177,7 +2248,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.22"
+BUILD                  = "SignalScope-3.5.23"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -17320,7 +17391,7 @@ function loadClips(idx,streamName){
   fetch('/clips/'+encodeURIComponent(streamName))
     .then(function(r){return r.json();})
     .then(function(clips){
-      if(!clips.length){listEl.innerHTML='<em>No saved clips yet</em>';return;}
+      if(!clips.length){listEl.innerHTML='<div style="padding:14px 0;text-align:center;color:var(--mu);font-size:12px">🎙 No clips recorded yet — clips are saved automatically when silence or faults are detected.</div>';return;}
       var html='';
       clips.forEach(function(c){
         html+='<div style="border-bottom:1px solid var(--bor);padding:6px 0">'
@@ -17338,7 +17409,14 @@ function loadClips(idx,streamName){
     .catch(function(){listEl.innerHTML='<em style="color:var(--al)">Failed to load clips</em>';});
 }
 function deleteClip(streamEnc,fileEnc,idx){
-  if(!confirm('Delete this clip?')) return;
+  var btn=event&&event.target;
+  if(btn&&typeof _inlineConfirm==='function'){
+    _inlineConfirm(btn,'Delete this clip? This cannot be undone.',function(){ _doDeleteClip(streamEnc,fileEnc,idx); });
+    return;
+  }
+  _doDeleteClip(streamEnc,fileEnc,idx);
+}
+function _doDeleteClip(streamEnc,fileEnc,idx){
   fetch('/clips/'+streamEnc+'/'+fileEnc,{method:'DELETE'})
     .then(function(r){return r.json();})
     .then(function(j){if(j.ok) loadClips(idx,decodeURIComponent(streamEnc));});
@@ -17534,7 +17612,7 @@ tr.data-row.expanded td{background:#0d1e40}
     {% set tc = 't-silence' if tl=='silence' else ('t-clip' if tl=='clip' else ('t-hiss' if tl=='hiss' else ('t-rtp' if 'rtp' in tl else ('t-ai_alert' if tl=='ai_alert' else ('t-ai_warn' if tl=='ai_warn' else ('t-ptp' if 'ptp' in tl else ('t-cmp' if 'cmp' in tl else 't-other'))))))) %}
     {% set _is_log = e.type in ('DAB_AVAILABLE','DAB_UNAVAILABLE') %}
     <tr class="data-row" data-id="{{e.id}}" data-stream="{{e.stream}}" data-type="{{e.type}}" data-ts="{{e.ts}}" data-clip="{{e.clip}}" data-category="{{'log' if _is_log else 'alert'}}" data-level="{{e.level_dbfs if e.level_dbfs and e.level_dbfs > -120 else ''}}" data-rtp="{{e.rtp_loss_pct if e.rtp_loss_pct > 0 else ''}}">
-      <td style="color:var(--mu);font-size:12px;white-space:nowrap">{{e.ts}}</td>
+      <td style="color:var(--mu);font-size:12px;white-space:nowrap" class="ts-cell" title="{{e.ts}}">{{e.ts}}</td>
       <td><strong>{{e.stream}}</strong></td>
       <td><span class="type-badge {{tc}}">{{e.type}}</span></td>
       <td style="font-size:12px">{{e.message}}</td>
@@ -17686,8 +17764,9 @@ function rowHTML(e){
   var cat=LOG_TYPES[e.type||'']?'log':'alert';
   var lvlAttr=e.level_dbfs&&e.level_dbfs>-120?escAttr(String(e.level_dbfs)):'';
   var rtpAttr=e.rtp_loss_pct>0?escAttr(String(e.rtp_loss_pct)):'';
+  var _rtRel=typeof _relTimeStr==='function'?_relTimeStr(e.ts||''):(e.ts||'');
   return '<tr class="data-row" data-id="'+escAttr(e.id||'')+'" data-stream="'+escAttr(e.stream)+'" data-type="'+escAttr(e.type)+'" data-ts="'+escAttr(e.ts||'')+'" data-clip="'+escAttr(e.clip||'')+'" data-category="'+cat+'" data-level="'+lvlAttr+'" data-rtp="'+rtpAttr+'">'
-    +'<td style="color:var(--mu);font-size:12px;white-space:nowrap">'+escHTML(e.ts||'')+'</td>'
+    +'<td style="color:var(--mu);font-size:12px;white-space:nowrap" title="'+escAttr(e.ts||'')+'">'+escHTML(_rtRel)+'</td>'
     +'<td><strong>'+escHTML(e.stream||'')+'</strong></td>'
     +'<td><span class="type-badge '+tc+'">'+escHTML(e.type||'')+'</span></td>'
     +'<td style="font-size:12px">'+escHTML(e.message||'')+'</td>'
@@ -17699,6 +17778,29 @@ function rowHTML(e){
 }
 function escHTML(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function escAttr(s){return String(s).replace(/"/g,'&quot;');}
+function _relTimeStr(str){
+  if(!str) return str;
+  var d=new Date(str.replace(' ','T'));
+  if(isNaN(d)) return str;
+  var s=Math.floor((Date.now()-d.getTime())/1000);
+  if(s<0)    return str;
+  if(s<5)    return 'just now';
+  if(s<60)   return s+'s ago';
+  if(s<3600) return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';
+  return str;
+}
+// Update all server-rendered timestamp cells to relative time, then refresh every 60 s
+function _refreshRelTimes(){
+  document.querySelectorAll('#evt_body tr[data-ts]').forEach(function(row){
+    var ts=row.dataset.ts||'';
+    if(!ts) return;
+    var cell=row.querySelector('td[title]');
+    if(cell && cell.getAttribute('title')===ts) cell.textContent=_relTimeStr(ts);
+  });
+}
+_refreshRelTimes();
+setInterval(_refreshRelTimes, 60000);
 
 // ── AI feedback ────────────────────────────────────────────────────────────
 function sendFeedback(btn){
@@ -19089,8 +19191,9 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       });
   }
 
-  function adminRestart(){
-    if(!confirm("Restart SignalScope now?\n\nAll active streams will disconnect briefly.")) return;
+  function adminRestart(btn){
+    var _btn = btn || document.getElementById("dab-restart-btn") || document.body;
+    _inlineConfirm(_btn,'Restart SignalScope? All active streams will disconnect briefly.',function(){
     var st = document.getElementById("proc-ctrl-status");
     if(st){ st.style.color = "var(--mu)"; st.textContent = "Restarting…"; }
     _csrfFetch("/api/admin/restart", {method:"POST"})
@@ -19104,6 +19207,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
         if(st){ st.style.color="#86efac"; st.textContent = "Restarting — page will reload in 6 s…"; }
         setTimeout(function(){ window.location.reload(); }, 6000);
       });
+    }); // end _inlineConfirm
   }
 
   function dabUpdateAddBtn(){
@@ -25761,7 +25865,11 @@ function saveChain(){
 document.getElementById('btn_save_chain').addEventListener('click',saveChain);
 
 function deleteChain(id,name){
-  if(!confirm('Delete chain "'+name+'"?'))return;
+  var btn=event&&event.target&&event.target.closest('.chain-del-btn');
+  if(btn){_inlineConfirm(btn,'Delete chain "'+name+'"? All fault history will be removed.',function(){_doDeleteChain(id);});return;}
+  _doDeleteChain(id);
+}
+function _doDeleteChain(id){
   _f('/api/chains/'+encodeURIComponent(id),{method:'DELETE'}).then(r=>r.json()).then(d=>{
     if(d.ok){var el=document.getElementById('chain_'+id);if(el)el.remove();}
   }).catch(()=>{});
@@ -26312,7 +26420,7 @@ function loadFaultLog(cid, body, arrow, _nRefresh){
   // fault fires, so a cached panel would show "No clips" until page reload.
   _f('/api/chains/'+encodeURIComponent(cid)+'/fault_log').then(function(r){return r.json();}).then(function(d){
       var entries=d.entries||[];
-      if(!entries.length){body.innerHTML='<div class="flog-empty">No faults recorded yet.</div>';return;}
+      if(!entries.length){body.innerHTML='<div class="flog-empty" style="padding:14px;text-align:center;color:var(--mu);font-size:12px">✓ No faults recorded for this chain — all clear.</div>';return;}
       var hasRtp=entries.some(function(ev){return ev.rtp_loss_pct!=null;});
       // Clips are stored in a JS-side map (not in HTML data-* attributes) to
       // avoid the double-quote encoding problem: _esc() encodes < > & but NOT
@@ -26324,7 +26432,9 @@ function loadFaultLog(cid, body, arrow, _nRefresh){
       // page is reloaded after the first clip-bearing fault fires).
       var html='<table class="flog-table"><thead><tr><th>Date/Time</th><th>Fault Point</th><th>Site</th>'+(hasRtp?'<th>RTP Loss</th>':'')+'<th>Clips</th><th>Duration</th><th style="min-width:180px">Engineer Note</th></tr></thead><tbody>';
       entries.forEach(function(ev){
-        var dt=new Date(ev.ts_start*1000).toLocaleString();
+        var _dtFull=new Date(ev.ts_start*1000).toLocaleString();
+        var _dtRel=_relTime(ev.ts_start);
+        var dt='<span title="'+_dtFull+'">'+_dtRel+'</span><br><span style="font-size:10px;color:var(--mu)">'+_dtFull+'</span>';
         var dur=ev.ts_recovered?_fmtDur(ev.ts_recovered-ev.ts_start):'<span style="color:var(--al)">Ongoing</span>';
         var rtpCell='';
         if(hasRtp){
@@ -26685,9 +26795,12 @@ function abgToggleActive(gid){
 }
 
 function abgDelete(gid, name){
-  if(!confirm('Delete A/B group "'+name+'"?')) return;
-  fetch('/api/ab_groups/'+gid,{method:'DELETE',headers:{'X-CSRFToken':_csrf_abg()}})
-  .then(function(){location.reload();});
+  var btn=event&&event.target&&event.target.closest('[onclick]');
+  var anchor=btn||document.querySelector('[data-abg-del-id="'+gid+'"]')||document.body;
+  _inlineConfirm(anchor,'Delete A/B group "'+name+'"? This cannot be undone.',function(){
+    fetch('/api/ab_groups/'+gid,{method:'DELETE',headers:{'X-CSRFToken':_csrf_abg()}})
+    .then(function(){location.reload();});
+  });
 }
 
 function abgEdit(gid){
@@ -31101,12 +31214,12 @@ document.addEventListener('click',function(e){
 });
 document.addEventListener('click',function(e){
   var btn=e.target.closest('[data-action="hub-remove-input"]');if(!btn)return;
-  if(!confirm('Remove "'+btn.dataset.name+'" from '+btn.dataset.site+'? Monitoring will restart.'))return;
-  btn.disabled=true;
-  hubPost('/api/hub/site/'+encodeURIComponent(btn.dataset.site)+'/input/remove',{name:btn.dataset.name})
-  .then(function(d){btn.disabled=false;if(d.ok)btn.textContent='✓ Queued';else alert('Failed: '+(d.error||'unknown'));})
-  .catch(function(){btn.disabled=false;});
-});
+  _inlineConfirm(btn,'Remove "'+btn.dataset.name+'" from '+btn.dataset.site+'? Monitoring will restart.',function(){
+    btn.disabled=true;
+    hubPost('/api/hub/site/'+encodeURIComponent(btn.dataset.site)+'/input/remove',{name:btn.dataset.name})
+    .then(function(d){btn.disabled=false;if(d.ok)btn.textContent='✓ Queued';else alert('Failed: '+(d.error||'unknown'));})
+    .catch(function(){btn.disabled=false;});
+  });
 document.addEventListener('click',function(e){
   var btn=e.target.closest('[data-action="hub-enable-input"],[data-action="hub-disable-input"]');if(!btn)return;
   var ep=btn.dataset.action==='hub-enable-input'?'enable':'disable';
@@ -31230,13 +31343,14 @@ document.addEventListener('click',function(e){
 document.addEventListener('click',function(e){
   var btn=e.target.closest('.site-restart-btn');if(!btn)return;
   var site=btn.dataset.site;
-  if(!confirm('Send restart command to "'+site+'"?\n\nThe remote process will restart in ~1 second. Monitoring will be interrupted briefly.'))return;
+  _inlineConfirm(btn,'Restart "'+site+'"? Monitoring will be interrupted briefly.',function(){
   btn.disabled=true;btn.textContent='⏳';
   hubPost('/api/hub/site/'+encodeURIComponent(site)+'/restart',{})
   .then(function(d){
     if(d.ok){btn.textContent='✓ Restarting…';btn.style.color='var(--ok)';}
     else{btn.disabled=false;btn.textContent='🔄 Restart';alert('Restart failed: '+(d.error||'unknown'));}
   }).catch(function(err){btn.disabled=false;btn.textContent='🔄 Restart';alert('Error: '+(err.message||err));});
+  }); // end _inlineConfirm
 });
 
 // Backup is now a direct download link — no JS handler needed.
@@ -32404,6 +32518,10 @@ body.wall-mode .sc{}
 .btn-loading.bp{background-image:linear-gradient(90deg,var(--acc) 25%,#4db8ff 50%,var(--acc) 75%) !important}
 .btn-loading.bd{background-image:linear-gradient(90deg,var(--al) 25%,#f87171 50%,var(--al) 75%) !important}
 .btn-loading.bg{background-image:linear-gradient(90deg,var(--bor) 25%,#1e4a7f 50%,var(--bor) 75%) !important}
+@keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.ic-bar{display:flex;align-items:center;gap:8px;padding:7px 12px;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;margin-top:6px;animation:toastIn .2s ease}
+.ic-msg{flex:1;font-size:12px;color:var(--mu)}
+#stale-bar{display:none;position:fixed;top:0;left:0;right:0;z-index:9998;padding:5px 16px;background:#451a03;border-bottom:1px solid rgba(239,68,68,.4);color:#fca5a5;font-size:12px;font-weight:600;text-align:center;letter-spacing:.02em}
 </style>
 <script nonce="{{csp_nonce()}}">
 function aiClass(s){return s.includes('ALERT')?'ai-al':s.includes('WARN')?'ai-wn':'ai-ok';}
@@ -32417,6 +32535,56 @@ function siteStatus(streams){
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]);});}
 function fmt(ts){if(!ts)return'—';const d=new Date(ts*1000);return d.toLocaleTimeString();}
 function ago(s){if(s<5)return'just now';if(s<60)return s+'s ago';return Math.round(s/60)+'m ago';}
+function agoJS(s){return ago(s);}
+function _relTime(epochSecs){
+  var s=Math.floor(Date.now()/1000)-(epochSecs||0);
+  if(s<5)    return 'just now';
+  if(s<60)   return s+'s ago';
+  if(s<3600) return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
+}
+function _relTimeStr(str){
+  if(!str) return str;
+  var d=new Date(str.replace(' ','T'));
+  if(isNaN(d)) return str;
+  var s=Math.floor((Date.now()-d.getTime())/1000);
+  if(s<0)    return str;
+  if(s<5)    return 'just now';
+  if(s<60)   return s+'s ago';
+  if(s<3600) return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';
+  return str;
+}
+function _inlineConfirm(triggerEl, msg, onConfirm){
+  var existing=triggerEl.nextElementSibling;
+  if(existing && existing.classList.contains('ic-bar')){ existing.remove(); return; }
+  var bar=document.createElement('div');
+  bar.className='ic-bar';
+  bar.innerHTML='<span class="ic-msg">'+msg+'</span>'
+    +'<button class="btn bg bs ic-cancel">Cancel</button>'
+    +'<button class="btn bd bs ic-ok">Confirm</button>';
+  triggerEl.insertAdjacentElement('afterend',bar);
+  bar.querySelector('.ic-cancel').onclick=function(e){ e.stopPropagation(); bar.remove(); };
+  bar.querySelector('.ic-ok').onclick=function(e){ e.stopPropagation(); bar.remove(); onConfirm(); };
+}
+// ── Stale data banner ─────────────────────────────────────────────────────────
+var _hubFailCount=0, _hubLastOk=Date.now();
+function _updateStaleBar(failed){
+  var bar=document.getElementById('stale-bar');
+  if(!bar) return;
+  if(failed){
+    _hubFailCount++;
+    if(_hubFailCount>=2){
+      var age=Math.round((Date.now()-_hubLastOk)/1000);
+      bar.textContent='⚠ Connection lost — last update '+(age<60?age+'s':Math.floor(age/60)+'m')+' ago. Retrying…';
+      bar.style.display='';
+    }
+  } else {
+    _hubFailCount=0; _hubLastOk=Date.now();
+    bar.style.display='none';
+  }
+}
 function toggleHist(id){const el=document.getElementById(id);el.classList.toggle('open');}
 var lastAlertState={};
 function playAlertSound(){try{new Audio('/static/alert.wav').play();}catch(e){}}
@@ -32590,7 +32758,12 @@ function hubRefresh(){
     // Re-apply active search filter after card content updates
     var _si = document.getElementById('hubSearch');
     if(_si && _si._searchApply && ((_si.value||'').trim())) _si._searchApply();
-  }).catch(function(e){console.warn('[hubRefresh]',e);}).finally(function(){ _hubSchedule(); });
+    // Tab title — prefix 🔴 when any chain fault is active so engineers see it in background tabs
+    var _anyAlert=data.sites.some(function(s){return (s.site_status==='ALERT');});
+    var _anyWarn=!_anyAlert&&data.sites.some(function(s){return (s.site_status==='WARN');});
+    document.title=(_anyAlert?'🔴 ':_anyWarn?'🟡 ':'')+' SignalScope — Hub';
+    _updateStaleBar(false);
+  }).catch(function(e){console.warn('[hubRefresh]',e); _updateStaleBar(true);}).finally(function(){ _hubSchedule(); });
 }
 // ── Live view — polling-based PPM meters ──────────────────────────────────
 // Replaces SSE with a simple GET poll every 150 ms. Works through any nginx
@@ -33004,6 +33177,25 @@ document.addEventListener('DOMContentLoaded', function(){
       hubRefresh();
     }
   });
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
+  document.addEventListener('keydown', function(e){
+    var tag=(document.activeElement||{}).tagName||'';
+    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+    if(e.metaKey||e.ctrlKey||e.altKey) return;
+    // R — force refresh
+    if(e.key==='r'||e.key==='R'){
+      e.preventDefault();
+      clearTimeout(_hubTimer); hubRefresh();
+      return;
+    }
+    // Esc — close any open ic-bar, offline-banner-modal, or hmp-panel
+    if(e.key==='Escape'){
+      document.querySelectorAll('.ic-bar').forEach(function(b){b.remove();});
+      var hmp=document.getElementById('hmp-panel');
+      if(hmp&&hmp.style.display!=='none'){var cl=document.getElementById('hmp-close');if(cl)cl.click();}
+      return;
+    }
+  });
 });
 
 // ── Signal history charts ──────────────────────────────────────────────────────
@@ -33233,6 +33425,7 @@ setInterval(_loadTrends, 300000);
 })();
 </script>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body data-live-view="{{live_view}}">
+<div id="stale-bar"></div>
 {{ topnav("hub") }}
 <div class="hub-topbar" style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;gap:7px;align-items:center">
   <span style="font-size:13px;font-weight:600">🛰 Hub Dashboard</span>

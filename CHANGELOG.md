@@ -2,6 +2,19 @@
 
 ---
 
+## [3.5.23] - 2026-04-04
+
+### Added
+- **Stale data banner** — fixed orange bar appears at the top of the Hub page after two consecutive `hubRefresh` failures, showing "⚠ Connection lost — last update Xm ago. Retrying…". Clears automatically on first successful poll. Engineers can immediately see when hub data is frozen rather than unknowingly acting on stale information.
+- **Relative timestamps** — Reports page and fault log drawer now show "4m ago", "just now", etc. Hovering the cell shows the full absolute timestamp. Updates every 60 s automatically. Reverts to absolute time for events older than 24 h.
+- **Inline confirmations** — every destructive action (`confirm()` dialog) replaced with a slick inline bar that appears directly below the button: Cancel / Confirm. Works on LAN/HTTP where browser `confirm()` is silently blocked. Covers: delete user, delete backup, restore backup, restart, delete chain, delete clip, remove plugin, install/update plugin, hub site remove/restart, hub input remove, A/B group delete, mobile token disable.
+- **Keyboard shortcuts on Hub page** — `R` forces an immediate refresh; `Esc` closes any open inline confirmation bars and the live-play panel.
+- **Tab title alert state** — Hub page title prefixes `🔴` on any ALERT site, `🟡` on any WARN site (all-clear has no prefix). Engineers see the alert state at a glance in background tabs.
+- **Settings scroll preservation** — switching Settings tabs now saves and restores scroll position per-tab in localStorage. No more jumping back to the top when returning to a long Inputs or Hub section.
+- **Improved empty states** — clips panel shows "🎙 No clips recorded yet — clips are saved automatically when silence or faults are detected." Fault log drawer shows "✓ No faults recorded for this chain — all clear." instead of blank space.
+
+---
+
 ## [3.5.22] - 2026-04-04
 
 ### Fixed
