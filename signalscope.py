@@ -2249,7 +2249,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.28"
+BUILD                  = "SignalScope-3.5.29"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -26802,6 +26802,14 @@ function _fmtDur(secs){
   return Math.floor(secs/3600)+'h '+Math.floor((secs%3600)/60)+'m';
 }
 function _esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+function _relTime(epochSecs){
+  var s=Math.floor(Date.now()/1000)-(epochSecs||0);
+  if(s<5)    return 'just now';
+  if(s<60)   return s+'s ago';
+  if(s<3600) return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
+}
 
 // Initialise datetime picker to now so the user has a sensible starting point
 (function(){var d=new Date();var pad=function(n){return String(n).padStart(2,'0');};document.getElementById('hist_dt').value=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());})();

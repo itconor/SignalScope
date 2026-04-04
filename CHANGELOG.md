@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.29] - 2026-04-04
+
+### Fixed
+- **Broadcast Chains fault log always shows "Error loading fault log"** — `loadFaultLog` called `_relTime()` (added in 3.5.23 for relative timestamps) but `_relTime` was never defined in `BROADCAST_CHAINS_TPL`. Every call threw `ReferenceError: _relTime is not defined`, which was swallowed by the `.catch()` handler and rendered as the error message. Fixed by adding `_relTime` alongside `_esc` and `_fmtDur` in the chains template.
+
+---
+
 ## [3.5.28] - 2026-04-04
 
 ### Fixed
