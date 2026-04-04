@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.15"
+BUILD                  = "SignalScope-3.5.16"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -7643,19 +7643,19 @@ class MonitorManager:
         # Raises SdrBusyError if an FM stream already holds this device index.
         sdr_manager.claim_dab_device(session.device_idx, owner_name)
         _gain_val = str(getattr(session, "gain", -1))
-        # -C 1 is required for DabPrewarm to work correctly.  Without it,
-        # welle-cli's behaviour changes in a way that defeats the prewarm's
-        # persistent-connection strategy and services become sequential again
-        # (~52 s each, same as the pre-3.5.5 bug).  With -C 1 + DabPrewarm
-        # (the 3.5.5 combination that was proven to work) all services become
-        # ready within ~52 s total.  Do NOT remove -C 1 on non-Pi hardware.
+        # No -C flag on non-Pi: welle-cli decodes all services simultaneously.
+        # With -C 1 the carousel rotates one service every ~52 s regardless of
+        # how many connections are waiting — services become ready at 52 s,
+        # 104 s, 156 s intervals.  Without -C, all encoders start in parallel
+        # and the prewarm connections get data in seconds rather than minutes.
         cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
-               "-C", "1", "-g", _gain_val, "-F", driver]
+               "-g", _gain_val, "-F", driver]
         if session.ppm:
             cmd += ["-p", str(session.ppm)]
         if _is_raspberry_pi():
-            # On Pi -C N (consumers) + -T to limit CPU on large muxes.
-            # Replaces the -C 1 added above.
+            # Pi: -T disables TII decoding (saves CPU).  -C N limits decoding
+            # to only the monitored services so the full mux doesn't overload
+            # the CPU.  Uses -F not -D so no -C/-D conflict.
             _n = max(1, len(session.consumers))
             cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
                    "-T", "-C", str(_n), "-g", _gain_val, "-F", driver]
@@ -7821,7 +7821,7 @@ class MonitorManager:
                 url    = f"http://localhost:{session.dab_port}/mp3/{sid_str}"
                 end_ts = time.monotonic() + 150          # hold for up to 150 s
                 try:
-                    with _pur.urlopen(url, timeout=5) as r:
+                    with _pur.urlopen(url, timeout=30) as r:
                         while time.monotonic() < end_ts and not session.stop_evt.is_set():
                             chunk = r.read(8192)
                             if not chunk:

@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.16] - 2026-04-04
+
+### Fixed
+- **DAB services sequential (52 s each) — root cause: `-C 1` carousel mode** — with `-C 1`, welle-cli decodes services one at a time, rotating every ~52 s regardless of how many connections are waiting. Services appeared at 52 s, 104 s, 156 s intervals; services beyond the 4th frequently missed the 120 s probe deadline entirely. Fix: removed `-C 1` from the non-Pi welle-cli command in `_start_dab_session`. Without `-C`, welle-cli decodes all services simultaneously — all encoders start in parallel and are ready within seconds. Pi hardware retains `-T -C N` (N = monitored service count) to prevent CPU overload. Prewarm `timeout=5 → 30`: without the carousel, all encoders start in parallel but may take more than 5 s to produce their first output; the longer timeout ensures prewarm connections stay open until real data flows, keeping encoders alive for the probe loop.
+
+---
+
 ## [3.5.15] - 2026-04-04
 
 ### Fixed
