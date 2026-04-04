@@ -2248,7 +2248,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.23"
+BUILD                  = "SignalScope-3.5.24"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -11723,7 +11723,7 @@ class HubClient:
                     try:
                         src = _relay_live_buf()
                         if src:
-                            seed_n = int(3.0 / CHUNK_DURATION)
+                            seed_n = int(5.0 / CHUNK_DURATION)  # 5 s pre-seed — more headroom on high-RTT WANs
                             for c in list(src)[-seed_n:]:
                                 proc.stdin.write(_pcm(c))
                         sent_seq = getattr(inp, "_live_chunk_seq", 0)
@@ -11750,7 +11750,13 @@ class HubClient:
                 consecutive_fails = 0
                 try:
                     while not stop_event.is_set():
-                        data = proc.stdout.read(4096)
+                        # 16 384 bytes ≈ one 0.5 s stereo-256kbps chunk in a single
+                        # read.  Using 4096 here required 4 WAN round trips per chunk
+                        # (4 × RTT overhead per 0.5 s), which put 256 kbps stereo relay
+                        # behind real-time on any WAN with RTT > ~125 ms — producing the
+                        # characteristic "starts and stops" stutter.  A single larger
+                        # read drops that to ≤ 1 round trip per 0.5 s chunk.
+                        data = proc.stdout.read(16384)
                         if not data:
                             break
                         try:

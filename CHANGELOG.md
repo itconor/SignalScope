@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.24] - 2026-04-04
+
+### Fixed
+- **Hub live relay stutter / "starts and stops" for stereo DAB streams** — the relay writer in `_push_audio_request` was using `proc.stdout.read(4096)` with a blocking WAN POST after each read. At 256 kbps stereo this meant 4 WAN round trips per 0.5 s audio chunk; on any link with RTT > ~125 ms the hub's relay slot drained faster than it refilled, producing periodic audio dropouts. Fixed by increasing the read size to 16 384 bytes (≈ one full 0.5 s stereo chunk), reducing WAN round trips from 4 to ≤ 1 per chunk. Also increased the relay pre-seed from 3 s to 5 s for additional headroom on high-latency links.
+
+---
+
 ## [3.5.23] - 2026-04-04
 
 ### Added
