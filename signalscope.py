@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.5"
+BUILD                  = "SignalScope-3.5.6"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -7633,7 +7633,7 @@ class MonitorManager:
         # Raises SdrBusyError if an FM stream already holds this device index.
         sdr_manager.claim_dab_device(session.device_idx, owner_name)
         _gain_val = str(getattr(session, "gain", -1))
-        cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel, "-C", "1", "-g", _gain_val, "-F", driver]
+        cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel, "-g", _gain_val, "-F", driver]
         if session.ppm:
             cmd += ["-p", str(session.ppm)]
         self.log(f"[{name}] DAB shared: launching {' '.join(cmd)}")

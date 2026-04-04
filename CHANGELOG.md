@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.6] - 2026-04-04
+
+### Fixed
+- **DAB slow startup root cause — welle-cli `-C 1` carousel mode** — the welle-cli launch command included `-C 1`, which puts welle-cli into carousel mode: it decodes **one programme at a time**, rotating through the ensemble. This is the documented meaning of `-C N` ("number of programmes to decode in a carousel"). With `-C 1`, welle-cli activates one service encoder, holds it for ~52 s, then deactivates it and starts the next — so 9 services take ~8 minutes. The flag was present from the original shared-session implementation and was the sole cause of the sequential 52 s-per-service startup pattern. **Fixed:** removed `-C 1` from the welle-cli command entirely. Without `-C`, welle-cli decodes the **entire ensemble simultaneously**, and all `/mp3/<sid>` endpoints become ready within ~1 mux-lock cycle (~10–15 s). The `DabPrewarm` thread added in 3.5.5 remains as a useful insurance but is no longer the primary mechanism.
+
+---
+
 ## [3.5.5] - 2026-04-04
 
 ### Fixed
