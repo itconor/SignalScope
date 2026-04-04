@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.13"
+BUILD                  = "SignalScope-3.5.14"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -7643,20 +7643,25 @@ class MonitorManager:
         # Raises SdrBusyError if an FM stream already holds this device index.
         sdr_manager.claim_dab_device(session.device_idx, owner_name)
         _gain_val = str(getattr(session, "gain", -1))
-        cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel, "-g", _gain_val, "-F", driver]
+        # -C 1 is required for DabPrewarm to work correctly.  Without it,
+        # welle-cli's behaviour changes in a way that defeats the prewarm's
+        # persistent-connection strategy and services become sequential again
+        # (~52 s each, same as the pre-3.5.5 bug).  With -C 1 + DabPrewarm
+        # (the 3.5.5 combination that was proven to work) all services become
+        # ready within ~52 s total.  Do NOT remove -C 1 on non-Pi hardware.
+        cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
+               "-C", "1", "-g", _gain_val, "-F", driver]
         if session.ppm:
             cmd += ["-p", str(session.ppm)]
         if _is_raspberry_pi():
-            # On Pi, decoding a large mux (e.g. BBC National ~12 services) in full
-            # saturates the CPU. -T disables TII decoding (not needed for monitoring).
-            # -C N limits simultaneous service decoding to the number of consumers
-            # registered on this session — only the services being monitored are
-            # decoded, not the full mux ensemble.
-            # Note: monitoring uses -F (not -D) for device selection, so -C and -F
-            # are compatible — no conflict here unlike the scanner plugin.
+            # On Pi -C N (consumers) + -T to limit CPU on large muxes.
+            # Replaces the -C 1 added above.
             _n = max(1, len(session.consumers))
-            cmd += ["-T", "-C", str(_n)]
-            self.log(f"[{name}] Raspberry Pi — adding -T -C {_n} to limit CPU")
+            cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
+                   "-T", "-C", str(_n), "-g", _gain_val, "-F", driver]
+            if session.ppm:
+                cmd += ["-p", str(session.ppm)]
+            self.log(f"[{name}] Raspberry Pi — using -T -C {_n} to limit CPU")
         self.log(f"[{name}] DAB shared: launching {' '.join(cmd)}")
 
         try:

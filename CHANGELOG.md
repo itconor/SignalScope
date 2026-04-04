@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.14] - 2026-04-04
+
+### Fixed
+- **DAB services sequential again after 3.5.6 — restore `-C 1` on non-Pi** — 3.5.6 removed `-C 1` from the monitoring welle-cli command on the incorrect assumption it was the root cause of slow startup. The actual fix was the DabPrewarm introduced in 3.5.5. The proven combination is `-C 1` + DabPrewarm: without `-C 1`, welle-cli's behaviour changes in a way that defeats the prewarm's persistent-connection strategy and services revert to sequential ~52 s-each startup. Restored `-C 1` on non-Pi hardware. Pi hardware uses `-T -C N` (where N = monitored service count) as before.
+
+---
+
 ## [3.5.13] - 2026-04-04
 
 ### Fixed
