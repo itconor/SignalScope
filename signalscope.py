@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.1"
+BUILD                  = "SignalScope-3.5.2"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -6115,6 +6115,7 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
     cfg._last_level_dbfs=lev
     cfg._last_peak_dbfs=dbfs(float(np.max(np.abs(data))))
     cfg._has_real_level=True
+    cfg._last_level_ts=time.time()
     if not cfg.enabled: return
     in_alert = lev <= cfg.silence_threshold_dbfs
     _sla_update(cfg, elapsed, in_alert)

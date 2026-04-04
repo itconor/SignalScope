@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.2] - 2026-04-04
+
+### Fixed
+- **`/api/health` always reports "Stale streams"** — `_last_level_ts` was read by the health check but never written anywhere in the codebase. `getattr(inp, "_last_level_ts", 0)` always returned `0`, making `age = time.time() - 0` ≈ 1.7 billion seconds — every stream with a real level measurement was permanently flagged as stale regardless of actual health. Fixed: `cfg._last_level_ts = time.time()` is now written alongside `_has_real_level = True` in `analyse_chunk`, updated on every audio chunk (~10 Hz). The health check now correctly flags streams that genuinely stop producing audio for > 120 s.
+
+---
+
 ## [3.5.1] - 2026-04-04
 
 ### Fixed
