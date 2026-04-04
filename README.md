@@ -48,7 +48,7 @@ Once complete, open `http://localhost:5000`. The setup wizard will guide you thr
 
 | Category | What SignalScope does |
 |---|---|
-| **Inputs** | FM via RTL-SDR, DAB via RTL-SDR, Livewire/AES67 (RTP multicast), HTTP/HTTPS audio streams, local ALSA/PulseAudio devices |
+| **Inputs** | FM via RTL-SDR (with configurable de-emphasis), DAB via RTL-SDR, Livewire/AES67 (RTP multicast), HTTP/HTTPS audio streams, local ALSA/PulseAudio devices |
 | **FM Scanner** | On-demand FM frequency tuning via RTL-SDR with live browser audio, RDS decoding, band scan, tuning history and presets; hub scanner page (`/hub/scanner`) |
 | **Web SDR plugin** | Browser-based SDR with scrolling waterfall, click-to-tune, WFM/NFM/AM demodulation — installed via Settings → Plugins |
 | **Logger plugin** | Continuous 24/7 compliance recording of any monitored stream; 5-minute segments with silence overlay, scrubable timeline with zoom/pan, show-name and track bands, mic on-air band, mark in/out clip export, right-click timeline markers, configurable recording format (MP3/AAC/Opus), per-stream quality tiers and configurable retention — installed via Settings → Plugins |
@@ -161,6 +161,18 @@ Dongles marked **Scanner** are reported to the hub in every heartbeat and used t
 4. Optionally set a PPM calibration offset
 5. Save — SignalScope starts the RTL-SDR receiver and will begin reporting level, carrier strength, and RDS data
 
+#### FM De-emphasis
+
+FM broadcast transmitters apply pre-emphasis before transmission to reduce high-frequency noise on analogue FM. SignalScope applies matching de-emphasis after demodulation to restore flat frequency response and reduce perceived hiss.
+
+Configure per-input in **Settings → Inputs → Edit → De-emphasis**:
+
+| Setting | Region |
+|---|---|
+| **50 µs** (default) | Europe, Australia, Asia, most of the world |
+| **75 µs** | North America, South Korea |
+| **Off** | Disable (e.g. for data-only monitoring where flat response is required) |
+
 ### Adding DAB Sources
 
 1. Select **DAB** in the Add Input form
@@ -205,7 +217,7 @@ Requires at least one RTL-SDR dongle configured with role **Scanner** in **Setti
 
 The pipeline runs entirely in Python: `rtl_fm → resampling (scipy) → PCM → hub relay → browser Web Audio API`. End-to-end latency is typically 1–2 seconds RF to browser.
 
-For WAN deployments where the hub is hosted remotely from the SDR client, the pipeline uses adaptive chunk batching to maintain real-time throughput regardless of round-trip time.
+For WAN deployments where the hub is hosted remotely from the SDR client, the pipeline uses adaptive chunk batching to maintain real-time throughput regardless of round-trip time. The hub relay uses large read chunks (16 KB per read) to minimise WAN round trips — one POST per 0.5 s audio chunk for 256 kbps stereo streams.
 
 ---
 

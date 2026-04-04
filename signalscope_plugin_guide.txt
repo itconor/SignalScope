@@ -87,6 +87,11 @@ Audio format:
   Chunk size:  24 000 samples = 0.5 s per chunk
   To pipe to ffmpeg stdin: chunk.astype(np.float32).tobytes()
 
+NOTE: _stream_buffer always contains mono (mixed-down) audio regardless of source
+stereo setting. For stereo streams the interleaved L/R data is in _audio_buffer.
+Use _stream_buffer for analysis, mixing, comparison, and relay. Use _audio_buffer
+only when you need true L/R separation (e.g. building a stereo MP3 relay).
+
 Helper to get the buffer for a named stream:
 
     def _get_buffer(stream_name):
@@ -149,6 +154,9 @@ ACCESSING CONFIG
         inp.name          # stream display name (str)
         inp.enabled       # bool
         inp.device_index  # URL / device string / frequency
+        inp.stereo        # bool — stereo capture enabled (DAB/HTTP/ALSA)
+        inp.fm_force_mono # bool — force mono output regardless of pilot SNR (FM only)
+        inp.fm_deemphasis # str  — "50us" | "75us" | "off" — FM de-emphasis (FM only)
 
     def _available_streams():
         try:
