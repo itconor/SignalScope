@@ -42,7 +42,7 @@ input[type=text],input[type=number],input[type=password],input[type=email]{width
 .toast.t-err{border-left:3px solid var(--al)}
 .toast.t-info{border-left:3px solid var(--acc)}
 @keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
-.ic-bar{display:flex;align-items:center;gap:8px;padding:7px 12px;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;margin-top:6px;animation:toastIn .2s ease}
+.ic-bar{display:flex;align-items:center;gap:8px;padding:7px 12px;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;margin-top:6px;animation:toastIn .2s ease;flex-basis:100%;flex-shrink:0}
 .ic-msg{flex:1;font-size:12px;color:var(--mu)}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body class="{{'wall-mode' if wall_mode else ''}}">
 <script nonce="{{csp_nonce()}}">
@@ -1981,7 +1981,7 @@ window.pluginFetchAvail = function(silentIfDone){
         }
         var verLine = (p.version && inst) ? '<div style="font-size:11px;color:var(--mu);margin-top:2px">'
           + 'Installed: v'+_esc(inst.version||'?')+' &nbsp;·&nbsp; Latest: v'+_esc(p.version||'?')+'</div>' : '';
-        return '<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;'
+        return '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 12px;'
           + 'background:var(--bg3,#111f35);border:1px solid var(--bor);border-radius:8px;margin-bottom:8px">'
           + '<span style="font-size:22px;flex-shrink:0">'+(p.icon||'🔌')+'</span>'
           + '<div style="flex:1;min-width:0">'
@@ -2249,7 +2249,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.32"
+BUILD                  = "SignalScope-3.5.33"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -32751,7 +32751,7 @@ body.wall-mode .sc{}
 .btn-loading.bd{background-image:linear-gradient(90deg,var(--al) 25%,#f87171 50%,var(--al) 75%) !important}
 .btn-loading.bg{background-image:linear-gradient(90deg,var(--bor) 25%,#1e4a7f 50%,var(--bor) 75%) !important}
 @keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
-.ic-bar{display:flex;align-items:center;gap:8px;padding:7px 12px;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;margin-top:6px;animation:toastIn .2s ease}
+.ic-bar{display:flex;align-items:center;gap:8px;padding:7px 12px;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;margin-top:6px;animation:toastIn .2s ease;flex-basis:100%;flex-shrink:0}
 .ic-msg{flex:1;font-size:12px;color:var(--mu)}
 #stale-bar{display:none;position:fixed;top:0;left:0;right:0;z-index:9998;padding:5px 16px;background:#451a03;border-bottom:1px solid rgba(239,68,68,.4);color:#fca5a5;font-size:12px;font-weight:600;text-align:center;letter-spacing:.02em}
 </style>

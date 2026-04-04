@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.33] - 2026-04-04
+
+### Fixed
+- **Plugin update/install confirm dialog crushes description text** — clicking "Update to vX" or "Install" inserted the inline confirm bar (`ic-bar`) as an extra flex item inside the plugin row's `display:flex` container. With `min-width:0` on the description div, it could shrink to near zero and wrap every word onto its own line. Fixed by: (1) adding `flex-wrap:wrap` to the plugin row container so the confirm bar can break onto its own line; (2) adding `flex-basis:100%` to the global `.ic-bar` rule so whenever a confirm bar lives inside a flex container it always occupies a full-width row beneath the main content. Applies to both the Settings and Hub templates.
+
+---
+
 ## [3.5.32] - 2026-04-04
 
 ### Added
