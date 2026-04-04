@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.162] - 2026-04-04
+
+### Fixed
+- **`/api/health` DB check** — `MetricsDB.query()` was called with wrong argument order (time-range style instead of `stream, metric, hours`), causing a 500 on every health poll. Fixed to `query("__health_check__", "level_dbfs", 0.01)`.
+
+---
+
 ## [3.4.161] - 2026-04-04
 
 ### Fixed

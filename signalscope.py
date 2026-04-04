@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.161"
+BUILD                  = "SignalScope-3.4.162"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -16034,9 +16034,7 @@ def api_health():
     # ── Database ──────────────────────────────────────────────────────────
     db_ok = False
     try:
-        metrics_db.query("level_dbfs",
-                         time.time() - 10, time.time(),
-                         "__health_check__")
+        metrics_db.query("__health_check__", "level_dbfs", 0.01)
         db_ok = True
     except Exception as e:
         issues.append(f"Database: {e}")
