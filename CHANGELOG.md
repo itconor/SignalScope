@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.19] - 2026-04-04
+
+### Fixed
+- **DAB services still sequential at 52s intervals — welle-cli default is one-at-a-time** — removing `-C 1` in 3.5.16 had no effect because welle-cli's default behaviour (no `-C` flag) is also sequential one-at-a-time activation, producing the same 52 s / 104 s / 156 s pattern. The fix is `-C N` with N large enough to decode all services simultaneously. Non-Pi: added `-C 20` (larger than any standard DAB mux ≤18 services), forcing all encoders to start in parallel. Pi: kept `-T -C N` where N = monitored service count. Added a 0.5 s pause before building the welle-cli command so that all 9 concurrently-starting monitor threads have time to register in `session.consumers` before `len(session.consumers)` is read for the Pi `-C N` value (previously it was always 1 at the moment welle-cli launched).
+
+---
+
 ## [3.5.18] - 2026-04-04
 
 ### Fixed

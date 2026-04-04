@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.18"
+BUILD                  = "SignalScope-3.5.19"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -7643,25 +7643,33 @@ class MonitorManager:
         # Raises SdrBusyError if an FM stream already holds this device index.
         sdr_manager.claim_dab_device(session.device_idx, owner_name)
         _gain_val = str(getattr(session, "gain", -1))
-        # No -C flag on non-Pi: welle-cli decodes all services simultaneously.
-        # With -C 1 the carousel rotates one service every ~52 s regardless of
-        # how many connections are waiting — services become ready at 52 s,
-        # 104 s, 156 s intervals.  Without -C, all encoders start in parallel
-        # and the prewarm connections get data in seconds rather than minutes.
-        cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
-               "-g", _gain_val, "-F", driver]
-        if session.ppm:
-            cmd += ["-p", str(session.ppm)]
+
+        # Brief pause so that any other monitoring threads that started at the
+        # same time (all 9 services initialise concurrently) have time to call
+        # _get_or_create_dab_session and add themselves to session.consumers.
+        # Without this, len(session.consumers) is 1 at the moment welle-cli
+        # launches, giving a too-small -C value on Pi.
+        time.sleep(0.5)
+
+        # -C N tells welle-cli to decode N services simultaneously rather than
+        # activating them one-at-a-time (its default, which causes services to
+        # appear at 52 s, 104 s, 156 s intervals regardless of -C 1 being set).
+        # Non-Pi: use 20 — larger than any standard DAB mux (≤18 services), so
+        # all encoders start in parallel.  CPU cost is negligible on non-Pi.
+        # Pi: -T disables TII decoding; -C N limits parallel decoding to the
+        # monitored services only to avoid CPU overload.
         if _is_raspberry_pi():
-            # Pi: -T disables TII decoding (saves CPU).  -C N limits decoding
-            # to only the monitored services so the full mux doesn't overload
-            # the CPU.  Uses -F not -D so no -C/-D conflict.
             _n = max(1, len(session.consumers))
             cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
                    "-T", "-C", str(_n), "-g", _gain_val, "-F", driver]
             if session.ppm:
                 cmd += ["-p", str(session.ppm)]
             self.log(f"[{name}] Raspberry Pi — using -T -C {_n} to limit CPU")
+        else:
+            cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
+                   "-C", "20", "-g", _gain_val, "-F", driver]
+            if session.ppm:
+                cmd += ["-p", str(session.ppm)]
         self.log(f"[{name}] DAB shared: launching {' '.join(cmd)}")
 
         try:
