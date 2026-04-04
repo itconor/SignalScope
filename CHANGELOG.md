@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.17] - 2026-04-04
+
+### Fixed
+- **DAB audio endpoint probe stuck for 52 s — threshold too high** — the initial probe loop required `len(read) >= 4096` bytes before declaring an endpoint ready. welle-cli sends the ID3 header and early MP3 frames in small chunks well below 4096 bytes. The check silently failed on every probe attempt (no exception thrown, no log line, just a small read that didn't hit the threshold) causing a ~52 s busy-loop until a large enough burst finally accumulated. Fixed: threshold lowered to `>= 128` bytes. Any non-trivial response body means the encoder has started. Probe `timeout=3 → 5` for a slightly longer initial read window. Same fix applied to the reconnect-recovery probe.
+
+---
+
 ## [3.5.16] - 2026-04-04
 
 ### Fixed

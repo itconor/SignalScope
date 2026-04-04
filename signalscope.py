@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.16"
+BUILD                  = "SignalScope-3.5.17"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8098,13 +8098,12 @@ class MonitorManager:
                 return
 
             # ── Initial probe: wait for the audio endpoint to serve data ────────
-            # 120s deadline: welle-cli initialises individual service /mp3/sid
-            # endpoints lazily (on first HTTP connection).  In a large ensemble
-            # (e.g. 9 services on 12D) the encoders start one-at-a-time; slower
-            # services can take 90-160s after mux-ready before their endpoint
-            # serves 4 KB.  The previous 35s limit caused all streams to cycle
-            # through probe→fail→5s-restart repeatedly, spreading readiness over
-            # 3+ minutes.  120s covers even the slowest service in a single pass.
+            # 120s deadline for safety.  The threshold is intentionally low (128
+            # bytes): welle-cli sends the ID3 header and first MP3 frames in small
+            # chunks.  The old ≥4096 check silently failed on every probe (no
+            # exception — just a small read that didn't hit the threshold) causing a
+            # ~52 s busy-loop before a large-enough burst finally arrived.  Any
+            # non-trivial response body means the encoder has started.
             stream_ready = False
             ready_deadline = time.time() + 120
             while time.time() < ready_deadline and not stop_evt.is_set():
@@ -8112,9 +8111,9 @@ class MonitorManager:
                     self.log(f"[{name}] DAB: welle-cli exited before audio stream became ready")
                     return
                 try:
-                    with _ur.urlopen(audio_url, timeout=3) as _trig:
+                    with _ur.urlopen(audio_url, timeout=5) as _trig:
                         probe = _trig.read(4096)
-                        if probe and len(probe) >= 4096:
+                        if probe and len(probe) >= 128:
                             stream_ready = True
                             self.log(f"[{name}] DAB: audio endpoint ready ({len(probe)} bytes)")
                             break
@@ -8325,9 +8324,9 @@ class MonitorManager:
                         if session.proc.poll() is not None or session.failed:
                             break
                         try:
-                            with _ur.urlopen(audio_url, timeout=3) as _trig:
-                                probe = _trig.read(8192)
-                                if probe and len(probe) >= 2048:
+                            with _ur.urlopen(audio_url, timeout=5) as _trig:
+                                probe = _trig.read(4096)
+                                if probe and len(probe) >= 128:
                                     recovered = True
                                     break
                         except Exception:
