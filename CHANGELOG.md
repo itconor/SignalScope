@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.25] - 2026-04-04
+
+### Fixed
+- **Check for Updates / Restart / Kill orphan DAB buttons all broken since 3.5.23** — the backup list delete-button handler (`bk-list-wrap` click listener) was missing its closing `});` after the 3.5.23 inline-confirm refactor. This left a JavaScript syntax error in the entire 1309–1833 script block, silently killing `_csrf()`, `checkForUpdates()`, and the `upd-check-btn` event listener. All buttons depending on that block appeared to do nothing. Fixed by restoring the missing `});` to close the event handler.
+- **Restart button TypeError** — `onclick="adminRestart()"` passed no argument; the function tried `_inlineConfirm(null, …)` which threw a TypeError. Fixed by changing the onclick to `adminRestart(this)` so the button element is passed.
+
+---
+
 ## [3.5.24] - 2026-04-04
 
 ### Fixed

@@ -1044,7 +1044,7 @@ document.addEventListener('DOMContentLoaded',function(){
   <div class="sec" style="margin-top:24px">⚡ Process Control</div>
   <p class="help" style="margin-bottom:12px">Restart the SignalScope process (all active streams will disconnect briefly) or free a stuck SDR dongle left claimed after a scan.</p>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-    <button type="button" class="btn bw" onclick="adminRestart()" style="font-size:13px">🔄 Restart SignalScope</button>
+    <button type="button" class="btn bw" onclick="adminRestart(this)" style="font-size:13px">🔄 Restart SignalScope</button>
     <button type="button" class="btn bw" onclick="killDabOrphans()" style="font-size:13px">🔌 Kill orphan DAB processes</button>
     <span id="proc-ctrl-status" style="font-size:12px;color:var(--mu)"></span>
   </div>
@@ -1576,6 +1576,7 @@ document.getElementById('bk-list-wrap').addEventListener('click', function(e){
   .then(function(d){ if(d.ok) bkLoadList(); })
   .catch(function(){});
   }); // end _inlineConfirm
+}); // end bk-list-wrap click handler
 bkLoadList();
 
 function killDabOrphans(){
@@ -2248,7 +2249,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.24"
+BUILD                  = "SignalScope-3.5.25"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
