@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.30] - 2026-04-04
+
+### Added
+- **AI Monitor stereo support** — the AI anomaly monitor now correctly handles stereo streams. Previously, `_ai_loop` read `_audio_buffer` directly; for stereo streams this contains interleaved L/R float32 data that was being processed as a double-length mono signal, producing completely wrong spectral features. The loop now detects `_audio_channels == 2`, deinterleaves the buffer into separate L and R arrays, and uses the mid-mix `(L+R)/2` for the 14 standard features. Two additional stereo-specific features are extracted and appended: **[14] L–R correlation** (normalised to [0,1]; detects one dead channel, phase faults) and **[15] L/R RMS imbalance** (|dBFS_L − dBFS_R| / 20 dB; detects channel balance faults). Stereo streams train and load 16-feature models (`AI_FEATURE_DIM_STEREO = 16`); mono streams continue to use 14-feature models. `_classify` adds stereo-specific fault labels for features [14] and [15]. On the first run after upgrade, any existing mono-trained models for stereo streams will automatically detect the feature-dimension mismatch and begin a fresh learning phase.
+- **AI model feature dim stored in stats JSON** — `feat_dim` is now persisted in `<stream>_stats.json` alongside `mean`/`std`/`n`. On load, the ONNX model's input shape is checked against `feat_dim`; a mismatch resets to learning phase rather than crashing.
+
+---
+
 ## [3.5.29] - 2026-04-04
 
 ### Fixed

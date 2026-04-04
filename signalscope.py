@@ -2249,7 +2249,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.29"
+BUILD                  = "SignalScope-3.5.30"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2405,7 +2405,8 @@ LIVE_PLAYOUT_BUFFER_SECS = 1.5  # extra browser listen jitter buffer on Linux/VM
 
 LEARN_DURATION_SECONDS = 86400.0      # 24 hours
 AI_ANALYSIS_INTERVAL   = 5.0
-AI_FEATURE_DIM         = 14           # stable content-agnostic features (reduced from 20)
+AI_FEATURE_DIM         = 14           # stable content-agnostic features for mono streams
+AI_FEATURE_DIM_STEREO  = 16           # AI_FEATURE_DIM + 2 stereo-specific features
 AI_HIDDEN_DIM          = 7
 ANOMALY_WARN_THRESHOLD  = 3.2          # z-score → WARN (raised to reduce music/speech false positives)
 ANOMALY_ALERT_THRESHOLD = 5.5          # z-score → ALERT
@@ -2604,6 +2605,7 @@ class InputConfig:
     _level_dbfs_l:      float = field(default=-120.0, init=False, repr=False)
     _level_dbfs_r:      float = field(default=-120.0, init=False, repr=False)
     _audio_channels:    int   = field(default=1,      init=False, repr=False)
+    _ai_feat_dim:       int   = field(default=AI_FEATURE_DIM, init=False, repr=False)
     _history:           List[Dict] = field(default_factory=list, init=False, repr=False)
     _audio_buffer:      Optional[object] = field(default=None, init=False, repr=False)
     _stream_buffer:     Optional[object] = field(default=None, init=False, repr=False)
@@ -5375,8 +5377,10 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
 
 # ─── Feature extraction ───────────────────────────────────────────────────────
 
-def extract_features(audio: np.ndarray) -> np.ndarray:
-    """Extract 14 content-agnostic features for the autoencoder.
+def extract_features(audio: np.ndarray,
+                     L: np.ndarray = None,
+                     R: np.ndarray = None) -> np.ndarray:
+    """Extract 14 (mono) or 16 (stereo) content-agnostic features for the autoencoder.
 
     Key design principle: features must be STABLE across normal content variation
     (music vs speech vs jingles) and only deviate on genuine faults.
@@ -5385,6 +5389,14 @@ def extract_features(audio: np.ndarray) -> np.ndarray:
     dramatically between music and speech and cause constant false positives.
     Kept: level, dynamics, DC, clipping, spectral flatness (fault indicator),
     rolloff variance (content-stable shape descriptor), and noise floor estimate.
+
+    When L and R (per-channel arrays) are supplied two stereo-specific features
+    are appended:
+      [14] L–R correlation coefficient normalised to [0, 1].
+           Normal stereo programme: ~0.65–0.95. One channel dead: ~0.5.
+           Identical channels (lost stereo): ~1.0. Severe phase error: < 0.5.
+      [15] L/R RMS imbalance: |dBFS_L − dBFS_R| / 20, clipped to [0, 1].
+           Normal: near 0. Severe imbalance (one channel 20 dB down): 1.0.
     """
     n = len(audio)
     if n < 64:
@@ -5444,13 +5456,35 @@ def extract_features(audio: np.ndarray) -> np.ndarray:
     # Zero-crossing rate — very high = distortion/clipping artefact, very low = silence/DC
     zcr = float(np.mean(np.diff(np.sign(audio)) != 0))
 
-    return np.array([
+    base = np.array([
         lvl, pk, crest, dc, clip_frac,      # [0-4]  level / dynamics / fault indicators
         rms_var, min_frm,                    # [5-6]  short-term stability
         flat, rolloff, noise_floor,          # [7-9]  spectral shape (content-agnostic)
         hum, hf, zcr,                        # [10-12] specific fault signatures
         lvl * (1.0 - flat),                  # [13]   active signal sanity (0 if silence or pure noise)
     ], dtype=np.float32)
+
+    if L is not None and R is not None and len(L) >= 64 and len(R) >= 64:
+        # Feature [14]: L–R correlation, normalised from [-1,1] to [0,1]
+        _Lf = L.astype(np.float64); _Rf = R.astype(np.float64)
+        _mn = min(len(_Lf), len(_Rf)); _Lf = _Lf[:_mn]; _Rf = _Rf[:_mn]
+        try:
+            _corr = float(np.corrcoef(_Lf, _Rf)[0, 1])
+        except Exception:
+            _corr = 0.0
+        if not np.isfinite(_corr): _corr = 0.0
+        f14 = float(np.clip((_corr + 1.0) / 2.0, 0.0, 1.0))
+
+        # Feature [15]: L/R RMS imbalance (|dBFS_L − dBFS_R| / 20), clipped to [0,1]
+        _rms_l = float(np.sqrt(np.mean(_Lf**2) + 1e-12))
+        _rms_r = float(np.sqrt(np.mean(_Rf**2) + 1e-12))
+        _dbfs_l = 20.0 * np.log10(_rms_l + 1e-12)
+        _dbfs_r = 20.0 * np.log10(_rms_r + 1e-12)
+        f15 = float(np.clip(abs(_dbfs_l - _dbfs_r) / 20.0, 0.0, 1.0))
+
+        return np.concatenate([base, np.array([f14, f15], dtype=np.float32)])
+
+    return base
 
 # ─── Autoencoder: train (pure numpy Adam) + export as ONNX ────────────────────
 
@@ -5459,12 +5493,13 @@ def _relu(x): return np.maximum(0.0, x)
 
 def _train_autoencoder(samples: np.ndarray, log_fn):
     N = len(samples)
-    log_fn(f"[AI] Training autoencoder on {N} samples…")
+    feat_dim = samples.shape[1]   # 14 for mono, 16 for stereo — never hard-code
+    log_fn(f"[AI] Training autoencoder on {N} samples (feat_dim={feat_dim})…")
     rng = np.random.default_rng(42)
-    W1 = rng.normal(0, 0.1, (AI_FEATURE_DIM, AI_HIDDEN_DIM)).astype(np.float32)
+    W1 = rng.normal(0, 0.1, (feat_dim, AI_HIDDEN_DIM)).astype(np.float32)
     b1 = np.zeros(AI_HIDDEN_DIM, dtype=np.float32)
-    W2 = rng.normal(0, 0.1, (AI_HIDDEN_DIM, AI_FEATURE_DIM)).astype(np.float32)
-    b2 = np.zeros(AI_FEATURE_DIM, dtype=np.float32)
+    W2 = rng.normal(0, 0.1, (AI_HIDDEN_DIM, feat_dim)).astype(np.float32)
+    b2 = np.zeros(feat_dim, dtype=np.float32)
 
     lr=1e-3; beta1=0.9; beta2=0.999; eps=1e-8; t=0
     ms = [np.zeros_like(p) for p in (W1,b1,W2,b2)]
@@ -5482,7 +5517,7 @@ def _train_autoencoder(samples: np.ndarray, log_fn):
             diff  = out - batch
             loss  = float(np.mean(diff**2)); total += loss
             t += 1
-            dout = (2.0/(B*AI_FEATURE_DIM)) * diff
+            dout = (2.0/(B*feat_dim)) * diff
             dW2  = h.T @ dout;    db2 = dout.sum(0)
             dh   = dout @ W2.T;   dh_pre = dh * (h_pre > 0).astype(np.float32)
             dW1  = batch.T @ dh_pre; db1 = dh_pre.sum(0)
@@ -5505,8 +5540,9 @@ def _build_onnx(W1, b1, W2, b2) -> bytes:
     when onnxruntime is installed — including inside a PyInstaller exe.
     """
     from onnx import numpy_helper, TensorProto, helper
-    X   = helper.make_tensor_value_info("X",   TensorProto.FLOAT, [1, AI_FEATURE_DIM])
-    Out = helper.make_tensor_value_info("Out", TensorProto.FLOAT, [1, AI_FEATURE_DIM])
+    feat_dim = W1.shape[0]   # 14 for mono, 16 for stereo
+    X   = helper.make_tensor_value_info("X",   TensorProto.FLOAT, [1, feat_dim])
+    Out = helper.make_tensor_value_info("Out", TensorProto.FLOAT, [1, feat_dim])
     def _t(name, arr):
         return numpy_helper.from_array(arr.astype(np.float32), name=name)
     nodes = [
@@ -5536,8 +5572,13 @@ def _classify(feats: np.ndarray, recon: np.ndarray) -> str:
     Feature indices: [0]lvl [1]pk [2]crest [3]dc [4]clip_frac
                      [5]rms_var [6]min_frm [7]flat [8]rolloff [9]noise_floor
                      [10]hum [11]hf [12]zcr [13]sanity
+    Stereo only:     [14]lr_corr [15]lr_imbalance
     """
     diff = np.abs(feats - recon)
+    # Stereo-specific checks first (only present in 16-feature vectors)
+    if len(feats) >= 16:
+        if feats[15] > 0.5 and diff[15] > 0.25:  return "stereo channel imbalance"
+        if feats[14] < 0.3 and diff[14] > 0.25:  return "stereo phase / channel fault"
     # Hard fault checks first (feature value, not just deviation)
     if feats[6] < 0.05 and feats[0] < 0.15:   return "dropout"
     if feats[0] < 0.05:                         return "silence / very low level"
@@ -5587,11 +5628,18 @@ def _retrain_model(stream_name: str, clean_samples: np.ndarray):
 
     # ── Combine initial 24 h corpus + new clean/labeled samples ───────────────
     _initial_path = _initial_samples_path(stream_name)
-    _initial: np.ndarray = np.empty((0, AI_FEATURE_DIM), dtype=np.float32)
+    # Use clean_samples feat_dim as the reference — the initial corpus must match.
+    _feat_dim = clean_samples.shape[1] if len(clean_samples) > 0 else AI_FEATURE_DIM
+    _initial: np.ndarray = np.empty((0, _feat_dim), dtype=np.float32)
     if os.path.exists(_initial_path):
         try:
-            _initial = np.load(_initial_path)
-            _log(f"[AI:{stream_name}] Loaded {len(_initial)} original training samples from disk")
+            _loaded = np.load(_initial_path)
+            if _loaded.shape[1] == _feat_dim:
+                _initial = _loaded
+                _log(f"[AI:{stream_name}] Loaded {len(_initial)} original training samples from disk")
+            else:
+                _log(f"[AI:{stream_name}] Warning: initial corpus feat_dim {_loaded.shape[1]} != "
+                     f"current {_feat_dim} — retraining on clean buffer only")
         except Exception as _e:
             _log(f"[AI:{stream_name}] Warning: could not load initial corpus ({_e}) — "
                  f"retraining on clean buffer only")
@@ -5621,7 +5669,8 @@ def _retrain_model(stream_name: str, clean_samples: np.ndarray):
         mean_e = float(np.mean(errs))
         std_e  = max(float(np.std(errs)), 1e-6)
         with open(_stats_path(stream_name), "w") as f:
-            json.dump({"mean": mean_e, "std": std_e, "n": len(all_samples)}, f)
+            json.dump({"mean": mean_e, "std": std_e, "n": len(all_samples),
+                       "feat_dim": all_samples.shape[1]}, f)
 
         # Hot-swap live session and stats
         if monitor:
@@ -5630,6 +5679,7 @@ def _retrain_model(stream_name: str, clean_samples: np.ndarray):
                     inp._ai_session    = sess
                     inp._ai_error_mean = mean_e
                     inp._ai_error_std  = std_e
+                    inp._ai_feat_dim   = all_samples.shape[1]
                     if hasattr(inp, '_ai_error_var'):
                         inp._ai_error_var = std_e ** 2
                     # Model now knows this audio is normal — threshold bias resets to 0
@@ -5672,8 +5722,17 @@ class StreamAI:
         mp=_model_path(self.cfg.name); sp=_stats_path(self.cfg.name)
         if not (os.path.exists(mp) and os.path.exists(sp)): return False
         try:
-            self.cfg._ai_session = ort.InferenceSession(mp)
+            _sess = ort.InferenceSession(mp)
             with open(sp) as f: st=json.load(f)
+            # Validate stored feat_dim against the ONNX model's actual input shape.
+            # Mismatch means the model was built with a different feature set — reset.
+            _stored_dim = int(st.get("feat_dim", AI_FEATURE_DIM))
+            _onnx_dim   = _sess.get_inputs()[0].shape[-1]
+            if _onnx_dim != _stored_dim:
+                self.log(f"[AI:{self.cfg.name}] ONNX dim {_onnx_dim} != stats feat_dim {_stored_dim} — resetting.")
+                return False
+            self.cfg._ai_session   = _sess
+            self.cfg._ai_feat_dim  = _stored_dim
             self.cfg._ai_error_mean=st["mean"]; self.cfg._ai_error_std=st["std"]
             # Load per-stream feedback bias so it persists across restarts
             fp = _feedback_path(self.cfg.name)
@@ -5683,7 +5742,8 @@ class StreamAI:
             except Exception:
                 self.cfg._ai_threshold_bias = 0.0
             self.cfg._ai_phase="ready"; self.cfg._ai_status="Model loaded — monitoring"
-            self.log(f"[AI:{self.cfg.name}] Loaded existing model. Threshold bias={self.cfg._ai_threshold_bias:+.2f}σ")
+            self.log(f"[AI:{self.cfg.name}] Loaded existing model (feat_dim={_stored_dim}). "
+                     f"Threshold bias={self.cfg._ai_threshold_bias:+.2f}σ")
             return True
         except Exception as e:
             self.log(f"[AI:{self.cfg.name}] Load failed: {e}"); return False
@@ -5704,15 +5764,22 @@ class StreamAI:
         self.cfg._ai_status=f"Learning baseline… (0/{int(LEARN_DURATION_SECONDS//3600)}h {int((LEARN_DURATION_SECONDS%3600)//60)}m)"
         self.log(f"[AI:{self.cfg.name}] Learning phase started.")
 
-    def feed(self, audio: np.ndarray):
+    def feed(self, audio: np.ndarray, L: np.ndarray = None, R: np.ndarray = None):
         if not self.cfg.ai_monitor: return
         p = self.cfg._ai_phase
         if p == "no_onnx": return
-        if p == "learning": self._feed_learn(audio)
-        elif p == "ready":  self._feed_infer(audio)
+        # If stream stereo mode changed since model was trained, retrain.
+        _expected_dim = AI_FEATURE_DIM_STEREO if L is not None else AI_FEATURE_DIM
+        if p == "ready" and getattr(self.cfg, '_ai_feat_dim', AI_FEATURE_DIM) != _expected_dim:
+            self.log(f"[AI:{self.cfg.name}] Stereo mode changed "
+                     f"(model={self.cfg._ai_feat_dim}d, now={_expected_dim}d) — retraining.")
+            self._begin_learn()
+            p = "learning"
+        if p == "learning": self._feed_learn(audio, L, R)
+        elif p == "ready":  self._feed_infer(audio, L, R)
 
-    def _feed_learn(self, audio: np.ndarray):
-        self.cfg._ai_learn_samples.append(extract_features(audio))
+    def _feed_learn(self, audio: np.ndarray, L: np.ndarray = None, R: np.ndarray = None):
+        self.cfg._ai_learn_samples.append(extract_features(audio, L, R))
         elapsed = time.time() - self.cfg._ai_learn_start
         pct = min(100, int(elapsed / LEARN_DURATION_SECONDS * 100))
         self.cfg._ai_status = f"Learning baseline… {pct}% ({int(elapsed//60)}/{int(LEARN_DURATION_SECONDS//60)} min)"
@@ -5735,11 +5802,14 @@ class StreamAI:
             mean_e = float(np.mean(errs))
             std_e  = max(float(np.std(errs)), 1e-6)
             with open(_stats_path(self.cfg.name),"w") as f:
-                json.dump({"mean":mean_e,"std":std_e,"n":len(samples)},f)
+                json.dump({"mean":mean_e,"std":std_e,"n":len(samples),
+                           "feat_dim":samples.shape[1]},f)
             self.cfg._ai_session=sess; self.cfg._ai_error_mean=mean_e
-            self.cfg._ai_error_std=std_e; self.cfg._ai_phase="ready"
+            self.cfg._ai_error_std=std_e; self.cfg._ai_feat_dim=samples.shape[1]
+            self.cfg._ai_phase="ready"
             self.cfg._ai_status="Model trained — monitoring"
-            self.log(f"[AI:{self.cfg.name}] Ready. Baseline {mean_e:.5f} ± {std_e:.5f}")
+            self.log(f"[AI:{self.cfg.name}] Ready (feat_dim={samples.shape[1]}). "
+                     f"Baseline {mean_e:.5f} ± {std_e:.5f}")
 
             # ── Persist the full 24 h corpus so future feedback-retrains can
             # build on top of it rather than starting from a tiny clean buffer.
@@ -5764,10 +5834,10 @@ class StreamAI:
             self.cfg._ai_status=f"Training failed: {e}"
             self.log(f"[AI:{self.cfg.name}] Training error: {e}")
 
-    def _feed_infer(self, audio: np.ndarray):
+    def _feed_infer(self, audio: np.ndarray, L: np.ndarray = None, R: np.ndarray = None):
         cfg = self.cfg
         if not cfg._ai_session: return
-        feats = extract_features(audio)
+        feats = extract_features(audio, L, R)
         err   = _recon_error(cfg._ai_session, feats)
         z     = (err - cfg._ai_error_mean) / (cfg._ai_error_std + 1e-10)
 
@@ -10157,15 +10227,29 @@ class MonitorManager:
                 now=time.time()
                 if now-cfg._ai_last_run<AI_ANALYSIS_INTERVAL: continue
                 cfg._ai_last_run=now
+                _n_ch = getattr(cfg, '_audio_channels', 1) or 1
                 chunks=list(cfg._audio_buffer)
                 if not chunks: continue
-                audio=np.concatenate(chunks)
-                target=int(SAMPLE_RATE*3.0)
-                if len(audio)<int(SAMPLE_RATE*0.5): continue
-                audio=audio[-target:] if len(audio)>target else audio
+                raw=np.concatenate(chunks)
+                if _n_ch == 2:
+                    # Stereo interleaved: deinterleave into L/R, compute mid for base features
+                    _min_len = (len(raw) // 2) * 2   # ensure even length
+                    raw = raw[:_min_len]
+                    L_all = raw[0::2]; R_all = raw[1::2]
+                    mid = (L_all + R_all) * 0.5
+                    target = int(SAMPLE_RATE * 3.0)
+                    L_feed   = L_all[-target:] if len(L_all) > target else L_all
+                    R_feed   = R_all[-target:] if len(R_all) > target else R_all
+                    audio    = mid[-target:] if len(mid) > target else mid
+                    if len(audio) < int(SAMPLE_RATE * 0.5): continue
+                else:
+                    L_feed = None; R_feed = None
+                    target = int(SAMPLE_RATE * 3.0)
+                    audio = raw[-target:] if len(raw) > target else raw
+                    if len(audio) < int(SAMPLE_RATE * 0.5): continue
                 ai=self._stream_ais.get(cfg.name)
                 if ai:
-                    try: ai.feed(audio)
+                    try: ai.feed(audio, L_feed, R_feed)
                     except Exception as e: self.log(f"[AI:{cfg.name}] {e}")
             # Update stream comparators
             for comp in self._comparators:
