@@ -33,6 +33,9 @@ input[type=text],input[type=number],input[type=password],input[type=email]{width
 .btn-loading.bp{background-image:linear-gradient(90deg,var(--acc) 25%,#4db8ff 50%,var(--acc) 75%) !important}
 .btn-loading.bd{background-image:linear-gradient(90deg,var(--al) 25%,#f87171 50%,var(--al) 75%) !important}
 .btn-loading.bg{background-image:linear-gradient(90deg,var(--bor) 25%,#1e4a7f 50%,var(--bor) 75%) !important}
+.tip{position:relative;display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:rgba(23,168,255,.18);color:var(--acc);font-size:10px;font-weight:700;cursor:help;vertical-align:middle;margin-left:4px;flex-shrink:0}
+.tip::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#0a1e3d;color:var(--tx);font-size:11px;font-weight:400;line-height:1.45;padding:7px 10px;border-radius:7px;border:1px solid var(--bor);white-space:normal;width:220px;text-align:left;pointer-events:none;opacity:0;transition:opacity .15s;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.5)}
+.tip:hover::after{opacity:1}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body class="{{'wall-mode' if wall_mode else ''}}">
 <script nonce="{{csp_nonce()}}">
 function _csrfFetch(url,opts){
@@ -445,7 +448,7 @@ document.addEventListener('DOMContentLoaded',function(){
                {{'#22c55e' if cfg.hub.secret_key|length >= 16 else ('#f59e0b' if cfg.hub.secret_key else '#ef4444')}};border-radius:8px">
             <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:
                  {{'var(--ok)' if cfg.hub.secret_key|length >= 16 else ('var(--wn)' if cfg.hub.secret_key else 'var(--al)')}}">
-              🔑 Shared Secret Key
+              🔑 Shared Secret Key<span class="tip" data-tip="HMAC-SHA256 key used to authenticate audio chunks and heartbeats between hub and clients. Must be identical on the hub server and every client node. Minimum 16 characters. Generate a random string — treat it like a password.">ⓘ</span>
               — must be identical on the hub server AND every client site
             </div>
             <input type="password" name="hub_secret" value="{{cfg.hub.secret_key}}"
@@ -699,7 +702,7 @@ document.addEventListener('DOMContentLoaded',function(){
                {{'#22c55e' if cfg.hub.secret_key|length >= 16 else ('#f59e0b' if cfg.hub.secret_key else '#ef4444')}};border-radius:8px">
             <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:
                  {{'var(--ok)' if cfg.hub.secret_key|length >= 16 else ('var(--wn)' if cfg.hub.secret_key else 'var(--al)')}}">
-              🔑 Shared Secret Key
+              🔑 Shared Secret Key<span class="tip" data-tip="HMAC-SHA256 key used to authenticate audio chunks and heartbeats between hub and clients. Must be identical on the hub server and every client node. Minimum 16 characters. Generate a random string — treat it like a password.">ⓘ</span>
               — must be identical on the hub server AND every client site
             </div>
             <input type="password" name="hub_secret" value="{{cfg.hub.secret_key}}"
@@ -1126,10 +1129,10 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
   </div>
   <table style="width:100%;border-collapse:collapse;font-size:13px" id="sdr-table">
     <thead><tr style="color:var(--mu);font-size:11px;text-transform:uppercase">
-      <th style="padding:4px 8px;text-align:left">Serial</th>
-      <th style="padding:4px 8px;text-align:left">Role</th>
-      <th style="padding:4px 8px;text-align:left">PPM</th>
-      <th style="padding:4px 8px;text-align:left" title="RTL-SDR tuner gain in tenths of dB. -1 = hardware AGC (default). Use 486 or 496 for weak signals.">Gain</th>
+      <th style="padding:4px 8px;text-align:left">Serial<span class="tip" data-tip="Device serial number from rtl_test. Leave blank to use first available dongle. Set a serial when you have multiple dongles to pin each input to the correct device.">ⓘ</span></th>
+      <th style="padding:4px 8px;text-align:left">Role<span class="tip" data-tip="scanner — available for FM Scanner and Web SDR plugins. dab — used for DAB monitoring inputs. fm — used for FM RTL-SDR monitoring inputs. none — dongle not assigned to any role.">ⓘ</span></th>
+      <th style="padding:4px 8px;text-align:left">PPM<span class="tip" data-tip="Crystal frequency error correction in parts-per-million. Run: rtl_test -d N -p for 2–3 minutes to measure. The cumulative PPM value it settles on is what to enter here. Leave at 0 if unknown.">ⓘ</span></th>
+      <th style="padding:4px 8px;text-align:left">Gain<span class="tip" data-tip="RF gain in tenths of dB (e.g. 496 = 49.6 dB). Start at 300–400 for most antennas. Lower if signal is distorted or overloaded. -1 = hardware AGC (not recommended for unattended monitoring).">ⓘ</span></th>
       <th style="padding:4px 8px;text-align:left">Label</th>
       <th style="padding:4px 8px"></th>
     </tr></thead>
@@ -2147,7 +2150,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.19"
+BUILD                  = "SignalScope-3.5.20"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -17839,7 +17842,12 @@ tr:hover td{background:#123764}
   </td>
 </tr>{% endfor %}
 </tbody></table>
-{% else %}<p style="color:#64748b;margin:24px 0">No inputs yet.</p>{% endif %}
+{% else %}<div style="text-align:center;padding:48px 24px;color:var(--mu)">
+  <div style="font-size:36px;margin-bottom:12px">📡</div>
+  <div style="font-size:15px;font-weight:600;color:var(--tx);margin-bottom:6px">No inputs configured</div>
+  <div style="font-size:13px;margin-bottom:16px">Add an SDR device and input stream to start monitoring.</div>
+  <a href="/settings#p-inputs" class="btn bp bs" style="text-decoration:none">Go to Settings → Inputs</a>
+</div>{% endif %}
 </main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer></body></html>"""
 
 
@@ -19107,10 +19115,10 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
     </div>
     <div class="acard-body" id="abody-silence">
       <div class="fg2">
-        <label class="lbl">Threshold (dBFS)
+        <label class="lbl">Threshold (dBFS)<span class="tip" data-tip="Level below which audio is considered silent. Typical programme material sits above -40 dBFS. -60 dBFS is a good starting point for most inputs — catches genuine silence without false-alarming on quiet passages.">ⓘ</span>
           <input type="number" name="silence_threshold_dbfs" value="{{inp.silence_threshold_dbfs}}" step="0.5">
         </label>
-        <label class="lbl">Min duration (s)
+        <label class="lbl">Min duration (s)<span class="tip" data-tip="How long the signal must stay below the threshold before an alert fires. 5–10 s avoids false alarms from brief pauses between songs. Increase for talk radio or speech-heavy stations.">ⓘ</span>
           <input type="number" name="silence_min_duration" value="{{inp.silence_min_duration}}" step="0.5" min="0.5">
         </label>
       </div>
@@ -25102,7 +25110,11 @@ var _chainData={
 <!-- Chain list -->
 <div id="chains_list">
 {% if not chains %}
-<div class="empty">No chains defined yet. Click <strong>+ New Chain</strong> to get started.</div>
+<div style="text-align:center;padding:48px 24px;color:var(--mu)">
+  <div style="font-size:36px;margin-bottom:12px">🔗</div>
+  <div style="font-size:15px;font-weight:600;color:var(--tx);margin-bottom:6px">No signal chains defined</div>
+  <div style="font-size:13px;margin-bottom:16px">Signal chains link your monitored inputs to on-air fault detection. Click <strong style="color:var(--tx)">+ New Chain</strong> above to create your first chain.</div>
+</div>
 {% endif %}
 {% for c in chains %}
 <div class="chain-card card-unknown" id="chain_{{c.id|e}}">
@@ -33183,29 +33195,10 @@ setInterval(_loadTrends, 300000);
     {% if sites|length > 1 %}<span class="badge">Drag site cards to reorder</span>{% endif %}
   </div>
 {% if not sites %}
-    <div style="max-width:560px;margin:60px auto;text-align:center">
-      <div style="font-size:48px;margin-bottom:12px">📡</div>
-      <h2 style="font-size:18px;color:var(--tx);margin:0 0 6px">No sites connected yet</h2>
-      <p style="font-size:13px;color:var(--mu);margin:0 0 24px">Follow these steps to connect your first monitoring node.</p>
-      <div style="background:var(--sur);border:1px solid var(--bor);border-radius:12px;text-align:left;overflow:hidden">
-        <div style="background:linear-gradient(180deg,#143766,#102b54);padding:10px 16px;font-size:11px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em">Getting Started</div>
-        <div style="padding:16px">
-          {% for step, desc in [
-            ('Configure this hub', 'Go to <a href="/settings" style="color:var(--acc)">⚙ Settings → Hub</a>, set <strong>Mode</strong> to <strong>Hub</strong> and note the Hub URL shown there.'),
-            ('Install on client nodes', 'Install SignalScope on each machine you want to monitor. Open its settings, set <strong>Mode</strong> to <strong>Client</strong>, and paste the Hub URL.'),
-            ('Set a shared secret', 'In both Settings → Hub, enter the same <strong>Secret Key</strong> so heartbeats are authenticated. Leave blank to skip (less secure).'),
-            ('Wait for heartbeat', 'Client nodes send a heartbeat every ~10 s. A pending approval card will appear here — click <strong>Approve</strong> to start receiving data.')
-          ] %}
-          <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:{{'0' if loop.last else '14px'}}">
-            <div style="width:24px;height:24px;border-radius:999px;background:var(--acc);color:#000;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">{{loop.index}}</div>
-            <div>
-              <div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:2px">{{step}}</div>
-              <div style="font-size:12px;color:var(--mu)">{{desc|safe}}</div>
-            </div>
-          </div>
-          {% endfor %}
-        </div>
-      </div>
+    <div style="text-align:center;padding:48px 24px;color:var(--mu)">
+      <div style="font-size:36px;margin-bottom:12px">🌐</div>
+      <div style="font-size:15px;font-weight:600;color:var(--tx);margin-bottom:6px">No client sites connected</div>
+      <div style="font-size:13px">On each client machine, go to <strong style="color:var(--tx)">Settings → Hub &amp; Network</strong>, set Mode to <strong style="color:var(--tx)">Client</strong>, enter this hub's URL and the shared secret key, then save.</div>
     </div>
 {% else %}
 <div class="site-grid" id="site-grid">

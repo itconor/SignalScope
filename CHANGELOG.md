@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.20] - 2026-04-04
+
+### Added
+- **Contextual tooltips on Settings fields** — `ⓘ` icons with hover tooltips on the fields that most often confuse new engineers. SDR Devices table: Serial (when to use vs leave blank), Role (scanner/dab/fm/none explained), PPM (how to measure with rtl_test), Gain (tenths-of-dB scale, recommended starting range, AGC caveat). Hub & Network: Shared Secret Key (purpose, matching requirement, minimum length). Input edit form: Silence Threshold dBFS (typical programme levels, recommended starting value) and Min Duration (avoiding false alarms on quiet passages).
+- **Improved empty states** — Dashboard with no inputs configured now shows a centred card with icon, description, and a direct "Go to Settings → Inputs" button. Broadcast Chains with no chains shows a description and pointer to the "+ New Chain" button. Hub overview with no connected clients shows concise connection instructions (set Mode → Client, enter hub URL and secret key).
+
+---
+
 ## [3.5.19] - 2026-04-04
 
 ### Fixed
