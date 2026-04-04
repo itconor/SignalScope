@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.13] - 2026-04-04
+
+### Fixed
+- **DAB slow service startup — prewarm silently gave up after 5 s timeout** — `_warm_one` in the DabPrewarm thread used a single `urlopen(timeout=5)` attempt. If welle-cli took more than 5 seconds to start a service's MP3 encoder (common with many simultaneous services), the prewarm silently failed and never retried. With no persistent connection holding the encoder alive, the service fell back to the probe loop's short open-read-close cycles, which can reset the encoder on each attempt. Fixed: `_warm_one` now retries in a `while` loop until the 150 s window expires. `timeout=5 → 10` for more headroom per attempt. Services that take longer to warm now get persistent connections established as soon as the encoder is ready, rather than being abandoned after one failed attempt.
+
+---
+
 ## [3.5.12] - 2026-04-04
 
 ### Fixed

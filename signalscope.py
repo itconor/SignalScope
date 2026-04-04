@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.12"
+BUILD                  = "SignalScope-3.5.13"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -7815,14 +7815,22 @@ class MonitorManager:
             def _warm_one(sid_str):
                 url    = f"http://localhost:{session.dab_port}/mp3/{sid_str}"
                 end_ts = time.monotonic() + 150          # hold for up to 150 s
-                try:
-                    with _pur.urlopen(url, timeout=5) as r:
-                        while time.monotonic() < end_ts and not session.stop_evt.is_set():
-                            chunk = r.read(8192)
-                            if not chunk:
-                                break
-                except Exception:
-                    pass                                 # consumer probes will retry
+                # Keep retrying until the 150 s window expires.  A single
+                # attempt with timeout=5 was silently failing when welle-cli
+                # took >5 s to start the MP3 encoder (common on busy startup
+                # with many simultaneous services), leaving the service with
+                # no warm connection and falling back to the slow probe loop.
+                while time.monotonic() < end_ts and not session.stop_evt.is_set():
+                    try:
+                        with _pur.urlopen(url, timeout=10) as r:
+                            while time.monotonic() < end_ts and not session.stop_evt.is_set():
+                                chunk = r.read(8192)
+                                if not chunk:
+                                    break                # server closed — retry
+                    except Exception:
+                        pass
+                    if time.monotonic() < end_ts:
+                        time.sleep(0.5)                  # brief pause before retry
 
             threads = []
             for svc in svcs:
