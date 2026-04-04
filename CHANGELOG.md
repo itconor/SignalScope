@@ -2,10 +2,17 @@
 
 ---
 
+## [3.5.12] - 2026-04-04
+
+### Fixed
+- **Restore DAB monitoring Pi CPU fix (reverted in error in 3.5.11)** — `_start_dab_session` now correctly adds `-T -C N` on Raspberry Pi, where N = number of consumers on the session at launch. `-T` disables TII decoding; `-C N` limits simultaneous service decoding to only the services actually being monitored. Non-Pi hardware unchanged. The monitoring session uses `-F` for device selection (not `-D`), so there is no `-C`/`-D` conflict here.
+
+---
+
 ## [3.5.11] - 2026-04-04
 
 ### Fixed
-- **Reverted 3.5.9 `_start_dab_session` Pi changes** — the 3.5.9 release incorrectly modified `_start_dab_session` (DAB monitoring inputs) as a side-effect of DAB Scanner plugin work. Plugin changes must not affect main app behaviour. Reverted `_start_dab_session` to its 3.5.6 state. Also removed the `_is_raspberry_pi()` helper added to `signalscope.py` — Pi detection belongs in the plugin only.
+- **Reverted 3.5.9 `_start_dab_session` Pi changes (in error — restored in 3.5.12)**
 
 ---
 
