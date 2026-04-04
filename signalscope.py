@@ -2177,7 +2177,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.21"
+BUILD                  = "SignalScope-3.5.22"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -32094,6 +32094,8 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
 // Chain node status (ok/fault/adbreak class) is left to pollChains() at 5 s.
 var _wLiveLastTs = 0;
 var _wNodeMap    = null;  // "site|stream" → [{fill,lev}, ...] — built on first poll
+var _wFirstPoll  = true;  // true until first successful live_levels response
+var _wKnownKeys  = {};    // safe keys for which rendered lvl_* elements exist
 
 function _wBuildNodeMap() {
   _wNodeMap = {};
@@ -32117,6 +32119,7 @@ function _wLivePoll() {
     .then(function(data) {
       if (!data) return;
       if (!_wNodeMap) _wBuildNodeMap();
+      var _topoNewSeen = false;
       Object.keys(data).forEach(function(site) {
         var streams = data[site] || [];
         streams.forEach(function(s) {
@@ -32127,6 +32130,12 @@ function _wLivePoll() {
           var lkSafe = _wLiveKey(site, s.name);
           // Stream status card — unique ID elements
           var fillEl = document.getElementById('lvl_' + lkSafe);
+          // Topology detection: on first poll record known keys; later detect new streams
+          if (_wFirstPoll) {
+            if (fillEl) _wKnownKeys[lkSafe] = true;
+          } else if (!_wKnownKeys[lkSafe]) {
+            _topoNewSeen = true; return;  // new stream appeared — will reload after loop
+          }
           if (fillEl) { fillEl.style.width = pct + '%'; fillEl.style.background = col; }
           var valEl  = document.getElementById('lvlv_' + lkSafe);
           if (valEl)  { valEl.textContent = lev.toFixed(1) + ' dB'; valEl.style.color = col; }
@@ -32155,6 +32164,8 @@ function _wLivePoll() {
           });
         });
       });
+      _wFirstPoll = false;
+      if (_topoNewSeen) { location.reload(); return; }
     })
     .catch(function(){})
     .finally(function(){ setTimeout(_wLivePoll, 150); });
@@ -32266,9 +32277,6 @@ function pollChains(){
 }
 pollChains();
 setInterval(pollChains,5000);
-
-// ── Page refresh every 60s to pick up new streams/sites ────────────
-setTimeout(function(){location.reload();},60000);
 </script>
 </body></html>"""
 

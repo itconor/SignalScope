@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.22] - 2026-04-04
+
+### Fixed
+- **Wall Mode no longer reloads every 60 seconds** — removed the unconditional `location.reload()` timer. The page now stays live indefinitely. Topology changes (new site or stream appearing) are detected inside the existing 150 ms `_wLivePoll` loop: on first poll a set of known stream keys is built; on subsequent polls if a stream arrives in the API response with no rendered element it triggers a reload. Normal monitoring does not cause any reload.
+
+---
+
 ## [3.5.21] - 2026-04-04
 
 ### Changed
