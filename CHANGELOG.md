@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.5] - 2026-04-04
+
+### Fixed
+- **DAB slow startup — welle-cli encodes services sequentially (~52 s each)** — welle-cli starts each `/mp3/<sid>` service encoder lazily (on first HTTP connection) and processes them one at a time. With 9 services on the NI 12D multiplex this produced exactly 52 s intervals between "endpoint ready" events (confirmed from logs: +52 s, +104 s, +155 s, +206 s, +258 s...) for a total of ~8 minutes. The Python probe loop (3 s timeout → close → reconnect) kept triggering encode-start/stop cycles but could only get one service ready per 52 s cycle.
+
+  **Fix:** after the shared mux session becomes ready, a new `DabPrewarm` background thread opens **persistent streaming connections** to every service endpoint simultaneously (`/mp3/<sid>` for each SID in `mux.json`). This forces welle-cli to start all service encoders in parallel rather than sequentially. Each connection continuously reads audio data to keep the encoder alive for up to 150 s. Consumer ffmpeg processes connect as second subscribers and see immediate data instead of a cold start. Expected result: all 9 services ready within ~52 s of mux-ready instead of ~8 minutes.
+
+---
+
 ## [3.5.4] - 2026-04-04
 
 ### Fixed

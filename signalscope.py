@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.4"
+BUILD                  = "SignalScope-3.5.5"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -7768,6 +7768,54 @@ class MonitorManager:
         session.stderr_thread.start()
         session.poll_thread = threading.Thread(target=_poll_mux, daemon=True)
         session.poll_thread.start()
+
+        # ── Service endpoint pre-warmer ──────────────────────────────────────
+        # welle-cli starts each /mp3/<sid> encoder lazily (when the first client
+        # connects) and processes them ONE AT A TIME.  With 9 services this means
+        # sequential 52-second startup intervals = ~8 minutes total.
+        #
+        # Fix: after the mux is ready, open a persistent streaming connection to
+        # EVERY service simultaneously.  This forces welle-cli to start all
+        # encoders in parallel.  Each thread reads continuously to keep the
+        # connection (and encoder) alive.  The connections stay open until the
+        # session stops or 150 s, whichever comes first.  Consumer ffmpeg
+        # processes connect as second subscribers and see immediate data.
+        def _prewarm_all():
+            import urllib.request as _pur
+            # Wait for the mux to be fully enumerated (ready event).
+            if not session.ready.wait(timeout=60) or session.failed:
+                return
+            mux    = session.mux or {}
+            svcs   = mux.get("services", []) or []
+            if not svcs:
+                return
+            self.log(f"[DAB {session.channel}] Pre-warming {len(svcs)} service endpoint(s) in parallel")
+
+            def _warm_one(sid_str):
+                url    = f"http://localhost:{session.dab_port}/mp3/{sid_str}"
+                end_ts = time.monotonic() + 150          # hold for up to 150 s
+                try:
+                    with _pur.urlopen(url, timeout=5) as r:
+                        while time.monotonic() < end_ts and not session.stop_evt.is_set():
+                            chunk = r.read(8192)
+                            if not chunk:
+                                break
+                except Exception:
+                    pass                                 # consumer probes will retry
+
+            threads = []
+            for svc in svcs:
+                sid = str(svc.get("sid", "")).strip()
+                if not sid:
+                    continue
+                t = threading.Thread(target=_warm_one, args=(sid,), daemon=True,
+                                     name=f"DabWarm-{session.channel}-{sid}")
+                threads.append(t)
+            for t in threads:
+                t.start()
+
+        threading.Thread(target=_prewarm_all, daemon=True,
+                         name=f"DabPrewarm-{session.channel}").start()
 
     def _get_or_create_dab_session(self, serial, device_idx, channel, ppm, owner_name, gain: int = -1):
         key = self._dab_session_key(serial, device_idx, channel)
