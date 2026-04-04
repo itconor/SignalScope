@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.31] - 2026-04-04
+
+### Fixed
+- **Stereo toggle missing for DAB feeds on hub replica pages** — the stereo toggle button was hidden for both `dab://` and `fm://` sources on the hub overview. DAB stereo capture is a valid user setting (welle-cli decodes stereo when enabled); only FM is correctly excluded (FM stereo is auto-detected via pilot tone and controlled via Force Mono, not the stereo flag). Changed the condition to suppress the button for `fm://` only, so DAB feeds now show the stereo toggle alongside their other controls.
+
+---
+
 ## [3.5.30] - 2026-04-04
 
 ### Added

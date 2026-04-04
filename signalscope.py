@@ -2249,7 +2249,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.30"
+BUILD                  = "SignalScope-3.5.31"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -30787,7 +30787,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
               {{'✅ Enabled' if s.get('enabled', True) else '⏸ Disabled'}}
             </button>
           </div>
-          {%- if not _sdev2.startswith('dab://') and not _sdev2.startswith('fm://') %}
+          {%- if not _sdev2.startswith('fm://') %}
           <div class="sc-row" title="Toggle stereo capture — queued to the client on next heartbeat (~10 s)">Stereo
             <button class="btn bg bs sc-stereo-btn"
                     data-site="{{site.site|e}}" data-name="{{s.name|e}}" data-stereo="{{'1' if s.get('stereo') else '0'}}"
