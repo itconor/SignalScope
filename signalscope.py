@@ -2249,7 +2249,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.26"
+BUILD                  = "SignalScope-3.5.27"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2538,6 +2538,7 @@ class InputConfig:
 
     # FM output options
     fm_force_mono:        bool = False  # always output mono regardless of pilot SNR
+    fm_deemphasis:        str  = "50us" # de-emphasis time constant: "off" | "50us" | "75us"
 
     # Expected identity — alert when actual name differs or changes
     expected_fm_rds_ps:   str = ""   # expected RDS Programme Service name; blank = alert on any change
@@ -3009,6 +3010,7 @@ def load_config() -> AppConfig:
             glitch_pre_trend_db=float(item.get("glitch_pre_trend_db", 4.0)),
             stereo=bool(item.get("stereo", False)),
             fm_force_mono=bool(item.get("fm_force_mono", False)),
+            fm_deemphasis=str(item.get("fm_deemphasis", "50us") or "50us"),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
     return AppConfig(
@@ -3180,6 +3182,7 @@ def save_config(cfg: AppConfig):
             "glitch_pre_trend_db": i.glitch_pre_trend_db,
             "stereo": i.stereo,
             "fm_force_mono": i.fm_force_mono,
+            "fm_deemphasis": i.fm_deemphasis,
         } for i in cfg.inputs],
         "email": {
             "enabled": cfg.email.enabled, "smtp_host": cfg.email.smtp_host,
@@ -9218,6 +9221,29 @@ class MonitorManager:
                 self.log(f"[{name}] FM stereo decoder init failed ({_ste}) — mono only")
                 _stereo_zi = None
 
+        # ── De-emphasis filter state (one per channel, persists across chunks) ──
+        # First-order IIR: y[n] = (1-α)·x[n] + α·y[n-1]
+        # Time constants: 50 µs (Europe/Australia) or 75 µs (North America)
+        # Applied at 48 kHz after the final resample step.
+        _DEEMPH_ALPHA = {
+            "50us": float(np.exp(-1.0 / (50e-6 * SAMPLE_RATE))),   # ≈ 0.6592
+            "75us": float(np.exp(-1.0 / (75e-6 * SAMPLE_RATE))),   # ≈ 0.7568
+        }
+        _deemph_zi_m = [0.0]  # mono / mix channel
+        _deemph_zi_l = [0.0]  # left channel
+        _deemph_zi_r = [0.0]  # right channel
+
+        def _apply_deemph(x: np.ndarray, alpha: float, zi: list) -> np.ndarray:
+            """Stateful first-order IIR de-emphasis. Updates zi[0] in place."""
+            if not _have_scipy_resampler:
+                return x  # scipy not available — skip silently
+            from scipy.signal import lfilter as _lf
+            b = np.array([1.0 - alpha], dtype=np.float64)
+            a = np.array([1.0, -alpha], dtype=np.float64)
+            y, zi_new = _lf(b, a, x.astype(np.float64), zi=np.array([[zi[0]]]))
+            zi[0] = float(zi_new[0, 0])
+            return y.astype(np.float32)
+
         def _mpx_to_stereo(samp: np.ndarray):
             """Decode FM stereo from 171 kHz float32 MPX → (L_48k, R_48k).
 
@@ -9366,6 +9392,14 @@ class MonitorManager:
                             L_48    = np.clip(L_48    - np.mean(L_48),    -1.0, 1.0)
                             R_48    = np.clip(R_48    - np.mean(R_48),    -1.0, 1.0)
                             mono_48 = np.clip(mono_48 - np.mean(mono_48), -1.0, 1.0)
+                            # De-emphasis (stereo path) — applied before blend so both
+                            # channels and the mono_48 reference share the same filter.
+                            _deemph = cfg.fm_deemphasis
+                            if _deemph and _deemph != "off" and _deemph in _DEEMPH_ALPHA:
+                                _da = _DEEMPH_ALPHA[_deemph]
+                                L_48    = _apply_deemph(L_48,    _da, _deemph_zi_l)
+                                R_48    = _apply_deemph(R_48,    _da, _deemph_zi_r)
+                                mono_48 = _apply_deemph(mono_48, _da, _deemph_zi_m)
                             # External blend: fade L/R toward mono_48 as pilot SNR drops.
                             # Force-mono bypasses stereo output entirely (user override).
                             _b = 0.0 if _force_mono else _stereo_blend
@@ -9395,6 +9429,10 @@ class MonitorManager:
                         audio = _mpx_to_audio(samp)
                         if not audio.size:
                             continue
+                        # De-emphasis (mono path)
+                        _deemph = cfg.fm_deemphasis
+                        if _deemph and _deemph != "off" and _deemph in _DEEMPH_ALPHA:
+                            audio = _apply_deemph(audio, _DEEMPH_ALPHA[_deemph], _deemph_zi_m)
                         out_buf   = np.concatenate((out_buf, audio)) if out_buf.size else audio
                         out_buf_L = np.empty(0, dtype=np.float32)
                         out_buf_R = np.empty(0, dtype=np.float32)
@@ -18752,6 +18790,15 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
         <label for="inp_fm_force_mono" style="margin:0;text-transform:none;font-size:13px;font-weight:500;color:var(--tx)">Force mono output</label>
       </div>
       <p class="help">Always output mono regardless of pilot SNR. Useful for marginal-coverage or multipath-affected dongles where blended stereo remains audibly distorted.</p>
+      <div class="field" style="margin-top:12px;max-width:260px">
+        <label for="inp_fm_deemphasis">De-emphasis</label>
+        <select name="fm_deemphasis" id="inp_fm_deemphasis" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px">
+          <option value="50us" {{'selected' if inp.fm_deemphasis == '50us'}}>50 µs (Europe / Australia / Asia)</option>
+          <option value="75us" {{'selected' if inp.fm_deemphasis == '75us'}}>75 µs (North America / South Korea)</option>
+          <option value="off"  {{'selected' if inp.fm_deemphasis == 'off'}}>Off (no de-emphasis)</option>
+        </select>
+      </div>
+      <p class="help">FM broadcast transmitters apply pre-emphasis before transmission. Apply the matching de-emphasis curve here to restore flat frequency response. Most of the world uses 50 µs; North America uses 75 µs.</p>
     </div>
   </div>
 
@@ -20055,6 +20102,7 @@ def _inp_from_form(f):
         glitch_pre_trend_db=float(f.get("glitch_pre_trend_db") or 0.0),
         stereo=bool(f.get("stereo")),
         fm_force_mono=bool(f.get("fm_force_mono")),
+        fm_deemphasis=str(f.get("fm_deemphasis", "50us") or "50us"),
     )
 
 @app.route("/inputs/add", methods=["GET","POST"])
@@ -20108,6 +20156,11 @@ def input_edit(idx):
         new_inp  = _inp_from_form(request.form)
         old_inp  = inps[idx]
         old_name = old_inp.name
+        # Capture fields that require a full monitor restart to take effect.
+        # These are baked into local variables or ffmpeg -ac at loop startup
+        # and cannot be hot-swapped mid-stream.
+        _old_stereo      = old_inp.stereo
+        _old_device      = old_inp.device_index
         # Update config fields in-place on the existing object so that monitor
         # threads (which hold a direct reference to old_inp) keep working and
         # all runtime state (_last_level_dbfs, _audio_buffer, _ai_status, …)
@@ -20127,6 +20180,17 @@ def input_edit(idx):
                 if _ai:
                     monitor._stream_ais[old_inp.name] = _ai
         save_config(monitor.app_cfg)
+        # Stereo mode or device/source change: restart monitoring so that the
+        # ffmpeg -ac flag, _dab_n_ch/_http_n_ch, and CHUNK_BYTES are recalculated.
+        # The in-place update sets cfg.stereo correctly but the running loop
+        # already has the old channel count baked in — restart is required.
+        _needs_restart = (
+            old_inp.stereo != _old_stereo or
+            old_inp.device_index != _old_device
+        )
+        if _needs_restart and monitor.is_running():
+            monitor.stop_monitoring()
+            monitor.start_monitoring()
         flash(f"Updated '{old_inp.name}'."); return redirect(url_for("inputs_list"))
     return render_template_string(INPUT_FORM_TPL, cmp_search=int(COMPARE_SEARCH_SECS),title="Edit Input",
         sdr_devices=monitor.app_cfg.sdr_devices,
@@ -23817,7 +23881,7 @@ def hub_input_set_field(site_name):
     name  = str(data.get("name", "")).strip()
     field = str(data.get("field", "")).strip()
     value = data.get("value")
-    _allowed = {"stereo", "fm_force_mono", "alert_on_silence", "alert_on_hiss",
+    _allowed = {"stereo", "fm_force_mono", "fm_deemphasis", "alert_on_silence", "alert_on_hiss",
                 "alert_on_clip", "ai_monitor", "enabled"}
     if not name:  return jsonify({"error": "name is required"}), 400
     if field not in _allowed:

@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.27] - 2026-04-04
+
+### Added
+- **FM de-emphasis** — first-order IIR low-pass de-emphasis filter applied after FM demodulation and 48 kHz resample. Configurable per-input in Settings → Inputs → Edit (FM section): 50 µs (Europe / Australia / Asia), 75 µs (North America / South Korea), or Off. Stateful filter (persists across chunks) applied independently to L, R, and mono channels. Defaults to 50 µs for new and existing FM inputs. Corrects the FM pre-emphasis applied at the transmitter, restoring flat high-frequency response and reducing perceived hiss.
+
+### Fixed
+- **Stereo / device change not taking effect until manual restart** — editing an input's stereo checkbox or device/source and saving now automatically restarts monitoring when those settings change. Previously, the DAB/HTTP/ALSA monitor loop had `_dab_n_ch` / `_http_n_ch` and ffmpeg `-ac` baked in at thread startup; saving stereo=false while the stream was running left ffmpeg outputting stereo-interleaved PCM that was then misinterpreted as double-length mono audio (distorted). Monitoring is now restarted immediately on stereo or device_index change.
+
+---
+
 ## [3.5.26] - 2026-04-04
 
 ### Fixed
