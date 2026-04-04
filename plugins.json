@@ -64,8 +64,8 @@
     "name": "Morning Report",
     "file": "morning_report.py",
     "icon": "\ud83d\udcf0",
-    "description": "Daily morning briefing for broadcast engineers and non-technical staff. Auto-generates at 06:00 (configurable) covering the previous calendar day. Plain-English headline banner (all-clear or fault summary), per-chain health table with on-air %, traffic-light trend pills, human-readable outage durations, hourly fault heatmap, auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks), and stream quality summary with translated labels. All configured chains appear even with no fault history. Hub-only.",
-    "version": "1.1.0",
+    "description": "Daily morning briefing for broadcast engineers and non-technical staff. Auto-generates at 06:00 (configurable) covering the previous calendar day. Plain-English headline banner (all-clear or fault summary), per-chain health table with on-air %, traffic-light trend pills, human-readable outage durations, hourly fault heatmap, auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks), and stream quality summary with translated labels. All configured chains appear even with no fault history. Hub-only. v1.2.0: fix chain fault queries using wrong DB column names — report now correctly shows all chain faults from the previous 24 hours.",
+    "version": "1.2.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/morning_report.py"
   },
