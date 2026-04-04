@@ -2147,7 +2147,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.0"
+BUILD                  = "SignalScope-3.5.1"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -7936,7 +7936,7 @@ class MonitorManager:
         try:
             # DAB inputs can start at the same time. Be patient and retry so a
             # consumer can attach to the mux session that eventually wins.
-            startup_deadline = time.time() + 120
+            startup_deadline = time.time() + 180
             sid = None
             svc_name = None
             audio_url = None
@@ -7963,12 +7963,18 @@ class MonitorManager:
                     cfg._dab_ok = False
                     return
                 except SdrBusyError as e:
-                    self.log(f"[{name}] DAB: {e}")
-                    cfg._livewire_mode = "DAB (dongle in use)"
-                    cfg._dab_ok = False
-                    return
+                    # Transient: a previous DAB session may still be releasing the
+                    # device (up to 2.5 s shutdown + USB guard sleep). Retry within
+                    # startup_deadline rather than permanently exiting.  If an FM stream
+                    # is the real cause, the early FM conflict check (above the loop)
+                    # catches it on the next attempt.
+                    self.log(f"[{name}] DAB: dongle temporarily busy — will retry: {e}")
+                    cfg._livewire_mode = "DAB (dongle busy — retrying)"
+                    session = None
+                    time.sleep(2.0)
+                    continue
 
-                if not session.ready.wait(timeout=min(25, max(1, int(startup_deadline - time.time())))) or session.failed:
+                if not session.ready.wait(timeout=min(45, max(1, int(startup_deadline - time.time())))) or session.failed:
                     self.log(f"[{name}] DAB: shared mux session did not become ready")
                     try:
                         self._release_dab_session(session, name)
@@ -8030,7 +8036,7 @@ class MonitorManager:
                     return
                 try:
                     with _ur.urlopen(audio_url, timeout=3) as _trig:
-                        probe = _trig.read(32768)
+                        probe = _trig.read(4096)
                         if probe and len(probe) >= 4096:
                             stream_ready = True
                             self.log(f"[{name}] DAB: audio endpoint ready ({len(probe)} bytes)")
@@ -30445,7 +30451,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           <button class="hist-toggle" onclick="this.closest('.hist-wrap').classList.toggle('open')">Recent events <span class="arr">▼</span></button>
           <div class="hist">
             {% for h in s.history[:8] %}
-            <div class="hev">{{h.ts or ''}} — {{h.msg or h.text or h.type or 'Event'}}</div>
+            <div class="hev">{{h.ts or ''}} — {{h.message or h.type or 'Event'}}</div>
             {% endfor %}
           </div>
         </div>
@@ -31248,9 +31254,20 @@ function _scByName(name){
             if(lrTxt)lrTxt.textContent=s.level_dbfs_l.toFixed(1)+' / '+s.level_dbfs_r.toFixed(1);
           }
         }
-        // Silence badge (live)
+        // Silence badge (live) — create element if not rendered at page load
         var silBadge=sc.querySelector('.sil-live-badge');
-        if(silBadge)silBadge.style.display=s.silence_active?'':'none';
+        if(s.silence_active){
+          if(!silBadge){
+            silBadge=document.createElement('span');
+            silBadge.className='sil-live-badge';
+            silBadge.textContent='🔇 SILENCE';
+            var nameEl=sc.querySelector('.sc-name strong');
+            if(nameEl)nameEl.after(silBadge);
+          }
+          silBadge.style.display='';
+        } else {
+          if(silBadge)silBadge.style.display='none';
+        }
         // Silence visual state on level bar
         if(s.silence_active)sc.classList.add('sc-silence');
         else sc.classList.remove('sc-silence');
@@ -32434,7 +32451,16 @@ function _livePoll() {
           var col  = lev <= -55 ? 'var(--al)' : lev <= -20 ? 'var(--wn)' : 'var(--ok)';
 
           var bar = document.getElementById('lvl_' + key);
-          if (bar) { bar.style.width = pct.toFixed(1) + '%'; bar.style.background = col; }
+          if (bar) {
+            bar.style.width = pct.toFixed(1) + '%';
+            bar.style.background = col;
+            // sc-silence class — amber animation when stream is silent
+            var scCard = bar.closest('.sc');
+            if (scCard) {
+              if (s.silence_active) scCard.classList.add('sc-silence');
+              else scCard.classList.remove('sc-silence');
+            }
+          }
 
           var val = document.getElementById('lvlv_' + key);
           if (val) { val.textContent = lev.toFixed(1) + ' dB'; val.style.color = col; }
@@ -33064,7 +33090,7 @@ setInterval(_loadTrends, 300000);
             <div style="width:24px;height:24px;border-radius:999px;background:var(--acc);color:#000;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">{{loop.index}}</div>
             <div>
               <div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:2px">{{step}}</div>
-              <div style="font-size:12px;color:var(--mu)">{{desc}}</div>
+              <div style="font-size:12px;color:var(--mu)">{{desc|safe}}</div>
             </div>
           </div>
           {% endfor %}

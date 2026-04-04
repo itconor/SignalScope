@@ -2,6 +2,22 @@
 
 ---
 
+## [3.5.1] - 2026-04-04
+
+### Fixed
+- **Hub site replica — history event body blank** — recent events accordion showed blank text because `h.msg`/`h.text` field names don't exist; correct field is `h.message`. All history events now display properly.
+- **Hub dashboard — silence animation not live** — `sc-silence` class (amber pulsing level bar) was only applied at Jinja2 render time on the hub dashboard; streams that became silent after page load stayed blue. Fixed: HUB_TPL `_livePoll` now toggles `sc-silence` on each stream card at the same 150 ms cadence as the level bars.
+- **Hub dashboard — getting-started HTML not rendered** — step descriptions in the first-time onboarding guide contained HTML (`<strong>` tags) but were rendered without `|safe`, so tag markup appeared literally. Fixed with `{{desc|safe}}`.
+- **Hub site replica — 🔇 SILENCE badge not created dynamically** — the badge element was only injected by Jinja2 when `silence_active` was True at page load; streams that went silent after load had no element to show/hide. Fixed: `_livePoll` in HUB_SITE_TPL now creates the badge element on first silence detection and inserts it after the stream name.
+- **DAB startup — premature consumer timeout** — `session.ready.wait(timeout=25)` fired before `_poll_mux` could announce ready on complex multiplexes (many services appearing gradually > 25 s). All consumers timed out simultaneously, killed the shared session, and restarted — cycling indefinitely. Timeout raised to 45 s to match the `_poll_mux` 45 s deadline.
+- **DAB startup — `SdrBusyError` caused permanent exit** — if the previous DAB session was still releasing the USB device (up to ~2.5 s), the new session's `claim_dab_device` raised `SdrBusyError` and `_run_dab` returned permanently (5 s restart). Fixed: `SdrBusyError` is now retried within the outer startup loop (with a 2 s pause) rather than causing a permanent exit.
+- **DAB startup — slow audio endpoint probe** — `_trig.read(32768)` blocked until 32 KB of MP3 data arrived (~2 s per stream at 128 kbps); with many parallel streams this serialised probe completions. Changed to `read(4096)` — enough to satisfy the `>= 4096` check with ~0.25 s of audio.
+
+### Improved
+- **DAB startup deadline** — outer retry loop deadline raised from 120 s to 180 s, giving slow-starting systems (marginal signal, large ensembles) more time to attach before the guarded thread restarts.
+
+---
+
 ## [3.5.0] - 2026-04-04
 
 ### Visual overhaul — look & feel
