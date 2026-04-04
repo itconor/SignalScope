@@ -2,6 +2,19 @@
 
 ---
 
+## [3.5.32] - 2026-04-04
+
+### Added
+- **Reports "Ack" column** — every event row on the Reports page now has an Ack cell. Click "Ack" to acknowledge the alert; the cell updates live to show "✓ acked by {user}" with a timestamp. Ack state is populated from `_history_with_acks()` on both the initial page render and the 15 s live-refresh endpoint (`/reports/data`), so newly arriving events also show their ack status without a page reload.
+- **Viewer role cannot acknowledge alerts** — the `/api/alerts/<id>/ack` endpoint now returns HTTP 403 for viewer and plugin-role users. Only admin/operator roles can acknowledge.
+- **Hub card ack indicator** — when a stream's current silence event has been acknowledged, a green "✓ acked by {user}" badge appears next to the 🔇 SILENCE badge on the hub overview stream card. Computed at page-render time from the most recent SILENCE alert event per stream.
+- **Keyboard shortcut overlay on Hub page** — press `?` on the Hub page to open a modal listing all keyboard shortcuts (R = force refresh, / = search, ? = shortcuts, Esc = close). Press `?` or `Esc` again to dismiss.
+
+### Fixed
+- **Inputs page empty-state CTA** — the "No inputs configured yet" empty state on Settings → Inputs previously linked to "Go to Settings → Inputs", creating a circular dead-end. Now shows a direct inline prompt: "Click + Add Input above to add your first stream."
+
+---
+
 ## [3.5.31] - 2026-04-04
 
 ### Fixed

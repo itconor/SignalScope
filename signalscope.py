@@ -2249,7 +2249,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.31"
+BUILD                  = "SignalScope-3.5.32"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -17657,6 +17657,8 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 .fb-btn.fb-bad{background:#450a0a;border-color:#ef4444}
 .fb-lbl{font-size:10px;color:var(--mu)}
 .fb-lbl.fb-lbl-ok{color:var(--ok)}.fb-lbl.fb-lbl-bad{color:var(--al)}
+.ack-cell{vertical-align:middle;text-align:center}
+.ack-done{font-size:12px;color:var(--ok);line-height:1.3;display:inline-block}
 .page-info{color:var(--mu);font-size:12px;margin-left:auto}
 .tab-bar{display:flex;gap:0;margin:0 0 0 0}
 .tab-btn{padding:6px 16px;border-radius:8px 8px 0 0;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;background:transparent;color:var(--mu);transition:background .12s,color .12s}
@@ -17733,6 +17735,7 @@ tr.data-row.expanded td{background:#0d1e40}
         <th class="col-rtp" style="width:75px">RTP Loss</th>
         <th>PTP @ Alert</th>
         <th style="width:220px">Clip</th>
+        <th style="width:110px">Ack</th>
       </tr>
     </thead>
     <tbody id="evt_body">
@@ -17781,9 +17784,16 @@ tr.data-row.expanded td{background:#0d1e40}
         </div>
         {% endif %}
       </td>
+      <td class="ack-cell" data-ack-id="{{e.id}}">
+        {% if e.acked %}
+        <span class="ack-done" title="Acknowledged {{e.acked.ts}}">✓ {{e.acked.by}}<br><span style="font-size:10px;color:var(--mu)">{{e.acked.ts[11:16]}}</span></span>
+        {% else %}
+        <button class="btn bg bs ack-btn" data-ack-id="{{e.id}}">Ack</button>
+        {% endif %}
+      </td>
     </tr>
     {% else %}
-    <tr><td colspan="8" class="no-data">No alert events recorded yet. Events appear here once monitoring starts and alerts fire.</td></tr>
+    <tr><td colspan="9" class="no-data">No alert events recorded yet. Events appear here once monitoring starts and alerts fire.</td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -17894,6 +17904,13 @@ function rowHTML(e){
   var lvlAttr=e.level_dbfs&&e.level_dbfs>-120?escAttr(String(e.level_dbfs)):'';
   var rtpAttr=e.rtp_loss_pct>0?escAttr(String(e.rtp_loss_pct)):'';
   var _rtRel=typeof _relTimeStr==='function'?_relTimeStr(e.ts||''):(e.ts||'');
+  var ackHtml='';
+  if(e.acked&&e.acked.by){
+    var ackTs=(e.acked.ts||'').substring(11,16);
+    ackHtml='<span class="ack-done" title="Acknowledged '+escAttr(e.acked.ts||'')+'">✓ '+escHTML(e.acked.by)+'<br><span style="font-size:10px;color:var(--mu)">'+escHTML(ackTs)+'</span></span>';
+  } else {
+    ackHtml='<button class="btn bg bs ack-btn" data-ack-id="'+escAttr(e.id||'')+'">Ack</button>';
+  }
   return '<tr class="data-row" data-id="'+escAttr(e.id||'')+'" data-stream="'+escAttr(e.stream)+'" data-type="'+escAttr(e.type)+'" data-ts="'+escAttr(e.ts||'')+'" data-clip="'+escAttr(e.clip||'')+'" data-category="'+cat+'" data-level="'+lvlAttr+'" data-rtp="'+rtpAttr+'">'
     +'<td style="color:var(--mu);font-size:12px;white-space:nowrap" title="'+escAttr(e.ts||'')+'">'+escHTML(_rtRel)+'</td>'
     +'<td><strong>'+escHTML(e.stream||'')+'</strong></td>'
@@ -17903,6 +17920,7 @@ function rowHTML(e){
     +'<td class="col-rtp">'+rtp+'</td>'
     +'<td>'+ptp+'</td>'
     +'<td>'+clip+fbHtml+'</td>'
+    +'<td class="ack-cell" data-ack-id="'+escAttr(e.id||'')+'">'+ackHtml+'</td>'
     +'</tr>';
 }
 function escHTML(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -17983,17 +18001,38 @@ function toggleDetailRow(row){
   if(!items) items='<span style="color:var(--mu);font-size:11px">No extra detail for this event.</span>';
   var td=document.createElement('tr');
   td.className='detail-row';
-  td.innerHTML='<td colspan="8"><div class="detail-grid">'+items+'</div></td>';
+  td.innerHTML='<td colspan="9"><div class="detail-grid">'+items+'</div></td>';
   row.parentNode.insertBefore(td, row.nextSibling);
 }
 document.addEventListener('click',function(e){
   var btn=e.target.closest('.fb-btn[data-fb-id]');
   if(btn){ sendFeedback(btn); return; }
+  var ackBtn=e.target.closest('.ack-btn[data-ack-id]');
+  if(ackBtn){ sendAck(ackBtn); return; }
   var row=e.target.closest('tr.data-row');
-  if(row && !e.target.closest('audio') && !e.target.closest('.fb-btn') && !e.target.closest('.fb-wrap')){
+  if(row && !e.target.closest('audio') && !e.target.closest('.fb-btn') && !e.target.closest('.fb-wrap') && !e.target.closest('.ack-btn')){
     toggleDetailRow(row);
   }
 });
+function sendAck(btn){
+  var id=btn.dataset.ackId;
+  if(!id) return;
+  var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
+  btn.disabled=true; btn.textContent='…';
+  fetch('/api/alerts/'+encodeURIComponent(id)+'/ack',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},
+    body:JSON.stringify({})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){btn.disabled=false;btn.textContent='Ack';return;}
+    var cell=btn.closest('.ack-cell');
+    if(cell){
+      var ack=d.ack||{};
+      var ts=(ack.ts||'').substring(11,16);
+      cell.innerHTML='<span class="ack-done" title="Acknowledged '+escAttr(ack.ts||'')+'">✓ '+escHTML(ack.by||'')+'<br><span style="font-size:10px;color:var(--mu)">'+escHTML(ts)+'</span></span>';
+    }
+  }).catch(function(){btn.disabled=false;btn.textContent='Ack';});
+}
 
 function refreshReports(){
   fetch('/reports/data').then(function(r){return r.json();}).then(function(d){
@@ -18137,9 +18176,9 @@ tr:hover td{background:#123764}
 </tbody></table>
 {% else %}<div style="text-align:center;padding:48px 24px;color:var(--mu)">
   <div style="font-size:36px;margin-bottom:12px">📡</div>
-  <div style="font-size:15px;font-weight:600;color:var(--tx);margin-bottom:6px">No inputs configured</div>
-  <div style="font-size:13px;margin-bottom:16px">Add an SDR device and input stream to start monitoring.</div>
-  <a href="/settings#p-inputs" class="btn bp bs" style="text-decoration:none">Go to Settings → Inputs</a>
+  <div style="font-size:15px;font-weight:600;color:var(--tx);margin-bottom:6px">No inputs configured yet</div>
+  <div style="font-size:13px;margin-bottom:4px">Click <strong style="color:var(--tx)">+ Add Input</strong> above to add your first stream.</div>
+  <div style="font-size:12px">Supports FM via RTL-SDR, DAB, HTTP/HTTPS streams, Livewire/AES67, and local audio devices.</div>
 </div>{% endif %}
 </main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer></body></html>"""
 
@@ -20012,6 +20051,8 @@ def status_json():
 @csrf_protect
 def alert_ack(alert_id: str):
     """Acknowledge an alert by its UUID."""
+    if _is_viewer():
+        return jsonify({"ok": False, "error": "Viewer role cannot acknowledge alerts"}), 403
     from flask import session as _session
     user = _session.get("user", "admin")
     ack = _save_ack(alert_id, user)
@@ -22987,7 +23028,7 @@ def api_trend(stream_name):
 @app.get("/reports")
 @login_required
 def reports():
-    events = _alert_log_load_with_feedback(2000)
+    events = _history_with_acks(_alert_log_load_with_feedback(2000))
     # Summary counts
     counts = {}
     for e in events:
@@ -23003,7 +23044,7 @@ def reports():
 @login_required
 def reports_data():
     """JSON endpoint for the reports page live refresh — returns events + summary counts."""
-    events = _alert_log_load_with_feedback(2000)
+    events = _history_with_acks(_alert_log_load_with_feedback(2000))
     counts = {}
     for e in events:
         counts[e.get("type","")] = counts.get(e.get("type",""), 0) + 1
@@ -24333,6 +24374,24 @@ def hub_dashboard():
     except Exception:
         pass
 
+    # Build ack indicators: find the most recent SILENCE event per stream that has been acked.
+    # Maps stream_name → {by, ts} so the template can show "✓ acked by X" next to silence badges.
+    _silence_acks: dict = {}
+    try:
+        with _alert_acks_lock:
+            _acks_snap = dict(_alert_acks)
+        if _acks_snap:
+            _seen_sa = set()
+            for _ev in _alert_log_load(500):
+                _sn = _ev.get("stream", "")
+                if _sn and _sn not in _seen_sa and _ev.get("type", "").upper() == "SILENCE":
+                    _seen_sa.add(_sn)
+                    _aid = _ev.get("id", "")
+                    if _aid and _aid in _acks_snap:
+                        _silence_acks[_sn] = _acks_snap[_aid]
+    except Exception:
+        pass
+
     if wall_mode:
         # Build chain evaluation results for the wall display
         wall_chains = []
@@ -24352,6 +24411,7 @@ def hub_dashboard():
         warn_site_count=warn_site_count, stale_count=stale_count, hub_cpu=hub_cpu, hub_mem=hub_mem,
         is_admin=_is_admin(),
         live_view='1' if cfg.hub.live_view else '0',
+        silence_acks=_silence_acks,
     )
 
 @app.post(f"/api/{HUB_API_VERSION}/audio_chunk/<slot_id>")
@@ -30570,6 +30630,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 .alert-row-time{color:var(--mu);white-space:nowrap;flex-shrink:0}.alert-row-msg{flex:1;word-break:break-word}
 .clip-badge{font-size:10px;padding:1px 6px;border-radius:999px;background:#381414;color:#fca5a5;margin-left:4px}
 .sil-live-badge{font-size:10px;padding:2px 7px;border-radius:999px;background:#451a03;color:#fbbf24;margin-left:4px;animation:rpulse 1.5s infinite}
+.sil-ack-badge{font-size:10px;padding:2px 6px;border-radius:999px;background:#0f2318;color:var(--ok);margin-left:4px;border:1px solid #166534}
 .refresh-bar{font-size:11px;color:var(--mu);display:flex;align-items:center;gap:8px}
 .refresh-dot{width:7px;height:7px;border-radius:999px;background:var(--ok);display:inline-block;animation:rpulse 2s infinite}
 @keyframes rpulse{0%,100%{opacity:1}50%{opacity:.3}}
@@ -30710,7 +30771,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         <div class="sc-name">
           <span class="dot sc-ai-dot {{dc}}"></span>
           <strong>{{s.name}}</strong>
-          {%- if s.get('silence_active') %}<span class="sil-live-badge">🔇 SILENCE</span>{%- endif %}
+          {%- if s.get('silence_active') %}<span class="sil-live-badge">🔇 SILENCE</span>{%- set _sack = silence_acks.get(s.get('name','')) %}{%- if _sack %}<span class="sil-ack-badge" title="Acknowledged {{_sack.ts}}">✓ acked by {{_sack.by}}</span>{%- endif %}{%- endif %}
           {% if s.get('clip_count') %}<span class="clip-badge" title="Saved alert clips">{{s.get('clip_count')}} clips</span>{% endif %}
           <span class="sc-dev">{{s.device_index or ''}}</span>
         </div>
@@ -32611,7 +32672,14 @@ body.wall-mode .site-meta{font-size:13px}
 }
 .sc-silence .lbar-fill{animation:silencePulse 2s ease-in-out infinite;background:var(--wn) !important;}
 .sc-silence .lbar-val{color:var(--wn) !important;}
-
+#kb-overlay{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9000;display:flex;align-items:center;justify-content:center}
+.kb-modal{background:var(--sur);border:1px solid var(--bor);border-radius:14px;min-width:340px;max-width:480px;overflow:hidden;box-shadow:0 16px 48px rgba(0,0,0,.55)}
+.kb-hdr{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54);font-size:14px;font-weight:700}
+.kb-tbl{width:100%;border-collapse:collapse}
+.kb-tbl td{padding:9px 18px;font-size:13px;border-bottom:1px solid var(--bor)}
+.kb-tbl tr:last-child td{border-bottom:none}
+.kb-tbl td:first-child{width:60px}
+kbd{display:inline-block;padding:2px 8px;border-radius:5px;background:#0a1828;border:1px solid var(--bor);font-size:12px;font-family:monospace;color:var(--acc)}
 body.wall-mode .streams{grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;padding:10px}
 .sc{background:#123764;border:1px solid var(--bor);border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.12);transition:border-color .15s,box-shadow .15s,transform .15s}
 .sc:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(0,0,0,.22)}
@@ -33352,11 +33420,37 @@ document.addEventListener('DOMContentLoaded', function(){
       clearTimeout(_hubTimer); hubRefresh();
       return;
     }
-    // Esc — close any open ic-bar, offline-banner-modal, or hmp-panel
+    // Esc — close any open ic-bar, offline-banner-modal, hmp-panel, or shortcut overlay
     if(e.key==='Escape'){
       document.querySelectorAll('.ic-bar').forEach(function(b){b.remove();});
       var hmp=document.getElementById('hmp-panel');
       if(hmp&&hmp.style.display!=='none'){var cl=document.getElementById('hmp-close');if(cl)cl.click();}
+      var ko=document.getElementById('kb-overlay');
+      if(ko){ko.remove();}
+      return;
+    }
+    // ? — show keyboard shortcut overlay
+    if(e.key==='?'||e.key==='/'){
+      e.preventDefault();
+      if(e.key==='/'){
+        var s=document.getElementById('hubSearch');
+        if(s){s.focus();s.select();}
+        return;
+      }
+      var existing=document.getElementById('kb-overlay');
+      if(existing){existing.remove();return;}
+      var ov=document.createElement('div');
+      ov.id='kb-overlay';
+      ov.innerHTML='<div class="kb-modal"><div class="kb-hdr"><span>⌨ Keyboard Shortcuts</span><button class="btn bg bs" id="kb-close">✕</button></div>'
+        +'<table class="kb-tbl"><tbody>'
+        +'<tr><td><kbd>R</kbd></td><td>Force refresh all site cards</td></tr>'
+        +'<tr><td><kbd>/</kbd></td><td>Focus site search box</td></tr>'
+        +'<tr><td><kbd>?</kbd></td><td>Show / hide this shortcut list</td></tr>'
+        +'<tr><td><kbd>Esc</kbd></td><td>Close overlays &amp; panels</td></tr>'
+        +'</tbody></table></div>';
+      document.body.appendChild(ov);
+      document.getElementById('kb-close').addEventListener('click',function(){ov.remove();});
+      ov.addEventListener('click',function(ev){if(ev.target===ov)ov.remove();});
       return;
     }
   });
