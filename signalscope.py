@@ -2147,7 +2147,17 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.8"
+BUILD                  = "SignalScope-3.5.9"
+
+def _is_raspberry_pi() -> bool:
+    """Return True if this machine is a Raspberry Pi."""
+    for _path in ("/proc/device-tree/model", "/sys/firmware/devicetree/base/model"):
+        try:
+            with open(_path, "rb") as _fh:
+                return b"raspberry pi" in _fh.read().lower()
+        except Exception:
+            pass
+    return False
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -7636,6 +7646,14 @@ class MonitorManager:
         cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel, "-g", _gain_val, "-F", driver]
         if session.ppm:
             cmd += ["-p", str(session.ppm)]
+        if _is_raspberry_pi():
+            # -T: disable TII decoding (not needed for monitoring, saves significant CPU)
+            # -C N: decode only N services simultaneously — set to the number of
+            #        consumers currently registered on this session so all monitored
+            #        services are served without decoding unused ones on the full mux.
+            _n_consumers = max(1, len(session.consumers))
+            cmd += ["-T", "-C", str(_n_consumers)]
+            self.log(f"[{name}] Raspberry Pi detected — adding -T -C {_n_consumers} to limit CPU")
         self.log(f"[{name}] DAB shared: launching {' '.join(cmd)}")
 
         try:

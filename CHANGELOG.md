@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.9] - 2026-04-04
+
+### Fixed
+- **DAB monitoring inputs — CPU overload on Raspberry Pi with large muxes** — the same CPU overload that affected the DAB Scanner plugin also affected monitored DAB inputs (`_start_dab_session`). On a Raspberry Pi, welle-cli decoded the entire ensemble simultaneously, saturating the CPU. **Fixed:** `_start_dab_session` now calls `_is_raspberry_pi()` and on Pi adds two flags to the welle-cli command: `-T` (disables TII decoding — not needed for monitoring, saves significant CPU) and `-C N` where N = the number of consumers registered on that session at launch time (so all configured monitored services are decoded, but unused services on the mux are not). Non-Pi hardware is unaffected.
+
+---
+
 ## [3.5.8] - 2026-04-04
 
 ### Fixed
