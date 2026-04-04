@@ -2249,7 +2249,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.25"
+BUILD                  = "SignalScope-3.5.26"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -31226,7 +31226,8 @@ document.addEventListener('click',function(e){
     hubPost('/api/hub/site/'+encodeURIComponent(btn.dataset.site)+'/input/remove',{name:btn.dataset.name})
     .then(function(d){btn.disabled=false;if(d.ok)btn.textContent='✓ Queued';else alert('Failed: '+(d.error||'unknown'));})
     .catch(function(){btn.disabled=false;});
-  });
+  }); // end _inlineConfirm
+}); // end hub-remove-input listener
 document.addEventListener('click',function(e){
   var btn=e.target.closest('[data-action="hub-enable-input"],[data-action="hub-disable-input"]');if(!btn)return;
   var ep=btn.dataset.action==='hub-enable-input'?'enable':'disable';

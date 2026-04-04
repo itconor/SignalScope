@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.26] - 2026-04-04
+
+### Fixed
+- **Hub "Remove input" button broken** — same missing `});` pattern as 3.5.25: the `hub-remove-input` click listener was missing its closing `});` after the `_inlineConfirm` call. This caused a JS syntax error in the hub script block, breaking all hub management buttons in that block.
+
+---
+
 ## [3.5.25] - 2026-04-04
 
 ### Fixed
