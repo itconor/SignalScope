@@ -2141,7 +2141,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.4.160"
+BUILD                  = "SignalScope-3.4.161"
 
 # ── SVG icon snippets ─────────────────────────────────────────────────────────
 # Used in templates via {{icons.NAME|safe}}.  class="ic" relies on the global
@@ -14950,6 +14950,15 @@ def _make_isolated_app(real_app, plugin_name: str):
 
         def post(self, rule, **opts):
             return self.route(rule, methods=["POST"], **opts)
+
+        def delete(self, rule, **opts):
+            return self.route(rule, methods=["DELETE"], **opts)
+
+        def patch(self, rule, **opts):
+            return self.route(rule, methods=["PATCH"], **opts)
+
+        def put(self, rule, **opts):
+            return self.route(rule, methods=["PUT"], **opts)
 
     return _PluginAppProxy()
 

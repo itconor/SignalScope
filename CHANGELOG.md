@@ -2,6 +2,13 @@
 
 ---
 
+## [3.4.161] - 2026-04-04
+
+### Fixed
+- **Plugin proxy completeness** — `delete`, `patch`, and `put` shorthand methods added to `_PluginAppProxy` so all HTTP methods on plugin-registered routes are wrapped by the error-isolation catcher. Previously only `get`, `post`, and `route` were covered; `ptpclock`'s DELETE routes bypassed the wrapper.
+
+---
+
 ## [3.4.160] - 2026-04-04
 
 ### Added
