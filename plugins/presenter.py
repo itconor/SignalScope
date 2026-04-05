@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.4.1",
+    "version":    "1.4.2",
 }
 
 import json, os, time, urllib.parse
