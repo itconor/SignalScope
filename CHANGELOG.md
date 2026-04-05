@@ -2,6 +2,13 @@
 
 ---
 
+## [Sync Capture plugin 1.0.2] - 2026-04-05
+
+### Fixed
+- **Client poller silent failures — root cause of captures never arriving**: The client polling thread had `except Exception: pass` with no logging at all. Any error (SSL, 403, wrong URL, hub not having synccap installed) was silently swallowed every 2 seconds with no trace in the log. Added startup log message `[SyncCap] Client poller started`, error logging that fires when the error message changes (rate-limited to avoid spam), and a recovery message when the hub becomes reachable again. Also stripped trailing slash from `hub_url` before building the command poll URL (a trailing slash would produce a double-slash path, routing to 404 on some proxies).
+
+---
+
 ## [Sync Capture plugin 1.0.1] - 2026-04-05
 
 ### Fixed

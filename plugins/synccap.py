@@ -245,26 +245,36 @@ def register(app, ctx):
     # ── Client node: start polling thread, register no routes ─────────────────
     if hub_server is None:
         def _client_poller():
+            _last_err = ""
+            monitor.log("[SyncCap] Client poller started")
             while True:
                 try:
                     cfg     = monitor.app_cfg
-                    hub_url = getattr(getattr(cfg, "hub", None), "hub_url", "") or ""
+                    hub_url = (getattr(getattr(cfg, "hub", None), "hub_url", "") or "").rstrip("/")
                     site    = getattr(getattr(cfg, "hub", None), "site_name", "") or ""
-                    if hub_url and site:
-                        req  = urllib.request.Request(
-                            f"{hub_url}/api/synccap/cmd",
-                            headers={"X-Site": site},
-                        )
-                        resp = urllib.request.urlopen(req, timeout=5)
-                        cmd  = json.loads(resp.read())
-                        if cmd.get("action") == "capture":
-                            threading.Thread(
-                                target=_handle_capture_cmd,
-                                args=(cmd, monitor, hub_url, site),
-                                daemon=True,
-                            ).start()
-                except Exception:
-                    pass
+                    if not hub_url or not site:
+                        time.sleep(_CLIENT_POLL_S)
+                        continue
+                    req  = urllib.request.Request(
+                        f"{hub_url}/api/synccap/cmd",
+                        headers={"X-Site": site},
+                    )
+                    resp = urllib.request.urlopen(req, timeout=5)
+                    cmd  = json.loads(resp.read())
+                    if _last_err:
+                        monitor.log("[SyncCap] Client poller: hub reachable again")
+                        _last_err = ""
+                    if cmd.get("action") == "capture":
+                        threading.Thread(
+                            target=_handle_capture_cmd,
+                            args=(cmd, monitor, hub_url, site),
+                            daemon=True,
+                        ).start()
+                except Exception as exc:
+                    err_str = str(exc)
+                    if err_str != _last_err:
+                        monitor.log(f"[SyncCap] Client poller error: {exc}")
+                        _last_err = err_str
                 time.sleep(_CLIENT_POLL_S)
 
         threading.Thread(
