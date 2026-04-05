@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.67] - 2026-04-05
+
+### Added
+- **`/api/health` — public endpoint**: Removed `@login_required` from the health check endpoint. Unauthenticated callers (UptimeRobot, Nagios, nginx health checks, etc.) now receive a minimal `{"status","build","ts"}` response with the correct HTTP code (200 ok / 503 degraded|error). Authenticated callers still get the full subsystem detail used by the dashboard.
+- **Mobile API rate limiting**: `mobile_api_required` now shares the `LoginLimiter` with the web login form. Failed token attempts are counted per IP; the same `login_max_attempts` / `login_lockout_mins` settings apply. Returns HTTP 429 with `retry_after` when locked. Successful authentication clears the counter.
+- **Startup topnav JS validation**: `_validate_topnav_js()` runs at startup, generates the topnav `<script>` block inside a test request context, and scans for the adjacent-string-literal pattern (`[A-Za-z0-9_;}\])]""`) that caused the 3.5.65/3.5.66 regressions. Prints `[OK]` on pass, `[!!] FAILED` with sample matches on fail — catches the bug before any request is served.
+
+---
+
 ## [3.5.66] - 2026-04-05
 
 ### Fixed

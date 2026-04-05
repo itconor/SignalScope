@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.66"
+BUILD                  = "SignalScope-3.5.67"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -4093,6 +4093,14 @@ def mobile_api_required(f):
         if not expected:
             return jsonify({"ok": False, "error": "mobile api token not configured"}), 403
 
+        ip = request.remote_addr or "unknown"
+
+        # Brute-force protection: reuse the login limiter
+        locked_secs = login_limiter.is_locked(ip)
+        if locked_secs > 0:
+            return jsonify({"ok": False, "error": "too many failed attempts",
+                            "retry_after": int(locked_secs) + 1}), 429
+
         supplied = ""
         authz = request.headers.get("Authorization", "").strip()
         if authz.lower().startswith("bearer "):
@@ -4105,7 +4113,11 @@ def mobile_api_required(f):
             supplied = request.args.get("api_key", "").strip()
 
         if not supplied or not _hmac.compare_digest(expected, supplied):
+            cfg = monitor.app_cfg
+            login_limiter.record_failure(ip, cfg.login_max_attempts, cfg.login_lockout_mins)
             return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+        login_limiter.clear(ip)
         return f(*args, **kwargs)
     return decorated
 
@@ -17006,14 +17018,21 @@ def api_version_check():
                     "error": _UPDATE_STATE.get("error")})
 
 @app.get("/api/health")
-@login_required
 def api_health():
     """Machine-readable subsystem health check.
 
     Returns a JSON object with an overall 'status' of 'ok', 'degraded', or
     'error', plus per-subsystem details.  Suitable for uptime-monitoring tools
     (UptimeRobot, Nagios, etc.) as well as the dashboard status banner.
+
+    Unauthenticated callers receive a minimal response (status + build only).
+    Authenticated callers (or when auth is disabled) receive full subsystem
+    detail — suitable for the internal dashboard status banner.
     """
+    from flask import session as _sess
+    _cfg_auth = monitor.app_cfg
+    _authed = (not _cfg_auth.auth.enabled) or bool(_sess.get("logged_in"))
+
     issues: list[str] = []
     subsystems: dict = {}
 
@@ -17082,6 +17101,13 @@ def api_health():
     else:
         overall = "degraded"
 
+    http_code = 200 if overall == "ok" else 503
+
+    if not _authed:
+        # Minimal response for unauthenticated monitoring tools (UptimeRobot, etc.)
+        return jsonify({"status": overall, "build": BUILD,
+                        "ts": round(time.time())}), http_code
+
     return jsonify({
         "status":     overall,
         "issues":     issues,
@@ -17089,7 +17115,7 @@ def api_health():
         "build":      BUILD,
         "uptime_s":   round(time.time() - _PROCESS_START),
         "ts":         round(time.time()),
-    }), (200 if overall == "ok" else 503)
+    }), http_code
 
 
 @app.post("/api/version_check/refresh")
@@ -36223,11 +36249,54 @@ def api_users_me_password():
     return jsonify({"ok": True})
 
 
+# ─── Startup self-check: topnav JS syntax ────────────────────────────────────
+
+def _validate_topnav_js():
+    """Detect adjacent-JS-string-literal bugs in the topnav <script> block.
+
+    Python implicit string concatenation can silently produce code like:
+        t.style.cssText="a;""b;"
+    which is a JS SyntaxError (two string literals with no operator).  This
+    check generates the topnav HTML within a fake request context and scans
+    the extracted <script> block for that pattern before the server starts
+    serving requests.
+    """
+    import re
+    try:
+        with app.test_request_context("/"):
+            nav_dict = _inject_nav()
+            topnav_fn = nav_dict.get("topnav")
+            if topnav_fn is None:
+                print("[!] topnav JS check: could not obtain topnav function", flush=True)
+                return
+            html = str(topnav_fn(""))
+            m = re.search(r'<script[^>]*>(.*?)</script>', html, re.DOTALL)
+            if not m:
+                print("[!] topnav JS check: no <script> block found", flush=True)
+                return
+            js = m.group(1)
+            # Look for a word-char/semicolon/closing-bracket immediately followed
+            # by "" — this is the sign of an implicit-concat bug where one JS string
+            # ends and another begins without a + operator.
+            bugs = re.findall(r'[A-Za-z0-9_;}\])]""', js)
+            if bugs:
+                print(f"[!!] topnav JS validation FAILED — {len(bugs)} adjacent string "
+                      f"literal(s) detected (JS SyntaxError). Samples: {bugs[:4]}",
+                      flush=True)
+            else:
+                print(f"[OK] topnav JS validation passed", flush=True)
+    except Exception as e:
+        print(f"[!] topnav JS check error: {e}", flush=True)
+
+
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 if __name__=="__main__":
     # Load any plugin files found alongside signalscope.py
     _load_plugins()
+
+    # Self-check: catch topnav JS syntax errors before serving requests
+    _validate_topnav_js()
 
     ort=_try_import("onnxruntime")
     if ort is None:
