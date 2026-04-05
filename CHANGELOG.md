@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.75] - 2026-04-05
+
+### Fixed
+- **DAB mono service incorrectly flagged as stereo**: welle-cli reports `channels: 2` in mux.json for some mono services (e.g. MP2 streams at 80 kbit/s — the codec uses a stereo frame container even for mono content). The mode string (e.g. "MPEG 1.0 Layer II, 48 kHz Mono @ 80 kbit/s") correctly indicates mono but was previously ignored. Fix: `_dab_stereo` is now set to `False` whenever the mode string contains "mono", regardless of the `channels` field. Additionally, if ffmpeg was launched in 2-channel mode for such a service, the dual-mono PCM is correctly downsampled to true mono (taking the L channel) before analysis, so L/R bars no longer show identical levels and `_audio_channels` is correctly reported as 1.
+
+---
+
 ## [3.5.74] - 2026-04-05
 
 ### Added

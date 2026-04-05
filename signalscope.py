@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.74"
+BUILD                  = "SignalScope-3.5.75"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8516,7 +8516,8 @@ class MonitorManager:
                     if not (svc_name.lower() == service_l or service_l in svc_name.lower()):
                         continue
                     cfg._dab_mode   = svc.get("mode", cfg._dab_mode)
-                    cfg._dab_stereo = svc.get("channels", 1) > 1
+                    _mode_lower     = (cfg._dab_mode or "").lower()
+                    cfg._dab_stereo = svc.get("channels", 1) > 1 and "mono" not in _mode_lower
                     dls = svc.get("dynamicLabel", "") or svc.get("dls", "")
                     if dls:
                         # welle-cli returns dynamicLabel as a dict
@@ -9173,7 +9174,8 @@ class MonitorManager:
                             raw = bytes(buf[:CHUNK_BYTES])
                             del buf[:CHUNK_BYTES]
                             samp = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-                            if cfg.stereo and _dab_n_ch == 2 and samp.size % 2 == 0:
+                            if cfg.stereo and _dab_n_ch == 2 and samp.size % 2 == 0 and cfg._dab_stereo:
+                                # Genuine stereo service — deinterleave L/R
                                 _fr = samp.reshape(-1, 2)
                                 _L = np.clip(_fr[:, 0] - np.mean(_fr[:, 0]), -1.0, 1.0)
                                 _R = np.clip(_fr[:, 1] - np.mean(_fr[:, 1]), -1.0, 1.0)
@@ -9189,6 +9191,19 @@ class MonitorManager:
                                 analyse_chunk(cfg, sender,
                                               lambda m, n=name: self.log(f"[{n}] {m}"),
                                               mono, CHUNK_DURATION,
+                                              cfg.alert_wav_duration,
+                                              self.app_cfg.inputs)
+                            elif _dab_n_ch == 2 and samp.size % 2 == 0:
+                                # ffmpeg gave 2-ch PCM but service is confirmed mono — take L channel (L=R)
+                                samp = samp[0::2]
+                                samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
+                                cfg._audio_channels = 1
+                                cfg._stream_buffer.append(samp.copy())
+                                cfg._audio_buffer.append(samp.copy())
+                                cfg._live_chunk_seq = getattr(cfg, "_live_chunk_seq", 0) + 1
+                                analyse_chunk(cfg, sender,
+                                              lambda m, n=name: self.log(f"[{n}] {m}"),
+                                              samp, CHUNK_DURATION,
                                               cfg.alert_wav_duration,
                                               self.app_cfg.inputs)
                             else:
