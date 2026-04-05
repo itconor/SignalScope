@@ -991,6 +991,43 @@ document.addEventListener('DOMContentLoaded',function(){
   </div>
   <span id="my-pw-msg" style="font-size:12px;margin-top:6px;display:block"></span>
 
+  <div class="sec" style="margin-top:20px">🔐 Two-Factor Authentication</div>
+  <p class="help" style="margin-bottom:10px">TOTP 2FA adds a second verification step after login using an authenticator app (Google Authenticator, Authy, 1Password, etc.).</p>
+  <div id="totp-status-wrap" style="margin-bottom:12px">
+    {% set cur_user = current_user() %}
+    {% if cur_user and cur_user.totp_enabled %}
+    <span style="font-size:13px;color:var(--ok)">✓ Two-factor authentication is <strong>enabled</strong> for your account.</span>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+      <button class="btn bd bs" type="button" id="totp-disable-btn">Disable 2FA</button>
+      <span id="totp-disable-msg" style="font-size:12px"></span>
+    </div>
+    {% else %}
+    <span style="font-size:13px;color:var(--mu)">Two-factor authentication is <strong>not enabled</strong> for your account.</span>
+    <div style="margin-top:10px">
+      <a href="/settings/totp/setup" class="btn bp bs">🔐 Set Up 2FA</a>
+    </div>
+    {% endif %}
+  </div>
+  <script nonce="{{csp_nonce()}}">
+  (function(){
+    var btn=document.getElementById('totp-disable-btn');
+    if(!btn)return;
+    btn.addEventListener('click',function(){
+      var pw=prompt('Enter your current password to disable 2FA:');
+      if(!pw)return;
+      var msg=document.getElementById('totp-disable-msg');
+      msg.textContent='Disabling…';msg.style.color='var(--mu)';
+      fetch('/settings/totp/disable',{method:'POST',
+        headers:{'Content-Type':'application/json','X-CSRFToken':(document.querySelector('meta[name="csrf-token"]')||{}).content||''},
+        body:JSON.stringify({password:pw})})
+      .then(function(r){return r.json();}).then(function(d){
+        if(d.ok){msg.textContent='✓ 2FA disabled.';msg.style.color='var(--ok)';setTimeout(function(){location.reload();},1200);}
+        else{msg.textContent='✗ '+(d.error||'Failed');msg.style.color='var(--al)';}
+      }).catch(function(){msg.textContent='Network error';msg.style.color='var(--al)';});
+    });
+  })();
+  </script>
+
   <div class="sec" style="margin-top:24px">🔐 Login Settings</div>
           <div class="cr" style="margin-bottom:10px"><input type="checkbox" name="auth_enabled" value="1" {{'checked' if cfg.auth.enabled}}><label style="margin:0;text-transform:none">Require login to access dashboard</label></div>
           <p class="help" style="margin-bottom:12px">User accounts and passwords are managed in the <strong>Users &amp; Roles</strong> section above. Use the settings below to control lockout and session behaviour.</p>
@@ -2260,7 +2297,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.36"
+BUILD                  = "SignalScope-3.5.37"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2680,6 +2717,8 @@ class UserAccount:
     chains:        list = field(default_factory=list)   # [] = all chains; [...] = whitelist
     enabled:       bool = True
     first_login:   bool = False
+    totp_secret:   str  = ""    # base32 TOTP secret; "" = 2FA not configured
+    totp_enabled:  bool = False # True = TOTP required at login
 
 class UserManager:
     """Loads and saves user accounts to signalscope_users.json."""
@@ -2708,6 +2747,8 @@ class UserManager:
                             chains        = u.get("chains", []),
                             enabled       = u.get("enabled", True),
                             first_login   = u.get("first_login", False),
+                            totp_secret   = u.get("totp_secret", ""),
+                            totp_enabled  = u.get("totp_enabled", False),
                         )
                         if ua.username:
                             self._users[ua.username] = ua
@@ -2735,7 +2776,8 @@ class UserManager:
             {"username": u.username, "password_hash": u.password_hash,
              "role": u.role, "sites": u.sites, "plugins": u.plugins,
              "chains": u.chains,
-             "enabled": u.enabled, "first_login": u.first_login}
+             "enabled": u.enabled, "first_login": u.first_login,
+             "totp_secret": u.totp_secret, "totp_enabled": u.totp_enabled}
             for u in self._users.values()
         ]
         _atomic_json_write(self._path, {"users": users_list})
@@ -15759,6 +15801,106 @@ def _log_security(msg: str):
     print(f"[Security] {msg}", flush=True)
 
 
+# ─── TOTP two-factor authentication ──────────────────────────────────────────
+
+_TOTP_REMEMBER_PATH  = os.path.join(BASE_DIR, "totp_remember.json")
+_totp_remember: dict = {}   # {username: {token_hash: expires_ts}}
+_totp_rem_lock = threading.Lock()
+
+def _load_totp_remember():
+    global _totp_remember
+    try:
+        with open(_TOTP_REMEMBER_PATH) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _totp_remember = data
+    except Exception:
+        _totp_remember = {}
+
+def _save_totp_remember():
+    try:
+        _atomic_json_write(_TOTP_REMEMBER_PATH, _totp_remember)
+    except Exception:
+        pass
+
+def _create_totp_remember(username: str) -> str:
+    """Create a 30-day remember token for a TOTP-verified device. Returns raw token."""
+    import secrets as _sec, hashlib as _hl
+    token = _sec.token_urlsafe(32)
+    token_hash = _hl.sha256(token.encode()).hexdigest()
+    expires = time.time() + 30 * 86400
+    with _totp_rem_lock:
+        if username not in _totp_remember:
+            _totp_remember[username] = {}
+        # Prune expired tokens
+        _totp_remember[username] = {h: e for h, e in _totp_remember[username].items()
+                                    if e > time.time()}
+        _totp_remember[username][token_hash] = expires
+        _save_totp_remember()
+    return token
+
+def _check_totp_remember(username: str, cookie_val: str) -> bool:
+    """Return True if cookie_val is a valid, unexpired remember token for username."""
+    if not cookie_val:
+        return False
+    parts = cookie_val.split(":", 1)
+    if len(parts) != 2 or parts[0] != username:
+        return False
+    import hashlib as _hl
+    token_hash = _hl.sha256(parts[1].encode()).hexdigest()
+    with _totp_rem_lock:
+        expires = _totp_remember.get(username, {}).get(token_hash)
+    return bool(expires and time.time() < expires)
+
+def _revoke_totp_remember(username: str):
+    """Revoke all remember tokens for a user (called on 2FA disable)."""
+    with _totp_rem_lock:
+        _totp_remember.pop(username, None)
+        _save_totp_remember()
+
+try:
+    _load_totp_remember()
+except Exception:
+    pass
+
+
+# ─── Audit log ───────────────────────────────────────────────────────────────
+
+_AUDIT_LOG_PATH = os.path.join(BASE_DIR, "audit_log.json")
+_audit_lock = threading.Lock()
+
+def _audit(action: str, detail: str = ""):
+    """Append an audit log entry. Safe to call from any Flask request context."""
+    try:
+        from flask import request as _req, has_request_context
+        if has_request_context():
+            _user = session.get("username", "—") if session else "—"
+            _ip   = _req.remote_addr or "—"
+        else:
+            _user = "system"
+            _ip   = "—"
+    except Exception:
+        _user = "system"
+        _ip   = "—"
+    entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "epoch": time.time(),
+             "user": _user, "ip": _ip, "action": action, "detail": detail}
+    try:
+        with _audit_lock:
+            try:
+                with open(_AUDIT_LOG_PATH) as _f:
+                    _log = json.load(_f)
+                if not isinstance(_log, list):
+                    _log = []
+            except Exception:
+                _log = []
+            _log.append(entry)
+            if len(_log) > 5000:
+                _log = _log[-5000:]
+            _atomic_json_write(_AUDIT_LOG_PATH, _log)
+    except Exception as _e:
+        print(f"[Audit] Write error: {_e}")
+
+
 # ─── RBAC helpers ─────────────────────────────────────────────────────────────
 
 def _current_user() -> "UserAccount | None":
@@ -16542,6 +16684,7 @@ def _inject_nav():
                f'padding:1px 5px;font-size:10px;color:#b7d8ff">'
                f'{_esc(_current_user_role())}</span></span>'
                if session.get("username") else "")
+            + (_a("audit", "📋\u202fAudit", "/audit") if _is_admin() else "")
             + (_a("settings", "⚙\u202fSettings", "/settings") if _is_admin() else "")
             + f'<form method="post" action="/logout" style="margin:0">'
               f'<input type="hidden" name="_csrf_token" value="{csrf}">'
@@ -20792,6 +20935,7 @@ def settings():
         # Push server URL (route notifications via remote server instead of direct APNs/FCM)
         cfg.mobile_api.push_server_url = f.get("push_server_url", "").strip()
         save_config(cfg)
+        _audit("config_save", "Settings saved from Settings page")
         # Invalidate both JWT caches so new credentials are used immediately
         _apns_jwt_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
         _fcm_token_cache.update({"token": "", "generated_at": 0.0, "cache_key": ""})
@@ -20805,7 +20949,8 @@ def settings():
         hub_sites=_hub_sites,
         _hub_default_fwd=_HUB_DEFAULT_FORWARD_TYPES,
         _all_alert_types=_ALL_ALERT_TYPES,
-        _installed_plugins=_scan_installed_plugins())
+        _installed_plugins=_scan_installed_plugins(),
+        current_user=_current_user)
 
 @app.post("/api/hub/site_rules")
 @login_required
@@ -21829,6 +21974,102 @@ def clips_delete(stream_name, filename):
 
 # ─── Auth routes ─────────────────────────────────────────────────────────────
 
+TOTP_VERIFY_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Two-Factor Auth — SignalScope</title>
+<meta name="csrf-token" content="{{csrf_token()}}">
+<style nonce="{{csp_nonce()}}">:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--tx:#e2e8f0;--mu:#64748b}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:14px;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.box{background:var(--sur);border:1px solid var(--bor);border-radius:12px;padding:32px;width:100%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.28)}
+h1{font-size:18px;font-weight:700;text-align:center;margin-bottom:6px}
+.sub{color:var(--mu);font-size:13px;text-align:center;margin-bottom:22px;line-height:1.5}
+label{display:block;margin-top:14px;color:var(--mu);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+input[type=text]{width:100%;margin-top:4px;padding:11px 14px;background:#173a69;border:1px solid var(--bor);border-radius:7px;color:var(--tx);font-size:20px;letter-spacing:6px;text-align:center;font-variant-numeric:tabular-nums}
+.btn{width:100%;margin-top:18px;padding:10px;background:var(--acc);color:#fff;border:none;border-radius:7px;font-size:14px;font-weight:600;cursor:pointer}
+.err{margin-top:12px;padding:9px 12px;background:#3a0f0f;border-left:3px solid #ef4444;border-radius:5px;font-size:13px;color:#fca5a5}
+.rem-row{margin-top:12px;display:flex;align-items:center;gap:8px}
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
+<div class="box">
+  <div style="text-align:center;font-size:32px;margin-bottom:10px">🔐</div>
+  <h1>Two-Factor Verification</h1>
+  <p class="sub">Enter the 6-digit code from your authenticator app for <strong>{{username}}</strong></p>
+  {% if error %}<div class="err">⚠ {{error}}</div>{% endif %}
+  <form method="post" autocomplete="off"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}">
+    <label>Authentication Code<input type="text" name="code" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" autofocus placeholder="000000" autocomplete="one-time-code"></label>
+    <div class="rem-row">
+      <input type="checkbox" name="remember" id="rem" value="1" style="cursor:pointer;width:15px;height:15px;accent-color:var(--acc)">
+      <label for="rem" style="cursor:pointer;color:var(--mu);font-size:12px;margin:0;text-transform:none;font-weight:400">Remember this device for 30 days</label>
+    </div>
+    <button class="btn" type="submit">Verify</button>
+  </form>
+  <div style="margin-top:14px;text-align:center;font-size:12px;color:var(--mu)">
+    <a href="/login" style="color:var(--mu)">← Back to login</a>
+  </div>
+</div></body></html>"""
+
+TOTP_SETUP_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Setup 2FA — SignalScope</title>
+<meta name="csrf-token" content="{{csrf_token()}}">
+<style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:14px;min-height:100vh}
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px}
+header h1{font-size:16px;font-weight:700}main{padding:28px;max-width:560px;margin:0 auto}
+.card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;margin-bottom:16px}
+.ch{padding:9px 14px;background:linear-gradient(180deg,#143766,#102b54);font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--bor)}
+.cb{padding:18px}
+.btn{display:inline-block;padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;border:none;font-weight:600;text-decoration:none}
+.bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}
+label{font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px}
+input[type=text]{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:8px 12px;font-size:16px;letter-spacing:4px;width:100%}
+.err{padding:8px 12px;background:#2a0a0a;color:var(--al);border:1px solid #991b1b;border-radius:6px;margin-bottom:12px;font-size:13px}
+.ok{padding:8px 12px;background:#0f2318;color:var(--ok);border:1px solid #166534;border-radius:6px;margin-bottom:12px;font-size:13px}
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
+{{topnav("settings") if topnav is defined}}
+<main>
+  <h2 style="font-size:18px;margin-bottom:18px">🔐 Set Up Two-Factor Authentication</h2>
+  {% if error %}<div class="err">⚠ {{error}}</div>{% endif %}
+  {% if success %}<div class="ok">✓ {{success}}</div>{% endif %}
+  <div class="card">
+    <div class="ch">Step 1 — Scan QR Code</div>
+    <div class="cb">
+      <p style="font-size:13px;color:var(--mu);margin-bottom:14px">Open your authenticator app (Google Authenticator, Authy, 1Password, etc.) and scan this QR code:</p>
+      <div id="qrcode" style="background:#fff;padding:12px;display:inline-block;border-radius:8px;margin-bottom:12px"></div>
+      <p style="font-size:11px;color:var(--mu);margin-top:8px">Can't scan? Enter this key manually:</p>
+      <code style="font-size:13px;letter-spacing:2px;color:var(--acc);background:#0a1828;padding:6px 10px;border-radius:4px;display:inline-block;margin-top:4px;word-break:break-all">{{secret}}</code>
+    </div>
+  </div>
+  <div class="card">
+    <div class="ch">Step 2 — Verify Code</div>
+    <div class="cb">
+      <form method="post" autocomplete="off">
+        <input type="hidden" name="_csrf_token" value="{{csrf_token()}}">
+        <input type="hidden" name="secret" value="{{secret}}">
+        <label>Enter the 6-digit code from your app</label>
+        <input type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="one-time-code" style="max-width:200px">
+        <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+          <button class="btn bp" type="submit">Verify &amp; Enable 2FA</button>
+          <a href="/settings#p-sec" class="btn bg">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+<script nonce="{{csp_nonce()}}">
+// Render QR code client-side using qrcode.js
+(function(){
+  var s=document.createElement('script');
+  s.src='https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js';
+  s.onload=function(){
+    QRCode.toCanvas(
+      document.getElementById('qrcode'),
+      {{uri|tojson}},
+      {width:200,margin:1,color:{dark:'#000',light:'#fff'}},
+      function(err){if(err)document.getElementById('qrcode').textContent='{{uri}}';}
+    );
+  };
+  s.onerror=function(){document.getElementById('qrcode').innerHTML='<p style="color:#333;font-size:11px;padding:4px">QR library failed to load — use the manual key above.</p>';};
+  document.head.appendChild(s);
+})();
+</script>
+</body></html>"""
+
 LOGIN_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Login — SignalScope</title>
 <meta name="csrf-token" content="{{csrf_token()}}">
 <style nonce="{{csp_nonce()}}">:root{--bg:#0d0f14;--sur:#161a22;--bor:#252b38;--acc:#4f9cf9;--tx:#e2e8f0;--mu:#64748b}
@@ -21864,6 +22105,12 @@ input[type=text],input[type=password]{width:100%;margin-top:4px;padding:9px 11px
     {% if first_login %}
     <label>New Password<input type="password" name="new_password" autocomplete="new-password" placeholder="Minimum 8 characters"></label>
     <label>Confirm Password<input type="password" name="confirm_password" autocomplete="new-password"></label>
+    {% endif %}
+    {% if not first_login %}
+    <div style="margin-top:14px;display:flex;align-items:center;gap:8px">
+      <input type="checkbox" name="remember_me" id="rem" value="1" style="cursor:pointer;width:15px;height:15px;accent-color:var(--acc)">
+      <label for="rem" style="cursor:pointer;color:var(--mu);font-size:12px;margin:0;text-transform:none;font-weight:400">Remember this device for 30 days</label>
+    </div>
     {% endif %}
     <button class="btn" type="submit">{% if first_login %}Set Password & Sign In{% else %}Sign In{% endif %}</button>
   </form>
@@ -22971,7 +23218,23 @@ def login():
                     user.password_hash = _hash_password(pw)
                     user_manager.add_or_update(user)
                     _log_security(f"Upgraded password hash for '{uname}'")
+                # Check remember-me: if TOTP enabled but device is remembered, skip
+                _rem_cookie = request.cookies.get("ss_totp_rem", "")
+                if user.totp_enabled and user.totp_secret:
+                    if _check_totp_remember(user.username, _rem_cookie):
+                        _set_session(user)
+                        _audit("login", f"User '{uname}' logged in (2FA remembered) from {ip}")
+                        _pr_url = _plugin_role_url(user.role)
+                        return redirect(_pr_url if _pr_url else _safe_next())
+                    # Stash pending state and redirect to TOTP page
+                    session["totp_pending"] = True
+                    session["totp_user"]    = user.username
+                    session["totp_next"]    = _safe_next()
+                    session["totp_rem_req"] = bool(request.form.get("remember_me"))
+                    return redirect(url_for("login_totp"))
                 _set_session(user)
+                _audit("login", f"User '{uname}' logged in from {ip}")
+                # Handle remember-me (non-TOTP path has no device token — just session)
                 _pr_url = _plugin_role_url(user.role)
                 return redirect(_pr_url if _pr_url else _safe_next())
 
@@ -22989,8 +23252,261 @@ def logout():
     """
     from flask import session
     _log_security(f"Logout from {request.remote_addr}")
+    _audit("logout", f"Logout from {request.remote_addr}")
     session.clear()
-    return redirect(url_for("login"))
+    resp = redirect(url_for("login"))
+    # Clear remember token on explicit logout
+    resp.delete_cookie("ss_totp_rem")
+    return resp
+
+
+@app.route("/login/totp", methods=["GET", "POST"])
+def login_totp():
+    """TOTP second-factor verification page."""
+    if not session.get("totp_pending"):
+        return redirect(url_for("login"))
+    uname = session.get("totp_user", "")
+    error = None
+    if request.method == "POST":
+        code = (request.form.get("code") or "").strip().replace(" ", "")
+        remember = bool(request.form.get("remember"))
+        user = user_manager.get(uname) if user_manager else None
+        if not user or not user.totp_secret:
+            session.clear()
+            return redirect(url_for("login"))
+        try:
+            import pyotp as _pyotp
+            totp = _pyotp.TOTP(user.totp_secret)
+            if totp.verify(code, valid_window=1):
+                next_url = session.pop("totp_next", None) or "/"
+                session.pop("totp_pending", None)
+                session.pop("totp_user", None)
+                session.pop("totp_rem_req", None)
+                session["logged_in"]       = True
+                session["login_ts"]        = time.time()
+                session["username"]        = user.username
+                session["role"]            = user.role
+                session["allowed_sites"]   = user.sites   or []
+                session["allowed_plugins"] = user.plugins or []
+                session["allowed_chains"]  = user.chains  or []
+                _audit("login", f"User '{uname}' logged in (2FA verified) from {request.remote_addr}")
+                resp = redirect(next_url)
+                if remember:
+                    token = _create_totp_remember(user.username)
+                    resp.set_cookie("ss_totp_rem", f"{user.username}:{token}",
+                                    max_age=30 * 86400, httponly=True, samesite="Lax")
+                return resp
+            else:
+                login_limiter.record_failure(
+                    request.remote_addr or "?",
+                    monitor.app_cfg.login_max_attempts,
+                    monitor.app_cfg.login_lockout_mins,
+                )
+                error = "Invalid code — check your authenticator app and try again."
+        except ImportError:
+            error = "Server error: pyotp is not installed. Contact your administrator."
+        except Exception as _e:
+            error = f"Verification error: {_e}"
+    return render_template_string(TOTP_VERIFY_TPL, error=error, username=uname, build=BUILD)
+
+
+@app.route("/settings/totp/setup", methods=["GET", "POST"])
+@login_required
+def totp_setup():
+    """TOTP enrolment page — generate secret, show QR, verify code to activate."""
+    try:
+        import pyotp as _pyotp
+    except ImportError:
+        from flask import flash as _flash
+        _flash("pyotp is not installed. Run: pip install pyotp", "error")
+        return redirect(url_for("settings") + "#p-sec")
+    from flask import session as _sess
+    uname = _sess.get("username", "")
+    user  = user_manager.get(uname) if user_manager else None
+    if not user:
+        return redirect(url_for("settings"))
+    error   = None
+    success = None
+    if request.method == "POST":
+        secret = (request.form.get("secret") or "").strip().upper()
+        code   = (request.form.get("code") or "").strip().replace(" ", "")
+        if not secret or not code:
+            error = "Secret and code are required."
+        else:
+            try:
+                totp = _pyotp.TOTP(secret)
+                if totp.verify(code, valid_window=1):
+                    user.totp_secret  = secret
+                    user.totp_enabled = True
+                    user_manager.add_or_update(user)
+                    _audit("totp_enabled", f"User '{uname}' enabled 2FA")
+                    from flask import flash as _fl
+                    _fl("Two-factor authentication enabled ✓")
+                    return redirect(url_for("settings") + "#p-sec")
+                else:
+                    error = "Code did not match — check your authenticator app."
+            except Exception as _ve:
+                error = f"Invalid secret: {_ve}"
+        # Re-use the POSTed secret so the user doesn't lose their scan
+        secret_to_show = secret
+    else:
+        # Generate a fresh secret (or reuse existing if already configured)
+        secret_to_show = user.totp_secret if user.totp_secret else _pyotp.random_base32()
+    totp_obj = _pyotp.TOTP(secret_to_show)
+    uri = totp_obj.provisioning_uri(name=uname, issuer_name="SignalScope")
+    return render_template_string(TOTP_SETUP_TPL, secret=secret_to_show, uri=uri,
+                                  error=error, success=success, build=BUILD,
+                                  topnav=topnav)
+
+
+@app.post("/settings/totp/disable")
+@login_required
+@csrf_protect
+def totp_disable():
+    """Disable TOTP for the current user (requires current password)."""
+    from flask import session as _sess
+    uname = _sess.get("username", "")
+    user  = user_manager.get(uname) if user_manager else None
+    if not user:
+        return jsonify({"ok": False, "error": "user not found"}), 404
+    pw = (request.get_json(force=True) or {}).get("password", "")
+    if not pw or not _check_password(pw, user.password_hash):
+        return jsonify({"ok": False, "error": "Incorrect password"}), 403
+    user.totp_secret  = ""
+    user.totp_enabled = False
+    user_manager.add_or_update(user)
+    _revoke_totp_remember(uname)
+    _audit("totp_disabled", f"User '{uname}' disabled 2FA")
+    return jsonify({"ok": True})
+
+
+# ─── Audit log ───────────────────────────────────────────────────────────────
+
+AUDIT_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Audit Log — SignalScope</title>
+<style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:13px}
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+header h1{font-size:16px;font-weight:700}.nav-active{background:var(--acc)!important;color:#fff!important}
+.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600}.btn:hover{filter:brightness(1.1)}
+.bg{background:var(--bor);color:var(--tx)}.bp{background:var(--acc);color:#fff}.bs{padding:3px 9px;font-size:12px}
+.panelbar{padding:8px 20px;background:linear-gradient(180deg,#12305c,#10284f);border-bottom:1px solid var(--bor);display:flex;gap:8px;align-items:center}
+main{padding:20px;max-width:1100px;margin:0 auto}
+table{width:100%;border-collapse:collapse;background:rgba(13,35,70,.96);border:1px solid var(--bor);border-radius:12px;overflow:hidden}
+th{text-align:left;padding:8px 12px;background:#12305c;border-bottom:2px solid var(--bor);font-size:11px;color:#c5dcff;text-transform:uppercase;letter-spacing:.05em}
+td{padding:8px 12px;border-bottom:1px solid var(--bor);font-size:12px;vertical-align:top}
+tr:hover td{background:#123764}
+.act-login{color:var(--ok)}.act-logout{color:var(--mu)}.act-totp{color:var(--acc)}.act-config{color:#f59e0b}.act-chain{color:#8b5cf6}.act-user{color:#06b6d4}.act-other{color:var(--mu)}
+.filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+.filter-bar input,.filter-bar select{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 9px;font-size:12px}
+@media(max-width:640px){td:nth-child(3),th:nth-child(3){display:none}main{padding:10px}table{display:block;overflow-x:auto}}
+</style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
+{{topnav("audit")}}
+<div class="panelbar">
+  <span style="font-size:13px;font-weight:600">📋 Audit Log</span>
+  <span style="color:var(--mu);font-size:12px">Last {{entries|length}} events</span>
+  <a href="/audit.csv" class="btn bg bs" style="margin-left:auto">⬇ CSV</a>
+</div>
+<main>
+  <div class="filter-bar">
+    <input type="text" id="f-user" placeholder="Filter by user…" oninput="applyAuditFilter()">
+    <input type="text" id="f-action" placeholder="Filter by action…" oninput="applyAuditFilter()">
+    <input type="text" id="f-detail" placeholder="Search detail…" oninput="applyAuditFilter()">
+    <span id="f-count" style="font-size:12px;color:var(--mu)"></span>
+  </div>
+  <table id="audit-table">
+    <thead><tr>
+      <th style="width:150px">Date / Time</th>
+      <th style="width:110px">User</th>
+      <th style="width:120px">IP</th>
+      <th style="width:160px">Action</th>
+      <th>Detail</th>
+    </tr></thead>
+    <tbody>
+    {% for e in entries %}
+    {% set ac = e.action|lower %}
+    {% if 'login' in ac %}{% set cls='act-login' %}
+    {% elif 'logout' in ac %}{% set cls='act-logout' %}
+    {% elif 'totp' in ac %}{% set cls='act-totp' %}
+    {% elif 'config' in ac or 'settings' in ac %}{% set cls='act-config' %}
+    {% elif 'chain' in ac %}{% set cls='act-chain' %}
+    {% elif 'user' in ac %}{% set cls='act-user' %}
+    {% else %}{% set cls='act-other' %}{% endif %}
+    <tr>
+      <td style="color:var(--mu);white-space:nowrap">{{e.ts}}</td>
+      <td style="font-weight:600">{{e.user}}</td>
+      <td style="color:var(--mu);font-family:monospace;font-size:11px">{{e.ip}}</td>
+      <td><span class="{{cls}}">{{e.action}}</span></td>
+      <td style="color:var(--mu)">{{e.detail}}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" style="text-align:center;color:var(--mu);padding:28px">No audit events recorded yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</main>
+<script nonce="{{csp_nonce()}}">
+function applyAuditFilter(){
+  var fu=(document.getElementById('f-user').value||'').toLowerCase();
+  var fa=(document.getElementById('f-action').value||'').toLowerCase();
+  var fd=(document.getElementById('f-detail').value||'').toLowerCase();
+  var rows=document.querySelectorAll('#audit-table tbody tr');
+  var shown=0;
+  rows.forEach(function(r){
+    var cells=r.querySelectorAll('td');
+    if(!cells.length){r.style.display='';shown++;return;}
+    var user=(cells[1].textContent||'').toLowerCase();
+    var act=(cells[3].textContent||'').toLowerCase();
+    var det=(cells[4].textContent||'').toLowerCase();
+    var ok=(!fu||user.includes(fu))&&(!fa||act.includes(fa))&&(!fd||det.includes(fd));
+    r.style.display=ok?'':'none';
+    if(ok)shown++;
+  });
+  document.getElementById('f-count').textContent=shown+' shown';
+}
+applyAuditFilter();
+</script>
+</body></html>"""
+
+@app.get("/audit")
+@login_required
+@admin_required
+def audit_log_page():
+    """Audit log viewer — shows recent config changes, logins, and user actions."""
+    try:
+        with open(_AUDIT_LOG_PATH) as f:
+            entries = json.load(f)
+        if not isinstance(entries, list):
+            entries = []
+        entries = list(reversed(entries[-500:]))   # newest first, cap at 500
+    except Exception:
+        entries = []
+    return render_template_string(AUDIT_TPL, entries=entries, build=BUILD)
+
+
+@app.get("/audit.csv")
+@login_required
+@admin_required
+def audit_csv():
+    """Download the full audit log as CSV."""
+    try:
+        with open(_AUDIT_LOG_PATH) as f:
+            entries = json.load(f)
+        if not isinstance(entries, list):
+            entries = []
+        entries = list(reversed(entries))
+    except Exception:
+        entries = []
+    lines = ["datetime,epoch,user,ip,action,detail"]
+    for e in entries:
+        def _cv(v):
+            s = str(v or "")
+            return '"' + s.replace('"', '""') + '"' if (',' in s or '"' in s or '\n' in s) else s
+        lines.append(",".join([_cv(e.get("ts","")), _cv(e.get("epoch","")),
+                                _cv(e.get("user","")), _cv(e.get("ip","")),
+                                _cv(e.get("action","")), _cv(e.get("detail",""))]))
+    return Response("\n".join(lines), mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="audit_{time.strftime("%Y%m%d_%H%M")}.csv"'})
+
 
 # ─── SLA dashboard ────────────────────────────────────────────────────────────
 
@@ -30521,6 +31037,7 @@ def api_chains_save():
         chains.append(chain_dict)
     cfg.signal_chains = chains
     save_config(cfg)
+    _audit("chain_save", f"Chain '{name}' saved (id={cid})")
     return jsonify({"ok": True, "id": cid})
 
 
@@ -30535,6 +31052,7 @@ def api_chains_delete(chain_id):
     cfg.signal_chains = [c for c in cfg.signal_chains if c.get("id") != chain_id]
     if len(cfg.signal_chains) < before:
         save_config(cfg)
+        _audit("chain_delete", f"Chain id={chain_id} deleted")
     return jsonify({"ok": True})
 
 
@@ -35125,6 +35643,7 @@ def api_users_create():
                          enabled=enabled, first_login=False)
     user_manager.add_or_update(ua)
     _log_security(f"User '{username}' created (role={role}) by '{session.get('username','?')}'")
+    _audit("user_create", f"User '{username}' created with role={role}")
     return jsonify({"ok": True, "username": username})
 
 
@@ -35171,6 +35690,7 @@ def api_users_update(username):
 
     user_manager.add_or_update(ua)
     _log_security(f"User '{username}' updated by '{session.get('username','?')}'")
+    _audit("user_update", f"User '{username}' updated (role={ua.role}, enabled={ua.enabled})")
     return jsonify({"ok": True})
 
 
@@ -35191,6 +35711,7 @@ def api_users_delete(username):
         return jsonify({"error": "Cannot delete the only admin account"}), 400
     user_manager.delete(username)
     _log_security(f"User '{username}' deleted by '{session.get('username','?')}'")
+    _audit("user_delete", f"User '{username}' deleted")
     return jsonify({"ok": True})
 
 

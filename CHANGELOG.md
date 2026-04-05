@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.37] - 2026-04-05
+
+### Added
+- **TOTP two-factor authentication** — per-user TOTP 2FA (Google Authenticator, Authy, 1Password, etc.). Enrol via Settings → Security → Set Up 2FA: a QR code is rendered client-side using qrcode.js and a manual key is shown for manual entry. Entering the correct code activates 2FA on the account. At login, users with 2FA enabled are redirected to a TOTP verification page before their session is created. Disable 2FA at any time with your current password.
+- **Remember this device for 30 days** — both the TOTP verification page and the standard login page include a "Remember this device for 30 days" checkbox. On TOTP, ticking it sets a signed `ss_totp_rem` cookie so trusted devices skip the TOTP prompt for 30 days. Tokens are invalidated when 2FA is disabled. All remember tokens are revoked on explicit logout.
+- **Audit log** — every significant action (login, logout, settings save, chain create/delete, user create/update/delete, 2FA enable/disable) is appended to `audit_log.json` with timestamp, username, IP, action, and detail. View the last 500 events at `/audit` (admin only) with live client-side filtering by user, action, and detail. Download the full log as CSV via `GET /audit.csv`. An "📋 Audit" link appears in the nav bar for admin users.
+
+---
+
 ## [3.5.36] - 2026-04-05
 
 ### Added
