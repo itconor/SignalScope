@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":    "Icecast",
     "url":      "/icecast",
     "icon":     "📡",
-    "version":  "1.1.0",
+    "version":  "1.1.1",
     "hub_only": False,
 }
 

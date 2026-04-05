@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.2.0",
+    "version":  "1.2.1",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics

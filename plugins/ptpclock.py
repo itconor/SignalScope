@@ -18,7 +18,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "PTP Clock",
     "url":     "/hub/ptpclock",
     "icon":    "",
-    "version": "1.4.1",
+    "version": "1.4.2",
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════

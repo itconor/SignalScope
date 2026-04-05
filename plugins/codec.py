@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Codecs",
     "url":     "/hub/codecs",
     "icon":    "📡",
-    "version": "1.0.5",
+    "version": "1.0.6",
     # No hub_only — runs on both hub and client nodes.
     # Client: polls local codecs, pushes status to hub.
     # Hub: aggregates status from all connected sites.

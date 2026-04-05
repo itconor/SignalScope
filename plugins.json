@@ -54,8 +54,8 @@
     "name": "Zetta Integration",
     "file": "zetta.py",
     "icon": "\ud83d\udcfb",
-    "description": "RCS Zetta broadcast automation integration. Polls the Zetta SOAP service to show live now-playing data for each station \u2014 title, artist, cart number, category. Detects commercial/spot blocks in real time. Provides /api/zetta/status for chain and external integration. Includes WSDL discovery and a raw SOAP debug console. No extra pip packages required.",
-    "version": "1.0.3",
+    "description": "RCS Zetta broadcast automation integration. Polls the Zetta SOAP service to show live now-playing data for each station \u2014 title, artist, cart number, category. Detects commercial/spot blocks in real time. Provides /api/zetta/status for chain and external integration. Includes WSDL discovery and a raw SOAP debug console. No extra pip packages required. v1.0.4: button loading states (shimmer while fetching), required attribute on URL field, spellcheck=false on URL input.",
+    "version": "1.0.4",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/zetta.py"
   },
@@ -64,8 +64,8 @@
     "name": "Morning Report",
     "file": "morning_report.py",
     "icon": "\ud83d\udcf0",
-    "description": "Daily morning briefing for broadcast engineers and non-technical staff. Auto-generates at 06:00 (configurable) covering the previous calendar day. Plain-English headline banner (all-clear or fault summary), per-chain health table with on-air %, traffic-light trend pills, human-readable outage durations, hourly fault heatmap, auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks), and stream quality summary with translated labels. All configured chains appear even with no fault history. Hub-only. v1.2.0: fix chain fault queries using wrong DB column names — report now correctly shows all chain faults from the previous 24 hours.",
-    "version": "1.2.0",
+    "description": "Daily morning briefing for broadcast engineers and non-technical staff. Auto-generates at 06:00 (configurable) covering the previous calendar day. Plain-English headline banner (all-clear or fault summary), per-chain health table with on-air %, traffic-light trend pills, human-readable outage durations, hourly fault heatmap, auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks), and stream quality summary with translated labels. All configured chains appear even with no fault history. Hub-only. v1.2.1: Regenerate button now shows shimmer loading state.",
+    "version": "1.2.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/morning_report.py"
   },
@@ -84,8 +84,8 @@
     "name": "Codec Monitor",
     "file": "codec.py",
     "icon": "\ud83d\udce1",
-    "description": "Real-time connection monitor for broadcast contribution codecs \u2014 Comrex ACCESS/BRIC-Link, Tieline Gateway/ViA, Prodys Quantum ST, and APT/WorldCast Quantum. Polls each device via HTTP status-page scraping or SNMP and tracks connected/idle/offline state. Fires CODEC_FAULT and CODEC_RECOVERY alerts into the SignalScope Reports page on state changes. Mobile API at /api/mobile/codecs/status for the iOS app. Runs on hub and client nodes.",
-    "version": "1.0.5",
+    "description": "Real-time connection monitor for broadcast contribution codecs \u2014 Comrex ACCESS/BRIC-Link, Tieline Gateway/ViA, Prodys Quantum ST, and APT/WorldCast Quantum. Polls each device via HTTP status-page scraping or SNMP and tracks connected/idle/offline state. Fires CODEC_FAULT and CODEC_RECOVERY alerts into the SignalScope Reports page on state changes. Mobile API at /api/mobile/codecs/status for the iOS app. Runs on hub and client nodes. v1.0.6: Save button loading state; required on Name/Host fields; 2-col form collapses to 1 col on mobile.",
+    "version": "1.0.6",
     "requirements": "pysnmp",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/codec.py"
   },
@@ -94,8 +94,8 @@
     "name": "Push Server",
     "file": "push.py",
     "icon": "\ud83d\udce1",
-    "description": "Turns this SignalScope hub into a centralised push notification server for iOS and Android. Holds APNs (.p8 key) and FCM (service account JSON) credentials and delivers notifications on behalf of any SignalScope installation that points its Push Server URL here. Includes one-click migration from existing Settings credentials. Hub-only.",
-    "version": "1.0.5",
+    "description": "Turns this SignalScope hub into a centralised push notification server for iOS and Android. Holds APNs (.p8 key) and FCM (service account JSON) credentials and delivers notifications on behalf of any SignalScope installation that points its Push Server URL here. Includes one-click migration from existing Settings credentials. Hub-only. v1.0.6: button loading states; credential fields get spellcheck=false/autocomplete=off; improved empty state for deliveries log; responsive APNs grid.",
+    "version": "1.0.6",
     "requirements": "cryptography httpx[http2]",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/push.py"
   },
@@ -104,8 +104,8 @@
     "name": "PTP Clock",
     "file": "ptpclock.py",
     "icon": "",
-    "description": "Full-screen GPS-accurate wall clock for broadcast studios. Two display modes: digital (large HH:MM:SS with tenths) and analog studio clock (sweep second hand). Shows live PTP sync status, offset, and jitter. Custom branding via URL parameter. Time served from the GPS-disciplined server clock, accurate on any browser.",
-    "version": "1.4.1",
+    "description": "Full-screen GPS-accurate wall clock for broadcast studios. Two display modes: digital (large HH:MM:SS with tenths) and analog studio clock (sweep second hand). Shows live PTP sync status, offset, and jitter. Custom branding via URL parameter. Time served from the GPS-disciplined server clock, accurate on any browser. v1.4.2: Save settings and Add preset buttons show shimmer loading state; preset rows wrap on narrow screens; mode grid collapses to 1 col on mobile.",
+    "version": "1.4.2",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/ptpclock.py"
   },
@@ -114,8 +114,8 @@
     "name": "Icecast Streaming",
     "file": "icecast.py",
     "icon": "\ud83d\udce1",
-    "description": "Manage Icecast2 streaming servers on client nodes. Re-streams any monitored input type (FM/RTL-SDR, DAB, ALSA, RTP, HTTP) to Icecast2 via the same PCM buffer tap used by the Logger plugin. Per-stream stereo toggle: HTTP inputs preserve native stereo; all others upmix mono to dual-mono. Hub overview shows live listener counts and stream status from all connected sites; create and manage streams on any client from the hub. Requires ffmpeg; Icecast2 installed separately.",
-    "version": "1.1.0",
+    "description": "Manage Icecast2 streaming servers on client nodes. Re-streams any monitored input type (FM/RTL-SDR, DAB, ALSA, RTP, HTTP) to Icecast2 via the same PCM buffer tap used by the Logger plugin. Per-stream stereo toggle: HTTP inputs preserve native stereo; all others upmix mono to dual-mono. Hub overview shows live listener counts and stream status from all connected sites; create and manage streams on any client from the hub. Requires ffmpeg; Icecast2 installed separately. v1.1.1: all action buttons (Start/Stop/Save/Add/Delete) show shimmer loading state; passwords changed to type=password; responsive grid collapses on mobile; stream table gets horizontal scroll on small screens.",
+    "version": "1.1.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/icecast.py"
   },
@@ -134,8 +134,8 @@
     "name": "Producer View",
     "file": "presenter.py",
     "icon": "🎙",
-    "description": "Simplified hub view for producers and presenters. Shows station status cards with live level indicators and a plain-English chain fault history. Reads directly from the fault log database (same source as Broadcast Chains) so clip play buttons always work, including clips uploaded asynchronously from remote client sites. Chain-filtered and site-filtered to only show what the user has permission to see. All-clear banner when everything is running normally. Integrates with the plugin-role user system (SignalScope 3.4.85+) — users assigned the Producer role go directly here on login. Hub-only.",
-    "version": "1.4.0",
+    "description": "Simplified hub view for producers and presenters. Shows station status cards with live level indicators and a plain-English chain fault history. Reads directly from the fault log database (same source as Broadcast Chains) so clip play buttons always work, including clips uploaded asynchronously from remote client sites. Chain-filtered and site-filtered to only show what the user has permission to see. All-clear banner when everything is running normally. Integrates with the plugin-role user system (SignalScope 3.4.85+) — users assigned the Producer role go directly here on login. Hub-only. v1.4.1: Save button loading state.",
+    "version": "1.4.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/presenter.py"
   },
@@ -144,8 +144,8 @@
     "name": "AzuraCast",
     "file": "azuracast.py",
     "icon": "\ud83c\udf99",
-    "description": "AzuraCast web radio integration. Polls configured AzuraCast servers for live now-playing data, listener counts, and station health. Station cards show current track, artist, progress bar, next track, live/AutoDJ status, and listener count. Fires AZURACAST_FAULT and AZURACAST_RECOVERY alerts when stations go offline or recover. Optionally cross-references with SignalScope silence detection \u2014 fires AZURACAST_SILENCE if a station is broadcasting but its linked input is silent. Hub overview aggregates all stations from all connected sites.",
-    "version": "1.0.0",
+    "description": "AzuraCast web radio integration. Polls configured AzuraCast servers for live now-playing data, listener counts, and station health. Station cards show current track, artist, progress bar, next track, live/AutoDJ status, and listener count. Fires AZURACAST_FAULT and AZURACAST_RECOVERY alerts when stations go offline or recover. Optionally cross-references with SignalScope silence detection \u2014 fires AZURACAST_SILENCE if a station is broadcasting but its linked input is silent. Hub overview aggregates all stations from all connected sites. v1.0.1: Discover button loading state; required on URL field; spellcheck=false on API key; improved empty states for stations and servers panels.",
+    "version": "1.0.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/azuracast.py"
   }

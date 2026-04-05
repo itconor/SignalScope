@@ -16,7 +16,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/push",
     "icon":     "📡",
     "hub_only": True,
-    "version":  "1.0.5",
+    "version":  "1.0.6",
 }
 
 # ─── plugin version ───────────────────────────────────────────────────────────
