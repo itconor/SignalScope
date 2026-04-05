@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.77] - 2026-04-05
+
+### Added
+- **Over-compression detection** (`alert_on_over_compression`, off by default): Tracks the EMA-smoothed crest factor (peak − RMS dB). When it drops below `over_compression_crest_db` (default 6 dB) for `over_compression_min_duration` (default 120 s), fires `OVER_COMPRESSION`. Catches heavy brickwall limiting or processing chains left too hot — normal programme audio typically has 8–18 dB of crest. EMA resets during silence so re-entry establishes a fresh baseline.
+- **Unexpected tone detection** (`alert_on_tone`, off by default): Detects a sustained pure or near-pure tone standing well above the surrounding spectral noise floor. Uses a local SNR approach: compares the peak FFT bin to the median of the surrounding ±500 Hz band (excluding the peak itself). Fires `TONE_DETECT` when the local SNR exceeds `tone_snr_db` (default 30 dB) for `tone_min_duration` (default 10 s). Catches test tones left on air, DTMF bleed, alignment carriers. Configurable frequency range (`tone_min_hz` / `tone_max_hz`). Shares the existing FFT block — no extra compute when hiss or hum detection is also enabled.
+- **HF content loss / bandwidth narrowing** (`alert_on_hf_loss`, off by default): Compares the ratio of high-frequency energy (6–16 kHz) to mid-frequency energy (300–6 kHz) against a learned slow EMA baseline (tau ~10 min). Fires `HF_LOSS` when the ratio drops more than `hf_loss_threshold_db` (default 15 dB) below baseline for `hf_loss_min_duration` (default 30 s). Catches telephone-quality feeds accidentally sent to air, codec degradation, or a low-pass fault in processing. Requires ~10 minutes of audio to establish a baseline; warmup counter resets during silence.
+- **Dead channel detection** (`alert_on_dead_channel`, on by default): For stereo streams, fires `DEAD_CHANNEL` when one channel drops to or below the silence threshold while the other remains active — indicating a broken cable, failed interface card, or routing fault. Configurable `dead_channel_min_duration` (default 10 s). Distinct from Stereo Imbalance (which requires both channels to be above the silence threshold and computes a dB difference).
+- `OVER_COMPRESSION`, `TONE_DETECT`, `HF_LOSS`, `DEAD_CHANNEL` added to Reports `_SILENCE_TYPES` filter.
+
 ## [3.5.76] - 2026-04-05
 
 ### Added

@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.76"
+BUILD                  = "SignalScope-3.5.77"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2793,6 +2793,27 @@ class InputConfig:
     alert_on_stereo_imbalance:     bool  = True
     stereo_imbalance_db:           float = 6.0     # minimum L-R level difference to alert (dB)
     stereo_imbalance_min_duration: float = 30.0    # must persist this long before alerting
+
+    # Over-compression / crest factor collapse detection
+    alert_on_over_compression:      bool  = False
+    over_compression_crest_db:      float = 6.0    # crest (peak−RMS) below this = over-compressed
+    over_compression_min_duration:  float = 120.0  # seconds crest must stay low before alerting
+
+    # Unexpected sustained tone detection (test tone, DTMF, stuck carrier)
+    alert_on_tone:      bool  = False
+    tone_snr_db:        float = 30.0    # local SNR vs surrounding ±500 Hz band (dB)
+    tone_min_hz:        float = 200.0   # ignore sub-bass / DC artefacts
+    tone_max_hz:        float = 16000.0
+    tone_min_duration:  float = 10.0
+
+    # High-frequency content loss / bandwidth narrowing detection
+    alert_on_hf_loss:          bool  = False
+    hf_loss_threshold_db:      float = 15.0   # HF energy must drop this far below baseline
+    hf_loss_min_duration:      float = 30.0
+
+    # Dead channel detection (stereo streams only)
+    alert_on_dead_channel:          bool  = True
+    dead_channel_min_duration:      float = 10.0
 
     # FM output options
     fm_force_mono:        bool = False  # always output mono regardless of pilot SNR
@@ -3300,6 +3321,19 @@ def load_config() -> AppConfig:
             alert_on_stereo_imbalance=bool(item.get("alert_on_stereo_imbalance", True)),
             stereo_imbalance_db=float(item.get("stereo_imbalance_db", 6.0)),
             stereo_imbalance_min_duration=float(item.get("stereo_imbalance_min_duration", 30.0)),
+            alert_on_over_compression=bool(item.get("alert_on_over_compression", False)),
+            over_compression_crest_db=float(item.get("over_compression_crest_db", 6.0)),
+            over_compression_min_duration=float(item.get("over_compression_min_duration", 120.0)),
+            alert_on_tone=bool(item.get("alert_on_tone", False)),
+            tone_snr_db=float(item.get("tone_snr_db", 30.0)),
+            tone_min_hz=float(item.get("tone_min_hz", 200.0)),
+            tone_max_hz=float(item.get("tone_max_hz", 16000.0)),
+            tone_min_duration=float(item.get("tone_min_duration", 10.0)),
+            alert_on_hf_loss=bool(item.get("alert_on_hf_loss", False)),
+            hf_loss_threshold_db=float(item.get("hf_loss_threshold_db", 15.0)),
+            hf_loss_min_duration=float(item.get("hf_loss_min_duration", 30.0)),
+            alert_on_dead_channel=bool(item.get("alert_on_dead_channel", True)),
+            dead_channel_min_duration=float(item.get("dead_channel_min_duration", 10.0)),
             stereo=bool(item.get("stereo", False)),
             fm_force_mono=bool(item.get("fm_force_mono", False)),
             fm_deemphasis=str(item.get("fm_deemphasis", "50us") or "50us"),
@@ -3498,6 +3532,19 @@ def save_config(cfg: AppConfig):
             "alert_on_stereo_imbalance": i.alert_on_stereo_imbalance,
             "stereo_imbalance_db": i.stereo_imbalance_db,
             "stereo_imbalance_min_duration": i.stereo_imbalance_min_duration,
+            "alert_on_over_compression": i.alert_on_over_compression,
+            "over_compression_crest_db": i.over_compression_crest_db,
+            "over_compression_min_duration": i.over_compression_min_duration,
+            "alert_on_tone": i.alert_on_tone,
+            "tone_snr_db": i.tone_snr_db,
+            "tone_min_hz": i.tone_min_hz,
+            "tone_max_hz": i.tone_max_hz,
+            "tone_min_duration": i.tone_min_duration,
+            "alert_on_hf_loss": i.alert_on_hf_loss,
+            "hf_loss_threshold_db": i.hf_loss_threshold_db,
+            "hf_loss_min_duration": i.hf_loss_min_duration,
+            "alert_on_dead_channel": i.alert_on_dead_channel,
+            "dead_channel_min_duration": i.dead_channel_min_duration,
             "stereo": i.stereo,
             "fm_force_mono": i.fm_force_mono,
             "fm_deemphasis": i.fm_deemphasis,
@@ -6925,7 +6972,7 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
 
     # Spectral checks — shared FFT for both Hiss and Mains Hum
     _sp_psd = _sp_freq = None
-    if cfg.alert_on_hiss or cfg.alert_on_hum:
+    if cfg.alert_on_hiss or cfg.alert_on_hum or cfg.alert_on_tone or cfg.alert_on_hf_loss:
         _sp_n   = len(data); _sp_win = np.hanning(_sp_n)
         _sp_psd  = np.abs(np.fft.rfft(data * _sp_win)) ** 2
         _sp_freq = np.fft.rfftfreq(_sp_n, d=1.0 / SAMPLE_RATE)
@@ -7195,6 +7242,144 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                             alert_type="STEREO_IMBALANCE", stream=cfg.name, level_dbfs=lev)
                     log_fn(f"[ALERT] {msg}")
                 cfg._si_secs = 0.0
+
+    # ── Over-compression / crest factor collapse ──────────────────────────────
+    # Fires when peak−RMS (crest factor) stays below threshold: indicates heavy
+    # brickwall limiting or over-processing that removes transients.
+    if cfg.alert_on_over_compression and lev > cfg.silence_threshold_dbfs:
+        _oc_peak = cfg._last_peak_dbfs
+        _oc_crest = _oc_peak - lev   # larger = more dynamic, smaller = compressed
+        _oc_alpha = min(max(elapsed / 5.0, 0.02), 0.5)   # tau ~5 s
+        cfg._crest_ema = getattr(cfg, '_crest_ema', _oc_crest) * (1 - _oc_alpha) + _oc_crest * _oc_alpha
+        if cfg._crest_ema < cfg.over_compression_crest_db:
+            cfg._over_comp_secs = getattr(cfg, '_over_comp_secs', 0.0) + elapsed
+        else:
+            cfg._over_comp_secs = max(0.0, getattr(cfg, '_over_comp_secs', 0.0) - elapsed * 0.5)
+        if getattr(cfg, '_over_comp_secs', 0.0) >= cfg.over_compression_min_duration:
+            if now - cfg._last_alerts.get("OVER_COMPRESSION", 0) >= ALERT_COOLDOWN:
+                cfg._last_alerts["OVER_COMPRESSION"] = now
+                msg = (f"Over-compression on '{cfg.name}' — "
+                       f"crest factor {cfg._crest_ema:.1f} dB "
+                       f"(threshold {cfg.over_compression_crest_db:.1f} dB, "
+                       f"sustained {cfg.over_compression_min_duration:.0f}s)")
+                clip = _save_alert_wav(cfg, "over_compression", cfg.alert_wav_duration)
+                _add_history(cfg, "OVER_COMPRESSION", msg, clip_path=clip or "")
+                if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                    sender.send(f"OVER-COMPRESSION on {cfg.name}", msg, clip,
+                        alert_type="OVER_COMPRESSION", stream=cfg.name, level_dbfs=lev)
+                log_fn(f"[ALERT] {msg}")
+                cfg._over_comp_secs = 0.0
+    elif not lev > cfg.silence_threshold_dbfs:
+        # Reset EMA during silence so re-entry starts fresh
+        cfg._crest_ema = getattr(cfg, '_crest_ema', 12.0)
+
+    # ── Unexpected sustained tone detection ───────────────────────────────────
+    # Detects a pure or near-pure tone (test tone, DTMF, stuck carrier) standing
+    # well above the spectral noise floor. Uses local SNR: peak bin vs median of
+    # the surrounding ±500 Hz band excluding the peak itself.
+    if cfg.alert_on_tone and _sp_psd is not None and lev > cfg.silence_threshold_dbfs:
+        _tn_mask = (_sp_freq >= cfg.tone_min_hz) & (_sp_freq <= cfg.tone_max_hz)
+        if np.any(_tn_mask):
+            _tn_psd_band = np.where(_tn_mask, _sp_psd, 0.0)
+            _tn_pk_idx   = int(np.argmax(_tn_psd_band))
+            _tn_pk_freq  = float(_sp_freq[_tn_pk_idx])
+            _tn_pk_pow   = float(_sp_psd[_tn_pk_idx])
+            # Local reference: median of surrounding band (excluding ±5 Hz around peak)
+            _tn_local = (np.abs(_sp_freq - _tn_pk_freq) <= 500.0) & \
+                        (np.abs(_sp_freq - _tn_pk_freq) > 5.0)
+            _tn_ref_pow = float(np.median(_sp_psd[_tn_local])) if np.any(_tn_local) else 1e-30
+            _tn_snr = 10.0 * math.log10(max(_tn_pk_pow / max(_tn_ref_pow, 1e-30), 1e-10))
+            if _tn_snr >= cfg.tone_snr_db:
+                cfg._tone_secs   = getattr(cfg, '_tone_secs', 0.0) + elapsed
+                cfg._tone_freq_hz = _tn_pk_freq
+            else:
+                cfg._tone_secs = max(0.0, getattr(cfg, '_tone_secs', 0.0) - elapsed * 2.0)
+            if getattr(cfg, '_tone_secs', 0.0) >= cfg.tone_min_duration:
+                if now - cfg._last_alerts.get("TONE_DETECT", 0) >= ALERT_COOLDOWN:
+                    cfg._last_alerts["TONE_DETECT"] = now
+                    _tf = getattr(cfg, '_tone_freq_hz', _tn_pk_freq)
+                    msg = (f"Sustained tone on '{cfg.name}' — "
+                           f"{_tf:.0f} Hz at {_tn_snr:.0f} dB local SNR "
+                           f"(sustained {cfg.tone_min_duration:.0f}s)")
+                    clip = _save_alert_wav(cfg, "tone_detect", cfg.alert_wav_duration)
+                    _add_history(cfg, "TONE_DETECT", msg, clip_path=clip or "")
+                    if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                        sender.send(f"TONE on {cfg.name}", msg, clip,
+                            alert_type="TONE_DETECT", stream=cfg.name, level_dbfs=lev)
+                    log_fn(f"[ALERT] {msg}")
+                    cfg._tone_secs = 0.0
+
+    # ── High-frequency content loss / bandwidth narrowing ─────────────────────
+    # Detects when a stream loses its high-frequency content — e.g. a telephone-
+    # quality feed accidentally sent to air, codec degradation, or a low-pass
+    # fault in processing. Uses the ratio of HF (6–16 kHz) to MF (300–6 kHz)
+    # energy. An adaptive slow EMA (~10 min) establishes a per-stream baseline;
+    # alert fires when the current ratio drops more than hf_loss_threshold_db
+    # below that baseline. 10-minute warmup before any alert can fire.
+    if cfg.alert_on_hf_loss and _sp_psd is not None and lev > cfg.silence_threshold_dbfs:
+        _hf_mf = (_sp_freq >= 300.0) & (_sp_freq < 6000.0)
+        _hf_hf = (_sp_freq >= 6000.0) & (_sp_freq <= 16000.0)
+        _hf_mf_pow = float(np.sum(_sp_psd[_hf_mf])) if np.any(_hf_mf) else 1e-30
+        _hf_hf_pow = float(np.sum(_sp_psd[_hf_hf])) if np.any(_hf_hf) else 1e-30
+        _hf_ratio_db = 10.0 * math.log10(max(_hf_hf_pow / max(_hf_mf_pow, 1e-30), 1e-10))
+        # Slow EMA baseline (tau ~10 min)
+        _hf_alpha = min(max(elapsed / 600.0, 0.0005), 0.02)
+        cfg._hf_ratio_ema = (getattr(cfg, '_hf_ratio_ema', _hf_ratio_db)
+                             * (1 - _hf_alpha) + _hf_ratio_db * _hf_alpha)
+        cfg._hf_warmup = getattr(cfg, '_hf_warmup', 0) + 1
+        if cfg._hf_warmup >= 1200:   # 10 min warmup
+            _hf_drop = cfg._hf_ratio_ema - _hf_ratio_db   # positive = HF below baseline
+            if _hf_drop >= cfg.hf_loss_threshold_db:
+                cfg._hf_loss_secs = getattr(cfg, '_hf_loss_secs', 0.0) + elapsed
+            else:
+                cfg._hf_loss_secs = max(0.0, getattr(cfg, '_hf_loss_secs', 0.0) - elapsed)
+            if getattr(cfg, '_hf_loss_secs', 0.0) >= cfg.hf_loss_min_duration:
+                if now - cfg._last_alerts.get("HF_LOSS", 0) >= ALERT_COOLDOWN:
+                    cfg._last_alerts["HF_LOSS"] = now
+                    msg = (f"HF content loss on '{cfg.name}' — "
+                           f"high-frequency energy {_hf_drop:.0f} dB below baseline "
+                           f"(possible bandwidth narrowing or lo-fi feed)")
+                    clip = _save_alert_wav(cfg, "hf_loss", cfg.alert_wav_duration)
+                    _add_history(cfg, "HF_LOSS", msg, clip_path=clip or "")
+                    if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                        sender.send(f"HF LOSS on {cfg.name}", msg, clip,
+                            alert_type="HF_LOSS", stream=cfg.name, level_dbfs=lev)
+                    log_fn(f"[ALERT] {msg}")
+                    cfg._hf_loss_secs = 0.0
+    elif not lev > cfg.silence_threshold_dbfs:
+        # Reset warmup counter during silence so EMA catches up before alerting
+        cfg._hf_warmup = 0
+
+    # ── Dead channel detection (stereo only) ──────────────────────────────────
+    # Fires when one channel of a stereo stream goes completely silent while the
+    # other remains active — a broken cable, failed interface, or routing fault.
+    if (cfg.alert_on_dead_channel
+            and getattr(cfg, '_audio_channels', 1) == 2):
+        _dc_l = getattr(cfg, '_level_dbfs_l', -120.0)
+        _dc_r = getattr(cfg, '_level_dbfs_r', -120.0)
+        _dc_hi = max(_dc_l, _dc_r)
+        _dc_lo = min(_dc_l, _dc_r)
+        _dc_active = (_dc_hi > cfg.silence_threshold_dbfs + 10.0
+                      and _dc_lo <= cfg.silence_threshold_dbfs)
+        if _dc_active:
+            cfg._dead_ch_secs = getattr(cfg, '_dead_ch_secs', 0.0) + elapsed
+        else:
+            cfg._dead_ch_secs = max(0.0, getattr(cfg, '_dead_ch_secs', 0.0) - elapsed * 0.5)
+        if getattr(cfg, '_dead_ch_secs', 0.0) >= cfg.dead_channel_min_duration:
+            if now - cfg._last_alerts.get("DEAD_CHANNEL", 0) >= ALERT_COOLDOWN:
+                cfg._last_alerts["DEAD_CHANNEL"] = now
+                _dead_side = "L" if _dc_l <= cfg.silence_threshold_dbfs else "R"
+                _live_side = "R" if _dead_side == "L" else "L"
+                msg = (f"Dead channel on '{cfg.name}' — "
+                       f"{_dead_side} channel silent ({_dc_lo:.1f} dBFS) "
+                       f"while {_live_side} is active ({_dc_hi:.1f} dBFS)")
+                clip = _save_alert_wav(cfg, "dead_channel", cfg.alert_wav_duration)
+                _add_history(cfg, "DEAD_CHANNEL", msg, clip_path=clip or "")
+                if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                    sender.send(f"DEAD CHANNEL on {cfg.name}", msg, clip,
+                        alert_type="DEAD_CHANNEL", stream=cfg.name, level_dbfs=lev)
+                log_fn(f"[ALERT] {msg}")
+                cfg._dead_ch_secs = 0.0
 
     # ── Glitch / short dropout detection ─────────────────────────────────────
     # A glitch is a level dip that is significantly below the recent rolling mean
@@ -20745,6 +20930,89 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
     </div>
   </div>
 
+  <!-- Over-compression -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_over_compression" value="1" class="acard-chk" data-card="overcomp" {{'checked' if inp.alert_on_over_compression}}>
+      <span class="acard-ttl">⬛ Over-compression</span>
+      <span class="acard-badge" id="abadge-overcomp"></span>
+    </div>
+    <div class="acard-body" id="abody-overcomp">
+      <p class="help">Detects heavy brickwall limiting or over-processing: when the crest factor (peak minus RMS) stays below the threshold for the duration, the audio has lost most of its transients. Normal programme audio typically has a crest factor of 8–18 dB.</p>
+      <div class="fg2">
+        <label class="lbl">Crest factor threshold (dB) — alert when peak−RMS stays below this
+          <input type="number" name="over_compression_crest_db" value="{{inp.over_compression_crest_db}}" step="0.5" min="1" max="20">
+        </label>
+        <label class="lbl">Min duration (s)
+          <input type="number" name="over_compression_min_duration" value="{{inp.over_compression_min_duration}}" step="10" min="10">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unexpected Tone -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_tone" value="1" class="acard-chk" data-card="tone" {{'checked' if inp.alert_on_tone}}>
+      <span class="acard-ttl">🔔 Unexpected Tone</span>
+      <span class="acard-badge" id="abadge-tone"></span>
+    </div>
+    <div class="acard-body" id="abody-tone">
+      <p class="help">Detects a sustained pure or near-pure tone standing well above the surrounding spectral noise floor — e.g. a 1 kHz test tone left on air, a DTMF bleed, or an alignment carrier. Local SNR compares the peak spectral bin to the median of the surrounding ±500 Hz band.</p>
+      <div class="fg2">
+        <label class="lbl">Local SNR threshold (dB)
+          <input type="number" name="tone_snr_db" value="{{inp.tone_snr_db}}" step="5" min="10" max="80">
+        </label>
+        <label class="lbl">Min frequency (Hz)
+          <input type="number" name="tone_min_hz" value="{{inp.tone_min_hz}}" step="50" min="50" max="2000">
+        </label>
+        <label class="lbl">Max frequency (Hz)
+          <input type="number" name="tone_max_hz" value="{{inp.tone_max_hz}}" step="500" min="1000" max="20000">
+        </label>
+        <label class="lbl">Min duration (s)
+          <input type="number" name="tone_min_duration" value="{{inp.tone_min_duration}}" step="5" min="5">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- HF Content Loss -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_hf_loss" value="1" class="acard-chk" data-card="hfloss" {{'checked' if inp.alert_on_hf_loss}}>
+      <span class="acard-ttl">📉 HF Content Loss</span>
+      <span class="acard-badge" id="abadge-hfloss"></span>
+    </div>
+    <div class="acard-body" id="abody-hfloss">
+      <p class="help">Detects bandwidth narrowing — when the ratio of high-frequency energy (6–16 kHz) to mid-frequency energy (300–6 kHz) drops significantly below a learned 10-minute baseline. Catches telephone-quality feeds accidentally put to air, codec degradation, or a low-pass fault in processing. Requires ~10 minutes of audio to establish a baseline before any alert can fire.</p>
+      <div class="fg2">
+        <label class="lbl">Drop threshold (dB below baseline)
+          <input type="number" name="hf_loss_threshold_db" value="{{inp.hf_loss_threshold_db}}" step="1" min="5" max="40">
+        </label>
+        <label class="lbl">Min duration (s)
+          <input type="number" name="hf_loss_min_duration" value="{{inp.hf_loss_min_duration}}" step="5" min="5">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dead Channel -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_dead_channel" value="1" class="acard-chk" data-card="deadch" {{'checked' if inp.alert_on_dead_channel}}>
+      <span class="acard-ttl">🔇 Dead Channel <span style="font-size:10px;color:var(--mu)">(stereo only)</span></span>
+      <span class="acard-badge" id="abadge-deadch"></span>
+    </div>
+    <div class="acard-body" id="abody-deadch">
+      <p class="help">Stereo streams only. Fires when one channel goes completely silent (at or below the silence threshold) while the other carries active audio — indicating a broken cable, failed interface card, or routing fault. Distinct from Stereo Imbalance (which requires both channels to be active).</p>
+      <div class="fg2">
+        <label class="lbl">Min duration (s)
+          <input type="number" name="dead_channel_min_duration" value="{{inp.dead_channel_min_duration}}" step="5" min="5">
+        </label>
+      </div>
+    </div>
+  </div>
+
   <!-- EBU R128 -->
   <div class="acard">
     <div class="acard-hdr" style="background:rgba(79,156,249,.06)">
@@ -21648,6 +21916,19 @@ def _inp_from_form(f):
         alert_on_stereo_imbalance=bool(f.get("alert_on_stereo_imbalance")),
         stereo_imbalance_db=float(f.get("stereo_imbalance_db") or 6.0),
         stereo_imbalance_min_duration=float(f.get("stereo_imbalance_min_duration") or 30.0),
+        alert_on_over_compression=bool(f.get("alert_on_over_compression")),
+        over_compression_crest_db=float(f.get("over_compression_crest_db") or 6.0),
+        over_compression_min_duration=float(f.get("over_compression_min_duration") or 120.0),
+        alert_on_tone=bool(f.get("alert_on_tone")),
+        tone_snr_db=float(f.get("tone_snr_db") or 30.0),
+        tone_min_hz=float(f.get("tone_min_hz") or 200.0),
+        tone_max_hz=float(f.get("tone_max_hz") or 16000.0),
+        tone_min_duration=float(f.get("tone_min_duration") or 10.0),
+        alert_on_hf_loss=bool(f.get("alert_on_hf_loss")),
+        hf_loss_threshold_db=float(f.get("hf_loss_threshold_db") or 15.0),
+        hf_loss_min_duration=float(f.get("hf_loss_min_duration") or 30.0),
+        alert_on_dead_channel=bool(f.get("alert_on_dead_channel")),
+        dead_channel_min_duration=float(f.get("dead_channel_min_duration") or 10.0),
         stereo=bool(f.get("stereo")),
         fm_force_mono=bool(f.get("fm_force_mono")),
         fm_deemphasis=str(f.get("fm_deemphasis", "50us") or "50us"),
@@ -32570,7 +32851,8 @@ def hub_reports():
                       "ABGROUP_OFF_AIR", "ABGROUP_BOTH_FAULT", "ABGROUP_A_FAULT",
                       "ABGROUP_B_FAULT", "ABGROUP_RX_FAULT", "ABGROUP_RECOVERED",
                       "MAINS_HUM", "DC_OFFSET", "PHASE_REVERSAL",
-                      "LEVEL_DRIFT", "OVERMOD", "MONO_ON_STEREO", "STEREO_IMBALANCE"}
+                      "LEVEL_DRIFT", "OVERMOD", "MONO_ON_STEREO", "STEREO_IMBALANCE",
+                      "OVER_COMPRESSION", "TONE_DETECT", "HF_LOSS", "DEAD_CHANNEL"}
     type_names  = sorted(
         set(e.get("type","") for e in all_events if e.get("type")) | _SILENCE_TYPES
     )
