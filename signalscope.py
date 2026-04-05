@@ -2297,7 +2297,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.38"
+BUILD                  = "SignalScope-3.5.39"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -22030,7 +22030,12 @@ input[type=text]{background:#0d1e40;border:1px solid var(--bor);border-radius:6p
     <div class="ch">Step 1 — Scan QR Code</div>
     <div class="cb">
       <p style="font-size:13px;color:var(--mu);margin-bottom:14px">Open your authenticator app (Google Authenticator, Authy, 1Password, etc.) and scan this QR code:</p>
-      <div id="qrcode" style="background:#fff;padding:12px;display:inline-block;border-radius:8px;margin-bottom:12px"></div>
+      {% if qr_b64 %}
+      <img src="data:image/png;base64,{{qr_b64}}" alt="TOTP QR code"
+           style="background:#fff;padding:10px;border-radius:8px;display:block;width:216px;height:216px;margin-bottom:12px">
+      {% else %}
+      <p style="font-size:12px;color:var(--wn);margin-bottom:12px">⚠ QR image unavailable — use the manual key below (<code>pip install qrcode[pil]</code> to enable).</p>
+      {% endif %}
       <p style="font-size:11px;color:var(--mu);margin-top:8px">Can't scan? Enter this key manually:</p>
       <code style="font-size:13px;letter-spacing:2px;color:var(--acc);background:#0a1828;padding:6px 10px;border-radius:4px;display:inline-block;margin-top:4px;word-break:break-all">{{secret}}</code>
     </div>
@@ -22051,23 +22056,6 @@ input[type=text]{background:#0d1e40;border:1px solid var(--bor);border-radius:6p
     </div>
   </div>
 </main>
-<script nonce="{{csp_nonce()}}">
-// Render QR code client-side using qrcode.js
-(function(){
-  var s=document.createElement('script');
-  s.src='https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js';
-  s.onload=function(){
-    QRCode.toCanvas(
-      document.getElementById('qrcode'),
-      {{uri|tojson}},
-      {width:200,margin:1,color:{dark:'#000',light:'#fff'}},
-      function(err){if(err)document.getElementById('qrcode').textContent='{{uri}}';}
-    );
-  };
-  s.onerror=function(){document.getElementById('qrcode').innerHTML='<p style="color:#333;font-size:11px;padding:4px">QR library failed to load — use the manual key above.</p>';};
-  document.head.appendChild(s);
-})();
-</script>
 </body></html>"""
 
 LOGIN_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Login — SignalScope</title>
@@ -23310,6 +23298,32 @@ def login_totp():
     return render_template_string(TOTP_VERIFY_TPL, error=error, username=uname, build=BUILD)
 
 
+def _make_totp_qr_b64(uri: str) -> str:
+    """Return a base64-encoded PNG QR code for *uri*, or '' on failure.
+
+    Tries qrcode[pil] first, then segno (pure-Python fallback).
+    Both are optional — if neither is installed the setup page falls back to
+    the manual key display only.
+    """
+    import io, base64
+    try:
+        import qrcode  # type: ignore
+        img = qrcode.make(uri)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        pass
+    try:
+        import segno  # type: ignore
+        buf = io.BytesIO()
+        segno.make(uri, error="M").save(buf, kind="png", scale=5)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        pass
+    return ""
+
+
 @app.route("/settings/totp/setup", methods=["GET", "POST"])
 @login_required
 def totp_setup():
@@ -23354,7 +23368,9 @@ def totp_setup():
         secret_to_show = user.totp_secret if user.totp_secret else _pyotp.random_base32()
     totp_obj = _pyotp.TOTP(secret_to_show)
     uri = totp_obj.provisioning_uri(name=uname, issuer_name="SignalScope")
+    qr_b64 = _make_totp_qr_b64(uri)
     return render_template_string(TOTP_SETUP_TPL, secret=secret_to_show, uri=uri,
+                                  qr_b64=qr_b64,
                                   error=error, success=success, build=BUILD)
 
 

@@ -1383,7 +1383,7 @@ main() {
   # ── Python packages — pip is idempotent, safe to run on updates too ──────────
   step "Installing/updating Python packages"
   python -m pip install --upgrade pip wheel "setuptools<81"
-  python -m pip install flask waitress cheroot numpy scipy requests certifi cryptography psutil sounddevice "httpx[http2]" pyotp
+  python -m pip install flask waitress cheroot numpy scipy requests certifi cryptography psutil sounddevice "httpx[http2]" pyotp "qrcode[pil]"
 
   step "Installing optional MP3 encoder (lameenc)"
   python -m pip install lameenc || warn "lameenc not available — MP3 clip encoding will fall back to ffmpeg or WAV"

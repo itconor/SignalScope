@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.39] - 2026-04-05
+
+### Fixed
+- **TOTP setup QR code not rendering** — the QR code was generated client-side by loading `qrcode.js` from the jsDelivr CDN. The app's Content Security Policy has no external `script-src` hosts allowlisted, so the CDN script was blocked and users saw "QR library failed to load — use the manual key above." Fix: QR code is now generated server-side in Python by `_make_totp_qr_b64()` (uses `qrcode[pil]`, falls back to `segno`) and embedded directly as a `data:image/png;base64,…` `<img>` tag. No external network request, no CSP issue. The CDN `<script>` block has been removed from `TOTP_SETUP_TPL`. `qrcode[pil]` added to the installer.
+
+---
+
 ## [3.5.38] - 2026-04-05
 
 ### Fixed
