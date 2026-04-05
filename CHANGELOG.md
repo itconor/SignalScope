@@ -2,6 +2,18 @@
 
 ---
 
+## [3.5.35] - 2026-04-05
+
+### Added
+- **Stream tags** — each input now has a comma-separated Tags field (Settings → Inputs → Edit → 🏷 Tags). Tags are displayed as blue pills on stream cards in the hub overview and on the Settings inputs list. Tags are included in the heartbeat payload so the hub always has up-to-date tag data.
+- **Hub tag filter bar** — when any stream has tags configured, a filter bar appears above the site grid with "All" plus one pill per unique tag. Clicking a tag pill hides all stream cards that don't carry that tag and collapses site cards that have no matching visible streams. Clicking "All" restores everything.
+- **Mobile responsive layout** — Settings, Hub, and Reports pages are now usable on small screens:
+  - Settings: sidebar collapses off-screen on ≤768 px; a ☰ hamburger button (fixed top-right) slides it open/closed
+  - Hub: site grid goes single-column on ≤900 px; toolbar stacks vertically, stream grid goes single-column, and header shrinks on ≤640 px
+  - Reports: filter bar stacks vertically, filters go full-width, table becomes horizontally scrollable, and the less-critical Level/RTP columns are hidden on ≤640 px
+
+---
+
 ## [3.5.34] - 2026-04-05
 
 ### Added

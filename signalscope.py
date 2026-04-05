@@ -44,6 +44,16 @@ input[type=text],input[type=number],input[type=password],input[type=email]{width
 @keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 .ic-bar{display:flex;align-items:center;gap:8px;padding:7px 12px;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;margin-top:6px;animation:toastIn .2s ease;flex-basis:100%;flex-shrink:0}
 .ic-msg{flex:1;font-size:12px;color:var(--mu)}
+/* ── Mobile / narrow viewport ──────────────────────────────────────────────── */
+.sb-ham{display:none}
+@media(max-width:768px){
+  .sb{position:fixed;left:0;top:46px;z-index:810;transform:translateX(-100%);transition:transform .22s ease;height:calc(100vh - 46px);box-shadow:4px 0 16px rgba(0,0,0,.4)}
+  .sb.mob-open{transform:translateX(0)}
+  .sb-ham{display:flex;align-items:center;justify-content:center;position:fixed;top:8px;right:12px;z-index:820;width:32px;height:32px;border-radius:7px;background:var(--bor);border:none;color:var(--tx);font-size:17px;cursor:pointer}
+  .ct{padding:14px;max-width:100%}
+  header h1{font-size:14px}
+  table{display:block;overflow-x:auto;white-space:nowrap}
+}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body class="{{'wall-mode' if wall_mode else ''}}">
 <script nonce="{{csp_nonce()}}">
 function _csrfFetch(url,opts){
@@ -230,7 +240,8 @@ document.addEventListener('DOMContentLoaded',function(){
 </script>
 {{ topnav("settings") }}
 <div class="pg">
-<nav class="sb">
+<button class="sb-ham" id="sb-ham" aria-label="Open settings menu" onclick="var s=document.querySelector('.sb');s.classList.toggle('mob-open');this.textContent=s.classList.contains('mob-open')?'✕':'☰'">☰</button>
+<nav class="sb" id="sb-nav" onclick="if(window.innerWidth<=768&&!event.target.closest('.sb-ham')){document.querySelector('.sb').classList.remove('mob-open');document.getElementById('sb-ham').textContent='☰'}">
   <button class="tb" id="b-notif" onclick="st('notif')">🔔 Notifications</button>
   <button class="tb" id="b-hub"   onclick="st('hub')"  >🛰 Hub &amp; Network</button>
   <button class="tb" id="b-sec"   onclick="st('sec')"  >👥 Users &amp; Roles</button>
@@ -2249,7 +2260,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.34"
+BUILD                  = "SignalScope-3.5.35"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2544,6 +2555,9 @@ class InputConfig:
     # Expected identity — alert when actual name differs or changes
     expected_fm_rds_ps:   str = ""   # expected RDS Programme Service name; blank = alert on any change
     expected_dab_service: str = ""   # expected DAB service name; blank = alert on any change
+
+    # Stream grouping / classification
+    tags: str = ""   # comma-separated user-defined tags, e.g. "FM,North,Talk" — used for hub filtering
 
     # RTP tracking (runtime)
     _rtp_last_seq:      int   = field(default=-1,   init=False, repr=False)
@@ -3013,6 +3027,7 @@ def load_config() -> AppConfig:
             stereo=bool(item.get("stereo", False)),
             fm_force_mono=bool(item.get("fm_force_mono", False)),
             fm_deemphasis=str(item.get("fm_deemphasis", "50us") or "50us"),
+            tags=str(item.get("tags", "") or ""),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
     return AppConfig(
@@ -3185,6 +3200,7 @@ def save_config(cfg: AppConfig):
             "stereo": i.stereo,
             "fm_force_mono": i.fm_force_mono,
             "fm_deemphasis": i.fm_deemphasis,
+            "tags": i.tags,
         } for i in cfg.inputs],
         "email": {
             "enabled": cfg.email.enabled, "smtp_host": cfg.email.smtp_host,
@@ -11588,6 +11604,7 @@ class HubClient:
                 "alert_on_silence":  inp.alert_on_silence,
                 "alert_on_hiss":     inp.alert_on_hiss,
                 "alert_on_clip":     inp.alert_on_clip,
+                "tags":              inp.tags,
                 "dab_snr":           round(inp._dab_snr, 1),
                 "dab_sig":           round(inp._dab_sig, 1),
                 "dab_ensemble":      inp._dab_ensemble,
@@ -17672,6 +17689,16 @@ audio{height:28px;width:200px;accent-color:var(--acc);vertical-align:middle}
 .detail-row .detail-val{color:var(--tx)}
 tr.data-row{cursor:pointer}
 tr.data-row.expanded td{background:#0d1e40}
+@media(max-width:640px){
+  .filters{flex-direction:column;gap:6px}
+  .filters label{min-width:0;width:100%}
+  .filters select,.filters input[type=datetime-local]{width:100%}
+  .summary{overflow-x:auto;flex-wrap:nowrap;padding-bottom:4px}
+  .card{overflow-x:auto}
+  #evt_table{min-width:760px}
+  .col-level,.col-rtp{display:none}
+  main>div[style*="display:flex"]{flex-wrap:wrap;gap:6px}
+}
 </style>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("reports") }}
@@ -18177,10 +18204,11 @@ tr:hover td{background:#123764}
 <main>
 {% with m=get_flashed_messages() %}{% if m %}<ul class="fl">{% for x in m %}<li>{{x}}</li>{% endfor %}</ul>{% endif %}{% endwith %}
 {% if inputs %}
-<table><thead><tr><th>#</th><th>Name</th><th>Stream</th><th>Alerts</th><th>AI Model</th><th></th></tr></thead><tbody>
+<table><thead><tr><th>#</th><th>Name</th><th>Stream</th><th>Tags</th><th>Alerts</th><th>AI Model</th><th></th></tr></thead><tbody>
 {% for i,inp in inputs %}<tr>
   <td>{{i+1}}</td><td>{{inp.name}}</td>
   <td style="font-family:monospace;font-size:12px">{{inp.device_index}}</td>
+  <td style="font-size:12px">{% if inp.tags %}{% for tag in inp.tags.split(',') %}{% set t=tag.strip() %}{% if t %}<span style="display:inline-block;padding:1px 7px;border-radius:999px;background:#1e3a5f;color:var(--acc);font-size:11px;margin:1px 2px;white-space:nowrap">{{t}}</span>{% endif %}{% endfor %}{% else %}<span style="color:var(--mu)">—</span>{% endif %}</td>
   <td style="font-size:12px">{%if inp.alert_on_silence%}Silence {%endif%}{%if inp.alert_on_hiss%}Hiss {%endif%}{%if inp.alert_on_clip%}Clip{%endif%}</td>
   <td style="font-size:12px">{%if inp.ai_monitor%}{%if model_exists[i]%}✅ Ready{%else%}⏳ Needs training{%endif%}{%else%}—{%endif%}</td>
   <td style="display:flex;gap:5px">
@@ -19777,6 +19805,16 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
   </script>
 
   </div>{# /non_dab_fields #}
+  <div class="acard" style="margin-top:12px">
+    <div class="acard-hdr" style="cursor:default">🏷 Tags</div>
+    <div class="acard-body" style="padding-top:10px">
+      <div class="field" style="max-width:420px">
+        <label class="lbl">Tags <span class="tip" data-tip="Comma-separated tags used to group and filter streams on the Hub overview, e.g. FM, DAB, North, Talk">ⓘ</span></label>
+        <input type="text" name="tags" value="{{inp.tags}}" placeholder="FM, Talk, North Wales" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;width:100%">
+      </div>
+      <p class="help" style="margin-top:6px">Separate tags with commas. Tags appear as coloured pills on stream cards and can be used to filter the Hub overview.</p>
+    </div>
+  </div>
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/inputs">Cancel</a></div>
 </form></main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer></body></html>"""
 
@@ -20243,6 +20281,7 @@ def _inp_from_form(f):
         stereo=bool(f.get("stereo")),
         fm_force_mono=bool(f.get("fm_force_mono")),
         fm_deemphasis=str(f.get("fm_deemphasis", "50us") or "50us"),
+        tags=str(f.get("tags", "") or ""),
     )
 
 @app.route("/inputs/add", methods=["GET","POST"])
@@ -30837,7 +30876,8 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% set ph = s.ai_phase or '' %}
       {% set dc = 'dok' %}
       {% if '[ALERT]' in ai %}{% set dc='dal' %}{% elif '[WARN]' in ai %}{% set dc='dwn' %}{% elif ph=='learning' %}{% set dc='dlr' %}{% endif %}
-      <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}" data-sn="{{s.name|e}}">
+      {% set _stags = (s.get('tags','') or '') %}
+      <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}" data-sn="{{s.name|e}}" data-tags="{{_stags|e}}">
         <div class="sc-name">
           <span class="dot sc-ai-dot {{dc}}"></span>
           <strong>{{s.name}}</strong>
@@ -30845,6 +30885,9 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           {% if s.get('clip_count') %}<span class="clip-badge" title="Saved alert clips">{{s.get('clip_count')}} clips</span>{% endif %}
           <span class="sc-dev">{{s.device_index or ''}}</span>
         </div>
+        {%- if _stags %}
+        <div class="sc-tags">{% for _t in _stags.split(',') %}{% set _tk=_t.strip() %}{% if _tk %}<span class="sc-tag">{{_tk}}</span>{% endif %}{% endfor %}</div>
+        {%- endif %}
         <div class="lbar-wrap">
           <span style="font-size:11px;color:var(--mu);width:28px">Lvl</span>
           <div class="lbar-outer">
@@ -32747,6 +32790,13 @@ body.wall-mode .site-meta{font-size:13px}
 }
 .sc-silence .lbar-fill{animation:silencePulse 2s ease-in-out infinite;background:var(--wn) !important;}
 .sc-silence .lbar-val{color:var(--wn) !important;}
+.sc-tags{display:flex;flex-wrap:wrap;gap:3px;padding:2px 10px 6px}
+.sc-tag{display:inline-block;padding:1px 7px;border-radius:999px;background:#1e3a5f;color:var(--acc);font-size:10px;white-space:nowrap}
+.tag-filter-bar{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:10px}
+.tag-fp{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--bor);background:transparent;color:var(--mu);transition:background .12s,color .12s,border-color .12s}
+.tag-fp:hover{background:#1e3a5f;color:var(--tx)}
+.tag-fp.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+.sc.tag-hidden{display:none}
 #kb-overlay{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9000;display:flex;align-items:center;justify-content:center}
 .kb-modal{background:var(--sur);border:1px solid var(--bor);border-radius:14px;min-width:340px;max-width:480px;overflow:hidden;box-shadow:0 16px 48px rgba(0,0,0,.55)}
 .kb-hdr{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54);font-size:14px;font-weight:700}
@@ -32829,6 +32879,22 @@ body.wall-mode .sc{}
 .ic-bar{display:flex;align-items:center;gap:8px;padding:7px 12px;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;margin-top:6px;animation:toastIn .2s ease;flex-basis:100%;flex-shrink:0}
 .ic-msg{flex:1;font-size:12px;color:var(--mu)}
 #stale-bar{display:none;position:fixed;top:0;left:0;right:0;z-index:9998;padding:5px 16px;background:#451a03;border-bottom:1px solid rgba(239,68,68,.4);color:#fca5a5;font-size:12px;font-weight:600;text-align:center;letter-spacing:.02em}
+/* ── Hub mobile ─────────────────────────────────────────────────────────── */
+@media(max-width:640px){
+  header{padding:8px 12px;gap:6px}
+  header h1{font-size:14px}
+  main{padding:10px}
+  .hub-summary{gap:6px}
+  .sum-pill{font-size:11px;padding:5px 8px}
+  .site-grid{columns:100%}
+  .hub-toolbar{flex-direction:column;align-items:stretch}
+  .search{min-width:0;max-width:100%}
+  .streams{grid-template-columns:1fr!important}
+  .sc-detail .sc-row{font-size:11px}
+}
+@media(max-width:900px){
+  .site-grid{columns:100%}
+}
 </style>
 <script nonce="{{csp_nonce()}}">
 function aiClass(s){return s.includes('ALERT')?'ai-al':s.includes('WARN')?'ai-wn':'ai-ok';}
@@ -33444,6 +33510,35 @@ document.addEventListener('click', function(e){
   // are handled by their own dedicated listeners elsewhere in this template.
 });
 
+// ── Tag filter ──────────────────────────────────────────────────────────────
+var _activeTag = '';
+function applyTagFilter(tag){
+  _activeTag = tag;
+  // Update pill highlights
+  document.querySelectorAll('#tag-filter-bar .tag-fp').forEach(function(b){
+    b.classList.toggle('active', b.dataset.tag === tag);
+  });
+  // Show/hide individual stream cards (.sc) within site cards
+  // A stream card is hidden if it has no matching tag; a site card is hidden
+  // if ALL of its stream cards are hidden.
+  document.querySelectorAll('.site-card').forEach(function(siteCard){
+    var streams = siteCard.querySelectorAll('.sc');
+    var anyVisible = false;
+    streams.forEach(function(sc){
+      var match = !tag || (sc.dataset.tags||'').split(',').some(function(t){return t.trim()===tag;});
+      sc.classList.toggle('tag-hidden', !match);
+      if(match) anyVisible = true;
+    });
+    // If no streams visible, hide the whole site card
+    siteCard.style.display = (streams.length && !anyVisible) ? 'none' : '';
+  });
+}
+document.addEventListener('click', function(e){
+  var pill = e.target.closest('#tag-filter-bar .tag-fp');
+  if(!pill) return;
+  applyTagFilter(pill.dataset.tag);
+});
+
 // Only start polling after the DOM is fully rendered
 document.addEventListener('DOMContentLoaded', function(){
   initCardSearch('hubSearch', 'site-grid', '.site-card');
@@ -33792,6 +33887,24 @@ setInterval(_loadTrends, 300000);
     <input id="hubSearch" class="search" type="text" placeholder="Search sites, streams, FM, DAB… (press / to focus)">
     {% if sites|length > 1 %}<span class="badge">Drag site cards to reorder</span>{% endif %}
   </div>
+  {%- set _all_tags = [] %}
+  {%- for site in sites %}
+    {%- for s in site.get('streams', []) %}
+      {%- for _t in (s.get('tags','') or '').split(',') %}
+        {%- set _tk = _t.strip() %}
+        {%- if _tk and _tk not in _all_tags %}{%- set _ = _all_tags.append(_tk) %}{%- endif %}
+      {%- endfor %}
+    {%- endfor %}
+  {%- endfor %}
+  {%- if _all_tags %}
+  <div class="tag-filter-bar" id="tag-filter-bar">
+    <span style="font-size:11px;color:var(--mu);font-weight:600">Tags:</span>
+    <button class="tag-fp active" data-tag="">All</button>
+    {%- for _t in _all_tags|sort %}
+    <button class="tag-fp" data-tag="{{_t|e}}">{{_t}}</button>
+    {%- endfor %}
+  </div>
+  {%- endif %}
 {% if not sites %}
     <div style="text-align:center;padding:48px 24px;color:var(--mu)">
       <div style="font-size:36px;margin-bottom:12px">🌐</div>
