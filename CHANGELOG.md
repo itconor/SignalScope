@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.58] - 2026-04-05
+
+### Fixed
+- **Restart SignalScope — Maintenance tab**: Replaced `_ssConfirm` (which closed immediately due to the original click event bubbling to the newly-appended backdrop) with a self-contained inline modal. Modal buttons are `type="button"` so they cannot accidentally submit the settings form. Backdrop closes on `mousedown` (not `click`) to avoid the open/close race.
+- **Restart SignalScope — Plugins tab**: Same self-contained modal approach. Also guards against double-open with `_ar-modal` id check.
+- **Settings Save button**: Click listener was registered before the button existed in the DOM (script ran at line 396 but button was at line 437). Moved registration inside `DOMContentLoaded` so the element is always available. Dirty-banner input/change listeners moved to same handler.
+
+---
+
 ## [3.5.57] - 2026-04-05
 
 ### Fixed

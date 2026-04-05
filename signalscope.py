@@ -405,34 +405,35 @@ document.addEventListener('DOMContentLoaded',function(){
                 el.textContent = d.ok ? '✓ '+d.message : '✗ '+d.message;
               }).catch(function(e){ _btnReset(btn); el.style.color='var(--al)'; el.textContent='✗ Request failed: '+e; });
           }
-          document.getElementById('settings-save-btn').addEventListener('click', function(){
-            var btn = this;
-            var form = btn.closest('form');
-            var secret = form.querySelector('#hub_secret');
-            if(secret && secret.value && secret.value.length < 16){
-              secret.focus();
-              secret.style.borderColor = 'var(--al)';
-              showToast('Hub secret must be at least 16 characters', 'err');
-              return;
-            }
-            if(secret) secret.style.borderColor = '';
-            _btnLoad(btn);
-            var fd = new FormData(form);
-            _csrfFetch('/settings', {method:'POST', body: fd})
-              .then(function(r){
-                _btnReset(btn);
-                if(r.ok){ showToast('Settings saved', 'ok'); document.getElementById('dirty-banner').style.display='none'; }
-                else { showToast('Save failed ('+r.status+')', 'err'); }
-              }).catch(function(){ _btnReset(btn); showToast('Save failed — check connection', 'err'); });
-          });
-          (function(){
+          document.addEventListener('DOMContentLoaded',function(){
+            var sbtn=document.getElementById('settings-save-btn');
+            if(sbtn) sbtn.addEventListener('click', function(){
+              var btn = this;
+              var form = btn.closest('form');
+              var secret = form.querySelector('#hub_secret');
+              if(secret && secret.value && secret.value.length < 16){
+                secret.focus();
+                secret.style.borderColor = 'var(--al)';
+                showToast('Hub secret must be at least 16 characters', 'err');
+                return;
+              }
+              if(secret) secret.style.borderColor = '';
+              _btnLoad(btn);
+              var fd = new FormData(form);
+              _csrfFetch('/settings', {method:'POST', body: fd})
+                .then(function(r){
+                  _btnReset(btn);
+                  if(r.ok){ showToast('Settings saved', 'ok'); document.getElementById('dirty-banner').style.display='none'; }
+                  else { showToast('Save failed ('+r.status+')', 'err'); }
+                }).catch(function(){ _btnReset(btn); showToast('Save failed — check connection', 'err'); });
+            });
             var _db=document.getElementById('dirty-banner');
             var _form=document.querySelector('form');
             if(_form&&_db){
               _form.addEventListener('input',function(){_db.style.display='flex';});
               _form.addEventListener('change',function(){_db.style.display='flex';});
             }
-          })();
+          });
           </script>
   <div class="act"><button class="btn bp" type="button" id="settings-save-btn">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
@@ -1688,23 +1689,42 @@ function killDabOrphans(btn){
 }
 
 function adminRestart(btn){
-  _ssConfirm('Restart SignalScope? All active streams will disconnect briefly.',function(){
+  if(document.getElementById('_ar-modal')) return;
+  var bd=document.createElement('div');
+  bd.id='_ar-modal';
+  bd.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:99998;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif';
+  bd.innerHTML='<div style="background:#0d2346;border:1px solid #17345f;border-radius:12px;padding:24px;width:min(380px,90vw);box-shadow:0 24px 60px rgba(0,0,0,.65)">'
+    +'<div style="font-size:15px;font-weight:700;color:#eef5ff;margin-bottom:10px">Restart SignalScope?</div>'
+    +'<div style="font-size:13px;color:#c5d8f5;line-height:1.55;margin-bottom:20px">All active streams will disconnect briefly.</div>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end">'
+    +'<button type="button" id="_ar-cancel" style="background:#17345f;color:#eef5ff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>'
+    +'<button type="button" id="_ar-ok" style="background:#ef4444;color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer">Restart</button>'
+    +'</div></div>';
+  document.body.appendChild(bd);
+  var _fired=false;
+  function _close(){if(bd.parentNode)bd.remove();}
+  // Use mousedown+mouseup to avoid the original click event triggering backdrop close
+  bd.addEventListener('mousedown',function(e){if(e.target===bd)_close();});
+  bd.querySelector('#_ar-cancel').onclick=function(e){e.stopPropagation();_close();};
+  bd.querySelector('#_ar-ok').onclick=function(e){
+    e.stopPropagation();
+    if(_fired)return;_fired=true;
+    _close();
     _btnLoad(btn);
     var st=document.getElementById('proc-ctrl-status');
-    if(st){st.style.color='var(--mu)';st.textContent='Restarting…';}
+    if(st){st.style.color='var(--mu)';st.textContent='Restarting\u2026';}
     fetch('/api/admin/restart',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'}})
       .then(function(){
         _btnReset(btn);
-        if(st){st.style.color='#86efac';st.textContent='Restarting — page will reload in 6 s…';}
+        if(st){st.style.color='#86efac';st.textContent='Restarting \u2014 page will reload in 6 s\u2026';}
         setTimeout(function(){window.location.reload();},6000);
       })
       .catch(function(){
-        // Normal — server went away mid-restart
         _btnReset(btn);
-        if(st){st.style.color='#86efac';st.textContent='Restarting — page will reload in 6 s…';}
+        if(st){st.style.color='#86efac';st.textContent='Restarting \u2014 page will reload in 6 s\u2026';}
         setTimeout(function(){window.location.reload();},6000);
       });
-  },{danger:true,yesLabel:'Restart'});
+  };
 }
 
 // ── User Management ──────────────────────────────────────────────────────────
@@ -2174,15 +2194,34 @@ document.getElementById('p-plugins').addEventListener('click', function(e){
   var upd = e.target.closest('.plugin-update-btn');
   if(upd){ pluginUpdate(upd.dataset.id, upd.dataset.url, upd.dataset.file, upd.dataset.newver||'?'); return; }
   if(e.target.closest('#plugin-restart-btn')){
-    var btn = document.getElementById('plugin-restart-btn');
-    _ssConfirm('Restart SignalScope? All active streams will disconnect briefly.',function(){
-      var st  = document.getElementById('plugin-restart-status');
-      _btnLoad(btn);
-      if(st){ st.style.color='var(--mu)'; st.textContent='Restarting — page will reload in 8 s…'; }
-      _csrfPost('/api/admin/restart', {})
-        .catch(function(){/* server went away — normal */})
-        .finally(function(){ _btnReset(btn); setTimeout(function(){ window.location.reload(); }, 8000); });
-    },{danger:true,yesLabel:'Restart'});
+    if(document.getElementById('_ar-modal')) return;
+    var rbtn=document.getElementById('plugin-restart-btn');
+    var rbd=document.createElement('div');
+    rbd.id='_ar-modal';
+    rbd.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:99998;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif';
+    rbd.innerHTML='<div style="background:#0d2346;border:1px solid #17345f;border-radius:12px;padding:24px;width:min(380px,90vw);box-shadow:0 24px 60px rgba(0,0,0,.65)">'
+      +'<div style="font-size:15px;font-weight:700;color:#eef5ff;margin-bottom:10px">Restart SignalScope?</div>'
+      +'<div style="font-size:13px;color:#c5d8f5;line-height:1.55;margin-bottom:20px">All active streams will disconnect briefly.</div>'
+      +'<div style="display:flex;gap:8px;justify-content:flex-end">'
+      +'<button type="button" id="_ar-cancel" style="background:#17345f;color:#eef5ff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>'
+      +'<button type="button" id="_ar-ok" style="background:#ef4444;color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer">Restart</button>'
+      +'</div></div>';
+    document.body.appendChild(rbd);
+    var _rfired=false;
+    function _rclose(){if(rbd.parentNode)rbd.remove();}
+    rbd.addEventListener('mousedown',function(e){if(e.target===rbd)_rclose();});
+    rbd.querySelector('#_ar-cancel').onclick=function(e){e.stopPropagation();_rclose();};
+    rbd.querySelector('#_ar-ok').onclick=function(e){
+      e.stopPropagation();
+      if(_rfired)return;_rfired=true;
+      _rclose();
+      _btnLoad(rbtn);
+      var rst=document.getElementById('plugin-restart-status');
+      if(rst){rst.style.color='var(--mu)';rst.textContent='Restarting \u2014 page will reload in 8 s\u2026';}
+      _csrfPost('/api/admin/restart',{})
+        .catch(function(){})
+        .finally(function(){_btnReset(rbtn);setTimeout(function(){window.location.reload();},8000);});
+    };
   }
 });
 })();
@@ -2351,7 +2390,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.57"
+BUILD                  = "SignalScope-3.5.58"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
