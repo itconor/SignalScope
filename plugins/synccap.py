@@ -17,6 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
+    "version":  "1.0.3",
 }
 
 import os
