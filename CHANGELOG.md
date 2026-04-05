@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.49] - 2026-04-05
+
+### Fixed
+- **Broadcast Chains — SLA History dropdown also toggled Fault History**: The SLA History toggle div shared the `flog-toggle` CSS class with the Fault History toggle. The delegated click listener on `#chains_list` matched both, causing the Fault History panel to open/close whenever the SLA History row was clicked. Fixed by giving the SLA toggle its own `slahist-toggle` class; CSS extended to cover both classes.
+
+### Removed
+- **Broadcast Chains — Test Alert button**: Removed the 🧪 Test Alert button and its result banner from the chain list header. The associated JS event listener and result `<div>` are also removed. The `/api/chains/test_alert` backend route is preserved.
+
+---
+
 ## [3.5.48] - 2026-04-05
 
 ### Changed

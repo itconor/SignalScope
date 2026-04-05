@@ -2315,7 +2315,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.48"
+BUILD                  = "SignalScope-3.5.49"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -26107,8 +26107,8 @@ main{padding:18px;max-width:1600px;margin:0 auto}
 .shared-badge{font-size:10px;color:#93c5fd;display:block;text-align:center;margin-top:2px}
 /* Fault log panel */
 .flog-panel{border-top:1px solid var(--bor);padding:0 16px}
-.flog-toggle{font-size:11px;color:var(--mu);cursor:pointer;padding:6px 0;display:flex;align-items:center;gap:6px;user-select:none}
-.flog-toggle:hover{color:var(--tx)}
+.flog-toggle,.slahist-toggle{font-size:11px;color:var(--mu);cursor:pointer;padding:6px 0;display:flex;align-items:center;gap:6px;user-select:none}
+.flog-toggle:hover,.slahist-toggle:hover{color:var(--tx)}
 .flog-table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px}
 .flog-table th{color:var(--mu);font-weight:600;padding:3px 6px;text-align:left;border-bottom:1px solid var(--bor)}
 .flog-table td{padding:4px 6px;border-bottom:1px solid rgba(255,255,255,.04);color:var(--tx)}
@@ -26322,13 +26322,10 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 <div class="page-title">
   <h1>⛓ Broadcast Chains</h1>
   <div style="display:flex;gap:8px;align-items:center">
-    <button class="btn bg bs" id="btn_test_alert" title="Send a clearly-labelled TEST alert through all notification channels (email, webhook, Pushover, APNs) — will not create a real fault log entry">🧪 Test Alert</button>
     <button class="btn bp bs" id="btn_new_abg">＋ New A/B Group</button>
     <button class="btn bp" id="btn_new_chain">+ New Chain</button>
   </div>
 </div>
-<div id="test_alert_result" style="display:none;margin:0 0 12px 0;padding:10px 14px;border-radius:8px;font-size:13px"></div>
-
 <!-- History time-travel bar -->
 <div class="hist-bar">
   <span style="font-size:12px;font-weight:600;color:var(--mu)">📅 History:</span>
@@ -26540,7 +26537,7 @@ var _chainData={
   </div>
   <!-- Chain SLA history panel -->
   <div class="flog-panel" id="slahist_panel_{{c.id|e}}">
-    <div class="flog-toggle" id="slahist_toggle_{{c.id|e}}" data-chain-id="{{c.id|e}}" style="display:flex;align-items:center;gap:6px"
+    <div class="slahist-toggle" id="slahist_toggle_{{c.id|e}}" data-chain-id="{{c.id|e}}"
          onclick="toggleSlaHist('{{c.id|e}}')">
       <span id="slahist_arrow_{{c.id|e}}">&#9658;</span> 📊 SLA History
     </div>
@@ -26960,40 +26957,6 @@ document.getElementById('btn_new_chain').addEventListener('click',function(){sho
 document.getElementById('btn_new_abg').addEventListener('click',function(){abgOpenNew();});
 document.getElementById('abg-cancel-btn').addEventListener('click',function(){document.getElementById('abg-modal').style.display='none';});
 
-document.getElementById('btn_test_alert').addEventListener('click', function() {
-  var btn = this;
-  var banner = document.getElementById('test_alert_result');
-  btn.disabled = true;
-  btn.textContent = '⏳ Sending…';
-  banner.style.display = 'none';
-  _csrfFetch('/api/chains/test_alert', {method:'POST'})
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      btn.disabled = false;
-      btn.textContent = '🧪 Test Alert';
-      banner.style.display = 'block';
-      if (d.ok) {
-        banner.style.background = 'rgba(24,228,113,.12)';
-        banner.style.border = '1px solid rgba(24,228,113,.4)';
-        banner.style.color = '#18e471';
-        banner.textContent = '✔ Test alert sent via all configured channels. Check your email, webhook, and phone.';
-      } else {
-        banner.style.background = 'rgba(255,79,79,.12)';
-        banner.style.border = '1px solid rgba(255,79,79,.4)';
-        banner.style.color = '#ff4f4f';
-        banner.textContent = '✖ ' + (d.error || 'Unknown error');
-      }
-    })
-    .catch(function(e){
-      btn.disabled = false;
-      btn.textContent = '🧪 Test Alert';
-      banner.style.display = 'block';
-      banner.style.background = 'rgba(255,79,79,.12)';
-      banner.style.border = '1px solid rgba(255,79,79,.4)';
-      banner.style.color = '#ff4f4f';
-      banner.textContent = '✖ Request failed: ' + e;
-    });
-});
 document.getElementById('btn_cancel_builder').addEventListener('click',function(){document.getElementById('builder').style.display='none';});
 document.getElementById('btn_add_node').addEventListener('click',function(){addPosition(null);});
 
