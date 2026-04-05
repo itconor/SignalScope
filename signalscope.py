@@ -256,6 +256,10 @@ document.addEventListener('DOMContentLoaded',function(){
 <div class="ct">
 {% with m=get_flashed_messages() %}{% if m %}<ul class="fl">{% for x in m %}<li>{{x}}</li>{% endfor %}</ul>{% endif %}{% endwith %}
 <form method="post"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}">
+<div id="dirty-banner" style="display:none;align-items:center;gap:10px;background:#0f2318;color:var(--ok);border:1px solid #166534;border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:12px;font-weight:600;position:sticky;top:4px;z-index:100">
+  ⚠ You have unsaved changes
+  <button type="button" class="btn bp bs" onclick="document.getElementById('settings-save-btn').click()" style="margin-left:auto">Save now</button>
+</div>
 <div class="pn" id="p-notif">
   <div class="sec">📧 Email Alerts</div>
           <div class="cr"><input type="checkbox" name="email_enabled" value="1" {{'checked' if cfg.email.enabled}}><label style="margin:0;text-transform:none">Enable email alerts</label></div>
@@ -307,21 +311,21 @@ document.addEventListener('DOMContentLoaded',function(){
             <div id="wh-routes">
             {% for i, r in cfg.webhook.routes | enumerate %}
             <div class="wh-row" style="display:grid;grid-template-columns:0.8fr 1.5fr 0.6fr 0.8fr 0.8fr 0.8fr 0.6fr auto;gap:6px;align-items:center;margin-bottom:6px">
-              <input type="text" name="wr_name_{{i}}"    value="{{r.name}}"    placeholder="e.g. Breakfast"
+              <input type="text" name="wr_name_{{i}}"    value="{{r.name}}"    placeholder="e.g. Breakfast" aria-label="Route name"
                      style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
-              <input type="text" name="wr_url_{{i}}"     value="{{r.url}}"     placeholder="https://…"
+              <input type="text" name="wr_url_{{i}}"     value="{{r.url}}"     placeholder="https://…" aria-label="Webhook URL"
                      style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
-              <select name="wr_style_{{i}}" style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
+              <select name="wr_style_{{i}}" aria-label="Message style" style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
                 <option value="teams" {{'selected' if r.teams_style}}>Teams Card</option>
                 <option value="slack" {{'selected' if not r.teams_style}}>Plain text</option>
               </select>
-              <input type="text" name="wr_streams_{{i}}" value="{{r.filter_streams | join(', ')}}" placeholder="all streams (comma-separated names)"
+              <input type="text" name="wr_streams_{{i}}" value="{{r.filter_streams | join(', ')}}" placeholder="all streams (comma-separated names)" aria-label="Filter: streams"
                      style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
-              <input type="text" name="wr_types_{{i}}"   value="{{r.filter_types | join(', ')}}"   placeholder="all types (e.g. SILENCE,CHAIN_FAULT)"
+              <input type="text" name="wr_types_{{i}}"   value="{{r.filter_types | join(', ')}}"   placeholder="all types (e.g. SILENCE,CHAIN_FAULT)" aria-label="Filter: alert types"
                      style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
-              <input type="text" name="wr_sites_{{i}}"   value="{{r.filter_sites | join(', ')}}"   placeholder="all sites (comma-separated names)"
+              <input type="text" name="wr_sites_{{i}}"   value="{{r.filter_sites | join(', ')}}"   placeholder="all sites (comma-separated names)" aria-label="Filter: sites"
                      style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
-              <select name="wr_severity_{{i}}" style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
+              <select name="wr_severity_{{i}}" aria-label="Severity filter" style="padding:6px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px;width:100%">
                 <option value=""      {{'selected' if not r.filter_severity}}>Both</option>
                 <option value="ALERT" {{'selected' if r.filter_severity=='ALERT'}}>Alert</option>
                 <option value="WARN"  {{'selected' if r.filter_severity=='WARN'}}>Warn</option>
@@ -361,13 +365,13 @@ document.addEventListener('DOMContentLoaded',function(){
             row.style.cssText = 'display:grid;grid-template-columns:0.8fr 1.5fr 0.6fr 0.8fr 0.8fr 0.8fr 0.6fr auto;gap:6px;align-items:center;margin-bottom:6px';
             var inp = 'padding:6px 8px;background:#173a69;border:1px solid #252b38;border-radius:5px;color:#e2e8f0;font-size:12px;width:100%';
             row.innerHTML =
-              '<input type="text" name="wr_name_'+i+'" placeholder="e.g. Engineering" style="'+inp+'">'
-              +'<input type="text" name="wr_url_'+i+'" placeholder="https://…" style="'+inp+'">'
-              +'<select name="wr_style_'+i+'" style="'+inp+'"><option value="teams">Teams Card</option><option value="slack">Plain text</option></select>'
-              +'<input type="text" name="wr_streams_'+i+'" placeholder="all streams (comma-separated names)" style="'+inp+'">'
-              +'<input type="text" name="wr_types_'+i+'"   placeholder="all types (e.g. SILENCE,CHAIN_FAULT)" style="'+inp+'">'
-              +'<input type="text" name="wr_sites_'+i+'"   placeholder="all sites (comma-separated names)" style="'+inp+'">'
-              +'<select name="wr_severity_'+i+'" style="'+inp+'"><option value="">Both</option><option value="ALERT">Alert</option><option value="WARN">Warn</option></select>'
+              '<input type="text" name="wr_name_'+i+'" placeholder="e.g. Engineering" aria-label="Route name" style="'+inp+'">'
+              +'<input type="text" name="wr_url_'+i+'" placeholder="https://…" aria-label="Webhook URL" style="'+inp+'">'
+              +'<select name="wr_style_'+i+'" aria-label="Message style" style="'+inp+'"><option value="teams">Teams Card</option><option value="slack">Plain text</option></select>'
+              +'<input type="text" name="wr_streams_'+i+'" placeholder="all streams (comma-separated names)" aria-label="Filter: streams" style="'+inp+'">'
+              +'<input type="text" name="wr_types_'+i+'"   placeholder="all types (e.g. SILENCE,CHAIN_FAULT)" aria-label="Filter: alert types" style="'+inp+'">'
+              +'<input type="text" name="wr_sites_'+i+'"   placeholder="all sites (comma-separated names)" aria-label="Filter: sites" style="'+inp+'">'
+              +'<select name="wr_severity_'+i+'" aria-label="Severity filter" style="'+inp+'"><option value="">Both</option><option value="ALERT">Alert</option><option value="WARN">Warn</option></select>'
               +'<button type="button" onclick="this.closest(\'.wh-row\').remove()" style="padding:5px 9px;background:#7c2d12;color:#fca5a5;border:none;border-radius:5px;cursor:pointer;font-size:13px">\u2715</button>';
             document.getElementById('wh-routes').appendChild(row);
           }
@@ -404,15 +408,31 @@ document.addEventListener('DOMContentLoaded',function(){
           document.getElementById('settings-save-btn').addEventListener('click', function(){
             var btn = this;
             var form = btn.closest('form');
+            var secret = form.querySelector('#hub_secret');
+            if(secret && secret.value && secret.value.length < 16){
+              secret.focus();
+              secret.style.borderColor = 'var(--al)';
+              showToast('Hub secret must be at least 16 characters', 'err');
+              return;
+            }
+            if(secret) secret.style.borderColor = '';
             _btnLoad(btn);
             var fd = new FormData(form);
             _csrfFetch('/settings', {method:'POST', body: fd})
               .then(function(r){
                 _btnReset(btn);
-                if(r.ok){ showToast('Settings saved', 'ok'); }
+                if(r.ok){ showToast('Settings saved', 'ok'); document.getElementById('dirty-banner').style.display='none'; }
                 else { showToast('Save failed ('+r.status+')', 'err'); }
               }).catch(function(){ _btnReset(btn); showToast('Save failed — check connection', 'err'); });
           });
+          (function(){
+            var _db=document.getElementById('dirty-banner');
+            var _form=document.querySelector('form');
+            if(_form&&_db){
+              _form.addEventListener('input',function(){_db.style.display='flex';});
+              _form.addEventListener('change',function(){_db.style.display='flex';});
+            }
+          })();
           </script>
   <div class="act"><button class="btn bp" type="button" id="settings-save-btn">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
@@ -549,8 +569,9 @@ document.addEventListener('DOMContentLoaded',function(){
               🔑 Shared Secret Key<span class="tip" data-tip="HMAC-SHA256 key used to authenticate audio chunks and heartbeats between hub and clients. Must be identical on the hub server and every client node. Minimum 16 characters. Generate a random string — treat it like a password.">ⓘ</span>
               — must be identical on the hub server AND every client site
             </div>
-            <input type="password" name="hub_secret" value="{{cfg.hub.secret_key}}"
+            <input type="password" name="hub_secret" id="hub_secret" value="{{cfg.hub.secret_key}}"
                    placeholder="Enter a strong secret — minimum 16 characters"
+                   minlength="16"
                    style="width:100%;padding:8px 10px;background:#141820;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
             <p style="margin-top:8px;font-size:12px;color:
                  {{'var(--ok)' if cfg.hub.secret_key|length >= 16 else ('var(--wn)' if cfg.hub.secret_key else 'var(--al)')}}">
@@ -803,8 +824,9 @@ document.addEventListener('DOMContentLoaded',function(){
               🔑 Shared Secret Key<span class="tip" data-tip="HMAC-SHA256 key used to authenticate audio chunks and heartbeats between hub and clients. Must be identical on the hub server and every client node. Minimum 16 characters. Generate a random string — treat it like a password.">ⓘ</span>
               — must be identical on the hub server AND every client site
             </div>
-            <input type="password" name="hub_secret" value="{{cfg.hub.secret_key}}"
+            <input type="password" name="hub_secret" id="hub_secret" value="{{cfg.hub.secret_key}}"
                    placeholder="Enter a strong secret — minimum 16 characters"
+                   minlength="16"
                    style="width:100%;padding:8px 10px;background:#141820;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
             <p style="margin-top:8px;font-size:12px;color:
                  {{'var(--ok)' if cfg.hub.secret_key|length >= 16 else ('var(--wn)' if cfg.hub.secret_key else 'var(--al)')}}">
@@ -2327,7 +2349,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.51"
+BUILD                  = "SignalScope-3.5.52"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -26416,7 +26438,7 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
         <div class="adv-field">
           <label title="Alert when level trend falls below this slope. 0 = disabled.">Degrading threshold (dBFS/min)</label>
           <input type="number" id="builder_trend_alert" min="-10" max="0" step="0.1" value="0" style="width:90px">
-          <div class="field-hint">0 = off · &#x2212;1 = alert at &#x2212;1dB/min</div>
+          <div class="field-hint">0 = off · negative values only · e.g. &#x2212;1.0 = alert when level falls 1 dB/min</div>
         </div>
         <div class="adv-field">
           <label title="Suppress notifications if this upstream chain is faulted.">Upstream chain (cascade)</label>

@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.52] - 2026-04-05
+
+### Changed
+- **Settings — hub secret validation**: field gets `minlength="16"` so browsers enforce the minimum natively; the AJAX save handler also checks length client-side and focuses the field with a red border + error toast if too short (Sprint H2)
+- **Chain builder — degrading threshold hint**: clarified from "−1 = alert at −1dB/min" to "negative values only · e.g. −1.0 = alert when level falls 1 dB/min" (Sprint H3)
+- **Webhook routing rows** — all inputs and selects now carry `aria-label` attributes so screen readers and mobile browsers can identify each column; applies to both server-rendered rows and JS-built rows from `addRoute()` (Sprint H4)
+- **Settings — unsaved changes banner**: a sticky "⚠ You have unsaved changes / Save now" banner appears at the top of the content area whenever any form field is edited, and clears automatically after a successful save (Sprint H5)
+
+---
+
 ## [3.5.51] - 2026-04-05
 
 ### Changed
