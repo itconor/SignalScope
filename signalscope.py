@@ -2349,7 +2349,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.52"
+BUILD                  = "SignalScope-3.5.53"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -18614,6 +18614,29 @@ window.addEventListener('DOMContentLoaded', function(){
     document.getElementById('f_clips').checked = false;
     applyFilters();
   });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', function(e){
+    var tag=(document.activeElement||{}).tagName||'';
+    if(e.metaKey||e.ctrlKey||e.altKey) return;
+    // Escape — reset all filters
+    if(e.key==='Escape'&&(tag==='INPUT'||tag==='SELECT')){
+      document.activeElement.blur(); return;
+    }
+    if(e.key==='Escape'&&tag!=='INPUT'&&tag!=='TEXTAREA'&&tag!=='SELECT'){
+      document.getElementById('f_stream').value='';
+      document.getElementById('f_type').value='';
+      document.getElementById('f_from').value='';
+      document.getElementById('f_to').value='';
+      document.getElementById('f_clips').checked=false;
+      applyFilters(); return;
+    }
+    // / — focus stream filter
+    if(e.key==='/'&&tag!=='INPUT'&&tag!=='TEXTAREA'&&tag!=='SELECT'){
+      e.preventDefault();
+      document.getElementById('f_stream').focus();
+    }
+  });
 });
 </script>
 </body></html>"""
@@ -26999,6 +27022,7 @@ function showBuilder(chain){
     if(_advHdr) _advHdr.classList.remove('open');
   }
   b.style.display='';b.scrollIntoView({behavior:'smooth',block:'start'});
+  setTimeout(function(){var n=document.getElementById('builder_name');if(n)n.focus();},120);
 }
 document.getElementById('btn_new_chain').addEventListener('click',function(){showBuilder(null);});
 document.getElementById('btn_new_abg').addEventListener('click',function(){abgOpenNew();});
@@ -28225,6 +28249,7 @@ function abgEdit(gid){
     var rxKey = g.rx_node ? ((g.rx_node.site||'local')+'/'+g.rx_node.stream) : '';
     rxSel.value = rxKey;
     document.getElementById('abg-modal').style.display='flex';
+    setTimeout(function(){var n=document.getElementById('abg-name');if(n)n.focus();},80);
   });
 }
 
@@ -28239,6 +28264,7 @@ function abgOpenNew(){
   document.getElementById('abg-rx-label').value = '';
   document.getElementById('abg-notes').value = '';
   document.getElementById('abg-modal').style.display='flex';
+  setTimeout(function(){var n=document.getElementById('abg-name');if(n)n.focus();},80);
 }
 
 // Populate RX stream dropdown — response is {options:[...]}, not a bare array
@@ -28318,6 +28344,31 @@ function abgPoll(){
 }
 abgPoll();
 setInterval(abgPoll, 10000);
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', function(e){
+  var tag=(document.activeElement||{}).tagName||'';
+  if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+  if(e.metaKey||e.ctrlKey||e.altKey) return;
+
+  if(e.key==='Escape'){
+    // Dismiss in priority order: schwin overlay → abg modal → maint popover → builder
+    var sw=document.getElementById('schwin-overlay');
+    if(sw&&sw.style.display==='flex'){sw.style.display='none';return;}
+    var abg=document.getElementById('abg-modal');
+    if(abg&&abg.style.display==='flex'){abg.style.display='none';return;}
+    if(_maintPop&&_maintPop.style.display!=='none'){_maintPop.style.display='none';_maintCtx=null;return;}
+    var b=document.getElementById('builder');
+    if(b&&b.style.display!=='none'){b.style.display='none';return;}
+    return;
+  }
+
+  // N — open new chain builder
+  if(e.key==='n'||e.key==='N'){
+    e.preventDefault();
+    showBuilder(null);
+  }
+});
 </script>
 </body></html>"""
 

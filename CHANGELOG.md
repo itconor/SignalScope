@@ -2,6 +2,21 @@
 
 ---
 
+## [3.5.53] - 2026-04-05
+
+### Changed
+- **Chain builder** — auto-focuses the chain name field when the builder panel opens (Sprint G1)
+- **A/B Group modal** — auto-focuses the group name field on open for both new and edit flows (Sprint G2)
+- **Broadcast Chains keyboard shortcuts** (Sprint G1/G2/G3/G4):
+  - `N` — open new chain builder from anywhere on the page
+  - `Escape` — dismiss open panels in priority order: Scheduled Maintenance overlay → A/B Group modal → maintenance popover → chain builder
+- **Reports keyboard shortcuts** (Sprint G4):
+  - `Escape` — reset all active filters when no input is focused; blur active filter input when one is focused
+  - `/` — focus the stream filter dropdown from anywhere on the page
+- **Note**: Sprint G5 (focus rings) was completed in v3.5.50
+
+---
+
 ## [3.5.52] - 2026-04-05
 
 ### Changed
