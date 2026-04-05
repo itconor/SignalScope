@@ -2401,7 +2401,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.59"
+BUILD                  = "SignalScope-3.5.60"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -35433,7 +35433,8 @@ setInterval(_loadTrends, 300000);
     {% set ph  = s.ai_phase  or '' %}
     {% set dc  = 'dok' %}
     {% if '[ALERT]' in ai %}{% set dc='dal' %}{% elif '[WARN]' in ai %}{% set dc='dwn' %}{% elif ph=='learning' %}{% set dc='dlr' %}{% endif %}
-    <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}" data-idx="{{i}}" data-site="{{site.site|e}}" data-stream="{{s.name|e}}">
+    {% set _stags = (s.get('tags','') or '') %}
+    <div class="sc {{'stats-alert' if '[ALERT]' in ai else ('stats-warn' if '[WARN]' in ai else '')}}" data-idx="{{i}}" data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-tags="{{_stags|e}}">
 
       {# Header #}
       <div class="sc-name">

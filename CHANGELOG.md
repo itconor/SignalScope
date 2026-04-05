@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.60] - 2026-04-05
+
+### Fixed
+- **Hub overview — tag filter shows no results**: Stream cards in `HUB_TPL` were missing the `data-tags` attribute. The `applyTagFilter()` JS read `sc.dataset.tags` which was always empty, so every stream was hidden when a tag was clicked. Added `data-tags="{{_stags|e}}"` to the stream card `<div>` in the hub overview template, matching the equivalent attribute already present in `HUB_SITE_TPL`.
+
+---
+
 ## [3.5.59] - 2026-04-05
 
 ### Changed
