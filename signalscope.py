@@ -2297,7 +2297,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.42"
+BUILD                  = "SignalScope-3.5.43"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -31947,7 +31947,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% else %}
       <button class="btn sc-cmd-btn" data-site="{{site.site|e}}" data-cmd="start" style="background:#1e3a1e;color:#86efac;font-size:11px;padding:2px 10px">▶ Start</button>
       {% endif %}
-      {% if is_admin %}<button class="btn" data-action="hub-mgr-toggle" data-site="{{site.site|e}}" style="background:#1a3050;color:var(--acc);font-size:11px;padding:2px 10px">⚙ Sources</button>{% endif %}
+      {% if is_admin %}<button class="btn bp" data-action="hub-mgr-toggle" data-site="{{site.site|e}}" style="font-size:11px;padding:2px 10px">⚙ Sources</button>{% endif %}
       <button class="btn site-log-btn" data-site="{{site.site|e}}" style="background:#1a2a3a;color:#93c5fd;font-size:11px;padding:2px 10px">📋 Log</button>
       {% if site.running %}
       <button class="btn site-restart-btn" data-site="{{site.site|e}}" style="background:#2a1e3a;color:#c4b5fd;font-size:11px;padding:2px 10px">🔄 Restart</button>
@@ -32027,8 +32027,13 @@ main{padding:18px;max-width:1500px;margin:0 auto}
     <div class="offline-banner">⚠ No heartbeat received for {{site.age_s}}s — site may be down</div>
     {% else %}
     {% if not site.get('streams', []) %}
-    <div style="padding:28px 20px;text-align:center;color:var(--mu);font-size:13px">
-      No streams configured — use <strong style="color:var(--tx)">⚙ Sources</strong> to add one
+    <div style="padding:40px 20px;text-align:center">
+      <div style="font-size:36px;margin-bottom:12px;opacity:.4">📡</div>
+      <div style="font-size:14px;font-weight:600;color:var(--tx);margin-bottom:6px">No sources configured</div>
+      <div style="font-size:12px;color:var(--mu);margin-bottom:20px">Add an input source so this site has something to monitor.</div>
+      {% if is_admin %}
+      <button class="btn bp" data-action="hub-mgr-toggle" data-site="{{site.site|e}}" style="padding:8px 22px;font-size:13px">⚙ Add Sources</button>
+      {% endif %}
     </div>
     {% else %}
     <div class="streams">

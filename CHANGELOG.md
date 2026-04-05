@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.43] - 2026-04-05
+
+### Changed
+- **Replica page — Sources button more prominent** — the `⚙ Sources` button on the site replica header is now styled as a primary blue button (`btn bp`) so it stands out clearly from the row of small grey action buttons (Stop, Log, Restart, Backup, Ping, etc.).
+- **Replica page — empty state calls to action** — when a site has no streams configured, the replica page previously showed a grey text hint. It now shows a centred empty-state panel with a large `⚙ Add Sources` primary button that opens the Sources panel directly.
+
+---
+
 ## [3.5.42] - 2026-04-05
 
 ### Fixed
