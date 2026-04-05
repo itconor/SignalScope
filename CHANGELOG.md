@@ -2,6 +2,20 @@
 
 ---
 
+## [3.5.54] - 2026-04-05
+
+### Fixed
+- **Reports — double card border**: removed an orphaned `</div>` that caused the browser to wrap the tab bar, filters, and event table in a phantom element, producing a double card border on the Reports page (Sprint I2)
+- **Broadcast Chains — duplicate "Back to Live" button**: removed the toolbar copy of the button; the banner's "⬭ Back to Live" is now the single canonical control for exiting history mode (Sprint I4)
+
+### Changed
+- **Broadcast Chains — history datetime input**: `<span>📅 History:</span>` replaced with a proper `<label for="hist_dt">` so the label is programmatically associated with the input; `aria-label` also added directly to the input (Sprint I3)
+
+### Note
+- I1 (unsaved changes indicator) completed in v3.5.52; I5 (hub search no-results) was already implemented
+
+---
+
 ## [3.5.53] - 2026-04-05
 
 ### Changed

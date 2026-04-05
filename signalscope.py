@@ -2349,7 +2349,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.53"
+BUILD                  = "SignalScope-3.5.54"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -18201,7 +18201,6 @@ tr.data-row.expanded td{background:#0d1e40}
   </div>
 
   {# Filters #}
-  </div>
   <div class="card">
   <div class="tab-bar">
     <button class="tab-btn tab-active" data-tab="alerts">Alerts</button>
@@ -26397,14 +26396,13 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 </div>
 <!-- History time-travel bar -->
 <div class="hist-bar">
-  <span style="font-size:12px;font-weight:600;color:var(--mu)">📅 History:</span>
-  <input type="datetime-local" id="hist_dt" step="60" title="Select date and time to view">
+  <label for="hist_dt" style="font-size:12px;font-weight:600;color:var(--mu);white-space:nowrap">📅 View state at:</label>
+  <input type="datetime-local" id="hist_dt" step="60" title="Select date and time to view" aria-label="View chain state at time">
   <button class="btn bg bs" id="hist_m1h" title="Back 1 hour">−1h</button>
   <button class="btn bg bs" id="hist_m15" title="Back 15 minutes">−15m</button>
   <button class="btn bg bs" id="hist_p15" title="Forward 15 minutes">+15m</button>
   <button class="btn bg bs" id="hist_p1h" title="Forward 1 hour">+1h</button>
   <button class="btn bp bs" id="hist_go">▶ View</button>
-  <button class="btn bg bs" id="hist_live_btn" style="display:none">⬤ Back to Live</button>
   <span id="hist_note" style="font-size:11px;color:var(--mu)">Select a date &amp; time to inspect historical chain state (up to 90 days back)</span>
 </div>
 <div class="hist-banner" id="hist_banner">
@@ -27360,7 +27358,6 @@ function _enterHistMode(ts){
   var lbl=new Date(ts*1000).toLocaleString();
   document.getElementById('hist_time_label').textContent=lbl;
   document.getElementById('hist_banner').classList.add('active');
-  document.getElementById('hist_live_btn').style.display='';
   document.getElementById('hist_note').textContent='';
   if(_liveTimer){clearInterval(_liveTimer);_liveTimer=null;}
   // Stop any playing audio
@@ -27370,7 +27367,6 @@ function _enterHistMode(ts){
 function _exitHistMode(){
   _histTs=null;
   document.getElementById('hist_banner').classList.remove('active');
-  document.getElementById('hist_live_btn').style.display='none';
   document.getElementById('hist_note').textContent='Select a date & time to inspect historical chain state (up to 90 days back)';
   if(!_liveTimer){_liveTimer=setInterval(refreshStatus,5000);}
   refreshStatus();
@@ -27401,7 +27397,6 @@ document.getElementById('hist_p1h').addEventListener('click',function(){
   if(next>Date.now()/1000){_exitHistMode();return;}
   _histStep(3600);
 });
-document.getElementById('hist_live_btn').addEventListener('click',_exitHistMode);
 document.getElementById('hist_banner_live').addEventListener('click',_exitHistMode);
 
 // ── Live status refresh ───────────────────────────────────────────────────────
