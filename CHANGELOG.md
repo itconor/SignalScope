@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.63] - 2026-04-05
+
+### Changed
+- **Broadcast Chains — Chain builder redesigned**: Replaced the inline builder panel with a fixed right-side drawer (540 px) that slides in with a smooth transition and closes by clicking the backdrop or the × button. Body scroll locks while the drawer is open.
+- **Broadcast Chains — Position cards**: Each signal position is now a self-contained card with a numbered header and reorder controls, replacing the flat list of node rows. Cards show the position number ("Position 1", "Position 2", …) and a ↑/↓ pair to move them up or down.
+- **Broadcast Chains — Live chain preview**: A mini chain diagram at the top of the drawer updates in real time as positions are added, removed, or reordered. Each position shows its site, stream, and redundancy label (if set). Clicking a preview node scrolls to the corresponding position card.
+- **Broadcast Chains — Timing split into Quick and Advanced**: The three most-used timing fields (Min fault duration, Min recovery duration, Min alert interval) are always visible. Seven less-common fields (Fault hold-off, Mixin, Upstream chain, Fault shift grace, Ad-break gap tolerance, Trend alert, Clip duration) are collapsed into an "Advanced…" disclosure that auto-expands when the chain has non-default values.
+
+---
+
 ## [3.5.62] - 2026-04-05
 
 ### Fixed

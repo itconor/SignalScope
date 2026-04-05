@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.62"
+BUILD                  = "SignalScope-3.5.63"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -26425,6 +26425,52 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 #cmp-audio{flex:1;min-width:200px;height:32px;accent-color:#3b82f6}
 #cmp-close{background:none;border:1px solid var(--bor);border-radius:6px;color:var(--mu);font-size:13px;cursor:pointer;padding:5px 12px;line-height:1;flex-shrink:0;white-space:nowrap}
 #cmp-close:hover{border-color:var(--al);color:var(--al)}
+/* ── Drawer ── */
+.builder-drawer{position:fixed;top:0;right:0;bottom:0;width:540px;max-width:100vw;background:#070f24;border-left:1px solid var(--bor);z-index:950;display:flex;flex-direction:column;transform:translateX(100%);transition:transform .24s cubic-bezier(.4,0,.2,1);box-shadow:-12px 0 48px rgba(0,0,0,.6)}
+.builder-drawer.open{transform:translateX(0)}
+.builder-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:949;opacity:0;pointer-events:none;transition:opacity .24s}
+.builder-backdrop.open{opacity:1;pointer-events:auto}
+.drawer-hdr{padding:13px 16px;border-bottom:1px solid var(--bor);display:flex;align-items:center;gap:10px;flex-shrink:0;background:#06101e}
+.drawer-body{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+.drawer-footer{padding:11px 16px;border-top:1px solid var(--bor);display:flex;align-items:center;gap:8px;flex-shrink:0;background:#06101e}
+/* ── Preview ── */
+.preview-wrap{background:#060e1c;border:1px solid var(--bor);border-radius:10px;padding:12px 16px;min-height:68px;display:flex;align-items:center;flex-wrap:nowrap;overflow-x:auto;gap:0}
+.preview-empty{color:var(--mu);font-size:12px;font-style:italic;margin:auto;white-space:nowrap}
+.preview-node{border:1.5px solid var(--bor);border-radius:8px;padding:7px 10px;min-width:84px;max-width:120px;text-align:center;background:#0d1e3a;cursor:pointer;transition:border-color .18s,background .18s;flex-shrink:0}
+.preview-node:hover,.preview-node.pv-active{border-color:var(--acc);background:rgba(23,168,255,.1)}
+.pv-name{font-size:11px;font-weight:700;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pv-sub{font-size:9px;color:var(--mu);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pv-stack{border:1.5px dashed #374151;border-radius:8px;padding:4px 8px;min-width:84px;background:#0a1830;cursor:pointer;flex-shrink:0;transition:border-color .18s}
+.pv-stack:hover,.pv-stack.pv-active{border-color:var(--acc)}
+.pv-arr{color:var(--mu);font-size:16px;padding:0 5px;flex-shrink:0;align-self:center}
+/* ── Position card ── */
+.pos-card{background:#0a1e42;border:1px solid var(--bor);border-radius:10px;overflow:hidden}
+.pos-card-hdr{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#0d2550;border-bottom:1px solid var(--bor);font-size:12px;font-weight:600}
+.pos-num-lbl{color:var(--acc)}
+.pos-reorder{display:flex;gap:3px;margin-left:auto}
+.pos-re-btn{background:transparent;border:1px solid var(--bor);border-radius:4px;color:var(--mu);cursor:pointer;padding:1px 6px;font-size:11px;line-height:1.5;transition:border-color .15s,color .15s}
+.pos-re-btn:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+.pos-re-btn:disabled{opacity:.2;cursor:default}
+.pos-card-body{padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.pos-stream-wrap{display:grid;grid-template-columns:1fr 1.4fr;gap:8px;align-items:end}
+.pos-stream-wrap label{font-size:11px;color:var(--mu);margin-bottom:3px;display:block}
+.pos-stream-wrap select{width:100%;font-size:12px;padding:5px 7px}
+.pos-opts-btn{font-size:11px;padding:2px 9px;border-radius:5px;background:transparent;border:1px solid var(--bor);color:var(--mu);cursor:pointer;align-self:flex-end;transition:border-color .15s,color .15s;white-space:nowrap}
+.pos-opts-btn:hover{border-color:var(--acc);color:var(--acc)}
+.pos-optional{display:none;border-top:1px solid rgba(255,255,255,.05);padding-top:8px;margin-top:2px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.pos-optional.open{display:grid}
+.pos-optional label{font-size:11px;color:var(--mu);margin-bottom:3px;display:block}
+.pos-optional input{width:100%;font-size:12px;padding:5px 7px}
+.pos-stack-node{border:1px solid rgba(255,255,255,.07);border-radius:7px;padding:8px 10px;background:rgba(0,0,0,.25);position:relative}
+.pos-stack-node-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:11px;color:var(--mu)}
+.pos-stack-sep{text-align:center;font-size:13px;color:var(--mu);padding:2px 0;opacity:.5}
+.pos-card-footer{padding:7px 10px;background:#06101e;border-top:1px solid rgba(255,255,255,.04);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.stack-lbl-wrap{padding:6px 10px;border-bottom:1px solid var(--bor);background:#0a1830}
+.stack-lbl-wrap label{font-size:11px;color:var(--mu);margin-bottom:3px;display:block}
+/* ── Timing sections ── */
+.timing-quick{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;padding:12px}
+.timing-quick .adv-field label,.timing-adv .adv-field label{font-size:12px;color:var(--tx);font-weight:600}
+.timing-adv{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;padding:12px;border-top:1px solid rgba(255,255,255,.06)}
 </style></head><body>
 {{topnav('chains')|safe}}
 <main>
@@ -26517,113 +26563,134 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
   <button class="btn bg bs" id="hist_banner_live" style="margin-left:auto">⬤ Back to Live</button>
 </div>
 
-<!-- Builder panel -->
-<div id="builder" class="builder-panel" style="display:none">
-  <div class="builder-title" id="builder_title">New Chain</div>
-  <input type="hidden" id="builder_id">
+<!-- Builder backdrop -->
+<div id="builder-backdrop" class="builder-backdrop"></div>
 
-  <!-- Basic: name -->
-  <div class="blk">
-    <label>Chain Name</label>
-    <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%">
+<!-- Builder drawer -->
+<div id="builder" class="builder-drawer">
+  <div class="drawer-hdr">
+    <span id="builder_title" style="font-size:15px;font-weight:700;color:var(--tx)">New Chain</span>
+    <button type="button" id="btn_cancel_builder" class="btn bg bs" style="margin-left:auto;font-size:12px">✕ Close</button>
   </div>
+  <div class="drawer-body">
+    <input type="hidden" id="builder_id">
 
-  <!-- Advanced settings — collapsible (above nodes so always reachable) -->
-  <div class="blk-collapsible" id="blk_advanced">
-    <div class="blk-collapsible-hdr" data-target="adv_body">
-      <span>&#x2699; Timing &amp; Behaviour</span>
-      <span class="blk-caret">&#x25B6;</span>
+    <!-- Live preview -->
+    <div>
+      <div style="font-size:10px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Live Preview</div>
+      <div class="preview-wrap" id="builder-preview"><span class="preview-empty">Add positions to see chain</span></div>
     </div>
-    <div id="adv_body" style="display:none">
-      <div class="adv-grid">
+
+    <!-- Chain name -->
+    <div>
+      <label style="font-size:12px;font-weight:600;color:var(--mu);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;display:block">Chain Name</label>
+      <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%">
+    </div>
+
+    <!-- Quick timing — always visible -->
+    <div class="blk-collapsible" id="blk_quick_timing">
+      <div class="blk-collapsible-hdr open" data-target="quick_timing_body">
+        <span>⏱ Alert Timing</span>
+        <span class="blk-caret">▶</span>
+      </div>
+      <div id="quick_timing_body" class="timing-quick">
         <div class="adv-field">
-          <label title="How long the chain must stay in fault before an alert fires. Only applies to pre-mix-in (ad-break candidate) faults.">Fault confirmation (s)</label>
-          <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:90px">
-          <div class="field-hint">0 = immediate · 180 = 3 min</div>
+          <label title="How long silence must persist before an alert fires. Prevents false alarms from brief gaps.">Wait before alerting (s)</label>
+          <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:100%">
+          <div class="field-hint">0 = instant · 30 = 30 sec</div>
         </div>
         <div class="adv-field">
-          <label title="Universal hold-off before any CHAIN_FAULT fires — applies to ALL fault types including post-mix-in. Use this to prevent alerts from brief on-air silences (e.g. poorly-segued songs). 0 = off.">Fault hold-off (s)</label>
-          <input type="number" id="builder_fault_holdoff" min="0" max="300" step="5" value="0" style="width:90px">
-          <div class="field-hint">0 = off · applies to all faults</div>
-        </div>
-        <div class="adv-field">
-          <label title="Mark the node where ad audio is injected. Silent here = real fault.">Ad mix-in node</label>
-          <select id="builder_mixin_idx" style="width:100%">
-            <option value="">— None —</option>
-          </select>
-          <div class="field-hint">Silent here = bypass delay</div>
-        </div>
-        <div class="adv-field">
-          <label title="Chain must stay OK for this long before a recovery notification fires.">Recovery confirmation (s)</label>
-          <input type="number" id="builder_min_recovery" min="0" max="3600" step="30" value="0" style="width:90px">
+          <label title="Audio must be restored for this long before a recovery notification fires.">Confirm recovery (s)</label>
+          <input type="number" id="builder_min_recovery" min="0" max="3600" step="30" value="0" style="width:100%">
           <div class="field-hint">0 = immediate</div>
         </div>
         <div class="adv-field">
-          <label title="Minimum time between alert notifications. Clips always written.">Alert interval (min)</label>
-          <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:90px">
+          <label title="Minimum time between repeated alert notifications for the same chain.">Repeat alert after (min)</label>
+          <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:100%">
           <div class="field-hint">0 = no limit</div>
         </div>
-        <div class="adv-field">
-          <label title="Alert when level trend falls below this slope. 0 = disabled.">Degrading threshold (dBFS/min)</label>
-          <input type="number" id="builder_trend_alert" min="-10" max="0" step="0.1" value="0" style="width:90px">
-          <div class="field-hint">0 = off · negative values only · e.g. &#x2212;1.0 = alert when level falls 1 dB/min</div>
+      </div>
+    </div>
+
+    <!-- Signal path -->
+    <div>
+      <div class="blk-hdr">
+        <span>Signal Path <span style="font-size:10px;color:var(--mu);font-weight:400">— left = source, right = destination</span></span>
+        <span style="font-size:11px;color:var(--mu)">Each position can stack multiple streams</span>
+      </div>
+      <div id="builder_nodes" style="display:flex;flex-direction:column;gap:8px;margin:10px 0 8px"></div>
+      <button class="btn bg bs" id="btn_add_node" type="button">＋ Add Position</button>
+    </div>
+
+    <!-- Advanced settings — collapsible -->
+    <div class="blk-collapsible" id="blk_advanced">
+      <div class="blk-collapsible-hdr" data-target="adv_body">
+        <span>⚙ Advanced Settings</span>
+        <span class="blk-caret">▶</span>
+      </div>
+      <div id="adv_body" style="display:none">
+        <div class="adv-grid">
+          <div class="adv-field">
+            <label title="Universal hold-off before any CHAIN_FAULT fires — applies to ALL fault types. Use to prevent alerts from brief silences between songs.">Fault hold-off (s)</label>
+            <input type="number" id="builder_fault_holdoff" min="0" max="300" step="5" value="0" style="width:90px">
+            <div class="field-hint">0 = off · applies to all faults</div>
+          </div>
+          <div class="adv-field">
+            <label title="Mark the node where ad audio is injected. Silent here = real fault, not ad break.">Ad mix-in node</label>
+            <select id="builder_mixin_idx" style="width:100%"><option value="">— None —</option></select>
+            <div class="field-hint">Silent here = bypass delay</div>
+          </div>
+          <div class="adv-field">
+            <label title="Suppress notifications if this upstream chain is also faulted.">Upstream chain (cascade)</label>
+            <select id="builder_upstream_chain" style="width:100%"><option value="">— None —</option></select>
+            <div class="field-hint">Suppress if upstream faulted</div>
+          </div>
+          <div class="adv-field">
+            <label title="Extra grace if fault position shifts during the confirmation window.">Fault shift grace (s)</label>
+            <input type="number" id="builder_fault_shift_grace" min="0" max="300" step="10" value="0" style="width:90px">
+            <div class="field-hint">0 = keep clock</div>
+          </div>
+          <div class="adv-field">
+            <label title="Brief inter-ad silences shorter than this share one confirmation window. Prevents false faults from badly-segued ads.">Ad-break gap tolerance (s)</label>
+            <input type="number" id="builder_adbreak_gap_tol" min="0" max="30" step="1" value="5" style="width:90px">
+            <div class="field-hint">5 s default · 0 = off</div>
+          </div>
+          <div class="adv-field">
+            <label title="Alert when level trend falls below this slope. 0 = disabled.">Degrading trend (dBFS/min)</label>
+            <input type="number" id="builder_trend_alert" min="-10" max="0" step="0.1" value="0" style="width:90px">
+            <div class="field-hint">0 = off · e.g. −1.0 = 1 dB/min drop</div>
+          </div>
+          <div class="adv-field">
+            <label title="Duration of onset and recovery audio clips. 0 = use system default (10 s).">Clip duration (s)</label>
+            <input type="number" id="builder_clip_seconds" min="0" max="300" step="5" value="0" style="width:90px">
+            <div class="field-hint">0 = default (10 s) · max 300 s</div>
+          </div>
         </div>
-        <div class="adv-field">
-          <label title="Suppress notifications if this upstream chain is faulted.">Upstream chain (cascade)</label>
-          <select id="builder_upstream_chain" style="width:100%">
-            <option value="">— None —</option>
-          </select>
-          <div class="field-hint">Suppress if upstream faulted</div>
-        </div>
-        <div class="adv-field">
-          <label title="Extra grace if fault position shifts during the confirmation window.">Fault shift grace (s)</label>
-          <input type="number" id="builder_fault_shift_grace" min="0" max="300" step="10" value="0" style="width:90px">
-          <div class="field-hint">0 = keep clock</div>
-        </div>
-        <div class="adv-field">
-          <label title="During an ad break, brief inter-ad silences shorter than this value share one confirmation window rather than each getting a fresh countdown. Prevents false faults from badly-segued ads. 0 = disabled.">Ad-break gap tolerance (s)</label>
-          <input type="number" id="builder_adbreak_gap_tol" min="0" max="30" step="1" value="5" style="width:90px">
-          <div class="field-hint">5 s default; 0 = off</div>
-        </div>
-        <div class="adv-field">
-          <label title="Duration of onset and recovery audio clips saved for this chain. Longer clips give more context but use more storage. 0 = use system default (10 s).">Clip duration (s)</label>
-          <input type="number" id="builder_clip_seconds" min="0" max="300" step="5" value="0" style="width:90px">
-          <div class="field-hint">0 = default (10 s) · max 300 s</div>
+      </div>
+    </div>
+
+    <!-- Comparators — collapsible -->
+    <div class="blk-collapsible" id="blk_comparators" style="margin-top:0">
+      <div class="blk-collapsible-hdr" data-target="comp_body">
+        <span>↔ Signal Comparators</span>
+        <span style="font-size:11px;color:var(--mu);margin-left:8px">Needs ≥ 5 min shared history</span>
+        <span class="blk-caret" style="margin-left:auto">▶</span>
+      </div>
+      <div id="comp_body" style="display:none">
+        <div id="builder_comparators" style="padding:10px 12px 0"></div>
+        <div style="padding:8px 12px 12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn bg bs" type="button" id="btn_add_comp">＋ Add Comparator</button>
+          <button class="btn bg bs" type="button" id="btn_add_e2e">↔ Add End-to-End</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Nodes — below timing so timing is always visible -->
-  <div class="blk-hdr" style="margin-top:14px">
-    <span>Signal Path — left = source, right = destination</span>
-    <span style="font-size:11px;color:var(--mu)">Each position can hold multiple streams (stack)</span>
+  <div class="drawer-footer">
+    <button class="btn bp" id="btn_save_chain" type="button">💾 Save Chain</button>
+    <button class="btn bg" id="btn_cancel_builder_footer" type="button">Cancel</button>
+    <span id="builder_status" style="font-size:12px;color:var(--mu);margin-left:4px"></span>
   </div>
-  <div id="builder_nodes" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
-  <button class="btn bg bs" id="btn_add_node" style="margin-bottom:14px">&#xFF0B; Add Position</button>
-
-  <!-- Comparators — collapsible -->
-  <div class="blk-collapsible" id="blk_comparators" style="margin-top:8px">
-    <div class="blk-collapsible-hdr" data-target="comp_body">
-      <span>&#x2194; Signal Comparators</span>
-      <span style="font-size:11px;color:var(--mu);margin-left:8px">Needs &#x2265; 5 min shared history</span>
-      <span class="blk-caret" style="margin-left:auto">&#x25B6;</span>
-    </div>
-    <div id="comp_body" style="display:none">
-      <div id="builder_comparators" style="margin-bottom:8px"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn bg bs" type="button" id="btn_add_comp">&#xFF0B; Add Comparator</button>
-        <button class="btn bg bs" type="button" id="btn_add_e2e">&#x2194; Add End-to-End</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Actions -->
-  <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
-    <button class="btn bp" id="btn_save_chain">&#x1F4BE; Save Chain</button>
-    <button class="btn bg" id="btn_cancel_builder">Cancel</button>
-  </div>
-  <div id="builder_status" style="margin-top:8px;font-size:12px;color:var(--mu)"></div>
 </div>
 
 <!-- Chain data lookup — avoids JSON-in-HTML-attribute encoding issues -->
@@ -26797,10 +26864,10 @@ function streamsFor(site){return _opts.filter(o=>o.site===site).map(o=>o.stream)
 
 // ── Comparator helpers ────────────────────────────────────────────────────────
 function getNodeOptions(){
-  var grps=document.querySelectorAll('#builder_nodes .pos-group');
+  var grps=document.querySelectorAll('#builder_nodes .pos-card');
   var opts=[];
   grps.forEach(function(grp,i){
-    var rows=grp.querySelectorAll('.node-row');
+    var rows=grp.querySelectorAll('.pos-stack-node');
     if(rows.length>1){
       // Stack — use the configured stack label, fall back to "Stack N"
       var stackLblIn=grp.querySelector('.stack-label-in');
@@ -26866,82 +26933,88 @@ function addComparator(fromIdx,fromSub,toIdx,toSub){
 }
 document.getElementById('btn_add_comp').addEventListener('click',function(){addComparator();});
 document.getElementById('btn_add_e2e').addEventListener('click',function(){
-  var n=document.querySelectorAll('#builder_nodes .pos-group').length;
+  var n=document.querySelectorAll('#builder_nodes .pos-card').length;
   if(n<2){_ssToast('Add at least 2 positions first.','warn');return;}
   addComparator(0,null,n-1,null);
 });
 
 // ── Node builder ──────────────────────────────────────────────────────────────
 function _addNodeRowToGroup(group, nd){
-  var row=document.createElement('div');row.className='node-row';
-  var siteSel=document.createElement('select');siteSel.className='ns';
-  siteSel.style.cssText='min-width:120px;width:100%';
+  var body=group.querySelector('.pos-card-body');
+  if(!body)return;
+  var existingNodes=body.querySelectorAll('.pos-stack-node');
+  // If already has nodes, add a separator
+  if(existingNodes.length>0){
+    var sep=document.createElement('div');sep.className='pos-stack-sep chain-stack-sep-el';sep.textContent='│';
+    body.appendChild(sep);
+  }
+  // Create the node container
+  var nodeWrap=document.createElement('div');nodeWrap.className='pos-stack-node node-row';
+  // Node header (only shown when multiple nodes exist for remove button)
+  var nodeHdr=document.createElement('div');nodeHdr.className='pos-stack-node-hdr';
+  nodeHdr.style.display='none';
+  var nodeTitle=document.createElement('span');nodeTitle.style.cssText='font-size:11px;color:var(--mu)';nodeTitle.textContent='Redundant stream';
+  var rmNodeBtn=document.createElement('button');rmNodeBtn.type='button';rmNodeBtn.className='btn bd';
+  rmNodeBtn.style.cssText='font-size:10px;padding:1px 7px;margin-left:auto';rmNodeBtn.textContent='✕ Remove';
+  rmNodeBtn.onclick=function(){
+    var sep=nodeWrap.previousElementSibling;
+    if(sep&&sep.classList.contains('chain-stack-sep-el'))sep.remove();
+    else{var ns=nodeWrap.nextElementSibling;if(ns&&ns.classList.contains('chain-stack-sep-el'))ns.remove();}
+    nodeWrap.remove();
+    _updateGroupControls(group);_refreshCompSels();_refreshMixinSel();_updatePreview();
+  };
+  nodeHdr.appendChild(nodeTitle);nodeHdr.appendChild(rmNodeBtn);
+  nodeWrap.appendChild(nodeHdr);
+  // Site + stream selects
+  var streamWrap=document.createElement('div');streamWrap.className='pos-stream-wrap';
+  var siteDiv=document.createElement('div');
+  var siteLbl=document.createElement('label');siteLbl.textContent='Site';
+  var siteSel=document.createElement('select');siteSel.className='ns';siteSel.style.width='100%';
   var sites=sitesFromOpts();
   Object.keys(sites).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=sites[s];siteSel.appendChild(o);});
-  var streamSel=document.createElement('select');streamSel.className='nst';
-  streamSel.style.cssText='min-width:150px;width:100%';
+  siteDiv.appendChild(siteLbl);siteDiv.appendChild(siteSel);
+  var streamDiv=document.createElement('div');
+  var streamLbl=document.createElement('label');streamLbl.textContent='Stream';
+  var streamSel=document.createElement('select');streamSel.className='nst';streamSel.style.width='100%';
   function fillStreams(){
     streamSel.innerHTML='';
     streamsFor(siteSel.value).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;streamSel.appendChild(o);});
     if(nd&&nd.stream)streamSel.value=nd.stream;
   }
-  siteSel.addEventListener('change',function(){fillStreams();_refreshCompSels();_refreshMixinSel();});
-  streamSel.addEventListener('change',function(){_refreshCompSels();_refreshMixinSel();});
-  // Expand toggle
-  var expandBtn=document.createElement('button');expandBtn.type='button';
-  expandBtn.className='node-expand-btn';expandBtn.textContent='\u22EF Options';
-  expandBtn.title='Label, machine tag, thresholds, offline alert';
-  // Expanded detail panel
-  var detail=document.createElement('div');detail.className='node-row-expand';
-  function mkDetailField(lbl,el){
-    var w=document.createElement('div');
-    var l=document.createElement('label');l.textContent=lbl;
-    w.appendChild(l);w.appendChild(el);return w;
-  }
-  var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';
-  labelIn.placeholder='Label (optional)';labelIn.style.width='100%';
-  labelIn.addEventListener('input',function(){_refreshCompSels();_refreshMixinSel();});
-  var machineIn=document.createElement('input');machineIn.type='text';machineIn.className='nm';
-  machineIn.placeholder='Machine tag (optional)';machineIn.style.width='100%';
-  machineIn.title='Hardware tag for shared-fault detection';
-  var threshIn=document.createElement('input');threshIn.type='number';threshIn.className='nth';
-  threshIn.placeholder='e.g. \u221240';threshIn.style.width='100%';
-  threshIn.title='Override silence threshold (dBFS) for this node';
+  siteSel.addEventListener('change',function(){fillStreams();_refreshCompSels();_refreshMixinSel();_updatePreview();});
+  streamSel.addEventListener('change',function(){_refreshCompSels();_refreshMixinSel();_updatePreview();});
+  streamDiv.appendChild(streamLbl);streamDiv.appendChild(streamSel);
+  streamWrap.appendChild(siteDiv);streamWrap.appendChild(streamDiv);
+  nodeWrap.appendChild(streamWrap);
+  // Options expand
+  var optsRow=document.createElement('div');optsRow.style.cssText='display:flex;align-items:center;gap:8px;margin-top:4px';
+  var optsBtn=document.createElement('button');optsBtn.type='button';optsBtn.className='pos-opts-btn';optsBtn.textContent='⋯ Options';
+  var optPanel=document.createElement('div');optPanel.className='pos-optional node-row-expand';
+  function mkField(lbl,el){var w=document.createElement('div');var l=document.createElement('label');l.textContent=lbl;w.appendChild(l);w.appendChild(el);return w;}
+  var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';labelIn.placeholder='Label (optional)';labelIn.style.width='100%';
+  labelIn.addEventListener('input',function(){_refreshCompSels();_refreshMixinSel();_updatePreview();});
+  var machineIn=document.createElement('input');machineIn.type='text';machineIn.className='nm';machineIn.placeholder='Machine tag';machineIn.style.width='100%';
+  var threshIn=document.createElement('input');threshIn.type='number';threshIn.className='nth';threshIn.placeholder='e.g. −40';threshIn.style.width='100%';
   threshIn.step='0.5';threshIn.min='-120';threshIn.max='0';
-  var offThreshIn=document.createElement('input');offThreshIn.type='number';offThreshIn.className='noth';
-  offThreshIn.placeholder='e.g. \u221230';offThreshIn.style.width='100%';
-  offThreshIn.title='Hysteresis off-threshold (dBFS) \u2014 leave blank for on+10dB';
+  var offThreshIn=document.createElement('input');offThreshIn.type='number';offThreshIn.className='noth';offThreshIn.placeholder='e.g. −30';offThreshIn.style.width='100%';
   offThreshIn.step='0.5';offThreshIn.min='-120';offThreshIn.max='0';
-  var offlineNotifyChk=document.createElement('label');
-  offlineNotifyChk.style.cssText='display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-top:16px';
+  var offlineRow=document.createElement('div');offlineRow.style.cssText='display:flex;align-items:center;gap:6px;grid-column:1/-1;margin-top:4px';
   var offlineCb=document.createElement('input');offlineCb.type='checkbox';offlineCb.className='nonl';
-  offlineCb.title='Alert when this node goes offline (separate from chain fault)';
-  offlineNotifyChk.appendChild(offlineCb);
-  offlineNotifyChk.appendChild(document.createTextNode('Offline alert'));
-  detail.appendChild(mkDetailField('Label',labelIn));
-  detail.appendChild(mkDetailField('Machine tag',machineIn));
-  detail.appendChild(mkDetailField('Silence on (dBFS)',threshIn));
-  detail.appendChild(mkDetailField('Silence off (dBFS)',offThreshIn));
-  detail.appendChild(offlineNotifyChk);
-  expandBtn.addEventListener('click',function(){
-    var open=detail.classList.toggle('open');
-    expandBtn.textContent=open?'\u25B2 Less':'\u22EF Options';
+  var offlineLbl=document.createElement('label');offlineLbl.style.cssText='font-size:12px;color:var(--tx);margin:0;cursor:pointer';offlineLbl.textContent='Alert when this stream goes offline';
+  offlineRow.appendChild(offlineCb);offlineRow.appendChild(offlineLbl);
+  optPanel.appendChild(mkField('Label',labelIn));
+  optPanel.appendChild(mkField('Machine tag',machineIn));
+  optPanel.appendChild(mkField('Silence on (dBFS)',threshIn));
+  optPanel.appendChild(mkField('Silence off (dBFS)',offThreshIn));
+  optPanel.appendChild(offlineRow);
+  optsBtn.addEventListener('click',function(){
+    var open=optPanel.classList.toggle('open');
+    optsBtn.textContent=open?'▲ Less':'⋯ Options';
   });
-  // Remove button
-  var rmRow=document.createElement('button');rmRow.type='button';rmRow.textContent='\u2715';rmRow.className='btn bd bs';
-  rmRow.style.cssText='padding:3px 8px;font-size:13px';
-  rmRow.title='Remove this stream';
-  rmRow.onclick=function(){
-    // Remove both the row and its detail panel
-    if(row.parentNode)row.parentNode.removeChild(row);
-    if(detail.parentNode)detail.parentNode.removeChild(detail);
-    _updateGroupControls(group);
-    _refreshCompSels();_refreshMixinSel();
-    if(!group.querySelector('.node-row')){
-      var container=document.getElementById('builder_nodes');
-      if(container&&group.parentNode===container)container.removeChild(group);
-    }
-  };
+  optsRow.appendChild(optsBtn);
+  nodeWrap.appendChild(optsRow);
+  nodeWrap.appendChild(optPanel);
+  // Populate values if editing
   if(nd){
     if(nd.site&&siteSel.querySelector('option[value="'+nd.site+'"]'))siteSel.value=nd.site;
     fillStreams();
@@ -26951,84 +27024,160 @@ function _addNodeRowToGroup(group, nd){
     if(nd.silence_threshold_dbfs!==undefined&&nd.silence_threshold_dbfs!==null)threshIn.value=nd.silence_threshold_dbfs;
     if(nd.silence_off_threshold_dbfs!==undefined&&nd.silence_off_threshold_dbfs!==null)offThreshIn.value=nd.silence_off_threshold_dbfs;
     if(nd.offline_notify)offlineCb.checked=true;
-    // Auto-open detail if any optional field has a value
     if(nd.label||nd.machine||nd.silence_threshold_dbfs||nd.offline_notify){
-      detail.classList.add('open');expandBtn.textContent='\u25B2 Less';
+      optPanel.classList.add('open');optsBtn.textContent='▲ Less';
     }
   } else { fillStreams(); }
-  row.appendChild(siteSel);row.appendChild(streamSel);
-  row.appendChild(expandBtn);row.appendChild(rmRow);
-  var footer=group.querySelector('.pos-footer');
-  if(footer){
-    group.insertBefore(row,footer);
-    group.insertBefore(detail,footer);
-  }else{
-    group.appendChild(row);
-    group.appendChild(detail);
-  }
+  body.appendChild(nodeWrap);
   _updateGroupControls(group);
-  _refreshCompSels();
-  _refreshMixinSel();
+  _refreshCompSels();_refreshMixinSel();_updatePreview();
 }
 
 function _updateGroupControls(group){
-  var rows=group.querySelectorAll('.node-row');
-  var footer=group.querySelector('.pos-footer');
-  if(!footer)return;
-  var isStack=rows.length>1;
-  var modeSel=footer.querySelector('.stack-mode-sel');
-  if(modeSel){modeSel.style.display=isStack?'':'none';}
-  // Show stack label input only when this position has multiple nodes
+  var body=group.querySelector('.pos-card-body');
+  if(!body)return;
+  var nodeWraps=body.querySelectorAll('.pos-stack-node');
+  var isStack=nodeWraps.length>1;
+  // Show/hide stack label
   var stackLblWrap=group.querySelector('.stack-lbl-wrap');
-  if(stackLblWrap){stackLblWrap.style.display=isStack?'':'none';}
-  // Update remove-row button visibility: only show if >1 row
-  // Only hide the remove (bd) buttons — expand buttons always stay visible
-  group.querySelectorAll('.node-row .btn.bd').forEach(function(btn){
-    btn.style.display=isStack?'':'none';
+  if(stackLblWrap)stackLblWrap.style.display=isStack?'':'none';
+  // Show/hide mode select
+  var modeSel=group.querySelector('.stack-mode-sel');
+  if(modeSel)modeSel.style.display=isStack?'':'none';
+  // Show/hide node headers (remove button per node) only when stacked
+  nodeWraps.forEach(function(nw){
+    var h=nw.querySelector('.pos-stack-node-hdr');
+    if(h)h.style.display=isStack?'flex':'none';
   });
 }
 
 function _mkPosGroup(){
-  var grp=document.createElement('div');grp.className='pos-group';
-  // Position header (shows position number + stack label when stacked)
-  var posHdr=document.createElement('div');posHdr.className='pos-group-hdr pos-num-hdr';
-  posHdr.textContent='Position '+(document.getElementById('builder_nodes').children.length+1);
-  grp.appendChild(posHdr);
-  // Stack label — only visible when group has >1 node (i.e. it becomes a stack)
-  var stackLblWrap=document.createElement('div');stackLblWrap.className='stack-lbl-wrap';
-  stackLblWrap.style.cssText='display:none;padding:6px 10px;border-bottom:1px solid var(--bor);background:#0a1830';
-  var stackLblIn=document.createElement('input');stackLblIn.type='text';stackLblIn.className='stack-label-in';
-  stackLblIn.placeholder='Stack label (e.g. Primary Sources, STL feeds…)';
-  stackLblIn.title='A short name for this stack shown in the chain diagram, fault log and alerts';
-  stackLblIn.style.cssText='width:100%;box-sizing:border-box;font-size:12px';
-  stackLblWrap.appendChild(stackLblIn);
-  grp.appendChild(stackLblWrap);
-  // Footer controls
-  var footer=document.createElement('div');footer.className='pos-footer';
-  footer.style.cssText='display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap';
-  var addBtn=document.createElement('button');addBtn.type='button';addBtn.textContent='+ Stack';addBtn.className='btn bg bs';
-  addBtn.style.cssText='font-size:11px;padding:2px 8px';
-  addBtn.onclick=function(){_addNodeRowToGroup(grp,null);};
-  var modeSel=document.createElement('select');modeSel.className='stack-mode-sel';modeSel.style.cssText='font-size:11px;display:none;padding:2px 4px';
-  ['all','any'].forEach(function(m){var o=document.createElement('option');o.value=m;o.textContent=m==='all'?'Fault if ALL silent':'Fault if ANY silent';modeSel.appendChild(o);});
-  var removePos=document.createElement('button');removePos.type='button';removePos.textContent='✕ Remove position';removePos.className='btn bd bs';
-  removePos.style.cssText='font-size:11px;padding:2px 8px;margin-left:auto';
-  removePos.onclick=function(){
+  var card=document.createElement('div');card.className='pos-card';
+  // Header: position number + reorder + remove
+  var hdr=document.createElement('div');hdr.className='pos-card-hdr';
+  var numLbl=document.createElement('span');numLbl.className='pos-num-lbl';
+  numLbl.textContent='Position 1';
+  var reorderWrap=document.createElement('div');reorderWrap.className='pos-reorder';
+  var upBtn=document.createElement('button');upBtn.type='button';upBtn.className='pos-re-btn';upBtn.textContent='↑';upBtn.title='Move up';
+  upBtn.onclick=function(){_movePosition(card,'up');};
+  var dnBtn=document.createElement('button');dnBtn.type='button';dnBtn.className='pos-re-btn';dnBtn.textContent='↓';dnBtn.title='Move down';
+  dnBtn.onclick=function(){_movePosition(card,'down');};
+  reorderWrap.appendChild(upBtn);reorderWrap.appendChild(dnBtn);
+  var rmPos=document.createElement('button');rmPos.type='button';rmPos.className='btn bd bs';
+  rmPos.style.cssText='font-size:11px;padding:2px 8px;margin-left:6px';
+  rmPos.textContent='✕ Remove';
+  rmPos.onclick=function(){
     var container=document.getElementById('builder_nodes');
-    container.removeChild(grp);
-    _refreshCompSels();_refreshMixinSel();
+    container.removeChild(card);
+    _renumberPositions();_refreshCompSels();_refreshMixinSel();_updatePreview();
   };
-  footer.appendChild(addBtn);footer.appendChild(modeSel);footer.appendChild(removePos);
-  grp.appendChild(footer);
-  return grp;
+  hdr.appendChild(numLbl);hdr.appendChild(reorderWrap);hdr.appendChild(rmPos);
+  card.appendChild(hdr);
+  // Stack label — shown when card has >1 node
+  var stackLblWrap=document.createElement('div');stackLblWrap.className='stack-lbl-wrap';
+  stackLblWrap.style.display='none';
+  var stackLblLabel=document.createElement('label');stackLblLabel.textContent='Stack label (e.g. Primary Sources, STL feeds…)';
+  var stackLblIn=document.createElement('input');stackLblIn.type='text';stackLblIn.className='stack-label-in';
+  stackLblIn.placeholder='Label for this stack position';stackLblIn.style.cssText='width:100%;font-size:12px';
+  stackLblWrap.appendChild(stackLblLabel);stackLblWrap.appendChild(stackLblIn);
+  card.appendChild(stackLblWrap);
+  // Body — node rows go here
+  var body=document.createElement('div');body.className='pos-card-body';
+  card.appendChild(body);
+  // Footer
+  var footer=document.createElement('div');footer.className='pos-card-footer';
+  var addStackBtn=document.createElement('button');addStackBtn.type='button';
+  addStackBtn.textContent='+ Add redundant stream';addStackBtn.className='btn bg bs';
+  addStackBtn.style.cssText='font-size:11px;padding:2px 8px';
+  addStackBtn.onclick=function(){_addNodeRowToGroup(card,null);};
+  var modeSel=document.createElement('select');modeSel.className='stack-mode-sel';
+  modeSel.style.cssText='font-size:11px;display:none;padding:2px 4px';
+  ['all','any'].forEach(function(m){var o=document.createElement('option');o.value=m;o.textContent=m==='all'?'Fault if ALL silent':'Fault if ANY silent';modeSel.appendChild(o);});
+  footer.appendChild(addStackBtn);footer.appendChild(modeSel);
+  card.appendChild(footer);
+  return card;
+}
+
+function _renumberPositions(){
+  var cards=document.querySelectorAll('#builder_nodes .pos-card');
+  cards.forEach(function(card,i){
+    var lbl=card.querySelector('.pos-num-lbl');
+    if(lbl)lbl.textContent='Position '+(i+1);
+    var up=card.querySelector('.pos-re-btn:first-child');
+    var dn=card.querySelectorAll('.pos-re-btn')[1];
+    if(up)up.disabled=(i===0);
+    if(dn)dn.disabled=(i===cards.length-1);
+  });
+}
+
+function _movePosition(card,dir){
+  var container=document.getElementById('builder_nodes');
+  if(dir==='up'&&card.previousElementSibling){
+    container.insertBefore(card,card.previousElementSibling);
+  } else if(dir==='down'&&card.nextElementSibling){
+    container.insertBefore(card.nextElementSibling,card);
+  }
+  _renumberPositions();_refreshCompSels();_refreshMixinSel();_updatePreview();
+}
+
+function _updatePreview(){
+  var wrap=document.getElementById('builder-preview');
+  if(!wrap)return;
+  var cards=document.querySelectorAll('#builder_nodes .pos-card');
+  if(!cards.length){
+    wrap.innerHTML='<span class="preview-empty">Add positions to see chain</span>';
+    return;
+  }
+  wrap.innerHTML='';
+  cards.forEach(function(card,i){
+    if(i>0){var arr=document.createElement('div');arr.className='pv-arr';arr.textContent='→';wrap.appendChild(arr);}
+    var body=card.querySelector('.pos-card-body');
+    var nodeWraps=body?body.querySelectorAll('.pos-stack-node'):[];
+    if(nodeWraps.length>1){
+      // Stack node
+      var stackEl=document.createElement('div');stackEl.className='pv-stack';
+      var slIn=card.querySelector('.stack-label-in');
+      var slLbl=slIn&&slIn.value.trim()?slIn.value.trim():'Stack';
+      var slTxt=document.createElement('div');slTxt.style.cssText='font-size:10px;font-weight:700;color:var(--acc);text-align:center;margin-bottom:3px';slTxt.textContent=slLbl;
+      stackEl.appendChild(slTxt);
+      nodeWraps.forEach(function(nw,j){
+        if(j>0){var s=document.createElement('div');s.style.cssText='text-align:center;font-size:11px;color:var(--mu);opacity:.4';s.textContent='│';stackEl.appendChild(s);}
+        var lbl=nw.querySelector('.nl');var st=nw.querySelector('.nst');
+        var name=(lbl&&lbl.value.trim())||(st&&st.value)||'Stream';
+        var n=document.createElement('div');n.className='pv-name';n.textContent=name;stackEl.appendChild(n);
+      });
+      stackEl.dataset.posIdx=String(i);
+      stackEl.addEventListener('click',function(){_pvScrollTo(i);});
+      wrap.appendChild(stackEl);
+    } else {
+      var nw=nodeWraps[0]||card;
+      var lbl=nw.querySelector('.nl');var st=nw.querySelector('.nst');var ss=nw.querySelector('.ns');
+      var name=(lbl&&lbl.value.trim())||(st&&st.value)||'Stream';
+      var site=(ss&&ss.options[ss.selectedIndex]&&ss.options[ss.selectedIndex].textContent)||'';
+      var pn=document.createElement('div');pn.className='preview-node';
+      pn.innerHTML='<div class="pv-name">'+name+'</div>'+(site?'<div class="pv-sub">'+site+'</div>':'');
+      pn.dataset.posIdx=String(i);
+      pn.addEventListener('click',function(){_pvScrollTo(i);});
+      wrap.appendChild(pn);
+    }
+  });
+}
+
+function _pvScrollTo(posIdx){
+  var cards=document.querySelectorAll('#builder_nodes .pos-card');
+  if(posIdx<cards.length){
+    cards[posIdx].scrollIntoView({behavior:'smooth',block:'nearest'});
+    // Brief highlight
+    document.querySelectorAll('.preview-node.pv-active,.pv-stack.pv-active').forEach(function(el){el.classList.remove('pv-active');});
+    var pvNodes=document.querySelectorAll('#builder-preview [data-pos-idx="'+posIdx+'"]');
+    pvNodes.forEach(function(el){el.classList.add('pv-active');setTimeout(function(){el.classList.remove('pv-active');},1200);});
+  }
 }
 
 function addPosition(nd){
-  // nd can be a single node dict, a stack dict, or null
   var container=document.getElementById('builder_nodes');
   var grp=_mkPosGroup();
   if(nd&&nd.type==='stack'){
-    // Restore stack label
     var stackLblIn=grp.querySelector('.stack-label-in');
     if(stackLblIn&&nd.label&&nd.label!=='Stack')stackLblIn.value=nd.label;
     var ms=grp.querySelector('.stack-mode-sel');if(ms)ms.value=nd.mode||'all';
@@ -27038,11 +27187,12 @@ function addPosition(nd){
   }
   container.appendChild(grp);
   _updateGroupControls(grp);
+  _renumberPositions();
+  _updatePreview();
 }
 
 // ── Builder show/hide ─────────────────────────────────────────────────────────
 function showBuilder(chain){
-  var b=document.getElementById('builder');
   document.getElementById('builder_status').textContent='';
   document.getElementById('builder_nodes').innerHTML='';
   document.getElementById('builder_comparators').innerHTML='';
@@ -27058,28 +27208,22 @@ function showBuilder(chain){
     document.getElementById('builder_min_alert_interval').value=chain.min_alert_interval_minutes||0;
     document.getElementById('builder_trend_alert').value=chain.trend_alert_dbfs_per_min||0;
     document.getElementById('builder_clip_seconds').value=chain.clip_seconds||0;
-    // Populate upstream chain dropdown
     var ucs=document.getElementById('builder_upstream_chain');
     if(ucs){
       ucs.innerHTML='<option value="">— None —</option>';
       (Object.values(_chainData)||[]).forEach(function(oc){
-        if(oc.id&&oc.id!==chain.id){
-          var opt=document.createElement('option');
-          opt.value=oc.id;opt.textContent=oc.name||oc.id;
-          if(chain.upstream_chain_id===oc.id)opt.selected=true;
-          ucs.appendChild(opt);
-        }
+        if(oc.id&&oc.id!==chain.id){var opt=document.createElement('option');opt.value=oc.id;opt.textContent=oc.name||oc.id;if(chain.upstream_chain_id===oc.id)opt.selected=true;ucs.appendChild(opt);}
       });
     }
     loadOpts(function(){
       (chain.nodes||[]).forEach(addPosition);
       (chain.comparators||[]).forEach(function(c){addComparator(c.from_idx,c.from_sub!=null?c.from_sub:null,c.to_idx,c.to_sub!=null?c.to_sub:null);});
-      // Restore mix-in point after nodes are rendered (options are now populated)
       var mi=chain.mixin_node_idx;
       if(mi!==null&&mi!==undefined&&mi!==''){
         var ms=document.getElementById('builder_mixin_idx');
         if(ms&&ms.querySelector('option[value="'+mi+'"]'))ms.value=String(mi);
       }
+      _updatePreview();
     });
   } else {
     document.getElementById('builder_title').textContent='New Chain';
@@ -27096,44 +27240,41 @@ function showBuilder(chain){
     var ucs2=document.getElementById('builder_upstream_chain');
     if(ucs2){
       ucs2.innerHTML='<option value="">— None —</option>';
-      (Object.values(_chainData)||[]).forEach(function(oc){
-        if(oc.id){
-          var opt=document.createElement('option');opt.value=oc.id;opt.textContent=oc.name||oc.id;
-          ucs2.appendChild(opt);
-        }
-      });
+      (Object.values(_chainData)||[]).forEach(function(oc){if(oc.id){var opt=document.createElement('option');opt.value=oc.id;opt.textContent=oc.name||oc.id;ucs2.appendChild(opt);}});
     }
-    loadOpts(function(){addPosition(null);});
+    loadOpts(function(){addPosition(null);_updatePreview();});
   }
-  // Auto-expand Timing & Behaviour if any timing value is non-zero
-  var _hasTimingVals = (
-    parseInt(document.getElementById('builder_min_fault').value||'0') > 0 ||
-    parseInt(document.getElementById('builder_fault_holdoff').value||'0') > 0 ||
-    parseInt(document.getElementById('builder_min_recovery').value||'0') > 0 ||
-    parseInt(document.getElementById('builder_min_alert_interval').value||'0') > 0 ||
-    parseFloat(document.getElementById('builder_trend_alert').value||'0') !== 0 ||
-    parseInt(document.getElementById('builder_fault_shift_grace').value||'0') > 0 ||
-    parseFloat(document.getElementById('builder_clip_seconds').value||'0') > 0 ||
-    (document.getElementById('builder_mixin_idx').value || '') !== '' ||
-    (document.getElementById('builder_upstream_chain').value || '') !== ''
+  // Auto-expand Advanced if any non-default values
+  var _hasAdv=(
+    parseInt(document.getElementById('builder_fault_holdoff').value||'0')>0||
+    parseInt(document.getElementById('builder_fault_shift_grace').value||'0')>0||
+    parseFloat(document.getElementById('builder_trend_alert').value||'0')!==0||
+    parseFloat(document.getElementById('builder_clip_seconds').value||'0')>0||
+    (document.getElementById('builder_mixin_idx').value||'')!==''||
+    (document.getElementById('builder_upstream_chain').value||'')!==''
   );
-  var _advBody = document.getElementById('adv_body');
-  var _advHdr  = document.querySelector('#blk_advanced .blk-collapsible-hdr');
-  if(_hasTimingVals && _advBody){
-    _advBody.style.display = '';
-    if(_advHdr) _advHdr.classList.add('open');
-  } else if(_advBody){
-    _advBody.style.display = 'none';
-    if(_advHdr) _advHdr.classList.remove('open');
-  }
-  b.style.display='';b.scrollIntoView({behavior:'smooth',block:'start'});
-  setTimeout(function(){var n=document.getElementById('builder_name');if(n)n.focus();},120);
+  var _advBody=document.getElementById('adv_body');
+  var _advHdr=document.querySelector('#blk_advanced .blk-collapsible-hdr');
+  if(_hasAdv&&_advBody){_advBody.style.display='';if(_advHdr)_advHdr.classList.add('open');}
+  else if(_advBody){_advBody.style.display='none';if(_advHdr)_advHdr.classList.remove('open');}
+  // Open drawer
+  document.getElementById('builder').classList.add('open');
+  document.getElementById('builder-backdrop').classList.add('open');
+  document.body.style.overflow='hidden';
+  setTimeout(function(){var n=document.getElementById('builder_name');if(n)n.focus();},80);
 }
 document.getElementById('btn_new_chain').addEventListener('click',function(){showBuilder(null);});
 document.getElementById('btn_new_abg').addEventListener('click',function(){abgOpenNew();});
 document.getElementById('abg-cancel-btn').addEventListener('click',function(){document.getElementById('abg-modal').style.display='none';});
 
-document.getElementById('btn_cancel_builder').addEventListener('click',function(){document.getElementById('builder').style.display='none';});
+function _closeBuilder(){
+  document.getElementById('builder').classList.remove('open');
+  document.getElementById('builder-backdrop').classList.remove('open');
+  document.body.style.overflow='';
+}
+document.getElementById('btn_cancel_builder').addEventListener('click',_closeBuilder);
+document.getElementById('btn_cancel_builder_footer').addEventListener('click',_closeBuilder);
+document.getElementById('builder-backdrop').addEventListener('click',_closeBuilder);
 document.getElementById('btn_add_node').addEventListener('click',function(){addPosition(null);});
 
 // ── Save chain ────────────────────────────────────────────────────────────────
@@ -27143,8 +27284,8 @@ function saveChain(){
   var st=document.getElementById('builder_status');
   if(!name){st.style.color='var(--al)';st.textContent='Chain name required.';return;}
   var nodes=[];
-  document.querySelectorAll('#builder_nodes .pos-group').forEach(function(grp){
-    var rows=grp.querySelectorAll('.node-row');
+  document.querySelectorAll('#builder_nodes .pos-card').forEach(function(grp){
+    var rows=grp.querySelectorAll('.pos-stack-node');
     var modeSel=grp.querySelector('.stack-mode-sel');
     var mode=modeSel?modeSel.value:'all';
     var subNodes=[];
