@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.78"
+BUILD                  = "SignalScope-3.5.79"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -10071,11 +10071,16 @@ class MonitorManager:
         rtl_cmd = [
             "rtl_fm",
             "-f", str(freq_hz),
-            "-M", "wbfm",   # wideband FM — full MPX composite output (pilot + L-R sideband)
+            "-M", "fm",     # FM discriminator output at 171 kHz — full MPX composite
+            # NOTE: do NOT use -M wbfm here. wbfm forces a hardcoded 32 kHz output
+            # rate regardless of -s, which breaks all downstream resampling.
+            # -M fm at -s 171000 outputs the raw FM discriminator at 171 kHz,
+            # preserving the pilot (19 kHz) and L-R sidebands (23-53 kHz).
             "-l", "0",
-            # No -A flag: de-emphasis is applied in Python (_apply_deemph).
-            # -A std on a 171 kHz MPX signal would roll off the 19 kHz pilot and
-            # the 23–53 kHz L-R DSB-SC sidebands, destroying stereo separation.
+            # No -A flag: de-emphasis is applied in Python (_apply_deemph after
+            # stereo decode and resample to 48 kHz). Applying -A std here would
+            # attenuate the 19 kHz pilot by ~16 dB (50µs @ 19 kHz), corrupting
+            # the subcarrier reconstruction.
             "-s", "171000",
             "-F", "9",
             "-d", str(device_idx),
@@ -10256,9 +10261,14 @@ class MonitorManager:
                 _sos_pilot  = _sbut(4, [17000 / _nyq, 21000 / _nyq], btype="bandpass", output="sos")  # pilot 17–21 kHz
                 _sos_lmr    = _sbut(4, 15000 / _nyq, btype="low",      output="sos")  # L-R  0–15 kHz
                 _stereo_zi  = {
-                    "sos_lpr":   _sos_lpr,   "zi_lpr":   _sfzi(_sos_lpr)   * 0.0,
-                    "sos_pilot": _sos_pilot,  "zi_pilot": _sfzi(_sos_pilot) * 0.0,
-                    "sos_lmr":   _sos_lmr,   "zi_lmr":   _sfzi(_sos_lmr)   * 0.0,
+                    "sos_lpr":      _sos_lpr,   "zi_lpr":   _sfzi(_sos_lpr)   * 0.0,
+                    "sos_pilot":    _sos_pilot,  "zi_pilot": _sfzi(_sos_pilot) * 0.0,
+                    "sos_lmr":      _sos_lmr,   "zi_lmr":   _sfzi(_sos_lmr)   * 0.0,
+                    # Slow EMA of pilot amplitude (√2 × RMS of filtered pilot).
+                    # More robust than np.max under noise — avoids shrinking pilot_n
+                    # below 1.0 on noise spikes, which would add a DC offset to sub38
+                    # and contaminate lmr with L+R content causing L/R imbalance.
+                    "pilot_amp_ema": 0.0,
                 }
                 self.log(f"[{name}] FM stereo MPX decoder ready")
             except Exception as _ste:
@@ -10313,7 +10323,23 @@ class MonitorManager:
             st = _stereo_zi
             lpr,   st["zi_lpr"]   = _sosf(st["sos_lpr"],   samp, zi=st["zi_lpr"])
             pilot, st["zi_pilot"] = _sosf(st["sos_pilot"],  samp, zi=st["zi_pilot"])
-            pilot_peak = float(np.max(np.abs(pilot)))
+
+            # Slow EMA of pilot amplitude (√2 × RMS).
+            # √2×RMS = peak for a pure sine, so normalization target is correct.
+            # EMA with α=0.05 converges over ~20 blocks (≈2 s at 0.1 s/block),
+            # ignoring noise spikes that would make np.max() over-estimate the
+            # amplitude and shrink pilot_n — which would add a DC offset of
+            # (A²−1) to sub38, causing lmr to carry L+R bleed → L/R imbalance.
+            _pilot_rms = float(np.sqrt(np.mean(np.square(pilot))))
+            _pilot_amp = _pilot_rms * 1.4142  # √2 × RMS = peak for sine
+            _ema_prev  = st["pilot_amp_ema"]
+            _EMA_ALPHA = 0.05
+            st["pilot_amp_ema"] = (
+                _pilot_amp if _ema_prev < 1e-6
+                else _EMA_ALPHA * _pilot_amp + (1.0 - _EMA_ALPHA) * _ema_prev
+            )
+            pilot_peak = st["pilot_amp_ema"]
+
             if pilot_peak > 0.02:   # ≥0.02 — require a reasonably clean pilot
                 # cos(2θ) = 2·cos²(θ) − 1 — doubles pilot freq to 38 kHz subcarrier
                 pilot_n = pilot / (pilot_peak + 1e-9)
