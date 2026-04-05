@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.72"
+BUILD                  = "SignalScope-3.5.73"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2701,12 +2701,14 @@ class InputConfig:
 
     silence_threshold_dbfs: float = -55.0
     silence_min_duration:   float = 3.0
+    silence_recover_db:     float = 4.0   # hysteresis: clear silence only when lev rises this many dB above threshold
     hiss_hf_band_hz:        float = 6000.0
     hiss_rise_db:           float = 20.0
     hiss_min_duration:      float = 10.0
     clip_threshold_dbfs:    float = -1.0
     clip_window_seconds:    float = 2.0
     clip_count_threshold:   int   = 3
+    clip_debounce_seconds:  float = 30.0  # after CLIP alert fires, ignore clips for this duration
     alert_wav_duration:     float = 10.0
     cascade_parent:          Optional[str] = None
     cascade_suppress_alerts: bool          = False
@@ -2748,6 +2750,21 @@ class InputConfig:
     glitch_min_drop_rate_dbfs_s:  float = 40.0  # minimum dBFS/s fall rate (was 22/12 — too low, caught slow dips)
     glitch_floor_db:              float = 8.0    # dip must reach within 8 dB of silence threshold (was 15/0 — 0 = any depth)
     glitch_pre_trend_db:          float = 4.0    # reject if level already fell this many dB in 2-5 s before onset (was 0=disabled)
+
+    # Mains hum detection (50 / 60 Hz harmonics)
+    alert_on_hum:         bool  = True
+    hum_rise_db:          float = 25.0   # hum peak must be this many dB above local noise floor
+    hum_min_duration:     float = 5.0    # must persist this long before alert
+
+    # DC offset detection
+    alert_on_dc_offset:   bool  = True
+    dc_offset_threshold:  float = 5.0    # threshold in % of full scale (5 % ≈ −26 dBFS absolute)
+    dc_min_duration:      float = 5.0    # must persist this long before alert
+
+    # Phase reversal detection (stereo streams only)
+    alert_on_phase_reversal:     bool  = True
+    phase_reversal_mono_drop_db: float = 12.0  # mono mix must be this many dB quieter than min(L,R)
+    phase_reversal_min_duration: float = 10.0  # must persist this long before alert
 
     # FM output options
     fm_force_mono:        bool = False  # always output mono regardless of pilot SNR
@@ -3196,12 +3213,14 @@ def load_config() -> AppConfig:
             ai_monitor=item.get("ai_monitor", True),
             silence_threshold_dbfs=item.get("silence_threshold_dbfs", -55.0),
             silence_min_duration=item.get("silence_min_duration", 3.0),
+            silence_recover_db=float(item.get("silence_recover_db", 4.0)),
             hiss_hf_band_hz=item.get("hiss_hf_band_hz", 6000.0),
             hiss_rise_db=item.get("hiss_rise_db", 20.0),
             hiss_min_duration=item.get("hiss_min_duration", 10.0),
             clip_threshold_dbfs=item.get("clip_threshold_dbfs", -1.0),
             clip_window_seconds=item.get("clip_window_seconds", 2.0),
             clip_count_threshold=item.get("clip_count_threshold", 3),
+            clip_debounce_seconds=float(item.get("clip_debounce_seconds", 30.0)),
             alert_wav_duration=item.get("alert_wav_duration", 10.0),
             cascade_parent=item.get("cascade_parent"),
             cascade_suppress_alerts=item.get("cascade_suppress_alerts", False),
@@ -3231,6 +3250,15 @@ def load_config() -> AppConfig:
             glitch_min_drop_rate_dbfs_s=float(item.get("glitch_min_drop_rate_dbfs_s", 40.0)),
             glitch_floor_db=float(item.get("glitch_floor_db", 8.0)),
             glitch_pre_trend_db=float(item.get("glitch_pre_trend_db", 4.0)),
+            alert_on_hum=bool(item.get("alert_on_hum", True)),
+            hum_rise_db=float(item.get("hum_rise_db", 25.0)),
+            hum_min_duration=float(item.get("hum_min_duration", 5.0)),
+            alert_on_dc_offset=bool(item.get("alert_on_dc_offset", True)),
+            dc_offset_threshold=float(item.get("dc_offset_threshold", 5.0)),
+            dc_min_duration=float(item.get("dc_min_duration", 5.0)),
+            alert_on_phase_reversal=bool(item.get("alert_on_phase_reversal", True)),
+            phase_reversal_mono_drop_db=float(item.get("phase_reversal_mono_drop_db", 12.0)),
+            phase_reversal_min_duration=float(item.get("phase_reversal_min_duration", 10.0)),
             stereo=bool(item.get("stereo", False)),
             fm_force_mono=bool(item.get("fm_force_mono", False)),
             fm_deemphasis=str(item.get("fm_deemphasis", "50us") or "50us"),
@@ -3371,11 +3399,13 @@ def save_config(cfg: AppConfig):
             "alert_on_clip": i.alert_on_clip, "ai_monitor": i.ai_monitor,
             "silence_threshold_dbfs": i.silence_threshold_dbfs,
             "silence_min_duration": i.silence_min_duration,
+            "silence_recover_db": i.silence_recover_db,
             "hiss_hf_band_hz": i.hiss_hf_band_hz, "hiss_rise_db": i.hiss_rise_db,
             "hiss_min_duration": i.hiss_min_duration,
             "clip_threshold_dbfs": i.clip_threshold_dbfs,
             "clip_window_seconds": i.clip_window_seconds,
             "clip_count_threshold": i.clip_count_threshold,
+            "clip_debounce_seconds": i.clip_debounce_seconds,
             "alert_wav_duration": i.alert_wav_duration,
             "cascade_parent": i.cascade_parent,
             "cascade_suppress_alerts": i.cascade_suppress_alerts,
@@ -3405,6 +3435,15 @@ def save_config(cfg: AppConfig):
             "glitch_min_drop_rate_dbfs_s": i.glitch_min_drop_rate_dbfs_s,
             "glitch_floor_db": i.glitch_floor_db,
             "glitch_pre_trend_db": i.glitch_pre_trend_db,
+            "alert_on_hum": i.alert_on_hum,
+            "hum_rise_db": i.hum_rise_db,
+            "hum_min_duration": i.hum_min_duration,
+            "alert_on_dc_offset": i.alert_on_dc_offset,
+            "dc_offset_threshold": i.dc_offset_threshold,
+            "dc_min_duration": i.dc_min_duration,
+            "alert_on_phase_reversal": i.alert_on_phase_reversal,
+            "phase_reversal_mono_drop_db": i.phase_reversal_mono_drop_db,
+            "phase_reversal_min_duration": i.phase_reversal_min_duration,
             "stereo": i.stereo,
             "fm_force_mono": i.fm_force_mono,
             "fm_deemphasis": i.fm_deemphasis,
@@ -6758,7 +6797,13 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
 
     # Silence / composite fault classification
     if cfg.alert_on_silence:
-        cfg._silence_secs = cfg._silence_secs+elapsed if lev<=cfg.silence_threshold_dbfs else 0.0
+        _sil_thr     = cfg.silence_threshold_dbfs
+        _sil_recover = _sil_thr + cfg.silence_recover_db
+        if lev <= _sil_thr:
+            cfg._silence_secs = cfg._silence_secs + elapsed
+        elif lev >= _sil_recover:
+            cfg._silence_secs = 0.0
+        # else: in hysteresis band — neither count up nor clear
         if cfg._silence_secs>=cfg.silence_min_duration:
             now=time.time()
             alert_key, alert_title, alert_msg = _classify_silence_alert(cfg, lev)
@@ -6782,7 +6827,7 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                 cfg._silence_active    = True
                 cfg._silence_alert_key = alert_key
             cfg._silence_secs=0.0
-        elif cfg._silence_active and lev>cfg.silence_threshold_dbfs:
+        elif cfg._silence_active and lev >= cfg.silence_threshold_dbfs + cfg.silence_recover_db:
             # Audio has just resumed. Reset state immediately to avoid re-triggering,
             # then wait _POST_SILENCE_SECS so the rolling buffer fills with restored
             # audio before saving — the clip will show [tail of silence + recovery].
@@ -6807,25 +6852,31 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
     # Clip
     if cfg.alert_on_clip:
         peak_db=dbfs(float(np.max(np.abs(data)))); now=time.time()
-        if peak_db>=cfg.clip_threshold_dbfs:
+        # Debounce: don't accumulate clips for clip_debounce_seconds after an alert
+        if peak_db>=cfg.clip_threshold_dbfs and now-cfg._last_alerts.get("CLIP",0)>=cfg.clip_debounce_seconds:
             if now-cfg._clip_window_start>cfg.clip_window_seconds:
                 cfg._clip_count=0; cfg._clip_window_start=now
             cfg._clip_count+=1
             if cfg._clip_count>=cfg.clip_count_threshold:
-                if now-cfg._last_alerts.get("CLIP",0)>=ALERT_COOLDOWN:
-                    cfg._last_alerts["CLIP"]=now
-                    msg=f"Clipping on '{cfg.name}' — {cfg._clip_count}x in {cfg.clip_window_seconds}s (peak {peak_db:.1f} dBFS)"
-                    clip=_save_alert_wav(cfg,"clip",cfg.alert_wav_duration)
-                    _add_history(cfg,"CLIP",msg,clip_path=clip or "")
-                    sender.send(f"CLIP on {cfg.name}", msg, clip,
-                    alert_type="CLIP", stream=cfg.name, level_dbfs=peak_db)
-                    log_fn(f"[ALERT] {msg}")
+                cfg._last_alerts["CLIP"]=now
+                msg=f"Clipping on '{cfg.name}' — {cfg._clip_count}x in {cfg.clip_window_seconds}s (peak {peak_db:.1f} dBFS)"
+                clip=_save_alert_wav(cfg,"clip",cfg.alert_wav_duration)
+                _add_history(cfg,"CLIP",msg,clip_path=clip or "")
+                sender.send(f"CLIP on {cfg.name}", msg, clip,
+                alert_type="CLIP", stream=cfg.name, level_dbfs=peak_db)
+                log_fn(f"[ALERT] {msg}")
                 cfg._clip_count=0
 
+    # Spectral checks — shared FFT for both Hiss and Mains Hum
+    _sp_psd = _sp_freq = None
+    if cfg.alert_on_hiss or cfg.alert_on_hum:
+        _sp_n   = len(data); _sp_win = np.hanning(_sp_n)
+        _sp_psd  = np.abs(np.fft.rfft(data * _sp_win)) ** 2
+        _sp_freq = np.fft.rfftfreq(_sp_n, d=1.0 / SAMPLE_RATE)
+
     # Hiss
-    if cfg.alert_on_hiss:
-        n=len(data); win=np.hanning(n); psd=np.abs(np.fft.rfft(data*win))**2
-        freq=np.fft.rfftfreq(n,d=1.0/SAMPLE_RATE); tot=float(np.sum(psd)+1e-12)
+    if cfg.alert_on_hiss and _sp_psd is not None:
+        psd=_sp_psd; freq=_sp_freq; tot=float(np.sum(psd)+1e-12)
         hf =float(np.sum(psd[freq>=cfg.hiss_hf_band_hz])/tot)
         mid=float(np.sum(psd[(freq>=1000)&(freq<cfg.hiss_hf_band_hz)])/tot)
         if cfg._baseline_learning_remaining>0:
@@ -6851,6 +6902,101 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                     level_dbfs=float(cfg._last_level_dbfs))
                     log_fn(f"[ALERT] {msg}")
                 cfg._hiss_secs=0.0
+
+    # Mains hum (50 / 60 Hz harmonics)
+    # Compares energy in a ±3 Hz band around each harmonic against the
+    # median of the surrounding 30 Hz noise floor — self-normalising, no baseline needed.
+    if cfg.alert_on_hum and _sp_psd is not None and lev > cfg.silence_threshold_dbfs:
+        def _hum_snr(_hz, _psd=_sp_psd, _freq=_sp_freq):
+            _bw   = 3.0
+            _pm   = (_freq >= _hz - _bw) & (_freq <= _hz + _bw)
+            _nm   = ((_freq >= _hz - 30) & (_freq < _hz - _bw)) | \
+                    ((_freq > _hz + _bw) & (_freq <= _hz + 30))
+            _peak = float(np.sum(_psd[_pm])) if np.any(_pm) else 0.0
+            _nv   = _psd[_nm]
+            _nref = float(np.median(_nv)) * float(np.sum(_pm)) if len(_nv) > 2 else 1e-30
+            return 10.0 * math.log10(max(_peak / max(_nref, 1e-30), 1e-10))
+        _snr_50 = max(_hum_snr(50), _hum_snr(100))
+        _snr_60 = max(_hum_snr(60), _hum_snr(120))
+        _snr_best = max(_snr_50, _snr_60)
+        _hum_type = "50 Hz" if _snr_50 >= _snr_60 else "60 Hz"
+        if _snr_best >= cfg.hum_rise_db:
+            cfg._hum_secs = min(getattr(cfg, '_hum_secs', 0.0) + elapsed,
+                                cfg.hum_min_duration * 2)
+        else:
+            cfg._hum_secs = max(0.0, getattr(cfg, '_hum_secs', 0.0) - elapsed)
+        if getattr(cfg, '_hum_secs', 0.0) >= cfg.hum_min_duration:
+            now = time.time()
+            if now - cfg._last_alerts.get("MAINS_HUM", 0) >= ALERT_COOLDOWN:
+                cfg._last_alerts["MAINS_HUM"] = now
+                msg = (f"Mains hum on '{cfg.name}' — "
+                       f"{_hum_type} detected (+{_snr_best:.0f} dB above noise floor)")
+                clip = _save_alert_wav(cfg, "mains_hum", cfg.alert_wav_duration)
+                _add_history(cfg, "MAINS_HUM", msg, clip_path=clip or "")
+                if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                    sender.send(f"MAINS HUM on {cfg.name}", msg, clip,
+                        alert_type="MAINS_HUM", stream=cfg.name, level_dbfs=lev)
+                log_fn(f"[ALERT] {msg}")
+            cfg._hum_secs = 0.0
+
+    # DC offset detection
+    # Tracks an exponential moving average of raw sample mean.
+    # A significant non-zero mean that persists is characteristic of
+    # a faulty ADC, DC-coupled input, or broken capacitor.
+    if cfg.alert_on_dc_offset and lev > cfg.silence_threshold_dbfs:
+        _dc_raw = float(np.mean(data))
+        cfg._dc_ema = getattr(cfg, '_dc_ema', 0.0) * 0.95 + _dc_raw * 0.05
+        _dc_threshold_frac = cfg.dc_offset_threshold / 100.0
+        if abs(cfg._dc_ema) >= _dc_threshold_frac:
+            cfg._dc_secs = getattr(cfg, '_dc_secs', 0.0) + elapsed
+        else:
+            cfg._dc_secs = max(0.0, getattr(cfg, '_dc_secs', 0.0) - elapsed * 0.5)
+        if getattr(cfg, '_dc_secs', 0.0) >= cfg.dc_min_duration:
+            now = time.time()
+            if now - cfg._last_alerts.get("DC_OFFSET", 0) >= ALERT_COOLDOWN:
+                cfg._last_alerts["DC_OFFSET"] = now
+                _dc_pct = cfg._dc_ema * 100.0
+                msg = (f"DC offset on '{cfg.name}' — "
+                       f"{_dc_pct:+.1f}% mean bias "
+                       f"(threshold {cfg.dc_offset_threshold:.0f}%)")
+                clip = _save_alert_wav(cfg, "dc_offset", cfg.alert_wav_duration)
+                _add_history(cfg, "DC_OFFSET", msg, clip_path=clip or "")
+                if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                    sender.send(f"DC OFFSET on {cfg.name}", msg, clip,
+                        alert_type="DC_OFFSET", stream=cfg.name, level_dbfs=lev)
+                log_fn(f"[ALERT] {msg}")
+            cfg._dc_secs = 0.0
+
+    # Phase reversal detection (stereo streams only)
+    # When L and R are 180° out of phase they cancel in the mono mix,
+    # making lev (mixed mono) significantly quieter than each channel alone.
+    if (cfg.alert_on_phase_reversal
+            and getattr(cfg, '_audio_channels', 1) == 2
+            and lev > cfg.silence_threshold_dbfs):
+        _lev_l = getattr(cfg, '_level_dbfs_l', -120.0)
+        _lev_r = getattr(cfg, '_level_dbfs_r', -120.0)
+        # Both channels must individually be carrying audio
+        _both_active = (_lev_l > cfg.silence_threshold_dbfs + 10.0
+                        and _lev_r > cfg.silence_threshold_dbfs + 10.0)
+        # Mono is suspiciously quiet relative to either channel
+        _phase_drop = min(_lev_l, _lev_r) - lev
+        if _both_active and _phase_drop >= cfg.phase_reversal_mono_drop_db:
+            cfg._phase_rev_secs = getattr(cfg, '_phase_rev_secs', 0.0) + elapsed
+        else:
+            cfg._phase_rev_secs = max(0.0, getattr(cfg, '_phase_rev_secs', 0.0) - elapsed * 0.5)
+        if getattr(cfg, '_phase_rev_secs', 0.0) >= cfg.phase_reversal_min_duration:
+            now = time.time()
+            if now - cfg._last_alerts.get("PHASE_REVERSAL", 0) >= ALERT_COOLDOWN:
+                cfg._last_alerts["PHASE_REVERSAL"] = now
+                msg = (f"Phase reversal on '{cfg.name}' — "
+                       f"mono mix {_phase_drop:.0f} dB quieter than individual channels")
+                clip = _save_alert_wav(cfg, "phase_reversal", cfg.alert_wav_duration)
+                _add_history(cfg, "PHASE_REVERSAL", msg, clip_path=clip or "")
+                if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                    sender.send(f"PHASE REVERSAL on {cfg.name}", msg, clip,
+                        alert_type="PHASE_REVERSAL", stream=cfg.name, level_dbfs=lev)
+                log_fn(f"[ALERT] {msg}")
+            cfg._phase_rev_secs = 0.0
 
     # ── Glitch / short dropout detection ─────────────────────────────────────
     # A glitch is a level dip that is significantly below the recent rolling mean
@@ -20183,6 +20329,9 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
         <label class="lbl">Min duration (s)<span class="tip" data-tip="How long the signal must stay below the threshold before an alert fires. 5–10 s avoids false alarms from brief pauses between songs. Increase for talk radio or speech-heavy stations.">ⓘ</span>
           <input type="number" name="silence_min_duration" value="{{inp.silence_min_duration}}" step="0.5" min="0.5">
         </label>
+        <label class="lbl">Recovery hysteresis (dB)<span class="tip" data-tip="Silence only clears when level rises this many dB ABOVE the threshold. Prevents rapid on/off flapping when audio hovers near the silence boundary. Default: 4 dB.">ⓘ</span>
+          <input type="number" name="silence_recover_db" value="{{inp.silence_recover_db}}" step="0.5" min="0">
+        </label>
       </div>
     </div>
   </div>
@@ -20202,8 +20351,11 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
         <label class="lbl">Window (s)
           <input type="number" name="clip_window_seconds" value="{{inp.clip_window_seconds}}" step="0.5" min="0.5">
         </label>
-        <label class="lbl">Consecutive clips
+        <label class="lbl">Clips to alert
           <input type="number" name="clip_count_threshold" value="{{inp.clip_count_threshold}}" step="1" min="1">
+        </label>
+        <label class="lbl">Debounce (s)<span class="tip" data-tip="After a CLIP alert fires, ignore further clipping for this many seconds. Prevents repeated alerts during loud passages. Default: 30 s.">ⓘ</span>
+          <input type="number" name="clip_debounce_seconds" value="{{inp.clip_debounce_seconds}}" step="5" min="5">
         </label>
       </div>
     </div>
@@ -20226,6 +20378,63 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
         </label>
         <label class="lbl">Min duration (s)
           <input type="number" name="hiss_min_duration" value="{{inp.hiss_min_duration}}" step="0.5" min="0.5">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mains hum -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_hum" value="1" class="acard-chk" data-card="hum" {{'checked' if inp.alert_on_hum}}>
+      <span class="acard-ttl">⚡ Mains Hum (50 / 60 Hz)</span>
+      <span class="acard-badge" id="abadge-hum"></span>
+    </div>
+    <div class="acard-body" id="abody-hum">
+      <div class="fg2">
+        <label class="lbl">Detection threshold (dB above noise floor)<span class="tip" data-tip="How many dB above the local FFT noise floor a 50 Hz or 60 Hz fundamental must be to count as hum. 25 dB catches genuine mains hum while ignoring normal programme bass content. The check is self-normalising — no baseline learning period needed.">ⓘ</span>
+          <input type="number" name="hum_rise_db" value="{{inp.hum_rise_db}}" step="1" min="10" max="60">
+        </label>
+        <label class="lbl">Min duration (s)<span class="tip" data-tip="Hum must persist for this long before an alert fires. Avoids false alarms on brief low-frequency transients. Default: 5 s.">ⓘ</span>
+          <input type="number" name="hum_min_duration" value="{{inp.hum_min_duration}}" step="0.5" min="1">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- DC offset -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_dc_offset" value="1" class="acard-chk" data-card="dcoffset" {{'checked' if inp.alert_on_dc_offset}}>
+      <span class="acard-ttl">〰 DC Offset</span>
+      <span class="acard-badge" id="abadge-dcoffset"></span>
+    </div>
+    <div class="acard-body" id="abody-dcoffset">
+      <div class="fg2">
+        <label class="lbl">Threshold (% of full scale)<span class="tip" data-tip="The exponential moving average of the raw sample mean must exceed this percentage of full scale. 5% (~-26 dBFS absolute) is a safe starting point. Genuine DC faults from faulty equipment typically exceed 10%. Values below 2% risk false alarms on normal audio asymmetry.">ⓘ</span>
+          <input type="number" name="dc_offset_threshold" value="{{inp.dc_offset_threshold}}" step="0.5" min="1" max="50">
+        </label>
+        <label class="lbl">Min duration (s)<span class="tip" data-tip="DC bias must persist for this long before an alert fires. Default: 5 s.">ⓘ</span>
+          <input type="number" name="dc_min_duration" value="{{inp.dc_min_duration}}" step="0.5" min="1">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase reversal -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_phase_reversal" value="1" class="acard-chk" data-card="phasrev" {{'checked' if inp.alert_on_phase_reversal}}>
+      <span class="acard-ttl">↕ Phase Reversal <span style="font-size:10px;color:var(--mu)">(stereo only)</span></span>
+      <span class="acard-badge" id="abadge-phasrev"></span>
+    </div>
+    <div class="acard-body" id="abody-phasrev">
+      <div class="fg2">
+        <label class="lbl">Cancellation threshold (dB)<span class="tip" data-tip="The mono mix (L+R) must be at least this many dB quieter than both individual channels. Phase-reversed L and R cancel in the mix. 12 dB is a safe default — genuine phase reversal gives 20–40 dB of cancellation on real programme material. Only fires on stereo-configured inputs.">ⓘ</span>
+          <input type="number" name="phase_reversal_mono_drop_db" value="{{inp.phase_reversal_mono_drop_db}}" step="1" min="6" max="40">
+        </label>
+        <label class="lbl">Min duration (s)<span class="tip" data-tip="Phase cancellation must persist for this long before an alert fires. 10 s avoids false alarms during mono-compatible audio passages. Default: 10 s.">ⓘ</span>
+          <input type="number" name="phase_reversal_min_duration" value="{{inp.phase_reversal_min_duration}}" step="1" min="5">
         </label>
       </div>
     </div>
@@ -21074,12 +21283,14 @@ def _inp_from_form(f):
         ai_monitor=bool(f.get("ai_monitor")),
         silence_threshold_dbfs=float(f.get("silence_threshold_dbfs",-55.0)),
         silence_min_duration=float(f.get("silence_min_duration",3.0)),
+        silence_recover_db=float(f.get("silence_recover_db") or 4.0),
         hiss_hf_band_hz=float(f.get("hiss_hf_band_hz",6000.0)),
         hiss_rise_db=float(f.get("hiss_rise_db",12.0)),
         hiss_min_duration=float(f.get("hiss_min_duration",3.0)),
         clip_threshold_dbfs=float(f.get("clip_threshold_dbfs",-1.0)),
         clip_window_seconds=float(f.get("clip_window_seconds",2.0)),
         clip_count_threshold=int(f.get("clip_count_threshold",3)),
+        clip_debounce_seconds=float(f.get("clip_debounce_seconds") or 30.0),
         alert_wav_duration=float(f.get("alert_wav_duration",10.0)),
         cascade_parent=f.get("cascade_parent") or None,
         cascade_suppress_alerts=bool(f.get("cascade_suppress_alerts")),
@@ -21109,6 +21320,15 @@ def _inp_from_form(f):
         glitch_min_drop_rate_dbfs_s=float(f.get("glitch_min_drop_rate_dbfs_s") or 40.0),
         glitch_floor_db=float(f.get("glitch_floor_db") or 8.0),
         glitch_pre_trend_db=float(f.get("glitch_pre_trend_db") or 4.0),
+        alert_on_hum=bool(f.get("alert_on_hum")),
+        hum_rise_db=float(f.get("hum_rise_db") or 25.0),
+        hum_min_duration=float(f.get("hum_min_duration") or 5.0),
+        alert_on_dc_offset=bool(f.get("alert_on_dc_offset")),
+        dc_offset_threshold=float(f.get("dc_offset_threshold") or 5.0),
+        dc_min_duration=float(f.get("dc_min_duration") or 5.0),
+        alert_on_phase_reversal=bool(f.get("alert_on_phase_reversal")),
+        phase_reversal_mono_drop_db=float(f.get("phase_reversal_mono_drop_db") or 12.0),
+        phase_reversal_min_duration=float(f.get("phase_reversal_min_duration") or 10.0),
         stereo=bool(f.get("stereo")),
         fm_force_mono=bool(f.get("fm_force_mono")),
         fm_deemphasis=str(f.get("fm_deemphasis", "50us") or "50us"),
@@ -32029,7 +32249,8 @@ def hub_reports():
                       "DAB_AUDIO_FAULT", "RTP_FAULT",
                       "AUDIO_GLITCH", "AUDIO_GLITCH_SUSTAINED", "AUDIO_FLATNESS",
                       "ABGROUP_OFF_AIR", "ABGROUP_BOTH_FAULT", "ABGROUP_A_FAULT",
-                      "ABGROUP_B_FAULT", "ABGROUP_RX_FAULT", "ABGROUP_RECOVERED"}
+                      "ABGROUP_B_FAULT", "ABGROUP_RX_FAULT", "ABGROUP_RECOVERED",
+                      "MAINS_HUM", "DC_OFFSET", "PHASE_REVERSAL"}
     type_names  = sorted(
         set(e.get("type","") for e in all_events if e.get("type")) | _SILENCE_TYPES
     )

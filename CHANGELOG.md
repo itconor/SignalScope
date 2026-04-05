@@ -2,6 +2,20 @@
 
 ---
 
+## [3.5.73] - 2026-04-05
+
+### Added
+- **Mains hum detection (50/60 Hz)**: New `alert_on_hum` check detects mains interference at 50 Hz, 60 Hz, 100 Hz, and 120 Hz. Uses the existing spectral FFT (shared with Hiss detection — no extra compute cost). Compares hum-band energy against the surrounding local noise floor (self-normalising — no baseline learning required). Fires `MAINS_HUM` alert with type, frequency family, and SNR in the message. Configurable threshold and minimum duration. Enabled by default.
+- **DC offset detection**: New `alert_on_dc_offset` check tracks an exponential moving average of the raw PCM sample mean. A persistent non-zero mean (faulty ADC, DC-coupled input, capacitor failure) fires `DC_OFFSET` alert with percentage bias and duration. Configurable threshold (% of full scale) and minimum duration. Enabled by default; suppressed on silent streams.
+- **Phase reversal detection (stereo streams)**: New `alert_on_phase_reversal` check detects when L and R channels are wired 180° out of phase. L+R cancellation makes the mono mix significantly quieter than either individual channel. Fires `PHASE_REVERSAL` alert with the measured dB of cancellation. Configurable mono-drop threshold and minimum duration. Stereo-only — automatically inactive on mono inputs.
+- **`MAINS_HUM`, `DC_OFFSET`, `PHASE_REVERSAL`** added to the Reports type filter `_SILENCE_TYPES` set so they always appear in the Type dropdown regardless of event window.
+
+### Fixed
+- **Silence detection hysteresis**: The silence counter reset to 0 the instant level crossed back above `silence_threshold_dbfs`, causing rapid on/off flapping when audio hovered near the boundary. Added `silence_recover_db` field (default 4 dB): silence now only clears when `lev ≥ threshold + recover_db`. The silence recovery clip path also uses the same hysteresis threshold. Configurable per-input in Settings → Monitoring & Alerts.
+- **Clip detection debounce**: After a CLIP alert fires, the clip event counter continued accumulating, potentially re-firing as soon as `ALERT_COOLDOWN` expired. Added `clip_debounce_seconds` field (default 30 s): clips are not counted at all during the debounce window. This prevents repeated alert floods during a loud passage that is genuinely clipping throughout. Configurable per-input.
+
+---
+
 ## [3.5.72] - 2026-04-05
 
 ### Fixed
