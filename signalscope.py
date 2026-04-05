@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.81"
+BUILD                  = "SignalScope-3.5.82"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -9362,19 +9362,12 @@ class MonitorManager:
                             raw = bytes(buf[:CHUNK_BYTES])
                             del buf[:CHUNK_BYTES]
                             samp = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-                            # Use stereo path when user has stereo enabled AND we haven't
-                            # yet confirmed this is a mono service.  _dab_stereo defaults
-                            # False and is only populated from mux.json every 10 s, so we
-                            # must NOT gate on it alone — doing so would drop all DAB inputs
-                            # into the mono path until metadata arrives (and permanently for
-                            # any service where welle-cli omits or under-reports channels).
-                            # Only use the mono fallback once _dab_mode is populated AND it
-                            # confirms the service is mono (i.e. we have metadata AND it says
-                            # mono, not just "metadata hasn't arrived yet").
-                            _meta_ready   = bool(getattr(cfg, "_dab_mode", ""))
-                            _svc_is_mono  = _meta_ready and not cfg._dab_stereo
-                            if cfg.stereo and _dab_n_ch == 2 and samp.size % 2 == 0 and not _svc_is_mono:
-                                # Stereo service (or metadata not yet received — default stereo)
+                            # Stereo path is gated solely on cfg.stereo (the user's explicit
+                            # setting).  _dab_stereo from mux metadata is for informational
+                            # display only — relying on it blocked the stereo path when
+                            # welle-cli omits or reports channels=0/1 for stereo services.
+                            if cfg.stereo and _dab_n_ch == 2 and samp.size % 2 == 0:
+                                # Stereo service — deinterleave L/R
                                 _fr = samp.reshape(-1, 2)
                                 _L = np.clip(_fr[:, 0] - np.mean(_fr[:, 0]), -1.0, 1.0)
                                 _R = np.clip(_fr[:, 1] - np.mean(_fr[:, 1]), -1.0, 1.0)
@@ -9393,7 +9386,7 @@ class MonitorManager:
                                               cfg.alert_wav_duration,
                                               self.app_cfg.inputs)
                             elif _dab_n_ch == 2 and samp.size % 2 == 0:
-                                # Metadata confirms mono service but ffmpeg gave 2-ch — take L channel (L=R)
+                                # cfg.stereo=False but ffmpeg output was 2-ch — take L channel
                                 samp = samp[0::2]
                                 samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
                                 cfg._audio_channels = 1

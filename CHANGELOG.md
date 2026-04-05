@@ -16,6 +16,13 @@
 
 ---
 
+## [3.5.82] - 2026-04-05
+
+### Fixed
+- **DAB stereo L/R bars still absent after 3.5.80 fix**: The 3.5.80 `_meta_ready`/`_svc_is_mono` approach failed because `_dab_stereo` was evaluated against `svc.get("channels", 1)` from welle-cli's mux.json. When welle-cli omits the `channels` key (or reports it as 0), the default of 1 gives `1 > 1 = False` → `_dab_stereo = False`. Once `_dab_mode` became non-empty (metadata arrived), `_svc_is_mono = True` for every service regardless of actual stereo content, permanently blocking the stereo path. Fix: reverted the stereo branch to the pre-3.5.75 behaviour — `cfg.stereo` (the user's explicit checkbox) is the sole gate. `_dab_stereo` from mux metadata remains populated for informational display but no longer blocks the processing path.
+
+---
+
 ## [3.5.81] - 2026-04-05
 
 ### Fixed
