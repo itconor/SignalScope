@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.64"
+BUILD                  = "SignalScope-3.5.65"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16875,10 +16875,10 @@ def _inject_nav():
                 ':{bg:"#2a0a0a",bd:"#991b1b",col:"#ef4444",ic:"✕"};'
               'var t=document.createElement("div");'
               't.style.cssText="background:"+c.bg+";color:"+c.col+";border:1px solid "+c.bd+";"'
-                '"border-radius:10px;padding:11px 14px;font-size:13px;font-family:system-ui,sans-serif;"'
-                '"max-width:340px;box-shadow:0 6px 24px rgba(0,0,0,.55);"'
-                '"display:flex;align-items:flex-start;gap:9px;pointer-events:auto;cursor:pointer;"'
-                '"opacity:0;transform:translateX(12px);transition:opacity .18s,transform .18s";'
+                '+"border-radius:10px;padding:11px 14px;font-size:13px;font-family:system-ui,sans-serif;"'
+                '+"max-width:340px;box-shadow:0 6px 24px rgba(0,0,0,.55);"'
+                '+"display:flex;align-items:flex-start;gap:9px;pointer-events:auto;cursor:pointer;"'
+                '+"opacity:0;transform:translateX(12px);transition:opacity .18s,transform .18s";'
               't.innerHTML="<span style=\\"flex-shrink:0;font-size:14px\\">"+c.ic+"</span>"'
                 '+"<span style=\\"flex:1;line-height:1.45\\">"+msg+"</span>"'
                 '+"<span style=\\"opacity:.45;font-size:16px;line-height:1;flex-shrink:0\\">&times;</span>";'
@@ -16909,10 +16909,10 @@ def _inject_nav():
               'box.innerHTML=ttl'
                 '+"<div style=\\"font-size:13px;color:#c5d8f5;line-height:1.55;margin-bottom:20px\\">"+msg+"</div>"'
                 '+"<div style=\\"display:flex;gap:8px;justify-content:flex-end\\">"'
-                '+"<button class=\\"_ssc_no\\" style=\\"background:#17345f;color:#eef5ff;border:none;border-radius:7px;"'
-                '"padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit\\">"+nLbl+"</button>"'
-                '+"<button class=\\"_ssc_yes\\" style=\\"background:"+yBg+";color:#fff;border:none;border-radius:7px;"'
-                '"padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit\\">"+yLbl+"</button>"'
+                '+"<button class=\\"_ssc_no\\" style=\\"background:#17345f;color:#eef5ff;border:none;border-radius:7px;'
+                'padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit\\">"+nLbl+"</button>"'
+                '+"<button class=\\"_ssc_yes\\" style=\\"background:"+yBg+";color:#fff;border:none;border-radius:7px;'
+                'padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit\\">"+yLbl+"</button>"'
                 '+"</div>";'
               'bd.appendChild(box);document.body.appendChild(bd);'
               'function close(){if(bd.parentNode)bd.parentNode.removeChild(bd);}'
@@ -27345,8 +27345,8 @@ function saveChain(){
     else{_ssToast('Save failed: '+(d.error||'unknown error'),'err');}
   }).catch(function(e){_btnReset(_saveBtn);_ssToast('Network error — chain not saved','err');console.error('[saveChain]',e);});
   } catch(err) {
-    _btnReset(_saveBtn);
-    _ssToast('Unexpected error — see console','err');
+    if(typeof _btnReset==='function')_btnReset(_saveBtn);
+    if(typeof _ssToast==='function')_ssToast('Unexpected error — see console','err');
     console.error('[saveChain exception]',err);
   }
 }

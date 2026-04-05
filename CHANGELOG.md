@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.65] - 2026-04-05
+
+### Fixed
+- **Save Chain button does nothing (root cause)**: The `topnav()` script that defines `_ssToast`, `_ssConfirm`, `_btnLoad`, and `_btnReset` had a JS syntax error (`Unexpected string`) caused by Python implicit string concatenation producing adjacent JS string literals with no `+` operator between them. The browser silently refused to execute the entire script block, leaving all four utility functions undefined. `saveChain()` ran but crashed in the `catch` block calling `_btnReset(undefined)` — the error was swallowed silently. Three locations fixed in `topnav()`: `t.style.cssText` continuation lines, and both `_ssc_no`/`_ssc_yes` button `style` attributes split across Python string boundaries. Added defensive `typeof` guards in `saveChain`'s catch block.
+
+---
+
 ## [3.5.64] - 2026-04-05
 
 ### Fixed
