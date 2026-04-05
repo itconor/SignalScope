@@ -2,6 +2,18 @@
 
 ---
 
+## [3.5.51] - 2026-04-05
+
+### Changed
+- **Broadcast Chains empty state** upgraded to the standard `.empty-state` pattern with icon, title, sub-text, and a direct "+ New Chain" button — previously just plain muted text with no call-to-action (Sprint F1)
+- **Scheduled Maintenance Windows** loading state replaced with a two-row shimmer skeleton matching the app's `_btnShim` animation — previously a raw "Loading…" text node (Sprint F3)
+- **Reports event count** is now server-side rendered as the initial value so it is never blank on page load — previously empty until `DOMContentLoaded` fired (Sprint F4)
+
+### Note
+- Sprint F2 (Hub Overview search no-results) was already implemented via `hub-search-hint` in `initCardSearch()` — no change needed
+
+---
+
 ## [3.5.50] - 2026-04-05
 
 ### Changed

@@ -2327,7 +2327,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.50"
+BUILD                  = "SignalScope-3.5.51"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -18202,7 +18202,7 @@ tr.data-row.expanded td{background:#0d1e40}
     <label>To   <input type="datetime-local" id="f_to"   onchange="applyFilters()"></label>
     <label><input type="checkbox" id="f_clips" onchange="applyFilters()"> Clips only</label>
     <button type="button" class="btn bg bs" id="btn_reset_filters" title="Clear all filters" style="align-self:flex-end">✕ Reset</button>
-    <span class="page-info" id="row_count"></span>
+    <span class="page-info" id="row_count">{{total}} event{{'s' if total != 1 else ''}} shown</span>
   </div>
 
   {# Events table #}
@@ -26260,6 +26260,10 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 .comp-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
 .comp-node-sel{background:#12305c;border:1px solid var(--bor);color:var(--tx);border-radius:8px;padding:5px 8px;font-size:12px;width:160px}
 .empty{text-align:center;padding:56px 0;color:var(--mu);font-size:15px}
+.empty-state{text-align:center;padding:56px 24px;color:var(--mu)}
+.es-icon{font-size:44px;display:block;margin-bottom:14px;opacity:.55}
+.es-title{font-size:15px;font-weight:700;color:var(--tx);margin-bottom:8px}
+.es-sub{font-size:13px;margin-bottom:20px;line-height:1.5}
 /* Chain live mini-player */
 #chain-mini-player{position:fixed;bottom:0;left:0;right:0;z-index:9999;background:linear-gradient(180deg,#0d2346 0%,#070f24 100%);border-top:2px solid #3b82f6;padding:10px 18px;display:none;align-items:center;gap:14px;box-shadow:0 -6px 28px rgba(0,0,0,.5);flex-wrap:wrap}
 #cmp-icon{font-size:20px;flex-shrink:0;animation:cmpPulse 1.4s ease-in-out infinite}
@@ -26483,10 +26487,11 @@ var _chainData={
 <!-- Chain list -->
 <div id="chains_list">
 {% if not chains %}
-<div style="text-align:center;padding:48px 24px;color:var(--mu)">
-  <div style="font-size:36px;margin-bottom:12px">🔗</div>
-  <div style="font-size:15px;font-weight:600;color:var(--tx);margin-bottom:6px">No signal chains defined</div>
-  <div style="font-size:13px;margin-bottom:16px">Signal chains link your monitored inputs to on-air fault detection. Click <strong style="color:var(--tx)">+ New Chain</strong> above to create your first chain.</div>
+<div class="empty-state">
+  <span class="es-icon">⛓</span>
+  <div class="es-title">No signal chains defined</div>
+  <div class="es-sub">Signal chains link your monitored inputs to on-air fault detection.<br>Create your first chain to start receiving fault alerts.</div>
+  <button class="btn bp" onclick="showBuilder(null)">+ New Chain</button>
 </div>
 {% endif %}
 {% for c in chains %}
@@ -27187,7 +27192,10 @@ function _openSchedWinPanel(cid){
 
 function _loadSchedWins(cid){
   var body=document.getElementById('schwin-body');
-  body.innerHTML='<div style="color:var(--mu);font-size:12px">Loading\u2026</div>';
+  body.innerHTML='<div style="display:flex;flex-direction:column;gap:10px">'
+    +'<div style="height:38px;border-radius:8px;background:linear-gradient(90deg,var(--bor) 25%,#1e3a5f 50%,var(--bor) 75%);background-size:200% auto;animation:_btnShim .9s linear infinite"></div>'
+    +'<div style="height:38px;border-radius:8px;background:linear-gradient(90deg,var(--bor) 25%,#1e3a5f 50%,var(--bor) 75%);background-size:200% auto;animation:_btnShim .9s linear infinite;opacity:.6"></div>'
+    +'</div>';
   fetch('/api/chains/'+encodeURIComponent(cid)+'/maintenance_windows')
     .then(function(r){return r.json();})
     .then(function(d){
