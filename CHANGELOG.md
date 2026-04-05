@@ -2,6 +2,21 @@
 
 ---
 
+## [3.5.72] - 2026-04-05
+
+### Fixed
+- **Glitch detection too sensitive — firing on natural audio dynamics**: Multiple compounding issues caused false positives on quiet passages, song fades, and normal broadcast content:
+  1. **`glitch_drop_db` default was 18 dB** — a song fade or quiet voiceover easily crosses 18 dB below the 60 s rolling mean. Raised to **30 dB** — the dip must be severe, not just a quiet moment.
+  2. **Form save fallback for `glitch_max_seconds` was 8.0 s** — an 8-second dropout is a silence event, not a glitch. Lowered to **1.5 s**. True packet-loss/STL glitches are < 1 s.
+  3. **Form save fallback for `glitch_min_drop_rate_dbfs_s` was 12 dBFS/s** — fades and breath pauses hit 12 dBFS/s easily. Raised to **40 dBFS/s** — both onset AND recovery must be abrupt.
+  4. **Form save fallback for `glitch_floor_db` was 0 (disabled)** — any depth dip counted. Set to **8 dB** — the dropout must reach within 8 dB of the silence threshold (near-silent).
+  5. **Form save fallback for `glitch_pre_trend_db` was 0 (disabled)** — fade rejection was off by default. Set to **4 dB** — rejects dips where the level was already declining.
+  6. **No minimum duration** — a single 10 ms measurement spike could register as a glitch. Added `glitch_min_seconds = 0.05 s` (50 ms) — network/codec glitches are ≥ 50 ms; sub-50 ms "dips" are measurement noise.
+
+  **⚠ Existing installations**: these defaults only apply to newly-saved input configs. To get the tighter settings, open each input in Settings → Inputs → Edit, check the Glitch Detection values match the new defaults, and save.
+
+---
+
 ## [3.5.71] - 2026-04-05
 
 ### Fixed

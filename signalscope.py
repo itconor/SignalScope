@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.71"
+BUILD                  = "SignalScope-3.5.72"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2730,9 +2730,12 @@ class InputConfig:
     flatness_min_seconds:     int   = 300        # must persist this long before firing alert
 
     # Short drop / glitch detection
+    # Tuned for sudden complete dropouts (packet loss, STL loss, codec hiccup).
+    # NOT intended to fire on natural audio dynamics (fades, quiet passages).
     glitch_detect:                bool  = False   # enable glitch detection
-    glitch_drop_db:               float = 18.0   # drop must be this many dB below rolling mean
-    glitch_max_seconds:           float = 4.0    # drop lasting longer counts as silence, not glitch
+    glitch_drop_db:               float = 30.0   # drop must be ≥30 dB below rolling mean (was 18 — fades and quiet passages easily hit 18)
+    glitch_min_seconds:           float = 0.05   # minimum dip duration (s) — filters single-sample measurement spikes
+    glitch_max_seconds:           float = 1.5    # drop lasting longer is a silence event, not a glitch (was 4.0 / 8.0)
     glitch_alert_count:           int   = 3      # N glitches in window triggers first alert
     glitch_alert_window_min:      int   = 5      # sliding window for first alert (minutes)
     # Sustained glitching — fires a louder alert when hammering continues
@@ -2742,9 +2745,9 @@ class InputConfig:
     # over the 0.5–3 s window before the threshold crossing.
     # Song fades: 2–10 dBFS/s.  Real glitches (packet loss, STL): 40–200+ dBFS/s.
     # 0 = disabled (count all dips regardless of slope).
-    glitch_min_drop_rate_dbfs_s:  float = 22.0  # minimum dBFS/s fall rate to count as a glitch (onset AND recovery)
-    glitch_floor_db:              float = 15.0   # dip must reach within this many dB of silence threshold (0=disabled)
-    glitch_pre_trend_db:          float = 4.0    # reject if level already fell this many dB in 2-5 s before onset (0=disabled)
+    glitch_min_drop_rate_dbfs_s:  float = 40.0  # minimum dBFS/s fall rate (was 22/12 — too low, caught slow dips)
+    glitch_floor_db:              float = 8.0    # dip must reach within 8 dB of silence threshold (was 15/0 — 0 = any depth)
+    glitch_pre_trend_db:          float = 4.0    # reject if level already fell this many dB in 2-5 s before onset (was 0=disabled)
 
     # FM output options
     fm_force_mono:        bool = False  # always output mono regardless of pilot SNR
@@ -3218,14 +3221,15 @@ def load_config() -> AppConfig:
             flatness_min_range_db=float(item.get("flatness_min_range_db", 2.0)),
             flatness_min_seconds=int(item.get("flatness_min_seconds", 300)),
             glitch_detect=bool(item.get("glitch_detect", False)),
-            glitch_drop_db=float(item.get("glitch_drop_db", 18.0)),
-            glitch_max_seconds=float(item.get("glitch_max_seconds", 4.0)),
+            glitch_drop_db=float(item.get("glitch_drop_db", 30.0)),
+            glitch_min_seconds=float(item.get("glitch_min_seconds", 0.05)),
+            glitch_max_seconds=float(item.get("glitch_max_seconds", 1.5)),
             glitch_alert_count=int(item.get("glitch_alert_count", 3)),
             glitch_alert_window_min=int(item.get("glitch_alert_window_min", 5)),
             glitch_sustained_count=int(item.get("glitch_sustained_count", 10)),
             glitch_sustained_window_min=int(item.get("glitch_sustained_window_min", 10)),
-            glitch_min_drop_rate_dbfs_s=float(item.get("glitch_min_drop_rate_dbfs_s", 22.0)),
-            glitch_floor_db=float(item.get("glitch_floor_db", 15.0)),
+            glitch_min_drop_rate_dbfs_s=float(item.get("glitch_min_drop_rate_dbfs_s", 40.0)),
+            glitch_floor_db=float(item.get("glitch_floor_db", 8.0)),
             glitch_pre_trend_db=float(item.get("glitch_pre_trend_db", 4.0)),
             stereo=bool(item.get("stereo", False)),
             fm_force_mono=bool(item.get("fm_force_mono", False)),
@@ -3392,6 +3396,7 @@ def save_config(cfg: AppConfig):
             "flatness_min_seconds": i.flatness_min_seconds,
             "glitch_detect": i.glitch_detect,
             "glitch_drop_db": i.glitch_drop_db,
+            "glitch_min_seconds": i.glitch_min_seconds,
             "glitch_max_seconds": i.glitch_max_seconds,
             "glitch_alert_count": i.glitch_alert_count,
             "glitch_alert_window_min": i.glitch_alert_window_min,
@@ -6924,7 +6929,7 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                         _recovery_rate = (lev - _rpv) / _rdt
                         if _recovery_rate < _min_rate:
                             _reject = True
-                if not _reject and 0.0 < _dip_dur < cfg.glitch_max_seconds:
+                if not _reject and cfg.glitch_min_seconds <= _dip_dur < cfg.glitch_max_seconds:
                     # Count it
                     cfg._glitch_timestamps.append(_gn)
                     cfg._glitch_count_total += 1
@@ -20299,11 +20304,17 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       <p class="help">Detects brief audio dropouts shorter than the silence alarm window. Shows ⚡ badges on chain nodes and fires an AUDIO_GLITCH alert.</p>
       <div class="fg2" id="glitch_fields_{{inp.name|e}}" style="margin-top:8px;{{'display:none' if not inp.glitch_detect}}">
         <label class="lbl">Drop threshold below rolling mean (dB)
-          <input type="number" name="glitch_drop_db" value="{{inp.glitch_drop_db}}" step="1" min="5" max="50">
+          <input type="number" name="glitch_drop_db" value="{{inp.glitch_drop_db}}" step="1" min="5" max="60">
         </label>
+        <p class="help">How many dB below the 60-second rolling mean the level must fall. Song fades and quiet passages rarely exceed 20 dB. Set to 30+ to target only near-silent dropouts. Default: 30 dB.</p>
+        <label class="lbl">Minimum drop duration (s)
+          <input type="number" name="glitch_min_seconds" value="{{inp.glitch_min_seconds}}" step="0.01" min="0.02" max="1.0">
+        </label>
+        <p class="help">Ignore dips shorter than this — filters single-sample measurement spikes. Network/codec glitches are typically 50–500 ms. Default: 0.05 s (50 ms).</p>
         <label class="lbl">Max drop duration to count as glitch (s)
-          <input type="number" name="glitch_max_seconds" value="{{inp.glitch_max_seconds}}" step="0.5" min="0.5" max="30">
+          <input type="number" name="glitch_max_seconds" value="{{inp.glitch_max_seconds}}" step="0.1" min="0.1" max="10">
         </label>
+        <p class="help">Drops longer than this become a silence event (handled by silence detection). True glitches are short bursts — keep this at 1–2 s. Default: 1.5 s.</p>
         <label class="lbl">Alert after N glitches
           <input type="number" name="glitch_alert_count" value="{{inp.glitch_alert_count}}" step="1" min="1">
         </label>
@@ -20325,15 +20336,15 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
           <label class="lbl">Minimum drop rate to count as glitch (dBFS/s)
             <input type="number" name="glitch_min_drop_rate_dbfs_s" value="{{inp.glitch_min_drop_rate_dbfs_s}}" step="1" min="0" max="200">
           </label>
-          <p class="help">Average fall rate over the 0.5–3 s before the dip, and rise rate over 0.5–3 s after recovery. Song fades: 2–10 dBFS/s. Real glitches: 40–200+ dBFS/s. Applied to both onset and recovery — both must be abrupt to count. Set to 0 to disable. Default: 22 dBFS/s.</p>
+          <p class="help">Average fall rate over the 0.5–3 s before the dip, and rise rate over 0.5–3 s after recovery. Both onset AND recovery must be this abrupt. Song fades: 2–10 dBFS/s. Real glitches (packet loss, STL): 40–200+ dBFS/s. Set to 0 to disable. Default: 40 dBFS/s.</p>
           <label class="lbl">Silence floor margin (dB, 0 = disabled)
             <input type="number" name="glitch_floor_db" value="{{inp.glitch_floor_db}}" step="1" min="0" max="40">
           </label>
-          <p class="help">The dip must reach within this many dB of the silence threshold. Real dropouts go to near-silence; quiet musical passages rarely do. E.g. with threshold −50 dBFS and margin 15, the dip must hit −35 dBFS or lower. Default: 15 dB.</p>
+          <p class="help">The dip must reach within this many dB of the silence threshold. Real audio cutouts go near-silent; quiet musical passages rarely do. E.g. threshold −55 dBFS + margin 8 → dip must reach −47 dBFS or lower. Default: 8 dB.</p>
           <label class="lbl">Pre-dip trend rejection (dB, 0 = disabled)
             <input type="number" name="glitch_pre_trend_db" value="{{inp.glitch_pre_trend_db}}" step="1" min="0" max="20">
           </label>
-          <p class="help">If the level was already falling by this many dB in the 2–5 s before the threshold crossing, the dip is treated as a content fade and ignored. Catches slow fades that still appear abrupt at the instant they cross the threshold. Default: 4 dB.</p>
+          <p class="help">If the level was already falling by this many dB in the 2–5 s before the threshold crossing, treat it as a content fade and ignore it. Default: 4 dB.</p>
         </div>
       </div>
 
@@ -21088,15 +21099,16 @@ def _inp_from_form(f):
         flatness_min_range_db=float(f.get("flatness_min_range_db") or 2.0),
         flatness_min_seconds=int(f.get("flatness_min_seconds") or 300),
         glitch_detect=bool(f.get("glitch_detect")),
-        glitch_drop_db=float(f.get("glitch_drop_db") or 18.0),
-        glitch_max_seconds=float(f.get("glitch_max_seconds") or 8.0),
+        glitch_drop_db=float(f.get("glitch_drop_db") or 30.0),
+        glitch_min_seconds=float(f.get("glitch_min_seconds") or 0.05),
+        glitch_max_seconds=float(f.get("glitch_max_seconds") or 1.5),
         glitch_alert_count=int(f.get("glitch_alert_count") or 3),
         glitch_alert_window_min=int(f.get("glitch_alert_window_min") or 5),
         glitch_sustained_count=int(f.get("glitch_sustained_count") or 10),
         glitch_sustained_window_min=int(f.get("glitch_sustained_window_min") or 10),
-        glitch_min_drop_rate_dbfs_s=float(f.get("glitch_min_drop_rate_dbfs_s") or 12.0),
-        glitch_floor_db=float(f.get("glitch_floor_db") or 0.0),
-        glitch_pre_trend_db=float(f.get("glitch_pre_trend_db") or 0.0),
+        glitch_min_drop_rate_dbfs_s=float(f.get("glitch_min_drop_rate_dbfs_s") or 40.0),
+        glitch_floor_db=float(f.get("glitch_floor_db") or 8.0),
+        glitch_pre_trend_db=float(f.get("glitch_pre_trend_db") or 4.0),
         stereo=bool(f.get("stereo")),
         fm_force_mono=bool(f.get("fm_force_mono")),
         fm_deemphasis=str(f.get("fm_deemphasis", "50us") or "50us"),
