@@ -9,6 +9,11 @@
 
 ---
 
+## [3.5.80] - 2026-04-05
+
+### Fixed
+- **DAB stereo L/R bars broken for all inputs (3.5.75 regression)**: The 3.5.75 mono-service fix added `and cfg._dab_stereo` to the stereo branch condition. `_dab_stereo` defaults to `False` and is only populated from mux.json every 10 seconds. This meant every DAB input with stereo enabled fell into the new `elif` branch (the mono fallback) until metadata arrived — and permanently for any service where welle-cli's `channels` field was absent or reported as 1. The `elif` sets `cfg._audio_channels = 1`, causing `level_dbfs_l` / `level_dbfs_r` to be reported as `null`, blanking the L/R bars on all DAB inputs. Fix: the mono fallback now only fires when `_dab_mode` is populated (metadata has been received) AND it confirms the service is mono (`_dab_stereo = False`). When metadata hasn't arrived yet, the stereo path is used — matching the pre-3.5.75 behaviour and ensuring L/R bars are always shown for stereo-configured inputs.
+
 ## [3.5.79] - 2026-04-05
 
 ### Fixed
