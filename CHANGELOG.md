@@ -16,6 +16,13 @@
 
 ---
 
+## [3.5.83] - 2026-04-05
+
+### Fixed
+- **DAB stereo/mono detection — proper fix for 3.5.75 regression**: The original 3.5.75 problem (mono services appearing as stereo) was real and needed fixing. The real bug in 3.5.75 was not the logic but the **default value**: `_dab_stereo` defaulted to `False`, meaning every service appeared mono until mux metadata arrived — permanently for services where welle-cli omits or gives an unexpected value for `channels`. Attempts in 3.5.80 and 3.5.82 to work around this introduced further complexity that failed for the same underlying reason. Proper fix: (1) `_dab_stereo` now defaults to `True` (assume stereo). (2) `_copy_dab_metrics_from_mux` only updates `_dab_stereo` when the mode string is populated, and uses the mode string alone (not the unreliable `channels` field) — `False` only when mode explicitly contains "mono". (3) Branch condition is the clean `cfg._dab_stereo` form restored. Result: stereo services always show L/R; mono services (welle-cli MP2 mode-string "Mono") collapse to mono once metadata arrives.
+
+---
+
 ## [3.5.82] - 2026-04-05
 
 ### Fixed

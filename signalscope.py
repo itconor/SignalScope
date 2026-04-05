@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.82"
+BUILD                  = "SignalScope-3.5.83"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2844,7 +2844,7 @@ class InputConfig:
     _dab_ok:            bool  = field(default=False, init=False, repr=False)
     _dab_mode:          str   = field(default="",   init=False, repr=False)  # "DAB" or "DAB+"
     _dab_bitrate:       int   = field(default=0,    init=False, repr=False)  # kbps
-    _dab_stereo:        bool  = field(default=False, init=False, repr=False)
+    _dab_stereo:        bool  = field(default=True,  init=False, repr=False)  # assume stereo until mode string says otherwise
     _dab_dls:           str   = field(default="",   init=False, repr=False)  # Dynamic Label (now playing)
     # FM status (populated for fm:// sources)
     _fm_freq_mhz:       float = field(default=0.0,  init=False, repr=False)
@@ -8705,7 +8705,13 @@ class MonitorManager:
                         continue
                     cfg._dab_mode   = svc.get("mode", cfg._dab_mode)
                     _mode_lower     = (cfg._dab_mode or "").lower()
-                    cfg._dab_stereo = svc.get("channels", 1) > 1 and "mono" not in _mode_lower
+                    # Only update _dab_stereo once we have a mode string.
+                    # Use the mode string alone — the channels field is unreliable
+                    # (welle-cli reports channels=2 for some mono MP2 services).
+                    # Default is True (assume stereo); set False only when the mode
+                    # string explicitly contains "mono".
+                    if _mode_lower:
+                        cfg._dab_stereo = "mono" not in _mode_lower
                     dls = svc.get("dynamicLabel", "") or svc.get("dls", "")
                     if dls:
                         # welle-cli returns dynamicLabel as a dict
@@ -9362,11 +9368,11 @@ class MonitorManager:
                             raw = bytes(buf[:CHUNK_BYTES])
                             del buf[:CHUNK_BYTES]
                             samp = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-                            # Stereo path is gated solely on cfg.stereo (the user's explicit
-                            # setting).  _dab_stereo from mux metadata is for informational
-                            # display only — relying on it blocked the stereo path when
-                            # welle-cli omits or reports channels=0/1 for stereo services.
-                            if cfg.stereo and _dab_n_ch == 2 and samp.size % 2 == 0:
+                            # _dab_stereo defaults True (assume stereo).  _copy_dab_metrics_from_mux
+                            # sets it False only when the mode string explicitly contains "mono",
+                            # so mono services (welle-cli reporting channels=2 for MP2 mono) are
+                            # correctly collapsed once metadata arrives.
+                            if cfg.stereo and _dab_n_ch == 2 and samp.size % 2 == 0 and cfg._dab_stereo:
                                 # Stereo service — deinterleave L/R
                                 _fr = samp.reshape(-1, 2)
                                 _L = np.clip(_fr[:, 0] - np.mean(_fr[:, 0]), -1.0, 1.0)
@@ -9386,7 +9392,7 @@ class MonitorManager:
                                               cfg.alert_wav_duration,
                                               self.app_cfg.inputs)
                             elif _dab_n_ch == 2 and samp.size % 2 == 0:
-                                # cfg.stereo=False but ffmpeg output was 2-ch — take L channel
+                                # Confirmed mono service (mode string says "mono") — take L channel (L=R)
                                 samp = samp[0::2]
                                 samp = np.clip(samp - np.mean(samp), -1.0, 1.0)
                                 cfg._audio_channels = 1
