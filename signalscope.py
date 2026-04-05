@@ -22021,7 +22021,7 @@ input[type=text]{background:#0d1e40;border:1px solid var(--bor);border-radius:6p
 .err{padding:8px 12px;background:#2a0a0a;color:var(--al);border:1px solid #991b1b;border-radius:6px;margin-bottom:12px;font-size:13px}
 .ok{padding:8px 12px;background:#0f2318;color:var(--ok);border:1px solid #166534;border-radius:6px;margin-bottom:12px;font-size:13px}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
-{{topnav("settings") if topnav is defined}}
+{{topnav("settings")}}
 <main>
   <h2 style="font-size:18px;margin-bottom:18px">🔐 Set Up Two-Factor Authentication</h2>
   {% if error %}<div class="err">⚠ {{error}}</div>{% endif %}
@@ -23355,8 +23355,7 @@ def totp_setup():
     totp_obj = _pyotp.TOTP(secret_to_show)
     uri = totp_obj.provisioning_uri(name=uname, issuer_name="SignalScope")
     return render_template_string(TOTP_SETUP_TPL, secret=secret_to_show, uri=uri,
-                                  error=error, success=success, build=BUILD,
-                                  topnav=topnav)
+                                  error=error, success=success, build=BUILD)
 
 
 @app.post("/settings/totp/disable")
