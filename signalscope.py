@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.63"
+BUILD                  = "SignalScope-3.5.64"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -26457,9 +26457,9 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 .pos-stream-wrap select{width:100%;font-size:12px;padding:5px 7px}
 .pos-opts-btn{font-size:11px;padding:2px 9px;border-radius:5px;background:transparent;border:1px solid var(--bor);color:var(--mu);cursor:pointer;align-self:flex-end;transition:border-color .15s,color .15s;white-space:nowrap}
 .pos-opts-btn:hover{border-color:var(--acc);color:var(--acc)}
-.pos-optional{display:none;border-top:1px solid rgba(255,255,255,.05);padding-top:8px;margin-top:2px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.pos-optional{display:none;border-top:1px solid rgba(255,255,255,.05);padding-top:8px;margin-top:2px;grid-template-columns:1fr 1fr;gap:8px}
 .pos-optional.open{display:grid}
-.pos-optional label{font-size:11px;color:var(--mu);margin-bottom:3px;display:block}
+.pos-optional .field-lbl{font-size:11px;color:var(--mu);margin-bottom:3px;display:block}
 .pos-optional input{width:100%;font-size:12px;padding:5px 7px}
 .pos-stack-node{border:1px solid rgba(255,255,255,.07);border-radius:7px;padding:8px 10px;background:rgba(0,0,0,.25);position:relative}
 .pos-stack-node-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:11px;color:var(--mu)}
@@ -26990,7 +26990,7 @@ function _addNodeRowToGroup(group, nd){
   var optsRow=document.createElement('div');optsRow.style.cssText='display:flex;align-items:center;gap:8px;margin-top:4px';
   var optsBtn=document.createElement('button');optsBtn.type='button';optsBtn.className='pos-opts-btn';optsBtn.textContent='⋯ Options';
   var optPanel=document.createElement('div');optPanel.className='pos-optional node-row-expand';
-  function mkField(lbl,el){var w=document.createElement('div');var l=document.createElement('label');l.textContent=lbl;w.appendChild(l);w.appendChild(el);return w;}
+  function mkField(lbl,el){var w=document.createElement('div');var l=document.createElement('label');l.className='field-lbl';l.textContent=lbl;w.appendChild(l);w.appendChild(el);return w;}
   var labelIn=document.createElement('input');labelIn.type='text';labelIn.className='nl';labelIn.placeholder='Label (optional)';labelIn.style.width='100%';
   labelIn.addEventListener('input',function(){_refreshCompSels();_refreshMixinSel();_updatePreview();});
   var machineIn=document.createElement('input');machineIn.type='text';machineIn.className='nm';machineIn.placeholder='Machine tag';machineIn.style.width='100%';
@@ -27279,10 +27279,12 @@ document.getElementById('btn_add_node').addEventListener('click',function(){addP
 
 // ── Save chain ────────────────────────────────────────────────────────────────
 function saveChain(){
+  var _saveBtn=document.getElementById('btn_save_chain');
+  try {
   var name=document.getElementById('builder_name').value.trim();
   var cid=document.getElementById('builder_id').value.trim();
   var st=document.getElementById('builder_status');
-  if(!name){st.style.color='var(--al)';st.textContent='Chain name required.';return;}
+  if(!name){_ssToast('Chain name is required','warn');if(st){st.style.color='var(--al)';st.textContent='Chain name required.';}document.getElementById('builder_name').focus();return;}
   var nodes=[];
   document.querySelectorAll('#builder_nodes .pos-card').forEach(function(grp){
     var rows=grp.querySelectorAll('.pos-stack-node');
@@ -27312,7 +27314,7 @@ function saveChain(){
       nodes.push(stackNode);
     }
   });
-  if(!nodes.length){st.style.color='var(--al)';st.textContent='Add at least one node.';return;}
+  if(!nodes.length){_ssToast('Add at least one position with a stream selected','warn');if(st){st.style.color='var(--al)';st.textContent='Add at least one node.';}return;}
   function _parseCompVal(v){var p=String(v).split(':');var idx=parseInt(p[0]);var sub=p.length>1?parseInt(p[1]):null;return{idx:idx,sub:sub};}
   var comparators=[];
   document.querySelectorAll('#builder_comparators .comp-row').forEach(function(row){
@@ -27336,13 +27338,17 @@ function saveChain(){
   var clipSeconds=parseFloat(document.getElementById('builder_clip_seconds').value||'0')||0;
   var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_holdoff_seconds:faultHoldoff,fault_shift_grace_seconds:shiftGrace,adbreak_gap_tolerance_seconds:adbreakGapTol,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId,clip_seconds:clipSeconds};
   if(cid)payload.id=cid;
-  var _saveBtn=document.getElementById('btn_save_chain');
   _btnLoad(_saveBtn);
-  _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
+  _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(d){
     _btnReset(_saveBtn);
-    if(d.ok){_ssToast('Chain saved','ok');setTimeout(()=>location.reload(),600);}
-    else{st.style.color='var(--al)';st.textContent='Error: '+(d.error||'?');}
-  }).catch(e=>{_btnReset(_saveBtn);st.style.color='var(--al)';st.textContent=''+e;});
+    if(d.ok){_ssToast('Chain saved','ok');setTimeout(function(){location.reload();},600);}
+    else{_ssToast('Save failed: '+(d.error||'unknown error'),'err');}
+  }).catch(function(e){_btnReset(_saveBtn);_ssToast('Network error — chain not saved','err');console.error('[saveChain]',e);});
+  } catch(err) {
+    _btnReset(_saveBtn);
+    _ssToast('Unexpected error — see console','err');
+    console.error('[saveChain exception]',err);
+  }
 }
 document.getElementById('btn_save_chain').addEventListener('click',saveChain);
 

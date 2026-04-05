@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.64] - 2026-04-05
+
+### Fixed
+- **Chain builder — Save Chain does nothing**: All error feedback was written to a tiny 12 px grey `#builder_status` span in the drawer footer that was easy to miss. Errors now use `_ssToast` (visible bottom-right toast). Added a `try/catch` wrapper around the entire function to surface unexpected JS exceptions via toast + `console.error`. Replaced arrow-function `.then` chains with plain functions to avoid any parser edge-cases. The page-reload-after-save also moved to a plain `function(){}` callback.
+- **Chain builder — node options panel always visible**: `.pos-optional` CSS rule had two `display:` values (`display:none` then `display:grid` in the same declaration). The second value always won, so the Label / Machine tag / Silence threshold panel was always expanded and could not be toggled closed. Fixed by removing the stray `display:grid` from the base rule — only `.pos-optional.open` now sets `display:grid`.
+- **Chain builder — "Alert when offline" checkbox/label misaligned**: `.pos-optional label { display:block }` applied to every label inside the options panel, including the inline "Alert when this stream goes offline" label inside a flex row. `display:block` prevented it from sitting next to the checkbox as a flex item. Fixed by narrowing the CSS rule to `.pos-optional .field-lbl` and setting `class="field-lbl"` only on the field-header labels created by `mkField()` — the inline offline label is unaffected.
+
+---
+
 ## [3.5.63] - 2026-04-05
 
 ### Changed
