@@ -290,6 +290,11 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
 .stat{padding:10px 14px;border:1px solid var(--bor);border-radius:8px;background:#0c1f40;font-size:13px;margin-bottom:12px}
 .log-entry{font-size:12px;font-family:ui-monospace,monospace;padding:4px 0;border-bottom:1px solid #0d2040;color:var(--mu)}
 .log-entry .ts{color:#4a6a9a;margin-right:8px}
+.empty-state{text-align:center;padding:36px 20px;color:var(--mu)}
+.empty-state .es-icon{font-size:28px;margin-bottom:8px;display:block;opacity:.55}
+.empty-state .es-title{font-size:13px;font-weight:600;color:var(--tx);margin-bottom:4px}
+.empty-state .es-sub{font-size:12px;line-height:1.5}
+.bs{padding:3px 9px;font-size:12px}
 </style></head><body>
 <header>
   <a class="back" href="/">← Back</a>
@@ -309,7 +314,7 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
     {% if migrate_available %}
     <div style="margin-top:14px;padding:12px 14px;border:1px solid var(--wn);border-radius:8px;background:#1a1000">
       <p style="font-size:13px;color:var(--wn);margin-bottom:10px">⬆ <strong>Existing credentials found</strong> in SignalScope Settings → Notifications. Click below to copy them here in one go — no re-typing needed.</p>
-      <button id="migrate-btn" class="btn" style="background:var(--wn);color:#000">⬆ Migrate from existing settings</button>
+      <button id="migrate-btn" class="btn bp">⬆ Migrate from existing settings</button>
     </div>
     {% endif %}
     {% if migrate_done %}
@@ -328,7 +333,7 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
     <h2>🧪 Test Push Notification</h2>
     <p style="font-size:12px;color:var(--mu);margin-bottom:14px">Sends a [TEST] notification to all registered iOS and Android device tokens using the credentials above. Useful for verifying your APNs/FCM setup is working.</p>
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <button id="test-btn" class="btn" style="background:#1e3a5f;color:var(--tx)">🔔 Send test notification</button>
+      <button id="test-btn" class="btn bg">🔔 Send test notification</button>
       <span id="test-result" style="font-size:13px"></span>
     </div>
   </div>
@@ -369,7 +374,11 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
       <div class="log-entry"><span class="ts">{{e.ts}}</span>{{e.msg}}</div>
       {% endfor %}
     {% else %}
-      <p class="mu" style="font-size:13px">No deliveries yet.</p>
+      <div class="empty-state">
+        <span class="es-icon">📭</span>
+        <div class="es-title">No deliveries yet</div>
+        <div class="es-sub">Push notifications will appear here once devices start receiving them.</div>
+      </div>
     {% endif %}
   </div>
 
@@ -396,23 +405,23 @@ if(_sb){_sb.addEventListener('click',function(){
 
 var _tb=document.getElementById('test-btn'),_tr=document.getElementById('test-result');
 if(_tb){_tb.addEventListener('click',function(){
-  _tb.disabled=true;_tb.textContent='Sending…';_tr.textContent='';
+  _tr.textContent='';_btnLoad(_tb);
   fetch('/hub/push/test',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'},body:'{}',credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      _tb.disabled=false;_tb.textContent='🔔 Send test notification';
+      _btnReset(_tb);
       if(d.ok){_tr.style.color='var(--ok)';_tr.textContent='✔ Sent — iOS: '+d.sent_ios+', Android: '+d.sent_android+(d.no_tokens?' (no tokens registered)':'');}
       else{_tr.style.color='var(--al)';_tr.textContent='✘ '+(d.error||'failed');}
     })
-    .catch(function(e){_tb.disabled=false;_tb.textContent='🔔 Send test notification';_tr.style.color='var(--al)';_tr.textContent='✘ '+e;});
+    .catch(function(e){_btnReset(_tb);_tr.style.color='var(--al)';_tr.textContent='✘ '+e;});
 });}
 
 var _mb=document.getElementById('migrate-btn');
 if(_mb){_mb.addEventListener('click',function(){
-  _mb.disabled=true;_mb.textContent='Migrating…';
+  _btnLoad(_mb);
   fetch('/hub/push/migrate',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'},body:'{}',credentials:'same-origin'})
-    .then(function(r){if(r.ok){window.location='/hub/push?migrated=1';}else{r.text().then(function(t){_ssToast('Migration failed: '+t,'err');_mb.disabled=false;_mb.textContent='⬆ Migrate from existing settings';});}})
-    .catch(function(e){_ssToast('Migration error: '+e,'err');_mb.disabled=false;_mb.textContent='⬆ Migrate from existing settings';});
+    .then(function(r){if(r.ok){window.location='/hub/push?migrated=1';}else{r.text().then(function(t){_btnReset(_mb);_ssToast('Migration failed: '+t,'err');});}})
+    .catch(function(e){_btnReset(_mb);_ssToast('Migration error: '+e,'err');});
 });}
 </script>
 </body></html>"""

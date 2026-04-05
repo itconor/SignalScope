@@ -442,6 +442,10 @@ th{color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px sol
 td{padding:6px 8px}
 .srv-section{margin-bottom:12px;padding:10px;background:#0a1a36;border-radius:8px;border:1px solid var(--bor)}
 .srv-section h4{font-size:12px;color:var(--acc);margin-bottom:8px;font-weight:700}
+.empty-state{text-align:center;padding:36px 20px;color:var(--mu)}
+.empty-state .es-icon{font-size:28px;margin-bottom:8px;display:block;opacity:.5}
+.empty-state .es-title{font-size:13px;font-weight:600;color:var(--tx);margin-bottom:4px}
+.empty-state .es-sub{font-size:12px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -596,7 +600,9 @@ function _esc(s){
 function _renderCards(stations){
   var el = document.getElementById('cards');
   if(!stations || !stations.length){
-    el.innerHTML = '<div style="color:var(--mu);font-style:italic">No stations configured.</div>';
+    el.innerHTML = '<div class="empty-state"><span class="es-icon">📻</span>'
+      +'<div class="es-title">No stations configured yet</div>'
+      +'<div class="es-sub">Expand the <strong>Servers &amp; Configuration</strong> panel below to discover and add AzuraCast stations.</div></div>';
     return;
   }
   el.innerHTML = stations.map(_renderCard).join('');
@@ -605,7 +611,9 @@ function _renderCards(stations){
 function _renderSrvList(servers, stations){
   var el = document.getElementById('srv-list');
   if(!servers || !servers.length){
-    el.innerHTML = '<div style="color:var(--mu);font-style:italic;margin-bottom:8px">No servers configured.</div>';
+    el.innerHTML = '<div class="empty-state" style="padding:24px 20px"><span class="es-icon">🔌</span>'
+      +'<div class="es-title">No AzuraCast servers added yet</div>'
+      +'<div class="es-sub">Enter your server URL and API key in the form below and click <strong>🔍 Discover Stations</strong>.</div></div>';
     return;
   }
   var html = '';
@@ -851,6 +859,10 @@ tr:hover td{background:rgba(23,52,95,.35)}
 .site-sep td{background:rgba(10,25,55,.7);color:var(--acc);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:5px 12px}
 #msg{display:none;border-radius:8px;padding:8px 12px;margin-bottom:14px;font-size:13px}
 .msg-err{display:block!important;background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
+.empty-state{text-align:center;padding:48px 20px;color:var(--mu)}
+.empty-state .es-icon{font-size:32px;margin-bottom:10px;display:block;opacity:.5}
+.empty-state .es-title{font-size:14px;font-weight:600;color:var(--tx);margin-bottom:6px}
+.empty-state .es-sub{font-size:12px;line-height:1.55}
 </style>
 </head>
 <body>

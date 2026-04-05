@@ -2,6 +2,18 @@
 
 ---
 
+## [3.5.47] - 2026-04-05
+
+### Changed
+- **Empty states — Push, AzuraCast** — replaced bare italic/plain text "nothing here" messages with centred empty-state panels (icon + title + sub-text with actionable hint):
+  - Push plugin deliveries tab: 📭 "No deliveries yet" with explanatory sub-text
+  - AzuraCast overview stations grid: 📻 "No stations configured yet" pointing to the Servers panel below
+  - AzuraCast overview servers list: 🔌 "No AzuraCast servers added yet" pointing to the Discover form
+- **Inline button styles cleaned up — push.py**: Migrate and Test buttons now use `.btn.bp` / `.btn.bg` class system instead of raw inline `style=` colour overrides. Loading shimmer (`_btnLoad`/`_btnReset`) also added to both buttons.
+- **`.empty-state` CSS** added to push.py and azuracast.py (both settings and overview templates).
+
+---
+
 ## [3.5.46] - 2026-04-05
 
 ### Changed
