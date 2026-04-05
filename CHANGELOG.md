@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.66] - 2026-04-05
+
+### Fixed
+- **Save Chain still broken**: Three more adjacent-string-literal JS syntax errors in `topnav()` — `bd.style.cssText`, `box.style.cssText` (both in `_ssConfirm`) had CSS strings split across Python string boundaries without `+`. Same root cause as 3.5.65. All occurrences in the topnav script are now fixed.
+
+---
+
 ## [3.5.65] - 2026-04-05
 
 ### Fixed

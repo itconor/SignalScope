@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.65"
+BUILD                  = "SignalScope-3.5.66"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16897,11 +16897,11 @@ def _inject_nav():
               'opts=opts||{};'
               'var bd=document.createElement("div");'
               'bd.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:99998;"'
-                '"display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)";'
+                '+"display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)";'
               'var box=document.createElement("div");'
               'box.style.cssText="background:#0d2346;border:1px solid #17345f;border-radius:12px;"'
-                '"padding:24px;width:min(380px,90vw);box-shadow:0 24px 60px rgba(0,0,0,.65);"'
-                '"font-family:system-ui,sans-serif;animation:_ssConfIn .15s ease-out";'
+                '+"padding:24px;width:min(380px,90vw);box-shadow:0 24px 60px rgba(0,0,0,.65);"'
+                '+"font-family:system-ui,sans-serif;animation:_ssConfIn .15s ease-out";'
               'var yBg=opts.danger?"#ef4444":"#17a8ff";'
               'var yLbl=opts.yesLabel||"Confirm";'
               'var nLbl=opts.noLabel||"Cancel";'
