@@ -155,7 +155,7 @@
     "file": "synccap.py",
     "icon": "🎙",
     "description": "Multi-site synchronized audio capture. Select any combination of inputs from any connected sites, set a capture duration (5–300 s), and press Capture. The hub broadcasts a timestamped command; each client grabs the last N seconds from its rolling audio buffer at the agreed moment and uploads the clip. Hub-local inputs are captured directly. All clips are presented together on a single page with inline audio players for side-by-side listening and comparison — ideal for checking simulcast alignment, network contribution quality, or making reference recordings across a transmitter network. Hub-only. v1.0.4: root-cause fix — client detection used hub_server is None which is always False; switched to mode-based detection so client handler now correctly registers. v1.0.1: PCM float32→int16 scaling; full error logging.",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/synccap.py"
   }

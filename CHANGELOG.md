@@ -9,6 +9,14 @@
 
 ---
 
+## [Sync Capture plugin 1.0.5] - 2026-04-05
+
+### Fixed
+- **Clips panel invisible after capture**: The `.clips-panel` CSS class had `display:none` applied to the `<td>` element itself. When clicking a history row to expand it, the parent `<tr>` became visible but the `<td>` inside remained hidden. Removed `display:none` from the CSS class — the `<tr>` already starts with `style="display:none"` and is the correct visibility gate.
+- **Clips don't auto-expand after capture completes**: After a capture finishes, `loadCaptures()` re-rendered the history table but left all rows collapsed. Now passes the just-completed `capture_id` to `loadCaptures()` which auto-expands that row so clips are immediately visible.
+
+---
+
 ## [Sync Capture plugin 1.0.4] - 2026-04-05
 
 ### Fixed

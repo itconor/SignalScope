@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.4",
+    "version":  "1.0.5",
 }
 
 import os
@@ -686,7 +686,7 @@ td{padding:7px 10px;border-bottom:1px solid rgba(23,52,95,.4);font-size:12px}
 .b-mu{background:rgba(138,164,200,.12);color:var(--mu)}
 .b-al{background:rgba(239,68,68,.15);color:var(--al)}
 /* clips panel */
-.clips-panel{display:none;background:#050d1e;border-top:1px solid var(--bor)}
+.clips-panel{background:#050d1e;border-top:1px solid var(--bor)}
 .clips-grid{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
 .clip-card{background:var(--sur);border:1px solid var(--bor);border-radius:8px;padding:12px}
 .clip-site{font-size:10px;color:var(--mu);margin-bottom:2px}
@@ -980,19 +980,26 @@ function pollProgress(capId, selections){
         clearInterval(_pollTimer); _pollTimer=null;
         document.getElementById('prog-title').textContent =
           cap.status==='complete'?'Capture complete ✓':'Capture expired — partial results';
-        loadCaptures();
+        loadCaptures(capId);  // pass capId to auto-expand
       }
     })
     .catch(function(){});
 }
 
 // ── history table ──────────────────────────────────────────────────────────
-document.getElementById('btn-refresh').addEventListener('click', loadCaptures);
+document.getElementById('btn-refresh').addEventListener('click', function(){ loadCaptures(); });
 
-function loadCaptures(){
+function loadCaptures(autoExpandId){
   fetch('/api/synccap/captures',{credentials:'same-origin'})
     .then(function(r){return r.json();})
-    .then(renderHistory)
+    .then(function(caps){
+      renderHistory(caps);
+      // Auto-expand the latest capture row when triggered by completion
+      if(autoExpandId){
+        var panel = document.getElementById('clips_'+autoExpandId);
+        if(panel) panel.style.display='';
+      }
+    })
     .catch(function(){});
 }
 
