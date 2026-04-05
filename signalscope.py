@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.67"
+BUILD                  = "SignalScope-3.5.68"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16860,6 +16860,7 @@ def _inject_nav():
                f'{_esc(_current_user_role())}</span></span>'
                if session.get("username") else "")
             + (_a("audit", "📋\u202fAudit Log", "/audit") if _is_admin() and not show_hub else "")
+            + _a("about", "ℹ\u202fAbout", "/about")
             + (_a("settings", "⚙\u202fSettings", "/settings") if _is_admin() else "")
             + f'<form method="post" action="/logout" style="margin:0">'
               f'<input type="hidden" name="_csrf_token" value="{csrf}">'
@@ -18315,6 +18316,7 @@ tr.data-row.expanded td{background:#0d1e40}
 {{ topnav("reports") }}
 <div style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;gap:7px;align-items:center;flex-wrap:wrap">
   <span style="font-size:13px;font-weight:600">📋 Alert Reports</span>
+  <span style="font-size:11px;color:var(--mu)">Alert history, fault analysis and clip review</span>
   <div style="margin-left:auto;display:flex;gap:7px">
     <a href="/reports.csv" id="csv-dl-link" class="btn bp" title="Download filtered events as CSV">⬇ CSV</a>
     <form method="post" action="/reports/clear" id="_rpt-clr-form" style="display:inline"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}"><button class="btn bd bs" type="button" onclick="_ssConfirm('This will permanently delete all alert history.',function(){document.getElementById('_rpt-clr-form').submit();},{danger:true,yesLabel:'Clear All',title:'Clear alert history?'})">🗑 Clear</button></form>
@@ -20601,6 +20603,146 @@ Website: <a href="https://signalscope.site" target="_blank">https://signalscope.
 def privacy_policy():
     """Public privacy policy page — no login required."""
     return _PRIVACY_TPL
+
+
+_ABOUT_TPL = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>About — SignalScope</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="{{csrf_token()}}">
+<style nonce="{{csp_nonce()}}">
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:13px}
+main{padding:24px 20px 48px;max-width:800px;margin:0 auto}
+.hero{text-align:center;padding:40px 20px 32px}
+.hero .icon{font-size:56px;display:block;margin-bottom:16px;filter:drop-shadow(0 0 24px rgba(23,168,255,.35))}
+.hero h1{font-size:34px;font-weight:800;letter-spacing:-.03em;margin-bottom:10px;color:var(--tx)}
+.hero .tagline{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.22em;font-weight:700;margin-bottom:14px}
+.hero .desc{color:var(--mu);font-size:13px;line-height:1.7;max-width:520px;margin:0 auto}
+.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+@media(max-width:540px){.stat-grid{grid-template-columns:1fr 1fr}}
+.stat{background:var(--sur);border:1px solid var(--bor);border-radius:12px;padding:20px 14px;text-align:center}
+.stat-n{font-size:30px;font-weight:800;color:var(--acc);line-height:1}
+.stat-l{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;margin-top:7px}
+.card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;margin-bottom:16px}
+.ch{padding:9px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54);font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em}
+.cb{padding:0}
+.row{display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-bottom:1px solid rgba(23,52,95,.5)}
+.row:last-child{border-bottom:none}
+.rl{color:var(--mu);font-size:12px}
+.rv{font-weight:600;font-size:13px;text-align:right}
+a{color:var(--acc);text-decoration:none}
+a:hover{text-decoration:underline}
+.badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;background:#1e3a5f;color:var(--acc);font-weight:700}
+.footer{text-align:center;padding:24px 0 8px;color:var(--mu);font-size:12px;line-height:1.8}
+.oss-row{display:flex;justify-content:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.oss{display:inline-flex;align-items:center;gap:5px;background:#0a1a35;border:1px solid var(--bor);border-radius:6px;padding:5px 12px;font-size:12px;color:var(--mu);text-decoration:none}
+.oss:hover{border-color:var(--acc);color:var(--acc)}
+</style>
+</head>
+<body>
+{{ topnav("about") }}
+<main>
+
+  <div class="hero">
+    <span class="icon">📡</span>
+    <h1>SignalScope</h1>
+    <div class="tagline">Broadcast signal intelligence</div>
+    <div class="desc">Open-source broadcast monitoring platform for FM, DAB and IP audio streams — built for engineers who need reliable, real-time signal intelligence.</div>
+  </div>
+
+  <div class="stat-grid">
+    <div class="stat">
+      <div class="stat-n">{{stream_count}}</div>
+      <div class="stat-l">Streams monitored</div>
+    </div>
+    <div class="stat">
+      <div class="stat-n">{{plugin_count}}</div>
+      <div class="stat-l">Active plugins</div>
+    </div>
+    <div class="stat">
+      <div class="stat-n">{{uptime}}</div>
+      <div class="stat-l">Uptime</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="ch">⚙ System</div>
+    <div class="cb">
+      <div class="row"><span class="rl">Build</span><span class="rv"><span class="badge">{{build}}</span></span></div>
+      <div class="row"><span class="rl">Mode</span><span class="rv">{{mode_label}}</span></div>
+      <div class="row"><span class="rl">Site name</span><span class="rv">{{site_name}}</span></div>
+      <div class="row"><span class="rl">Running since</span><span class="rv">{{started_at}}</span></div>
+      <div class="row">
+        <span class="rl">Health</span>
+        <span class="rv" id="_about-health" style="color:var(--mu)">Checking…</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="ch">👤 Author &amp; project</div>
+    <div class="cb">
+      <div class="row"><span class="rl">Built by</span><span class="rv">Conor Ewings</span></div>
+      <div class="row"><span class="rl">Contact</span><span class="rv"><a href="mailto:conor.ewings@gmail.com">conor.ewings@gmail.com</a></span></div>
+      <div class="row"><span class="rl">Source code</span><span class="rv"><a href="https://github.com/itconor/SignalScope" target="_blank" rel="noopener noreferrer">github.com/itconor/SignalScope ↗</a></span></div>
+      <div class="row"><span class="rl">Licence</span><span class="rv">MIT — free &amp; open source</span></div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Built with ❤ for broadcast engineers
+    <div class="oss-row">
+      <a class="oss" href="https://github.com/itconor/SignalScope" target="_blank" rel="noopener noreferrer">⭐ Star on GitHub</a>
+      <a class="oss" href="https://github.com/itconor/SignalScope/issues" target="_blank" rel="noopener noreferrer">🐛 Report an issue</a>
+      <a class="oss" href="/privacy">Privacy Policy</a>
+    </div>
+  </div>
+
+</main>
+<script nonce="{{csp_nonce()}}">
+fetch('/api/health',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+  var el=document.getElementById('_about-health');
+  if(!el)return;
+  var col=d.status==='ok'?'var(--ok)':d.status==='degraded'?'var(--wn)':'var(--al)';
+  el.innerHTML='<span style="color:'+col+';font-weight:700">'+d.status.toUpperCase()+'</span>';
+}).catch(function(){});
+</script>
+</body></html>"""
+
+
+@app.get("/about")
+@login_required
+def about_page():
+    """About page — SignalScope version, system info and author details."""
+    import datetime as _dt
+    cfg = monitor.app_cfg
+    uptime_s = int(time.time() - _PROCESS_START)
+    d, rem = divmod(uptime_s, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d > 0:
+        uptime = f"{d}d {h}h"
+    elif h > 0:
+        uptime = f"{h}h {m}m"
+    else:
+        uptime = f"{m}m"
+    mode_map = {"hub": "Hub only", "client": "Client only",
+                "both": "Hub + Client", "standalone": "Standalone"}
+    mode = (cfg.hub.mode if cfg.hub else "standalone") or "standalone"
+    mode_label = mode_map.get(mode, mode.title())
+    site_name = (cfg.hub.site_name or socket.gethostname()) if cfg.hub else socket.gethostname()
+    started_at = _dt.datetime.fromtimestamp(_PROCESS_START).strftime("%-d %b %Y, %H:%M")
+    return render_template_string(_ABOUT_TPL,
+        build=BUILD,
+        stream_count=len(cfg.inputs),
+        plugin_count=len(_plugins),
+        uptime=uptime,
+        mode_label=mode_label,
+        site_name=site_name,
+        started_at=started_at,
+    )
 
 
 @app.get("/")
@@ -26567,7 +26709,10 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
   </div>
 </div>
 <div class="page-title">
-  <h1>⛓ Broadcast Chains</h1>
+  <div>
+    <h1>⛓ Broadcast Chains</h1>
+    <p style="font-size:12px;color:var(--mu);margin-top:4px">Automated fault detection and failover monitoring for broadcast signal chains</p>
+  </div>
   <div style="display:flex;gap:8px;align-items:center">
     <button class="btn bp bs" id="btn_new_abg">＋ New A/B Group</button>
     <button class="btn bp" id="btn_new_chain">+ New Chain</button>
@@ -35505,6 +35650,7 @@ setInterval(_loadTrends, 300000);
 <div class="hub-topbar" style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;gap:7px;align-items:center">
   <span style="font-size:13px;font-weight:600">🛰 Hub Dashboard</span>
   <span class="badge">{{sites|length}} site{{"s" if sites|length!=1 else ""}}</span>
+  <span style="font-size:11px;color:var(--mu)">Live signal monitoring across all connected sites</span>
   <div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
     <a href="/hub?wall={{'0' if wall_mode else '1'}}{% if problems_only %}&problems=1{% endif %}" class="btn bg bs" title="Full-screen display mode — hides navigation, enlarges cards, suitable for monitoring screens">{{'🧰 Normal Mode' if wall_mode else '🖥 Wall Mode'}}</a>
     <button type="button" class="btn bg bs" onclick="toggleFullscreen()">⛶ Fullscreen</button>

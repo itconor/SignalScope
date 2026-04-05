@@ -2,6 +2,17 @@
 
 ---
 
+## [3.5.68] - 2026-04-05
+
+### Added
+- **`/about` page**: New page accessible from the topnav "ℹ About" link. Shows the SignalScope branding and tagline ("Broadcast signal intelligence"), three live stat cards (streams monitored, active plugins, uptime), a System card (build, mode, site name, running since, live health status via `/api/health`), and an Author card (Conor Ewings, conor.ewings@gmail.com, GitHub link, MIT licence). Links to GitHub star/issue pages and the privacy policy in the footer.
+- **Page subtitles**: One-sentence descriptions added to three main pages so first-time visitors immediately understand what each section does:
+  - Hub Dashboard — *"Live signal monitoring across all connected sites"*
+  - Alert Reports — *"Alert history, fault analysis and clip review"*
+  - Broadcast Chains — *"Automated fault detection and failover monitoring for broadcast signal chains"*
+
+---
+
 ## [3.5.67] - 2026-04-05
 
 ### Added
