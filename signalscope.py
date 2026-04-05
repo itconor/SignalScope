@@ -2297,7 +2297,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.39"
+BUILD                  = "SignalScope-3.5.40"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16446,10 +16446,12 @@ def _inject_nav():
         reports_group = ("" if hub_only else
                          _group("📋\u202fReports", [("reports", "📋\u202fReports", "/reports"),
                                                     ("sla",     "📈\u202fSLA",     "/sla")]))
-        hub_group     = (_group("🌐\u202fHub", [("hub",         "🌐\u202fHub",                "/hub"),
-                                               ("hub_reports", "📋\u202fHub Reports",      "/hub/reports"),
-                                               ("chains",      "🔗\u202fBroadcast Chains", "/chains")])
-                         if show_hub else "")
+        _hub_items    = [("hub",         "🌐\u202fHub",                "/hub"),
+                         ("hub_reports", "📋\u202fHub Reports",      "/hub/reports"),
+                         ("chains",      "🔗\u202fBroadcast Chains", "/chains")]
+        if _is_admin():
+            _hub_items.append(("audit", "📋\u202fAudit Log", "/audit"))
+        hub_group     = _group("🌐\u202fHub", _hub_items) if show_hub else ""
 
         # ── Plugins dropdown ──────────────────────────────────────────────
         _vis_plugins = [p for p in _plugins
@@ -16684,7 +16686,7 @@ def _inject_nav():
                f'padding:1px 5px;font-size:10px;color:#b7d8ff">'
                f'{_esc(_current_user_role())}</span></span>'
                if session.get("username") else "")
-            + (_a("audit", "📋\u202fAudit", "/audit") if _is_admin() else "")
+            + (_a("audit", "📋\u202fAudit Log", "/audit") if _is_admin() and not show_hub else "")
             + (_a("settings", "⚙\u202fSettings", "/settings") if _is_admin() else "")
             + f'<form method="post" action="/logout" style="margin:0">'
               f'<input type="hidden" name="_csrf_token" value="{csrf}">'
@@ -22007,15 +22009,16 @@ input[type=text]{width:100%;margin-top:4px;padding:11px 14px;background:#173a69;
 
 TOTP_SETUP_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Setup 2FA — SignalScope</title>
 <meta name="csrf-token" content="{{csrf_token()}}">
-<style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+<style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:14px;min-height:100vh}
-header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px}
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
 header h1{font-size:16px;font-weight:700}main{padding:28px;max-width:560px;margin:0 auto}
 .card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;margin-bottom:16px}
 .ch{padding:9px 14px;background:linear-gradient(180deg,#143766,#102b54);font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--bor)}
 .cb{padding:18px}
-.btn{display:inline-block;padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;border:none;font-weight:600;text-decoration:none}
-.bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}
+.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;font-weight:600;text-decoration:none;font-family:inherit}.btn:hover{filter:brightness(1.15)}
+.bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}.bd{background:var(--al);color:#fff}
+.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
 label{font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px}
 input[type=text]{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:8px 12px;font-size:16px;letter-spacing:4px;width:100%}
 .err{padding:8px 12px;background:#2a0a0a;color:var(--al);border:1px solid #991b1b;border-radius:6px;margin-bottom:12px;font-size:13px}

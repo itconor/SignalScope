@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.40] - 2026-04-05
+
+### Fixed
+- **TOTP setup page nav bar oversized** — `TOTP_SETUP_TPL` was missing the `.bs` (small button) class, so the topnav's `btn bg bs` nav buttons rendered at full `5px 12px` padding instead of the compact `3px 9px`. Also added missing `--wn` CSS variable, `.bd` (danger) and `.nav-active` classes, and `flex-wrap:wrap` + `box-shadow` to the `header` CSS rule so the setup page is fully style-consistent with the rest of the app.
+
+### Changed
+- **Audit Log moved into Hub dropdown** — the "📋 Audit Log" nav link is now an item inside the Hub ▾ dropdown menu (between Broadcast Chains and the Hub items) rather than a standalone button. In standalone (non-hub) mode it remains a standalone button since there is no Hub dropdown to place it in.
+
+---
+
 ## [3.5.39] - 2026-04-05
 
 ### Fixed
