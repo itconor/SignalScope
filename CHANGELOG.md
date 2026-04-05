@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.44] - 2026-04-05
+
+### Changed
+- **Sources panel converted to centred modal popover** — clicking ⚙ Sources on a replica page now opens a fixed-position modal with a blurred dark backdrop, sticky header, × close button, slide-in animation, Escape-to-close, and backdrop-click-to-close. The panel no longer expands inline at the bottom of the site card. Form inputs enlarged to 13 px and use the standard `#0d1e40` input background. Status messages (`hubMgrMsg`) now use themed `.msg-ok` / `.msg-err` styled boxes instead of plain coloured text.
+
+---
+
 ## [3.5.43] - 2026-04-05
 
 ### Changed

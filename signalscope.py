@@ -2297,7 +2297,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.43"
+BUILD                  = "SignalScope-3.5.44"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -31918,6 +31918,10 @@ main{padding:18px;max-width:1500px;margin:0 auto}
 .btn-loading.bp{background-image:linear-gradient(90deg,var(--acc) 25%,#4db8ff 50%,var(--acc) 75%) !important}
 .btn-loading.bd{background-image:linear-gradient(90deg,var(--al) 25%,#f87171 50%,var(--al) 75%) !important}
 .btn-loading.bg{background-image:linear-gradient(90deg,var(--bor) 25%,#1e4a7f 50%,var(--bor) 75%) !important}
+@keyframes hubMgrIn{from{opacity:0;transform:translate(-50%,-46%)}to{opacity:1;transform:translate(-50%,-50%)}}
+.hub-mgr-open{animation:hubMgrIn .18s ease-out forwards}
+.hub-mgr-msg.msg-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
+.hub-mgr-msg.msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
 </style><link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png"></head><body>
 {{ topnav("hub") }}
 <main>
@@ -32313,87 +32317,6 @@ main{padding:18px;max-width:1500px;margin:0 auto}
     </div>
     {% endif %}
 
-    <!-- ── Source management panel (admin only) ──────────────────── -->
-    {% if is_admin %}
-    <div id="hub-mgr-{{site.site|e}}" style="display:none;border-top:2px solid var(--acc);background:#080f1f;padding:12px 16px">
-      <div style="font-size:12px;font-weight:700;color:var(--acc);margin-bottom:10px">⚙ Source Management — {{site.site}}</div>
-      <!-- Add source form -->
-      <div style="background:#0d2346;border:1px solid var(--bor);border-radius:8px;padding:12px;margin-bottom:10px">
-        <div style="font-size:11px;font-weight:700;color:var(--mu);margin-bottom:8px">➕ Add Source</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-          <div class="hub-mgr-name-wrap" data-site="{{site.site|e}}">
-            <label style="font-size:11px;color:var(--mu)">Name</label>
-            <input class="hub-mgr-name" data-site="{{site.site|e}}" placeholder="e.g. BBC R4" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
-          </div>
-          <div>
-            <label style="font-size:11px;color:var(--mu)">Source Type</label>
-            <select class="hub-mgr-type" data-site="{{site.site|e}}" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
-              <option value="rtp">Livewire / AES67 (RTP)</option>
-              <option value="http">HTTP Audio Stream</option>
-              <option value="fm">FM via RTL-SDR</option>
-              <option value="dab">DAB via RTL-SDR</option>
-            </select>
-          </div>
-          <div class="hub-mgr-dev-wrap" data-site="{{site.site|e}}" style="grid-column:1/-1">
-            <label class="hub-mgr-dev-lbl" data-site="{{site.site|e}}" style="font-size:11px;color:var(--mu)">Device Address</label>
-            <input class="hub-mgr-dev" data-site="{{site.site|e}}" placeholder="e.g. 239.192.0.1:5004" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
-          </div>
-          <!-- FM fields (shown only when type=fm) -->
-          <div class="hub-mgr-fm-fields" data-site="{{site.site|e}}" style="display:none;grid-column:1/-1">
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;align-items:end">
-              <div>
-                <label style="font-size:11px;color:var(--mu)">Frequency (MHz)</label>
-                <input class="hub-mgr-fm-freq" data-site="{{site.site|e}}" type="number" step="0.1" min="64" max="108" placeholder="e.g. 96.7" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
-              </div>
-              <div>
-                <label style="font-size:11px;color:var(--mu)">PPM Offset</label>
-                <input class="hub-mgr-fm-ppm" data-site="{{site.site|e}}" type="number" value="0" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
-              </div>
-              <div>
-                <label style="font-size:11px;color:var(--mu)">Dongle Serial (opt.)</label>
-                <input class="hub-mgr-fm-serial" data-site="{{site.site|e}}" placeholder="auto" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
-              </div>
-            </div>
-          </div>
-          <!-- DAB scan fields (shown only when type=dab) -->
-          <div class="hub-mgr-dab-fields" data-site="{{site.site|e}}" style="display:none;grid-column:1/-1;display:none">
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:6px;align-items:end">
-              <div>
-                <label style="font-size:11px;color:var(--mu)">Channel</label>
-                <select class="hub-mgr-dab-ch" data-site="{{site.site|e}}" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
-                  {% for ch in ['5A','5B','5C','5D','6A','6B','6C','6D','7A','7B','7C','7D','8A','8B','8C','8D','9A','9B','9C','9D','10A','10B','10C','10D','11A','11B','11C','11D','12A','12B','12C','12D','13A','13B','13C','13D','13E','13F'] %}
-                  <option value="{{ch}}" {{'selected' if ch=='12C'}}>{{ch}}</option>
-                  {% endfor %}
-                </select>
-              </div>
-              <div>
-                <label style="font-size:11px;color:var(--mu)">PPM Offset</label>
-                <input class="hub-mgr-dab-ppm" data-site="{{site.site|e}}" type="number" value="0" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
-              </div>
-              <div>
-                <label style="font-size:11px;color:var(--mu)">Dongle Serial (opt.)</label>
-                <input class="hub-mgr-dab-serial" data-site="{{site.site|e}}" placeholder="auto" style="width:100%;padding:5px 8px;background:#173a69;border:1px solid var(--bor);border-radius:5px;color:var(--tx);font-size:12px">
-              </div>
-              <button class="btn bp hub-mgr-dab-scan-btn" data-site="{{site.site|e}}" style="font-size:12px;padding:5px 12px;white-space:nowrap">🔍 Scan Mux</button>
-            </div>
-            <!-- Scan results area -->
-            <div class="hub-mgr-dab-results" data-site="{{site.site|e}}" style="margin-top:8px;display:none">
-              <div style="font-size:11px;color:var(--mu);margin-bottom:6px">Select services to add:</div>
-              <div class="hub-mgr-dab-svc-list" data-site="{{site.site|e}}" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
-              <button class="btn hub-mgr-dab-add-sel" data-site="{{site.site|e}}" style="background:#166534;color:#fff;font-size:12px;padding:4px 14px">➕ Add Selected Services</button>
-            </div>
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <label style="font-size:11px;color:var(--mu)"><input type="checkbox" class="hub-mgr-sil" data-site="{{site.site|e}}" checked style="margin-right:4px">Silence alert</label>
-          <label style="font-size:11px;color:var(--mu)"><input type="checkbox" class="hub-mgr-clip" data-site="{{site.site|e}}" checked style="margin-right:4px">Clip alert</label>
-          <label style="font-size:11px;color:var(--mu)"><input type="checkbox" class="hub-mgr-ai" data-site="{{site.site|e}}" checked style="margin-right:4px">AI monitor</label>
-          <button class="btn hub-mgr-add-btn" data-site="{{site.site|e}}" style="background:#166534;color:#fff;font-size:12px;padding:4px 14px;margin-left:auto" data-site-add="{{site.site|e}}">➕ Add Source</button>
-        </div>
-        <div class="hub-mgr-msg" data-site="{{site.site|e}}" style="font-size:12px;margin-top:6px;display:none"></div>
-      </div>
-    </div>
-    {% endif %}
 
     {% set _cmps = site.get('comparators', []) or [] %}
     {% if _cmps %}
@@ -32443,6 +32366,93 @@ main{padding:18px;max-width:1500px;margin:0 auto}
     {% endif %}
   </div>
 </main>
+
+<!-- ── Sources modal (admin only) ────────────────────────────────────────── -->
+{% if is_admin %}
+<div id="hub-mgr-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:8900;backdrop-filter:blur(3px)" onclick="closeHubMgr()"></div>
+<div id="hub-mgr-{{site.site|e}}" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:8901;width:min(580px,95vw);max-height:88vh;overflow-y:auto;background:#080f1f;border:1px solid var(--bor);border-radius:14px;box-shadow:0 28px 70px rgba(0,0,0,.7)">
+  <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54);position:sticky;top:0;z-index:1;border-radius:14px 14px 0 0">
+    <span style="font-size:14px;font-weight:700;color:var(--acc)">⚙ Sources — {{site.site}}</span>
+    <button onclick="closeHubMgr()" style="margin-left:auto;background:none;border:1px solid var(--bor);border-radius:6px;color:var(--mu);cursor:pointer;font-size:18px;line-height:1;padding:2px 8px">&times;</button>
+  </div>
+  <div style="padding:16px">
+    <!-- Add source form -->
+    <div style="background:#0d2346;border:1px solid var(--bor);border-radius:10px;padding:14px">
+      <div style="font-size:11px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">➕ Add Source</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div class="hub-mgr-name-wrap" data-site="{{site.site|e}}">
+          <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">Name</label>
+          <input class="hub-mgr-name" data-site="{{site.site|e}}" placeholder="e.g. BBC R4" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">Source Type</label>
+          <select class="hub-mgr-type" data-site="{{site.site|e}}" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+            <option value="rtp">Livewire / AES67 (RTP)</option>
+            <option value="http">HTTP Audio Stream</option>
+            <option value="fm">FM via RTL-SDR</option>
+            <option value="dab">DAB via RTL-SDR</option>
+          </select>
+        </div>
+        <div class="hub-mgr-dev-wrap" data-site="{{site.site|e}}" style="grid-column:1/-1">
+          <label class="hub-mgr-dev-lbl" data-site="{{site.site|e}}" style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">Device Address</label>
+          <input class="hub-mgr-dev" data-site="{{site.site|e}}" placeholder="e.g. 239.192.0.1:5004" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+        </div>
+        <!-- FM fields -->
+        <div class="hub-mgr-fm-fields" data-site="{{site.site|e}}" style="display:none;grid-column:1/-1">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;align-items:end">
+            <div>
+              <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">Frequency (MHz)</label>
+              <input class="hub-mgr-fm-freq" data-site="{{site.site|e}}" type="number" step="0.1" min="64" max="108" placeholder="e.g. 96.7" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">PPM Offset</label>
+              <input class="hub-mgr-fm-ppm" data-site="{{site.site|e}}" type="number" value="0" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">Dongle Serial (opt.)</label>
+              <input class="hub-mgr-fm-serial" data-site="{{site.site|e}}" placeholder="auto" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+            </div>
+          </div>
+        </div>
+        <!-- DAB fields -->
+        <div class="hub-mgr-dab-fields" data-site="{{site.site|e}}" style="display:none;grid-column:1/-1">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end">
+            <div>
+              <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">Channel</label>
+              <select class="hub-mgr-dab-ch" data-site="{{site.site|e}}" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+                {% for ch in ['5A','5B','5C','5D','6A','6B','6C','6D','7A','7B','7C','7D','8A','8B','8C','8D','9A','9B','9C','9D','10A','10B','10C','10D','11A','11B','11C','11D','12A','12B','12C','12D','13A','13B','13C','13D','13E','13F'] %}
+                <option value="{{ch}}" {{'selected' if ch=='12C'}}>{{ch}}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">PPM Offset</label>
+              <input class="hub-mgr-dab-ppm" data-site="{{site.site|e}}" type="number" value="0" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">Dongle Serial (opt.)</label>
+              <input class="hub-mgr-dab-serial" data-site="{{site.site|e}}" placeholder="auto" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+            </div>
+            <button class="btn bp hub-mgr-dab-scan-btn" data-site="{{site.site|e}}" style="white-space:nowrap">🔍 Scan Mux</button>
+          </div>
+          <div class="hub-mgr-dab-results" data-site="{{site.site|e}}" style="margin-top:10px;display:none">
+            <div style="font-size:11px;color:var(--mu);margin-bottom:6px">Select services to add:</div>
+            <div class="hub-mgr-dab-svc-list" data-site="{{site.site|e}}" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+            <button class="btn bp hub-mgr-dab-add-sel" data-site="{{site.site|e}}">➕ Add Selected Services</button>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--bor)">
+        <label style="font-size:12px;color:var(--mu);display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="hub-mgr-sil" data-site="{{site.site|e}}" checked style="accent-color:var(--acc)">Silence alert</label>
+        <label style="font-size:12px;color:var(--mu);display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="hub-mgr-clip" data-site="{{site.site|e}}" checked style="accent-color:var(--acc)">Clip alert</label>
+        <label style="font-size:12px;color:var(--mu);display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="hub-mgr-ai" data-site="{{site.site|e}}" checked style="accent-color:var(--acc)">AI monitor</label>
+        <button class="btn bp hub-mgr-add-btn" data-site="{{site.site|e}}" data-site-add="{{site.site|e}}" style="margin-left:auto">➕ Add Source</button>
+      </div>
+      <div class="hub-mgr-msg" data-site="{{site.site|e}}" style="font-size:12px;margin-top:8px;display:none;padding:6px 10px;border-radius:6px"></div>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <!-- ── Ping modal ─────────────────────────────────────────────────────────── -->
 <div id="hub-ping-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9001;align-items:center;justify-content:center">
@@ -32620,13 +32630,35 @@ document.addEventListener('click',function(e){
   })
   .catch(function(err){btn.disabled=false;alert('Error: '+(err.message||err));});
 });
-function hubMgrMsg(site,txt,ok){var el=document.querySelector('.hub-mgr-msg[data-site="'+site+'"]');if(!el)return;el.style.display='';el.style.color=ok?'var(--ok)':'var(--al)';el.textContent=txt;if(ok)setTimeout(function(){el.style.display='none';},5000);}
-
+function hubMgrMsg(site,txt,ok){
+  var el=document.querySelector('.hub-mgr-msg[data-site="'+site+'"]');
+  if(!el)return;
+  el.className='hub-mgr-msg '+(ok?'msg-ok':'msg-err');
+  el.style.display='block';
+  el.textContent=txt;
+  if(ok)setTimeout(function(){el.style.display='none';el.className='hub-mgr-msg';},5000);
+}
+function closeHubMgr(){
+  var bd=document.getElementById('hub-mgr-backdrop');
+  if(bd)bd.style.display='none';
+  document.querySelectorAll('[id^="hub-mgr-"]').forEach(function(p){
+    if(p.id!=='hub-mgr-backdrop'){p.style.display='none';p.classList.remove('hub-mgr-open');}
+  });
+  document.body.style.overflow='';
+}
 document.addEventListener('click',function(e){
   var btn=e.target.closest('[data-action="hub-mgr-toggle"]');if(!btn)return;
   var panel=document.getElementById('hub-mgr-'+btn.dataset.site);
-  if(panel)panel.style.display=panel.style.display==='none'?'block':'none';
+  if(!panel)return;
+  var bd=document.getElementById('hub-mgr-backdrop');
+  if(panel.style.display==='block'){closeHubMgr();return;}
+  closeHubMgr();
+  panel.style.display='block';
+  panel.classList.add('hub-mgr-open');
+  if(bd)bd.style.display='block';
+  document.body.style.overflow='hidden';
 });
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeHubMgr();});
 document.addEventListener('change',function(e){
   var sel=e.target.closest('.hub-mgr-type');if(!sel)return;
   var site=sel.dataset.site, t=sel.value;
