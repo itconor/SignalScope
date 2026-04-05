@@ -130,10 +130,9 @@ async function rotateMobileApiToken(){
 }
 
 async function disableMobileApiToken(){
-  var meta=document.getElementById('mobile-api-meta');
-  var btn=document.getElementById('mobile-disable-btn');
-  if(btn){ _inlineConfirm(btn,'Disable the mobile API token? The iPhone app will stop connecting until a new one is rotated.',function(){ _doDisableMobileApiToken(); }); return; }
-  _doDisableMobileApiToken();
+  _ssConfirm('Disable the mobile API token? The iPhone app will stop connecting until a new one is rotated.',function(){
+    _doDisableMobileApiToken();
+  },{danger:true,yesLabel:'Disable'});
 }
 async function _doDisableMobileApiToken(){
   var meta=document.getElementById('mobile-api-meta');
@@ -1978,9 +1977,9 @@ function userSave(btn){
   }).catch(function(e){_btnReset(btn);msg.style.color='var(--al)';msg.textContent='\u2717 '+e;});
 }
 function userDelete(username){
-  var db=document.querySelector('.user-del-btn[data-username="'+username.replace(/"/g,'\\\"')+'"]');
-  if(db){ _inlineConfirm(db,'Delete user "'+username+'"? This cannot be undone.',function(){ _doUserDelete(username); }); return; }
-  _doUserDelete(username);
+  _ssConfirm('Delete user "'+username+'"? This cannot be undone.',function(){
+    _doUserDelete(username);
+  },{danger:true,yesLabel:'Delete',title:'Delete User'});
 }
 function _doUserDelete(username){
   fetch('/api/users/'+encodeURIComponent(username),{method:'DELETE',credentials:'same-origin',
@@ -2459,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.61"
+BUILD                  = "SignalScope-3.5.62"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -18144,15 +18143,12 @@ function loadClips(idx,streamName){
     .catch(function(){listEl.innerHTML='<em style="color:var(--al)">Failed to load clips</em>';});
 }
 function deleteClip(streamEnc,fileEnc,idx){
-  var btn=event&&event.target;
-  if(btn&&typeof _inlineConfirm==='function'){
-    _inlineConfirm(btn,'Delete this clip? This cannot be undone.',function(){ _doDeleteClip(streamEnc,fileEnc,idx); });
-    return;
-  }
-  _doDeleteClip(streamEnc,fileEnc,idx);
+  _ssConfirm('Delete this clip? This cannot be undone.',function(){
+    _doDeleteClip(streamEnc,fileEnc,idx);
+  },{danger:true,yesLabel:'Delete'});
 }
 function _doDeleteClip(streamEnc,fileEnc,idx){
-  fetch('/clips/'+streamEnc+'/'+fileEnc,{method:'DELETE'})
+  fetch('/clips/'+streamEnc+'/'+fileEnc,{method:'DELETE',headers:_csrfHeaders()})
     .then(function(r){return r.json();})
     .then(function(j){if(j.ok) loadClips(idx,decodeURIComponent(streamEnc));});
 }
@@ -20402,6 +20398,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
     // Now Playing stations
     fetch('/api/nowplaying_stations').then(function(r){return r.json();}).then(function(stations){
       var sel = document.getElementById('np_select');
+      if(!sel) return;
       var cur = '{{inp.nowplaying_station_id}}';
       stations.forEach(function(s){
         var opt = document.createElement('option');
@@ -34415,18 +34412,6 @@ function _relTimeStr(str){
   if(s<3600) return Math.floor(s/60)+'m ago';
   if(s<86400)return Math.floor(s/3600)+'h ago';
   return str;
-}
-function _inlineConfirm(triggerEl, msg, onConfirm){
-  var existing=triggerEl.nextElementSibling;
-  if(existing && existing.classList.contains('ic-bar')){ existing.remove(); return; }
-  var bar=document.createElement('div');
-  bar.className='ic-bar';
-  bar.innerHTML='<span class="ic-msg">'+msg+'</span>'
-    +'<button class="btn bg bs ic-cancel">Cancel</button>'
-    +'<button class="btn bd bs ic-ok">Confirm</button>';
-  triggerEl.insertAdjacentElement('afterend',bar);
-  bar.querySelector('.ic-cancel').onclick=function(e){ e.stopPropagation(); bar.remove(); };
-  bar.querySelector('.ic-ok').onclick=function(e){ e.stopPropagation(); bar.remove(); onConfirm(); };
 }
 // ── Stale data banner ─────────────────────────────────────────────────────────
 var _hubFailCount=0, _hubLastOk=Date.now();

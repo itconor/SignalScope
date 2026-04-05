@@ -2,6 +2,18 @@
 
 ---
 
+## [3.5.62] - 2026-04-05
+
+### Fixed
+- **Settings Mobile — Disable Token skips confirmation**: `disableMobileApiToken()` looked for a button with `id="mobile-disable-btn"` to pass to `_inlineConfirm`. No element had that ID, so `btn` was always null, the `_inlineConfirm` path was skipped, and the token was disabled immediately without any confirmation dialog. Replaced with `_ssConfirm({danger:true, yesLabel:'Disable'})` which always shows a modal.
+- **Settings Security — Delete User submits form**: `userDelete()` used `_inlineConfirm` on the delete button, which is inside the main settings `<form>`. The `ic-ok` button (no `type="button"`) submitted the form on click — "Settings saved" banner appeared instead of the user being deleted. Replaced with `_ssConfirm({danger:true, yesLabel:'Delete'})`.
+- **Dashboard — Delete Clip skips confirmation**: `deleteClip()` in MAIN_TPL guarded `_inlineConfirm` with `typeof _inlineConfirm==='function'`. Since `_inlineConfirm` is only defined in SETTINGS_TPL, the guard always failed and clips were deleted immediately without a confirmation dialog. Replaced with `_ssConfirm({danger:true, yesLabel:'Delete'})`.
+- **Dashboard — Delete Clip missing CSRF header**: `_doDeleteClip()` sent a `DELETE` fetch with no `X-CSRFToken`. Added `headers:_csrfHeaders()` (already defined in MAIN_TPL).
+- **INPUT_FORM_TPL — Now Playing station list null crash**: `loadNowPlayingStations()` called `sel.appendChild(opt)` unconditionally. If the `np_select` element doesn't exist (e.g. for input types that don't show the Now Playing section), this throws a null reference error and the promise silently rejects. Added `if(!sel) return;` guard.
+- **HUB_TPL — Dead `_inlineConfirm` definition removed**: `_inlineConfirm` was copied from SETTINGS_TPL into HUB_TPL but was never called anywhere in that template. Removed the dead 12-line function.
+
+---
+
 ## [3.5.61] - 2026-04-05
 
 ### Fixed
