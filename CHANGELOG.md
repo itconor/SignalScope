@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.56] - 2026-04-05
+
+### Fixed
+- **Restart SignalScope button broken in Maintenance and Plugins tabs**: `adminRestart()` in `INPUT_FORM_TPL` called `_inlineConfirm()` which is only defined in `SETTINGS_TPL` and `HUB_TPL`. In the input/maintenance/plugins context the function was undefined, so clicking Restart did nothing. Changed to `_ssConfirm()` (injected globally by topnav) with `{danger:true, yesLabel:'Restart'}` options.
+- **Delete chain / Delete A/B group buttons broken**: `deleteChain()` and `abgDelete()` in `BROADCAST_CHAINS_TPL` called `_inlineConfirm()` which is not defined in that template. Changed to `_ssConfirm()`.
+- **Remove input / Restart site buttons broken on hub site page**: Two confirm dialogs in `HUB_SITE_TPL` called `_inlineConfirm()` which is not defined in that template. Changed to `_ssConfirm()`.
+
+---
+
 ## [3.5.54] - 2026-04-05
 
 ### Fixed

@@ -2349,7 +2349,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.55"
+BUILD                  = "SignalScope-3.5.56"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -19947,7 +19947,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
 
   function adminRestart(btn){
     var _btn = btn || document.getElementById("dab-restart-btn") || document.body;
-    _inlineConfirm(_btn,'Restart SignalScope? All active streams will disconnect briefly.',function(){
+    _ssConfirm('Restart SignalScope? All active streams will disconnect briefly.',function(){
     _btnLoad(_btn);
     var st = document.getElementById("proc-ctrl-status");
     if(st){ st.style.color = "var(--mu)"; st.textContent = "Restarting…"; }
@@ -19962,7 +19962,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
         if(st){ st.style.color="#86efac"; st.textContent = "Restarting — page will reload in 6 s…"; }
         setTimeout(function(){ window.location.reload(); }, 6000);
       });
-    }); // end _inlineConfirm
+    },{danger:true,yesLabel:'Restart'}); // end _ssConfirm
   }
 
   function dabUpdateAddBtn(){
@@ -27100,7 +27100,7 @@ document.getElementById('btn_save_chain').addEventListener('click',saveChain);
 
 function deleteChain(id,name){
   var btn=event&&event.target&&event.target.closest('.chain-del-btn');
-  if(btn){_inlineConfirm(btn,'Delete chain "'+name+'"? All fault history will be removed.',function(){_doDeleteChain(id);});return;}
+  if(btn){_ssConfirm('Delete chain "'+name+'"? All fault history will be removed.',function(){_doDeleteChain(id);},{danger:true,yesLabel:'Delete',title:'Delete chain?'});return;}
   _doDeleteChain(id);
 }
 function _doDeleteChain(id){
@@ -28222,10 +28222,10 @@ function abgToggleActive(gid){
 function abgDelete(gid, name){
   var btn=event&&event.target&&event.target.closest('[onclick]');
   var anchor=btn||document.querySelector('[data-abg-del-id="'+gid+'"]')||document.body;
-  _inlineConfirm(anchor,'Delete A/B group "'+name+'"? This cannot be undone.',function(){
+  _ssConfirm('Delete A/B group "'+name+'"? This cannot be undone.',function(){
     fetch('/api/ab_groups/'+gid,{method:'DELETE',headers:{'X-CSRFToken':_csrf_abg()}})
     .then(function(){location.reload();});
-  });
+  },{danger:true,yesLabel:'Delete',title:'Delete A/B group?'});
 }
 
 function abgEdit(gid){
@@ -32931,12 +32931,12 @@ document.addEventListener('click',function(e){
 });
 document.addEventListener('click',function(e){
   var btn=e.target.closest('[data-action="hub-remove-input"]');if(!btn)return;
-  _inlineConfirm(btn,'Remove "'+btn.dataset.name+'" from '+btn.dataset.site+'? Monitoring will restart.',function(){
+  _ssConfirm('Remove "'+btn.dataset.name+'" from '+btn.dataset.site+'? Monitoring will restart.',function(){
     btn.disabled=true;
     hubPost('/api/hub/site/'+encodeURIComponent(btn.dataset.site)+'/input/remove',{name:btn.dataset.name})
     .then(function(d){btn.disabled=false;if(d.ok)btn.textContent='✓ Queued';else _ssToast('Failed: '+(d.error||'unknown'),'err');})
     .catch(function(){btn.disabled=false;});
-  }); // end _inlineConfirm
+  },{danger:true,yesLabel:'Remove'});
 }); // end hub-remove-input listener
 document.addEventListener('click',function(e){
   var btn=e.target.closest('[data-action="hub-enable-input"],[data-action="hub-disable-input"]');if(!btn)return;
@@ -33061,14 +33061,14 @@ document.addEventListener('click',function(e){
 document.addEventListener('click',function(e){
   var btn=e.target.closest('.site-restart-btn');if(!btn)return;
   var site=btn.dataset.site;
-  _inlineConfirm(btn,'Restart "'+site+'"? Monitoring will be interrupted briefly.',function(){
+  _ssConfirm('Restart "'+site+'"? Monitoring will be interrupted briefly.',function(){
   btn.disabled=true;btn.textContent='⏳';
   hubPost('/api/hub/site/'+encodeURIComponent(site)+'/restart',{})
   .then(function(d){
     if(d.ok){btn.textContent='✓ Restarting…';btn.style.color='var(--ok)';}
     else{btn.disabled=false;btn.textContent='🔄 Restart';_ssToast('Restart failed: '+(d.error||'unknown'),'err');}
   }).catch(function(err){btn.disabled=false;btn.textContent='🔄 Restart';_ssToast('Error: '+(err.message||err),'err');});
-  }); // end _inlineConfirm
+  });
 });
 
 // Backup is now a direct download link — no JS handler needed.
