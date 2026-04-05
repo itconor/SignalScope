@@ -2,6 +2,17 @@
 
 ---
 
+## [3.5.61] - 2026-04-05
+
+### Fixed
+- **Settings — Backup delete submits form instead of confirming**: The backup list delete button used `_inlineConfirm()` whose injected `ic-ok` button has no `type="button"`, causing it to act as `type="submit"` inside the settings `<form>`. Clicking delete submitted the form, showing "Settings saved" and jumping to the top of the page with no delete occurring. Replaced with a self-contained modal (same pattern as the Restart button): all buttons have explicit `type="button"`, modal appended to `document.body`, backdrop closes on `mousedown`.
+- **Settings — Backup restore (from disk) submits form**: Same `_inlineConfirm` bug on the ↩ Restore button in the saved-backups list. Replaced with a self-contained modal.
+- **Settings — Upload restore button submits form**: The `restore-upload-btn` click handler used `_inlineConfirm` for confirmation. Same bug. Replaced with a self-contained modal.
+- **Settings — Rogue ⬇ Backup link on all tabs**: Every settings tab panel (Notifications, Hub, Security, General, Mobile, SDR) had an `<a href="/settings/backup">⬇ Backup</a>` link inside its action bar. The link is only relevant on the Maintenance tab, which already has a prominent Download Backup button in its content. Removed the backup link from all non-Maintenance action bars.
+- **Settings restore — CSRF header missing**: `_doRestoreUpload` sent the CSRF token in FormData body only. Added `X-CSRFToken` header so both body and header validation paths are satisfied.
+
+---
+
 ## [3.5.60] - 2026-04-05
 
 ### Fixed

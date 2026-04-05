@@ -435,7 +435,7 @@ document.addEventListener('DOMContentLoaded',function(){
             }
           });
           </script>
-  <div class="act"><button class="btn bp" type="button" id="settings-save-btn">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
+  <div class="act"><button class="btn bp" type="button" id="settings-save-btn">Save</button><a class="btn bg" href="/">Cancel</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-hub">
   <div class="sec">🌐 Network Interfaces</div>
@@ -690,7 +690,7 @@ document.addEventListener('DOMContentLoaded',function(){
               .catch(function(e){if(statusEl) statusEl.textContent = '✗ '+e;});
           }
           </script>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-hub">
   <div class="sec">🌐 Network Interfaces</div>
@@ -945,7 +945,7 @@ document.addEventListener('DOMContentLoaded',function(){
               .catch(function(e){if(statusEl) statusEl.textContent = '✗ '+e;});
           }
           </script>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-sec">
   <div class="sec">👥 Users &amp; Roles</div>
@@ -1086,7 +1086,7 @@ document.addEventListener('DOMContentLoaded',function(){
               <span class="help" style="display:block;margin-top:2px">Auto logout after inactivity</span>
             </label>
           </div>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-gen">
   <div class="sec">📊 SLA Reporting</div>
@@ -1102,7 +1102,7 @@ document.addEventListener('DOMContentLoaded',function(){
                    style="width:120px">
           </label>
           <p class="help">Daily summary email is sent at this time each day. Requires email to be configured. Uses 24-hour local time.</p>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-maint">
   <div class="sec">🗂 Maintenance</div>
@@ -1272,7 +1272,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
       <span style="color:var(--mu)">FCM not configured — Android push disabled</span>
     {% endif %}
   </div>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 
 <div class="pn" id="p-sdr">
@@ -1395,7 +1395,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
   });
   </script>
 
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
+  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <script nonce="{{csp_nonce()}}">
 function _csrf(){return (document.querySelector('meta[name="csrf-token"]')||{}).content||document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)?.[1]||'';}
@@ -1503,8 +1503,28 @@ document.getElementById('restore-upload-btn').addEventListener('click', function
   var st=document.getElementById('restore-status');
   if(!fi.files.length){st.style.color='var(--wn)';st.textContent='Select a backup ZIP first.';return;}
   var _rbtn=this;
-  _inlineConfirm(_rbtn,'Overwrite current config and AI models with this backup?',function(){_doRestoreUpload(_rbtn);});
-  return;
+  if(document.getElementById('_ru-modal')) return;
+  var bd=document.createElement('div');
+  bd.id='_ru-modal';
+  bd.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:99998;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif';
+  bd.innerHTML='<div style="background:#0d2346;border:1px solid #17345f;border-radius:12px;padding:24px;width:min(380px,90vw);box-shadow:0 24px 60px rgba(0,0,0,.65)">'
+    +'<div style="font-size:15px;font-weight:700;color:#eef5ff;margin-bottom:10px">Restore Backup?</div>'
+    +'<div style="font-size:13px;color:#c5d8f5;line-height:1.55;margin-bottom:20px">Overwrite current config, AI models and databases with this backup? Monitoring will restart automatically.</div>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end">'
+    +'<button type="button" id="_ru-cancel" style="background:#17345f;color:#eef5ff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>'
+    +'<button type="button" id="_ru-ok" style="background:#ef4444;color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer">Restore</button>'
+    +'</div></div>';
+  document.body.appendChild(bd);
+  var _fired=false;
+  function _closeRu(){if(bd.parentNode)bd.remove();}
+  bd.addEventListener('mousedown',function(ev){if(ev.target===bd)_closeRu();});
+  bd.querySelector('#_ru-cancel').onclick=function(ev){ev.stopPropagation();_closeRu();};
+  bd.querySelector('#_ru-ok').onclick=function(ev){
+    ev.stopPropagation();
+    if(_fired)return;_fired=true;
+    _closeRu();
+    _doRestoreUpload(_rbtn);
+  };
 });
 function _doRestoreUpload(btn){
   var fi=document.getElementById('restore-file-input');
@@ -1514,7 +1534,7 @@ function _doRestoreUpload(btn){
   fd.append('_csrf_token', _csrf());
   st.style.color='var(--acc)'; st.textContent='Uploading…';
   _btnLoad(btn);
-  fetch('/settings/restore',{method:'POST',body:fd})
+  fetch('/settings/restore',{method:'POST',body:fd,headers:{'X-CSRFToken':_csrf()}})
     .then(function(r){
       _btnReset(btn);
       if(r.redirected||r.ok){ st.style.color='var(--ok)'; st.textContent='Restore complete — reloading…'; setTimeout(function(){location.reload();},2000); }
@@ -1633,43 +1653,81 @@ document.getElementById('bk-list-wrap').addEventListener('click', function(e){
   var rbtn=e.target.closest('.bk-restore-btn');
   if(rbtn){
     var fname=rbtn.dataset.filename;
-    _inlineConfirm(rbtn,'Restore "'+fname+'"? This overwrites config, databases and audio. Monitoring will restart.',function(){
-    rbtn.disabled=true; rbtn.textContent='⏳ Restoring…';
-    // Show/clear result area
-    var res=document.getElementById('bk-restore-result');
-    if(res){res.style.display='block';res.style.color='var(--acc)';res.textContent='Starting restore…';}
-    fetch('/settings/restore/from_disk',{method:'POST',
-      headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'},
-      body:JSON.stringify({filename:fname})})
-    .then(function(r){
-      if(r.redirected||!r.ok) throw new Error(r.redirected?'Session expired — reload page':'HTTP '+r.status);
-      return r.json();
-    })
-    .then(function(d){
-      if(d.ok){ bkPollRestore(d.job_id, rbtn); }
-      else {
-        if(res){res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Failed to start');}
+    if(document.getElementById('_bkr-modal')) return;
+    var bd=document.createElement('div');
+    bd.id='_bkr-modal';
+    bd.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:99998;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif';
+    bd.innerHTML='<div style="background:#0d2346;border:1px solid #17345f;border-radius:12px;padding:24px;width:min(420px,90vw);box-shadow:0 24px 60px rgba(0,0,0,.65)">'
+      +'<div style="font-size:15px;font-weight:700;color:#eef5ff;margin-bottom:10px">Restore Backup?</div>'
+      +'<div style="font-size:13px;color:#c5d8f5;line-height:1.55;margin-bottom:20px">Restore <strong>'+fname+'</strong>? This will overwrite your config, databases and audio. Monitoring will restart.</div>'
+      +'<div style="display:flex;gap:8px;justify-content:flex-end">'
+      +'<button type="button" id="_bkr-cancel" style="background:#17345f;color:#eef5ff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>'
+      +'<button type="button" id="_bkr-ok" style="background:#ef4444;color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer">Restore</button>'
+      +'</div></div>';
+    document.body.appendChild(bd);
+    var _fired=false;
+    function _closeBkr(){if(bd.parentNode)bd.remove();}
+    bd.addEventListener('mousedown',function(ev){if(ev.target===bd)_closeBkr();});
+    bd.querySelector('#_bkr-cancel').onclick=function(ev){ev.stopPropagation();_closeBkr();};
+    bd.querySelector('#_bkr-ok').onclick=function(ev){
+      ev.stopPropagation();
+      if(_fired)return;_fired=true;
+      _closeBkr();
+      rbtn.disabled=true; rbtn.textContent='⏳ Restoring…';
+      var res=document.getElementById('bk-restore-result');
+      if(res){res.style.display='block';res.style.color='var(--acc)';res.textContent='Starting restore…';}
+      fetch('/settings/restore/from_disk',{method:'POST',
+        headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'},
+        body:JSON.stringify({filename:fname})})
+      .then(function(r){
+        if(r.redirected||!r.ok) throw new Error(r.redirected?'Session expired — reload page':'HTTP '+r.status);
+        return r.json();
+      })
+      .then(function(d){
+        if(d.ok){ bkPollRestore(d.job_id, rbtn); }
+        else {
+          if(res){res.style.color='var(--al)';res.textContent='✗ '+(d.error||'Failed to start');}
+          rbtn.disabled=false; rbtn.textContent='↩ Restore';
+        }
+      })
+      .catch(function(er){
+        if(res){res.style.color='var(--al)';res.textContent='✗ Request failed: '+er.message;}
         rbtn.disabled=false; rbtn.textContent='↩ Restore';
-      }
-    })
-    .catch(function(e){
-      if(res){res.style.color='var(--al)';res.textContent='✗ Request failed: '+e.message;}
-      rbtn.disabled=false; rbtn.textContent='↩ Restore';
-    });
-    }); // end _inlineConfirm
+      });
+    };
     return;
   }
   // Delete button
   var btn=e.target.closest('.bk-del-btn');
   if(!btn) return;
-  _inlineConfirm(btn,'Delete '+btn.dataset.filename+'? This cannot be undone.',function(){
-  fetch('/settings/backup/delete',{method:'POST',
-    headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'},
-    body:JSON.stringify({filename:btn.dataset.filename})})
-  .then(function(r){return r.json();})
-  .then(function(d){ if(d.ok) bkLoadList(); })
-  .catch(function(){});
-  }); // end _inlineConfirm
+  var dname=btn.dataset.filename;
+  if(document.getElementById('_bkd-modal')) return;
+  var dbd=document.createElement('div');
+  dbd.id='_bkd-modal';
+  dbd.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:99998;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif';
+  dbd.innerHTML='<div style="background:#0d2346;border:1px solid #17345f;border-radius:12px;padding:24px;width:min(380px,90vw);box-shadow:0 24px 60px rgba(0,0,0,.65)">'
+    +'<div style="font-size:15px;font-weight:700;color:#eef5ff;margin-bottom:10px">Delete Backup?</div>'
+    +'<div style="font-size:13px;color:#c5d8f5;line-height:1.55;margin-bottom:20px">Delete <strong>'+dname+'</strong>? This cannot be undone.</div>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end">'
+    +'<button type="button" id="_bkd-cancel" style="background:#17345f;color:#eef5ff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>'
+    +'<button type="button" id="_bkd-ok" style="background:#ef4444;color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer">Delete</button>'
+    +'</div></div>';
+  document.body.appendChild(dbd);
+  var _dfired=false;
+  function _closeBkd(){if(dbd.parentNode)dbd.remove();}
+  dbd.addEventListener('mousedown',function(ev){if(ev.target===dbd)_closeBkd();});
+  dbd.querySelector('#_bkd-cancel').onclick=function(ev){ev.stopPropagation();_closeBkd();};
+  dbd.querySelector('#_bkd-ok').onclick=function(ev){
+    ev.stopPropagation();
+    if(_dfired)return;_dfired=true;
+    _closeBkd();
+    fetch('/settings/backup/delete',{method:'POST',
+      headers:{'X-CSRFToken':_bkGetCsrf(),'Content-Type':'application/json'},
+      body:JSON.stringify({filename:dname})})
+    .then(function(r){return r.json();})
+    .then(function(d){ if(d.ok) bkLoadList(); })
+    .catch(function(){});
+  };
 }); // end bk-list-wrap click handler
 bkLoadList();
 
@@ -2401,7 +2459,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.60"
+BUILD                  = "SignalScope-3.5.61"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
