@@ -1709,21 +1709,23 @@ function adminRestart(btn){
   bd.querySelector('#_ar-ok').onclick=function(e){
     e.stopPropagation();
     if(_fired)return;_fired=true;
-    _close();
-    _btnLoad(btn);
-    var st=document.getElementById('proc-ctrl-status');
-    if(st){st.style.color='var(--mu)';st.textContent='Restarting\u2026';}
+    // Transform modal into countdown display instead of closing
+    var box=bd.querySelector('div');
+    box.innerHTML='<div style="text-align:center;padding:8px 0">'
+      +'<div style="font-size:32px;margin-bottom:14px">&#x267B;</div>'
+      +'<div style="font-size:15px;font-weight:700;color:#eef5ff;margin-bottom:10px">Restarting SignalScope\u2026</div>'
+      +'<div id="_ar-cd" style="font-size:13px;color:#c5d8f5">Page will reload in 6 seconds</div>'
+      +'</div>';
+    var _secs=6;
+    var _iv=setInterval(function(){
+      _secs--;
+      var cd=document.getElementById('_ar-cd');
+      if(cd) cd.textContent='Page will reload in '+_secs+' second'+(_secs!==1?'s':'');
+      if(_secs<=0) clearInterval(_iv);
+    },1000);
     fetch('/api/admin/restart',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'}})
-      .then(function(){
-        _btnReset(btn);
-        if(st){st.style.color='#86efac';st.textContent='Restarting \u2014 page will reload in 6 s\u2026';}
-        setTimeout(function(){window.location.reload();},6000);
-      })
-      .catch(function(){
-        _btnReset(btn);
-        if(st){st.style.color='#86efac';st.textContent='Restarting \u2014 page will reload in 6 s\u2026';}
-        setTimeout(function(){window.location.reload();},6000);
-      });
+      .catch(function(){/* normal — server went away */})
+      .finally(function(){setTimeout(function(){_close();window.location.reload();},6000);});
   };
 }
 
@@ -2214,13 +2216,22 @@ document.getElementById('p-plugins').addEventListener('click', function(e){
     rbd.querySelector('#_ar-ok').onclick=function(e){
       e.stopPropagation();
       if(_rfired)return;_rfired=true;
-      _rclose();
-      _btnLoad(rbtn);
-      var rst=document.getElementById('plugin-restart-status');
-      if(rst){rst.style.color='var(--mu)';rst.textContent='Restarting \u2014 page will reload in 8 s\u2026';}
+      var rbox=rbd.querySelector('div');
+      rbox.innerHTML='<div style="text-align:center;padding:8px 0">'
+        +'<div style="font-size:32px;margin-bottom:14px">&#x267B;</div>'
+        +'<div style="font-size:15px;font-weight:700;color:#eef5ff;margin-bottom:10px">Restarting SignalScope\u2026</div>'
+        +'<div id="_ar-cd" style="font-size:13px;color:#c5d8f5">Page will reload in 8 seconds</div>'
+        +'</div>';
+      var _rsecs=8;
+      var _riv=setInterval(function(){
+        _rsecs--;
+        var rcd=document.getElementById('_ar-cd');
+        if(rcd) rcd.textContent='Page will reload in '+_rsecs+' second'+(_rsecs!==1?'s':'');
+        if(_rsecs<=0) clearInterval(_riv);
+      },1000);
       _csrfPost('/api/admin/restart',{})
         .catch(function(){})
-        .finally(function(){_btnReset(rbtn);setTimeout(function(){window.location.reload();},8000);});
+        .finally(function(){setTimeout(function(){_rclose();window.location.reload();},8000);});
     };
   }
 });
@@ -2390,7 +2401,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.58"
+BUILD                  = "SignalScope-3.5.59"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""

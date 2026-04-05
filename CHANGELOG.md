@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.59] - 2026-04-05
+
+### Changed
+- **Restart SignalScope — Maintenance & Plugins tabs**: After clicking Restart the confirm modal now transforms into a countdown display ("Restarting SignalScope… Page will reload in N seconds") rather than closing immediately. Gives clear visual confirmation that the restart was triggered and how long until the page reloads.
+
+---
+
 ## [3.5.58] - 2026-04-05
 
 ### Fixed
