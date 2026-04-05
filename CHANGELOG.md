@@ -16,6 +16,13 @@
 
 ---
 
+## [3.5.81] - 2026-04-05
+
+### Fixed
+- **Hub connection broken / `/status.json` 500 for clients with any non-FM input (3.5.76 regression)**: `_fm_stereo_blend` was added to the heartbeat payload and `inp_dict` in 3.5.76 (`round(inp._fm_stereo_blend, 3)`) but was never added as a default field in `InputConfig`. For FM inputs the FM monitoring loop sets it via `getattr(cfg, "_fm_stereo_blend", 0.0)` at startup. For every other input type (DAB, ALSA, HTTP, RTP) the attribute is never created. Accessing it raised `AttributeError` in both the heartbeat builder and `status_json`, causing: (1) every heartbeat POST to the hub to fail → hub connection appears broken; (2) `/status.json` to return HTTP 500. Fix: add `_fm_stereo_blend: float = field(default=0.0, init=False, repr=False)` to `InputConfig`.
+
+---
+
 ## [3.5.80] - 2026-04-05
 
 ### Fixed

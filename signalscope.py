@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.80"
+BUILD                  = "SignalScope-3.5.81"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2851,6 +2851,7 @@ class InputConfig:
     _fm_signal_dbm:     float = field(default=-120.0, init=False, repr=False)
     _fm_snr_db:         float = field(default=0.0,  init=False, repr=False)
     _fm_stereo:         bool  = field(default=False, init=False, repr=False)
+    _fm_stereo_blend:   float = field(default=0.0,  init=False, repr=False)
     _fm_rds_ps:         str   = field(default="",   init=False, repr=False)
     _fm_rds_rt:         str   = field(default="",   init=False, repr=False)
     _fm_rds_ok:         bool  = field(default=False, init=False, repr=False)
