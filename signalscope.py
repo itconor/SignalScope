@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.77"
+BUILD                  = "SignalScope-3.5.78"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -10071,9 +10071,11 @@ class MonitorManager:
         rtl_cmd = [
             "rtl_fm",
             "-f", str(freq_hz),
-            "-M", "fm",
+            "-M", "wbfm",   # wideband FM — full MPX composite output (pilot + L-R sideband)
             "-l", "0",
-            "-A", "std",
+            # No -A flag: de-emphasis is applied in Python (_apply_deemph).
+            # -A std on a 171 kHz MPX signal would roll off the 19 kHz pilot and
+            # the 23–53 kHz L-R DSB-SC sidebands, destroying stereo separation.
             "-s", "171000",
             "-F", "9",
             "-d", str(device_idx),

@@ -2,6 +2,11 @@
 
 ---
 
+## [3.5.78] - 2026-04-05
+
+### Fixed
+- **FM stereo systematic L/R imbalance**: rtl_fm was launched with `-M fm` (standard mono FM demodulation), which applies a 15 kHz audio LPF and discards the entire 23–53 kHz L-R DSB-SC sideband before the samples reach the Python stereo decoder. With no L-R signal present, the pilot demodulation in `_mpx_to_stereo` produced only noise, and `lmr_scaled = lmr × 2` added/subtracted that noise asymmetrically to the L and R channels — causing a systematic and content-dependent apparent imbalance that was identical on every station but not present on a real FM receiver. Fix: changed to `-M wbfm` (wideband FM), which outputs the raw FM discriminator signal at the full 171 kHz MPX composite rate including the pilot tone (19 kHz), the L-R DSB-SC sidebands (23–53 kHz), and RDS (57 kHz). The `-A std` de-emphasis flag has also been removed — applying rtl_fm's audio de-emphasis to the MPX composite would roll off the pilot and L-R subcarrier content, again destroying stereo separation. De-emphasis is correctly applied in Python via `_apply_deemph` after stereo decoding.
+
 ## [3.5.77] - 2026-04-05
 
 ### Added
