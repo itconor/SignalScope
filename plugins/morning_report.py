@@ -1004,8 +1004,7 @@ tr:hover td{background:rgba(255,255,255,.03)}
 
   document.getElementById('btn-regen').addEventListener('click', function(){
     var btn = this;
-    btn.disabled = true;
-    btn.textContent = '…';
+    _btnLoad(btn);
     fetch('/api/morning-report/generate', {
       method: 'POST',
       credentials: 'same-origin',
@@ -1013,8 +1012,7 @@ tr:hover td{background:rgba(255,255,255,.03)}
       body: JSON.stringify({})
     }).then(function(r){ return r.json(); })
       .then(function(d){
-        btn.disabled = false;
-        btn.textContent = '↻ Regenerate';
+        _btnReset(btn);
         if(d.ok){
           var t = document.getElementById('toast');
           t.style.display = 'block';
@@ -1024,8 +1022,7 @@ tr:hover td{background:rgba(255,255,255,.03)}
         }
       })
       .catch(function(e){
-        btn.disabled = false;
-        btn.textContent = '↻ Regenerate';
+        _btnReset(btn);
         _ssToast('Request failed: ' + e,'err');
       });
   });

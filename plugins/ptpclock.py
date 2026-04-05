@@ -404,15 +404,18 @@ document.getElementById('modes').addEventListener('click',function(e){
 
 // Save settings
 document.getElementById('save-btn').addEventListener('click',function(){
+  var _sb=this;
   var body={
     brand:document.getElementById('f-brand').value.trim(),
     timezone:document.getElementById('f-tz').value.trim(),
     ntp_server:document.getElementById('f-ntp').value.trim()
   };
+  _btnLoad(_sb);
   fetch('/api/hub/ptpclock/settings',{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_getCsrf()},body:JSON.stringify(body),credentials:'same-origin'})
   .then(function(r){return r.json()}).then(function(d){
+    _btnReset(_sb);
     if(d.ok){var s=document.getElementById('save-ok');s.style.display='inline';setTimeout(function(){s.style.display='none'},2000)}
-  });
+  }).catch(function(){_btnReset(_sb);});
 });
 
 // Logo upload
@@ -458,6 +461,7 @@ document.getElementById('meter-list').addEventListener('click',function(e){
 
 // ── Presets ───────────────────────────────────────────────────────
 document.getElementById('add-preset-btn').addEventListener('click',function(){
+  var _apb=this;
   var name=document.getElementById('np-name').value.trim();
   var brand=document.getElementById('np-brand').value.trim();
   var tz=document.getElementById('np-tz').value.trim();
@@ -475,10 +479,12 @@ document.getElementById('add-preset-btn').addEventListener('click',function(){
         color_muted:document.getElementById('np-muted').value}),
       credentials:'same-origin'
     }).then(function(r){return r.json()}).then(function(d){
+      _btnReset(_apb);
       if(d.ok)location.reload();
-    });
+    }).catch(function(){_btnReset(_apb);});
   }
 
+  _btnLoad(_apb);
   if(logoFile){
     var fd=new FormData();fd.append('logo',logoFile);
     fetch('/api/hub/ptpclock/logo/upload',{method:'POST',headers:{'X-CSRFToken':_getCsrf()},body:fd,credentials:'same-origin'})

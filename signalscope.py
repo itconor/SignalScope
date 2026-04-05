@@ -374,13 +374,13 @@ document.addEventListener('DOMContentLoaded',function(){
           <p class="help" style="margin-bottom:10px">Send a test alert to verify your notification settings are working.</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             {%if cfg.email.enabled and cfg.email.smtp_host%}
-            <button type="button" class="btn bg" onclick="testNotify('email')">📧 Test Email</button>
+            <button type="button" class="btn bg" onclick="testNotify(this,'email')">📧 Test Email</button>
             {%endif%}
             {%if cfg.webhook.enabled and cfg.webhook.url or cfg.webhook.routes%}
-            <button type="button" class="btn bg" onclick="testNotify('webhook')">🔗 Test Webhook</button>
+            <button type="button" class="btn bg" onclick="testNotify(this,'webhook')">🔗 Test Webhook</button>
             {%endif%}
             {%if cfg.pushover.enabled and cfg.pushover.user_key%}
-            <button type="button" class="btn bg" onclick="testNotify('pushover')">📱 Test Pushover</button>
+            <button type="button" class="btn bg" onclick="testNotify(this,'pushover')">📱 Test Pushover</button>
             {%endif%}
             {%if not (cfg.email.enabled or cfg.webhook.enabled or cfg.pushover.enabled)%}
             <span style="color:var(--mu);font-size:12px">No notification methods configured yet.</span>
@@ -388,14 +388,16 @@ document.addEventListener('DOMContentLoaded',function(){
           </div>
           <div id="test-notify-result" style="margin-top:8px;font-size:12px;display:none"></div>
           <script nonce="{{csp_nonce()}}">
-          function testNotify(channel){
+          function testNotify(btn,channel){
+            _btnLoad(btn);
             var el = document.getElementById('test-notify-result');
             el.style.display=''; el.style.color='var(--mu)'; el.textContent='Sending…';
             _csrfFetch('/settings/test-notify?channel='+channel, {method:'POST'})
               .then(r=>r.json()).then(function(d){
+                _btnReset(btn);
                 el.style.color = d.ok ? 'var(--ok)' : 'var(--al)';
                 el.textContent = d.ok ? '✓ '+d.message : '✗ '+d.message;
-              }).catch(function(e){ el.style.color='var(--al)'; el.textContent='✗ Request failed: '+e; });
+              }).catch(function(e){ _btnReset(btn); el.style.color='var(--al)'; el.textContent='✗ Request failed: '+e; });
           }
           </script>
   <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
@@ -974,7 +976,7 @@ document.addEventListener('DOMContentLoaded',function(){
       </div>
     </div>
     <div style="display:flex;gap:8px">
-      <button class="btn bp bs" type="button" id="user-save-btn" onclick="userSave()">Save User</button>
+      <button class="btn bp bs" type="button" id="user-save-btn" onclick="userSave(this)">Save User</button>
       <button class="btn bg bs" type="button" onclick="userCancelForm()">Cancel</button>
       <span id="user-form-msg" style="font-size:12px;margin-left:8px;align-self:center"></span>
     </div>
@@ -987,7 +989,7 @@ document.addEventListener('DOMContentLoaded',function(){
       <input type="password" id="my-current-pw" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px" autocomplete="current-password"></div>
     <div class="field"><label style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">New Password</label>
       <input type="password" id="my-new-pw" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px" autocomplete="new-password" placeholder="Min 8 characters"></div>
-    <button class="btn bg bs" type="button" onclick="myPwSave()">Update Password</button>
+    <button class="btn bg bs" type="button" onclick="myPwSave(this)">Update Password</button>
   </div>
   <span id="my-pw-msg" style="font-size:12px;margin-top:6px;display:block"></span>
 
@@ -1017,13 +1019,15 @@ document.addEventListener('DOMContentLoaded',function(){
       if(!pw)return;
       var msg=document.getElementById('totp-disable-msg');
       msg.textContent='Disabling…';msg.style.color='var(--mu)';
+      _btnLoad(btn);
       fetch('/settings/totp/disable',{method:'POST',
         headers:{'Content-Type':'application/json','X-CSRFToken':(document.querySelector('meta[name="csrf-token"]')||{}).content||''},
         body:JSON.stringify({password:pw})})
       .then(function(r){return r.json();}).then(function(d){
+        _btnReset(btn);
         if(d.ok){msg.textContent='✓ 2FA disabled.';msg.style.color='var(--ok)';setTimeout(function(){location.reload();},1200);}
         else{msg.textContent='✗ '+(d.error||'Failed');msg.style.color='var(--al)';}
-      }).catch(function(){msg.textContent='Network error';msg.style.color='var(--al)';});
+      }).catch(function(){_btnReset(btn);msg.textContent='Network error';msg.style.color='var(--al)';});
     });
   })();
   </script>
@@ -1093,7 +1097,7 @@ document.addEventListener('DOMContentLoaded',function(){
   <p class="help" style="margin-bottom:12px">Restart the SignalScope process (all active streams will disconnect briefly) or free a stuck SDR dongle left claimed after a scan.</p>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <button type="button" class="btn bw" onclick="adminRestart(this)" style="font-size:13px">🔄 Restart SignalScope</button>
-    <button type="button" class="btn bw" onclick="killDabOrphans()" style="font-size:13px">🔌 Kill orphan DAB processes</button>
+    <button type="button" class="btn bw" onclick="killDabOrphans(this)" style="font-size:13px">🔌 Kill orphan DAB processes</button>
     <span id="proc-ctrl-status" style="font-size:12px;color:var(--mu)"></span>
   </div>
 
@@ -1238,7 +1242,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
   <div class="sec">📻 SDR Devices</div>
   <p class="help" style="margin-bottom:10px">Register RTL-SDR dongles by serial number so inputs can reference them reliably regardless of USB port order. Program a serial once with <code style="background:#173a69;padding:1px 6px;border-radius:3px">rtl_eeprom -d 0 -s "MY_DONGLE"</code>, then unplug and replug.</p>
   <div id="sdr-connected" style="margin-bottom:10px;font-size:12px;color:var(--mu)">
-    <button type="button" class="btn bg bs" onclick="sdrScan()">🔍 Scan for dongles</button>
+    <button type="button" class="btn bg bs" onclick="sdrScan(this)">🔍 Scan for dongles</button>
     <span id="sdr-scan-result" style="margin-left:8px"></span>
   </div>
   <div id="sdr-usbfs-warn" style="display:none;padding:10px 14px;background:#2a1a0f;border-left:3px solid var(--wn);border-radius:6px;margin-bottom:10px;font-size:12px">
@@ -1296,11 +1300,13 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
       +'<td style="padding:6px 8px"><button type="button" class="btn bw bs" onclick="this.closest(&quot;tr&quot;).remove()">✕</button></td>';
     document.getElementById('sdr-rows').appendChild(tr);
   }
-  function sdrScan(){
+  function sdrScan(btn){
     var el=document.getElementById('sdr-scan-result');
     var warn=document.getElementById('sdr-warnings');
     el.textContent='Scanning…'; el.style.color='var(--mu)';
+    _btnLoad(btn);
     _csrfFetch('/api/sdr/scan').then(function(r){return r.json();}).then(function(d){
+      _btnReset(btn);
       if(!d.devices || d.devices.length===0){
         el.textContent='No dongles found — check USB and rtl-sdr installation.';
         el.style.color='var(--wn)'; return;
@@ -1333,7 +1339,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
       if(!warn.children.length){
         warn.innerHTML='<p style="font-size:12px;color:var(--ok)">✓ All connected dongles are registered.</p>';
       }
-    }).catch(function(e){el.textContent='Scan failed: '+e; el.style.color='var(--al)';});
+    }).catch(function(e){_btnReset(btn);el.textContent='Scan failed: '+e; el.style.color='var(--al)';});
   }
   document.getElementById('sdr-usbfs-fix-btn').addEventListener('click', function(){
     var btn=this;
@@ -1459,22 +1465,25 @@ document.getElementById('restore-upload-btn').addEventListener('click', function
   var fi=document.getElementById('restore-file-input');
   var st=document.getElementById('restore-status');
   if(!fi.files.length){st.style.color='var(--wn)';st.textContent='Select a backup ZIP first.';return;}
-  _inlineConfirm(this,'Overwrite current config and AI models with this backup?',function(){_doRestoreUpload();});
+  var _rbtn=this;
+  _inlineConfirm(_rbtn,'Overwrite current config and AI models with this backup?',function(){_doRestoreUpload(_rbtn);});
   return;
 });
-function _doRestoreUpload(){
+function _doRestoreUpload(btn){
   var fi=document.getElementById('restore-file-input');
   var st=document.getElementById('restore-status');
   var fd=new FormData();
   fd.append('backup_zip', fi.files[0]);
   fd.append('_csrf_token', _csrf());
   st.style.color='var(--acc)'; st.textContent='Uploading…';
+  _btnLoad(btn);
   fetch('/settings/restore',{method:'POST',body:fd})
     .then(function(r){
+      _btnReset(btn);
       if(r.redirected||r.ok){ st.style.color='var(--ok)'; st.textContent='Restore complete — reloading…'; setTimeout(function(){location.reload();},2000); }
       else { return r.text().then(function(t){ st.style.color='var(--al)'; st.textContent='Restore failed (HTTP '+r.status+').'; }); }
     })
-    .catch(function(e){ st.style.color='var(--al)'; st.textContent='Request failed: '+e.message; });
+    .catch(function(e){ _btnReset(btn); st.style.color='var(--al)'; st.textContent='Request failed: '+e.message; });
 }
 
 // ── Save backup to disk ──────────────────────────────────────────────────────
@@ -1627,21 +1636,24 @@ document.getElementById('bk-list-wrap').addEventListener('click', function(e){
 }); // end bk-list-wrap click handler
 bkLoadList();
 
-function killDabOrphans(){
+function killDabOrphans(btn){
   var st=document.getElementById('proc-ctrl-status');
   if(st){st.style.color='var(--mu)';st.textContent='Killing orphan processes…';}
+  _btnLoad(btn);
   fetch('/api/dab/kill_orphans',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'}})
     .then(function(r){return r.json();})
     .then(function(d){
+      _btnReset(btn);
       var msg=d.message||(d.error?'Error: '+d.error:'Done');
       if(st){st.style.color=d.error?'#f87171':'#86efac';st.textContent=msg;}
       setTimeout(function(){if(st){st.style.color='';st.textContent='';}},6000);
     })
-    .catch(function(e){if(st){st.style.color='#f87171';st.textContent='Request failed: '+e;}});
+    .catch(function(e){_btnReset(btn);if(st){st.style.color='#f87171';st.textContent='Request failed: '+e;}});
 }
 
 function adminRestart(btn){
   _inlineConfirm(btn||document.getElementById('admin-restart-btn'),'Restart SignalScope? All active streams will disconnect briefly.',function(){
+  _btnLoad(btn);
   var st=document.getElementById('proc-ctrl-status');
   if(st){st.style.color='var(--mu)';st.textContent='Restarting…';}
   fetch('/api/admin/restart',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'}})
@@ -1822,7 +1834,7 @@ function _collectChainChecks(){
   var boxes=document.querySelectorAll('#uf-chains-wrap .uf-chain-chk:checked');
   return Array.prototype.slice.call(boxes).map(function(b){return b.value;});
 }
-function userSave(){
+function userSave(btn){
   var orig=document.getElementById('uf-orig-username').value;
   var isEdit=!!orig;
   var username=document.getElementById('uf-username').value.trim();
@@ -1834,6 +1846,7 @@ function userSave(){
   var plugins=_collectPluginChecks();
   var msg=document.getElementById('user-form-msg');
   msg.style.color='var(--mu)'; msg.textContent='Saving\u2026';
+  _btnLoad(btn);
   var url=isEdit?'/api/users/'+encodeURIComponent(orig):'/api/users';
   var method=isEdit?'PUT':'POST';
   fetch(url,{method:method,credentials:'same-origin',
@@ -1841,9 +1854,10 @@ function userSave(){
     body:JSON.stringify({username:username,role:role,password:password,
       enabled:enabled,sites:sites,chains:chains,plugins:plugins})
   }).then(function(r){return r.json();}).then(function(d){
+    _btnReset(btn);
     if(d.ok){msg.style.color='var(--ok)';msg.textContent='\u2713 Saved';userLoad();setTimeout(userCancelForm,1200);}
     else{msg.style.color='var(--al)';msg.textContent='\u2717 '+(d.error||'Error');}
-  }).catch(function(e){msg.style.color='var(--al)';msg.textContent='\u2717 '+e;});
+  }).catch(function(e){_btnReset(btn);msg.style.color='var(--al)';msg.textContent='\u2717 '+e;});
 }
 function userDelete(username){
   var db=document.querySelector('.user-del-btn[data-username="'+username.replace(/"/g,'\\\"')+'"]');
@@ -1859,18 +1873,20 @@ function _doUserDelete(username){
     else{msg.style.color='var(--al)';msg.textContent='\u2717 '+(d.error||'Error');}
   }).catch(function(e){var msg=document.getElementById('users-msg');if(msg)msg.textContent='\u2717 '+e;});
 }
-function myPwSave(){
+function myPwSave(btn){
   var cur=document.getElementById('my-current-pw').value;
   var nw=document.getElementById('my-new-pw').value;
   var msg=document.getElementById('my-pw-msg');
   msg.style.color='var(--mu)';msg.textContent='Saving\u2026';
+  _btnLoad(btn);
   fetch('/api/users/me/password',{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
     body:JSON.stringify({current_password:cur,new_password:nw})
   }).then(function(r){return r.json();}).then(function(d){
+    _btnReset(btn);
     if(d.ok){msg.style.color='var(--ok)';msg.textContent='\u2713 Password updated';document.getElementById('my-current-pw').value='';document.getElementById('my-new-pw').value='';}
     else{msg.style.color='var(--al)';msg.textContent='\u2717 '+(d.error||'Error');}
-  }).catch(function(e){msg.style.color='var(--al)';msg.textContent='\u2717 '+e;});
+  }).catch(function(e){_btnReset(btn);msg.style.color='var(--al)';msg.textContent='\u2717 '+e;});
 }
 // Load users when security tab is opened
 (function(){
@@ -2297,7 +2313,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.45"
+BUILD                  = "SignalScope-3.5.46"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16761,10 +16777,27 @@ def _inject_nav():
               'function _esc(e){if(e.key==="Escape"){close();document.removeEventListener("keydown",_esc);}}'
               'document.addEventListener("keydown",_esc);'
               '};'
-              # ── CSS for confirm slide-in ─────────────────────────────────────
+              # ── _btnLoad / _btnReset ────────────────────────────────────────
+              'window._btnLoad=function(b){'
+              'if(!b)return;'
+              'b._oTxt=b.innerHTML;b._oDis=b.disabled;'
+              'b.disabled=true;b.classList.add("btn-loading");'
+              '};'
+              'window._btnReset=function(b){'
+              'if(!b)return;'
+              'b.disabled=b._oDis||false;'
+              'b.classList.remove("btn-loading");'
+              'if(b._oTxt!==undefined)b.innerHTML=b._oTxt;'
+              '};'
+              # ── CSS: confirm slide-in + btn-loading shimmer ──────────────────
               'var _ks=document.createElement("style");'
               '_ks.textContent="@keyframes _ssConfIn{from{opacity:0;transform:scale(.96) translateY(8px)}'
-                'to{opacity:1;transform:scale(1) translateY(0)}}";'
+                'to{opacity:1;transform:scale(1) translateY(0)}}'
+                '@keyframes _btnShim{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}'
+                '.btn-loading{position:relative;overflow:hidden;pointer-events:none;opacity:.72}'
+                '.btn-loading::after{content:\\"\\";position:absolute;inset:0;'
+                'background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,.18) 50%,transparent 100%);'
+                'animation:_btnShim .9s linear infinite}";'
               'document.head.appendChild(_ks);'
               '})();'
               '</script>'
@@ -19825,18 +19858,21 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
   }
   // ── end channel-scan ──────────────────────────────────────────────────────
 
-  function killDabOrphans(){
+  function killDabOrphans(btn){
     var st = document.getElementById("dab_scan_status") ||
              document.getElementById("proc-ctrl-status");
     if(st) st.textContent = "Killing orphan processes…";
+    _btnLoad(btn);
     _csrfFetch("/api/dab/kill_orphans", {method:"POST"})
       .then(function(r){ return r.json(); })
       .then(function(d){
+        _btnReset(btn);
         var msg = d.message || (d.error ? "Error: "+d.error : "Done");
         if(st) { st.style.color = d.error ? "#f87171" : "#86efac"; st.textContent = msg; }
         setTimeout(function(){ if(st) { st.style.color = ""; st.textContent = ""; } }, 6000);
       })
       .catch(function(e){
+        _btnReset(btn);
         if(st) { st.style.color="#f87171"; st.textContent="Request failed: "+e; }
       });
   }
@@ -19844,6 +19880,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
   function adminRestart(btn){
     var _btn = btn || document.getElementById("dab-restart-btn") || document.body;
     _inlineConfirm(_btn,'Restart SignalScope? All active streams will disconnect briefly.',function(){
+    _btnLoad(_btn);
     var st = document.getElementById("proc-ctrl-status");
     if(st){ st.style.color = "var(--mu)"; st.textContent = "Restarting…"; }
     _csrfFetch("/api/admin/restart", {method:"POST"})

@@ -474,7 +474,7 @@ td{padding:6px 8px}
             <div class="field"><label>API Key (optional)</label>
               <input id="az-key" type="text" placeholder="Leave blank for public API">
             </div>
-            <button class="btn bp" onclick="doDiscover()">🔍 Discover Stations</button>
+            <button class="btn bp" onclick="doDiscover(this)">🔍 Discover Stations</button>
             <div id="disc-result" style="margin-top:12px"></div>
           </div>
         </div>
@@ -696,17 +696,19 @@ function _inputSelect(id){
   return '<select id="' + id + '">' + opts + '</select>';
 }
 
-function doDiscover(){
+function doDiscover(btn){
   var url = document.getElementById('az-url').value.trim();
   var key = document.getElementById('az-key').value.trim();
   if(!url){ _showMsg('Enter a server URL first.', false); return; }
 
   document.getElementById('disc-result').innerHTML
     = '<div style="color:var(--mu)">Discovering…</div>';
+  _btnLoad(btn);
 
   _loadInputs(function(){
     _post('/api/azuracast/discover', {url:url, api_key:key})
       .then(function(d){
+        _btnReset(btn);
         if(!d.ok){ _showMsg(d.error||'Discovery failed', false);
           document.getElementById('disc-result').innerHTML=''; return; }
         var stations = d.stations||[];
@@ -760,7 +762,7 @@ function doDiscover(){
           }
         });
       })
-      .catch(function(e){ _showMsg('Discover error: '+e, false); });
+      .catch(function(e){ _btnReset(btn); _showMsg('Discover error: '+e, false); });
   });
 }
 

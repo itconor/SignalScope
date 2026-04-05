@@ -1066,14 +1066,18 @@ document.body.addEventListener('click',function(e){
   var el=e.target;
 
   if(el.dataset.action==='server-start'){
+    _btnLoad(el);
     _post('/api/icecast/server/start',{},function(err,d){
+      _btnReset(el);
       if(err||!d.ok){_showMsg((d&&d.error)||'Error starting server',false);}
       else{_showMsg('Icecast2 started',true);_refresh();}
     });
     return;
   }
   if(el.dataset.action==='server-stop'){
+    _btnLoad(el);
     _post('/api/icecast/server/stop',{},function(err,d){
+      _btnReset(el);
       if(err||!d.ok){_showMsg((d&&d.error)||'Error stopping server',false);}
       else{_showMsg('Icecast2 stopped',true);_refresh();}
     });
@@ -1085,8 +1089,10 @@ document.body.addEventListener('click',function(e){
     var srcpw=document.getElementById('cfg-srcpw').value;
     var admpw=document.getElementById('cfg-admpw').value;
     if(!port||port<1024||port>65535){_showMsg('Invalid port',false);return;}
+    _btnLoad(el);
     _post('/api/icecast/config/save',{port:port,hostname:hostname,
       source_password:srcpw,admin_password:admpw},function(err,d){
+      _btnReset(el);
       if(err||!d.ok){_showMsg((d&&d.error)||'Save failed',false);}
       else{_showMsg('Settings saved',true);_refresh();}
     });
@@ -1106,9 +1112,11 @@ document.body.addEventListener('click',function(e){
     var stereo=document.getElementById('add-stereo').checked;
     if(!name){_showMsg('Name is required',false);return;}
     if(!mount){_showMsg('Mount point is required',false);return;}
+    _btnLoad(el);
     _post('/api/icecast/stream/add',{name:name,input_device:device,
       input_name:inputName,mount:mount,format:fmt,bitrate:br,
       stereo:stereo,genre:genre,description:desc,public:pub,enabled:true},function(err,d){
+      _btnReset(el);
       if(err||!d.ok){_showMsg((d&&d.error)||'Add failed',false);}
       else{_showMsg('Stream added',true);_refresh();}
     });
@@ -1117,7 +1125,9 @@ document.body.addEventListener('click',function(e){
 
   var startBtn=el.closest('.stream-start-btn');
   if(startBtn){
+    _btnLoad(startBtn);
     _post('/api/icecast/stream/start',{id:startBtn.dataset.id},function(err,d){
+      _btnReset(startBtn);
       if(err||!d.ok){_showMsg((d&&d.error)||'Start failed',false);}
       else{_showMsg('Stream started',true);_refresh();}
     });
@@ -1125,7 +1135,9 @@ document.body.addEventListener('click',function(e){
   }
   var stopBtn=el.closest('.stream-stop-btn');
   if(stopBtn){
+    _btnLoad(stopBtn);
     _post('/api/icecast/stream/stop',{id:stopBtn.dataset.id},function(err,d){
+      _btnReset(stopBtn);
       if(err||!d.ok){_showMsg((d&&d.error)||'Stop failed',false);}
       else{_showMsg('Stream stopped',true);_refresh();}
     });
@@ -1135,7 +1147,9 @@ document.body.addEventListener('click',function(e){
   if(delBtn){
     var _dId=delBtn.dataset.id,_dNm=delBtn.dataset.name;
     _ssConfirm('Delete stream "'+_dNm+'"?',function(){
+      _btnLoad(delBtn);
       _post('/api/icecast/stream/delete',{id:_dId},function(err,d){
+        _btnReset(delBtn);
         if(err||!d.ok){_showMsg((d&&d.error)||'Delete failed',false);}
         else{_showMsg('Stream deleted',true);_refresh();}
       });

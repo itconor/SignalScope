@@ -663,23 +663,29 @@ document.getElementById('btn-save').addEventListener('click',function(){
     stations:  stations,
   };
   _msg('msg','Saving…');
+  var _sv=document.getElementById('btn-save');
+  _btnLoad(_sv);
   _f('/api/zetta/settings',{method:'POST',body:JSON.stringify(p)})
     .then(function(r){return r.json();})
     .then(function(d){
+      _btnReset(_sv);
       if(d.ok)_msg('msg','Saved.','var(--ok)');
       else _msg('msg','Error: '+(d.error||'?'),'var(--al)');
-    }).catch(function(e){_msg('msg',''+e,'var(--al)');});
+    }).catch(function(e){_btnReset(_sv);_msg('msg',''+e,'var(--al)');});
 });
 
 // ── Discover stations ─────────────────────────────────────────────────────────
 document.getElementById('btn-discover').addEventListener('click',function(){
+  var _dv=this;
   var url=document.getElementById('cfg-url').value.trim();
   var sfUrl=document.getElementById('cfg-sf-url').value.trim();
   if(!url){_msg('msg','Enter the Zetta SOAP URL first.','var(--wa)');return;}
   _msg('msg','Querying Zetta for station list…');
+  _btnLoad(_dv);
   _f('/api/zetta/discover',{method:'POST',body:JSON.stringify({url:url,sf_url:sfUrl})})
     .then(function(r){return r.json();})
     .then(function(d){
+      _btnReset(_dv);
       if(d.stations&&d.stations.length&&d.stations[0].id!=='error'){
         var src=d.source==='status_feed'?' (via Status Feed)':d.source==='main_service'?' (via main service)':'';
         var list=document.getElementById('stations-list');
@@ -689,18 +695,21 @@ document.getElementById('btn-discover').addEventListener('click',function(){
       } else {
         _msg('msg',(d.error||'No stations returned — enter them manually.'),'var(--wn)');
       }
-    }).catch(function(e){_msg('msg',''+e,'var(--al)');});
+    }).catch(function(e){_btnReset(_dv);_msg('msg',''+e,'var(--al)');});
 });
 
 // ── Test connection ───────────────────────────────────────────────────────────
 document.getElementById('btn-test').addEventListener('click',function(){
+  var _tv=this;
   var url=document.getElementById('cfg-url').value.trim();
   var sfUrl=document.getElementById('cfg-sf-url').value.trim();
   if(!url){_msg('msg','Enter the Zetta SOAP URL first.','var(--wa)');return;}
   _msg('msg','Testing…');
+  _btnLoad(_tv);
   _f('/api/zetta/test',{method:'POST',body:JSON.stringify({url:url,sf_url:sfUrl})})
     .then(function(r){return r.json();})
     .then(function(d){
+      _btnReset(_tv);
       if(d.ok){
         var sfPart=d.sf_ok===true?' · ✓ Status Feed alive ('+_esc(d.sf_url)+')'
                   :d.sf_ok===false?' · ⚠ Status Feed unreachable ('+_esc(d.sf_url)+')':'';
@@ -708,11 +717,12 @@ document.getElementById('btn-test').addEventListener('click',function(){
       } else {
         _msg('msg','✗ '+d.error,'var(--al)');
       }
-    }).catch(function(e){_msg('msg',''+e,'var(--al)');});
+    }).catch(function(e){_btnReset(_tv);_msg('msg',''+e,'var(--al)');});
 });
 
 // ── Debug — raw SOAP call ─────────────────────────────────────────────────────
 document.getElementById('btn-dbg-call').addEventListener('click',function(){
+  var _dc=this;
   var url=document.getElementById('dbg-url').value.trim()||document.getElementById('cfg-url').value.trim();
   var method=document.getElementById('dbg-method').value.trim();
   var body=document.getElementById('dbg-body').value.trim();
@@ -720,9 +730,11 @@ document.getElementById('btn-dbg-call').addEventListener('click',function(){
   if(!method){_msg('dbg-msg','Enter a SOAP Method name.','var(--wa)');return;}
   _msg('dbg-msg','Calling '+method+'…');
   document.getElementById('dbg-response').value='';
+  _btnLoad(_dc);
   _f('/api/zetta/debug',{method:'POST',body:JSON.stringify({url:url,method:method,body:body})})
     .then(function(r){return r.json();})
     .then(function(d){
+      _btnReset(_dc);
       if(d.ok){
         _msg('dbg-msg','✓ Success (HTTP 200)','var(--ok)');
         document.getElementById('dbg-response').value=d.raw||'(empty response)';
@@ -730,18 +742,21 @@ document.getElementById('btn-dbg-call').addEventListener('click',function(){
         _msg('dbg-msg','✗ '+d.error,'var(--al)');
         document.getElementById('dbg-response').value=d.raw||'';
       }
-    }).catch(function(e){_msg('dbg-msg',''+e,'var(--al)');});
+    }).catch(function(e){_btnReset(_dc);_msg('dbg-msg',''+e,'var(--al)');});
 });
 
 // ── Debug — list WSDL methods ─────────────────────────────────────────────────
 document.getElementById('btn-dbg-wsdl').addEventListener('click',function(){
+  var _dw=this;
   var url=document.getElementById('dbg-url').value.trim()||document.getElementById('cfg-url').value.trim();
   if(!url){_msg('dbg-msg','Enter a Service URL (or fill in the Settings URL).','var(--wa)');return;}
   _msg('dbg-msg','Fetching WSDL…');
   document.getElementById('dbg-methods').innerHTML='';
+  _btnLoad(_dw);
   _f('/api/zetta/wsdl_methods',{method:'POST',body:JSON.stringify({url:url})})
     .then(function(r){return r.json();})
     .then(function(d){
+      _btnReset(_dw);
       if(d.methods&&d.methods.length){
         _msg('dbg-msg','Namespace: '+d.namespace+'   ('+d.methods.length+' operations — click one to use it)','var(--ok)');
         document.getElementById('dbg-methods').innerHTML=
@@ -751,7 +766,7 @@ document.getElementById('btn-dbg-wsdl').addEventListener('click',function(){
       } else {
         _msg('dbg-msg',d.error||'No operations found in WSDL.','var(--wa)');
       }
-    }).catch(function(e){_msg('dbg-msg',''+e,'var(--al)');});
+    }).catch(function(e){_btnReset(_dw);_msg('dbg-msg',''+e,'var(--al)');});
 });
 // Delegated click — select a WSDL method into the method input
 document.getElementById('dbg-methods').addEventListener('click',function(e){

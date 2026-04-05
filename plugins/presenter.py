@@ -741,12 +741,14 @@ function loadFaults(){
     var url=(document.getElementById('ticket-url-input').value||'').trim();
     var st=document.getElementById('ticket-save-status');
     st.textContent='Saving…'; st.style.color='var(--mu)';
+    _btnLoad(btn);
     fetch('/api/producer/config',{method:'POST',credentials:'same-origin',
       headers:{'Content-Type':'application/json',
                'X-CSRFToken':(document.querySelector('meta[name="csrf-token"]')||{}).content||''},
       body:JSON.stringify({ticket_url:url})})
       .then(function(r){return r.json();})
       .then(function(d){
+        _btnReset(btn);
         if(d.ok){
           st.textContent='Saved ✓'; st.style.color='var(--ok)';
           setTimeout(function(){window.location.reload();},800);
@@ -754,7 +756,7 @@ function loadFaults(){
           st.textContent='Error: '+(d.error||'?'); st.style.color='var(--al)';
         }
       })
-      .catch(function(){st.textContent='Network error'; st.style.color='var(--al)';});
+      .catch(function(){_btnReset(btn);st.textContent='Network error'; st.style.color='var(--al)';});
   });
 })();
 

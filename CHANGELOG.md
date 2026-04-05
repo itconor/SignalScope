@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.46] - 2026-04-05
+
+### Changed
+- **Global button loading states** — two new helper functions (`_btnLoad(btn)` / `_btnReset(btn)`) and `.btn-loading` CSS (shimmer animation) injected globally via `topnav()`. While loading: button dims to 72% opacity, gains a travelling shimmer highlight, and is non-interactive (`pointer-events:none`). On completion (success or error) the button is fully restored with its original label. Applied to **25 action buttons** across 9 files:
+  - signalscope.py: Test Email/Webhook/Pushover, Save User, Update Password, Disable 2FA, Scan for dongles, Restore backup, Admin Restart, Kill DAB orphans
+  - plugins: icecast.py (Start/Stop/Save/Add/Delete streams), codec.py (Save device), ptpclock.py (Save settings, Add preset), morning_report.py (Regenerate), presenter.py (Save), azuracast.py (Discover), zetta.py (Save, Discover, Test, Debug call, WSDL methods)
+
+---
+
 ## [3.5.45] - 2026-04-05
 
 ### Changed

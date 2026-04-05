@@ -842,6 +842,7 @@ document.getElementById('overlay').addEventListener('click', function(e){
 });
 
 document.getElementById('save-btn').addEventListener('click', function(){
+  var _sb = this;
   var body = {
     name:          document.getElementById('f-name').value.trim(),
     type:          document.getElementById('f-type').value,
@@ -859,10 +860,12 @@ document.getElementById('save-btn').addEventListener('click', function(){
   };
   if(!body.name||!body.host){ _ssToast('Name and host are required.','warn'); return; }
   var url = _editId ? '/api/codecs/devices/'+_editId : '/api/codecs/devices';
+  _btnLoad(_sb);
   _post(url, body).then(function(r){
+    _btnReset(_sb);
     if(r.ok){ closeModal(); loadStatus(); }
     else _ssToast('Save failed: '+(r.error||'unknown'),'err');
-  }).catch(function(e){ _ssToast('Save failed: '+e,'err'); });
+  }).catch(function(e){ _btnReset(_sb); _ssToast('Save failed: '+e,'err'); });
 });
 
 // ── Card actions via event delegation ──
