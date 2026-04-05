@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.75"
+BUILD                  = "SignalScope-3.5.76"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -5662,6 +5662,7 @@ def _metrics_flush(inputs: list):
         if cfg._audio_channels == 2:
             rows.append((name, "level_dbfs_l", now, cfg._level_dbfs_l))
             rows.append((name, "level_dbfs_r", now, cfg._level_dbfs_r))
+            rows.append((name, "lr_balance",   now, round(cfg._level_dbfs_l - cfg._level_dbfs_r, 2)))
         rows.append((name, "lufs_m",        now, cfg._lufs_m))
         rows.append((name, "lufs_s",        now, cfg._lufs_s))
         rows.append((name, "lufs_i",        now, cfg._lufs_i))
@@ -5680,10 +5681,11 @@ def _metrics_flush(inputs: list):
 
         # FM-specific
         if dev.startswith("fm://"):
-            rows.append((name, "fm_signal_dbm", now, cfg._fm_signal_dbm))
-            rows.append((name, "fm_snr_db",     now, cfg._fm_snr_db))
-            rows.append((name, "fm_stereo",     now, 1.0 if cfg._fm_stereo else 0.0))
-            rows.append((name, "fm_rds_ok",     now, 1.0 if cfg._fm_rds_ok else 0.0))
+            rows.append((name, "fm_signal_dbm",    now, cfg._fm_signal_dbm))
+            rows.append((name, "fm_snr_db",        now, cfg._fm_snr_db))
+            rows.append((name, "fm_stereo",        now, 1.0 if cfg._fm_stereo else 0.0))
+            rows.append((name, "fm_stereo_blend",  now, round(cfg._fm_stereo_blend, 3)))
+            rows.append((name, "fm_rds_ok",        now, 1.0 if cfg._fm_rds_ok else 0.0))
 
         # DAB-specific
         if dev.startswith("dab://"):
@@ -12387,6 +12389,7 @@ class HubClient:
                 "fm_freq_mhz":       inp._fm_freq_mhz,
                 "fm_signal_dbm":     round(inp._fm_signal_dbm, 1),
                 "fm_snr_db":         round(inp._fm_snr_db, 1),
+                "fm_stereo_blend":   round(inp._fm_stereo_blend, 3),
                 "fm_stereo":         inp._fm_stereo,
                 "fm_force_mono":     bool(inp.fm_force_mono),
                 "fm_rds_ps":         inp._fm_rds_ps,
@@ -17821,6 +17824,8 @@ main{padding:16px;max-width:1440px;margin:0 auto}
             <span class="rv" id="fm_snr_{{idx}}" style="color:{%if inp._fm_snr_db>=12%}var(--ok){%elif inp._fm_snr_db>=6%}var(--wn){%else%}var(--al){%endif%}">{{inp._fm_snr_db|round(1)}} dB</span></div>
           <div class="row"><span class="rl">Stereo</span>
             <span class="rv" id="fm_stereo_{{idx}}" style="color:{%if inp._fm_stereo%}var(--ok){%else%}var(--mu){%endif%}">{%if inp._fm_stereo%}✓ Stereo{%else%}Mono{%endif%}</span></div>
+          <div class="row" title="Stereo decoder blend — 100% means the pilot is strong and full L/R separation is active. Values below 100% indicate a marginal pilot: the decoder is fading toward mono, which can produce uneven L/R noise."><span class="rl">Blend</span>
+            <span class="rv" id="fm_blend_{{idx}}" style="color:{%if not inp._fm_stereo%}var(--mu){%elif inp._fm_stereo_blend>=0.95%}var(--ok){%elif inp._fm_stereo_blend>=0.5%}var(--wn){%else%}var(--al){%endif%}">{%if inp._fm_stereo%}{{(inp._fm_stereo_blend*100)|round(0)|int}}%{%else%}—{%endif%}</span></div>
           <div class="row"><span class="rl">Deviation</span>
             <span class="rv" id="fm_dev_{{idx}}" style="color:{%if inp._fm_over_ofcom%}var(--al){%elif inp._fm_deviation_peak_khz>=70%}var(--wn){%else%}var(--ok){%endif%}">
               {{inp._fm_deviation_peak_khz|round(1)}} kHz{%if inp._fm_over_ofcom%} ⚠ OFCOM{%endif%}</span></div>
@@ -18248,6 +18253,12 @@ function updateCards(inputs){
       if(fmSt){
         fmSt.textContent=inp.fm_stereo?'✓ Stereo':'Mono';
         fmSt.style.color=inp.fm_stereo?'var(--ok)':'var(--mu)';
+      }
+      var fmBl=document.getElementById('fm_blend_'+idx);
+      if(fmBl){
+        var bl=inp.fm_stereo_blend||0;
+        fmBl.textContent=inp.fm_stereo?Math.round(bl*100)+'%':'—';
+        fmBl.style.color=!inp.fm_stereo?'var(--mu)':bl>=0.95?'var(--ok)':bl>=0.5?'var(--wn)':'var(--al)';
       }
       var fmDev=document.getElementById('fm_dev_'+idx);
       if(fmDev && inp.fm_deviation_peak_khz != null){
@@ -21361,9 +21372,10 @@ def status_json():
             "dab_stereo":   i._dab_stereo,
             "dab_dls":      i._dab_dls,
             "fm_freq_mhz":  i._fm_freq_mhz,
-            "fm_signal_dbm":round(i._fm_signal_dbm, 1),
-            "fm_snr_db":    round(i._fm_snr_db, 1),
-            "fm_stereo":    i._fm_stereo,
+            "fm_signal_dbm":     round(i._fm_signal_dbm, 1),
+            "fm_snr_db":         round(i._fm_snr_db, 1),
+            "fm_stereo_blend":   round(i._fm_stereo_blend, 3),
+            "fm_stereo":         i._fm_stereo,
             "fm_rds_ps":    i._fm_rds_ps,
             "fm_rds_rt":    i._fm_rds_rt,
             "fm_rds_ok":    i._fm_rds_ok,
@@ -33332,6 +33344,8 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             <div class="sc-row" title="FM carrier level reported by the RTL-SDR receiver">Signal <span>📶 {{s.fm_signal_dbm}} dBFS</span></div>
             <div class="sc-row" title="FM 19 kHz stereo pilot SNR — Good: ≥12 dB, Marginal: 6–11 dB, Poor: &lt;6 dB">Pilot <span style="color:{{'var(--ok)' if s.fm_snr_db>=12 else 'var(--wn)' if s.fm_snr_db>=6 else 'var(--al)'}}">{{s.fm_snr_db}} dB</span></div>
             <div class="sc-row">Audio <span>{% if s.fm_stereo %}🔊 Stereo{% else %}🔈 Mono{% endif %}</span></div>
+            {% set _blend = s.get('fm_stereo_blend', 0) or 0 %}
+            <div class="sc-row" title="Stereo decoder blend — 100% = strong pilot, full L/R separation. Below 100% = marginal pilot, decoder partially fading to mono, which can create uneven L/R noise.">Blend <span style="color:{{'var(--mu)' if not s.fm_stereo else ('var(--ok)' if _blend>=0.95 else ('var(--wn)' if _blend>=0.5 else 'var(--al))'))}}">{% if s.fm_stereo %}{{(_blend*100)|int}}%{% else %}—{% endif %}</span></div>
             {% if s.fm_deviation_peak_khz is defined and s.fm_deviation_peak_khz is not none %}
             <div class="sc-row" title="Peak FM deviation — Ofcom UK limit is ±75 kHz; values above this are flagged">Deviation <span style="color:{{'var(--al)' if s.fm_over_ofcom else ('var(--wn)' if s.fm_deviation_peak_khz>=70 else 'var(--ok)')}}">{{s.fm_deviation_peak_khz}} kHz{%if s.fm_over_ofcom%} ⚠ OFCOM{%endif%}</span></div>
             {% endif %}
@@ -33427,11 +33441,13 @@ main{padding:18px;max-width:1500px;margin:0 auto}
                 <option value="level_dbfs">Level dBFS</option>
                 {%if s.get('stereo') or _sdev.startswith('fm://')%}<option value="level_dbfs_l">L Channel dBFS</option>{%endif%}
                 {%if s.get('stereo') or _sdev.startswith('fm://')%}<option value="level_dbfs_r">R Channel dBFS</option>{%endif%}
+                {%if s.get('stereo') or _sdev.startswith('fm://')%}<option value="lr_balance">L/R Balance dB</option>{%endif%}
                 <option value="silence_flag">Silence Flag</option>
                 <option value="clip_count">Clip Count</option>
                 {%if _sdev.startswith('fm://')%}<option value="fm_signal_dbm">FM Signal dBm</option>{%endif%}
                 {%if _sdev.startswith('fm://')%}<option value="fm_snr_db">FM SNR dB</option>{%endif%}
                 {%if _sdev.startswith('fm://')%}<option value="fm_stereo">FM Stereo</option>{%endif%}
+                {%if _sdev.startswith('fm://')%}<option value="fm_stereo_blend">FM Stereo Blend %</option>{%endif%}
                 {%if _sdev.startswith('fm://')%}<option value="fm_rds_ok">FM RDS Lock</option>{%endif%}
                 {%if _sdev.startswith('dab://')%}<option value="dab_snr">DAB SNR dB</option>{%endif%}
                 {%if _sdev.startswith('dab://')%}<option value="dab_sig">DAB Signal dBm</option>{%endif%}

@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.76] - 2026-04-05
+
+### Added
+- **Stereo decoder blend % display on FM input cards**: The FM / RDS stats block now shows a "Blend" row (client status page, hub watch view) indicating what percentage of full L/R stereo separation the decoder is applying. 100% = pilot SNR is strong and full stereo is active. Below 100% = marginal pilot, the decoder is fading toward mono to reduce noise, which can cause uneven L/R noise levels. Colour-coded: green ≥95%, amber ≥50%, red below 50%.
+- **`lr_balance` metric** (L − R in dB, signed): Logged to the metrics database for all stereo streams (FM, DAB, ALSA, RTP, HTTP). Positive = L louder, negative = R louder. Available in the hub watch view metrics chart dropdown as "L/R Balance dB". Allows you to graph imbalance over time to distinguish persistent broadcast offsets from momentary content panning.
+- **`fm_stereo_blend` metric**: Pilot blend fraction (0.0–1.0) logged to metrics for all FM streams. Available in the chart dropdown as "FM Stereo Blend %". Graph this alongside L/R balance to determine whether imbalance correlates with weak-pilot conditions (decoder issue) or persists at 100% blend (broadcast issue).
+
 ## [3.5.75] - 2026-04-05
 
 ### Fixed
