@@ -9,6 +9,13 @@
 
 ---
 
+## [Sync Capture plugin 1.0.6] - 2026-04-05
+
+### Changed
+- **FM inputs always upload as WAV**: ffmpeg MP3 encoding adds latency relative to the capture window. FM (`fm://`) inputs now always send WAV regardless of file size. Non-FM inputs (DAB, HTTP, ALSA, RTP) still compress to MP3 when WAV exceeds 200 KB.
+
+---
+
 ## [Sync Capture plugin 1.0.5] - 2026-04-05
 
 ### Fixed

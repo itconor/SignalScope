@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.5",
+    "version":  "1.0.6",
 }
 
 import os
@@ -145,7 +145,11 @@ def _capture_input(cfg, duration_s):
         if not pcm:
             return None, None, None
         wav = _pcm_to_wav(pcm, n_ch)
-        mp3 = _wav_to_mp3(wav) if len(wav) > 200_000 else None
+        # FM inputs: always send WAV — ffmpeg MP3 encoding is slow relative to
+        # the short capture window and nginx is configured for large uploads.
+        dev = (getattr(cfg, "device_index", "") or "").lower()
+        is_fm = dev.startswith("fm://")
+        mp3 = _wav_to_mp3(wav) if (not is_fm and len(wav) > 200_000) else None
         if mp3:
             return mp3, "mp3", n_ch
         return wav, "wav", n_ch
