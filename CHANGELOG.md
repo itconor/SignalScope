@@ -2,6 +2,13 @@
 
 ---
 
+## [Sync Capture plugin 1.0.1] - 2026-04-05
+
+### Fixed
+- **Captures always expired with no clips**: Two bugs prevented client audio from reaching the hub. (1) PCM scaling: `_stream_buffer` holds float32 in [−1.0, 1.0]; converting directly to int16 produced values of 0 or ±1 (silence). Fix: scale by 32767 before the cast (`(arr * 32767).astype(np.int16)`). (2) Silent error handling: `except Exception: pass` in `_handle_capture_cmd` swallowed all upload errors with no log output; `if not inp: continue` silently discarded streams not found on the client. All error paths now call `monitor.log()` with the specific failure reason (stream not found, buffer empty, upload exception). Capture receipt and upload success are also logged.
+
+---
+
 ## [Sync Capture plugin 1.0.0] - 2026-04-05
 
 ### Added

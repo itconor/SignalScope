@@ -73,7 +73,11 @@ def _save_db(data):
 # ── audio helpers ─────────────────────────────────────────────────────────────
 
 def _chunks_to_pcm(chunks, duration_s, n_ch):
-    """Return last duration_s*SR*n_ch int16 samples as bytes."""
+    """Return last duration_s*SR*n_ch int16 samples as bytes.
+
+    _stream_buffer holds float32 in [-1.0, 1.0].  Scale by 32767 before
+    converting to int16 — without this the int16 values are 0/±1 (silence).
+    """
     if not _HAS_NP or not chunks:
         return b""
     need = int(duration_s * _SAMPLE_RATE) * n_ch
@@ -81,7 +85,9 @@ def _chunks_to_pcm(chunks, duration_s, n_ch):
         arr = np.concatenate(list(chunks))
         if arr.size > need:
             arr = arr[-need:]
-        return arr.astype(np.int16).tobytes()
+        # Scale float32 [-1, 1] → int16 [-32767, 32767]
+        arr = np.clip(arr, -1.0, 1.0)
+        return (arr * 32767).astype(np.int16).tobytes()
     except Exception:
         return b""
 
@@ -162,6 +168,12 @@ def _handle_capture_cmd(cmd, monitor, hub_url, site):
     duration_s = cmd.get("duration_s", 30)
     streams    = cmd.get("streams", [])
 
+    monitor.log(
+        f"[SyncCap] Client received capture {capture_id}: "
+        f"{len(streams)} stream(s), {duration_s} s, "
+        f"capture_at T+{capture_at - time.time():.1f} s"
+    )
+
     wait = capture_at - time.time()
     if 0 < wait <= 30:
         time.sleep(wait)
@@ -172,10 +184,22 @@ def _handle_capture_cmd(cmd, monitor, hub_url, site):
             None,
         )
         if not inp:
+            monitor.log(
+                f"[SyncCap] Client: stream '{stream_name}' not found in inputs "
+                f"(capture {capture_id})"
+            )
             continue
         audio, ext, n_ch = _capture_input(inp, duration_s)
         if not audio:
+            monitor.log(
+                f"[SyncCap] Client: no audio captured for '{stream_name}' "
+                f"(capture {capture_id}) — buffer empty or numpy unavailable"
+            )
             continue
+        monitor.log(
+            f"[SyncCap] Client: captured {len(audio)} bytes ({ext}) "
+            f"for '{stream_name}', uploading to hub…"
+        )
         try:
             url = f"{hub_url}/api/synccap/clip/{capture_id}"
             req = urllib.request.Request(
@@ -189,8 +213,15 @@ def _handle_capture_cmd(cmd, monitor, hub_url, site):
                 },
             )
             urllib.request.urlopen(req, timeout=30).close()
-        except Exception:
-            pass  # best-effort
+            monitor.log(
+                f"[SyncCap] Client: uploaded '{stream_name}' to hub OK "
+                f"(capture {capture_id})"
+            )
+        except Exception as exc:
+            monitor.log(
+                f"[SyncCap] Client: upload failed for '{stream_name}' "
+                f"(capture {capture_id}): {exc}"
+            )
 
 
 # ── register ──────────────────────────────────────────────────────────────────
