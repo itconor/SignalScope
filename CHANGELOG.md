@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.70] - 2026-04-05
+
+### Fixed
+- **About page — broken topnav header**: The `/about` page `<style>` block was missing `.btn`, `.bg`, `.bp`, `.bs`, `.bd`, `.nav-active`, and `header` CSS rules that the topnav nav buttons depend on. Every other page template defines these; the about page didn't, so the nav bar appeared unstyled. Also scoped `a` link styles to `main a` to avoid overriding nav link colours, and renamed `.badge` to `.about-badge` to avoid colliding with the topnav's own `.badge` class.
+
+---
+
 ## [3.5.69] - 2026-04-05
 
 ### Fixed

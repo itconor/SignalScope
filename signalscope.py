@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.69"
+BUILD                  = "SignalScope-3.5.70"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -20614,6 +20614,14 @@ _ABOUT_TPL = r"""<!doctype html>
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:13px}
+/* ── topnav dependencies ── */
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
+.btn{display:inline-flex;align-items:center;border:none;border-radius:8px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;text-decoration:none;white-space:nowrap}
+.btn:hover{filter:brightness(1.15)}
+.bg{background:var(--bor);color:var(--tx)}.bp{background:var(--acc);color:#fff}.bd{background:var(--al);color:#fff}
+.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;background:#1e3a5f;color:var(--acc)}
+/* ── page ── */
 main{padding:24px 20px 48px;max-width:800px;margin:0 auto}
 .hero{text-align:center;padding:40px 20px 32px}
 .hero .icon{font-size:56px;display:block;margin-bottom:16px;filter:drop-shadow(0 0 24px rgba(23,168,255,.35))}
@@ -20630,11 +20638,10 @@ main{padding:24px 20px 48px;max-width:800px;margin:0 auto}
 .cb{padding:0}
 .row{display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-bottom:1px solid rgba(23,52,95,.5)}
 .row:last-child{border-bottom:none}
-.rl{color:var(--mu);font-size:12px}
-.rv{font-weight:600;font-size:13px;text-align:right}
-a{color:var(--acc);text-decoration:none}
-a:hover{text-decoration:underline}
-.badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;background:#1e3a5f;color:var(--acc);font-weight:700}
+.rl{color:var(--mu);font-size:12px}.rv{font-weight:600;font-size:13px;text-align:right}
+main a{color:var(--acc);text-decoration:none}
+main a:hover{text-decoration:underline}
+.about-badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;background:#1e3a5f;color:var(--acc);font-weight:700}
 .footer{text-align:center;padding:24px 0 8px;color:var(--mu);font-size:12px;line-height:1.8}
 .oss-row{display:flex;justify-content:center;gap:10px;margin-top:12px;flex-wrap:wrap}
 .oss{display:inline-flex;align-items:center;gap:5px;background:#0a1a35;border:1px solid var(--bor);border-radius:6px;padding:5px 12px;font-size:12px;color:var(--mu);text-decoration:none}
@@ -20670,7 +20677,7 @@ a:hover{text-decoration:underline}
   <div class="card">
     <div class="ch">⚙ System</div>
     <div class="cb">
-      <div class="row"><span class="rl">Build</span><span class="rv"><span class="badge">{{build}}</span></span></div>
+      <div class="row"><span class="rl">Build</span><span class="rv"><span class="about-badge">{{build}}</span></span></div>
       <div class="row"><span class="rl">Mode</span><span class="rv">{{mode_label}}</span></div>
       <div class="row"><span class="rl">Site name</span><span class="rv">{{site_name}}</span></div>
       <div class="row"><span class="rl">Running since</span><span class="rv">{{started_at}}</span></div>
