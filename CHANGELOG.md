@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.57] - 2026-04-05
+
+### Fixed
+- **Restart SignalScope broken in Maintenance tab**: `adminRestart()` used `_inlineConfirm()` — the inline confirm bar's "Confirm" button has no `type="button"` so inside the settings `<form>` it defaulted to `type="submit"`, submitting the settings form and navigating away before the restart POST could complete. Changed to `_ssConfirm()` with `{danger:true, yesLabel:'Restart'}`.
+- **Restart SignalScope broken in Plugins tab**: Same function, same `_inlineConfirm` issue. Also the inline bar was inserted into a `display:flex` container causing it to appear and immediately be obscured. Changed to `_ssConfirm()`. Both buttons now also call `_btnLoad`/`_btnReset` for proper loading state.
+
+---
+
 ## [3.5.56] - 2026-04-05
 
 ### Fixed

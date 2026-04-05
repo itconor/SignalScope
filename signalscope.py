@@ -1688,21 +1688,23 @@ function killDabOrphans(btn){
 }
 
 function adminRestart(btn){
-  _inlineConfirm(btn||document.getElementById('admin-restart-btn'),'Restart SignalScope? All active streams will disconnect briefly.',function(){
-  _btnLoad(btn);
-  var st=document.getElementById('proc-ctrl-status');
-  if(st){st.style.color='var(--mu)';st.textContent='Restarting…';}
-  fetch('/api/admin/restart',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'}})
-    .then(function(){
-      if(st){st.style.color='#86efac';st.textContent='Restarting — page will reload in 6 s…';}
-      setTimeout(function(){window.location.reload();},6000);
-    })
-    .catch(function(){
-      // Normal — server went away mid-restart
-      if(st){st.style.color='#86efac';st.textContent='Restarting — page will reload in 6 s…';}
-      setTimeout(function(){window.location.reload();},6000);
-    });
-  }); // end _inlineConfirm
+  _ssConfirm('Restart SignalScope? All active streams will disconnect briefly.',function(){
+    _btnLoad(btn);
+    var st=document.getElementById('proc-ctrl-status');
+    if(st){st.style.color='var(--mu)';st.textContent='Restarting…';}
+    fetch('/api/admin/restart',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'}})
+      .then(function(){
+        _btnReset(btn);
+        if(st){st.style.color='#86efac';st.textContent='Restarting — page will reload in 6 s…';}
+        setTimeout(function(){window.location.reload();},6000);
+      })
+      .catch(function(){
+        // Normal — server went away mid-restart
+        _btnReset(btn);
+        if(st){st.style.color='#86efac';st.textContent='Restarting — page will reload in 6 s…';}
+        setTimeout(function(){window.location.reload();},6000);
+      });
+  },{danger:true,yesLabel:'Restart'});
 }
 
 // ── User Management ──────────────────────────────────────────────────────────
@@ -2173,14 +2175,14 @@ document.getElementById('p-plugins').addEventListener('click', function(e){
   if(upd){ pluginUpdate(upd.dataset.id, upd.dataset.url, upd.dataset.file, upd.dataset.newver||'?'); return; }
   if(e.target.closest('#plugin-restart-btn')){
     var btn = document.getElementById('plugin-restart-btn');
-    _inlineConfirm(btn,'Restart SignalScope? All active streams will disconnect briefly.',function(){
+    _ssConfirm('Restart SignalScope? All active streams will disconnect briefly.',function(){
       var st  = document.getElementById('plugin-restart-status');
-      if(btn){ btn.disabled=true; btn.textContent='Restarting…'; }
+      _btnLoad(btn);
       if(st){ st.style.color='var(--mu)'; st.textContent='Restarting — page will reload in 8 s…'; }
       _csrfPost('/api/admin/restart', {})
         .catch(function(){/* server went away — normal */})
-        .finally(function(){ setTimeout(function(){ window.location.reload(); }, 8000); });
-    });
+        .finally(function(){ _btnReset(btn); setTimeout(function(){ window.location.reload(); }, 8000); });
+    },{danger:true,yesLabel:'Restart'});
   }
 });
 })();
@@ -2349,7 +2351,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.56"
+BUILD                  = "SignalScope-3.5.57"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
