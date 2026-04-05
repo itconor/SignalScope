@@ -1020,13 +1020,13 @@ tr:hover td{background:rgba(255,255,255,.03)}
           t.style.display = 'block';
           setTimeout(function(){ t.style.display='none'; window.location.reload(); }, 1200);
         } else {
-          alert('Error: ' + (d.error || 'unknown'));
+          _ssToast('Error: ' + (d.error || 'unknown'),'err');
         }
       })
       .catch(function(e){
         btn.disabled = false;
         btn.textContent = '↻ Regenerate';
-        alert('Request failed: ' + e);
+        _ssToast('Request failed: ' + e,'err');
       });
   });
 })();

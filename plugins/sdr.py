@@ -1450,7 +1450,7 @@ function doScan(){
   var site = siteSel.value; if(!site) return;
   var startMhz = parseFloat(document.getElementById('scan-start').value) || 76;
   var endMhz   = parseFloat(document.getElementById('scan-end').value)   || 108;
-  if(endMhz <= startMhz){ alert('End must be greater than start'); return; }
+  if(endMhz <= startMhz){ _ssToast('End must be greater than start','warn'); return; }
   _scanning = true;
   scanBtn.disabled = true;
   scanStatus.style.display = '';

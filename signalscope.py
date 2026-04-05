@@ -1724,7 +1724,7 @@ function _loadRoleOptions(selectedRole, cb){
 function userEditLoad(username){
   fetch('/api/users',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
     var u=(d.users||[]).find(function(x){return x.username===username;});
-    if(!u){alert('User not found');return;}
+    if(!u){_ssToast('User not found','err');return;}
     document.getElementById('user-form-title').textContent='Edit User: '+u.username;
     document.getElementById('uf-orig-username').value=u.username;
     document.getElementById('uf-username').value=u.username;
@@ -2066,10 +2066,10 @@ function _doPluginInstall(id, url, file, btn){
         _availFetched = false;  // re-check on next open so status is fresh
       } else {
         if(btn){ btn.disabled=false; btn.textContent='⬇ Install'; }
-        alert('Install failed: '+(d.error||'?'));
+        _ssToast('Install failed: '+(d.error||'?'),'err');
       }
     })
-    .catch(function(){ if(btn){btn.disabled=false;btn.textContent='⬇ Install';} alert('Network error'); });
+    .catch(function(){ if(btn){btn.disabled=false;btn.textContent='⬇ Install';} _ssToast('Network error','err'); });
 };
 
 window.pluginUpdate = function(id, url, file, newVer){
@@ -2092,10 +2092,10 @@ function _doPluginUpdate(id, url, file, newVer, btn){
         _availFetched = false;
       } else {
         if(btn){ btn.disabled=false; btn.textContent='⟳ Update to v'+_esc(newVer); }
-        alert('Update failed: '+(d.error||'?'));
+        _ssToast('Update failed: '+(d.error||'?'),'err');
       }
     })
-    .catch(function(){ if(btn){btn.disabled=false;btn.textContent='⟳ Update to v'+_esc(newVer);} alert('Network error'); });
+    .catch(function(){ if(btn){btn.disabled=false;btn.textContent='⟳ Update to v'+_esc(newVer);} _ssToast('Network error','err'); });
 };
 
 window.pluginRemove = function(file){
@@ -2105,9 +2105,9 @@ window.pluginRemove = function(file){
     .then(function(r){return r.json();})
     .then(function(d){
       if(d.ok){ window.location.reload(); }
-      else { alert('Remove failed: '+(d.error||'?')); }
+      else { _ssToast('Remove failed: '+(d.error||'?'),'err'); }
     })
-    .catch(function(){ alert('Network error'); });
+    .catch(function(){ _ssToast('Network error','err'); });
   }); // end _inlineConfirm
 };
 
@@ -2297,7 +2297,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.44"
+BUILD                  = "SignalScope-3.5.45"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16696,6 +16696,78 @@ def _inject_nav():
             + health_banner_html
             + _hmp_html
             + _hmp_script
+            + f'<script nonce="{nonce}">'
+              '(function(){'
+              # ── Toast container ─────────────────────────────────────────────
+              'var _tw=document.createElement("div");'
+              '_tw.id="_ss-toast-wrap";'
+              '_tw.style.cssText="position:fixed;right:20px;bottom:20px;z-index:99999;'
+                'display:flex;flex-direction:column;gap:10px;align-items:flex-end;pointer-events:none";'
+              'document.body.appendChild(_tw);'
+              # ── _ssToast(msg, type, dur) ────────────────────────────────────
+              # type: 'ok' | 'err' | 'warn' | 'info'
+              'window._ssToast=function(msg,type,dur){'
+              'type=type||"err";dur=dur||4500;'
+              'var c=type==="ok"?{bg:"#0f2318",bd:"#166534",col:"#22c55e",ic:"✓"}'
+                ':type==="warn"?{bg:"#2a1a0a",bd:"#92400e",col:"#f59e0b",ic:"⚠"}'
+                ':type==="info"?{bg:"#0a1828",bd:"#1e3a6e",col:"#17a8ff",ic:"ℹ"}'
+                ':{bg:"#2a0a0a",bd:"#991b1b",col:"#ef4444",ic:"✕"};'
+              'var t=document.createElement("div");'
+              't.style.cssText="background:"+c.bg+";color:"+c.col+";border:1px solid "+c.bd+";"'
+                '"border-radius:10px;padding:11px 14px;font-size:13px;font-family:system-ui,sans-serif;"'
+                '"max-width:340px;box-shadow:0 6px 24px rgba(0,0,0,.55);"'
+                '"display:flex;align-items:flex-start;gap:9px;pointer-events:auto;cursor:pointer;"'
+                '"opacity:0;transform:translateX(12px);transition:opacity .18s,transform .18s";'
+              't.innerHTML="<span style=\\"flex-shrink:0;font-size:14px\\">"+c.ic+"</span>"'
+                '+"<span style=\\"flex:1;line-height:1.45\\">"+msg+"</span>"'
+                '+"<span style=\\"opacity:.45;font-size:16px;line-height:1;flex-shrink:0\\">&times;</span>";'
+              '_tw.appendChild(t);'
+              'requestAnimationFrame(function(){requestAnimationFrame(function(){'
+                't.style.opacity="1";t.style.transform="translateX(0)";'
+              '});});'
+              'function rm(){t.style.opacity="0";t.style.transform="translateX(10px)";'
+                'setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t);},200);}'
+              'var tid=setTimeout(rm,dur);'
+              't.onclick=function(){clearTimeout(tid);rm();};'
+              '};'
+              # ── _ssConfirm(msg, onYes, opts) ────────────────────────────────
+              # opts: {yesLabel, noLabel, danger, title}
+              'window._ssConfirm=function(msg,onYes,opts){'
+              'opts=opts||{};'
+              'var bd=document.createElement("div");'
+              'bd.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:99998;"'
+                '"display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)";'
+              'var box=document.createElement("div");'
+              'box.style.cssText="background:#0d2346;border:1px solid #17345f;border-radius:12px;"'
+                '"padding:24px;width:min(380px,90vw);box-shadow:0 24px 60px rgba(0,0,0,.65);"'
+                '"font-family:system-ui,sans-serif;animation:_ssConfIn .15s ease-out";'
+              'var yBg=opts.danger?"#ef4444":"#17a8ff";'
+              'var yLbl=opts.yesLabel||"Confirm";'
+              'var nLbl=opts.noLabel||"Cancel";'
+              'var ttl=opts.title?"<div style=\\"font-size:15px;font-weight:700;color:#eef5ff;margin-bottom:10px\\">"+opts.title+"</div>":"";'
+              'box.innerHTML=ttl'
+                '+"<div style=\\"font-size:13px;color:#c5d8f5;line-height:1.55;margin-bottom:20px\\">"+msg+"</div>"'
+                '+"<div style=\\"display:flex;gap:8px;justify-content:flex-end\\">"'
+                '+"<button class=\\"_ssc_no\\" style=\\"background:#17345f;color:#eef5ff;border:none;border-radius:7px;"'
+                '"padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit\\">"+nLbl+"</button>"'
+                '+"<button class=\\"_ssc_yes\\" style=\\"background:"+yBg+";color:#fff;border:none;border-radius:7px;"'
+                '"padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit\\">"+yLbl+"</button>"'
+                '+"</div>";'
+              'bd.appendChild(box);document.body.appendChild(bd);'
+              'function close(){if(bd.parentNode)bd.parentNode.removeChild(bd);}'
+              'box.querySelector("._ssc_yes").onclick=function(){close();if(onYes)onYes();};'
+              'box.querySelector("._ssc_no").onclick=close;'
+              'bd.onclick=function(e){if(e.target===bd)close();};'
+              'function _esc(e){if(e.key==="Escape"){close();document.removeEventListener("keydown",_esc);}}'
+              'document.addEventListener("keydown",_esc);'
+              '};'
+              # ── CSS for confirm slide-in ─────────────────────────────────────
+              'var _ks=document.createElement("style");'
+              '_ks.textContent="@keyframes _ssConfIn{from{opacity:0;transform:scale(.96) translateY(8px)}'
+                'to{opacity:1;transform:scale(1) translateY(0)}}";'
+              'document.head.appendChild(_ks);'
+              '})();'
+              '</script>'
         )
 
     from markupsafe import Markup
@@ -18045,7 +18117,7 @@ tr.data-row.expanded td{background:#0d1e40}
   <span style="font-size:13px;font-weight:600">📋 Alert Reports</span>
   <div style="margin-left:auto;display:flex;gap:7px">
     <a href="/reports.csv" id="csv-dl-link" class="btn bp" title="Download filtered events as CSV">⬇ CSV</a>
-    <form method="post" action="/reports/clear" style="display:inline"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}"><button class="btn bw" type="submit" onclick="return confirm('Clear all alert history?')">🗑 Clear</button></form>
+    <form method="post" action="/reports/clear" id="_rpt-clr-form" style="display:inline"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}"><button class="btn bd bs" type="button" onclick="_ssConfirm('This will permanently delete all alert history.',function(){document.getElementById('_rpt-clr-form').submit();},{danger:true,yesLabel:'Clear All',title:'Clear alert history?'})">🗑 Clear</button></form>
   </div>
 </div>
 
@@ -19073,7 +19145,7 @@ function saveConfig(){
   _csrfFetch('/api/setup/config', {method:'POST', body:fd}).then(function(r){ return r.json(); })
     .then(function(d){
       if(d.ok) goStep(4);
-      else alert('Save failed: '+d.message);
+      else _ssToast('Save failed: '+d.message,'err');
     });
 }
 
@@ -19081,8 +19153,8 @@ function saveAuth(){
   var fd = new FormData(document.getElementById('auth-form'));
   var pw  = fd.get('auth_password');
   var pw2 = fd.get('auth_confirm');
-  if(pw && pw !== pw2){ alert('Passwords do not match.'); return; }
-  if(pw && pw.length < 8){ alert('Password must be at least 8 characters.'); return; }
+  if(pw && pw !== pw2){ _ssToast('Passwords do not match.','warn'); return; }
+  if(pw && pw.length < 8){ _ssToast('Password must be at least 8 characters.','warn'); return; }
   _csrfFetch('/api/setup/auth', {method:'POST', body:fd})
     .then(function(r){
       if(!r.ok){
@@ -19094,10 +19166,10 @@ function saveAuth(){
     })
     .then(function(d){
       if(d.ok) goStep(5);
-      else alert('Save failed: '+(d.message || 'Unknown error'));
+      else _ssToast('Save failed: '+(d.message || 'Unknown error'),'err');
     })
     .catch(function(e){
-      alert('Save failed: '+e);
+      _ssToast('Save failed: '+e,'err');
       console.error('Wizard auth save failed', e);
     });
 }
@@ -19823,7 +19895,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       if(ser) di += "&serial=" + encodeURIComponent(ser);
       services.push({name: name, device_index: di});
     });
-    if(!services.length){ alert("No services selected."); return; }
+    if(!services.length){ _ssToast('No services selected.','warn'); return; }
     var btn = document.getElementById("dab_add_btn");
     var st  = document.getElementById("dab_bulk_status");
     btn.disabled = true;
@@ -26582,7 +26654,7 @@ function addComparator(fromIdx,fromSub,toIdx,toSub){
 document.getElementById('btn_add_comp').addEventListener('click',function(){addComparator();});
 document.getElementById('btn_add_e2e').addEventListener('click',function(){
   var n=document.querySelectorAll('#builder_nodes .pos-group').length;
-  if(n<2){alert('Add at least 2 positions first.');return;}
+  if(n<2){_ssToast('Add at least 2 positions first.','warn');return;}
   addComparator(0,null,n-1,null);
 });
 
@@ -27155,11 +27227,12 @@ document.addEventListener('click',function(e){
   // Delete
   var db2=e.target.closest('.schwin-del-btn');
   if(db2){
-    if(!confirm('Delete this maintenance window?'))return;
     var cid3=db2.dataset.cid,wid2=db2.dataset.wid;
-    fetch('/api/chains/'+encodeURIComponent(cid3)+'/maintenance_windows/'+encodeURIComponent(wid2),
-      {method:'DELETE',headers:{'X-CSRFToken':_csrf()}})
-    .then(function(r){return r.json();}).then(function(){_loadSchedWins(cid3);}).catch(function(){});
+    _ssConfirm('Delete this maintenance window?',function(){
+      fetch('/api/chains/'+encodeURIComponent(cid3)+'/maintenance_windows/'+encodeURIComponent(wid2),
+        {method:'DELETE',headers:{'X-CSRFToken':_csrf()}})
+      .then(function(r){return r.json();}).then(function(){_loadSchedWins(cid3);}).catch(function(){});
+    },{danger:true,yesLabel:'Delete',title:'Delete maintenance window'});
     return;
   }
   // Add
@@ -27224,10 +27297,10 @@ function _exitHistMode(){
 }
 document.getElementById('hist_go').addEventListener('click',function(){
   var v=document.getElementById('hist_dt').value;
-  if(!v){alert('Please pick a date and time first.');return;}
+  if(!v){_ssToast('Please pick a date and time first.','warn');return;}
   var ts=_dtLocalToEpoch(v);
-  if(!ts||isNaN(ts)){alert('Invalid date/time.');return;}
-  if(ts>Date.now()/1000){alert('Cannot view the future — choose a past time.');return;}
+  if(!ts||isNaN(ts)){_ssToast('Invalid date/time.','warn');return;}
+  if(ts>Date.now()/1000){_ssToast('Cannot view the future — choose a past time.','warn');return;}
   _enterHistMode(ts);
 });
 function _histStep(deltaSecs){
@@ -28141,13 +28214,13 @@ document.getElementById('abg-save-btn').addEventListener('click', function(){
     rx_node: rxNode,
     notes: document.getElementById('abg-notes').value
   };
-  if(!payload.name){alert('Group name is required');return;}
-  if(!payload.chain_a_id||!payload.chain_b_id){alert('Both A and B chains must be selected');return;}
+  if(!payload.name){_ssToast('Group name is required','warn');return;}
+  if(!payload.chain_a_id||!payload.chain_b_id){_ssToast('Both A and B chains must be selected','warn');return;}
   fetch('/api/ab_groups/save',{method:'POST',headers:{'X-CSRFToken':_csrf_abg(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
   .then(function(r){return r.json();}).then(function(d){
     if(d.ok){document.getElementById('abg-modal').style.display='none';location.reload();}
-    else{alert('Save failed: '+JSON.stringify(d));}
-  }).catch(function(e){alert('Network error: '+e);});
+    else{_ssToast('Save failed: '+JSON.stringify(d),'err');}
+  }).catch(function(e){_ssToast('Network error: '+e,'err');});
 });
 
 // Event delegation for A/B group card buttons
@@ -32504,7 +32577,7 @@ function sendSiteCommand(site, command, btn){
     } else {
       btn.disabled = false;
       btn.textContent = command === 'start' ? '▶ Start' : '⏹ Stop';
-      alert('Failed: ' + (d.error||'unknown error'));
+      _ssToast('Failed: ' + (d.error||'unknown error'),'err');
     }
   }).catch(function(){
     btn.classList.remove('btn-loading');
@@ -32574,11 +32647,11 @@ function setExpectedName(site,stream,field,value,btn){
       if(btn){var sp=document.createElement('span');sp.style.cssText='color:var(--ok);font-size:10px';sp.textContent='✓ Saved';btn.replaceWith(sp);}
     } else {
       if(btn){btn.disabled=false;btn.textContent='📌 Set';}
-      alert('Set name failed: '+(d.error||'unknown error'));
+      _ssToast('Set name failed: '+(d.error||'unknown error'),'err');
     }
   }).catch(function(err){
     if(btn){btn.disabled=false;btn.textContent='📌 Set';}
-    alert('Set name error: '+(err.message||err));
+    _ssToast('Set name error: '+(err.message||err),'err');
   });
 }
 // Delegated listener for set-expected buttons (avoids CSP inline-handler hash requirement)
@@ -32604,9 +32677,9 @@ document.addEventListener('click',function(e){
       btn.style.background=newEnabled?'#0f2318':'#2a1010';
       btn.style.color=newEnabled?'var(--ok)':'var(--mu)';
       btn.title='Queued — takes effect on next heartbeat (~10 s)';
-    } else { alert('Failed: '+(d.error||'unknown error')); }
+    } else { _ssToast('Failed: '+(d.error||'unknown error'),'err'); }
   })
-  .catch(function(err){btn.disabled=false;alert('Error: '+(err.message||err));});
+  .catch(function(err){btn.disabled=false;_ssToast('Error: '+(err.message||err),'err');});
 });
 document.addEventListener('click',function(e){
   var btn=e.target.closest('.sc-stereo-btn');
@@ -32625,10 +32698,10 @@ document.addEventListener('click',function(e){
       btn.style.color=newVal?'var(--ok)':'var(--mu)';
       btn.title='Change takes effect on next heartbeat (~10 s) — restart monitoring on client to apply immediately';
     } else {
-      alert('Failed: '+(d.error||'unknown error'));
+      _ssToast('Failed: '+(d.error||'unknown error'),'err');
     }
   })
-  .catch(function(err){btn.disabled=false;alert('Error: '+(err.message||err));});
+  .catch(function(err){btn.disabled=false;_ssToast('Error: '+(err.message||err),'err');});
 });
 function hubMgrMsg(site,txt,ok){
   var el=document.querySelector('.hub-mgr-msg[data-site="'+site+'"]');
@@ -32759,7 +32832,7 @@ document.addEventListener('click',function(e){
   _inlineConfirm(btn,'Remove "'+btn.dataset.name+'" from '+btn.dataset.site+'? Monitoring will restart.',function(){
     btn.disabled=true;
     hubPost('/api/hub/site/'+encodeURIComponent(btn.dataset.site)+'/input/remove',{name:btn.dataset.name})
-    .then(function(d){btn.disabled=false;if(d.ok)btn.textContent='✓ Queued';else alert('Failed: '+(d.error||'unknown'));})
+    .then(function(d){btn.disabled=false;if(d.ok)btn.textContent='✓ Queued';else _ssToast('Failed: '+(d.error||'unknown'),'err');})
     .catch(function(){btn.disabled=false;});
   }); // end _inlineConfirm
 }); // end hub-remove-input listener
@@ -32768,7 +32841,7 @@ document.addEventListener('click',function(e){
   var ep=btn.dataset.action==='hub-enable-input'?'enable':'disable';
   btn.disabled=true;
   hubPost('/api/hub/site/'+encodeURIComponent(btn.dataset.site)+'/input/'+ep,{name:btn.dataset.name})
-  .then(function(d){btn.disabled=false;if(d.ok)btn.textContent='✓ Queued';else alert('Failed: '+(d.error||'unknown'));})
+  .then(function(d){btn.disabled=false;if(d.ok)btn.textContent='✓ Queued';else _ssToast('Failed: '+(d.error||'unknown'),'err');})
   .catch(function(){btn.disabled=false;});
 });
 
@@ -32867,7 +32940,7 @@ document.addEventListener('click',function(e){
               setTimeout(function(){location.reload();},1500);
             } else {
               btn.disabled=false;btn.textContent=origText;
-              alert('Backup request sent — the site will upload its backup at the next heartbeat (every 30s). Reload the page in a minute to see the download link.');
+              _ssToast('Backup request sent — site will upload at next heartbeat (~30 s). Reload in a minute to see the download link.','info',7000);
             }
           } else {
             polls++;
@@ -32891,8 +32964,8 @@ document.addEventListener('click',function(e){
   hubPost('/api/hub/site/'+encodeURIComponent(site)+'/restart',{})
   .then(function(d){
     if(d.ok){btn.textContent='✓ Restarting…';btn.style.color='var(--ok)';}
-    else{btn.disabled=false;btn.textContent='🔄 Restart';alert('Restart failed: '+(d.error||'unknown'));}
-  }).catch(function(err){btn.disabled=false;btn.textContent='🔄 Restart';alert('Error: '+(err.message||err));});
+    else{btn.disabled=false;btn.textContent='🔄 Restart';_ssToast('Restart failed: '+(d.error||'unknown'),'err');}
+  }).catch(function(err){btn.disabled=false;btn.textContent='🔄 Restart';_ssToast('Error: '+(err.message||err),'err');});
   }); // end _inlineConfirm
 });
 
@@ -32931,7 +33004,7 @@ document.addEventListener('click',function(e){
 
   function doPing(){
     var target=(input.value||'').trim();
-    if(!target){alert('Enter a target IP or hostname first.');return;}
+    if(!target){_ssToast('Enter a target IP or hostname first.','warn');return;}
     if(_pollTimer){clearTimeout(_pollTimer);_pollTimer=null;}
     body.textContent='Sending ping command to '+_pingSite+'\u2026';
     sendBtn.disabled=true;sendBtn.textContent='Sending\u2026';
@@ -32982,13 +33055,13 @@ document.addEventListener('click',function(e){
         ?'Live view is ON — 1 Hz metric push active. Click to disable.'
         :'Live view is OFF — click to enable 1 Hz metric push for real-time chain evaluation.';
     } else {
-      alert('Failed to set live view: '+(d.error||'unknown'));
+      _ssToast('Failed to set live view: '+(d.error||'unknown'),'err');
     }
     btn.disabled=false;
   }).catch(function(err){
     btn.disabled=false;
     btn.textContent=curEnabled?'⚡ Live View: ON':'💤 Live View: OFF';
-    alert('Error: '+(err.message||err));
+    _ssToast('Error: '+(err.message||err),'err');
   });
 });
 
@@ -33000,8 +33073,8 @@ document.addEventListener('click',function(e){
   hubPost('/api/hub/site/'+encodeURIComponent(site)+'/retrain',{stream:stream})
   .then(function(d){
     if(d.ok){btn.textContent='✓ Queued';btn.style.color='var(--ok)';}
-    else{btn.disabled=false;btn.textContent='🔄 Retrain AI';alert('Failed: '+(d.error||'unknown'));}
-  }).catch(function(err){btn.disabled=false;btn.textContent='🔄 Retrain AI';alert('Error: '+(err.message||err));});
+    else{btn.disabled=false;btn.textContent='🔄 Retrain AI';_ssToast('Failed: '+(d.error||'unknown'),'err');}
+  }).catch(function(err){btn.disabled=false;btn.textContent='🔄 Retrain AI';_ssToast('Error: '+(err.message||err),'err');});
 });
 
 // ── Calibrate Silence button ──────────────────────────────────────────────────
@@ -33014,8 +33087,8 @@ document.addEventListener('click',function(e){
   hubPost('/api/hub/site/'+encodeURIComponent(site)+'/calibrate_silence',{stream:stream,headroom_db:hd})
   .then(function(d){
     if(d.ok){btn.textContent='✓ Queued';btn.style.color='var(--ok)';}
-    else{btn.disabled=false;btn.textContent='🎚 Calibrate Silence';alert('Failed: '+(d.error||'unknown'));}
-  }).catch(function(err){btn.disabled=false;btn.textContent='🎚 Calibrate Silence';alert('Error: '+(err.message||err));});
+    else{btn.disabled=false;btn.textContent='🎚 Calibrate Silence';_ssToast('Failed: '+(d.error||'unknown'),'err');}
+  }).catch(function(err){btn.disabled=false;btn.textContent='🎚 Calibrate Silence';_ssToast('Error: '+(err.message||err),'err');});
 });
 
 // ── Per-site relay bitrate control ───────────────────────────────────────────
@@ -33031,7 +33104,7 @@ function setRelayBitrate(sel){
     body: JSON.stringify({bitrate: bitrate})
   }).then(function(r){ return r.json(); }).then(function(d){
     sel.disabled = false;
-    if(!d.ok){ sel.value = orig; alert('Failed to set relay bitrate: ' + (d.error||'unknown error')); }
+    if(!d.ok){ sel.value = orig; _ssToast('Failed to set relay bitrate: ' + (d.error||'unknown error'),'err'); }
   }).catch(function(){ sel.disabled = false; sel.value = orig; });
 }
 // ── Clip duration selector updates URL ──────────────────────────────────────
@@ -34556,7 +34629,7 @@ function sendSiteCommand(site, command, btn){
     } else {
       btn.disabled = false;
       btn.textContent = command==='start'?'▶ Start':'⏹ Stop';
-      alert('Failed: '+(d.error||'unknown error'));
+      _ssToast('Failed: '+(d.error||'unknown error'),'err');
     }
   }).catch(function(){
     btn.classList.remove('btn-loading');

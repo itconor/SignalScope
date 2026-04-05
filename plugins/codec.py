@@ -857,12 +857,12 @@ document.getElementById('save-btn').addEventListener('click', function(){
     snmp_port:     parseInt(document.getElementById('f-snmp-port').value)||161,
     snmp_oid:      document.getElementById('f-oid').value.trim(),
   };
-  if(!body.name||!body.host){ alert('Name and host are required.'); return; }
+  if(!body.name||!body.host){ _ssToast('Name and host are required.','warn'); return; }
   var url = _editId ? '/api/codecs/devices/'+_editId : '/api/codecs/devices';
   _post(url, body).then(function(r){
     if(r.ok){ closeModal(); loadStatus(); }
-    else alert('Save failed: '+(r.error||'unknown'));
-  }).catch(function(e){ alert('Save failed: '+e); });
+    else _ssToast('Save failed: '+(r.error||'unknown'),'err');
+  }).catch(function(e){ _ssToast('Save failed: '+e,'err'); });
 });
 
 // ── Card actions via event delegation ──
@@ -872,10 +872,12 @@ document.getElementById('grid').addEventListener('click', function(e){
   var chk  = e.target.closest('.check-btn');
   var pg   = e.target.closest('.page-btn');
   if(rm){
-    if(!confirm('Remove "'+rm.dataset.name+'"?')) return;
-    _post('/api/codecs/devices/'+rm.dataset.id+'/remove',{}).then(function(r){
-      if(r.ok) loadStatus(); else alert('Remove failed');
-    });
+    _ssConfirm('Remove device "'+rm.dataset.name+'"?',function(){
+      _post('/api/codecs/devices/'+rm.dataset.id+'/remove',{}).then(function(r){
+        if(r.ok) loadStatus(); else _ssToast('Remove failed','err');
+      });
+    },{danger:true,yesLabel:'Remove',title:'Remove Device'});
+    return;
   }
   if(edit){
     var d = edit.dataset;
@@ -920,11 +922,12 @@ document.getElementById('page-reload-btn').addEventListener('click', function(){
 });
 document.getElementById('clear-session-btn').addEventListener('click', function(){
   if(!_pageDevId) return;
-  if(!confirm('Clear saved session? You will need to log in again.')) return;
+  _ssConfirm('Clear saved session? You will need to log in again.',function(){
   _post('/api/codecs/devices/'+_pageDevId+'/clear_session',{}).then(function(){
     _updateSessionBadge(false);
     var f = document.getElementById('page-frame');
     f.src = f.src;
+  });
   });
 });
 

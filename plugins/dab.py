@@ -565,7 +565,7 @@ connBtn.addEventListener('click', function(){
     doStop();
   } else {
     if(!_service || !_channel){
-      alert('Select a service from the list first.');
+      _ssToast('Select a service from the list first.','warn');
       return;
     }
     doConnect(_service, _channel, _ensemble);
@@ -911,7 +911,7 @@ function _startScan(site, channels, regionLabel){
       scanStopBtn.style.display = 'none';
       scanProg.style.display    = 'none';
       console.error('[DAB] Scan rejected by hub:', d.error || d);
-      alert('Scan failed: ' + (d.error || '?'));
+      _ssToast('Scan failed: ' + (d.error || '?'),'err');
       return;
     }
     console.log('[DAB] Scan accepted by hub, polling for progress');

@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.45] - 2026-04-05
+
+### Changed
+- **Global toast + confirm modal system** — all browser `alert()` and `confirm()` calls across the entire app (signalscope.py + all plugins) have been replaced with two new global functions injected by `topnav()`:
+  - `_ssToast(msg, type, dur)` — animated slide-in toast notification (bottom-right, stacks, auto-dismisses). Types: `'ok'` (green), `'err'` (red), `'warn'` (amber), `'info'` (blue). Click to dismiss early.
+  - `_ssConfirm(msg, onYes, opts)` — centred modal confirmation dialog with blurred backdrop, Escape-to-close, backdrop-click-to-close. Options: `danger` (red confirm button), `yesLabel`, `noLabel`, `title`.
+  - **32 call sites replaced** across signalscope.py, push.py, dab.py, morning_report.py, sdr.py, presenter.py, codec.py, azuracast.py, icecast.py. No browser `alert()`/`confirm()` dialogs remain.
+
+---
+
 ## [3.5.44] - 2026-04-05
 
 ### Changed

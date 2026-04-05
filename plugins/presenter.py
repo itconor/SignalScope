@@ -407,7 +407,7 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
   <div class="hdr-right">
     {% if has_listener %}<a href="/listener" class="hdr-listen">🎧 Listen Live</a>{% endif %}
     {% if username %}<div class="hdr-user">👤 {{username}}</div>{% endif %}
-    <a href="/logout" class="hdr-signout" onclick="return confirm('Sign out?')">Sign out</a>
+    <a href="/logout" class="hdr-signout" id="_pres-signout">Sign out</a>
   </div>
 </header>
 
@@ -763,6 +763,9 @@ loadChainStatus();
 loadFaults();
 
 })();
+
+var _po=document.getElementById('_pres-signout');
+if(_po)_po.addEventListener('click',function(e){e.preventDefault();_ssConfirm('Sign out of SignalScope Presenter?',function(){window.location='/logout';},{yesLabel:'Sign Out'});});
 </script>
 </body>
 </html>

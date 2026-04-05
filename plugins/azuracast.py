@@ -787,21 +787,23 @@ function doAddStation(idx, stationId){
 }
 
 function doRemoveStation(srvId, staId){
-  if(!confirm('Remove station ' + staId + '?')) return;
+  _ssConfirm('Remove station ' + staId + '?',function(){
   _post('/api/azuracast/station/remove', {server_id: srvId, station_id: staId})
     .then(function(d){
       if(d.ok){ _showMsg('Station removed.', true); loadStatus(); }
       else { _showMsg(d.error||'Remove failed', false); }
     }).catch(function(e){ _showMsg('Error: '+e, false); });
+  });
 }
 
 function doRemoveServer(srvId){
-  if(!confirm('Remove this server and all its stations?')) return;
+  _ssConfirm('Remove this server and all its stations?',function(){
   _post('/api/azuracast/server/remove', {server_id: srvId})
     .then(function(d){
       if(d.ok){ _showMsg('Server removed.', true); loadStatus(); }
       else { _showMsg(d.error||'Remove failed', false); }
     }).catch(function(e){ _showMsg('Error: '+e, false); });
+  });
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

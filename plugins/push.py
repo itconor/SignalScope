@@ -390,8 +390,8 @@ if(_sb){_sb.addEventListener('click',function(){
     fcm_project_id:_val('fcm_project_id'),fcm_service_account_json:_val('fcm_service_account_json')
   });
   fetch('/hub/push/save',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'},body:body,credentials:'same-origin'})
-    .then(function(r){if(r.ok){window.location='/hub/push?saved=1';}else{r.text().then(function(t){alert('Save failed: '+t);_sb.disabled=false;_sb.textContent='💾 Save credentials';});}})
-    .catch(function(e){alert('Save error: '+e);_sb.disabled=false;_sb.textContent='💾 Save credentials';});
+    .then(function(r){if(r.ok){window.location='/hub/push?saved=1';}else{r.text().then(function(t){_ssToast('Save failed: '+t,'err');_sb.disabled=false;_sb.textContent='💾 Save credentials';});}})
+    .catch(function(e){_ssToast('Save error: '+e,'err');_sb.disabled=false;_sb.textContent='💾 Save credentials';});
 });}
 
 var _tb=document.getElementById('test-btn'),_tr=document.getElementById('test-result');
@@ -411,8 +411,8 @@ var _mb=document.getElementById('migrate-btn');
 if(_mb){_mb.addEventListener('click',function(){
   _mb.disabled=true;_mb.textContent='Migrating…';
   fetch('/hub/push/migrate',{method:'POST',headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'},body:'{}',credentials:'same-origin'})
-    .then(function(r){if(r.ok){window.location='/hub/push?migrated=1';}else{r.text().then(function(t){alert('Migration failed: '+t);_mb.disabled=false;_mb.textContent='⬆ Migrate from existing settings';});}})
-    .catch(function(e){alert('Migration error: '+e);_mb.disabled=false;_mb.textContent='⬆ Migrate from existing settings';});
+    .then(function(r){if(r.ok){window.location='/hub/push?migrated=1';}else{r.text().then(function(t){_ssToast('Migration failed: '+t,'err');_mb.disabled=false;_mb.textContent='⬆ Migrate from existing settings';});}})
+    .catch(function(e){_ssToast('Migration error: '+e,'err');_mb.disabled=false;_mb.textContent='⬆ Migrate from existing settings';});
 });}
 </script>
 </body></html>"""

@@ -1133,11 +1133,13 @@ document.body.addEventListener('click',function(e){
   }
   var delBtn=el.closest('.stream-del-btn');
   if(delBtn){
-    if(!confirm('Delete stream "'+delBtn.dataset.name+'"?')) return;
-    _post('/api/icecast/stream/delete',{id:delBtn.dataset.id},function(err,d){
-      if(err||!d.ok){_showMsg((d&&d.error)||'Delete failed',false);}
-      else{_showMsg('Stream deleted',true);_refresh();}
-    });
+    var _dId=delBtn.dataset.id,_dNm=delBtn.dataset.name;
+    _ssConfirm('Delete stream "'+_dNm+'"?',function(){
+      _post('/api/icecast/stream/delete',{id:_dId},function(err,d){
+        if(err||!d.ok){_showMsg((d&&d.error)||'Delete failed',false);}
+        else{_showMsg('Stream deleted',true);_refresh();}
+      });
+    },{danger:true,yesLabel:'Delete',title:'Delete stream'});
     return;
   }
 });
