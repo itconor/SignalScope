@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.69] - 2026-04-05
+
+### Fixed
+- **Producer view — Sign out button does nothing**: The presenter plugin's `_PRODUCER_TPL` has its own custom header (no `topnav()` call), so `_ssConfirm` — which is only injected by `topnav()` — was undefined on the page. The click handler called `e.preventDefault()` (suppressing the `href="/logout"` fallback) then threw an uncaught `ReferenceError` on `_ssConfirm`, leaving the user stuck. Fixed by replacing `_ssConfirm(...)` with a native `window.confirm()` call which works without topnav.
+
+---
+
 ## [3.5.68] - 2026-04-05
 
 ### Added

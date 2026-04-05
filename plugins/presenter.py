@@ -767,7 +767,10 @@ loadFaults();
 })();
 
 var _po=document.getElementById('_pres-signout');
-if(_po)_po.addEventListener('click',function(e){e.preventDefault();_ssConfirm('Sign out of SignalScope Presenter?',function(){window.location='/logout';},{yesLabel:'Sign Out'});});
+if(_po)_po.addEventListener('click',function(e){
+  e.preventDefault();
+  if(window.confirm('Sign out of SignalScope?')){window.location='/logout';}
+});
 </script>
 </body>
 </html>
