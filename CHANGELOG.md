@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.42] - 2026-04-05
+
+### Fixed
+- **Broadcast Chains save fails with "CSRF validation failed"** — `BROADCAST_CHAINS_TPL` had two `var _csrf` declarations across two `<script>` blocks. The first (line 1 of the first block) captured the token as a plain string. The second (added later for the Scheduled Maintenance Windows feature) redeclared `_csrf` as a function. When the second block ran on page load, the function object silently overwrote the string — so `_f()` was sending `function(){...}` as the `X-CSRFToken` header value and every save/delete call failed with a CSRF error. Fix: consolidated into a single `function _csrf(){...}` declaration at the top of the first script block; updated `_f()` to call `_csrf()`; removed the duplicate declaration from the maintenance windows block.
+
+---
+
 ## [3.5.41] - 2026-04-05
 
 ### Fixed

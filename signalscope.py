@@ -2297,7 +2297,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.41"
+BUILD                  = "SignalScope-3.5.42"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -26487,7 +26487,7 @@ var _chainData={
 <footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer>
 
 <script nonce="{{csp_nonce()}}">
-var _csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content||(document.cookie.match(/csrf_token=([^;]+)/)||[])[1]||'';
+function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||(document.cookie.match(/csrf_token=([^;]+)/)||[])[1]||'';}
 var _opts=[];
 
 // Collapsible section toggle
@@ -26502,7 +26502,7 @@ document.addEventListener('click', function(e){
   hdr.classList.toggle('open', open);
 });
 
-function _f(url,o){o=o||{};o.headers=Object.assign({'X-CSRFToken':_csrf,'Content-Type':'application/json'},o.headers||{});return fetch(url,o);}
+function _f(url,o){o=o||{};o.headers=Object.assign({'X-CSRFToken':_csrf(),'Content-Type':'application/json'},o.headers||{});return fetch(url,o);}
 
 function loadOpts(cb){
   _f('/api/chains/streams').then(r=>r.json()).then(d=>{_opts=d.options||[];if(cb)cb();}).catch(()=>{if(cb)cb();});
@@ -27055,7 +27055,6 @@ document.addEventListener('click',function(e){
 });
 
 // ── Scheduled Maintenance Windows ────────────────────────────────────────────
-var _csrf=function(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||'';};
 document.getElementById('chains_list').addEventListener('click',function(e){
   var btn=e.target.closest('.chain-schwin-btn');
   if(!btn)return;
