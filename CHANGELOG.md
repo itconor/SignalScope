@@ -2,6 +2,13 @@
 
 ---
 
+## [Sync Capture plugin 1.0.3] - 2026-04-05
+
+### Fixed
+- **Captures never delivered to clients — redesigned to use heartbeat commands**: The custom `/api/synccap/cmd` poll endpoint required synccap to be independently installed and running on every client node, and its poller errors were invisible. Replaced entirely with the standard heartbeat command mechanism (`hub_server.push_pending_command` → heartbeat ACK → `monitor._plugin_cmd_handlers`). The hub now pushes `{"type": "synccap_capture", "payload": {...}}` into the site's existing command queue; the client's synccap plugin registers a handler via `ctx["register_cmd_handler"]` that fires when the command arrives in the next heartbeat cycle (~10 s). No separate poll thread, no custom route, no silent failures. Requires SignalScope 3.5.84+.
+
+---
+
 ## [Sync Capture plugin 1.0.2] - 2026-04-05
 
 ### Fixed
@@ -20,6 +27,13 @@
 
 ### Added
 - **Sync Capture plugin** (`synccap.py`): Multi-site synchronized audio capture. Hub page shows all inputs from every connected site grouped by site name; tick any combination, set a label and duration (5–300 s), press Capture. The hub sends a `capture_at` timestamp (now + 5 s) to each client via a lightweight 2-second poll; each client waits until that moment, grabs the last N seconds from its 60-second rolling `_stream_buffer`, compresses to MP3 (via ffmpeg, if available) when the WAV exceeds ~200 KB, and uploads to the hub. Hub-local inputs are captured in-process at the same timestamp with no round-trip. All clips for a session are stored under `plugins/synccap_clips/` and presented together in an expandable row with inline `<audio>` players for side-by-side comparison. Stereo clips are labelled with a STEREO badge. Captures expire after 3 minutes if not all expected clips have arrived. Hub-only plugin.
+
+---
+
+## [3.5.84] - 2026-04-05
+
+### Added
+- **Plugin heartbeat command handler registry**: Plugins can now register handlers for custom hub→client command types delivered via the standard heartbeat ACK, without requiring changes to `signalscope.py` per plugin and without a separate poll endpoint. `ctx["register_cmd_handler"](cmd_type, fn)` registers `fn(payload)` to be called on the client when a command of that type arrives in a heartbeat response. Hub side uses `hub_server.push_pending_command(site, {"type": "...", "payload": {...}})`. Unknown command types fall through to `monitor._plugin_cmd_handlers` after all built-in types are checked.
 
 ---
 

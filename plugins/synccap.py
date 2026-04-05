@@ -42,8 +42,6 @@ except ImportError:
 
 _CLIP_DIR      = None   # plugins/synccap_clips/
 _DB_PATH       = None   # plugins/synccap_db.json
-_pending_cmds  = {}     # site -> cmd dict  (hub side)
-_pending_lock  = threading.Lock()
 _db_lock       = threading.Lock()
 
 _SAMPLE_RATE   = 48000
@@ -242,44 +240,24 @@ def register(app, ctx):
 
     cfg_ss = monitor.app_cfg
 
-    # ── Client node: start polling thread, register no routes ─────────────────
+    # ── Client node: register heartbeat command handler, no routes ───────────
     if hub_server is None:
-        def _client_poller():
-            _last_err = ""
-            monitor.log("[SyncCap] Client poller started")
-            while True:
-                try:
-                    cfg     = monitor.app_cfg
-                    hub_url = (getattr(getattr(cfg, "hub", None), "hub_url", "") or "").rstrip("/")
-                    site    = getattr(getattr(cfg, "hub", None), "site_name", "") or ""
-                    if not hub_url or not site:
-                        time.sleep(_CLIENT_POLL_S)
-                        continue
-                    req  = urllib.request.Request(
-                        f"{hub_url}/api/synccap/cmd",
-                        headers={"X-Site": site},
-                    )
-                    resp = urllib.request.urlopen(req, timeout=5)
-                    cmd  = json.loads(resp.read())
-                    if _last_err:
-                        monitor.log("[SyncCap] Client poller: hub reachable again")
-                        _last_err = ""
-                    if cmd.get("action") == "capture":
-                        threading.Thread(
-                            target=_handle_capture_cmd,
-                            args=(cmd, monitor, hub_url, site),
-                            daemon=True,
-                        ).start()
-                except Exception as exc:
-                    err_str = str(exc)
-                    if err_str != _last_err:
-                        monitor.log(f"[SyncCap] Client poller error: {exc}")
-                        _last_err = err_str
-                time.sleep(_CLIENT_POLL_S)
-
-        threading.Thread(
-            target=_client_poller, daemon=True, name="SyncCapPoller"
-        ).start()
+        register_cmd_handler = ctx.get("register_cmd_handler")
+        if register_cmd_handler:
+            def _on_synccap_capture(payload):
+                cfg     = monitor.app_cfg
+                hub_url = (getattr(getattr(cfg, "hub", None), "hub_url", "") or "").rstrip("/")
+                site    = getattr(getattr(cfg, "hub", None), "site_name", "") or ""
+                threading.Thread(
+                    target=_handle_capture_cmd,
+                    args=(payload, monitor, hub_url, site),
+                    daemon=True,
+                    name="SyncCapCapture",
+                ).start()
+            register_cmd_handler("synccap_capture", _on_synccap_capture)
+            monitor.log("[SyncCap] Client handler registered (heartbeat delivery)")
+        else:
+            monitor.log("[SyncCap] WARNING: register_cmd_handler not in ctx — upgrade SignalScope")
         return
 
     # ── Hub node: register all routes ─────────────────────────────────────────
@@ -355,15 +333,16 @@ def register(app, ctx):
             else:
                 sites_needed.setdefault(sel["site"], []).append(sel["stream"])
 
-        with _pending_lock:
-            for site, streams in sites_needed.items():
-                _pending_cmds[site] = {
-                    "action":     "capture",
+        for site, streams in sites_needed.items():
+            hub_server.push_pending_command(site, {
+                "type": "synccap_capture",
+                "payload": {
                     "capture_id": capture_id,
                     "capture_at": capture_at,
                     "duration_s": duration,
                     "streams":    streams,
-                }
+                },
+            })
 
         # Hub-local capture — wait until capture_at then grab stream buffers
         if hub_streams:
@@ -425,20 +404,6 @@ def register(app, ctx):
         ).start()
 
         return jsonify({"capture_id": capture_id, "capture_at": capture_at})
-
-    # ── Command poll (clients call this) ──────────────────────────────────────
-    @app.get("/api/synccap/cmd")
-    def synccap_cmd_poll():
-        from flask import request, jsonify
-        site  = request.headers.get("X-Site", "").strip()
-        if not site:
-            return jsonify({}), 400
-        sdata = hub_server._sites.get(site, {})
-        if not sdata.get("_approved"):
-            return jsonify({}), 403
-        with _pending_lock:
-            cmd = _pending_cmds.pop(site, None)
-        return jsonify(cmd or {})
 
     # ── Clip upload (clients POST here) ───────────────────────────────────────
     @app.post("/api/synccap/clip/<capture_id>")

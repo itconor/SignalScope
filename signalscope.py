@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.83"
+BUILD                  = "SignalScope-3.5.84"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8502,6 +8502,16 @@ class MonitorManager:
         # to be uploaded to the hub.  Drained by HubClient._loop() after each
         # successful heartbeat so clips reach the hub within one heartbeat cycle.
         self._hub_clip_queue: queue.Queue = queue.Queue(maxsize=500)
+        # Plugin-registered command handlers: cmd_type → callable(payload)
+        # Plugins register via ctx["register_cmd_handler"](type, fn).
+        # HubClient dispatches unknown command types here so plugins can
+        # receive commands delivered through the standard heartbeat ACK
+        # without requiring changes to signalscope.py per plugin.
+        self._plugin_cmd_handlers: Dict[str, object] = {}
+
+    def register_plugin_cmd_handler(self, cmd_type: str, handler) -> None:
+        """Register a handler for a plugin-specific heartbeat command type."""
+        self._plugin_cmd_handlers[cmd_type] = handler
 
     def log(self,msg):
         line=f"[{time.strftime('%H:%M:%S')}] {msg}"
@@ -13554,6 +13564,11 @@ class HubClient:
                         self._cmd_set_live_view(cmd_payload)
                     elif cmd_type == "set_input_field":
                         self._cmd_set_input_field(cmd_payload)
+                    elif cmd_type in monitor._plugin_cmd_handlers:
+                        try:
+                            monitor._plugin_cmd_handlers[cmd_type](cmd_payload)
+                        except Exception as _pce:
+                            monitor.log(f"[Hub] Plugin cmd '{cmd_type}' error: {_pce}")
                 # Drain auto-clip-upload queue — clips saved since the last
                 # heartbeat are uploaded to the hub for the Reports page.
                 # Cap at 2 per heartbeat cycle to avoid spawning a burst of
@@ -16446,6 +16461,11 @@ def _load_plugins():
         "mobile_api_required":  mobile_api_required,
         "metrics_db":           metrics_db,
         "BUILD":                BUILD,
+        # Plugins on client nodes can register handlers for custom heartbeat
+        # command types so they receive hub→client commands without a separate
+        # poll endpoint.  Call ctx["register_cmd_handler"]("my_cmd", fn) where
+        # fn(payload: dict) is called on the client when the command arrives.
+        "register_cmd_handler": monitor.register_plugin_cmd_handler,
     }
     for py in sorted(plugins_dir.glob("*.py")):
         # Pre-flight: only import files that declare the plugin marker
