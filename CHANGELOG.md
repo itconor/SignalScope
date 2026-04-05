@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.34] - 2026-04-05
+
+### Added
+- **Metric history CSV export** — new `GET /metrics.csv?stream=X&metric=Y&hours=N` endpoint downloads a time-series CSV (columns: `datetime,ts,stream,metric,value`). Supports up to 720 hours (30 days) of history. A "⬇ CSV" download button appears in the Signal History panel on hub stream cards; its URL automatically tracks the current stream/metric/range selection as you change them.
+- **Alert CSV date-range filter** — the "⬇ CSV" button on the Reports page now respects the active from/to date, stream, and type filters. The download link updates live as you adjust filters, so you always export exactly the events shown on screen. The `/reports.csv` endpoint accepts `?from=`, `?to=`, `?stream=`, and `?type=` query parameters directly.
+
+---
+
 ## [3.5.33] - 2026-04-04
 
 ### Fixed

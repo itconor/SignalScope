@@ -2249,7 +2249,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.33"
+BUILD                  = "SignalScope-3.5.34"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -17678,7 +17678,7 @@ tr.data-row.expanded td{background:#0d1e40}
 <div style="padding:8px 20px;background:var(--sur);border-bottom:1px solid var(--bor);display:flex;gap:7px;align-items:center;flex-wrap:wrap">
   <span style="font-size:13px;font-weight:600">📋 Alert Reports</span>
   <div style="margin-left:auto;display:flex;gap:7px">
-    <a href="/reports.csv" class="btn bp">⬇ CSV</a>
+    <a href="/reports.csv" id="csv-dl-link" class="btn bp" title="Download filtered events as CSV">⬇ CSV</a>
     <form method="post" action="/reports/clear" style="display:inline"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}"><button class="btn bw" type="submit" onclick="return confirm('Clear all alert history?')">🗑 Clear</button></form>
   </div>
 </div>
@@ -17826,7 +17826,22 @@ function typeCls(t){
   if(t.includes('cmp')) return 't-cmp';
   return 't-other';
 }
+function _updateCsvLink(){
+  var fs  = document.getElementById('f_stream').value;
+  var ft  = document.getElementById('f_type').value;
+  var ff  = document.getElementById('f_from').value;
+  var ft2 = document.getElementById('f_to').value;
+  var link = document.getElementById('csv-dl-link');
+  if(!link) return;
+  var params=[];
+  if(ff)  params.push('from='+encodeURIComponent(ff.replace('T',' ')));
+  if(ft2) params.push('to='+encodeURIComponent(ft2.replace('T',' ')));
+  if(fs)  params.push('stream='+encodeURIComponent(fs));
+  if(ft)  params.push('type='+encodeURIComponent(ft));
+  link.href='/reports.csv'+(params.length?'?'+params.join('&'):'');
+}
 function applyFilters(){
+  _updateCsvLink();
   var fs = document.getElementById('f_stream').value.toLowerCase();
   var ft = document.getElementById('f_type').value.toLowerCase();
   var ff = document.getElementById('f_from').value;
@@ -18082,7 +18097,7 @@ function refreshReports(){
 }
 
 window.addEventListener('DOMContentLoaded', function(){
-  applyFilters();
+  applyFilters();  // also calls _updateCsvLink()
   setInterval(refreshReports, 15000);
 });
 </script>
@@ -22748,6 +22763,36 @@ def sla_dashboard():
         })
     return render_template_string(SLA_TPL, rows=rows, target=target, build=BUILD)
 
+@app.get("/metrics.csv")
+@login_required
+def metrics_csv():
+    """Download a metric time-series as CSV.
+
+    Query params:
+        stream  — stream name (required), e.g. "My Station" or "SiteName/My Station" (hub)
+        metric  — metric name (default: level_dbfs)
+        hours   — hours of history to export (default 168 = 7 days, max 720 = 30 days)
+    """
+    stream = request.args.get("stream", "").strip()
+    metric = request.args.get("metric", "level_dbfs").strip()
+    try:
+        hours = min(float(request.args.get("hours", 168)), 720.0)
+    except ValueError:
+        hours = 168.0
+    if not stream:
+        return Response("stream parameter required", status=400, mimetype="text/plain")
+    points = metrics_db.query(stream, metric, hours)
+    lines = ["datetime,ts,stream,metric,value"]
+    for ts_val, value in points:
+        dt = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts_val))
+        safe_val = f"{value:.4f}" if isinstance(value, float) else str(value)
+        lines.append(f'"{dt}",{ts_val:.3f},"{stream}",{metric},{safe_val}')
+    safe_stem = (stream.replace("/", "_").replace(" ", "_").replace("\\", "_"))[:40]
+    fname = f"metrics_{safe_stem}_{metric}_{time.strftime('%Y%m%d_%H%M')}.csv"
+    return Response("\n".join(lines), mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @app.get("/sla.csv")
 @login_required
 def sla_csv():
@@ -23059,7 +23104,29 @@ def reports_data():
 @app.get("/reports.csv")
 @login_required
 def reports_csv():
+    """Download alert log as CSV.
+
+    Optional query params:
+        from  — start datetime string, e.g. "2026-04-01 00:00" (inclusive)
+        to    — end datetime string,   e.g. "2026-04-05 23:59" (inclusive)
+        stream — filter to one stream name
+        type   — filter to one alert type
+    """
     events = _alert_log_load(10000)
+    from_ts = request.args.get("from", "").strip().replace("T", " ")
+    to_ts   = request.args.get("to",   "").strip().replace("T", " ")
+    f_stream = request.args.get("stream", "").strip()
+    f_type   = request.args.get("type",   "").strip().lower()
+    if from_ts or to_ts or f_stream or f_type:
+        filtered = []
+        for e in events:
+            ts = e.get("ts", "")
+            if from_ts and ts < from_ts:           continue
+            if to_ts   and ts > to_ts + " 99":    continue
+            if f_stream and e.get("stream","") != f_stream: continue
+            if f_type   and e.get("type","").lower() != f_type: continue
+            filtered.append(e)
+        events = filtered
     cols = ["ts","stream","type","message","level_dbfs","rtp_loss_pct",
             "ptp_state","ptp_offset_us","ptp_drift_us","ptp_jitter_us","ptp_gm","clip"]
     lines = [",".join(cols)]
@@ -23067,8 +23134,11 @@ def reports_csv():
         lines.append(",".join(
             f'"{str(e.get(c,"")).replace(chr(34), chr(39))}"' for c in cols
         ))
+    suffix = ""
+    if from_ts: suffix += f"_from{from_ts[:10].replace('-','')}"
+    if to_ts:   suffix += f"_to{to_ts[:10].replace('-','')}"
     return Response("\n".join(lines), mimetype="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="alerts_{time.strftime("%Y%m%d_%H%M")}.csv"'})
+        headers={"Content-Disposition": f'attachment; filename="alerts{suffix}_{time.strftime("%Y%m%d_%H%M")}.csv"'})
 
 @app.post("/reports/clear")
 @login_required
@@ -31010,6 +31080,9 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             </div>
             <canvas class="sc-hc" height="110" style="display:block;width:100%;height:110px"></canvas>
             <div class="sc-hs" style="display:none;font-size:11px;color:var(--mu);text-align:center;padding:4px 0 6px"></div>
+            <div style="padding:2px 10px 6px;display:flex;justify-content:flex-end">
+              <a class="btn bg sc-hcsv" href="#" download style="font-size:10px;padding:2px 8px;color:var(--mu)">⬇ CSV</a>
+            </div>
           </div>
         </div>
         {% if site.online %}
@@ -32061,6 +32134,8 @@ function _scHistLoad(section) {
   var site=section.dataset.site, stream=section.dataset.stream;
   var colorMap={level_dbfs_l:'#38bdf8',level_dbfs_r:'#818cf8',fm_signal_dbm:'#34d399',fm_snr_db:'#6ee7b7',fm_stereo:'#a7f3d0',fm_rds_ok:'#34d399',dab_snr:'#a78bfa',dab_sig:'#c4b5fd',dab_bitrate:'#818cf8',lufs_m:'#fbbf24',lufs_s:'#fb923c',lufs_i:'#f87171',rtp_jitter_ms:'#e879f9',rtp_loss_pct:'#f472b6',silence_flag:'#64748b',clip_count:'#ef4444'};
   status.textContent='Loading…'; status.style.display='block';
+  var csvLink=section.querySelector('.sc-hcsv');
+  if(csvLink) csvLink.href='/metrics.csv?stream='+encodeURIComponent(site+'/'+stream)+'&metric='+encodeURIComponent(metric)+'&hours='+hours;
   fetch('/api/metrics/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream)+'?metric='+encodeURIComponent(metric)+'&hours='+hours)
     .then(function(r){return r.json();})
     .then(function(d){status.style.display='none'; drawMetricChart(canvas,d.points,colorMap[metric]||'#60a5fa');})
@@ -33534,6 +33609,8 @@ function _scHistLoad(section) {
   var colorMap = {fm_signal_dbm:'#34d399',fm_snr_db:'#6ee7b7',fm_stereo:'#a7f3d0',fm_rds_ok:'#34d399',dab_snr:'#a78bfa',dab_sig:'#c4b5fd',dab_bitrate:'#818cf8',lufs_m:'#fbbf24',lufs_s:'#fb923c',lufs_i:'#f87171',rtp_jitter_ms:'#e879f9',rtp_loss_pct:'#f472b6',silence_flag:'#64748b',clip_count:'#ef4444'};
   var color  = colorMap[metric] || '#60a5fa';
   status.textContent='Loading…'; status.style.display='block';
+  var csvLink=section.querySelector('.sc-hcsv');
+  if(csvLink) csvLink.href='/metrics.csv?stream='+encodeURIComponent(site+'/'+stream)+'&metric='+encodeURIComponent(metric)+'&hours='+hours;
   var metricUrl = '/api/metrics/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream)+'?metric='+encodeURIComponent(metric)+'&hours='+hours;
   var trendUrl  = metric==='level_dbfs' ? '/api/trend/'+encodeURIComponent(site)+'/'+encodeURIComponent(stream) : null;
   Promise.all([
