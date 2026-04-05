@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.70"
+BUILD                  = "SignalScope-3.5.71"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -4014,12 +4014,14 @@ def login_required(f):
             session.clear()
             flash(f"Session expired after {timeout_hrs}h. Please log in again.")
             return redirect(url_for("login", next=request.path))
-        # Refresh site/chain/plugin permissions from the live user account so
-        # that admin edits take effect immediately without requiring re-login.
+        # Refresh role + permissions from the live user account so that admin
+        # edits (including role changes) take effect immediately without
+        # requiring the affected user to log out and back in.
         _uname = session.get("username", "")
         if user_manager and _uname:
             _ua = user_manager.get(_uname)
             if _ua:
+                session["role"]            = _ua.role
                 session["allowed_sites"]   = _ua.sites   or []
                 session["allowed_plugins"] = _ua.plugins or []
                 session["allowed_chains"]  = _ua.chains  or []

@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.71] - 2026-04-05
+
+### Fixed
+- **Role change not taking effect until re-login**: When an admin changed a user's role (e.g. "presenter" → "admin"), the `login_required` decorator's live-refresh block updated `allowed_sites/plugins/chains` from the user store but never updated `session["role"]`. So `_current_user_role()` still returned the old role on the next request, causing the user to be redirected to the plugin page (e.g. `/producer`) even though their role had been promoted. Fixed by adding `session["role"] = _ua.role` to the refresh block — role changes now take effect on the very next page load without requiring the user to log out.
+
+---
+
 ## [3.5.70] - 2026-04-05
 
 ### Fixed
