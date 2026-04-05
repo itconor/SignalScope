@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.41] - 2026-04-05
+
+### Fixed
+- **HUB_SITE_TPL nav buttons oversized** — the site replica view (hub single-site page) was missing `.bs`, `.nav-active`, and `.bd` CSS classes. Topnav buttons rendered at full padding size. Also aligned `.btn` base padding to `5px 12px` to match the rest of the app and added `font-family:inherit` and `filter:brightness(1.15)` hover.
+- **SLA Dashboard `--wn` undefined** — the SLA dashboard `:root` block was missing `--wn:#f59e0b`. The `.warn-box` element references this variable, so the amber warning highlight would fall back to transparent/inherit on some browsers.
+
+---
+
 ## [3.5.40] - 2026-04-05
 
 ### Fixed

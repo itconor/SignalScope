@@ -2297,7 +2297,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.40"
+BUILD                  = "SignalScope-3.5.41"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -18470,7 +18470,7 @@ window.addEventListener('DOMContentLoaded', function(){
 </body></html>"""
 
 SLA_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>SLA Dashboard</title>
-<style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+<style nonce="{{csp_nonce()}}">:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top, #12376f 0%, var(--bg) 38%, #05101f 100%);color:var(--tx);font-size:14px;position:relative}body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}body>*{position:relative;z-index:1}
 header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
 header h1{font-size:16px;font-weight:700}.badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
@@ -31849,8 +31849,9 @@ body>*{position:relative;z-index:1}
 a{color:var(--acc);text-decoration:none}
 header{background:linear-gradient(180deg, rgba(10,31,65,.96), rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 10px 24px rgba(0,0,0,.18)}
 main{padding:18px;max-width:1500px;margin:0 auto}
-.btn{display:inline-block;padding:6px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600;transition:filter .15s,box-shadow .15s}
-.bp{background:var(--acc);color:#fff;box-shadow:0 2px 8px rgba(23,168,255,.25)}.bp:hover{box-shadow:0 3px 12px rgba(23,168,255,.4)}.bg{background:var(--bor);color:var(--tx)}
+.btn{display:inline-block;padding:5px 12px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600;font-family:inherit;transition:filter .15s,box-shadow .15s}.btn:hover{filter:brightness(1.15)}
+.bp{background:var(--acc);color:#fff;box-shadow:0 2px 8px rgba(23,168,255,.25)}.bp:hover{box-shadow:0 3px 12px rgba(23,168,255,.4)}.bg{background:var(--bor);color:var(--tx)}.bd{background:var(--al);color:#fff}
+.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
 .badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#1e3a5f;color:var(--acc)}
 .site-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.18)}
 .site-card.site-ok{border-left:5px solid var(--ok)}.site-card.site-warn{border-left:5px solid var(--wn);box-shadow:0 6px 18px rgba(0,0,0,.18),0 0 0 1px rgba(245,158,11,.15),0 0 24px rgba(245,158,11,.08)}.site-card.site-alert{border-left:5px solid var(--al);box-shadow:0 6px 18px rgba(0,0,0,.18),0 0 0 1px rgba(239,68,68,.2),0 0 28px rgba(239,68,68,.12);animation:alertCardPulse 3s ease-in-out infinite}.site-card.site-offline{border-left:5px solid var(--mu);opacity:.82}
