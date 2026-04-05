@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.8",
+    "version":  "1.0.9",
 }
 
 import os
@@ -131,27 +131,46 @@ def _wav_to_mp3(wav_bytes):
 
 def _capture_input(cfg, duration_s):
     """
-    Grab duration_s of audio from cfg._stream_buffer.
+    Grab duration_s of audio from the appropriate buffer.
     Returns (audio_bytes, ext, n_ch) or (None, None, None).
 
-    _stream_buffer is ALWAYS mono regardless of input type — stereo inputs
-    push a mono mix there and keep the interleaved stereo in _audio_buffer.
-    Always write WAV as mono (n_ch=1) to match the actual data.  Using
-    _audio_channels here would produce n_ch=2 for stereo inputs, making the
-    WAV header claim stereo when the data is mono → double-speed playback.
+    Buffer strategy (mirrors _save_alert_wav):
+      - Stereo inputs (_audio_channels == 2): use _audio_buffer which holds
+        interleaved L/R float32.  Slice in frame units to avoid mid-frame cuts.
+        Falls back to mono _stream_buffer if _audio_buffer is empty.
+      - Mono inputs: use _stream_buffer (60 s rolling, always mono float32).
+
+    NEVER use _audio_channels to decide WAV n_ch when reading _stream_buffer —
+    _stream_buffer is always mono regardless of stereo config.
     """
     if not _HAS_NP:
         return None, None, None
     try:
+        n_ch = getattr(cfg, "_audio_channels", 1) or 1
+
+        if n_ch == 2:
+            # Stereo path — _audio_buffer holds interleaved L/R float32
+            abuf = getattr(cfg, "_audio_buffer", None)
+            if abuf:
+                chunks = list(abuf)
+                if chunks:
+                    audio = np.concatenate(chunks)
+                    # Slice in frame units (2 samples per frame: L, R)
+                    frames = audio.reshape(-1, 2)
+                    frames = frames[-int(duration_s * _SAMPLE_RATE):]
+                    audio  = np.clip(frames.flatten(), -1.0, 1.0)
+                    pcm = (audio * 32767).astype(np.int16).tobytes()
+                    if pcm:
+                        return _pcm_to_wav(pcm, 2), "wav", 2
+
+        # Mono path (or stereo fallback): _stream_buffer is always mono
         buf = getattr(cfg, "_stream_buffer", None)
         if buf is None:
             return None, None, None
-        # n_ch is always 1 — _stream_buffer holds mono regardless of stereo config
         pcm = _chunks_to_pcm(buf, duration_s, 1)
         if not pcm:
             return None, None, None
-        wav = _pcm_to_wav(pcm, 1)
-        return wav, "wav", 1
+        return _pcm_to_wav(pcm, 1), "wav", 1
     except Exception:
         return None, None, None
 

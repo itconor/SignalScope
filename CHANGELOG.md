@@ -9,6 +9,13 @@
 
 ---
 
+## [Sync Capture plugin 1.0.9] - 2026-04-05
+
+### Changed
+- **Stereo captures**: Stereo inputs (`_audio_channels == 2` — FM, DAB, HTTP, RTP) now capture from `_audio_buffer` which holds the real interleaved L/R float32 data. Mono inputs continue to use `_stream_buffer` (60 s rolling). Stereo slicing uses frame-based indexing (reshape → slice → flatten) to avoid mid-frame cuts. Falls back to mono `_stream_buffer` if `_audio_buffer` is empty.
+
+---
+
 ## [Sync Capture plugin 1.0.8] - 2026-04-05
 
 ### Fixed
