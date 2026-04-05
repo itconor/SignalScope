@@ -2,6 +2,18 @@
 
 ---
 
+## [3.5.50] - 2026-04-05
+
+### Changed
+- **Settings Save** is now AJAX — button shows shimmer loading state and a ✓ toast on success instead of a hard page reload with no feedback (Sprint E1)
+- **Retrain AI button** converted from `<form method="post">` to an AJAX button with `_ssConfirm` confirmation dialog and `_btnLoad`/`_btnReset` loading state (Sprint E2)
+- **Chain builder Save** now shows a `showToast('Chain saved', 'ok')` instead of writing to an inline status text node; button gets loading shimmer during the save (Sprint E3)
+- **Delete chain** now shows a `showToast('Chain deleted', 'ok')` after the card is removed from the DOM — previously silent (Sprint E4)
+- **Global focus rings** — `.btn:focus-visible` and `.tb:focus-visible` now get a 2 px accent-colour outline, injected once via topnav so it applies across every page (Sprint G5)
+- **Reports — Reset filters button** added next to the filter bar; clears all stream/type/date/clips filters with one click (Sprint H1)
+
+---
+
 ## [3.5.49] - 2026-04-05
 
 ### Fixed

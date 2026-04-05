@@ -401,8 +401,20 @@ document.addEventListener('DOMContentLoaded',function(){
                 el.textContent = d.ok ? '✓ '+d.message : '✗ '+d.message;
               }).catch(function(e){ _btnReset(btn); el.style.color='var(--al)'; el.textContent='✗ Request failed: '+e; });
           }
+          document.getElementById('settings-save-btn').addEventListener('click', function(){
+            var btn = this;
+            var form = btn.closest('form');
+            _btnLoad(btn);
+            var fd = new FormData(form);
+            _csrfFetch('/settings', {method:'POST', body: fd})
+              .then(function(r){
+                _btnReset(btn);
+                if(r.ok){ showToast('Settings saved', 'ok'); }
+                else { showToast('Save failed ('+r.status+')', 'err'); }
+              }).catch(function(){ _btnReset(btn); showToast('Save failed — check connection', 'err'); });
+          });
           </script>
-  <div class="act"><button class="btn bp" type="submit">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
+  <div class="act"><button class="btn bp" type="button" id="settings-save-btn">Save</button><a class="btn bg" href="/">Cancel</a><a href="/settings/backup" class="btn bg bs" style="margin-left:auto">⬇ Backup</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-hub">
   <div class="sec">🌐 Network Interfaces</div>
@@ -2315,7 +2327,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.49"
+BUILD                  = "SignalScope-3.5.50"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16799,7 +16811,8 @@ def _inject_nav():
                 '.btn-loading{position:relative;overflow:hidden;pointer-events:none;opacity:.72}'
                 '.btn-loading::after{content:\\"\\";position:absolute;inset:0;'
                 'background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,.18) 50%,transparent 100%);'
-                'animation:_btnShim .9s linear infinite}";'
+                'animation:_btnShim .9s linear infinite}'
+                '.btn:focus-visible,.tb:focus-visible{outline:2px solid var(--acc);outline-offset:2px}";'
               'document.head.appendChild(_ks);'
               '})();'
               '</script>'
@@ -17311,9 +17324,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
       {% endif %}
       {% if ph=='ready' and running %}
         <div style="margin:2px 13px 8px">
-          <form method="post" action="/ai/retrain/{{idx}}" style="margin:0"><input type="hidden" name="_csrf_token" value="{{csrf_token()}}">
-            <button class="btn bg" style="font-size:11px;padding:2px 8px">↺ Retrain AI</button>
-          </form>
+          <button class="btn bg" style="font-size:11px;padding:2px 8px" onclick="(function(btn){_ssConfirm('Retrain AI? The learned baseline for this stream will be reset.',function(){_btnLoad(btn);_csrfFetch('/ai/retrain/{{idx}}',{method:'POST'}).then(function(r){return r.json();}).then(function(d){_btnReset(btn);if(d.ok||d.status==='ok'){showToast('AI retrain started','ok');}else{showToast(d.error||'Retrain failed','err');}}).catch(function(){_btnReset(btn);showToast('Request failed','err');});})})(this)">↺ Retrain AI</button>
         </div>
       {% endif %}
       {% endif %}
@@ -18190,6 +18201,7 @@ tr.data-row.expanded td{background:#0d1e40}
     <label>From <input type="datetime-local" id="f_from" onchange="applyFilters()"></label>
     <label>To   <input type="datetime-local" id="f_to"   onchange="applyFilters()"></label>
     <label><input type="checkbox" id="f_clips" onchange="applyFilters()"> Clips only</label>
+    <button type="button" class="btn bg bs" id="btn_reset_filters" title="Clear all filters" style="align-self:flex-end">✕ Reset</button>
     <span class="page-info" id="row_count"></span>
   </div>
 
@@ -18572,6 +18584,14 @@ function refreshReports(){
 window.addEventListener('DOMContentLoaded', function(){
   applyFilters();  // also calls _updateCsvLink()
   setInterval(refreshReports, 15000);
+  document.getElementById('btn_reset_filters').addEventListener('click', function(){
+    document.getElementById('f_stream').value = '';
+    document.getElementById('f_type').value = '';
+    document.getElementById('f_from').value = '';
+    document.getElementById('f_to').value = '';
+    document.getElementById('f_clips').checked = false;
+    applyFilters();
+  });
 });
 </script>
 </body></html>"""
@@ -27019,11 +27039,13 @@ function saveChain(){
   var clipSeconds=parseFloat(document.getElementById('builder_clip_seconds').value||'0')||0;
   var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_holdoff_seconds:faultHoldoff,fault_shift_grace_seconds:shiftGrace,adbreak_gap_tolerance_seconds:adbreakGapTol,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId,clip_seconds:clipSeconds};
   if(cid)payload.id=cid;
-  st.style.color='var(--mu)';st.textContent='Saving…';
+  var _saveBtn=document.getElementById('btn_save_chain');
+  _btnLoad(_saveBtn);
   _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
-    if(d.ok){st.style.color='var(--ok)';st.textContent='Saved.';setTimeout(()=>location.reload(),600);}
+    _btnReset(_saveBtn);
+    if(d.ok){showToast('Chain saved','ok');setTimeout(()=>location.reload(),600);}
     else{st.style.color='var(--al)';st.textContent='Error: '+(d.error||'?');}
-  }).catch(e=>{st.style.color='var(--al)';st.textContent=''+e;});
+  }).catch(e=>{_btnReset(_saveBtn);st.style.color='var(--al)';st.textContent=''+e;});
 }
 document.getElementById('btn_save_chain').addEventListener('click',saveChain);
 
@@ -27034,7 +27056,7 @@ function deleteChain(id,name){
 }
 function _doDeleteChain(id){
   _f('/api/chains/'+encodeURIComponent(id),{method:'DELETE'}).then(r=>r.json()).then(d=>{
-    if(d.ok){var el=document.getElementById('chain_'+id);if(el)el.remove();}
+    if(d.ok){var el=document.getElementById('chain_'+id);if(el)el.remove();showToast('Chain deleted','ok');}
   }).catch(()=>{});
 }
 
