@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.7",
+    "version":  "1.0.8",
 }
 
 import os
@@ -133,21 +133,25 @@ def _capture_input(cfg, duration_s):
     """
     Grab duration_s of audio from cfg._stream_buffer.
     Returns (audio_bytes, ext, n_ch) or (None, None, None).
+
+    _stream_buffer is ALWAYS mono regardless of input type — stereo inputs
+    push a mono mix there and keep the interleaved stereo in _audio_buffer.
+    Always write WAV as mono (n_ch=1) to match the actual data.  Using
+    _audio_channels here would produce n_ch=2 for stereo inputs, making the
+    WAV header claim stereo when the data is mono → double-speed playback.
     """
     if not _HAS_NP:
         return None, None, None
     try:
-        buf  = getattr(cfg, "_stream_buffer", None)
+        buf = getattr(cfg, "_stream_buffer", None)
         if buf is None:
             return None, None, None
-        n_ch = getattr(cfg, "_audio_channels", 1) or 1
-        pcm  = _chunks_to_pcm(buf, duration_s, n_ch)
+        # n_ch is always 1 — _stream_buffer holds mono regardless of stereo config
+        pcm = _chunks_to_pcm(buf, duration_s, 1)
         if not pcm:
             return None, None, None
-        wav = _pcm_to_wav(pcm, n_ch)
-        # Always return WAV — ffmpeg MP3 encoding adds latency and nginx is
-        # configured for large uploads, so there is no benefit to compressing.
-        return wav, "wav", n_ch
+        wav = _pcm_to_wav(pcm, 1)
+        return wav, "wav", 1
     except Exception:
         return None, None, None
 

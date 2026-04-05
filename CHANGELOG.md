@@ -9,6 +9,13 @@
 
 ---
 
+## [Sync Capture plugin 1.0.8] - 2026-04-05
+
+### Fixed
+- **All clips playing at double speed**: `_capture_input` used `_audio_channels` for the WAV channel count. For stereo inputs (FM, DAB) `_audio_channels` is 2, making the WAV header claim stereo — but `_stream_buffer` is always mono regardless of input type (stereo inputs push a mono mix to `_stream_buffer` and keep interleaved stereo in `_audio_buffer`). A mono-data WAV labelled as stereo plays at double speed. Fix: always write `n_ch=1`, matching what `_save_alert_wav` does when given `_stream_buffer` chunks (`_n_ch = 1 if _chunks is not None else ...`).
+
+---
+
 ## [Sync Capture plugin 1.0.7] - 2026-04-05
 
 ### Changed
