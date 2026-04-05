@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.3",
+    "version":  "1.0.4",
 }
 
 import os
@@ -48,8 +48,17 @@ _db_lock       = threading.Lock()
 _SAMPLE_RATE   = 48000
 _MIN_DUR       = 5
 _MAX_DUR       = 300
-_CLIENT_POLL_S = 2      # client polls /api/synccap/cmd every 2 s
+_CLIENT_POLL_S = 3      # client polls /api/synccap/cmd every 3 s (fallback for old cores)
 _EXPIRE_S      = 180    # capture expires after 3 min if not complete
+
+# hub-side: pending commands for old-core clients that poll /api/synccap/cmd
+# dict of site → (cmd_dict, expiry_ts)
+_pending_cmds  = {}
+_pending_lock  = threading.Lock()
+
+# client-side: set of capture_ids already processed — prevents double-capture
+# if both heartbeat and poll deliver the same command
+_processed_captures: set = set()
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -167,6 +176,12 @@ def _handle_capture_cmd(cmd, monitor, hub_url, site):
     duration_s = cmd.get("duration_s", 30)
     streams    = cmd.get("streams", [])
 
+    # Deduplicate: both heartbeat and poll may deliver the same capture
+    if capture_id in _processed_captures:
+        monitor.log(f"[SyncCap] Client: duplicate capture {capture_id} — ignored")
+        return
+    _processed_captures.add(capture_id)
+
     monitor.log(
         f"[SyncCap] Client received capture {capture_id}: "
         f"{len(streams)} stream(s), {duration_s} s, "
@@ -239,26 +254,70 @@ def register(app, ctx):
     _DB_PATH    = os.path.join(_plugin_dir, "synccap_db.json")
     os.makedirs(_CLIP_DIR, exist_ok=True)
 
-    cfg_ss = monitor.app_cfg
+    cfg_ss  = monitor.app_cfg
+    mode    = getattr(getattr(cfg_ss, "hub", None), "mode", "standalone") or "standalone"
+    hub_url = (getattr(getattr(cfg_ss, "hub", None), "hub_url", "") or "").rstrip("/")
+
+    # hub_server is always a HubServer() instance (never None in signalscope.py).
+    # Use mode to distinguish hub from client nodes.
+    is_hub    = mode in ("hub", "both")
+    is_client = mode == "client" and bool(hub_url)
 
     # ── Client node: register heartbeat command handler, no routes ───────────
-    if hub_server is None:
+    if is_client:
         register_cmd_handler = ctx.get("register_cmd_handler")
         if register_cmd_handler:
             def _on_synccap_capture(payload):
-                cfg     = monitor.app_cfg
-                hub_url = (getattr(getattr(cfg, "hub", None), "hub_url", "") or "").rstrip("/")
-                site    = getattr(getattr(cfg, "hub", None), "site_name", "") or ""
+                cfg2    = monitor.app_cfg
+                h_url   = (getattr(getattr(cfg2, "hub", None), "hub_url", "") or "").rstrip("/")
+                site2   = getattr(getattr(cfg2, "hub", None), "site_name", "") or ""
                 threading.Thread(
                     target=_handle_capture_cmd,
-                    args=(payload, monitor, hub_url, site),
+                    args=(payload, monitor, h_url, site2),
                     daemon=True,
                     name="SyncCapCapture",
                 ).start()
             register_cmd_handler("synccap_capture", _on_synccap_capture)
             monitor.log("[SyncCap] Client handler registered (heartbeat delivery)")
         else:
-            monitor.log("[SyncCap] WARNING: register_cmd_handler not in ctx — upgrade SignalScope")
+            # Fallback for cores older than 3.5.84: poll the hub poll endpoint
+            monitor.log("[SyncCap] Core pre-3.5.84 — using poll fallback for capture delivery")
+            def _poll_for_captures():
+                last_err_log = 0.0
+                while True:
+                    try:
+                        cfg2  = monitor.app_cfg
+                        h_url = (getattr(getattr(cfg2, "hub", None), "hub_url", "") or "").rstrip("/")
+                        site2 = getattr(getattr(cfg2, "hub", None), "site_name", "") or ""
+                        if not h_url or not site2:
+                            time.sleep(_CLIENT_POLL_S)
+                            continue
+                        req  = urllib.request.Request(
+                            f"{h_url}/api/synccap/cmd",
+                            headers={"X-Site": site2},
+                        )
+                        resp = urllib.request.urlopen(req, timeout=5)
+                        data = json.loads(resp.read())
+                        cmd  = data.get("cmd")
+                        if cmd:
+                            threading.Thread(
+                                target=_handle_capture_cmd,
+                                args=(cmd, monitor, h_url, site2),
+                                daemon=True,
+                                name="SyncCapCapture",
+                            ).start()
+                    except Exception as exc:
+                        now = time.time()
+                        if now - last_err_log > 30:
+                            monitor.log(f"[SyncCap] Poll error: {exc}")
+                            last_err_log = now
+                    time.sleep(_CLIENT_POLL_S)
+
+            threading.Thread(
+                target=_poll_for_captures, daemon=True, name="SyncCapPoll"
+            ).start()
+
+    if not is_hub:
         return
 
     # ── Hub node: register all routes ─────────────────────────────────────────
@@ -306,7 +365,7 @@ def register(app, ctx):
             return jsonify({"error": "No inputs selected"}), 400
 
         capture_id   = uuid.uuid4().hex[:12]
-        capture_at   = time.time() + 5   # 5 s for clients to receive command
+        capture_at   = time.time() + 15  # 15 s so heartbeat (≤10 s cycle) has time to deliver
         triggered_at = time.time()
 
         cap = {
@@ -335,15 +394,20 @@ def register(app, ctx):
                 sites_needed.setdefault(sel["site"], []).append(sel["stream"])
 
         for site, streams in sites_needed.items():
+            cmd_payload = {
+                "capture_id": capture_id,
+                "capture_at": capture_at,
+                "duration_s": duration,
+                "streams":    streams,
+            }
+            # Primary: deliver via heartbeat ACK (cores 3.5.84+)
             hub_server.push_pending_command(site, {
-                "type": "synccap_capture",
-                "payload": {
-                    "capture_id": capture_id,
-                    "capture_at": capture_at,
-                    "duration_s": duration,
-                    "streams":    streams,
-                },
+                "type":    "synccap_capture",
+                "payload": cmd_payload,
             })
+            # Fallback: also serve via /api/synccap/cmd poll (older cores)
+            with _pending_lock:
+                _pending_cmds[site] = (cmd_payload, time.time() + _EXPIRE_S)
 
         # Hub-local capture — wait until capture_at then grab stream buffers
         if hub_streams:
@@ -405,6 +469,30 @@ def register(app, ctx):
         ).start()
 
         return jsonify({"capture_id": capture_id, "capture_at": capture_at})
+
+    # ── Poll endpoint (fallback for old-core clients) ─────────────────────────
+    # New cores receive commands via heartbeat ACK. Old cores (pre-3.5.84)
+    # poll this endpoint.  Command is removed on first successful serve.
+    @app.get("/api/synccap/cmd")
+    def synccap_cmd_poll():
+        from flask import request, jsonify
+        site = request.headers.get("X-Site", "").strip()
+        if not site:
+            return jsonify({}), 400
+        sdata = hub_server._sites.get(site, {})
+        if not sdata.get("_approved"):
+            return jsonify({}), 403
+        with _pending_lock:
+            entry = _pending_cmds.get(site)
+            if entry:
+                cmd, expiry = entry
+                if time.time() > expiry:
+                    del _pending_cmds[site]
+                    return jsonify({})
+                # Pop on first serve so we don't re-deliver to the same client
+                del _pending_cmds[site]
+                return jsonify({"cmd": cmd})
+        return jsonify({})
 
     # ── Clip upload (clients POST here) ───────────────────────────────────────
     @app.post("/api/synccap/clip/<capture_id>")

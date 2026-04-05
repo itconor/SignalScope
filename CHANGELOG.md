@@ -2,6 +2,22 @@
 
 ---
 
+## [3.5.85] - 2026-04-05
+
+### Fixed
+- **Unhandled heartbeat commands now logged**: Unknown command types that aren't handled by any built-in handler or registered plugin handler are now logged on the client with a clear message, making it easier to diagnose delivery failures.
+
+---
+
+## [Sync Capture plugin 1.0.4] - 2026-04-05
+
+### Fixed
+- **Captures never delivered — root cause: `hub_server is None` always False**: `hub_server` in the plugin ctx is always a `HubServer()` instance (never `None`), so the `if hub_server is None:` check used in v1.0.3 to detect client nodes always evaluated to False. Client nodes were registering hub routes instead of the heartbeat capture handler — the `synccap_capture` command arrived via heartbeat but had no handler registered, and was silently dropped. Fix: replaced `hub_server is None` with a mode-based check (`mode == "client" and bool(hub_url)`), matching the SignalScope convention for detecting client nodes. **This is the root cause of every version of synccap failing to deliver captures.**
+- **Poll fallback re-added for belt-and-braces**: The hub now also populates `_pending_cmds[site]` when triggering a capture. A `/api/synccap/cmd` poll endpoint (removed in v1.0.3) is re-added on the hub. Client nodes on cores older than 3.5.84 (where `register_cmd_handler` is unavailable) fall back to polling this endpoint every 3 s. Both delivery paths include deduplication via `_processed_captures`.
+- **`capture_at` window increased from +5 s to +15 s**: Heartbeat cycle is ~10 s; 5 s was too short for the command to arrive before the capture window closed. Now +15 s, giving at least one full heartbeat cycle of headroom.
+
+---
+
 ## [Sync Capture plugin 1.0.3] - 2026-04-05
 
 ### Fixed

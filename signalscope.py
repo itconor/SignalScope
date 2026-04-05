@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.84"
+BUILD                  = "SignalScope-3.5.85"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -13569,6 +13569,11 @@ class HubClient:
                             monitor._plugin_cmd_handlers[cmd_type](cmd_payload)
                         except Exception as _pce:
                             monitor.log(f"[Hub] Plugin cmd '{cmd_type}' error: {_pce}")
+                    else:
+                        monitor.log(
+                            f"[Hub] Unknown command type '{cmd_type}' — no handler "
+                            f"registered (upgrade SignalScope or install the relevant plugin)"
+                        )
                 # Drain auto-clip-upload queue — clips saved since the last
                 # heartbeat are uploaded to the hub for the Reports page.
                 # Cap at 2 per heartbeat cycle to avoid spawning a burst of
