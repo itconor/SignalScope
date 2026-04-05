@@ -2,6 +2,13 @@
 
 ---
 
+## [Sync Capture plugin 1.0.0] - 2026-04-05
+
+### Added
+- **Sync Capture plugin** (`synccap.py`): Multi-site synchronized audio capture. Hub page shows all inputs from every connected site grouped by site name; tick any combination, set a label and duration (5–300 s), press Capture. The hub sends a `capture_at` timestamp (now + 5 s) to each client via a lightweight 2-second poll; each client waits until that moment, grabs the last N seconds from its 60-second rolling `_stream_buffer`, compresses to MP3 (via ffmpeg, if available) when the WAV exceeds ~200 KB, and uploads to the hub. Hub-local inputs are captured in-process at the same timestamp with no round-trip. All clips for a session are stored under `plugins/synccap_clips/` and presented together in an expandable row with inline `<audio>` players for side-by-side comparison. Stereo clips are labelled with a STEREO badge. Captures expire after 3 minutes if not all expected clips have arrived. Hub-only plugin.
+
+---
+
 ## [3.5.78] - 2026-04-05
 
 ### Fixed
