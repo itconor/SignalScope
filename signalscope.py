@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.73"
+BUILD                  = "SignalScope-3.5.74"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2765,6 +2765,34 @@ class InputConfig:
     alert_on_phase_reversal:     bool  = True
     phase_reversal_mono_drop_db: float = 12.0  # mono mix must be this many dB quieter than min(L,R)
     phase_reversal_min_duration: float = 10.0  # must persist this long before alert
+
+    # Level drift / gain change detection
+    # Compares a fast EMA (~1 min) against a slow EMA (~10 min).
+    # Fires when the stream audio level has drifted by more than drift_db
+    # — catches transmitter gain loss, AGC failure, fader accidents, etc.
+    alert_on_level_drift:     bool  = False   # off by default — programmes vary in loudness
+    level_drift_db:           float = 8.0     # minimum drift to alert (dB)
+    level_drift_min_duration: float = 60.0    # drift must persist this long (s) before alerting
+
+    # Sustained overmodulation
+    # Fires when a large fraction of audio chunks exceed the clip threshold
+    # over a rolling window — catches a mixer left too hot, not just brief peaks.
+    alert_on_overmod:         bool  = True
+    overmod_threshold_dbfs:   float = -1.0    # chunks above this count as overmodulated
+    overmod_window_seconds:   float = 60.0    # rolling window length
+    overmod_clip_pct:         float = 20.0    # alert if this % of chunks are clipping
+
+    # Mono-on-stereo detection (stereo streams only)
+    # Derives L-R correlation from available level measurements.  Fires when
+    # a stereo output is carrying mono content (correlation ≥ threshold).
+    alert_on_mono_on_stereo:       bool  = False   # off by default — many streams legitimately run mono
+    mono_on_stereo_corr:           float = 0.98    # L-R correlation threshold (0–1)
+    mono_on_stereo_min_duration:   float = 60.0    # must persist this long before alerting
+
+    # Stereo L/R imbalance detection (stereo streams only)
+    alert_on_stereo_imbalance:     bool  = True
+    stereo_imbalance_db:           float = 6.0     # minimum L-R level difference to alert (dB)
+    stereo_imbalance_min_duration: float = 30.0    # must persist this long before alerting
 
     # FM output options
     fm_force_mono:        bool = False  # always output mono regardless of pilot SNR
@@ -3259,6 +3287,19 @@ def load_config() -> AppConfig:
             alert_on_phase_reversal=bool(item.get("alert_on_phase_reversal", True)),
             phase_reversal_mono_drop_db=float(item.get("phase_reversal_mono_drop_db", 12.0)),
             phase_reversal_min_duration=float(item.get("phase_reversal_min_duration", 10.0)),
+            alert_on_level_drift=bool(item.get("alert_on_level_drift", False)),
+            level_drift_db=float(item.get("level_drift_db", 8.0)),
+            level_drift_min_duration=float(item.get("level_drift_min_duration", 60.0)),
+            alert_on_overmod=bool(item.get("alert_on_overmod", True)),
+            overmod_threshold_dbfs=float(item.get("overmod_threshold_dbfs", -1.0)),
+            overmod_window_seconds=float(item.get("overmod_window_seconds", 60.0)),
+            overmod_clip_pct=float(item.get("overmod_clip_pct", 20.0)),
+            alert_on_mono_on_stereo=bool(item.get("alert_on_mono_on_stereo", False)),
+            mono_on_stereo_corr=float(item.get("mono_on_stereo_corr", 0.98)),
+            mono_on_stereo_min_duration=float(item.get("mono_on_stereo_min_duration", 60.0)),
+            alert_on_stereo_imbalance=bool(item.get("alert_on_stereo_imbalance", True)),
+            stereo_imbalance_db=float(item.get("stereo_imbalance_db", 6.0)),
+            stereo_imbalance_min_duration=float(item.get("stereo_imbalance_min_duration", 30.0)),
             stereo=bool(item.get("stereo", False)),
             fm_force_mono=bool(item.get("fm_force_mono", False)),
             fm_deemphasis=str(item.get("fm_deemphasis", "50us") or "50us"),
@@ -3444,6 +3485,19 @@ def save_config(cfg: AppConfig):
             "alert_on_phase_reversal": i.alert_on_phase_reversal,
             "phase_reversal_mono_drop_db": i.phase_reversal_mono_drop_db,
             "phase_reversal_min_duration": i.phase_reversal_min_duration,
+            "alert_on_level_drift": i.alert_on_level_drift,
+            "level_drift_db": i.level_drift_db,
+            "level_drift_min_duration": i.level_drift_min_duration,
+            "alert_on_overmod": i.alert_on_overmod,
+            "overmod_threshold_dbfs": i.overmod_threshold_dbfs,
+            "overmod_window_seconds": i.overmod_window_seconds,
+            "overmod_clip_pct": i.overmod_clip_pct,
+            "alert_on_mono_on_stereo": i.alert_on_mono_on_stereo,
+            "mono_on_stereo_corr": i.mono_on_stereo_corr,
+            "mono_on_stereo_min_duration": i.mono_on_stereo_min_duration,
+            "alert_on_stereo_imbalance": i.alert_on_stereo_imbalance,
+            "stereo_imbalance_db": i.stereo_imbalance_db,
+            "stereo_imbalance_min_duration": i.stereo_imbalance_min_duration,
             "stereo": i.stereo,
             "fm_force_mono": i.fm_force_mono,
             "fm_deemphasis": i.fm_deemphasis,
@@ -6892,7 +6946,13 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                 cfg._hiss_secs=max(0.0,cfg._hiss_secs-elapsed)
             if cfg._hiss_secs>=cfg.hiss_min_duration:
                 now=time.time()
-                if now-cfg._last_alerts.get("HISS",0)>=ALERT_COOLDOWN:
+                # Fix #3: level transitions shift spectral balance and can masquerade
+                # as hiss. Suppress the alert if level changed >8 dB in the last 5 s.
+                _hiss_level_5s = [v for (t,v) in cfg._level_buf
+                                  if now-5.0 <= t and v > cfg.silence_threshold_dbfs]
+                _hiss_lev_stable = (len(_hiss_level_5s) < 3
+                                    or (max(_hiss_level_5s)-min(_hiss_level_5s)) < 8.0)
+                if _hiss_lev_stable and now-cfg._last_alerts.get("HISS",0)>=ALERT_COOLDOWN:
                     cfg._last_alerts["HISS"]=now
                     msg=f"Hiss/HF noise on '{cfg.name}' — HF up {hf_db:.1f}dB for {cfg._hiss_secs:.1f}s"
                     clip=_save_alert_wav(cfg,"hiss",cfg.alert_wav_duration)
@@ -6997,6 +7057,142 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                         alert_type="PHASE_REVERSAL", stream=cfg.name, level_dbfs=lev)
                 log_fn(f"[ALERT] {msg}")
             cfg._phase_rev_secs = 0.0
+
+    # ── Level drift / gain change detection ───────────────────────────────────
+    # Two EMAs at different time constants. When the fast (~1 min) EMA diverges
+    # from the slow (~10 min) EMA by more than level_drift_db, the stream has
+    # quietly gained or lost significant level — AGC failure, fader movement, etc.
+    if cfg.alert_on_level_drift and lev > cfg.silence_threshold_dbfs:
+        _ld_alpha_fast = min(max(elapsed / 60.0, 0.005), 0.15)   # tau ≈ 60 s
+        _ld_alpha_slow = min(max(elapsed / 600.0, 0.0005), 0.02)  # tau ≈ 600 s
+        cfg._ld_ema_fast = getattr(cfg, '_ld_ema_fast', lev) * (1 - _ld_alpha_fast) + lev * _ld_alpha_fast
+        cfg._ld_ema_slow = getattr(cfg, '_ld_ema_slow', lev) * (1 - _ld_alpha_slow) + lev * _ld_alpha_slow
+        cfg._ld_ema_chunks = getattr(cfg, '_ld_ema_chunks', 0) + 1
+        # Wait for slow EMA to stabilise (≈ 5 min / 600 chunks at 0.5 s)
+        if getattr(cfg, '_ld_ema_chunks', 0) >= 600:
+            _ld_diff = cfg._ld_ema_slow - cfg._ld_ema_fast  # positive = recent is quieter
+            if abs(_ld_diff) >= cfg.level_drift_db:
+                cfg._ld_drift_secs = getattr(cfg, '_ld_drift_secs', 0.0) + elapsed
+            else:
+                cfg._ld_drift_secs = max(0.0, getattr(cfg, '_ld_drift_secs', 0.0) - elapsed * 0.5)
+            if getattr(cfg, '_ld_drift_secs', 0.0) >= cfg.level_drift_min_duration:
+                now = time.time()
+                if now - cfg._last_alerts.get("LEVEL_DRIFT", 0) >= ALERT_COOLDOWN:
+                    cfg._last_alerts["LEVEL_DRIFT"] = now
+                    _ld_dir = "dropped" if _ld_diff > 0 else "risen"
+                    msg = (f"Level drift on '{cfg.name}' — "
+                           f"mean level has {_ld_dir} ~{abs(_ld_diff):.1f} dB "
+                           f"(was {cfg._ld_ema_slow:.1f} dBFS, now {cfg._ld_ema_fast:.1f} dBFS)")
+                    clip = _save_alert_wav(cfg, "level_drift", cfg.alert_wav_duration)
+                    _add_history(cfg, "LEVEL_DRIFT", msg, clip_path=clip or "")
+                    if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                        sender.send(f"LEVEL DRIFT on {cfg.name}", msg, clip,
+                            alert_type="LEVEL_DRIFT", stream=cfg.name, level_dbfs=lev)
+                    log_fn(f"[ALERT] {msg}")
+                cfg._ld_drift_secs = 0.0
+    else:
+        # Reset EMA counters when stream is silent so drift doesn't accumulate
+        # across silence periods and fire spuriously when audio returns.
+        if not cfg.alert_on_level_drift or lev <= cfg.silence_threshold_dbfs:
+            cfg._ld_ema_chunks = 0
+            cfg._ld_ema_fast = lev
+            cfg._ld_ema_slow = lev
+
+    # ── Sustained overmodulation ───────────────────────────────────────────────
+    # Tracks a rolling fraction of clipping chunks.  Fires OVERMOD when the
+    # stream has been chronically too hot — distinct from the burst CLIP alert.
+    if cfg.alert_on_overmod and lev > cfg.silence_threshold_dbfs:
+        peak_db_om = dbfs(float(np.max(np.abs(data))))
+        _om_is_clip = peak_db_om >= cfg.overmod_threshold_dbfs
+        # Exponential average of "clipping fraction" over overmod_window_seconds
+        _om_alpha = min(max(elapsed / cfg.overmod_window_seconds, 0.005), 0.2)
+        cfg._overmod_frac = getattr(cfg, '_overmod_frac', 0.0) * (1 - _om_alpha) + float(_om_is_clip) * _om_alpha
+        _om_thresh = cfg.overmod_clip_pct / 100.0
+        if getattr(cfg, '_overmod_frac', 0.0) >= _om_thresh:
+            now = time.time()
+            if now - cfg._last_alerts.get("OVERMOD", 0) >= ALERT_COOLDOWN:
+                cfg._last_alerts["OVERMOD"] = now
+                msg = (f"Sustained overmodulation on '{cfg.name}' — "
+                       f"~{cfg._overmod_frac*100:.0f}% of audio at or above "
+                       f"{cfg.overmod_threshold_dbfs:.1f} dBFS "
+                       f"over {cfg.overmod_window_seconds:.0f}s window")
+                clip = _save_alert_wav(cfg, "overmod", cfg.alert_wav_duration)
+                _add_history(cfg, "OVERMOD", msg, clip_path=clip or "")
+                if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                    sender.send(f"OVERMOD on {cfg.name}", msg, clip,
+                        alert_type="OVERMOD", stream=cfg.name, level_dbfs=peak_db_om)
+                log_fn(f"[ALERT] {msg}")
+
+    # ── Mono-on-stereo detection ───────────────────────────────────────────────
+    # For a stereo stream, derive approximate L-R correlation from existing
+    # per-channel level readings using the identity:
+    #   r = (4·P_sum − P_L − P_R) / (2·√(P_L·P_R))
+    # where P_sum = power of the mono mix (lev), P_L/P_R = channel powers.
+    # For genuine stereo content r ≈ 0.3–0.8; for mono-on-stereo r ≈ 1.0.
+    if (cfg.alert_on_mono_on_stereo
+            and getattr(cfg, '_audio_channels', 1) == 2
+            and lev > cfg.silence_threshold_dbfs):
+        _mos_l = getattr(cfg, '_level_dbfs_l', -120.0)
+        _mos_r = getattr(cfg, '_level_dbfs_r', -120.0)
+        if (_mos_l > cfg.silence_threshold_dbfs + 6.0
+                and _mos_r > cfg.silence_threshold_dbfs + 6.0):
+            _mos_pl = 10 ** (_mos_l / 10.0)
+            _mos_pr = 10 ** (_mos_r / 10.0)
+            _mos_ps = 10 ** (lev / 10.0)
+            _mos_denom = 2.0 * math.sqrt(max(_mos_pl * _mos_pr, 1e-30))
+            _mos_corr = max(-1.0, min(1.0,
+                (4.0 * _mos_ps - _mos_pl - _mos_pr) / _mos_denom
+                if _mos_denom > 1e-30 else 0.0))
+            if _mos_corr >= cfg.mono_on_stereo_corr:
+                cfg._mos_secs = getattr(cfg, '_mos_secs', 0.0) + elapsed
+            else:
+                cfg._mos_secs = max(0.0, getattr(cfg, '_mos_secs', 0.0) - elapsed * 0.5)
+            if getattr(cfg, '_mos_secs', 0.0) >= cfg.mono_on_stereo_min_duration:
+                now = time.time()
+                if now - cfg._last_alerts.get("MONO_ON_STEREO", 0) >= ALERT_COOLDOWN:
+                    cfg._last_alerts["MONO_ON_STEREO"] = now
+                    msg = (f"Mono-on-stereo on '{cfg.name}' — "
+                           f"L/R correlation {_mos_corr:.2f} "
+                           f"(stereo output appears to be carrying mono content)")
+                    clip = _save_alert_wav(cfg, "mono_on_stereo", cfg.alert_wav_duration)
+                    _add_history(cfg, "MONO_ON_STEREO", msg, clip_path=clip or "")
+                    if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                        sender.send(f"MONO ON STEREO on {cfg.name}", msg, clip,
+                            alert_type="MONO_ON_STEREO", stream=cfg.name, level_dbfs=lev)
+                    log_fn(f"[ALERT] {msg}")
+                cfg._mos_secs = 0.0
+
+    # ── Stereo L/R imbalance detection ────────────────────────────────────────
+    # Fires when one channel is persistently louder than the other by more than
+    # stereo_imbalance_db — a common result of a faulty panner or broken cable.
+    if (cfg.alert_on_stereo_imbalance
+            and getattr(cfg, '_audio_channels', 1) == 2
+            and lev > cfg.silence_threshold_dbfs):
+        _si_l = getattr(cfg, '_level_dbfs_l', -120.0)
+        _si_r = getattr(cfg, '_level_dbfs_r', -120.0)
+        # Both channels must individually be carrying audio
+        if (_si_l > cfg.silence_threshold_dbfs + 6.0
+                and _si_r > cfg.silence_threshold_dbfs + 6.0):
+            _si_diff = abs(_si_l - _si_r)
+            if _si_diff >= cfg.stereo_imbalance_db:
+                cfg._si_secs = getattr(cfg, '_si_secs', 0.0) + elapsed
+            else:
+                cfg._si_secs = max(0.0, getattr(cfg, '_si_secs', 0.0) - elapsed * 0.5)
+            if getattr(cfg, '_si_secs', 0.0) >= cfg.stereo_imbalance_min_duration:
+                now = time.time()
+                if now - cfg._last_alerts.get("STEREO_IMBALANCE", 0) >= ALERT_COOLDOWN:
+                    cfg._last_alerts["STEREO_IMBALANCE"] = now
+                    _si_loud = "L" if _si_l > _si_r else "R"
+                    msg = (f"Stereo imbalance on '{cfg.name}' — "
+                           f"{_si_loud} channel {_si_diff:.1f} dB louder "
+                           f"(L: {_si_l:.1f}, R: {_si_r:.1f} dBFS)")
+                    clip = _save_alert_wav(cfg, "stereo_imbalance", cfg.alert_wav_duration)
+                    _add_history(cfg, "STEREO_IMBALANCE", msg, clip_path=clip or "")
+                    if not _stream_in_any_chain(cfg.name, monitor.app_cfg):
+                        sender.send(f"STEREO IMBALANCE on {cfg.name}", msg, clip,
+                            alert_type="STEREO_IMBALANCE", stream=cfg.name, level_dbfs=lev)
+                    log_fn(f"[ALERT] {msg}")
+                cfg._si_secs = 0.0
 
     # ── Glitch / short dropout detection ─────────────────────────────────────
     # A glitch is a level dip that is significantly below the recent rolling mean
@@ -20440,6 +20636,89 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
     </div>
   </div>
 
+  <!-- Level drift -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_level_drift" value="1" class="acard-chk" data-card="levdrift" {{'checked' if inp.alert_on_level_drift}}>
+      <span class="acard-ttl">📉 Level Drift / Gain Change</span>
+      <span class="acard-badge" id="abadge-levdrift"></span>
+    </div>
+    <div class="acard-body" id="abody-levdrift">
+      <p class="help">Compares a 1-minute rolling mean against a 10-minute rolling mean. Fires when the stream audio level has gradually shifted — catches transmitter gain loss, AGC failure, fader accidents. Disabled by default because loudness naturally varies between programmes.</p>
+      <div class="fg3">
+        <label class="lbl">Drift threshold (dB)<span class="tip" data-tip="How many dB of difference between the short-term (1 min) and long-term (10 min) rolling mean before an alert fires. 8 dB is a useful default — most natural loudness variation stays within 4–6 dB.">ⓘ</span>
+          <input type="number" name="level_drift_db" value="{{inp.level_drift_db}}" step="0.5" min="2" max="30">
+        </label>
+        <label class="lbl">Persist before alert (s)<span class="tip" data-tip="The drift must persist for this long before an alert fires. 60 s avoids false alarms on natural loudness transitions between songs. Default: 60 s.">ⓘ</span>
+          <input type="number" name="level_drift_min_duration" value="{{inp.level_drift_min_duration}}" step="10" min="10">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sustained overmodulation -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_overmod" value="1" class="acard-chk" data-card="overmod" {{'checked' if inp.alert_on_overmod}}>
+      <span class="acard-ttl">🔴 Sustained Overmodulation</span>
+      <span class="acard-badge" id="abadge-overmod"></span>
+    </div>
+    <div class="acard-body" id="abody-overmod">
+      <p class="help">Fires when a large fraction of audio is consistently clipping over a rolling window. Distinct from the burst Clip alert — this catches a mixer left too hot or processing set incorrectly.</p>
+      <div class="fg3">
+        <label class="lbl">Clip threshold (dBFS)<span class="tip" data-tip="Chunks above this peak level count as overmodulated. Default: −1 dBFS — within 1 dB of full scale.">ⓘ</span>
+          <input type="number" name="overmod_threshold_dbfs" value="{{inp.overmod_threshold_dbfs}}" step="0.5" max="0">
+        </label>
+        <label class="lbl">Rolling window (s)<span class="tip" data-tip="Length of the rolling window to measure clip fraction. Default: 60 s.">ⓘ</span>
+          <input type="number" name="overmod_window_seconds" value="{{inp.overmod_window_seconds}}" step="5" min="10">
+        </label>
+        <label class="lbl">Alert at (% clipping)<span class="tip" data-tip="Alert when this percentage of chunks in the window are at or above the clip threshold. Default: 20% — 12 out of every 60 seconds.">ⓘ</span>
+          <input type="number" name="overmod_clip_pct" value="{{inp.overmod_clip_pct}}" step="5" min="5" max="100">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mono-on-stereo -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_mono_on_stereo" value="1" class="acard-chk" data-card="monost" {{'checked' if inp.alert_on_mono_on_stereo}}>
+      <span class="acard-ttl">◎ Mono-on-Stereo <span style="font-size:10px;color:var(--mu)">(stereo only)</span></span>
+      <span class="acard-badge" id="abadge-monost"></span>
+    </div>
+    <div class="acard-body" id="abody-monost">
+      <p class="help">Detects when a stereo output is carrying identical L and R channels — a common patching error. Derives L-R correlation mathematically from available level readings; no raw stereo samples needed. Disabled by default — many legitimate streams run mono content.</p>
+      <div class="fg2">
+        <label class="lbl">Correlation threshold (0–1)<span class="tip" data-tip="L-R correlation above this value is considered mono. 0.98 is a safe default — genuine stereo programme material rarely exceeds 0.9 on average.">ⓘ</span>
+          <input type="number" name="mono_on_stereo_corr" value="{{inp.mono_on_stereo_corr}}" step="0.01" min="0.80" max="1.0">
+        </label>
+        <label class="lbl">Min duration (s)<span class="tip" data-tip="Correlation must persist for this long before an alert fires. Default: 60 s — speech content can be naturally mono-like; give music time to show stereo content.">ⓘ</span>
+          <input type="number" name="mono_on_stereo_min_duration" value="{{inp.mono_on_stereo_min_duration}}" step="10" min="10">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stereo imbalance -->
+  <div class="acard">
+    <div class="acard-hdr">
+      <input type="checkbox" name="alert_on_stereo_imbalance" value="1" class="acard-chk" data-card="sterimb" {{'checked' if inp.alert_on_stereo_imbalance}}>
+      <span class="acard-ttl">↔ Stereo L/R Imbalance <span style="font-size:10px;color:var(--mu)">(stereo only)</span></span>
+      <span class="acard-badge" id="abadge-sterimb"></span>
+    </div>
+    <div class="acard-body" id="abody-sterimb">
+      <p class="help">Fires when one stereo channel is persistently louder than the other — a common result of a faulty panner, broken cable, or incorrect gain staging. Both channels must be above the silence threshold for the check to run.</p>
+      <div class="fg2">
+        <label class="lbl">Imbalance threshold (dB)<span class="tip" data-tip="Minimum L-R level difference to count as imbalanced. 6 dB is a good default — normal stereo content rarely has a persistent 6 dB imbalance unless something is wrong.">ⓘ</span>
+          <input type="number" name="stereo_imbalance_db" value="{{inp.stereo_imbalance_db}}" step="0.5" min="1" max="30">
+        </label>
+        <label class="lbl">Min duration (s)<span class="tip" data-tip="Imbalance must persist for this long before an alert fires. 30 s avoids false alarms on stereo-panned content. Default: 30 s.">ⓘ</span>
+          <input type="number" name="stereo_imbalance_min_duration" value="{{inp.stereo_imbalance_min_duration}}" step="5" min="5">
+        </label>
+      </div>
+    </div>
+  </div>
+
   <!-- EBU R128 -->
   <div class="acard">
     <div class="acard-hdr" style="background:rgba(79,156,249,.06)">
@@ -21329,6 +21608,19 @@ def _inp_from_form(f):
         alert_on_phase_reversal=bool(f.get("alert_on_phase_reversal")),
         phase_reversal_mono_drop_db=float(f.get("phase_reversal_mono_drop_db") or 12.0),
         phase_reversal_min_duration=float(f.get("phase_reversal_min_duration") or 10.0),
+        alert_on_level_drift=bool(f.get("alert_on_level_drift")),
+        level_drift_db=float(f.get("level_drift_db") or 8.0),
+        level_drift_min_duration=float(f.get("level_drift_min_duration") or 60.0),
+        alert_on_overmod=bool(f.get("alert_on_overmod")),
+        overmod_threshold_dbfs=float(f.get("overmod_threshold_dbfs") or -1.0),
+        overmod_window_seconds=float(f.get("overmod_window_seconds") or 60.0),
+        overmod_clip_pct=float(f.get("overmod_clip_pct") or 20.0),
+        alert_on_mono_on_stereo=bool(f.get("alert_on_mono_on_stereo")),
+        mono_on_stereo_corr=float(f.get("mono_on_stereo_corr") or 0.98),
+        mono_on_stereo_min_duration=float(f.get("mono_on_stereo_min_duration") or 60.0),
+        alert_on_stereo_imbalance=bool(f.get("alert_on_stereo_imbalance")),
+        stereo_imbalance_db=float(f.get("stereo_imbalance_db") or 6.0),
+        stereo_imbalance_min_duration=float(f.get("stereo_imbalance_min_duration") or 30.0),
         stereo=bool(f.get("stereo")),
         fm_force_mono=bool(f.get("fm_force_mono")),
         fm_deemphasis=str(f.get("fm_deemphasis", "50us") or "50us"),
@@ -32250,7 +32542,8 @@ def hub_reports():
                       "AUDIO_GLITCH", "AUDIO_GLITCH_SUSTAINED", "AUDIO_FLATNESS",
                       "ABGROUP_OFF_AIR", "ABGROUP_BOTH_FAULT", "ABGROUP_A_FAULT",
                       "ABGROUP_B_FAULT", "ABGROUP_RX_FAULT", "ABGROUP_RECOVERED",
-                      "MAINS_HUM", "DC_OFFSET", "PHASE_REVERSAL"}
+                      "MAINS_HUM", "DC_OFFSET", "PHASE_REVERSAL",
+                      "LEVEL_DRIFT", "OVERMOD", "MONO_ON_STEREO", "STEREO_IMBALANCE"}
     type_names  = sorted(
         set(e.get("type","") for e in all_events if e.get("type")) | _SILENCE_TYPES
     )

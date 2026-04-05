@@ -2,6 +2,20 @@
 
 ---
 
+## [3.5.74] - 2026-04-05
+
+### Added
+- **Level drift detection** (`alert_on_level_drift`, off by default): Compares a 1-minute fast EMA against a 10-minute slow EMA. When the stream's mean level has quietly shifted by more than `level_drift_db` (default 8 dB) for `level_drift_min_duration` (default 60 s), fires `LEVEL_DRIFT` alert. Catches transmitter gain loss, AGC failure, accidental fader movement. EMAs reset automatically when the stream goes silent to avoid false alarms after pauses.
+- **Sustained overmodulation** (`alert_on_overmod`, on by default): Tracks an exponential rolling fraction of clipping chunks over a `overmod_window_seconds` (default 60 s) window. Fires `OVERMOD` when the fraction exceeds `overmod_clip_pct` (default 20%). Distinct from the burst CLIP alert — catches a mixer or processing chain left chronically too hot.
+- **Mono-on-stereo detection** (`alert_on_mono_on_stereo`, off by default): For stereo streams, derives approximate L-R cross-correlation mathematically from existing per-channel level readings using `r = (4·P_sum − P_L − P_R) / (2·√(P_L·P_R))`. Fires `MONO_ON_STEREO` when correlation ≥ `mono_on_stereo_corr` (default 0.98) for ≥ `mono_on_stereo_min_duration` (default 60 s). No raw stereo samples needed.
+- **Stereo L/R imbalance** (`alert_on_stereo_imbalance`, on by default): For stereo streams, fires `STEREO_IMBALANCE` when |L − R| ≥ `stereo_imbalance_db` (default 6 dB) persists for ≥ `stereo_imbalance_min_duration` (default 30 s). Both channels must individually be above the silence threshold for the check to activate.
+- `LEVEL_DRIFT`, `OVERMOD`, `MONO_ON_STEREO`, `STEREO_IMBALANCE` added to Reports `_SILENCE_TYPES` filter.
+
+### Fixed
+- **Hiss false alarm during rapid level transitions**: Before firing a HISS alert, the detector now checks if the audio level changed by more than 8 dB in the last 5 seconds. Level transitions shift spectral balance and can cause the HF energy ratio to spike transiently. The alert is suppressed and the counter reset while the level is unstable.
+
+---
+
 ## [3.5.73] - 2026-04-05
 
 ### Added
