@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.36] - 2026-04-05
+
+### Added
+- **Chain fault log CSV export** — every chain's fault history panel now has a "⬇ CSV" download button. Exports up to 2 000 most recent faults as a CSV file (columns: date/time, fault node, site/stream, duration, RTP loss %, adbreak flag, cascade source, message, engineer notes). Available at `GET /api/chains/<id>/fault_log.csv`.
+- **Multi-month SLA history** — input stream SLA is now persisted to a new `stream_sla_history` SQLite table on each monthly rollover. The SLA dashboard page shows all past months per stream in a collapsible row (click any stream row to expand). Broadcast chain SLA history is derived directly from `chain_status` metrics and shown in a new "📊 SLA History" collapsible panel on each chain card, populated from `GET /api/chains/<id>/sla_history?months=12`.
+- **Scheduled maintenance windows per chain** — a new "🗓 Windows" button on each chain opens a modal to manage recurring or one-off maintenance windows. Recurring windows fire on selected days of the week at a configured time for a set duration. One-off windows fire at a specific epoch timestamp. Windows can optionally suppress SLA downtime. Windows are persisted in the chain config (`lwai_config.json`) and evaluated every ~30 s in `_chains_monitor_loop`; the existing maintenance/eval mechanism is reused so all downstream suppression behaviour (alerts, badges, etc.) works automatically. REST API: `GET/POST /api/chains/<id>/maintenance_windows`, `PUT/DELETE /api/chains/<id>/maintenance_windows/<wid>`.
+
+---
+
 ## [3.5.35] - 2026-04-05
 
 ### Added

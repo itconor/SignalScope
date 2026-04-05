@@ -2260,7 +2260,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.35"
+BUILD                  = "SignalScope-3.5.36"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -4609,12 +4609,96 @@ def _sla_update(cfg: InputConfig, elapsed_s: float, in_alert: bool):
     """Called every chunk from analyse_chunk to accumulate SLA data."""
     month = time.strftime("%Y-%m")
     if cfg._sla_month != month:
+        # Persist completed month before resetting
+        if cfg._sla_month and cfg._sla_monitored_s > 0:
+            try:
+                metrics_db.sla_history_write(
+                    cfg.name, cfg._sla_month,
+                    cfg._sla_monitored_s, cfg._sla_alert_s,
+                )
+            except Exception:
+                pass
         cfg._sla_month = month
         cfg._sla_monitored_s = 0.0
         cfg._sla_alert_s     = 0.0
         cfg._sla_events      = []
     cfg._sla_monitored_s += elapsed_s
     if in_alert: cfg._sla_alert_s += elapsed_s
+
+def _apply_scheduled_windows(chain: dict, maint: dict, now: float):
+    """Activate or deactivate scheduled maintenance windows for a chain.
+
+    Modifies `maint` in place: sets ``maint[node_key] = expiry_ts`` for all
+    leaf nodes when the current time falls inside an enabled window; removes
+    expired window entries so normal evaluation resumes.
+
+    Called from ``_chains_monitor_loop`` every ~30 s before ``eval_chain``.
+
+    Window types:
+      recurring — repeats on specified days of week (Mon=0…Sun=6); if
+                  ``days_of_week`` is empty it fires every day.
+      one_off   — single epoch-based window defined by ``start_ts``.
+    """
+    import datetime as _dt
+    windows = chain.get("maintenance_windows") or []
+    if not windows:
+        return
+    # Collect all leaf node keys that this chain covers
+    node_keys: list = []
+    for node in chain.get("nodes", []):
+        if node.get("type") == "stack":
+            for sub in node.get("nodes", []):
+                site   = sub.get("site", "")
+                stream = sub.get("stream", "")
+                if site and stream:
+                    node_keys.append(f"{site}|{stream}")
+        else:
+            site   = node.get("site", "")
+            stream = node.get("stream", "")
+            if site and stream:
+                node_keys.append(f"{site}|{stream}")
+    if not node_keys:
+        return
+
+    local_now = _dt.datetime.fromtimestamp(now)
+    for w in windows:
+        if not w.get("enabled", True):
+            continue
+        dur_s = float(w.get("duration_minutes", 60) or 60) * 60.0
+        win_type = w.get("type", "recurring")
+        in_window = False
+        expiry    = 0.0
+
+        if win_type == "one_off":
+            start_ts = float(w.get("start_ts", 0) or 0)
+            if start_ts and now >= start_ts and now < start_ts + dur_s:
+                in_window = True
+                expiry    = start_ts + dur_s
+        else:
+            # recurring
+            days = w.get("days_of_week", [])   # [] = every day
+            try:
+                hh, mm = (w.get("start_time") or "02:00").split(":")
+                win_start_min = int(hh) * 60 + int(mm)
+            except Exception:
+                win_start_min = 120   # 02:00 default
+            today_dow = local_now.weekday()   # Mon=0
+            cur_min   = local_now.hour * 60 + local_now.minute
+            # Check whether today's window is active
+            if (not days or today_dow in days):
+                if win_start_min <= cur_min < win_start_min + int(dur_s / 60):
+                    in_window = True
+                    # expiry = seconds until end of today's window
+                    end_min  = win_start_min + int(dur_s / 60)
+                    remaining = (end_min - cur_min) * 60 - local_now.second
+                    expiry    = now + max(remaining, 1)
+
+        if in_window:
+            for nk in node_keys:
+                maint[nk] = expiry
+        # (don't remove expired entries here — _chain_maintenance cleanup happens
+        #  in eval_chain's existing ``now > expiry`` guard)
+
 
 def sla_pct(cfg: InputConfig) -> float:
     if cfg._sla_monitored_s < 1.0: return 100.0
@@ -4747,6 +4831,20 @@ class MetricsDB:
                     conn.execute("ALTER TABLE chain_fault_log ADD COLUMN message TEXT DEFAULT ''")
                     conn.commit()
                     print("[MetricsDB] Migrated chain_fault_log: added message column")
+                except _sqlite3.OperationalError:
+                    pass
+                # Migration: add stream_sla_history table (Sprint 4)
+                try:
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS stream_sla_history ("
+                        "  stream       TEXT NOT NULL,"
+                        "  month        TEXT NOT NULL,"
+                        "  monitored_s  REAL NOT NULL DEFAULT 0,"
+                        "  alert_s      REAL NOT NULL DEFAULT 0,"
+                        "  PRIMARY KEY (stream, month)"
+                        ")"
+                    )
+                    conn.commit()
                 except _sqlite3.OperationalError:
                     pass
                 self._conn = conn
@@ -4945,6 +5043,98 @@ class MetricsDB:
         except Exception as e:
             print(f"[MetricsDB] fault_log_prune error: {e}")
             self._conn = None
+
+    # ── Stream SLA history persistence ───────────────────────────────────────
+
+    def sla_history_write(self, stream: str, month: str, monitored_s: float, alert_s: float):
+        """Upsert a completed-month SLA record for an input stream."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                self._db_execute(
+                    "INSERT INTO stream_sla_history(stream, month, monitored_s, alert_s)"
+                    " VALUES(?,?,?,?)"
+                    " ON CONFLICT(stream, month) DO UPDATE SET"
+                    "   monitored_s=excluded.monitored_s,"
+                    "   alert_s=excluded.alert_s",
+                    (stream, month, monitored_s, alert_s),
+                )
+                self._conn.commit()
+        except Exception as e:
+            print(f"[MetricsDB] sla_history_write error: {e}")
+            self._conn = None
+
+    def sla_history_load(self, stream: "str | None" = None, months: int = 12) -> list:
+        """Return per-month SLA rows, newest first.
+
+        If stream is None, return all streams. Limit to most recent `months` months.
+        Each row: {"stream", "month", "monitored_s", "alert_s", "pct"}
+        """
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                if stream:
+                    cur = self._db_execute(
+                        "SELECT stream, month, monitored_s, alert_s FROM stream_sla_history"
+                        " WHERE stream=? ORDER BY month DESC LIMIT ?",
+                        (stream, months),
+                    )
+                else:
+                    cur = self._db_execute(
+                        "SELECT stream, month, monitored_s, alert_s FROM stream_sla_history"
+                        " ORDER BY stream, month DESC",
+                        (),
+                    )
+                rows = cur.fetchall()
+        except Exception as e:
+            print(f"[MetricsDB] sla_history_load error: {e}")
+            self._conn = None
+            return []
+        result = []
+        for r in rows:
+            mon_s = r[2] or 0.0
+            alt_s = r[3] or 0.0
+            pct   = round(100.0 * (1.0 - alt_s / mon_s) if mon_s > 0 else 100.0, 3)
+            result.append({"stream": r[0], "month": r[1],
+                           "monitored_s": mon_s, "alert_s": alt_s, "pct": pct})
+        return result
+
+    def chain_sla_history(self, chain_id: str, months: int = 6) -> list:
+        """Return monthly SLA % for a broadcast chain from the metric_history table.
+
+        Each row: {"month", "pct", "up_min", "down_min", "samples"}
+        """
+        cutoff = time.time() - months * 31.0 * 86400
+        stream_key = f"chain/{chain_id}"
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._conn = self._connect()
+                cur = self._db_execute(
+                    "SELECT strftime('%Y-%m', datetime(ts,'unixepoch','localtime')) AS mo,"
+                    "       COUNT(*) AS n, SUM(value) AS up"
+                    " FROM metric_history"
+                    " WHERE stream=? AND metric='chain_status' AND ts>=?"
+                    " GROUP BY mo ORDER BY mo ASC",
+                    (stream_key, cutoff),
+                )
+                rows = cur.fetchall()
+        except Exception as e:
+            print(f"[MetricsDB] chain_sla_history error: {e}")
+            self._conn = None
+            return []
+        result = []
+        for r in rows:
+            n      = r[1] or 0
+            up     = r[2] or 0.0
+            down   = n - up
+            pct    = round(100.0 * up / n if n > 0 else 100.0, 3)
+            result.append({"month": r[0], "pct": pct,
+                           "up_min": round(up, 0), "down_min": round(down, 0),
+                           "samples": n})
+        return result
 
     def write(self, rows: list):
         """Insert a list of (stream, metric, ts, value) tuples."""
@@ -13835,6 +14025,10 @@ class HubServer:
                     if not cid:
                         continue
                     maint = self._chain_maintenance.get(cid, {})
+                    # Apply scheduled maintenance windows — sets maint entries for all
+                    # leaf nodes when the current time falls inside an enabled window.
+                    _apply_scheduled_windows(chain, maint, now)
+                    self._chain_maintenance[cid] = maint
                     result = self.eval_chain(chain, maintenance=maint)
                     self._check_watched_nodes(cid, result, now)
                     curr   = result["status"]   # "ok" | "fault" | "unknown"
@@ -18164,8 +18358,9 @@ tr:hover td{background:#123764}
     </thead>
     <tbody>
     {% for r in rows %}
-    <tr>
-      <td><strong>{{r.name}}</strong></td>
+    {% set hist = hist_by_stream.get(r.name, []) if hist_by_stream is defined else [] %}
+    <tr style="cursor:{{'pointer' if hist else 'default'}}" onclick="{% if hist %}var hb=document.getElementById('sh_{{loop.index}}');hb.style.display=hb.style.display==='none'?'table-row-group':'none'{% endif %}">
+      <td><strong>{{r.name}}</strong>{% if hist %}<span style="font-size:10px;color:var(--mu);margin-left:6px">▾ {{hist|length}} past month{{'s' if hist|length!=1}}</span>{% endif %}</td>
       <td style="color:var(--mu)">{{r.month}}</td>
       <td>
         <span class="{{'ok-color' if r.ok else 'al-color'}}">{{r.pct}}%</span>
@@ -18175,12 +18370,30 @@ tr:hover td{background:#123764}
       <td style="color:var(--mu)">{{r.down_m}} min</td>
       <td><span class="tag {{'tag-ok' if r.ok else 'tag-fail'}}">{{'✓ Met' if r.ok else '✗ Missed'}}</span></td>
     </tr>
+    {% if hist %}
+    <tbody id="sh_{{loop.index}}" style="display:none">
+    {% for h in hist %}
+    {% set hok = h.pct >= target %}
+    <tr style="background:#07142b">
+      <td style="padding-left:28px;font-size:12px;color:var(--mu)">↳ {{h.month}}</td>
+      <td style="font-size:12px;color:var(--mu)">{{h.month}}</td>
+      <td style="font-size:12px">
+        <span class="{{'ok-color' if hok else 'al-color'}}">{{h.pct}}%</span>
+        <span class="bar-wrap"><span class="bar-fill" style="width:{{[h.pct,100]|min}}%;background:{{'var(--ok)' if hok else 'var(--al)'}};"></span></span>
+      </td>
+      <td style="font-size:12px;color:var(--mu)">{{(h.monitored_s/3600)|round(1)}} h</td>
+      <td style="font-size:12px;color:var(--mu)">{{(h.alert_s/60)|round(1)}} min</td>
+      <td><span class="tag {{'tag-ok' if hok else 'tag-fail'}}" style="font-size:10px">{{'✓ Met' if hok else '✗ Missed'}}</span></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+    {% endif %}
     {% else %}
     <tr><td colspan="6" style="text-align:center;color:var(--mu);padding:32px">No data yet — start monitoring to begin SLA tracking.</td></tr>
     {% endfor %}
     </tbody>
   </table>
-  <p style="margin-top:14px;font-size:12px;color:var(--mu)">SLA resets monthly. Downtime counted when stream level is at or below the silence threshold.</p>
+  <p style="margin-top:14px;font-size:12px;color:var(--mu)">SLA resets monthly. Downtime counted when stream level is at or below the silence threshold. Click a row to expand past months.</p>
 </main><footer style="padding:14px 20px;text-align:center;font-size:11px;color:var(--mu);border-top:1px solid var(--bor);background:rgba(6,18,34,.86)">SignalScope {{build if build is defined else ""}} • Broadcast Signal Intelligence • <a href="/privacy" style="color:inherit;text-decoration:none;opacity:.7">Privacy Policy</a></footer></body></html>"""
 
 INPUT_LIST_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Inputs</title>
@@ -22800,7 +23013,13 @@ def sla_dashboard():
             "down_m":  round(down_m, 1),
             "month":   inp._sla_month or time.strftime("%Y-%m"),
         })
-    return render_template_string(SLA_TPL, rows=rows, target=target, build=BUILD)
+    # Load per-stream history (past months from DB)
+    all_hist = metrics_db.sla_history_load()
+    hist_by_stream: dict = {}
+    for h in all_hist:
+        hist_by_stream.setdefault(h["stream"], []).append(h)
+    return render_template_string(SLA_TPL, rows=rows, target=target, build=BUILD,
+                                  hist_by_stream=hist_by_stream)
 
 @app.get("/metrics.csv")
 @login_required
@@ -25622,6 +25841,7 @@ var _chainData={
     <span style="font-size:12px;color:var(--al)" id="fault_label_{{c.id|e}}"></span>
     <div class="chain-actions">
       <button class="btn bs chain-maint-btn" data-chain-id="{{c.id|e}}" data-chain-name="{{c.name|e}}" style="background:#1e3a8a;border-color:#3b82f6;color:#bfdbfe" title="Set maintenance mode for the entire chain">🔧 Maint</button>
+      <button class="btn bg bs chain-schwin-btn" data-chain-id="{{c.id|e}}" title="Manage scheduled maintenance windows">🗓 Windows</button>
       {% if is_admin %}
       <button class="btn bg bs chain-edit-btn" data-chain-id="{{c.id|e}}">✎ Edit</button>
       <button class="btn bd bs chain-delete-btn" data-id="{{c.id|e}}" data-name="{{c.name|e}}">✕ Delete</button>
@@ -25664,11 +25884,20 @@ var _chainData={
   </div>
   <!-- Fault log panel -->
   <div class="flog-panel" id="flog_panel_{{c.id|e}}">
-    <div class="flog-toggle" id="flog_toggle_{{c.id|e}}" data-chain-id="{{c.id|e}}">
+    <div class="flog-toggle" id="flog_toggle_{{c.id|e}}" data-chain-id="{{c.id|e}}" style="display:flex;align-items:center;gap:6px">
       <span id="flog_arrow_{{c.id|e}}">&#9658;</span> &#128203; Fault History
       <span id="flog_count_{{c.id|e}}" style="color:var(--mu)"></span>
+      <a href="/api/chains/{{c.id|e}}/fault_log.csv" class="btn bg bs" style="font-size:10px;margin-left:auto;opacity:.8;text-decoration:none" title="Export fault log as CSV" download onclick="event.stopPropagation()">⬇ CSV</a>
     </div>
     <div id="flog_body_{{c.id|e}}" style="display:none"></div>
+  </div>
+  <!-- Chain SLA history panel -->
+  <div class="flog-panel" id="slahist_panel_{{c.id|e}}">
+    <div class="flog-toggle" id="slahist_toggle_{{c.id|e}}" data-chain-id="{{c.id|e}}" style="display:flex;align-items:center;gap:6px"
+         onclick="toggleSlaHist('{{c.id|e}}')">
+      <span id="slahist_arrow_{{c.id|e}}">&#9658;</span> 📊 SLA History
+    </div>
+    <div id="slahist_body_{{c.id|e}}" style="display:none;padding:10px 14px"></div>
   </div>
   {% if c.comparators %}
   <div class="chain-corr-row">
@@ -26291,6 +26520,144 @@ document.addEventListener('click',function(e){
   }
 });
 
+// ── Scheduled Maintenance Windows ────────────────────────────────────────────
+var _csrf=function(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||'';};
+document.getElementById('chains_list').addEventListener('click',function(e){
+  var btn=e.target.closest('.chain-schwin-btn');
+  if(!btn)return;
+  e.stopPropagation();
+  var cid=btn.dataset.chainId;
+  if(!cid)return;
+  _openSchedWinPanel(cid);
+});
+
+function _openSchedWinPanel(cid){
+  // Reuse or create modal overlay
+  var ov=document.getElementById('schwin-overlay');
+  if(!ov){
+    ov=document.createElement('div');
+    ov.id='schwin-overlay';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9100;display:flex;align-items:center;justify-content:center';
+    ov.innerHTML='<div id="schwin-modal" style="background:var(--sur);border:1px solid var(--bor);border-radius:14px;min-width:420px;max-width:600px;width:90%;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 16px 48px rgba(0,0,0,.55)">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54)">'
+      +'<span style="font-weight:700;font-size:14px">🗓 Scheduled Maintenance Windows</span>'
+      +'<button id="schwin-close" style="background:none;border:none;color:var(--mu);font-size:18px;cursor:pointer;line-height:1">✕</button>'
+      +'</div>'
+      +'<div id="schwin-body" style="overflow-y:auto;flex:1;padding:16px"></div>'
+      +'</div>';
+    document.body.appendChild(ov);
+    document.getElementById('schwin-close').addEventListener('click',function(){ov.style.display='none';});
+    ov.addEventListener('click',function(ev){if(ev.target===ov)ov.style.display='none';});
+  }
+  ov.style.display='flex';
+  ov.dataset.cid=cid;
+  _loadSchedWins(cid);
+}
+
+function _loadSchedWins(cid){
+  var body=document.getElementById('schwin-body');
+  body.innerHTML='<div style="color:var(--mu);font-size:12px">Loading\u2026</div>';
+  fetch('/api/chains/'+encodeURIComponent(cid)+'/maintenance_windows')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var wins=d.windows||[];
+      var html='';
+      if(wins.length){
+        wins.forEach(function(w){
+          var days=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+          var dayStr=w.days_of_week&&w.days_of_week.length?w.days_of_week.map(function(d){return days[d];}).join(', '):'Every day';
+          var desc=w.type==='one_off'
+            ?'One-off: '+new Date((w.start_ts||0)*1000).toLocaleString()
+            :dayStr+' at '+(w.start_time||'02:00');
+          var enCol=w.enabled?'var(--ok)':'var(--mu)';
+          html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--bor)">'
+            +'<span style="font-size:11px;color:'+enCol+'">'+(w.enabled?'●':'○')+'</span>'
+            +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:13px;font-weight:600">'+(w.label||'Maintenance window')+'</div>'
+            +'<div style="font-size:11px;color:var(--mu)">'+desc+' · '+w.duration_minutes+' min'+(w.affect_sla?' · SLA suppressed':'')+'</div>'
+            +'</div>'
+            +'<button class="btn bg bs schwin-toggle-btn" data-cid="'+_esc2(cid)+'" data-wid="'+_esc2(w.id)+'" data-enabled="'+(w.enabled?'1':'0')+'" style="font-size:10px">'+(w.enabled?'Disable':'Enable')+'</button>'
+            +'<button class="btn bd bs schwin-del-btn" data-cid="'+_esc2(cid)+'" data-wid="'+_esc2(w.id)+'" style="font-size:10px">✕</button>'
+            +'</div>';
+        });
+      } else {
+        html='<p style="color:var(--mu);font-size:12px;margin-bottom:12px">No scheduled windows configured.</p>';
+      }
+      // Add new window form
+      html+='<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--bor)">'
+        +'<div style="font-size:12px;font-weight:700;color:var(--acc);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Add Window</div>'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+        +'<div class="field"><label class="lbl">Label</label><input id="sw-label" type="text" placeholder="Weekly TX test" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 8px;width:100%"></div>'
+        +'<div class="field"><label class="lbl">Type</label><select id="sw-type" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 8px;width:100%" onchange="document.getElementById(\'sw-recurring\').style.display=this.value===\'recurring\'?\'\':\''+'none\';">'
+        +'<option value="recurring">Recurring</option><option value="one_off">One-off</option></select></div>'
+        +'</div>'
+        +'<div id="sw-recurring" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">'
+        +'<div class="field"><label class="lbl">Start time (HH:MM)</label><input id="sw-start" type="time" value="02:00" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 8px;width:100%"></div>'
+        +'<div class="field"><label class="lbl">Days</label><div style="display:flex;flex-wrap:wrap;gap:4px;padding-top:2px">'+['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(function(d,i){return'<label style="font-size:11px;cursor:pointer"><input type="checkbox" class="sw-day" value="'+i+'" checked style="margin-right:2px">'+d+'</label>';}).join('')+'</div></div>'
+        +'</div>'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">'
+        +'<div class="field"><label class="lbl">Duration (min)</label><input id="sw-dur" type="number" min="1" max="1440" value="60" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 8px;width:100%"></div>'
+        +'<div class="field"><label class="lbl">Affect SLA</label><input id="sw-sla" type="checkbox" style="margin-top:8px"> <span style="font-size:11px;color:var(--mu)">Suppress downtime</span></div>'
+        +'</div>'
+        +'<button class="btn bp bs" id="sw-add-btn" data-cid="'+_esc2(cid)+'" style="margin-top:10px">+ Add Window</button>'
+        +'<div id="sw-msg" style="margin-top:6px;font-size:12px"></div>'
+        +'</div>';
+      body.innerHTML=html;
+    }).catch(function(){body.innerHTML='<div style="color:var(--al);font-size:12px">Error loading windows.</div>';});
+}
+
+function _esc2(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');}
+
+document.addEventListener('click',function(e){
+  // Toggle enable/disable
+  var tb=e.target.closest('.schwin-toggle-btn');
+  if(tb){
+    var cid2=tb.dataset.cid,wid=tb.dataset.wid,en=tb.dataset.enabled==='1';
+    fetch('/api/chains/'+encodeURIComponent(cid2)+'/maintenance_windows/'+encodeURIComponent(wid),
+      {method:'PUT',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
+       body:JSON.stringify({enabled:!en})})
+    .then(function(r){return r.json();}).then(function(){_loadSchedWins(cid2);}).catch(function(){});
+    return;
+  }
+  // Delete
+  var db2=e.target.closest('.schwin-del-btn');
+  if(db2){
+    if(!confirm('Delete this maintenance window?'))return;
+    var cid3=db2.dataset.cid,wid2=db2.dataset.wid;
+    fetch('/api/chains/'+encodeURIComponent(cid3)+'/maintenance_windows/'+encodeURIComponent(wid2),
+      {method:'DELETE',headers:{'X-CSRFToken':_csrf()}})
+    .then(function(r){return r.json();}).then(function(){_loadSchedWins(cid3);}).catch(function(){});
+    return;
+  }
+  // Add
+  var ab=e.target.closest('#sw-add-btn');
+  if(ab){
+    var cid4=ab.dataset.cid;
+    var body2=document.getElementById('schwin-body');
+    var label=document.getElementById('sw-label').value.trim();
+    var wtype=document.getElementById('sw-type').value;
+    var dur=parseInt(document.getElementById('sw-dur').value)||60;
+    var sla=document.getElementById('sw-sla').checked;
+    var payload={type:wtype,label:label,duration_minutes:dur,affect_sla:sla,enabled:true};
+    if(wtype==='recurring'){
+      payload.start_time=document.getElementById('sw-start').value||'02:00';
+      payload.days_of_week=Array.from(body2.querySelectorAll('.sw-day:checked')).map(function(c){return parseInt(c.value);});
+    } else {
+      payload.start_ts=Date.now()/1000+3600;  // default: 1 h from now
+    }
+    var msg=document.getElementById('sw-msg');
+    msg.textContent='Saving…';msg.style.color='var(--mu)';
+    fetch('/api/chains/'+encodeURIComponent(cid4)+'/maintenance_windows',
+      {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
+       body:JSON.stringify(payload)})
+    .then(function(r){return r.json();}).then(function(d){
+      if(d.ok){_loadSchedWins(cid4);}
+      else{msg.textContent='Error: '+(d.error||'?');msg.style.color='var(--al)';}
+    }).catch(function(){msg.textContent='Network error';msg.style.color='var(--al)';});
+    return;
+  }
+});
+
 // ── History time-travel controls ──────────────────────────────────────────────
 var _histTs = null;   // null = live mode; epoch seconds = history mode
 var _liveTimer = null;
@@ -26847,6 +27214,51 @@ document.getElementById('chains_list').addEventListener('click',function(e){
   var banner=document.getElementById('hist_banner');
   if(banner){ banner.style.transition='box-shadow .3s'; banner.style.boxShadow='0 0 0 3px rgba(23,168,255,.6)'; setTimeout(function(){if(banner)banner.style.boxShadow='';},2000); }
 });
+
+// ── Chain SLA History ────────────────────────────────────────────────────────
+function toggleSlaHist(cid){
+  var body=document.getElementById('slahist_body_'+cid);
+  var arrow=document.getElementById('slahist_arrow_'+cid);
+  if(!body)return;
+  if(body.style.display==='none'){
+    body.style.display='';
+    if(arrow)arrow.innerHTML='&#9660;';
+    if(body.dataset.loaded)return;
+    body.dataset.loaded='1';
+    body.innerHTML='<div style="color:var(--mu);font-size:11px">Loading\u2026</div>';
+    fetch('/api/chains/'+encodeURIComponent(cid)+'/sla_history?months=12')
+      .then(function(r){return r.json();})
+      .then(function(d){
+        var hist=d.history||[];
+        if(!hist.length){body.innerHTML='<div style="color:var(--mu);font-size:11px">No SLA history yet — data accumulates at month rollover.</div>';return;}
+        var html='<table style="width:100%;border-collapse:collapse;font-size:12px">'
+          +'<thead><tr>'
+          +'<th style="text-align:left;padding:4px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Month</th>'
+          +'<th style="text-align:left;padding:4px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Uptime</th>'
+          +'<th style="text-align:left;padding:4px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Down (min)</th>'
+          +'<th style="text-align:left;padding:4px 8px;color:var(--mu);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--bor)">Samples</th>'
+          +'</tr></thead><tbody>';
+        hist.forEach(function(h){
+          var ok=h.pct>=99.0;
+          var col=ok?'var(--ok)':'var(--al)';
+          var bar=Math.min(h.pct,100);
+          html+='<tr>'
+            +'<td style="padding:4px 8px">'+h.month+'</td>'
+            +'<td style="padding:4px 8px"><span style="color:'+col+'">'+h.pct.toFixed(2)+'%</span>'
+            +'<span style="display:inline-block;width:80px;height:6px;background:var(--bor);border-radius:999px;margin-left:6px;vertical-align:middle">'
+            +'<span style="display:block;width:'+bar+'%;height:6px;background:'+col+';border-radius:999px"></span></span></td>'
+            +'<td style="padding:4px 8px;color:var(--mu)">'+h.down_min+'</td>'
+            +'<td style="padding:4px 8px;color:var(--mu)">'+h.samples+'</td>'
+            +'</tr>';
+        });
+        html+='</tbody></table>';
+        body.innerHTML=html;
+      }).catch(function(){body.innerHTML='<div style="color:var(--al);font-size:11px">Error loading SLA history.</div>';});
+  } else {
+    body.style.display='none';
+    if(arrow)arrow.innerHTML='&#9658;';
+  }
+}
 
 // ── Fault Replay Timeline ────────────────────────────────────────────────────
 var _REPLAY_PALETTE=['#f59e0b','#06b6d4','#8b5cf6','#ec4899','#f97316','#14b8a6','#a78bfa','#fb7185'];
@@ -27778,6 +28190,22 @@ def api_chains_history():
                 "error": str(e),
             })
     return jsonify({"results": results, "ts": ts})
+
+
+@app.get("/api/chains/<cid>/sla_history")
+@login_required
+def api_chains_sla_history(cid: str):
+    """Return monthly SLA history for a chain from the metric_history table.
+
+    Query params:
+        months — how many past months to include (default 6, max 36)
+    """
+    try:
+        months = max(1, min(36, int(request.args.get("months", 6))))
+    except (TypeError, ValueError):
+        months = 6
+    history = metrics_db.chain_sla_history(cid, months=months)
+    return jsonify({"cid": cid, "months": months, "history": history})
 
 
 @app.get("/api/chains/status")
@@ -29541,6 +29969,64 @@ def api_chains_fault_log(cid: str):
     return jsonify({"entries": list(reversed(entries))})  # newest first
 
 
+@app.get("/api/chains/<cid>/fault_log.csv")
+@login_required
+def api_chains_fault_log_csv(cid: str):
+    """Download the fault log for a chain as CSV (up to 2000 most recent faults)."""
+    cfg = monitor.app_cfg
+    chain_name = next((c.get("name", "") for c in cfg.signal_chains if c.get("id") == cid), cid)
+    entries = metrics_db.fault_log_load(cid, limit=2000)
+    notes = _load_chain_notes()
+    if notes:
+        for entry in entries:
+            fid = entry.get("id", "")
+            if fid and fid in notes:
+                entry["note"]    = notes[fid]["text"]
+                entry["note_by"] = notes[fid]["by"]
+    entries = list(reversed(entries))  # newest first
+
+    def _csv(v):
+        if v is None:
+            return ""
+        s = str(v)
+        if "," in s or '"' in s or "\n" in s:
+            return '"' + s.replace('"', '""') + '"'
+        return s
+
+    lines = ["fault_id,chain_id,chain_name,date_start,ts_start,fault_node,"
+             "fault_site,fault_stream,rtp_loss_pct,date_recovered,ts_recovered,"
+             "duration_minutes,adbreak_overshoot,cascaded_from,message,note,note_by"]
+    for e in entries:
+        ts_s = e.get("ts_start") or 0.0
+        ts_r = e.get("ts_recovered")
+        dt_s = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts_s)) if ts_s else ""
+        dt_r = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts_r)) if ts_r else ""
+        dur  = round((ts_r - ts_s) / 60.0, 2) if (ts_r and ts_s) else ""
+        lines.append(",".join([
+            _csv(e.get("id", "")),
+            _csv(cid),
+            _csv(chain_name),
+            _csv(dt_s),
+            _csv(f"{ts_s:.3f}" if ts_s else ""),
+            _csv(e.get("fault_node_label", "")),
+            _csv(e.get("fault_site", "")),
+            _csv(e.get("fault_stream", "")),
+            _csv(f"{e['rtp_loss_pct']:.1f}" if e.get("rtp_loss_pct") is not None else ""),
+            _csv(dt_r),
+            _csv(f"{ts_r:.3f}" if ts_r else ""),
+            _csv(str(dur) if dur != "" else ""),
+            _csv("Yes" if e.get("adbreak_overshoot") else ""),
+            _csv(e.get("cascaded_from", "")),
+            _csv(e.get("message", "")),
+            _csv(e.get("note", "")),
+            _csv(e.get("note_by", "")),
+        ]))
+    safe_name = (chain_name.replace(" ", "_").replace("/", "_").replace("\\", "_"))[:40]
+    fname = f"fault_log_{safe_name}_{time.strftime('%Y%m%d_%H%M')}.csv"
+    return Response("\n".join(lines), mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @app.post("/api/chains/notes/<fault_log_id>")
 @login_required
 @csrf_protect
@@ -30020,9 +30506,10 @@ def api_chains_save():
                   "upstream_chain_id": upstream_chain_id,
                   "clip_seconds": clip_seconds}
     if cid:
-        # Update existing
+        # Update existing — preserve maintenance_windows (managed by separate endpoints)
         for i, c in enumerate(chains):
             if c.get("id") == cid:
+                chain_dict["maintenance_windows"] = c.get("maintenance_windows", [])
                 chains[i] = chain_dict
                 break
         else:
@@ -30049,6 +30536,148 @@ def api_chains_delete(chain_id):
     if len(cfg.signal_chains) < before:
         save_config(cfg)
     return jsonify({"ok": True})
+
+
+# ── Scheduled maintenance windows ─────────────────────────────────────────────
+
+@app.get("/api/chains/<cid>/maintenance_windows")
+@login_required
+def api_chains_mwindows_get(cid: str):
+    """Return the scheduled maintenance windows for a chain."""
+    cfg = monitor.app_cfg
+    chain = next((c for c in cfg.signal_chains if c.get("id") == cid), None)
+    if chain is None:
+        return jsonify({"ok": False, "error": "chain not found"}), 404
+    return jsonify({"ok": True, "windows": chain.get("maintenance_windows", [])})
+
+
+@app.post("/api/chains/<cid>/maintenance_windows")
+@login_required
+@admin_required
+@csrf_protect
+def api_chains_mwindows_add(cid: str):
+    """Add a scheduled maintenance window to a chain.
+
+    Body JSON:
+      type            "recurring" | "one_off"
+      label           str (optional display name)
+      days_of_week    [0-6] (Mon=0) — recurring only, empty = every day
+      start_time      "HH:MM"       — recurring only
+      start_ts        float epoch   — one_off only
+      duration_minutes int (1-1440)
+      affect_sla      bool          — suppress SLA downtime during window
+      enabled         bool
+    """
+    import uuid as _uuid
+    data = request.get_json(force=True) or {}
+    win_type = str(data.get("type", "recurring")).strip()
+    if win_type not in ("recurring", "one_off"):
+        return jsonify({"ok": False, "error": "type must be recurring or one_off"}), 400
+    try:
+        dur = max(1, min(1440, int(data.get("duration_minutes", 60) or 60)))
+    except (TypeError, ValueError):
+        dur = 60
+    window = {
+        "id":               str(_uuid.uuid4()),
+        "type":             win_type,
+        "label":            str(data.get("label", "") or "").strip()[:80],
+        "duration_minutes": dur,
+        "affect_sla":       bool(data.get("affect_sla", False)),
+        "enabled":          bool(data.get("enabled", True)),
+    }
+    if win_type == "recurring":
+        days_raw = data.get("days_of_week", [])
+        window["days_of_week"] = [int(d) for d in days_raw if 0 <= int(d) <= 6]
+        window["start_time"]   = str(data.get("start_time", "02:00") or "02:00")[:5]
+    else:
+        try:
+            window["start_ts"] = float(data.get("start_ts", 0) or 0)
+        except (TypeError, ValueError):
+            window["start_ts"] = 0.0
+    cfg = monitor.app_cfg
+    chains = list(cfg.signal_chains)
+    for i, c in enumerate(chains):
+        if c.get("id") == cid:
+            wins = list(c.get("maintenance_windows", []))
+            wins.append(window)
+            c = dict(c)
+            c["maintenance_windows"] = wins
+            chains[i] = c
+            cfg.signal_chains = chains
+            save_config(cfg)
+            return jsonify({"ok": True, "window": window})
+    return jsonify({"ok": False, "error": "chain not found"}), 404
+
+
+@app.put("/api/chains/<cid>/maintenance_windows/<wid>")
+@login_required
+@admin_required
+@csrf_protect
+def api_chains_mwindows_update(cid: str, wid: str):
+    """Update a field on an existing maintenance window (patch-style)."""
+    data = request.get_json(force=True) or {}
+    cfg = monitor.app_cfg
+    chains = list(cfg.signal_chains)
+    for i, c in enumerate(chains):
+        if c.get("id") != cid:
+            continue
+        wins = list(c.get("maintenance_windows", []))
+        for j, w in enumerate(wins):
+            if w.get("id") != wid:
+                continue
+            w = dict(w)
+            if "label" in data:
+                w["label"] = str(data["label"] or "").strip()[:80]
+            if "enabled" in data:
+                w["enabled"] = bool(data["enabled"])
+            if "affect_sla" in data:
+                w["affect_sla"] = bool(data["affect_sla"])
+            if "duration_minutes" in data:
+                try:
+                    w["duration_minutes"] = max(1, min(1440, int(data["duration_minutes"])))
+                except (TypeError, ValueError):
+                    pass
+            if w.get("type") == "recurring":
+                if "days_of_week" in data:
+                    w["days_of_week"] = [int(d) for d in data["days_of_week"] if 0 <= int(d) <= 6]
+                if "start_time" in data:
+                    w["start_time"] = str(data["start_time"] or "02:00")[:5]
+            else:
+                if "start_ts" in data:
+                    try:
+                        w["start_ts"] = float(data["start_ts"])
+                    except (TypeError, ValueError):
+                        pass
+            wins[j] = w
+            c = dict(c)
+            c["maintenance_windows"] = wins
+            chains[i] = c
+            cfg.signal_chains = chains
+            save_config(cfg)
+            return jsonify({"ok": True, "window": w})
+        return jsonify({"ok": False, "error": "window not found"}), 404
+    return jsonify({"ok": False, "error": "chain not found"}), 404
+
+
+@app.delete("/api/chains/<cid>/maintenance_windows/<wid>")
+@login_required
+@admin_required
+@csrf_protect
+def api_chains_mwindows_delete(cid: str, wid: str):
+    """Remove a scheduled maintenance window from a chain."""
+    cfg = monitor.app_cfg
+    chains = list(cfg.signal_chains)
+    for i, c in enumerate(chains):
+        if c.get("id") != cid:
+            continue
+        wins = [w for w in c.get("maintenance_windows", []) if w.get("id") != wid]
+        c = dict(c)
+        c["maintenance_windows"] = wins
+        chains[i] = c
+        cfg.signal_chains = chains
+        save_config(cfg)
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "chain not found"}), 404
 
 
 @app.get("/api/ab_groups/status")
