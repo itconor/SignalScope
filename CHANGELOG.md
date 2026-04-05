@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.38] - 2026-04-05
+
+### Fixed
+- **TOTP setup page 500 error** — opening Settings → Security → Set Up 2FA produced an `Internal Server Error`. Root cause: `render_template_string` was called with `topnav=topnav` as an explicit keyword argument, but `topnav` is registered as a Jinja2 global (not a local variable in the view function), so Python raised `NameError` before the template was rendered. Fix: removed the redundant `topnav=topnav` kwarg; the Jinja2 global is resolved automatically.
+
+---
+
 ## [3.5.37] - 2026-04-05
 
 ### Added
