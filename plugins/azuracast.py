@@ -473,10 +473,10 @@ td{padding:6px 8px}
           <div class="ch">Add / Discover Server</div>
           <div class="cb">
             <div class="field"><label>AzuraCast URL</label>
-              <input id="az-url" type="url" placeholder="https://radio.example.com">
+              <input id="az-url" type="url" placeholder="https://radio.example.com" required autocomplete="off">
             </div>
             <div class="field"><label>API Key (optional)</label>
-              <input id="az-key" type="text" placeholder="Leave blank for public API">
+              <input id="az-key" type="text" placeholder="Leave blank for public API" spellcheck="false" autocomplete="off">
             </div>
             <button class="btn bp" onclick="doDiscover(this)">🔍 Discover Stations</button>
             <div id="disc-result" style="margin-top:12px"></div>

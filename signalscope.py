@@ -21,7 +21,8 @@ header h1{font-size:16px;font-weight:700}
 .ct{flex:1;padding:26px;max-width:680px}
 .pn{display:none}.pn.on{display:block}
 label{display:block;margin-top:13px;color:var(--mu);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-input[type=text],input[type=number],input[type=password],input[type=email]{width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
+input[type=text],input[type=number],input[type=password],input[type=email],input[type=url],select{width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
+input[type=text]:focus,input[type=number]:focus,input[type=password]:focus,input[type=email]:focus,input[type=url]:focus,select:focus{outline:none;border-color:var(--acc)}
 .cr{display:flex;align-items:center;gap:8px;margin-top:10px}input[type=checkbox]{width:16px;height:16px;accent-color:var(--acc)}
 .sec{margin-top:22px;padding-top:14px;border-top:1px solid var(--bor);font-weight:600;font-size:14px}
 .sec:first-of-type{margin-top:0;padding-top:0;border-top:none}
@@ -267,8 +268,8 @@ document.addEventListener('DOMContentLoaded',function(){
           <label>To<input type="email" name="to_addr" value="{{cfg.email.to_addr}}"></label>
   <div class="sec">🔔 Pushover Notifications</div>
           <div class="cr"><input type="checkbox" name="pv_enabled" value="1" {{'checked' if cfg.pushover.enabled}}><label style="margin:0;text-transform:none">Enable Pushover notifications</label></div>
-          <label>User Key<input type="text" name="pv_user_key" value="{{cfg.pushover.user_key}}" placeholder="Your Pushover user key"></label>
-          <label>App Token<input type="text" name="pv_app_token" value="{{cfg.pushover.app_token}}" placeholder="Your application API token"></label>
+          <label>User Key<input type="text" name="pv_user_key" value="{{cfg.pushover.user_key}}" placeholder="Your Pushover user key" spellcheck="false" autocomplete="off"></label>
+          <label>App Token<input type="text" name="pv_app_token" value="{{cfg.pushover.app_token}}" placeholder="Your application API token" spellcheck="false" autocomplete="off"></label>
           <label>Priority for WARN
             <select name="pv_pri_warn" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
               <option value="-2" {{'-2'==cfg.pushover.priority_warn|string and 'selected' or ''}}>Lowest (silent)</option>
@@ -341,8 +342,9 @@ document.addEventListener('DOMContentLoaded',function(){
               <label style="margin:0;text-transform:none;font-size:12px">MS Teams Adaptive Card format
                 <span style="font-size:11px;color:var(--mu)">(uncheck for plain text / Slack)</span></label>
             </div>
-            <input type="text" name="webhook_url" value="{{cfg.webhook.url}}"
+            <input type="url" name="webhook_url" value="{{cfg.webhook.url}}"
                    placeholder="Fallback URL — used if no route above matches (leave blank to drop unmatched alerts)"
+                   spellcheck="false" autocomplete="off"
                    style="width:100%;padding:7px 10px;background:#141820;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
           </div>
         
@@ -2313,7 +2315,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.47"
+BUILD                  = "SignalScope-3.5.48"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -18724,7 +18726,8 @@ h2{font-size:20px;font-weight:700;margin-bottom:8px;color:var(--tx)}
 .badge-err{background:#450a0a;color:#fca5a5}
 .badge-na{background:var(--bor);color:var(--mu)}
 label{display:block;margin-top:14px;color:var(--mu);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-input[type=text],input[type=password],select{width:100%;margin-top:4px;padding:9px 11px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
+input[type=text],input[type=password],input[type=number],input[type=url],select{width:100%;margin-top:4px;padding:9px 11px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
+input[type=text]:focus,input[type=password]:focus,input[type=number]:focus,input[type=url]:focus,select:focus{outline:none;border-color:var(--acc)}
 .cr{display:flex;align-items:center;gap:8px;margin-top:10px}input[type=checkbox]{width:16px;height:16px;accent-color:var(--acc)}
 .help{font-size:12px;color:var(--mu);margin-top:5px;line-height:1.5}
 .btn{display:inline-block;padding:8px 18px;border-radius:6px;font-size:13px;cursor:pointer;border:none;text-decoration:none;font-weight:600;transition:filter .15s,box-shadow .15s}
@@ -19229,7 +19232,8 @@ header h1{font-size:16px;font-weight:700}.btn{display:inline-block;padding:5px 1
 .bp{background:var(--acc);color:#fff;box-shadow:0 2px 8px rgba(23,168,255,.25)}.bp:hover{box-shadow:0 3px 12px rgba(23,168,255,.4)}.bg{background:var(--bor);color:var(--tx)}.bd{background:var(--al);color:#fff}.bw{background:#7c2d12;color:#fca5a5}.bs{padding:3px 9px;font-size:12px}.nav-active{background:var(--acc)!important;color:#fff!important}
 main{padding:22px;max-width:620px;margin:0 auto}
 label{display:block;margin-top:13px;color:var(--mu);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-input[type=text],input[type=number],select{width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
+input[type=text],input[type=number],input[type=url],select{width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px}
+input[type=text]:focus,input[type=number]:focus,input[type=url]:focus,select:focus{outline:none;border-color:var(--acc)}
 .cr{display:flex;align-items:center;gap:8px;margin-top:10px}input[type=checkbox]{width:16px;height:16px;accent-color:var(--acc)}
 .help{font-size:12px;color:var(--mu);margin-top:4px;line-height:1.5}
 .sec{margin-top:18px;padding-top:13px;border-top:1px solid var(--bor);font-weight:600;font-size:14px}

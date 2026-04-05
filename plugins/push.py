@@ -282,7 +282,8 @@ h2{font-size:15px;font-weight:700;margin-bottom:14px;color:var(--acc)}
 label{display:flex;flex-direction:column;gap:4px;margin-bottom:12px;font-size:13px;color:var(--mu)}
 label span{color:var(--tx);font-weight:500}
 input,textarea{background:#071428;border:1px solid var(--bor);border-radius:8px;color:var(--tx);padding:8px 10px;font-size:13px;width:100%;outline:none}
-input:focus,textarea:focus{border-color:var(--acc)}
+input:focus,select:focus,textarea:focus{border-color:var(--acc)}
+@media(max-width:480px){.grid-2{grid-template-columns:1fr!important}}
 textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
 .btn{display:inline-block;padding:6px 16px;border-radius:8px;font-size:13px;cursor:pointer;border:none;font-weight:600}
 .bp{background:var(--acc);color:#fff}.bg{background:var(--bor);color:var(--tx)}
@@ -342,9 +343,9 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
     <div class="card">
       <h2>🔔 APNs Credentials (iOS)</h2>
       <p style="font-size:12px;color:var(--mu);margin-bottom:14px">Get from <strong>developer.apple.com → Keys</strong>. Create a key with Apple Push Notifications service enabled.</p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <label><span>Key ID</span><input id="apns_key_id" value="{{cfg.apns_key_id}}" placeholder="ABC1234DEF" maxlength="10" style="font-family:monospace"></label>
-        <label><span>Team ID</span><input id="apns_team_id" value="{{cfg.apns_team_id}}" placeholder="XYZ9876543" maxlength="10" style="font-family:monospace"></label>
+      <div class="grid-2" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <label><span>Key ID</span><input id="apns_key_id" value="{{cfg.apns_key_id}}" placeholder="ABC1234DEF" maxlength="10" style="font-family:monospace" spellcheck="false" autocomplete="off"></label>
+        <label><span>Team ID</span><input id="apns_team_id" value="{{cfg.apns_team_id}}" placeholder="XYZ9876543" maxlength="10" style="font-family:monospace" spellcheck="false" autocomplete="off"></label>
         <label style="grid-column:1/-1"><span>Bundle ID</span><input id="apns_bundle_id" value="{{cfg.apns_bundle_id}}" placeholder="com.example.SignalScope"></label>
       </div>
       <label><span>.p8 Private Key <em style="font-weight:400;color:var(--mu)">(leave blank to keep existing)</em></span>
@@ -355,7 +356,7 @@ textarea{font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
     <div class="card">
       <h2>🤖 FCM Credentials (Android)</h2>
       <p style="font-size:12px;color:var(--mu);margin-bottom:14px">Get from <strong>console.firebase.google.com → Project settings → Service accounts → Generate new private key</strong>.</p>
-      <label><span>Firebase Project ID</span><input id="fcm_project_id" value="{{cfg.fcm_project_id}}" placeholder="my-project-12345" style="font-family:monospace"></label>
+      <label><span>Firebase Project ID</span><input id="fcm_project_id" value="{{cfg.fcm_project_id}}" placeholder="my-project-12345" style="font-family:monospace" spellcheck="false" autocomplete="off"></label>
       <label><span>Service Account JSON <em style="font-weight:400;color:var(--mu)">(leave blank to keep existing — current: {{cfg.fcm_service_account_json[:40]+'…' if cfg.fcm_service_account_json else 'not set'}})</em></span>
         <textarea id="fcm_service_account_json" rows="5" placeholder='{"type":"service_account","project_id":"...",...}'></textarea>
       </label>

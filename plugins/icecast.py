@@ -820,6 +820,8 @@ th{padding:7px 10px;text-align:left;font-size:11px;text-transform:uppercase;lett
 td{padding:8px 10px;border-bottom:1px solid var(--bor);vertical-align:middle}
 tr:hover td{background:rgba(23,52,95,.35)}
 .url-link{font-size:12px;color:var(--acc);font-family:monospace}
+.tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+@media(max-width:540px){.grid-2c{grid-template-columns:1fr!important}#add-form{grid-template-columns:1fr!important}}
 #msg{padding:8px 14px;border-radius:8px;margin-bottom:12px;display:none;font-size:13px}
 .msg-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
 .msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
@@ -851,11 +853,11 @@ tr:hover td{background:rgba(23,52,95,.35)}
     <details>
       <summary class="ch" style="cursor:pointer">Server Settings</summary>
       <div class="cb">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-          <div class="field"><label>Port</label><input type="number" id="cfg-port" min="1024" max="65535"></div>
-          <div class="field"><label>Hostname</label><input type="text" id="cfg-hostname"></div>
-          <div class="field"><label>Source Password</label><input type="text" id="cfg-srcpw"></div>
-          <div class="field"><label>Admin Password</label><input type="text" id="cfg-admpw"></div>
+        <div class="grid-2c" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="field"><label>Port</label><input type="number" id="cfg-port" min="1024" max="65535" required></div>
+          <div class="field"><label>Hostname</label><input type="text" id="cfg-hostname" required spellcheck="false" autocomplete="off"></div>
+          <div class="field"><label>Source Password</label><input type="password" id="cfg-srcpw" autocomplete="new-password"></div>
+          <div class="field"><label>Admin Password</label><input type="password" id="cfg-admpw" autocomplete="new-password"></div>
         </div>
         <div style="margin-top:10px">
           <button class="btn bp bs" data-action="save-config">Save Settings</button>
@@ -867,7 +869,7 @@ tr:hover td{background:rgba(23,52,95,.35)}
   <!-- Streams Table Card -->
   <div class="card">
     <div class="ch">Streams</div>
-    <div class="cb" style="padding:0">
+    <div class="cb tbl-wrap" style="padding:0">
       <table>
         <thead>
           <tr>

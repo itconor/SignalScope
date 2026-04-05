@@ -519,7 +519,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical}
       <div class="row">
         <div class="f">
           <label>Zetta SOAP Service URL</label>
-          <input id="cfg-url" placeholder="http://zetta-server/ZettaService/ZettaService.asmx" value="{{url}}">
+          <input id="cfg-url" placeholder="http://zetta-server/ZettaService/ZettaService.asmx" value="{{url}}" required spellcheck="false" autocomplete="off">
           <div class="hint">Full URL to the .asmx endpoint (no ?wsdl)</div>
         </div>
       </div>

@@ -173,6 +173,7 @@ h1{font-size:24px;font-weight:600;margin-bottom:6px}
 .card{background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:20px;margin-bottom:16px}
 .card h2{font-size:16px;font-weight:600;margin-bottom:12px;color:#94a3b8}
 .modes{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px}
+@media(max-width:480px){.modes{grid-template-columns:1fr}}
 .mode-card{background:#0f172a;border:2px solid #1e293b;border-radius:12px;padding:24px 16px;text-align:center;cursor:pointer;transition:all 0.2s}
 .mode-card:hover{border-color:#3b82f6;background:#0f1729}
 .mode-card .icon{font-size:48px;margin-bottom:8px}
@@ -260,7 +261,7 @@ input[type=text]:focus,select:focus{outline:none;border-color:#3b82f6}
   <div class="help" style="margin-bottom:8px">Create multiple branded clocks for different studios or stations. Each gets its own URL for kiosk displays.</div>
   <div id="presets">
     {% for p in settings.presets %}
-    <div class="preset-row" style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #1e293b">
+    <div class="preset-row" style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #1e293b;flex-wrap:wrap">
       <div style="flex:1">
         <div style="font-size:14px;font-weight:600">{{p.name or p.brand or 'Untitled'}}</div>
         <div style="font-size:11px;color:#64748b">{{p.mode or 'digital'}} — {{p.brand or 'No brand'}} — {{p.timezone or 'Server TZ'}}{% if p.stream %} — Level: {{p.stream}}{% endif %}</div>

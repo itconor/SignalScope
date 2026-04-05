@@ -629,6 +629,7 @@ h1{font-size:1.3em;font-weight:600;color:var(--tx);margin-bottom:20px}
 .field input:focus,.field select:focus{outline:none;border-color:var(--ac)}
 .field .hint{font-size:11px;color:#4a7899;margin-top:3px}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:480px){.row2{grid-template-columns:1fr}}
 .modal-btns{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
 .snmp-fields{display:none}
 /* Device page iframe modal */
@@ -682,7 +683,7 @@ h1{font-size:1.3em;font-weight:600;color:var(--tx);margin-bottom:20px}
     <h2 id="modal-title">Add Codec Device</h2>
     <div class="field">
       <label>Name</label>
-      <input id="f-name" placeholder="e.g. Studio 1 Link">
+      <input id="f-name" placeholder="e.g. Studio 1 Link" required>
     </div>
     <div class="row2">
       <div class="field">
@@ -698,7 +699,7 @@ h1{font-size:1.3em;font-weight:600;color:var(--tx);margin-bottom:20px}
       </div>
       <div class="field">
         <label>Host / IP</label>
-        <input id="f-host" placeholder="192.168.1.10">
+        <input id="f-host" placeholder="192.168.1.10" required>
       </div>
     </div>
     <div class="row2">

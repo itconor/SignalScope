@@ -2,6 +2,21 @@
 
 ---
 
+## [3.5.48] - 2026-04-05
+
+### Changed
+- **Form UX — `required` attributes**: Added `required` to mandatory fields that were already JS-validated but had no HTML constraint: codec Name + Host, zetta SOAP URL, AzuraCast server URL. Browser now shows inline validation tooltip before the fetch fires.
+- **Form UX — `spellcheck="false" autocomplete="off"`** on all credential/API key fields: Pushover User Key + App Token, Webhook URL (also changed to `type="url"`), AzuraCast API key, Zetta URL, Icecast hostname, push.py APNs Key ID + Team ID + FCM Project ID.
+- **Form UX — Icecast passwords** changed to `type="password"` with `autocomplete="new-password"` so browsers don't autofill streaming credentials into the source/admin password fields.
+- **Focus rings — `:focus` rules added to main SETTINGS_TPL and two hub sub-templates**: all `<input>` types and `<select>` now get `border-color:var(--acc)` on focus. Previously only some templates had this.
+- **Mobile responsiveness**:
+  - codec.py: `.row2` (2-column form grid) collapses to 1 column at ≤480 px.
+  - icecast.py: server settings grid + add-stream grid collapse to 1 column at ≤540 px; stream table wrapped in `.tbl-wrap` (horizontal scroll on small screens).
+  - ptpclock.py: mode-select grid collapses to 1 column at ≤480 px; preset rows get `flex-wrap:wrap`.
+  - push.py: APNs credentials grid gets `.grid-2` class with responsive collapse at ≤480 px.
+
+---
+
 ## [3.5.47] - 2026-04-05
 
 ### Changed
