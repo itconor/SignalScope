@@ -2349,7 +2349,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.54"
+BUILD                  = "SignalScope-3.5.55"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -17346,7 +17346,7 @@ main{padding:16px;max-width:1440px;margin:0 auto}
       {% endif %}
       {% if ph=='ready' and running %}
         <div style="margin:2px 13px 8px">
-          <button class="btn bg" style="font-size:11px;padding:2px 8px" onclick="(function(btn){_ssConfirm('Retrain AI? The learned baseline for this stream will be reset.',function(){_btnLoad(btn);_csrfFetch('/ai/retrain/{{idx}}',{method:'POST'}).then(function(r){return r.json();}).then(function(d){_btnReset(btn);if(d.ok||d.status==='ok'){showToast('AI retrain started','ok');}else{showToast(d.error||'Retrain failed','err');}}).catch(function(){_btnReset(btn);showToast('Request failed','err');});})})(this)">↺ Retrain AI</button>
+          <button class="btn bg" style="font-size:11px;padding:2px 8px" onclick="(function(btn){_ssConfirm('Retrain AI? The learned baseline for this stream will be reset.',function(){_btnLoad(btn);_csrfFetch('/ai/retrain/{{idx}}',{method:'POST'}).then(function(r){return r.json();}).then(function(d){_btnReset(btn);if(d.ok||d.status==='ok'){_ssToast('AI retrain started','ok');}else{_ssToast(d.error||'Retrain failed','err');}}).catch(function(){_btnReset(btn);_ssToast('Request failed','err');});})})(this)">↺ Retrain AI</button>
         </div>
       {% endif %}
       {% endif %}
@@ -27092,7 +27092,7 @@ function saveChain(){
   _btnLoad(_saveBtn);
   _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
     _btnReset(_saveBtn);
-    if(d.ok){showToast('Chain saved','ok');setTimeout(()=>location.reload(),600);}
+    if(d.ok){_ssToast('Chain saved','ok');setTimeout(()=>location.reload(),600);}
     else{st.style.color='var(--al)';st.textContent='Error: '+(d.error||'?');}
   }).catch(e=>{_btnReset(_saveBtn);st.style.color='var(--al)';st.textContent=''+e;});
 }
@@ -27105,7 +27105,7 @@ function deleteChain(id,name){
 }
 function _doDeleteChain(id){
   _f('/api/chains/'+encodeURIComponent(id),{method:'DELETE'}).then(r=>r.json()).then(d=>{
-    if(d.ok){var el=document.getElementById('chain_'+id);if(el)el.remove();showToast('Chain deleted','ok');}
+    if(d.ok){var el=document.getElementById('chain_'+id);if(el)el.remove();_ssToast('Chain deleted','ok');}
   }).catch(()=>{});
 }
 
