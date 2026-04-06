@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.107] - 2026-04-06
+
+### Fixed
+- **Morning Report always showing "All Clear"** (morning_report plugin v1.2.2) — `_BASE_DIR` pointed to the `plugins/` subdirectory. `metrics_history.db`, `alert_log.json`, and `sla_data.json` were therefore looked up in `plugins/` where they do not exist. All three data loaders check `os.path.exists()` before opening and silently return empty results, so every report contained zero faults and the "All Clear" headline was always chosen. Fix: added `_APP_DIR = os.path.dirname(_BASE_DIR)` (the parent app directory) and changed the three shared-data paths to use `_APP_DIR`. Plugin config files (`morning_report_cfg.json`, `morning_report_cache.json`) correctly remain under `_BASE_DIR` in `plugins/`.
+
+---
+
 ## [3.5.106] - 2026-04-06
 
 ### Removed

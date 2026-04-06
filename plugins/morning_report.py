@@ -8,18 +8,19 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.2.1",
+    "version":  "1.2.2",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
 from collections import defaultdict
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # plugins/ dir
+_APP_DIR  = os.path.dirname(_BASE_DIR)                    # parent app dir (where shared data files live)
 _CFG_PATH    = os.path.join(_BASE_DIR, "morning_report_cfg.json")
 _CACHE_PATH  = os.path.join(_BASE_DIR, "morning_report_cache.json")
-_METRICS_DB  = os.path.join(_BASE_DIR, "metrics_history.db")
-_ALERT_LOG   = os.path.join(_BASE_DIR, "alert_log.json")
-_SLA_PATH    = os.path.join(_BASE_DIR, "sla_data.json")
+_METRICS_DB  = os.path.join(_APP_DIR,  "metrics_history.db")
+_ALERT_LOG   = os.path.join(_APP_DIR,  "alert_log.json")
+_SLA_PATH    = os.path.join(_APP_DIR,  "sla_data.json")
 
 _DEFAULT_CFG = {"report_time": "06:00"}
 

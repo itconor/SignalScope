@@ -4,7 +4,7 @@
 SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
 
 - **Repo**: https://github.com/itconor/SignalScope
-- **Current build string**: `BUILD = "SignalScope-3.5.106"` (increment on every release)
+- **Current build string**: `BUILD = "SignalScope-3.5.107"` (increment on every release)
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **Release flow**: bump `BUILD`, update `CHANGELOG.md`, `git commit`, `git push`, `gh release create v{version}`
 - **`gh` CLI path**: `/opt/homebrew/bin/gh` — always use this full path, it is installed and working
@@ -649,6 +649,15 @@ Fix: ZIP is written to a named temp file on disk (`tempfile.NamedTemporaryFile(s
 
 **Rule**: Never include `logger_index.db` in a path-relative arc name inside the ZIP without placing it under `plugins/` — the restore route uses `_PLUGINS_SUBDIR` to know where to put it back.
 **Rule**: Any `send_file()` of a temp file MUST be paired with an `@after_this_request` cleanup hook to delete the temp file once Flask finishes streaming.
+
+---
+
+### Morning Report always showing "All Clear" — wrong data file paths (fixed 3.5.107, morning_report v1.2.2)
+`_BASE_DIR = os.path.dirname(os.path.abspath(__file__))` resolves to the `plugins/` subdirectory. `_METRICS_DB`, `_ALERT_LOG`, and `_SLA_PATH` were all joined to `_BASE_DIR`, so they pointed to `plugins/metrics_history.db`, `plugins/alert_log.json`, `plugins/sla_data.json` — none of which exist (the real files are in the parent app directory). All three loader functions call `os.path.exists()` first and silently return `[]`/`{}` on failure, so every report contained zero faults and always showed "All Clear".
+
+Fix: added `_APP_DIR = os.path.dirname(_BASE_DIR)` and changed the three shared-data paths to use `_APP_DIR`. Plugin-private files (`morning_report_cfg.json`, `morning_report_cache.json`) remain under `_BASE_DIR` in `plugins/`.
+
+**Rule**: Any plugin that reads shared app data files (`metrics_history.db`, `alert_log.json`, `sla_data.json`, etc.) MUST resolve them from `os.path.dirname(_BASE_DIR)` (the parent app directory), NOT from `_BASE_DIR` (the `plugins/` subdirectory). Only plugin-specific config and cache files should live under `_BASE_DIR`.
 
 ---
 
