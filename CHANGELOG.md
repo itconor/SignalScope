@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.90] - 2026-04-06
+
+### Fixed
+- **Plugin Manager navbar broken**: standalone hub pages that call `topnav()` need `display:inline-block` and `text-decoration:none` on `.btn` (topnav renders nav links as `<a class="btn ...">`) and a `.nav-active` class. Without these the nav links collapsed and had no active highlight. Added to `_HUB_PLUGINMGR_TPL` CSS; rule added to CLAUDE.md to prevent recurrence.
+
+---
+
 ## [3.5.89] - 2026-04-06
 
 ### Fixed
