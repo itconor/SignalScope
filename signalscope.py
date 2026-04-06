@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.100"
+BUILD                  = "SignalScope-3.5.101"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -17448,6 +17448,22 @@ def favicon():
     return send_from_directory(STATIC_DIR, ICON_FILE, mimetype="image/vnd.microsoft.icon")
 
 app.jinja_env.filters["enumerate"] = enumerate
+
+def _jinja_safe_lkey(s):
+    """Sanitise a composite site|stream key so it is safe as an HTML element id.
+
+    Applies the same replacement rule as the JS _liveKey() and _wLiveKey()
+    functions: replace every character that is not A-Z, a-z, 0-9, or | with an
+    underscore.  The | character is preserved as the site-name/stream-name
+    separator.  Without this filter the Jinja2 templates used to apply only a
+    handful of replace() calls (space, slash, dot, dash, parens) which left
+    characters like + or & untouched, causing document.getElementById() to
+    fail for stream names such as "BBC Radio 4+".
+    """
+    import re as _re_lk
+    return _re_lk.sub(r'[^a-zA-Z0-9|]', '_', s or '')
+
+app.jinja_env.filters["safe_lkey"] = _jinja_safe_lkey
 
 # Apply security headers to every response
 app.after_request(_apply_security_headers)
@@ -34409,17 +34425,14 @@ main{padding:18px;max-width:1500px;margin:0 auto}
         {% if s.get('stereo') or _ldev.startswith('fm://') %}
         {% set _ll = s.get('level_dbfs_l') %}
         {% set _lr = s.get('level_dbfs_r') %}
-        {% if _ll is not none and _lr is not none %}
-        {% set _llpct = [[(_ll+80)/80*100, 100]|min, 0]|max|int %}
-        {% set _lrpct = [[(_lr+80)/80*100, 100]|min, 0]|max|int %}
-        <div class="lbar-wrap sc-lr-bar" style="gap:4px;padding-top:0">
+        {% set _has_lr = _ll is not none and _lr is not none %}
+        <div class="lbar-wrap sc-lr-bar" style="gap:4px;padding-top:0{% if not _has_lr %};display:none{% endif %}">
           <span style="font-size:9px;color:var(--mu);width:28px;flex-shrink:0">L</span>
-          <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" style="width:{{_llpct}}%;background:{{lcol}}"></div></div></div>
+          <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" style="width:{% if _has_lr %}{{[[(_ll+80)/80*100,100]|min,0]|max|int}}{% else %}0{% endif %}%;background:{{lcol}}"></div></div></div>
           <span style="font-size:9px;color:var(--mu);width:10px;flex-shrink:0;text-align:right">R</span>
-          <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" style="width:{{_lrpct}}%;background:{{lcol}}"></div></div></div>
-          <span class="sc-lr-txt" style="font-size:9px;color:var(--mu);width:46px;text-align:right;flex-shrink:0">{{_ll|round(1)}} / {{_lr|round(1)}}</span>
+          <div class="lbar-outer" style="flex:1"><div class="lbar-track"><div class="lbar-fill" style="width:{% if _has_lr %}{{[[(_lr+80)/80*100,100]|min,0]|max|int}}{% else %}0{% endif %}%;background:{{lcol}}"></div></div></div>
+          <span class="sc-lr-txt" style="font-size:9px;color:var(--mu);width:46px;text-align:right;flex-shrink:0">{% if _has_lr %}{{_ll|round(1)}} / {{_lr|round(1)}}{% else %}— / —{% endif %}</span>
         </div>
-        {% endif %}
         {% endif %}
         {% if s.lufs_m is not none and s.lufs_m > -69 %}
         {% set tpcol = 'var(--al)' if s.lufs_tp > -1 else ('var(--wn)' if s.lufs_tp > -3 else 'var(--mu)') %}
@@ -36042,7 +36055,7 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
     {% elif dev.startswith('fm://') %}{% set dtype='fm' %}
     {% elif dev.startswith('rtp://') or dev.startswith('livewire') or dev|int(-1) >= 0 %}{% set dtype='lw' %}
     {% else %}{% set dtype='other' %}{% endif %}
-    {% set _wlkey = (s.site + '|' + st.name)|replace(' ','_')|replace('/','_')|replace('.','_')|replace('-','_')|replace('(','_')|replace(')','_') %}
+    {% set _wlkey = (s.site + '|' + st.name)|safe_lkey %}
     <div class="sw-card {{card_cls}}">
       <div class="sw-top">
         <div class="sw-dot {{dot_cls}}"></div>
@@ -37546,7 +37559,7 @@ setInterval(_loadTrends, 300000);
       </div>
 
       {# Level bar — id used by _applyLiveFrame for 1 Hz live updates #}
-      {% set _lkey = (site.site + '|' + s.name)|replace(' ','_')|replace('/','_')|replace('.','_')|replace('-','_')|replace('(','_')|replace(')','_') %}
+      {% set _lkey = (site.site + '|' + s.name)|safe_lkey %}
       <div class="lbar-wrap" style="padding:4px 10px" data-rms="{{lev}}" data-peak="{{s.get('peak_dbfs', lev)}}">
         <span class="sc-lbar-label" style="font-size:11px;color:var(--acc);width:28px;cursor:pointer;user-select:none" title="RMS level">RMS</span>
         <div class="lbar-outer">

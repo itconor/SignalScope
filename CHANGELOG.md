@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.101] - 2026-04-06
+
+### Fixed
+- **Hub overview live bars and L/R not updating for streams with `+`, `&`, or other special characters in their name** (e.g., "BBC Radio 4+"): The Jinja2 template used a chain of `|replace(...)` calls to build element IDs (spaces, slashes, dots, dashes, parentheses), while the JavaScript `_liveKey()` / `_wLiveKey()` functions used a comprehensive regex `[^a-zA-Z0-9|]` → `_`. Any character not in the Jinja2 replace chain (e.g., `+`) was left in the Jinja2 ID but replaced by `_` in the JS key, causing `document.getElementById()` to silently return `null` — live bar fills and L/R bars would never update for those streams. Fix: registered a `safe_lkey` Jinja2 filter that applies the same regex as the JS functions. `HUB_TPL` and `HUB_WALL_TPL` now use `|safe_lkey` on the combined site|stream key, producing IDs that always match what JS looks for.
+- **Hub site replica page — L/R bars not appearing for DAB stereo streams until page refresh**: The `.sc-lr-bar` div was inside `{% if _ll is not none and _lr is not none %}`, so if L/R data happened to be `None` at page render time (stream still starting, or race with the heartbeat), the element was never added to the DOM. The 150 ms live poll would find `lrWrap = null` and silently skip all L/R updates. Fix: `.sc-lr-bar` is now always rendered for stereo streams; starts with `display:none` when L/R data is absent and the JS live poll shows it (unchanged behaviour) when real L/R values arrive.
+
+---
+
 ## [3.5.100] - 2026-04-06
 
 ### Fixed
