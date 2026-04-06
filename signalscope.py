@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.88"
+BUILD                  = "SignalScope-3.5.89"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -33114,6 +33114,7 @@ select.site-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px
 .msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
 #restart-banner{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:9px 14px;margin-bottom:12px;color:var(--wn);font-size:12px;display:none}
 .hdr-row{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.b-pend{background:rgba(23,168,255,.12);color:var(--acc);border-color:rgba(23,168,255,.3)}
 </style></head>
 <body>
 {{topnav("hub_plugins")|safe}}
@@ -33138,14 +33139,19 @@ select.site-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px
 </main>
 <script nonce="{{csp_nonce()}}">
 var _reg=null,_data=null;
+// Tracks pending remote commands so cells show ⏳ while waiting for the
+// client to heartbeat and apply the change. Key = "site|file".
+var _pending=new Map();
+
 function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||'';}
 function _esc(s){var d=document.createElement('div');d.textContent=String(s||'');return d.innerHTML;}
 
-function showMsg(t,ok){
+function showMsg(t,ok,sticky){
   var m=document.getElementById('msg');
   m.className='';m.classList.add(ok?'msg-ok':'msg-err');
   m.textContent=t;m.style.display='block';
-  clearTimeout(m._t);m._t=setTimeout(function(){m.style.display='none';},7000);
+  clearTimeout(m._t);
+  if(!sticky)m._t=setTimeout(function(){m.style.display='none';},7000);
 }
 
 function vGt(a,b){
@@ -33164,11 +33170,30 @@ async function doAction(action,site,file,url,btn){
     });
     var d=await r.json();
     if(d.ok){
-      showMsg(d.msg,true);
       document.getElementById('restart-banner').style.display='block';
-      setTimeout(doRefresh,1500);
-    }else{showMsg(d.error||'Error',false);}
-  }catch(e){showMsg('Network error: '+e,false);}
+      var isHub=(site==='__hub__');
+      if(isHub){
+        // Hub: change applied immediately — refresh in 1.5 s to show new state
+        showMsg('✓ '+d.msg,true,false);
+        setTimeout(doRefresh,1500);
+      }else{
+        // Remote client: command queued via heartbeat ACK.
+        // The client won't pick it up until its next heartbeat (~10 s) and
+        // the plugin cache won't refresh for up to 60 s after that.
+        // Show a sticky banner, mark the cell as pending, and check back in 20 s.
+        var key=site+'|'+file;
+        _pending.set(key,action);
+        showMsg('✓ Command queued for "'+site+'" — checking back in ~20 s',true,true);
+        buildMatrix(); // re-render immediately to show ⏳ Pending badge
+        clearTimeout(_pending['_t_'+key]);
+        _pending['_t_'+key]=setTimeout(function(){
+          _pending.delete(key);
+          showMsg('',true,false); // clear sticky message
+          doRefresh();
+        },20000);
+      }
+    }else{showMsg('Error: '+(d.error||'unknown error'),false,false);}
+  }catch(e){showMsg('Network error: '+e,false,false);}
   if(btn){btn.disabled=false;btn.textContent=orig;}
 }
 
@@ -33218,18 +33243,25 @@ function buildMatrix(){
     html+='</td>';
     sites.forEach(function(s,i){
       var inst=siteMaps[i][plug.file];
+      var pendKey=s.id+'|'+plug.file;
       html+='<td><div class="sc">';
-      if(!s.online&&s.id!=='__hub__'){
+      if(_pending.has(pendKey)){
+        // Command sent, waiting for client to heartbeat and apply
+        html+='<span class="badge b-pend">⏳ Pending…</span>';
+      }else if(!s.online&&s.id!=='__hub__'){
         html+='<span class="badge b-mu">Offline</span>';
       }else if(inst){
-        var upd=plug.rv&&vGt(plug.rv,inst.v);
-        if(upd){
+        var upd=plug.rv&&inst.active&&vGt(plug.rv,inst.v);
+        if(!inst.active){
+          // File exists on disk but wasn't loaded at startup — needs restart
+          html+='<span class="badge b-wn" title="File installed but SignalScope needs a restart to load it">v'+_esc(inst.v||'?')+' ↻ Restart needed</span>';
+        }else if(upd){
           html+='<span class="badge b-wn">v'+_esc(inst.v||'?')+' → v'+_esc(plug.rv)+'</span>';
           if(plug.url)html+=_btn('Update','update',s.id,plug.file,plug.url,'bw');
         }else{
           html+='<span class="badge b-ok">v'+_esc(inst.v||'?')+' ✓</span>';
         }
-        html+=_btn('Remove','remove',s.id,plug.file,'','bd');
+        if(inst.active||!upd)html+=_btn('Remove','remove',s.id,plug.file,'','bd');
       }else{
         html+='<span class="badge b-mu">—</span>';
         if(plug.url)html+=_btn('Install','install',s.id,plug.file,plug.url,'bp');
@@ -33281,7 +33313,6 @@ function buildRegistry(){
   document.getElementById('reg-body').querySelectorAll('.reg-inst-btn').forEach(function(btn){
     btn.addEventListener('click',function(){
       var file=this.dataset.file;
-      // Escape periods in the selector ID to find the right <select>
       var sel=document.getElementById('rs-'+file);
       var site=(sel&&sel.value)||'__hub__';
       doAction('install',site,file,this.dataset.url,this);
@@ -33303,7 +33334,7 @@ async function doRefresh(){
     buildMatrix();
     buildRegistry();
     document.getElementById('ts').textContent='Updated '+new Date().toLocaleTimeString();
-  }catch(e){showMsg('Refresh failed: '+e,false);}
+  }catch(e){showMsg('Refresh failed: '+e,false,false);}
   if(btn)btn.disabled=false;
 }
 

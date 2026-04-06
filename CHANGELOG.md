@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.89] - 2026-04-06
+
+### Fixed
+- **Plugin Manager UX — remote action feedback**: clicking Update/Install/Remove on a client site now immediately shows a sticky "✓ Command queued for [site] — checking back in ~20 s" banner and replaces the cell with a blue ⏳ Pending badge. The matrix does not auto-refresh until 20 seconds later, giving the client time to heartbeat and apply the change.
+- **Plugin Manager — restart state**: cells now distinguish between three installed states: green "v1.0.0 ✓" (running), amber "v1.0.0 ↻ Restart needed" (file on disk but not yet loaded — shown immediately after a remote install before the node restarts), and "—" (not installed). Hub-side installs still auto-refresh after 1.5 s.
+
+---
+
 ## [3.5.88] - 2026-04-06
 
 ### Added
