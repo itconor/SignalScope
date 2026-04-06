@@ -922,7 +922,7 @@ def register(app, ctx):
         if cl_hdr and cl_hdr > _MAX_UPLOAD_BYTES:
             return jsonify({"error": "Clip too large"}), 413
 
-        data = request.get_data(limit=_MAX_UPLOAD_BYTES + 1)
+        data = request.get_data()
         if len(data) > _MAX_UPLOAD_BYTES:
             return jsonify({"error": "Clip too large"}), 413
         if not data:
