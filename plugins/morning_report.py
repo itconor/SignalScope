@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.2.2",
+    "version":  "1.2.3",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -1002,6 +1002,22 @@ tr:hover td{background:rgba(255,255,255,.03)}
         || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]
         || '';
   }
+  function _btnLoad(btn){
+    btn._origTxt = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '↻ Generating…';
+  }
+  function _btnReset(btn){
+    btn.disabled = false;
+    btn.textContent = btn._origTxt || '↻ Regenerate';
+  }
+  function _ssToast(msg, type){
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.background = (type === 'err') ? '#7f1d1d' : '#14532d';
+    t.style.display = 'block';
+    setTimeout(function(){ t.style.display = 'none'; }, 3500);
+  }
 
   document.getElementById('btn-regen').addEventListener('click', function(){
     var btn = this;
@@ -1016,15 +1032,17 @@ tr:hover td{background:rgba(255,255,255,.03)}
         _btnReset(btn);
         if(d.ok){
           var t = document.getElementById('toast');
+          t.textContent = 'Report regenerated';
+          t.style.background = '#14532d';
           t.style.display = 'block';
           setTimeout(function(){ t.style.display='none'; window.location.reload(); }, 1200);
         } else {
-          _ssToast('Error: ' + (d.error || 'unknown'),'err');
+          _ssToast('Error: ' + (d.error || 'unknown'), 'err');
         }
       })
       .catch(function(e){
         _btnReset(btn);
-        _ssToast('Request failed: ' + e,'err');
+        _ssToast('Request failed: ' + e, 'err');
       });
   });
 })();

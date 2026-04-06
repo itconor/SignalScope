@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.109] - 2026-04-06
+
+### Fixed
+- **Morning Report Regenerate button does nothing** (morning_report v1.2.3) — `_btnLoad`, `_btnReset`, and `_ssToast` were called in the button's click handler but never defined in the plugin template. Clicking the button threw a `ReferenceError` immediately, crashing the handler before the `fetch` was even sent — no spinner, no toast, no reload. Fixed by inlining all three helper functions directly in the plugin's `<script>` block.
+
+---
+
 ## [3.5.108] - 2026-04-06
 
 ### Fixed

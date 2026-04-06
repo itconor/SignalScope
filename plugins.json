@@ -64,8 +64,8 @@
     "name": "Morning Report",
     "file": "morning_report.py",
     "icon": "\ud83d\udcf0",
-    "description": "Daily morning briefing for broadcast engineers and non-technical staff. Auto-generates at 06:00 (configurable) covering the previous calendar day. Plain-English headline banner (all-clear or fault summary), per-chain health table with on-air %, traffic-light trend pills, human-readable outage durations, hourly fault heatmap, auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks), and stream quality summary with translated labels. All configured chains appear even with no fault history. Hub-only. v1.2.2: Fixed report always showing All Clear — data files were being looked up in the wrong directory.",
-    "version": "1.2.2",
+    "description": "Daily morning briefing for broadcast engineers and non-technical staff. Auto-generates at 06:00 (configurable) covering the previous calendar day. Plain-English headline banner (all-clear or fault summary), per-chain health table with on-air %, traffic-light trend pills, human-readable outage durations, hourly fault heatmap, auto-detected notable patterns (clustering, above-average faults, recurring issues, clean streaks), and stream quality summary with translated labels. All configured chains appear even with no fault history. Hub-only. v1.2.3: Fixed Regenerate button doing nothing (missing helper functions).",
+    "version": "1.2.3",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/morning_report.py"
   },
