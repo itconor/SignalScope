@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.114"
+BUILD                  = "SignalScope-3.5.115"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -33311,10 +33311,12 @@ def hub_reports():
     chain_cfg = cfg.signal_chains if cfg.hub.mode in ("hub","both") else []
     stream_to_chains: dict = {}   # stream_name → [chain_name, ...]
     chain_names_list: list = []
+    chain_names_set:  set  = set()
     for ch in chain_cfg:
         cname = ch.get("name","")
         if cname and cname not in chain_names_list:
             chain_names_list.append(cname)
+            chain_names_set.add(cname)
         for node in ch.get("nodes", []):
             # Expand stack nodes to their sub-nodes
             subs = node.get("nodes", []) if node.get("type") == "stack" else [node]
@@ -33337,9 +33339,14 @@ def hub_reports():
             merged["_client_addr"] = client_addr
             merged["_online"]      = s.get("online", False)
             ev_stream = merged.get("stream","")
-            # CHAIN_FAULT events: stream field holds the chain name directly
+            # CHAIN_FAULT events may have stream = chain name (hub-side main entry)
+            # OR stream = input name (per-node entry via _cmd_save_clip → _add_history).
+            # Use stream_to_chains lookup for input-name entries; pass chain names through.
             if merged.get("type") == "CHAIN_FAULT":
-                merged["_chain"] = ev_stream
+                if ev_stream in chain_names_set:
+                    merged["_chain"] = ev_stream
+                else:
+                    merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
             else:
                 merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
             all_events.append(merged)
@@ -33361,7 +33368,10 @@ def hub_reports():
         merged["_online"]      = True
         ev_stream = merged.get("stream", "")
         if merged.get("type") == "CHAIN_FAULT":
-            merged["_chain"] = ev_stream
+            if ev_stream in chain_names_set:
+                merged["_chain"] = ev_stream
+            else:
+                merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
         else:
             merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
         all_events.append(merged)

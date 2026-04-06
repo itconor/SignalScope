@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.115] - 2026-04-06
+
+### Fixed — Hub Reports: CHAIN_FAULT chain column showing input name instead of chain name
+
+Per-node `CHAIN_FAULT` events written by `_cmd_save_clip → _add_history` on client nodes have `stream = input_name` (e.g., "Kiss FM"), not the chain name. Hub Reports incorrectly assumed all `CHAIN_FAULT` events have `stream = chain_name`, so the Chain column showed `⛓ Kiss FM` instead of `⛓ Cool FM`. The Chain filter was also inconsistent as a result — filtering by "Cool FM" would miss those per-node entries.
+
+Fix: the `_chain` display field is now resolved correctly for both event sources. If `stream` matches a known chain name it is used directly (the main hub-side CHAIN_FAULT entry). Otherwise a `stream_to_chains` lookup maps the input name to its chain(s) — the same lookup used for all other event types. Events for inputs genuinely not in any chain show `—` in the Chain column.
+
+---
+
 ## [3.5.114] - 2026-04-06
 
 ### Fixed
