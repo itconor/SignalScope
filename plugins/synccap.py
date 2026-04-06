@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.16",
+    "version":  "1.0.17",
 }
 
 import os
@@ -1351,6 +1351,24 @@ audio{flex:1;height:30px}
 .pager{display:flex;align-items:center;gap:8px;margin-top:8px}
 .search-row{display:flex;gap:6px;margin-bottom:10px}
 .search-row input{flex:1;padding:5px 9px}
+/* ── First-time explainers ─────────────────────────────────────────────── */
+.howto-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;padding:14px}
+.howto-step{display:flex;flex-direction:column;gap:5px}
+.step-num{width:22px;height:22px;border-radius:50%;background:var(--acc);color:#07142b;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.step-title{font-size:12px;font-weight:700}
+.step-body{font-size:11px;color:var(--mu);line-height:1.55}
+.step-badge{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:rgba(23,168,255,.15);border:1px solid rgba(23,168,255,.3);color:var(--acc);font-size:9px;font-weight:700;margin-right:4px;flex-shrink:0;vertical-align:middle}
+.hint{font-size:11px;color:var(--mu);line-height:1.55;margin-top:6px}
+/* Inline tooltip */
+.tip{position:relative;display:inline-block}
+.tip-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:rgba(138,164,200,.12);border:1px solid rgba(138,164,200,.25);color:var(--mu);font-size:9px;font-weight:700;cursor:help;margin-left:4px;vertical-align:middle;line-height:1}
+.tip-icon:hover+.tip-body,.tip:focus-within .tip-body{display:block}
+.tip-body{display:none;position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#0d2346;border:1px solid var(--bor);border-radius:8px;padding:9px 11px;font-size:11px;color:var(--tx);white-space:normal;width:230px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.45);line-height:1.55;font-weight:400;text-transform:none;letter-spacing:0;pointer-events:none}
+/* Empty history state */
+.hist-empty{text-align:center;padding:28px 16px;color:var(--mu)}
+.hist-empty-icon{font-size:28px;margin-bottom:8px}
+.hist-empty-title{font-size:13px;font-weight:700;color:var(--tx);margin-bottom:6px}
+.hist-empty-body{font-size:11px;line-height:1.6;max-width:300px;margin:0 auto}
 </style>
 </head>
 <body>
@@ -1363,36 +1381,71 @@ audio{flex:1;height:30px}
 
 <div class="wrap">
 
+  <!-- ── How it works banner (hidden after first dismissal) ── -->
+  <div id="howto" style="display:none;grid-column:1/-1" class="card">
+    <div class="ch" style="justify-content:space-between">
+      <span>🎙 How Sync Capture works</span>
+      <button class="btn bg bs" id="howto-dismiss" style="font-size:10px">Got it — hide ✕</button>
+    </div>
+    <div class="howto-steps">
+      <div class="howto-step">
+        <div class="step-num">1</div>
+        <div class="step-title">Select inputs</div>
+        <div class="step-body">Choose one or more audio streams from any connected site. You can mix sites — that's the whole point.</div>
+      </div>
+      <div class="howto-step">
+        <div class="step-num">2</div>
+        <div class="step-title">Label &amp; duration</div>
+        <div class="step-body">Give the capture a name and choose how many seconds to save (5–300 s). The audio comes from each site's rolling buffer, so it's already recorded.</div>
+      </div>
+      <div class="howto-step">
+        <div class="step-num">3</div>
+        <div class="step-title">Capture</div>
+        <div class="step-body">All selected sites save the same moment in time simultaneously. Clips upload to the hub automatically — no manual steps needed on remote sites.</div>
+      </div>
+      <div class="howto-step">
+        <div class="step-num">4</div>
+        <div class="step-title">Compare &amp; align</div>
+        <div class="step-body">Open any capture from the history. Play clips side-by-side, view waveforms, measure loudness, and run auto-alignment to find timing offsets between sites.</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Left column ── -->
   <div>
     <div class="card">
-      <div class="ch">Select Inputs <span id="sel-count" style="margin-left:auto;font-weight:400">0 selected</span></div>
+      <div class="ch"><span class="step-badge">1</span>Select Inputs <span id="sel-count" style="margin-left:auto;font-weight:400">0 selected</span></div>
       <div class="cb">
         <div id="msg"></div>
         <div style="display:flex;gap:6px;margin-bottom:8px">
           <button class="btn bg bs" id="btn-all">All</button>
           <button class="btn bg bs" id="btn-none">Clear</button>
-          <button class="btn bg bs" id="btn-reload" style="margin-left:auto">↻</button>
+          <button class="btn bg bs" id="btn-reload" style="margin-left:auto" title="Reload input list">↻</button>
         </div>
         <div class="stream-list" id="stream-list"><div style="color:var(--mu);padding:8px 0;font-size:12px">Loading…</div></div>
+        <p class="hint" style="margin-top:8px">Streams from all connected hub clients appear here, grouped by site. Select any combination across sites.</p>
       </div>
     </div>
 
     <div class="card">
-      <div class="ch">Capture Settings</div>
+      <div class="ch"><span class="step-badge">2</span>Capture Settings</div>
       <div class="cb">
         <div class="field">
-          <label>Label</label>
+          <label>Label <span style="color:var(--mu);font-weight:400;text-transform:none;font-size:10px">(optional)</span></label>
           <input type="text" id="cap-label" placeholder="e.g. 09:00 Morning check" maxlength="80" spellcheck="false" autocomplete="off">
         </div>
         <div class="field">
-          <label>Duration — <span id="dur-display">30 s</span></label>
+          <label>
+            Duration — <span id="dur-display">30 s</span>
+            <span class="tip"><span class="tip-icon" tabindex="0">?</span><span class="tip-body">How much audio to save per clip. Each site keeps a rolling 60-second buffer, so you can capture up to 60 s of audio that already happened — no need to predict in advance. Longer captures give more context for alignment.</span></span>
+          </label>
           <div class="dur-wrap">
             <input type="range" id="cap-dur" min="5" max="300" value="30">
             <span class="dur-val" id="dur-val">30s</span>
           </div>
         </div>
         <button class="btn bp" id="cap-btn" style="width:100%;padding:8px">⏺ Capture</button>
+        <p class="hint">All selected sites receive a command to save the same N seconds of audio simultaneously. Clips upload to the hub automatically — nothing to do on each site.</p>
       </div>
     </div>
 
@@ -1400,11 +1453,12 @@ audio{flex:1;height:30px}
       <div class="ch">Storage</div>
       <div class="cb">
         <div class="field">
-          <label>Clip Directory</label>
+          <label>Clip Directory <span style="color:var(--mu);font-weight:400;text-transform:none;font-size:10px">(hub only)</span></label>
           <input type="text" id="clip-dir-input" spellcheck="false" autocomplete="off" placeholder="Default: plugins/synccap_clips">
         </div>
         <div id="disk-info" style="font-size:11px;color:var(--mu);margin-bottom:10px"></div>
         <button class="btn bg bs" id="save-storage-btn">Save Path</button>
+        <p class="hint" style="margin-top:8px">Clips are stored on the hub only. Client recordings are uploaded and then discarded on the remote site.</p>
       </div>
     </div>
   </div>
@@ -1412,8 +1466,9 @@ audio{flex:1;height:30px}
   <!-- ── Right column ── -->
   <div>
     <div class="card" id="prog-card" style="display:none">
-      <div class="ch" id="prog-title">Collecting clips…</div>
+      <div class="ch" id="prog-title">⏳ Collecting clips…</div>
       <div class="cb" id="prog-body"></div>
+      <div style="padding:0 14px 12px;font-size:11px;color:var(--mu)" id="prog-hint">Commands sent to all selected sites. Each site will upload its clip once recorded — this usually takes 10–30 s depending on clip length and network speed.</div>
     </div>
 
     <div class="card">
@@ -1434,7 +1489,7 @@ audio{flex:1;height:30px}
             <th>Time</th><th>Label</th><th style="white-space:nowrap">Dur</th>
             <th>Clips</th><th>Status</th><th></th>
           </tr></thead>
-          <tbody id="cap-tbody"><tr><td colspan="6" style="color:var(--mu);text-align:center;padding:20px">No captures yet</td></tr></tbody>
+          <tbody id="cap-tbody"><tr><td colspan="6"><div class="hist-empty"><div class="hist-empty-icon">🎙</div><div class="hist-empty-title">No captures yet</div><div class="hist-empty-body">Select streams on the left, then click <strong>⏺ Capture</strong>. Each row here represents one synchronized recording session — click any row to open the clips and alignment tools.</div></div></td></tr></tbody>
         </table>
       </div>
       <div class="cb" style="padding-top:8px">
@@ -1481,6 +1536,17 @@ function fmtBytes(b){
   if(b<1073741824) return (b/1048576).toFixed(1)+'MB';
   return (b/1073741824).toFixed(2)+'GB';
 }
+
+// ── howto banner (show once, dismissed to localStorage) ───────────────────────
+(function(){
+  if(!localStorage.getItem('synccap_howto_ok')){
+    document.getElementById('howto').style.display='block';
+  }
+  document.getElementById('howto-dismiss').addEventListener('click',function(){
+    localStorage.setItem('synccap_howto_ok','1');
+    document.getElementById('howto').style.display='none';
+  });
+})();
 
 // ── duration slider ───────────────────────────────────────────────────────────
 document.getElementById('cap-dur').addEventListener('input', function(){
@@ -1931,7 +1997,7 @@ function applyAlignment(capId, data, clips){
     +'<button class="btn bg bs" id="realign-btn-'+capId+'">↻ Re-align</button>'
     +'</div>';
 
-  var scoreNote='<span style="font-size:10px;color:var(--mu)" title="Score is RMS loudness envelope — FM/DAB/unprocessed compare fairly">Scores: loudness envelope match</span>';
+  var scoreNote='<span style="font-size:10px;color:var(--mu)" title="How closely each clip\'s loudness envelope matches the reference over the aligned overlap region. Works across FM, DAB, HTTP and codec differences. Excellent ≥ 0.95, Good ≥ 0.85, Fair ≥ 0.70, Poor below that.">Scores: loudness envelope match ⓘ</span>';
 
   var html='<div class="align-panel">';
   html+=refSelHtml;
@@ -1940,7 +2006,7 @@ function applyAlignment(capId, data, clips){
   html+='<button class="btn bg bs" id="stop-all-'+capId+'">■ Stop</button>';
   html+='<button class="btn bg bs" id="cmp-btn-'+capId+'">📊 Compare</button>';
   html+='<button class="btn bg bs" id="spec-btn-'+capId+'">📈 Spectrum</button>';
-  html+='<span class="overlap-badge" title="Aligned overlap duration">⧖ '+overlapS.toFixed(1)+' s</span>';
+  html+='<span class="overlap-badge" title="The common programme window shared by all clips after alignment offsets are applied. Longer = more reliable comparison.">⧖ '+overlapS.toFixed(1)+' s overlap</span>';
   html+=scoreNote;
   html+='</div>';
 
@@ -1963,15 +2029,15 @@ function applyAlignment(capId, data, clips){
       else{ldStr='≈ 0 dB';ldTitle='Same level as reference';}
     }
     var ldBadge=ldStr?'<span class="lvl-pill lvl-ld" title="'+ldTitle+'">'+esc(ldStr)+'</span>':'';
-    var lufsBadge=lufs!=null?'<span class="lvl-pill" title="Integrated loudness (K-weighted)">LUFS '+lufs+'</span>':'';
-    var tpBadge=tp!=null?'<span class="lvl-pill" title="True peak">TP '+tp+' dBTP</span>':'';
+    var lufsBadge=lufs!=null?'<span class="lvl-pill" title="Integrated loudness, K-weighted (EBU R128). Broadcast standard is typically −23 LUFS ± 1 LU. Louder = less negative number.">LUFS '+lufs+'</span>':'';
+    var tpBadge=tp!=null?'<span class="lvl-pill" title="True peak level. EBU R128 broadcast maximum is −1 dBTP. Values above −1 may cause distortion after encoding.">TP '+tp+' dBTP</span>':'';
 
     html+='<div class="align-track" data-fn="'+esc(fn)+'">';
     // Top row: info | pills | duration
     html+='<div class="at-top">';
     html+='<div class="at-info"><div class="clip-site" style="font-size:10px;color:var(--mu)">'+esc(cl.site)+'</div><div class="clip-stream" style="font-size:12px;font-weight:600">'+esc(cl.stream)+ch+'</div></div>';
     html+='<div class="at-pills">';
-    html+='<span class="'+pillCls+'" title="Skip this much from the clip start to reach the common programme point">'+offLabel+'</span>';
+    html+='<span class="'+pillCls+'" title="Timing offset vs the reference clip. +0.5 s means this site is 0.5 s behind — its audio reaches the listener half a second later. +0.0 s = this is the reference (or perfectly aligned).">'+offLabel+'</span>';
     html+='<span class="'+_scoreCls(sc,isRef)+'" title="'+_scoreTitle(sc,isRef)+'">'+_scoreLbl(sc,isRef)+'</span>';
     html+=ldBadge+lufsBadge+tpBadge;
     html+='</div>';

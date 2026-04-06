@@ -23,6 +23,18 @@
 
 ---
 
+## [Sync Capture plugin 1.0.17] - 2026-04-06
+
+### Changed
+- **First-time user onboarding**: 4-step "How it works" banner shown on first visit, dismissed to `localStorage`. Explains the workflow end-to-end in plain English.
+- **Step badges**: ① and ② badges on Select Inputs and Capture Settings card headers to indicate order.
+- **Inline tooltips**: Duration slider now has a `?` tooltip explaining the rolling buffer concept. Offset, score, LUFS, TP, and overlap badges all have richer plain-English tooltips (e.g. "broadcast standard is −23 LUFS", "values above −1 dBTP may cause distortion").
+- **Hint text**: Short helper lines below the stream list, capture button, and storage card explaining what each section does and where files go.
+- **Better empty state**: History table now shows an icon, a title, and step-by-step guidance rather than bare "No captures yet".
+- **Progress card hint**: Added explanatory text below the progress rows ("Commands sent to all sites — clips upload automatically, usually 10–30 s").
+
+---
+
 ## [Sync Capture plugin 1.0.16] - 2026-04-06
 
 ### Changed
