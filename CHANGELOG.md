@@ -2,6 +2,14 @@
 
 ---
 
+## [Sync Capture plugin 1.0.16] - 2026-04-06
+
+### Changed
+- **Alignment panel layout**: each track is now two rows — top row has stream info + all pills, bottom row has the audio player + waveform spanning the full width. Eliminates the cramped right-push when many badges are present.
+- **Level difference label**: replaced bare `±N dB` with plain-English `↑ N dB louder` / `↓ N dB quieter` / `≈ 0 dB` with a tooltip ("4.1 dB quieter than reference"). Badge is now blue-tinted (`.lvl-ld`) to stand out from the grey LUFS/TP pills. Reference track shows no level badge (it is the reference).
+
+---
+
 ## [Sync Capture plugin 1.0.15] - 2026-04-06
 
 ### Fixed

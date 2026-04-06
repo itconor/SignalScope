@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.15",
+    "version":  "1.0.16",
 }
 
 import os
@@ -1318,10 +1318,13 @@ audio{flex:1;height:30px}
 .clips-panel-bar-lbl{font-size:11px;color:var(--mu);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
 .align-panel{padding:12px 14px;border-top:1px solid var(--bor);background:#030b18}
 .align-hdr{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
-.align-track{display:grid;grid-template-columns:160px auto auto auto 1fr auto;align-items:start;gap:6px;padding:8px 0;border-bottom:1px solid rgba(23,52,95,.35)}
+.align-track{padding:10px 0;border-bottom:1px solid rgba(23,52,95,.35)}
 .align-track:last-child{border:none}
-.align-track-info{min-width:0}
-.align-track audio{height:28px;width:100%}
+.at-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.at-info{min-width:130px;flex-shrink:0}
+.at-pills{display:flex;align-items:center;gap:5px;flex-wrap:wrap;flex:1}
+.at-dur{font-size:11px;color:var(--mu);white-space:nowrap;flex-shrink:0}
+.at-bottom{display:flex;flex-direction:column;gap:4px}
 .offset-pill{background:rgba(23,168,255,.15);color:var(--acc);border:1px solid rgba(23,168,255,.3);border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600;white-space:nowrap;flex-shrink:0}
 .offset-pill.zero{background:rgba(34,197,94,.12);color:var(--ok);border-color:rgba(34,197,94,.3)}
 .overlap-badge{background:rgba(245,158,11,.12);color:var(--wn);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600}
@@ -1331,7 +1334,8 @@ audio{flex:1;height:30px}
 .score-fr{background:rgba(245,158,11,.12);color:var(--wn);border:1px solid rgba(245,158,11,.3)}
 .score-pr{background:rgba(239,68,68,.12);color:var(--al);border:1px solid rgba(239,68,68,.3)}
 .score-ref{background:rgba(138,164,200,.1);color:var(--mu);border:1px solid rgba(138,164,200,.2)}
-.lvl-pill{background:rgba(138,164,200,.1);color:var(--mu);border:1px solid rgba(138,164,200,.2);border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600;white-space:nowrap;flex-shrink:0}
+.lvl-pill{background:rgba(138,164,200,.1);color:var(--mu);border:1px solid rgba(138,164,200,.2);border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;white-space:nowrap;flex-shrink:0}
+.lvl-ld{background:rgba(23,168,255,.08);color:var(--acc);border-color:rgba(23,168,255,.25)}
 .wf-canvas{width:100%;height:52px;display:block;border-radius:4px;cursor:crosshair}
 .compare-panel{margin-top:12px;padding-top:12px;border-top:1px solid rgba(23,52,95,.5)}
 .compare-panel label{font-size:10px;color:var(--mu);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;display:block}
@@ -1949,24 +1953,37 @@ function applyAlignment(capId, data, clips){
     var pillCls=off===0?'offset-pill zero':'offset-pill';
     var ch=cl.n_ch===2?'<span class="badge b-mu" style="font-size:9px;margin-left:4px">STEREO</span>':'';
     var color=_WF_COLORS[idx%_WF_COLORS.length];
-    var ldStr=ld===null||ld===undefined?'':(ld>=0?'+':'')+ld+' dB';
-    var lufsStr=lufs!=null?'LUFS '+lufs:'';
-    var tpStr=tp!=null?'TP '+tp:'';
-    var metaBadges=[ldStr,lufsStr,tpStr].filter(Boolean).map(function(s){return '<span class="lvl-pill">'+esc(s)+'</span>';}).join('');
+
+    // Level diff — human readable: "4.1 dB quieter" / "1.2 dB louder"
+    var ldStr='', ldTitle='';
+    if(ld!==null&&ld!==undefined&&!isRef){
+      var abs=Math.abs(ld).toFixed(1);
+      if(ld>0.1){ldStr='↑ '+abs+' dB louder';ldTitle=abs+' dB louder than reference';}
+      else if(ld<-0.1){ldStr='↓ '+abs+' dB quieter';ldTitle=abs+' dB quieter than reference';}
+      else{ldStr='≈ 0 dB';ldTitle='Same level as reference';}
+    }
+    var ldBadge=ldStr?'<span class="lvl-pill lvl-ld" title="'+ldTitle+'">'+esc(ldStr)+'</span>':'';
+    var lufsBadge=lufs!=null?'<span class="lvl-pill" title="Integrated loudness (K-weighted)">LUFS '+lufs+'</span>':'';
+    var tpBadge=tp!=null?'<span class="lvl-pill" title="True peak">TP '+tp+' dBTP</span>':'';
 
     html+='<div class="align-track" data-fn="'+esc(fn)+'">';
-    html+='<div class="align-track-info"><div class="clip-site" style="font-size:10px;color:var(--mu)">'+esc(cl.site)+'</div><div class="clip-stream" style="font-size:12px;font-weight:600">'+esc(cl.stream)+ch+'</div></div>';
-    html+='<span class="'+pillCls+'" title="Skip offset to reach common programme point">'+offLabel+'</span>';
+    // Top row: info | pills | duration
+    html+='<div class="at-top">';
+    html+='<div class="at-info"><div class="clip-site" style="font-size:10px;color:var(--mu)">'+esc(cl.site)+'</div><div class="clip-stream" style="font-size:12px;font-weight:600">'+esc(cl.stream)+ch+'</div></div>';
+    html+='<div class="at-pills">';
+    html+='<span class="'+pillCls+'" title="Skip this much from the clip start to reach the common programme point">'+offLabel+'</span>';
     html+='<span class="'+_scoreCls(sc,isRef)+'" title="'+_scoreTitle(sc,isRef)+'">'+_scoreLbl(sc,isRef)+'</span>';
-    html+='<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">'+metaBadges+'</div>';
-    html+='<div style="display:flex;flex-direction:column;gap:4px;min-width:0">';
-    html+='<audio class="align-audio" controls preload="metadata" src="'+src+'" data-offset="'+off+'" style="width:100%;height:28px"></audio>';
-    html+='<canvas class="wf-canvas" data-fn="'+esc(fn)+'" height="40" style="background:#020810;"></canvas>';
-    // Stereo info
-    var si=stereoD[fn];
-    if(si) html+='<div class="stereo-info">L: '+si.l_rms_dbfs+' dBFS  R: '+si.r_rms_dbfs+' dBFS  Bal: '+(si.balance_db>=0?'+':'')+si.balance_db+' dB  L/R corr: '+si.lr_corr+'</div>';
+    html+=ldBadge+lufsBadge+tpBadge;
     html+='</div>';
-    html+='<span style="color:var(--mu);font-size:11px;flex-shrink:0;white-space:nowrap">'+dur.toFixed(1)+' s</span>';
+    html+='<span class="at-dur">'+dur.toFixed(1)+' s</span>';
+    html+='</div>';
+    // Bottom row: audio + waveform (full width)
+    html+='<div class="at-bottom">';
+    html+='<audio class="align-audio" controls preload="metadata" src="'+src+'" data-offset="'+off+'" style="width:100%;height:32px"></audio>';
+    html+='<canvas class="wf-canvas" data-fn="'+esc(fn)+'" height="44" style="background:#020810;"></canvas>';
+    var si=stereoD[fn];
+    if(si) html+='<div class="stereo-info">L: '+si.l_rms_dbfs+' dBFS  •  R: '+si.r_rms_dbfs+' dBFS  •  Balance: '+(si.balance_db>=0?'+':'')+si.balance_db+' dB  •  L/R corr: '+si.lr_corr+'</div>';
+    html+='</div>';
     html+='</div>';
   });
 
