@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.100] - 2026-04-06
+
+### Fixed
+- **DAB bulk-add ignores stereo checkbox**: when adding multiple DAB services at once via the mux browser, the "Enable stereo capture" checkbox was never read by `dabBulkAdd()` and was not sent to the server. All bulk-added inputs were silently created with `stereo=False`. Fix: `dabBulkAdd()` now reads `#inp_stereo_dab` and includes `stereo: true/false` in each service object sent to `/inputs/add_dab_bulk`. The server route passes the value through to `InputConfig`.
+
+---
+
 ## [3.5.99] - 2026-04-06
 
 ### Fixed

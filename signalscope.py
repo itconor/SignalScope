@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.99"
+BUILD                  = "SignalScope-3.5.100"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -21160,8 +21160,9 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
   }
 
   function dabBulkAdd(){
-    var ch  = document.getElementById("dab_channel").value;
-    var ser = document.getElementById("dab_serial").value.trim();
+    var ch     = document.getElementById("dab_channel").value;
+    var ser    = document.getElementById("dab_serial").value.trim();
+    var stereo = !!(document.getElementById("inp_stereo_dab") || {checked:false}).checked;
     var services = [];
     document.querySelectorAll(".dab-svc-row").forEach(function(row){
       var cb = row.querySelector("input[type=checkbox]");
@@ -21171,7 +21172,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       if(!name) return;
       var di = "dab://" + encodeURIComponent(name) + "?channel=" + encodeURIComponent(ch);
       if(ser) di += "&serial=" + encodeURIComponent(ser);
-      services.push({name: name, device_index: di});
+      services.push({name: name, device_index: di, stereo: stereo});
     });
     if(!services.length){ _ssToast('No services selected.','warn'); return; }
     var btn = document.getElementById("dab_add_btn");
@@ -22446,7 +22447,8 @@ def inputs_add_dab_bulk():
         if name.lower() in existing_names:
             skipped.append(name)
             continue
-        inp = InputConfig(name=name, device_index=di)
+        inp = InputConfig(name=name, device_index=di,
+                          stereo=bool(svc.get("stereo", False)))
         monitor.app_cfg.inputs.append(inp)
         existing_names.add(name.lower())
         added.append(name)
