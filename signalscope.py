@@ -1137,6 +1137,18 @@ document.addEventListener('DOMContentLoaded',function(){
     <span id="proc-ctrl-status" style="font-size:12px;color:var(--mu)"></span>
   </div>
 
+  <div class="sec" style="margin-top:24px">⏻ Remote Reboot Setup</div>
+  <p class="help" style="margin-bottom:12px">Enables the hub's <strong>⏻ Reboot</strong> button for this machine. Writes a one-line sudoers entry so SignalScope can reboot without an interactive password. Only needs to be done once per machine.</p>
+  <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap">
+    <div class="field">
+      <label for="reboot-sudo-pw">Sudo password</label>
+      <input type="password" id="reboot-sudo-pw" autocomplete="current-password" placeholder="your sudo password" style="width:220px">
+    </div>
+    <button type="button" class="btn bp" id="reboot-setup-btn" style="font-size:13px">🔒 Setup Reboot Permission</button>
+    <span id="reboot-setup-status" style="font-size:12px;color:var(--mu)"></span>
+  </div>
+  <p class="help" style="margin-top:6px;font-size:11px">Creates <code style="background:#173a69;padding:1px 4px;border-radius:3px">/etc/sudoers.d/signalscope-reboot</code>. The password is sent over HTTPS and not stored.</p>
+
   <div class="sec" style="margin-top:24px">⬇ Backup &amp; Restore</div>
   <p class="help" style="margin-bottom:12px">Download a ZIP archive containing your configuration, AI models, signal history database, SLA data, alert log and hub state. Use this to back up your setup or migrate to a new server.</p>
   <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
@@ -1785,6 +1797,35 @@ function adminRestart(btn){
       .finally(function(){setTimeout(function(){_close();window.location.reload();},6000);});
   };
 }
+
+// ── Reboot Setup ─────────────────────────────────────────────────────────────
+(function(){
+  var btn=document.getElementById('reboot-setup-btn');
+  if(!btn)return;
+  btn.addEventListener('click',function(){
+    var pw=document.getElementById('reboot-sudo-pw');
+    var st=document.getElementById('reboot-setup-status');
+    if(!pw||!pw.value){st.textContent='Enter your sudo password first.';st.style.color='var(--al)';return;}
+    var orig=btn.textContent;
+    btn.disabled=true;btn.textContent='⏳ Setting up…';st.textContent='';
+    fetch('/api/admin/setup_reboot',{method:'POST',
+      headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'},
+      body:JSON.stringify({password:pw.value})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){
+        st.textContent='✓ Done — reboot permission configured.';st.style.color='var(--ok)';
+        pw.value='';btn.textContent='✓ Setup complete';
+      } else {
+        st.textContent='✗ '+(d.error||'Failed — check the log for details.');st.style.color='var(--al)';
+        btn.disabled=false;btn.textContent=orig;
+      }
+    }).catch(function(){
+      st.textContent='Network error.';st.style.color='var(--al)';
+      btn.disabled=false;btn.textContent=orig;
+    });
+  });
+})();
 
 // ── User Management ──────────────────────────────────────────────────────────
 function _userRoleBadge(role){
@@ -2458,7 +2499,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.122"
+BUILD                  = "SignalScope-3.5.123"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -12513,6 +12554,21 @@ class HubClient:
             os.execv(sys.executable, [sys.executable] + sys.argv)
         threading.Thread(target=_do_restart, daemon=True, name="RemoteRestart").start()
 
+    def _cmd_kill_welle(self, payload: dict):
+        """Kill any welle-cli and rtl_tcp processes owned by the current user.
+        No sudo required — pkill only targets the current user's processes."""
+        import subprocess as _sp
+        killed = []
+        for _proc in ("welle-cli", "rtl_tcp"):
+            ret = _sp.call(["pkill", "-f", _proc],
+                           stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            if ret == 0:
+                killed.append(_proc)
+        if killed:
+            monitor.log(f"[Hub] kill_welle: killed {', '.join(killed)}")
+        else:
+            monitor.log("[Hub] kill_welle: no welle-cli or rtl_tcp processes found")
+
     def _cmd_reboot(self, payload: dict):
         monitor.log("[Hub] Remote reboot command received — rebooting system in 3s …")
         def _do_reboot():
@@ -13989,6 +14045,8 @@ class HubClient:
                         self._cmd_restart(cmd_payload)
                     elif cmd_type == "reboot":
                         self._cmd_reboot(cmd_payload)
+                    elif cmd_type == "kill_welle":
+                        self._cmd_kill_welle(cmd_payload)
                     elif cmd_type == "chain_note":
                         self._cmd_chain_note(cmd_payload)
                     elif cmd_type == "ai_feedback":
@@ -24533,6 +24591,67 @@ def api_admin_restart():
     return jsonify({"ok": True, "note": "Restarting in ~1.5 s…"})
 
 
+@app.post("/api/admin/setup_reboot")
+@login_required
+@csrf_protect
+def api_admin_setup_reboot():
+    """Write a sudoers.d entry that allows passwordless 'sudo reboot'.
+
+    Accepts {"password": "<sudo password>"} and uses 'sudo -S tee' to
+    write /etc/sudoers.d/signalscope-reboot.  After this, the hub's
+    ⏻ Reboot button will work on this machine.
+    """
+    import subprocess as _sp, getpass as _gp, shutil as _sh, os as _os
+    data = request.get_json(silent=True) or {}
+    pw   = str(data.get("password", "")).encode()
+    if not pw:
+        return jsonify({"error": "password required"}), 400
+
+    try:
+        _user = _gp.getuser()
+    except Exception:
+        _user = _os.environ.get("USER", "root")
+
+    entry = f"{_user} ALL=(ALL) NOPASSWD: /sbin/reboot, /usr/sbin/reboot\n"
+
+    if _os.geteuid() == 0:
+        # Running as root — just write directly
+        try:
+            with open("/etc/sudoers.d/signalscope-reboot", "w") as _f:
+                _f.write(entry)
+            _os.chmod("/etc/sudoers.d/signalscope-reboot", 0o440)
+            monitor.log("[Admin] setup_reboot: wrote sudoers.d entry (root)")
+            return jsonify({"ok": True})
+        except Exception as _e:
+            return jsonify({"error": str(_e)}), 500
+
+    # Not root — use sudo -S to write via tee
+    if not _sh.which("sudo"):
+        return jsonify({"error": "sudo not found on this system"}), 500
+    try:
+        result = _sp.run(
+            ["sudo", "-S", "tee", "/etc/sudoers.d/signalscope-reboot"],
+            input=pw + b"\n" + entry.encode(),
+            stdout=_sp.DEVNULL, stderr=_sp.PIPE,
+            timeout=10
+        )
+        if result.returncode == 0:
+            # Set correct permissions (sudoers.d files must be 0440)
+            _sp.run(["sudo", "-S", "chmod", "0440",
+                     "/etc/sudoers.d/signalscope-reboot"],
+                    input=pw + b"\n", stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                    timeout=5)
+            monitor.log(f"[Admin] setup_reboot: sudoers.d entry written for {_user}")
+            return jsonify({"ok": True})
+        else:
+            err = result.stderr.decode(errors="replace").strip()
+            monitor.log(f"[Admin] setup_reboot failed: {err}")
+            return jsonify({"error": "sudo failed — wrong password or sudo not configured"}), 403
+    except Exception as _e:
+        monitor.log(f"[Admin] setup_reboot error: {_e}")
+        return jsonify({"error": str(_e)}), 500
+
+
 @app.get("/api/dab/scan")
 @login_required
 def api_dab_scan():
@@ -26885,6 +27004,18 @@ def hub_site_reboot(site_name):
     if err: return err
     hub_server.push_pending_command(site_name, {"type": "reboot"})
     monitor.log(f"[Hub] Reboot command pushed to site '{site_name}'")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/hub/site/<path:site_name>/kill_welle")
+@login_required
+@csrf_protect
+def hub_site_kill_welle(site_name):
+    """Hub admin: push a kill_welle command to free a stuck SDR dongle on a remote client."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    hub_server.push_pending_command(site_name, {"type": "kill_welle"})
+    monitor.log(f"[Hub] kill_welle command pushed to site '{site_name}'")
     return jsonify({"ok": True})
 
 
@@ -34423,6 +34554,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       <button class="btn site-restart-btn" data-site="{{site.site|e}}" style="background:#2a1e3a;color:#c4b5fd;font-size:11px;padding:2px 10px">🔄 Restart</button>
       {% endif %}
       <button class="btn site-reboot-btn" data-site="{{site.site|e}}" style="background:#3a1e1e;color:#fca5a5;font-size:11px;padding:2px 10px" title="Reboot the remote machine's operating system">⏻ Reboot</button>
+      <button class="btn site-kill-welle-btn" data-site="{{site.site|e}}" style="background:#2a2000;color:#fde68a;font-size:11px;padding:2px 10px" title="Kill stuck welle-cli / rtl_tcp processes and free the SDR dongle">🔌 Kill Welle</button>
       {% if site._backup_ts %}
       <a class="btn" href="/api/hub/site/{{site.site|urlencode}}/backup" style="background:#142514;color:#4ade80;font-size:11px;padding:2px 10px;text-decoration:none" title="Download backup — {{(site._backup_size // 1024) if site._backup_size else '?'}} KB, taken {{fmt(site._backup_ts)}}">⬇ Backup <span style="opacity:.7;font-size:10px">({{ago(site._backup_age_s)}})</span></a>
       <button class="btn site-backup-btn" data-site="{{site.site|e}}" style="background:#1a2e1a;color:#86efac;font-size:11px;padding:2px 10px" title="Request a fresh backup from this site now">↻ Backup Now</button>
@@ -35440,6 +35572,21 @@ document.addEventListener('click',function(e){
     if(d.ok){btn.textContent='✓ Reboot queued';btn.style.color='var(--ok)';}
     else{btn.disabled=false;btn.textContent='⏻ Reboot';_ssToast('Reboot failed: '+(d.error||'unknown'),'err');}
   }).catch(function(err){btn.disabled=false;btn.textContent='⏻ Reboot';_ssToast('Error: '+(err.message||err),'err');});
+  });
+});
+
+// ── Kill Welle button ─────────────────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.site-kill-welle-btn');if(!btn)return;
+  var site=btn.dataset.site;
+  _ssConfirm('Kill all welle-cli and rtl_tcp processes on "'+site+'"?\n\nSignalScope will restart them automatically. Use this to free a stuck SDR dongle.',function(){
+  var origText=btn.textContent;
+  btn.disabled=true;btn.textContent='⏳';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/kill_welle',{})
+  .then(function(d){
+    if(d.ok){btn.textContent='✓ Sent';btn.style.color='var(--ok)';setTimeout(function(){btn.disabled=false;btn.textContent=origText;btn.style.color='';},4000);}
+    else{btn.disabled=false;btn.textContent=origText;_ssToast('Kill welle failed: '+(d.error||'unknown'),'err');}
+  }).catch(function(err){btn.disabled=false;btn.textContent=origText;_ssToast('Error: '+(err.message||err),'err');});
   });
 });
 

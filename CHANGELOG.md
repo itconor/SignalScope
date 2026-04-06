@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.123] - 2026-04-06
+
+### Added — Kill Welle button; Reboot Setup in Settings
+
+**🔌 Kill Welle** button added to hub site cards. Pushes a `kill_welle` command via heartbeat; client runs `pkill -f welle-cli` and `pkill -f rtl_tcp` on its own user's processes — no sudo required. Frees a stuck SDR dongle without rebooting.
+
+**⏻ Remote Reboot Setup** section added to Settings → Maintenance. Enter the machine's sudo password once and click "Setup Reboot Permission" — writes `/etc/sudoers.d/signalscope-reboot` using `sudo -S tee`. After that the hub's ⏻ Reboot button works permanently without any shell access or further configuration.
+
+---
+
 ## [3.5.122] - 2026-04-06
 
 ### Fixed — Remote reboot: try root, systemctl, sudo in order; no shell setup required
