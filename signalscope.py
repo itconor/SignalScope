@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.121"
+BUILD                  = "SignalScope-3.5.122"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -12517,14 +12517,34 @@ class HubClient:
         monitor.log("[Hub] Remote reboot command received — rebooting system in 3s …")
         def _do_reboot():
             time.sleep(3.0)
-            import subprocess as _sp
-            # Try systemctl first (works on systemd without root via logind/polkit),
-            # fall back to sudo reboot.  Requires passwordless sudo if systemctl fails:
-            #   echo 'signalscope ALL=(ALL) NOPASSWD: /sbin/reboot' | sudo tee /etc/sudoers.d/signalscope-reboot
-            ret = _sp.call(["systemctl", "reboot"], stderr=_sp.DEVNULL)
-            if ret != 0:
-                monitor.log("[Hub] systemctl reboot returned non-zero — trying sudo reboot")
-                _sp.call(["sudo", "reboot"])
+            import subprocess as _sp, os as _os
+            # Method 1: direct reboot syscall / built-in — works when running as root
+            if _os.geteuid() == 0:
+                monitor.log("[Hub] Running as root — executing reboot directly")
+                _os.system("reboot")
+                return
+            # Method 2: systemctl reboot via D-Bus/logind — works on most modern
+            # systemd systems without extra config
+            try:
+                ret = _sp.call(["systemctl", "reboot"],
+                               stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+                if ret == 0:
+                    return
+                monitor.log(f"[Hub] systemctl reboot exited {ret}")
+            except Exception as _e:
+                monitor.log(f"[Hub] systemctl reboot failed: {_e}")
+            # Method 3: sudo reboot — requires passwordless sudo entry:
+            #   echo '<user> ALL=(ALL) NOPASSWD: /sbin/reboot' \
+            #        | sudo tee /etc/sudoers.d/signalscope-reboot
+            try:
+                ret = _sp.call(["sudo", "-n", "reboot"],
+                               stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+                if ret == 0:
+                    return
+                monitor.log(f"[Hub] sudo -n reboot exited {ret} — passwordless sudo not configured")
+            except Exception as _e:
+                monitor.log(f"[Hub] sudo reboot failed: {_e}")
+            monitor.log("[Hub] All reboot methods failed — machine did not reboot")
         threading.Thread(target=_do_reboot, daemon=True, name="RemoteReboot").start()
 
     def _cmd_set_live_view(self, payload: dict):

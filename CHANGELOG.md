@@ -2,6 +2,17 @@
 
 ---
 
+## [3.5.122] - 2026-04-06
+
+### Fixed — Remote reboot: try root, systemctl, sudo in order; no shell setup required
+
+Updated the `_cmd_reboot` handler to try three methods in sequence:
+1. **Direct reboot** (`os.system("reboot")`) — used immediately if SignalScope is running as root (common when RTL-SDR USB access requires root)
+2. **`systemctl reboot`** — works on modern systemd/Pi OS Bookworm without any extra configuration via polkit/logind
+3. **`sudo -n reboot`** — falls back to this only if the above two fail; requires a passwordless sudoers entry
+
+This means no shell setup is needed for the majority of deployments.
+
 ## [3.5.121] - 2026-04-06
 
 ### Added — Remote OS reboot from hub overview
