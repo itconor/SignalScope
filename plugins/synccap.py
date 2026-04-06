@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.9",
+    "version":  "1.0.10",
 }
 
 import os
@@ -149,19 +149,34 @@ def _capture_input(cfg, duration_s):
         n_ch = getattr(cfg, "_audio_channels", 1) or 1
 
         if n_ch == 2:
-            # Stereo path — _audio_buffer holds interleaved L/R float32
+            # Stereo path — _audio_buffer holds interleaved L/R float32.
+            # Only take the contiguous same-sized stereo tail to avoid mixing old
+            # mono chunks (from before pilot lock-on) with the new stereo chunks.
             abuf = getattr(cfg, "_audio_buffer", None)
-            if abuf:
-                chunks = list(abuf)
-                if chunks:
-                    audio = np.concatenate(chunks)
-                    # Slice in frame units (2 samples per frame: L, R)
-                    frames = audio.reshape(-1, 2)
-                    frames = frames[-int(duration_s * _SAMPLE_RATE):]
-                    audio  = np.clip(frames.flatten(), -1.0, 1.0)
-                    pcm = (audio * 32767).astype(np.int16).tobytes()
-                    if pcm:
-                        return _pcm_to_wav(pcm, 2), "wav", 2
+            sbuf = getattr(cfg, "_stream_buffer", None)
+            if abuf and sbuf:
+                s_chunks = list(sbuf)
+                a_chunks = list(abuf)
+                if s_chunks and a_chunks:
+                    stereo_size = s_chunks[-1].size * 2
+                    safe = []
+                    for c in reversed(a_chunks):
+                        if c.size == stereo_size:
+                            safe.append(c)
+                        else:
+                            break
+                    safe.reverse()
+                    need_frames = int(duration_s * _SAMPLE_RATE)
+                    have_frames = sum(c.size for c in safe) // 2
+                    # Only use stereo path if we have ≥90 % of the requested duration
+                    if safe and have_frames >= need_frames * 0.9:
+                        audio  = np.concatenate(safe)
+                        frames = audio.reshape(-1, 2)
+                        frames = frames[-need_frames:]
+                        audio  = np.clip(frames.flatten(), -1.0, 1.0)
+                        pcm    = (audio * 32767).astype(np.int16).tobytes()
+                        if pcm:
+                            return _pcm_to_wav(pcm, 2), "wav", 2
 
         # Mono path (or stereo fallback): _stream_buffer is always mono
         buf = getattr(cfg, "_stream_buffer", None)
@@ -613,6 +628,100 @@ def register(app, ctx):
         resp.headers["Content-Length"] = str(file_size)
         return resp
 
+    # ── Alignment (FFT cross-correlation) ────────────────────────────────────
+    @app.get("/api/synccap/align/<capture_id>")
+    @login_required
+    def synccap_align(capture_id):
+        from flask import jsonify
+        if not _HAS_NP:
+            return jsonify({"error": "numpy unavailable — install numpy to use alignment"}), 503
+
+        with _db_lock:
+            db  = _load_db()
+            cap = db.get(capture_id)
+        if not cap:
+            return jsonify({"error": "Not found"}), 404
+
+        clips = cap.get("clips", [])
+        if len(clips) < 2:
+            return jsonify({"error": "Need at least 2 clips to align"}), 400
+
+        sr = _SAMPLE_RATE
+
+        # Load each clip as mono float32
+        loaded = []
+        for cl in clips:
+            path = os.path.join(_CLIP_DIR, cl["filename"])
+            if not os.path.exists(path):
+                continue
+            try:
+                with wave.open(path, "rb") as wf:
+                    n_ch = wf.getnchannels()
+                    n_fr = wf.getnframes()
+                    raw  = wf.readframes(n_fr)
+                pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32767.0
+                if n_ch == 2:
+                    pcm = pcm.reshape(-1, 2).mean(axis=1)
+                loaded.append({
+                    "filename": cl["filename"],
+                    "site":     cl["site"],
+                    "stream":   cl["stream"],
+                    "audio":    pcm,
+                })
+            except Exception:
+                continue
+
+        if len(loaded) < 2:
+            return jsonify({"error": "Could not load enough clips for alignment"}), 500
+
+        # Window: first 10 s (or half of shortest clip, whichever is smaller)
+        min_dur   = min(len(c["audio"]) for c in loaded) / sr
+        window_s  = min(10.0, min_dur / 2.0)
+        window_n  = max(1, int(window_s * sr))
+
+        # Normalise to unit variance so amplitude differences don't bias lag estimate
+        def _norm(a):
+            s = np.std(a)
+            return a / (s + 1e-9)
+
+        ref     = loaded[0]
+        ref_win = _norm(ref["audio"][:window_n])
+
+        lags = {ref["filename"]: 0.0}  # seconds — positive means clip starts later in programme time
+
+        for item in loaded[1:]:
+            tgt_win = _norm(item["audio"][:window_n])
+            n       = len(ref_win) + len(tgt_win) - 1
+            # C[k] = sum_n ref[n] * tgt[n-k];  peak at k* means tgt[n-k*] ≈ ref[n]
+            # → tgt starts at programme time k*/sr relative to ref
+            corr   = np.fft.irfft(
+                np.fft.rfft(ref_win, n) * np.conj(np.fft.rfft(tgt_win, n)), n
+            )
+            k_star = int(np.argmax(corr))
+            if k_star > n // 2:
+                k_star -= n
+            lags[item["filename"]] = float(k_star) / sr
+
+        # Compute playback offsets:
+        #   offset[fn] = max_lag - lags[fn]
+        #   = how many seconds to skip from the start of clip fn so all clips start
+        #     at the same point in programme time.
+        max_lag  = max(lags.values())
+        offsets  = {fn: round(max_lag - lag, 3) for fn, lag in lags.items()}
+        durations = {c["filename"]: round(len(c["audio"]) / sr, 3) for c in loaded}
+
+        # Effective overlap after offsetting
+        min_remaining = min(
+            durations[fn] - offsets.get(fn, 0.0)
+            for fn in durations
+        )
+
+        return jsonify({
+            "offsets":   offsets,
+            "durations": durations,
+            "overlap_s": round(max(0.0, min_remaining), 3),
+        })
+
     # ── Delete capture ────────────────────────────────────────────────────────
     @app.delete("/api/synccap/capture/<capture_id>")
     @login_required
@@ -723,6 +832,18 @@ audio{width:100%;height:30px}
 .shimmer{position:relative;overflow:hidden}
 .shimmer::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,.08) 50%,transparent 100%);background-size:200% 100%;animation:shim 1.2s infinite linear}
 @keyframes shim{0%{background-position:200% 0}100%{background-position:-200% 0}}
+/* align panel */
+.clips-panel-bar{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--bor)}
+.clips-panel-bar-lbl{font-size:11px;color:var(--mu);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.align-panel{padding:12px 14px;border-top:1px solid var(--bor);background:#030b18}
+.align-hdr{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.align-track{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid rgba(23,52,95,.35)}
+.align-track:last-child{border:none}
+.align-track-info{width:180px;flex-shrink:0;min-width:0}
+.align-track audio{flex:1;height:30px;min-width:120px}
+.offset-pill{background:rgba(23,168,255,.15);color:var(--acc);border:1px solid rgba(23,168,255,.3);border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600;white-space:nowrap;flex-shrink:0}
+.offset-pill.zero{background:rgba(34,197,94,.12);color:var(--ok);border-color:rgba(34,197,94,.3)}
+.overlap-badge{background:rgba(245,158,11,.12);color:var(--wn);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600}
 </style>
 </head>
 <body>
@@ -1054,9 +1175,15 @@ function renderHistory(caps){
       +'<td><button class="btn bd bs" data-del="'+cap.capture_id+'">✕</button></td>'
       +'</tr>'
       +'<tr id="clips_'+cap.capture_id+'" style="display:none">'
-      +'<td colspan="6" class="clips-panel">'+(
-        cap.clips.length
-          ? '<div class="clips-grid">'+cap.clips.map(function(cl){
+      +'<td colspan="6" class="clips-panel">'
+      +'<div class="clips-panel-bar">'
+      +'<span class="clips-panel-bar-lbl">Clips</span>'
+      +(cap.clips.length>=2
+        ?'<button class="btn bg bs align-btn" data-capid="'+cap.capture_id+'" style="margin-left:auto">⇌ Align</button>'
+        :'')
+      +'</div>'
+      +(cap.clips.length
+          ? '<div class="clips-grid" id="cg_'+cap.capture_id+'">'+cap.clips.map(function(cl){
               var src='/api/synccap/clip/'+cap.capture_id+'/'+encodeURIComponent(cl.filename);
               var ch=cl.n_ch===2?'<span class="badge b-mu" style="font-size:9px;margin-left:4px">STEREO</span>':'';
               return '<div class="clip-card">'
@@ -1066,7 +1193,9 @@ function renderHistory(caps){
                 +'</div>';
             }).join('')+'</div>'
           : '<div class="no-clips">No clips received for this capture.</div>'
-      )+'</td></tr>';
+      )
+      +'<div id="ap_'+cap.capture_id+'"></div>'  /* align panel injected here */
+      +'</td></tr>';
   }).join('');
 }
 
@@ -1077,6 +1206,12 @@ document.getElementById('cap-tbody').addEventListener('click', function(e){
     e.stopPropagation();
     if(!window.confirm('Delete this capture and all its clips?')) return;
     deleteCapture(delBtn.dataset.del);
+    return;
+  }
+  var alignBtn = e.target.closest('.align-btn');
+  if(alignBtn){
+    e.stopPropagation();
+    alignCapture(alignBtn.dataset.capid, alignBtn);
     return;
   }
   var row = e.target.closest('.cap-row');
@@ -1095,6 +1230,92 @@ function deleteCapture(capId){
   .then(function(r){return r.json();})
   .then(function(d){ if(d.ok) loadCaptures(); })
   .catch(function(){});
+}
+
+// ── alignment ──────────────────────────────────────────────────────────────
+function alignCapture(capId, btn){
+  // Toggle: if align panel already visible, hide and reset button
+  var ap = document.getElementById('ap_'+capId);
+  if(ap && ap.innerHTML){
+    ap.innerHTML='';
+    btn.textContent='⇌ Align';
+    return;
+  }
+  btn.disabled=true; btn.classList.add('shimmer'); btn.textContent='Analysing…';
+  fetch('/api/synccap/align/'+capId, {credentials:'same-origin'})
+    .then(function(r){
+      if(!r.ok) return r.json().then(function(d){throw new Error(d.error||r.status);});
+      return r.json();
+    })
+    .then(function(data){
+      btn.disabled=false; btn.classList.remove('shimmer'); btn.textContent='⇌ Hide Alignment';
+      // Find the cap object from DOM data attribute
+      var row = document.querySelector('.cap-row[data-capid="'+capId+'"]');
+      var cap = row ? JSON.parse(row.dataset.cap||'{}') : {};
+      applyAlignment(capId, data, cap.clips||[]);
+    })
+    .catch(function(err){
+      btn.disabled=false; btn.classList.remove('shimmer'); btn.textContent='⇌ Align';
+      showMsg('Alignment failed: '+err.message, false);
+    });
+}
+
+function applyAlignment(capId, data, clips){
+  var ap = document.getElementById('ap_'+capId);
+  if(!ap) return;
+
+  var offsets   = data.offsets   || {};
+  var durations = data.durations || {};
+  var overlapS  = data.overlap_s || 0;
+
+  // Build the aligned track list in clip order
+  var tracks = clips.filter(function(cl){ return offsets[cl.filename]!==undefined; });
+
+  if(!tracks.length){ ap.innerHTML='<div class="no-clips" style="margin:10px">Could not correlate clips.</div>'; return; }
+
+  var html = '<div class="align-panel">';
+  html += '<div class="align-hdr">';
+  html += '<button class="btn bp bs" id="play-all-'+capId+'">▶ Play All Aligned</button>';
+  html += '<button class="btn bg bs" id="stop-all-'+capId+'">■ Stop All</button>';
+  html += '<span class="overlap-badge" title="Duration of the common aligned region">⧖ '+overlapS.toFixed(1)+' s overlap</span>';
+  html += '</div>';
+
+  tracks.forEach(function(cl){
+    var fn  = cl.filename;
+    var off = offsets[fn] || 0;
+    var dur = durations[fn] || 0;
+    var src = '/api/synccap/clip/'+capId+'/'+encodeURIComponent(fn);
+    var offLabel = off===0 ? '+0.0 s' : (off>0?'+':'')+off.toFixed(3)+' s';
+    var pillCls  = off===0 ? 'offset-pill zero' : 'offset-pill';
+    var ch = cl.n_ch===2?'<span class="badge b-mu" style="font-size:9px;margin-left:4px">STEREO</span>':'';
+    html += '<div class="align-track">';
+    html += '<div class="align-track-info"><div class="clip-site">'+esc(cl.site)+'</div>'
+          + '<div class="clip-stream" style="font-size:12px;font-weight:600">'+esc(cl.stream)+ch+'</div></div>';
+    html += '<span class="'+pillCls+'" title="Skip this many seconds to reach the common start point">'+offLabel+'</span>';
+    html += '<audio class="align-audio" controls preload="metadata" src="'+src+'"'
+          + ' data-offset="'+off+'" style="flex:1;height:30px;min-width:120px"></audio>';
+    html += '<span style="color:var(--mu);font-size:11px;flex-shrink:0">'+dur.toFixed(1)+' s</span>';
+    html += '</div>';
+  });
+
+  html += '</div>';
+  ap.innerHTML = html;
+
+  // Play All — set currentTime to offset then play each
+  document.getElementById('play-all-'+capId).addEventListener('click', function(){
+    ap.querySelectorAll('.align-audio').forEach(function(aud){
+      var off = parseFloat(aud.dataset.offset)||0;
+      aud.currentTime = off;
+      aud.play().catch(function(){});
+    });
+  });
+
+  // Stop All
+  document.getElementById('stop-all-'+capId).addEventListener('click', function(){
+    ap.querySelectorAll('.align-audio').forEach(function(aud){
+      aud.pause();
+    });
+  });
 }
 
 // ── init ───────────────────────────────────────────────────────────────────

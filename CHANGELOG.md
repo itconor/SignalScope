@@ -9,6 +9,16 @@
 
 ---
 
+## [Sync Capture plugin 1.0.10] - 2026-04-05
+
+### Added
+- **Clip alignment via FFT cross-correlation**: Completed captures with 2 or more clips now show an "⇌ Align" button in the clips panel. Clicking it calls `GET /api/synccap/align/<capture_id>` which loads each clip as mono float32, cross-correlates the first 10 s of each against the reference clip, and returns per-clip playback offsets (in seconds). The UI renders a multi-track align panel showing each clip with its offset badge (`+X.XXX s`), a shared overlap duration indicator, and `▶ Play All Aligned` / `■ Stop All` buttons. Play All sets each `<audio>` element's `currentTime` to its offset and calls `play()` simultaneously — giving synchronized playback without any server-side audio processing. Works across clips from different client sites (FM, DAB, IP) sharing the same programme content, handling path latency differences up to ≈5 s.
+
+### Fixed
+- **Stereo `_audio_buffer` tail-filtering**: `_capture_input` now scans the stereo `_audio_buffer` from the tail and discards any old mono-sized chunks (produced before FM pilot tone lock-on). Only contiguous same-sized stereo chunks are used. Falls back to mono `_stream_buffer` if the stereo tail covers less than 90 % of the requested duration — guaranteeing full-length clips.
+
+---
+
 ## [Sync Capture plugin 1.0.9] - 2026-04-05
 
 ### Changed
