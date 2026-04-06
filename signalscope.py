@@ -2424,7 +2424,7 @@ SignalScope
 Monitors Axia Livewire (stream IDs) and raw multicast RTP streams.
 Uses a local ONNX autoencoder for zero-training-required glitch detection.
 
-Each stream learns its own "normal" baseline over 5 minutes, then continuously
+Each stream learns its own "normal" baseline over 24 hours, then continuously
 monitors for deviations — silence, hiss, clipping, dropouts, distortion etc.
 Models are saved as .onnx files and persist across restarts.
 
@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.104"
+BUILD                  = "SignalScope-3.5.105"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -21551,7 +21551,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       <span class="acard-badge" id="abadge-ai"></span>
     </div>
     <div class="acard-body" id="abody-ai">
-      <p class="help">Learns "normal" over 5 minutes. Detects dropouts, clipping, hiss, noise bursts and distortion — entirely locally, no internet required. Requires <code style="background:#173a69;padding:1px 5px;border-radius:3px">pip install onnxruntime</code>.</p>
+      <p class="help">Learns "normal" over 24 hours. Detects dropouts, clipping, hiss, noise bursts and distortion — entirely locally, no internet required. Requires <code style="background:#173a69;padding:1px 5px;border-radius:3px">pip install onnxruntime</code>.</p>
     </div>
   </div>
 

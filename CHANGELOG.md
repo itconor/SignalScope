@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.105] - 2026-04-06
+
+### Fixed
+- AI Anomaly Detection help text: corrected learning phase duration from "5 minutes" to "24 hours" in both the Settings UI tooltip and the module docstring
+
+---
+
 ## [3.5.104] - 2026-04-06
 
 ### Fixed — Logger "Remote site not responding" after client site-name change (logger v1.6.2)
