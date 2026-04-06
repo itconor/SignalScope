@@ -2,6 +2,26 @@
 
 ---
 
+## [3.5.102] - 2026-04-06
+
+### Changed — alert defaults tuned for broadcast (new inputs only; existing configs unchanged)
+
+The previous defaults generated excessive alert noise on real broadcast installations. Changes affect newly created inputs only — existing saved configs are untouched.
+
+| Setting | Old default | New default | Reason |
+|---|---|---|---|
+| `alert_on_hiss` | **on** | **off** | Music (cymbals, sibilance, hi-hats) triggers hiss detection constantly. Enable manually if monitoring silent-source inputs such as talkback or commentary circuits. |
+| `ai_monitor` | **on** | **off** | Requires `pip install onnxruntime`. During learning-phase transitions and after programme-format changes it produces false positives. Better as an explicit opt-in once a stream is stable. |
+| `silence_min_duration` | **3 s** | **10 s** | Broadcast stations have brief pauses between songs, news reads and idents. 3 s fired alerts on every natural gap; 10 s catches only genuine dead air. |
+| `clip_window_seconds` | **2 s** | **10 s** | FM broadcast limiters/processors routinely clip at peaks by design. A 2 s window caught virtually every loud song. |
+| `clip_count_threshold` | **3** | **10** | 3 clips in 2 s was trivially exceeded on any heavily compressed station. 10 clips in 10 s targets genuinely runaway clipping. |
+| `clip_debounce_seconds` | **30 s** | **120 s** | Previously re-alarmed every 30 s throughout a loud track; 2 min debounce prevents repeated notifications. |
+| `alert_on_hum` | **on** | **off** | Modern broadcast equipment rarely introduces mains hum. Enable if running long analogue tie lines or legacy gear. |
+| `alert_on_dc_offset` | **on** | **off** | Slight DC offset is endemic in ADCs, codecs and broadcast kit — rarely actionable and difficult to fix remotely. |
+| `overmod_clip_pct` | **20 %** | **30 %** | Broadcast limiting regularly pushes audio above −1 dBFS as part of loudness processing; 20 % triggered on heavily processed stations in normal operation. |
+
+---
+
 ## [3.5.101] - 2026-04-06
 
 ### Fixed

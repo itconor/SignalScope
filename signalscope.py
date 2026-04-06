@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.101"
+BUILD                  = "SignalScope-3.5.102"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2695,20 +2695,20 @@ class InputConfig:
 
     enabled: bool = True
     alert_on_silence: bool = True
-    alert_on_hiss:    bool = True
+    alert_on_hiss:    bool = False  # off by default — music (cymbals, sibilance) too easily triggers this
     alert_on_clip:    bool = True
-    ai_monitor:       bool = True
+    ai_monitor:       bool = False  # off by default — requires pip install onnxruntime; enable once stream is stable
 
     silence_threshold_dbfs: float = -55.0
-    silence_min_duration:   float = 3.0
+    silence_min_duration:   float = 10.0  # 10 s — stations have brief pauses between songs/news reads; 3 s generates constant false alarms
     silence_recover_db:     float = 4.0   # hysteresis: clear silence only when lev rises this many dB above threshold
     hiss_hf_band_hz:        float = 6000.0
     hiss_rise_db:           float = 20.0
     hiss_min_duration:      float = 10.0
     clip_threshold_dbfs:    float = -1.0
-    clip_window_seconds:    float = 2.0
-    clip_count_threshold:   int   = 3
-    clip_debounce_seconds:  float = 30.0  # after CLIP alert fires, ignore clips for this duration
+    clip_window_seconds:    float = 10.0  # wider window — FM processors clip at peaks by design; 2 s caught every loud song
+    clip_count_threshold:   int   = 10    # 10 clips in the window — broadcast limiters produce brief clips constantly; 3 was far too sensitive
+    clip_debounce_seconds:  float = 120.0 # longer debounce — prevents repeat alerts throughout a loud track (was 30 s)
     alert_wav_duration:     float = 10.0
     cascade_parent:          Optional[str] = None
     cascade_suppress_alerts: bool          = False
@@ -2752,12 +2752,12 @@ class InputConfig:
     glitch_pre_trend_db:          float = 4.0    # reject if level already fell this many dB in 2-5 s before onset (was 0=disabled)
 
     # Mains hum detection (50 / 60 Hz harmonics)
-    alert_on_hum:         bool  = True
+    alert_on_hum:         bool  = False  # off by default — modern broadcast equipment rarely hums; enable if running analogue tie lines
     hum_rise_db:          float = 25.0   # hum peak must be this many dB above local noise floor
     hum_min_duration:     float = 5.0    # must persist this long before alert
 
     # DC offset detection
-    alert_on_dc_offset:   bool  = True
+    alert_on_dc_offset:   bool  = False  # off by default — slight DC offset is endemic in ADCs and broadcast kit; rarely actionable
     dc_offset_threshold:  float = 5.0    # threshold in % of full scale (5 % ≈ −26 dBFS absolute)
     dc_min_duration:      float = 5.0    # must persist this long before alert
 
@@ -2780,7 +2780,7 @@ class InputConfig:
     alert_on_overmod:         bool  = True
     overmod_threshold_dbfs:   float = -1.0    # chunks above this count as overmodulated
     overmod_window_seconds:   float = 60.0    # rolling window length
-    overmod_clip_pct:         float = 20.0    # alert if this % of chunks are clipping
+    overmod_clip_pct:         float = 30.0    # alert if this % of chunks are clipping (raised from 20 — broadcast limiting regularly peaks above -1 dBFS)
 
     # Mono-on-stereo detection (stereo streams only)
     # Derives L-R correlation from available level measurements.  Fires when
