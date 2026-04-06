@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.125] - 2026-04-06
+
+### Revert — Full revert of signalscope.py to 3.5.114 codebase
+
+All changes introduced in 3.5.115–3.5.124 caused regressions on existing clients. This release restores the exact 3.5.114 signalscope.py with only the version number bumped so the auto-updater can distribute it cleanly.
+
+---
+
 ## [3.5.124] - 2026-04-06
 
 ### Fixed — Revert Pi DAB to 3.5.114 rtl_tcp-for-all-Pi behaviour
