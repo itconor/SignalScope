@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.86] - 2026-04-06
+
+### Fixed
+- **DAB startup still sequential 52 s per service on non-Pi hardware**: `-C 20` (added in 3.5.16 under the incorrect belief it forces parallel decoding) produces the same 52 s / 104 s / 156 s carousel as `-C 1` — welle-cli's `-C N` is always a per-service carousel regardless of N vs service count. Fix: **removed `-C` entirely from the non-Pi `_start_dab_session` command**. Without `-C`, welle-cli decodes the full ensemble simultaneously — all services ready in ~10–15 s. Pi path (`-T -C N`) unchanged.
+
+---
+
 ## [3.5.85] - 2026-04-05
 
 ### Fixed

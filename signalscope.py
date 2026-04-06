@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.85"
+BUILD                  = "SignalScope-3.5.86"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8801,13 +8801,17 @@ class MonitorManager:
         # launches, giving a too-small -C value on Pi.
         time.sleep(0.5)
 
-        # -C N tells welle-cli to decode N services simultaneously rather than
-        # activating them one-at-a-time (its default, which causes services to
-        # appear at 52 s, 104 s, 156 s intervals regardless of -C 1 being set).
-        # Non-Pi: use 20 — larger than any standard DAB mux (≤18 services), so
-        # all encoders start in parallel.  CPU cost is negligible on non-Pi.
+        # welle-cli's -C N flag activates encoders N at a time in a carousel —
+        # even -C 20 on a 12-service mux produces sequential 52 s / 104 s / 156 s
+        # startup because welle-cli processes each slot serially regardless of N.
+        # WITHOUT -C, welle-cli decodes the full ensemble simultaneously and all
+        # services are ready within ~10–15 s.  The pre-warmer (below) then opens
+        # persistent connections to every /mp3/<sid> endpoint in parallel so that
+        # consumer ffmpeg processes see immediate data.
+        #
+        # Non-Pi: omit -C entirely — full parallel ensemble decode, no CPU concern.
         # Pi: -T disables TII decoding; -C N limits parallel decoding to the
-        # monitored services only to avoid CPU overload.
+        # monitored services only to avoid CPU overload on the slower hardware.
         if _is_raspberry_pi():
             _n = max(1, len(session.consumers))
             cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
@@ -8816,8 +8820,9 @@ class MonitorManager:
                 cmd += ["-p", str(session.ppm)]
             self.log(f"[{name}] Raspberry Pi — using -T -C {_n} to limit CPU")
         else:
+            # No -C flag — welle-cli decodes the full ensemble in parallel
             cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
-                   "-C", "20", "-g", _gain_val, "-F", driver]
+                   "-g", _gain_val, "-F", driver]
             if session.ppm:
                 cmd += ["-p", str(session.ppm)]
         self.log(f"[{name}] DAB shared: launching {' '.join(cmd)}")
@@ -8954,16 +8959,12 @@ class MonitorManager:
         session.poll_thread.start()
 
         # ── Service endpoint pre-warmer ──────────────────────────────────────
-        # welle-cli starts each /mp3/<sid> encoder lazily (when the first client
-        # connects) and processes them ONE AT A TIME.  With 9 services this means
-        # sequential 52-second startup intervals = ~8 minutes total.
-        #
-        # Fix: after the mux is ready, open a persistent streaming connection to
-        # EVERY service simultaneously.  This forces welle-cli to start all
-        # encoders in parallel.  Each thread reads continuously to keep the
-        # connection (and encoder) alive.  The connections stay open until the
-        # session stops or 150 s, whichever comes first.  Consumer ffmpeg
-        # processes connect as second subscribers and see immediate data.
+        # Without -C, welle-cli decodes the full ensemble simultaneously.
+        # However /mp3/<sid> encoders still start lazily on first HTTP connection.
+        # Pre-warmer opens persistent connections to all endpoints simultaneously
+        # so that consumer ffmpeg processes connect and see data immediately.
+        # Each thread reads continuously to keep the connection alive for up to
+        # 150 s (long enough for consumer threads to take over).
         def _prewarm_all():
             import urllib.request as _pur
             # Wait for the mux to be fully enumerated (ready event).
