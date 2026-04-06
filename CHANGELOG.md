@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.119] - 2026-04-06
+
+### Fixed — Pi DAB-only: use welle-cli natively without -F rtl_sdr
+
+3.5.118 correctly skipped the rtl_tcp proxy for DAB-only Pi nodes but incorrectly fell through to the non-Pi command path, which passed `-F rtl_sdr,N` and was missing the Pi CPU flags (`-T -C N`). Fix: dedicated `elif` branch for Pi+no-FM that uses welle-cli natively without any `-F` flag (Pi welle-cli ignores all device-selection args and opens the first RTL-SDR automatically) while retaining the Pi-specific `-T` (disable TII) and `-C N` (limit encoder slots) flags.
+
+---
+
 ## [3.5.118] - 2026-04-06
 
 ### Changed — Pi DAB: skip rtl_tcp proxy when no FM inputs are configured

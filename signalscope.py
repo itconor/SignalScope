@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.118"
+BUILD                  = "SignalScope-3.5.119"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -9058,11 +9058,19 @@ class MonitorManager:
                 if session.ppm:
                     cmd += ["-p", str(session.ppm)]
                 self.log(f"[{name}] Raspberry Pi — rtl_tcp unavailable, falling back to -F rtl_sdr,{_tcp_idx}")
+        elif _is_raspberry_pi() and not _has_fm_inputs:
+            # Pi, DAB-only — no rtl_tcp needed, use welle-cli natively.
+            # Pi welle-cli ignores ALL device-selection args (-F/-D) so
+            # don't pass them; it will open the first available RTL-SDR.
+            # Apply Pi CPU flags (-T disables TII; -C N limits encoder slots).
+            _n = max(1, len(session.consumers))
+            cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
+                   "-T", "-C", str(_n), "-g", _gain_val]
+            if session.ppm:
+                cmd += ["-p", str(session.ppm)]
+            self.log(f"[{name}] Raspberry Pi, no FM inputs — welle-cli native (no rtl_tcp proxy)")
         else:
-            # Non-Pi, or Pi with no FM inputs (no rtl_tcp proxy needed) —
-            # welle-cli decodes the full ensemble in parallel with direct -F
-            if _is_raspberry_pi() and not _has_fm_inputs:
-                self.log(f"[{name}] Raspberry Pi, no FM inputs — skipping rtl_tcp proxy, using -F rtl_sdr directly")
+            # Non-Pi: no -C flag — welle-cli decodes the full ensemble in parallel
             cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
                    "-g", _gain_val, "-F", driver]
             if session.ppm:
