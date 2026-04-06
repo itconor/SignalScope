@@ -61,6 +61,11 @@ Once complete, open `http://localhost:5000`. The setup wizard will guide you thr
 | **Zetta Integration plugin** | RCS Zetta broadcast automation integration; polls SOAP service for now-playing data, detects commercial blocks, provides WSDL discovery — installed via Settings → Plugins |
 | **Morning Report plugin** | Auto-generated daily briefing at 06:00 covering fault summary, chain health, hourly heatmap, and notable patterns — installed via Settings → Plugins |
 | **Signal Path Latency plugin** | Tracks comparator delay measurements over 90 days, SVG sparklines, drift/alert badges — installed via Settings → Plugins |
+| **Icecast Streaming plugin** | Re-stream any monitored input to Icecast2; per-stream stereo toggle; hub overview shows live listener counts from all sites — installed via Settings → Plugins |
+| **Listener plugin** | Polished station-card listening page for presenters and producers; live level meters, one-tap audio, animated equaliser, stereo badge, auto-reconnect — installed via Settings → Plugins |
+| **Producer View plugin** | Simplified hub view for producers/presenters; station status cards, plain-English fault history, role-based login redirect — installed via Settings → Plugins |
+| **AzuraCast plugin** | AzuraCast web radio integration; polls live now-playing, listener counts, and station health; AZURACAST_FAULT/RECOVERY alerts; optional cross-reference with SignalScope silence detection — installed via Settings → Plugins |
+| **Sync Capture plugin** | Multi-site synchronized audio capture; simultaneous clip grab from any combination of inputs across all sites; EBU R128 LUFS/true-peak, sub-sample alignment, waveform comparison, octave-band spectrum, BWF export, DAW session export (REAPER .rpp + Audition .sesx) — installed via Settings → Plugins |
 | **Level & loudness** | dBFS level, LUFS Momentary/Short-term/Integrated (EBU R128), true peak |
 | **Metadata** | RDS PS name, RDS RadioText, stereo flag, TP/TA/PI; DAB service name, DLS now-playing text, ensemble/mode/bitrate/SNR |
 | **Rule alerts** | Silence, clipping, hiss, LUFS true peak, LUFS integrated loudness |
@@ -459,6 +464,48 @@ Latency tracking for broadcast chains at `/hub/latency`:
 - Stores 90 days of history in SQLite, computes rolling baselines
 - Displays per-comparator SVG sparklines, stable/drifting/alert status badges
 - Configurable alert thresholds per comparator pair
+- Hub-only
+
+#### Icecast Streaming (`icecast.py`)
+Re-stream any monitored input to Icecast2 at `/hub/icecast`:
+- Re-stream any monitored input type (FM/RTL-SDR, DAB, ALSA, RTP, HTTP) to an Icecast2 server
+- Per-stream stereo toggle — HTTP inputs preserve native stereo; all others upmix mono to dual-mono
+- Hub overview shows live listener counts and stream status from all connected sites
+- Create and manage streams on any client from the hub
+- Requires ffmpeg; Icecast2 installed separately
+
+#### Listener (`listener.py`)
+Live stream listening page for presenters and producers at `/hub/listener`:
+- Polished station cards with live level meters and one-tap audio playback
+- Stereo streams show a STEREO badge and play in stereo in the now-playing bar
+- Auto-reconnects, animated equaliser, volume control, mobile-friendly
+- Hub-only
+
+#### Producer View (`presenter.py`)
+Simplified hub view for producers and presenters at `/hub/presenter`:
+- Station status cards with live level indicators
+- Plain-English chain fault history readable by non-technical staff
+- Clips from remote client sites always available (asynchronous upload)
+- Users assigned the **Producer** role are redirected here automatically on login
+- Hub-only
+
+#### AzuraCast (`azuracast.py`)
+AzuraCast web radio integration at `/hub/azuracast`:
+- Polls configured AzuraCast servers for live now-playing data, listener counts, and station health
+- Station cards show current track, artist, progress bar, next track, live/AutoDJ status, and listener count
+- Fires **AZURACAST_FAULT** and **AZURACAST_RECOVERY** alerts when stations go offline or recover
+- Optionally cross-references with SignalScope silence detection — fires **AZURACAST_SILENCE** if a station is broadcasting but its linked SignalScope input is silent
+- Hub overview aggregates all stations from all connected sites
+
+#### Sync Capture (`synccap.py`)
+Multi-site synchronized audio capture at `/hub/synccap`:
+- Select any combination of inputs from any connected sites, set a capture duration (5–300 s), and press Capture
+- The hub broadcasts a timestamped command; each client grabs the last N seconds from its rolling audio buffer and uploads the clip
+- All clips are presented together with inline audio players for side-by-side listening and comparison
+- Per-clip EBU R128 LUFS and true-peak analysis, sub-sample cross-correlation alignment, waveform comparison overlay, octave-band spectrum
+- **⇌ Align** button auto-aligns all clips by cross-correlating their audio content
+- **💾 DAW Session** button downloads a ZIP of all WAV clips plus a REAPER `.rpp` and Adobe Audition `.sesx` session file — with alignment offsets baked in if alignment has been run
+- BWF broadcast-wave export with timecode metadata per clip
 - Hub-only
 
 ### Writing a Plugin
@@ -881,6 +928,7 @@ journalctl -t signalscope-watchdog
 | `metrics_history.db` | Signal history database (90 days) |
 | `sla_data.json` | SLA uptime records |
 | `alert_log.json` | Full alert event history |
+| `plugins/logger_index.db` | Logger plugin recording index and metadata database |
 | `hub_state.json` | Hub site registrations and connection state |
 
 To restore, upload the ZIP via **Settings → Maintenance → Restore from Backup**. To migrate, install SignalScope on the target machine and restore from backup — full history and configuration will be intact.

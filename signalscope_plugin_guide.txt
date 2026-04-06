@@ -37,7 +37,7 @@ PLUGIN SKELETON
         hub_server        = ctx["hub_server"]          # HubServer or None
         listen_registry   = ctx["listen_registry"]     # ListenSlotRegistry
         mobile_api_req    = ctx.get("mobile_api_required", ctx["login_required"])
-        BUILD             = ctx["BUILD"]     # e.g. "SignalScope-3.4.105"
+        BUILD             = ctx["BUILD"]     # e.g. "SignalScope-3.5.104"
 
         @app.get("/hub/myplugin")
         @login_required
@@ -215,9 +215,9 @@ FULL ctx REFERENCE
   login_required        decorator           Require authenticated browser session on a route
   csrf_protect          decorator           Validate CSRF token on POST routes
   mobile_api_required   decorator           Require valid mobile API Bearer token
-  hub_server            HubServer|None      Hub state, ._sites, ._scanner_sessions; None on client-only nodes
+  hub_server            HubServer           Hub state, ._sites, ._scanner_sessions; ALWAYS a live HubServer instance — never None
   listen_registry       ListenSlotRegistry  Create/get audio relay slots (for streaming to browser)
-  BUILD                 str                 e.g. "SignalScope-3.4.105"
+  BUILD                 str                 e.g. "SignalScope-3.5.104"
 
 IMPORTANT — mobile API routes:
   Any route under /api/mobile/... MUST use mobile_api_required, not login_required.
@@ -227,6 +227,21 @@ IMPORTANT — hub_only plugins:
   Set "hub_only": True in SIGNALSCOPE_PLUGIN to suppress the nav bar item when
   the node is running in client-only mode. The register() function still runs;
   only the nav bar entry is hidden.
+
+IMPORTANT — hub_server is NEVER None:
+  hub_server is always a HubServer() instance regardless of node mode.
+  Do NOT use "if hub_server is None:" to detect client nodes — it always evaluates
+  to False. Detect node mode with the cfg strings instead:
+
+    cfg_ss  = monitor.app_cfg
+    mode    = getattr(getattr(cfg_ss, "hub", None), "mode", "standalone") or "standalone"
+    hub_url = (getattr(getattr(cfg_ss, "hub", None), "hub_url", "") or "").rstrip("/")
+
+    is_hub    = mode in ("hub", "both")
+    is_client = mode == "client" and bool(hub_url)
+
+  To suppress the nav bar item on client-only nodes use "hub_only": True in
+  SIGNALSCOPE_PLUGIN — this is the correct pattern, not hub_server None checks.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
