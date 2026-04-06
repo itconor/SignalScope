@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.112"
+BUILD                  = "SignalScope-3.5.113"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -34650,6 +34650,55 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           <button class="btn bp" data-action="live"
             data-url="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/live"
             data-name="{{s.name|e}}" data-site-name="{{site.site|e}}">▶ Live</button>
+          <button class="btn bg sc-cfg-btn" title="Detection settings"
+            data-site="{{site.site|e}}" data-stream="{{s.name|e}}"
+            data-panel="rsc_cfg_{{i}}" style="font-size:12px;padding:3px 8px">⚙</button>
+        </div>
+
+        {# Detection settings panel #}
+        <div class="sc-cfg-panel" id="rsc_cfg_{{i}}" style="display:none;padding:10px;border-top:1px solid var(--bor);background:#080f20">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mu);margin-bottom:8px">Detection Settings — <span style="color:var(--acc)">{{s.name}}</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;margin-bottom:10px">
+            {%- set _bools = [
+              ("alert_on_silence",         s.alert_on_silence,              "Silence"),
+              ("alert_on_clip",            s.alert_on_clip,                 "Clip"),
+              ("alert_on_hiss",            s.alert_on_hiss,                 "Hiss"),
+              ("alert_on_overmod",         s.get("alert_on_overmod",False), "Overmod"),
+              ("alert_on_hum",             s.get("alert_on_hum",False),     "Mains Hum"),
+              ("alert_on_dc_offset",       s.get("alert_on_dc_offset",False),"DC Offset"),
+              ("alert_on_phase_reversal",  s.get("alert_on_phase_reversal",True), "Phase Rev"),
+              ("alert_on_stereo_imbalance",s.get("alert_on_stereo_imbalance",True),"L/R Imbal"),
+              ("alert_on_mono_on_stereo",  s.get("alert_on_mono_on_stereo",False),"Mono→Ster"),
+              ("glitch_detect",            s.get("glitch_detect",False),    "Glitch"),
+              ("flatness_detect",          s.get("flatness_detect",False),  "Flatness"),
+              ("ai_monitor",               s.ai_monitor,                    "AI Monitor"),
+            ] %}
+            {%- for field, val, label in _bools %}
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px">
+              <input type="checkbox" class="sc-cfg-chk"
+                data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-field="{{field}}"
+                {{'checked' if val else ''}} style="accent-color:var(--acc)">
+              {{label}}
+            </label>
+            {%- endfor %}
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px">
+            <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--mu)">
+              Silence threshold (dBFS)
+              <input type="number" class="sc-cfg-num" step="1" min="-90" max="-10"
+                data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-field="silence_threshold_dbfs"
+                value="{{s.silence_threshold_dbfs|default(-55)|round(0)|int}}"
+                style="background:#0d1e40;border:1px solid var(--bor);border-radius:4px;color:var(--tx);padding:3px 6px;width:100%">
+            </label>
+            <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--mu)">
+              Silence duration (s)
+              <input type="number" class="sc-cfg-num" step="1" min="3" max="300"
+                data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-field="silence_min_duration"
+                value="{{s.silence_min_duration|default(10)|round(0)|int}}"
+                style="background:#0d1e40;border:1px solid var(--bor);border-radius:4px;color:var(--tx);padding:3px 6px;width:100%">
+            </label>
+          </div>
+          <div style="margin-top:8px;font-size:10px;color:var(--mu)">Changes queue for next client heartbeat (~10 s)</div>
         </div>
         {% if s.history %}
         <div class="hist-wrap">
@@ -35440,6 +35489,44 @@ document.addEventListener('change', function(ev){
   if(!sel.id || !sel.id.startsWith('rhdur_')) return;
   var a = sel.parentElement.querySelector('a[href*="/clip?seconds="]');
   if(a){ a.href = a.href.replace(/seconds=\d+/, 'seconds=' + encodeURIComponent(sel.value)); }
+});
+// ── Detection settings panel ─────────────────────────────────────────────────
+function _scCfgSet(site,stream,field,value,el){
+  fetch('/api/hub/site/'+encodeURIComponent(site)+'/input/set_field',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':_getCsrf()},
+    body:JSON.stringify({name:stream,field:field,value:value})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(el){el.style.outline=d.ok?'2px solid var(--ok)':'2px solid var(--al)';
+      if(d.ok) setTimeout(function(){el.style.outline='';},1200);}
+    if(!d.ok) _ssToast('Error: '+(d.error||'unknown'),'err');
+  }).catch(function(e){
+    if(el) el.style.outline='2px solid var(--al)';
+    _ssToast('Request failed: '+e,'err');
+  });
+}
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.sc-cfg-btn');
+  if(!btn) return;
+  var panel=document.getElementById(btn.dataset.panel);
+  if(!panel) return;
+  var open=panel.style.display==='block';
+  panel.style.display=open?'none':'block';
+  btn.style.background=open?'':'var(--bor)';
+});
+document.addEventListener('change',function(e){
+  var chk=e.target.closest('.sc-cfg-chk');
+  if(chk){_scCfgSet(chk.dataset.site,chk.dataset.stream,chk.dataset.field,chk.checked,chk);return;}
+  var num=e.target.closest('.sc-cfg-num');
+  if(num){var v=parseFloat(num.value);if(!isNaN(v))_scCfgSet(num.dataset.site,num.dataset.stream,num.dataset.field,v,num);}
+});
+document.addEventListener('keydown',function(e){
+  if(e.key!=='Enter') return;
+  var num=e.target.closest('.sc-cfg-num');
+  if(!num) return;
+  var v=parseFloat(num.value);if(isNaN(v))return;
+  _scCfgSet(num.dataset.site,num.dataset.stream,num.dataset.field,v,num);
+  num.blur();
 });
 // ── Shared helpers ────────────────────────────────────────────────────────────
 var _site = {{site.site|tojson}};

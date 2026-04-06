@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.113] - 2026-04-06
+
+### Added
+- **Detection settings panel on replica page** — the ⚙ button and inline settings panel (added to the main hub overview in 3.5.111) is now also present on every stream card on the hub site replica page (`/hub/site/<name>`).
+
+---
+
 ## [3.5.112] - 2026-04-06
 
 ### Fixed — Hub replica page 500 when Live View first enabled
