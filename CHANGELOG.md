@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.124] - 2026-04-06
+
+### Fixed — Revert Pi DAB to 3.5.114 rtl_tcp-for-all-Pi behaviour
+
+Removes the `_has_fm_inputs` gate introduced in 3.5.118. Pi DAB sessions now always use the rtl_tcp proxy path, exactly as in 3.5.114. The stale-killer fix from 3.5.117 (match on `-d {device_idx}` not on port) is retained.
+
+---
+
 ## [3.5.123] - 2026-04-06
 
 ### Added — Kill Welle button; Reboot Setup in Settings

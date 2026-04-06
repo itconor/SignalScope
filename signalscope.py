@@ -2499,7 +2499,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.123"
+BUILD                  = "SignalScope-3.5.124"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8933,7 +8933,7 @@ class MonitorManager:
         # consumer ffmpeg processes see immediate data.
         #
         # Non-Pi: omit -C entirely — full parallel ensemble decode, no CPU concern.
-        # Pi: ALWAYS use rtl_tcp proxy — see below.
+        # Pi: always use rtl_tcp proxy — see below.
         #
         # DEVICE SELECTION ON Pi:
         #   The apt-installed welle-cli on Raspberry Pi OS ignores ALL device
@@ -8952,17 +8952,8 @@ class MonitorManager:
         #   if the serial assignments were changed or if USB enumeration changed
         #   (e.g. after a monitor restart).  A forced fresh scan ensures we pick
         #   the correct index even when FM and DAB start concurrently.
-        _has_fm_inputs = any(
-            str(getattr(inp, "device_index", "")).lower().startswith("fm://")
-            for inp in self.app_cfg.inputs
-            if getattr(inp, "enabled", True)
-        )
-        if _is_raspberry_pi() and _has_fm_inputs:
-            # ── rtl_tcp proxy path (Pi DAB sessions when FM also present) ───
-            # rtl_tcp is only needed to work around welle-cli's broken device
-            # selection on Pi when an FM rtl_fm stream is competing for the
-            # same USB bus.  If no FM inputs are configured, welle-cli can
-            # open the DAB dongle directly (-F rtl_sdr,N) without the proxy.
+        if _is_raspberry_pi():
+            # ── rtl_tcp proxy path (all Pi DAB sessions) ────────────────────
             _rtl_tcp_bin = _find_binary("rtl_tcp")
             if not _rtl_tcp_bin:
                 _rtl_tcp_bin = "rtl_tcp"
