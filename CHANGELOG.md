@@ -2,6 +2,18 @@
 
 ---
 
+## [3.5.104] - 2026-04-06
+
+### Fixed — Logger "Remote site not responding" after client site-name change (logger v1.6.2)
+
+**Root cause:** `hub_catalog_cache.json` persists the hub's merged Logger catalog across restarts. When a client node's site name is changed in Settings, the client re-registers with the hub under the new name. However, the old site name's catalog entries (loaded from disk cache at startup, or added earlier in the same session) remain in `_hub_logger_catalog[old_name]`. Because the catalog endpoint merges all sites with a first-slug-wins rule, the stream still appeared in the UI with `site = old_name`. All subsequent requests (`/api/logger/hub/days/<old_name>/...`) queued commands for `old_name`; the client (now polling as `new_name`) never picked them up, hitting the 20-attempt timeout: "Remote site not responding".
+
+**Fix:** `api_logger_hub_register` now evicts incoming slugs from all other site entries in `_hub_logger_catalog` before inserting the new registration. A slug can only be live on one site; whichever site registers last with that slug is authoritative. Stale entries are logged and the empty old-site dict is removed entirely. The updated catalog snapshot is written to the cache immediately, so the fix persists across the next hub restart without any manual file deletion.
+
+**If you hit this before upgrading:** delete `hub_catalog_cache.json` from the directory where `signalscope.py` lives and restart the hub. The client will re-register within 60 s and the correct site name will be used.
+
+---
+
 ## [3.5.103] - 2026-04-06
 
 ### Added — Sync Capture: DAW Session export (plugin v1.0.18)

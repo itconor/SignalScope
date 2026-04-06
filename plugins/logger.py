@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.6.1",
+    "version": "1.6.2",
 }
 
 import datetime
@@ -982,6 +982,22 @@ def register(app, ctx):
             with _hub_logger_lock:
                 _hub_logger_streams[site] = streams
                 if isinstance(catalog, dict) and catalog:
+                    # Evict these slugs from any OTHER site's catalog entry so that
+                    # a site-rename doesn't strand the old entry in the cache.  The
+                    # same slug can only be live on one site; whichever site registers
+                    # last with that slug is authoritative.
+                    incoming_slugs = set(catalog.keys())
+                    for other_site in list(_hub_logger_catalog.keys()):
+                        if other_site == site:
+                            continue
+                        stale = incoming_slugs & set(_hub_logger_catalog[other_site].keys())
+                        if stale:
+                            _log(f"[Logger] Hub: evicting slug(s) {stale} from old site "
+                                 f"'{other_site}' (now owned by '{site}')")
+                            for _s in stale:
+                                del _hub_logger_catalog[other_site][_s]
+                            if not _hub_logger_catalog[other_site]:
+                                del _hub_logger_catalog[other_site]
                     _hub_logger_catalog[site] = catalog
                 _catalog_snapshot = dict(_hub_logger_catalog)
             _log(f"[Logger] Hub: site '{site}' registered {len(streams)} stream(s), {len(catalog)} catalog entries")
