@@ -42,6 +42,7 @@ Signalscopeiosapp/
 *.jpg
 Screenshot*.png
 SignalScope_3_0_plan.txt
+signalscope.backup*.py
 
 # ── PDF generation tooling (local only) ──────────────────────────────────────
 generate_user_guide.py

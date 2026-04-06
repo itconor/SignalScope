@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.107"
+BUILD                  = "SignalScope-3.5.108"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16801,7 +16801,8 @@ def _load_plugins():
     # alongside signalscope.py.  Safe to run on every startup — no-ops once done.
     migrated: list[str] = []
     for py in sorted(app_dir.glob("*.py")):
-        if py.name == self_name:
+        # Skip the main app file and any backup/copy variants (e.g. signalscope.backup-3.5.104.py)
+        if py.stem.lower().startswith("signalscope"):
             continue
         try:
             src = py.read_text(encoding="utf-8", errors="ignore")
@@ -16848,6 +16849,9 @@ def _load_plugins():
         "register_cmd_handler": monitor.register_plugin_cmd_handler,
     }
     for py in sorted(plugins_dir.glob("*.py")):
+        # Skip any backup/copy of the main app that may have landed here
+        if py.stem.lower().startswith("signalscope"):
+            continue
         # Pre-flight: only import files that declare the plugin marker
         try:
             src = py.read_text(encoding="utf-8", errors="ignore")

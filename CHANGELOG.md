@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.108] - 2026-04-06
+
+### Fixed
+- **`signalscope.backup-*.py` files detected as plugins** — the plugin migration scanner and the `plugins/` loader both checked for the string `"SIGNALSCOPE_PLUGIN"` in a file's source, then skipped only the exact filename `signalscope.py`. Any backup copy (e.g. `signalscope.backup-3.5.104.py`) passed that guard, got migrated into `plugins/`, and appeared as a broken plugin entry. Fix: both scanners now skip any `.py` file whose stem starts with `signalscope` (case-insensitive). `signalscope.backup*.py` also added to `.gitignore`.
+
+---
+
 ## [3.5.107] - 2026-04-06
 
 ### Fixed
