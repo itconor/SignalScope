@@ -25,7 +25,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.14",
+    "version":  "1.0.15",
 }
 
 import os
@@ -168,8 +168,8 @@ def _analyse_lufs(audio_mono):
         return None, None
     weighted = _k_weight(audio_mono)
     ms = float(np.mean(weighted ** 2))
-    lufs = round(-0.691 + 10.0 * np.log10(ms + 1e-9), 1)
-    tp   = round(20.0 * np.log10(float(np.max(np.abs(audio_mono))) + 1e-9), 1)
+    lufs = round(float(-0.691 + 10.0 * np.log10(ms + 1e-9)), 1)
+    tp   = round(float(20.0 * np.log10(float(np.max(np.abs(audio_mono))) + 1e-9)), 1)
     return lufs, tp
 
 
@@ -193,7 +193,7 @@ def _octave_bands(audio, sr=_SAMPLE_RATE):
         fl, fh = fc / 2 ** 0.5, fc * 2 ** 0.5
         mask = (freq >= fl) & (freq < fh)
         e = float(np.sum(mag2[mask])) if mask.any() else 0.0
-        result[str(fc)] = round(10.0 * np.log10(e / nfft + 1e-9), 1)
+        result[str(fc)] = round(float(10.0 * np.log10(e / nfft + 1e-9)), 1)
     return result
 
 
@@ -213,12 +213,12 @@ def _stereo_analysis(wav_path):
         L, R = st[:, 0], st[:, 1]
         l_rms = float(np.sqrt(np.mean(L ** 2)))
         r_rms = float(np.sqrt(np.mean(R ** 2)))
-        bal   = round(20.0 * np.log10((r_rms + 1e-9) / (l_rms + 1e-9)), 1)
+        bal   = round(float(20.0 * np.log10((r_rms + 1e-9) / (l_rms + 1e-9))), 1)
         lc, rc = L - L.mean(), R - R.mean()
         lr_corr = round(float(np.dot(lc, rc) / (len(L) * (np.std(lc) * np.std(rc) + 1e-9))), 3)
         return {
-            "l_rms_dbfs": round(20.0 * np.log10(l_rms + 1e-9), 1),
-            "r_rms_dbfs": round(20.0 * np.log10(r_rms + 1e-9), 1),
+            "l_rms_dbfs": round(float(20.0 * np.log10(l_rms + 1e-9)), 1),
+            "r_rms_dbfs": round(float(20.0 * np.log10(r_rms + 1e-9)), 1),
             "balance_db": bal,
             "lr_corr":    round(min(1.0, max(-1.0, lr_corr)), 3),
         }
@@ -544,14 +544,14 @@ def _compute_alignment(cap, ref_fn=None):
             k_interp = float(k_star)
         if k_interp > n // 2:
             k_interp -= n
-        lags[item["filename"]] = k_interp / sr
+        lags[item["filename"]] = float(k_interp / sr)  # ensure Python float for JSON
 
-    max_lag  = max(lags.values())
-    offsets  = {fn: round(max_lag - lag, 3) for fn, lag in lags.items()}
-    durations = {c["filename"]: round(len(c["audio"]) / sr, 3) for c in loaded}
+    max_lag  = float(max(lags.values()))
+    offsets  = {fn: round(float(max_lag - lag), 3) for fn, lag in lags.items()}
+    durations = {c["filename"]: round(float(len(c["audio"]) / sr), 3) for c in loaded}
 
     min_remaining = min(durations[fn] - offsets.get(fn, 0.0) for fn in durations)
-    overlap_s = round(max(0.0, min_remaining), 3)
+    overlap_s = round(float(max(0.0, min_remaining)), 3)
 
     # Step 2: align audio arrays by offset
     aligned_audio = {}
@@ -603,7 +603,7 @@ def _compute_alignment(cap, ref_fn=None):
         seg = aligned_audio[fn][:overlap_n]
         if overlap_n > 0 and len(seg) > 0:
             tgt_rms = float(np.sqrt(np.mean(seg ** 2)))
-            ld = round(20.0 * np.log10((tgt_rms + 1e-9) / (ref_rms_val + 1e-9)), 1)
+            ld = round(float(20.0 * np.log10((tgt_rms + 1e-9) / (ref_rms_val + 1e-9))), 1)
         else:
             ld = None
         level_diffs[fn] = ld

@@ -2,6 +2,13 @@
 
 ---
 
+## [Sync Capture plugin 1.0.15] - 2026-04-06
+
+### Fixed
+- **Alignment failed: undefined is not an object**: `np.log10()` always returns numpy scalar types even when given Python floats. These are not JSON-serializable, causing `jsonify()` to raise a 500 on the async alignment poll endpoint, so `d.result` arrived as `undefined` in the browser. Fixed by wrapping all `np.log10()` calls with `float()` in `_analyse_lufs`, `_octave_bands`, `_stereo_analysis`, and `_compute_alignment`. Also wrapped FFT lag values with `float()` for the same reason.
+
+---
+
 ## [Sync Capture plugin 1.0.14] - 2026-04-06
 
 ### Fixed
