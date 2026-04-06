@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.94"
+BUILD                  = "SignalScope-3.5.95"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8446,6 +8446,8 @@ class DabSharedSession:
     ppm: int = 0
     gain: int = -1             # RTL-SDR gain in tenths of dB; -1 = hardware AGC
     proc: Any = None
+    rtl_tcp_proc: Any = None   # rtl_tcp proxy process (Pi multi-dongle workaround)
+    rtl_tcp_port: int = 0      # TCP port used by rtl_tcp proxy
     lease: Any = None
     ready: threading.Event = field(default_factory=threading.Event)
     stop_evt: threading.Event = field(default_factory=threading.Event)
@@ -8878,52 +8880,97 @@ class MonitorManager:
         # consumer ffmpeg processes see immediate data.
         #
         # Non-Pi: omit -C entirely — full parallel ensemble decode, no CPU concern.
-        # Pi: -T disables TII decoding; -C N limits parallel decoding to the
-        # monitored services only to avoid CPU overload on the slower hardware.
+        # Pi single-dongle: -T -C N to limit CPU.
+        # Pi multi-dongle (device_idx > 0): use rtl_tcp proxy — see below.
         #
-        # DEVICE SELECTION — Pi with serial:
-        #   Use -D driver=rtlsdr,serial=SERIAL instead of -F rtl_sdr,INDEX.
-        #   Some welle-cli builds silently ignore the ",N" device-index suffix in
-        #   -F and fall back to opening "first available" (device 0).  When an FM
-        #   rtl_fm stream is already running on device 0, this produces
-        #   usb_claim_interface error -6 even though the two inputs are configured
-        #   with different serial numbers.  -D with the serial number is unambiguous
-        #   and matches the approach used by the DAB Scanner plugin.
-        #   IMPORTANT: welle-cli rejects -C and -D together ("Cannot select both
-        #   -C and -D"), so -C is omitted when -D is used.
-        if _is_raspberry_pi():
-            # USB serialisation: the Pi's DWC2 USB host controller cannot handle
-            # two simultaneous libusb_claim_interface calls to different devices.
-            # If an FM rtl_fm process is mid-initialisation (it takes ~1 s from
-            # launch to "Sampling at..."), launching welle-cli at the same moment
-            # causes usb_claim_interface error -6 on whichever finishes second —
-            # even though they are on completely different physical dongles.
-            # Waiting 3 s here gives rtl_fm (and any scanner stream) time to
-            # complete its USB init before welle-cli opens the second dongle.
-            if sdr_manager.status():
-                self.log(f"[{name}] Pi USB stagger: FM/scanner active — waiting 3 s "
-                         f"before welle-cli opens dongle")
-                time.sleep(3.0)
-
-            _n = max(1, len(session.consumers))
-            if session.serial:
-                # Serial known: pin device by serial (-D) not by index (-F).
-                # Omit -C since welle-cli rejects -C and -D together.
+        # DEVICE SELECTION ON Pi WITH MULTIPLE DONGLES:
+        #   The apt-installed welle-cli on Raspberry Pi OS ignores all device
+        #   selection arguments (-F rtl_sdr,N and -D driver=rtlsdr,serial=X) and
+        #   ALWAYS opens the first available RTL-SDR device (index 0).  When an
+        #   FM stream is also running and has device 0 claimed, welle-cli gets
+        #   usb_claim_interface error -6 even though the two inputs are assigned
+        #   to completely different physical dongles with different serial numbers.
+        #
+        #   Fix: for device_idx > 0 on Pi, launch rtl_tcp -d DEVICE_IDX first.
+        #   rtl_tcp uses the standard rtlsdr_open(index) path which correctly
+        #   opens the requested device (same mechanism as rtl_fm -d 0 for FM).
+        #   welle-cli then connects via -F rtl_tcp,127.0.0.1:PORT and never
+        #   touches USB directly — its broken device-selection is bypassed entirely.
+        if _is_raspberry_pi() and session.device_idx > 0:
+            # ── rtl_tcp proxy path ──────────────────────────────────────────
+            _rtl_tcp_bin = _find_binary("rtl_tcp")
+            if not _rtl_tcp_bin:
+                _rtl_tcp_bin = "rtl_tcp"
+            # Pick a free local port for the rtl_tcp server
+            import socket as _sock
+            with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as _ts:
+                _ts.bind(("127.0.0.1", 0))
+                session.rtl_tcp_port = _ts.getsockname()[1]
+            _tcp_gain = str(int(float(_gain_val)) if float(_gain_val) > 0 else 0)
+            _tcp_cmd = [_rtl_tcp_bin,
+                        "-d", str(session.device_idx),
+                        "-p", str(session.rtl_tcp_port),
+                        "-a", "127.0.0.1",
+                        "-g", _tcp_gain]
+            if session.ppm:
+                _tcp_cmd += ["-P", str(session.ppm)]
+            self.log(f"[{name}] Pi multi-dongle: launching rtl_tcp proxy on "
+                     f"device {session.device_idx} → port {session.rtl_tcp_port}")
+            try:
+                import os as _os2
+                session.rtl_tcp_proc = subprocess.Popen(
+                    _tcp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    bufsize=0)
+                # Wait for rtl_tcp to be ready (outputs "Listening..." to stderr)
+                _ready_deadline = time.monotonic() + 8
+                while time.monotonic() < _ready_deadline:
+                    _line = session.rtl_tcp_proc.stderr.readline()
+                    if not _line:
+                        if session.rtl_tcp_proc.poll() is not None:
+                            break
+                        time.sleep(0.05)
+                        continue
+                    _lstr = _line.decode(errors="ignore").strip()
+                    if _lstr:
+                        self.log(f"[rtl_tcp {session.channel}] {_lstr}")
+                    if any(k in _lstr.lower() for k in ("listening", "accepted", "found")):
+                        if "listening" in _lstr.lower():
+                            break
+                time.sleep(0.3)  # brief settle after rtl_tcp is ready
+            except Exception as _e:
+                self.log(f"[{name}] Failed to launch rtl_tcp proxy: {_e} — falling back")
+                session.rtl_tcp_proc = None
+            if session.rtl_tcp_proc and session.rtl_tcp_proc.poll() is None:
+                # rtl_tcp is running — connect welle-cli to it via TCP
+                _n = max(1, len(session.consumers))
                 cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
-                       "-T", "-g", _gain_val, "-D", f"driver=rtlsdr,serial={session.serial}"]
+                       "-T", "-C", str(_n), "-g", _gain_val,
+                       "-F", f"rtl_tcp,127.0.0.1:{session.rtl_tcp_port}"]
                 if session.ppm:
                     cmd += ["-p", str(session.ppm)]
-                self.log(f"[{name}] Raspberry Pi — using -T -D serial={session.serial} "
-                         f"to pin device (no -C, incompatible with -D)")
+                self.log(f"[{name}] Raspberry Pi — using rtl_tcp proxy (device {session.device_idx})")
             else:
-                # No serial: fall back to device index via -F.
+                # rtl_tcp failed; fall back to direct -F with index
+                if session.rtl_tcp_proc:
+                    try: session.rtl_tcp_proc.kill()
+                    except Exception: pass
+                    session.rtl_tcp_proc = None
+                _n = max(1, len(session.consumers))
                 cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
                        "-T", "-C", str(_n), "-g", _gain_val, "-F", driver]
                 if session.ppm:
                     cmd += ["-p", str(session.ppm)]
-                self.log(f"[{name}] Raspberry Pi — using -T -C {_n} to limit CPU")
+                self.log(f"[{name}] Raspberry Pi — rtl_tcp unavailable, falling back to -F")
+        elif _is_raspberry_pi():
+            # Single dongle (device_idx == 0): -T -C N, direct access
+            _n = max(1, len(session.consumers))
+            cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
+                   "-T", "-C", str(_n), "-g", _gain_val, "-F", driver]
+            if session.ppm:
+                cmd += ["-p", str(session.ppm)]
+            self.log(f"[{name}] Raspberry Pi — using -T -C {_n} to limit CPU")
         else:
-            # No -C flag — welle-cli decodes the full ensemble in parallel
+            # Non-Pi: no -C flag — welle-cli decodes the full ensemble in parallel
             cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
                    "-g", _gain_val, "-F", driver]
             if session.ppm:
@@ -9141,6 +9188,7 @@ class MonitorManager:
             session.stop_evt.set()
         except Exception:
             pass
+        # Terminate welle-cli first
         for p in [getattr(session, 'proc', None)]:
             if not p:
                 continue
@@ -9161,6 +9209,20 @@ class MonitorManager:
                     p.wait(timeout=3)
                 except Exception:
                     pass
+        # Kill the rtl_tcp proxy (Pi multi-dongle path) AFTER welle-cli has
+        # exited — welle-cli holds a TCP connection to rtl_tcp; killing rtl_tcp
+        # first would cause welle-cli to error and possibly stall its exit.
+        _tcp_proc = getattr(session, 'rtl_tcp_proc', None)
+        if _tcp_proc is not None:
+            try:
+                _tcp_proc.kill()
+            except Exception:
+                pass
+            try:
+                _tcp_proc.wait(timeout=3)
+            except Exception:
+                pass
+            session.rtl_tcp_proc = None
         # Give the USB stack a moment to fully release the device interface.
         # Raised from 0.5 s → 2.0 s: on a Pi with both FM and DAB inputs the
         # kernel needs more time to process the USB interface release after the

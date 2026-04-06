@@ -2,6 +2,18 @@
 
 ---
 
+## [3.5.95] - 2026-04-06
+
+### Fixed
+- **DAB + FM on Raspberry Pi — `usb_claim_interface error -6` (definitive fix)**: Root cause conclusively confirmed: the apt-installed `welle-cli` on Raspberry Pi OS **always opens device 0** regardless of any device-selection arguments (`-F rtl_sdr,N`, `-D driver=rtlsdr,serial=X` — all ignored). When FM monitoring holds device 0, welle-cli for the DAB dongle (device 1) still attempts to open device 0, gets error -6, and fails — even though completely different physical dongles with different serials are configured. Proven by the user swapping the two dongles: DAB on device 0 + FM on device 1 worked; the reverse always failed.
+  - **Fix**: on Raspberry Pi with `device_idx > 0`, `_start_dab_session` now launches `rtl_tcp -d DEVICE_IDX` first. `rtl_tcp` uses the standard `rtlsdr_open(index)` path which correctly opens the requested device by index (same mechanism as `rtl_fm -d 0`). `welle-cli` then connects via `-F rtl_tcp,127.0.0.1:PORT` and never touches USB directly — its broken device-selection is bypassed entirely.
+  - `rtl_tcp` is started before `welle-cli`, with a brief ready-wait watching for "Listening" in stderr. On failure, falls back to direct `-F rtl_sdr,N` with a log warning.
+  - `_stop_dab_session` now kills `rtl_tcp_proc` after `welle-cli` exits (killing it first would cause welle-cli to error during shutdown), then waits up to 3 s for clean exit.
+  - `DabSharedSession` gains two new fields: `rtl_tcp_proc` (the `rtl_tcp` subprocess) and `rtl_tcp_port` (the chosen local port).
+  - Device 0 on Pi (single-dongle or DAB on device 0) is unaffected — continues to use `-T -C N` direct access as before.
+
+---
+
 ## [3.5.94] - 2026-04-06
 
 ### Fixed
