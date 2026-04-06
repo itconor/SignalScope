@@ -2,6 +2,44 @@
 
 ---
 
+## [3.5.118] - 2026-04-06
+
+### Changed — Pi DAB: skip rtl_tcp proxy when no FM inputs are configured
+
+The rtl_tcp proxy was introduced for Raspberry Pi to work around welle-cli's broken device-selection (it always opens USB device 0 regardless of `-F`/`-D` flags). The proxy is only necessary when an FM `rtl_fm` stream is competing for the same USB bus — without FM, welle-cli can open the DAB dongle directly with `-F rtl_sdr,N`.
+
+On DAB-only Pi nodes, running the unnecessary rtl_tcp layer adds a process that is susceptible to USB autosuspend events (Pi librtlsdr prints "Signal caught, exiting!" for USB device errors, not just OS signals), causing repeated DAB session restarts.
+
+Fix: `_start_dab_session` now checks `self.app_cfg.inputs` for any enabled `fm://` inputs. If none are present, the Pi rtl_tcp proxy path is skipped and welle-cli uses `-F rtl_sdr,N` directly — the same path as non-Pi hardware.
+
+---
+
+## [3.5.117] - 2026-04-06
+
+### Fixed — Pi DAB rtl_tcp stale killer matched wrong processes (port=0 / serial not in argv)
+
+The rtl_tcp stale-killer block in `_start_dab_session` had two bugs:
+
+1. **port=0 overkill**: for a brand-new session `session.rtl_tcp_port = 0`. `str(0) = "0"` is a substring of virtually every rtl_tcp command line (`-d 0`, `127.0.0.1`, any port containing the digit 0), so the killer matched and SIGKILL'd **all** running rtl_tcp processes — including unrelated ones on other channels or dongles.
+
+2. **serial never in rtl_tcp argv**: `session.serial` ("DAB_DONGLE_1") does not appear in rtl_tcp's command line. rtl_tcp is launched with `-d INDEX` (a number), not by serial. The serial match therefore never fired.
+
+Fix: replaced both checks with a single `-d {device_idx}` substring match (space-padded to avoid partial matches), which correctly identifies rtl_tcp processes holding the same USB device index.
+
+This bug could have caused rtl_tcp processes for a **working** mux session to be killed when a **different** mux restarted on the same Pi (because the device index=0 appears in both command lines).
+
+---
+
+## [3.5.116] - 2026-04-06
+
+### Fixed — Hub replica page: DAB add doesn't assign dongle serial or PPM
+
+When adding a DAB service from the hub's remote management modal, the dongle serial field was a free-text input defaulting to empty and the PPM defaulted to 0. The new service was added without a serial, so SignalScope could grab any available dongle instead of the correct one.
+
+Fix: the DAB serial field is now a **dropdown** auto-populated from the serials already in use by existing DAB inputs on that client site (parsed from their `dab://…?channel=…&serial=…&ppm=…` `device_index` strings). Selecting a serial from the dropdown also updates the PPM field to match. A "none (auto)" option is available for sites with no existing DAB inputs; on those sites a free-text input is shown as before. The PPM field initial value is also pre-populated from the first existing dongle's PPM when a dropdown is rendered.
+
+---
+
 ## [3.5.115] - 2026-04-06
 
 ### Fixed — Hub Reports: CHAIN_FAULT chain column showing input name instead of chain name

@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.115"
+BUILD                  = "SignalScope-3.5.118"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8911,8 +8911,17 @@ class MonitorManager:
         #   if the serial assignments were changed or if USB enumeration changed
         #   (e.g. after a monitor restart).  A forced fresh scan ensures we pick
         #   the correct index even when FM and DAB start concurrently.
-        if _is_raspberry_pi():
-            # ── rtl_tcp proxy path (all Pi DAB sessions) ────────────────────
+        _has_fm_inputs = any(
+            str(getattr(inp, "device_index", "")).lower().startswith("fm://")
+            for inp in self.app_cfg.inputs
+            if getattr(inp, "enabled", True)
+        )
+        if _is_raspberry_pi() and _has_fm_inputs:
+            # ── rtl_tcp proxy path (Pi DAB sessions when FM also present) ───
+            # rtl_tcp is only needed to work around welle-cli's broken device
+            # selection on Pi when an FM rtl_fm stream is competing for the
+            # same USB bus.  If no FM inputs are configured, welle-cli can
+            # open the DAB dongle directly (-F rtl_sdr,N) without the proxy.
             _rtl_tcp_bin = _find_binary("rtl_tcp")
             if not _rtl_tcp_bin:
                 _rtl_tcp_bin = "rtl_tcp"
@@ -8920,20 +8929,17 @@ class MonitorManager:
             # Kill stale rtl_tcp processes that may be holding the target device
             # from a previous monitor run or a crash.  (The welle-cli stale killer
             # above only targets welle-cli; rtl_tcp processes can also linger.)
+            # Match on "-d {device_idx}" in the command — that is the USB device
+            # index rtl_tcp was told to open.  Do NOT match on port (too broad when
+            # port=0) or on serial (serial doesn't appear in rtl_tcp's argv).
             try:
                 import subprocess as _sp_stale, signal as _sig_stale
                 _pgrep = _sp_stale.run(["pgrep", "-a", "rtl_tcp"],
                                         capture_output=True, text=True)
+                _dev_tag = f" -d {session.device_idx} "  # space-padded to avoid substring matches
+                _dev_tag_end = f" -d {session.device_idx}"  # also check at end of line
                 for _sline in _pgrep.stdout.splitlines():
-                    _spid = int(_sline.split()[0])
-                    if str(session.rtl_tcp_port) in _sline or (
-                            session.serial and session.serial in _sline):
-                        try: _os.kill(_spid, _sig_stale.SIGKILL)
-                        except Exception: pass
-                # Also kill any rtl_tcp that targets the same channel port
-                # (leftover from a previous session regardless of args)
-                for _sline in _pgrep.stdout.splitlines():
-                    if f"-p {session.dab_port}" in _sline:
+                    if _dev_tag in _sline or _sline.endswith(_dev_tag_end):
                         try: _os.kill(int(_sline.split()[0]), _sig_stale.SIGKILL)
                         except Exception: pass
             except Exception:
@@ -9053,7 +9059,10 @@ class MonitorManager:
                     cmd += ["-p", str(session.ppm)]
                 self.log(f"[{name}] Raspberry Pi — rtl_tcp unavailable, falling back to -F rtl_sdr,{_tcp_idx}")
         else:
-            # Non-Pi: no -C flag — welle-cli decodes the full ensemble in parallel
+            # Non-Pi, or Pi with no FM inputs (no rtl_tcp proxy needed) —
+            # welle-cli decodes the full ensemble in parallel with direct -F
+            if _is_raspberry_pi() and not _has_fm_inputs:
+                self.log(f"[{name}] Raspberry Pi, no FM inputs — skipping rtl_tcp proxy, using -F rtl_sdr directly")
             cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
                    "-g", _gain_val, "-F", driver]
             if session.ppm:
@@ -34877,6 +34886,8 @@ main{padding:18px;max-width:1500px;margin:0 auto}
           </div>
         </div>
         <!-- DAB fields -->
+        {% set _dab_dongles = [] %}
+        {% for _dst in site.get('streams', []) %}{% if _dst.get('device_index','').startswith('dab://') %}{% set _dqs = _dst.get('device_index','').split('?') %}{% if _dqs|length > 1 %}{% set _dns = namespace(s='',p='0') %}{% for _dp in _dqs[1].split('&') %}{% if _dp.startswith('serial=') %}{% set _dns.s = _dp[7:] %}{% endif %}{% if _dp.startswith('ppm=') %}{% set _dns.p = _dp[4:] %}{% endif %}{% endfor %}{% if _dns.s %}{% set _dkey = _dns.s + '|' + _dns.p %}{% if _dkey not in _dab_dongles %}{% set _ = _dab_dongles.append(_dkey) %}{% endif %}{% endif %}{% endif %}{% endif %}{% endfor %}
         <div class="hub-mgr-dab-fields" data-site="{{site.site|e}}" style="display:none;grid-column:1/-1">
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end">
             <div>
@@ -34889,11 +34900,18 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             </div>
             <div>
               <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">PPM Offset</label>
-              <input class="hub-mgr-dab-ppm" data-site="{{site.site|e}}" type="number" value="0" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+              <input class="hub-mgr-dab-ppm" data-site="{{site.site|e}}" type="number" value="{{_dab_dongles[0].split('|')[1] if _dab_dongles else '0'}}" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
             </div>
             <div>
-              <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">Dongle Serial (opt.)</label>
+              <label style="font-size:11px;color:var(--mu);display:block;margin-bottom:4px">Dongle Serial</label>
+              {% if _dab_dongles %}
+              <select class="hub-mgr-dab-serial" data-site="{{site.site|e}}" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+                {% for _dk in _dab_dongles %}{% set _dkp = _dk.split('|') %}<option value="{{_dkp[0]|e}}" data-ppm="{{_dkp[1]|e}}">{{_dkp[0]|e}}</option>{% endfor %}
+                <option value="" data-ppm="0">— none (auto) —</option>
+              </select>
+              {% else %}
               <input class="hub-mgr-dab-serial" data-site="{{site.site|e}}" placeholder="auto" style="width:100%;padding:6px 9px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:13px">
+              {% endif %}
             </div>
             <button class="btn bp hub-mgr-dab-scan-btn" data-site="{{site.site|e}}" style="white-space:nowrap">🔍 Scan Mux</button>
           </div>
@@ -35165,6 +35183,13 @@ document.addEventListener('click',function(e){
     }).catch(function(){if(polls++<max)setTimeout(poll,2000);});}
     setTimeout(poll,3000);
   }).catch(function(){btn.disabled=false;btn.textContent='🔍 Scan Mux';hubMgrMsg(site,'Request failed');});
+});
+document.addEventListener('change',function(e){
+  var sel=e.target.closest('.hub-mgr-dab-serial');
+  if(!sel||sel.tagName!=='SELECT')return;
+  var site=sel.dataset.site;
+  var ppmEl=document.querySelector('.hub-mgr-dab-ppm[data-site="'+site+'"]');
+  if(ppmEl)ppmEl.value=((sel.options[sel.selectedIndex]||{}).dataset||{ppm:'0'}).ppm||'0';
 });
 document.addEventListener('click',function(e){
   var btn=e.target.closest('.hub-mgr-dab-add-sel');if(!btn)return;
