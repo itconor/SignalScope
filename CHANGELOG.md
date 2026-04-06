@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.92] - 2026-04-06
+
+### Fixed
+- **DAB + FM on Pi — `usb_claim_interface error -6` when serials are different**: `_start_dab_session` was always using `-F rtl_sdr,N` (device index) to tell welle-cli which dongle to use. Some welle-cli builds silently ignore the `,N` device-index suffix and fall back to opening "first available" (device 0). When rtl_fm is already running on device 0, welle-cli then collides with it and gets error -6 — even though FM and DAB are configured with completely different serial numbers. Fix: on Raspberry Pi with a serial number configured, use `-D driver=rtlsdr,serial=SERIAL` instead of `-F rtl_sdr,N`. Serial-based selection is unambiguous and matches the approach already used by the DAB Scanner plugin. `-C` is omitted when `-D` is used (welle-cli rejects both together).
+
+---
+
 ## [3.5.91] - 2026-04-06
 
 ### Fixed

@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.91"
+BUILD                  = "SignalScope-3.5.92"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8812,13 +8812,35 @@ class MonitorManager:
         # Non-Pi: omit -C entirely — full parallel ensemble decode, no CPU concern.
         # Pi: -T disables TII decoding; -C N limits parallel decoding to the
         # monitored services only to avoid CPU overload on the slower hardware.
+        #
+        # DEVICE SELECTION — Pi with serial:
+        #   Use -D driver=rtlsdr,serial=SERIAL instead of -F rtl_sdr,INDEX.
+        #   Some welle-cli builds silently ignore the ",N" device-index suffix in
+        #   -F and fall back to opening "first available" (device 0).  When an FM
+        #   rtl_fm stream is already running on device 0, this produces
+        #   usb_claim_interface error -6 even though the two inputs are configured
+        #   with different serial numbers.  -D with the serial number is unambiguous
+        #   and matches the approach used by the DAB Scanner plugin.
+        #   IMPORTANT: welle-cli rejects -C and -D together ("Cannot select both
+        #   -C and -D"), so -C is omitted when -D is used.
         if _is_raspberry_pi():
             _n = max(1, len(session.consumers))
-            cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
-                   "-T", "-C", str(_n), "-g", _gain_val, "-F", driver]
-            if session.ppm:
-                cmd += ["-p", str(session.ppm)]
-            self.log(f"[{name}] Raspberry Pi — using -T -C {_n} to limit CPU")
+            if session.serial:
+                # Serial known: pin device by serial (-D) not by index (-F).
+                # Omit -C since welle-cli rejects -C and -D together.
+                cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
+                       "-T", "-g", _gain_val, "-D", f"driver=rtlsdr,serial={session.serial}"]
+                if session.ppm:
+                    cmd += ["-p", str(session.ppm)]
+                self.log(f"[{name}] Raspberry Pi — using -T -D serial={session.serial} "
+                         f"to pin device (no -C, incompatible with -D)")
+            else:
+                # No serial: fall back to device index via -F.
+                cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
+                       "-T", "-C", str(_n), "-g", _gain_val, "-F", driver]
+                if session.ppm:
+                    cmd += ["-p", str(session.ppm)]
+                self.log(f"[{name}] Raspberry Pi — using -T -C {_n} to limit CPU")
         else:
             # No -C flag — welle-cli decodes the full ensemble in parallel
             cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
