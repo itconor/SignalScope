@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.96"
+BUILD                  = "SignalScope-3.5.97"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8455,6 +8455,7 @@ class DabSharedSession:
     failed: bool = False
     refcount: int = 0
     consumers: set = field(default_factory=set)
+    consumer_sids: set = field(default_factory=set)  # SIDs actually needed; populated by _run_dab
     stderr_thread: Any = None
     poll_thread: Any = None
 
@@ -9124,7 +9125,33 @@ class MonitorManager:
             svcs   = mux.get("services", []) or []
             if not svcs:
                 return
-            self.log(f"[DAB {session.channel}] Pre-warming {len(svcs)} service endpoint(s) in parallel")
+
+            # On Raspberry Pi the welle-cli -C N flag runs in carousel mode:
+            # it activates encoders one at a time, ~52 s each.  Warming ALL
+            # services fills the carousel queue (e.g. 29 entries @ 52 s = 25 min
+            # before the needed service gets a turn).  On Pi we therefore wait
+            # briefly for consumer threads to register their SIDs and then only
+            # warm those specific endpoints.  The queue has only the needed
+            # services, so they are activated immediately.
+            #
+            # On non-Pi: welle-cli decodes the full ensemble in parallel so
+            # warming all services (to lazily init their encoders) is correct.
+            if _is_raspberry_pi():
+                # Give _run_dab threads 3 s to resolve and register their SIDs.
+                _wait_end = time.monotonic() + 3.0
+                while time.monotonic() < _wait_end and not session.stop_evt.is_set():
+                    if session.consumer_sids:
+                        break
+                    time.sleep(0.1)
+                warm_sids = set(session.consumer_sids)
+                if not warm_sids:
+                    # Fall back to all services if no SIDs were registered in time.
+                    warm_sids = {str(s.get("sid", "")).strip() for s in svcs if s.get("sid")}
+                self.log(f"[DAB {session.channel}] Pre-warming {len(warm_sids)} consumer "
+                         f"endpoint(s) (Pi carousel mode — skipping {len(svcs)-len(warm_sids)} unused services)")
+            else:
+                warm_sids = {str(s.get("sid", "")).strip() for s in svcs if s.get("sid")}
+                self.log(f"[DAB {session.channel}] Pre-warming {len(warm_sids)} service endpoint(s) in parallel")
 
             def _warm_one(sid_str):
                 url    = f"http://localhost:{session.dab_port}/mp3/{sid_str}"
@@ -9144,8 +9171,7 @@ class MonitorManager:
                     pass                                 # consumer probes will take over
 
             threads = []
-            for svc in svcs:
-                sid = str(svc.get("sid", "")).strip()
+            for sid in warm_sids:
                 if not sid:
                     continue
                 t = threading.Thread(target=_warm_one, args=(sid,), daemon=True,
@@ -9413,6 +9439,10 @@ class MonitorManager:
                     cfg._dab_service = svc_name or service
                     cfg._dab_ok = True
                     audio_url = f"http://localhost:{session.dab_port}/mp3/{sid}"
+                    # Register this SID so the prewarm only warms services we need
+                    # (critical on Pi with -C carousel mode — warming all services
+                    # fills the queue and makes the target service wait N×52 s)
+                    session.consumer_sids.add(sid)
                     self.log(f"[{name}] DAB: streaming audio from {audio_url} (shared mux {channel})")
                     # Log initial availability and write immediate metric row
                     _now_avail = time.time()

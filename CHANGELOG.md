@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.97] - 2026-04-06
+
+### Fixed
+- **DAB on Raspberry Pi — audio takes many minutes to start (carousel prewarm)**: on Pi, `_start_dab_session` uses welle-cli's `-C N` carousel flag (N = number of consumers, typically 1). The prewarm was opening persistent connections to ALL services in the mux (e.g. 29 services × 52 s per service in the carousel = up to 25 minutes before the needed service got its turn). Fix: on Pi, the prewarm now waits up to 3 s for consumer threads to register their resolved SIDs (via the new `DabSharedSession.consumer_sids` set), then only warms those specific endpoints. welle-cli's carousel queue contains only the services actually needed, so they are activated immediately (typically ready within 15 s). On non-Pi (full parallel ensemble decode), all services are still pre-warmed as before.
+
+---
+
 ## [3.5.96] - 2026-04-06
 
 ### Fixed
