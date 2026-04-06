@@ -2,6 +2,15 @@
 
 ---
 
+## [3.5.94] - 2026-04-06
+
+### Fixed
+- **DAB + FM on Pi — `usb_claim_interface error -6` (persistent, not just race)**: 3.5.93's stagger proved the timing wasn't the cause — error -6 persisted even 14 seconds after FM was fully running. Two compounding root causes fixed:
+  1. **Stale welle-cli process not killed**: the stale-killer matched only `-F rtl_sdr,N` (old format). After the 3.5.92 change to `-D driver=rtlsdr,serial=X`, stale processes from previous monitor runs or the DAB Scanner plugin no longer matched the tag and were not killed. Updated to kill any welle-cli matching old `-F` format, new `-D serial=X` format, or `-c CHANNEL` (catches DAB Scanner leftovers regardless of device args).
+  2. **`dvb_usb_rtl28xxu` kernel driver still bound**: before each welle-cli launch on Pi, SignalScope now proactively walks `/sys/bus/usb/devices/` to find the target dongle (by serial), checks each USB interface for a `dvb_usb_rtl28xxu` driver binding, and unbinds it via sysfs (direct write first, `sudo -n tee` fallback — same pattern as the existing usbfs_memory fix). If unbind fails (no sudo), a log message explains the fix (`blacklist dvb_usb_rtl28xxu`).
+
+---
+
 ## [3.5.93] - 2026-04-06
 
 ### Fixed

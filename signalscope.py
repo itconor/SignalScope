@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.93"
+BUILD                  = "SignalScope-3.5.94"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8763,25 +8763,93 @@ class MonitorManager:
         _wb = _find_binary("welle-cli") or "welle-cli"
 
         # Kill any stale welle-cli processes that still hold the USB device from a
-        # previous monitor run.  The USB kernel interface isn't released until the
-        # process fully exits; without this, the new launch gets LIBUSB_ERROR_BUSY
-        # (-6 / usb_claim_interface error) if the monitor is restarted quickly.
+        # previous monitor run OR a stale DAB Scanner plugin session.  The USB
+        # kernel interface isn't released until the process fully exits; without
+        # this, the new launch gets LIBUSB_ERROR_BUSY (-6) if the monitor is
+        # restarted quickly or the DAB Scanner left a process behind.
+        #
+        # Match tags cover both old (-F rtl_sdr,N) and new (-D serial=X) command
+        # formats, and also the channel flag (-c 11D) to catch DAB Scanner leftovers
+        # regardless of the device selection flags they used.
         try:
             import subprocess as _sp2, signal as _sig
             result = _sp2.run(["pgrep", "-a", "welle-cli"], capture_output=True, text=True)
-            _driver_tag = f"rtl_sdr,{int(session.device_idx)}"
+            _kill_tags = [
+                f"rtl_sdr,{int(session.device_idx)}",          # old -F format
+                f"serial={session.serial}" if session.serial else "",  # -D format
+                f"-c {session.channel} ",                        # any on this channel
+                f"-c {session.channel}",                         # (end of line)
+            ]
+            _killed_stale = False
             for line in result.stdout.splitlines():
-                if _driver_tag in line:
+                if any(t and t in line for t in _kill_tags):
                     pid = int(line.split()[0])
-                    self.log(f"[DAB {session.channel}] Killing stale welle-cli PID {pid} (device {session.device_idx})")
+                    self.log(f"[DAB {session.channel}] Killing stale welle-cli PID {pid}")
                     try:
                         _os.kill(pid, _sig.SIGKILL)
+                        _killed_stale = True
                     except Exception:
                         pass
-            if result.stdout.strip():
-                time.sleep(1.2)   # let USB stack fully release the interface
+            if _killed_stale:
+                time.sleep(2.0)   # allow USB interface to fully release after kill
+            elif result.stdout.strip():
+                time.sleep(1.2)   # unrelated welle-cli running, brief pause
         except Exception:
             pass
+
+        # Proactively unbind dvb_usb_rtl28xxu from the target dongle before
+        # welle-cli opens it.  On some Pi setups the kernel DVB driver remains
+        # bound to an RTL-SDR dongle (either because it was never blacklisted, or
+        # because a previous welle-cli exited without re-attaching it and the
+        # kernel re-bound it).  With the driver bound, libusb_claim_interface
+        # returns LIBUSB_ERROR_BUSY (-6) even though no userspace process holds
+        # the device.  Using sysfs unbind (same sudo -n pattern as _apply_usbfs_fix)
+        # clears this before welle-cli's rtlsdr_open() is called.
+        if _is_raspberry_pi() and session.serial:
+            try:
+                import pathlib as _pl
+                _dvb_drv = _pl.Path("/sys/bus/usb/drivers/dvb_usb_rtl28xxu")
+                if _dvb_drv.exists():
+                    # Find the USB device matching this serial
+                    _dev_path = None
+                    for _p in _pl.Path("/sys/bus/usb/devices").iterdir():
+                        try:
+                            if (_p / "serial").read_text().strip() == session.serial:
+                                _dev_path = _p
+                                break
+                        except Exception:
+                            continue
+                    if _dev_path:
+                        _unbind_f = _dvb_drv / "unbind"
+                        # Find interface directories (e.g. 1-1.3:1.0) for this device
+                        for _iface in _dev_path.parent.glob(f"{_dev_path.name}:*"):
+                            try:
+                                _drv_lnk = _iface / "driver"
+                                if not _drv_lnk.exists():
+                                    continue
+                                if _pl.Path(_drv_lnk).resolve().name == "dvb_usb_rtl28xxu":
+                                    _iname = _iface.name
+                                    # Try direct write first (root), then sudo -n
+                                    try:
+                                        _unbind_f.write_text(_iname)
+                                        self.log(f"[DAB {session.channel}] Unbound dvb_usb_rtl28xxu from {_iname}")
+                                    except PermissionError:
+                                        import subprocess as _sp3
+                                        _r = _sp3.run(
+                                            ["sudo", "-n", "tee", str(_unbind_f)],
+                                            input=_iname.encode(),
+                                            capture_output=True, timeout=3)
+                                        if _r.returncode == 0:
+                                            self.log(f"[DAB {session.channel}] Unbound dvb_usb_rtl28xxu (sudo) from {_iname}")
+                                        else:
+                                            self.log(f"[DAB {session.channel}] dvb_usb_rtl28xxu unbind failed — "
+                                                     f"run: echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/rtlsdr.conf")
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                continue
+            except Exception:
+                pass
 
         # Always pin the device index so two dongles on the same machine don't
         # conflict.  "rtl_sdr,0" is identical to "rtl_sdr" for a single dongle
