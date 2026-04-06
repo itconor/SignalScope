@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.99] - 2026-04-06
+
+### Fixed
+- **DAB on Pi — rtl_tcp proxy starts but welle-cli never launches (thread hangs forever)**: `readline()` on rtl_tcp's stderr pipe blocks indefinitely once rtl_tcp finishes its startup output and begins listening. The 8-second `_ready_deadline` check only ran at the top of the while loop — it could never interrupt a blocking `readline()`. Additionally, rtl_tcp prints `"listening..."` to **stdout**, which was piped to `/dev/null`, so the string-match approach could never succeed regardless. Fix: stderr is now drained in a background thread (for logging/error detection only). Readiness is determined by attempting a TCP connection to `127.0.0.1:rtl_tcp_port` — when the connect succeeds, rtl_tcp is provably listening and welle-cli can connect. This is reliable regardless of how rtl_tcp routes its output.
+
+---
+
 ## [3.5.98] - 2026-04-06
 
 ### Fixed

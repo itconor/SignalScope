@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.98"
+BUILD                  = "SignalScope-3.5.99"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8969,26 +8969,44 @@ class MonitorManager:
                     session.rtl_tcp_proc = subprocess.Popen(
                         _tcp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                         bufsize=0)
-                    # Wait for rtl_tcp to be ready (outputs "Listening..." to stderr)
-                    _ready_deadline = time.monotonic() + 8
-                    _got_error = False
-                    while time.monotonic() < _ready_deadline:
-                        _line = session.rtl_tcp_proc.stderr.readline()
-                        if not _line:
-                            if session.rtl_tcp_proc.poll() is not None:
-                                break
-                            time.sleep(0.05)
-                            continue
-                        _lstr = _line.decode(errors="ignore").strip()
-                        if _lstr:
-                            self.log(f"[rtl_tcp {session.channel}] {_lstr}")
-                        if "usb_claim_interface error" in _lstr.lower():
-                            _got_error = True
-                        if "listening" in _lstr.lower():
-                            _tcp_ok = True
+                    # Drain stderr in a background thread to avoid blocking the
+                    # pipe (rtl_tcp writes device info to stderr then goes quiet).
+                    # "listening..." goes to stdout which is /dev/null, so we
+                    # CANNOT detect readiness from text output — use a TCP
+                    # connect probe instead.
+                    _got_error_flag = [False]
+                    def _drain_stderr(_proc=session.rtl_tcp_proc, _ch=session.channel,
+                                      _flag=_got_error_flag):
+                        try:
+                            for _raw in _proc.stderr:
+                                try:
+                                    _ls = _raw.decode(errors="ignore").strip()
+                                except Exception:
+                                    _ls = ""
+                                if _ls:
+                                    self.log(f"[rtl_tcp {_ch}] {_ls}")
+                                if "usb_claim_interface error" in _ls.lower():
+                                    _flag[0] = True
+                        except Exception:
+                            pass
+                    threading.Thread(target=_drain_stderr, daemon=True,
+                                     name=f"rtl_tcp_stderr_{session.channel}").start()
+                    # Wait until rtl_tcp's TCP port accepts connections (reliable
+                    # readiness check — works regardless of stdout/stderr routing).
+                    _conn_deadline = time.monotonic() + 8
+                    while time.monotonic() < _conn_deadline:
+                        if session.rtl_tcp_proc.poll() is not None:
+                            break   # process exited
+                        try:
+                            with _sock.create_connection(
+                                    ("127.0.0.1", session.rtl_tcp_port), timeout=0.5):
+                                _tcp_ok = True
                             break
-                    time.sleep(0.3)
-                    if not _tcp_ok and _got_error:
+                        except Exception:
+                            time.sleep(0.2)
+                    # Give the drain thread a moment to log any error lines
+                    time.sleep(0.5)
+                    if not _tcp_ok and _got_error_flag[0]:
                         # Device busy — kill this attempt and retry
                         try: session.rtl_tcp_proc.kill()
                         except Exception: pass
@@ -8999,7 +9017,7 @@ class MonitorManager:
                 except Exception as _e:
                     self.log(f"[{name}] Failed to launch rtl_tcp proxy: {_e}")
                     session.rtl_tcp_proc = None
-                break   # no error detected — exit retry loop
+                break   # exit retry loop
             if _tcp_ok and session.rtl_tcp_proc and session.rtl_tcp_proc.poll() is None:
                 # rtl_tcp is running — connect welle-cli to it via TCP
                 _n = max(1, len(session.consumers))
