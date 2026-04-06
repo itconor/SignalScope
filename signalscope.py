@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.109"
+BUILD                  = "SignalScope-3.5.110"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2777,10 +2777,10 @@ class InputConfig:
     # Sustained overmodulation
     # Fires when a large fraction of audio chunks exceed the clip threshold
     # over a rolling window — catches a mixer left too hot, not just brief peaks.
-    alert_on_overmod:         bool  = True
+    alert_on_overmod:         bool  = False   # off by default — broadcast limiting regularly peaks near 0 dBFS; only enable if you know your content never clips
     overmod_threshold_dbfs:   float = -1.0    # chunks above this count as overmodulated
     overmod_window_seconds:   float = 60.0    # rolling window length
-    overmod_clip_pct:         float = 30.0    # alert if this % of chunks are clipping (raised from 20 — broadcast limiting regularly peaks above -1 dBFS)
+    overmod_clip_pct:         float = 30.0    # alert if this % of chunks are clipping
 
     # Mono-on-stereo detection (stereo streams only)
     # Derives L-R correlation from available level measurements.  Fires when
@@ -2912,6 +2912,9 @@ class InputConfig:
     _lufs_kw_zi2: Optional[object] = field(default=None, init=False, repr=False)
     _lufs_s_buf:  List  = field(default_factory=list, init=False, repr=False)
     _lufs_i_buf:  List  = field(default_factory=list, init=False, repr=False)
+
+    # Startup grace period — suppress silence/silence_end during initial stream connect
+    _monitor_start_ts:      float = field(default=0.0,   init=False, repr=False)
 
     # Shared level history buffer for flatness + glitch detection (runtime)
     # Holds (wall_clock_ts, level_dbfs) tuples, pruned to last 10 minutes.
@@ -3258,11 +3261,11 @@ def load_config() -> AppConfig:
             name=item.get("name",""), device_index=str(item.get("device_index","")),
             enabled=item.get("enabled", True),
             alert_on_silence=item.get("alert_on_silence", True),
-            alert_on_hiss=item.get("alert_on_hiss", True),
+            alert_on_hiss=item.get("alert_on_hiss", False),
             alert_on_clip=item.get("alert_on_clip", True),
             ai_monitor=item.get("ai_monitor", True),
             silence_threshold_dbfs=item.get("silence_threshold_dbfs", -55.0),
-            silence_min_duration=item.get("silence_min_duration", 3.0),
+            silence_min_duration=item.get("silence_min_duration", 10.0),
             silence_recover_db=float(item.get("silence_recover_db", 4.0)),
             hiss_hf_band_hz=item.get("hiss_hf_band_hz", 6000.0),
             hiss_rise_db=item.get("hiss_rise_db", 20.0),
@@ -3300,10 +3303,10 @@ def load_config() -> AppConfig:
             glitch_min_drop_rate_dbfs_s=float(item.get("glitch_min_drop_rate_dbfs_s", 40.0)),
             glitch_floor_db=float(item.get("glitch_floor_db", 8.0)),
             glitch_pre_trend_db=float(item.get("glitch_pre_trend_db", 4.0)),
-            alert_on_hum=bool(item.get("alert_on_hum", True)),
+            alert_on_hum=bool(item.get("alert_on_hum", False)),
             hum_rise_db=float(item.get("hum_rise_db", 25.0)),
             hum_min_duration=float(item.get("hum_min_duration", 5.0)),
-            alert_on_dc_offset=bool(item.get("alert_on_dc_offset", True)),
+            alert_on_dc_offset=bool(item.get("alert_on_dc_offset", False)),
             dc_offset_threshold=float(item.get("dc_offset_threshold", 5.0)),
             dc_min_duration=float(item.get("dc_min_duration", 5.0)),
             alert_on_phase_reversal=bool(item.get("alert_on_phase_reversal", True)),
@@ -3312,10 +3315,10 @@ def load_config() -> AppConfig:
             alert_on_level_drift=bool(item.get("alert_on_level_drift", False)),
             level_drift_db=float(item.get("level_drift_db", 8.0)),
             level_drift_min_duration=float(item.get("level_drift_min_duration", 60.0)),
-            alert_on_overmod=bool(item.get("alert_on_overmod", True)),
+            alert_on_overmod=bool(item.get("alert_on_overmod", False)),
             overmod_threshold_dbfs=float(item.get("overmod_threshold_dbfs", -1.0)),
             overmod_window_seconds=float(item.get("overmod_window_seconds", 60.0)),
-            overmod_clip_pct=float(item.get("overmod_clip_pct", 20.0)),
+            overmod_clip_pct=float(item.get("overmod_clip_pct", 30.0)),
             alert_on_mono_on_stereo=bool(item.get("alert_on_mono_on_stereo", False)),
             mono_on_stereo_corr=float(item.get("mono_on_stereo_corr", 0.98)),
             mono_on_stereo_min_duration=float(item.get("mono_on_stereo_min_duration", 60.0)),
@@ -6894,10 +6897,19 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
             _check_escalation(cfg, sender, log_fn)
 
     # Silence / composite fault classification
+    # Startup grace period: suppress silence detection for the first 30 s after
+    # monitoring starts.  Every stream connect begins with a brief silence while
+    # the source buffers/handshakes — without this every new stream fires a
+    # spurious SILENCE then silence_end pair on startup.
+    _SILENCE_GRACE_SECS = 30.0
+    _silence_graced = (
+        cfg._monitor_start_ts > 0
+        and (time.monotonic() - cfg._monitor_start_ts) < _SILENCE_GRACE_SECS
+    )
     if cfg.alert_on_silence:
         _sil_thr     = cfg.silence_threshold_dbfs
         _sil_recover = _sil_thr + cfg.silence_recover_db
-        if lev <= _sil_thr:
+        if lev <= _sil_thr and not _silence_graced:
             cfg._silence_secs = cfg._silence_secs + elapsed
         elif lev >= _sil_recover:
             cfg._silence_secs = 0.0
@@ -8559,6 +8571,7 @@ class MonitorManager:
                 cfg._stream_buffer=collections.deque(maxlen=int(SAMPLE_RATE*STREAM_BUFFER_SECONDS/CHUNK_SIZE)+2)
                 cfg._baseline_learning_remaining=5.0; cfg._hf_baseline=None
                 cfg._silence_secs=0.0; cfg._silence_active=False; cfg._silence_alert_key=""
+                cfg._monitor_start_ts=time.monotonic()
                 cfg._hiss_secs=0.0
                 cfg._ai_status=""; cfg._ai_phase="idle"; cfg._ai_learn_samples=[]
 

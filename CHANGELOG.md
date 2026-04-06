@@ -2,6 +2,26 @@
 
 ---
 
+## [3.5.110] - 2026-04-06
+
+### Fixed — Alert noise reduction for new streams
+
+Several `InputConfig` loader fallback values did not match the dataclass defaults, meaning streams loaded from older config files silently got more aggressive alert settings than intended. Fixed:
+
+| Alert | Old loader fallback | New (matches dataclass) |
+|---|---|---|
+| `alert_on_hiss` | `True` | `False` |
+| `alert_on_hum` | `True` | `False` |
+| `alert_on_dc_offset` | `True` | `False` |
+| `silence_min_duration` | 3 s | 10 s |
+| `overmod_clip_pct` | 20 % | 30 % |
+
+`alert_on_overmod` default changed from `True` → `False` in both the dataclass and loader — broadcast streams are heavily limited and routinely peak near 0 dBFS, making this fire constantly on normal programme audio.
+
+Added a 30-second startup grace period for silence detection. Every stream connect begins with a brief silence while the source buffers/connects; without this, every new/restarted stream fired a spurious SILENCE then `silence_end` clip pair immediately on startup.
+
+---
+
 ## [3.5.109] - 2026-04-06
 
 ### Fixed
