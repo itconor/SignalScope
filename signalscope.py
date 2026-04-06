@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.120"
+BUILD                  = "SignalScope-3.5.121"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -12513,6 +12513,20 @@ class HubClient:
             os.execv(sys.executable, [sys.executable] + sys.argv)
         threading.Thread(target=_do_restart, daemon=True, name="RemoteRestart").start()
 
+    def _cmd_reboot(self, payload: dict):
+        monitor.log("[Hub] Remote reboot command received — rebooting system in 3s …")
+        def _do_reboot():
+            time.sleep(3.0)
+            import subprocess as _sp
+            # Try systemctl first (works on systemd without root via logind/polkit),
+            # fall back to sudo reboot.  Requires passwordless sudo if systemctl fails:
+            #   echo 'signalscope ALL=(ALL) NOPASSWD: /sbin/reboot' | sudo tee /etc/sudoers.d/signalscope-reboot
+            ret = _sp.call(["systemctl", "reboot"], stderr=_sp.DEVNULL)
+            if ret != 0:
+                monitor.log("[Hub] systemctl reboot returned non-zero — trying sudo reboot")
+                _sp.call(["sudo", "reboot"])
+        threading.Thread(target=_do_reboot, daemon=True, name="RemoteReboot").start()
+
     def _cmd_set_live_view(self, payload: dict):
         """Hub command: enable or disable high-bandwidth live metric push on this client.
 
@@ -13953,6 +13967,8 @@ class HubClient:
                         self._cmd_self_update(cmd_payload)
                     elif cmd_type == "restart":
                         self._cmd_restart(cmd_payload)
+                    elif cmd_type == "reboot":
+                        self._cmd_reboot(cmd_payload)
                     elif cmd_type == "chain_note":
                         self._cmd_chain_note(cmd_payload)
                     elif cmd_type == "ai_feedback":
@@ -26840,6 +26856,18 @@ def hub_site_restart(site_name):
     return jsonify({"ok": True})
 
 
+@app.post("/api/hub/site/<path:site_name>/reboot")
+@login_required
+@csrf_protect
+def hub_site_reboot(site_name):
+    """Hub admin: push a full OS reboot command to a remote client site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    hub_server.push_pending_command(site_name, {"type": "reboot"})
+    monitor.log(f"[Hub] Reboot command pushed to site '{site_name}'")
+    return jsonify({"ok": True})
+
+
 @app.post("/api/hub/site/<path:site_name>/live_view")
 @login_required
 @csrf_protect
@@ -34374,6 +34402,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% if site.running %}
       <button class="btn site-restart-btn" data-site="{{site.site|e}}" style="background:#2a1e3a;color:#c4b5fd;font-size:11px;padding:2px 10px">🔄 Restart</button>
       {% endif %}
+      <button class="btn site-reboot-btn" data-site="{{site.site|e}}" style="background:#3a1e1e;color:#fca5a5;font-size:11px;padding:2px 10px" title="Reboot the remote machine's operating system">⏻ Reboot</button>
       {% if site._backup_ts %}
       <a class="btn" href="/api/hub/site/{{site.site|urlencode}}/backup" style="background:#142514;color:#4ade80;font-size:11px;padding:2px 10px;text-decoration:none" title="Download backup — {{(site._backup_size // 1024) if site._backup_size else '?'}} KB, taken {{fmt(site._backup_ts)}}">⬇ Backup <span style="opacity:.7;font-size:10px">({{ago(site._backup_age_s)}})</span></a>
       <button class="btn site-backup-btn" data-site="{{site.site|e}}" style="background:#1a2e1a;color:#86efac;font-size:11px;padding:2px 10px" title="Request a fresh backup from this site now">↻ Backup Now</button>
@@ -35377,6 +35406,20 @@ document.addEventListener('click',function(e){
     if(d.ok){btn.textContent='✓ Restarting…';btn.style.color='var(--ok)';}
     else{btn.disabled=false;btn.textContent='🔄 Restart';_ssToast('Restart failed: '+(d.error||'unknown'),'err');}
   }).catch(function(err){btn.disabled=false;btn.textContent='🔄 Restart';_ssToast('Error: '+(err.message||err),'err');});
+  });
+});
+
+// ── Reboot button ─────────────────────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.site-reboot-btn');if(!btn)return;
+  var site=btn.dataset.site;
+  _ssConfirm('⚠ Reboot the operating system on "'+site+'"?\n\nThe machine will go offline for ~60 s. All active streams will be interrupted.',function(){
+  btn.disabled=true;btn.textContent='⏳ Rebooting…';
+  hubPost('/api/hub/site/'+encodeURIComponent(site)+'/reboot',{})
+  .then(function(d){
+    if(d.ok){btn.textContent='✓ Reboot queued';btn.style.color='var(--ok)';}
+    else{btn.disabled=false;btn.textContent='⏻ Reboot';_ssToast('Reboot failed: '+(d.error||'unknown'),'err');}
+  }).catch(function(err){btn.disabled=false;btn.textContent='⏻ Reboot';_ssToast('Error: '+(err.message||err),'err');});
   });
 });
 

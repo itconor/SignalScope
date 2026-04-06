@@ -2,6 +2,20 @@
 
 ---
 
+## [3.5.121] - 2026-04-06
+
+### Added — Remote OS reboot from hub overview
+
+Added **⏻ Reboot** button to each site card on the hub overview. Clicking it sends a `reboot` command to the remote client via the next heartbeat ACK (~10 s). The client handler tries `systemctl reboot` first (works on most modern systemd systems via polkit/logind without extra config), then falls back to `sudo reboot`. If `sudo reboot` is needed, add a sudoers rule on the client:
+
+```
+echo '<user> ALL=(ALL) NOPASSWD: /sbin/reboot' | sudo tee /etc/sudoers.d/signalscope-reboot
+```
+
+The button is always visible (not gated on running state) so you can reboot a site that has a hung/stuck process. A confirmation dialog warns that the machine will go offline for ~60 s.
+
+---
+
 ## [3.5.120] - 2026-04-06
 
 ### Fixed — Pi DAB-only: revert to standard non-Pi welle-cli command
