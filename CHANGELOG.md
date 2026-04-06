@@ -16,6 +16,15 @@
 
 ---
 
+## [Sync Capture plugin 1.0.11] - 2026-04-06
+
+### Added
+- **Correlation scores**: after alignment, each clip receives a Pearson r score computed on the middle 10 s of the aligned overlap window (mean-centred, unit-normalised). The reference clip is always 100%; others show a colour-coded percentage — green ≥88 % (Excellent), blue ≥70 % (Good), amber ≥50 % (Fair), red <50 % (Poor). Scores below 90 % are expected and normal when comparing FM processed vs DAB vs unprocessed feeds, which have different loudness curves, limiting and EQ.
+- **Per-clip RMS waveform thumbnails**: each track in the align panel shows a 600-point RMS envelope canvas below its audio player, colour-coded per stream.
+- **📊 Compare Waveforms button**: opens an overlay canvas showing all clips' aligned overlap waveforms plotted on a shared timeline with a colour legend, making it easy to spot timing differences and level mismatches visually.
+
+---
+
 ## [Sync Capture plugin 1.0.10] - 2026-04-05
 
 ### Added

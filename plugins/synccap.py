@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.10",
+    "version":  "1.0.11",
 }
 
 import os
@@ -628,7 +628,7 @@ def register(app, ctx):
         resp.headers["Content-Length"] = str(file_size)
         return resp
 
-    # ── Alignment (FFT cross-correlation) ────────────────────────────────────
+    # ── Alignment (FFT cross-correlation + correlation scores + waveforms) ────
     @app.get("/api/synccap/align/<capture_id>")
     @login_required
     def synccap_align(capture_id):
@@ -674,12 +674,12 @@ def register(app, ctx):
         if len(loaded) < 2:
             return jsonify({"error": "Could not load enough clips for alignment"}), 500
 
+        # ── Step 1: compute lags via FFT cross-correlation ────────────────────
         # Window: first 10 s (or half of shortest clip, whichever is smaller)
-        min_dur   = min(len(c["audio"]) for c in loaded) / sr
-        window_s  = min(10.0, min_dur / 2.0)
-        window_n  = max(1, int(window_s * sr))
+        min_dur  = min(len(c["audio"]) for c in loaded) / sr
+        window_s = min(10.0, min_dur / 2.0)
+        window_n = max(1, int(window_s * sr))
 
-        # Normalise to unit variance so amplitude differences don't bias lag estimate
         def _norm(a):
             s = np.std(a)
             return a / (s + 1e-9)
@@ -687,39 +687,115 @@ def register(app, ctx):
         ref     = loaded[0]
         ref_win = _norm(ref["audio"][:window_n])
 
-        lags = {ref["filename"]: 0.0}  # seconds — positive means clip starts later in programme time
+        lags = {ref["filename"]: 0.0}
 
         for item in loaded[1:]:
             tgt_win = _norm(item["audio"][:window_n])
             n       = len(ref_win) + len(tgt_win) - 1
-            # C[k] = sum_n ref[n] * tgt[n-k];  peak at k* means tgt[n-k*] ≈ ref[n]
-            # → tgt starts at programme time k*/sr relative to ref
-            corr   = np.fft.irfft(
+            corr    = np.fft.irfft(
                 np.fft.rfft(ref_win, n) * np.conj(np.fft.rfft(tgt_win, n)), n
             )
-            k_star = int(np.argmax(corr))
+            k_star  = int(np.argmax(corr))
             if k_star > n // 2:
                 k_star -= n
             lags[item["filename"]] = float(k_star) / sr
 
-        # Compute playback offsets:
-        #   offset[fn] = max_lag - lags[fn]
-        #   = how many seconds to skip from the start of clip fn so all clips start
-        #     at the same point in programme time.
-        max_lag  = max(lags.values())
-        offsets  = {fn: round(max_lag - lag, 3) for fn, lag in lags.items()}
+        max_lag   = max(lags.values())
+        offsets   = {fn: round(max_lag - lag, 3) for fn, lag in lags.items()}
         durations = {c["filename"]: round(len(c["audio"]) / sr, 3) for c in loaded}
 
-        # Effective overlap after offsetting
         min_remaining = min(
             durations[fn] - offsets.get(fn, 0.0)
             for fn in durations
         )
+        overlap_s = round(max(0.0, min_remaining), 3)
+
+        # ── Step 2: correlation scores on aligned overlap ─────────────────────
+        # After offsetting, extract an analysis window from the middle of the
+        # overlap.  Mean-centre and normalise to unit variance, then compute
+        # Pearson r against the reference.
+        #
+        # Using the MIDDLE of the overlap (not the start) avoids startup
+        # transients that are particularly common on DAB streams (buffering,
+        # codec sync).  10 s gives a stable estimate without being too slow.
+        #
+        # Scores will naturally be <100% between FM processed / DAB / unprocessed
+        # feeds — this is informative, not an error.  Typical ranges:
+        #   Same feed, same path         → 95–99 %
+        #   DAB vs FM processed          → 75–90 %
+        #   Heavy limiting vs clean feed → 60–80 %
+        #   Completely different content → <40 %
+
+        # Align each audio array by its offset
+        aligned_audio = {}
+        for item in loaded:
+            fn   = item["filename"]
+            skip = int(offsets[fn] * sr)
+            aligned_audio[fn] = item["audio"][skip:]
+
+        overlap_n   = int(overlap_s * sr)
+        score_s     = min(10.0, overlap_s * 0.5)
+        score_n     = max(1, int(score_s * sr))
+        mid_start   = max(0, (overlap_n - score_n) // 2)
+
+        ref_fn    = ref["filename"]
+        ref_seg   = aligned_audio[ref_fn][mid_start : mid_start + score_n]
+        ref_seg   = ref_seg - ref_seg.mean()
+        ref_std   = float(np.std(ref_seg)) + 1e-9
+
+        scores = {ref_fn: 1.0}
+
+        for item in loaded[1:]:
+            fn      = item["filename"]
+            tgt_seg = aligned_audio[fn][mid_start : mid_start + score_n]
+            if len(tgt_seg) < score_n:
+                scores[fn] = None
+                continue
+            tgt_seg = tgt_seg - tgt_seg.mean()
+            tgt_std = float(np.std(tgt_seg)) + 1e-9
+            # Pearson r: dot product of unit-norm segments
+            r = float(np.dot(ref_seg / ref_std, tgt_seg / tgt_std)) / score_n
+            scores[fn] = round(max(0.0, min(1.0, r)), 4)
+
+        # ── Step 3: waveform thumbnails ───────────────────────────────────────
+        # Downsample each aligned clip to _WF_POINTS RMS-envelope points for
+        # the waveform canvas.  Both the individual waveform and a shared
+        # "compare" waveform (all clips, same x-axis = aligned programme time)
+        # are returned.  The compare view uses the aligned arrays trimmed to
+        # the overlap window.
+        _WF_POINTS = 600   # horizontal resolution of the waveform canvas
+
+        def _rms_envelope(audio, n_points):
+            """Downsample to n_points by computing RMS over each block."""
+            if len(audio) == 0:
+                return [0.0] * n_points
+            block = max(1, len(audio) // n_points)
+            out   = []
+            for i in range(n_points):
+                sl = audio[i * block : (i + 1) * block]
+                if len(sl) == 0:
+                    out.append(0.0)
+                else:
+                    out.append(float(np.sqrt(np.mean(sl ** 2))))
+            return out
+
+        waveforms         = {}   # {fn: [n_points floats]}  — full aligned clip
+        compare_waveforms = {}   # {fn: [n_points floats]}  — overlap window only
+
+        for item in loaded:
+            fn  = item["filename"]
+            seg = aligned_audio[fn]
+            waveforms[fn] = _rms_envelope(seg, _WF_POINTS)
+            ov  = seg[:overlap_n] if overlap_n > 0 else seg
+            compare_waveforms[fn] = _rms_envelope(ov, _WF_POINTS)
 
         return jsonify({
-            "offsets":   offsets,
-            "durations": durations,
-            "overlap_s": round(max(0.0, min_remaining), 3),
+            "offsets":          offsets,
+            "durations":        durations,
+            "overlap_s":        overlap_s,
+            "scores":           scores,
+            "waveforms":        waveforms,
+            "compare_waveforms": compare_waveforms,
         })
 
     # ── Delete capture ────────────────────────────────────────────────────────
@@ -837,13 +913,31 @@ audio{width:100%;height:30px}
 .clips-panel-bar-lbl{font-size:11px;color:var(--mu);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
 .align-panel{padding:12px 14px;border-top:1px solid var(--bor);background:#030b18}
 .align-hdr{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
-.align-track{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid rgba(23,52,95,.35)}
+.align-track{display:grid;grid-template-columns:170px auto auto 1fr auto;align-items:start;gap:8px;padding:8px 0;border-bottom:1px solid rgba(23,52,95,.35)}
 .align-track:last-child{border:none}
-.align-track-info{width:180px;flex-shrink:0;min-width:0}
-.align-track audio{flex:1;height:30px;min-width:120px}
+.align-track-info{min-width:0}
+.align-track audio{height:28px;width:100%}
 .offset-pill{background:rgba(23,168,255,.15);color:var(--acc);border:1px solid rgba(23,168,255,.3);border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600;white-space:nowrap;flex-shrink:0}
 .offset-pill.zero{background:rgba(34,197,94,.12);color:var(--ok);border-color:rgba(34,197,94,.3)}
 .overlap-badge{background:rgba(245,158,11,.12);color:var(--wn);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600}
+/* score pill */
+.score-pill{border-radius:4px;padding:1px 7px;font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0}
+.score-ex{background:rgba(34,197,94,.15);color:#4ade80;border:1px solid rgba(34,197,94,.3)}
+.score-gd{background:rgba(23,168,255,.12);color:var(--acc);border:1px solid rgba(23,168,255,.25)}
+.score-fr{background:rgba(245,158,11,.12);color:var(--wn);border:1px solid rgba(245,158,11,.3)}
+.score-pr{background:rgba(239,68,68,.12);color:var(--al);border:1px solid rgba(239,68,68,.3)}
+.score-ref{background:rgba(138,164,200,.1);color:var(--mu);border:1px solid rgba(138,164,200,.2)}
+/* waveform */
+.wf-canvas{width:100%;height:52px;display:block;border-radius:4px;cursor:crosshair}
+.wf-row{margin-top:6px}
+.wf-row label{font-size:10px;color:var(--mu);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;display:block}
+/* compare view */
+.compare-panel{margin-top:12px;padding-top:12px;border-top:1px solid rgba(23,52,95,.5)}
+.compare-panel label{font-size:10px;color:var(--mu);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;display:block}
+.compare-canvas{width:100%;height:80px;display:block;border-radius:4px;background:#020810}
+.compare-legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:5px}
+.compare-legend-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--mu)}
+.compare-legend-swatch{width:12px;height:3px;border-radius:2px;flex-shrink:0}
 </style>
 </head>
 <body>
@@ -1233,8 +1327,11 @@ function deleteCapture(capId){
 }
 
 // ── alignment ──────────────────────────────────────────────────────────────
+
+// Colour palette for compare waveform (up to 8 streams)
+var _WF_COLORS = ['#17a8ff','#22c55e','#f59e0b','#ef4444','#a78bfa','#fb923c','#34d399','#f472b6'];
+
 function alignCapture(capId, btn){
-  // Toggle: if align panel already visible, hide and reset button
   var ap = document.getElementById('ap_'+capId);
   if(ap && ap.innerHTML){
     ap.innerHTML='';
@@ -1249,7 +1346,6 @@ function alignCapture(capId, btn){
     })
     .then(function(data){
       btn.disabled=false; btn.classList.remove('shimmer'); btn.textContent='⇌ Hide Alignment';
-      // Find the cap object from DOM data attribute
       var row = document.querySelector('.cap-row[data-capid="'+capId+'"]');
       var cap = row ? JSON.parse(row.dataset.cap||'{}') : {};
       applyAlignment(capId, data, cap.clips||[]);
@@ -1260,61 +1356,244 @@ function alignCapture(capId, btn){
     });
 }
 
+function _scoreClass(s, isRef){
+  if(isRef) return 'score-pill score-ref';
+  if(s===null||s===undefined) return 'score-pill score-pr';
+  if(s>=0.88) return 'score-pill score-ex';
+  if(s>=0.70) return 'score-pill score-gd';
+  if(s>=0.50) return 'score-pill score-fr';
+  return 'score-pill score-pr';
+}
+function _scoreLabel(s, isRef){
+  if(isRef) return 'Reference';
+  if(s===null||s===undefined) return 'N/A';
+  var pct = Math.round(s*100);
+  if(s>=0.88) return pct+'% ✓';
+  if(s>=0.70) return pct+'%';
+  if(s>=0.50) return pct+'% ⚠';
+  return pct+'% ✗';
+}
+function _scoreTitle(s, isRef){
+  if(isRef) return 'Reference clip — all others scored against this';
+  if(s===null||s===undefined) return 'Insufficient overlap to score';
+  var pct = Math.round(s*100);
+  if(s>=0.88) return pct+'% correlation — excellent match';
+  if(s>=0.70) return pct+'% — good match (normal for FM processed vs DAB)';
+  if(s>=0.50) return pct+'% — fair (heavy processing or different path EQ)';
+  return pct+'% — poor match (check content or alignment)';
+}
+
+function _drawWaveform(canvas, points, color, bg){
+  var W = canvas.offsetWidth || 600;
+  var H = canvas.height;
+  canvas.width = W;
+  var ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  if(bg){ ctx.fillStyle=bg; ctx.fillRect(0,0,W,H); }
+  if(!points||!points.length) return;
+  var max = Math.max.apply(null, points) || 1;
+  var cx  = W / points.length;
+  ctx.fillStyle = color;
+  for(var i=0;i<points.length;i++){
+    var h = (points[i]/max) * (H/2-1);
+    var x = Math.round(i*cx);
+    var w = Math.max(1, Math.round(cx));
+    var mid = H/2;
+    ctx.fillRect(x, mid-h, w, h*2);
+  }
+  // Centre line
+  ctx.fillStyle = 'rgba(255,255,255,0.07)';
+  ctx.fillRect(0, H/2-1, W, 1);
+}
+
+function _drawCompare(canvas, allPoints, colors){
+  var W = canvas.offsetWidth || 600;
+  var H = canvas.height;
+  canvas.width = W;
+  var ctx = canvas.getContext('2d');
+  ctx.fillStyle='#020810'; ctx.fillRect(0,0,W,H);
+  // Find global max for shared scale
+  var gmax = 0;
+  allPoints.forEach(function(pts){ if(pts){ var m=Math.max.apply(null,pts); if(m>gmax) gmax=m; } });
+  if(!gmax) gmax=1;
+  allPoints.forEach(function(pts, idx){
+    if(!pts) return;
+    var color = colors[idx % colors.length];
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.5;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    var cx = W / pts.length;
+    for(var i=0;i<pts.length;i++){
+      var x   = i * cx + cx/2;
+      var amp = (pts[i]/gmax) * (H/2 - 2);
+      if(i===0) ctx.moveTo(x, H/2 - amp);
+      else       ctx.lineTo(x, H/2 - amp);
+    }
+    // Mirror bottom
+    for(var i=pts.length-1;i>=0;i--){
+      var x   = i * cx + cx/2;
+      var amp = (pts[i]/gmax) * (H/2 - 2);
+      ctx.lineTo(x, H/2 + amp);
+    }
+    ctx.closePath();
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.globalAlpha = 0.85;
+    ctx.stroke();
+  });
+  ctx.globalAlpha=1;
+  ctx.fillStyle='rgba(255,255,255,0.06)';
+  ctx.fillRect(0,H/2-1,W,1);
+}
+
 function applyAlignment(capId, data, clips){
   var ap = document.getElementById('ap_'+capId);
   if(!ap) return;
 
-  var offsets   = data.offsets   || {};
-  var durations = data.durations || {};
-  var overlapS  = data.overlap_s || 0;
+  var offsets   = data.offsets            || {};
+  var durations = data.durations          || {};
+  var scores    = data.scores             || {};
+  var waveforms = data.waveforms          || {};
+  var cmpWaves  = data.compare_waveforms  || {};
+  var overlapS  = data.overlap_s          || 0;
 
-  // Build the aligned track list in clip order
   var tracks = clips.filter(function(cl){ return offsets[cl.filename]!==undefined; });
+  if(!tracks.length){
+    ap.innerHTML='<div class="no-clips" style="margin:10px">Could not correlate clips.</div>';
+    return;
+  }
 
-  if(!tracks.length){ ap.innerHTML='<div class="no-clips" style="margin:10px">Could not correlate clips.</div>'; return; }
+  // Score hint: note about processing differences
+  var scoreNote = '<span style="font-size:10px;color:var(--mu)">Scores below 90% are normal when comparing FM processed vs DAB vs unprocessed feeds</span>';
 
   var html = '<div class="align-panel">';
   html += '<div class="align-hdr">';
   html += '<button class="btn bp bs" id="play-all-'+capId+'">▶ Play All Aligned</button>';
   html += '<button class="btn bg bs" id="stop-all-'+capId+'">■ Stop All</button>';
+  html += '<button class="btn bg bs" id="cmp-btn-'+capId+'">📊 Compare Waveforms</button>';
   html += '<span class="overlap-badge" title="Duration of the common aligned region">⧖ '+overlapS.toFixed(1)+' s overlap</span>';
+  html += scoreNote;
   html += '</div>';
 
-  tracks.forEach(function(cl){
-    var fn  = cl.filename;
-    var off = offsets[fn] || 0;
-    var dur = durations[fn] || 0;
-    var src = '/api/synccap/clip/'+capId+'/'+encodeURIComponent(fn);
+  // Per-track rows
+  tracks.forEach(function(cl, idx){
+    var fn       = cl.filename;
+    var off      = offsets[fn] || 0;
+    var dur      = durations[fn] || 0;
+    var sc       = scores[fn];
+    var isRef    = idx === 0;
+    var src      = '/api/synccap/clip/'+capId+'/'+encodeURIComponent(fn);
     var offLabel = off===0 ? '+0.0 s' : (off>0?'+':'')+off.toFixed(3)+' s';
     var pillCls  = off===0 ? 'offset-pill zero' : 'offset-pill';
-    var ch = cl.n_ch===2?'<span class="badge b-mu" style="font-size:9px;margin-left:4px">STEREO</span>':'';
-    html += '<div class="align-track">';
-    html += '<div class="align-track-info"><div class="clip-site">'+esc(cl.site)+'</div>'
-          + '<div class="clip-stream" style="font-size:12px;font-weight:600">'+esc(cl.stream)+ch+'</div></div>';
-    html += '<span class="'+pillCls+'" title="Skip this many seconds to reach the common start point">'+offLabel+'</span>';
+    var ch       = cl.n_ch===2?'<span class="badge b-mu" style="font-size:9px;margin-left:4px">STEREO</span>':'';
+    var trackColor = _WF_COLORS[idx % _WF_COLORS.length];
+
+    html += '<div class="align-track" data-fn="'+esc(fn)+'">';
+    html += '<div class="align-track-info">'
+          + '<div class="clip-site" style="font-size:10px;color:var(--mu)">'+esc(cl.site)+'</div>'
+          + '<div class="clip-stream" style="font-size:12px;font-weight:600">'+esc(cl.stream)+ch+'</div>'
+          + '</div>';
+    html += '<span class="'+pillCls+'" title="Skip from clip start to reach common programme point">'+offLabel+'</span>';
+    html += '<span class="'+_scoreClass(sc,isRef)+'" title="'+_scoreTitle(sc,isRef)+'">'+_scoreLabel(sc,isRef)+'</span>';
+    html += '<div style="display:flex;flex-direction:column;gap:4px;min-width:0">';
     html += '<audio class="align-audio" controls preload="metadata" src="'+src+'"'
-          + ' data-offset="'+off+'" style="flex:1;height:30px;min-width:120px"></audio>';
-    html += '<span style="color:var(--mu);font-size:11px;flex-shrink:0">'+dur.toFixed(1)+' s</span>';
+          + ' data-offset="'+off+'" style="width:100%;height:28px"></audio>';
+    html += '<canvas class="wf-canvas" data-fn="'+esc(fn)+'" height="40"'
+          + ' style="background:#020810;" title="Waveform (RMS envelope)"></canvas>';
+    html += '</div>';
+    html += '<span style="color:var(--mu);font-size:11px;flex-shrink:0;white-space:nowrap">'+dur.toFixed(1)+' s</span>';
     html += '</div>';
   });
+
+  // Compare panel (initially hidden)
+  html += '<div id="cmp-panel-'+capId+'" class="compare-panel" style="display:none">';
+  html += '<label>Aligned Waveform Comparison — overlap region</label>';
+  html += '<canvas id="cmp-canvas-'+capId+'" class="compare-canvas" height="80"></canvas>';
+  html += '<div class="compare-legend" id="cmp-legend-'+capId+'"></div>';
+  html += '</div>';
 
   html += '</div>';
   ap.innerHTML = html;
 
-  // Play All — set currentTime to offset then play each
+  // Draw individual waveforms
+  tracks.forEach(function(cl, idx){
+    var fn     = cl.filename;
+    var canvas = ap.querySelector('.wf-canvas[data-fn="'+CSS.escape(fn)+'"]');
+    if(!canvas) return;
+    var color  = _WF_COLORS[idx % _WF_COLORS.length];
+    // Use rAF so the element has laid out and offsetWidth is real
+    requestAnimationFrame(function(){
+      _drawWaveform(canvas, waveforms[fn], color, '#020810');
+    });
+  });
+
+  // Build compare legend
+  var legendEl = document.getElementById('cmp-legend-'+capId);
+  if(legendEl){
+    var legendHtml='';
+    tracks.forEach(function(cl, idx){
+      var color = _WF_COLORS[idx % _WF_COLORS.length];
+      legendHtml += '<div class="compare-legend-item">'
+        +'<div class="compare-legend-swatch" style="background:'+color+'"></div>'
+        +esc(cl.stream)+' <span style="color:#445566">('+esc(cl.site)+')</span>'
+        +'</div>';
+    });
+    legendEl.innerHTML = legendHtml;
+  }
+
+  // Compare waveforms button
+  var cmpBtn    = document.getElementById('cmp-btn-'+capId);
+  var cmpPanel  = document.getElementById('cmp-panel-'+capId);
+  var cmpCanvas = document.getElementById('cmp-canvas-'+capId);
+  var _cmpDrawn = false;
+  if(cmpBtn && cmpPanel && cmpCanvas){
+    cmpBtn.addEventListener('click', function(){
+      var vis = cmpPanel.style.display!=='none';
+      cmpPanel.style.display = vis ? 'none' : '';
+      cmpBtn.textContent = vis ? '📊 Compare Waveforms' : '📊 Hide Comparison';
+      if(!vis && !_cmpDrawn){
+        _cmpDrawn = true;
+        requestAnimationFrame(function(){
+          var allPts  = tracks.map(function(cl){ return cmpWaves[cl.filename]||null; });
+          var colors  = tracks.map(function(_,i){ return _WF_COLORS[i%_WF_COLORS.length]; });
+          _drawCompare(cmpCanvas, allPts, colors);
+        });
+      }
+    });
+  }
+
+  // Play All
   document.getElementById('play-all-'+capId).addEventListener('click', function(){
     ap.querySelectorAll('.align-audio').forEach(function(aud){
-      var off = parseFloat(aud.dataset.offset)||0;
-      aud.currentTime = off;
+      aud.currentTime = parseFloat(aud.dataset.offset)||0;
       aud.play().catch(function(){});
     });
   });
 
   // Stop All
   document.getElementById('stop-all-'+capId).addEventListener('click', function(){
-    ap.querySelectorAll('.align-audio').forEach(function(aud){
-      aud.pause();
-    });
+    ap.querySelectorAll('.align-audio').forEach(function(aud){ aud.pause(); });
+  });
+
+  // Redraw waveforms on resize
+  var _resizeTm;
+  window.addEventListener('resize', function(){
+    clearTimeout(_resizeTm);
+    _resizeTm = setTimeout(function(){
+      tracks.forEach(function(cl, idx){
+        var fn     = cl.filename;
+        var canvas = ap.querySelector('.wf-canvas[data-fn="'+CSS.escape(fn)+'"]');
+        if(!canvas) return;
+        _drawWaveform(canvas, waveforms[fn], _WF_COLORS[idx%_WF_COLORS.length], '#020810');
+      });
+      if(_cmpDrawn && cmpCanvas){
+        var allPts = tracks.map(function(cl){ return cmpWaves[cl.filename]||null; });
+        var colors = tracks.map(function(_,i){ return _WF_COLORS[i%_WF_COLORS.length]; });
+        _drawCompare(cmpCanvas, allPts, colors);
+      }
+    }, 150);
   });
 }
 
