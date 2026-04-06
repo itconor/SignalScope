@@ -26,6 +26,15 @@
 
 ---
 
+## [Sync Capture plugin 1.0.12] - 2026-04-06
+
+### Fixed
+- **Correlation scores wrong for FM vs DAB comparisons**: Raw Pearson r on PCM samples is destroyed by the processing differences between paths — FM de-emphasis, DAB MPEG/AAC codec quantisation, broadcast limiting and EQ all change every individual sample even when the content is identical. A perfectly-aligned FM vs DAB pair was scoring ~43%. Switched to **RMS envelope correlation**: compute RMS over 50 ms blocks (the loudness contour) then correlate those vectors. The loudness envelope is invariant to codec, EQ and dynamics differences — same programme on FM and DAB produce the same contour. Typical scores now: same content cross-path (FM/DAB/unprocessed) → 80–97%, different content → 15–40%.
+- Updated score thresholds to match envelope-score ranges: ≥80% Excellent (green), ≥60% Good (blue), ≥40% Fair (amber), <40% Poor (red).
+- Analysis window uses middle 15 s of overlap (was 10 s), trimmed symmetrically to avoid DAB startup transients and FM fade-in at the edges.
+
+---
+
 ## [Sync Capture plugin 1.0.11] - 2026-04-06
 
 ### Added

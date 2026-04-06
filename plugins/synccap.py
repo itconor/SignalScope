@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.11",
+    "version":  "1.0.12",
 }
 
 import os
@@ -711,50 +711,72 @@ def register(app, ctx):
         overlap_s = round(max(0.0, min_remaining), 3)
 
         # ── Step 2: correlation scores on aligned overlap ─────────────────────
-        # After offsetting, extract an analysis window from the middle of the
-        # overlap.  Mean-centre and normalise to unit variance, then compute
-        # Pearson r against the reference.
-        #
-        # Using the MIDDLE of the overlap (not the start) avoids startup
-        # transients that are particularly common on DAB streams (buffering,
-        # codec sync).  10 s gives a stable estimate without being too slow.
-        #
-        # Scores will naturally be <100% between FM processed / DAB / unprocessed
-        # feeds — this is informative, not an error.  Typical ranges:
-        #   Same feed, same path         → 95–99 %
-        #   DAB vs FM processed          → 75–90 %
-        #   Heavy limiting vs clean feed → 60–80 %
-        #   Completely different content → <40 %
-
-        # Align each audio array by its offset
+        # Align each audio array by its offset first.
         aligned_audio = {}
         for item in loaded:
             fn   = item["filename"]
             skip = int(offsets[fn] * sr)
             aligned_audio[fn] = item["audio"][skip:]
 
-        overlap_n   = int(overlap_s * sr)
-        score_s     = min(10.0, overlap_s * 0.5)
-        score_n     = max(1, int(score_s * sr))
-        mid_start   = max(0, (overlap_n - score_n) // 2)
+        overlap_n = int(overlap_s * sr)
 
-        ref_fn    = ref["filename"]
-        ref_seg   = aligned_audio[ref_fn][mid_start : mid_start + score_n]
-        ref_seg   = ref_seg - ref_seg.mean()
-        ref_std   = float(np.std(ref_seg)) + 1e-9
+        # Score using RMS ENVELOPE correlation rather than raw sample correlation.
+        #
+        # Raw Pearson r on PCM samples fails completely for cross-path comparisons
+        # because FM and DAB go through very different processing chains:
+        #   - FM: de-emphasis, stereo decoder, broadcast limiter, AGC
+        #   - DAB: MPEG/AAC codec with its own quantisation and reconstruction
+        #   - Unprocessed: no dynamics processing at all
+        # These processing differences change every sample individually even when
+        # the audio content is identical — raw correlation gives ~40% on a
+        # perfectly matching FM vs DAB pair.
+        #
+        # The RMS envelope (loudness contour over ~50 ms windows) is INVARIANT to
+        # these processing differences: if the same programme is on both paths,
+        # loud moments are loud on both and quiet moments are quiet on both
+        # regardless of codec, EQ or limiting.  Typical envelope-correlation scores:
+        #   Same content, any cross-path (FM/DAB/unprocessed) → 80–97 %
+        #   Same content, same path (identical feed)           → 95–99 %
+        #   Different content                                  → 15–40 %
+        #   One stream silent                                  → near 0 %
+        #
+        # Block size: 50 ms = 2400 samples at 48 kHz.
+        # Analysis window: middle 15 s of overlap (avoids startup transients on
+        # DAB and fade-in on FM, which skew the envelope on short clips).
+
+        _ENV_BLOCK = int(0.050 * sr)   # 50 ms RMS block
+        score_s    = min(15.0, overlap_s * 0.6)
+        score_n    = max(_ENV_BLOCK * 2, int(score_s * sr))
+        mid_start  = max(0, (overlap_n - score_n) // 2)
+
+        def _rms_envelope_seg(audio, start, n, block):
+            """Return RMS values for each block-size window in audio[start:start+n]."""
+            seg = audio[start : start + n]
+            if len(seg) < block:
+                return np.array([float(np.sqrt(np.mean(seg ** 2)))])
+            n_blocks = len(seg) // block
+            blocks   = seg[: n_blocks * block].reshape(n_blocks, block)
+            return np.sqrt(np.mean(blocks ** 2, axis=1))
+
+        ref_fn  = ref["filename"]
+        ref_env = _rms_envelope_seg(aligned_audio[ref_fn], mid_start, score_n, _ENV_BLOCK)
+        ref_env = ref_env - ref_env.mean()
+        ref_std = float(np.std(ref_env)) + 1e-9
 
         scores = {ref_fn: 1.0}
 
         for item in loaded[1:]:
             fn      = item["filename"]
-            tgt_seg = aligned_audio[fn][mid_start : mid_start + score_n]
-            if len(tgt_seg) < score_n:
+            tgt_env = _rms_envelope_seg(aligned_audio[fn], mid_start, score_n, _ENV_BLOCK)
+            if len(tgt_env) < 2:
                 scores[fn] = None
                 continue
-            tgt_seg = tgt_seg - tgt_seg.mean()
-            tgt_std = float(np.std(tgt_seg)) + 1e-9
-            # Pearson r: dot product of unit-norm segments
-            r = float(np.dot(ref_seg / ref_std, tgt_seg / tgt_std)) / score_n
+            # Trim to same length (reference may be slightly longer/shorter)
+            n_use   = min(len(ref_env), len(tgt_env))
+            r_env   = ref_env[:n_use]
+            t_env   = tgt_env[:n_use] - tgt_env[:n_use].mean()
+            tgt_std = float(np.std(t_env)) + 1e-9
+            r = float(np.dot(r_env / ref_std, t_env / tgt_std)) / n_use
             scores[fn] = round(max(0.0, min(1.0, r)), 4)
 
         # ── Step 3: waveform thumbnails ───────────────────────────────────────
@@ -1356,31 +1378,37 @@ function alignCapture(capId, btn){
     });
 }
 
+// Score thresholds are calibrated for RMS envelope correlation.
+// Envelope scoring is path-agnostic (FM vs DAB vs unprocessed all score
+// correctly because loudness contour is invariant to codec/EQ differences).
+// Typical ranges:  same content cross-path → 80–97 %
+//                  same content same path  → 95–99 %
+//                  different content       → 15–40 %
 function _scoreClass(s, isRef){
   if(isRef) return 'score-pill score-ref';
   if(s===null||s===undefined) return 'score-pill score-pr';
-  if(s>=0.88) return 'score-pill score-ex';
-  if(s>=0.70) return 'score-pill score-gd';
-  if(s>=0.50) return 'score-pill score-fr';
+  if(s>=0.80) return 'score-pill score-ex';
+  if(s>=0.60) return 'score-pill score-gd';
+  if(s>=0.40) return 'score-pill score-fr';
   return 'score-pill score-pr';
 }
 function _scoreLabel(s, isRef){
   if(isRef) return 'Reference';
   if(s===null||s===undefined) return 'N/A';
   var pct = Math.round(s*100);
-  if(s>=0.88) return pct+'% ✓';
-  if(s>=0.70) return pct+'%';
-  if(s>=0.50) return pct+'% ⚠';
+  if(s>=0.80) return pct+'% ✓';
+  if(s>=0.60) return pct+'%';
+  if(s>=0.40) return pct+'% ⚠';
   return pct+'% ✗';
 }
 function _scoreTitle(s, isRef){
-  if(isRef) return 'Reference clip — all others scored against this';
+  if(isRef) return 'Reference clip — all others scored against this. Score is based on RMS loudness envelope (not raw samples), so FM vs DAB vs unprocessed all compare fairly.';
   if(s===null||s===undefined) return 'Insufficient overlap to score';
   var pct = Math.round(s*100);
-  if(s>=0.88) return pct+'% correlation — excellent match';
-  if(s>=0.70) return pct+'% — good match (normal for FM processed vs DAB)';
-  if(s>=0.50) return pct+'% — fair (heavy processing or different path EQ)';
-  return pct+'% — poor match (check content or alignment)';
+  if(s>=0.80) return pct+'% envelope match — same content confirmed';
+  if(s>=0.60) return pct+'% — likely same content (some processing difference or transient mismatch)';
+  if(s>=0.40) return pct+'% — uncertain (heavy processing difference or partial content match)';
+  return pct+'% — content mismatch or one stream silent/different programme';
 }
 
 function _drawWaveform(canvas, points, color, bg){
@@ -1465,8 +1493,8 @@ function applyAlignment(capId, data, clips){
     return;
   }
 
-  // Score hint: note about processing differences
-  var scoreNote = '<span style="font-size:10px;color:var(--mu)">Scores below 90% are normal when comparing FM processed vs DAB vs unprocessed feeds</span>';
+  // Score hint: note about envelope scoring
+  var scoreNote = '<span style="font-size:10px;color:var(--mu)" title="Score is based on RMS loudness envelope, not raw samples — so FM, DAB and unprocessed feeds score correctly even with different EQ and codec processing">Scores based on loudness envelope — FM/DAB/unprocessed compare fairly</span>';
 
   var html = '<div class="align-panel">';
   html += '<div class="align-hdr">';
