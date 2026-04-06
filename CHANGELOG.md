@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.114] - 2026-04-06
+
+### Fixed
+- **Mono-on-Stereo false positives on DAB inputs** — DAB joint stereo encodes L/R as mid/side rather than two independent channels. The decoded L and R have near-identical RMS levels even on genuine stereo content, so the level-based correlation estimate always sits near 1.0 and the alert fires constantly. The detector is now suppressed for any input whose `device_index` starts with `dab://`. The Settings UI help text also notes this limitation.
+
+---
+
 ## [3.5.113] - 2026-04-06
 
 ### Added

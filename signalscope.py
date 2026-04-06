@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.113"
+BUILD                  = "SignalScope-3.5.114"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -7187,7 +7187,11 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
     # For genuine stereo content r ≈ 0.3–0.8; for mono-on-stereo r ≈ 1.0.
     if (cfg.alert_on_mono_on_stereo
             and getattr(cfg, '_audio_channels', 1) == 2
-            and lev > cfg.silence_threshold_dbfs):
+            and lev > cfg.silence_threshold_dbfs
+            # DAB joint-stereo encodes L/R as mid/side — decoded L and R have
+            # near-identical RMS even on genuine stereo content, so this
+            # level-based correlation estimate is unreliable for DAB inputs.
+            and not (cfg.device_index or '').lower().startswith('dab://')):
         _mos_l = getattr(cfg, '_level_dbfs_l', -120.0)
         _mos_r = getattr(cfg, '_level_dbfs_r', -120.0)
         if (_mos_l > cfg.silence_threshold_dbfs + 6.0
@@ -21422,7 +21426,7 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       <span class="acard-badge" id="abadge-monost"></span>
     </div>
     <div class="acard-body" id="abody-monost">
-      <p class="help">Detects when a stereo output is carrying identical L and R channels — a common patching error. Derives L-R correlation mathematically from available level readings; no raw stereo samples needed. Disabled by default — many legitimate streams run mono content.</p>
+      <p class="help">Detects when a stereo output is carrying identical L and R channels — a common patching error. Derives L-R correlation mathematically from available level readings; no raw stereo samples needed. Disabled by default — many legitimate streams run mono content. <strong>Not available for DAB inputs</strong> — DAB joint stereo encodes L/R as mid/side, giving near-identical RMS levels even on genuine stereo content, making this detector unreliable.</p>
       <div class="fg2">
         <label class="lbl">Correlation threshold (0–1)<span class="tip" data-tip="L-R correlation above this value is considered mono. 0.98 is a safe default — genuine stereo programme material rarely exceeds 0.9 on average.">ⓘ</span>
           <input type="number" name="mono_on_stereo_corr" value="{{inp.mono_on_stereo_corr}}" step="0.01" min="0.80" max="1.0">
