@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.91] - 2026-04-06
+
+### Fixed
+- **DAB + FM on Pi — `usb_claim_interface error -6` cascade**: when a shared DAB mux session failed (e.g. at startup with FM also running on the same dongle), `_stop_dab_session` was calling `p.kill()` but never calling `p.wait()` after it. The 0.5 s sleep could complete while the killed process was still in the kernel's process table, still holding the USB interface claim. All 8 streams then retried simultaneously; the new welle-cli launch hit the same error -6 because the old process hadn't fully released the USB device.
+  - Added `p.wait(timeout=3)` immediately after `p.kill()` — process exit is now confirmed before proceeding
+  - Increased USB settle sleep from 0.5 s → 2.0 s after confirmed process exit
+  - Increased the shared USB backoff from 3.0 s → 8.0 s to cover the worst-case shutdown path (terminate timeout 2 s + kill wait 3 s + settle 2 s + headroom)
+
+---
+
 ## [3.5.90] - 2026-04-06
 
 ### Fixed

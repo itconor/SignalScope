@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.90"
+BUILD                  = "SignalScope-3.5.91"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8886,7 +8886,7 @@ class MonitorManager:
                             # device index wait 3 s before the next attempt,
                             # preventing rapid-fire crash loops that lock up
                             # the USB bus entirely.
-                            self._dab_usb_backoffs[session.device_idx] = time.time() + 3.0
+                            self._dab_usb_backoffs[session.device_idx] = time.time() + 8.0
                         session.failed = True
                         session.ready.set()
                         try:
@@ -9049,11 +9049,20 @@ class MonitorManager:
                     p.kill()
                 except Exception:
                     pass
+                # CRITICAL: wait for the killed process to fully exit before
+                # sleeping.  Without this p.wait() the process may still hold the
+                # USB interface when time.sleep() completes, causing the next
+                # welle-cli launch to get LIBUSB_ERROR_BUSY (-6) regardless of
+                # how long we sleep.
+                try:
+                    p.wait(timeout=3)
+                except Exception:
+                    pass
         # Give the USB stack a moment to fully release the device interface.
-        # Without this, a monitor restart can hit LIBUSB_ERROR_BUSY (-6) on the
-        # very next welle-cli launch because the kernel hasn't yet released the
-        # USB claim even though the process has exited.
-        time.sleep(0.5)
+        # Raised from 0.5 s → 2.0 s: on a Pi with both FM and DAB inputs the
+        # kernel needs more time to process the USB interface release after the
+        # process exits, especially when multiple sessions fail in a cascade.
+        time.sleep(2.0)
         # Release the SDR device claim so FM/scanner streams can use it again
         try:
             sdr_manager.release_dab_device(session.device_idx)
