@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.110"
+BUILD                  = "SignalScope-3.5.111"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -11959,7 +11959,16 @@ class HubClient:
     _REMOTE_BOOL_FIELDS = frozenset({
         "stereo", "fm_force_mono",
         "alert_on_silence", "alert_on_hiss", "alert_on_clip",
+        "alert_on_overmod", "alert_on_hum", "alert_on_dc_offset",
+        "alert_on_phase_reversal", "alert_on_stereo_imbalance",
+        "alert_on_mono_on_stereo", "glitch_detect", "flatness_detect",
         "ai_monitor", "enabled",
+    })
+
+    # Whitelisted numeric (float) fields that hub admins may set remotely.
+    _REMOTE_FLOAT_FIELDS = frozenset({
+        "silence_threshold_dbfs", "silence_min_duration",
+        "overmod_clip_pct",
     })
 
     def _cmd_set_input_field(self, payload: dict):
@@ -11967,15 +11976,23 @@ class HubClient:
         name  = str(payload.get("name", "")).strip()
         field = str(payload.get("field", "")).strip()
         value = payload.get("value")
-        if field not in self._REMOTE_BOOL_FIELDS:
+        if field in self._REMOTE_BOOL_FIELDS:
+            cast_value = bool(value)
+        elif field in self._REMOTE_FLOAT_FIELDS:
+            try:
+                cast_value = float(value)
+            except (TypeError, ValueError):
+                monitor.log(f"[Hub] set_input_field: invalid float value for '{field}' — ignored")
+                return
+        else:
             monitor.log(f"[Hub] set_input_field: field '{field}' not in whitelist — ignored")
             return
         cfg = self._cfg_fn()
         for inp in cfg.inputs:
             if inp.name == name:
-                setattr(inp, field, bool(value))
+                setattr(inp, field, cast_value)
                 save_config(cfg)
-                monitor.log(f"[Hub] Remote set_input_field: '{name}'.{field} = {bool(value)}")
+                monitor.log(f"[Hub] Remote set_input_field: '{name}'.{field} = {cast_value}")
                 self._restart_if_running()
                 return
         monitor.log(f"[Hub] set_input_field: '{name}' not found — ignored")
@@ -26655,14 +26672,26 @@ def hub_input_set_field(site_name):
     name  = str(data.get("name", "")).strip()
     field = str(data.get("field", "")).strip()
     value = data.get("value")
-    _allowed = {"stereo", "fm_force_mono", "fm_deemphasis", "alert_on_silence", "alert_on_hiss",
-                "alert_on_clip", "ai_monitor", "enabled"}
+    _bool_fields  = {"stereo", "fm_force_mono", "fm_deemphasis", "alert_on_silence",
+                     "alert_on_hiss", "alert_on_clip", "alert_on_overmod", "alert_on_hum",
+                     "alert_on_dc_offset", "alert_on_phase_reversal", "alert_on_stereo_imbalance",
+                     "alert_on_mono_on_stereo", "glitch_detect", "flatness_detect",
+                     "ai_monitor", "enabled"}
+    _float_fields = {"silence_threshold_dbfs", "silence_min_duration", "overmod_clip_pct"}
+    _allowed = _bool_fields | _float_fields
     if not name:  return jsonify({"error": "name is required"}), 400
     if field not in _allowed:
         return jsonify({"error": f"field '{field}' not allowed; must be one of: {sorted(_allowed)}"}), 400
+    if field in _float_fields:
+        try:
+            typed_value = float(value)
+        except (TypeError, ValueError):
+            return jsonify({"error": f"field '{field}' requires a numeric value"}), 400
+    else:
+        typed_value = bool(value)
     hub_server.push_pending_command(site_name, {
         "type": "set_input_field",
-        "payload": {"name": name, "field": field, "value": bool(value)},
+        "payload": {"name": name, "field": field, "value": typed_value},
     })
     return jsonify({"ok": True, "note": "set_input_field queued for next heartbeat"})
 
@@ -37279,6 +37308,50 @@ document.addEventListener('change',function(e){
   var section=sel.closest('.sc-hist'); if(!section) return;
   if(sel.closest('.sc-hist-body').style.display==='block') _scHistLoad(section);
 });
+
+// ── Detection settings panel ───────────────────────────────────────────────────
+function _getCsrfHub(){
+  return (document.querySelector('meta[name="csrf-token"]')||{}).content
+      || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+}
+function _scCfgSet(site,stream,field,value,el){
+  fetch('/api/hub/site/'+encodeURIComponent(site)+'/input/set_field',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':_getCsrfHub()},
+    body:JSON.stringify({name:stream,field:field,value:value})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(el){el.style.outline=d.ok?'2px solid var(--ok)':'2px solid var(--al)';
+      if(d.ok) setTimeout(function(){el.style.outline='';},1200);}
+    if(!d.ok) console.warn('[SignalScope] set_field error:',d.error);
+  }).catch(function(e){
+    if(el) el.style.outline='2px solid var(--al)';
+    console.warn('[SignalScope] set_field failed:',e);
+  });
+}
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.sc-cfg-btn');
+  if(!btn) return;
+  var panel=document.getElementById(btn.dataset.panel);
+  if(!panel) return;
+  var open=panel.style.display==='block';
+  panel.style.display=open?'none':'block';
+  btn.style.background=open?'':'var(--bor)';
+});
+document.addEventListener('change',function(e){
+  var chk=e.target.closest('.sc-cfg-chk');
+  if(chk){_scCfgSet(chk.dataset.site,chk.dataset.stream,chk.dataset.field,chk.checked,chk);return;}
+  var num=e.target.closest('.sc-cfg-num');
+  if(num){var v=parseFloat(num.value);if(!isNaN(v))_scCfgSet(num.dataset.site,num.dataset.stream,num.dataset.field,v,num);}
+});
+document.addEventListener('keydown',function(e){
+  if(e.key!=='Enter') return;
+  var num=e.target.closest('.sc-cfg-num');
+  if(!num) return;
+  var v=parseFloat(num.value);if(isNaN(v))return;
+  _scCfgSet(num.dataset.site,num.dataset.stream,num.dataset.field,v,num);
+  num.blur();
+});
+
 // ── Availability timeline ──────────────────────────────────────────────────────
 var _TL_HOURS = [24, 1, 6];
 var _TL_COLORS = {ok:'#22c55e', silence:'#ef4444', dab_missing:'#f59e0b', nodata:'#1e2a3a'};
@@ -37749,6 +37822,55 @@ setInterval(_loadTrends, 300000);
         <button class="btn bp bs" data-sidx="{{loop.index0}}" data-site="{{ci}}" data-action="live"
           data-url="/hub/site/{{site.site|urlencode}}/stream/{{ci}}/live"
           data-name="{{s.name}}" data-site-name="{{site.site}}">▶ Live</button>
+        <button class="btn bg bs sc-cfg-btn" title="Detection settings"
+          data-site="{{site.site|e}}" data-stream="{{s.name|e}}"
+          data-panel="sc_cfg_{{site.site|safe_lkey}}__{{i}}">⚙</button>
+      </div>
+
+      {# Detection settings panel — hidden by default, toggled by ⚙ button #}
+      <div class="sc-cfg-panel" id="sc_cfg_{{site.site|safe_lkey}}__{{i}}" style="display:none;padding:10px;border-top:1px solid var(--bor);background:#080f20">
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mu);margin-bottom:8px">Detection Settings — <span style="color:var(--acc)">{{s.name}}</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;margin-bottom:10px">
+          {%- set _bools = [
+            ("alert_on_silence",         s.alert_on_silence,         "Silence"),
+            ("alert_on_clip",            s.alert_on_clip,            "Clip"),
+            ("alert_on_hiss",            s.alert_on_hiss,            "Hiss"),
+            ("alert_on_overmod",         s.get("alert_on_overmod",False), "Overmod"),
+            ("alert_on_hum",             s.get("alert_on_hum",False),     "Mains Hum"),
+            ("alert_on_dc_offset",       s.get("alert_on_dc_offset",False),"DC Offset"),
+            ("alert_on_phase_reversal",  s.get("alert_on_phase_reversal",True), "Phase Rev"),
+            ("alert_on_stereo_imbalance",s.get("alert_on_stereo_imbalance",True),"L/R Imbal"),
+            ("alert_on_mono_on_stereo",  s.get("alert_on_mono_on_stereo",False),"Mono→Ster"),
+            ("glitch_detect",            s.get("glitch_detect",False),    "Glitch"),
+            ("flatness_detect",          s.get("flatness_detect",False),  "Flatness"),
+            ("ai_monitor",               s.ai_monitor,                    "AI Monitor"),
+          ] %}
+          {%- for field, val, label in _bools %}
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px">
+            <input type="checkbox" class="sc-cfg-chk"
+              data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-field="{{field}}"
+              {{'checked' if val else ''}} style="accent-color:var(--acc)">
+            {{label}}
+          </label>
+          {%- endfor %}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px">
+          <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--mu)">
+            Silence threshold (dBFS)
+            <input type="number" class="sc-cfg-num" step="1" min="-90" max="-10"
+              data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-field="silence_threshold_dbfs"
+              value="{{s.silence_threshold_dbfs|default(-55)|round(0)|int}}"
+              style="background:#0d1e40;border:1px solid var(--bor);border-radius:4px;color:var(--tx);padding:3px 6px;width:100%">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--mu)">
+            Silence duration (s)
+            <input type="number" class="sc-cfg-num" step="1" min="3" max="300"
+              data-site="{{site.site|e}}" data-stream="{{s.name|e}}" data-field="silence_min_duration"
+              value="{{s.silence_min_duration|default(10)|round(0)|int}}"
+              style="background:#0d1e40;border:1px solid var(--bor);border-radius:4px;color:var(--tx);padding:3px 6px;width:100%">
+          </label>
+        </div>
+        <div style="margin-top:8px;font-size:10px;color:var(--mu)">Changes queue for next client heartbeat (~10 s)</div>
       </div>
 
       {# Clip count badge #}

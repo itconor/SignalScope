@@ -2,6 +2,20 @@
 
 ---
 
+## [3.5.111] - 2026-04-06
+
+### Added — Remote detection settings from hub stream cards
+
+Each stream card on the hub overview now has a ⚙ button (in the listen strip) that opens a settings panel inline. From there hub admins can toggle any detection on/off and adjust silence threshold/duration without SSH-ing into the client. Changes are queued as `set_input_field` commands and delivered on the next client heartbeat (~10 s). A green outline flashes on the control to confirm the command was accepted; red means the request failed.
+
+**Toggles**: Silence, Clip, Hiss, Overmod, Mains Hum, DC Offset, Phase Reversal, L/R Imbalance, Mono-on-Stereo, Glitch, Flatness, AI Monitor.
+
+**Numeric fields**: Silence threshold (dBFS), Silence duration (s).
+
+Also expanded the `set_input_field` API and client command handler to support numeric (float) fields in addition to booleans — previously only boolean fields were remotely settable.
+
+---
+
 ## [3.5.110] - 2026-04-06
 
 ### Fixed — Alert noise reduction for new streams
