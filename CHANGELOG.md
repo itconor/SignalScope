@@ -2,15 +2,16 @@
 
 ---
 
-## [Plugin Manager 1.0.0] - 2026-04-06
+## [3.5.88] - 2026-04-06
 
 ### Added
-- **New plugin: Plugin Manager** — hub-only page showing every connected site's installed plugins in a single matrix. Install, update, and remove plugins on the hub and on any approved client from one screen.
-- **Hub side**: matrix table (rows = plugins, columns = sites) with version comparison and per-cell install/update/remove buttons. Registry card lists all plugins from GitHub with install buttons for any site. Auto-refreshes every 30 s. Restart-needed banner when any action requires a server restart.
-- **Client side**: background thread reports installed plugin list to hub every 60 s via `POST /api/pluginmgr/report`; receives pending commands in response. Commands also delivered via heartbeat ACK for faster turnaround.
-- **Remote actions**: install (downloads from GitHub registry URL → atomic replace), remove (`os.remove`). Results reported back to hub and shown in the UI.
-- **Stale detection**: clients not seen in >150 s are shown as offline in the matrix.
-- **Hub-only**: nav item hidden on client nodes (`hub_only: True`).
+- **Hub Plugin Manager** (`/hub/plugins`) — built into SignalScope core, no plugin install required. Accessible from the Hub dropdown on any hub node.
+  - **Matrix view**: rows = plugins (registry + anything installed anywhere), columns = Hub + every connected client. Each cell shows installed version, update-available badge, or "—" (not installed), with Install / Update / Remove buttons per cell.
+  - **Registry panel**: all GitHub-listed plugins shown as cards with a site selector dropdown and one-click install to any site. Registry JSON cached for 5 minutes.
+  - **Hub actions**: install/remove applied immediately to the hub's own `plugins/` directory with `py_compile` validation + atomic `os.replace`. Cache invalidated so the next heartbeat reports the updated list.
+  - **Client actions**: `plugin_install` / `plugin_remove` commands queued via the existing `push_pending_command` / heartbeat ACK system — no extra poll thread, no extra plugin needed on the client.
+- **Heartbeat `installed_plugins` field**: every client now includes a lightweight summary of its installed plugins in each heartbeat payload (cached 60 s). The hub reads this into `_sites[site]["installed_plugins"]` automatically.
+- **Client command handlers** `plugin_install` / `plugin_remove`: download URL → `py_compile` validate → `os.replace` into `plugins/`; or `unlink` for remove. Both invalidate the heartbeat cache so the hub sees the change on the next heartbeat cycle.
 
 ---
 

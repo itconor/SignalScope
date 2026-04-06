@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.87"
+BUILD                  = "SignalScope-3.5.88"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -12217,6 +12217,81 @@ class HubClient:
         save_config(cfg_obj)
         monitor.log(f"[Hub] Remote set_live_view: live_view = {enabled}")
 
+    def _cmd_plugin_install(self, payload: dict):
+        """Hub command: download and install (or update) a plugin on this client."""
+        url      = str(payload.get("url",  "")).strip()
+        filename = str(payload.get("file", "")).strip()
+        if not url or not filename:
+            monitor.log("[PluginMgr] plugin_install: missing url or file in payload")
+            return
+        threading.Thread(target=self._run_plugin_install,
+                         args=(url, filename), daemon=True, name="PluginInstall").start()
+
+    def _run_plugin_install(self, url: str, filename: str):
+        import py_compile, tempfile as _tf, pathlib, urllib.request as _ur
+        plugins_dir = pathlib.Path(__file__).parent / _PLUGINS_SUBDIR
+        plugins_dir.mkdir(exist_ok=True)
+        dest = (plugins_dir / filename).resolve()
+        # Safety: must remain inside plugins_dir and be a .py file
+        try:
+            dest.relative_to(plugins_dir.resolve())
+        except ValueError:
+            monitor.log(f"[PluginMgr] Install rejected: path escape for {filename!r}")
+            return
+        if dest.suffix != ".py":
+            monitor.log(f"[PluginMgr] Install rejected: {filename!r} is not a .py file")
+            return
+        try:
+            with _ur.urlopen(url, timeout=30) as r:
+                data = r.read()
+        except Exception as e:
+            monitor.log(f"[PluginMgr] Download failed for {filename}: {e}")
+            return
+        fd, tmp = _tf.mkstemp(suffix=".py", dir=str(plugins_dir))
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            py_compile.compile(tmp, doraise=True)
+            os.replace(tmp, str(dest))
+            # Invalidate the heartbeat plugin summary cache so the hub sees
+            # the new plugin on the next heartbeat cycle.
+            global _installed_plugins_cache_ts
+            _installed_plugins_cache_ts = 0.0
+            monitor.log(f"[PluginMgr] Installed {filename} — restart SignalScope to activate")
+        except Exception as e:
+            monitor.log(f"[PluginMgr] Install failed for {filename}: {e}")
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def _cmd_plugin_remove(self, payload: dict):
+        """Hub command: remove a plugin file from this client."""
+        import pathlib
+        filename = str(payload.get("file", "")).strip()
+        if not filename:
+            monitor.log("[PluginMgr] plugin_remove: missing file in payload")
+            return
+        plugins_dir = pathlib.Path(__file__).parent / _PLUGINS_SUBDIR
+        target = (plugins_dir / filename).resolve()
+        try:
+            target.relative_to(plugins_dir.resolve())
+        except ValueError:
+            monitor.log(f"[PluginMgr] Remove rejected: path escape for {filename!r}")
+            return
+        if target.suffix != ".py":
+            monitor.log(f"[PluginMgr] Remove rejected: {filename!r} is not a .py file")
+            return
+        try:
+            target.unlink()
+            global _installed_plugins_cache_ts
+            _installed_plugins_cache_ts = 0.0
+            monitor.log(f"[PluginMgr] Removed {filename} — restart SignalScope to deactivate")
+        except FileNotFoundError:
+            monitor.log(f"[PluginMgr] Remove: {filename} not found")
+        except Exception as e:
+            monitor.log(f"[PluginMgr] Remove failed for {filename}: {e}")
+
     def _cmd_chain_note(self, payload: dict):
         """Apply an engineer note pushed from the hub.
 
@@ -12756,6 +12831,9 @@ class HubClient:
             "low_bw":          getattr(cfg.hub, "low_bw", False),
             # Report live_view state so the hub replica page can show a toggle.
             "live_view":       getattr(cfg.hub, "live_view", False),
+            # Report installed plugins so the hub Plugin Manager can show a
+            # cross-site matrix without needing any plugin installed on clients.
+            "installed_plugins": _get_installed_plugins_summary(),
         }
 
     def _handle_listen_requests(self, cfg, listen_requests: list):
@@ -13588,6 +13666,10 @@ class HubClient:
                         self._cmd_set_live_view(cmd_payload)
                     elif cmd_type == "set_input_field":
                         self._cmd_set_input_field(cmd_payload)
+                    elif cmd_type == "plugin_install":
+                        self._cmd_plugin_install(cmd_payload)
+                    elif cmd_type == "plugin_remove":
+                        self._cmd_plugin_remove(cmd_payload)
                     elif cmd_type in monitor._plugin_cmd_handlers:
                         try:
                             monitor._plugin_cmd_handlers[cmd_type](cmd_payload)
@@ -16570,6 +16652,34 @@ def _scan_installed_plugins() -> list:
         result.append(info)
     return result
 
+# Cached lightweight plugin summary used in heartbeat payloads.
+# Rescans the plugins/ directory at most once every 60 s so the heartbeat
+# thread doesn't re-read every .py file on every 10-second cycle.
+_installed_plugins_cache: list     = []
+_installed_plugins_cache_ts: float = 0.0
+
+def _get_installed_plugins_summary() -> list:
+    """Return a small list-of-dicts describing installed plugins, cached 60 s."""
+    global _installed_plugins_cache, _installed_plugins_cache_ts
+    now = time.monotonic()
+    if now - _installed_plugins_cache_ts > 60.0:
+        try:
+            _installed_plugins_cache = [
+                {
+                    "file":    p["file"],
+                    "id":      p.get("id", ""),
+                    "name":    p.get("name", ""),
+                    "version": p.get("version", ""),
+                    "active":  p.get("active", False),
+                }
+                for p in _scan_installed_plugins()
+            ]
+            _installed_plugins_cache_ts = now
+        except Exception:
+            pass
+    return _installed_plugins_cache
+
+
 # ─── Login brute-force protection ─────────────────────────────────────────────
 
 class LoginLimiter:
@@ -17261,7 +17371,8 @@ def _inject_nav():
                                                     ("sla",     "📈\u202fSLA",     "/sla")]))
         _hub_items    = [("hub",         "🌐\u202fHub",                "/hub"),
                          ("hub_reports", "📋\u202fHub Reports",      "/hub/reports"),
-                         ("chains",      "🔗\u202fBroadcast Chains", "/chains")]
+                         ("chains",      "🔗\u202fBroadcast Chains", "/chains"),
+                         ("hub_plugins", "🧩\u202fPlugin Manager",   "/hub/plugins")]
         if _is_admin():
             _hub_items.append(("audit", "📋\u202fAudit Log", "/audit"))
         hub_group     = _group("🌐\u202fHub", _hub_items) if show_hub else ""
@@ -32958,6 +33069,384 @@ def hub_reports():
         with_clips=with_clips, build=BUILD,
         f_site=f_site, f_stream=f_stream, f_type=f_type, f_chain=f_chain,
     )
+
+
+# ─── Hub Plugin Manager ───────────────────────────────────────────────────────
+
+_HUB_PLUGINMGR_TPL = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="csrf-token" content="{{csrf_token()}}">
+<title>Plugin Manager — SignalScope</title>
+<style nonce="{{csp_nonce()}}">
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:13px}
+a{color:var(--acc);text-decoration:none}
+.btn{border:none;border-radius:8px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}.btn:hover{filter:brightness(1.15)}
+.btn:disabled{opacity:.45;cursor:default;filter:none}
+.bp{background:var(--acc);color:#fff}.bd{background:var(--al);color:#fff}.bg{background:var(--bor);color:var(--tx)}.bw{background:#854d0e;color:#fef08a}.bs{padding:3px 8px;font-size:11px}
+.card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;margin-bottom:16px}
+.ch{padding:9px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54);font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em;justify-content:space-between}
+.cb{padding:14px}
+.badge{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid;white-space:nowrap}
+.b-ok{background:rgba(34,197,94,.12);color:var(--ok);border-color:rgba(34,197,94,.3)}
+.b-wn{background:rgba(245,158,11,.12);color:var(--wn);border-color:rgba(245,158,11,.3)}
+.b-mu{background:rgba(138,164,200,.08);color:var(--mu);border-color:rgba(138,164,200,.2)}
+.b-al{background:rgba(239,68,68,.12);color:var(--al);border-color:rgba(239,68,68,.3)}
+main{padding:18px 20px 32px}
+h2{font-size:18px;font-weight:700}
+.mtx-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table.mtx{border-collapse:collapse;min-width:100%}
+table.mtx th,table.mtx td{padding:7px 11px;border-bottom:1px solid var(--bor);font-size:12px;white-space:nowrap}
+table.mtx th{color:var(--mu);text-transform:uppercase;font-size:11px;font-weight:700;letter-spacing:.04em;background:var(--sur)}
+table.mtx tbody tr:hover td{background:rgba(23,52,95,.28)}
+table.mtx td:first-child{white-space:normal;min-width:160px}
+.plug-name{font-weight:600}
+.plug-file{font-size:10px;color:var(--mu)}
+.sc{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.reg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
+.reg-card{background:#0a1e42;border:1px solid var(--bor);border-radius:10px;padding:11px 13px;display:flex;flex-direction:column;gap:7px}
+.reg-card h4{font-size:13px;font-weight:700}
+.reg-desc{font-size:11px;color:var(--mu);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.reg-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+select.site-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:3px 7px;font-size:11px;cursor:pointer}
+#msg{padding:8px 12px;border-radius:8px;margin-bottom:12px;font-size:12px;display:none}
+.msg-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
+.msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
+#restart-banner{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:9px 14px;margin-bottom:12px;color:var(--wn);font-size:12px;display:none}
+.hdr-row{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+</style></head>
+<body>
+{{topnav("hub_plugins")|safe}}
+<main>
+<div class="hdr-row">
+  <h2>🧩 Plugin Manager</h2>
+  <button class="btn bg bs" id="btn-ref">↻ Refresh</button>
+  <span id="ts" style="font-size:11px;color:var(--mu)"></span>
+</div>
+<div id="restart-banner">⚠ One or more changes require a SignalScope restart to take effect on the affected node.</div>
+<div id="msg"></div>
+
+<div class="card">
+<div class="ch"><span>📦 Available Plugins</span><span id="reg-st" style="font-size:11px;color:var(--mu);font-weight:400;text-transform:none;letter-spacing:0"></span></div>
+<div class="cb"><div id="reg-body" class="reg-grid"><span style="color:var(--mu)">Loading registry…</span></div></div>
+</div>
+
+<div class="card">
+<div class="ch"><span>🧩 Plugin Status — All Sites</span></div>
+<div class="cb"><div id="mtx-body" class="mtx-wrap"><span style="color:var(--mu)">Loading…</span></div></div>
+</div>
+</main>
+<script nonce="{{csp_nonce()}}">
+var _reg=null,_data=null;
+function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||'';}
+function _esc(s){var d=document.createElement('div');d.textContent=String(s||'');return d.innerHTML;}
+
+function showMsg(t,ok){
+  var m=document.getElementById('msg');
+  m.className='';m.classList.add(ok?'msg-ok':'msg-err');
+  m.textContent=t;m.style.display='block';
+  clearTimeout(m._t);m._t=setTimeout(function(){m.style.display='none';},7000);
+}
+
+function vGt(a,b){
+  var pa=(a||'').split('.').map(Number),pb=(b||'').split('.').map(Number);
+  for(var i=0;i<3;i++){if((pa[i]||0)>(pb[i]||0))return true;if((pa[i]||0)<(pb[i]||0))return false;}
+  return false;
+}
+
+async function doAction(action,site,file,url,btn){
+  if(btn){btn.disabled=true;var orig=btn.textContent;btn.textContent='…';}
+  try{
+    var r=await fetch('/api/hub/plugins/action',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
+      body:JSON.stringify({action:action,site:site,file:file,url:url||''})
+    });
+    var d=await r.json();
+    if(d.ok){
+      showMsg(d.msg,true);
+      document.getElementById('restart-banner').style.display='block';
+      setTimeout(doRefresh,1500);
+    }else{showMsg(d.error||'Error',false);}
+  }catch(e){showMsg('Network error: '+e,false);}
+  if(btn){btn.disabled=false;btn.textContent=orig;}
+}
+
+function buildMatrix(){
+  if(!_data)return;
+  var sites=[{id:'__hub__',name:'Hub',online:true,plugins:_data.hub||[]}];
+  Object.keys(_data.sites||{}).sort().forEach(function(n){
+    var s=_data.sites[n];
+    sites.push({id:n,name:n,online:s.online,age:s.age,plugins:s.plugins||[]});
+  });
+
+  // Collect all known plugins (registry + installed anywhere)
+  var plugs=new Map();
+  (_reg||[]).forEach(function(p){
+    plugs.set(p.file,{id:p.id,name:p.name,icon:p.icon||'🔌',rv:p.version||'',url:p.url||'',file:p.file});
+  });
+  sites.forEach(function(s){
+    (s.plugins||[]).forEach(function(p){
+      if(!plugs.has(p.file))plugs.set(p.file,{id:p.id||'',name:p.name||p.file,icon:'🔌',rv:'',url:'',file:p.file});
+    });
+  });
+
+  if(plugs.size===0){
+    document.getElementById('mtx-body').innerHTML='<p style="color:var(--mu)">No plugins installed on any site and registry unavailable.</p>';
+    return;
+  }
+
+  // Per-site plugin lookup: file → {version, active}
+  var siteMaps=sites.map(function(s){
+    var m={};(s.plugins||[]).forEach(function(p){m[p.file]={v:p.version||'',active:p.active};});return m;
+  });
+
+  var html='<table class="mtx"><thead><tr><th>Plugin</th>';
+  sites.forEach(function(s){
+    html+='<th>';
+    if(!s.online&&s.id!=='__hub__')html+='<span class="badge b-al" style="margin-right:4px">Offline</span>';
+    html+=_esc(s.name);
+    if(s.age>0&&s.id!=='__hub__')html+='<br><span style="font-size:10px;color:var(--mu)">'+Math.round(s.age)+'s ago</span>';
+    html+='</th>';
+  });
+  html+='</tr></thead><tbody>';
+
+  Array.from(plugs.values()).sort(function(a,b){return a.name.localeCompare(b.name);}).forEach(function(plug){
+    html+='<tr><td>';
+    html+='<div class="plug-name">'+_esc(plug.icon)+' '+_esc(plug.name)+'</div>';
+    html+='<div class="plug-file">'+_esc(plug.file)+'</div>';
+    html+='</td>';
+    sites.forEach(function(s,i){
+      var inst=siteMaps[i][plug.file];
+      html+='<td><div class="sc">';
+      if(!s.online&&s.id!=='__hub__'){
+        html+='<span class="badge b-mu">Offline</span>';
+      }else if(inst){
+        var upd=plug.rv&&vGt(plug.rv,inst.v);
+        if(upd){
+          html+='<span class="badge b-wn">v'+_esc(inst.v||'?')+' → v'+_esc(plug.rv)+'</span>';
+          if(plug.url)html+=_btn('Update','update',s.id,plug.file,plug.url,'bw');
+        }else{
+          html+='<span class="badge b-ok">v'+_esc(inst.v||'?')+' ✓</span>';
+        }
+        html+=_btn('Remove','remove',s.id,plug.file,'','bd');
+      }else{
+        html+='<span class="badge b-mu">—</span>';
+        if(plug.url)html+=_btn('Install','install',s.id,plug.file,plug.url,'bp');
+      }
+      html+='</div></td>';
+    });
+    html+='</tr>';
+  });
+  html+='</tbody></table>';
+  document.getElementById('mtx-body').innerHTML=html;
+  document.getElementById('mtx-body').querySelectorAll('.pm-btn').forEach(function(b){
+    b.addEventListener('click',function(){
+      doAction(this.dataset.action,this.dataset.site,this.dataset.file,this.dataset.url,this);
+    });
+  });
+}
+
+function _btn(label,action,site,file,url,cls){
+  return '<button class="btn '+cls+' bs pm-btn" data-action="'+_esc(action)+'" data-site="'+_esc(site)+'" data-file="'+_esc(file)+'" data-url="'+_esc(url||'')+'">'+label+'</button>';
+}
+
+function buildRegistry(){
+  var reg=_reg||[];
+  if(!reg.length){
+    document.getElementById('reg-body').innerHTML='<span style="color:var(--mu)">Registry unavailable — check network.</span>';
+    return;
+  }
+  document.getElementById('reg-st').textContent=reg.length+' plugins';
+
+  // Build site options for install target selector
+  var siteOpts='<option value="__hub__">Hub</option>';
+  Object.keys((_data&&_data.sites)||{}).sort().forEach(function(n){
+    if((_data.sites[n]||{}).online)siteOpts+='<option value="'+_esc(n)+'">'+_esc(n)+'</option>';
+  });
+
+  var html='';
+  reg.forEach(function(p){
+    html+='<div class="reg-card">';
+    html+='<h4>'+_esc(p.icon||'🔌')+' '+_esc(p.name)+'</h4>';
+    html+='<div class="reg-desc" title="'+_esc(p.description||'')+'">'+_esc(p.description||'')+'</div>';
+    html+='<div class="reg-actions">';
+    html+='<span class="badge b-mu">v'+_esc(p.version||'?')+'</span>';
+    if(p.requirements)html+='<span class="badge b-mu" title="pip requirements">'+_esc(p.requirements)+'</span>';
+    html+='<select class="site-sel" id="rs-'+_esc(p.file)+'">'+siteOpts+'</select>';
+    html+='<button class="btn bp bs reg-inst-btn" data-file="'+_esc(p.file)+'" data-url="'+_esc(p.url||'')+'">⬇ Install</button>';
+    html+='</div></div>';
+  });
+  document.getElementById('reg-body').innerHTML=html;
+  document.getElementById('reg-body').querySelectorAll('.reg-inst-btn').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var file=this.dataset.file;
+      // Escape periods in the selector ID to find the right <select>
+      var sel=document.getElementById('rs-'+file);
+      var site=(sel&&sel.value)||'__hub__';
+      doAction('install',site,file,this.dataset.url,this);
+    });
+  });
+}
+
+async function doRefresh(){
+  var btn=document.getElementById('btn-ref');
+  if(btn)btn.disabled=true;
+  try{
+    var [dr,rr]=await Promise.all([
+      fetch('/api/hub/plugins/data'),
+      fetch('/api/hub/plugins/registry')
+    ]);
+    _data=await dr.json();
+    var rj=await rr.json();
+    if(Array.isArray(rj))_reg=rj;
+    buildMatrix();
+    buildRegistry();
+    document.getElementById('ts').textContent='Updated '+new Date().toLocaleTimeString();
+  }catch(e){showMsg('Refresh failed: '+e,false);}
+  if(btn)btn.disabled=false;
+}
+
+document.getElementById('btn-ref').addEventListener('click',doRefresh);
+doRefresh();
+setInterval(doRefresh,30000);
+</script>
+</body></html>
+"""
+
+_pluginmgr_registry_cache = {"data": None, "ts": 0.0}
+
+@app.get("/hub/plugins")
+@login_required
+def hub_plugin_manager():
+    cfg_ss = monitor.app_cfg
+    _mode  = getattr(getattr(cfg_ss, "hub", None), "mode", "standalone") or "standalone"
+    if _mode not in ("hub", "both"):
+        from flask import redirect
+        return redirect("/")
+    return render_template_string(_HUB_PLUGINMGR_TPL)
+
+@app.get("/api/hub/plugins/data")
+@login_required
+def hub_plugins_data():
+    """Return hub's own installed plugins + per-site lists from heartbeat data."""
+    cfg_ss = monitor.app_cfg
+    _mode  = getattr(getattr(cfg_ss, "hub", None), "mode", "standalone") or "standalone"
+    if _mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 403
+    now = time.time()
+    sites_out = {}
+    with hub_server._lock:
+        snap = dict(hub_server._sites)
+    for site, sdata in snap.items():
+        if not sdata.get("_approved"):
+            continue
+        age = now - sdata.get("_received", 0)
+        sites_out[site] = {
+            "plugins": sdata.get("installed_plugins", []),
+            "online":  age < 150,
+            "age":     round(age, 0),
+        }
+    return jsonify({
+        "hub":   _scan_installed_plugins(),
+        "sites": sites_out,
+    })
+
+@app.get("/api/hub/plugins/registry")
+@login_required
+def hub_plugins_registry():
+    """Proxy the GitHub plugin registry with a 5-minute in-process cache."""
+    import urllib.request as _ur
+    cache = _pluginmgr_registry_cache
+    if time.time() - cache["ts"] < 300 and cache["data"] is not None:
+        return jsonify(cache["data"])
+    try:
+        with _ur.urlopen(_PLUGIN_REGISTRY_URL, timeout=12) as r:
+            data = json.loads(r.read())
+        cache["data"] = data
+        cache["ts"]   = time.time()
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+@app.post("/api/hub/plugins/action")
+@login_required
+@csrf_protect
+def hub_plugins_action():
+    """Install or remove a plugin on the hub or a connected client site."""
+    import pathlib, py_compile, tempfile as _tf, urllib.request as _ur
+    body   = request.get_json(force=True) or {}
+    action = str(body.get("action", "")).strip()
+    site   = str(body.get("site",   "")).strip()
+    fname  = str(body.get("file",   "")).strip()
+    url    = str(body.get("url",    "")).strip()
+
+    if action not in ("install", "remove", "update") or not site or not fname:
+        return jsonify({"error": "Bad request — action/site/file required"}), 400
+
+    # "update" is just install with overwrite — normalise
+    if action == "update":
+        action = "install"
+
+    cfg_ss    = monitor.app_cfg
+    _mode     = getattr(getattr(cfg_ss, "hub", None), "mode", "standalone") or "standalone"
+    hub_sname = (getattr(getattr(cfg_ss, "hub", None), "site_name", "") or "").strip()
+
+    is_hub_target = (site == "__hub__") or (hub_sname and site == hub_sname)
+
+    if is_hub_target:
+        # Act directly on this hub process
+        plugins_dir = pathlib.Path(__file__).parent / _PLUGINS_SUBDIR
+        target = (plugins_dir / fname).resolve()
+        try:
+            target.relative_to(plugins_dir.resolve())
+        except ValueError:
+            return jsonify({"error": "Path error"}), 400
+        if target.suffix != ".py":
+            return jsonify({"error": "Only .py plugin files are supported"}), 400
+
+        if action == "remove":
+            try:
+                target.unlink()
+                global _installed_plugins_cache_ts
+                _installed_plugins_cache_ts = 0.0
+                return jsonify({"ok": True, "msg": f"Removed {fname} from hub — restart to deactivate"})
+            except FileNotFoundError:
+                return jsonify({"error": f"{fname} not found on hub"}), 404
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+        else:  # install
+            if not url:
+                return jsonify({"error": "url required for install"}), 400
+            try:
+                plugins_dir.mkdir(exist_ok=True)
+                with _ur.urlopen(url, timeout=30) as r:
+                    data = r.read()
+                fd, tmp = _tf.mkstemp(suffix=".py", dir=str(plugins_dir))
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(data)
+                    py_compile.compile(tmp, doraise=True)
+                    os.replace(tmp, str(target))
+                    _installed_plugins_cache_ts = 0.0
+                    return jsonify({"ok": True, "msg": f"Installed {fname} on hub — restart to activate"})
+                except Exception as e:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    return jsonify({"error": str(e)}), 500
+            except Exception as e:
+                return jsonify({"error": f"Download failed: {e}"}), 502
+    else:
+        # Queue command for client site via heartbeat ACK
+        cmd = {
+            "type":    "plugin_install" if action == "install" else "plugin_remove",
+            "payload": {"file": fname, "url": url},
+        }
+        hub_server.push_pending_command(site, cmd)
+        verb = "install" if action == "install" else "removal"
+        return jsonify({"ok": True, "msg": f"Plugin {verb} queued for {site} — will apply on next heartbeat"})
 
 
 # Update heartbeat ingestion to record client IP
