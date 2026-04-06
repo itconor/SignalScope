@@ -2,6 +2,18 @@
 
 ---
 
+## [Plugin Manager 1.0.0] - 2026-04-06
+
+### Added
+- **New plugin: Plugin Manager** — hub-only page showing every connected site's installed plugins in a single matrix. Install, update, and remove plugins on the hub and on any approved client from one screen.
+- **Hub side**: matrix table (rows = plugins, columns = sites) with version comparison and per-cell install/update/remove buttons. Registry card lists all plugins from GitHub with install buttons for any site. Auto-refreshes every 30 s. Restart-needed banner when any action requires a server restart.
+- **Client side**: background thread reports installed plugin list to hub every 60 s via `POST /api/pluginmgr/report`; receives pending commands in response. Commands also delivered via heartbeat ACK for faster turnaround.
+- **Remote actions**: install (downloads from GitHub registry URL → atomic replace), remove (`os.remove`). Results reported back to hub and shown in the UI.
+- **Stale detection**: clients not seen in >150 s are shown as offline in the matrix.
+- **Hub-only**: nav item hidden on client nodes (`hub_only: True`).
+
+---
+
 ## [Sync Capture plugin 1.0.16] - 2026-04-06
 
 ### Changed

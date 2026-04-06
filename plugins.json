@@ -150,6 +150,16 @@
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/azuracast.py"
   },
   {
+    "id": "pluginmgr",
+    "name": "Plugin Manager",
+    "file": "pluginmgr.py",
+    "icon": "🧩",
+    "description": "Hub-only remote plugin manager. Shows all connected sites in a matrix — rows are plugins, columns are sites. Install, update, and remove plugins on the hub or any approved client from one screen. Client nodes report their installed plugin list every 60 s; the hub queues install/remove commands and delivers them via the report poll or heartbeat ACK. Version comparison highlights sites running older versions. Stale clients (>150 s) shown as offline. Hub-only.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/pluginmgr.py"
+  },
+  {
     "id": "synccap",
     "name": "Sync Capture",
     "file": "synccap.py",
