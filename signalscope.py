@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.105"
+BUILD                  = "SignalScope-3.5.106"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -6892,12 +6892,6 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
         if _now_e - cfg._last_alerts.get("_escalation_check", 0) >= 60.0:
             cfg._last_alerts["_escalation_check"] = _now_e
             _check_escalation(cfg, sender, log_fn)
-
-    if cfg.cascade_suppress_alerts and cfg.cascade_parent and all_inputs:
-        parent=next((i for i in all_inputs if i.name==cfg.cascade_parent),None)
-        if parent and parent._last_level_dbfs<=parent.silence_threshold_dbfs:
-            cfg._silence_secs=0.0; cfg._silence_active=False; cfg._silence_alert_key=""
-            cfg._flatness_since=0.0; cfg._glitch_dip_start=0.0; return
 
     # Silence / composite fault classification
     if cfg.alert_on_silence:
@@ -21556,10 +21550,10 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
   </div>
 
   <!-- Advanced (collapsible) -->
-  <details class="acard" {{'open' if inp.compare_role or inp.cascade_parent or inp.nowplaying_station_id or inp.escalation_minutes}}>
+  <details class="acard" {{'open' if inp.compare_role or inp.nowplaying_station_id or inp.escalation_minutes}}>
     <summary class="acard-hdr">
       <span class="acard-ttl" style="color:var(--mu)">⚙ Advanced Settings</span>
-      <span style="font-size:11px;color:var(--mu)">Clip length · Escalation · Compare · Cascade · Now Playing</span>
+      <span style="font-size:11px;color:var(--mu)">Clip length · Escalation · Compare · Now Playing</span>
       <span style="font-size:11px;color:var(--mu);margin-left:4px">▾</span>
     </summary>
     <div class="acard-body">
@@ -21662,18 +21656,6 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
                value="{{inp.compare_gain_alert_db if inp.compare_gain_alert_db is defined else 3.0}}">
       </label>
       <p class="help">Set one stream as Pre, the other as Post, pick each other as peer. Auto-aligns for delay up to {{cmp_search}} s.</p>
-
-      <div class="sec" style="margin-top:14px">Cascade Suppression</div>
-      <label class="lbl">Suppress if upstream stream is silent
-        <select name="cascade_parent" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
-          <option value="">— None —</option>
-          {% for n in all_names %}{% if n!=inp.name %}<option value="{{n}}" {{'selected' if inp.cascade_parent==n}}>{{n}}</option>{% endif %}{% endfor %}
-        </select>
-      </label>
-      <div class="cr" style="margin-top:8px">
-        <input type="checkbox" name="cascade_suppress_alerts" value="1" {{'checked' if inp.cascade_suppress_alerts}}>
-        <label style="margin:0;text-transform:none">Enable cascade suppression</label>
-      </div>
 
       <div class="sec" style="margin-top:14px">🎵 Now Playing (Planet Radio)</div>
       <label class="lbl">Station
@@ -22362,8 +22344,6 @@ def _inp_from_form(f):
         clip_count_threshold=int(f.get("clip_count_threshold",3)),
         clip_debounce_seconds=float(f.get("clip_debounce_seconds") or 30.0),
         alert_wav_duration=float(f.get("alert_wav_duration",10.0)),
-        cascade_parent=f.get("cascade_parent") or None,
-        cascade_suppress_alerts=bool(f.get("cascade_suppress_alerts")),
         compare_peer=f.get("compare_peer") or None,
         compare_role=f.get("compare_role",""),
         compare_gain_alert_db=float(f.get("compare_gain_alert_db") or 3.0),

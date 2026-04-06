@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.106] - 2026-04-06
+
+### Removed
+- **Per-input Cascade Suppression** — the "Suppress if upstream stream is silent" dropdown and checkbox have been removed from the input edit form. The feature is superseded by Broadcast Chains, which identifies the first failed node in a signal path and suppresses downstream alerts properly. Existing configs that had `cascade_parent` / `cascade_suppress_alerts` set will deserialise cleanly (fields are retained in `InputConfig` for backwards compatibility) but the suppression logic no longer runs. The separate chain-level cascade suppression (suppress chain fault notifications when an upstream chain is also faulted) is unaffected.
+
+---
+
 ## [3.5.105] - 2026-04-06
 
 ### Fixed
