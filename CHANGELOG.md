@@ -2,6 +2,13 @@
 
 ---
 
+## [Sync Capture plugin 1.0.14] - 2026-04-06
+
+### Fixed
+- **Upload 500 error**: `request.get_data(limit=...)` is not a valid Flask parameter — caused `TypeError` → HTTP 500 on every client clip upload. Replaced with `request.get_data()` (size cap enforced by the `Content-Length` pre-check and post-read comparison that were already in place).
+
+---
+
 ## [Sync Capture plugin 1.0.13] - 2026-04-06
 
 ### Changed / Added
