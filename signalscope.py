@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.97"
+BUILD                  = "SignalScope-3.5.98"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8881,27 +8881,70 @@ class MonitorManager:
         # consumer ffmpeg processes see immediate data.
         #
         # Non-Pi: omit -C entirely — full parallel ensemble decode, no CPU concern.
-        # Pi single-dongle: -T -C N to limit CPU.
-        # Pi multi-dongle (device_idx > 0): use rtl_tcp proxy — see below.
+        # Pi: ALWAYS use rtl_tcp proxy — see below.
         #
-        # DEVICE SELECTION ON Pi WITH MULTIPLE DONGLES:
-        #   The apt-installed welle-cli on Raspberry Pi OS ignores all device
+        # DEVICE SELECTION ON Pi:
+        #   The apt-installed welle-cli on Raspberry Pi OS ignores ALL device
         #   selection arguments (-F rtl_sdr,N and -D driver=rtlsdr,serial=X) and
-        #   ALWAYS opens the first available RTL-SDR device (index 0).  When an
-        #   FM stream is also running and has device 0 claimed, welle-cli gets
-        #   usb_claim_interface error -6 even though the two inputs are assigned
-        #   to completely different physical dongles with different serial numbers.
+        #   ALWAYS opens the first available RTL-SDR device that libusb can claim.
+        #   When another process (FM rtl_fm) already holds that device, welle-cli
+        #   gets usb_claim_interface error -6.
         #
-        #   Fix: for device_idx > 0 on Pi, launch rtl_tcp -d DEVICE_IDX first.
-        #   rtl_tcp uses the standard rtlsdr_open(index) path which correctly
-        #   opens the requested device (same mechanism as rtl_fm -d 0 for FM).
-        #   welle-cli then connects via -F rtl_tcp,127.0.0.1:PORT and never
+        #   Fix: on ALL Pi nodes, launch rtl_tcp first.  rtl_tcp uses the standard
+        #   rtlsdr_open(index) path (same mechanism as rtl_fm -d N) and correctly
+        #   opens the requested device.  welle-cli connects via TCP and never
         #   touches USB directly — its broken device-selection is bypassed entirely.
-        if _is_raspberry_pi() and session.device_idx > 0:
-            # ── rtl_tcp proxy path ──────────────────────────────────────────
+        #
+        #   IMPORTANT: resolve the device index fresh from the live USB scan right
+        #   before launching rtl_tcp.  The sdr_manager cache (10 s) may be stale
+        #   if the serial assignments were changed or if USB enumeration changed
+        #   (e.g. after a monitor restart).  A forced fresh scan ensures we pick
+        #   the correct index even when FM and DAB start concurrently.
+        if _is_raspberry_pi():
+            # ── rtl_tcp proxy path (all Pi DAB sessions) ────────────────────
             _rtl_tcp_bin = _find_binary("rtl_tcp")
             if not _rtl_tcp_bin:
                 _rtl_tcp_bin = "rtl_tcp"
+
+            # Kill stale rtl_tcp processes that may be holding the target device
+            # from a previous monitor run or a crash.  (The welle-cli stale killer
+            # above only targets welle-cli; rtl_tcp processes can also linger.)
+            try:
+                import subprocess as _sp_stale, signal as _sig_stale
+                _pgrep = _sp_stale.run(["pgrep", "-a", "rtl_tcp"],
+                                        capture_output=True, text=True)
+                for _sline in _pgrep.stdout.splitlines():
+                    _spid = int(_sline.split()[0])
+                    if str(session.rtl_tcp_port) in _sline or (
+                            session.serial and session.serial in _sline):
+                        try: _os.kill(_spid, _sig_stale.SIGKILL)
+                        except Exception: pass
+                # Also kill any rtl_tcp that targets the same channel port
+                # (leftover from a previous session regardless of args)
+                for _sline in _pgrep.stdout.splitlines():
+                    if f"-p {session.dab_port}" in _sline:
+                        try: _os.kill(int(_sline.split()[0]), _sig_stale.SIGKILL)
+                        except Exception: pass
+            except Exception:
+                pass
+
+            # Re-resolve serial → device index right now using a forced fresh scan
+            # so that stale sdr_manager cache (10 s) or changed serial assignments
+            # don't send rtl_tcp to the wrong dongle.
+            _tcp_idx = session.device_idx   # safe default
+            if session.serial:
+                try:
+                    _fresh = sdr_manager.scan(force=True)
+                    for _fd in _fresh:
+                        if _fd.get("serial") == session.serial:
+                            _tcp_idx = _fd["index"]
+                            break
+                    if _tcp_idx != session.device_idx:
+                        self.log(f"[{name}] Pi rtl_tcp: serial {session.serial!r} "
+                                 f"now at device {_tcp_idx} (was {session.device_idx})")
+                except Exception:
+                    pass
+
             # Pick a free local port for the rtl_tcp server
             import socket as _sock
             with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as _ts:
@@ -8909,39 +8952,55 @@ class MonitorManager:
                 session.rtl_tcp_port = _ts.getsockname()[1]
             _tcp_gain = str(int(float(_gain_val)) if float(_gain_val) > 0 else 0)
             _tcp_cmd = [_rtl_tcp_bin,
-                        "-d", str(session.device_idx),
+                        "-d", str(_tcp_idx),
                         "-p", str(session.rtl_tcp_port),
                         "-a", "127.0.0.1",
                         "-g", _tcp_gain]
             if session.ppm:
                 _tcp_cmd += ["-P", str(session.ppm)]
-            self.log(f"[{name}] Pi multi-dongle: launching rtl_tcp proxy on "
-                     f"device {session.device_idx} → port {session.rtl_tcp_port}")
-            try:
-                import os as _os2
-                session.rtl_tcp_proc = subprocess.Popen(
-                    _tcp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                    bufsize=0)
-                # Wait for rtl_tcp to be ready (outputs "Listening..." to stderr)
-                _ready_deadline = time.monotonic() + 8
-                while time.monotonic() < _ready_deadline:
-                    _line = session.rtl_tcp_proc.stderr.readline()
-                    if not _line:
-                        if session.rtl_tcp_proc.poll() is not None:
-                            break
-                        time.sleep(0.05)
-                        continue
-                    _lstr = _line.decode(errors="ignore").strip()
-                    if _lstr:
-                        self.log(f"[rtl_tcp {session.channel}] {_lstr}")
-                    if any(k in _lstr.lower() for k in ("listening", "accepted", "found")):
+            self.log(f"[{name}] Pi: launching rtl_tcp proxy on "
+                     f"device {_tcp_idx} (serial {session.serial!r}) → port {session.rtl_tcp_port}")
+            _tcp_ok = False
+            for _tcp_attempt in range(2):   # retry once after 3 s if first attempt gets -6
+                if _tcp_attempt > 0:
+                    self.log(f"[{name}] Pi: retrying rtl_tcp after 3 s (previous attempt got -6)")
+                    time.sleep(3.0)
+                try:
+                    session.rtl_tcp_proc = subprocess.Popen(
+                        _tcp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                        bufsize=0)
+                    # Wait for rtl_tcp to be ready (outputs "Listening..." to stderr)
+                    _ready_deadline = time.monotonic() + 8
+                    _got_error = False
+                    while time.monotonic() < _ready_deadline:
+                        _line = session.rtl_tcp_proc.stderr.readline()
+                        if not _line:
+                            if session.rtl_tcp_proc.poll() is not None:
+                                break
+                            time.sleep(0.05)
+                            continue
+                        _lstr = _line.decode(errors="ignore").strip()
+                        if _lstr:
+                            self.log(f"[rtl_tcp {session.channel}] {_lstr}")
+                        if "usb_claim_interface error" in _lstr.lower():
+                            _got_error = True
                         if "listening" in _lstr.lower():
+                            _tcp_ok = True
                             break
-                time.sleep(0.3)  # brief settle after rtl_tcp is ready
-            except Exception as _e:
-                self.log(f"[{name}] Failed to launch rtl_tcp proxy: {_e} — falling back")
-                session.rtl_tcp_proc = None
-            if session.rtl_tcp_proc and session.rtl_tcp_proc.poll() is None:
+                    time.sleep(0.3)
+                    if not _tcp_ok and _got_error:
+                        # Device busy — kill this attempt and retry
+                        try: session.rtl_tcp_proc.kill()
+                        except Exception: pass
+                        try: session.rtl_tcp_proc.wait(timeout=2)
+                        except Exception: pass
+                        session.rtl_tcp_proc = None
+                        continue
+                except Exception as _e:
+                    self.log(f"[{name}] Failed to launch rtl_tcp proxy: {_e}")
+                    session.rtl_tcp_proc = None
+                break   # no error detected — exit retry loop
+            if _tcp_ok and session.rtl_tcp_proc and session.rtl_tcp_proc.poll() is None:
                 # rtl_tcp is running — connect welle-cli to it via TCP
                 _n = max(1, len(session.consumers))
                 cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
@@ -8949,11 +9008,13 @@ class MonitorManager:
                        "-F", f"rtl_tcp,127.0.0.1:{session.rtl_tcp_port}"]
                 if session.ppm:
                     cmd += ["-p", str(session.ppm)]
-                self.log(f"[{name}] Raspberry Pi — using rtl_tcp proxy (device {session.device_idx})")
+                self.log(f"[{name}] Raspberry Pi — using rtl_tcp proxy (device {_tcp_idx})")
             else:
                 # rtl_tcp failed; fall back to direct -F with index
                 if session.rtl_tcp_proc:
                     try: session.rtl_tcp_proc.kill()
+                    except Exception: pass
+                    try: session.rtl_tcp_proc.wait(timeout=2)
                     except Exception: pass
                     session.rtl_tcp_proc = None
                 _n = max(1, len(session.consumers))
@@ -8961,15 +9022,7 @@ class MonitorManager:
                        "-T", "-C", str(_n), "-g", _gain_val, "-F", driver]
                 if session.ppm:
                     cmd += ["-p", str(session.ppm)]
-                self.log(f"[{name}] Raspberry Pi — rtl_tcp unavailable, falling back to -F")
-        elif _is_raspberry_pi():
-            # Single dongle (device_idx == 0): -T -C N, direct access
-            _n = max(1, len(session.consumers))
-            cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
-                   "-T", "-C", str(_n), "-g", _gain_val, "-F", driver]
-            if session.ppm:
-                cmd += ["-p", str(session.ppm)]
-            self.log(f"[{name}] Raspberry Pi — using -T -C {_n} to limit CPU")
+                self.log(f"[{name}] Raspberry Pi — rtl_tcp unavailable, falling back to -F rtl_sdr,{_tcp_idx}")
         else:
             # Non-Pi: no -C flag — welle-cli decodes the full ensemble in parallel
             cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,

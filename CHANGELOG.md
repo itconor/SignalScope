@@ -2,6 +2,17 @@
 
 ---
 
+## [3.5.98] - 2026-04-06
+
+### Fixed
+- **DAB on Pi — rtl_tcp proxy opening wrong device (`usb_claim_interface error -6`)**: Three compounding problems fixed:
+  1. **rtl_tcp was only used for `device_idx > 0`**: if the DAB dongle resolved to device 0 but another process was using it, welle-cli would still try USB directly. Now rtl_tcp is used for **all** Pi DAB sessions regardless of device index — welle-cli never touches USB on Pi.
+  2. **Stale `sdr_manager` cache sending rtl_tcp to wrong device**: the serial→index scan is cached for 10 s. When FM serial assignments change or the monitor restarts, the cached index can point to the wrong dongle (e.g., the FM dongle). Fix: force a fresh scan (`scan(force=True)`) immediately before launching rtl_tcp to get the current live mapping.
+  3. **No stale rtl_tcp killer**: leftover rtl_tcp processes from previous crashes could hold a device. Added a stale rtl_tcp killer (analogous to the welle-cli stale killer) before each launch.
+  - Also: rtl_tcp now retries once after 3 s if it gets `-6` on first attempt (handles the case where a previous FM process hasn't fully released the device yet).
+
+---
+
 ## [3.5.97] - 2026-04-06
 
 ### Fixed
