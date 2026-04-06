@@ -43,6 +43,9 @@ Signalscopeiosapp/
 Screenshot*.png
 SignalScope_3_0_plan.txt
 
+# ── PDF generation tooling (local only) ──────────────────────────────────────
+generate_user_guide.py
+
 # ── Claude / AI tooling ───────────────────────────────────────────────────────
 static/.claude/
 .claude/
