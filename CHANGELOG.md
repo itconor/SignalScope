@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.120] - 2026-04-06
+
+### Fixed — Pi DAB-only: revert to standard non-Pi welle-cli command
+
+The dedicated Pi-DAB-only branch (`elif _is_raspberry_pi() and not _has_fm_inputs`) is removed. Pi nodes with no FM inputs now fall through to the standard non-Pi path: `welle-cli -F rtl_sdr,{device_idx}`. This is the command that was in use before the rtl_tcp proxy work was added, and it was working correctly. The Airspy probe (`AIRSPY_ERROR_NOT_FOUND`) is benign — welle-cli still finds the RTL-SDR after it. Removing the Pi-specific `-T -C N` flags and the special-case branch restores the behaviour that was confirmed stable.
+
+---
+
 ## [3.5.119] - 2026-04-06
 
 ### Fixed — Pi DAB-only: use welle-cli natively without -F rtl_sdr
