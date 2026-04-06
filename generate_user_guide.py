@@ -93,7 +93,7 @@ def draw_cover_page(c, doc):
     # Version
     c.setFillColor(colors.HexColor("#5a7fa0"))
     c.setFont("Helvetica", 10)
-    c.drawCentredString(w / 2, h * 0.46, "Current as of build  SignalScope-3.4.105")
+    c.drawCentredString(w / 2, h * 0.46, "Current as of build  SignalScope-3.5.104")
 
     # Lower rule
     c.setStrokeColor(colors.HexColor("#1a3a6a"))
@@ -367,19 +367,24 @@ TOC_ENTRIES = [
     (14, "Codec Monitor Plugin"),
     (15, "Push Server Plugin"),
     (16, "PTP Clock Plugin"),
-    (17, "SignalScope Player"),
-    (18, "Alerting"),
-    (19, "Broadcast Chains"),
-    (20, "Hub Mode"),
-    (21, "AI Anomaly Detection"),
-    (22, "Stream Comparator"),
-    (23, "Metric History & Analytics"),
-    (24, "SLA Tracking"),
-    (25, "Security"),
-    (26, "Backup & Migration"),
-    (27, "Mobile API"),
-    (28, "Plugin Development"),
-    (29, "Troubleshooting"),
+    (17, "Icecast Streaming Plugin"),
+    (18, "Listener Plugin"),
+    (19, "Producer View Plugin"),
+    (20, "AzuraCast Plugin"),
+    (21, "Sync Capture Plugin"),
+    (22, "SignalScope Player"),
+    (23, "Alerting"),
+    (24, "Broadcast Chains"),
+    (25, "Hub Mode"),
+    (26, "AI Anomaly Detection"),
+    (27, "Stream Comparator"),
+    (28, "Metric History & Analytics"),
+    (29, "SLA Tracking"),
+    (30, "Security"),
+    (31, "Backup & Migration"),
+    (32, "Mobile API"),
+    (33, "Plugin Development"),
+    (34, "Troubleshooting"),
 ]
 
 
@@ -423,6 +428,11 @@ def ch1_introduction(styles):
         "PTP / GPS-disciplined wall clock for studios, accurate on any browser",
         "Push notification server for iOS and Android via APNs and FCM",
         "SignalScope Player — desktop companion app (Windows & macOS) for logger recordings",
+        "Icecast Streaming plugin — re-stream any monitored input to an Icecast2 server",
+        "Listener plugin — polished stream player for presenters and producers",
+        "Producer View plugin — simplified chain fault display for non-technical on-air staff",
+        "AzuraCast plugin — live now-playing integration and silence correlation with AzuraCast web radio",
+        "Sync Capture plugin — multi-site simultaneous audio capture for simulcast alignment verification",
         "Extensible plugin system for adding custom functionality alongside the core application",
     ]
     for cap in caps:
@@ -1239,9 +1249,208 @@ def ch16_ptpclock(styles):
     return elems
 
 
-def ch17_player(styles):
+def ch17_icecast(styles):
     elems = []
-    elems += chapter_header(styles, 17, "SignalScope Player")
+    elems += chapter_header(styles, 17, "Icecast Streaming Plugin")
+    elems.append(body(styles,
+        "The Icecast Streaming plugin re-streams any monitored input to an Icecast2 server, turning "
+        "SignalScope nodes into live internet radio relay points. It taps the same PCM buffer used by "
+        "the Logger plugin, so recording and streaming run simultaneously without conflict. "
+        "Install from <b>Settings → Plugins → Check GitHub for plugins</b>. Requires <b>ffmpeg</b> "
+        "and an Icecast2 server installed separately."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Features")
+    features = [
+        "Re-stream any monitored input type: FM/RTL-SDR, DAB, ALSA, RTP, HTTP",
+        "Per-stream stereo toggle: HTTP inputs preserve native stereo; all others upmix mono to dual-mono",
+        "Hub overview shows live listener counts and stream status from all connected sites",
+        "Create and manage streams on any client node directly from the hub interface",
+        "Multiple streams can share a single Icecast2 server on different mount points",
+    ]
+    for f in features:
+        elems.append(bullet(styles, f))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Configuration")
+    elems.append(body(styles,
+        "Navigate to <b>Icecast Streaming</b> in the nav bar and click <b>Add Stream</b>. For each stream provide:"))
+    elems.append(bullet(styles, "<b>Input stream:</b> select from monitored inputs on this node"))
+    elems.append(bullet(styles, "<b>Icecast server URL:</b> e.g. http://localhost:8000"))
+    elems.append(bullet(styles, "<b>Mount point:</b> e.g. /coolFM"))
+    elems.append(bullet(styles, "<b>Source password:</b> the Icecast source password"))
+    elems.append(bullet(styles, "<b>Bitrate:</b> output MP3 bitrate in kbps (default 128)"))
+    elems.append(bullet(styles, "<b>Stereo:</b> enable for stereo inputs"))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Hub Overview")
+    elems.append(body(styles,
+        "On a hub deployment, the Icecast Streaming page shows a unified overview of all streams across "
+        "all connected sites. Each stream card shows the mount point, current listener count, bitrate, "
+        "and Start/Stop controls. Streams can be managed on remote client nodes from the hub without "
+        "logging into individual nodes."))
+    return elems
+
+
+def ch18_listener(styles):
+    elems = []
+    elems += chapter_header(styles, 18, "Listener Plugin")
+    elems.append(body(styles,
+        "The Listener plugin provides a polished, consumer-grade audio player for presenters and producers. "
+        "It shows all streams the authenticated user has access to as station cards with live level meters, "
+        "one-tap playback, and auto-reconnect. Hub-only. "
+        "Install from <b>Settings → Plugins → Check GitHub for plugins</b>. No additional packages required."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Features")
+    features = [
+        "Station cards with stream name, site, and live PPM-style level meter",
+        "One-tap audio playback — tap any card to start listening immediately",
+        "Stereo badge on stereo streams; STEREO also shown in the now-playing bar",
+        "Animated equaliser bars while audio is playing",
+        "Volume control slider in the now-playing bar",
+        "Auto-reconnects silently if the stream drops",
+        "Mobile-friendly layout — designed for tablets and phones as well as desktop",
+        "Users only see streams they have permission to access (respects the plugin role user system)",
+    ]
+    for f in features:
+        elems.append(bullet(styles, f))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Access")
+    elems.append(body(styles,
+        "Navigate to <b>Listener</b> in the nav bar, or direct non-technical users to the URL directly. "
+        "Users assigned the <b>Producer</b> role are directed to the Producer View on login; Listener "
+        "is available to all other authenticated users at <b>/hub/listener</b>."))
+    return elems
+
+
+def ch19_presenter(styles):
+    elems = []
+    elems += chapter_header(styles, 19, "Producer View Plugin")
+    elems.append(body(styles,
+        "The Producer View plugin provides a simplified, plain-English hub interface for producers and "
+        "presenters — technical detail is replaced with at-a-glance status and a human-readable fault "
+        "history. Hub-only. "
+        "Install from <b>Settings → Plugins → Check GitHub for plugins</b>. No additional packages required."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Features")
+    features = [
+        "Station status cards with green / amber / red status indicator and live level bar",
+        "All-clear banner displayed prominently when everything is running normally",
+        "Plain-English fault history — e.g. 'Audio lost for 4 minutes, recovered at 14:32'",
+        "Audio replay buttons for fault clips — producers can hear exactly what went to air",
+        "Chain-filtered and site-filtered: users only see chains and sites they have permission to view",
+        "Producer-role users are directed here automatically on login",
+    ]
+    for f in features:
+        elems.append(bullet(styles, f))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Producer Role")
+    elems.append(body(styles,
+        "Assign the <b>Producer</b> role to a user in <b>Settings → Users</b>. Producer-role users "
+        "are redirected to the Producer View on every login — they never see the full engineering dashboard. "
+        "Requires SignalScope 3.4.85 or later with the plugin-role user system enabled."))
+    return elems
+
+
+def ch20_azuracast(styles):
+    elems = []
+    elems += chapter_header(styles, 20, "AzuraCast Plugin")
+    elems.append(body(styles,
+        "The AzuraCast plugin connects SignalScope to AzuraCast web radio installations, providing live "
+        "now-playing data, listener counts, and station health monitoring with automatic fault alerting. "
+        "Install from <b>Settings → Plugins → Check GitHub for plugins</b>. No additional packages required."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Features")
+    features = [
+        "Station cards show current track, artist, album art, progress bar, next track, live/AutoDJ status, and listener count",
+        "AZURACAST_FAULT alert fires when a station goes offline or becomes unreachable",
+        "AZURACAST_RECOVERY alert fires when a station comes back online",
+        "AZURACAST_SILENCE alert fires when a station is broadcasting but its linked SignalScope input is silent",
+        "Hub overview aggregates all AzuraCast stations from all connected sites in one page",
+        "Supports multiple AzuraCast servers; each site can manage its own server list",
+    ]
+    for f in features:
+        elems.append(bullet(styles, f))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Configuration")
+    elems.append(body(styles,
+        "Navigate to <b>AzuraCast</b> in the nav bar and click <b>Add Server</b>. Enter:"))
+    elems.append(bullet(styles, "<b>Server URL:</b> your AzuraCast installation URL (e.g. https://radio.example.com)"))
+    elems.append(bullet(styles, "<b>API Key:</b> an AzuraCast read-only API key (generate in AzuraCast → Admin → API Keys)"))
+    elems.append(spacer(4))
+    elems.append(body(styles,
+        "Once added, stations are discovered automatically via the AzuraCast Now Playing API. "
+        "To enable silence correlation, link each AzuraCast station to a SignalScope monitored input "
+        "in the station settings panel — the plugin will cross-reference audio levels with broadcast status."))
+    return elems
+
+
+def ch21_synccap(styles):
+    elems = []
+    elems += chapter_header(styles, 21, "Sync Capture Plugin")
+    elems.append(body(styles,
+        "The Sync Capture plugin performs multi-site simultaneous audio capture across all connected "
+        "SignalScope nodes. It is ideal for checking simulcast alignment, verifying network contribution "
+        "quality, or making reference recordings across a transmitter network. Hub-only. "
+        "Install from <b>Settings → Plugins → Check GitHub for plugins</b>. No additional packages required."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "How It Works")
+    steps = [
+        "Select any combination of inputs from any connected sites in the Sync Capture page",
+        "Set a capture duration (5–300 seconds)",
+        "Press Capture — the hub broadcasts a timestamped command to all selected sites simultaneously",
+        "Each client grabs the last N seconds from its rolling audio buffer at the agreed wall-clock moment",
+        "Clips are uploaded to the hub and presented together with inline audio players",
+        "Listen to all captures side by side to compare alignment, contribution quality, or identify faults",
+    ]
+    for i, s in enumerate(steps, 1):
+        elems.append(bullet(styles, f"{i}. {s}"))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "Analysis Tools")
+    elems.append(data_table(styles,
+        ["Tool", "Description"],
+        [
+            ["⇌ Align", "Computes cross-correlation between clips to find the sub-sample timing offset of each site relative to the reference. Displays lag in milliseconds and correlation quality."],
+            ["EBU R128 LUFS", "True peak and integrated loudness per clip for level comparison across sites."],
+            ["Octave-band spectrum", "Per-clip octave-band energy plot to identify frequency-domain differences between sites."],
+            ["Stereo L/R analysis", "Level and phase for left and right channels independently on stereo clips."],
+            ["RDS/DLS snapshot", "Metadata captured at the moment of the clip for FM and DAB inputs."],
+        ],
+        col_widths=[100, 370]))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "DAW Session Export")
+    elems.append(body(styles,
+        "Click <b>💾 DAW Session</b> on any completed capture to download a ZIP containing:"))
+    elems.append(bullet(styles, "All WAV clips in a <b>clips/</b> subdirectory"))
+    elems.append(bullet(styles, "A <b>REAPER .rpp</b> project file — one track per site, clips positioned at timeline 0"))
+    elems.append(bullet(styles, "An <b>Adobe Audition .sesx</b> session file — one track per site, clips positioned at timeline 0"))
+    elems.append(spacer(4))
+    elems.append(body(styles,
+        "If <b>⇌ Align</b> has been run before export, the alignment offsets are baked into the session "
+        "files as source in-points — open the project in REAPER or Audition and the clips will be "
+        "perfectly time-aligned automatically."))
+    elems.append(spacer(8))
+
+    elems += h1(styles, "BWF Export")
+    elems.append(body(styles,
+        "Individual clips can be downloaded as Broadcast Wave Format (BWF) files with embedded "
+        "origination timestamp metadata. The BWF timestamp corresponds to the wall-clock capture time "
+        "on the originating site, enabling forensic time-stamping of recorded material."))
+    return elems
+
+
+def ch22_player(styles):
+    elems = []
+    elems += chapter_header(styles, 22, "SignalScope Player")
     elems.append(body(styles,
         "SignalScope Player is a standalone desktop application for Windows and macOS that provides "
         "offline access to logger recordings. It connects to a SignalScope hub's Logger API, browses "
@@ -1314,9 +1523,9 @@ def ch17_player(styles):
     return elems
 
 
-def ch18_alerting(styles):
+def ch23_alerting(styles):
     elems = []
-    elems += chapter_header(styles, 18, "Alerting")
+    elems += chapter_header(styles, 23, "Alerting")
     elems.append(body(styles,
         "SignalScope generates alerts for a wide range of signal quality and fault conditions. "
         "All alerts are logged to the alert history and, depending on configuration, sent via one "
@@ -1417,9 +1626,9 @@ def ch18_alerting(styles):
     return elems
 
 
-def ch19_chains(styles):
+def ch24_chains(styles):
     elems = []
-    elems += chapter_header(styles, 19, "Broadcast Chains")
+    elems += chapter_header(styles, 24, "Broadcast Chains")
     elems.append(body(styles,
         "Broadcast Chains model the physical signal path as an ordered sequence of monitoring points. "
         "The hub identifies the first failed node and fires a named fault alert with specific fault "
@@ -1504,9 +1713,9 @@ def ch19_chains(styles):
     return elems
 
 
-def ch20_hub(styles):
+def ch25_hub(styles):
     elems = []
-    elems += chapter_header(styles, 20, "Hub Mode")
+    elems += chapter_header(styles, 25, "Hub Mode")
     elems.append(body(styles,
         "Hub mode enables multi-site aggregation. A central hub node collects data from all connected "
         "client nodes, providing a unified view of the entire broadcast estate."))
@@ -1566,9 +1775,9 @@ def ch20_hub(styles):
     return elems
 
 
-def ch21_ai(styles):
+def ch26_ai(styles):
     elems = []
-    elems += chapter_header(styles, 21, "AI Anomaly Detection")
+    elems += chapter_header(styles, 26, "AI Anomaly Detection")
     elems.append(body(styles,
         "Each stream has its own ONNX autoencoder model trained on 14 audio features. The AI engine "
         "learns the normal behaviour of each stream and alerts when the signal deviates significantly "
@@ -1599,9 +1808,9 @@ def ch21_ai(styles):
     return elems
 
 
-def ch22_comparator(styles):
+def ch27_comparator(styles):
     elems = []
-    elems += chapter_header(styles, 22, "Stream Comparator")
+    elems += chapter_header(styles, 27, "Stream Comparator")
     elems.append(body(styles,
         "The Stream Comparator pairs two streams to measure processing delay and detect signal faults "
         "caused by processing chain issues. Configure in <b>Settings → Comparators</b>."))
@@ -1619,9 +1828,9 @@ def ch22_comparator(styles):
     return elems
 
 
-def ch23_metrics(styles):
+def ch28_metrics(styles):
     elems = []
-    elems += chapter_header(styles, 23, "Metric History & Analytics")
+    elems += chapter_header(styles, 28, "Metric History & Analytics")
 
     elems += h1(styles, "Stored Metrics")
     elems.append(body(styles,
@@ -1683,9 +1892,9 @@ def ch23_metrics(styles):
     return elems
 
 
-def ch24_sla(styles):
+def ch29_sla(styles):
     elems = []
-    elems += chapter_header(styles, 24, "SLA Tracking")
+    elems += chapter_header(styles, 29, "SLA Tracking")
     elems.append(body(styles,
         "SignalScope calculates monthly per-stream uptime percentages, providing SLA reporting for "
         "broadcast monitoring obligations."))
@@ -1706,9 +1915,9 @@ def ch24_sla(styles):
     return elems
 
 
-def ch25_security(styles):
+def ch30_security(styles):
     elems = []
-    elems += chapter_header(styles, 25, "Security")
+    elems += chapter_header(styles, 30, "Security")
     elems.append(data_table(styles,
         ["Feature", "Details"],
         [
@@ -1724,9 +1933,9 @@ def ch25_security(styles):
     return elems
 
 
-def ch26_backup(styles):
+def ch31_backup(styles):
     elems = []
-    elems += chapter_header(styles, 26, "Backup & Migration")
+    elems += chapter_header(styles, 31, "Backup & Migration")
     elems.append(body(styles,
         "Use <b>Settings → Maintenance → Backup &amp; Restore</b> to download a timestamped ZIP "
         "containing the complete application state."))
@@ -1752,9 +1961,9 @@ def ch26_backup(styles):
     return elems
 
 
-def ch27_mobile(styles):
+def ch32_mobile(styles):
     elems = []
-    elems += chapter_header(styles, 27, "Mobile API")
+    elems += chapter_header(styles, 32, "Mobile API")
     elems.append(body(styles,
         "All Mobile API endpoints require authentication via a Bearer token, X-API-Key header, or "
         "?token= query parameter. Generate tokens in <b>Settings → Mobile API</b>."))
@@ -1793,9 +2002,9 @@ def ch27_mobile(styles):
     return elems
 
 
-def ch28_plugins(styles):
+def ch33_plugins(styles):
     elems = []
-    elems += chapter_header(styles, 28, "Plugin Development")
+    elems += chapter_header(styles, 33, "Plugin Development")
     elems.append(body(styles,
         "SignalScope's plugin system allows you to extend the application with custom pages and "
         "functionality. Plugins are single Python files placed in the <b>plugins/</b> subdirectory "
@@ -1845,7 +2054,7 @@ def ch28_plugins(styles):
             ["login_required", "decorator", "Apply to routes that require an authenticated browser session"],
             ["mobile_api_required", "decorator", "Apply to /api/mobile/... routes — accepts Bearer token auth from the iOS app. Always obtain as: ctx.get(\"mobile_api_required\", ctx[\"login_required\"])"],
             ["csrf_protect", "decorator", "Apply to POST routes to validate CSRF token"],
-            ["BUILD", "str", "Current build string e.g. 'SignalScope-3.4.105'"],
+            ["BUILD", "str", "Current build string e.g. 'SignalScope-3.5.104'"],
         ],
         col_widths=[120, 110, 240]))
     elems.append(spacer(8))
@@ -1882,9 +2091,9 @@ def ch28_plugins(styles):
     return elems
 
 
-def ch29_troubleshooting(styles):
+def ch34_troubleshooting(styles):
     elems = []
-    elems += chapter_header(styles, 29, "Troubleshooting")
+    elems += chapter_header(styles, 34, "Troubleshooting")
 
     issues = [
         (
@@ -2024,7 +2233,7 @@ def build_pdf():
         pageTemplates=[cover_template, content_template],
         title="SignalScope User Guide",
         author="SignalScope",
-        subject="Comprehensive User Guide — SignalScope-3.4.105",
+        subject="Comprehensive User Guide — SignalScope-3.5.104",
     )
 
     styles = make_styles()
@@ -2055,19 +2264,24 @@ def build_pdf():
         ch14_codec,
         ch15_push,
         ch16_ptpclock,
-        ch17_player,
-        ch18_alerting,
-        ch19_chains,
-        ch20_hub,
-        ch21_ai,
-        ch22_comparator,
-        ch23_metrics,
-        ch24_sla,
-        ch25_security,
-        ch26_backup,
-        ch27_mobile,
-        ch28_plugins,
-        ch29_troubleshooting,
+        ch17_icecast,
+        ch18_listener,
+        ch19_presenter,
+        ch20_azuracast,
+        ch21_synccap,
+        ch22_player,
+        ch23_alerting,
+        ch24_chains,
+        ch25_hub,
+        ch26_ai,
+        ch27_comparator,
+        ch28_metrics,
+        ch29_sla,
+        ch30_security,
+        ch31_backup,
+        ch32_mobile,
+        ch33_plugins,
+        ch34_troubleshooting,
     ]
 
     for i, ch_fn in enumerate(chapters):
