@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.86"
+BUILD                  = "SignalScope-3.5.87"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8978,15 +8978,20 @@ class MonitorManager:
 
             def _warm_one(sid_str):
                 url    = f"http://localhost:{session.dab_port}/mp3/{sid_str}"
-                end_ts = time.monotonic() + 150          # hold for up to 150 s
+                end_ts = time.monotonic() + 600          # hold for up to 600 s
+                # timeout must be > per-service encoder startup time (~52 s).
+                # Previous value of 30 s caused ALL prewarm connections to close
+                # before any encoder was ready, making the prewarm ineffective.
+                # 70 s > 52 s ensures the connection outlasts one service startup;
+                # once data arrives the loop keeps the connection alive until end_ts.
                 try:
-                    with _pur.urlopen(url, timeout=30) as r:
+                    with _pur.urlopen(url, timeout=70) as r:
                         while time.monotonic() < end_ts and not session.stop_evt.is_set():
                             chunk = r.read(8192)
                             if not chunk:
                                 break
                 except Exception:
-                    pass                                 # consumer probes will retry
+                    pass                                 # consumer probes will take over
 
             threads = []
             for svc in svcs:
@@ -9257,26 +9262,39 @@ class MonitorManager:
                 return
 
             # ── Initial probe: wait for the audio endpoint to serve data ────────
-            # 120s deadline.  We want ≥4096 bytes (≈0.25 s of 128 kbps MP3) to
-            # confirm the encoder is producing sustained audio — not just an ID3
-            # header — which matters on weak signals where welle-cli may send a
-            # few bytes and stall.  The previous single read(4096) silently failed
-            # because welle-cli sends frames one-at-a-time (≈480 bytes each) and
-            # a single read() on a streaming HTTP socket returns as soon as ANY
-            # data is in the buffer.  Fix: accumulate across reads within a 5 s
-            # window per probe attempt, so we collect ≥4096 bytes even when the
-            # server sends individual MP3 frames.
-            stream_ready = False
-            ready_deadline = time.time() + 120
-            while time.time() < ready_deadline and not stop_evt.is_set():
+            # welle-cli initialises audio encoders one at a time (~52 s each).
+            # With 9 services the last one may not be ready until ~9×52 = 468 s.
+            #
+            # CRITICAL: do NOT use a short per-attempt timeout that causes the
+            # probe to close and reopen the connection.  Every close disconnects
+            # this service from welle-cli's encoder queue; reconnecting re-queues
+            # it at the BACK of the line.  The previous 5 s cycling timeout turned
+            # a 52 s wait into a perpetual re-queue storm that made every service
+            # appear to take 52 s regardless of its real queue position.
+            #
+            # Fix: open ONE connection and hold it with a per-read timeout of 70 s
+            # (> one 52 s service startup).  welle-cli keeps the connection in its
+            # internal queue; when this service's turn comes it starts sending and
+            # the read returns immediately.  On genuine errors (connection refused,
+            # welle-cli crash) we do retry, but with a 3 s gap — not 0.5 s.
+            #
+            # ready_deadline covers 12 services × 52 s = 624 s worst case.
+            stream_ready   = False
+            ready_deadline = time.time() + 660   # 11 min worst case
+            _PROBE_TIMEOUT = 70                  # per-read timeout: > 52 s, < 104 s
+            while not stream_ready and not stop_evt.is_set() and time.time() < ready_deadline:
                 if session.proc.poll() is not None:
                     self.log(f"[{name}] DAB: welle-cli exited before audio stream became ready")
                     return
                 try:
-                    with _ur.urlopen(audio_url, timeout=5) as _trig:
+                    with _ur.urlopen(audio_url, timeout=_PROBE_TIMEOUT) as _trig:
                         _probe_data = b""
-                        _probe_end  = time.monotonic() + 4.5
-                        while len(_probe_data) < 4096 and time.monotonic() < _probe_end:
+                        while len(_probe_data) < 4096 and not stop_evt.is_set():
+                            # Inline crash check so we don't block for 70 s if
+                            # welle-cli exits while this connection is waiting.
+                            if session.proc.poll() is not None:
+                                self.log(f"[{name}] DAB: welle-cli exited while waiting for audio")
+                                return
                             _chunk = _trig.read(4096)
                             if not _chunk:
                                 break
@@ -9284,10 +9302,15 @@ class MonitorManager:
                         if len(_probe_data) >= 4096:
                             stream_ready = True
                             self.log(f"[{name}] DAB: audio endpoint ready ({len(_probe_data)} bytes)")
-                            break
                 except Exception as e:
-                    self.log(f"[{name}] DAB: waiting for audio endpoint: {e}")
-                time.sleep(0.5)
+                    # Genuine error (connection refused, socket reset, etc.) — log
+                    # once and retry after a short pause.  Do NOT log socket.timeout
+                    # as an error since that's the expected path while waiting in queue.
+                    err_str = str(e)
+                    if "timed out" not in err_str.lower() and "timeout" not in err_str.lower():
+                        self.log(f"[{name}] DAB: waiting for audio endpoint: {e}")
+                    if not stop_evt.is_set():
+                        time.sleep(3.0)
 
             if not stream_ready or stop_evt.is_set():
                 self.log(f"[{name}] DAB: audio stream never became ready")

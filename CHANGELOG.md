@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.87] - 2026-04-06
+
+### Fixed
+- **DAB startup slow (52 s per service) — root cause found and fixed**: The `-C` flag was a red herring. The real problem was two bugs in the consumer-side probe and prewarm:
+  1. **Prewarm `timeout=30 s`** was shorter than the 52-s per-service encoder startup time. Every prewarm connection timed out and disconnected before any encoder was ready, making the prewarm do nothing.
+  2. **Probe cycling every ~5.5 s** (5 s socket timeout + 0.5 s sleep, from the previous fix) caused constant disconnect/reconnect churn. Each reconnect re-queued the service at the back of welle-cli's internal encoder queue, preventing any service from getting ahead in the queue. This produced the classic 52-s-interval pattern regardless of the `-C` value.
+  - **Fix**: Prewarm timeout increased to 70 s (> 52 s startup) with 600 s total hold time, keeping all service connections alive while welle-cli works through the queue. Probe changed to a **persistent single connection** with 70 s per-read timeout — no more disconnect churn. `ready_deadline` extended to 660 s (11 min, covers 12 services × 52 s). Socket timeout exceptions during the wait are no longer logged as errors.
+
+---
+
 ## [3.5.86] - 2026-04-06
 
 ### Fixed
