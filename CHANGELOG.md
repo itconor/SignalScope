@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.93] - 2026-04-06
+
+### Fixed
+- **DAB + FM on Pi — `usb_claim_interface error -6` root cause (timing race)**: The 3.5.92 fix confirmed correct device selection (welle-cli was reaching the right dongle), but error -6 persisted. The welle-cli log now showed `Airspy: airpsy_open failed` immediately before `usb_claim_interface error -6`, confirming welle-cli is trying the correct RTL-SDR device — but the Pi's DWC2 USB host controller rejects simultaneous `libusb_claim_interface` calls to different devices. rtl_fm's USB init (launch → "Sampling at...") takes ~1 s. When welle-cli launches at the same moment (same log second), both call `libusb_claim_interface` concurrently and one fails. Fix: on Raspberry Pi, if FM or scanner streams are active (`sdr_manager.status()` non-empty), `_start_dab_session` waits 3 s before launching welle-cli, ensuring rtl_fm's USB initialisation is complete first.
+
+---
+
 ## [3.5.92] - 2026-04-06
 
 ### Fixed

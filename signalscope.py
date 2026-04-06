@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.92"
+BUILD                  = "SignalScope-3.5.93"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8824,6 +8824,19 @@ class MonitorManager:
         #   IMPORTANT: welle-cli rejects -C and -D together ("Cannot select both
         #   -C and -D"), so -C is omitted when -D is used.
         if _is_raspberry_pi():
+            # USB serialisation: the Pi's DWC2 USB host controller cannot handle
+            # two simultaneous libusb_claim_interface calls to different devices.
+            # If an FM rtl_fm process is mid-initialisation (it takes ~1 s from
+            # launch to "Sampling at..."), launching welle-cli at the same moment
+            # causes usb_claim_interface error -6 on whichever finishes second —
+            # even though they are on completely different physical dongles.
+            # Waiting 3 s here gives rtl_fm (and any scanner stream) time to
+            # complete its USB init before welle-cli opens the second dongle.
+            if sdr_manager.status():
+                self.log(f"[{name}] Pi USB stagger: FM/scanner active — waiting 3 s "
+                         f"before welle-cli opens dongle")
+                time.sleep(3.0)
+
             _n = max(1, len(session.consumers))
             if session.serial:
                 # Serial known: pin device by serial (-D) not by index (-F).
