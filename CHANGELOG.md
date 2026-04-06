@@ -2,6 +2,17 @@
 
 ---
 
+## [Sync Capture plugin 1.0.13] - 2026-04-06
+
+### Changed / Added
+- **Bug fixes**: atomic DB writes (temp + `os.replace()`), upload size limit (`_MAX_UPLOAD_BYTES`), streaming Range-aware clip serve (no full RAM read), bounded processed-capture dedup set (500 entries, FIFO eviction), per-site pending-command queue (list not single slot), validate clip upload against capture's actual selections
+- **Audio analysis**: EBU R128 integrated LUFS + true peak dBTP per clip (K-weighting via scipy if available, fallback unweighted); level difference dB vs reference over aligned overlap; sub-sample lag interpolation via parabolic fit around FFT peak; octave-band spectrum (63–16 kHz, 9 bands, bar chart canvas); stereo L/R analysis (L/R dBFS, balance dB, L/R correlation) for stereo clips
+- **Broadcast features**: RDS/DLS metadata snapshot at capture time stored in clip record; BWF export endpoint (`/bwf` suffix) with `bext` chunk containing originator, timecode, LUFS
+- **UX**: live countdown timer in progress panel; per-clip download (WAV) and BWF download buttons; reference clip selector with re-align; pagination + search on capture history (`?offset&limit&q`); label pre-fill with current HH:MM timestamp
+- **Architecture**: async alignment (POST `align_async` + GET `align_result` polling, 202 response); single heapq scheduler thread replaces one-thread-per-capture pattern; JS `Map` cache replaces `data-cap` DOM attribute for cap objects; `ResizeObserver` on waveform canvases replaces global `window.resize` listener; configurable clip storage path (`synccap_cfg.json`) + disk usage badge in header
+
+---
+
 ## [3.5.87] - 2026-04-06
 
 ### Fixed
