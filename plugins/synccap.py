@@ -17,6 +17,11 @@ spectrum, stereo L/R analysis, RDS/DLS metadata snapshot, BWF export, async
 alignment with job polling, single heapq scheduler, JS Map cap cache,
 ResizeObserver waveforms, reference clip selector, pagination + search,
 timestamp label pre-fill, per-clip download buttons, configurable storage path.
+v1.0.18: DAW Session export — one-click ZIP download containing all WAV clips
+plus REAPER (.rpp) and Adobe Audition (.sesx) session files.  If alignment has
+been run the stored offsets are baked into the session files so every track
+opens pre-aligned in the DAW.  Alignment result is now persisted to the capture
+DB record so the export can use it without recomputing.
 """
 
 SIGNALSCOPE_PLUGIN = {
@@ -25,7 +30,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/synccap",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.17",
+    "version":  "1.0.18",
 }
 
 import os
@@ -39,6 +44,7 @@ import shutil
 import struct
 import heapq
 import re
+import zipfile
 import urllib.request
 import urllib.error
 from collections import deque
@@ -264,6 +270,120 @@ def _build_bwf(wav_bytes, stream_name, site, captured_at_ts, lufs=None):
 
     new_riff_size = len(wav_bytes) - 8 + len(bext_chunk)
     return b"RIFF" + struct.pack("<I", new_riff_size) + b"WAVE" + bext_chunk + wav_bytes[12:]
+
+
+# ── DAW session builders (Item DAW export) ───────────────────────────────────
+
+def _build_reaper_rpp(clips, offsets, durations, label):
+    """Build a minimal REAPER .rpp project string for an aligned multitrack session.
+
+    Each clip becomes a separate track.  ``offsets[fn]`` is the source in-point
+    (seconds to skip from the start of the WAV file) so that all tracks are
+    time-aligned when played back from position 0 on the REAPER timeline.
+    Session files reference audio files via the relative path  clips/<filename>.
+    """
+    import uuid as _uuid_m
+    lines = ['<REAPER_PROJECT 0.1 "6.0"', '  TEMPO 120 4 4']
+    for cl in clips:
+        fn   = cl["filename"]
+        off  = round(offsets.get(fn, 0.0), 6)
+        dur  = round(durations.get(fn, 0.0), 6)
+        tlen = round(max(0.001, dur - off), 6)
+        name = "{} \u2014 {}".format(cl["stream"], cl["site"]).replace('"', "'")
+        guid = "{{{}}}".format(str(_uuid_m.uuid4()).upper())
+        lines += [
+            "  <TRACK",
+            '    NAME "{}"'.format(name),
+            "    TRACKID {}".format(guid),
+            "    <ITEM",
+            "      POSITION 0",
+            "      LENGTH {}".format(tlen),
+            "      SOFFS {}".format(off),
+            '      NAME "{}"'.format(fn.replace('"', "'")),
+            "      <SOURCE WAVE",
+            '        FILE "clips/{}"'.format(fn),
+            "      >",
+            "    >",
+            "  >",
+        ]
+    lines.append(">")
+    return "\n".join(lines) + "\n"
+
+
+def _build_audition_sesx(clips, offsets, durations, label, sr=_SAMPLE_RATE):
+    """Build an Adobe Audition .sesx XML session string for an aligned multitrack session.
+
+    ``offsets[fn]`` becomes the ``sourceInPoint`` on each audioClip so that all
+    clips line up at timeline position 0.  Files are referenced by the relative
+    path  clips/<filename>.
+    """
+    import xml.etree.ElementTree as _ET
+
+    max_dur = max(
+        (durations.get(cl["filename"], 0.0) - offsets.get(cl["filename"], 0.0))
+        for cl in clips
+    ) if clips else 30.0
+    max_dur = max(0.001, max_dur)
+
+    root = _ET.Element("sesx", version="1.1")
+    sess = _ET.SubElement(root, "session",
+        appBuild="13.0.0.192",
+        appVersion="13.0.0",
+        audioChannelType="stereo",
+        bitDepth="32",
+        duration="{:.6f}".format(max_dur),
+        eventCount=str(len(clips)),
+        frameRate="25",
+        numTracks=str(len(clips)),
+        sampleRate=str(sr),
+        startTimecode="00;00;00;00",
+        version="5",
+    )
+    tracks_el = _ET.SubElement(sess, "tracks")
+    files_el  = _ET.SubElement(sess, "files")
+
+    for i, cl in enumerate(clips):
+        fn      = cl["filename"]
+        off     = offsets.get(fn, 0.0)
+        dur     = durations.get(fn, 0.0)
+        relpath = "clips/{}".format(fn)
+        tname   = "{} \u2014 {}".format(cl["stream"], cl["site"])
+
+        track = _ET.SubElement(tracks_el, "audioTrack",
+            automationLaneOpenState="0",
+            id=str(i), index=str(i), select="false",
+        )
+        tp = _ET.SubElement(track, "trackParameters")
+        tn = _ET.SubElement(tp, "trackName")
+        tn.text = tname
+        _ET.SubElement(tp, "outputBus",
+            busIndex="0", channelCount="2", index="0", type="Master")
+        aclips = _ET.SubElement(track, "audioClips")
+        ac = _ET.SubElement(aclips, "audioClip",
+            id=str(i),
+            name=fn,
+            select="false",
+            sourceInPoint="{:.6f}".format(round(off, 6)),
+            sourceOutPoint="{:.6f}".format(round(dur, 6)),
+            start="0.000000",
+        )
+        _ET.SubElement(ac, "file",
+            absolutePath="", relative="true", relPath=relpath)
+        _ET.SubElement(files_el, "file",
+            absolutePath="",
+            duration="{:.6f}".format(round(dur, 6)),
+            id=str(i),
+            mediaType="audio",
+            relPath=relpath,
+            sampleRate=str(sr),
+        )
+
+    try:
+        _ET.indent(root, space="  ")   # Python 3.9+
+    except AttributeError:
+        pass
+    return '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n' + \
+           _ET.tostring(root, encoding="unicode")
 
 
 # ── audio helpers ─────────────────────────────────────────────────────────────
@@ -1122,6 +1242,19 @@ def register(app, ctx):
                     while len(_align_seq_list) > _MAX_ALIGN_JOBS:
                         old = _align_seq_list.pop(0)
                         _align_jobs.pop(old, None)
+                # Persist alignment summary to DB so daw_export can use it without recomputing
+                try:
+                    with _db_lock:
+                        _db2 = _load_db()
+                        if capture_id in _db2:
+                            _db2[capture_id]["alignment"] = {
+                                "offsets":      result["offsets"],
+                                "durations":    result["durations"],
+                                "ref_filename": result["ref_filename"],
+                            }
+                            _save_db(_db2)
+                except Exception:
+                    pass
             except Exception as exc:
                 with _align_lock:
                     _align_jobs[job_id] = {"status": "error", "error": str(exc), "ts": time.time()}
@@ -1160,6 +1293,71 @@ def register(app, ctx):
             return jsonify(_compute_alignment(cap, ref_fn))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
+
+    @app.get("/api/synccap/capture/<capture_id>/daw_export")
+    @login_required
+    def synccap_daw_export(capture_id):
+        """Return a ZIP containing all WAV clips plus REAPER and Adobe Audition session files.
+
+        If alignment has been run the stored offsets are used so that each DAW
+        session opens with every track already time-aligned.  If no alignment
+        data is available all clips are placed at time-zero with no source
+        in-point (i.e. user must align manually in the DAW).
+        """
+        from flask import Response
+        with _db_lock:
+            db  = _load_db()
+            cap = db.get(capture_id)
+        if not cap:
+            return "Capture not found", 404
+        clips = cap.get("clips", [])
+        if not clips:
+            return "No clips in this capture", 404
+
+        # Use persisted alignment if available, otherwise zero offsets
+        align        = cap.get("alignment") or {}
+        raw_offsets  = align.get("offsets",   {})
+        raw_durations = align.get("durations", {})
+
+        offsets   = {}
+        durations = {}
+        for cl in clips:
+            fn   = cl["filename"]
+            path = os.path.join(_CLIP_DIR, fn)
+            offsets[fn] = float(raw_offsets.get(fn, 0.0))
+            if fn in raw_durations:
+                durations[fn] = float(raw_durations[fn])
+            elif os.path.exists(path):
+                try:
+                    with wave.open(path, "rb") as wf:
+                        durations[fn] = round(wf.getnframes() / float(wf.getframerate()), 3)
+                except Exception:
+                    durations[fn] = float(cap.get("duration_s", 30))
+            else:
+                durations[fn] = float(cap.get("duration_s", 30))
+
+        label      = cap.get("label", "SyncCapture")
+        safe_label = re.sub(r"[^\w\-]", "_", label)[:40]
+
+        rpp  = _build_reaper_rpp(clips, offsets, durations, label)
+        sesx = _build_audition_sesx(clips, offsets, durations, label)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("{}_reaper.rpp".format(safe_label),  rpp.encode("utf-8"))
+            zf.writestr("{}_audition.sesx".format(safe_label), sesx.encode("utf-8"))
+            for cl in clips:
+                fn   = cl["filename"]
+                path = os.path.join(_CLIP_DIR, fn)
+                if os.path.exists(path):
+                    zf.write(path, "clips/{}".format(fn))
+        buf.seek(0)
+        data = buf.read()
+        resp = Response(data, status=200, mimetype="application/zip")
+        resp.headers["Content-Disposition"] = \
+            'attachment; filename="{}_daw.zip"'.format(safe_label)
+        resp.headers["Content-Length"] = str(len(data))
+        return resp
 
     @app.delete("/api/synccap/capture/<capture_id>")
     @login_required
@@ -1779,7 +1977,10 @@ function renderHistory(caps){
       +'<td colspan="6" class="clips-panel">'
       +'<div class="clips-panel-bar">'
       +'<span class="clips-panel-bar-lbl">Clips</span>'
-      +(cap.clips.length>=2?'<button class="btn bg bs align-btn" data-capid="'+cap.capture_id+'" style="margin-left:auto">⇌ Align</button>':'')
+      +'<div style="display:flex;gap:6px;margin-left:auto">'
+      +(cap.clips.length>0?'<a class="btn bg bs" href="/api/synccap/capture/'+cap.capture_id+'/daw_export" download style="text-decoration:none">💾 DAW Session</a>':'')
+      +(cap.clips.length>=2?'<button class="btn bg bs align-btn" data-capid="'+cap.capture_id+'">⇌ Align</button>':'')
+      +'</div>'
       +'</div>'
       +(cap.clips.length
         ?'<div class="clips-grid" id="cg_'+cap.capture_id+'">'+cap.clips.map(function(cl){

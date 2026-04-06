@@ -2,6 +2,25 @@
 
 ---
 
+## [3.5.103] - 2026-04-06
+
+### Added — Sync Capture: DAW Session export (plugin v1.0.18)
+
+A new **💾 DAW Session** button appears on every capture row that has at least one clip. Clicking it downloads a ZIP containing:
+
+- **All WAV clips** in a `clips/` subdirectory
+- **`<label>_reaper.rpp`** — a REAPER project file; each clip becomes a separate track. If alignment has been run the stored source in-point offsets are baked in so every track is pre-aligned when you open the project.
+- **`<label>_audition.sesx`** — an Adobe Audition multitrack session file in the same format, using `sourceInPoint` / `sourceOutPoint` attributes to position each clip at the correct in-point on the timeline.
+
+**How alignment interacts with the export:** Running ⇌ Align now writes the computed `offsets`, `durations`, and `ref_filename` to the capture's DB record. The DAW export route reads these without recomputing. Captures exported before alignment is run receive zero offsets (clips land at the start of each track — user aligns manually in the DAW). Re-running alignment with a different reference overwrites the stored offsets; subsequent exports use the latest result.
+
+**Format notes:**
+- REAPER `.rpp` uses `SOFFS` at the item level to set the source in-point. All tracks sit at timeline position 0.
+- Audition `.sesx` uses `sourceInPoint` / `sourceOutPoint` on each `audioClip`, also all at `start="0"` on the timeline.
+- Both files reference clips via the relative path `clips/<filename>` — unzip into a single folder and open from there.
+
+---
+
 ## [3.5.102] - 2026-04-06
 
 ### Changed — alert defaults tuned for broadcast (new inputs only; existing configs unchanged)
