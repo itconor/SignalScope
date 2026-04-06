@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.95"
+BUILD                  = "SignalScope-3.5.96"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -18923,9 +18923,14 @@ function updateComparators(cmps){
 
 function refresh(){
   fetch('/status.json').then(r=>r.json()).then(function(d){
-    // Log
+    // Log — only auto-scroll if the user is already at (or near) the bottom.
+    // If they've scrolled up to read older lines, leave their position alone.
     var lb=document.getElementById('lb');
-    if(lb){lb.textContent=d.logs.join('\n');lb.scrollTop=99999;}
+    if(lb){
+      var _atBot=lb.scrollHeight-lb.scrollTop-lb.clientHeight<40;
+      lb.textContent=d.logs.join('\n');
+      if(_atBot) lb.scrollTop=lb.scrollHeight;
+    }
 
     // Cards
     if(d.inputs) updateCards(d.inputs);

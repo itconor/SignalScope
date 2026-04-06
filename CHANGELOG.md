@@ -2,6 +2,13 @@
 
 ---
 
+## [3.5.96] - 2026-04-06
+
+### Fixed
+- **Client status page log — auto-scroll fights manual scroll**: the log box was unconditionally jumping to the bottom on every `/status.json` poll (~5 s interval), making it impossible to scroll up and read older entries. Fixed: auto-scroll now only fires if the user is already at (or within 40 px of) the bottom. If they've scrolled up the position is preserved across refreshes.
+
+---
+
 ## [3.5.95] - 2026-04-06
 
 ### Fixed
