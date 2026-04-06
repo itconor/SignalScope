@@ -2458,7 +2458,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.111"
+BUILD                  = "SignalScope-3.5.112"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -25970,7 +25970,28 @@ def hub_live_push():
                             # Stream appeared in live push but not yet in
                             # heartbeat payload — add a minimal entry so chain
                             # evaluation can see it immediately.
-                            new_st = {"name": sname, "enabled": True}
+                            # Include safe defaults for every field the hub
+                            # templates access so a page load or poll before
+                            # the first heartbeat doesn't throw a 500.
+                            new_st = {
+                                "name": sname, "enabled": True,
+                                "device_index": "", "format": "",
+                                "alert_on_silence": False, "alert_on_hiss": False,
+                                "alert_on_clip": False, "ai_monitor": False,
+                                "ai_status": "", "ai_phase": "",
+                                "silence_active": False,
+                                "silence_threshold_dbfs": -55.0,
+                                "silence_min_duration": 10.0,
+                                "alert_on_overmod": False, "alert_on_hum": False,
+                                "alert_on_dc_offset": False,
+                                "alert_on_phase_reversal": False,
+                                "alert_on_stereo_imbalance": False,
+                                "alert_on_mono_on_stereo": False,
+                                "glitch_detect": False, "flatness_detect": False,
+                                "stereo": False, "level_dbfs": -120.0,
+                                "peak_dbfs": -120.0, "rtp_loss_pct": 0.0,
+                                "sla_pct": None, "history": [],
+                            }
                             for _f in _LIVE_STREAM_FIELDS:
                                 if _f in live_st:
                                     new_st[_f] = live_st[_f]

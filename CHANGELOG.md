@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.112] - 2026-04-06
+
+### Fixed — Hub replica page 500 when Live View first enabled
+
+When Live View was toggled ON for a site, the client immediately started sending `live_push` frames. If a stream appeared in those frames before the first heartbeat had been received (or between heartbeats), `hub_live_push` injected a minimal stub entry with only `name`, `enabled`, and the fast-changing metric fields. The hub template then accessed fields like `device_index`, `silence_threshold_dbfs`, `alert_on_silence`, etc. that didn't exist on the stub — causing a Jinja2 `UndefinedError` → HTTP 500 on the next replica page load or `/api/hub/site/.../data` poll. The page recovered once a real heartbeat arrived (~10 s) and replaced the stub.
+
+Fix: stub entries created by `hub_live_push` now include safe defaults for all template-accessed fields.
+
+---
+
 ## [3.5.111] - 2026-04-06
 
 ### Added — Remote detection settings from hub stream cards
