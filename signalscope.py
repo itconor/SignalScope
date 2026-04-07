@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.128"
+BUILD                  = "SignalScope-3.5.129"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -12882,11 +12882,41 @@ class HubClient:
                              AlertSender(monitor.app_cfg, monitor.log))
         )
 
+    # Debounce timer for _restart_if_running — coalesces rapid successive
+    # config changes (e.g. toggling stereo on many inputs at once from the
+    # hub) into a single restart.  Without this, N changes in one heartbeat
+    # ACK produce N rapid stop/start cycles that hammer the USB stack.
+    _restart_timer: "threading.Timer | None" = None
+    _restart_timer_lock: "threading.Lock" = None   # set in __post_init__ or lazily
+
     def _restart_if_running(self):
-        """Restart monitoring if it is currently active (to apply config changes)."""
-        if monitor.is_running():
-            monitor.stop_monitoring()
-            monitor.start_monitoring()
+        """Schedule a debounced monitoring restart to apply config changes.
+
+        Any number of calls within RESTART_DEBOUNCE_S seconds are coalesced
+        into a single stop+start, preventing USB stack thrashing on rapid
+        bulk config changes (e.g. toggling stereo on many inputs at once).
+        """
+        if not monitor.is_running():
+            return
+        _RESTART_DEBOUNCE_S = 2.0
+        # Lazily initialise the lock (class-level default is None)
+        if self._restart_timer_lock is None:
+            HubClient._restart_timer_lock = threading.Lock()
+        with self._restart_timer_lock:
+            if self._restart_timer is not None:
+                self._restart_timer.cancel()
+            t = threading.Timer(_RESTART_DEBOUNCE_S, self._do_debounced_restart)
+            t.daemon = True
+            t.name = "HubClientRestartDebounce"
+            self._restart_timer = t
+            t.start()
+
+    def _do_debounced_restart(self):
+        with self._restart_timer_lock:
+            self._restart_timer = None
+        monitor.log("[Hub] Applying config changes — restarting monitoring (debounced)")
+        monitor.stop_monitoring()
+        monitor.start_monitoring()
 
     def start(self):
         self.state = self.STATE_CONNECTING

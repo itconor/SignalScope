@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.129] - 2026-04-07
+
+### Fixed — Bulk hub config changes no longer cause rapid-fire monitor restart storm
+
+When toggling stereo (or any restart-triggering field) on multiple inputs simultaneously from the hub, each `set_input_field` command previously called `stop_monitoring()` + `start_monitoring()` immediately. N inputs changed in one heartbeat ACK → N rapid USB open/close cycles → USB stack corruption on Pi 5 RP1 controller.
+
+Fix: `_restart_if_running()` is now debounced. Any number of config changes within a 2-second window are coalesced into a single restart. The same applies to `add_input`, `remove_input`, and `toggle_input` hub commands.
+
+---
+
 ## [3.5.128] - 2026-04-07
 
 ### Added — ⚡ USB Fix button on hub site cards (push RTL-SDR autosuspend fix remotely)
