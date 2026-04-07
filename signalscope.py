@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.127"
+BUILD                  = "SignalScope-3.5.128"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -12397,6 +12397,45 @@ class HubClient:
         else:
             monitor.log("[Hub] kill_welle: no welle-cli or rtl_tcp processes found")
 
+    def _cmd_setup_usb_autosuspend(self, payload: dict):
+        """Write the RTL-SDR USB autosuspend udev rule on the client machine.
+        Requires sudo password in payload when not running as root."""
+        import subprocess as _sp
+        password = payload.get("password", "")
+        udev_rule = ('SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", '
+                     'ATTR{power/autosuspend}="-1", '
+                     'ATTR{power/autosuspend_delay_ms}="-1"\n')
+        rule_path = "/etc/udev/rules.d/99-rtlsdr-autosuspend.rules"
+        # Try direct write first (running as root)
+        try:
+            with open(rule_path, 'w') as _f:
+                _f.write(udev_rule)
+            monitor.log("[Hub] USB autosuspend rule written directly (running as root)")
+        except PermissionError:
+            if not password:
+                monitor.log("[Hub] USB autosuspend fix: sudo password required but not provided")
+                return
+            _r = _sp.run(["sudo", "-S", "tee", rule_path],
+                         input=f"{password}\n{udev_rule}".encode(),
+                         capture_output=True, timeout=10)
+            if _r.returncode != 0:
+                monitor.log(f"[Hub] USB autosuspend fix: sudo tee failed — "
+                            f"{_r.stderr.decode(errors='ignore')[:200]}")
+                return
+            monitor.log("[Hub] USB autosuspend rule written via sudo")
+        except Exception as _e:
+            monitor.log(f"[Hub] USB autosuspend fix: failed to write rule: {_e}")
+            return
+        # Reload udev rules
+        for _cmd in (["sudo", "-S", "udevadm", "control", "--reload-rules"],
+                     ["sudo", "-S", "udevadm", "trigger"]):
+            try:
+                _sp.run(_cmd, input=f"{password}\n".encode(),
+                        capture_output=True, timeout=10)
+            except Exception:
+                pass
+        monitor.log("[Hub] USB autosuspend fix applied — replug dongle or reboot to activate")
+
     def _cmd_reboot(self, payload: dict):
         monitor.log("[Hub] Remote reboot command received — rebooting system in 3s …")
         def _do_reboot():
@@ -13875,6 +13914,8 @@ class HubClient:
                         self._cmd_reboot(cmd_payload)
                     elif cmd_type == "kill_welle":
                         self._cmd_kill_welle(cmd_payload)
+                    elif cmd_type == "setup_usb_autosuspend":
+                        self._cmd_setup_usb_autosuspend(cmd_payload)
                     elif cmd_type == "chain_note":
                         self._cmd_chain_note(cmd_payload)
                     elif cmd_type == "ai_feedback":
@@ -26967,6 +27008,23 @@ def hub_site_kill_welle(site_name):
     return jsonify({"ok": True})
 
 
+@app.post("/api/hub/site/<path:site_name>/setup_usb_autosuspend")
+@login_required
+@csrf_protect
+def hub_site_setup_usb_autosuspend(site_name):
+    """Hub admin: push USB autosuspend fix command to a remote client site."""
+    _, err = _hub_site_guard(site_name)
+    if err: return err
+    data = request.get_json(silent=True) or {}
+    password = data.get("password", "")
+    hub_server.push_pending_command(site_name, {
+        "type": "setup_usb_autosuspend",
+        "payload": {"password": password},
+    })
+    monitor.log(f"[Hub] USB autosuspend fix command pushed to site '{site_name}'")
+    return jsonify({"ok": True})
+
+
 @app.post("/api/hub/site/<path:site_name>/live_view")
 @login_required
 @csrf_protect
@@ -34503,6 +34561,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% endif %}
       <button class="btn site-reboot-btn" data-site="{{site.site|e}}" style="background:#3a1e1e;color:#fca5a5;font-size:11px;padding:2px 10px" title="Reboot the remote machine's operating system">⏻ Reboot</button>
       <button class="btn site-kill-welle-btn" data-site="{{site.site|e}}" style="background:#2a2000;color:#fde68a;font-size:11px;padding:2px 10px" title="Kill stuck welle-cli / rtl_tcp processes and free the SDR dongle">🔌 Kill Welle</button>
+      <button class="btn site-usb-fix-btn" data-site="{{site.site|e}}" style="background:#1a2a1a;color:#86efac;border:1px solid #166534;font-size:11px;padding:2px 10px" title="Write RTL-SDR USB autosuspend udev rule on the remote site (fixes Pi 5 'Signal caught' crashes)">⚡ USB Fix</button>
       {% if site._backup_ts %}
       <a class="btn" href="/api/hub/site/{{site.site|urlencode}}/backup" style="background:#142514;color:#4ade80;font-size:11px;padding:2px 10px;text-decoration:none" title="Download backup — {{(site._backup_size // 1024) if site._backup_size else '?'}} KB, taken {{fmt(site._backup_ts)}}">⬇ Backup <span style="opacity:.7;font-size:10px">({{ago(site._backup_age_s)}})</span></a>
       <button class="btn site-backup-btn" data-site="{{site.site|e}}" style="background:#1a2e1a;color:#86efac;font-size:11px;padding:2px 10px" title="Request a fresh backup from this site now">↻ Backup Now</button>
@@ -35600,6 +35659,49 @@ document.addEventListener('click',function(e){
     else{btn.disabled=false;btn.textContent=origText;_ssToast('Kill welle failed: '+(d.error||'unknown'),'err');}
   }).catch(function(err){btn.disabled=false;btn.textContent=origText;_ssToast('Error: '+(err.message||err),'err');});
   });
+});
+
+// ── USB Autosuspend Fix button ────────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('.site-usb-fix-btn');if(!btn)return;
+  var site=btn.dataset.site;
+  var anchor=btn.closest('.site-header')||btn.parentElement;
+  var existing=anchor.parentElement&&anchor.parentElement.querySelector('.site-usb-fix-panel');
+  if(existing){existing.remove();return;}
+  var panel=document.createElement('div');
+  panel.className='site-usb-fix-panel';
+  panel.style.cssText='padding:10px 16px;background:#0a1f0a;border-top:1px solid #166534;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px';
+  panel.innerHTML='<span style="color:#86efac">⚡ USB Autosuspend Fix for <strong>'+site+'</strong></span>'
+    +'<span style="color:var(--mu);font-size:11px">Enter sudo password on that machine:</span>'
+    +'<input class="usb-fix-pw" type="password" placeholder="sudo password" autocomplete="new-password" '
+    +'style="background:#0d1117;border:1px solid #166534;border-radius:6px;color:var(--tx);padding:4px 8px;font-size:12px;width:160px">'
+    +'<button class="btn bs usb-fix-apply-btn" style="background:#166534;color:#fff;font-size:11px">⚡ Apply</button>'
+    +'<button class="btn bg bs" style="font-size:11px" data-usb-cancel="1">Cancel</button>'
+    +'<span style="color:var(--mu);font-size:10px;flex-basis:100%">Writes /etc/udev/rules.d/99-rtlsdr-autosuspend.rules then reloads udev. Replug dongle or reboot to activate.</span>';
+  panel.querySelector('[data-usb-cancel]').addEventListener('click',function(){panel.remove();});
+  var applyBtn=panel.querySelector('.usb-fix-apply-btn');
+  var pwInput=panel.querySelector('.usb-fix-pw');
+  function doApply(){
+    var pw=pwInput.value;
+    applyBtn.disabled=true;applyBtn.textContent='⏳ Applying…';
+    hubPost('/api/hub/site/'+encodeURIComponent(site)+'/setup_usb_autosuspend',{password:pw})
+      .then(function(d){
+        if(d.ok){
+          panel.innerHTML='<span style="color:#86efac">✓ USB autosuspend fix command sent to <strong>'+site+'</strong> — check site log for result, then replug dongle or reboot.</span>';
+          setTimeout(function(){panel.remove();},6000);
+        } else {
+          applyBtn.disabled=false;applyBtn.textContent='⚡ Apply';
+          _ssToast('USB fix failed: '+(d.error||'unknown error'),'err');
+        }
+      }).catch(function(err){
+        applyBtn.disabled=false;applyBtn.textContent='⚡ Apply';
+        _ssToast('USB fix error: '+(err.message||err),'err');
+      });
+  }
+  applyBtn.addEventListener('click',doApply);
+  pwInput.addEventListener('keydown',function(ev){if(ev.key==='Enter')doApply();});
+  anchor.insertAdjacentElement('afterend',panel);
+  setTimeout(function(){pwInput.focus();},50);
 });
 
 // Backup is now a direct download link — no JS handler needed.

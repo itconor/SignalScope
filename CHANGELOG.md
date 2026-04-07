@@ -2,6 +2,18 @@
 
 ---
 
+## [3.5.128] - 2026-04-07
+
+### Added — ⚡ USB Fix button on hub site cards (push RTL-SDR autosuspend fix remotely)
+
+New **⚡ USB Fix** button on every hub site card. Opens an inline password prompt; sends the udev rule setup command to the remote client via the heartbeat channel — no shell or direct web access to the client needed.
+
+- New client command `setup_usb_autosuspend`: writes `/etc/udev/rules.d/99-rtlsdr-autosuspend.rules` and reloads udev. Tries direct write first (root), falls back to `sudo -S tee` with provided password.
+- New hub route `POST /api/hub/site/<site>/setup_usb_autosuspend`
+- Result appears in the site log within one heartbeat cycle (~10 s). Replug the dongle or use ⏻ Reboot to activate.
+
+---
+
 ## [3.5.127] - 2026-04-07
 
 ### Changed — DAB monitor loop unified: Pi now uses same path as x86
