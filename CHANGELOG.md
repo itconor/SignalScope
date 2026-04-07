@@ -2,6 +2,19 @@
 
 ---
 
+## [3.5.130] - 2026-04-07
+
+### Fixed — Restore Pi DAB monitor loop to 3.5.126 behaviour (rtl_tcp proxy + DVB unbind)
+
+3.5.127 unified the DAB monitor loop to the x86 path on all platforms. This broke DAB monitoring on Raspberry Pi (direct welle-cli without rtl_tcp fails because Pi apt welle-cli ignores `-F rtl_sdr,N` device selection). Restored:
+
+- Pi-specific rtl_tcp proxy launch (with USB autosuspend disable attempt and ioctl reset on "Signal caught")
+- DVB driver unbinding block (`dvb_usb_rtl28xxu`)
+- Pi carousel pre-warmer branch (warm only consumer SIDs, not the full ensemble)
+- Non-Pi path unchanged: direct welle-cli, no `-C`
+
+---
+
 ## [3.5.129] - 2026-04-07
 
 ### Fixed — Bulk hub config changes no longer cause rapid-fire monitor restart storm
