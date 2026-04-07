@@ -2,6 +2,22 @@
 
 ---
 
+## [3.5.126] - 2026-04-07
+
+### Added — Version selector: install any GitHub release on a remote client from the hub
+
+A new **📦 Version** button appears on every online hub site card. Clicking it opens an inline panel that fetches all SignalScope releases from GitHub and presents them in a dropdown. The selected version is installed on the remote client via the existing heartbeat command pipeline — the client downloads the raw Python file directly from GitHub, validates it with `py_compile`, replaces itself, and restarts. Works for both upgrades and downgrades.
+
+**New endpoints:**
+- `GET /api/hub/releases` — returns all GitHub releases with tag, name, and raw download URL
+- `POST /api/hub/site/<site>/install_version` — pushes install command with `direct_url` payload
+
+**New client path:** `_run_direct_update` downloads from the GitHub raw URL directly (no hub relay needed), bypassing the `hub/update/download` endpoint used for hub-pushed updates. URL is validated server-side to only allow `raw.githubusercontent.com/itconor/SignalScope/` URLs.
+
+The site is automatically put into chain maintenance mode (15 min) during install, same as the standard update flow.
+
+---
+
 ## [3.5.125] - 2026-04-06
 
 ### Fixed — Pi 5 RTL-SDR USB autosuspend kills rtl_tcp ("Signal caught, exiting!")

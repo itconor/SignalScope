@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.125"
+BUILD                  = "SignalScope-3.5.126"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -12595,15 +12595,54 @@ class HubClient:
             monitor.log(f"[Hub] Pruned {removed} file(s) from uploaded clips older than 24 h")
 
     def _cmd_self_update(self, payload: dict):
-        """Hub command: download the hub's current signalscope.py and restart."""
+        """Hub command: download the hub's current signalscope.py and restart.
+        If payload contains 'direct_url', download from that URL directly
+        (used for installing a specific GitHub release version)."""
         hub_version = payload.get("hub_version", "?")
-        monitor.log(f"[Hub] Self-update requested — hub is {hub_version}, we are {BUILD}")
-        cfg_obj  = self._cfg_fn()
-        hub_url  = cfg_obj.hub.hub_url.rstrip("/")
-        secret   = cfg_obj.hub.secret_key
-        threading.Thread(target=self._run_self_update,
-                         args=(hub_url, secret, hub_version),
-                         daemon=True, name="SelfUpdate").start()
+        direct_url  = payload.get("direct_url", "")
+        if direct_url:
+            monitor.log(f"[Hub] Version-specific install requested — target {hub_version}")
+            threading.Thread(target=self._run_direct_update,
+                             args=(direct_url, hub_version),
+                             daemon=True, name="SelfUpdate").start()
+        else:
+            monitor.log(f"[Hub] Self-update requested — hub is {hub_version}, we are {BUILD}")
+            cfg_obj  = self._cfg_fn()
+            hub_url  = cfg_obj.hub.hub_url.rstrip("/")
+            secret   = cfg_obj.hub.secret_key
+            threading.Thread(target=self._run_self_update,
+                             args=(hub_url, secret, hub_version),
+                             daemon=True, name="SelfUpdate").start()
+
+    def _run_direct_update(self, direct_url: str, version_label: str):
+        """Download a specific version of signalscope.py directly from GitHub raw URL."""
+        import py_compile, tempfile
+        script_path = os.path.abspath(__file__)
+        script_dir  = os.path.dirname(script_path)
+        monitor.log(f"[Update] Downloading {version_label} from {direct_url} …")
+        try:
+            req = urllib.request.Request(direct_url, headers={"User-Agent": "SignalScope"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                new_code = r.read()
+            monitor.log(f"[Update] Downloaded {len(new_code)//1024}KB")
+            fd, tmp_path = tempfile.mkstemp(suffix=".py", dir=script_dir)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(new_code)
+                py_compile.compile(tmp_path, doraise=True)
+                monitor.log(f"[Update] Syntax OK — installing {version_label} and restarting …")
+                os.replace(tmp_path, script_path)
+            except Exception as e:
+                monitor.log(f"[Update] Validation failed — aborting install: {e}")
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                return
+            time.sleep(0.5)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:
+            monitor.log(f"[Update] Direct install failed: {e}")
 
     def _run_self_update(self, hub_url: str, secret: str, hub_version: str):
         """Download new signalscope.py from hub and perform an in-place restart."""
@@ -26895,6 +26934,60 @@ def hub_trigger_update(site_name):
     return jsonify({"ok": True})
 
 
+@app.get("/api/hub/releases")
+@login_required
+def hub_get_releases():
+    """Fetch the list of SignalScope GitHub releases for the version selector."""
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 403
+    try:
+        req = urllib.request.Request(
+            _GH_API_RELEASES_URL,
+            headers={"User-Agent": "SignalScope", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            releases_raw = json.loads(r.read())
+        releases = []
+        for rel in releases_raw:
+            tag  = rel.get("tag_name", "")
+            name = rel.get("name") or tag
+            if not tag:
+                continue
+            raw_url = f"https://raw.githubusercontent.com/itconor/SignalScope/{tag}/signalscope.py"
+            releases.append({"tag": tag, "name": name, "url": raw_url,
+                              "prerelease": rel.get("prerelease", False)})
+        return jsonify({"releases": releases})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.post("/api/hub/site/<path:site_name>/install_version")
+@login_required
+@csrf_protect
+def hub_install_version(site_name):
+    """Push an install_version command to a remote site (install any GitHub release)."""
+    cfg = monitor.app_cfg
+    if cfg.hub.mode not in ("hub", "both"):
+        return jsonify({"error": "not a hub"}), 403
+    data = request.get_json(silent=True) or {}
+    tag      = (data.get("tag") or "").strip()
+    raw_url  = (data.get("url") or "").strip()
+    if not tag or not raw_url:
+        return jsonify({"error": "tag and url required"}), 400
+    # Only allow raw.githubusercontent.com URLs for security
+    if not raw_url.startswith("https://raw.githubusercontent.com/itconor/SignalScope/"):
+        return jsonify({"error": "invalid URL — must be from itconor/SignalScope repo"}), 400
+    if hub_server:
+        _set_site_chain_maintenance(site_name, duration=900, reason="version install in progress")
+        hub_server._pending_updates[site_name] = time.time()
+    hub_server.push_pending_command(site_name, {
+        "type":    "self_update",
+        "payload": {"hub_version": tag, "direct_url": raw_url},
+    })
+    monitor.log(f"[Hub] Install {tag} command pushed to site '{site_name}'")
+    return jsonify({"ok": True})
+
+
 @app.post("/api/hub/site/<path:site_name>/relay_bitrate")
 @login_required
 @csrf_protect
@@ -34754,6 +34847,11 @@ main{padding:18px;max-width:1500px;margin:0 auto}
               style="background:#3a2a0f;color:#fbbf24;border:1px solid #b45309;font-size:11px;padding:2px 10px"
               title="Push update to this site">⬆ Update</button>
       {% endif %}
+      {% if site.online %}
+      <button class="btn site-version-sel-btn" data-site="{{site.site|e}}"
+              style="background:#1a1e2a;color:#93c5fd;border:1px solid var(--bor);font-size:11px;padding:2px 10px"
+              title="Install a specific SignalScope version on this site">📦 Version</button>
+      {% endif %}
       {% endif %}
       <span id="ss-last-seen" class="site-meta">Last seen: {{ago(site.age_s)}}</span>
       <span id="ss-latency" class="site-meta" title="Round-trip time for the last hub heartbeat"{% if site.latency_ms is none %} style="display:none"{% endif %}>Latency: {{site.latency_ms}} ms</span>
@@ -35381,6 +35479,65 @@ document.addEventListener('click', function(e){
       });
   });
   anchor.insertAdjacentElement('afterend', bar);
+});
+
+// ── Version selector ──────────────────────────────────────────────────────────
+document.addEventListener('click', function(e){
+  var btn = e.target.closest('.site-version-sel-btn');
+  if(!btn) return;
+  var site = btn.getAttribute('data-site');
+  if(!site) return;
+  var anchor = btn.closest('.site-header') || btn.parentElement;
+  var existing = anchor.parentElement && anchor.parentElement.querySelector('.site-version-panel');
+  if(existing){ existing.remove(); return; }
+  // Build panel
+  var panel = document.createElement('div');
+  panel.className = 'site-version-panel';
+  panel.style.cssText = 'padding:10px 16px;background:#0d1e3a;border-top:1px solid var(--bor);display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px';
+  panel.innerHTML = '<span style="color:var(--mu)">📦 Install version on <strong style="color:var(--tx)">'+site+'</strong>:</span>'
+    +'<select class="ver-sel" style="background:#0d1117;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:4px 8px;font-size:12px;min-width:180px"><option value="">Loading releases…</option></select>'
+    +'<button class="btn bp bs ver-install-btn" disabled style="font-size:11px">⬇ Install</button>'
+    +'<button class="btn bg bs" style="font-size:11px" data-ver-cancel="1">Cancel</button>';
+  panel.querySelector('[data-ver-cancel]').addEventListener('click', function(){ panel.remove(); });
+  anchor.insertAdjacentElement('afterend', panel);
+  var sel = panel.querySelector('.ver-sel');
+  var installBtn = panel.querySelector('.ver-install-btn');
+  // Fetch releases
+  fetch('/api/hub/releases',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    if(d.error){ sel.innerHTML='<option>Error: '+d.error+'</option>'; return; }
+    sel.innerHTML='<option value="">— select a version —</option>';
+    (d.releases||[]).forEach(function(rel){
+      var opt=document.createElement('option');
+      opt.value=JSON.stringify({tag:rel.tag,url:rel.url});
+      opt.textContent=rel.name+(rel.prerelease?' [pre-release]':'');
+      sel.appendChild(opt);
+    });
+    sel.disabled=false;
+    installBtn.disabled=false;
+  }).catch(function(err){
+    sel.innerHTML='<option>Failed to load: '+(err.message||err)+'</option>';
+  });
+  installBtn.addEventListener('click',function(){
+    if(!sel.value) return;
+    var info;
+    try{ info=JSON.parse(sel.value); } catch(ex){ return; }
+    if(!info.tag||!info.url) return;
+    if(!confirm('Install '+info.tag+' on site "'+site+'"? The site will restart.\n\nThis can be used to downgrade.')) return;
+    installBtn.disabled=true; installBtn.textContent='⏳ Sending…';
+    hubPost('/api/hub/site/'+encodeURIComponent(site)+'/install_version',{tag:info.tag,url:info.url})
+      .then(function(d){
+        if(d.ok){
+          panel.innerHTML='<span style="color:var(--ok)">✓ Install command sent to <strong>'+site+'</strong> — site will download '+info.tag+' and restart shortly.</span>';
+          setTimeout(function(){ panel.remove(); },4000);
+        } else {
+          installBtn.disabled=false; installBtn.textContent='⬇ Install';
+          _ssToast('Install failed: '+(d.error||'unknown error'),'err');
+        }
+      }).catch(function(err){
+        installBtn.disabled=false; installBtn.textContent='⬇ Install';
+        _ssToast('Install error: '+(err.message||err),'err');
+      });
+  });
 });
 
 // ── Source management ─────────────────────────────────────────────────────────
