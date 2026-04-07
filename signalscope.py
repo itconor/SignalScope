@@ -1149,6 +1149,18 @@ document.addEventListener('DOMContentLoaded',function(){
   </div>
   <p class="help" style="margin-top:6px;font-size:11px">Creates <code style="background:#173a69;padding:1px 4px;border-radius:3px">/etc/sudoers.d/signalscope-reboot</code>. The password is sent over HTTPS and not stored.</p>
 
+  <div class="sec" style="margin-top:24px">⚡ RTL-SDR USB Autosuspend Fix</div>
+  <p class="help" style="margin-bottom:12px">On Raspberry Pi 5, the OS suspends the RTL-SDR dongle during DMA setup causing <code style="background:#173a69;padding:1px 4px;border-radius:3px">Signal caught, exiting!</code> crashes in rtl_tcp. This writes a udev rule to permanently disable autosuspend for all RTL-SDR devices. Only needs to be done once.</p>
+  <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap">
+    <div class="field">
+      <label for="autosuspend-sudo-pw">Sudo password</label>
+      <input type="password" id="autosuspend-sudo-pw" autocomplete="current-password" placeholder="your sudo password" style="width:220px">
+    </div>
+    <button type="button" class="btn bp" id="autosuspend-setup-btn" style="font-size:13px">⚡ Fix USB Autosuspend</button>
+    <span id="autosuspend-setup-status" style="font-size:12px;color:var(--mu)"></span>
+  </div>
+  <p class="help" style="margin-top:6px;font-size:11px">Creates <code style="background:#173a69;padding:1px 4px;border-radius:3px">/etc/udev/rules.d/99-rtlsdr-autosuspend.rules</code> and reloads udev. Replug the dongle or reboot to activate.</p>
+
   <div class="sec" style="margin-top:24px">⬇ Backup &amp; Restore</div>
   <p class="help" style="margin-bottom:12px">Download a ZIP archive containing your configuration, AI models, signal history database, SLA data, alert log and hub state. Use this to back up your setup or migrate to a new server.</p>
   <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
@@ -1818,6 +1830,35 @@ function adminRestart(btn){
         pw.value='';btn.textContent='✓ Setup complete';
       } else {
         st.textContent='✗ '+(d.error||'Failed — check the log for details.');st.style.color='var(--al)';
+        btn.disabled=false;btn.textContent=orig;
+      }
+    }).catch(function(){
+      st.textContent='Network error.';st.style.color='var(--al)';
+      btn.disabled=false;btn.textContent=orig;
+    });
+  });
+})();
+
+// ── USB Autosuspend Fix ───────────────────────────────────────────────────────
+(function(){
+  var btn=document.getElementById('autosuspend-setup-btn');
+  if(!btn)return;
+  btn.addEventListener('click',function(){
+    var pw=document.getElementById('autosuspend-sudo-pw');
+    var st=document.getElementById('autosuspend-setup-status');
+    if(!pw||!pw.value){st.textContent='Enter your sudo password first.';st.style.color='var(--al)';return;}
+    var orig=btn.textContent;
+    btn.disabled=true;btn.textContent='⏳ Setting up…';st.textContent='';
+    fetch('/api/admin/setup_usb_autosuspend',{method:'POST',
+      headers:{'X-CSRFToken':_csrf(),'Content-Type':'application/json'},
+      body:JSON.stringify({password:pw.value})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){
+        st.textContent='✓ Done — replug the dongle or reboot to activate.';st.style.color='var(--ok)';
+        pw.value='';btn.textContent='✓ Setup complete';
+      } else {
+        st.textContent='✗ '+(d.error||'Failed — check the log.');st.style.color='var(--al)';
         btn.disabled=false;btn.textContent=orig;
       }
     }).catch(function(){
@@ -2499,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.124"
+BUILD                  = "SignalScope-3.5.125"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8994,6 +9035,38 @@ class MonitorManager:
                 except Exception:
                     pass
 
+            # ── Disable USB autosuspend for this dongle ──────────────────────
+            # On Pi 5 (RP1 USB controller), the kernel suspends the RTL-SDR
+            # device during DMA buffer allocation, causing rtl_tcp to exit with
+            # "Signal caught, exiting!" before any client can connect.
+            # Write -1 to the sysfs power/autosuspend attribute for the specific
+            # device.  This does not require root if the sysfs file is writable
+            # (it usually is not — see Settings → Maintenance → USB Autosuspend
+            # Fix for a permanent sudo-based solution).  Silent on failure.
+            try:
+                import glob as _glob
+                _as_serial = session.serial
+                for _udir in _glob.glob('/sys/bus/usb/devices/*'):
+                    if ':' in os.path.basename(_udir):
+                        continue   # skip interface dirs
+                    _sf = os.path.join(_udir, 'serial')
+                    if not os.path.exists(_sf):
+                        continue
+                    if open(_sf).read().strip() == _as_serial:
+                        _fixed = False
+                        for _attr in ('autosuspend', 'autosuspend_delay_ms'):
+                            _af = os.path.join(_udir, 'power', _attr)
+                            try:
+                                with open(_af, 'w') as _ff: _ff.write('-1')
+                                _fixed = True
+                            except Exception:
+                                pass
+                        if _fixed:
+                            self.log(f"[{name}] USB autosuspend disabled for {_as_serial}")
+                        break
+            except Exception:
+                pass
+
             # Pick a free local port for the rtl_tcp server
             import socket as _sock
             with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as _ts:
@@ -9023,9 +9096,10 @@ class MonitorManager:
                     # "listening..." goes to stdout which is /dev/null, so we
                     # CANNOT detect readiness from text output — use a TCP
                     # connect probe instead.
-                    _got_error_flag = [False]
+                    _got_error_flag  = [False]   # usb_claim_interface -6
+                    _got_signal_flag = [False]   # "signal caught" = USB autosuspend
                     def _drain_stderr(_proc=session.rtl_tcp_proc, _ch=session.channel,
-                                      _flag=_got_error_flag):
+                                      _flag=_got_error_flag, _sflag=_got_signal_flag):
                         try:
                             for _raw in _proc.stderr:
                                 try:
@@ -9036,6 +9110,8 @@ class MonitorManager:
                                     self.log(f"[rtl_tcp {_ch}] {_ls}")
                                 if "usb_claim_interface error" in _ls.lower():
                                     _flag[0] = True
+                                if "signal caught" in _ls.lower():
+                                    _sflag[0] = True
                         except Exception:
                             pass
                     threading.Thread(target=_drain_stderr, daemon=True,
@@ -9055,8 +9131,44 @@ class MonitorManager:
                             time.sleep(0.2)
                     # Give the drain thread a moment to log any error lines
                     time.sleep(0.5)
+                    if not _tcp_ok and _got_signal_flag[0]:
+                        # "Signal caught, exiting!" = USB autosuspend killed rtl_tcp
+                        # during DMA buffer allocation (common on Pi 5 RP1 USB).
+                        # Attempt a USB-level device reset via ioctl so the next
+                        # rtl_tcp open gets a clean device state.
+                        self.log(f"[{name}] Pi: rtl_tcp died from USB autosuspend — "
+                                 f"attempting USB device reset for {session.serial!r}")
+                        try:
+                            import fcntl as _fcntl, glob as _rg
+                            _USBDEVFS_RESET = 21536  # 0x5514
+                            for _rdir in _rg.glob('/sys/bus/usb/devices/*'):
+                                if ':' in os.path.basename(_rdir):
+                                    continue
+                                _rsf = os.path.join(_rdir, 'serial')
+                                if not os.path.exists(_rsf):
+                                    continue
+                                if open(_rsf).read().strip() == session.serial:
+                                    _bus = open(os.path.join(_rdir,'busnum')).read().strip()
+                                    _dev = open(os.path.join(_rdir,'devnum')).read().strip()
+                                    _dp  = f"/dev/bus/usb/{int(_bus):03d}/{int(_dev):03d}"
+                                    _fd  = os.open(_dp, os.O_WRONLY)
+                                    _fcntl.ioctl(_fd, _USBDEVFS_RESET, 0)
+                                    os.close(_fd)
+                                    self.log(f"[{name}] Pi: USB reset {_dp} OK — waiting 2 s")
+                                    time.sleep(2.0)
+                                    break
+                        except Exception as _ue:
+                            self.log(f"[{name}] Pi: USB reset failed ({_ue}) — "
+                                     f"use Settings → Maintenance → USB Autosuspend Fix")
+                        try: session.rtl_tcp_proc.kill()
+                        except Exception: pass
+                        try: session.rtl_tcp_proc.wait(timeout=2)
+                        except Exception: pass
+                        session.rtl_tcp_proc = None
+                        _got_signal_flag[0] = False
+                        continue
                     if not _tcp_ok and _got_error_flag[0]:
-                        # Device busy — kill this attempt and retry
+                        # Device busy (usb_claim_interface -6) — kill and retry
                         try: session.rtl_tcp_proc.kill()
                         except Exception: pass
                         try: session.rtl_tcp_proc.wait(timeout=2)
@@ -24640,6 +24752,72 @@ def api_admin_setup_reboot():
             return jsonify({"error": "sudo failed — wrong password or sudo not configured"}), 403
     except Exception as _e:
         monitor.log(f"[Admin] setup_reboot error: {_e}")
+        return jsonify({"error": str(_e)}), 500
+
+
+@app.post("/api/admin/setup_usb_autosuspend")
+@login_required
+@csrf_protect
+def api_admin_setup_usb_autosuspend():
+    """Write a udev rule that permanently disables USB autosuspend for RTL-SDR devices.
+
+    Accepts {"password": "<sudo password>"} and uses 'sudo -S tee' to write
+    /etc/udev/rules.d/99-rtlsdr-autosuspend.rules, then reloads udev.
+    Fixes "Signal caught, exiting!" crashes on Pi 5 caused by the RP1 USB
+    controller suspending the dongle during DMA buffer allocation.
+    """
+    import subprocess as _sp, shutil as _sh, os as _os
+    data = request.get_json(silent=True) or {}
+    pw   = str(data.get("password", "")).encode()
+    if not pw:
+        return jsonify({"error": "password required"}), 400
+
+    rule = ('SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", '
+            'ATTR{power/autosuspend}="-1", '
+            'ATTR{power/autosuspend_delay_ms}="-1"\n')
+    rule_path = "/etc/udev/rules.d/99-rtlsdr-autosuspend.rules"
+
+    def _write_and_reload(write_fn):
+        write_fn()
+        try:
+            _sp.run(["udevadm", "control", "--reload-rules"],
+                    timeout=5, check=False)
+            _sp.run(["udevadm", "trigger", "--subsystem-match=usb"],
+                    timeout=5, check=False)
+        except Exception:
+            pass
+        monitor.log("[Admin] setup_usb_autosuspend: udev rule written and reloaded")
+
+    if _os.geteuid() == 0:
+        try:
+            def _w():
+                with open(rule_path, "w") as _f: _f.write(rule)
+            _write_and_reload(_w)
+            return jsonify({"ok": True})
+        except Exception as _e:
+            return jsonify({"error": str(_e)}), 500
+
+    if not _sh.which("sudo"):
+        return jsonify({"error": "sudo not found on this system"}), 500
+    try:
+        result = _sp.run(
+            ["sudo", "-S", "tee", rule_path],
+            input=pw + b"\n" + rule.encode(),
+            stdout=_sp.DEVNULL, stderr=_sp.PIPE, timeout=10
+        )
+        if result.returncode == 0:
+            _sp.run(["sudo", "-S", "udevadm", "control", "--reload-rules"],
+                    input=pw + b"\n", stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, timeout=5)
+            _sp.run(["sudo", "-S", "udevadm", "trigger", "--subsystem-match=usb"],
+                    input=pw + b"\n", stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, timeout=5)
+            monitor.log("[Admin] setup_usb_autosuspend: udev rule written via sudo")
+            return jsonify({"ok": True})
+        else:
+            err = result.stderr.decode(errors="replace").strip()
+            monitor.log(f"[Admin] setup_usb_autosuspend failed: {err}")
+            return jsonify({"error": "sudo failed — wrong password or sudo not configured"}), 403
+    except Exception as _e:
+        monitor.log(f"[Admin] setup_usb_autosuspend error: {_e}")
         return jsonify({"error": str(_e)}), 500
 
 

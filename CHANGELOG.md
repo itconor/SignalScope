@@ -2,6 +2,18 @@
 
 ---
 
+## [3.5.125] - 2026-04-06
+
+### Fixed — Pi 5 RTL-SDR USB autosuspend kills rtl_tcp ("Signal caught, exiting!")
+
+On Raspberry Pi 5, the RP1 USB controller suspends the RTL-SDR dongle during DMA buffer allocation, causing rtl_tcp to crash immediately with "Signal caught, exiting!". Three-layer fix:
+
+1. **Automatic sysfs attempt** — before each rtl_tcp launch, SignalScope tries to write `-1` to the device's `/sys/.../power/autosuspend` sysfs attribute (no sudo; silent on failure if not writable)
+2. **Auto-recovery** — if "Signal caught" is detected in rtl_tcp stderr, a USB device reset is performed via `USBDEVFS_RESET` ioctl (works without root if RTL-SDR udev rules give device node access) before retrying
+3. **Permanent fix** — Settings → Maintenance → **⚡ RTL-SDR USB Autosuspend Fix**: enter sudo password once to write `/etc/udev/rules.d/99-rtlsdr-autosuspend.rules` and reload udev. Replug the dongle or reboot to activate. This is the definitive fix.
+
+---
+
 ## [3.5.124] - 2026-04-06
 
 ### Fixed — Revert Pi DAB to 3.5.114 rtl_tcp-for-all-Pi behaviour
