@@ -2,6 +2,19 @@
 
 ---
 
+## [3.5.127] - 2026-04-07
+
+### Changed — DAB monitor loop unified: Pi now uses same path as x86
+
+Removed all Pi-specific branching from `_start_dab_session`:
+- rtl_tcp proxy launch (and all its retry/USB-reset/autosuspend logic) removed
+- DVB driver unbinding block removed
+- Pre-warmer carousel-mode Pi branch removed (all platforms now warm all services in parallel)
+
+welle-cli is now launched identically on Pi and x86: no `-C`, no `-T`, using `-F rtl_sdr,{device_idx}` directly. Since DAB scans already work via this path on Pi, the monitor loop should too.
+
+---
+
 ## [3.5.126] - 2026-04-07
 
 ### Added — Version selector: install any GitHub release on a remote client from the hub

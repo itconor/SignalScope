@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.126"
+BUILD                  = "SignalScope-3.5.127"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -8893,59 +8893,6 @@ class MonitorManager:
         except Exception:
             pass
 
-        # Proactively unbind dvb_usb_rtl28xxu from the target dongle before
-        # welle-cli opens it.  On some Pi setups the kernel DVB driver remains
-        # bound to an RTL-SDR dongle (either because it was never blacklisted, or
-        # because a previous welle-cli exited without re-attaching it and the
-        # kernel re-bound it).  With the driver bound, libusb_claim_interface
-        # returns LIBUSB_ERROR_BUSY (-6) even though no userspace process holds
-        # the device.  Using sysfs unbind (same sudo -n pattern as _apply_usbfs_fix)
-        # clears this before welle-cli's rtlsdr_open() is called.
-        if _is_raspberry_pi() and session.serial:
-            try:
-                import pathlib as _pl
-                _dvb_drv = _pl.Path("/sys/bus/usb/drivers/dvb_usb_rtl28xxu")
-                if _dvb_drv.exists():
-                    # Find the USB device matching this serial
-                    _dev_path = None
-                    for _p in _pl.Path("/sys/bus/usb/devices").iterdir():
-                        try:
-                            if (_p / "serial").read_text().strip() == session.serial:
-                                _dev_path = _p
-                                break
-                        except Exception:
-                            continue
-                    if _dev_path:
-                        _unbind_f = _dvb_drv / "unbind"
-                        # Find interface directories (e.g. 1-1.3:1.0) for this device
-                        for _iface in _dev_path.parent.glob(f"{_dev_path.name}:*"):
-                            try:
-                                _drv_lnk = _iface / "driver"
-                                if not _drv_lnk.exists():
-                                    continue
-                                if _pl.Path(_drv_lnk).resolve().name == "dvb_usb_rtl28xxu":
-                                    _iname = _iface.name
-                                    # Try direct write first (root), then sudo -n
-                                    try:
-                                        _unbind_f.write_text(_iname)
-                                        self.log(f"[DAB {session.channel}] Unbound dvb_usb_rtl28xxu from {_iname}")
-                                    except PermissionError:
-                                        import subprocess as _sp3
-                                        _r = _sp3.run(
-                                            ["sudo", "-n", "tee", str(_unbind_f)],
-                                            input=_iname.encode(),
-                                            capture_output=True, timeout=3)
-                                        if _r.returncode == 0:
-                                            self.log(f"[DAB {session.channel}] Unbound dvb_usb_rtl28xxu (sudo) from {_iname}")
-                                        else:
-                                            self.log(f"[DAB {session.channel}] dvb_usb_rtl28xxu unbind failed — "
-                                                     f"run: echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/rtlsdr.conf")
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                continue
-            except Exception:
-                pass
 
         # Always pin the device index so two dongles on the same machine don't
         # conflict.  "rtl_sdr,0" is identical to "rtl_sdr" for a single dongle
@@ -8961,253 +8908,14 @@ class MonitorManager:
         # Brief pause so that any other monitoring threads that started at the
         # same time (all 9 services initialise concurrently) have time to call
         # _get_or_create_dab_session and add themselves to session.consumers.
-        # Without this, len(session.consumers) is 1 at the moment welle-cli
-        # launches, giving a too-small -C value on Pi.
         time.sleep(0.5)
 
-        # welle-cli's -C N flag activates encoders N at a time in a carousel —
-        # even -C 20 on a 12-service mux produces sequential 52 s / 104 s / 156 s
-        # startup because welle-cli processes each slot serially regardless of N.
-        # WITHOUT -C, welle-cli decodes the full ensemble simultaneously and all
-        # services are ready within ~10–15 s.  The pre-warmer (below) then opens
-        # persistent connections to every /mp3/<sid> endpoint in parallel so that
-        # consumer ffmpeg processes see immediate data.
-        #
-        # Non-Pi: omit -C entirely — full parallel ensemble decode, no CPU concern.
-        # Pi: always use rtl_tcp proxy — see below.
-        #
-        # DEVICE SELECTION ON Pi:
-        #   The apt-installed welle-cli on Raspberry Pi OS ignores ALL device
-        #   selection arguments (-F rtl_sdr,N and -D driver=rtlsdr,serial=X) and
-        #   ALWAYS opens the first available RTL-SDR device that libusb can claim.
-        #   When another process (FM rtl_fm) already holds that device, welle-cli
-        #   gets usb_claim_interface error -6.
-        #
-        #   Fix: on ALL Pi nodes, launch rtl_tcp first.  rtl_tcp uses the standard
-        #   rtlsdr_open(index) path (same mechanism as rtl_fm -d N) and correctly
-        #   opens the requested device.  welle-cli connects via TCP and never
-        #   touches USB directly — its broken device-selection is bypassed entirely.
-        #
-        #   IMPORTANT: resolve the device index fresh from the live USB scan right
-        #   before launching rtl_tcp.  The sdr_manager cache (10 s) may be stale
-        #   if the serial assignments were changed or if USB enumeration changed
-        #   (e.g. after a monitor restart).  A forced fresh scan ensures we pick
-        #   the correct index even when FM and DAB start concurrently.
-        if _is_raspberry_pi():
-            # ── rtl_tcp proxy path (all Pi DAB sessions) ────────────────────
-            _rtl_tcp_bin = _find_binary("rtl_tcp")
-            if not _rtl_tcp_bin:
-                _rtl_tcp_bin = "rtl_tcp"
-
-            # Kill stale rtl_tcp processes that may be holding the target device
-            # from a previous monitor run or a crash.  (The welle-cli stale killer
-            # above only targets welle-cli; rtl_tcp processes can also linger.)
-            # Match on "-d {device_idx}" in the command — that is the USB device
-            # index rtl_tcp was told to open.  Do NOT match on port (too broad when
-            # port=0) or on serial (serial doesn't appear in rtl_tcp's argv).
-            try:
-                import subprocess as _sp_stale, signal as _sig_stale
-                _pgrep = _sp_stale.run(["pgrep", "-a", "rtl_tcp"],
-                                        capture_output=True, text=True)
-                _dev_tag = f" -d {session.device_idx} "  # space-padded to avoid substring matches
-                _dev_tag_end = f" -d {session.device_idx}"  # also check at end of line
-                for _sline in _pgrep.stdout.splitlines():
-                    if _dev_tag in _sline or _sline.endswith(_dev_tag_end):
-                        try: _os.kill(int(_sline.split()[0]), _sig_stale.SIGKILL)
-                        except Exception: pass
-            except Exception:
-                pass
-
-            # Re-resolve serial → device index right now using a forced fresh scan
-            # so that stale sdr_manager cache (10 s) or changed serial assignments
-            # don't send rtl_tcp to the wrong dongle.
-            _tcp_idx = session.device_idx   # safe default
-            if session.serial:
-                try:
-                    _fresh = sdr_manager.scan(force=True)
-                    for _fd in _fresh:
-                        if _fd.get("serial") == session.serial:
-                            _tcp_idx = _fd["index"]
-                            break
-                    if _tcp_idx != session.device_idx:
-                        self.log(f"[{name}] Pi rtl_tcp: serial {session.serial!r} "
-                                 f"now at device {_tcp_idx} (was {session.device_idx})")
-                except Exception:
-                    pass
-
-            # ── Disable USB autosuspend for this dongle ──────────────────────
-            # On Pi 5 (RP1 USB controller), the kernel suspends the RTL-SDR
-            # device during DMA buffer allocation, causing rtl_tcp to exit with
-            # "Signal caught, exiting!" before any client can connect.
-            # Write -1 to the sysfs power/autosuspend attribute for the specific
-            # device.  This does not require root if the sysfs file is writable
-            # (it usually is not — see Settings → Maintenance → USB Autosuspend
-            # Fix for a permanent sudo-based solution).  Silent on failure.
-            try:
-                import glob as _glob
-                _as_serial = session.serial
-                for _udir in _glob.glob('/sys/bus/usb/devices/*'):
-                    if ':' in os.path.basename(_udir):
-                        continue   # skip interface dirs
-                    _sf = os.path.join(_udir, 'serial')
-                    if not os.path.exists(_sf):
-                        continue
-                    if open(_sf).read().strip() == _as_serial:
-                        _fixed = False
-                        for _attr in ('autosuspend', 'autosuspend_delay_ms'):
-                            _af = os.path.join(_udir, 'power', _attr)
-                            try:
-                                with open(_af, 'w') as _ff: _ff.write('-1')
-                                _fixed = True
-                            except Exception:
-                                pass
-                        if _fixed:
-                            self.log(f"[{name}] USB autosuspend disabled for {_as_serial}")
-                        break
-            except Exception:
-                pass
-
-            # Pick a free local port for the rtl_tcp server
-            import socket as _sock
-            with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as _ts:
-                _ts.bind(("127.0.0.1", 0))
-                session.rtl_tcp_port = _ts.getsockname()[1]
-            _tcp_gain = str(int(float(_gain_val)) if float(_gain_val) > 0 else 0)
-            _tcp_cmd = [_rtl_tcp_bin,
-                        "-d", str(_tcp_idx),
-                        "-p", str(session.rtl_tcp_port),
-                        "-a", "127.0.0.1",
-                        "-g", _tcp_gain]
-            if session.ppm:
-                _tcp_cmd += ["-P", str(session.ppm)]
-            self.log(f"[{name}] Pi: launching rtl_tcp proxy on "
-                     f"device {_tcp_idx} (serial {session.serial!r}) → port {session.rtl_tcp_port}")
-            _tcp_ok = False
-            for _tcp_attempt in range(2):   # retry once after 3 s if first attempt gets -6
-                if _tcp_attempt > 0:
-                    self.log(f"[{name}] Pi: retrying rtl_tcp after 3 s (previous attempt got -6)")
-                    time.sleep(3.0)
-                try:
-                    session.rtl_tcp_proc = subprocess.Popen(
-                        _tcp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                        bufsize=0)
-                    # Drain stderr in a background thread to avoid blocking the
-                    # pipe (rtl_tcp writes device info to stderr then goes quiet).
-                    # "listening..." goes to stdout which is /dev/null, so we
-                    # CANNOT detect readiness from text output — use a TCP
-                    # connect probe instead.
-                    _got_error_flag  = [False]   # usb_claim_interface -6
-                    _got_signal_flag = [False]   # "signal caught" = USB autosuspend
-                    def _drain_stderr(_proc=session.rtl_tcp_proc, _ch=session.channel,
-                                      _flag=_got_error_flag, _sflag=_got_signal_flag):
-                        try:
-                            for _raw in _proc.stderr:
-                                try:
-                                    _ls = _raw.decode(errors="ignore").strip()
-                                except Exception:
-                                    _ls = ""
-                                if _ls:
-                                    self.log(f"[rtl_tcp {_ch}] {_ls}")
-                                if "usb_claim_interface error" in _ls.lower():
-                                    _flag[0] = True
-                                if "signal caught" in _ls.lower():
-                                    _sflag[0] = True
-                        except Exception:
-                            pass
-                    threading.Thread(target=_drain_stderr, daemon=True,
-                                     name=f"rtl_tcp_stderr_{session.channel}").start()
-                    # Wait until rtl_tcp's TCP port accepts connections (reliable
-                    # readiness check — works regardless of stdout/stderr routing).
-                    _conn_deadline = time.monotonic() + 8
-                    while time.monotonic() < _conn_deadline:
-                        if session.rtl_tcp_proc.poll() is not None:
-                            break   # process exited
-                        try:
-                            with _sock.create_connection(
-                                    ("127.0.0.1", session.rtl_tcp_port), timeout=0.5):
-                                _tcp_ok = True
-                            break
-                        except Exception:
-                            time.sleep(0.2)
-                    # Give the drain thread a moment to log any error lines
-                    time.sleep(0.5)
-                    if not _tcp_ok and _got_signal_flag[0]:
-                        # "Signal caught, exiting!" = USB autosuspend killed rtl_tcp
-                        # during DMA buffer allocation (common on Pi 5 RP1 USB).
-                        # Attempt a USB-level device reset via ioctl so the next
-                        # rtl_tcp open gets a clean device state.
-                        self.log(f"[{name}] Pi: rtl_tcp died from USB autosuspend — "
-                                 f"attempting USB device reset for {session.serial!r}")
-                        try:
-                            import fcntl as _fcntl, glob as _rg
-                            _USBDEVFS_RESET = 21536  # 0x5514
-                            for _rdir in _rg.glob('/sys/bus/usb/devices/*'):
-                                if ':' in os.path.basename(_rdir):
-                                    continue
-                                _rsf = os.path.join(_rdir, 'serial')
-                                if not os.path.exists(_rsf):
-                                    continue
-                                if open(_rsf).read().strip() == session.serial:
-                                    _bus = open(os.path.join(_rdir,'busnum')).read().strip()
-                                    _dev = open(os.path.join(_rdir,'devnum')).read().strip()
-                                    _dp  = f"/dev/bus/usb/{int(_bus):03d}/{int(_dev):03d}"
-                                    _fd  = os.open(_dp, os.O_WRONLY)
-                                    _fcntl.ioctl(_fd, _USBDEVFS_RESET, 0)
-                                    os.close(_fd)
-                                    self.log(f"[{name}] Pi: USB reset {_dp} OK — waiting 2 s")
-                                    time.sleep(2.0)
-                                    break
-                        except Exception as _ue:
-                            self.log(f"[{name}] Pi: USB reset failed ({_ue}) — "
-                                     f"use Settings → Maintenance → USB Autosuspend Fix")
-                        try: session.rtl_tcp_proc.kill()
-                        except Exception: pass
-                        try: session.rtl_tcp_proc.wait(timeout=2)
-                        except Exception: pass
-                        session.rtl_tcp_proc = None
-                        _got_signal_flag[0] = False
-                        continue
-                    if not _tcp_ok and _got_error_flag[0]:
-                        # Device busy (usb_claim_interface -6) — kill and retry
-                        try: session.rtl_tcp_proc.kill()
-                        except Exception: pass
-                        try: session.rtl_tcp_proc.wait(timeout=2)
-                        except Exception: pass
-                        session.rtl_tcp_proc = None
-                        continue
-                except Exception as _e:
-                    self.log(f"[{name}] Failed to launch rtl_tcp proxy: {_e}")
-                    session.rtl_tcp_proc = None
-                break   # exit retry loop
-            if _tcp_ok and session.rtl_tcp_proc and session.rtl_tcp_proc.poll() is None:
-                # rtl_tcp is running — connect welle-cli to it via TCP
-                _n = max(1, len(session.consumers))
-                cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
-                       "-T", "-C", str(_n), "-g", _gain_val,
-                       "-F", f"rtl_tcp,127.0.0.1:{session.rtl_tcp_port}"]
-                if session.ppm:
-                    cmd += ["-p", str(session.ppm)]
-                self.log(f"[{name}] Raspberry Pi — using rtl_tcp proxy (device {_tcp_idx})")
-            else:
-                # rtl_tcp failed; fall back to direct -F with index
-                if session.rtl_tcp_proc:
-                    try: session.rtl_tcp_proc.kill()
-                    except Exception: pass
-                    try: session.rtl_tcp_proc.wait(timeout=2)
-                    except Exception: pass
-                    session.rtl_tcp_proc = None
-                _n = max(1, len(session.consumers))
-                cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
-                       "-T", "-C", str(_n), "-g", _gain_val, "-F", driver]
-                if session.ppm:
-                    cmd += ["-p", str(session.ppm)]
-                self.log(f"[{name}] Raspberry Pi — rtl_tcp unavailable, falling back to -F rtl_sdr,{_tcp_idx}")
-        else:
-            # Non-Pi: no -C flag — welle-cli decodes the full ensemble in parallel
-            cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
-                   "-g", _gain_val, "-F", driver]
-            if session.ppm:
-                cmd += ["-p", str(session.ppm)]
+        # No -C flag: welle-cli decodes the full ensemble simultaneously.
+        # All services are ready within ~10–15 s on both x86 and Pi.
+        cmd = [_wb, "-w", str(session.dab_port), "-c", session.channel,
+               "-g", _gain_val, "-F", driver]
+        if session.ppm:
+            cmd += ["-p", str(session.ppm)]
         self.log(f"[{name}] DAB shared: launching {' '.join(cmd)}")
 
         try:
@@ -9358,32 +9066,10 @@ class MonitorManager:
             if not svcs:
                 return
 
-            # On Raspberry Pi the welle-cli -C N flag runs in carousel mode:
-            # it activates encoders one at a time, ~52 s each.  Warming ALL
-            # services fills the carousel queue (e.g. 29 entries @ 52 s = 25 min
-            # before the needed service gets a turn).  On Pi we therefore wait
-            # briefly for consumer threads to register their SIDs and then only
-            # warm those specific endpoints.  The queue has only the needed
-            # services, so they are activated immediately.
-            #
-            # On non-Pi: welle-cli decodes the full ensemble in parallel so
-            # warming all services (to lazily init their encoders) is correct.
-            if _is_raspberry_pi():
-                # Give _run_dab threads 3 s to resolve and register their SIDs.
-                _wait_end = time.monotonic() + 3.0
-                while time.monotonic() < _wait_end and not session.stop_evt.is_set():
-                    if session.consumer_sids:
-                        break
-                    time.sleep(0.1)
-                warm_sids = set(session.consumer_sids)
-                if not warm_sids:
-                    # Fall back to all services if no SIDs were registered in time.
-                    warm_sids = {str(s.get("sid", "")).strip() for s in svcs if s.get("sid")}
-                self.log(f"[DAB {session.channel}] Pre-warming {len(warm_sids)} consumer "
-                         f"endpoint(s) (Pi carousel mode — skipping {len(svcs)-len(warm_sids)} unused services)")
-            else:
-                warm_sids = {str(s.get("sid", "")).strip() for s in svcs if s.get("sid")}
-                self.log(f"[DAB {session.channel}] Pre-warming {len(warm_sids)} service endpoint(s) in parallel")
+            # welle-cli decodes the full ensemble in parallel on all platforms;
+            # warm all services to lazily initialise their encoders.
+            warm_sids = {str(s.get("sid", "")).strip() for s in svcs if s.get("sid")}
+            self.log(f"[DAB {session.channel}] Pre-warming {len(warm_sids)} service endpoint(s) in parallel")
 
             def _warm_one(sid_str):
                 url    = f"http://localhost:{session.dab_port}/mp3/{sid_str}"
