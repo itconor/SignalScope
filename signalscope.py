@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.130"
+BUILD                  = "SignalScope-3.5.131"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -9063,10 +9063,15 @@ class MonitorManager:
             self.log(f"[{name}] Pi: launching rtl_tcp proxy on "
                      f"device {_tcp_idx} (serial {session.serial!r}) → port {session.rtl_tcp_port}")
             _tcp_ok = False
-            for _tcp_attempt in range(2):
-                if _tcp_attempt > 0:
-                    self.log(f"[{name}] Pi: retrying rtl_tcp after 3 s (previous attempt got -6)")
-                    time.sleep(3.0)
+            # Signal-caught (USB autosuspend) retries use longer delays;
+            # -6 busy retries are quicker.  Pi 5 RP1 USB state recovers
+            # eventually — give it up to 5 attempts before giving up.
+            _MAX_TCP_ATTEMPTS = 5
+            _signal_caught_delays = [8.0, 10.0, 15.0, 20.0]   # per retry
+            _busy_delays          = [3.0, 5.0, 8.0, 10.0]
+            _signal_retry_n = 0
+            _busy_retry_n   = 0
+            for _tcp_attempt in range(_MAX_TCP_ATTEMPTS):
                 try:
                     session.rtl_tcp_proc = subprocess.Popen(
                         _tcp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
@@ -9104,8 +9109,10 @@ class MonitorManager:
                             time.sleep(0.2)
                     time.sleep(0.5)
                     if not _tcp_ok and _got_signal_flag[0]:
-                        self.log(f"[{name}] Pi: rtl_tcp died from USB autosuspend — "
-                                 f"attempting USB device reset for {session.serial!r}")
+                        _delay = _signal_caught_delays[min(_signal_retry_n, len(_signal_caught_delays)-1)]
+                        self.log(f"[{name}] Pi: rtl_tcp died from USB autosuspend "
+                                 f"(attempt {_tcp_attempt+1}/{_MAX_TCP_ATTEMPTS}) — "
+                                 f"attempting USB reset, then waiting {_delay:.0f} s")
                         try:
                             import fcntl as _fcntl, glob as _rg
                             _USBDEVFS_RESET = 21536  # 0x5514
@@ -9122,8 +9129,7 @@ class MonitorManager:
                                     _fd  = os.open(_dp, os.O_WRONLY)
                                     _fcntl.ioctl(_fd, _USBDEVFS_RESET, 0)
                                     os.close(_fd)
-                                    self.log(f"[{name}] Pi: USB reset {_dp} OK — waiting 2 s")
-                                    time.sleep(2.0)
+                                    self.log(f"[{name}] Pi: USB reset {_dp} OK")
                                     break
                         except Exception as _ue:
                             self.log(f"[{name}] Pi: USB reset failed ({_ue}) — "
@@ -9134,13 +9140,20 @@ class MonitorManager:
                         except Exception: pass
                         session.rtl_tcp_proc = None
                         _got_signal_flag[0] = False
+                        _signal_retry_n += 1
+                        time.sleep(_delay)
                         continue
                     if not _tcp_ok and _got_error_flag[0]:
+                        _delay = _busy_delays[min(_busy_retry_n, len(_busy_delays)-1)]
+                        self.log(f"[{name}] Pi: rtl_tcp USB busy (attempt {_tcp_attempt+1}/{_MAX_TCP_ATTEMPTS}) — "
+                                 f"retrying in {_delay:.0f} s")
                         try: session.rtl_tcp_proc.kill()
                         except Exception: pass
                         try: session.rtl_tcp_proc.wait(timeout=2)
                         except Exception: pass
                         session.rtl_tcp_proc = None
+                        _busy_retry_n += 1
+                        time.sleep(_delay)
                         continue
                 except Exception as _e:
                     self.log(f"[{name}] Failed to launch rtl_tcp proxy: {_e}")

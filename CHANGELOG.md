@@ -2,6 +2,21 @@
 
 ---
 
+## [3.5.131] - 2026-04-08
+
+### Fixed — Pi 5 DAB: more retries + longer delays for USB autosuspend recovery
+
+The healthy Pi log confirmed that "Signal caught, exiting!" during startup is a real crash (fires before TCP connection), distinct from the normal post-connection cancel-async message. The Pi 5 RP1 USB DMA state IS recoverable without a power cycle — it just needs more attempts and longer waits.
+
+Changes to the rtl_tcp retry loop:
+- Max attempts raised from 2 → 5
+- Signal-caught delays: 8 s, 10 s, 15 s, 20 s (increasing per retry, previously just 3 s wait shared with -6 errors)
+- Busy (-6) delays: 3 s, 5 s, 8 s, 10 s (previously just 3 s)
+- Attempt counter logged on each failure so it's clear how many retries remain
+- Removed the hardcoded 2 s sleep inside the ioctl reset block (delay now comes from the per-retry table)
+
+---
+
 ## [3.5.130] - 2026-04-07
 
 ### Fixed — Restore Pi DAB monitor loop to 3.5.126 behaviour (rtl_tcp proxy + DVB unbind)
