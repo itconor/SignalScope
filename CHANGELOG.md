@@ -2,6 +2,22 @@
 
 ---
 
+## [3.5.132] - 2026-04-08
+
+### Added — DLS / RDS RadioText stale detection
+
+DAB DLS (Dynamic Label Segment / now-playing text) and FM RDS RadioText that hasn't changed in 10 minutes are now flagged as stale.
+
+**Hub overview page**: the DLS and RDS Text rows turn amber and display `⏰ Xm stale` when text is unchanged for ≥10 minutes, indicating a likely playout automation or broadcast chain fault.
+
+**Hub Reports**: `DLS_STALE` and `RDS_STALE` alert types added. The hub fires one alert per stream when text goes stale (>10 min unchanged), then respects a 1-hour cooldown before re-alerting. The stale indicator resets immediately when the text changes again. Both types are always visible in the Reports Type filter.
+
+**Client-side tracking**: `InputConfig` gains `_dab_dls_last_change_ts` and `_fm_rds_rt_last_change_ts` runtime fields. The heartbeat payload includes `dab_dls_stale_mins` and `fm_rds_rt_stale_mins` (0.0 when fresh, minutes elapsed when stale). Timestamps are seeded on first observation so DLS/RDS that arrives and never changes correctly triggers the stale alert after 10 minutes.
+
+**Note on "set expected" buttons**: The existing `📌 Set`/`📌 Update` buttons for Expected DAB Service (`expected_dab_service`) and Expected RDS PS name (`expected_fm_rds_ps`) are confirmed present in the hub template. DLS text changes with every song and is not suitable for pinning as a fixed expected value — the staleness timer provides the equivalent monitoring signal.
+
+---
+
 ## [3.5.131] - 2026-04-08
 
 ### Fixed — Pi 5 DAB: more retries + longer delays for USB autosuspend recovery

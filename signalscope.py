@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.131"
+BUILD                  = "SignalScope-3.5.132"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2681,6 +2681,7 @@ _ALL_ALERT_TYPES = [
     "CHAIN_FAULT", "CHAIN_RECOVERED", "CHAIN_FLAPPING",
     "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
     "AUDIO_GLITCH", "AUDIO_GLITCH_SUSTAINED", "AUDIO_FLATNESS",
+    "DLS_STALE", "RDS_STALE",
 ]
 # Chain monitoring constants
 CHAIN_FLAP_WINDOW        = 600    # seconds — window for flap detection
@@ -2928,6 +2929,8 @@ class InputConfig:
     _dab_bitrate:       int   = field(default=0,    init=False, repr=False)  # kbps
     _dab_stereo:        bool  = field(default=True,  init=False, repr=False)  # assume stereo until mode string says otherwise
     _dab_dls:           str   = field(default="",   init=False, repr=False)  # Dynamic Label (now playing)
+    _dab_dls_last_change_ts: float = field(default=0.0, init=False, repr=False)  # unix ts when _dab_dls last changed
+    _dab_dls_stale_alerted_ts: float = field(default=0.0, init=False, repr=False)  # ts of last DLS_STALE alert (client-side unused; hub uses module-level dict)
     # FM status (populated for fm:// sources)
     _fm_freq_mhz:       float = field(default=0.0,  init=False, repr=False)
     _fm_signal_dbm:     float = field(default=-120.0, init=False, repr=False)
@@ -2936,6 +2939,7 @@ class InputConfig:
     _fm_stereo_blend:   float = field(default=0.0,  init=False, repr=False)
     _fm_rds_ps:         str   = field(default="",   init=False, repr=False)
     _fm_rds_rt:         str   = field(default="",   init=False, repr=False)
+    _fm_rds_rt_last_change_ts: float = field(default=0.0, init=False, repr=False)  # unix ts when _fm_rds_rt last changed
     _fm_rds_ok:         bool  = field(default=False, init=False, repr=False)
     _fm_rds_status:     str   = field(default="No lock", init=False, repr=False)
     _fm_rds_valid_groups:int  = field(default=0, init=False, repr=False)
@@ -3805,6 +3809,10 @@ _alert_acks_lock = threading.Lock()
 # Key: (site, pre_name, post_name). Value: unix ts of last push.
 _cmp_pair_requested: Dict[tuple, float] = {}
 _CMP_PAIR_RECHECK_SECS = 300  # re-push if comparator vanishes for 5+ minutes
+# DLS/RDS stale alert cooldown — keys: f"{site}:{stream}:DLS" or f"...:RDS"
+_stale_alerted: Dict[str, float] = {}
+_STALE_ALERT_THRESH_MINS  = 10.0   # fire when unchanged for this many minutes
+_STALE_ALERT_COOLDOWN_SECS = 3600  # re-alert at most once per hour per stream
 
 def _alert_log_append(event: dict):
     """Append one event to the alert log, pruning if over the configured limit."""
@@ -3837,6 +3845,65 @@ def _alert_log_prune():
         _alert_log_last_prune = time.time()
     except Exception as e:
         print(f"[AlertLog] Prune failed: {e}")
+
+def _check_stale_text_alerts(site: str, streams: list):
+    """Fire DLS_STALE / RDS_STALE alert events for streams whose DLS/RDS text
+    hasn't changed in more than _STALE_ALERT_THRESH_MINS minutes.
+    Respects _STALE_ALERT_COOLDOWN_SECS to avoid repeated alerts.
+    Called from HubServer.ingest() in a background thread.
+    """
+    global _stale_alerted
+    now = time.time()
+    for st in streams:
+        stream_name = st.get("name", "")
+        if not stream_name:
+            continue
+
+        # ── DLS stale ────────────────────────────────────────────────────────
+        dab_dls       = st.get("dab_dls", "") or ""
+        dls_stale_mins = float(st.get("dab_dls_stale_mins") or 0)
+        dls_key        = f"{site}:{stream_name}:DLS"
+        if dab_dls and dls_stale_mins >= _STALE_ALERT_THRESH_MINS:
+            last_alert = _stale_alerted.get(dls_key, 0)
+            if now - last_alert >= _STALE_ALERT_COOLDOWN_SECS:
+                _stale_alerted[dls_key] = now
+                _mins_i = int(dls_stale_mins)
+                _alert_log_append({
+                    "id":      str(uuid.uuid4()),
+                    "ts":      time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "stream":  stream_name,
+                    "_site":   f"({site})",
+                    "type":    "DLS_STALE",
+                    "message": (f"DLS text unchanged for {_mins_i} min on {site} — "
+                                f"'{dab_dls[:60]}'"),
+                    "clip":    "",
+                })
+        else:
+            # Text is fresh or absent — clear cooldown so next stale period fires immediately
+            _stale_alerted.pop(dls_key, None)
+
+        # ── RDS RadioText stale ───────────────────────────────────────────────
+        fm_rds_rt      = st.get("fm_rds_rt", "") or ""
+        rds_stale_mins = float(st.get("fm_rds_rt_stale_mins") or 0)
+        rds_key        = f"{site}:{stream_name}:RDS"
+        if fm_rds_rt and rds_stale_mins >= _STALE_ALERT_THRESH_MINS:
+            last_alert = _stale_alerted.get(rds_key, 0)
+            if now - last_alert >= _STALE_ALERT_COOLDOWN_SECS:
+                _stale_alerted[rds_key] = now
+                _mins_i = int(rds_stale_mins)
+                _alert_log_append({
+                    "id":      str(uuid.uuid4()),
+                    "ts":      time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "stream":  stream_name,
+                    "_site":   f"({site})",
+                    "type":    "RDS_STALE",
+                    "message": (f"RDS RadioText unchanged for {_mins_i} min on {site} — "
+                                f"'{fm_rds_rt[:60]}'"),
+                    "clip":    "",
+                })
+        else:
+            _stale_alerted.pop(rds_key, None)
+
 
 def _alert_log_load(limit: int = 2000) -> List[dict]:
     """Read the last `limit` events from the alert log."""
@@ -8825,7 +8892,13 @@ class MonitorManager:
                         # Extract just the label text; fall back to str() for plain strings.
                         if isinstance(dls, dict):
                             dls = dls.get("label", "") or dls.get("text", "") or ""
-                        cfg._dab_dls = str(dls).strip()
+                        _new_dls = str(dls).strip()
+                        if _new_dls != cfg._dab_dls:
+                            cfg._dab_dls = _new_dls
+                            cfg._dab_dls_last_change_ts = time.time()
+                        elif not cfg._dab_dls_last_change_ts and _new_dls:
+                            # First time we see this DLS — seed the timestamp
+                            cfg._dab_dls_last_change_ts = time.time()
                     for comp in svc.get("components", []):
                         if comp.get("transportmode") == "audio":
                             br = comp.get("subchannel", {}).get("bitrate", 0)
@@ -10467,7 +10540,12 @@ class MonitorManager:
                             if cand:
                                 cfg._fm_rds_rt_counts[cand] = cfg._fm_rds_rt_counts.get(cand, 0) + 1
                                 if cfg._fm_rds_rt_counts[cand] >= 2:
+                                    _old_rt_b = getattr(cfg, "_fm_rds_rt", "")
                                     cfg._fm_rds_rt = cand
+                                    if cand != _old_rt_b:
+                                        cfg._fm_rds_rt_last_change_ts = time.time()
+                                    elif not getattr(cfg, "_fm_rds_rt_last_change_ts", 0.0) and cand:
+                                        cfg._fm_rds_rt_last_change_ts = time.time()
                                     cfg._fm_rds_status = f"Locked ({cfg._fm_rds_valid_groups} valid)"
 
                     i += 104
@@ -10613,7 +10691,12 @@ class MonitorManager:
                         cfg._fm_rt_hist = cfg._fm_rt_hist[-10:]
                         stable_rt, count = Counter(cfg._fm_rt_hist).most_common(1)[0]
                         if count >= 2 or len(stable_rt) >= 12:
+                            _old_rt_c = getattr(cfg, "_fm_rds_rt", "")
                             cfg._fm_rds_rt = stable_rt
+                            if stable_rt != _old_rt_c:
+                                cfg._fm_rds_rt_last_change_ts = time.time()
+                            elif not getattr(cfg, "_fm_rds_rt_last_change_ts", 0.0) and stable_rt:
+                                cfg._fm_rds_rt_last_change_ts = time.time()
                 if pi:
                     cfg._fm_rds_pi = str(pi).strip()
                 if group:
@@ -13299,6 +13382,8 @@ class HubClient:
                 "dab_bitrate":       inp._dab_bitrate,
                 "dab_stereo":        inp._dab_stereo,
                 "dab_dls":           inp._dab_dls,
+                "dab_dls_stale_mins": (round((time.time() - inp._dab_dls_last_change_ts) / 60.0, 1)
+                                       if inp._dab_dls and inp._dab_dls_last_change_ts else 0.0),
                 "fm_freq_mhz":       inp._fm_freq_mhz,
                 "fm_signal_dbm":     round(inp._fm_signal_dbm, 1),
                 "fm_snr_db":         round(inp._fm_snr_db, 1),
@@ -13308,6 +13393,8 @@ class HubClient:
                 "fm_rds_ps":         inp._fm_rds_ps,
                 "expected_fm_rds_ps": inp.expected_fm_rds_ps,
                 "fm_rds_rt":         getattr(inp, "_fm_rds_rt", ""),
+                "fm_rds_rt_stale_mins": (round((time.time() - getattr(inp, "_fm_rds_rt_last_change_ts", 0.0)) / 60.0, 1)
+                                         if getattr(inp, "_fm_rds_rt", "") and getattr(inp, "_fm_rds_rt_last_change_ts", 0.0) else 0.0),
                 "fm_rds_ok":         inp._fm_rds_ok,
                 "fm_rds_status":     getattr(inp, "_fm_rds_status", "No lock"),
                 "fm_deviation_peak_khz": round(inp._fm_deviation_peak_khz, 1),
@@ -14928,6 +15015,12 @@ class HubServer:
                 target=self._flush_site_metrics,
                 args=(site, streams_payload, time.time()),
                 daemon=True, name="HubMetrics"
+            ).start()
+            # Check for stale DLS/RDS text and fire DLS_STALE/RDS_STALE events
+            threading.Thread(
+                target=_check_stale_text_alerts,
+                args=(site, streams_payload),
+                daemon=True, name="StaleTextCheck"
             ).start()
 
         # Write hub site health and latency metrics once per heartbeat
@@ -33915,7 +34008,8 @@ def hub_reports():
                       "ABGROUP_B_FAULT", "ABGROUP_RX_FAULT", "ABGROUP_RECOVERED",
                       "MAINS_HUM", "DC_OFFSET", "PHASE_REVERSAL",
                       "LEVEL_DRIFT", "OVERMOD", "MONO_ON_STEREO", "STEREO_IMBALANCE",
-                      "OVER_COMPRESSION", "TONE_DETECT", "HF_LOSS", "DEAD_CHANNEL"}
+                      "OVER_COMPRESSION", "TONE_DETECT", "HF_LOSS", "DEAD_CHANNEL",
+                      "DLS_STALE", "RDS_STALE"}
     type_names  = sorted(
         set(e.get("type","") for e in all_events if e.get("type")) | _SILENCE_TYPES
     )
@@ -35089,11 +35183,13 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             <div class="sc-row">Bitrate <span>{% if s.dab_bitrate %}{{s.dab_bitrate}} kbps{% else %}—{% endif %}</span></div>
             <div class="sc-row">Audio <span style="color:{{'var(--ok)' if s.dab_stereo else 'var(--mu)'}}">{% if s.dab_stereo %}Stereo{% else %}Mono{% endif %}</span></div>
             {% if s.dab_dls %}
+            {% set _dls_stale = (s.get('dab_dls_stale_mins') or 0)|float %}
             <div class="sc-row sc-rt-row" style="align-items:center">DLS
-              <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px;color:var(--mu)" title="{{s.dab_dls}}">
+              <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px;color:{{'var(--wn)' if _dls_stale>=10 else 'var(--mu)'}}" title="{{s.dab_dls}}{% if _dls_stale>=10 %} — Stale for {{_dls_stale|int}} min{% endif %}">
                 {% if s.dab_dls|length > 28 %}<span class="rds-rt-scroll sc-rt-text"><span>🎵 {{s.dab_dls}}</span><span aria-hidden="true">🎵 {{s.dab_dls}}</span></span>
                 {% else %}<span class="rds-rt-static sc-rt-text">🎵 {{s.dab_dls}}</span>{% endif %}
               </span>
+              {% if _dls_stale >= 10 %}<span style="font-size:10px;color:var(--wn);white-space:nowrap;margin-left:4px;font-weight:600" title="DLS text has not changed for {{_dls_stale|int}} minutes — may indicate playout automation fault">⏰ {{_dls_stale|int}}m stale</span>{% endif %}
             </div>
             {% endif %}
           </details>
@@ -35127,11 +35223,13 @@ main{padding:18px;max-width:1500px;margin:0 auto}
               {% endif %}
             </span></div>
             {% if s.fm_rds_rt %}
+            {% set _rt_stale = (s.get('fm_rds_rt_stale_mins') or 0)|float %}
             <div class="sc-row sc-rt-row" style="align-items:center">Text
-              <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px" title="{{s.fm_rds_rt}}">
+              <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px;{{'color:var(--wn)' if _rt_stale>=10 else ''}}" title="{{s.fm_rds_rt}}{% if _rt_stale>=10 %} — Stale for {{_rt_stale|int}} min{% endif %}">
                 {% if s.fm_rds_rt|length > 28 %}<span class="rds-rt-scroll sc-rt-text"><span>🎵 {{s.fm_rds_rt}}</span><span aria-hidden="true">🎵 {{s.fm_rds_rt}}</span></span>
                 {% else %}<span class="rds-rt-static sc-rt-text">🎵 {{s.fm_rds_rt}}</span>{% endif %}
               </span>
+              {% if _rt_stale >= 10 %}<span style="font-size:10px;color:var(--wn);white-space:nowrap;margin-left:4px;font-weight:600" title="RDS RadioText has not changed for {{_rt_stale|int}} minutes — may indicate playout automation fault">⏰ {{_rt_stale|int}}m stale</span>{% endif %}
             </div>
             {% endif %}
             {% if s.get('fm_rds_status') %}<div class="sc-row">Lock <span style="font-size:11px;color:var(--mu)">{{s.fm_rds_status}}</span></div>{% endif %}
