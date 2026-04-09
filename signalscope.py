@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.132"
+BUILD                  = "SignalScope-3.5.133"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -11008,10 +11008,26 @@ class MonitorManager:
                             # Force-mono bypasses stereo output entirely (user override).
                             _b = 0.0 if _force_mono else _stereo_blend
                             if _b <= 0.0:
-                                # Full mono — don't populate L/R buffers
-                                out_buf   = np.concatenate((out_buf, mono_48))
-                                out_buf_L = np.empty(0, dtype=np.float32)
-                                out_buf_R = np.empty(0, dtype=np.float32)
+                                out_buf = np.concatenate((out_buf, mono_48))
+                                if _force_mono:
+                                    # User explicitly wants mono — clear L/R so _audio_buffer
+                                    # gets mono-format chunks (relay reconnect resets to mono).
+                                    out_buf_L = np.empty(0, dtype=np.float32)
+                                    out_buf_R = np.empty(0, dtype=np.float32)
+                                else:
+                                    # Weak pilot (blend=0 due to SNR below threshold) but
+                                    # _fm_stereo is still True — keep _audio_buffer in a
+                                    # CONSISTENT stereo format (L=R=mono_48) so that any
+                                    # active relay reading _audio_buffer with ffmpeg -ac 2
+                                    # never sees mixed mono/stereo chunk sizes.
+                                    # A half-size mono frame fed to a stereo ffmpeg process
+                                    # produces corrupt MP3 that the browser decoder rejects
+                                    # and drops the connection — the root cause of "FM relay
+                                    # works for a minute then dies" when pilot fades briefly.
+                                    # When blend recovers, L/R smoothly transition back to
+                                    # actual stereo with no discontinuity.
+                                    out_buf_L = np.concatenate((out_buf_L, mono_48))
+                                    out_buf_R = np.concatenate((out_buf_R, mono_48))
                             else:
                                 if _b < 1.0:
                                     L_out = (_b * L_48 + (1.0 - _b) * mono_48).astype(np.float32)

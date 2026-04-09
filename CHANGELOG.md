@@ -2,6 +2,22 @@
 
 ---
 
+## [3.5.133] - 2026-04-09
+
+### Fixed — FM relay via hub drops after 1–2 minutes (stereo/mono transition corrupts MP3 stream)
+
+**Root cause**: When the FM pilot signal is marginal (SNR 8–14 dB), `_fm_stereo` is True but `_stereo_blend` is 0. The monitoring loop cleared `out_buf_L/R` and wrote **mono-format** frames (4 800 samples) into `_audio_buffer`. Any active hub relay started while the pilot was strong enough for stereo uses ffmpeg `-ac 2` (stereo). When the first mono-format frame arrives, ffmpeg interprets 4 800 int16 samples as 2 400 stereo pairs — half the expected duration — producing corrupt/half-speed MP3. The browser decoder silently drops the connection.
+
+The failure mode was timing-dependent: a strong signal kept the relay working until the pilot SNR dipped below 14 dB for even one frame (~100 ms), at which point a single mixed-size chunk broke the ffmpeg stream.
+
+**Fix**: When `_fm_stereo=True` and `_stereo_blend=0` (weak pilot, not force-mono), duplicate `mono_48` to both L and R channels instead of clearing them. `_audio_buffer` now receives consistently stereo-interleaved frames (L=R=mono_48) across the entire blend=0 period. The relay hears correct stereo-bitrate mono (both channels identical) and smoothly transitions to full stereo when the pilot recovers — no reconnect required.
+
+`fm_force_mono` (explicit user toggle) is unaffected: that path still clears L/R to force mono-format chunks in `_audio_buffer`.
+
+**Rule**: Never clear `out_buf_L`/`out_buf_R` in the `_b <= 0.0` branch when `not _force_mono` and `cfg._fm_stereo is True`. Use mono-dup instead. Clearing them while the relay expects stereo-format data produces mixed-size `_audio_buffer` contents that corrupt ffmpeg's fixed `-ac 2` input stream.
+
+---
+
 ## [3.5.132] - 2026-04-08
 
 ### Added — DLS / RDS RadioText stale detection
