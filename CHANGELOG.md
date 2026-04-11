@@ -2,6 +2,14 @@
 
 ---
 
+## IP Link v1.1.15 — 2026-04-11
+
+### Fixed — Safari rejects CN/RED codecs in offer SDP (plugin v1.1.15)
+
+Added CN (Comfort Noise, PT 13) and RED (Redundant Audio) to the SDP codec drop list alongside telephone-event. Safari rejects `a=rtpmap:13 CN/8000` with "Invalid SDP line". Neither CN nor RED is needed for audio contribution. The `_SDP_DROP_CODECS` regex now covers all three.
+
+---
+
 ## IP Link v1.1.14 — 2026-04-11
 
 ### Fixed — Safari rejects telephone-event codec in offer SDP (plugin v1.1.14)

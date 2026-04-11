@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.14",
+    "version": "1.1.15",
     "hub_only": True,
 }
 
@@ -353,19 +353,22 @@ function _getHubMic(cb){
 
 // ─── SDP munging ─────────────────────────────────────────────────────────────
 // Chrome generates SDP that Safari rejects. Strip/clean known problem areas:
-//  - a=ssrc / a=ssrc-group  (source-level attributes; Safari can't parse them)
-//  - telephone-event codec  (DTMF; not needed for audio contribution — Safari
-//    rejects certain dynamic payload types such as 126)
-// Codecs must be removed cleanly: strip rtpmap/fmtp/rtcp-fb lines AND remove
-// the payload type number from the m= line.
+//  - a=ssrc / a=ssrc-group     (source-level attributes Safari can't parse)
+//  - telephone-event (DTMF)    (not needed; Safari rejects PT 126 etc.)
+//  - CN (Comfort Noise PT 13)  (Safari rejects a=rtpmap:13 CN/8000)
+//  - RED (Redundant Audio)     (not needed for contribution; can cause issues)
+// Codecs removed cleanly: strip rtpmap/fmtp/rtcp-fb lines AND remove the
+// payload type number from the m= line.
+var _SDP_DROP_CODECS = /^(telephone-event|CN|RED)$/i;
+
 function _mungeOfferSdp(sdp){
   var lines = sdp.split(/\r?\n/);
 
-  // Collect payload types we want to drop
+  // Collect payload types to drop from rtpmap lines
   var dropPts = {};
   lines.forEach(function(line){
-    var m = line.match(/^a=rtpmap:(\d+) telephone-event\//i);
-    if(m) dropPts[m[1]] = true;
+    var m = line.match(/^a=rtpmap:(\d+) ([^\/]+)\//i);
+    if(m && _SDP_DROP_CODECS.test(m[2])) dropPts[m[1]] = true;
   });
 
   var out = [];
