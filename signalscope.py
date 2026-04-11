@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.134"
+BUILD                  = "SignalScope-3.5.135"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -38888,6 +38888,18 @@ setInterval(_loadTrends, 300000);
             {% endif %}
             📶{{"▮"*bars}}{{"▯"*(5-bars)}} {{s.dab_sig}} dBm
           </span></div>
+          {% set _dab_mer = (s.get('dab_mer') or 0)|float %}
+          {% if _dab_mer > 0 %}
+          <div class="sc-row" title="Modulation Error Ratio — Good: ≥20 dB">MER <span style="color:{{'var(--ok)' if _dab_mer>=20 else 'var(--wn)' if _dab_mer>=14 else 'var(--al)'}}">{{_dab_mer}} dB</span></div>
+          {% endif %}
+          {% set _dab_ber = (s.get('dab_ber') or 0)|float %}
+          {% if _dab_ber > 0 %}
+          <div class="sc-row" title="Bit Error Rate — target &lt;0.0001">BER <span style="color:{{'var(--al)' if _dab_ber>0.001 else 'var(--wn)' if _dab_ber>0.0001 else 'var(--ok)'}}">{{'{:.2e}'.format(_dab_ber) if _dab_ber < 0.001 else '{:.4f}'.format(_dab_ber)}}</span></div>
+          {% endif %}
+          {% set _dab_fc = (s.get('dab_freq_corr_hz') or 0)|int %}
+          {% if _dab_fc != 0 %}
+          <div class="sc-row" title="Frequency correction Hz applied by welle-cli">Freq Corr <span style="color:{{'var(--wn)' if _dab_fc|abs > 500 else 'var(--mu)'}}">{{'+' if _dab_fc > 0 else ''}}{{_dab_fc}} Hz</span></div>
+          {% endif %}
           <div class="sc-row">Ensemble <span style="font-size:11px">{{s.dab_ensemble or '—'}}</span></div>
           <div class="sc-row">Service <span style="font-size:11px;display:flex;align-items:center;gap:5px">
             <span>{{s.dab_service or '—'}}</span>
@@ -38903,11 +38915,13 @@ setInterval(_loadTrends, 300000);
           <div class="sc-row">Bitrate <span>{% if s.dab_bitrate %}{{s.dab_bitrate}} kbps{% else %}—{% endif %}</span></div>
           <div class="sc-row">Audio <span style="color:{{'var(--ok)' if s.dab_stereo else 'var(--mu)'}}">{% if s.dab_stereo %}Stereo{% else %}Mono{% endif %}</span></div>
           {% if s.dab_dls %}
+          {% set _dls_stale = (s.get('dab_dls_stale_mins') or 0)|float %}
           <div class="sc-row sc-rt-row" style="align-items:center">DLS
-            <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px;color:var(--mu)" title="{{s.dab_dls}}">
+            <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px;color:{{'var(--wn)' if _dls_stale>=10 else 'var(--mu)'}}" title="{{s.dab_dls}}{% if _dls_stale>=10 %} — Stale for {{_dls_stale|int}} min{% endif %}">
               {% if s.dab_dls|length > 28 %}<span class="rds-rt-scroll sc-rt-text"><span>🎵 {{s.dab_dls}}</span><span aria-hidden="true">🎵 {{s.dab_dls}}</span></span>
               {% else %}<span class="rds-rt-static sc-rt-text">🎵 {{s.dab_dls}}</span>{% endif %}
             </span>
+            {% if _dls_stale >= 10 %}<span style="font-size:10px;color:var(--wn);white-space:nowrap;margin-left:4px;font-weight:600">⏰ {{_dls_stale|int}}m stale</span>{% endif %}
           </div>
           {% endif %}
         </details>
@@ -38931,6 +38945,24 @@ setInterval(_loadTrends, 300000);
           {% if s.fm_deviation_peak_khz is defined and s.fm_deviation_peak_khz is not none %}
           <div class="sc-row">Deviation <span style="color:{{'var(--al)' if s.fm_over_ofcom else ('var(--wn)' if s.fm_deviation_peak_khz>=70 else 'var(--ok)')}}">{{s.fm_deviation_peak_khz}} kHz{%if s.fm_over_ofcom%} ⚠ OFCOM{%endif%}</span></div>
           {% endif %}
+          {% set _mpx = (s.get('fm_mpx_power_dbr') or -99)|float %}
+          {% if _mpx > -99 %}
+          <div class="sc-row" title="MPX composite power — 0 dBr = ITU-R BS.412 full scale">MPX <span style="color:{{'var(--al)' if _mpx > 0 else ('var(--wn)' if _mpx > -3 else 'var(--ok)')}}">{{_mpx}} dBr</span></div>
+          {% endif %}
+          {% set _pilot = (s.get('fm_pilot_pct') or 0)|float %}
+          {% if _pilot > 0 %}
+          <div class="sc-row" title="Stereo pilot injection — standard ~9% of ±75 kHz">Pilot <span style="color:{{'var(--wn)' if _pilot < 7 or _pilot > 12 else 'var(--ok)'}}">{{_pilot}}%</span></div>
+          {% endif %}
+          {% set _co = (s.get('fm_carrier_offset_hz') or 0)|float %}
+          {% if _co|abs > 5 %}
+          <div class="sc-row" title="Carrier frequency offset from tuned centre (Hz)">Offset <span style="color:{{'var(--wn)' if _co|abs > 100 else 'var(--mu)'}}">{{'+' if _co > 0 else ''}}{{_co|int}} Hz</span></div>
+          {% endif %}
+          {% set _d67 = (s.get('fm_dev_pct_67') or 0)|float %}
+          {% set _d75 = (s.get('fm_dev_pct_75') or 0)|float %}
+          {% set _dsamp = (s.get('fm_dev_samples') or 0)|int %}
+          {% if _dsamp > 0 %}
+          <div class="sc-row" title="% time over deviation thresholds (session)">Dev % <span style="font-size:11px;color:{{'var(--al)' if _d75 > 0.5 else ('var(--wn)' if _d67 > 5 else 'var(--mu)')}}">67.5:{{_d67}}% 75:{{_d75}}%</span></div>
+          {% endif %}
           <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}};display:flex;align-items:center;gap:5px">
             {% if s.fm_rds_ok %}
               <span>📡 {{s.fm_rds_ps or 'Locked'}}</span>
@@ -38943,9 +38975,10 @@ setInterval(_loadTrends, 300000);
               {% endif %}
             {% else %}<span>— No RDS</span>{% endif %}
           </span></div>
-          {% set rt_text = s.fm_rds_rt or s.dab_dls or '' %}
-          <div class="sc-row sc-rt-row" {% if not rt_text %}style="display:none"{% endif %}>Text
-            <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px" title="{{rt_text}}">
+          {% set rt_text = s.fm_rds_rt or '' %}
+          {% set _rt_stale = (s.get('fm_rds_rt_stale_mins') or 0)|float %}
+          <div class="sc-row sc-rt-row" style="align-items:center" {% if not rt_text %}style="display:none"{% endif %}>Text
+            <span class="rds-rt-wrap sc-rt-wrap" style="font-size:11px;{{'color:var(--wn)' if _rt_stale>=10 else ''}}" title="{{rt_text}}{% if _rt_stale>=10 %} — Stale {{_rt_stale|int}} min{% endif %}">
               {% if rt_text|length > 40 %}
               <span class="rds-rt-scroll sc-rt-text">
                 <span>🎵 {{rt_text}}</span>
@@ -38955,7 +38988,20 @@ setInterval(_loadTrends, 300000);
               <span class="rds-rt-static sc-rt-text">{% if rt_text %}🎵 {{rt_text}}{% else %}—{% endif %}</span>
               {% endif %}
             </span>
+            {% if _rt_stale >= 10 %}<span style="font-size:10px;color:var(--wn);white-space:nowrap;margin-left:4px;font-weight:600">⏰ {{_rt_stale|int}}m stale</span>{% endif %}
           </div>
+          {% set _rds_pty = (s.get('fm_rds_pty') or 0)|int %}
+          {% set _rds_tp  = s.get('fm_rds_tp') %}
+          {% set _rds_ta  = s.get('fm_rds_ta') %}
+          {% set _rds_ct  = s.get('fm_rds_ct') or '' %}
+          {% if _rds_pty or _rds_tp or _rds_ta or _rds_ct %}
+          <div class="sc-row" title="RDS Traffic Programme / Announcement / Programme Type / Clock Time">RDS+ <span style="font-size:11px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+            {%- if _rds_pty %}<span>PTY{{_rds_pty}}</span>{% endif %}
+            {%- if _rds_tp  %}<span style="color:var(--acc)">TP</span>{% endif %}
+            {%- if _rds_ta  %}<span style="color:var(--wn);font-weight:700">📻 TA</span>{% endif %}
+            {%- if _rds_ct  %}<span style="color:var(--mu)">🕐 {{_rds_ct[:16]}}</span>{% endif %}
+          </span></div>
+          {% endif %}
         </details>
         {% endif %}
       </div>

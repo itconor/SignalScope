@@ -2,6 +2,14 @@
 
 ---
 
+## [3.5.135] - 2026-04-11
+
+### Fixed — New TX metrics not showing on main hub page
+
+DAB MER/BER/freq correction and FM MPX power/pilot/carrier offset/deviation histogram/RDS TA/TP/PTY/CT were only rendering in the hub site replica page (HUB_SITE_TPL). The main hub dashboard (HUB_TPL) DAB and FM stats blocks have been updated to match. DLS stale badge also added to the main hub DAB stats block.
+
+---
+
 ## [3.5.134] - 2026-04-11
 
 ### Added — TX high-site monitoring: 7 new diagnostic metrics
