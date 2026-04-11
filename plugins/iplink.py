@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.10",
+    "version": "1.1.11",
     "hub_only": True,
 }
 
@@ -351,6 +351,16 @@ function _getHubMic(cb){
     .catch(function(e){ cb(e,null); });
 }
 
+// ─── SDP munging ─────────────────────────────────────────────────────────────
+// Chrome generates a=ssrc lines with msid attributes that Safari rejects when
+// parsing a remote offer. Strip them — they're informational only and not needed
+// for the connection.
+function _mungeOfferSdp(sdp){
+  return sdp.split(/\r?\n/).filter(function(line){
+    return !/^a=ssrc:\d+ msid:/.test(line);
+  }).join('\r\n');
+}
+
 // ─── Hub WebRTC negotiation ──────────────────────────────────────────────────
 function _showConnErr(roomId, msg){
   _connErrs[roomId] = msg;
@@ -415,7 +425,7 @@ function acceptCall(roomId){
         };
 
         // Set remote offer, create answer
-        pc.setRemoteDescription({type:'offer', sdp:d.offer})
+        pc.setRemoteDescription({type:'offer', sdp:_mungeOfferSdp(d.offer)})
           .then(function(){ return pc.createAnswer(); })
           .then(function(ans){
             return pc.setLocalDescription(ans).then(function(){ return ans; });

@@ -2,6 +2,14 @@
 
 ---
 
+## IP Link v1.1.11 — 2026-04-11
+
+### Fixed — Chrome→Safari SDP parse failure (plugin v1.1.11)
+
+`setRemoteDescription` was throwing `Failed to parse SessionDescription — a=ssrc:N msid:... Invalid SDP line` when the talent used Chrome and the hub used Safari. Chrome generates `a=ssrc` source-attribute lines with `msid` in a format that Safari's WebRTC stack rejects. Fixed by stripping these lines from the offer SDP before passing to `setRemoteDescription` (`_mungeOfferSdp()`). The lines are informational only and not required for the connection.
+
+---
+
 ## IP Link v1.1.10 — 2026-04-11
 
 ### Fixed — SIP WebSocket error hint improved (plugin v1.1.10)
