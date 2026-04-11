@@ -2,6 +2,20 @@
 
 ---
 
+## IP Link v1.1.9 — 2026-04-11
+
+### Fixed — WebRTC errors now visible in UI; SIP hint improved (plugin v1.1.9)
+
+When a WebRTC connection attempt fails, the error reason is now shown directly in the room card as a red inline message (auto-clears after 10 s). Previously it was silently swallowed by `console.error` only.
+
+Added an outer `.catch()` to the offer-fetch chain in `acceptCall()` — previously, if the `fetch` or `r.json()` call itself failed, `_pcs[roomId]` stayed as `true` with no error shown and no way to retry.
+
+Replaced the blocking `alert('No offer found…')` with the same inline error mechanism.
+
+SIP WebSocket error hint updated: when the URL starts with `wss://`, the hint now specifically calls out the missing `/ws` path that Asterisk/FreePBX requires (e.g. `wss://host:8089/ws`).
+
+---
+
 ## IP Link v1.1.8 — 2026-04-11
 
 ### Fixed — Accept button no immediate feedback; SIP WebSocket error hint (plugin v1.1.8)

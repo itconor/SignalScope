@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.8",
+    "version": "1.1.9",
     "hub_only": True,
 }
 
@@ -333,10 +333,11 @@ var _csrf = (document.querySelector('meta[name="csrf-token"]')||{}).content || '
 function csrfHdr(){ return {'X-CSRFToken': (document.querySelector('meta[name="csrf-token"]')||{}).content||'','Content-Type':'application/json'}; }
 
 // ─── Per-room WebRTC state ───────────────────────────────────────────────────
-var _pcs = {};     // room_id → RTCPeerConnection
-var _streams = {}; // room_id → local MediaStream (mic)
-var _iceIdx = {};  // room_id → last hub_ice index sent / talent_ice index consumed
-var _levels = {};  // room_id → AudioContext analyser
+var _pcs = {};      // room_id → RTCPeerConnection (or true as placeholder)
+var _streams = {};  // room_id → local MediaStream (mic)
+var _iceIdx = {};   // room_id → last hub_ice index sent / talent_ice index consumed
+var _levels = {};   // room_id → AudioContext analyser
+var _connErrs = {}; // room_id → error string (shown in card, auto-cleared after 10 s)
 var _micStream = null; // shared mic stream for hub side
 
 var STUN = {{stun|tojson}};
@@ -351,6 +352,12 @@ function _getHubMic(cb){
 }
 
 // ─── Hub WebRTC negotiation ──────────────────────────────────────────────────
+function _showConnErr(roomId, msg){
+  _connErrs[roomId] = msg;
+  _refreshRooms();
+  setTimeout(function(){ delete _connErrs[roomId]; _refreshRooms(); }, 10000);
+}
+
 function acceptCall(roomId){
   if(_pcs[roomId]) return;   // already connecting, ignore double-click
   // Mark as connecting immediately — _renderRooms checks this every 1.5 s
@@ -367,7 +374,7 @@ function acceptCall(roomId){
     fetch('/api/iplink/room/'+roomId+'/offer', {credentials:'same-origin'})
       .then(function(r){ return r.json(); })
       .then(function(d){
-        if(!d.offer){ delete _pcs[roomId]; alert('No offer found — talent may have disconnected.'); return; }
+        if(!d.offer){ delete _pcs[roomId]; _showConnErr(roomId,'No offer found — talent may have disconnected. Reset the room and ask them to reconnect.'); return; }
         var pc = new RTCPeerConnection({iceServers: STUN.map(function(u){return{urls:u};})});
         _pcs[roomId] = pc;  // replace truthy placeholder with actual PC
         _iceIdx[roomId] = {sent:0, consumed:0};
@@ -428,9 +435,15 @@ function acceptCall(roomId){
           })
           .catch(function(e){
             console.error('Hub WebRTC error:', e);
-            delete _pcs[roomId];  // allow Accept button to reappear on failure
-            _refreshRooms();
+            delete _pcs[roomId];
+            _showConnErr(roomId, 'WebRTC failed: '+(e.message||String(e)));
           });
+      })
+      .catch(function(e){
+        // Outer catch: fetch/JSON errors on the offer request
+        console.error('Hub offer fetch error:', e);
+        delete _pcs[roomId];
+        _showConnErr(roomId, 'Could not fetch offer: '+(e.message||String(e)));
       });
   });
 }
@@ -580,6 +593,9 @@ function _renderRooms(rooms){
         html+='<button class="btn bp bs" id="accept_'+r.id+'" onclick="acceptCall(\''+r.id+'\')">✅ Accept</button>';
       }
       html+='</div>';
+    }
+    if(_connErrs[r.id]){
+      html+='<div class="msg msg-err" style="margin:8px 0 0">⚠ '+_esc(_connErrs[r.id])+'</div>';
     }
     // Level meters
     html+='<div class="lvl-wrap"><span class="lvl-label" style="font-size:10px">Talent</span>';
@@ -858,7 +874,7 @@ function _sipConnect(cfg){
       if(location.protocol==='https:'&&cfg.server.indexOf('wss://')!==0)
         hint=' — hub is HTTPS so server URL must use wss:// not ws://';
       else if(cfg.server.indexOf('wss://')===0)
-        hint=' — check the server URL and that its SSL certificate is trusted';
+        hint=' — check the URL is correct; Asterisk/FreePBX requires /ws at the end (e.g. wss://'+cfg.server.replace(/^wss?:\/\//,'').split('/')[0]+'/ws)';
       _sipSetState('error','WebSocket error'+hint);
     };
     _sip.ws.onclose=function(){
