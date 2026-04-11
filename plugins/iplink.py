@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "hub_only": True,
 }
 
@@ -29,6 +29,7 @@ _log    = None    # set in register()
 
 _ROOM_EXPIRE_S    = 7200   # expire idle rooms after 2 h
 _STUN_SERVERS     = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
+_STUN             = _STUN_SERVERS   # alias used in route templates
 
 _SIP_CFG_PATH = os.path.join(_BASE_DIR, "iplink_sip_cfg.json")
 _SIP_CFG_DEFAULT = {

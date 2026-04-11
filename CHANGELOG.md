@@ -2,6 +2,14 @@
 
 ---
 
+## IP Link v1.1.2 — 2026-04-11
+
+### Fixed — "Plugin internal error" on hub page and talent join (plugin v1.1.2)
+
+`_STUN` was referenced in both `iplink_hub()` and `iplink_talent()` route handlers but was never defined — only `_STUN_SERVERS` existed at module level. Every call to either route raised `NameError: name '_STUN' is not defined`, which was caught by `_wrap_view` and returned as `{"error":"Plugin internal error"}`. Fix: added `_STUN = _STUN_SERVERS` alias at module level.
+
+---
+
 ## [3.5.138] - 2026-04-11
 
 ### Fixed — IP Link hub page error on load (plugin v1.1.1)
