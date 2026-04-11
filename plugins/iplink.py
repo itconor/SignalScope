@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.17",
+    "version": "1.1.18",
     "hub_only": True,
 }
 
@@ -352,41 +352,63 @@ function _getHubMic(cb){
 }
 
 // ─── SDP munging ─────────────────────────────────────────────────────────────
-// Chrome generates SDP that Safari rejects. Strip/clean known problem areas:
-//  - a=ssrc / a=ssrc-group     (source-level attributes Safari can't parse)
-//  - telephone-event (DTMF)    (not needed; Safari rejects PT 126 etc.)
-//  - CN (Comfort Noise PT 13)  (Safari rejects a=rtpmap:13 CN/8000)
-//  - RED (Redundant Audio)     (not needed for contribution)
-//  - PCMA / PCMU (G.711)       (Safari rejects a=rtpmap:8 PCMA/8000 — static
-//                               PTs don't need rtpmap; Chrome includes them anyway)
-// Codecs removed cleanly: strip rtpmap/fmtp/rtcp-fb lines AND remove the
-// payload type number from the m= line. Opus remains as the only audio codec.
-var _SDP_DROP_CODECS = /^(telephone-event|CN|RED|PCMA|PCMU)$/i;
+// SDP compatibility shim applied to offers before setRemoteDescription.
+// Cleans up lines that cause parse failures in various browsers:
+//  - a=ssrc / a=ssrc-group       source-level attributes some browsers reject
+//  - a=extmap-allow-mixed        session-level; older Safari WebKit rejects it and
+//                                MISREPORTS the error pointing at a later line
+//                                (e.g. "a=fmtp:111 … Invalid SDP line") — stripping
+//                                this is the fix for those "wrong line" errors
+//  - a=extmap:N/direction        direction specifiers in extmap (recvonly etc.)
+//                                unsupported in older Safari; normalised to a=extmap:N
+//  - a=rtcp-rsize                some older Safari builds reject this
+//  - telephone-event / CN / RED  not needed for contribution
+//  - PCMA / PCMU / G.711 PTs     static PTs 0-95: some browsers reject explicit rtpmap
+//  - rtx / ulpfec / flexfec      retransmission/FEC; not needed, can confuse parsers
+// Orphan guard: fmtp/rtcp-fb lines whose PT has no corresponding rtpmap are
+// stripped — an orphaned fmtp causes Chrome to report "Invalid SDP line" for it.
+// Codec removal: rtpmap/fmtp/rtcp-fb lines AND the PT in the m= line are all
+// removed together. Opus remains as the sole audio codec.
+var _SDP_DROP_CODECS = /^(telephone-event|CN|RED|PCMA|PCMU|rtx|ulpfec|flexfec)$/i;
 
 function _mungeOfferSdp(sdp){
   var lines = sdp.split(/\r?\n/);
 
-  // Collect payload types to drop:
-  //  - Named codecs in _SDP_DROP_CODECS (telephone-event, CN, RED, PCMA, PCMU)
-  //  - ALL static payload types 0-95: Safari rejects explicit a=rtpmap entries
-  //    for these — they're already defined by RFC 3551 and Chrome shouldn't
-  //    include rtpmap for them. Opus is always 96+ so it's unaffected.
-  var dropPts = {};
+  // Pass 1: collect PTs to drop AND PTs that have an a=rtpmap line
+  var dropPts = {}, mappedPts = {};
   lines.forEach(function(line){
     var m = line.match(/^a=rtpmap:(\d+) ([^\/]+)\//i);
     if(!m) return;
     var pt = parseInt(m[1], 10);
+    mappedPts[m[1]] = true;
     if(_SDP_DROP_CODECS.test(m[2]) || pt <= 95) dropPts[m[1]] = true;
   });
 
+  // Pass 2: filter / rewrite lines
   var out = [];
   lines.forEach(function(line){
-    if(/^a=ssrc(-group)?:/.test(line)) return;           // drop ssrc lines
+    // Drop ssrc source-level attributes
+    if(/^a=ssrc(-group)?:/.test(line)) return;
+    // Drop extmap-allow-mixed (causes Safari to misreport parse errors on later lines)
+    if(/^a=extmap-allow-mixed\s*$/.test(line)) return;
+    // Drop rtcp-rsize (some Safari builds reject it)
+    if(/^a=rtcp-rsize\s*$/.test(line)) return;
+    // Normalise extmap direction specifiers: a=extmap:N/recvonly URI → a=extmap:N URI
+    var em = line.match(/^(a=extmap:\d+)\/(?:sendrecv|sendonly|recvonly|inactive)( .*)?$/);
+    if(em){ out.push(em[1] + (em[2]||'')); return; }
+    // Drop rtpmap/fmtp/rtcp-fb for removed codecs
     var am = line.match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/);
-    if(am && dropPts[am[1]]) return;                     // drop removed codec attrs
-    if(line.startsWith('m=') && Object.keys(dropPts).length){
+    if(am && dropPts[am[1]]) return;
+    // Drop orphaned fmtp/rtcp-fb lines (PT has no rtpmap → would cause "Invalid SDP line")
+    if(am && !am[0].startsWith('a=rtpmap') && !mappedPts[am[1]]) return;
+    // Rewrite m= lines: remove dropped PTs AND any static PTs (≤95) with no rtpmap
+    if(line.startsWith('m=')){
       var parts = line.split(' ');
-      var pts   = parts.slice(3).filter(function(p){ return !dropPts[p]; });
+      var pts = parts.slice(3).filter(function(p){
+        if(dropPts[p]) return false;
+        if(!mappedPts[p] && parseInt(p,10) <= 95) return false;
+        return true;
+      });
       out.push(parts.slice(0,3).concat(pts).join(' '));
       return;
     }
@@ -460,7 +482,8 @@ function acceptCall(roomId){
         };
 
         // Set remote offer, create answer
-        pc.setRemoteDescription({type:'offer', sdp:_mungeOfferSdp(d.offer)})
+        var _mungedSdp = _mungeOfferSdp(d.offer);
+        pc.setRemoteDescription({type:'offer', sdp:_mungedSdp})
           .then(function(){ return pc.createAnswer(); })
           .then(function(ans){
             return pc.setLocalDescription(ans).then(function(){ return ans; });
@@ -479,7 +502,9 @@ function acceptCall(roomId){
             _applyQuality(pc, roomId);
           })
           .catch(function(e){
-            console.error('Hub WebRTC error:', e);
+            // Log the munged SDP so it can be inspected in DevTools if SDP parsing fails
+            console.error('[IPLink] WebRTC error:', e.message);
+            console.debug('[IPLink] munged offer SDP that was rejected:\n', _mungedSdp);
             delete _pcs[roomId];
             _showConnErr(roomId, 'WebRTC failed: '+(e.message||String(e)));
           });
@@ -782,7 +807,7 @@ var _sip = {
   pc:null,               // RTCPeerConnection for SIP call
   micStream:null, remoteAnalyser:null, micAnalyser:null,
   callStart:null, micMuted:false,
-  regTimer:null, retryTimer:null, durTimer:null,
+  regTimer:null, retryTimer:null, regTimeoutTimer:null, durTimer:null, regAuthAttempts:0,
 };
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -900,6 +925,13 @@ function _sipRegister(authHdr){
   if(authHdr)hdrs['Authorization']=authHdr;
   _sipSend(_sipBuildReq('REGISTER','sip:'+dom,hdrs,''));
   _sipSetState('registering');
+  // Timeout: if no response in 15 s, show an error rather than spinning forever
+  clearTimeout(_sip.regTimeoutTimer);
+  _sip.regTimeoutTimer=setTimeout(function(){
+    if(_sip.state==='registering'){
+      _sipSetState('error','Registration timed out — no response from server. Check the server URL and that it accepts SIP over WebSocket.');
+    }
+  },15000);
 }
 
 // ── Connect to SIP server ──────────────────────────────────────────────────
@@ -945,7 +977,7 @@ function _sipConnect(cfg){
 }
 
 function _sipStop(){
-  clearTimeout(_sip.regTimer);clearTimeout(_sip.retryTimer);clearInterval(_sip.durTimer);
+  clearTimeout(_sip.regTimer);clearTimeout(_sip.retryTimer);clearTimeout(_sip.regTimeoutTimer);clearInterval(_sip.durTimer);
   if(_sip.ws){try{_sip.ws.close();}catch(e){}_sip.ws=null;}
   _sipCleanupCall();
   _sip.state='idle'; _sipUpdateUI();
@@ -1128,12 +1160,19 @@ function _sipHandleMsg(raw){
     var method=csqH.replace(/^\d+\s+/,'').toUpperCase().trim();
     var st=msg.status;
     if(method==='REGISTER'){
+      clearTimeout(_sip.regTimeoutTimer);  // got a response — cancel the 15 s timeout
       if(st===200){
+        _sip.regAuthAttempts=0;
         _sipSetState('registered');
         var exp=parseInt(((msg.headers['contact']||'').match(/expires=(\d+)/)||[])[1]||'600');
         clearTimeout(_sip.regTimer);
         _sip.regTimer=setTimeout(function(){if(_sip.state==='registered')_sipRegister();},exp*900);
       }else if(st===401||st===407){
+        _sip.regAuthAttempts=(_sip.regAuthAttempts||0)+1;
+        if(_sip.regAuthAttempts>2){
+          _sipSetState('error','Authentication failed — check your SIP username and password.');
+          return;
+        }
         var wwwH=msg.headers['www-authenticate']||msg.headers['proxy-authenticate']||'';
         var auth=_sipParseWWWAuth(wwwH);
         var regUri='sip:'+_sipDomain();

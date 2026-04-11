@@ -2,6 +2,28 @@
 
 ---
 
+## IP Link v1.1.18 — 2026-04-11
+
+### Fixed — comprehensive SDP munge to stop whack-a-mole parse failures (plugin v1.1.18)
+
+Root cause of the recurring `a=fmtp:111 … Invalid SDP line` errors (and previous similar reports) identified and fixed:
+
+**`a=extmap-allow-mixed`** — A session-level attribute Chrome adds to all offers. Older Safari WebKit doesn't support it and, critically, **misreports** the resulting parse failure as a different, later line in the SDP (e.g. `a=fmtp:111 minptime=10;useinbandfec=1 Invalid SDP line` even though that line is perfectly valid). Stripping this attribute from offers before `setRemoteDescription` prevents the misreported failures entirely.
+
+**`a=extmap:N/direction` direction specifiers** — Chrome includes direction modifiers on `extmap` lines (`/recvonly`, `/sendonly`, etc.) that are unsupported in older Safari. These are now normalised to plain `a=extmap:N` (bidirectional, universally supported).
+
+**`a=rtcp-rsize`** — Reduced-size RTCP; some Safari builds reject it. Now stripped.
+
+**`rtx` / `ulpfec` / `flexfec`** — Retransmission and FEC codecs added to `_SDP_DROP_CODECS`. Not needed for audio contribution; can confuse some SDP parsers.
+
+**Orphan guard** — `a=fmtp` and `a=rtcp-fb` lines whose payload type has no corresponding `a=rtpmap` line are now stripped. An orphaned fmtp (PT with no rtpmap) causes Chrome to report `Invalid SDP line` for the fmtp line. This catches any non-standard contributor browser that sends malformed SDP.
+
+**m= line hardening** — Static payload types (≤95) with no explicit rtpmap are now also stripped from the `m=` line, not just those with rtpmap entries.
+
+**SDP console logging** — When `setRemoteDescription` fails, the munged SDP that was passed to the browser is now logged to the console (`console.debug`) so it can be inspected in DevTools to diagnose any future issues.
+
+---
+
 ## IP Link v1.1.17 — 2026-04-11
 
 ### Fixed — drop ALL static payload type rtpmap entries for Safari (plugin v1.1.17)

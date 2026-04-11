@@ -154,8 +154,8 @@
     "name": "IP Link",
     "file": "iplink.py",
     "icon": "🎙",
-    "description": "Browser-based IP codec and SIP softphone. WebRTC rooms: hub creates named rooms with shareable talent URLs — contributors join from any browser with no app download, low-latency Opus audio, bidirectional IFB, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo). SIP client: register with any SIP PBX supporting WebSocket transport (Asterisk, FreeSWITCH, 3CX); take and make SIP calls directly from the hub page; digest auth, incoming call banner with Answer/Decline, mic mute, RTT stats, persistent config. Hub-only. v1.1.14: full Safari/Chrome SDP compatibility — strips a=ssrc lines and telephone-event codec from offers. v1.1.13: fix SIP WebSocket blocked by CSP. v1.1.9: WebRTC errors shown in room card.",
-    "version": "1.1.17",
+    "description": "Browser-based IP codec and SIP softphone. WebRTC rooms: hub creates named rooms with shareable talent URLs — contributors join from any browser with no app download, low-latency Opus audio, bidirectional IFB, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo). SIP client: register with any SIP PBX supporting WebSocket transport (Asterisk, FreeSWITCH, 3CX); take and make SIP calls directly from the hub page; digest auth, incoming call banner with Answer/Decline, mic mute, RTT stats, persistent config. Hub-only. v1.1.18: comprehensive SDP munge — strips a=extmap-allow-mixed (root cause of misreported fmtp parse errors), normalises extmap direction specifiers, strips rtcp-rsize, drops rtx/ulpfec/flexfec codecs, orphan-guards fmtp lines with no corresponding rtpmap; SDP logged to console on error. v1.1.14: Safari/Chrome SDP compat. v1.1.13: fix SIP WebSocket CSP. v1.1.9: WebRTC errors in room card.",
+    "version": "1.1.18",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/iplink.py"
   },
