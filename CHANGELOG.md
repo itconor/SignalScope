@@ -2,6 +2,16 @@
 
 ---
 
+## IP Link v1.1.6 — 2026-04-11
+
+### Fixed — Accept button reverts to Accept on WebRTC room connection (plugin v1.1.6)
+
+`_renderRooms()` fires every 1.5 s and rebuilds the entire room grid from server data. While `acceptCall()` was negotiating WebRTC (which can take several seconds for ICE gathering), the room status on the server was still `offer_received`. The next poll overwrote the "Connecting…" button with a fresh "Accept" button, making it appear the connection had been rejected.
+
+Fix: `_renderRooms` now checks `_pcs[r.id]` before rendering the Accept button. If a PeerConnection already exists for the room, it renders a disabled "⏳ Connecting…" button instead. `_pcs[roomId]` is deleted on WebRTC failure (catch) and on `connectionState === 'failed'` so the Accept button reappears only when the connection genuinely failed and a retry is needed. Also fixed: only mark the room disconnected on ICE `'failed'` (not transient `'disconnected'`).
+
+---
+
 ## IP Link v1.1.5 — 2026-04-11
 
 ### Fixed — Accept reverts to incoming / call drops immediately (plugin v1.1.5)

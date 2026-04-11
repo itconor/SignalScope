@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.5",
+    "version": "1.1.6",
     "hub_only": True,
 }
 
@@ -394,7 +394,11 @@ function acceptCall(roomId){
 
         pc.onconnectionstatechange = function(){
           _refreshRooms();
-          if(pc.connectionState === 'disconnected' || pc.connectionState === 'failed'){
+          if(pc.connectionState === 'failed'){
+            delete _pcs[roomId];
+            fetch('/api/iplink/room/'+roomId+'/status',{method:'POST',credentials:'same-origin',headers:csrfHdr(),body:JSON.stringify({from:'hub',status:'disconnected'})});
+          } else if(pc.connectionState === 'disconnected'){
+            // Transient — don't tear down yet; ICE may recover
             fetch('/api/iplink/room/'+roomId+'/status',{method:'POST',credentials:'same-origin',headers:csrfHdr(),body:JSON.stringify({from:'hub',status:'disconnected'})});
           }
         };
@@ -418,7 +422,11 @@ function acceptCall(roomId){
             // Apply quality settings
             _applyQuality(pc, roomId);
           })
-          .catch(function(e){ console.error('Hub WebRTC error:', e); });
+          .catch(function(e){
+            console.error('Hub WebRTC error:', e);
+            delete _pcs[roomId];  // allow Accept button to reappear on failure
+            _refreshRooms();
+          });
       });
   });
 }
@@ -559,10 +567,14 @@ function _renderRooms(rooms){
     html+='</div>';
     // Body
     html+='<div class="rc-body">';
-    // Accept banner
+    // Accept banner — show Connecting… if a PeerConnection already exists for this room
     if(r.status==='offer_received'){
       html+='<div class="accept-banner">📲 <span style="flex:1">Incoming call from contributor</span>';
-      html+='<button class="btn bp bs" id="accept_'+r.id+'" onclick="acceptCall(\''+r.id+'\')">✅ Accept</button>';
+      if(_pcs[r.id]){
+        html+='<button class="btn bp bs" disabled>⏳ Connecting…</button>';
+      } else {
+        html+='<button class="btn bp bs" id="accept_'+r.id+'" onclick="acceptCall(\''+r.id+'\')">✅ Accept</button>';
+      }
       html+='</div>';
     }
     // Level meters
@@ -756,10 +768,10 @@ function _sipBuildReq(method,uri,hdrs,body){
 
 // ── SIP message parser ─────────────────────────────────────────────────────
 function _sipParse(raw){
-  var sep=raw.indexOf('\r\n\r\n');
-  if(sep<0)sep=raw.indexOf('\n\n');
+  var sep=raw.indexOf('\r\n\r\n'), sepLen=4;
+  if(sep<0){sep=raw.indexOf('\n\n'); sepLen=2;}
   var hdrSec=sep>=0?raw.substring(0,sep):raw;
-  var body=sep>=0?raw.substring(sep+(raw[sep+2]==='\n'?2:4)):'';
+  var body=sep>=0?raw.substring(sep+sepLen):'';
   var lines=hdrSec.split(/\r?\n/);
   var fl=lines[0], hdrs={};
   var compact={v:'via',f:'from',t:'to',m:'contact',i:'call-id',l:'content-length',c:'content-type'};
