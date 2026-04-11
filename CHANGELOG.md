@@ -2,6 +2,16 @@
 
 ---
 
+## IP Link v1.1.8 — 2026-04-11
+
+### Fixed — Accept button no immediate feedback; SIP WebSocket error hint (plugin v1.1.8)
+
+`acceptCall()` was missing the immediate `btn.textContent='⏳ Connecting…'` line after the `_pcs` guard was added in v1.1.7. Button now shows "Connecting…" immediately on click again.
+
+SIP WebSocket error message now includes a specific hint: if the hub is on HTTPS and the configured server URL starts with `ws://` (not `wss://`), the browser blocks the connection as mixed content — the error now says so explicitly. If the URL is already `wss://`, the hint directs to certificate trust issues.
+
+---
+
 ## IP Link v1.1.7 — 2026-04-11
 
 ### Fixed — Accept button timing window (plugin v1.1.7)

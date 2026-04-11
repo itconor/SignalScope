@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.7",
+    "version": "1.1.8",
     "hub_only": True,
 }
 
@@ -356,6 +356,8 @@ function acceptCall(roomId){
   // Mark as connecting immediately — _renderRooms checks this every 1.5 s
   // and will show "Connecting…" rather than re-rendering the Accept button.
   _pcs[roomId] = true;
+  var btn = document.getElementById('accept_'+roomId);
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Connecting…'; }
 
   _getHubMic(function(err, micStream){
     if(err){
@@ -851,7 +853,14 @@ function _sipConnect(cfg){
     _sip.ws=new WebSocket(cfg.server,['sip']);
     _sip.ws.onopen=function(){_sipRegister();};
     _sip.ws.onmessage=function(e){_sipHandleMsg(e.data);};
-    _sip.ws.onerror=function(){_sipSetState('error','WebSocket error');};
+    _sip.ws.onerror=function(){
+      var hint='';
+      if(location.protocol==='https:'&&cfg.server.indexOf('wss://')!==0)
+        hint=' — hub is HTTPS so server URL must use wss:// not ws://';
+      else if(cfg.server.indexOf('wss://')===0)
+        hint=' — check the server URL and that its SSL certificate is trusted';
+      _sipSetState('error','WebSocket error'+hint);
+    };
     _sip.ws.onclose=function(){
       if(_sip.state==='idle')return;
       _sipSetState('error','Disconnected');
