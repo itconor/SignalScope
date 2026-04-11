@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.6",
+    "version": "1.1.7",
     "hub_only": True,
 }
 
@@ -352,8 +352,10 @@ function _getHubMic(cb){
 
 // ─── Hub WebRTC negotiation ──────────────────────────────────────────────────
 function acceptCall(roomId){
-  var btn = document.getElementById('accept_'+roomId);
-  if(btn){ btn.disabled=true; btn.textContent='Connecting…'; }
+  if(_pcs[roomId]) return;   // already connecting, ignore double-click
+  // Mark as connecting immediately — _renderRooms checks this every 1.5 s
+  // and will show "Connecting…" rather than re-rendering the Accept button.
+  _pcs[roomId] = true;
 
   _getHubMic(function(err, micStream){
     if(err){
@@ -363,9 +365,9 @@ function acceptCall(roomId){
     fetch('/api/iplink/room/'+roomId+'/offer', {credentials:'same-origin'})
       .then(function(r){ return r.json(); })
       .then(function(d){
-        if(!d.offer){ alert('No offer found — talent may have disconnected.'); return; }
+        if(!d.offer){ delete _pcs[roomId]; alert('No offer found — talent may have disconnected.'); return; }
         var pc = new RTCPeerConnection({iceServers: STUN.map(function(u){return{urls:u};})});
-        _pcs[roomId] = pc;
+        _pcs[roomId] = pc;  // replace truthy placeholder with actual PC
         _iceIdx[roomId] = {sent:0, consumed:0};
 
         // Add mic track (IFB return to talent)

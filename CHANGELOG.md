@@ -2,6 +2,14 @@
 
 ---
 
+## IP Link v1.1.7 — 2026-04-11
+
+### Fixed — Accept button timing window (plugin v1.1.7)
+
+`_pcs[roomId]` was only set after `_getHubMic` callback + `fetch('/offer')` resolved (~1–2 s). The 1.5 s room-list refresh fired inside that window, saw no `_pcs` entry, and re-rendered a fresh Accept button. Fixed: `_pcs[roomId] = true` is set at the very start of `acceptCall()` (replaced with the actual `RTCPeerConnection` once created). Also added a double-click guard (`if(_pcs[roomId]) return`).
+
+---
+
 ## IP Link v1.1.6 — 2026-04-11
 
 ### Fixed — Accept button reverts to Accept on WebRTC room connection (plugin v1.1.6)
