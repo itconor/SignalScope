@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.16",
+    "version": "1.1.17",
     "hub_only": True,
 }
 
@@ -366,11 +366,17 @@ var _SDP_DROP_CODECS = /^(telephone-event|CN|RED|PCMA|PCMU)$/i;
 function _mungeOfferSdp(sdp){
   var lines = sdp.split(/\r?\n/);
 
-  // Collect payload types to drop from rtpmap lines
+  // Collect payload types to drop:
+  //  - Named codecs in _SDP_DROP_CODECS (telephone-event, CN, RED, PCMA, PCMU)
+  //  - ALL static payload types 0-95: Safari rejects explicit a=rtpmap entries
+  //    for these — they're already defined by RFC 3551 and Chrome shouldn't
+  //    include rtpmap for them. Opus is always 96+ so it's unaffected.
   var dropPts = {};
   lines.forEach(function(line){
     var m = line.match(/^a=rtpmap:(\d+) ([^\/]+)\//i);
-    if(m && _SDP_DROP_CODECS.test(m[2])) dropPts[m[1]] = true;
+    if(!m) return;
+    var pt = parseInt(m[1], 10);
+    if(_SDP_DROP_CODECS.test(m[2]) || pt <= 95) dropPts[m[1]] = true;
   });
 
   var out = [];

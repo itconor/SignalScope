@@ -2,6 +2,14 @@
 
 ---
 
+## IP Link v1.1.17 — 2026-04-11
+
+### Fixed — drop ALL static payload type rtpmap entries for Safari (plugin v1.1.17)
+
+Safari rejects explicit `a=rtpmap` entries for static payload types (0–95) — PT 9 G722/8000 was the latest. Rather than blacklisting codecs one by one, `_mungeOfferSdp` now drops ALL `a=rtpmap` lines where the payload type is 0–95. These are defined by RFC 3551 and Chrome shouldn't need to list them explicitly. Opus is always a dynamic type (96+) and is unaffected.
+
+---
+
 ## IP Link v1.1.16 — 2026-04-11
 
 ### Fixed — PCMA/PCMU SDP rejection + SIP CSP patch approach (plugin v1.1.16)
