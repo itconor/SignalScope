@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.3",
+    "version": "1.1.4",
     "hub_only": True,
 }
 
@@ -1307,7 +1307,7 @@ _TALENT_TPL = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>{{room_name}} — IP Link</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<style>
+<style nonce="{{csp_nonce()}}">
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px}
@@ -1369,7 +1369,7 @@ h1{font-size:22px;font-weight:800;margin-bottom:4px}
   <audio id="ifbAudio" autoplay playsinline style="display:none"></audio>
 </div>
 
-<script>
+<script nonce="{{csp_nonce()}}">
 var ROOM_ID = {{room_id|tojson}};
 var STUN    = {{stun|tojson}};
 var _pc, _mic, _muted=false, _pollTimer;

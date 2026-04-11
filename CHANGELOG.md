@@ -2,6 +2,16 @@
 
 ---
 
+## IP Link v1.1.4 — 2026-04-11
+
+### Fixed — Talent page stuck at "Initialising…" (plugin v1.1.4)
+
+The contributor/talent page (`/iplink/talent/<id>`) had `<style>` and `<script>` tags without `nonce="{{csp_nonce()}}"`. SignalScope's Content Security Policy requires every inline `<style>` and `<script>` to carry the per-request nonce. Without it the browser silently blocks all CSS and JS — the page renders as unstyled static HTML, `window.addEventListener('load', ...)` never fires, the WebRTC setup never starts, and the status indicator stays permanently at "Initialising…".
+
+Fix: added `nonce="{{csp_nonce()}}"` to both the `<style>` and `<script>` tags in `_TALENT_TPL`.
+
+---
+
 ## IP Link v1.1.3 — 2026-04-11
 
 ### Fixed — New Room button dead / SIP JS blocked by CSP (plugin v1.1.3)
