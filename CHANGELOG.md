@@ -2,6 +2,35 @@
 
 ---
 
+## [3.5.134] - 2026-04-11
+
+### Added — TX high-site monitoring: 7 new diagnostic metrics
+
+Seven new RF and site-health metrics for monitoring FM/DAB transmitter sites:
+
+**1. CPU temperature on hub site cards**
+`_build_system_health()` now reads CPU temperature via `psutil.sensors_temperatures()` with a fallback to `/sys/class/thermal/thermal_zone0/temp` (Raspberry Pi / Linux). The hub site summary bar shows `🌡 XX.X°C` coloured amber ≥65°C, red ≥75°C. `SITE_TEMP_HIGH` and `SITE_DISK_LOW` alert types added (fired with 1-hour cooldown at ≥75°C / ≥90% disk used).
+
+**2. DAB MER + BER + frequency correction**
+`_copy_dab_metrics_from_mux()` now extracts `demodulator.mer` (Modulation Error Ratio, dB), `demodulator.viterbiErrorRate`/`ber` (bit error rate), and `demodulator.frequencyCorr` from the welle-cli JSON. All three appear in the DAB stats panel (hub overview + client status page + heartbeat payload) with colour thresholds.
+
+**3. FM RDS extended fields: TA, TP, PTY, CT**
+`_apply_redsea_json()` now captures `ta` (Traffic Announcement), `tp` (Traffic Programme), `pty` (Programme Type code 0–31, accepting both `int` and `{"code": N}` forms), and `ct`/`clock_time` (RDS Clock Time, ISO 8601). Displayed in an `RDS+` row when any field is present. TA announcement shown in amber with 📻 icon.
+
+**4. Carrier frequency offset**
+Slow EMA (α=0.05, ≈1 s time constant) of the FM discriminator DC mean, scaled to Hz. `_fm_carrier_offset_hz` in `InputConfig`. Shown in FM stats when offset exceeds ±5 Hz; amber ≥±100 Hz indicating off-tune transmitter.
+
+**5. MPX composite power (dBr)**
+RMS of the raw MPX discriminator output expressed as dBr (0 dBr = ITU-R BS.412 full-scale modulation). Stored as `_fm_mpx_power_dbr`. Shown in FM stats with colour thresholds.
+
+**6. Pilot injection level (%)**
+Stereo pilot (19 kHz) amplitude extracted from the FFT, expressed as a percentage of ±75 kHz deviation. Standard broadcast is ~9%. Below 7% = weak pilot / stereo dropout risk; above 12% = over-modulated. Stored as `_fm_pilot_pct`.
+
+**7. Deviation histogram / compliance log**
+Rolling session counters (`_fm_dev_n67`, `_fm_dev_n72`, `_fm_dev_n75`, `_fm_dev_total`) track the percentage of audio time exceeding 67.5 kHz (EBU R68 programme limit), 72 kHz, and 75 kHz (Ofcom hard limit). Shown as `Dev % 67.5:X% 72:X% 75:X%` in FM stats. All counters reset on monitor restart (session-based).
+
+---
+
 ## [3.5.133] - 2026-04-09
 
 ### Fixed — FM relay via hub drops after 1–2 minutes (stereo/mono transition corrupts MP3 stream)

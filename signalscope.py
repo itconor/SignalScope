@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.133"
+BUILD                  = "SignalScope-3.5.134"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2682,6 +2682,7 @@ _ALL_ALERT_TYPES = [
     "FM_RDS_MISMATCH", "DAB_SERVICE_MISMATCH",
     "AUDIO_GLITCH", "AUDIO_GLITCH_SUSTAINED", "AUDIO_FLATNESS",
     "DLS_STALE", "RDS_STALE",
+    "SITE_TEMP_HIGH", "SITE_DISK_LOW",
 ]
 # Chain monitoring constants
 CHAIN_FLAP_WINDOW        = 600    # seconds — window for flap detection
@@ -2931,6 +2932,9 @@ class InputConfig:
     _dab_dls:           str   = field(default="",   init=False, repr=False)  # Dynamic Label (now playing)
     _dab_dls_last_change_ts: float = field(default=0.0, init=False, repr=False)  # unix ts when _dab_dls last changed
     _dab_dls_stale_alerted_ts: float = field(default=0.0, init=False, repr=False)  # ts of last DLS_STALE alert (client-side unused; hub uses module-level dict)
+    _dab_mer:           float = field(default=0.0,  init=False, repr=False)  # Modulation Error Ratio dB
+    _dab_freq_corr_hz:  int   = field(default=0,    init=False, repr=False)  # frequency correction Hz
+    _dab_ber:           float = field(default=0.0,  init=False, repr=False)  # Viterbi bit error rate
     # FM status (populated for fm:// sources)
     _fm_freq_mhz:       float = field(default=0.0,  init=False, repr=False)
     _fm_signal_dbm:     float = field(default=-120.0, init=False, repr=False)
@@ -2946,10 +2950,21 @@ class InputConfig:
     _fm_rds_metric:     float = field(default=0.0, init=False, repr=False)
     _fm_rds_best_phase: int   = field(default=-1, init=False, repr=False)
     _fm_rds_last_good:  float = field(default=0.0, init=False, repr=False)
+    _fm_rds_ta:         bool  = field(default=False, init=False, repr=False)  # Traffic Announcement active
+    _fm_rds_tp:         bool  = field(default=False, init=False, repr=False)  # Traffic Programme
+    _fm_rds_pty:        int   = field(default=0,    init=False, repr=False)  # Programme Type 0-31
+    _fm_rds_ct:         str   = field(default="",   init=False, repr=False)  # RDS Clock Time (ISO 8601)
     # Name-change tracking (runtime)
     _fm_rds_ps_prev:    str   = field(default="",   init=False, repr=False)
     _fm_deviation_peak_khz: float = field(default=0.0,  init=False, repr=False)
     _fm_over_ofcom:     bool  = field(default=False, init=False, repr=False)
+    _fm_carrier_offset_hz: float = field(default=0.0, init=False, repr=False)  # carrier freq offset EMA (Hz)
+    _fm_mpx_power_dbr:  float = field(default=-99.0, init=False, repr=False)  # MPX composite power dBr
+    _fm_pilot_pct:      float = field(default=0.0,  init=False, repr=False)  # pilot injection % of ±75 kHz
+    _fm_dev_n67:        int   = field(default=0,    init=False, repr=False)  # samples >67.5 kHz deviation
+    _fm_dev_n72:        int   = field(default=0,    init=False, repr=False)  # samples >72 kHz deviation
+    _fm_dev_n75:        int   = field(default=0,    init=False, repr=False)  # samples >75 kHz deviation
+    _fm_dev_total:      int   = field(default=0,    init=False, repr=False)  # total deviation samples
     _dab_service_prev:  str   = field(default="",   init=False, repr=False)
     # SLA tracking (runtime)
     _sla_monitored_s:   float = field(default=0.0,  init=False, repr=False)
@@ -3903,6 +3918,56 @@ def _check_stale_text_alerts(site: str, streams: list):
                 })
         else:
             _stale_alerted.pop(rds_key, None)
+
+
+_SITE_HEALTH_ALERTED: Dict[str, float] = {}
+_SITE_HEALTH_COOLDOWN_SECS = 3600   # re-alert at most once per hour
+
+def _check_site_health_alerts(site: str, system: dict):
+    """Fire SITE_TEMP_HIGH / SITE_DISK_LOW events when resource thresholds are exceeded.
+    Called from HubServer.ingest() in a background thread.
+    """
+    global _SITE_HEALTH_ALERTED
+    now = time.time()
+
+    # ── CPU temperature ───────────────────────────────────────────────────────
+    cpu_temp = system.get("cpu_temp_c")
+    temp_key = f"{site}:TEMP"
+    if cpu_temp is not None and float(cpu_temp) >= 75.0:
+        last = _SITE_HEALTH_ALERTED.get(temp_key, 0)
+        if now - last >= _SITE_HEALTH_COOLDOWN_SECS:
+            _SITE_HEALTH_ALERTED[temp_key] = now
+            _alert_log_append({
+                "id":      str(uuid.uuid4()),
+                "ts":      time.strftime("%Y-%m-%d %H:%M:%S"),
+                "stream":  "",
+                "_site":   f"({site})",
+                "type":    "SITE_TEMP_HIGH",
+                "message": f"CPU temperature high on {site}: {cpu_temp}°C (≥75°C threshold)",
+                "clip":    "",
+            })
+    elif cpu_temp is None or float(cpu_temp) < 70.0:
+        _SITE_HEALTH_ALERTED.pop(temp_key, None)
+
+    # ── Disk space ────────────────────────────────────────────────────────────
+    disk_pct = system.get("disk_pct")
+    disk_key = f"{site}:DISK"
+    if disk_pct is not None and float(disk_pct) >= 90.0:
+        last = _SITE_HEALTH_ALERTED.get(disk_key, 0)
+        if now - last >= _SITE_HEALTH_COOLDOWN_SECS:
+            _SITE_HEALTH_ALERTED[disk_key] = now
+            free_gb = system.get("disk_free_gb", "?")
+            _alert_log_append({
+                "id":      str(uuid.uuid4()),
+                "ts":      time.strftime("%Y-%m-%d %H:%M:%S"),
+                "stream":  "",
+                "_site":   f"({site})",
+                "type":    "SITE_DISK_LOW",
+                "message": f"Disk space low on {site}: {disk_pct}% used ({free_gb} GB free)",
+                "clip":    "",
+            })
+    elif disk_pct is None or float(disk_pct) < 85.0:
+        _SITE_HEALTH_ALERTED.pop(disk_key, None)
 
 
 def _alert_log_load(limit: int = 2000) -> List[dict]:
@@ -8862,6 +8927,20 @@ class MonitorManager:
         except Exception:
             pass
         try:
+            demod = mux.get("demodulator", {})
+            mer = demod.get("mer")
+            if mer is not None:
+                cfg._dab_mer = float(mer)
+            freq_corr = demod.get("frequencyCorr") or demod.get("freqCorr")
+            if freq_corr is not None:
+                cfg._dab_freq_corr_hz = int(round(float(freq_corr)))
+            # BER: welle-cli reports as viterbiErrorRate or ber
+            ber = demod.get("viterbiErrorRate") or demod.get("ber")
+            if ber is not None:
+                cfg._dab_ber = float(ber)
+        except Exception:
+            pass
+        try:
             ens = mux.get("ensemble", {})
             lbl = ens.get("label", {})
             cfg._dab_ensemble = (lbl.get("label", "") or lbl.get("shortlabel", "")).strip()
@@ -10702,6 +10781,27 @@ class MonitorManager:
                 if group:
                     cfg._fm_rds_group = str(group).strip()
 
+                # ---- Extra RDS fields ----
+                ta_val = obj.get("ta")
+                if ta_val is not None:
+                    cfg._fm_rds_ta = bool(ta_val)
+                tp_val = obj.get("tp")
+                if tp_val is not None:
+                    cfg._fm_rds_tp = bool(tp_val)
+                pty_val = obj.get("pty")
+                if pty_val is not None:
+                    # redsea may return {"code": 3, "text": "Drama"} or plain int
+                    if isinstance(pty_val, dict):
+                        cfg._fm_rds_pty = int(pty_val.get("code", 0) or 0)
+                    else:
+                        try:
+                            cfg._fm_rds_pty = int(pty_val)
+                        except (TypeError, ValueError):
+                            pass
+                ct_val = obj.get("ct") or obj.get("clock_time")
+                if ct_val:
+                    cfg._fm_rds_ct = str(ct_val)[:32]
+
                 cfg._fm_rds_status = "RDS decoded"
                 cfg._fm_rds_ok = True
                 cfg._fm_rds_metric = 1.0
@@ -10922,6 +11022,18 @@ class MonitorManager:
                 rms = float(np.sqrt(np.mean(np.square(x))) + 1e-12)
                 cfg._fm_signal_dbm = float(20.0 * np.log10(rms + 1e-12))
 
+                # ── MPX composite power dBr (0 dBr = full-scale ITU-R BS.412 modulation) ──
+                cfg._fm_mpx_power_dbr = round(float(20.0 * np.log10(rms + 1e-12)), 1)
+
+                # ── Carrier frequency offset — slow EMA of DC component ──────────────────
+                # mean(samp) = carrier deviation from tuned centre / (IN_RATE/2)
+                # Update at α=0.05 (≈20-block time constant ≈ 1 s at 0.1 s blocks)
+                _DEV_SCALE_KHZ = IN_RATE / 2000.0   # = 85.5 kHz at ±1.0 for 171 kHz
+                _raw_offset = float(np.mean(x)) * (IN_RATE / 2.0)
+                _alpha_co = 0.05
+                cfg._fm_carrier_offset_hz = round(
+                    _alpha_co * _raw_offset + (1.0 - _alpha_co) * cfg._fm_carrier_offset_hz, 1)
+
                 # Pilot estimate from the 19 kHz tone in the MPX stream.
                 win = np.hanning(x.size).astype(np.float32)
                 X = np.fft.rfft(x * win)
@@ -10929,9 +11041,9 @@ class MonitorManager:
                 mag = np.abs(X)
                 pilot_band = (freqs >= 18850.0) & (freqs <= 19150.0)
                 noise_band = ((freqs >= 17000.0) & (freqs <= 18000.0)) | ((freqs >= 20000.0) & (freqs <= 21000.0))
-                pilot = float(np.max(mag[pilot_band])) if np.any(pilot_band) else 0.0
+                pilot_mag = float(np.max(mag[pilot_band])) if np.any(pilot_band) else 0.0
                 noise = float(np.median(mag[noise_band])) if np.any(noise_band) else 1e-9
-                pilot_db = 20.0 * np.log10((pilot + 1e-12) / (noise + 1e-12))
+                pilot_db = 20.0 * np.log10((pilot_mag + 1e-12) / (noise + 1e-12))
                 cfg._fm_snr_db = float(max(0.0, pilot_db))
                 cfg._fm_stereo = bool(pilot_db >= 8.0)
                 # Stereo blend: 0.0 (mono) → 1.0 (full stereo), linear between thresholds.
@@ -10941,12 +11053,25 @@ class MonitorManager:
                     (pilot_db - _BLEND_LO_DB) / max(1.0, _BLEND_HI_DB - _BLEND_LO_DB)))
                 cfg._fm_stereo_blend = float(_blend)
 
+                # ── Pilot injection % of ±75 kHz (nominal standard: ~9%) ───────────────
+                # For rfft with Hanning window: time-domain amplitude ≈ 2*mag[k] / (N*0.5)
+                # Multiply by _DEV_SCALE_KHZ to get kHz, divide by 75 for percentage.
+                _pilot_amp_khz = (2.0 * pilot_mag / max(x.size * 0.5, 1)) * _DEV_SCALE_KHZ
+                cfg._fm_pilot_pct = round(min(99.9, _pilot_amp_khz / 75.0 * 100.0), 1)
+
                 # FM frequency deviation — Ofcom limit: ±75 kHz
                 # samples_f32 is discriminator output: ±1.0 = ±(IN_RATE/2) Hz
-                _DEV_SCALE_KHZ = IN_RATE / 2000.0   # = 85.5 kHz at ±1.0 for 171 kHz
-                peak_dev = float(np.max(np.abs(x))) * _DEV_SCALE_KHZ
+                dev_khz = np.abs(x).astype(np.float32) * _DEV_SCALE_KHZ
+                peak_dev = float(np.max(dev_khz))
                 cfg._fm_deviation_peak_khz = round(peak_dev, 1)
                 cfg._fm_over_ofcom = peak_dev > 75.0
+
+                # ── Deviation histogram (rolling session counters) ────────────────────
+                n = int(x.size)
+                cfg._fm_dev_total += n
+                cfg._fm_dev_n67   += int(np.sum(dev_khz > 67.5))
+                cfg._fm_dev_n72   += int(np.sum(dev_khz > 72.0))
+                cfg._fm_dev_n75   += int(np.sum(dev_khz > 75.0))
             except Exception:
                 pass
 
@@ -13324,6 +13449,7 @@ class HubClient:
             "disk_pct":      round(du.used  / max(du.total, 1) * 100, 1),
             "proc_uptime_s": round(time.time() - _PROCESS_START),
             "cpu_pct":       None,
+            "cpu_temp_c":    None,
             "ram_total_gb":  None,
             "ram_used_gb":   None,
             "ram_pct":       None,
@@ -13337,8 +13463,27 @@ class HubClient:
                 info["ram_used_gb"]  = round(vm.used  / 1073741824, 2)
                 info["ram_pct"]      = round(vm.percent, 1)
                 info["os_uptime_s"]  = round(time.time() - _psutil.boot_time())
+                # CPU temperature via psutil sensors (Linux/Pi)
+                temps = _psutil.sensors_temperatures() if hasattr(_psutil, "sensors_temperatures") else {}
+                for key in ("coretemp", "cpu-thermal", "cpu_thermal", "k10temp", "acpitz"):
+                    if key in temps and temps[key]:
+                        info["cpu_temp_c"] = round(temps[key][0].current, 1)
+                        break
             except Exception:
                 pass
+        # Fallback: read thermal_zone0 directly (Pi / Linux without psutil temps)
+        if info["cpu_temp_c"] is None:
+            for tz_path in (
+                "/sys/class/thermal/thermal_zone0/temp",
+                "/sys/firmware/devicetree/base/model",   # not a temp file, skip
+            ):
+                if tz_path.endswith("/temp") and os.path.exists(tz_path):
+                    try:
+                        with open(tz_path) as _f:
+                            info["cpu_temp_c"] = round(int(_f.read().strip()) / 1000.0, 1)
+                    except Exception:
+                        pass
+                    break
         return info
 
     def _get_scanner_rds(self) -> dict:
@@ -13400,6 +13545,9 @@ class HubClient:
                 "dab_dls":           inp._dab_dls,
                 "dab_dls_stale_mins": (round((time.time() - inp._dab_dls_last_change_ts) / 60.0, 1)
                                        if inp._dab_dls and inp._dab_dls_last_change_ts else 0.0),
+                "dab_mer":           round(inp._dab_mer, 1),
+                "dab_freq_corr_hz":  inp._dab_freq_corr_hz,
+                "dab_ber":           round(inp._dab_ber, 6),
                 "fm_freq_mhz":       inp._fm_freq_mhz,
                 "fm_signal_dbm":     round(inp._fm_signal_dbm, 1),
                 "fm_snr_db":         round(inp._fm_snr_db, 1),
@@ -13413,8 +13561,19 @@ class HubClient:
                                          if getattr(inp, "_fm_rds_rt", "") and getattr(inp, "_fm_rds_rt_last_change_ts", 0.0) else 0.0),
                 "fm_rds_ok":         inp._fm_rds_ok,
                 "fm_rds_status":     getattr(inp, "_fm_rds_status", "No lock"),
+                "fm_rds_ta":         bool(inp._fm_rds_ta),
+                "fm_rds_tp":         bool(inp._fm_rds_tp),
+                "fm_rds_pty":        int(inp._fm_rds_pty),
+                "fm_rds_ct":         inp._fm_rds_ct,
                 "fm_deviation_peak_khz": round(inp._fm_deviation_peak_khz, 1),
                 "fm_over_ofcom":     inp._fm_over_ofcom,
+                "fm_carrier_offset_hz": round(inp._fm_carrier_offset_hz, 1),
+                "fm_mpx_power_dbr":  round(inp._fm_mpx_power_dbr, 1),
+                "fm_pilot_pct":      round(inp._fm_pilot_pct, 1),
+                "fm_dev_pct_67":     round(inp._fm_dev_n67  / max(inp._fm_dev_total, 1) * 100, 2),
+                "fm_dev_pct_72":     round(inp._fm_dev_n72  / max(inp._fm_dev_total, 1) * 100, 2),
+                "fm_dev_pct_75":     round(inp._fm_dev_n75  / max(inp._fm_dev_total, 1) * 100, 2),
+                "fm_dev_samples":    inp._fm_dev_total,
                 "fm_rds_valid":      int(getattr(inp, "_fm_rds_valid_groups", 0)),
                 "history":           list(inp._history)[-8:],
                 "nowplaying_station_id": inp.nowplaying_station_id,
@@ -15037,6 +15196,14 @@ class HubServer:
                 target=_check_stale_text_alerts,
                 args=(site, streams_payload),
                 daemon=True, name="StaleTextCheck"
+            ).start()
+        # Check site resource health and fire SITE_TEMP_HIGH / SITE_DISK_LOW
+        _sys_payload = payload.get("system")
+        if _sys_payload and isinstance(_sys_payload, dict):
+            threading.Thread(
+                target=_check_site_health_alerts,
+                args=(site, _sys_payload),
+                daemon=True, name="SiteHealthCheck"
             ).start()
 
         # Write hub site health and latency metrics once per heartbeat
@@ -18900,6 +19067,18 @@ main{padding:16px;max-width:1440px;margin:0 auto}
           <div class="row"><span class="rl">SNR</span>
             <span class="rv" id="dab_snr_{{idx}}" style="color:{%if inp._dab_snr>=12%}var(--ok){%elif inp._dab_snr>=6%}var(--wn){%else%}var(--al){%endif%}">{{inp._dab_snr|round(1)}} dB</span></div>
           <div class="row"><span class="rl">Signal</span><span class="rv" id="dab_sig_{{idx}}">{{inp._dab_sig|round(1)}} dBm</span></div>
+          {%if inp._dab_mer > 0%}
+          <div class="row" title="Modulation Error Ratio — Good ≥20 dB"><span class="rl">MER</span>
+            <span class="rv" id="dab_mer_{{idx}}" style="color:{%if inp._dab_mer>=20%}var(--ok){%elif inp._dab_mer>=14%}var(--wn){%else%}var(--al){%endif%}">{{inp._dab_mer|round(1)}} dB</span></div>
+          {%endif%}
+          {%if inp._dab_ber > 0%}
+          <div class="row" title="Bit Error Rate (Viterbi) — target &lt;0.0001"><span class="rl">BER</span>
+            <span class="rv" id="dab_ber_{{idx}}" style="font-size:11px;color:{%if inp._dab_ber>0.001%}var(--al){%elif inp._dab_ber>0.0001%}var(--wn){%else%}var(--ok){%endif%}">{{inp._dab_ber}}</span></div>
+          {%endif%}
+          {%if inp._dab_freq_corr_hz%}
+          <div class="row" title="Frequency correction Hz applied by welle-cli"><span class="rl">Freq Corr</span>
+            <span class="rv" id="dab_fc_{{idx}}" style="font-size:11px;color:{%if inp._dab_freq_corr_hz|abs > 500%}var(--wn){%else%}var(--mu){%endif%}">{%if inp._dab_freq_corr_hz > 0%}+{%endif%}{{inp._dab_freq_corr_hz}} Hz</span></div>
+          {%endif%}
           <div class="row"><span class="rl">Ensemble</span><span class="rv" id="dab_ens_{{idx}}" style="font-size:11px">{{inp._dab_ensemble or '—'}}</span></div>
           <div class="row"><span class="rl">Mode</span><span class="rv" id="dab_mode_{{idx}}" style="font-size:11px">{{inp._dab_mode or '—'}}</span></div>
           <div class="row"><span class="rl">Bitrate</span><span class="rv" id="dab_br_{{idx}}">{% if inp._dab_bitrate %}{{inp._dab_bitrate}} kbps{% else %}—{% endif %}</span></div>
@@ -18928,10 +19107,34 @@ main{padding:16px;max-width:1440px;margin:0 auto}
           <div class="row"><span class="rl">Deviation</span>
             <span class="rv" id="fm_dev_{{idx}}" style="color:{%if inp._fm_over_ofcom%}var(--al){%elif inp._fm_deviation_peak_khz>=70%}var(--wn){%else%}var(--ok){%endif%}">
               {{inp._fm_deviation_peak_khz|round(1)}} kHz{%if inp._fm_over_ofcom%} ⚠ OFCOM{%endif%}</span></div>
+          {%if inp._fm_mpx_power_dbr > -99%}
+          <div class="row" title="MPX composite power — 0 dBr = ITU-R BS.412 full scale"><span class="rl">MPX Power</span>
+            <span class="rv" id="fm_mpx_{{idx}}" style="color:{%if inp._fm_mpx_power_dbr>0%}var(--al){%elif inp._fm_mpx_power_dbr>-3%}var(--wn){%else%}var(--ok){%endif%}">{{inp._fm_mpx_power_dbr|round(1)}} dBr</span></div>
+          {%endif%}
+          {%if inp._fm_pilot_pct > 0%}
+          <div class="row" title="Stereo pilot injection — standard ~9% of ±75 kHz"><span class="rl">Pilot Inj</span>
+            <span class="rv" id="fm_pilot_{{idx}}" style="color:{%if inp._fm_pilot_pct < 7 or inp._fm_pilot_pct > 12%}var(--wn){%else%}var(--ok){%endif%}">{{inp._fm_pilot_pct|round(1)}}%</span></div>
+          {%endif%}
+          {%if inp._fm_carrier_offset_hz|abs > 5%}
+          <div class="row" title="Carrier frequency offset from tuned centre (slow EMA)"><span class="rl">Offset</span>
+            <span class="rv" id="fm_co_{{idx}}" style="font-size:11px;color:{%if inp._fm_carrier_offset_hz|abs>100%}var(--wn){%else%}var(--mu){%endif%}">{%if inp._fm_carrier_offset_hz>0%}+{%endif%}{{inp._fm_carrier_offset_hz|round(0)|int}} Hz</span></div>
+          {%endif%}
+          {%if inp._fm_dev_total > 0%}
+          <div class="row" title="% of samples exceeding deviation thresholds this session"><span class="rl">Dev %</span>
+            <span class="rv" style="font-size:11px;color:{%if (inp._fm_dev_n75/inp._fm_dev_total*100)>0.5%}var(--al){%elif (inp._fm_dev_n67/inp._fm_dev_total*100)>5%}var(--wn){%else%}var(--mu){%endif%}">67.5:{{(inp._fm_dev_n67/inp._fm_dev_total*100)|round(1)}}% 72:{{(inp._fm_dev_n72/inp._fm_dev_total*100)|round(1)}}% 75:{{(inp._fm_dev_n75/inp._fm_dev_total*100)|round(1)}}%</span></div>
+          {%endif%}
           <div class="row"><span class="rl">RDS</span>
             <span class="rv" id="fm_rds_{{idx}}" style="color:{% if inp._fm_rds_ok %}var(--ok){% else %}var(--mu){% endif %};font-size:11px">{{ inp._fm_rds_ps or (inp._fm_rds_status|default('No lock', true)) }}</span></div>
           <div class="row"><span class="rl">Text</span>
             <span class="rv" id="fm_rt_{{idx}}" style="font-size:11px">{{ inp._fm_rds_rt or '—' }}</span></div>
+          {%if inp._fm_rds_tp or inp._fm_rds_ta or inp._fm_rds_pty%}
+          <div class="row" title="RDS extra: Programme Type / Traffic Programme / Traffic Announcement"><span class="rl">RDS+</span>
+            <span class="rv" style="font-size:11px;display:flex;gap:6px;align-items:center">
+              {%if inp._fm_rds_pty%}<span>PTY{{inp._fm_rds_pty}}</span>{%endif%}
+              {%if inp._fm_rds_tp%}<span style="color:var(--acc)">TP</span>{%endif%}
+              {%if inp._fm_rds_ta%}<span style="color:var(--wn);font-weight:700">📻 TA</span>{%endif%}
+            </span></div>
+          {%endif%}
           {%if inp.fm_force_mono%}
           <div class="row" style="margin-top:4px">
             <span style="font-size:11px;color:var(--wn)">🔇 Force Mono active — <a href="/inputs/{{idx}}/edit" style="color:var(--acc)">change in input config</a></span>
@@ -19364,6 +19567,21 @@ function updateCards(inputs){
         var dv=inp.fm_deviation_peak_khz;
         fmDev.textContent=dv.toFixed(1)+' kHz'+(inp.fm_over_ofcom?' ⚠ OFCOM':'');
         fmDev.style.color=inp.fm_over_ofcom?'var(--al)':dv>=70?'var(--wn)':'var(--ok)';
+      }
+      var fmMpx=document.getElementById('fm_mpx_'+idx);
+      if(fmMpx && inp.fm_mpx_power_dbr!=null){
+        fmMpx.textContent=inp.fm_mpx_power_dbr.toFixed(1)+' dBr';
+        fmMpx.style.color=inp.fm_mpx_power_dbr>0?'var(--al)':inp.fm_mpx_power_dbr>-3?'var(--wn)':'var(--ok)';
+      }
+      var fmPilot=document.getElementById('fm_pilot_'+idx);
+      if(fmPilot && inp.fm_pilot_pct!=null){
+        fmPilot.textContent=inp.fm_pilot_pct.toFixed(1)+'%';
+        fmPilot.style.color=(inp.fm_pilot_pct<7||inp.fm_pilot_pct>12)?'var(--wn)':'var(--ok)';
+      }
+      var fmCo=document.getElementById('fm_co_'+idx);
+      if(fmCo && inp.fm_carrier_offset_hz!=null && Math.abs(inp.fm_carrier_offset_hz)>5){
+        fmCo.textContent=(inp.fm_carrier_offset_hz>0?'+':'')+Math.round(inp.fm_carrier_offset_hz)+' Hz';
+        fmCo.style.color=Math.abs(inp.fm_carrier_offset_hz)>100?'var(--wn)':'var(--mu)';
       }
       var fmRds=document.getElementById('fm_rds_'+idx);
       if(fmRds){
@@ -22547,6 +22765,9 @@ def status_json():
             "dab_bitrate":  i._dab_bitrate,
             "dab_stereo":   i._dab_stereo,
             "dab_dls":      i._dab_dls,
+            "dab_mer":      round(i._dab_mer, 1),
+            "dab_freq_corr_hz": i._dab_freq_corr_hz,
+            "dab_ber":      round(i._dab_ber, 6),
             "fm_freq_mhz":  i._fm_freq_mhz,
             "fm_signal_dbm":     round(i._fm_signal_dbm, 1),
             "fm_snr_db":         round(i._fm_snr_db, 1),
@@ -22556,9 +22777,19 @@ def status_json():
             "fm_rds_rt":    i._fm_rds_rt,
             "fm_rds_ok":    i._fm_rds_ok,
             "fm_rds_status": getattr(i, "_fm_rds_status", "No lock"),
+            "fm_rds_ta":    bool(i._fm_rds_ta),
+            "fm_rds_tp":    bool(i._fm_rds_tp),
+            "fm_rds_pty":   int(i._fm_rds_pty),
+            "fm_rds_ct":    i._fm_rds_ct,
             "fm_rds_valid": int(getattr(i, "_fm_rds_valid_groups", 0)),
             "fm_deviation_peak_khz": round(i._fm_deviation_peak_khz, 1),
             "fm_over_ofcom":i._fm_over_ofcom,
+            "fm_carrier_offset_hz": round(i._fm_carrier_offset_hz, 1),
+            "fm_mpx_power_dbr":  round(i._fm_mpx_power_dbr, 1),
+            "fm_pilot_pct":      round(i._fm_pilot_pct, 1),
+            "fm_dev_pct_67": round(i._fm_dev_n67 / max(i._fm_dev_total, 1) * 100, 2),
+            "fm_dev_pct_72": round(i._fm_dev_n72 / max(i._fm_dev_total, 1) * 100, 2),
+            "fm_dev_pct_75": round(i._fm_dev_n75 / max(i._fm_dev_total, 1) * 100, 2),
             "stereo":       i.stereo,
             "level_dbfs_l": round(i._level_dbfs_l, 1) if i._audio_channels == 2 else None,
             "level_dbfs_r": round(i._level_dbfs_r, 1) if i._audio_channels == 2 else None,
@@ -35036,6 +35267,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% set _dpct = _sys.get('disk_pct', 0)|float %}
       <span id="ss-disk-stat" class="sum-pill" style="color:{{'#ef4444' if _dpct>=90 else ('#f59e0b' if _dpct>=70 else 'var(--ok)')}}">💾 {{_sys.get('disk_free_gb','?')}}GB free</span>
       {% if _sys.get('cpu_pct') is not none %}<span id="ss-cpu-stat" class="sum-pill" style="color:var(--mu)">CPU: {{_sys.get('cpu_pct')}}%</span>{% endif %}
+      {% if _sys.get('cpu_temp_c') is not none %}{% set _ct = _sys.get('cpu_temp_c')|float %}<span id="ss-temp-stat" class="sum-pill" style="color:{{'var(--al)' if _ct>=75 else ('var(--wn)' if _ct>=65 else 'var(--mu)')}}">🌡 {{_ct}}°C</span>{% endif %}
       {% if _sys.get('ram_pct') is not none %}<span id="ss-ram-stat" class="sum-pill" style="color:var(--mu)">RAM: {{_sys.get('ram_pct')}}%</span>{% endif %}
       {% set _upt = _sys.get('proc_uptime_s', 0)|int %}
       <span id="ss-uptime-stat" class="sum-pill" style="color:var(--mu)">⏱ {{(_upt//3600)}}h {{((_upt%3600)//60)}}m</span>
@@ -35181,6 +35413,18 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             <summary class="stats-toggle">DAB stats <span>▼</span></summary>
             <div class="sc-row" title="DAB signal-to-noise ratio — Good: ≥12 dB, Marginal: 6–11 dB, Poor: &lt;6 dB">SNR <span style="color:{{'var(--ok)' if s.dab_snr>=12 else 'var(--wn)' if s.dab_snr>=6 else 'var(--al)'}}">{{s.dab_snr}} dB</span></div>
             <div class="sc-row" title="Received signal power from welle-cli">Signal <span>{{s.dab_sig}} dBm</span></div>
+            {% set _dab_mer = (s.get('dab_mer') or 0)|float %}
+            {% if _dab_mer > 0 %}
+            <div class="sc-row" title="Modulation Error Ratio — higher is better. Good: ≥20 dB">MER <span style="color:{{'var(--ok)' if _dab_mer>=20 else 'var(--wn)' if _dab_mer>=14 else 'var(--al)'}}">{{_dab_mer}} dB</span></div>
+            {% endif %}
+            {% set _dab_ber = (s.get('dab_ber') or 0)|float %}
+            {% if _dab_ber > 0 %}
+            <div class="sc-row" title="Bit Error Rate (Viterbi) — lower is better. Target: &lt;0.0001">BER <span style="color:{{'var(--al)' if _dab_ber>0.001 else 'var(--wn)' if _dab_ber>0.0001 else 'var(--ok)'}}">{{'{:.2e}'.format(_dab_ber) if _dab_ber < 0.001 else '{:.4f}'.format(_dab_ber)}}</span></div>
+            {% endif %}
+            {% set _dab_fc = (s.get('dab_freq_corr_hz') or 0)|int %}
+            {% if _dab_fc != 0 %}
+            <div class="sc-row" title="Frequency correction applied by welle-cli demodulator (Hz)">Freq Corr <span style="color:{{'var(--wn)' if _dab_fc|abs > 500 else 'var(--mu)'}}">{{'+' if _dab_fc > 0 else ''}}{{_dab_fc}} Hz</span></div>
+            {% endif %}
             <div class="sc-row">Ensemble <span style="font-size:11px">{{s.dab_ensemble or '—'}}</span></div>
             <div class="sc-row">Service <span style="font-size:11px;display:flex;align-items:center;gap:5px">
               <span>{{s.dab_service or '—'}}</span>
@@ -35221,6 +35465,25 @@ main{padding:18px;max-width:1500px;margin:0 auto}
             {% if s.fm_deviation_peak_khz is defined and s.fm_deviation_peak_khz is not none %}
             <div class="sc-row" title="Peak FM deviation — Ofcom UK limit is ±75 kHz; values above this are flagged">Deviation <span style="color:{{'var(--al)' if s.fm_over_ofcom else ('var(--wn)' if s.fm_deviation_peak_khz>=70 else 'var(--ok)')}}">{{s.fm_deviation_peak_khz}} kHz{%if s.fm_over_ofcom%} ⚠ OFCOM{%endif%}</span></div>
             {% endif %}
+            {% set _mpx = (s.get('fm_mpx_power_dbr') or -99)|float %}
+            {% if _mpx > -99 %}
+            <div class="sc-row" title="MPX composite power level — 0 dBr = ITU-R BS.412 full-scale modulation">MPX Power <span style="color:{{'var(--al)' if _mpx > 0 else ('var(--wn)' if _mpx > -3 else 'var(--ok)')}}">{{_mpx}} dBr</span></div>
+            {% endif %}
+            {% set _pilot = (s.get('fm_pilot_pct') or 0)|float %}
+            {% if _pilot > 0 %}
+            <div class="sc-row" title="Stereo pilot injection level — standard is ~9% of ±75 kHz. Low (&lt;7%) = weak pilot, stereo dropout. High (&gt;12%) = over-modulated.">Pilot <span style="color:{{'var(--wn)' if _pilot < 7 or _pilot > 12 else 'var(--ok)'}}">{{_pilot}}%</span></div>
+            {% endif %}
+            {% set _co = (s.get('fm_carrier_offset_hz') or 0)|float %}
+            {% if _co|abs > 5 %}
+            <div class="sc-row" title="Carrier frequency offset from tuned centre (slow EMA) — large values indicate transmitter off-tune">Offset <span style="color:{{'var(--wn)' if _co|abs > 100 else 'var(--mu)'}}">{{'+' if _co > 0 else ''}}{{_co|int}} Hz</span></div>
+            {% endif %}
+            {% set _d67 = (s.get('fm_dev_pct_67') or 0)|float %}
+            {% set _d72 = (s.get('fm_dev_pct_72') or 0)|float %}
+            {% set _d75 = (s.get('fm_dev_pct_75') or 0)|float %}
+            {% set _dsamp = (s.get('fm_dev_samples') or 0)|int %}
+            {% if _dsamp > 0 %}
+            <div class="sc-row" title="% of audio time exceeding deviation thresholds (session). Ofcom limit ±75 kHz. EBU R68 ≤±67.5 kHz for programme content.">Dev % <span style="font-size:11px;color:{{'var(--al)' if _d75 > 0.5 else ('var(--wn)' if _d67 > 5 else 'var(--mu)')}}">67.5:{{_d67}}% 72:{{_d72}}% 75:{{_d75}}%</span></div>
+            {% endif %}
             <div class="sc-row">RDS <span style="color:{{'var(--ok)' if s.fm_rds_ok else 'var(--mu)'}};display:flex;align-items:center;gap:5px">
               {% if s.fm_rds_ok %}
                 <span>📡 {{s.fm_rds_ps or 'Locked'}}</span>
@@ -35247,6 +35510,18 @@ main{padding:18px;max-width:1500px;margin:0 auto}
               </span>
               {% if _rt_stale >= 10 %}<span style="font-size:10px;color:var(--wn);white-space:nowrap;margin-left:4px;font-weight:600" title="RDS RadioText has not changed for {{_rt_stale|int}} minutes — may indicate playout automation fault">⏰ {{_rt_stale|int}}m stale</span>{% endif %}
             </div>
+            {% endif %}
+            {% set _rds_pty = (s.get('fm_rds_pty') or 0)|int %}
+            {% set _rds_tp  = s.get('fm_rds_tp') %}
+            {% set _rds_ta  = s.get('fm_rds_ta') %}
+            {% set _rds_ct  = s.get('fm_rds_ct') or '' %}
+            {% if _rds_pty or _rds_tp or _rds_ta or _rds_ct %}
+            <div class="sc-row" title="RDS: Programme Type / Traffic Programme flag / Traffic Announcement / Clock Time">RDS+ <span style="font-size:11px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+              {%- if _rds_pty %}<span title="Programme Type {{_rds_pty}}">PTY{{_rds_pty}}</span>{% endif %}
+              {%- if _rds_tp  %}<span style="color:var(--acc)">TP</span>{% endif %}
+              {%- if _rds_ta  %}<span style="color:var(--wn);font-weight:700">📻 TA</span>{% endif %}
+              {%- if _rds_ct  %}<span style="color:var(--mu)" title="RDS Clock Time">🕐 {{_rds_ct[:16]}}</span>{% endif %}
+            </span></div>
             {% endif %}
             {% if s.get('fm_rds_status') %}<div class="sc-row">Lock <span style="font-size:11px;color:var(--mu)">{{s.fm_rds_status}}</span></div>{% endif %}
             {% if s.get('fm_rds_valid') %}<div class="sc-row">Groups <span style="font-size:11px">{{s.fm_rds_valid}}</span></div>{% endif %}
