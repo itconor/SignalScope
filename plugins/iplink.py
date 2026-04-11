@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.9",
+    "version": "1.1.10",
     "hub_only": True,
 }
 
@@ -869,12 +869,16 @@ function _sipConnect(cfg){
     _sip.ws=new WebSocket(cfg.server,['sip']);
     _sip.ws.onopen=function(){_sipRegister();};
     _sip.ws.onmessage=function(e){_sipHandleMsg(e.data);};
-    _sip.ws.onerror=function(){
+    _sip.ws.onerror=function(ev){
       var hint='';
-      if(location.protocol==='https:'&&cfg.server.indexOf('wss://')!==0)
-        hint=' — hub is HTTPS so server URL must use wss:// not ws://';
-      else if(cfg.server.indexOf('wss://')===0)
-        hint=' — check the URL is correct; Asterisk/FreePBX requires /ws at the end (e.g. wss://'+cfg.server.replace(/^wss?:\/\//,'').split('/')[0]+'/ws)';
+      if(location.protocol==='https:'&&cfg.server.indexOf('wss://')!==0){
+        hint=' — hub is on HTTPS, server URL must use wss:// not ws://';
+      } else {
+        // wss:// URL — common causes: cert not trusted in this browser, wrong port,
+        // firewall blocking the port, or server not running.
+        // To rule out the cert: open '+cfg.server.replace('wss://','https://')+' in a new tab.
+        hint=' — possible causes: (1) certificate not trusted — open '+cfg.server.replace('wss://','https://')+' in a new tab and accept it; (2) wrong port or server not running; (3) firewall blocking the port';
+      }
       _sipSetState('error','WebSocket error'+hint);
     };
     _sip.ws.onclose=function(){

@@ -2,6 +2,14 @@
 
 ---
 
+## IP Link v1.1.10 — 2026-04-11
+
+### Fixed — SIP WebSocket error hint improved (plugin v1.1.10)
+
+Replaced the `/ws`-specific hint with actionable diagnostics covering the real common causes: untrusted certificate (with a direct link to open the HTTPS URL in a new tab to accept it), wrong port, server not running, firewall blocking.
+
+---
+
 ## IP Link v1.1.9 — 2026-04-11
 
 ### Fixed — WebRTC errors now visible in UI; SIP hint improved (plugin v1.1.9)
