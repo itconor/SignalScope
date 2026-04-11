@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.12",
+    "version": "1.1.13",
     "hub_only": True,
 }
 
@@ -1688,6 +1688,30 @@ def register(app, ctx):
 
     # Start cleanup thread
     threading.Thread(target=_cleanup_thread, daemon=True, name="IPLinkCleanup").start()
+
+    # ── CSP patch — allow wss: on the hub IP Link page ─────────────────────────
+    # SignalScope sets connect-src 'self' via an after_request handler.
+    # We wrap app.wsgi_app (runs AFTER all Flask after_request handlers) to extend
+    # connect-src to allow wss: connections so the SIP WebSocket client can reach
+    # external SIP servers. Only applies to /hub/iplink — all other pages unchanged.
+    _orig_wsgi = app.wsgi_app
+
+    def _iplink_csp_wsgi(environ, start_response):
+        if environ.get("PATH_INFO", "") != "/hub/iplink":
+            return _orig_wsgi(environ, start_response)
+
+        def _patch_start_response(status, headers, exc_info=None):
+            patched = []
+            for name, value in headers:
+                if name == "Content-Security-Policy" and "connect-src" in value:
+                    value = value.replace("connect-src 'self'",
+                                         "connect-src 'self' wss:")
+                patched.append((name, value))
+            return start_response(status, patched, exc_info)
+
+        return _orig_wsgi(environ, _patch_start_response)
+
+    app.wsgi_app = _iplink_csp_wsgi
 
     # ── Helper ─────────────────────────────────────────────────────────────────
     def _get_room(room_id):

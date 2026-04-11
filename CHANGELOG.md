@@ -2,6 +2,16 @@
 
 ---
 
+## IP Link v1.1.13 — 2026-04-11
+
+### Fixed — SIP WebSocket blocked by CSP (plugin v1.1.13)
+
+Root cause: SignalScope's Content-Security-Policy sets `connect-src 'self'`, which the browser enforces by silently killing any WebSocket connection to a different domain (e.g. `wss://sip.signalscope.site:8089`). The server was working correctly — `101 Switching Protocols` confirmed — but the browser never let the connection open.
+
+Fix: wraps `app.wsgi_app` with WSGI middleware that patches `connect-src 'self'` → `connect-src 'self' wss:` in the CSP response header, but only for the `/hub/iplink` page. Runs after all Flask `after_request` handlers so SignalScope's CSP header is set first, then we extend it.
+
+---
+
 ## IP Link v1.1.12 — 2026-04-11
 
 ### Fixed — Safari rejects all a=ssrc lines, not just msid (plugin v1.1.12)
