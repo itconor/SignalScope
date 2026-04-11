@@ -2,6 +2,18 @@
 
 ---
 
+## IP Link v1.1.3 — 2026-04-11
+
+### Fixed — New Room button dead / SIP JS blocked by CSP (plugin v1.1.3)
+
+`csrf_token`, `csp_nonce`, and `topnav` are registered as Jinja2 **context processors** in SignalScope — they are automatically available in every `render_template_string` call without being passed explicitly. Previous code tried to resolve them via `sys.modules` by probing `hasattr(module, "topnav")`. Because `topnav` is an inner closure returned by the context processor (not a module-level attribute), the probe always failed, `_ss` stayed `None`, and all three helpers became no-op lambdas. Passing `csp_nonce=lambda:""` to the template **overrode** the working context-processor version, producing `nonce=""` on the script tag. An empty nonce doesn't match the CSP policy — the browser silently blocked the entire script block. With no JS running: the New Room button did nothing, the SIP dial button was unresponsive, and `_sipLoadCfg()` never fired.
+
+Fix: removed all helper resolution code from `register()` and stopped passing `csp_nonce`, `csrf_token`, and `topnav` to `rts()`. They are injected automatically.
+
+**Rule for all plugins**: never pass `csp_nonce`, `csrf_token`, or `topnav` as explicit keyword arguments to `render_template_string`. They are context processors — passing them explicitly risks overriding the real implementations with stale or incorrect values.
+
+---
+
 ## IP Link v1.1.2 — 2026-04-11
 
 ### Fixed — "Plugin internal error" on hub page and talent join (plugin v1.1.2)

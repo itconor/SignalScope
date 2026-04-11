@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.2",
+    "version": "1.1.3",
     "hub_only": True,
 }
 
@@ -1617,21 +1617,6 @@ def register(app, ctx):
     except ImportError:
         return
 
-    # ── Resolve SignalScope template helpers once at startup ───────────────────
-    # sys.modules is populated at this point; no dynamic import needed at request time.
-    import sys as _sys
-    _ss = None
-    for _mn in ("signalscope", "__main__"):
-        _m = _sys.modules.get(_mn)
-        if _m and hasattr(_m, "topnav"):
-            _ss = _m
-            break
-    if _ss is None:
-        _log("[IPLink] WARNING: could not locate SignalScope module — hub page may not render correctly")
-    _csp_nonce  = getattr(_ss, "_csp_nonce",  lambda: "") if _ss else lambda: ""
-    _csrf_token = getattr(_ss, "csrf_token",  lambda: "") if _ss else lambda: ""
-    _topnav     = getattr(_ss, "topnav",      lambda *a, **kw: "") if _ss else lambda *a, **kw: ""
-
     # Start cleanup thread
     threading.Thread(target=_cleanup_thread, daemon=True, name="IPLinkCleanup").start()
 
@@ -1644,8 +1629,9 @@ def register(app, ctx):
     @app.get("/hub/iplink")
     @login_required
     def iplink_hub():
-        return rts(_HUB_TPL, stun=_STUN, build=BUILD,
-                   csp_nonce=_csp_nonce, csrf_token=_csrf_token, topnav=_topnav)
+        # csrf_token, csp_nonce, and topnav are Jinja2 context processors —
+        # automatically available in render_template_string; do not pass explicitly.
+        return rts(_HUB_TPL, stun=_STUN, build=BUILD)
 
     # ── Talent page (no login required) ───────────────────────────────────────
     @app.get("/iplink/join/<room_id>")
