@@ -2,6 +2,18 @@
 
 ---
 
+## IP Link v1.1.16 — 2026-04-11
+
+### Fixed — PCMA/PCMU SDP rejection + SIP CSP patch approach (plugin v1.1.16)
+
+Safari rejects `a=rtpmap:8 PCMA/8000` (G.711). Added PCMA and PCMU to `_SDP_DROP_CODECS` — both are static payload types that Chrome lists explicitly but Safari refuses to parse. Opus remains as the negotiated codec.
+
+SIP CSP fix rewritten: replaced the WSGI middleware approach with `after_request_funcs.insert(0, ...)`. Flask processes `after_request` handlers in reverse list order, so inserting at position 0 guarantees our handler runs last — after SignalScope has already set the `connect-src 'self'` CSP header — extending it to `connect-src 'self' wss:`.
+
+Added `securitypolicyviolation` event listener in JS: if the browser's CSP does block the SIP WebSocket, a specific error is shown ("blocked by browser security policy") rather than the generic WebSocket error.
+
+---
+
 ## IP Link v1.1.15 — 2026-04-11
 
 ### Fixed — Safari rejects CN/RED codecs in offer SDP (plugin v1.1.15)

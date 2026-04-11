@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.15",
+    "version": "1.1.16",
     "hub_only": True,
 }
 
@@ -356,10 +356,12 @@ function _getHubMic(cb){
 //  - a=ssrc / a=ssrc-group     (source-level attributes Safari can't parse)
 //  - telephone-event (DTMF)    (not needed; Safari rejects PT 126 etc.)
 //  - CN (Comfort Noise PT 13)  (Safari rejects a=rtpmap:13 CN/8000)
-//  - RED (Redundant Audio)     (not needed for contribution; can cause issues)
+//  - RED (Redundant Audio)     (not needed for contribution)
+//  - PCMA / PCMU (G.711)       (Safari rejects a=rtpmap:8 PCMA/8000 — static
+//                               PTs don't need rtpmap; Chrome includes them anyway)
 // Codecs removed cleanly: strip rtpmap/fmtp/rtcp-fb lines AND remove the
-// payload type number from the m= line.
-var _SDP_DROP_CODECS = /^(telephone-event|CN|RED)$/i;
+// payload type number from the m= line. Opus remains as the only audio codec.
+var _SDP_DROP_CODECS = /^(telephone-event|CN|RED|PCMA|PCMU)$/i;
 
 function _mungeOfferSdp(sdp){
   var lines = sdp.split(/\r?\n/);
@@ -895,31 +897,41 @@ function _sipRegister(authHdr){
 }
 
 // ── Connect to SIP server ──────────────────────────────────────────────────
+// Listen for CSP violations — if the browser blocks the SIP WebSocket due to
+// Content-Security-Policy, a securitypolicyviolation event fires before onerror.
+var _sipCspBlocked = false;
+document.addEventListener('securitypolicyviolation', function(e){
+  if(_sip.cfg && _sip.cfg.server && e.blockedURI &&
+     _sip.cfg.server.indexOf(e.blockedURI.replace(/^wss?:/,'')) >= 0){
+    _sipCspBlocked = true;
+    _sipSetState('error','WebSocket blocked by browser security policy (CSP). Reload this page and try again — if it persists, contact your SignalScope administrator.');
+  }
+});
+
 function _sipConnect(cfg){
   _sipStop();
   _sip.cfg=cfg;
   _sip.regCid=_sipCid(_sipDomain());
   _sip.regFromTag=_sipTag();
   _sip.regCsq=0;
+  _sipCspBlocked=false;
   _sipSetState('connecting');
   try{
     _sip.ws=new WebSocket(cfg.server,['sip']);
     _sip.ws.onopen=function(){_sipRegister();};
     _sip.ws.onmessage=function(e){_sipHandleMsg(e.data);};
     _sip.ws.onerror=function(ev){
+      if(_sipCspBlocked) return; // already shown CSP error
       var hint='';
       if(location.protocol==='https:'&&cfg.server.indexOf('wss://')!==0){
         hint=' — hub is on HTTPS, server URL must use wss:// not ws://';
       } else {
-        // wss:// URL — common causes: cert not trusted in this browser, wrong port,
-        // firewall blocking the port, or server not running.
-        // To rule out the cert: open '+cfg.server.replace('wss://','https://')+' in a new tab.
-        hint=' — possible causes: (1) certificate not trusted — open '+cfg.server.replace('wss://','https://')+' in a new tab and accept it; (2) wrong port or server not running; (3) firewall blocking the port';
+        hint=' — possible causes: (1) cert not trusted — open '+cfg.server.replace('wss://','https://')+' in a new tab; (2) wrong port or server not running; (3) firewall blocking the port';
       }
       _sipSetState('error','WebSocket error'+hint);
     };
     _sip.ws.onclose=function(){
-      if(_sip.state==='idle')return;
+      if(_sip.state==='idle'||_sipCspBlocked)return;
       _sipSetState('error','Disconnected');
       _sip.retryTimer=setTimeout(function(){if(_sip.cfg)_sipConnect(_sip.cfg);},30000);
     };
@@ -1716,28 +1728,22 @@ def register(app, ctx):
     threading.Thread(target=_cleanup_thread, daemon=True, name="IPLinkCleanup").start()
 
     # ── CSP patch — allow wss: on the hub IP Link page ─────────────────────────
-    # SignalScope sets connect-src 'self' via an after_request handler.
-    # We wrap app.wsgi_app (runs AFTER all Flask after_request handlers) to extend
-    # connect-src to allow wss: connections so the SIP WebSocket client can reach
-    # external SIP servers. Only applies to /hub/iplink — all other pages unchanged.
-    _orig_wsgi = app.wsgi_app
-
-    def _iplink_csp_wsgi(environ, start_response):
-        if environ.get("PATH_INFO", "") != "/hub/iplink":
-            return _orig_wsgi(environ, start_response)
-
-        def _patch_start_response(status, headers, exc_info=None):
-            patched = []
-            for name, value in headers:
-                if name == "Content-Security-Policy" and "connect-src" in value:
-                    value = value.replace("connect-src 'self'",
-                                         "connect-src 'self' wss:")
-                patched.append((name, value))
-            return start_response(status, patched, exc_info)
-
-        return _orig_wsgi(environ, _patch_start_response)
-
-    app.wsgi_app = _iplink_csp_wsgi
+    # SignalScope sets connect-src 'self' via an after_request handler. Flask
+    # calls after_request handlers in REVERSE registration order, so inserting
+    # at position 0 means our handler runs LAST — after SignalScope has already
+    # set the CSP header — allowing us to reliably extend connect-src.
+    from flask import request as _freq
+    def _iplink_csp_patch(response):
+        try:
+            if _freq.path == "/hub/iplink":
+                csp = response.headers.get("Content-Security-Policy", "")
+                if csp and "connect-src" in csp and "wss:" not in csp:
+                    response.headers["Content-Security-Policy"] = csp.replace(
+                        "connect-src 'self'", "connect-src 'self' wss:")
+        except Exception:
+            pass
+        return response
+    app.after_request_funcs.setdefault(None, []).insert(0, _iplink_csp_patch)
 
     # ── Helper ─────────────────────────────────────────────────────────────────
     def _get_room(room_id):
