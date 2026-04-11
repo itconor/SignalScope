@@ -2,6 +2,14 @@
 
 ---
 
+## IP Link v1.1.14 — 2026-04-11
+
+### Fixed — Safari rejects telephone-event codec in offer SDP (plugin v1.1.14)
+
+Safari rejected `a=rtpmap:126 telephone-event/8000` with "Invalid SDP line". Rather than patching one line at a time, `_mungeOfferSdp` now does a proper codec removal: finds all `telephone-event` payload type numbers, strips their `a=rtpmap`/`a=fmtp`/`a=rtcp-fb` attribute lines, and removes the payload type numbers from the `m=` line. DTMF is not used in audio contribution so this has no effect on call quality.
+
+---
+
 ## IP Link v1.1.13 — 2026-04-11
 
 ### Fixed — SIP WebSocket blocked by CSP (plugin v1.1.13)

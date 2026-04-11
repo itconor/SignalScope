@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.13",
+    "version": "1.1.14",
     "hub_only": True,
 }
 
@@ -352,14 +352,37 @@ function _getHubMic(cb){
 }
 
 // ─── SDP munging ─────────────────────────────────────────────────────────────
-// Chrome generates a=ssrc source-attribute lines that Safari rejects entirely
-// when parsing a remote offer (cname, msid, mslabel, label variants all fail).
-// Strip all a=ssrc lines — they are informational only and not needed for the
-// connection to establish.
+// Chrome generates SDP that Safari rejects. Strip/clean known problem areas:
+//  - a=ssrc / a=ssrc-group  (source-level attributes; Safari can't parse them)
+//  - telephone-event codec  (DTMF; not needed for audio contribution — Safari
+//    rejects certain dynamic payload types such as 126)
+// Codecs must be removed cleanly: strip rtpmap/fmtp/rtcp-fb lines AND remove
+// the payload type number from the m= line.
 function _mungeOfferSdp(sdp){
-  return sdp.split(/\r?\n/).filter(function(line){
-    return !/^a=ssrc(-group)?:/.test(line);
-  }).join('\r\n');
+  var lines = sdp.split(/\r?\n/);
+
+  // Collect payload types we want to drop
+  var dropPts = {};
+  lines.forEach(function(line){
+    var m = line.match(/^a=rtpmap:(\d+) telephone-event\//i);
+    if(m) dropPts[m[1]] = true;
+  });
+
+  var out = [];
+  lines.forEach(function(line){
+    if(/^a=ssrc(-group)?:/.test(line)) return;           // drop ssrc lines
+    var am = line.match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/);
+    if(am && dropPts[am[1]]) return;                     // drop removed codec attrs
+    if(line.startsWith('m=') && Object.keys(dropPts).length){
+      var parts = line.split(' ');
+      var pts   = parts.slice(3).filter(function(p){ return !dropPts[p]; });
+      out.push(parts.slice(0,3).concat(pts).join(' '));
+      return;
+    }
+    out.push(line);
+  });
+
+  return out.join('\r\n');
 }
 
 // ─── Hub WebRTC negotiation ──────────────────────────────────────────────────
