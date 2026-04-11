@@ -2,6 +2,27 @@
 
 ---
 
+## [3.5.136] - 2026-04-11
+
+### Added — IP Link plugin (WebRTC browser contribution codec)
+
+New plugin `plugins/iplink.py` — a browser-based, software-only IP codec in the style of ipDTL. No app download required on talent side; the hub operator shares a URL and the contributor opens it in any modern browser (phone, laptop, tablet).
+
+**Features:**
+- **Named rooms** — hub creates rooms with a unique shareable link per talent; multiple rooms can be open simultaneously
+- **Pure WebRTC** — low-latency Opus audio with hardware echo cancellation and noise suppression enabled; bidirectional audio for IFB/talkback
+- **Quality presets** — Voice (64 kbps mono), Broadcast (128 kbps stereo), Hi-Fi (256 kbps stereo); applied via `RTCRtpSender.setParameters()` after connection
+- **HTTP polling signalling** — no WebSocket dependency; SDP offer/answer and ICE candidates exchanged via REST with index-based append-only lists
+- **Live level meters** — both talent and hub side level bars update in real time in the hub room cards
+- **RTT & packet loss stats** — talent browser reports WebRTC stats (RTT ms, loss %) back to the hub for display
+- **IFB mute** — hub operator can mute their own microphone into the IFB return with one click; talent sees "IFB muted" notice
+- **Room lifecycle** — rooms expire automatically after 2 hours of inactivity; hub can also delete or reset rooms manually
+- **Hub-only nav item** — plugin nav link suppressed in client-only mode (`hub_only: True`)
+
+**Security:** Hub routes protected by `@login_required` + `@csrf_protect`. Talent routes use the room UUID (36-char entropy) as an implicit access token — no login required for talent contributors.
+
+---
+
 ## [3.5.135] - 2026-04-11
 
 ### Fixed — New TX metrics not showing on main hub page

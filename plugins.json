@@ -150,6 +150,16 @@
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/azuracast.py"
   },
   {
+    "id": "iplink",
+    "name": "IP Link",
+    "file": "iplink.py",
+    "icon": "🎙",
+    "description": "Browser-based WebRTC IP codec — an open-source alternative to ipDTL. Hub creates named rooms with shareable talent URLs. Contributors open the link in any modern browser (phone, laptop, tablet) with no app download required. Low-latency Opus audio, bidirectional IFB/talkback, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo), RTT and packet-loss stats, hub IFB mute control. Signalling via HTTP polling — no WebSocket dependency. Hub-only.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/iplink.py"
+  },
+  {
     "id": "synccap",
     "name": "Sync Capture",
     "file": "synccap.py",
