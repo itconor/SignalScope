@@ -2,6 +2,14 @@
 
 ---
 
+## IP Link v1.1.12 — 2026-04-11
+
+### Fixed — Safari rejects all a=ssrc lines, not just msid (plugin v1.1.12)
+
+v1.1.11 only stripped `a=ssrc` lines containing `msid`. Safari also rejects `a=ssrc:N cname:...` and all other `a=ssrc` variants. `_mungeOfferSdp` now strips all `a=ssrc` and `a=ssrc-group` lines from the offer before `setRemoteDescription`.
+
+---
+
 ## IP Link v1.1.11 — 2026-04-11
 
 ### Fixed — Chrome→Safari SDP parse failure (plugin v1.1.11)

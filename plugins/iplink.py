@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.11",
+    "version": "1.1.12",
     "hub_only": True,
 }
 
@@ -352,12 +352,13 @@ function _getHubMic(cb){
 }
 
 // ─── SDP munging ─────────────────────────────────────────────────────────────
-// Chrome generates a=ssrc lines with msid attributes that Safari rejects when
-// parsing a remote offer. Strip them — they're informational only and not needed
-// for the connection.
+// Chrome generates a=ssrc source-attribute lines that Safari rejects entirely
+// when parsing a remote offer (cname, msid, mslabel, label variants all fail).
+// Strip all a=ssrc lines — they are informational only and not needed for the
+// connection to establish.
 function _mungeOfferSdp(sdp){
   return sdp.split(/\r?\n/).filter(function(line){
-    return !/^a=ssrc:\d+ msid:/.test(line);
+    return !/^a=ssrc(-group)?:/.test(line);
   }).join('\r\n');
 }
 
