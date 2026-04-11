@@ -154,8 +154,8 @@
     "name": "IP Link",
     "file": "iplink.py",
     "icon": "🎙",
-    "description": "Browser-based WebRTC IP codec — an open-source alternative to ipDTL. Hub creates named rooms with shareable talent URLs. Contributors open the link in any modern browser (phone, laptop, tablet) with no app download required. Low-latency Opus audio, bidirectional IFB/talkback, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo), RTT and packet-loss stats, hub IFB mute control. Signalling via HTTP polling — no WebSocket dependency. Hub-only.",
-    "version": "1.0.0",
+    "description": "Browser-based IP codec and SIP softphone. WebRTC rooms: hub creates named rooms with shareable talent URLs — contributors join from any browser with no app download, low-latency Opus audio, bidirectional IFB, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo). SIP client (v1.1.0): register with any SIP PBX supporting WebSocket transport (Asterisk, FreeSWITCH, 3CX); take and make SIP calls directly from the hub page; digest auth, incoming call banner with Answer/Decline, mic mute, RTT stats, persistent config. Hub-only.",
+    "version": "1.1.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/iplink.py"
   },

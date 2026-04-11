@@ -2,6 +2,25 @@
 
 ---
 
+## [3.5.137] - 2026-04-11
+
+### Added — IP Link: SIP client (plugin v1.1.0)
+
+The IP Link plugin now includes a full browser-based SIP softphone alongside the existing WebRTC room system. Hub operators can register with any SIP PBX that supports WebSocket transport (Asterisk, FreeSWITCH, 3CX, etc.) and take/make SIP calls directly from the IP Link page.
+
+**SIP features:**
+- **Registration** — connects to any SIP server via `wss://` WebSocket; digest authentication (RFC 3261 MD5 HMAC, with and without QOP); automatic re-registration before expiry; 30-second reconnect retry on disconnect
+- **Incoming calls** — pulsing amber banner with caller ID; Answer / Decline buttons; 100 Trying → 180 Ringing → 200 OK with gathered ICE SDP answer; active call card shows remote/mic levels and duration
+- **Outgoing calls** — dial field accepts extension, E.164 number, or full `sip:user@domain` URI; ICE gather-then-send (3 s timeout) before INVITE
+- **Quality** — hardware echo cancellation and noise suppression via browser constraints; bidirectional Opus audio
+- **Call management** — mic mute toggle; hang up; RTT displayed from WebRTC stats; call duration counter
+- **Config persistence** — SIP credentials saved to `plugins/iplink_sip_cfg.json` via `GET/POST /api/iplink/sip/config`; password never echoed in GET response; auto-connect on page load when "Auto-connect" checkbox ticked
+- **Zero dependencies** — compact pure-JS MD5 (RFC 1321) inlined for digest auth; no CDN, no WebSocket polyfill, no third-party SIP library
+
+**SIP compatibility notes:** Server must support SIP over WebSocket (RFC 7118). In Asterisk this requires `res_http_websocket` + WebSocket transport in `pjsip.conf`. In FreeSWITCH, enable `mod_verto` or `mod_sofia` with WS transport. The plugin sends `Via: SIP/2.0/WS`, `Contact: <sip:user@host;transport=ws>`, and `User-Agent: SignalScope-IPLink/1.1`.
+
+---
+
 ## [3.5.136] - 2026-04-11
 
 ### Added — IP Link plugin (WebRTC browser contribution codec)
