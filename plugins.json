@@ -154,8 +154,8 @@
     "name": "IP Link",
     "file": "iplink.py",
     "icon": "🎙",
-    "description": "Browser-based IP codec and SIP softphone. WebRTC rooms: hub creates named rooms with shareable talent URLs — contributors join from any browser with no app download, low-latency Opus audio, bidirectional IFB, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo). SIP client (v1.1.0): register with any SIP PBX supporting WebSocket transport (Asterisk, FreeSWITCH, 3CX); take and make SIP calls directly from the hub page; digest auth, incoming call banner with Answer/Decline, mic mute, RTT stats, persistent config. Hub-only. v1.1.4: fix talent page stuck at \"Initialising…\" — CSP nonces added to style/script tags.",
-    "version": "1.1.4",
+    "description": "Browser-based IP codec and SIP softphone. WebRTC rooms: hub creates named rooms with shareable talent URLs — contributors join from any browser with no app download, low-latency Opus audio, bidirectional IFB, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo). SIP client (v1.1.0): register with any SIP PBX supporting WebSocket transport (Asterisk, FreeSWITCH, 3CX); take and make SIP calls directly from the hub page; digest auth, incoming call banner with Answer/Decline, mic mute, RTT stats, persistent config. Hub-only. v1.1.5: fix Accept reverts to incoming — set intermediate answering state immediately on click (hides banner); only tear down WebRTC on ICE 'failed' not 'disconnected'; fix catch not resetting state.",
+    "version": "1.1.5",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/iplink.py"
   },

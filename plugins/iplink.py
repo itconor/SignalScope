@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.4",
+    "version": "1.1.5",
     "hub_only": True,
 }
 
@@ -865,6 +865,9 @@ function sipAnswerCall(){
   if(!_sip.inInvite)return;
   var inv=_sip.inInvite;
   _sipSend(_sipBuildResp(inv,180,'Ringing',{'Contact':_sipContact()},''));
+  // Hide the incoming banner immediately — use 'dialling' so call card renders
+  // with the caller's name while we set up WebRTC (state→'incall' after ACK).
+  _sipSetState('dialling');
   navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false})
     .then(function(stream){
       _sip.micStream=stream;
@@ -874,9 +877,12 @@ function sipAnswerCall(){
         var a=document.getElementById('sipAudio');
         if(a&&e.streams[0]){a.srcObject=e.streams[0];_sipSetupRemoteMeter(e.streams[0]);}
       };
+      // Only tear down on 'failed' — 'disconnected' is temporary and ICE may recover.
       _sip.pc.onconnectionstatechange=function(){
-        if(_sip.pc.connectionState==='disconnected'||_sip.pc.connectionState==='failed'){
+        var cs=_sip.pc.connectionState;
+        if(cs==='failed'){
           _sipCleanupCall();_sipSetState('registered');
+          _sipShowCallErr('Call ended: connection failed');
         }
       };
       return _sip.pc.setRemoteDescription({type:'offer',sdp:inv.body});
@@ -899,8 +905,12 @@ function sipAnswerCall(){
       _sipSetState('incall');
     })
     .catch(function(e){
+      // Properly clean up so the incoming banner doesn't stick around.
       _sipSend(_sipBuildResp(inv,500,'Internal Error',{},''));
       console.error('SIP answer error:',e);
+      _sipCleanupCall();
+      _sipSetState('registered');
+      _sipShowCallErr('Could not answer call: '+(e.message||e));
     });
 }
 
@@ -932,8 +942,10 @@ function sipDial(target){
         if(a&&e.streams[0]){a.srcObject=e.streams[0];_sipSetupRemoteMeter(e.streams[0]);}
       };
       _sip.pc.onconnectionstatechange=function(){
-        if(_sip.pc.connectionState==='disconnected'||_sip.pc.connectionState==='failed'){
+        var cs=_sip.pc.connectionState;
+        if(cs==='failed'){
           _sipCleanupCall();_sipSetState('registered');
+          _sipShowCallErr('Call ended: connection failed');
         }
       };
       return _sip.pc.createOffer({offerToReceiveAudio:true});
@@ -1059,8 +1071,8 @@ function _sipHandleMsg(raw){
   }else{
     var m=msg.method;
     if(m==='INVITE'){
-      if(_sip.state==='incall'||_sip.state==='incoming'){
-        // Re-INVITE or second call: decline
+      if(_sip.state==='incall'||_sip.state==='incoming'||_sip.state==='dialling'){
+        // Re-INVITE or second call while busy: decline
         _sipSend(_sipBuildResp(msg,486,'Busy Here',{},''));
       }else{
         _sipHandleInvite(msg);
@@ -1077,9 +1089,12 @@ function _sipHandleMsg(raw){
     }else if(m==='OPTIONS'){
       _sipSend(_sipBuildResp(msg,200,'OK',{'Allow':'INVITE,ACK,CANCEL,OPTIONS,BYE','Accept':'application/sdp'},''));
     }else if(m==='ACK'){
-      // ACK to our 200 OK — call now fully established
-      if(_sip.state==='incoming'){
-        _sip.callStart=Date.now();_sipSetState('incall');
+      // ACK to our 200 OK — call now fully established.
+      // State is 'incall' if sipAnswerCall() finished before ACK arrived,
+      // or 'dialling' if ACK arrived before the promise chain completed.
+      if(_sip.state==='incoming'||_sip.state==='dialling'){
+        if(!_sip.callStart)_sip.callStart=Date.now();
+        _sipSetState('incall');
       }
     }
   }

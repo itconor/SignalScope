@@ -2,6 +2,22 @@
 
 ---
 
+## IP Link v1.1.5 — 2026-04-11
+
+### Fixed — Accept reverts to incoming / call drops immediately (plugin v1.1.5)
+
+Three bugs combined to cause the "Accept briefly shows connecting then reverts" symptom:
+
+**1. `onconnectionstatechange` tore down on `'disconnected'`** — WebRTC `'disconnected'` is transient; ICE naturally bounces through disconnected while checking candidate pairs. The correct terminal state is `'failed'`. Tearing down on `'disconnected'` caused the call to be ended prematurely. Fixed: both `sipAnswerCall()` and `sipDial()` now only call `_sipCleanupCall()` on `connectionState === 'failed'`.
+
+**2. `.catch()` didn't reset state** — if any step in the answer chain failed (getUserMedia denied, `setRemoteDescription` error, etc.), the catch sent a 500 response but left `_sip.state` as `'incoming'` with `_sip.inInvite` still set. The incoming banner and Accept button therefore reappeared. Fixed: catch now calls `_sipCleanupCall()` + `_sipSetState('registered')` + shows an error message.
+
+**3. No intermediate state during answer** — state stayed `'incoming'` (banner + Accept button visible) throughout the entire getUserMedia/ICE gathering async chain, giving no visual feedback. Fixed: `_sipSetState('dialling')` is called immediately after sending 180 Ringing, hiding the banner and showing the call card while WebRTC negotiation runs.
+
+Also: INVITE guard extended to include `'dialling'` state (re-INVITEs arriving during answer now receive 486 rather than spawning a second incoming call). ACK handler extended to fire from `'dialling'` state in case ACK arrives before the promise chain sets `'incall'`.
+
+---
+
 ## IP Link v1.1.4 — 2026-04-11
 
 ### Fixed — Talent page stuck at "Initialising…" (plugin v1.1.4)
