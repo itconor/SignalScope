@@ -2,6 +2,16 @@
 
 ---
 
+## [3.5.138] - 2026-04-11
+
+### Fixed — IP Link hub page error on load (plugin v1.1.1)
+
+`iplink_hub()` tried to import `_csp_nonce`, `csrf_token`, and `topnav` dynamically on every request using `from signalscope import ...` with a `sys.modules` fallback. Both paths could fail at request time — particularly when the plugin is loaded as a sub-module rather than run directly — producing the "IPLink plugin error — could not import SignalScope helpers" 500 error.
+
+Fix: the three helpers are resolved **once at `register()` startup time** (when `sys.modules` is fully populated and `signalscope` is always present) and closed over by the route function. `rts` (`render_template_string`) is also imported once at `register()` time rather than inside the route. A warning is logged if the module cannot be located, but the route no longer 500s.
+
+---
+
 ## [3.5.137] - 2026-04-11
 
 ### Added — IP Link: SIP client (plugin v1.1.0)
