@@ -11,11 +11,14 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.2.2",
+    "version": "1.3.0",
 }
 
 import json
 import os
+import random
+import socket
+import struct
 import threading
 import time
 import uuid
@@ -26,9 +29,134 @@ _lock   = threading.Lock()
 _rooms  = {}      # room_id -> room dict  (see _new_room())
 _log    = None    # set in register()
 
-_ROOM_EXPIRE_S    = 7200   # expire idle rooms after 2 h
+_ROOM_EXPIRE_S    = 7200   # expire idle rooms after 2 h (permanent rooms never expire)
 _STUN_SERVERS     = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
 _STUN             = _STUN_SERVERS   # alias used in route templates
+_ROOMS_PATH       = os.path.join(_BASE_DIR, "iplink_rooms.json")
+
+# ── Livewire / AES67 RTP multicast output ─────────────────────────────────────
+_lw_senders = {}   # room_id → _LivewireSender
+
+
+class _LivewireSender:
+    """Send AES67-compatible RTP multicast (L24/48kHz) from S16LE PCM input.
+    Compatible with Axia Livewire standard channels and generic AES67 receivers."""
+
+    PT         = 96      # dynamic payload type for L24/48000/2
+    RATE       = 48000
+    SAMPLES_PP = 48      # 1 ms per packet — Livewire standard
+
+    def __init__(self, address: str, port: int = 5004, n_ch: int = 2, ttl: int = 32):
+        self.address = address
+        self.port    = port
+        self.n_ch    = n_ch
+        self._seq    = random.randint(0, 0xFFFF)
+        self._ts     = random.randint(0, 0xFFFFFFFF)
+        self._ssrc   = random.randint(0, 0xFFFFFFFF)
+        self._buf    = b""
+        self.closed  = False
+        self._sock   = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
+
+    @staticmethod
+    def livewire_address(channel: int) -> str:
+        """Convert Livewire channel number (1-32767) to multicast address."""
+        return f"239.192.{(channel >> 8) & 0xFF}.{channel & 0xFF}"
+
+    def _rtp_header(self) -> bytes:
+        return struct.pack('!BBHII',
+            0x80,
+            self.PT,
+            self._seq  & 0xFFFF,
+            self._ts   & 0xFFFFFFFF,
+            self._ssrc,
+        )
+
+    @staticmethod
+    def _s16le_to_l24(data: bytes) -> bytes:
+        """Convert 16-bit signed LE PCM to 24-bit signed big-endian (L24)."""
+        out = bytearray()
+        for i in range(0, len(data) - 1, 2):
+            s = int.from_bytes(data[i:i+2], 'little', signed=True)
+            # Scale S16 → S24 (shift left 8)
+            out += (s << 8).to_bytes(3, 'big', signed=True)
+        return bytes(out)
+
+    def feed(self, pcm_s16le: bytes):
+        """Buffer S16LE PCM and emit RTP packets as data accumulates."""
+        if self.closed:
+            return
+        self._buf += pcm_s16le
+        bytes_pp = self.SAMPLES_PP * self.n_ch * 2   # bytes per packet (S16LE)
+        while len(self._buf) >= bytes_pp:
+            chunk    = self._buf[:bytes_pp]
+            self._buf = self._buf[bytes_pp:]
+            payload  = self._s16le_to_l24(chunk)
+            pkt      = self._rtp_header() + payload
+            try:
+                self._sock.sendto(pkt, (self.address, self.port))
+            except Exception:
+                pass
+            self._seq = (self._seq + 1) & 0xFFFF
+            self._ts  = (self._ts + self.SAMPLES_PP) & 0xFFFFFFFF
+
+    def stop(self):
+        self.closed = True
+        try:
+            self._sock.close()
+        except Exception:
+            pass
+
+
+# ── Persistent room save / load ────────────────────────────────────────────────
+
+def _save_rooms():
+    """Persist permanent rooms to disk."""
+    with _lock:
+        permanent = {rid: r for rid, r in _rooms.items() if r.get("permanent")}
+    # Serialise only the config fields — not transient signalling state
+    out = {}
+    for rid, r in permanent.items():
+        out[rid] = {
+            "id":       r["id"],
+            "name":     r["name"],
+            "quality":  r["quality"],
+            "permanent": True,
+            "output":   r.get("output", {}),
+            "created":  r["created"],
+        }
+    try:
+        with open(_ROOMS_PATH, "w") as fh:
+            json.dump(out, fh, indent=2)
+    except Exception as e:
+        if _log:
+            _log(f"[IPLink] Failed to save rooms: {e}")
+
+
+def _load_rooms():
+    """Load permanent rooms from disk and add to _rooms with reset signalling state."""
+    try:
+        with open(_ROOMS_PATH) as fh:
+            saved = json.load(fh)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        if _log:
+            _log(f"[IPLink] Failed to load rooms: {e}")
+        return
+    loaded = 0
+    with _lock:
+        for rid, r in saved.items():
+            if rid not in _rooms:
+                room = _new_room(r["name"], r.get("quality", "broadcast"))
+                room["id"]        = rid
+                room["permanent"] = True
+                room["output"]    = r.get("output", {})
+                room["created"]   = r.get("created", time.time())
+                _rooms[rid]       = room
+                loaded += 1
+    if _log and loaded:
+        _log(f"[IPLink] Loaded {loaded} permanent room(s) from disk")
 
 _SIP_CFG_PATH = os.path.join(_BASE_DIR, "iplink_sip_cfg.json")
 _SIP_CFG_DEFAULT = {
@@ -71,6 +199,8 @@ def _new_room(name: str, quality: str = "broadcast") -> dict:
         "id":           str(uuid.uuid4()),
         "name":         name,
         "quality":      quality if quality in _QUALITY else "broadcast",
+        "permanent":    False,
+        "output":       {"type": "speaker"},   # speaker | livewire | multicast
         "created":      time.time(),
         "last_active":  time.time(),
         "status":       "waiting",        # waiting | offer_received | connected | disconnected
@@ -102,10 +232,12 @@ def _room_public(room: dict) -> dict:
     r = dict(room)
     r.pop("offer", None)   # never send SDP to listing endpoints
     r.pop("answer", None)
-    r["quality_label"] = q["label"]
+    r["quality_label"]    = q["label"]
     r["talent_ice_count"] = len(room["talent_ice"])
     r["hub_ice_count"]    = len(room["hub_ice"])
     r["age_s"]            = _room_age_s(room)
+    r["permanent"]        = bool(room.get("permanent", False))
+    r["output"]           = room.get("output", {"type": "speaker"})
     if room["connected_at"]:
         r["duration_s"] = round(time.time() - room["connected_at"])
     return r
@@ -116,7 +248,9 @@ def _cleanup_thread():
         time.sleep(60)
         cutoff = time.time() - _ROOM_EXPIRE_S
         with _lock:
-            expired = [k for k, v in _rooms.items() if v["last_active"] < cutoff]
+            # Permanent rooms never expire
+            expired = [k for k, v in _rooms.items()
+                       if v["last_active"] < cutoff and not v.get("permanent")]
             for k in expired:
                 del _rooms[k]
             if expired and _log:
@@ -211,6 +345,18 @@ input[type=range].fader{flex:1;height:4px;accent-color:var(--acc);cursor:pointer
 .btn-onair.active{background:var(--al);color:#fff;border-color:var(--al);animation:pulse-border 1.2s infinite}
 /* Source selector */
 select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:4px 8px;font-size:12px;font-family:inherit;width:100%;margin-top:4px}
+/* Output config panel */
+.out-panel{background:#080f20;border:1px solid var(--bor);border-radius:8px;padding:10px 12px;margin-top:8px;font-size:12px}
+.out-panel label{display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer;color:var(--tx)}
+.out-panel input[type=radio]{accent-color:var(--acc)}
+.out-panel input[type=number],.out-panel input[type=text]{background:#0d1e40;border:1px solid var(--bor);border-radius:5px;color:var(--tx);padding:4px 8px;font-size:12px;font-family:inherit;width:100%;margin-top:4px}
+.out-sub{padding:6px 0 2px 22px;display:none}
+.out-sub.show{display:block}
+.lw-addr{font-size:11px;color:var(--mu);margin-top:3px}
+/* Permanent room indicator */
+.rc-perm{font-size:13px;opacity:.7;flex-shrink:0}
+/* Livewire active badge */
+.lw-badge{background:#1a0f40;color:#a78bfa;border:1px solid #5b21b6;display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700}
 </style></head><body>
 {{ topnav("iplink") | safe }}
 <main>
@@ -243,6 +389,12 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
             <option value="hifi">Hi-Fi (256 kbps stereo)</option>
           </select>
         </div>
+      </div>
+      <div style="margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--tx);cursor:pointer">
+          <input type="checkbox" id="cPermanent" style="accent-color:var(--acc)">
+          📌 Permanent room (survives restarts, never expires)
+        </label>
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn bp" id="createSubmit">Create Room</button>
@@ -396,6 +548,9 @@ var _recvVol  = {};  // room_id → recv volume (0-200, 100=unity)
 var _onAir    = {};  // room_id → bool (on-air state)
 var _feedReader = {}; // room_id → ReadableStreamReader (stream injection)
 var _prevOfferRooms = {}; // room_id → bool (for ringtone trigger detection)
+var _outPanelOpen   = {}; // room_id → bool
+var _outputCapture  = {}; // room_id → {node, reader}
+var _lwWorkletUrl   = null;
 
 var STUN = {{stun|tojson}};
 var BASE = window.location.origin;
@@ -558,6 +713,100 @@ function _applySourceForRoom(roomId){
   }
 }
 
+// ─── Livewire / output helpers ────────────────────────────────────────────────
+function _lwAddr(ch){
+  ch=parseInt(ch)||1;
+  return '239.192.'+((ch>>8)&0xFF)+'.'+(ch&0xFF);
+}
+function updateLwAddr(roomId){
+  var ch=document.getElementById('olw_'+roomId);
+  var el=document.getElementById('olwaddr_'+roomId);
+  var am=document.getElementById('omaddr_'+roomId);
+  if(!ch||!el) return;
+  var addr=_lwAddr(ch.value);
+  el.textContent='Multicast: '+addr+' port 5004';
+  if(am&&!am._customEdited) am.value=addr;
+}
+function setOutType(roomId, type){
+  var sub=document.getElementById('outsub_'+roomId);
+  if(sub) sub.classList.toggle('show', type==='livewire'||type==='multicast');
+}
+function toggleOutPanel(roomId){
+  _outPanelOpen[roomId]=!_outPanelOpen[roomId];
+  var el=document.getElementById('outp_'+roomId);
+  if(el) el.style.display=_outPanelOpen[roomId]?'':'none';
+}
+function saveOutput(roomId){
+  var typeEl=document.querySelector('input[name="ot_'+roomId+'"]:checked');
+  var type=typeEl?typeEl.value:'speaker';
+  var cfg={type:type};
+  if(type==='livewire'||type==='multicast'){
+    var ch=parseInt((document.getElementById('olw_'+roomId)||{}).value)||1;
+    var addr=((document.getElementById('omaddr_'+roomId)||{}).value||_lwAddr(ch)).trim();
+    var port=parseInt((document.getElementById('omport_'+roomId)||{}).value)||5004;
+    cfg.channel=ch; cfg.address=addr||_lwAddr(ch); cfg.port=port;
+    cfg.type='livewire'; // normalise
+  }
+  fetch('/api/iplink/room/'+roomId+'/output',{
+    method:'POST',credentials:'same-origin',headers:csrfHdr(),
+    body:JSON.stringify(cfg)
+  }).then(function(){
+    _outPanelOpen[roomId]=false;
+    _refreshRooms();
+    // If connected, start/stop capture accordingly
+    if(_pcs[roomId]&&_pcs[roomId]!==true){
+      if(cfg.type!=='speaker') _startOutputCapture(roomId);
+      else _stopOutputCapture(roomId);
+    }
+  }).catch(function(){});
+}
+
+// ─── AudioWorklet PCM capture (received audio → server → Livewire multicast) ─
+var _WORKLET_SRC=[
+  'class IPLinkPcm extends AudioWorkletProcessor{',
+  '  constructor(o){super(o);this._b=[];this._n=0;this._t=(o.processorOptions||{}).t||480;}',
+  '  process(inp){var c=inp[0];if(!c||!c[0])return true;',
+  '    this._b.push(c[0].slice());this._n+=c[0].length;',
+  '    if(this._n>=this._t){',
+  '      var o=new Float32Array(this._n),f=0;',
+  '      this._b.forEach(function(b){o.set(b,f);f+=b.length;});',
+  '      this.port.postMessage(o.buffer,[o.buffer]);',
+  '      this._b=[];this._n=0;',
+  '    }return true;}',
+  '}registerProcessor("iplink-pcm",IPLinkPcm);',
+].join('');
+
+function _getWorkletUrl(){
+  if(!_lwWorkletUrl)
+    _lwWorkletUrl=URL.createObjectURL(new Blob([_WORKLET_SRC],{type:'application/javascript'}));
+  return _lwWorkletUrl;
+}
+
+function _startOutputCapture(roomId){
+  _stopOutputCapture(roomId);
+  var rCtx=_recvCtx[roomId], rGain=_recvGain[roomId];
+  if(!rCtx||!rGain) return;
+  rCtx.audioWorklet.addModule(_getWorkletUrl()).then(function(){
+    var node=new AudioWorkletNode(rCtx,'iplink-pcm',{processorOptions:{t:480}});
+    rGain.connect(node);
+    _outputCapture[roomId]={node:node};
+    node.port.onmessage=function(e){
+      var f32=new Float32Array(e.data);
+      var s16=new Int16Array(f32.length);
+      for(var i=0;i<f32.length;i++){var v=Math.max(-1,Math.min(1,f32[i]));s16[i]=v<0?v*32768:v*32767;}
+      fetch('/api/iplink/room/'+roomId+'/output_chunk',{
+        method:'POST',credentials:'same-origin',
+        headers:{'Content-Type':'application/octet-stream'},
+        body:new Uint8Array(s16.buffer),
+      }).catch(function(){});
+    };
+  }).catch(function(e){console.warn('[IPLink] AudioWorklet failed:',e);});
+}
+function _stopOutputCapture(roomId){
+  var c=_outputCapture[roomId];
+  if(c){try{c.node.disconnect();}catch(e){}delete _outputCapture[roomId];}
+}
+
 // ─── Mic acquisition (shared across all rooms) ───────────────────────────────
 function _getHubMic(cb){
   if(_micStream){ cb(null, _micStream); return; }
@@ -658,6 +907,13 @@ function acceptCall(roomId){
             rSrc.connect(rGain); rGain.connect(rDest);
             if(audio) audio.srcObject=rDest.stream;
             _setupHubMeter(roomId, e.streams[0]);
+            // Start Livewire capture if room is configured for multicast output
+            fetch('/api/iplink/rooms',{credentials:'same-origin'})
+              .then(function(r){return r.json();})
+              .then(function(d){
+                var rm=(d.rooms||[]).find(function(x){return x.id===roomId;});
+                if(rm&&rm.output&&rm.output.type!=='speaker') _startOutputCapture(roomId);
+              }).catch(function(){});
           }catch(ex){
             if(audio) audio.srcObject=e.streams[0];
             _setupHubMeter(roomId, e.streams[0]);
@@ -810,6 +1066,7 @@ function disconnectRoom(roomId){
   var pc=_pcs[roomId];
   if(pc){ pc.close(); delete _pcs[roomId]; }
   _stopFeed(roomId);
+  _stopOutputCapture(roomId);
   delete _sendGain[roomId]; delete _recvGain[roomId];
   try{ if(_recvCtx[roomId]) _recvCtx[roomId].close(); }catch(e){} delete _recvCtx[roomId];
   delete _onAir[roomId];
@@ -876,6 +1133,8 @@ function _renderRooms(rooms){
     html+='<div class="rc-hdr">';
     html+='<span style="font-size:18px">🎙</span>';
     html+='<span class="rc-name" title="'+r.name+'">'+_esc(r.name)+'</span>';
+    if(r.permanent) html+='<span class="rc-perm" title="Permanent room">📌</span>';
+    var out=r.output||{}; if(out.type&&out.type!=='speaker') html+='<span class="lw-badge">📡 '+_esc(out.type==='livewire'?'LW ch '+out.channel:'AES67')+'</span>';
     html+=_statusBadge(r.status);
     html+='</div>';
     // Body
@@ -925,6 +1184,31 @@ function _renderRooms(rooms){
       html+='<span class="fader-val" id="rc_recvvolval_'+r.id+'">'+((_recvVol[r.id]!=null)?_recvVol[r.id]:100)+'%</span>';
       html+='</div>';
     }
+    // Output config panel
+    var outCfg=r.output||{};
+    var outOpen=!!_outPanelOpen[r.id];
+    html+='<div style="margin:6px 0 2px">';
+    html+='<button class="btn bg bs" onclick="toggleOutPanel(\''+r.id+'\')" style="width:100%;justify-content:center">📡 Output: '+(outCfg.type==='livewire'?'Livewire ch '+outCfg.channel:outCfg.type==='multicast'?'AES67 '+_esc(outCfg.address||''):'Speaker')+'</button>';
+    html+='<div id="outp_'+r.id+'" class="out-panel" style="'+(outOpen?'':'display:none')+'">';
+    html+='<div style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Audio Output</div>';
+    html+='<label><input type="radio" name="ot_'+r.id+'" value="speaker"'+((!outCfg.type||outCfg.type==='speaker')?' checked':'')+' onchange="setOutType(\''+r.id+'\',this.value)"> 🔊 Speaker (browser)</label>';
+    html+='<label><input type="radio" name="ot_'+r.id+'" value="livewire"'+(outCfg.type==='livewire'?' checked':'')+' onchange="setOutType(\''+r.id+'\',this.value)"> 📡 Livewire / AES67 Multicast</label>';
+    // Livewire sub-fields
+    html+='<div class="out-sub'+(outCfg.type==='livewire'||outCfg.type==='multicast'?' show':'')+'" id="outsub_'+r.id+'">';
+    html+='<div class="field" style="margin-bottom:6px"><label style="font-size:10px">Livewire Channel (1–32767)</label>';
+    html+='<input type="number" id="olw_'+r.id+'" min="1" max="32767" value="'+(outCfg.channel||1)+'" oninput="updateLwAddr(\''+r.id+'\')"></div>';
+    html+='<div class="lw-addr" id="olwaddr_'+r.id+'">Multicast: '+_lwAddr(outCfg.channel||1)+' port 5004</div>';
+    html+='<details style="margin-top:8px"><summary style="font-size:11px;color:var(--mu);cursor:pointer">Custom address (AES67)</summary>';
+    html+='<div class="field" style="margin-top:6px;margin-bottom:4px"><label style="font-size:10px">Multicast Address</label>';
+    html+='<input type="text" id="omaddr_'+r.id+'" placeholder="239.192.x.x" value="'+(outCfg.address||_lwAddr(outCfg.channel||1))+'"></div>';
+    html+='<div class="field" style="margin-bottom:4px"><label style="font-size:10px">Port</label>';
+    html+='<input type="number" id="omport_'+r.id+'" min="1" max="65535" value="'+(outCfg.port||5004)+'"></div>';
+    html+='</details>';
+    html+='</div>';
+    html+='<div style="margin-top:8px;display:flex;gap:6px">';
+    html+='<button class="btn bp bs" onclick="saveOutput(\''+r.id+'\')">💾 Apply</button>';
+    html+='<button class="btn bg bs" onclick="toggleOutPanel(\''+r.id+'\')">Close</button>';
+    html+='</div></div></div>';
     // Actions
     html+='<div class="actions">';
     html+='<button class="btn bg bs" onclick="copyLink(\''+r.id+'\',\'flash_'+r.id+'\')">🔗 Copy Link</button>';
@@ -1002,8 +1286,9 @@ document.getElementById('createSubmit').addEventListener('click',function(){
   var name=(document.getElementById('cName').value||'').trim();
   var quality=document.getElementById('cQuality').value;
   if(!name){ document.getElementById('createMsg').innerHTML='<div class="msg msg-err">Enter a room name</div>'; return; }
+  var permanent=document.getElementById('cPermanent').checked;
   fetch('/api/iplink/rooms',{method:'POST',credentials:'same-origin',
-    headers:csrfHdr(), body:JSON.stringify({name:name,quality:quality})})
+    headers:csrfHdr(), body:JSON.stringify({name:name,quality:quality,permanent:permanent})})
     .then(function(r){return r.json();})
     .then(function(d){
       if(d.error){document.getElementById('createMsg').innerHTML='<div class="msg msg-err">'+_esc(d.error)+'</div>'; return;}
@@ -2226,6 +2511,9 @@ def register(app, ctx):
     _site_name = getattr(_cfg_hub, 'site_name', '') or ''
     _secret    = getattr(_cfg_hub, 'secret_key', '') or ''
 
+    # Load permanent rooms from disk
+    _load_rooms()
+
     # Start cleanup thread
     threading.Thread(target=_cleanup_thread, daemon=True, name="IPLinkCleanup").start()
 
@@ -2302,15 +2590,19 @@ def register(app, ctx):
     @login_required
     @csrf_protect
     def iplink_create_room():
-        data = request.get_json(silent=True) or {}
-        name = str(data.get("name", "")).strip()[:50]
-        quality = str(data.get("quality", "broadcast"))
+        data      = request.get_json(silent=True) or {}
+        name      = str(data.get("name", "")).strip()[:50]
+        quality   = str(data.get("quality", "broadcast"))
+        permanent = bool(data.get("permanent", False))
         if not name:
             return jsonify({"error": "Room name required"}), 400
         room = _new_room(name, quality)
+        room["permanent"] = permanent
         with _lock:
             _rooms[room["id"]] = room
-        _log(f"[IPLink] Room created: '{name}' ({quality}) id={room['id'][:8]}")
+        if permanent:
+            _save_rooms()
+        _log(f"[IPLink] Room created: '{name}' ({quality}) permanent={permanent} id={room['id'][:8]}")
         return jsonify({"room": _room_public(room)}), 201
 
     @app.delete("/api/iplink/room/<room_id>")
@@ -2319,7 +2611,13 @@ def register(app, ctx):
     def iplink_delete_room(room_id):
         with _lock:
             room = _rooms.pop(room_id, None)
+        # Stop any Livewire sender
+        sender = _lw_senders.pop(room_id, None)
+        if sender:
+            sender.stop()
         if room:
+            if room.get("permanent"):
+                _save_rooms()
             _log(f"[IPLink] Room deleted: '{room['name']}'")
         return jsonify({"ok": bool(room)})
 
@@ -2476,6 +2774,10 @@ def register(app, ctx):
                 room["disconnected_at"] = time.time()
                 room["talent_level"] = 0.0
                 room["hub_level"]    = 0.0
+                # Stop Livewire sender on disconnect
+                sender = _lw_senders.pop(room_id, None)
+                if sender:
+                    sender.stop()
                 if side == "hub":
                     _log(f"[IPLink] Room '{room['name']}' disconnected by hub")
             _touch(room)
@@ -2635,6 +2937,62 @@ def register(app, ctx):
             _log(f"[IPLink] Client feed queued: room '{room['name']}' ← {site}[{stream_idx}] slot={slot.slot_id[:8]}")
             return jsonify({"ok": True, "slot_id": slot.slot_id, "n_ch": n_ch})
 
+    # ── Room output config ──────────────────────────────────────────────────────
+    @app.post("/api/iplink/room/<room_id>/output")
+    @login_required
+    @csrf_protect
+    def iplink_set_output(room_id):
+        """Set the audio output routing for a room (speaker | livewire | multicast)."""
+        room = _get_room(room_id)
+        if not room:
+            return jsonify({"error": "Not found"}), 404
+        data     = request.get_json(silent=True) or {}
+        out_type = str(data.get("type", "speaker"))
+        output   = {"type": out_type}
+        if out_type in ("livewire", "multicast"):
+            ch      = max(1, min(32767, int(data.get("channel", 1))))
+            address = str(data.get("address", "") or _LivewireSender.livewire_address(ch)).strip()
+            port    = max(1, min(65535, int(data.get("port", 5004))))
+            n_ch    = 2   # Livewire standard channels are stereo
+            output.update({"channel": ch, "address": address, "port": port, "n_ch": n_ch})
+        # Stop old sender if any
+        old = _lw_senders.pop(room_id, None)
+        if old:
+            old.stop()
+        # Start new sender if livewire output selected and room is connected
+        if out_type in ("livewire", "multicast") and room.get("status") == "connected":
+            sender = _LivewireSender(address, port, n_ch=output["n_ch"])
+            _lw_senders[room_id] = sender
+            _log(f"[IPLink] Livewire sender started: room '{room['name']}' → {address}:{port}")
+        with _lock:
+            room["output"] = output
+        if room.get("permanent"):
+            _save_rooms()
+        _log(f"[IPLink] Room '{room['name']}' output set to {out_type}")
+        return jsonify({"ok": True, "output": output})
+
+    # ── Output PCM chunk (browser posts received audio for Livewire relay) ─────
+    @app.post("/api/iplink/room/<room_id>/output_chunk")
+    def iplink_output_chunk(room_id):
+        """Receive S16LE PCM from the hub browser and forward to Livewire multicast."""
+        sender = _lw_senders.get(room_id)
+        if not sender:
+            # Room may have just been configured — create sender lazily
+            room = _get_room(room_id)
+            if not room:
+                return jsonify({"error": "Not found"}), 404
+            out = room.get("output", {})
+            if out.get("type") not in ("livewire", "multicast"):
+                return jsonify({"ok": True, "dropped": True})
+            sender = _LivewireSender(
+                out["address"], out.get("port", 5004), n_ch=out.get("n_ch", 2)
+            )
+            _lw_senders[room_id] = sender
+        pcm = request.get_data()
+        if pcm:
+            sender.feed(pcm)
+        return jsonify({"ok": True})
+
     # ── Client polls hub for pending feed commands ─────────────────────────────
     @app.get("/api/iplink/feed_cmd")
     def iplink_feed_cmd():
@@ -2670,4 +3028,4 @@ def register(app, ctx):
         _log(f"[IPLink] SIP config saved — server: {cfg.get('server','')}, user: {cfg.get('username','')}")
         return jsonify({"ok": True})
 
-    _log(f"[IPLink] Plugin registered — v1.2.2 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
+    _log(f"[IPLink] Plugin registered — v1.3.0 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
