@@ -154,8 +154,8 @@
     "name": "IP Link",
     "file": "iplink.py",
     "icon": "🎙",
-    "description": "Browser-based IP codec and SIP softphone. WebRTC rooms: hub creates named rooms with shareable talent URLs — contributors join from any browser with no app download, low-latency Opus audio, bidirectional IFB, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo). SIP client: register with any SIP PBX supporting WebSocket transport (Asterisk, FreeSWITCH, 3CX). Works on hub, client, and standalone nodes. v1.3.1: Livewire output site selector — choose which connected client site sends the multicast so it arrives on the correct LAN segment (e.g. the Axia iQ10 VLAN); hub relays PCM to client via streaming HTTP; client runs the Livewire/AES67 UDP sender locally. v1.3.0: Permanent rooms (saved to disk, survive restarts, never expire); Livewire/AES67 multicast output per room; received talent audio captured via AudioWorklet → S16LE PCM → L24 RTP multicast. v1.2.2: client-site stream audio injection via hub→client command queue.",
-    "version": "1.3.1",
+    "description": "Browser-based IP codec and SIP softphone. WebRTC rooms: hub creates named rooms with shareable talent URLs — contributors join from any browser with no app download, low-latency Opus audio, bidirectional IFB, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo). SIP client: register with any SIP PBX supporting WebSocket transport (Asterisk, FreeSWITCH, 3CX). Works on hub, client, and standalone nodes. v1.3.2: per-room audio source selector (each room card has its own source dropdown with global default fallback); fix source list disappearing when client momentarily returns empty streams. v1.3.1: Livewire output site selector — choose which connected client site sends the multicast so it arrives on the correct LAN segment (e.g. the Axia iQ10 VLAN). v1.3.0: Permanent rooms; Livewire/AES67 multicast output per room.",
+    "version": "1.3.2",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/iplink.py"
   },

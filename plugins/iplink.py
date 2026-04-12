@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.1",
+    "version": "1.3.2",
 }
 
 import json
@@ -3251,4 +3251,4 @@ def register(app, ctx):
         _log(f"[IPLink] SIP config saved — server: {cfg.get('server','')}, user: {cfg.get('username','')}")
         return jsonify({"ok": True})
 
-    _log(f"[IPLink] Plugin registered — v1.3.1 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
+    _log(f"[IPLink] Plugin registered — v1.3.2 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
