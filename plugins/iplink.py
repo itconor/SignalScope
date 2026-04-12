@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.31",
+    "version": "1.2.0",
     "hub_only": True,
 }
 
@@ -192,6 +192,26 @@ input:focus,select:focus{border-color:var(--acc);outline:none}
 details>summary{cursor:pointer;font-size:12px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:4px 0;list-style:none;display:flex;align-items:center;gap:6px}
 details>summary::before{content:'▶';font-size:10px;transition:transform .2s}
 details[open]>summary::before{transform:rotate(90deg)}
+/* Toggle switch (ipDTL-style settings) */
+.tog-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid rgba(23,52,95,.4)}
+.tog-row:last-child{border-bottom:none}
+.tog-lbl{font-size:13px;color:var(--tx)}
+.tog{position:relative;display:inline-block;width:42px;height:24px;flex-shrink:0}
+.tog input{opacity:0;width:0;height:0}
+.tog-sl{position:absolute;cursor:pointer;inset:0;background:#1a2a4a;border-radius:24px;transition:.25s}
+.tog-sl:before{content:'';position:absolute;width:18px;height:18px;left:3px;bottom:3px;background:#8aa4c8;border-radius:50%;transition:.25s}
+input:checked+.tog-sl{background:var(--ok)}
+input:checked+.tog-sl:before{transform:translateX(18px);background:#fff}
+/* Faders / sliders */
+.fader-row{display:flex;align-items:center;gap:10px;padding:6px 0}
+.fader-lbl{font-size:11px;color:var(--mu);width:36px;text-align:right;flex-shrink:0}
+input[type=range].fader{flex:1;height:4px;accent-color:var(--acc);cursor:pointer}
+.fader-val{font-size:11px;width:32px;text-align:left;font-variant-numeric:tabular-nums}
+/* On-Air button */
+.btn-onair{background:#1a3a1a;color:var(--ok);border:1px solid var(--ok)}
+.btn-onair.active{background:var(--al);color:#fff;border-color:var(--al);animation:pulse-border 1.2s infinite}
+/* Source selector */
+select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:4px 8px;font-size:12px;font-family:inherit;width:100%;margin-top:4px}
 </style></head><body>
 {{ topnav("iplink") | safe }}
 <main>
@@ -270,6 +290,36 @@ details[open]>summary::before{transform:rotate(90deg)}
     </div>
   </div>
 
+  <!-- Settings panel -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="ch">⚙ Settings</div>
+    <div class="cb" style="display:grid;grid-template-columns:1fr 1fr;gap:0 32px">
+      <div>
+        <div class="tog-row">
+          <span class="tog-lbl">Ringtone</span>
+          <label class="tog"><input type="checkbox" id="settRingtone"><span class="tog-sl"></span></label>
+        </div>
+        <div class="tog-row">
+          <span class="tog-lbl">Mute on Hangup</span>
+          <label class="tog"><input type="checkbox" id="settMuteHangup"><span class="tog-sl"></span></label>
+        </div>
+        <div class="tog-row">
+          <span class="tog-lbl">Auto-Accept</span>
+          <label class="tog"><input type="checkbox" id="settAutoAccept"><span class="tog-sl"></span></label>
+        </div>
+      </div>
+      <div>
+        <div class="field" style="margin-bottom:0">
+          <label>Send Audio Source</label>
+          <select id="globalSrcSel" class="src-sel">
+            <option value="mic">🎤 Hub Microphone</option>
+          </select>
+          <span style="font-size:11px;color:var(--mu);margin-top:4px">Source used when accepting room calls</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Room grid (rendered by JS) -->
   <div id="roomGrid"></div>
   <p id="noRooms" style="color:var(--mu);font-size:13px;display:none">No rooms yet — create one to generate a shareable link for your contributor.</p>
@@ -339,9 +389,173 @@ var _iceIdx = {};   // room_id → last hub_ice index sent / talent_ice index co
 var _levels = {};   // room_id → AudioContext analyser
 var _connErrs = {}; // room_id → error string (shown in card, auto-cleared after 10 s)
 var _micStream = null; // shared mic stream for hub side
+var _sendGain = {};  // room_id → GainNode (send to talent)
+var _recvGain = {};  // room_id → GainNode (received from talent)
+var _recvCtx  = {};  // room_id → AudioContext for received audio
+var _sendVol  = {};  // room_id → send volume (0-200, 100=unity)
+var _recvVol  = {};  // room_id → recv volume (0-200, 100=unity)
+var _onAir    = {};  // room_id → bool (on-air state)
+var _feedReader = {}; // room_id → ReadableStreamReader (stream injection)
+var _prevOfferRooms = {}; // room_id → bool (for ringtone trigger detection)
 
 var STUN = {{stun|tojson}};
 var BASE = window.location.origin;
+
+// ─── Settings (localStorage) ─────────────────────────────────────────────────
+var _sett = {ringtone:false,muteHangup:false,autoAccept:false};
+function _loadSett(){
+  try{var s=JSON.parse(localStorage.getItem('iplink_sett')||'{}');Object.assign(_sett,s);}catch(e){}
+  document.getElementById('settRingtone').checked = !!_sett.ringtone;
+  document.getElementById('settMuteHangup').checked = !!_sett.muteHangup;
+  document.getElementById('settAutoAccept').checked = !!_sett.autoAccept;
+}
+function _saveSett(){
+  _sett.ringtone    = document.getElementById('settRingtone').checked;
+  _sett.muteHangup  = document.getElementById('settMuteHangup').checked;
+  _sett.autoAccept  = document.getElementById('settAutoAccept').checked;
+  try{localStorage.setItem('iplink_sett',JSON.stringify(_sett));}catch(e){}
+}
+['settRingtone','settMuteHangup','settAutoAccept'].forEach(function(id){
+  document.getElementById(id).addEventListener('change',_saveSett);
+});
+
+// ─── Ringtone (Web Audio API beep) ───────────────────────────────────────────
+var _ringCtx=null, _ringIntervalId=null;
+function _playRing(){
+  if(!_sett.ringtone) return;
+  if(!_ringCtx) try{_ringCtx=new(window.AudioContext||window.webkitAudioContext)();}catch(e){return;}
+  var osc=_ringCtx.createOscillator(), g=_ringCtx.createGain();
+  osc.frequency.value=1000; g.gain.value=0.3;
+  osc.connect(g); g.connect(_ringCtx.destination);
+  osc.start(); osc.stop(_ringCtx.currentTime+0.08);
+}
+function _startRingtone(){
+  if(_ringIntervalId) return;
+  _playRing();
+  _ringIntervalId = setInterval(function(){ _playRing(); }, 2000);
+}
+function _stopRingtone(){
+  if(_ringIntervalId){ clearInterval(_ringIntervalId); _ringIntervalId=null; }
+}
+
+// ─── On-Air toggle ────────────────────────────────────────────────────────────
+function toggleOnAir(roomId){
+  _onAir[roomId] = !_onAir[roomId];
+  _refreshRooms();
+}
+
+// ─── Send/Recv volume faders ─────────────────────────────────────────────────
+function setSendVol(roomId, val){
+  _sendVol[roomId] = parseInt(val);
+  var g=_sendGain[roomId]; if(g) g.gain.value=_sendVol[roomId]/100;
+  var el=document.getElementById('rc_sendvolval_'+roomId); if(el) el.textContent=val+'%';
+}
+function setRecvVol(roomId, val){
+  _recvVol[roomId] = parseInt(val);
+  var g=_recvGain[roomId]; if(g) g.gain.value=_recvVol[roomId]/100;
+  var el=document.getElementById('rc_recvvolval_'+roomId); if(el) el.textContent=val+'%';
+}
+
+// ─── Stream source population ─────────────────────────────────────────────────
+function _loadStreamSources(){
+  fetch('/api/iplink/streams',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var sel=document.getElementById('globalSrcSel');
+      if(!sel) return;
+      var cur=sel.value;
+      // Remove old stream options
+      var toRemove=[];
+      for(var i=0;i<sel.options.length;i++){
+        if(sel.options[i].value!=='mic') toRemove.push(i);
+      }
+      toRemove.reverse().forEach(function(i){sel.remove(i);});
+      // Add current streams
+      (d.streams||[]).forEach(function(s){
+        var o=document.createElement('option');
+        o.value='stream:'+s.idx;
+        o.textContent='📡 '+s.name+(s.stereo?' (stereo)':'');
+        sel.appendChild(o);
+      });
+      // Restore selection if still valid
+      var found=false;
+      for(var i=0;i<sel.options.length;i++){if(sel.options[i].value===cur){sel.value=cur;found=true;break;}}
+      if(!found) sel.value='mic';
+    }).catch(function(){});
+}
+_loadStreamSources();
+setInterval(_loadStreamSources, 15000);
+
+// ─── Stream audio injection ───────────────────────────────────────────────────
+function _stopFeed(roomId){
+  if(_feedReader[roomId]){ try{_feedReader[roomId].cancel();}catch(e){} delete _feedReader[roomId]; }
+}
+
+function _injectStreamAudio(roomId, slotId, nCh){
+  _stopFeed(roomId);
+  var url='/hub/scanner/stream/'+slotId;
+  var ctx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:48000});
+  var dest=ctx.createMediaStreamDestination();
+  var gainNode=ctx.createGain();
+  gainNode.gain.value=(_sendVol[roomId]||100)/100;
+  _sendGain[roomId]=gainNode;
+  gainNode.connect(dest);
+  // Replace WebRTC track
+  var pc=_pcs[roomId];
+  if(pc&&pc!==true){
+    var track=dest.stream.getAudioTracks()[0];
+    pc.getSenders().forEach(function(s){if(s.track&&s.track.kind==='audio'){s.replaceTrack(track).catch(function(){});}});
+  }
+  // Pump PCM
+  var BLK_S=nCh===2?4800*2:4800, BLK_B=nCh===2?19200:9600;
+  var buf=new Uint8Array(0), nextT=ctx.currentTime+1.0;
+  fetch(url,{credentials:'same-origin'}).then(function(r){
+    var reader=r.body.getReader();
+    _feedReader[roomId]=reader;
+    (function pump(){reader.read().then(function(d){
+      if(d.done||!_feedReader[roomId]) return;
+      var tmp=new Uint8Array(buf.length+d.value.length);
+      tmp.set(buf); tmp.set(d.value,buf.length); buf=tmp;
+      while(buf.length>=BLK_B){
+        var blk=buf.slice(0,BLK_B); buf=buf.slice(BLK_B);
+        var ab=ctx.createBuffer(nCh,4800,48000);
+        var dv=new DataView(blk.buffer,blk.byteOffset,blk.byteLength);
+        for(var ch=0;ch<nCh;ch++){
+          var ch_data=ab.getChannelData(ch);
+          for(var i=0;i<4800;i++) ch_data[i]=dv.getInt16((i*nCh+ch)*2,true)/32768.0;
+        }
+        var src=ctx.createBufferSource(); src.buffer=ab; src.connect(gainNode);
+        var t=Math.max(nextT,ctx.currentTime+0.05); src.start(t); nextT=t+ab.duration;
+      }
+      pump();
+    }).catch(function(){});})();
+  }).catch(function(){});
+}
+
+function _applySourceForRoom(roomId){
+  var sel=document.getElementById('globalSrcSel');
+  var srcVal=sel?sel.value:'mic';
+  if(srcVal==='mic'){
+    _stopFeed(roomId);
+    // Restore mic track
+    if(_micStream){
+      var pc=_pcs[roomId];
+      if(pc&&pc!==true){
+        var t=_micStream.getAudioTracks()[0];
+        pc.getSenders().forEach(function(s){if(s.track&&s.track.kind==='audio'){s.replaceTrack(t).catch(function(){});}});
+      }
+    }
+  } else if(srcVal.indexOf('stream:')=== 0){
+    var idx=parseInt(srcVal.split(':')[1]);
+    fetch('/api/iplink/room/'+roomId+'/feed',{
+      method:'POST',credentials:'same-origin',headers:csrfHdr(),
+      body:JSON.stringify({stream_idx:idx})
+    }).then(function(r){return r.json();})
+    .then(function(d){
+      if(d.slot_id) _injectStreamAudio(roomId,d.slot_id,d.n_ch||1);
+    }).catch(function(){});
+  }
+}
 
 // ─── Mic acquisition (shared across all rooms) ───────────────────────────────
 function _getHubMic(cb){
@@ -429,11 +643,22 @@ function acceptCall(roomId){
           micStream.getTracks().forEach(function(t){ pc.addTrack(t, micStream); });
         }
 
-        // Receive talent audio
+        // Receive talent audio — route through gain node for recv fader
         pc.ontrack = function(e){
+          if(!e.streams[0]) return;
           var audio = document.getElementById('hubAudio');
-          if(audio && e.streams[0]){
-            audio.srcObject = e.streams[0];
+          try{
+            var rCtx=new(window.AudioContext||window.webkitAudioContext)();
+            var rSrc=rCtx.createMediaStreamSource(e.streams[0]);
+            var rGain=rCtx.createGain();
+            rGain.gain.value=(_recvVol[roomId]||100)/100;
+            _recvGain[roomId]=rGain; _recvCtx[roomId]=rCtx;
+            var rDest=rCtx.createMediaStreamDestination();
+            rSrc.connect(rGain); rGain.connect(rDest);
+            if(audio) audio.srcObject=rDest.stream;
+            _setupHubMeter(roomId, e.streams[0]);
+          }catch(ex){
+            if(audio) audio.srcObject=e.streams[0];
             _setupHubMeter(roomId, e.streams[0]);
           }
         };
@@ -480,6 +705,20 @@ function acceptCall(roomId){
             _pollTalentIce(roomId);
             // Apply quality settings
             _applyQuality(pc, roomId);
+            // Apply selected audio source (mic or stream feed)
+            _applySourceForRoom(roomId);
+            // Wire up send gain node for mic path
+            if(_micStream){
+              try{
+                var sCtx=new(window.AudioContext||window.webkitAudioContext)();
+                var sSrc=sCtx.createMediaStreamSource(_micStream);
+                var sGain=sCtx.createGain();
+                sGain.gain.value=(_sendVol[roomId]||100)/100;
+                _sendGain[roomId]=sGain;
+                // Note: track already added; gain affects monitoring level display only
+                // (track.enabled handles mute; replaceTrack handles source switching)
+              }catch(ex){}
+            }
           })
           .catch(function(e){
             console.error('[IPLink] setRemoteDescription error:', e.message);
@@ -569,6 +808,13 @@ function toggleMute(roomId){
 function disconnectRoom(roomId){
   var pc=_pcs[roomId];
   if(pc){ pc.close(); delete _pcs[roomId]; }
+  _stopFeed(roomId);
+  delete _sendGain[roomId]; delete _recvGain[roomId];
+  try{ if(_recvCtx[roomId]) _recvCtx[roomId].close(); }catch(e){} delete _recvCtx[roomId];
+  delete _onAir[roomId];
+  if(_sett.muteHangup && _micStream){
+    _micStream.getAudioTracks().forEach(function(t){t.enabled=false;});
+  }
   fetch('/api/iplink/room/'+roomId+'/status',{method:'POST',credentials:'same-origin',headers:csrfHdr(),body:JSON.stringify({from:'hub',status:'disconnected'})});
 }
 
@@ -665,11 +911,26 @@ function _renderRooms(rooms){
     if(r.stats && r.stats.loss_pct!=null){
       html+='<div class="rc-row"><span class="rc-lbl">Packet loss</span><span style="color:'+(r.stats.loss_pct>1?'var(--al)':r.stats.loss_pct>0?'var(--wn)':'var(--ok)')+'">'+r.stats.loss_pct+'%</span></div>';
     }
+    // Faders (only when connected)
+    if(r.status==='connected'){
+      html+='<div class="fader-row">';
+      html+='<span class="fader-lbl">Send</span>';
+      html+='<input type="range" class="fader" id="rc_sendvol_'+r.id+'" min="0" max="200" value="'+((_sendVol[r.id]!=null)?_sendVol[r.id]:100)+'" oninput="setSendVol(\''+r.id+'\',this.value)">';
+      html+='<span class="fader-val" id="rc_sendvolval_'+r.id+'">'+((_sendVol[r.id]!=null)?_sendVol[r.id]:100)+'%</span>';
+      html+='</div>';
+      html+='<div class="fader-row">';
+      html+='<span class="fader-lbl">Recv</span>';
+      html+='<input type="range" class="fader" id="rc_recvvol_'+r.id+'" min="0" max="200" value="'+((_recvVol[r.id]!=null)?_recvVol[r.id]:100)+'" oninput="setRecvVol(\''+r.id+'\',this.value)">';
+      html+='<span class="fader-val" id="rc_recvvolval_'+r.id+'">'+((_recvVol[r.id]!=null)?_recvVol[r.id]:100)+'%</span>';
+      html+='</div>';
+    }
     // Actions
     html+='<div class="actions">';
     html+='<button class="btn bg bs" onclick="copyLink(\''+r.id+'\',\'flash_'+r.id+'\')">🔗 Copy Link</button>';
     html+='<span id="flash_'+r.id+'" class="copy-flash">Copied!</span>';
     if(r.status==='connected'){
+      var onAirActive = !!_onAir[r.id];
+      html+='<button class="btn btn-onair bs'+(onAirActive?' active':'')+'" onclick="toggleOnAir(\''+r.id+'\')">'+(onAirActive?'🔴 On Air':'⭕ On Air')+'</button>';
       html+='<button class="btn bg bs" onclick="toggleMute(\''+r.id+'\')">'+( r.hub_muted?'🔊 Unmute IFB':'🔇 Mute IFB')+'</button>';
       html+='<button class="btn bd bs" onclick="disconnectRoom(\''+r.id+'\')">Disconnect</button>';
     } else if(r.status==='disconnected'||r.status==='offer_received'){
@@ -689,9 +950,28 @@ function _esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').rep
 function _refreshRooms(){
   fetch('/api/iplink/rooms',{credentials:'same-origin'})
     .then(function(r){return r.json();})
-    .then(function(d){ _renderRooms(d.rooms||[]); })
+    .then(function(d){
+      var rooms=d.rooms||[];
+      // Detect new offer_received rooms for ringtone + auto-accept
+      var anyOffer=false;
+      rooms.forEach(function(r){
+        var wasOffer=_prevOfferRooms[r.id];
+        var isOffer=r.status==='offer_received';
+        if(isOffer){
+          anyOffer=true;
+          if(!wasOffer){
+            // Newly arrived call
+            if(_sett.autoAccept && !_pcs[r.id]) acceptCall(r.id);
+          }
+        }
+        _prevOfferRooms[r.id]=isOffer;
+      });
+      if(anyOffer){ _startRingtone(); } else { _stopRingtone(); }
+      _renderRooms(rooms);
+    })
     .catch(function(){});
 }
+_loadSett();
 _refreshRooms();
 setInterval(_refreshRooms, 1500);
 
@@ -1803,6 +2083,33 @@ window.addEventListener('load', function(){
 </body></html>"""
 
 
+# ─── Stream feed thread ──────────────────────────────────────────────────────
+
+_feed_slots = {}   # room_id → slot (active feed relay)
+_feed_lock  = threading.Lock()
+
+
+def _feed_thread(inp, slot):
+    """Push live audio from a local SignalScope input into a relay slot at real-time pace."""
+    CHUNK_DUR = 0.095   # slightly under 0.1 s to avoid drifting behind
+    prev_chunk_id = None
+    while not slot.closed and not slot.stale:
+        t = time.monotonic()
+        buf = getattr(inp, '_stream_buffer', None)
+        if buf:
+            try:
+                chunk = bytes(buf[-1])   # most-recent 0.1 s PCM block
+                cid = id(chunk)
+                if cid != prev_chunk_id and chunk:
+                    slot.put(chunk)
+                    prev_chunk_id = cid
+            except (IndexError, Exception):
+                pass
+        elapsed = time.monotonic() - t
+        time.sleep(max(0, CHUNK_DUR - elapsed))
+    slot.closed = True   # ensure reaper picks it up
+
+
 # ─── Plugin registration ──────────────────────────────────────────────────────
 
 def register(app, ctx):
@@ -2090,6 +2397,64 @@ def register(app, ctx):
         _log(f"[IPLink] Hub IFB {'muted' if muted else 'unmuted'} on room '{room['name']}'")
         return jsonify({"ok": True, "muted": muted})
 
+    # ── Live streams list ──────────────────────────────────────────────────────
+    @app.get("/api/iplink/streams")
+    @login_required
+    def iplink_list_streams():
+        """Return currently active local SignalScope inputs for audio source selection."""
+        inputs = getattr(monitor.app_cfg, 'inputs', []) or []
+        streams = []
+        for idx, inp in enumerate(inputs):
+            name = getattr(inp, 'name', None) or getattr(inp, 'stream_name', None) or f"Input {idx}"
+            has_level = getattr(inp, '_has_real_level', False)
+            stereo = getattr(inp, '_audio_channels', 1) == 2
+            if has_level:
+                streams.append({"idx": idx, "name": name, "stereo": stereo})
+        return jsonify({"streams": streams})
+
+    # ── Room audio feed (inject SignalScope stream into WebRTC) ────────────────
+    listen_registry = ctx.get("listen_registry")
+
+    @app.post("/api/iplink/room/<room_id>/feed")
+    @login_required
+    @csrf_protect
+    def iplink_set_feed(room_id):
+        """Start pushing a local SignalScope input as the audio feed for a room."""
+        if not listen_registry:
+            return jsonify({"error": "listen_registry not available"}), 500
+        room = _get_room(room_id)
+        if not room:
+            return jsonify({"error": "Room not found"}), 404
+        data = request.get_json(silent=True) or {}
+        stream_idx = int(data.get("stream_idx", 0))
+        inputs = getattr(monitor.app_cfg, 'inputs', []) or []
+        if stream_idx < 0 or stream_idx >= len(inputs):
+            return jsonify({"error": "Invalid stream index"}), 400
+        inp = inputs[stream_idx]
+        n_ch = 2 if getattr(inp, '_audio_channels', 1) == 2 else 1
+        # Stop any existing feed for this room
+        with _feed_lock:
+            old_slot = _feed_slots.get(room_id)
+            if old_slot:
+                old_slot.closed = True
+        # Create new relay slot
+        slot = listen_registry.create(
+            "hub", stream_idx, kind="scanner",
+            mimetype="application/octet-stream",
+        )
+        with _feed_lock:
+            _feed_slots[room_id] = slot
+        threading.Thread(
+            target=_feed_thread, args=(inp, slot),
+            daemon=True, name=f"IPLinkFeed-{room_id[:8]}"
+        ).start()
+        _log(f"[IPLink] Stream feed started: room '{room['name']}' ← input [{stream_idx}] {getattr(inp,'name','?')}")
+        return jsonify({
+            "ok": True,
+            "slot_id": slot.slot_id,
+            "n_ch": n_ch,
+        })
+
     # ── SIP config API ─────────────────────────────────────────────────────────
     @app.get("/api/iplink/sip/config")
     @login_required
@@ -2115,4 +2480,4 @@ def register(app, ctx):
         _log(f"[IPLink] SIP config saved — server: {cfg.get('server','')}, user: {cfg.get('username','')}")
         return jsonify({"ok": True})
 
-    _log(f"[IPLink] Plugin registered — v1.1.0 — {len(_STUN_SERVERS)} STUN server(s), SIP client enabled")
+    _log(f"[IPLink] Plugin registered — v1.2.0 — {len(_STUN_SERVERS)} STUN server(s), SIP client + stream feed enabled")
