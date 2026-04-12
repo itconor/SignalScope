@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.4",
+    "version": "1.3.5",
 }
 
 import json
@@ -554,10 +554,13 @@ var _onAir    = {};  // room_id → bool (on-air state)
 var _feedReader = {}; // room_id → ReadableStreamReader (stream injection)
 var _prevOfferRooms = {}; // room_id → bool (for ringtone trigger detection)
 var _outPanelOpen   = {}; // room_id → bool
+var _pendingOutType = {}; // room_id → output type selected but not yet saved (keeps radio stable across re-renders)
 var _outputCapture  = {}; // room_id → {node, reader}
 var _lwWorkletUrl   = null;
 var _streamSources  = []; // cached list from /api/iplink/streams (never cleared on empty response)
 var _roomSrc        = {}; // room_id → 'global' | 'mic' | 'stream:SITE:IDX'
+var _feedAudio      = {}; // room_id → HTMLAudioElement (stream feed via createMediaElementSource)
+var _feedCtx        = {}; // room_id → AudioContext (for stream feed; closed on source change)
 
 var STUN = {{stun|tojson}};
 var BASE = window.location.origin;
@@ -688,20 +691,46 @@ setInterval(_loadOutputSites, 15000);
 
 // ─── Stream audio injection ───────────────────────────────────────────────────
 function _stopFeed(roomId){
+  // Stop audio element feed (current approach: createMediaElementSource)
+  var a=_feedAudio[roomId];
+  if(a){ try{a.pause();a.src='';}catch(e){} delete _feedAudio[roomId]; }
+  var c=_feedCtx[roomId];
+  if(c){ try{c.close();}catch(e){} delete _feedCtx[roomId]; }
+  // Stop legacy PCM reader (kept for backwards-compat)
   if(_feedReader[roomId]){ try{_feedReader[roomId].cancel();}catch(e){} delete _feedReader[roomId]; }
 }
 
-function _injectStreamAudio(roomId, slotId, nCh){
+function _injectStreamAudio(roomId, streamUrl){
+  // Inject a SignalScope live stream into the WebRTC sender for a room.
+  //
+  // Architecture: a hidden <audio> element fetches the hub's existing live-relay
+  // MP3 endpoint (works for both local inputs and remote client-site streams
+  // without requiring any additional plugin on client nodes).
+  // createMediaElementSource captures the decoded audio into a Web Audio graph
+  // (this also silences it locally — no echo to speakers) and routes it through
+  // a GainNode → MediaStreamDestinationNode → replaceTrack on the WebRTC sender.
   _stopFeed(roomId);
-  var url='/hub/scanner/stream/'+slotId;
-  var ctx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:48000});
-  // Resume immediately — browsers may start the context suspended even on a user gesture
+  var ctx=new(window.AudioContext||window.webkitAudioContext)();
   ctx.resume().catch(function(){});
-  var dest=ctx.createMediaStreamDestination();
+  _feedCtx[roomId]=ctx;
+
   var gainNode=ctx.createGain();
   gainNode.gain.value=(_sendVol[roomId]||100)/100;
   _sendGain[roomId]=gainNode;
+
+  var dest=ctx.createMediaStreamDestination();
   gainNode.connect(dest);
+
+  // Hidden audio element — pulls the MP3 live relay for this stream
+  var audio=new Audio(streamUrl);
+  audio.crossOrigin='use-credentials';  // send session cookie (same origin)
+  var srcNode=ctx.createMediaElementSource(audio);
+  srcNode.connect(gainNode);
+  _feedAudio[roomId]=audio;
+
+  audio.play().catch(function(e){
+    console.warn('[IPLink] Audio element play failed:',e.message||e);
+  });
 
   // Replace (or add) WebRTC audio track so the injected stream goes to the talent
   var pc=_pcs[roomId];
@@ -716,41 +745,11 @@ function _injectStreamAudio(roomId, slotId, nCh){
           });
         });
       } else {
-        // No audio sender (mic was denied) — try adding the track directly.
-        // This triggers renegotiation; works in Chrome/Firefox, less reliable in Safari.
         console.warn('[IPLink] No audio sender — adding track via addTrack');
         try{ pc.addTrack(track); }catch(e){ console.warn('[IPLink] addTrack failed:',e); }
       }
     }
   }
-
-  // Pump PCM from the relay slot into the AudioContext
-  var BLK_B=nCh===2?19200:9600;   // bytes per 100ms block (S16LE)
-  var buf=new Uint8Array(0);
-  var nextT=ctx.currentTime+1.0;  // 1 s pre-buffer
-
-  fetch(url,{credentials:'same-origin'}).then(function(r){
-    if(!r.ok){ console.warn('[IPLink] Stream relay returned',r.status,'for slot',slotId); return; }
-    var reader=r.body.getReader();
-    _feedReader[roomId]=reader;
-    (function pump(){reader.read().then(function(d){
-      if(d.done||!_feedReader[roomId]) return;
-      var tmp=new Uint8Array(buf.length+d.value.length);
-      tmp.set(buf); tmp.set(d.value,buf.length); buf=tmp;
-      while(buf.length>=BLK_B){
-        var blk=buf.slice(0,BLK_B); buf=buf.slice(BLK_B);
-        var ab=ctx.createBuffer(nCh,4800,48000);
-        var dv=new DataView(blk.buffer,blk.byteOffset,blk.byteLength);
-        for(var ch=0;ch<nCh;ch++){
-          var ch_data=ab.getChannelData(ch);
-          for(var i=0;i<4800;i++) ch_data[i]=dv.getInt16((i*nCh+ch)*2,true)/32768.0;
-        }
-        var src=ctx.createBufferSource(); src.buffer=ab; src.connect(gainNode);
-        var t=Math.max(nextT,ctx.currentTime+0.05); src.start(t); nextT=t+ab.duration;
-      }
-      pump();
-    }).catch(function(e){ console.warn('[IPLink] PCM pump error:',e); });})();
-  }).catch(function(e){ console.warn('[IPLink] Stream fetch error:',e); });
 }
 
 function _applySourceForRoom(roomId){
@@ -789,10 +788,10 @@ function _applySourceForRoom(roomId){
       return r.json();
     })
     .then(function(d){
-      if(d.slot_id){
-        _injectStreamAudio(roomId, d.slot_id, d.n_ch||1);
+      if(d.stream_url){
+        _injectStreamAudio(roomId, d.stream_url);
       } else {
-        _showConnErr(roomId, 'Stream source error: no slot returned');
+        _showConnErr(roomId, 'Stream source error: no URL returned');
       }
     }).catch(function(e){ if(e!=='feed-post-failed') console.warn('[IPLink] feed error:',e); });
   }
@@ -813,6 +812,7 @@ function updateLwAddr(roomId){
   if(am&&!am._customEdited) am.value=addr;
 }
 function setOutType(roomId, type){
+  _pendingOutType[roomId]=type;   // remember selection so re-renders don't revert before Apply
   var sub=document.getElementById('outsub_'+roomId);
   if(sub) sub.classList.toggle('show', type==='livewire'||type==='multicast');
 }
@@ -839,6 +839,7 @@ function saveOutput(roomId){
     body:JSON.stringify(cfg)
   }).then(function(){
     _outPanelOpen[roomId]=false;
+    delete _pendingOutType[roomId];   // saved — no longer need to override server state
     _refreshRooms();
     // If connected, start/stop capture accordingly
     if(_pcs[roomId]&&_pcs[roomId]!==true){
@@ -1299,10 +1300,13 @@ function _renderRooms(rooms){
     html+='<button class="btn bg bs" onclick="toggleOutPanel(\''+r.id+'\')" style="width:100%;justify-content:center">📡 Output: '+(outCfg.type==='livewire'?'Livewire ch '+outCfg.channel:outCfg.type==='multicast'?'AES67 '+_esc(outCfg.address||''):'Speaker')+'</button>';
     html+='<div id="outp_'+r.id+'" class="out-panel" style="'+(outOpen?'':'display:none')+'">';
     html+='<div style="font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Audio Output</div>';
-    html+='<label><input type="radio" name="ot_'+r.id+'" value="speaker"'+((!outCfg.type||outCfg.type==='speaker')?' checked':'')+' onchange="setOutType(\''+r.id+'\',this.value)"> 🔊 Speaker (browser)</label>';
-    html+='<label><input type="radio" name="ot_'+r.id+'" value="livewire"'+(outCfg.type==='livewire'?' checked':'')+' onchange="setOutType(\''+r.id+'\',this.value)"> 📡 Livewire / AES67 Multicast</label>';
+    // Use _pendingOutType (user changed radio but hasn't clicked Apply yet) to keep
+    // the selection stable across the 1.5 s _renderRooms re-render cycle.
+    var _dispOut=_pendingOutType[r.id]||(outCfg.type||'speaker');
+    html+='<label><input type="radio" name="ot_'+r.id+'" value="speaker"'+(_dispOut==='speaker'?' checked':'')+' onchange="setOutType(\''+r.id+'\',this.value)"> 🔊 Speaker (browser)</label>';
+    html+='<label><input type="radio" name="ot_'+r.id+'" value="livewire"'+(_dispOut==='livewire'?' checked':'')+' onchange="setOutType(\''+r.id+'\',this.value)"> 📡 Livewire / AES67 Multicast</label>';
     // Livewire sub-fields
-    html+='<div class="out-sub'+(outCfg.type==='livewire'||outCfg.type==='multicast'?' show':'')+'" id="outsub_'+r.id+'">';
+    html+='<div class="out-sub'+((_dispOut==='livewire'||_dispOut==='multicast')?' show':'')+'" id="outsub_'+r.id+'">';
     // Site selector — "Hub (local multicast)" or any connected client site
     html+='<div class="field" style="margin-bottom:6px"><label style="font-size:10px">Output Site</label>';
     html+='<select id="olwsite_'+r.id+'">';
@@ -3024,18 +3028,23 @@ def register(app, ctx):
         return jsonify({"streams": streams})
 
     # ── Room audio feed (inject SignalScope stream into WebRTC) ────────────────
-    listen_registry = ctx.get("listen_registry")
+    # Architecture: the browser uses a hidden <audio> element pointed at the
+    # hub's existing live-relay URL, captures it with createMediaElementSource,
+    # routes through a GainNode → MediaStreamDestinationNode, then replaceTrack
+    # on the WebRTC sender.  No separate PCM relay slot needed — this works for
+    # both local hub inputs and remote client-site streams without requiring the
+    # iplink plugin to be installed on client nodes.
 
     @app.post("/api/iplink/room/<room_id>/feed")
     @login_required
     @csrf_protect
     def iplink_set_feed(room_id):
-        """Start pushing a SignalScope stream as the audio feed for a room.
-        If site=='local', push directly from a local input's _stream_buffer.
-        Otherwise, queue a command for the named client site to start pushing PCM.
+        """Return the live-relay URL for a stream so the browser can inject it
+        into a WebRTC room via createMediaElementSource.
+        Local inputs: /stream/<idx>/live
+        Remote site:  /hub/site/<site>/stream/<idx>/live
         """
-        if not listen_registry:
-            return jsonify({"error": "listen_registry not available"}), 500
+        import urllib.parse as _urlparse
         room = _get_room(room_id)
         if not room:
             return jsonify({"error": "Room not found"}), 404
@@ -3043,65 +3052,31 @@ def register(app, ctx):
         stream_idx = int(data.get("stream_idx", 0))
         site       = str(data.get("site", "local"))
 
-        # Stop any existing feed for this room
-        with _feed_lock:
-            old_slot = _feed_slots.get(room_id)
-            if old_slot:
-                old_slot.closed = True
-            # If previous feed was from a client, cancel it
-            old_site = _feed_slots.get(f"{room_id}_site")
-            if old_site:
-                _pending_feeds[old_site] = {"stop": old_slot.slot_id if old_slot else None}
-
         if site == "local":
-            # Push directly from a local input's _stream_buffer
             inputs = getattr(monitor.app_cfg, 'inputs', []) or []
             if stream_idx < 0 or stream_idx >= len(inputs):
                 return jsonify({"error": "Invalid stream index"}), 400
-            inp  = inputs[stream_idx]
-            n_ch = 2 if getattr(inp, '_audio_channels', 1) == 2 else 1
-            slot = listen_registry.create(
-                "local", stream_idx, kind="scanner",
-                mimetype="application/octet-stream",
-            )
-            with _feed_lock:
-                _feed_slots[room_id]         = slot
-                _feed_slots[f"{room_id}_site"] = "local"
-            threading.Thread(
-                target=_feed_thread, args=(inp, slot),
-                daemon=True, name=f"IPLinkFeed-{room_id[:8]}",
-            ).start()
-            _log(f"[IPLink] Local feed: room '{room['name']}' ← input [{stream_idx}] {getattr(inp,'name','?')}")
-            return jsonify({"ok": True, "slot_id": slot.slot_id, "n_ch": n_ch})
-
+            inp = inputs[stream_idx]
+            name = (getattr(inp, 'name', None) or getattr(inp, 'stream_name', None)
+                    or getattr(inp, 'device_index', None) or f"Input {stream_idx}")
+            stream_url = f"/stream/{stream_idx}/live"
+            _log(f"[IPLink] Feed: room '{room['name']}' ← local input [{stream_idx}] {name}")
         else:
-            # Queue command for client site to push PCM
-            hub_server = ctx.get("hub_server")
-            if not hub_server:
+            hub_server_ref = ctx.get("hub_server")
+            if not hub_server_ref:
                 return jsonify({"error": "hub_server not available"}), 500
-            sites      = getattr(hub_server, '_sites', {})
-            sdata      = sites.get(site, {})
+            sites  = getattr(hub_server_ref, '_sites', {})
+            sdata  = sites.get(site, {})
             if not sdata.get('_approved'):
-                return jsonify({"error": f"Site '{site}' not approved or not connected"}), 400
+                return jsonify({"error": f"Site '{site}' not connected"}), 400
             site_streams = sdata.get('streams', [])
-            s_info = site_streams[stream_idx] if stream_idx < len(site_streams) else {}
-            # stereo=True comes from config (DAB/HTTP set it explicitly).
-            # FM stereo is detected at runtime — it never sets stereo=True in config,
-            # but the live-push merger puts level_dbfs_l in _sites when _audio_channels==2.
-            # _audio_channels itself is a runtime attr never serialised in the heartbeat.
-            is_stereo = (s_info.get('stereo') or
-                         s_info.get('level_dbfs_l') is not None)
-            n_ch = 2 if is_stereo else 1
-            slot = listen_registry.create(
-                site, stream_idx, kind="scanner",
-                mimetype="application/octet-stream",
-            )
-            with _feed_lock:
-                _feed_slots[room_id]           = slot
-                _feed_slots[f"{room_id}_site"] = site
-            _pending_feeds[site] = {"slot_id": slot.slot_id, "stream_idx": stream_idx}
-            _log(f"[IPLink] Client feed queued: room '{room['name']}' ← {site}[{stream_idx}] slot={slot.slot_id[:8]}")
-            return jsonify({"ok": True, "slot_id": slot.slot_id, "n_ch": n_ch})
+            if stream_idx >= len(site_streams):
+                return jsonify({"error": "Invalid stream index for this site"}), 400
+            site_enc   = _urlparse.quote(site, safe='')
+            stream_url = f"/hub/site/{site_enc}/stream/{stream_idx}/live"
+            _log(f"[IPLink] Feed: room '{room['name']}' ← {site}[{stream_idx}]")
+
+        return jsonify({"ok": True, "stream_url": stream_url})
 
     # ── Room output config ──────────────────────────────────────────────────────
     @app.post("/api/iplink/room/<room_id>/output")
@@ -3299,4 +3274,4 @@ def register(app, ctx):
         _log(f"[IPLink] SIP config saved — server: {cfg.get('server','')}, user: {cfg.get('username','')}")
         return jsonify({"ok": True})
 
-    _log(f"[IPLink] Plugin registered — v1.3.4 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
+    _log(f"[IPLink] Plugin registered — v1.3.5 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
