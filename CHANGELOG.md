@@ -2,6 +2,33 @@
 
 ---
 
+## IP Link v1.1.20 — 2026-04-12
+
+### Fixed — universal unconditional SDP munge for all hub browsers (plugin v1.1.20)
+
+**Root cause of all recurring "Invalid SDP line" errors identified:**
+
+The v1.1.19 fix was wrong. It made the munge Safari-only on the assumption that "Chrome's offer is valid for Chrome". This is no longer true:
+
+- **Chrome M130+** now rejects `a=ssrc:SSRC msid:STREAM TRACK` (the two-identifier format) that other browsers still generate in their offers. Chrome was silently failing for talent contributors using Firefox, older Chrome, or Safari.
+- **Safari** rejects `a=rtcp-fb: transport-cc` and similar RTCP feedback lines that Chrome includes.
+
+Neither browser's raw WebRTC offer is accepted cleanly by the other. Browser-detection is the wrong approach — it only fixes the specific browser being tested, not the talent's browser.
+
+**Fix: `_sdpClean` is now unconditional.** The `forSafari` parameter and dead branch have been removed. The full munge always runs:
+- Strip `a=ssrc` / `a=ssrc-group` (Chrome M130+ + Safari)
+- Strip `a=extmap-allow-mixed` (Safari misreport fix)
+- Strip `a=rtcp-rsize` (some Safari builds)
+- Strip `a=rtcp-fb:` lines (Safari rejects transport-cc; optional for any browser)
+- Normalise `a=extmap:N/direction` → `a=extmap:N`
+- Drop `rtx`/`ulpfec`/`flexfec` rtpmap/fmtp lines
+- Drop orphaned `a=fmtp` lines with no corresponding `a=rtpmap`
+- Rewrite `m=` lines removing dropped PTs
+
+The same unconditional munge is applied to outgoing SIP INVITE SDPs via `_sipMungeSdp`.
+
+---
+
 ## IP Link v1.1.19 — 2026-04-12
 
 ### Fixed — Chrome WebRTC parse error + SIP 500 on outgoing calls (plugin v1.1.19)

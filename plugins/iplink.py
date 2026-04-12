@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.19",
+    "version": "1.1.20",
     "hub_only": True,
 }
 
@@ -352,55 +352,61 @@ function _getHubMic(cb){
 }
 
 // ─── SDP munging ─────────────────────────────────────────────────────────────
-// ── Browser detection ─────────────────────────────────────────────────────────
-// True when running in Safari (excludes Chrome/Edge which include "Chrome" in UA).
-// Used to gate SDP munging: Chrome/Firefox accept Chrome offers natively;
-// only Safari needs the compatibility shim.
-var _hubIsSafari = (function(){
-  var ua = navigator.userAgent;
-  return /safari/i.test(ua) && !/chrome|chromium|crios|android/i.test(ua);
-})();
+// (No browser detection needed — SDP munge is applied unconditionally.)
 
-// SDP compatibility shim — only needed when the HUB browser is Safari.
-// Chrome/Firefox accept WebRTC SDP from any browser without munging.
-// Safari rejects several Chrome-specific lines; this shim strips them.
+// SDP compatibility shim — applied unconditionally to ALL incoming offers.
+// Both Chrome M130+ and Safari reject certain lines in raw WebRTC offers:
 //
-//  - a=ssrc / a=ssrc-group       source-level attributes Safari rejects
-//  - a=extmap-allow-mixed        session-level; Safari WebKit rejects it and
-//                                MISREPORTS the error as a later line (e.g.
-//                                "a=fmtp:111 … Invalid SDP line") — this was the
-//                                root cause of the recurring fmtp parse errors
-//  - a=extmap:N/direction        direction specifiers; unsupported in older Safari
-//  - a=rtcp-rsize                some Safari builds reject it
+//  - a=ssrc / a=ssrc-group       Chrome M130+ rejects the deprecated two-ID
+//                                "msid:STREAM TRACK" format; Safari rejects all ssrc
+//  - a=extmap-allow-mixed        Safari WebKit rejects and MISREPORTS as later lines
+//  - a=extmap:N/direction        direction specifiers; Safari rejects
+//  - a=rtcp-rsize                Safari rejects
+//  - a=rtcp-fb: transport-cc     Safari rejects; optional — call works without it
 //  - telephone-event / CN / RED  not needed for contribution
-//  - PCMA / PCMU / static PTs    Safari rejects explicit rtpmap for these
-//  - rtx / ulpfec / flexfec      not needed, can confuse parsers
-// Orphan guard: fmtp/rtcp-fb without a matching rtpmap are stripped.
+//  - PCMA / PCMU / static PTs    explicit rtpmap confuses parsers
+//  - rtx / ulpfec / flexfec      not needed
+// Orphan guard: fmtp without a matching rtpmap stripped (would cause parse error).
+// Codec removal: rtpmap/fmtp/rtcp-fb AND the m= PT entry are removed together.
 //
-// For SIP outgoing INVITE, the same cleaner (_sipMungeSdp) strips the Chrome
-// WebRTC lines that confuse SIP servers (ssrc, extmap-allow-mixed).
+// _sipMungeSdp re-uses the same cleaner for outgoing SIP INVITE SDPs.
 var _SDP_DROP_CODECS = /^(telephone-event|CN|RED|PCMA|PCMU|rtx|ulpfec|flexfec)$/i;
 
-// _sdpClean: shared SDP line filter used by both _mungeOfferSdp and _sipMungeSdp.
-// dropPts / mappedPts are pre-computed from Pass 1.
-function _sdpClean(lines, dropPts, mappedPts, forSafari){
+// _sdpBuildMaps: first-pass scan — collects payload types to drop and those
+// that have an explicit a=rtpmap line.
+function _sdpBuildMaps(lines){
+  var dropPts = {}, mappedPts = {};
+  lines.forEach(function(line){
+    var m = line.match(/^a=rtpmap:(\d+) ([^\/]+)\//i);
+    if(!m) return;
+    var pt = parseInt(m[1], 10);
+    mappedPts[m[1]] = true;
+    if(_SDP_DROP_CODECS.test(m[2]) || pt <= 95) dropPts[m[1]] = true;
+  });
+  return {dropPts:dropPts, mappedPts:mappedPts};
+}
+
+// _sdpClean: second-pass filter. Unconditional — strips everything that
+// Chrome M130+, Safari, or SIP servers reject in raw WebRTC offers.
+function _sdpClean(lines, dropPts, mappedPts){
   var out = [];
   lines.forEach(function(line){
-    // Always drop ssrc source-level attributes (nothing needs them)
+    // a=ssrc: Chrome M130+ rejects the deprecated "msid:STREAM TRACK" two-ID
+    // format; Safari rejects all ssrc lines.
     if(/^a=ssrc(-group)?:/.test(line)) return;
-    // Always drop extmap-allow-mixed (causes Safari to misreport errors; SIP servers ignore it anyway)
+    // a=extmap-allow-mixed: causes Safari to misreport parse errors as later lines.
     if(/^a=extmap-allow-mixed\s*$/.test(line)) return;
-    if(forSafari){
-      // Safari-only: drop rtcp-rsize
-      if(/^a=rtcp-rsize\s*$/.test(line)) return;
-      // Safari-only: normalise extmap direction specifiers
-      var em = line.match(/^(a=extmap:\d+)\/(?:sendrecv|sendonly|recvonly|inactive)( .*)?$/);
-      if(em){ out.push(em[1] + (em[2]||'')); return; }
-    }
-    // Drop rtpmap/fmtp/rtcp-fb for removed codecs
-    var am = line.match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/);
+    // a=rtcp-rsize: some Safari builds reject it; optional, call works without it.
+    if(/^a=rtcp-rsize\s*$/.test(line)) return;
+    // a=rtcp-fb: Safari rejects transport-cc and others; optional.
+    if(/^a=rtcp-fb:/.test(line)) return;
+    // Normalise extmap direction specifiers: a=extmap:N/recvonly URI → a=extmap:N URI
+    var em = line.match(/^(a=extmap:\d+)\/(?:sendrecv|sendonly|recvonly|inactive)( .*)?$/);
+    if(em){ out.push(em[1] + (em[2]||'')); return; }
+    // Drop rtpmap/fmtp for removed codecs
+    var am = line.match(/^a=(?:rtpmap|fmtp):(\d+)/);
     if(am && dropPts[am[1]]) return;
-    // Drop orphaned fmtp/rtcp-fb (PT has no rtpmap — causes "Invalid SDP line")
+    // Drop orphaned fmtp (PT has no rtpmap — causes "Invalid SDP line" in any browser)
     if(am && !am[0].startsWith('a=rtpmap') && !mappedPts[am[1]]) return;
     // Rewrite m= lines: remove dropped PTs and static PTs (≤95) with no rtpmap
     if(line.startsWith('m=')){
@@ -418,33 +424,20 @@ function _sdpClean(lines, dropPts, mappedPts, forSafari){
   return out.join('\r\n');
 }
 
-function _sdpBuildMaps(lines){
-  var dropPts = {}, mappedPts = {};
-  lines.forEach(function(line){
-    var m = line.match(/^a=rtpmap:(\d+) ([^\/]+)\//i);
-    if(!m) return;
-    var pt = parseInt(m[1], 10);
-    mappedPts[m[1]] = true;
-    if(_SDP_DROP_CODECS.test(m[2]) || pt <= 95) dropPts[m[1]] = true;
-  });
-  return {dropPts:dropPts, mappedPts:mappedPts};
-}
-
 // Applied to incoming WebRTC offers (talent → hub).
-// ONLY runs when the hub browser is Safari — Chrome/Firefox accept the raw offer.
+// Unconditional — Chrome M130+ and Safari both reject different lines in raw offers.
 function _mungeOfferSdp(sdp){
-  if(!_hubIsSafari) return sdp;   // Chrome/Firefox: no munging needed
   var lines = sdp.split(/\r?\n/);
-  var maps = _sdpBuildMaps(lines);
-  return _sdpClean(lines, maps.dropPts, maps.mappedPts, true);
+  var maps  = _sdpBuildMaps(lines);
+  return _sdpClean(lines, maps.dropPts, maps.mappedPts);
 }
 
 // Applied to outgoing SIP INVITE offers (Chrome WebRTC → SIP server).
-// Always runs: strips ssrc/extmap-allow-mixed which confuse many SIP servers.
+// Strips WebRTC-specific lines that SIP servers reject.
 function _sipMungeSdp(sdp){
   var lines = sdp.split(/\r?\n/);
-  var maps = _sdpBuildMaps(lines);
-  return _sdpClean(lines, maps.dropPts, maps.mappedPts, false);
+  var maps  = _sdpBuildMaps(lines);
+  return _sdpClean(lines, maps.dropPts, maps.mappedPts);
 }
 
 // ─── Hub WebRTC negotiation ──────────────────────────────────────────────────
