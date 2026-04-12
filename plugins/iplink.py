@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.29",
+    "version": "1.1.30",
     "hub_only": True,
 }
 
@@ -1189,13 +1189,29 @@ function _sipHandleMsg(raw){
       }else if(st===200){
         _sip.callToTag=_sipExtractTag(msg.headers['to']||'');
         var sdp=msg.body;
+        // Always ACK the 200 OK immediately — required by RFC 3261 regardless
+        // of whether SDP processing succeeds.
+        _sipSendAck(msg, _sip.callUri);
         if(_sip.pc&&sdp){
-          _sip.pc.setRemoteDescription({type:'answer',sdp:sdp})
+          // Ensure SDP ends with \r\n (same fix as offer/answer store)
+          var answerSdp = sdp.endsWith('\r\n') ? sdp : sdp + '\r\n';
+          console.debug('[IPLink SIP] 200 OK answer SDP:\n', answerSdp);
+          _sip.pc.setRemoteDescription({type:'answer', sdp:answerSdp})
             .then(function(){
-              _sipSendAck(msg,_sip.callUri);
               _sip.callStart=Date.now();
               _sipSetState('incall');
-            }).catch(function(e){console.error('SIP SDP:',e);});
+            }).catch(function(e){
+              console.error('[IPLink SIP] setRemoteDescription on answer failed:', e.message);
+              console.debug('[IPLink SIP] answer SDP that was rejected:\n', answerSdp);
+              // Show as error rather than staying frozen on "Ringing"
+              _sipCleanupCall();
+              _sipSetState('registered');
+              _sipShowCallErr('Call answered but media failed: '+e.message+' — check server logs for rtpengine errors');
+            });
+        } else if(_sip.pc && !sdp){
+          // 200 OK with no SDP body — treat as connected (audio may follow in re-INVITE)
+          _sip.callStart=Date.now();
+          _sipSetState('incall');
         }
       }else if(st>=400){
         // RFC 3261 §17.1.1.3: non-2xx INVITE responses MUST be ACKed.
