@@ -2,6 +2,18 @@
 
 ---
 
+## IP Link v1.1.31 — 2026-04-12
+
+### Fixed — SIP call connects but media fails: "Called in wrong state: stable" (plugin v1.1.31)
+
+**Root cause:** RFC 3261 §17.1.1.3 requires the ACK CSeq to exactly match the INVITE CSeq. `_sipSendAck` was calling `_sip.callCsq++` to increment the sequence counter before building the ACK — producing `CSeq: N+1 ACK` instead of `CSeq: N ACK`. The server never matched this to the outstanding INVITE transaction, so it kept retransmitting the 200 OK. Each retransmit triggered the 200 OK handler a second time. The first pass set `RTCPeerConnection` to `stable` via `setRemoteDescription`; the second pass called `setRemoteDescription` again on an already-stable PC, throwing "Failed to set remote answer sdp: Called in wrong state: stable".
+
+**Fix 1 — correct ACK CSeq:** `_sipSendAck` now extracts the CSeq number from the 200 OK response headers (`okMsg.headers['cseq']`) rather than using the local counter. The local `_sip.callCsq` counter is NOT incremented for ACK.
+
+**Fix 2 — duplicate 200 OK guard:** After sending ACK, the handler checks `if(_sip.state==='incall'){ return; }` before attempting `setRemoteDescription`. Server retransmits are silently ACKed without re-processing media negotiation.
+
+---
+
 ## IP Link v1.1.28 — 2026-04-12
 
 ### Fixed — ACK for 4xx INVITE built from response headers, not nulled _sip state (plugin v1.1.28)

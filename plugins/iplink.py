@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.30",
+    "version": "1.1.31",
     "hub_only": True,
 }
 
@@ -1109,8 +1109,11 @@ function _sipSendInvite(uri,sdp){
 }
 
 function _sipSendAck(okMsg,uri){
-  var cfg=_sip.cfg, dom=_sipDomain();
-  _sip.callCsq++;
+  var cfg=_sip.cfg;
+  // RFC 3261 §17.1.1.3: ACK CSeq MUST equal the INVITE CSeq — do NOT increment.
+  // The sequence number counter is only incremented for new requests (INVITE, BYE, etc).
+  var cseqNum = (okMsg.headers['cseq']||'1 INVITE').match(/^(\d+)/);
+  var cseq = (cseqNum ? cseqNum[1] : _sip.callCsq) + ' ACK';
   var toHdr=okMsg.headers['to']||('<'+uri+'>');
   var hdrs={
     'Via':          'SIP/2.0/WS '+_sipWsHostname()+';branch='+_sipBranch()+';rport',
@@ -1118,7 +1121,7 @@ function _sipSendAck(okMsg,uri){
     'From':         '"'+cfg.display_name+'" <'+_sipSelfUri()+'>;tag='+_sip.callFromTag,
     'To':           toHdr,
     'Call-ID':      _sip.callCid,
-    'CSeq':         _sip.callCsq+' ACK',
+    'CSeq':         cseq,
     'Contact':      _sipContact(),
   };
   _sipSend(_sipBuildReq('ACK',uri,hdrs,''));
@@ -1187,13 +1190,16 @@ function _sipHandleMsg(raw){
         var pill=document.getElementById('sipStatusPill');
         if(pill)pill.querySelector('span:last-child').textContent='SIP: Ringing…';
       }else if(st===200){
+        // Always ACK immediately — server retransmits 200 until it gets an ACK.
+        _sipSendAck(msg, _sip.callUri);
+        // Guard against duplicate 200 OK processing (server retransmits until ACK
+        // is received; the PC is already in 'stable' after the first processing
+        // and setRemoteDescription would fail with "Called in wrong state: stable").
+        if(_sip.state==='incall'){ return; }
         _sip.callToTag=_sipExtractTag(msg.headers['to']||'');
         var sdp=msg.body;
-        // Always ACK the 200 OK immediately — required by RFC 3261 regardless
-        // of whether SDP processing succeeds.
-        _sipSendAck(msg, _sip.callUri);
         if(_sip.pc&&sdp){
-          // Ensure SDP ends with \r\n (same fix as offer/answer store)
+          // Ensure SDP ends with \r\n
           var answerSdp = sdp.endsWith('\r\n') ? sdp : sdp + '\r\n';
           console.debug('[IPLink SIP] 200 OK answer SDP:\n', answerSdp);
           _sip.pc.setRemoteDescription({type:'answer', sdp:answerSdp})
@@ -1203,13 +1209,11 @@ function _sipHandleMsg(raw){
             }).catch(function(e){
               console.error('[IPLink SIP] setRemoteDescription on answer failed:', e.message);
               console.debug('[IPLink SIP] answer SDP that was rejected:\n', answerSdp);
-              // Show as error rather than staying frozen on "Ringing"
               _sipCleanupCall();
               _sipSetState('registered');
               _sipShowCallErr('Call answered but media failed: '+e.message+' — check server logs for rtpengine errors');
             });
         } else if(_sip.pc && !sdp){
-          // 200 OK with no SDP body — treat as connected (audio may follow in re-INVITE)
           _sip.callStart=Date.now();
           _sipSetState('incall');
         }
