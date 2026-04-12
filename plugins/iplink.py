@@ -474,7 +474,7 @@ function _loadStreamSources(){
       (d.streams||[]).forEach(function(s){
         var o=document.createElement('option');
         o.value='stream:'+s.idx;
-        o.textContent='📡 '+s.name+(s.stereo?' (stereo)':'');
+        o.textContent=(s.active?'🟢':'⚪')+' '+s.name+(s.stereo?' · stereo':'');
         sel.appendChild(o);
       });
       // Restore selection if still valid
@@ -2401,15 +2401,17 @@ def register(app, ctx):
     @app.get("/api/iplink/streams")
     @login_required
     def iplink_list_streams():
-        """Return currently active local SignalScope inputs for audio source selection."""
+        """Return all configured local SignalScope inputs for audio source selection."""
         inputs = getattr(monitor.app_cfg, 'inputs', []) or []
         streams = []
         for idx, inp in enumerate(inputs):
-            name = getattr(inp, 'name', None) or getattr(inp, 'stream_name', None) or f"Input {idx}"
-            has_level = getattr(inp, '_has_real_level', False)
+            name = (getattr(inp, 'name', None) or
+                    getattr(inp, 'stream_name', None) or
+                    getattr(inp, 'device_index', None) or
+                    f"Input {idx}")
             stereo = getattr(inp, '_audio_channels', 1) == 2
-            if has_level:
-                streams.append({"idx": idx, "name": name, "stereo": stereo})
+            active = getattr(inp, '_has_real_level', False)
+            streams.append({"idx": idx, "name": name, "stereo": stereo, "active": active})
         return jsonify({"streams": streams})
 
     # ── Room audio feed (inject SignalScope stream into WebRTC) ────────────────
