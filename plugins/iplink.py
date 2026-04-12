@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.20",
+    "version": "1.1.21",
     "hub_only": True,
 }
 
@@ -367,77 +367,28 @@ function _getHubMic(cb){
 //  - PCMA / PCMU / static PTs    explicit rtpmap confuses parsers
 //  - rtx / ulpfec / flexfec      not needed
 // Orphan guard: fmtp without a matching rtpmap stripped (would cause parse error).
-// Codec removal: rtpmap/fmtp/rtcp-fb AND the m= PT entry are removed together.
+// ─── SIP SDP normalisation ────────────────────────────────────────────────────
+// Room calls: both ends are WebRTC browsers that negotiate natively.
+//   The raw offer from the talent is passed unchanged to setRemoteDescription().
+//   Any SDP manipulation risks breaking the PT references (e.g. removing a codec
+//   from the m= line while leaving its a=fmtp behind → "Invalid SDP line").
 //
-// _sipMungeSdp re-uses the same cleaner for outgoing SIP INVITE SDPs.
-var _SDP_DROP_CODECS = /^(telephone-event|CN|RED|PCMA|PCMU|rtx|ulpfec|flexfec)$/i;
-
-// _sdpBuildMaps: first-pass scan — collects payload types to drop and those
-// that have an explicit a=rtpmap line.
-function _sdpBuildMaps(lines){
-  var dropPts = {}, mappedPts = {};
-  lines.forEach(function(line){
-    var m = line.match(/^a=rtpmap:(\d+) ([^\/]+)\//i);
-    if(!m) return;
-    var pt = parseInt(m[1], 10);
-    mappedPts[m[1]] = true;
-    if(_SDP_DROP_CODECS.test(m[2]) || pt <= 95) dropPts[m[1]] = true;
-  });
-  return {dropPts:dropPts, mappedPts:mappedPts};
-}
-
-// _sdpClean: second-pass filter. Unconditional — strips everything that
-// Chrome M130+, Safari, or SIP servers reject in raw WebRTC offers.
-function _sdpClean(lines, dropPts, mappedPts){
-  var out = [];
-  lines.forEach(function(line){
-    // a=ssrc: Chrome M130+ rejects the deprecated "msid:STREAM TRACK" two-ID
-    // format; Safari rejects all ssrc lines.
-    if(/^a=ssrc(-group)?:/.test(line)) return;
-    // a=extmap-allow-mixed: causes Safari to misreport parse errors as later lines.
-    if(/^a=extmap-allow-mixed\s*$/.test(line)) return;
-    // a=rtcp-rsize: some Safari builds reject it; optional, call works without it.
-    if(/^a=rtcp-rsize\s*$/.test(line)) return;
-    // a=rtcp-fb: Safari rejects transport-cc and others; optional.
-    if(/^a=rtcp-fb:/.test(line)) return;
-    // Normalise extmap direction specifiers: a=extmap:N/recvonly URI → a=extmap:N URI
-    var em = line.match(/^(a=extmap:\d+)\/(?:sendrecv|sendonly|recvonly|inactive)( .*)?$/);
-    if(em){ out.push(em[1] + (em[2]||'')); return; }
-    // Drop rtpmap/fmtp for removed codecs
-    var am = line.match(/^a=(?:rtpmap|fmtp):(\d+)/);
-    if(am && dropPts[am[1]]) return;
-    // Drop orphaned fmtp (PT has no rtpmap — causes "Invalid SDP line" in any browser)
-    if(am && !am[0].startsWith('a=rtpmap') && !mappedPts[am[1]]) return;
-    // Rewrite m= lines: remove dropped PTs and static PTs (≤95) with no rtpmap
-    if(line.startsWith('m=')){
-      var parts = line.split(' ');
-      var pts = parts.slice(3).filter(function(p){
-        if(dropPts[p]) return false;
-        if(!mappedPts[p] && parseInt(p,10) <= 95) return false;
-        return true;
-      });
-      out.push(parts.slice(0,3).concat(pts).join(' '));
-      return;
-    }
-    out.push(line);
-  });
-  return out.join('\r\n');
-}
-
-// Applied to incoming WebRTC offers (talent → hub).
-// Unconditional — Chrome M130+ and Safari both reject different lines in raw offers.
-function _mungeOfferSdp(sdp){
-  var lines = sdp.split(/\r?\n/);
-  var maps  = _sdpBuildMaps(lines);
-  return _sdpClean(lines, maps.dropPts, maps.mappedPts);
-}
-
-// Applied to outgoing SIP INVITE offers (Chrome WebRTC → SIP server).
-// Strips WebRTC-specific lines that SIP servers reject.
+// SIP calls: the hub's own Chrome offer contains WebRTC-specific extension lines
+//   that many SIP servers reject.  _sipMungeSdp strips only those lines — it does
+//   NOT rewrite m= lines or remove codecs so the offer stays self-consistent.
 function _sipMungeSdp(sdp){
-  var lines = sdp.split(/\r?\n/);
-  var maps  = _sdpBuildMaps(lines);
-  return _sdpClean(lines, maps.dropPts, maps.mappedPts);
+  var DROP = [
+    /^a=ssrc(-group)?:/,
+    /^a=extmap-allow-mixed\s*$/,
+    /^a=rtcp-rsize\s*$/,
+    /^a=rtcp-fb:/,
+  ];
+  return sdp.split(/\r?\n/).filter(function(line){
+    return !DROP.some(function(p){ return p.test(line); });
+  }).map(function(line){
+    // Normalise a=extmap:N/direction URI → a=extmap:N URI
+    return line.replace(/^(a=extmap:\d+)\/(?:sendrecv|sendonly|recvonly|inactive)\b/, '$1');
+  }).join('\r\n');
 }
 
 // ─── Hub WebRTC negotiation ──────────────────────────────────────────────────
@@ -503,9 +454,11 @@ function acceptCall(roomId){
           }
         };
 
-        // Set remote offer, create answer
-        var _mungedSdp = _mungeOfferSdp(d.offer);
-        pc.setRemoteDescription({type:'offer', sdp:_mungedSdp})
+        // Set remote offer — pass the talent's SDP unchanged.
+        // Both ends are WebRTC browsers; they negotiate codecs natively.
+        // Manipulating the SDP (removing codecs, rewriting m= lines) risks
+        // making PT references inconsistent and causes "Invalid SDP line" errors.
+        pc.setRemoteDescription({type:'offer', sdp:d.offer})
           .then(function(){ return pc.createAnswer(); })
           .then(function(ans){
             return pc.setLocalDescription(ans).then(function(){ return ans; });
@@ -524,9 +477,8 @@ function acceptCall(roomId){
             _applyQuality(pc, roomId);
           })
           .catch(function(e){
-            // Log the munged SDP so it can be inspected in DevTools if SDP parsing fails
-            console.error('[IPLink] WebRTC error:', e.message);
-            console.debug('[IPLink] munged offer SDP that was rejected:\n', _mungedSdp);
+            console.error('[IPLink] setRemoteDescription error:', e.message);
+            console.debug('[IPLink] raw offer SDP:\n', d.offer);
             delete _pcs[roomId];
             _showConnErr(roomId, 'WebRTC failed: '+(e.message||String(e)));
           });

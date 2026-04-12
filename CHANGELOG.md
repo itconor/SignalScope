@@ -2,6 +2,20 @@
 
 ---
 
+## IP Link v1.1.21 — 2026-04-12
+
+### Fixed — root cause of all "Invalid SDP line" WebRTC errors (plugin v1.1.21)
+
+**Root cause identified:** All previous munge attempts were wrong. The `_sdpClean` function rewrote `m=` lines to remove codecs (rtx, RED, G722, PCMU, etc.) while leaving `a=fmtp` lines for those same PTs in place. Chrome's SDP parser rejects `a=fmtp:PT` when PT is no longer in the `m=` line — hence "Invalid SDP line" on `a=fmtp:111`.
+
+**Fix:** For room-to-room WebRTC calls, the talent's raw offer SDP is now passed **unchanged** to `pc.setRemoteDescription()`. Both ends are WebRTC browsers; they negotiate codecs natively via the offer/answer exchange. No client-side SDP manipulation is needed or safe — any rewriting of `m=` lines or removal of codecs risks creating PT reference inconsistencies.
+
+The entire `_sdpBuildMaps` / `_sdpClean` / `_mungeOfferSdp` machinery has been removed.
+
+**SIP INVITE munge retained** — the hub's Chrome offer does contain WebRTC-specific attribute lines that SIP servers reject. `_sipMungeSdp` now uses a simple line-level strip with **no `m=` rewriting**: strips `a=ssrc`, `a=extmap-allow-mixed`, `a=rtcp-rsize`, `a=rtcp-fb`, and normalises `a=extmap:N/direction` → `a=extmap:N`. Codecs and `m=` lines are left intact.
+
+---
+
 ## IP Link v1.1.20 — 2026-04-12
 
 ### Fixed — universal unconditional SDP munge for all hub browsers (plugin v1.1.20)
