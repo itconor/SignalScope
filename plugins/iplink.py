@@ -397,9 +397,9 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
         </div>
       </div>
       <div style="margin-bottom:12px">
-        <label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--tx);cursor:pointer">
-          <input type="checkbox" id="cPermanent" style="accent-color:var(--acc)">
-          📌 Permanent room (survives restarts, never expires)
+        <label style="display:flex;align-items:flex-start;gap:7px;font-size:12px;color:var(--tx);cursor:pointer">
+          <input type="checkbox" id="cPermanent" style="accent-color:var(--acc);margin-top:2px;flex-shrink:0">
+          <span style="flex:1;min-width:0">📌 Permanent room (survives restarts, never expires)</span>
         </label>
       </div>
       <div style="display:flex;gap:8px">
@@ -517,8 +517,8 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
             </div>
           </div>
           <div style="margin-top:4px;margin-bottom:14px">
-            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--tx);cursor:pointer">
-              <input type="checkbox" id="sipEnabled"> Auto-connect when page loads
+            <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;color:var(--tx);cursor:pointer">
+              <input type="checkbox" id="sipEnabled" style="margin-top:2px;flex-shrink:0"><span>Auto-connect when page loads</span>
             </label>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
