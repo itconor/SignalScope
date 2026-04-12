@@ -273,7 +273,7 @@ _HUB_TPL = r"""<!doctype html>
 <style nonce="{{csp_nonce()}}">
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:13px}
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:13px;overflow-x:hidden}
 header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .btn{display:inline-flex;align-items:center;border:none;border-radius:8px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;text-decoration:none;white-space:nowrap}
 .btn:hover{filter:brightness(1.15)}
@@ -397,9 +397,8 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
         </div>
       </div>
       <div style="margin-bottom:12px">
-        <label style="display:flex;align-items:flex-start;gap:7px;font-size:12px;color:var(--tx);cursor:pointer">
-          <input type="checkbox" id="cPermanent" style="accent-color:var(--acc);margin-top:2px;flex-shrink:0">
-          <span style="flex:1;min-width:0">📌 Permanent room (survives restarts, never expires)</span>
+        <label style="font-size:12px;color:var(--tx);cursor:pointer;display:block;line-height:1.5">
+          <input type="checkbox" id="cPermanent" style="accent-color:var(--acc);vertical-align:middle;margin-right:5px">📌 Permanent room (survives restarts, never expires)
         </label>
       </div>
       <div style="display:flex;gap:8px">
@@ -517,8 +516,8 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
             </div>
           </div>
           <div style="margin-top:4px;margin-bottom:14px">
-            <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;color:var(--tx);cursor:pointer">
-              <input type="checkbox" id="sipEnabled" style="margin-top:2px;flex-shrink:0"><span>Auto-connect when page loads</span>
+            <label style="font-size:12px;color:var(--tx);cursor:pointer;display:block;line-height:1.5">
+              <input type="checkbox" id="sipEnabled" style="accent-color:var(--acc);vertical-align:middle;margin-right:5px">Auto-connect when page loads
             </label>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
