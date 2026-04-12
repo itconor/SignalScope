@@ -154,8 +154,8 @@
     "name": "IP Link",
     "file": "iplink.py",
     "icon": "🎙",
-    "description": "Browser-based IP codec and SIP softphone. WebRTC rooms: hub creates named rooms with shareable talent URLs — contributors join from any browser with no app download, low-latency Opus audio, bidirectional IFB, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo). SIP client: register with any SIP PBX supporting WebSocket transport (Asterisk, FreeSWITCH, 3CX); take and make SIP calls directly from the hub page; digest auth, incoming call banner with Answer/Decline, mic mute, RTT stats, persistent config. Hub-only. v1.2.1: fix stream source dropdown only showing Hub Microphone (was filtering on _has_real_level). v1.2.0: Settings panel (Ringtone, Mute on Hangup, Auto-Accept); On-Air button per room; Send/Receive faders; SignalScope stream audio injection — select any monitored feed as the send source for a room call.",
-    "version": "1.2.1",
+    "description": "Browser-based IP codec and SIP softphone. WebRTC rooms: hub creates named rooms with shareable talent URLs — contributors join from any browser with no app download, low-latency Opus audio, bidirectional IFB, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo). SIP client: register with any SIP PBX supporting WebSocket transport (Asterisk, FreeSWITCH, 3CX); take and make SIP calls directly from the hub page; digest auth, incoming call banner with Answer/Decline, mic mute, RTT stats, persistent config. Works on hub, client, and standalone nodes. v1.2.2: plugin now loads on all nodes (not hub-only); stream source selector lists feeds from all connected client sites on hub; client nodes push live PCM to hub relay slot via hub→client command queue. v1.2.0: Settings panel (Ringtone, Mute on Hangup, Auto-Accept); On-Air button; Send/Receive faders; stream audio injection.",
+    "version": "1.2.2",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/iplink.py"
   },

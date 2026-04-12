@@ -11,8 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.2.1",
-    "hub_only": True,
+    "version": "1.2.2",
 }
 
 import json
@@ -473,7 +472,7 @@ function _loadStreamSources(){
       // Add current streams
       (d.streams||[]).forEach(function(s){
         var o=document.createElement('option');
-        o.value='stream:'+s.idx;
+        o.value='stream:'+(s.site||'local')+':'+s.idx;
         o.textContent=(s.active?'🟢':'⚪')+' '+s.name+(s.stereo?' · stereo':'');
         sel.appendChild(o);
       });
@@ -546,10 +545,12 @@ function _applySourceForRoom(roomId){
       }
     }
   } else if(srcVal.indexOf('stream:')=== 0){
-    var idx=parseInt(srcVal.split(':')[1]);
+    // format: "stream:SITE:IDX"
+    var parts=srcVal.split(':');
+    var site=parts[1], idx=parseInt(parts[2]);
     fetch('/api/iplink/room/'+roomId+'/feed',{
       method:'POST',credentials:'same-origin',headers:csrfHdr(),
-      body:JSON.stringify({stream_idx:idx})
+      body:JSON.stringify({stream_idx:idx, site:site})
     }).then(function(r){return r.json();})
     .then(function(d){
       if(d.slot_id) _injectStreamAudio(roomId,d.slot_id,d.n_ch||1);
@@ -2085,8 +2086,9 @@ window.addEventListener('load', function(){
 
 # ─── Stream feed thread ──────────────────────────────────────────────────────
 
-_feed_slots = {}   # room_id → slot (active feed relay)
-_feed_lock  = threading.Lock()
+_feed_slots    = {}   # room_id → slot (active feed relay)
+_feed_lock     = threading.Lock()
+_pending_feeds = {}   # site_name → {slot_id, stream_idx} — hub queues, client consumes
 
 
 def _feed_thread(inp, slot):
@@ -2110,6 +2112,96 @@ def _feed_thread(inp, slot):
     slot.closed = True   # ensure reaper picks it up
 
 
+def _client_feed_thread(inp, hub_url, slot_id, secret):
+    """Client-side: push live PCM from a local input to a hub relay slot via HTTP."""
+    import urllib.request, hashlib, hmac as _hmac, os as _os
+    CHUNK_DUR = 0.095
+    chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
+    prev_chunk_id = None
+
+    def _sign(data):
+        if not secret:
+            return {}
+        ts = time.time()
+        key = hashlib.sha256(f"{secret}:signing".encode()).digest()
+        msg = f"{ts:.0f}:".encode() + data
+        sig = _hmac.new(key, msg, hashlib.sha256).hexdigest()
+        nonce = hashlib.md5(_os.urandom(8)).hexdigest()[:16]
+        return {"X-Hub-Sig": sig, "X-Hub-Ts": f"{ts:.0f}", "X-Hub-Nonce": nonce}
+
+    while True:
+        t = time.monotonic()
+        buf = getattr(inp, '_stream_buffer', None)
+        if not buf:
+            time.sleep(0.1)
+            continue
+        try:
+            chunk = bytes(buf[-1])
+            cid = id(chunk)
+            if cid != prev_chunk_id and chunk:
+                hdrs = {"Content-Type": "application/octet-stream"}
+                hdrs.update(_sign(chunk))
+                req = urllib.request.Request(chunk_url, data=chunk, method="POST", headers=hdrs)
+                try:
+                    resp = urllib.request.urlopen(req, timeout=5)
+                    if resp.status == 404:
+                        break   # slot gone — hub disconnected or room closed
+                except Exception:
+                    pass
+                prev_chunk_id = cid
+        except (IndexError, Exception):
+            pass
+        elapsed = time.monotonic() - t
+        time.sleep(max(0, CHUNK_DUR - elapsed))
+
+
+def _client_feed_poller(monitor_ref, hub_url, site_name, secret):
+    """Client-side background thread: poll hub for feed commands and execute them."""
+    import urllib.request, json as _json
+    cmd_url = f"{hub_url}/api/iplink/feed_cmd"
+    _active = {}   # slot_id → threading.Thread
+
+    while True:
+        try:
+            req = urllib.request.Request(
+                cmd_url, method="GET",
+                headers={"X-Site": site_name},
+            )
+            resp = urllib.request.urlopen(req, timeout=5)
+            d = _json.loads(resp.read())
+            cmd = d.get("cmd")
+            if cmd:
+                slot_id    = cmd.get("slot_id")
+                stream_idx = int(cmd.get("stream_idx", 0))
+                stop_id    = cmd.get("stop")
+                if stop_id and stop_id in _active:
+                    # Signal thread to stop by poisoning the slot (empty POST = EOF)
+                    try:
+                        urllib.request.urlopen(
+                            urllib.request.Request(
+                                f"{hub_url}/api/v1/audio_chunk/{stop_id}",
+                                data=b"", method="POST",
+                                headers={"Content-Type": "application/octet-stream"},
+                            ), timeout=5)
+                    except Exception:
+                        pass
+                    _active.pop(stop_id, None)
+                elif slot_id and slot_id not in _active:
+                    inputs = getattr(getattr(monitor_ref, 'app_cfg', None), 'inputs', []) or []
+                    if 0 <= stream_idx < len(inputs):
+                        inp = inputs[stream_idx]
+                        t = threading.Thread(
+                            target=_client_feed_thread,
+                            args=(inp, hub_url, slot_id, secret),
+                            daemon=True, name=f"IPLinkClientFeed-{slot_id[:6]}",
+                        )
+                        _active[slot_id] = t
+                        t.start()
+        except Exception:
+            pass
+        time.sleep(3)
+
+
 # ─── Plugin registration ──────────────────────────────────────────────────────
 
 def register(app, ctx):
@@ -2125,8 +2217,26 @@ def register(app, ctx):
     except ImportError:
         return
 
+    # Mode detection
+    _cfg_hub   = getattr(monitor.app_cfg, 'hub', None)
+    _mode      = (getattr(_cfg_hub, 'mode', 'standalone') or 'standalone')
+    _is_hub    = _mode in ('hub', 'both', 'standalone')
+    _is_client = _mode == 'client'
+    _hub_url   = (getattr(_cfg_hub, 'hub_url', '') or '').rstrip('/')
+    _site_name = getattr(_cfg_hub, 'site_name', '') or ''
+    _secret    = getattr(_cfg_hub, 'secret_key', '') or ''
+
     # Start cleanup thread
     threading.Thread(target=_cleanup_thread, daemon=True, name="IPLinkCleanup").start()
+
+    # Start client-side feed poller if we are a client node connected to a hub
+    if _is_client and _hub_url and _site_name:
+        threading.Thread(
+            target=_client_feed_poller,
+            args=(monitor, _hub_url, _site_name, _secret),
+            daemon=True, name="IPLinkClientFeedPoller",
+        ).start()
+        _log(f"[IPLink] Client mode — feed poller started → {_hub_url}")
 
     # ── CSP patch — allow wss: on the hub IP Link page ─────────────────────────
     # SignalScope sets connect-src 'self' via an after_request handler. Flask
@@ -2401,17 +2511,53 @@ def register(app, ctx):
     @app.get("/api/iplink/streams")
     @login_required
     def iplink_list_streams():
-        """Return all configured local SignalScope inputs for audio source selection."""
-        inputs = getattr(monitor.app_cfg, 'inputs', []) or []
+        """Return available streams for audio source injection.
+        Hub/both/standalone: lists streams from connected client sites (hub_server._sites).
+        Client/standalone with local inputs: also lists local inputs.
+        """
+        hub_server = ctx.get("hub_server")
         streams = []
-        for idx, inp in enumerate(inputs):
+
+        # Hub mode: gather streams from connected client sites
+        if _is_hub and hub_server:
+            try:
+                sites = getattr(hub_server, '_sites', {})
+                for site, sdata in sites.items():
+                    if not sdata.get('_approved'):
+                        continue
+                    site_streams = sdata.get('streams', [])
+                    for idx, s in enumerate(site_streams):
+                        name = s.get('name') or s.get('stream_name') or f"Stream {idx}"
+                        lvl  = s.get('level_dbfs')
+                        active = lvl is not None and lvl > -90
+                        stereo = s.get('stereo', False) or s.get('_audio_channels', 1) == 2
+                        streams.append({
+                            "site":   site,
+                            "idx":    idx,
+                            "name":   f"{site} — {name}",
+                            "stereo": stereo,
+                            "active": active,
+                        })
+            except Exception:
+                pass
+
+        # Always include local inputs (works on standalone / both mode)
+        local_inputs = getattr(monitor.app_cfg, 'inputs', []) or []
+        for idx, inp in enumerate(local_inputs):
             name = (getattr(inp, 'name', None) or
                     getattr(inp, 'stream_name', None) or
                     getattr(inp, 'device_index', None) or
                     f"Input {idx}")
             stereo = getattr(inp, '_audio_channels', 1) == 2
             active = getattr(inp, '_has_real_level', False)
-            streams.append({"idx": idx, "name": name, "stereo": stereo, "active": active})
+            streams.append({
+                "site":   "local",
+                "idx":    idx,
+                "name":   name,
+                "stereo": stereo,
+                "active": active,
+            })
+
         return jsonify({"streams": streams})
 
     # ── Room audio feed (inject SignalScope stream into WebRTC) ────────────────
@@ -2421,41 +2567,83 @@ def register(app, ctx):
     @login_required
     @csrf_protect
     def iplink_set_feed(room_id):
-        """Start pushing a local SignalScope input as the audio feed for a room."""
+        """Start pushing a SignalScope stream as the audio feed for a room.
+        If site=='local', push directly from a local input's _stream_buffer.
+        Otherwise, queue a command for the named client site to start pushing PCM.
+        """
         if not listen_registry:
             return jsonify({"error": "listen_registry not available"}), 500
         room = _get_room(room_id)
         if not room:
             return jsonify({"error": "Room not found"}), 404
-        data = request.get_json(silent=True) or {}
+        data       = request.get_json(silent=True) or {}
         stream_idx = int(data.get("stream_idx", 0))
-        inputs = getattr(monitor.app_cfg, 'inputs', []) or []
-        if stream_idx < 0 or stream_idx >= len(inputs):
-            return jsonify({"error": "Invalid stream index"}), 400
-        inp = inputs[stream_idx]
-        n_ch = 2 if getattr(inp, '_audio_channels', 1) == 2 else 1
+        site       = str(data.get("site", "local"))
+
         # Stop any existing feed for this room
         with _feed_lock:
             old_slot = _feed_slots.get(room_id)
             if old_slot:
                 old_slot.closed = True
-        # Create new relay slot
-        slot = listen_registry.create(
-            "hub", stream_idx, kind="scanner",
-            mimetype="application/octet-stream",
-        )
-        with _feed_lock:
-            _feed_slots[room_id] = slot
-        threading.Thread(
-            target=_feed_thread, args=(inp, slot),
-            daemon=True, name=f"IPLinkFeed-{room_id[:8]}"
-        ).start()
-        _log(f"[IPLink] Stream feed started: room '{room['name']}' ← input [{stream_idx}] {getattr(inp,'name','?')}")
-        return jsonify({
-            "ok": True,
-            "slot_id": slot.slot_id,
-            "n_ch": n_ch,
-        })
+            # If previous feed was from a client, cancel it
+            old_site = _feed_slots.get(f"{room_id}_site")
+            if old_site:
+                _pending_feeds[old_site] = {"stop": old_slot.slot_id if old_slot else None}
+
+        if site == "local":
+            # Push directly from a local input's _stream_buffer
+            inputs = getattr(monitor.app_cfg, 'inputs', []) or []
+            if stream_idx < 0 or stream_idx >= len(inputs):
+                return jsonify({"error": "Invalid stream index"}), 400
+            inp  = inputs[stream_idx]
+            n_ch = 2 if getattr(inp, '_audio_channels', 1) == 2 else 1
+            slot = listen_registry.create(
+                "local", stream_idx, kind="scanner",
+                mimetype="application/octet-stream",
+            )
+            with _feed_lock:
+                _feed_slots[room_id]         = slot
+                _feed_slots[f"{room_id}_site"] = "local"
+            threading.Thread(
+                target=_feed_thread, args=(inp, slot),
+                daemon=True, name=f"IPLinkFeed-{room_id[:8]}",
+            ).start()
+            _log(f"[IPLink] Local feed: room '{room['name']}' ← input [{stream_idx}] {getattr(inp,'name','?')}")
+            return jsonify({"ok": True, "slot_id": slot.slot_id, "n_ch": n_ch})
+
+        else:
+            # Queue command for client site to push PCM
+            hub_server = ctx.get("hub_server")
+            if not hub_server:
+                return jsonify({"error": "hub_server not available"}), 500
+            sites      = getattr(hub_server, '_sites', {})
+            sdata      = sites.get(site, {})
+            if not sdata.get('_approved'):
+                return jsonify({"error": f"Site '{site}' not approved or not connected"}), 400
+            site_streams = sdata.get('streams', [])
+            n_ch = 2 if (stream_idx < len(site_streams) and
+                         (site_streams[stream_idx].get('stereo') or
+                          site_streams[stream_idx].get('_audio_channels', 1) == 2)) else 1
+            slot = listen_registry.create(
+                site, stream_idx, kind="scanner",
+                mimetype="application/octet-stream",
+            )
+            with _feed_lock:
+                _feed_slots[room_id]           = slot
+                _feed_slots[f"{room_id}_site"] = site
+            _pending_feeds[site] = {"slot_id": slot.slot_id, "stream_idx": stream_idx}
+            _log(f"[IPLink] Client feed queued: room '{room['name']}' ← {site}[{stream_idx}] slot={slot.slot_id[:8]}")
+            return jsonify({"ok": True, "slot_id": slot.slot_id, "n_ch": n_ch})
+
+    # ── Client polls hub for pending feed commands ─────────────────────────────
+    @app.get("/api/iplink/feed_cmd")
+    def iplink_feed_cmd():
+        """Client site polls this to receive pending feed commands from the hub."""
+        site = request.headers.get("X-Site", "").strip()
+        if not site:
+            return jsonify({}), 400
+        cmd = _pending_feeds.pop(site, None)
+        return jsonify({"cmd": cmd} if cmd else {})
 
     # ── SIP config API ─────────────────────────────────────────────────────────
     @app.get("/api/iplink/sip/config")
@@ -2482,4 +2670,4 @@ def register(app, ctx):
         _log(f"[IPLink] SIP config saved — server: {cfg.get('server','')}, user: {cfg.get('username','')}")
         return jsonify({"ok": True})
 
-    _log(f"[IPLink] Plugin registered — v1.2.0 — {len(_STUN_SERVERS)} STUN server(s), SIP client + stream feed enabled")
+    _log(f"[IPLink] Plugin registered — v1.2.2 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
