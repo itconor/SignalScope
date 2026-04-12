@@ -467,11 +467,11 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
       </div>
       <div>
         <div class="field" style="margin-bottom:0">
-          <label>Send Audio Source</label>
+          <label>Default Audio Source</label>
           <select id="globalSrcSel" class="src-sel">
             <option value="mic">🎤 Hub Microphone</option>
           </select>
-          <span style="font-size:11px;color:var(--mu);margin-top:4px">Source used when accepting room calls</span>
+          <span style="font-size:11px;color:var(--mu);margin-top:4px">Default for rooms set to "↑ Default source"</span>
         </div>
       </div>
     </div>
@@ -557,6 +557,8 @@ var _prevOfferRooms = {}; // room_id → bool (for ringtone trigger detection)
 var _outPanelOpen   = {}; // room_id → bool
 var _outputCapture  = {}; // room_id → {node, reader}
 var _lwWorkletUrl   = null;
+var _streamSources  = []; // cached list from /api/iplink/streams (never cleared on empty response)
+var _roomSrc        = {}; // room_id → 'global' | 'mic' | 'stream:SITE:IDX'
 
 var STUN = {{stun|tojson}};
 var BASE = window.location.origin;
@@ -577,6 +579,15 @@ function _saveSett(){
 }
 ['settRingtone','settMuteHangup','settAutoAccept'].forEach(function(id){
   document.getElementById(id).addEventListener('change',_saveSett);
+});
+
+// When the global default source changes, re-apply to any connected room using 'global'
+document.getElementById('globalSrcSel').addEventListener('change',function(){
+  Object.keys(_pcs).forEach(function(roomId){
+    if(_pcs[roomId]&&_pcs[roomId]!==true&&(!_roomSrc[roomId]||_roomSrc[roomId]==='global')){
+      _applySourceForRoom(roomId);
+    }
+  });
 });
 
 // ─── Ringtone (Web Audio API beep) ───────────────────────────────────────────
@@ -616,33 +627,52 @@ function setRecvVol(roomId, val){
   var el=document.getElementById('rc_recvvolval_'+roomId); if(el) el.textContent=val+'%';
 }
 
-// ─── Stream source population ─────────────────────────────────────────────────
+// ─── Stream source cache & population ────────────────────────────────────────
+// Never clear the cache on an empty response — a client reconnecting briefly
+// can cause the server to return [] which would wipe the dropdown.
+
 function _loadStreamSources(){
   fetch('/api/iplink/streams',{credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      var sel=document.getElementById('globalSrcSel');
-      if(!sel) return;
-      var cur=sel.value;
-      // Remove old stream options
-      var toRemove=[];
-      for(var i=0;i<sel.options.length;i++){
-        if(sel.options[i].value!=='mic') toRemove.push(i);
-      }
-      toRemove.reverse().forEach(function(i){sel.remove(i);});
-      // Add current streams
-      (d.streams||[]).forEach(function(s){
-        var o=document.createElement('option');
-        o.value='stream:'+(s.site||'local')+':'+s.idx;
-        o.textContent=(s.active?'🟢':'⚪')+' '+s.name+(s.stereo?' · stereo':'');
-        sel.appendChild(o);
-      });
-      // Restore selection if still valid
-      var found=false;
-      for(var i=0;i<sel.options.length;i++){if(sel.options[i].value===cur){sel.value=cur;found=true;break;}}
-      if(!found) sel.value='mic';
+      var s=d.streams||[];
+      if(s.length) _streamSources=s;   // only update cache if server returned something
+      _populateSourceSelectors();
     }).catch(function(){});
 }
+
+// Fill a <select> with stream options, preserving fixedCount leading options.
+// Global selector has 1 fixed option (mic); per-room selectors have 2 (default↑, mic).
+function _fillSrcSel(sel, curVal, fixedCount){
+  while(sel.options.length > fixedCount) sel.remove(fixedCount);
+  _streamSources.forEach(function(s){
+    var o=document.createElement('option');
+    o.value='stream:'+(s.site||'local')+':'+s.idx;
+    o.textContent=(s.active?'🟢':'⚪')+' '+s.name+(s.stereo?' · stereo':'');
+    sel.appendChild(o);
+  });
+  for(var i=0;i<sel.options.length;i++){
+    if(sel.options[i].value===curVal){sel.value=curVal;return;}
+  }
+  sel.value=sel.options[0]?sel.options[0].value:'mic';
+}
+
+function _populateSourceSelectors(){
+  var gsel=document.getElementById('globalSrcSel');
+  if(gsel) _fillSrcSel(gsel, gsel.value, 1);   // 1 fixed: mic
+  // Per-room selectors (rebuilt by _renderRooms each poll cycle)
+  document.querySelectorAll('[id^="rc_src_"]').forEach(function(sel){
+    var rid=sel.id.replace('rc_src_','');
+    _fillSrcSel(sel, _roomSrc[rid]||'global', 2);   // 2 fixed: default↑, mic
+  });
+}
+
+function _onRoomSrcChange(roomId, val){
+  _roomSrc[roomId]=val;
+  // Apply immediately if the room is already connected
+  if(_pcs[roomId]&&_pcs[roomId]!==true) _applySourceForRoom(roomId);
+}
+
 _loadStreamSources();
 setInterval(_loadStreamSources, 15000);
 
@@ -704,8 +734,12 @@ function _injectStreamAudio(roomId, slotId, nCh){
 }
 
 function _applySourceForRoom(roomId){
-  var sel=document.getElementById('globalSrcSel');
-  var srcVal=sel?sel.value:'mic';
+  // Per-room selection takes precedence; 'global' falls back to the default selector
+  var srcVal=_roomSrc[roomId]||'global';
+  if(srcVal==='global'){
+    var gsel=document.getElementById('globalSrcSel');
+    srcVal=gsel?gsel.value:'mic';
+  }
   if(srcVal==='mic'){
     _stopFeed(roomId);
     // Restore mic track
@@ -716,7 +750,7 @@ function _applySourceForRoom(roomId){
         pc.getSenders().forEach(function(s){if(s.track&&s.track.kind==='audio'){s.replaceTrack(t).catch(function(){});}});
       }
     }
-  } else if(srcVal.indexOf('stream:')=== 0){
+  } else if(srcVal.indexOf('stream:')===0){
     // format: "stream:SITE:IDX"
     var parts=srcVal.split(':');
     var site=parts[1], idx=parseInt(parts[2]);
@@ -1208,6 +1242,14 @@ function _renderRooms(rooms){
       html+='<span class="fader-val" id="rc_recvvolval_'+r.id+'">'+((_recvVol[r.id]!=null)?_recvVol[r.id]:100)+'%</span>';
       html+='</div>';
     }
+    // ── Per-room audio source selector ────────────────────────────────────────
+    html+='<div style="margin:8px 0 4px"><label style="font-size:10px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Audio Source</label>';
+    html+='<select id="rc_src_'+r.id+'" class="src-sel" onchange="_onRoomSrcChange(\''+r.id+'\',this.value)" style="margin-top:4px">';
+    html+='<option value="global">↑ Default source</option>';
+    html+='<option value="mic">🎤 Hub Microphone</option>';
+    html+='</select></div>';
+    // (stream options are added by _populateSourceSelectors() after innerHTML is set)
+
     // Output config panel
     var outCfg=r.output||{};
     var outOpen=!!_outPanelOpen[r.id];
@@ -1259,6 +1301,8 @@ function _renderRooms(rooms){
   });
   html+='</div>';
   ng.innerHTML=html;
+  // Populate stream options on the newly-created per-room selectors
+  _populateSourceSelectors();
 }
 
 function _esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
