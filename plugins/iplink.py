@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.22",
+    "version": "1.1.23",
     "hub_only": True,
 }
 
@@ -368,21 +368,15 @@ function _getHubMic(cb){
 //  - rtx / ulpfec / flexfec      not needed
 // Orphan guard: fmtp without a matching rtpmap stripped (would cause parse error).
 // ─── SDP normalisation ───────────────────────────────────────────────────────
-// Room calls: both ends are WebRTC browsers that negotiate natively.
-//   Only a=ssrc lines are stripped — Chrome M130+ rejects the deprecated
-//   two-identifier msid format (a=ssrc:SSRC msid:STREAM TRACK) that older
-//   Chrome and Safari still generate.  No other manipulation is done; touching
-//   m= lines or removing codecs causes PT reference mismatches and "Invalid
-//   SDP line" errors.
-function _mungeOfferSdp(sdp){
-  return sdp.split(/\r?\n/).filter(function(line){
-    return !/^a=ssrc(-group)?:/.test(line);
-  }).join('\r\n');
-}
-
+// Room calls: both ends are WebRTC browsers — the raw offer is passed unchanged
+//   to setRemoteDescription().  The server ensures the SDP ends with \r\n so
+//   Chrome's line-oriented parser doesn't fail on an unterminated last line.
+//   No JS manipulation; any rewriting risks making m= / a=fmtp PT references
+//   inconsistent.
+//
 // SIP calls: the hub's own Chrome offer contains WebRTC-specific extension lines
-//   that many SIP servers reject.  _sipMungeSdp strips them — it does NOT
-//   rewrite m= lines or remove codecs so the offer stays self-consistent.
+//   that many SIP servers reject.  _sipMungeSdp strips only those attribute
+//   lines — no m= rewriting, no codec removal.
 function _sipMungeSdp(sdp){
   var DROP = [
     /^a=ssrc(-group)?:/,
@@ -461,10 +455,11 @@ function acceptCall(roomId){
           }
         };
 
-        // Set remote offer — strip only a=ssrc lines (Chrome M130+ rejects the
-        // deprecated two-ID msid format) and pass everything else unchanged.
-        var _cleanOffer = _mungeOfferSdp(d.offer);
-        pc.setRemoteDescription({type:'offer', sdp:_cleanOffer})
+        // Pass the talent's raw offer directly to setRemoteDescription.
+        // Both ends are WebRTC browsers; they negotiate codecs natively.
+        // The server guarantees the SDP ends with \r\n so Chrome's parser
+        // doesn't fail on an unterminated last line.
+        pc.setRemoteDescription({type:'offer', sdp:d.offer})
           .then(function(){ return pc.createAnswer(); })
           .then(function(ans){
             return pc.setLocalDescription(ans).then(function(){ return ans; });
@@ -484,7 +479,7 @@ function acceptCall(roomId){
           })
           .catch(function(e){
             console.error('[IPLink] setRemoteDescription error:', e.message);
-            console.debug('[IPLink] clean offer SDP:\n', _cleanOffer);
+            console.debug('[IPLink] raw offer SDP:\n', d.offer);
             delete _pcs[roomId];
             _showConnErr(roomId, 'WebRTC failed: '+(e.message||String(e)));
           });
@@ -1876,7 +1871,11 @@ def register(app, ctx):
             sdp  = str(data.get("offer", "")).strip()
             if not sdp:
                 return jsonify({"error": "No SDP"}), 400
-            room["offer"]  = sdp
+            # Restore the CRLF that .strip() removed.  SDP is a line-oriented
+            # format; RFC 4566 requires every line — including the last — to end
+            # with CRLF.  Without it Chrome reports the last line as "Invalid SDP
+            # line" because its parser can't find the line terminator.
+            room["offer"]  = sdp + "\r\n"
             room["status"] = "offer_received"
             room["answer"] = None
             room["talent_ice"] = []

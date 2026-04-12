@@ -2,6 +2,26 @@
 
 ---
 
+## IP Link v1.1.23 — 2026-04-12
+
+### Fixed — true root cause of all "Invalid SDP line" WebRTC errors (plugin v1.1.23)
+
+**Root cause (server-side):** `iplink_post_offer` stored the SDP with `.strip()`, which removes the terminal `\r\n`. RFC 4566 requires every SDP line — including the last — to end with CRLF. Chrome's line-oriented SDP parser couldn't find the terminator for the last line and reported it as `"Invalid SDP line"`. Whichever line happened to be last changed the reported error:
+
+- v1.1.20 (stripped `a=ssrc` + codecs): last line was `a=fmtp:111 …` → error on `a=fmtp:111`
+- v1.1.21–22 (stripped only `a=ssrc`): last line was `a=fmtp:101 0-16` or similar → error shifted
+- v1.1.21 (no strip): last line was `a=ssrc:… msid:UUID UUID` → error on `a=ssrc`
+
+Every version was reporting a different line, but the underlying cause was always the same missing `\r\n`.
+
+**Fix:** `room["offer"] = sdp + "\r\n"` — restore the CRLF that `.strip()` removed.
+
+**JS change:** `_mungeOfferSdp` removed from the room call path. The raw offer (now properly CRLF-terminated) is passed straight to `pc.setRemoteDescription()`. Two WebRTC browsers negotiate natively; any JS rewriting of the SDP only creates new opportunities to break PT references.
+
+`_sipMungeSdp` retained for outgoing SIP INVITEs (strips WebRTC attribute lines that SIP servers reject — no `m=` rewriting).
+
+---
+
 ## IP Link v1.1.22 — 2026-04-12
 
 ### Fixed — strip only a=ssrc lines, leave everything else intact (plugin v1.1.22)
