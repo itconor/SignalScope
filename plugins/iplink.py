@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.21",
+    "version": "1.1.22",
     "hub_only": True,
 }
 
@@ -367,15 +367,22 @@ function _getHubMic(cb){
 //  - PCMA / PCMU / static PTs    explicit rtpmap confuses parsers
 //  - rtx / ulpfec / flexfec      not needed
 // Orphan guard: fmtp without a matching rtpmap stripped (would cause parse error).
-// ─── SIP SDP normalisation ────────────────────────────────────────────────────
+// ─── SDP normalisation ───────────────────────────────────────────────────────
 // Room calls: both ends are WebRTC browsers that negotiate natively.
-//   The raw offer from the talent is passed unchanged to setRemoteDescription().
-//   Any SDP manipulation risks breaking the PT references (e.g. removing a codec
-//   from the m= line while leaving its a=fmtp behind → "Invalid SDP line").
-//
+//   Only a=ssrc lines are stripped — Chrome M130+ rejects the deprecated
+//   two-identifier msid format (a=ssrc:SSRC msid:STREAM TRACK) that older
+//   Chrome and Safari still generate.  No other manipulation is done; touching
+//   m= lines or removing codecs causes PT reference mismatches and "Invalid
+//   SDP line" errors.
+function _mungeOfferSdp(sdp){
+  return sdp.split(/\r?\n/).filter(function(line){
+    return !/^a=ssrc(-group)?:/.test(line);
+  }).join('\r\n');
+}
+
 // SIP calls: the hub's own Chrome offer contains WebRTC-specific extension lines
-//   that many SIP servers reject.  _sipMungeSdp strips only those lines — it does
-//   NOT rewrite m= lines or remove codecs so the offer stays self-consistent.
+//   that many SIP servers reject.  _sipMungeSdp strips them — it does NOT
+//   rewrite m= lines or remove codecs so the offer stays self-consistent.
 function _sipMungeSdp(sdp){
   var DROP = [
     /^a=ssrc(-group)?:/,
@@ -454,11 +461,10 @@ function acceptCall(roomId){
           }
         };
 
-        // Set remote offer — pass the talent's SDP unchanged.
-        // Both ends are WebRTC browsers; they negotiate codecs natively.
-        // Manipulating the SDP (removing codecs, rewriting m= lines) risks
-        // making PT references inconsistent and causes "Invalid SDP line" errors.
-        pc.setRemoteDescription({type:'offer', sdp:d.offer})
+        // Set remote offer — strip only a=ssrc lines (Chrome M130+ rejects the
+        // deprecated two-ID msid format) and pass everything else unchanged.
+        var _cleanOffer = _mungeOfferSdp(d.offer);
+        pc.setRemoteDescription({type:'offer', sdp:_cleanOffer})
           .then(function(){ return pc.createAnswer(); })
           .then(function(ans){
             return pc.setLocalDescription(ans).then(function(){ return ans; });
@@ -478,7 +484,7 @@ function acceptCall(roomId){
           })
           .catch(function(e){
             console.error('[IPLink] setRemoteDescription error:', e.message);
-            console.debug('[IPLink] raw offer SDP:\n', d.offer);
+            console.debug('[IPLink] clean offer SDP:\n', _cleanOffer);
             delete _pcs[roomId];
             _showConnErr(roomId, 'WebRTC failed: '+(e.message||String(e)));
           });

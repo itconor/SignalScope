@@ -2,6 +2,23 @@
 
 ---
 
+## IP Link v1.1.22 — 2026-04-12
+
+### Fixed — strip only a=ssrc lines, leave everything else intact (plugin v1.1.22)
+
+The actual error from Chrome was:
+```
+a=ssrc:323010011 msid:bcd1ebfb-... f9b58be9-... Invalid SDP line.
+```
+
+This is the `a=ssrc:SSRC msid:STREAM TRACK` two-identifier format. Chrome M130+ removed support for this deprecated Plan B / pre-Unified-Plan construct. Older Chrome versions and Safari still generate it. Chrome M130+ hub rejects it in `setRemoteDescription`.
+
+**Fix:** `_mungeOfferSdp` now does exactly one thing: filter out `a=ssrc` and `a=ssrc-group` lines. All other SDP lines — including `m=`, `a=rtpmap`, `a=fmtp`, `a=rtcp-fb` — are passed through unchanged. This preserves all PT references so Chrome can parse the offer without error.
+
+v1.1.21 went too far by removing all munging; v1.1.22 adds back the one strip that is actually needed.
+
+---
+
 ## IP Link v1.1.21 — 2026-04-12
 
 ### Fixed — root cause of all "Invalid SDP line" WebRTC errors (plugin v1.1.21)
