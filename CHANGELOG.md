@@ -2,6 +2,23 @@
 
 ---
 
+## IP Link v1.1.19 — 2026-04-12
+
+### Fixed — Chrome WebRTC parse error + SIP 500 on outgoing calls (plugin v1.1.19)
+
+**WebRTC SDP munge is now Safari-only.**  
+`_mungeOfferSdp` now detects the hub browser at runtime via `navigator.userAgent`. When the hub is Chrome or Firefox, the raw offer SDP is passed directly to `setRemoteDescription` — no stripping, no rewriting. Chrome's offer is valid for Chrome; the previous munging was accidentally breaking it (stripping things Chrome relied on, causing "Invalid SDP line" errors). Safari still receives the full munge to strip `a=extmap-allow-mixed`, direction specifiers, static-PT rtpmap entries, etc.
+
+**Outgoing SIP INVITE SDP is now cleaned before sending.**  
+`_sipMungeSdp` (new) strips Chrome-specific WebRTC junk (`a=ssrc:…`, `a=extmap-allow-mixed`, `rtx`/`ulpfec`/`flexfec` codecs) from the offer SDP before it's embedded in the INVITE body. Many SIP servers — even those with WebRTC support — choke on these lines and return a 500. The essential WebRTC parts (ICE candidates, DTLS fingerprint, Opus codec) are preserved.
+
+**Better SIP error hints.**  
+SIP error responses (400–599) now show a plain-English hint: 404 → "extension not found", 486 → "busy", 488 → "server rejected codec/SDP", 500 → "check dial plan / extension exists", etc.
+
+**Code cleanup:** shared `_sdpBuildMaps` + `_sdpClean` helpers eliminate duplication between the WebRTC and SIP munge paths.
+
+---
+
 ## IP Link v1.1.18 — 2026-04-11
 
 ### Fixed — comprehensive SDP munge to stop whack-a-mole parse failures (plugin v1.1.18)

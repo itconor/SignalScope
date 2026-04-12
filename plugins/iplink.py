@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.18",
+    "version": "1.1.19",
     "hub_only": True,
 }
 
@@ -352,56 +352,57 @@ function _getHubMic(cb){
 }
 
 // ─── SDP munging ─────────────────────────────────────────────────────────────
-// SDP compatibility shim applied to offers before setRemoteDescription.
-// Cleans up lines that cause parse failures in various browsers:
-//  - a=ssrc / a=ssrc-group       source-level attributes some browsers reject
-//  - a=extmap-allow-mixed        session-level; older Safari WebKit rejects it and
-//                                MISREPORTS the error pointing at a later line
-//                                (e.g. "a=fmtp:111 … Invalid SDP line") — stripping
-//                                this is the fix for those "wrong line" errors
-//  - a=extmap:N/direction        direction specifiers in extmap (recvonly etc.)
-//                                unsupported in older Safari; normalised to a=extmap:N
-//  - a=rtcp-rsize                some older Safari builds reject this
+// ── Browser detection ─────────────────────────────────────────────────────────
+// True when running in Safari (excludes Chrome/Edge which include "Chrome" in UA).
+// Used to gate SDP munging: Chrome/Firefox accept Chrome offers natively;
+// only Safari needs the compatibility shim.
+var _hubIsSafari = (function(){
+  var ua = navigator.userAgent;
+  return /safari/i.test(ua) && !/chrome|chromium|crios|android/i.test(ua);
+})();
+
+// SDP compatibility shim — only needed when the HUB browser is Safari.
+// Chrome/Firefox accept WebRTC SDP from any browser without munging.
+// Safari rejects several Chrome-specific lines; this shim strips them.
+//
+//  - a=ssrc / a=ssrc-group       source-level attributes Safari rejects
+//  - a=extmap-allow-mixed        session-level; Safari WebKit rejects it and
+//                                MISREPORTS the error as a later line (e.g.
+//                                "a=fmtp:111 … Invalid SDP line") — this was the
+//                                root cause of the recurring fmtp parse errors
+//  - a=extmap:N/direction        direction specifiers; unsupported in older Safari
+//  - a=rtcp-rsize                some Safari builds reject it
 //  - telephone-event / CN / RED  not needed for contribution
-//  - PCMA / PCMU / G.711 PTs     static PTs 0-95: some browsers reject explicit rtpmap
-//  - rtx / ulpfec / flexfec      retransmission/FEC; not needed, can confuse parsers
-// Orphan guard: fmtp/rtcp-fb lines whose PT has no corresponding rtpmap are
-// stripped — an orphaned fmtp causes Chrome to report "Invalid SDP line" for it.
-// Codec removal: rtpmap/fmtp/rtcp-fb lines AND the PT in the m= line are all
-// removed together. Opus remains as the sole audio codec.
+//  - PCMA / PCMU / static PTs    Safari rejects explicit rtpmap for these
+//  - rtx / ulpfec / flexfec      not needed, can confuse parsers
+// Orphan guard: fmtp/rtcp-fb without a matching rtpmap are stripped.
+//
+// For SIP outgoing INVITE, the same cleaner (_sipMungeSdp) strips the Chrome
+// WebRTC lines that confuse SIP servers (ssrc, extmap-allow-mixed).
 var _SDP_DROP_CODECS = /^(telephone-event|CN|RED|PCMA|PCMU|rtx|ulpfec|flexfec)$/i;
 
-function _mungeOfferSdp(sdp){
-  var lines = sdp.split(/\r?\n/);
-
-  // Pass 1: collect PTs to drop AND PTs that have an a=rtpmap line
-  var dropPts = {}, mappedPts = {};
-  lines.forEach(function(line){
-    var m = line.match(/^a=rtpmap:(\d+) ([^\/]+)\//i);
-    if(!m) return;
-    var pt = parseInt(m[1], 10);
-    mappedPts[m[1]] = true;
-    if(_SDP_DROP_CODECS.test(m[2]) || pt <= 95) dropPts[m[1]] = true;
-  });
-
-  // Pass 2: filter / rewrite lines
+// _sdpClean: shared SDP line filter used by both _mungeOfferSdp and _sipMungeSdp.
+// dropPts / mappedPts are pre-computed from Pass 1.
+function _sdpClean(lines, dropPts, mappedPts, forSafari){
   var out = [];
   lines.forEach(function(line){
-    // Drop ssrc source-level attributes
+    // Always drop ssrc source-level attributes (nothing needs them)
     if(/^a=ssrc(-group)?:/.test(line)) return;
-    // Drop extmap-allow-mixed (causes Safari to misreport parse errors on later lines)
+    // Always drop extmap-allow-mixed (causes Safari to misreport errors; SIP servers ignore it anyway)
     if(/^a=extmap-allow-mixed\s*$/.test(line)) return;
-    // Drop rtcp-rsize (some Safari builds reject it)
-    if(/^a=rtcp-rsize\s*$/.test(line)) return;
-    // Normalise extmap direction specifiers: a=extmap:N/recvonly URI → a=extmap:N URI
-    var em = line.match(/^(a=extmap:\d+)\/(?:sendrecv|sendonly|recvonly|inactive)( .*)?$/);
-    if(em){ out.push(em[1] + (em[2]||'')); return; }
+    if(forSafari){
+      // Safari-only: drop rtcp-rsize
+      if(/^a=rtcp-rsize\s*$/.test(line)) return;
+      // Safari-only: normalise extmap direction specifiers
+      var em = line.match(/^(a=extmap:\d+)\/(?:sendrecv|sendonly|recvonly|inactive)( .*)?$/);
+      if(em){ out.push(em[1] + (em[2]||'')); return; }
+    }
     // Drop rtpmap/fmtp/rtcp-fb for removed codecs
     var am = line.match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/);
     if(am && dropPts[am[1]]) return;
-    // Drop orphaned fmtp/rtcp-fb lines (PT has no rtpmap → would cause "Invalid SDP line")
+    // Drop orphaned fmtp/rtcp-fb (PT has no rtpmap — causes "Invalid SDP line")
     if(am && !am[0].startsWith('a=rtpmap') && !mappedPts[am[1]]) return;
-    // Rewrite m= lines: remove dropped PTs AND any static PTs (≤95) with no rtpmap
+    // Rewrite m= lines: remove dropped PTs and static PTs (≤95) with no rtpmap
     if(line.startsWith('m=')){
       var parts = line.split(' ');
       var pts = parts.slice(3).filter(function(p){
@@ -414,8 +415,36 @@ function _mungeOfferSdp(sdp){
     }
     out.push(line);
   });
-
   return out.join('\r\n');
+}
+
+function _sdpBuildMaps(lines){
+  var dropPts = {}, mappedPts = {};
+  lines.forEach(function(line){
+    var m = line.match(/^a=rtpmap:(\d+) ([^\/]+)\//i);
+    if(!m) return;
+    var pt = parseInt(m[1], 10);
+    mappedPts[m[1]] = true;
+    if(_SDP_DROP_CODECS.test(m[2]) || pt <= 95) dropPts[m[1]] = true;
+  });
+  return {dropPts:dropPts, mappedPts:mappedPts};
+}
+
+// Applied to incoming WebRTC offers (talent → hub).
+// ONLY runs when the hub browser is Safari — Chrome/Firefox accept the raw offer.
+function _mungeOfferSdp(sdp){
+  if(!_hubIsSafari) return sdp;   // Chrome/Firefox: no munging needed
+  var lines = sdp.split(/\r?\n/);
+  var maps = _sdpBuildMaps(lines);
+  return _sdpClean(lines, maps.dropPts, maps.mappedPts, true);
+}
+
+// Applied to outgoing SIP INVITE offers (Chrome WebRTC → SIP server).
+// Always runs: strips ssrc/extmap-allow-mixed which confuse many SIP servers.
+function _sipMungeSdp(sdp){
+  var lines = sdp.split(/\r?\n/);
+  var maps = _sdpBuildMaps(lines);
+  return _sdpClean(lines, maps.dropPts, maps.mappedPts, false);
 }
 
 // ─── Hub WebRTC negotiation ──────────────────────────────────────────────────
@@ -1090,7 +1119,7 @@ function sipDial(target){
     })
     .then(function(){
       _sipSetMicMeter(_sip.micStream);
-      _sipSendInvite(_sip.callUri,_sip.pc.localDescription.sdp);
+      _sipSendInvite(_sip.callUri,_sipMungeSdp(_sip.pc.localDescription.sdp));
       _sipSetState('dialling');
     })
     .catch(function(e){_sipShowCallErr('Microphone error: '+e.message);});
@@ -1198,9 +1227,15 @@ function _sipHandleMsg(raw){
         }
       }else if(st>=400){
         var reason=st+' '+(msg.reason||'');
+        var hint='';
+        if(st===404) hint=' — extension not found on server';
+        else if(st===486||st===600) hint=' — destination busy';
+        else if(st===403) hint=' — forbidden (check dial permissions)';
+        else if(st===488) hint=' — server rejected codec/SDP (check WebRTC support on server)';
+        else if(st===500) hint=' — server internal error (check dial plan / extension exists)';
         _sipCleanupCall();
         _sipSetState('registered');
-        _sipShowCallErr('Call failed: '+reason);
+        _sipShowCallErr('Call failed: '+reason+hint);
       }
     }else if(method==='BYE'){
       if(st===200){_sipCleanupCall();_sipSetState('registered');}
