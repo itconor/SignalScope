@@ -2,6 +2,23 @@
 
 ---
 
+## IP Link v1.1.25 — 2026-04-12
+
+### Fixed — SIP 484 on outgoing calls to bare extensions (plugin v1.1.25)
+
+**Problem:** Typing `test2` in the dial box sent `INVITE sip:test2@sip.signalscope.site` because `sipDial` always appended `_sipDomain()`, which falls back to the WebSocket hostname when the SIP Domain field is blank. The server returned 484 Address Incomplete because it routes by extension name only and doesn't recognise that domain as authoritative.
+
+**Fix:** `sipDial` now only appends a domain when the **SIP Domain** field is explicitly configured. With no explicit domain:
+- `test2` → `sip:test2` (no domain — server routes by extension)
+- `test2@pbx.local` → `sip:test2@pbx.local`
+- `sip:test2@pbx.local` → used as-is
+
+If your server needs a specific realm in the URI, set the **SIP Domain / Realm** field in SIP settings.
+
+**Also fixed:** `_sipMungeSdp` now ensures the SDP body always ends with `\r\n` (RFC 4566 requirement). Without it, some SIP servers misparse the Content-Length boundary.
+
+---
+
 ## IP Link v1.1.24 — 2026-04-12
 
 ### Fixed — same \r\n stripping bug on the answer path (plugin v1.1.24)

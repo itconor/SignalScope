@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.24",
+    "version": "1.1.25",
     "hub_only": True,
 }
 
@@ -384,12 +384,16 @@ function _sipMungeSdp(sdp){
     /^a=rtcp-rsize\s*$/,
     /^a=rtcp-fb:/,
   ];
-  return sdp.split(/\r?\n/).filter(function(line){
+  var out = sdp.split(/\r?\n/).filter(function(line){
     return !DROP.some(function(p){ return p.test(line); });
   }).map(function(line){
     // Normalise a=extmap:N/direction URI → a=extmap:N URI
     return line.replace(/^(a=extmap:\d+)\/(?:sendrecv|sendonly|recvonly|inactive)\b/, '$1');
   }).join('\r\n');
+  // Ensure SDP ends with \r\n — required by RFC 4566; without it the SIP
+  // server's Content-Length parsing may misread the body boundary.
+  if(!out.endsWith('\r\n')) out += '\r\n';
+  return out;
 }
 
 // ─── Hub WebRTC negotiation ──────────────────────────────────────────────────
@@ -1031,7 +1035,23 @@ function sipDial(target){
   if(!t){_sipShowCallErr('Enter an extension or SIP URI');return;}
   if(_sip.state!=='registered'){_sipShowCallErr('Not registered — check SIP settings');return;}
   var dom=_sipDomain();
-  _sip.callUri=t.match(/^sip:/i)?t:'sip:'+t+'@'+dom;
+  // Build the call URI:
+  // - full SIP URI typed → use as-is
+  // - user@domain typed → prepend sip:
+  // - bare extension + explicit SIP Domain configured → append that domain
+  // - bare extension + no explicit domain → send without domain (sip:ext)
+  //   so the server routes by extension only; appending the WS hostname
+  //   causes 484 on servers that use a different SIP realm.
+  var explicitDomain = (_sip.cfg.domain||'').trim();
+  if(t.match(/^sips?:/i)){
+    _sip.callUri = t;
+  } else if(t.indexOf('@')>=0){
+    _sip.callUri = 'sip:'+t;
+  } else if(explicitDomain){
+    _sip.callUri = 'sip:'+t+'@'+explicitDomain;
+  } else {
+    _sip.callUri = 'sip:'+t;
+  }
   _sip.callCid=_sipCid(dom);
   _sip.callFromTag=_sipTag();
   _sip.callToTag=null;
