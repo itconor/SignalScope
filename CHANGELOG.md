@@ -2,6 +2,18 @@
 
 ---
 
+## IP Link v1.1.27 — 2026-04-12
+
+### Debug + RFC compliance: ACK on 4xx INVITE, full SIP traffic logging (plugin v1.1.27)
+
+**RFC 3261 §17.1.1.3 compliance:** Non-2xx final responses to INVITE must be ACKed. We were never sending ACK for 4xx responses — some servers retransmit the error or block the Call-ID until they receive the ACK. Now sends ACK immediately on any 4xx/5xx/6xx INVITE response before cleanup.
+
+**SIP traffic logging:** All sent and received SIP messages are now logged to the browser DevTools console at `debug` level with `[IPLink SIP]` prefix. Filter on "IPLink SIP" in the console to see the full INVITE, REGISTER, and response exchange — makes it possible to diagnose 484 and other server errors.
+
+**484 hint updated:** "check the dial string and SIP Domain/Realm setting".
+
+---
+
 ## IP Link v1.1.26 — 2026-04-12
 
 ### Fixed — SIP 484 root cause: invalid SIP URI with no host (plugin v1.1.26)

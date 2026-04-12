@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.26",
+    "version": "1.1.27",
     "hub_only": True,
 }
 
@@ -887,7 +887,12 @@ function _sipBuildResp(req,status,reason,extraHdrs,body){
 }
 
 // ── Low-level send ─────────────────────────────────────────────────────────
-function _sipSend(msg){if(_sip.ws&&_sip.ws.readyState===1)_sip.ws.send(msg);}
+function _sipSend(msg){
+  if(_sip.ws&&_sip.ws.readyState===1){
+    console.debug('[IPLink SIP] >>>\n'+msg);
+    _sip.ws.send(msg);
+  }
+}
 
 // ── REGISTER ───────────────────────────────────────────────────────────────
 function _sipRegister(authHdr){
@@ -1144,6 +1149,7 @@ function sipHangup(){
 
 // ── Main message handler ───────────────────────────────────────────────────
 function _sipHandleMsg(raw){
+  console.debug('[IPLink SIP] <<<\n'+raw);
   var msg=_sipParse(raw);
   if(msg.isResponse){
     var csqH=msg.headers['cseq']||'';
@@ -1192,13 +1198,19 @@ function _sipHandleMsg(raw){
             }).catch(function(e){console.error('SIP SDP:',e);});
         }
       }else if(st>=400){
+        // RFC 3261 §17.1.1.3: non-2xx final responses to INVITE MUST be ACKed.
+        // Without this ACK the server may retransmit the error response or block
+        // the call-ID for future use.
+        _sipSendAck(msg, _sip.callUri||_sipSelfUri());
         var reason=st+' '+(msg.reason||'');
         var hint='';
         if(st===404) hint=' — extension not found on server';
+        else if(st===484) hint=' — check the dial string and SIP Domain/Realm setting';
         else if(st===486||st===600) hint=' — destination busy';
         else if(st===403) hint=' — forbidden (check dial permissions)';
         else if(st===488) hint=' — server rejected codec/SDP (check WebRTC support on server)';
         else if(st===500) hint=' — server internal error (check dial plan / extension exists)';
+        console.warn('[IPLink SIP] INVITE failed '+reason+' — check browser DevTools console for full SIP traffic (filter: IPLink SIP)');
         _sipCleanupCall();
         _sipSetState('registered');
         _sipShowCallErr('Call failed: '+reason+hint);
