@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.2",
+    "version": "1.3.3",
 }
 
 import json
@@ -695,21 +695,42 @@ function _injectStreamAudio(roomId, slotId, nCh){
   _stopFeed(roomId);
   var url='/hub/scanner/stream/'+slotId;
   var ctx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:48000});
+  // Resume immediately — browsers may start the context suspended even on a user gesture
+  ctx.resume().catch(function(){});
   var dest=ctx.createMediaStreamDestination();
   var gainNode=ctx.createGain();
   gainNode.gain.value=(_sendVol[roomId]||100)/100;
   _sendGain[roomId]=gainNode;
   gainNode.connect(dest);
-  // Replace WebRTC track
+
+  // Replace (or add) WebRTC audio track so the injected stream goes to the talent
   var pc=_pcs[roomId];
   if(pc&&pc!==true){
     var track=dest.stream.getAudioTracks()[0];
-    pc.getSenders().forEach(function(s){if(s.track&&s.track.kind==='audio'){s.replaceTrack(track).catch(function(){});}});
+    if(track){
+      var audioSenders=pc.getSenders().filter(function(s){return s.track&&s.track.kind==='audio';});
+      if(audioSenders.length){
+        audioSenders.forEach(function(s){
+          s.replaceTrack(track).catch(function(e){
+            console.warn('[IPLink] replaceTrack failed:',e.message||e);
+          });
+        });
+      } else {
+        // No audio sender (mic was denied) — try adding the track directly.
+        // This triggers renegotiation; works in Chrome/Firefox, less reliable in Safari.
+        console.warn('[IPLink] No audio sender — adding track via addTrack');
+        try{ pc.addTrack(track); }catch(e){ console.warn('[IPLink] addTrack failed:',e); }
+      }
+    }
   }
-  // Pump PCM
-  var BLK_S=nCh===2?4800*2:4800, BLK_B=nCh===2?19200:9600;
-  var buf=new Uint8Array(0), nextT=ctx.currentTime+1.0;
+
+  // Pump PCM from the relay slot into the AudioContext
+  var BLK_B=nCh===2?19200:9600;   // bytes per 100ms block (S16LE)
+  var buf=new Uint8Array(0);
+  var nextT=ctx.currentTime+1.0;  // 1 s pre-buffer
+
   fetch(url,{credentials:'same-origin'}).then(function(r){
+    if(!r.ok){ console.warn('[IPLink] Stream relay returned',r.status,'for slot',slotId); return; }
     var reader=r.body.getReader();
     _feedReader[roomId]=reader;
     (function pump(){reader.read().then(function(d){
@@ -728,8 +749,8 @@ function _injectStreamAudio(roomId, slotId, nCh){
         var t=Math.max(nextT,ctx.currentTime+0.05); src.start(t); nextT=t+ab.duration;
       }
       pump();
-    }).catch(function(){});})();
-  }).catch(function(){});
+    }).catch(function(e){ console.warn('[IPLink] PCM pump error:',e); });})();
+  }).catch(function(e){ console.warn('[IPLink] Stream fetch error:',e); });
 }
 
 function _applySourceForRoom(roomId){
@@ -756,10 +777,24 @@ function _applySourceForRoom(roomId){
     fetch('/api/iplink/room/'+roomId+'/feed',{
       method:'POST',credentials:'same-origin',headers:csrfHdr(),
       body:JSON.stringify({stream_idx:idx, site:site})
-    }).then(function(r){return r.json();})
+    }).then(function(r){
+      if(!r.ok){
+        r.json().then(function(d){
+          _showConnErr(roomId, 'Stream source error: '+(d.error||r.status)+'. Is the site connected?');
+        }).catch(function(){
+          _showConnErr(roomId, 'Stream source error: HTTP '+r.status);
+        });
+        return Promise.reject('feed-post-failed');
+      }
+      return r.json();
+    })
     .then(function(d){
-      if(d.slot_id) _injectStreamAudio(roomId,d.slot_id,d.n_ch||1);
-    }).catch(function(){});
+      if(d.slot_id){
+        _injectStreamAudio(roomId, d.slot_id, d.n_ch||1);
+      } else {
+        _showConnErr(roomId, 'Stream source error: no slot returned');
+      }
+    }).catch(function(e){ if(e!=='feed-post-failed') console.warn('[IPLink] feed error:',e); });
   }
 }
 
@@ -2949,7 +2984,8 @@ def register(app, ctx):
                         name = s.get('name') or s.get('stream_name') or f"Stream {idx}"
                         lvl  = s.get('level_dbfs')
                         active = lvl is not None and lvl > -90
-                        stereo = s.get('stereo', False) or s.get('_audio_channels', 1) == 2
+                        # FM stereo: runtime-detected, never in heartbeat; but live-push sets level_dbfs_l
+                        stereo = bool(s.get('stereo')) or s.get('level_dbfs_l') is not None
                         streams.append({
                             "site":   site,
                             "idx":    idx,
@@ -3040,9 +3076,14 @@ def register(app, ctx):
             if not sdata.get('_approved'):
                 return jsonify({"error": f"Site '{site}' not approved or not connected"}), 400
             site_streams = sdata.get('streams', [])
-            n_ch = 2 if (stream_idx < len(site_streams) and
-                         (site_streams[stream_idx].get('stereo') or
-                          site_streams[stream_idx].get('_audio_channels', 1) == 2)) else 1
+            s_info = site_streams[stream_idx] if stream_idx < len(site_streams) else {}
+            # stereo=True comes from config (DAB/HTTP set it explicitly).
+            # FM stereo is detected at runtime — it never sets stereo=True in config,
+            # but the live-push merger puts level_dbfs_l in _sites when _audio_channels==2.
+            # _audio_channels itself is a runtime attr never serialised in the heartbeat.
+            is_stereo = (s_info.get('stereo') or
+                         s_info.get('level_dbfs_l') is not None)
+            n_ch = 2 if is_stereo else 1
             slot = listen_registry.create(
                 site, stream_idx, kind="scanner",
                 mimetype="application/octet-stream",
@@ -3250,4 +3291,4 @@ def register(app, ctx):
         _log(f"[IPLink] SIP config saved — server: {cfg.get('server','')}, user: {cfg.get('username','')}")
         return jsonify({"ok": True})
 
-    _log(f"[IPLink] Plugin registered — v1.3.2 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
+    _log(f"[IPLink] Plugin registered — v1.3.3 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
