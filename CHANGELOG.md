@@ -2,6 +2,24 @@
 
 ---
 
+## IP Link v1.1.26 — 2026-04-12
+
+### Fixed — SIP 484 root cause: invalid SIP URI with no host (plugin v1.1.26)
+
+**Root cause of 484 Address Incomplete:** `sip:test2` (no `@host`) is not a valid SIP URI. RFC 3261 requires `sip:user@host`. When we send `INVITE sip:test2`, the server parses `test2` as a *hostname* (no user part), cannot route to a host called `test2`, and returns 484. v1.1.25 made this worse by removing the domain entirely.
+
+**What normal SIP clients do:** They use the server's SIP *realm* — obtained from the `realm=` field in the `WWW-Authenticate` header during REGISTER — as the domain for all call URIs. This is always correct regardless of what the WebSocket hostname is.
+
+**Fix:**
+1. `_sipDomain()` now uses: explicit SIP Domain config → realm learned from server's 401 challenge → WS hostname (last resort).
+2. On each 401/407 REGISTER challenge, `auth.realm` is stored in `_sip.realm`.
+3. `_sip.realm` is reset to `null` on each new `_sipConnect()` so stale realm from a previous server doesn't bleed through.
+4. Dial URI always appends domain: `sip:test2@realm` — never bare `sip:test2`.
+
+With a correctly registered SIP account the realm is learned automatically before any call is made, so bare extension dialling (`test2`) just works.
+
+---
+
 ## IP Link v1.1.25 — 2026-04-12
 
 ### Fixed — SIP 484 on outgoing calls to bare extensions (plugin v1.1.25)

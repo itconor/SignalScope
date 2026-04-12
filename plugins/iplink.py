@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.25",
+    "version": "1.1.26",
     "hub_only": True,
 }
 
@@ -787,6 +787,7 @@ var _sip = {
   micStream:null, remoteAnalyser:null, micAnalyser:null,
   callStart:null, micMuted:false,
   regTimer:null, retryTimer:null, regTimeoutTimer:null, durTimer:null, regAuthAttempts:0,
+  realm:null,    // learned from server's 401 WWW-Authenticate realm= during REGISTER
 };
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -797,7 +798,10 @@ function _sipCid(host){return _sipRand(14)+'@'+(host||'ss');}
 
 function _sipWsHostname(){try{return new URL(_sip.cfg.server).hostname;}catch(e){return 'ss';}}
 function _sipWsHost(){try{var u=new URL(_sip.cfg.server);return u.hostname+(u.port?':'+u.port:'');}catch(e){return 'ss';}}
-function _sipDomain(){return (_sip.cfg.domain||'').trim()||_sipWsHostname();}
+// Domain priority: explicit config → realm from server's 401 challenge → WS hostname.
+// The realm is the correct SIP domain for all URIs (REGISTER, INVITE, From, To).
+// Using the WS hostname alone causes 484 when the server's SIP realm differs.
+function _sipDomain(){return (_sip.cfg.domain||'').trim()||_sip.realm||_sipWsHostname();}
 function _sipSelfUri(){return 'sip:'+_sip.cfg.username+'@'+_sipDomain();}
 function _sipContact(){return '<sip:'+_sip.cfg.username+'@'+_sipWsHostname()+';transport=ws>';}
 
@@ -928,6 +932,7 @@ document.addEventListener('securitypolicyviolation', function(e){
 function _sipConnect(cfg){
   _sipStop();
   _sip.cfg=cfg;
+  _sip.realm=null;  // reset; will be learned from server's 401 challenge
   _sip.regCid=_sipCid(_sipDomain());
   _sip.regFromTag=_sipTag();
   _sip.regCsq=0;
@@ -1034,24 +1039,14 @@ function sipDial(target){
   var t=(target||'').trim();
   if(!t){_sipShowCallErr('Enter an extension or SIP URI');return;}
   if(_sip.state!=='registered'){_sipShowCallErr('Not registered — check SIP settings');return;}
-  var dom=_sipDomain();
-  // Build the call URI:
-  // - full SIP URI typed → use as-is
-  // - user@domain typed → prepend sip:
-  // - bare extension + explicit SIP Domain configured → append that domain
-  // - bare extension + no explicit domain → send without domain (sip:ext)
-  //   so the server routes by extension only; appending the WS hostname
-  //   causes 484 on servers that use a different SIP realm.
-  var explicitDomain = (_sip.cfg.domain||'').trim();
-  if(t.match(/^sips?:/i)){
-    _sip.callUri = t;
-  } else if(t.indexOf('@')>=0){
-    _sip.callUri = 'sip:'+t;
-  } else if(explicitDomain){
-    _sip.callUri = 'sip:'+t+'@'+explicitDomain;
-  } else {
-    _sip.callUri = 'sip:'+t;
-  }
+  var dom=_sipDomain();  // explicit config → learned realm → WS hostname
+  // Build the call URI.  A SIP URI must have a host part (sip:user@host).
+  // sip:ext with no @host is invalid — the server parses it as host=ext and
+  // returns 484.  Always append the domain; _sipDomain() uses the realm
+  // learned from the server's REGISTER challenge so it's always correct.
+  _sip.callUri = t.match(/^sips?:/i) ? t
+               : t.indexOf('@')>=0   ? 'sip:'+t
+               : 'sip:'+t+'@'+dom;
   _sip.callCid=_sipCid(dom);
   _sip.callFromTag=_sipTag();
   _sip.callToTag=null;
@@ -1170,6 +1165,11 @@ function _sipHandleMsg(raw){
         }
         var wwwH=msg.headers['www-authenticate']||msg.headers['proxy-authenticate']||'';
         var auth=_sipParseWWWAuth(wwwH);
+        // Learn the server's SIP realm from the challenge — this is the correct
+        // domain for all SIP URIs (INVITE Request-URI, From, To).  Store it so
+        // that bare extensions dial as sip:ext@realm rather than sip:ext (invalid)
+        // or sip:ext@ws-hostname (404/484 if the hostname isn't the SIP realm).
+        if(auth.realm && !_sip.realm) _sip.realm = auth.realm;
         var regUri='sip:'+_sipDomain();
         _sipRegister(_sipDigest('REGISTER',regUri,auth,_sip.cfg.username,_sip.cfg.password));
       }else if(st>=400){
