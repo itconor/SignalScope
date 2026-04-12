@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.23",
+    "version": "1.1.24",
     "hub_only": True,
 }
 
@@ -1907,7 +1907,7 @@ def register(app, ctx):
             sdp  = str(data.get("answer", "")).strip()
             if not sdp:
                 return jsonify({"error": "No SDP"}), 400
-            room["answer"] = sdp
+            room["answer"] = sdp + "\r\n"
             room["status"] = "connecting"
             _touch(room)
         return jsonify({"ok": True})

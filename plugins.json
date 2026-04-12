@@ -155,7 +155,7 @@
     "file": "iplink.py",
     "icon": "🎙",
     "description": "Browser-based IP codec and SIP softphone. WebRTC rooms: hub creates named rooms with shareable talent URLs — contributors join from any browser with no app download, low-latency Opus audio, bidirectional IFB, live level meters, quality presets (Voice 64 kbps / Broadcast 128 kbps stereo / Hi-Fi 256 kbps stereo). SIP client: register with any SIP PBX supporting WebSocket transport (Asterisk, FreeSWITCH, 3CX); take and make SIP calls directly from the hub page; digest auth, incoming call banner with Answer/Decline, mic mute, RTT stats, persistent config. Hub-only. v1.1.23: fix root cause of all 'Invalid SDP line' errors — Python .strip() was removing the terminal \\r\\n from the stored offer; Chrome's line-oriented parser then failed on the unterminated last line, reporting whichever line that was as 'Invalid'; server now restores \\r\\n after strip; raw offer passed unchanged to setRemoteDescription (no JS SDP manipulation). SIP munge retained for outgoing INVITEs. v1.1.18: comprehensive SDP munge. v1.1.14: Safari/Chrome SDP compat.",
-    "version": "1.1.23",
+    "version": "1.1.24",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/iplink.py"
   },

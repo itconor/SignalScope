@@ -2,6 +2,16 @@
 
 ---
 
+## IP Link v1.1.24 — 2026-04-12
+
+### Fixed — same \r\n stripping bug on the answer path (plugin v1.1.24)
+
+`iplink_post_answer` had the identical `.strip()` issue as the offer path fixed in v1.1.23. The hub's answer SDP was stored without its terminal `\r\n`, causing the talent's `setRemoteDescription` to fail on the last line with `a=ssrc:… cname:… Invalid SDP line.`
+
+Fix: `room["answer"] = sdp + "\r\n"`.
+
+---
+
 ## IP Link v1.1.23 — 2026-04-12
 
 ### Fixed — true root cause of all "Invalid SDP line" WebRTC errors (plugin v1.1.23)
