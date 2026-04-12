@@ -11,11 +11,12 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.0",
+    "version": "1.3.1",
 }
 
 import json
 import os
+import queue as _queue
 import random
 import socket
 import struct
@@ -35,7 +36,9 @@ _STUN             = _STUN_SERVERS   # alias used in route templates
 _ROOMS_PATH       = os.path.join(_BASE_DIR, "iplink_rooms.json")
 
 # ── Livewire / AES67 RTP multicast output ─────────────────────────────────────
-_lw_senders = {}   # room_id → _LivewireSender
+_lw_senders      = {}   # room_id → _LivewireSender (hub-local sender)
+_lw_relay_slots  = {}   # slot_id → queue.Queue  (hub→client PCM relay)
+_lw_relay_closed = set()  # slot_ids that are closed/done
 
 
 class _LivewireSender:
@@ -117,12 +120,15 @@ def _save_rooms():
     # Serialise only the config fields — not transient signalling state
     out = {}
     for rid, r in permanent.items():
+        # Strip transient keys (prefixed with _) from output before persisting
+        saved_output = {k: v for k, v in r.get("output", {}).items()
+                        if not k.startswith("_")}
         out[rid] = {
             "id":       r["id"],
             "name":     r["name"],
             "quality":  r["quality"],
             "permanent": True,
-            "output":   r.get("output", {}),
+            "output":   saved_output,
             "created":  r["created"],
         }
     try:
@@ -640,6 +646,17 @@ function _loadStreamSources(){
 _loadStreamSources();
 setInterval(_loadStreamSources, 15000);
 
+// ─── Output site list (for Livewire site selector) ───────────────────────────
+var _lwSites = [{id:'hub',name:'Hub (local multicast)'}];
+function _loadOutputSites(){
+  fetch('/api/iplink/output_sites',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){ _lwSites = d.sites||[{id:'hub',name:'Hub (local multicast)'}]; })
+    .catch(function(){});
+}
+_loadOutputSites();
+setInterval(_loadOutputSites, 15000);
+
 // ─── Stream audio injection ───────────────────────────────────────────────────
 function _stopFeed(roomId){
   if(_feedReader[roomId]){ try{_feedReader[roomId].cancel();}catch(e){} delete _feedReader[roomId]; }
@@ -744,7 +761,9 @@ function saveOutput(roomId){
     var ch=parseInt((document.getElementById('olw_'+roomId)||{}).value)||1;
     var addr=((document.getElementById('omaddr_'+roomId)||{}).value||_lwAddr(ch)).trim();
     var port=parseInt((document.getElementById('omport_'+roomId)||{}).value)||5004;
-    cfg.channel=ch; cfg.address=addr||_lwAddr(ch); cfg.port=port;
+    var siteEl=document.getElementById('olwsite_'+roomId);
+    var site=siteEl?siteEl.value:'hub';
+    cfg.channel=ch; cfg.address=addr||_lwAddr(ch); cfg.port=port; cfg.site=site;
     cfg.type='livewire'; // normalise
   }
   fetch('/api/iplink/room/'+roomId+'/output',{
@@ -1134,7 +1153,12 @@ function _renderRooms(rooms){
     html+='<span style="font-size:18px">🎙</span>';
     html+='<span class="rc-name" title="'+r.name+'">'+_esc(r.name)+'</span>';
     if(r.permanent) html+='<span class="rc-perm" title="Permanent room">📌</span>';
-    var out=r.output||{}; if(out.type&&out.type!=='speaker') html+='<span class="lw-badge">📡 '+_esc(out.type==='livewire'?'LW ch '+out.channel:'AES67')+'</span>';
+    var out=r.output||{};
+    if(out.type&&out.type!=='speaker'){
+      var _lbl=out.type==='livewire'?'LW ch '+out.channel:'AES67';
+      if(out.site&&out.site!=='hub') _lbl+=' @ '+out.site;
+      html+='<span class="lw-badge">📡 '+_esc(_lbl)+'</span>';
+    }
     html+=_statusBadge(r.status);
     html+='</div>';
     // Body
@@ -1195,6 +1219,14 @@ function _renderRooms(rooms){
     html+='<label><input type="radio" name="ot_'+r.id+'" value="livewire"'+(outCfg.type==='livewire'?' checked':'')+' onchange="setOutType(\''+r.id+'\',this.value)"> 📡 Livewire / AES67 Multicast</label>';
     // Livewire sub-fields
     html+='<div class="out-sub'+(outCfg.type==='livewire'||outCfg.type==='multicast'?' show':'')+'" id="outsub_'+r.id+'">';
+    // Site selector — "Hub (local multicast)" or any connected client site
+    html+='<div class="field" style="margin-bottom:6px"><label style="font-size:10px">Output Site</label>';
+    html+='<select id="olwsite_'+r.id+'">';
+    var _curSite=(outCfg.site||'hub');
+    _lwSites.forEach(function(s){
+      html+='<option value="'+_esc(s.id)+'"'+(_curSite===s.id?' selected':'')+'>'+_esc(s.name)+'</option>';
+    });
+    html+='</select></div>';
     html+='<div class="field" style="margin-bottom:6px"><label style="font-size:10px">Livewire Channel (1–32767)</label>';
     html+='<input type="number" id="olw_'+r.id+'" min="1" max="32767" value="'+(outCfg.channel||1)+'" oninput="updateLwAddr(\''+r.id+'\')"></div>';
     html+='<div class="lw-addr" id="olwaddr_'+r.id+'">Multicast: '+_lwAddr(outCfg.channel||1)+' port 5004</div>';
@@ -2440,6 +2472,32 @@ def _client_feed_thread(inp, hub_url, slot_id, secret):
         time.sleep(max(0, CHUNK_DUR - elapsed))
 
 
+def _client_lw_output_thread(hub_url, slot_id, address, port, n_ch):
+    """Client-side: stream received audio from a hub relay slot and multicast it locally.
+
+    The hub browser captures talent audio via AudioWorklet → POSTs S16LE chunks to
+    /api/iplink/room/<id>/output_chunk → hub puts into the relay slot → this thread
+    streams it from /api/iplink/output_stream/<slot_id> → feeds local _LivewireSender
+    → UDP multicast on the client's LAN (where the Axia console lives).
+    """
+    import urllib.request
+    sender = _LivewireSender(address, port, n_ch=n_ch)
+    try:
+        url = f"{hub_url}/api/iplink/output_stream/{slot_id}"
+        req = urllib.request.urlopen(url, timeout=120)   # streaming; refreshed on stall
+        READ_SZ = 9600   # ~0.1 s at 48 kHz S16LE stereo
+        while True:
+            chunk = req.read(READ_SZ)
+            if not chunk:
+                break
+            sender.feed(chunk)
+    except Exception as e:
+        if _log:
+            _log(f"[IPLink] Livewire output stream ended for {slot_id[:8]}: {e}")
+    finally:
+        sender.stop()
+
+
 def _client_feed_poller(monitor_ref, hub_url, site_name, secret):
     """Client-side background thread: poll hub for feed commands and execute them."""
     import urllib.request, json as _json
@@ -2457,8 +2515,9 @@ def _client_feed_poller(monitor_ref, hub_url, site_name, secret):
             cmd = d.get("cmd")
             if cmd:
                 slot_id    = cmd.get("slot_id")
-                stream_idx = int(cmd.get("stream_idx", 0))
                 stop_id    = cmd.get("stop")
+                cmd_type   = cmd.get("type", "feed")   # "feed" | "lw_output"
+
                 if stop_id and stop_id in _active:
                     # Signal thread to stop by poisoning the slot (empty POST = EOF)
                     try:
@@ -2471,7 +2530,22 @@ def _client_feed_poller(monitor_ref, hub_url, site_name, secret):
                     except Exception:
                         pass
                     _active.pop(stop_id, None)
-                elif slot_id and slot_id not in _active:
+
+                elif cmd_type == "lw_output" and slot_id and slot_id not in _active:
+                    # Hub wants us to stream from its relay slot and send LW multicast
+                    address = str(cmd.get("address", ""))
+                    port    = int(cmd.get("port", 5004))
+                    n_ch    = int(cmd.get("n_ch", 2))
+                    t = threading.Thread(
+                        target=_client_lw_output_thread,
+                        args=(hub_url, slot_id, address, port, n_ch),
+                        daemon=True, name=f"IPLinkLWOut-{slot_id[:6]}",
+                    )
+                    _active[slot_id] = t
+                    t.start()
+
+                elif cmd_type == "feed" and slot_id and slot_id not in _active:
+                    stream_idx = int(cmd.get("stream_idx", 0))
                     inputs = getattr(getattr(monitor_ref, 'app_cfg', None), 'inputs', []) or []
                     if 0 <= stream_idx < len(inputs):
                         inp = inputs[stream_idx]
@@ -2942,55 +3016,116 @@ def register(app, ctx):
     @login_required
     @csrf_protect
     def iplink_set_output(room_id):
-        """Set the audio output routing for a room (speaker | livewire | multicast)."""
+        """Set the audio output routing for a room (speaker | livewire | multicast).
+        For livewire/multicast, 'site' can be 'hub' (local UDP multicast) or a
+        connected client site name (hub queues an lw_output command; client runs
+        the _LivewireSender on its own network segment — e.g. the Axia LAN).
+        """
         room = _get_room(room_id)
         if not room:
             return jsonify({"error": "Not found"}), 404
         data     = request.get_json(silent=True) or {}
         out_type = str(data.get("type", "speaker"))
-        output   = {"type": out_type}
+        site_out = str(data.get("site", "hub")).strip() or "hub"
+        output   = {"type": out_type, "site": site_out}
+
         if out_type in ("livewire", "multicast"):
             ch      = max(1, min(32767, int(data.get("channel", 1))))
             address = str(data.get("address", "") or _LivewireSender.livewire_address(ch)).strip()
             port    = max(1, min(65535, int(data.get("port", 5004))))
             n_ch    = 2   # Livewire standard channels are stereo
             output.update({"channel": ch, "address": address, "port": port, "n_ch": n_ch})
-        # Stop old sender if any
-        old = _lw_senders.pop(room_id, None)
-        if old:
-            old.stop()
-        # Start new sender if livewire output selected and room is connected
-        if out_type in ("livewire", "multicast") and room.get("status") == "connected":
-            sender = _LivewireSender(address, port, n_ch=output["n_ch"])
-            _lw_senders[room_id] = sender
-            _log(f"[IPLink] Livewire sender started: room '{room['name']}' → {address}:{port}")
+
+        # ── Tear down old output ─────────────────────────────────────────────
+        old_sender = _lw_senders.pop(room_id, None)
+        if old_sender:
+            old_sender.stop()
+        # Close any old relay slot
+        old_out = room.get("output", {})
+        old_slot_id = old_out.get("_slot_id")
+        if old_slot_id:
+            _lw_relay_closed.add(old_slot_id)
+            old_q = _lw_relay_slots.pop(old_slot_id, None)
+            if old_q:
+                try: old_q.put_nowait(None)   # sentinel to unblock streaming reader
+                except _queue.Full: pass
+
+        # ── Start new output ─────────────────────────────────────────────────
+        if out_type in ("livewire", "multicast"):
+            if site_out == "hub":
+                # Local UDP multicast from the hub process
+                if room.get("status") == "connected":
+                    sender = _LivewireSender(address, port, n_ch=n_ch)
+                    _lw_senders[room_id] = sender
+                    _log(f"[IPLink] Livewire sender started (hub-local): room '{room['name']}' → {address}:{port}")
+            else:
+                # Remote client site: create relay queue + queue command
+                slot_id = str(uuid.uuid4())
+                q = _queue.Queue(maxsize=300)   # ~30 s buffer at 10 Hz
+                _lw_relay_slots[slot_id] = q
+                _lw_relay_closed.discard(slot_id)
+                output["_slot_id"] = slot_id   # transient — not saved to disk
+                _pending_feeds[site_out] = {
+                    "type":    "lw_output",
+                    "slot_id": slot_id,
+                    "address": address,
+                    "port":    port,
+                    "n_ch":    n_ch,
+                }
+                _log(f"[IPLink] Livewire relay queued for {site_out}: room '{room['name']}' → {address}:{port} slot={slot_id[:8]}")
+
         with _lock:
             room["output"] = output
         if room.get("permanent"):
             _save_rooms()
-        _log(f"[IPLink] Room '{room['name']}' output set to {out_type}")
-        return jsonify({"ok": True, "output": output})
+        _log(f"[IPLink] Room '{room['name']}' output set to {out_type} via {site_out}")
+        return jsonify({"ok": True, "output": {k: v for k, v in output.items() if not k.startswith("_")}})
 
     # ── Output PCM chunk (browser posts received audio for Livewire relay) ─────
     @app.post("/api/iplink/room/<room_id>/output_chunk")
     def iplink_output_chunk(room_id):
-        """Receive S16LE PCM from the hub browser and forward to Livewire multicast."""
-        sender = _lw_senders.get(room_id)
-        if not sender:
-            # Room may have just been configured — create sender lazily
-            room = _get_room(room_id)
-            if not room:
-                return jsonify({"error": "Not found"}), 404
-            out = room.get("output", {})
-            if out.get("type") not in ("livewire", "multicast"):
-                return jsonify({"ok": True, "dropped": True})
-            sender = _LivewireSender(
-                out["address"], out.get("port", 5004), n_ch=out.get("n_ch", 2)
-            )
-            _lw_senders[room_id] = sender
+        """Receive S16LE PCM from the hub browser and forward to Livewire multicast.
+
+        Routing:
+          output.site == "hub"          → feed directly to local _LivewireSender (UDP multicast)
+          output.site == "<client_name>" → put into relay queue; client streams it from
+                                           /api/iplink/output_stream/<slot_id> and multicasts
+                                           on its own network segment
+        """
+        room = _get_room(room_id)
+        if not room:
+            return jsonify({"error": "Not found"}), 404
+        out      = room.get("output", {})
+        out_type = out.get("type", "speaker")
+        if out_type not in ("livewire", "multicast"):
+            return jsonify({"ok": True, "dropped": True})
+
         pcm = request.get_data()
-        if pcm:
+        if not pcm:
+            return jsonify({"ok": True})
+
+        site_out = out.get("site", "hub")
+        if site_out == "hub":
+            # Local multicast
+            sender = _lw_senders.get(room_id)
+            if not sender:
+                # Lazy create (room may have been configured while not yet connected)
+                sender = _LivewireSender(
+                    out["address"], out.get("port", 5004), n_ch=out.get("n_ch", 2)
+                )
+                _lw_senders[room_id] = sender
             sender.feed(pcm)
+        else:
+            # Remote client site relay
+            slot_id = out.get("_slot_id")
+            if slot_id:
+                q = _lw_relay_slots.get(slot_id)
+                if q:
+                    try:
+                        q.put_nowait(pcm)
+                    except _queue.Full:
+                        pass   # drop chunk — client is too slow / disconnected
+
         return jsonify({"ok": True})
 
     # ── Client polls hub for pending feed commands ─────────────────────────────
@@ -3002,6 +3137,50 @@ def register(app, ctx):
             return jsonify({}), 400
         cmd = _pending_feeds.pop(site, None)
         return jsonify({"cmd": cmd} if cmd else {})
+
+    # ── Output sites list ──────────────────────────────────────────────────────
+    @app.get("/api/iplink/output_sites")
+    @login_required
+    def iplink_output_sites():
+        """Return sites available for Livewire output routing.
+        Hub (local multicast) is always first; approved connected client sites follow.
+        """
+        sites = [{"id": "hub", "name": "Hub (local multicast)"}]
+        hub_server_ref = ctx.get("hub_server")
+        if hub_server_ref:
+            for site, sdata in getattr(hub_server_ref, '_sites', {}).items():
+                if sdata.get('_approved'):
+                    sites.append({"id": site, "name": site})
+        return jsonify({"sites": sites})
+
+    # ── Output PCM stream (hub→client Livewire relay) ──────────────────────────
+    @app.get("/api/iplink/output_stream/<slot_id>")
+    def iplink_output_stream(slot_id):
+        """Streaming endpoint: client reads S16LE PCM and sends it as Livewire multicast.
+        Auth: slot_id is a UUID pre-shared in the lw_output command — no session needed.
+        """
+        q = _lw_relay_slots.get(slot_id)
+        if q is None:
+            return jsonify({"error": "Not found"}), 404
+
+        def _generate():
+            try:
+                while slot_id not in _lw_relay_closed:
+                    try:
+                        chunk = q.get(timeout=2.0)
+                        if chunk is None:   # sentinel — stream closed
+                            break
+                        yield chunk
+                    except _queue.Empty:
+                        pass   # keep alive while slot stays open
+            except GeneratorExit:
+                pass
+
+        resp = make_response(_generate())
+        resp.headers['Content-Type'] = 'application/octet-stream'
+        resp.headers['X-Accel-Buffering'] = 'no'
+        resp.headers['Cache-Control'] = 'no-cache'
+        return resp
 
     # ── SIP config API ─────────────────────────────────────────────────────────
     @app.get("/api/iplink/sip/config")
@@ -3028,4 +3207,4 @@ def register(app, ctx):
         _log(f"[IPLink] SIP config saved — server: {cfg.get('server','')}, user: {cfg.get('username','')}")
         return jsonify({"ok": True})
 
-    _log(f"[IPLink] Plugin registered — v1.3.0 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
+    _log(f"[IPLink] Plugin registered — v1.3.1 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
