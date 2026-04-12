@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.3",
+    "version": "1.3.4",
 }
 
 import json
@@ -353,8 +353,8 @@ input[type=range].fader{flex:1;height:4px;accent-color:var(--acc);cursor:pointer
 select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:4px 8px;font-size:12px;font-family:inherit;width:100%;margin-top:4px}
 /* Output config panel */
 .out-panel{background:#080f20;border:1px solid var(--bor);border-radius:8px;padding:10px 12px;margin-top:8px;font-size:12px}
-.out-panel label{display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer;color:var(--tx)}
-.out-panel input[type=radio]{accent-color:var(--acc)}
+.out-panel label{display:block;padding:3px 0;cursor:pointer;color:var(--tx);line-height:1.6}
+.out-panel input[type=radio]{accent-color:var(--acc);vertical-align:middle;margin-right:5px}
 .out-panel input[type=number],.out-panel input[type=text]{background:#0d1e40;border:1px solid var(--bor);border-radius:5px;color:var(--tx);padding:4px 8px;font-size:12px;font-family:inherit;width:100%;margin-top:4px}
 .out-sub{padding:6px 0 2px 22px;display:none}
 .out-sub.show{display:block}
@@ -950,8 +950,16 @@ function _sipMungeSdp(sdp){
 // ─── Hub WebRTC negotiation ──────────────────────────────────────────────────
 function _showConnErr(roomId, msg){
   _connErrs[roomId] = msg;
-  _refreshRooms();
-  setTimeout(function(){ delete _connErrs[roomId]; _refreshRooms(); }, 10000);
+  // Update the pre-rendered error div in-place — avoids a full re-render that
+  // would rebuild the source selector and could lose the user's dropdown state.
+  var el = document.getElementById('cerr_'+roomId);
+  if(el){ el.textContent = '⚠ '+msg; el.style.display = ''; }
+  else { _refreshRooms(); }   // fallback if card not yet rendered
+  setTimeout(function(){
+    delete _connErrs[roomId];
+    var el2 = document.getElementById('cerr_'+roomId);
+    if(el2) el2.style.display = 'none';
+  }, 10000);
 }
 
 function acceptCall(roomId){
@@ -1241,9 +1249,9 @@ function _renderRooms(rooms){
       }
       html+='</div>';
     }
-    if(_connErrs[r.id]){
-      html+='<div class="msg msg-err" style="margin:8px 0 0">⚠ '+_esc(_connErrs[r.id])+'</div>';
-    }
+    // Pre-rendered error div — updated in-place by _showConnErr to avoid re-render flickering
+    var _cerr = _connErrs[r.id] || '';
+    html+='<div id="cerr_'+r.id+'" class="msg msg-err" style="margin:8px 0 0'+(_cerr?'':';display:none')+'">'+(_cerr?'⚠ '+_esc(_cerr):'')+'</div>';
     // Level meters
     html+='<div class="lvl-wrap"><span class="lvl-label" style="font-size:10px">Talent</span>';
     html+='<div class="lvl-outer"><div class="lvl-fill" id="rc_tlvl_'+r.id+'" style="width:'+tlvlW+'%;background:'+talentLvlCol+'"></div></div>';
@@ -2489,17 +2497,16 @@ _pending_feeds = {}   # site_name → {slot_id, stream_idx} — hub queues, clie
 def _feed_thread(inp, slot):
     """Push live audio from a local SignalScope input into a relay slot at real-time pace."""
     CHUNK_DUR = 0.095   # slightly under 0.1 s to avoid drifting behind
-    prev_chunk_id = None
+    prev_raw = None     # identity of last deque entry pushed (not a bytes copy)
     while not slot.closed and not slot.stale:
         t = time.monotonic()
         buf = getattr(inp, '_stream_buffer', None)
         if buf:
             try:
-                chunk = bytes(buf[-1])   # most-recent 0.1 s PCM block
-                cid = id(chunk)
-                if cid != prev_chunk_id and chunk:
-                    slot.put(chunk)
-                    prev_chunk_id = cid
+                raw = buf[-1]               # the actual deque entry object
+                if raw is not prev_raw:     # new chunk arrived from monitor loop
+                    slot.put(bytes(raw))
+                    prev_raw = raw
             except (IndexError, Exception):
                 pass
         elapsed = time.monotonic() - t
@@ -2524,6 +2531,7 @@ def _client_feed_thread(inp, hub_url, slot_id, secret):
         nonce = hashlib.md5(_os.urandom(8)).hexdigest()[:16]
         return {"X-Hub-Sig": sig, "X-Hub-Ts": f"{ts:.0f}", "X-Hub-Nonce": nonce}
 
+    prev_raw = None     # identity of last deque entry pushed
     while True:
         t = time.monotonic()
         buf = getattr(inp, '_stream_buffer', None)
@@ -2531,9 +2539,9 @@ def _client_feed_thread(inp, hub_url, slot_id, secret):
             time.sleep(0.1)
             continue
         try:
-            chunk = bytes(buf[-1])
-            cid = id(chunk)
-            if cid != prev_chunk_id and chunk:
+            raw = buf[-1]
+            if raw is not prev_raw:
+                chunk = bytes(raw)
                 hdrs = {"Content-Type": "application/octet-stream"}
                 hdrs.update(_sign(chunk))
                 req = urllib.request.Request(chunk_url, data=chunk, method="POST", headers=hdrs)
@@ -2543,7 +2551,7 @@ def _client_feed_thread(inp, hub_url, slot_id, secret):
                         break   # slot gone — hub disconnected or room closed
                 except Exception:
                     pass
-                prev_chunk_id = cid
+                prev_raw = raw
         except (IndexError, Exception):
             pass
         elapsed = time.monotonic() - t
@@ -3291,4 +3299,4 @@ def register(app, ctx):
         _log(f"[IPLink] SIP config saved — server: {cfg.get('server','')}, user: {cfg.get('username','')}")
         return jsonify({"ok": True})
 
-    _log(f"[IPLink] Plugin registered — v1.3.3 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
+    _log(f"[IPLink] Plugin registered — v1.3.4 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
