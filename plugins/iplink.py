@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.28",
+    "version": "1.1.29",
     "hub_only": True,
 }
 
@@ -1204,7 +1204,10 @@ function _sipHandleMsg(raw){
         // already nulled them (server retransmits the 4xx until it gets an ACK).
         // The 4xx echoes Call-ID, From, CSeq from the original INVITE, so we
         // always have everything we need in msg.headers.
-        var _ackUri = _sip.callUri || _sipSelfUri();
+        // Use the To URI from the 4xx response as the ACK Request-URI.
+        // _sip.callUri may already be null if _sipCleanupCall() ran on a
+        // previous retransmission. The To header reliably contains the callee.
+        var _ackUri = _sipExtractURI(msg.headers['to']) || _sip.callUri || _sipSelfUri();
         var _ackHdrs = {
           'Via':          'SIP/2.0/WS '+_sipWsHostname()+';branch='+_sipBranch()+';rport',
           'Max-Forwards': '70',
