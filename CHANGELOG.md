@@ -2,6 +2,16 @@
 
 ---
 
+## IP Link v1.1.28 — 2026-04-12
+
+### Fixed — ACK for 4xx INVITE built from response headers, not nulled _sip state (plugin v1.1.28)
+
+The ACK for non-2xx INVITE responses was built using `_sip.callCid` and `_sip.callFromTag`. By the time the server retransmits the 4xx (because it never received a valid ACK), `_sipCleanupCall()` has already nulled those fields — producing `Call-ID: null`, `From: ...;tag=null`, and Request-URI pointing to self instead of the callee. The server's retransmission loop continued indefinitely.
+
+Fix: build the ACK entirely from the headers in the 4xx response message itself. RFC 3261 §17.1.1.3 specifies that the 4xx echoes Call-ID, From, and CSeq from the original INVITE — so `msg.headers` always has everything needed regardless of `_sip` state.
+
+---
+
 ## IP Link v1.1.27 — 2026-04-12
 
 ### Debug + RFC compliance: ACK on 4xx INVITE, full SIP traffic logging (plugin v1.1.27)

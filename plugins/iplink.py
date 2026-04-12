@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.1.27",
+    "version": "1.1.28",
     "hub_only": True,
 }
 
@@ -1198,10 +1198,23 @@ function _sipHandleMsg(raw){
             }).catch(function(e){console.error('SIP SDP:',e);});
         }
       }else if(st>=400){
-        // RFC 3261 §17.1.1.3: non-2xx final responses to INVITE MUST be ACKed.
-        // Without this ACK the server may retransmit the error response or block
-        // the call-ID for future use.
-        _sipSendAck(msg, _sip.callUri||_sipSelfUri());
+        // RFC 3261 §17.1.1.3: non-2xx INVITE responses MUST be ACKed.
+        // Build the ACK from the response headers directly — do NOT use
+        // _sip.callCid / _sip.callFromTag because _sipCleanupCall() may have
+        // already nulled them (server retransmits the 4xx until it gets an ACK).
+        // The 4xx echoes Call-ID, From, CSeq from the original INVITE, so we
+        // always have everything we need in msg.headers.
+        var _ackUri = _sip.callUri || _sipSelfUri();
+        var _ackHdrs = {
+          'Via':          'SIP/2.0/WS '+_sipWsHostname()+';branch='+_sipBranch()+';rport',
+          'Max-Forwards': '70',
+          'From':         msg.headers['from']  || '',
+          'To':           msg.headers['to']    || '',
+          'Call-ID':      msg.headers['call-id']|| '',
+          'CSeq':         (msg.headers['cseq'] || '1 INVITE').replace(/INVITE$/i, 'ACK'),
+          'Contact':      _sipContact(),
+        };
+        _sipSend(_sipBuildReq('ACK', _ackUri, _ackHdrs, ''));
         var reason=st+' '+(msg.reason||'');
         var hint='';
         if(st===404) hint=' — extension not found on server';
