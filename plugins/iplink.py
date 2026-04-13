@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.6",
+    "version": "1.4.7",
 }
 
 import asyncio as _asyncio
@@ -2947,6 +2947,12 @@ h1{font-size:22px;font-weight:800;margin-bottom:4px}
 /* IFB */
 .ifb-wrap{margin-top:14px;padding:10px 14px;background:#0a1628;border-radius:8px;font-size:12px;text-align:left}
 .ifb-wrap label{color:var(--mu);display:block;margin-bottom:6px}
+/* IFB status badge */
+.ifb-badge{display:inline-block;font-size:11px;font-weight:700;border-radius:4px;padding:3px 8px;margin-top:8px}
+.ifb-badge-wait{background:rgba(138,164,200,.12);color:var(--mu);border:1px solid rgba(138,164,200,.2)}
+.ifb-badge-ok{background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3)}
+.ifb-badge-blocked{background:rgba(245,158,11,.12);color:var(--wn);border:1px solid rgba(245,158,11,.3)}
+.ifb-play-btn{margin-top:8px;padding:8px 16px;background:#1e3a5f;border:1px solid var(--bor);border-radius:8px;color:var(--tx);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;width:100%}
 </style></head><body>
 <div class="card" id="mainCard">
   <div style="font-size:36px;margin-bottom:12px">🎙</div>
@@ -2974,6 +2980,13 @@ h1{font-size:22px;font-weight:800;margin-bottom:4px}
 
   <div class="stats" id="statsDiv" style="display:none"></div>
   <div class="err" id="errDiv" style="display:none"></div>
+
+  <!-- IFB status (shown once WebRTC connects) -->
+  <div id="ifbStatus" style="display:none;margin-top:10px">
+    <div class="ifb-badge ifb-badge-wait" id="ifbBadge">📻 Waiting for IFB…</div>
+    <!-- Shown only if autoplay is blocked -->
+    <button class="ifb-play-btn" id="ifbPlayBtn" style="display:none" onclick="_enableIFB()">▶ Tap to enable IFB audio</button>
+  </div>
 
   <!-- Hidden audio for IFB (hub talking back) -->
   <audio id="ifbAudio" autoplay playsinline style="display:none"></audio>
@@ -3021,10 +3034,36 @@ function _start(){
     });
 }
 
+// IFB stream reference for deferred play
+var _ifbStream = null;
+
+function _enableIFB(){
+  // Called when user taps the fallback button after autoplay is blocked
+  var audio = document.getElementById('ifbAudio');
+  var btn   = document.getElementById('ifbPlayBtn');
+  var badge = document.getElementById('ifbBadge');
+  if(_ifbStream){ audio.srcObject = _ifbStream; }
+  audio.play().then(function(){
+    btn.style.display  = 'none';
+    badge.className    = 'ifb-badge ifb-badge-ok';
+    badge.textContent  = '📻 IFB Active';
+  }).catch(function(e){
+    console.warn('[IPLink] IFB play still blocked:', e.message||e);
+  });
+}
+
 function _connect(micStream){
   _pc = new RTCPeerConnection({iceServers: STUN.map(function(u){return{urls:u};})});
 
-  // Add mic track
+  // IMPORTANT: declare a recvonly transceiver FIRST so the offer has a dedicated
+  // m-line for server→talent audio (m-line 0: recvonly).  This guarantees that
+  // aiortc's addTrack(serverTrack) matches exactly this m-line and the answer has
+  // a=sendonly on it — which causes ontrack to fire reliably on the talent side.
+  // Without this, with only a single sendrecv m-line from addTrack(mic), some
+  // browser/aiortc combinations never fire ontrack even though the track is connected.
+  _pc.addTransceiver('audio', {direction:'recvonly'});
+
+  // Add mic track (creates m-line 1: sendrecv, used as sendonly by talent)
   micStream.getTracks().forEach(function(t){ _pc.addTrack(t, micStream); });
 
   // Receive IFB (hub talking back to talent).
@@ -3033,10 +3072,21 @@ function _connect(micStream){
   // dynamically-assigned srcObject is not guaranteed to autoplay without it.
   _pc.ontrack = function(e){
     var audio = document.getElementById('ifbAudio');
+    var badge = document.getElementById('ifbBadge');
+    var btn   = document.getElementById('ifbPlayBtn');
     var stream = (e.streams && e.streams.length > 0) ? e.streams[0] : new MediaStream([e.track]);
+    _ifbStream     = stream;
     audio.srcObject = stream;
-    audio.play().catch(function(err){
+    badge.className = 'ifb-badge ifb-badge-ok';
+    badge.textContent = '📻 IFB Active';
+    audio.play().then(function(){
+      btn.style.display = 'none';  // autoplay succeeded — hide the fallback button
+    }).catch(function(err){
+      // Autoplay blocked (common on mobile before user gesture)
       console.warn('[IPLink] IFB autoplay blocked:', err.message || err);
+      badge.className   = 'ifb-badge ifb-badge-blocked';
+      badge.textContent = '📻 IFB blocked by browser';
+      btn.style.display = '';   // show tap-to-play button
     });
     _setupHubMeter(stream);
   };
@@ -3051,9 +3101,12 @@ function _connect(micStream){
     var s = _pc.connectionState;
     if(s==='connected'){
       _setStatus('dot-live','🔴 Live — connected to studio');
+      // Show IFB status section now we're connected
+      document.getElementById('ifbStatus').style.display = '';
       _startStats();
     } else if(s==='disconnected'||s==='failed'){
       _setStatus('dot-err','Disconnected');
+      document.getElementById('ifbStatus').style.display = 'none';
       _stopStats();
     } else if(s==='connecting'){
       _setStatus('dot-wait','Connecting…');
@@ -4114,4 +4167,4 @@ def register(app, ctx):
         _log(f"[IPLink] SIP config saved — server: {cfg.get('server','')}, user: {cfg.get('username','')}")
         return jsonify({"ok": True})
 
-    _log(f"[IPLink] Plugin registered — v1.3.5 — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
+    _log(f"[IPLink] Plugin registered — v{SIGNALSCOPE_PLUGIN['version']} — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
