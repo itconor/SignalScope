@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.0",
+    "version": "1.5.1",
 }
 
 import asyncio as _asyncio
@@ -862,6 +862,27 @@ def _load_sip_accounts() -> list:
         with open(_SIP_ACCTS_PATH) as fh:
             return json.load(fh)
     except FileNotFoundError:
+        # Migrate from old single-account iplink_sip_cfg.json if it exists
+        try:
+            with open(_SIP_CFG_PATH) as fh:
+                old = json.load(fh)
+            if old.get("server") and old.get("username"):
+                acct = {
+                    "id":           str(uuid.uuid4()),
+                    "label":        old.get("display_name") or old.get("username", "Studio"),
+                    "server":       old.get("server", ""),
+                    "username":     old.get("username", ""),
+                    "password":     old.get("password", ""),
+                    "domain":       old.get("domain", ""),
+                    "display_name": old.get("display_name", "Studio"),
+                    "enabled":      bool(old.get("enabled", True)),
+                }
+                accounts = [acct]
+                _save_sip_accounts(accounts)
+                if _log: _log(f"[IPLink] Migrated SIP config: {acct['username']} → iplink_sip_accounts.json")
+                return accounts
+        except Exception:
+            pass
         return []
     except Exception as e:
         if _log: _log(f"[IPLink] Failed to load SIP accounts: {e}")
