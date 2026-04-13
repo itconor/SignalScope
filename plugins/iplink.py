@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.9",
+    "version": "1.3.10",
 }
 
 import json
@@ -563,6 +563,7 @@ var _outputCapture  = {}; // room_id → {node, reader}
 var _lwWorkletUrl   = null;
 var _streamSources  = []; // cached list from /api/iplink/streams (never cleared on empty response)
 var _roomSrc        = {}; // room_id → 'global' | 'mic' | 'stream:SITE:IDX'
+var _srcSelOpen     = false; // true while a per-room source <select> is open — blocks _renderRooms innerHTML rebuild
 var _feedAudio      = {}; // room_id → HTMLAudioElement (stream feed)
 var _feedNodes      = {}; // room_id → {srcNode, gainNode, dest} — Web Audio nodes for active feed
 // Single shared AudioContext for ALL stream feeds.
@@ -1419,8 +1420,35 @@ function _renderRooms(rooms){
     html+='</div></div>'; // rc-body, room-card
   });
   html+='</div>';
+  // Don't rebuild the room grid while a per-room source <select> is open —
+  // replacing innerHTML destroys the open dropdown and Chrome closes it immediately.
+  if(_srcSelOpen){
+    // The render was skipped, but _roomSrc[id] is already updated by _onRoomSrcChange.
+    // Patch each visible select's value directly so the selection is visually correct
+    // without a full rebuild.
+    rooms.forEach(function(r){
+      var sel=document.getElementById('rc_src_'+r.id);
+      if(sel&&!sel.matches(':focus')){
+        var want=_roomSrc[r.id]||'global';
+        if(sel.value!==want) sel.value=want;
+      }
+    });
+    return;
+  }
   ng.innerHTML=html;
-  // Populate stream options on the newly-created per-room selectors
+  // After injecting new DOM, wire up focus/blur on each per-room source <select>
+  // so _srcSelOpen tracks whether ANY dropdown is currently open.
+  rooms.forEach(function(r){
+    var sel=document.getElementById('rc_src_'+r.id);
+    if(!sel) return;
+    sel.addEventListener('mousedown',function(){ _srcSelOpen=true; });
+    sel.addEventListener('focus',    function(){ _srcSelOpen=true; });
+    sel.addEventListener('blur',     function(){ _srcSelOpen=false; });
+    sel.addEventListener('change',   function(){ _srcSelOpen=false; });
+    // Keyboard close (Escape key) won't fire blur in some browsers without this:
+    sel.addEventListener('keydown',  function(e){ if(e.key==='Escape'||e.key==='Enter') _srcSelOpen=false; });
+  });
+  // Populate stream options on the newly-created global selector
   _populateSourceSelectors();
 }
 
