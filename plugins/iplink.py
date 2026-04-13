@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.0",
+    "version": "1.4.1",
 }
 
 import asyncio as _asyncio
@@ -1905,15 +1905,20 @@ function _renderRooms(rooms){
   ng.innerHTML=html;
   // After injecting new DOM, wire up focus/blur on each per-room source <select>
   // so _srcSelOpen tracks whether ANY dropdown is currently open.
-  rooms.forEach(function(r){
-    var sel=document.getElementById('rc_src_'+r.id);
+  // Wire _srcSelOpen guard on BOTH the per-room source select AND the server-source
+  // select — any open dropdown must block the 1.5 s innerHTML rebuild that would close it.
+  function _wireSel(sel){
     if(!sel) return;
     sel.addEventListener('mousedown',function(){ _srcSelOpen=true; });
     sel.addEventListener('focus',    function(){ _srcSelOpen=true; });
     sel.addEventListener('blur',     function(){ _srcSelOpen=false; });
     sel.addEventListener('change',   function(){ _srcSelOpen=false; });
-    // Keyboard close (Escape key) won't fire blur in some browsers without this:
+    // Escape/Enter may not fire blur in all browsers:
     sel.addEventListener('keydown',  function(e){ if(e.key==='Escape'||e.key==='Enter') _srcSelOpen=false; });
+  }
+  rooms.forEach(function(r){
+    _wireSel(document.getElementById('rc_src_'+r.id));
+    _wireSel(document.getElementById('smSrc_'+r.id));
   });
   // Populate stream options on the newly-created global selector
   _populateSourceSelectors();
