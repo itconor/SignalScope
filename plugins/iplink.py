@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.8",
+    "version": "1.4.9",
 }
 
 import asyncio as _asyncio
@@ -210,19 +210,23 @@ def _ensure_aio_loop():
 
 def _route_pcm_chunk(room_id: str, pcm: bytes):
     """Deliver one PCM chunk to:  (a) server-side WebRTC track → talent,
-    (b) hub-local Livewire sender → multicast.
+    (b) Livewire/AES67 multicast — hub-local sender or remote-site relay queue.
     Called from the source thread — must be thread-safe."""
     # (a) aiortc audio track
     if _AIORTC and _aio_loop:
         trk = _server_tracks.get(room_id)
         if trk:
             _asyncio.run_coroutine_threadsafe(trk._push(pcm), _aio_loop)
-    # (b) hub-local Livewire multicast
+    # (b) Livewire / AES67 multicast output
     room = _rooms.get(room_id)
     if not room:
         return
     out = room.get("output", {})
-    if out.get("type") in ("livewire", "multicast") and out.get("site", "hub") == "hub":
+    if out.get("type") not in ("livewire", "multicast"):
+        return
+    site_out = out.get("site", "hub")
+    if site_out == "hub":
+        # Hub-local UDP multicast
         addr = out.get("address", "")
         if not addr:
             return
@@ -231,6 +235,19 @@ def _route_pcm_chunk(room_id: str, pcm: bytes):
             sender = _LivewireSender(addr, out.get("port", 5004), n_ch=1)
             _lw_senders[room_id] = sender
         sender.feed(pcm)
+    else:
+        # Remote client site — push into the relay queue that
+        # _client_lw_output_thread reads from via /api/iplink/output_stream/<slot_id>.
+        # This path is reached in server-managed mode where the PCM comes from the
+        # source thread rather than from a hub browser's AudioWorklet POST.
+        slot_id = out.get("_slot_id")
+        if slot_id:
+            q = _lw_relay_slots.get(slot_id)
+            if q:
+                try:
+                    q.put_nowait(pcm)
+                except _queue.Full:
+                    pass   # drop — client is too slow or disconnected
 
 
 def _local_source_loop(room_id: str, idx: int, stop_evt: threading.Event):
@@ -3374,6 +3391,34 @@ def _client_lw_output_thread(hub_url, slot_id, address, port, n_ch):
         sender.stop()
 
 
+def _setup_remote_lw_relay(room_id: str, room: dict, site_out: str,
+                           address: str, port: int):
+    """Create a relay queue and queue a lw_output command for a remote client site.
+
+    Called both when the user saves the output setting (iplink_set_output) and
+    on hub startup (to re-establish relays for permanent rooms after restart,
+    since _slot_id is not persisted to disk).
+
+    n_ch is always 1 — the server source thread produces mono S16LE PCM.
+    The _LivewireSender on the client upmixes internally if the network requires stereo.
+    """
+    slot_id = str(uuid.uuid4())
+    q = _queue.Queue(maxsize=300)   # ~30 s buffer at 10 Hz
+    _lw_relay_slots[slot_id] = q
+    _lw_relay_closed.discard(slot_id)
+    room.get("output", {})["_slot_id"] = slot_id
+    _pending_feeds[site_out] = {
+        "type":    "lw_output",
+        "slot_id": slot_id,
+        "address": address,
+        "port":    port,
+        "n_ch":    1,
+    }
+    if _log:
+        _log(f"[IPLink] Livewire relay queued for {site_out}: "
+             f"room '{room.get('name', room_id[:8])}' → {address}:{port} slot={slot_id[:8]}")
+
+
 def _client_feed_poller(monitor_ref, hub_url, site_name, secret):
     """Client-side background thread: poll hub for feed commands and execute them."""
     import urllib.request, json as _json
@@ -3467,11 +3512,23 @@ def register(app, ctx):
     # Load permanent rooms from disk
     _load_rooms()
 
-    # Start server-side routing for permanent rooms that have it configured
+    # Start server-side routing for permanent rooms that have it configured.
+    # Also re-establish remote Livewire relay slots (_slot_id is not persisted to disk).
     if _is_hub:
         _has_sm = False
         for _rid, _room in list(_rooms.items()):
-            if _room.get("permanent") and _room.get("server_managed") and _room.get("source"):
+            if not _room.get("permanent"):
+                continue
+            # Re-queue remote Livewire relay commands on restart
+            _out = _room.get("output", {})
+            if (_out.get("type") in ("livewire", "multicast")
+                    and _out.get("site", "hub") != "hub"
+                    and _out.get("address")):
+                _setup_remote_lw_relay(
+                    _rid, _room,
+                    _out["site"], _out["address"], _out.get("port", 5004),
+                )
+            if _room.get("server_managed") and _room.get("source"):
                 _has_sm = True
                 _start_source_routing(_rid)
         if _has_sm and _AIORTC:
@@ -3933,25 +3990,13 @@ def register(app, ctx):
         if out_type in ("livewire", "multicast"):
             if site_out == "hub":
                 # Local UDP multicast from the hub process
-                if room.get("status") == "connected":
-                    sender = _LivewireSender(address, port, n_ch=n_ch)
-                    _lw_senders[room_id] = sender
-                    _log(f"[IPLink] Livewire sender started (hub-local): room '{room['name']}' → {address}:{port}")
+                sender = _LivewireSender(address, port, n_ch=1)
+                _lw_senders[room_id] = sender
+                _log(f"[IPLink] Livewire sender started (hub-local): room '{room['name']}' → {address}:{port}")
             else:
-                # Remote client site: create relay queue + queue command
-                slot_id = str(uuid.uuid4())
-                q = _queue.Queue(maxsize=300)   # ~30 s buffer at 10 Hz
-                _lw_relay_slots[slot_id] = q
-                _lw_relay_closed.discard(slot_id)
-                output["_slot_id"] = slot_id   # transient — not saved to disk
-                _pending_feeds[site_out] = {
-                    "type":    "lw_output",
-                    "slot_id": slot_id,
-                    "address": address,
-                    "port":    port,
-                    "n_ch":    n_ch,
-                }
-                _log(f"[IPLink] Livewire relay queued for {site_out}: room '{room['name']}' → {address}:{port} slot={slot_id[:8]}")
+                # Remote client site: create relay queue + queue command.
+                # n_ch=1: the source PCM is always mono S16LE from the server source thread.
+                _setup_remote_lw_relay(room_id, room, site_out, address, port)
 
         with _lock:
             room["output"] = output
