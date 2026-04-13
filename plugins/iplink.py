@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.5",
+    "version": "1.4.6",
 }
 
 import asyncio as _asyncio
@@ -3027,10 +3027,18 @@ function _connect(micStream){
   // Add mic track
   micStream.getTracks().forEach(function(t){ _pc.addTrack(t, micStream); });
 
-  // Receive IFB (hub talking back)
+  // Receive IFB (hub talking back to talent).
+  // aiortc may not associate the server track with a MediaStream (e.streams can be []),
+  // so fall back to wrapping e.track in a new MediaStream. Also call play() explicitly —
+  // dynamically-assigned srcObject is not guaranteed to autoplay without it.
   _pc.ontrack = function(e){
     var audio = document.getElementById('ifbAudio');
-    if(e.streams[0]){ audio.srcObject=e.streams[0]; _setupHubMeter(e.streams[0]); }
+    var stream = (e.streams && e.streams.length > 0) ? e.streams[0] : new MediaStream([e.track]);
+    audio.srcObject = stream;
+    audio.play().catch(function(err){
+      console.warn('[IPLink] IFB autoplay blocked:', err.message || err);
+    });
+    _setupHubMeter(stream);
   };
 
   // Collect and send ICE
