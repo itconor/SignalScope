@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.9",
+    "version": "1.4.10",
 }
 
 import asyncio as _asyncio
@@ -208,10 +208,29 @@ def _ensure_aio_loop():
 
 # ── Server-side source routing ─────────────────────────────────────────────────
 
+def _mono_to_dual_mono(pcm_mono: bytes) -> bytes:
+    """Upmix mono S16LE PCM to interleaved stereo dual-mono (L=R=mono sample).
+    Required for standard Livewire/AES67 which is always stereo (n_ch=2, L24).
+    """
+    if _HAS_NP:
+        arr = _np.frombuffer(pcm_mono, dtype=_np.int16)
+        return _np.repeat(arr, 2).tobytes()
+    # Pure-Python fallback
+    out = bytearray(len(pcm_mono) * 2)
+    for i in range(0, len(pcm_mono) - 1, 2):
+        out[i * 2:i * 2 + 2]     = pcm_mono[i:i + 2]   # L
+        out[i * 2 + 2:i * 2 + 4] = pcm_mono[i:i + 2]   # R = L
+    return bytes(out)
+
+
 def _route_pcm_chunk(room_id: str, pcm: bytes):
     """Deliver one PCM chunk to:  (a) server-side WebRTC track → talent,
     (b) Livewire/AES67 multicast — hub-local sender or remote-site relay queue.
-    Called from the source thread — must be thread-safe."""
+    Called from the source thread — must be thread-safe.
+
+    PCM input is always mono S16LE 48 kHz.  The Livewire path upmixes to
+    dual-mono stereo (L=R) so receivers get standard n_ch=2 L24 packets.
+    """
     # (a) aiortc audio track
     if _AIORTC and _aio_loop:
         trk = _server_tracks.get(room_id)
@@ -224,28 +243,28 @@ def _route_pcm_chunk(room_id: str, pcm: bytes):
     out = room.get("output", {})
     if out.get("type") not in ("livewire", "multicast"):
         return
+    # Standard Livewire is always stereo — upmix mono PCM to dual-mono
+    pcm_stereo = _mono_to_dual_mono(pcm)
     site_out = out.get("site", "hub")
     if site_out == "hub":
-        # Hub-local UDP multicast
+        # Hub-local UDP multicast (n_ch=2 = standard Livewire stereo)
         addr = out.get("address", "")
         if not addr:
             return
         sender = _lw_senders.get(room_id)
         if not sender:
-            sender = _LivewireSender(addr, out.get("port", 5004), n_ch=1)
+            sender = _LivewireSender(addr, out.get("port", 5004), n_ch=2)
             _lw_senders[room_id] = sender
-        sender.feed(pcm)
+        sender.feed(pcm_stereo)
     else:
-        # Remote client site — push into the relay queue that
+        # Remote client site — push stereo PCM into the relay queue that
         # _client_lw_output_thread reads from via /api/iplink/output_stream/<slot_id>.
-        # This path is reached in server-managed mode where the PCM comes from the
-        # source thread rather than from a hub browser's AudioWorklet POST.
         slot_id = out.get("_slot_id")
         if slot_id:
             q = _lw_relay_slots.get(slot_id)
             if q:
                 try:
-                    q.put_nowait(pcm)
+                    q.put_nowait(pcm_stereo)
                 except _queue.Full:
                     pass   # drop — client is too slow or disconnected
 
@@ -3412,7 +3431,7 @@ def _setup_remote_lw_relay(room_id: str, room: dict, site_out: str,
         "slot_id": slot_id,
         "address": address,
         "port":    port,
-        "n_ch":    1,
+        "n_ch":    2,   # standard Livewire stereo; _route_pcm_chunk upmixes mono→dual-mono
     }
     if _log:
         _log(f"[IPLink] Livewire relay queued for {site_out}: "
