@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.1",
+    "version": "1.4.2",
 }
 
 import asyncio as _asyncio
@@ -400,34 +400,42 @@ async def _server_accept_offer(room_id: str):
                 if _log:
                     _log(f"[IPLink] Server PC {state}: room '{r['name']}'")
 
-    @pc.on("icecandidate")
-    async def _on_ice(candidate):
-        if candidate:
-            sdp = candidate.to_sdp()
-            if not sdp.startswith("candidate:"):
-                sdp = "candidate:" + sdp
-            with _lock:
-                r = _rooms.get(room_id)
-                if r:
-                    r["hub_ice"].append({
-                        "candidate":     sdp,
-                        "sdpMLineIndex": 0,
-                        "sdpMid":        "0",
-                    })
-
     pc.addTrack(track)
     try:
         await pc.setRemoteDescription(_RTCSDesc(sdp=offer_sdp, type="offer"))
+
+        # Add any talent ICE candidates that arrived before setRemoteDescription
+        # (fast clients can POST candidates almost immediately after the offer)
+        with _lock:
+            r = _rooms.get(room_id)
+            early_ice = list(r["talent_ice"]) if r else []
+        for cand_data in early_ice:
+            await _server_add_ice(room_id, cand_data)
+
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
+
+        # ── Non-trickle ICE: wait for gathering to finish ────────────────────
+        # aiortc starts ICE gathering when setLocalDescription is called.
+        # The answer SDP has no candidates until gathering completes.
+        # We MUST wait here — otherwise the talent receives an answer with no
+        # server candidates and the connection can never be established.
+        for _ in range(300):   # up to 30 s (100 ms steps)
+            if pc.iceGatheringState == "complete":
+                break
+            await _asyncio.sleep(0.1)
+
+        final_sdp = pc.localDescription.sdp   # now contains all ICE candidates
         with _lock:
             r = _rooms.get(room_id)
             if r:
-                r["answer"] = pc.localDescription.sdp
-                r["status"] = "connecting"
+                r["answer"] = final_sdp
+                r["hub_ice"] = []   # not used in non-trickle mode — candidates are in SDP
+                r["status"]  = "connecting"
         if _log:
-            room = _rooms.get(room_id)
-            _log(f"[IPLink] Server answer created for room '{room['name'] if room else room_id[:8]}'")
+            r = _rooms.get(room_id)
+            _log(f"[IPLink] Server answer ready for room '{r['name'] if r else room_id[:8]}' "
+                 f"(ICE state: {pc.iceGatheringState})")
         _start_source_routing(room_id)
     except Exception as exc:
         if _log:
@@ -435,9 +443,10 @@ async def _server_accept_offer(room_id: str):
 
 
 async def _server_add_ice(room_id: str, cand_data: dict):
-    """Add a talent ICE candidate to the server-side peer connection."""
+    """Add a talent ICE candidate to the server-side peer connection.
+    Silently no-ops if the PC doesn't exist or remote description isn't set yet."""
     pc = _server_pcs.get(room_id)
-    if not pc:
+    if not pc or pc.remoteDescription is None:
         return
     cand_str = str(cand_data.get("candidate", ""))
     if not cand_str:
@@ -445,9 +454,13 @@ async def _server_add_ice(room_id: str, cand_data: dict):
     if cand_str.startswith("candidate:"):
         cand_str = cand_str[10:]
     try:
-        from aioice.candidate import Candidate as _AioiceCand
-        parsed  = _AioiceCand.from_sdp(cand_str)
-        rtc_c   = _RTCICand(
+        # aioice.Candidate.from_sdp parses the SDP-format candidate line
+        try:
+            from aioice.candidate import Candidate as _AioiceCand
+        except ImportError:
+            from aioice import Candidate as _AioiceCand
+        parsed = _AioiceCand.from_sdp(cand_str)
+        rtc_c  = _RTCICand(
             component     = parsed.component,
             foundation    = parsed.foundation,
             ip            = parsed.host,
