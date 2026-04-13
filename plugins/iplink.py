@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.4",
+    "version": "1.4.5",
 }
 
 import asyncio as _asyncio
@@ -21,8 +21,10 @@ import os
 import queue as _queue
 import random
 import secrets
+import shutil
 import socket
 import struct
+import subprocess
 import threading
 import time
 import uuid
@@ -263,40 +265,118 @@ def _local_source_loop(room_id: str, idx: int, stop_evt: threading.Event):
             last_key = id(sbuf[-1])
             time.sleep(0.05)
             continue
+        n_ch = getattr(inp, '_audio_channels', 1) or 1
         for c in sbuf[pos + 1:]:
-            _route_pcm_chunk(room_id, c)
+            if n_ch == 2 and _HAS_NP and len(c) >= 4:
+                # Downmix stereo S16LE to mono for the WebRTC track
+                stereo = _np.frombuffer(c, dtype=_np.int16)
+                mono   = ((stereo[0::2].astype(_np.int32) + stereo[1::2].astype(_np.int32)) // 2).astype(_np.int16)
+                _route_pcm_chunk(room_id, mono.tobytes())
+            else:
+                _route_pcm_chunk(room_id, c)
             last_key = id(c)
         time.sleep(0.05)
 
 
 def _remote_source_loop(room_id: str, site: str, idx: int, stop_evt: threading.Event):
-    """Stream PCM from a remote client site via the hub listen_registry relay."""
+    """Stream PCM from a remote client site via the hub listen_registry relay.
+
+    Creates a kind='live' slot — the client pushes the stream as MP3 chunks.
+    On the hub side, an ffmpeg subprocess decodes the incoming MP3 to
+    S16LE mono 48 kHz PCM, which _ServerAudioTrack expects.
+    kind='scanner' must NOT be used here: that tells the client to start an
+    RTL-SDR FM scanner session, not relay a specific monitored stream.
+    """
     if not _listen_reg_ref:
         if _log:
-            _log(f"[IPLink] No listen_registry available for remote source (room {room_id[:8]})")
+            _log(f"[IPLink] No listen_registry for remote source (room {room_id[:8]})")
         return
-    slot = None
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        if _log:
+            _log(f"[IPLink] ffmpeg not found — cannot decode remote audio for room {room_id[:8]}")
+        return
+    # Create a live-relay slot; the remote client will push MP3 chunks to it
+    # once it receives the slot_id in the next heartbeat ACK (~10 s).
     try:
-        slot = _listen_reg_ref.create(
-            site, idx, kind="scanner", mimetype="application/octet-stream"
-        )
+        slot = _listen_reg_ref.create(site, idx, kind="live", mimetype="audio/mpeg")
     except Exception as exc:
         if _log:
             _log(f"[IPLink] Remote slot create failed: {exc}")
         return
-    while not stop_evt.is_set():
-        try:
-            chunk = slot.get(timeout=1.0)
-            if chunk is None:
-                break
-            _route_pcm_chunk(room_id, chunk)
-        except Exception:
-            if not stop_evt.is_set():
-                time.sleep(0.5)
+    if _log:
+        _log(f"[IPLink] Remote relay slot {slot.slot_id} created for {site}[{idx}]"
+             f" (room {room_id[:8]}) — waiting for client to start pushing MP3")
+    # Spawn ffmpeg: read MP3 from stdin, output S16LE mono 48 kHz to stdout
     try:
-        slot.closed = True
-    except Exception:
-        pass
+        proc = subprocess.Popen(
+            [ffmpeg_bin, "-hide_banner", "-loglevel", "error",
+             "-f", "mp3", "-i", "pipe:0",
+             "-f", "s16le", "-ac", "1", "-ar", "48000", "pipe:1"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        if _log:
+            _log(f"[IPLink] ffmpeg spawn failed for room {room_id[:8]}: {exc}")
+        try: slot.closed = True
+        except Exception: pass
+        return
+    # Writer thread: relay MP3 chunks from the listen slot into ffmpeg stdin
+    def _mp3_writer():
+        try:
+            chunks_received = 0
+            while not stop_evt.is_set():
+                try:
+                    chunk = slot.get(timeout=2.0)
+                    if chunk is None:
+                        break
+                    proc.stdin.write(chunk)
+                    proc.stdin.flush()
+                    if chunks_received == 0 and _log:
+                        _log(f"[IPLink] First MP3 chunk from {site}[{idx}]"
+                             f" → ffmpeg (room {room_id[:8]})")
+                    chunks_received += 1
+                except _queue.Empty:
+                    pass  # no data yet; client may still be starting up
+                except Exception:
+                    if not stop_evt.is_set():
+                        time.sleep(0.2)
+        finally:
+            try: proc.stdin.close()
+            except Exception: pass
+    writer_t = threading.Thread(target=_mp3_writer, daemon=True,
+                                name=f"IPLink-MP3W-{room_id[:8]}")
+    writer_t.start()
+    # Watchdog: kill ffmpeg when stop_evt fires so the stdout.read() below unblocks
+    def _watchdog():
+        stop_evt.wait()
+        try: proc.kill()
+        except Exception: pass
+    threading.Thread(target=_watchdog, daemon=True, name=f"IPLink-WD-{room_id[:8]}").start()
+    # Main loop: read decoded PCM from ffmpeg stdout
+    CHUNK_BYTES = 9600   # 0.1 s of mono S16LE 48 kHz
+    pcm_chunks = 0
+    try:
+        while not stop_evt.is_set():
+            pcm = proc.stdout.read(CHUNK_BYTES)
+            if not pcm:
+                break  # ffmpeg exited or was killed
+            _route_pcm_chunk(room_id, pcm)
+            if pcm_chunks == 0 and _log:
+                _log(f"[IPLink] First PCM chunk from ffmpeg → track (room {room_id[:8]})")
+            pcm_chunks += 1
+    finally:
+        try: proc.kill()
+        except Exception: pass
+        try: proc.wait(timeout=3)
+        except Exception: pass
+        try: slot.closed = True
+        except Exception: pass
+        if _log:
+            _log(f"[IPLink] Remote source loop ended: room {room_id[:8]}"
+                 f" — {pcm_chunks} PCM chunks delivered")
 
 
 def _src_thread_fn(room_id: str, source: dict, stop_evt: threading.Event):
