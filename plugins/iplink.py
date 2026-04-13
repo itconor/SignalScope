@@ -11,18 +11,40 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.10",
+    "version": "1.4.0",
 }
 
+import asyncio as _asyncio
+import fractions as _fractions
 import json
 import os
 import queue as _queue
 import random
+import secrets
 import socket
 import struct
 import threading
 import time
 import uuid
+
+# Optional: aiortc for server-side WebRTC (talent stays connected without browser)
+try:
+    from aiortc import (RTCPeerConnection as _RTCPC,
+                        RTCSessionDescription as _RTCSDesc,
+                        RTCIceCandidate as _RTCICand,
+                        RTCConfiguration as _RTCCfg,
+                        RTCIceServer as _RTCISrv,
+                        MediaStreamTrack as _MSTBase)
+    import av as _av
+    _AIORTC = True
+except ImportError:
+    _AIORTC = False
+
+try:
+    import numpy as _np
+    _HAS_NP = True
+except ImportError:
+    _HAS_NP = False
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -39,6 +61,15 @@ _ROOMS_PATH       = os.path.join(_BASE_DIR, "iplink_rooms.json")
 _lw_senders      = {}   # room_id → _LivewireSender (hub-local sender)
 _lw_relay_slots  = {}   # slot_id → queue.Queue  (hub→client PCM relay)
 _lw_relay_closed = set()  # slot_ids that are closed/done
+
+# ── Server-side routing (permanent rooms) ─────────────────────────────────────
+_INTERNAL_TOKEN = secrets.token_hex(32)  # used for internal server-to-server calls
+_aio_loop       = None   # asyncio event loop (background thread) for aiortc
+_server_pcs     = {}     # room_id → RTCPeerConnection (server-side WebRTC)
+_server_tracks  = {}     # room_id → _ServerAudioTrack
+_src_threads    = {}     # room_id → (Thread, Event)
+_monitor_ref    = None   # set in register()
+_listen_reg_ref = None   # set in register()
 
 
 class _LivewireSender:
@@ -111,6 +142,327 @@ class _LivewireSender:
             pass
 
 
+# ── Server-side audio track (aiortc) ──────────────────────────────────────────
+# Only defined when aiortc + numpy are available; otherwise _ServerAudioTrack = None.
+if _AIORTC and _HAS_NP:
+    class _ServerAudioTrack(_MSTBase):
+        """Audio track whose PCM is fed by the server-side source thread.
+        Delivers 20 ms Opus frames (960 samples at 48 kHz) to the talent browser."""
+        kind    = "audio"
+        SAMPLES = 960           # 20 ms at 48 kHz — Opus preferred frame size
+        RATE    = 48000
+        FRAME_B = SAMPLES * 2   # bytes per frame: S16LE mono
+
+        def __init__(self):
+            super().__init__()
+            self._q   = _asyncio.Queue(maxsize=200)
+            self._buf = b""
+            self._pts = 0
+            self._tb  = _fractions.Fraction(1, self.RATE)
+
+        async def _push(self, pcm_s16le: bytes):
+            """Called from source thread (via run_coroutine_threadsafe)."""
+            try:
+                self._q.put_nowait(pcm_s16le)
+            except _asyncio.QueueFull:
+                pass  # drop on overflow
+
+        async def recv(self):
+            while len(self._buf) < self.FRAME_B:
+                try:
+                    chunk = await _asyncio.wait_for(self._q.get(), timeout=2.0)
+                    self._buf += chunk
+                except _asyncio.TimeoutError:
+                    self._buf += b'\x00' * self.FRAME_B  # silence pad on stall
+            frame_bytes = self._buf[:self.FRAME_B]
+            self._buf   = self._buf[self.FRAME_B:]
+            samples = _np.frombuffer(frame_bytes, dtype=_np.int16).astype(_np.float32) / 32768.0
+            frame   = _av.AudioFrame.from_ndarray(samples.reshape(1, -1),
+                                                   format='fltp', layout='mono')
+            frame.sample_rate = self.RATE
+            frame.pts         = self._pts
+            frame.time_base   = self._tb
+            self._pts        += self.SAMPLES
+            return frame
+else:
+    _ServerAudioTrack = None
+
+
+# ── asyncio event loop for server-side WebRTC ─────────────────────────────────
+def _ensure_aio_loop():
+    """Start the asyncio event loop in a background thread (idempotent)."""
+    global _aio_loop
+    if _aio_loop and _aio_loop.is_running():
+        return _aio_loop
+    _aio_loop = _asyncio.new_event_loop()
+    threading.Thread(target=_aio_loop.run_forever,
+                     daemon=True, name="IPLink-AIO").start()
+    return _aio_loop
+
+
+# ── Server-side source routing ─────────────────────────────────────────────────
+
+def _route_pcm_chunk(room_id: str, pcm: bytes):
+    """Deliver one PCM chunk to:  (a) server-side WebRTC track → talent,
+    (b) hub-local Livewire sender → multicast.
+    Called from the source thread — must be thread-safe."""
+    # (a) aiortc audio track
+    if _AIORTC and _aio_loop:
+        trk = _server_tracks.get(room_id)
+        if trk:
+            _asyncio.run_coroutine_threadsafe(trk._push(pcm), _aio_loop)
+    # (b) hub-local Livewire multicast
+    room = _rooms.get(room_id)
+    if not room:
+        return
+    out = room.get("output", {})
+    if out.get("type") in ("livewire", "multicast") and out.get("site", "hub") == "hub":
+        addr = out.get("address", "")
+        if not addr:
+            return
+        sender = _lw_senders.get(room_id)
+        if not sender:
+            sender = _LivewireSender(addr, out.get("port", 5004), n_ch=1)
+            _lw_senders[room_id] = sender
+        sender.feed(pcm)
+
+
+def _local_source_loop(room_id: str, idx: int, stop_evt: threading.Event):
+    """Poll a local monitor input's _stream_buffer for new PCM and route it.
+
+    Uses object-identity tracking on deque items — handles ring-buffer wraparound.
+    Polls every 50 ms, which is fine for 0.1 s chunks produced by the monitor loop.
+    """
+    last_key = None
+    while not stop_evt.is_set():
+        if not _monitor_ref:
+            time.sleep(0.5)
+            continue
+        inputs = getattr(_monitor_ref.app_cfg, 'inputs', []) or []
+        if idx >= len(inputs):
+            time.sleep(1.0)
+            continue
+        inp  = inputs[idx]
+        sbuf = list(getattr(inp, '_stream_buffer', []))
+        if not sbuf:
+            time.sleep(0.1)
+            continue
+        if last_key is None:
+            # First run: start from current tail; don't replay history
+            last_key = id(sbuf[-1])
+            time.sleep(0.05)
+            continue
+        # Find our last-seen chunk by object identity
+        pos = None
+        for i, c in enumerate(sbuf):
+            if id(c) == last_key:
+                pos = i
+                break
+        if pos is None:
+            # Chunk fell off the rolling deque — skip to current end
+            last_key = id(sbuf[-1])
+            time.sleep(0.05)
+            continue
+        for c in sbuf[pos + 1:]:
+            _route_pcm_chunk(room_id, c)
+            last_key = id(c)
+        time.sleep(0.05)
+
+
+def _remote_source_loop(room_id: str, site: str, idx: int, stop_evt: threading.Event):
+    """Stream PCM from a remote client site via the hub listen_registry relay."""
+    if not _listen_reg_ref:
+        if _log:
+            _log(f"[IPLink] No listen_registry available for remote source (room {room_id[:8]})")
+        return
+    slot = None
+    try:
+        slot = _listen_reg_ref.create(
+            site, idx, kind="scanner", mimetype="application/octet-stream"
+        )
+    except Exception as exc:
+        if _log:
+            _log(f"[IPLink] Remote slot create failed: {exc}")
+        return
+    while not stop_evt.is_set():
+        try:
+            chunk = slot.get(timeout=1.0)
+            if chunk is None:
+                break
+            _route_pcm_chunk(room_id, chunk)
+        except Exception:
+            if not stop_evt.is_set():
+                time.sleep(0.5)
+    try:
+        slot.closed = True
+    except Exception:
+        pass
+
+
+def _src_thread_fn(room_id: str, source: dict, stop_evt: threading.Event):
+    site = source.get("site", "local")
+    idx  = int(source.get("idx", 0))
+    if _log:
+        _log(f"[IPLink] Source thread started: room {room_id[:8]} ← {site}[{idx}]")
+    if site == "local":
+        _local_source_loop(room_id, idx, stop_evt)
+    else:
+        _remote_source_loop(room_id, site, idx, stop_evt)
+    if _log:
+        _log(f"[IPLink] Source thread stopped: room {room_id[:8]}")
+
+
+def _start_source_routing(room_id: str):
+    """Start (or restart) the server-side audio pipeline for a permanent room."""
+    _stop_source_routing(room_id)
+    room = _rooms.get(room_id)
+    if not room or not room.get("permanent") or not room.get("server_managed"):
+        return
+    source = room.get("source")
+    if not source:
+        return
+    stop_evt = threading.Event()
+    t = threading.Thread(
+        target=_src_thread_fn,
+        args=(room_id, source, stop_evt),
+        daemon=True,
+        name=f"IPLink-Src-{room_id[:8]}",
+    )
+    _src_threads[room_id] = (t, stop_evt)
+    t.start()
+
+
+def _stop_source_routing(room_id: str):
+    """Stop the server-side audio pipeline for a room (safe to call if not running)."""
+    entry = _src_threads.pop(room_id, None)
+    if entry:
+        entry[1].set()  # signal stop
+    if _AIORTC and _aio_loop:
+        pc  = _server_pcs.pop(room_id, None)
+        trk = _server_tracks.pop(room_id, None)
+        if pc:
+            _asyncio.run_coroutine_threadsafe(pc.close(), _aio_loop)
+        if trk:
+            try:
+                trk.stop()
+            except Exception:
+                pass
+
+
+# ── Server-side WebRTC coroutines (run on _aio_loop) ──────────────────────────
+
+async def _server_accept_offer(room_id: str):
+    """Create a server-side RTCPeerConnection and answer the talent's SDP offer."""
+    if not _AIORTC or not _ServerAudioTrack:
+        return
+    with _lock:
+        room = _rooms.get(room_id)
+        if not room or not room.get("offer"):
+            return
+        offer_sdp    = room["offer"]
+        room["hub_ice"] = []   # clear stale ICE from any prior session
+    # Tear down any previous server PC for this room
+    old_pc  = _server_pcs.pop(room_id, None)
+    old_trk = _server_tracks.pop(room_id, None)
+    if old_pc:
+        try:
+            await old_pc.close()
+        except Exception:
+            pass
+    if old_trk:
+        try:
+            old_trk.stop()
+        except Exception:
+            pass
+    # Create a fresh audio track and peer connection
+    track = _ServerAudioTrack()
+    _server_tracks[room_id] = track
+    pc = _RTCPC(configuration=_RTCCfg(
+        iceServers=[_RTCISrv(urls=u) for u in _STUN_SERVERS]
+    ))
+    _server_pcs[room_id] = pc
+
+    @pc.on("connectionstatechange")
+    async def _on_state():
+        state = pc.connectionState
+        with _lock:
+            r = _rooms.get(room_id)
+            if not r:
+                return
+            if state == "connected":
+                r["status"]       = "connected"
+                r["connected_at"] = time.time()
+                if _log:
+                    _log(f"[IPLink] Server PC connected: room '{r['name']}'")
+            elif state in ("failed", "disconnected", "closed"):
+                r["status"]           = "disconnected"
+                r["disconnected_at"]  = time.time()
+                if _log:
+                    _log(f"[IPLink] Server PC {state}: room '{r['name']}'")
+
+    @pc.on("icecandidate")
+    async def _on_ice(candidate):
+        if candidate:
+            sdp = candidate.to_sdp()
+            if not sdp.startswith("candidate:"):
+                sdp = "candidate:" + sdp
+            with _lock:
+                r = _rooms.get(room_id)
+                if r:
+                    r["hub_ice"].append({
+                        "candidate":     sdp,
+                        "sdpMLineIndex": 0,
+                        "sdpMid":        "0",
+                    })
+
+    pc.addTrack(track)
+    try:
+        await pc.setRemoteDescription(_RTCSDesc(sdp=offer_sdp, type="offer"))
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        with _lock:
+            r = _rooms.get(room_id)
+            if r:
+                r["answer"] = pc.localDescription.sdp
+                r["status"] = "connecting"
+        if _log:
+            room = _rooms.get(room_id)
+            _log(f"[IPLink] Server answer created for room '{room['name'] if room else room_id[:8]}'")
+        _start_source_routing(room_id)
+    except Exception as exc:
+        if _log:
+            _log(f"[IPLink] Server offer accept failed for {room_id[:8]}: {exc}")
+
+
+async def _server_add_ice(room_id: str, cand_data: dict):
+    """Add a talent ICE candidate to the server-side peer connection."""
+    pc = _server_pcs.get(room_id)
+    if not pc:
+        return
+    cand_str = str(cand_data.get("candidate", ""))
+    if not cand_str:
+        return
+    if cand_str.startswith("candidate:"):
+        cand_str = cand_str[10:]
+    try:
+        from aioice.candidate import Candidate as _AioiceCand
+        parsed  = _AioiceCand.from_sdp(cand_str)
+        rtc_c   = _RTCICand(
+            component     = parsed.component,
+            foundation    = parsed.foundation,
+            ip            = parsed.host,
+            port          = parsed.port,
+            priority      = parsed.priority,
+            protocol      = parsed.transport.lower(),
+            type          = parsed.type,
+            sdpMid        = cand_data.get("sdpMid", "0"),
+            sdpMLineIndex = int(cand_data.get("sdpMLineIndex", 0)),
+        )
+        await pc.addIceCandidate(rtc_c)
+    except Exception:
+        pass   # candidate parse failures are non-fatal
+
+
 # ── Persistent room save / load ────────────────────────────────────────────────
 
 def _save_rooms():
@@ -124,12 +476,14 @@ def _save_rooms():
         saved_output = {k: v for k, v in r.get("output", {}).items()
                         if not k.startswith("_")}
         out[rid] = {
-            "id":       r["id"],
-            "name":     r["name"],
-            "quality":  r["quality"],
-            "permanent": True,
-            "output":   saved_output,
-            "created":  r["created"],
+            "id":            r["id"],
+            "name":          r["name"],
+            "quality":       r["quality"],
+            "permanent":     True,
+            "output":        saved_output,
+            "created":       r["created"],
+            "server_managed": r.get("server_managed", False),
+            "source":        r.get("source"),          # {site, idx, name} or None
         }
     try:
         with open(_ROOMS_PATH, "w") as fh:
@@ -155,11 +509,13 @@ def _load_rooms():
         for rid, r in saved.items():
             if rid not in _rooms:
                 room = _new_room(r["name"], r.get("quality", "broadcast"))
-                room["id"]        = rid
-                room["permanent"] = True
-                room["output"]    = r.get("output", {})
-                room["created"]   = r.get("created", time.time())
-                _rooms[rid]       = room
+                room["id"]             = rid
+                room["permanent"]      = True
+                room["output"]         = r.get("output", {})
+                room["created"]        = r.get("created", time.time())
+                room["server_managed"] = r.get("server_managed", False)
+                room["source"]         = r.get("source")
+                _rooms[rid]            = room
                 loaded += 1
     if _log and loaded:
         _log(f"[IPLink] Loaded {loaded} permanent room(s) from disk")
@@ -202,12 +558,14 @@ _QUALITY = {
 
 def _new_room(name: str, quality: str = "broadcast") -> dict:
     return {
-        "id":           str(uuid.uuid4()),
-        "name":         name,
-        "quality":      quality if quality in _QUALITY else "broadcast",
-        "permanent":    False,
-        "output":       {"type": "speaker"},   # speaker | livewire | multicast
-        "created":      time.time(),
+        "id":            str(uuid.uuid4()),
+        "name":          name,
+        "quality":       quality if quality in _QUALITY else "broadcast",
+        "permanent":     False,
+        "output":        {"type": "speaker"},   # speaker | livewire | multicast
+        "server_managed": False,                 # permanent rooms only: server handles routing
+        "source":        None,                   # {site, idx, name} — server-side audio source
+        "created":       time.time(),
         "last_active":  time.time(),
         "status":       "waiting",        # waiting | offer_received | connected | disconnected
         "offer":        None,             # SDP string from talent
@@ -244,6 +602,9 @@ def _room_public(room: dict) -> dict:
     r["age_s"]            = _room_age_s(room)
     r["permanent"]        = bool(room.get("permanent", False))
     r["output"]           = room.get("output", {"type": "speaker"})
+    r["server_managed"]        = bool(room.get("server_managed", False))
+    r["source"]                = room.get("source")
+    r["server_routing_active"] = room.get("id", "") in _src_threads
     if room["connected_at"]:
         r["duration_s"] = round(time.time() - room["connected_at"])
     return r
@@ -355,6 +716,10 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
 .rc-src-badge{font-size:10px;font-weight:600;border-radius:4px;padding:3px 6px;margin-top:4px;display:inline-block}
 .rc-src-active{background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3)}
 .rc-src-pending{background:rgba(138,164,200,.12);color:var(--mu);border:1px solid rgba(138,164,200,.2)}
+/* Server-managed badge in room header */
+.rc-sm-badge{font-size:10px;font-weight:700;border-radius:4px;padding:2px 7px;display:inline-flex;align-items:center;gap:3px}
+.rc-sm-on{background:rgba(23,168,255,.18);color:var(--acc);border:1px solid rgba(23,168,255,.3)}
+.rc-sm-idle{background:rgba(138,164,200,.12);color:var(--mu);border:1px solid rgba(138,164,200,.2)}
 /* Output config panel */
 .out-panel{background:#080f20;border:1px solid var(--bor);border-radius:8px;padding:10px 12px;margin-top:8px;font-size:12px}
 .out-panel label{display:block;padding:3px 0;cursor:pointer;color:var(--tx);line-height:1.6}
@@ -541,6 +906,7 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
 <script nonce="{{csp_nonce()}}">
 var _csrf = (document.querySelector('meta[name="csrf-token"]')||{}).content || '';
 function csrfHdr(){ return {'X-CSRFToken': (document.querySelector('meta[name="csrf-token"]')||{}).content||'','Content-Type':'application/json'}; }
+function _csrfPost(url, body){ return fetch(url,{method:'POST',credentials:'same-origin',headers:csrfHdr(),body:JSON.stringify(body)}); }
 
 // ─── Per-room WebRTC state ───────────────────────────────────────────────────
 var _pcs = {};      // room_id → RTCPeerConnection (or true as placeholder)
@@ -726,6 +1092,54 @@ function _onRoomSrcChange(roomId, val){
   // When acceptCall() later establishes a PC, it calls _applySourceForRoom()
   // again which runs replaceTrack on the already-warmed feed.
   _applySourceForRoom(roomId);
+  // For permanent server-managed rooms: also save source to server so it persists
+  var _rd = _roomsData[roomId];
+  if(_rd && _rd.permanent && _rd.server_managed && val && val !== 'global'){
+    var _payload;
+    if(val === 'mic'){
+      _payload = {type:'mic'};
+    } else {
+      var _pts = val.split(':');  // 'stream:SITE:IDX'
+      var _src = _streamSources.filter(function(s){
+        return (s.site||'local')===_pts[1] && s.idx===parseInt(_pts[2]);
+      })[0];
+      _payload = {type:'stream', site:_pts[1], idx:parseInt(_pts[2]),
+                  name: _src ? _src.name : ''};
+    }
+    _csrfPost('/api/iplink/room/'+roomId+'/source', _payload).catch(function(){});
+  }
+}
+
+function toggleServerManaged(roomId){
+  var rd = _roomsData[roomId];
+  if(!rd || !rd.permanent) return;
+  var now = !!rd.server_managed;
+  _csrfPost('/api/iplink/room/'+roomId+'/server_managed', {enabled: !now})
+    .then(function(d){ return d.json(); })
+    .then(function(r){
+      if(r.ok && !r.webrtc_available && !now){
+        // aiortc not installed — still useful for Livewire-only routing
+        console.info('[IPLink] Server routing enabled (Livewire mode — aiortc not available for WebRTC persistence)');
+      }
+    }).catch(function(){});
+}
+
+function saveServerSource(roomId){
+  var sel = document.getElementById('smSrc_'+roomId);
+  if(!sel) return;
+  var val = sel.value;
+  var payload;
+  if(!val || val === 'none'){
+    payload = {type:'none'};
+  } else {
+    var pts = val.split(':');  // 'stream:SITE:IDX'
+    var src = _streamSources.filter(function(s){
+      return (s.site||'local')===pts[1] && s.idx===parseInt(pts[2]);
+    })[0];
+    payload = {type:'stream', site:pts[1], idx:parseInt(pts[2]),
+               name: src ? src.name : ''};
+  }
+  _csrfPost('/api/iplink/room/'+roomId+'/source', payload).catch(function(){});
 }
 
 _loadStreamSources();
@@ -1259,11 +1673,16 @@ function _fmt(s){
   return (m>0?m+'m ':'')+sec+'s';
 }
 
+var _roomsData = {};  // room_id → room object from last poll (for server_managed checks)
+
 function _renderRooms(rooms){
   var ng=document.getElementById('roomGrid');
   var np=document.getElementById('noRooms');
-  if(!rooms.length){ ng.innerHTML=''; np.style.display=''; return; }
+  if(!rooms.length){ ng.innerHTML=''; np.style.display=''; _roomsData={}; return; }
   np.style.display='none';
+  // Update room data cache (used by _onRoomSrcChange to decide server-side save)
+  _roomsData={};
+  rooms.forEach(function(r){ _roomsData[r.id]=r; });
   var html='<div class="room-grid">';
   rooms.forEach(function(r){
     var cls='room-card';
@@ -1278,6 +1697,13 @@ function _renderRooms(rooms){
     html+='<span style="font-size:18px">🎙</span>';
     html+='<span class="rc-name" title="'+r.name+'">'+_esc(r.name)+'</span>';
     if(r.permanent) html+='<span class="rc-perm" title="Permanent room">📌</span>';
+    // Server-managed badge (permanent rooms only)
+    if(r.permanent && r.server_managed){
+      var _smBadge = r.server_routing_active
+        ? '<span class="rc-sm-badge rc-sm-on" title="Server routing active">🖥 Server</span>'
+        : '<span class="rc-sm-badge rc-sm-idle" title="Server routing enabled, waiting for source">🖥 Idle</span>';
+      html += _smBadge;
+    }
     var out=r.output||{};
     if(out.type&&out.type!=='speaker'){
       var _lbl=out.type==='livewire'?'LW ch '+out.channel:'AES67';
@@ -1288,10 +1714,13 @@ function _renderRooms(rooms){
     html+='</div>';
     // Body
     html+='<div class="rc-body">';
-    // Accept banner — show Connecting… if a PeerConnection already exists for this room
+    // Accept banner — show Connecting… if a PeerConnection already exists for this room.
+    // For permanent server-managed rooms: server auto-accepts; don't show the Accept button.
     if(r.status==='offer_received'){
       html+='<div class="accept-banner">📲 <span style="flex:1">Incoming call from contributor</span>';
-      if(_pcs[r.id]){
+      if(r.permanent && r.server_managed){
+        html+='<button class="btn bp bs" disabled>🖥 Auto-accepting…</button>';
+      } else if(_pcs[r.id]){
         html+='<button class="btn bp bs" disabled>⏳ Connecting…</button>';
       } else {
         html+='<button class="btn bp bs" id="accept_'+r.id+'" onclick="acceptCall(\''+r.id+'\')">✅ Accept</button>';
@@ -1366,6 +1795,44 @@ function _renderRooms(rooms){
       html+='<div id="rc_srcbadge_'+r.id+'" class="rc-src-badge" style="display:none"></div>';
     }
     html+='</div>';
+
+    // ── Server-managed routing panel (permanent rooms only) ──────────────────
+    if(r.permanent){
+      var _smOn = !!r.server_managed;
+      var _smSrc = r.source;
+      var _smSrcLabel = _smSrc ? (_smSrc.name || (_smSrc.site==='local'?'Local':'Remote')+' ['+_smSrc.idx+']') : 'None';
+      html+='<div style="margin:6px 0 2px;border:1px solid var(--bor);border-radius:8px;padding:10px;background:rgba(23,52,95,.18)">';
+      html+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">';
+      html+='<span style="font-size:11px;color:var(--mu);font-weight:700;text-transform:uppercase;letter-spacing:.05em;flex:1">🖥 Server Routing</span>';
+      html+='<button class="btn bs '+(r.server_managed?'bp':'bg')+'" onclick="toggleServerManaged(\''+r.id+'\')">'+(r.server_managed?'On':'Off')+'</button>';
+      html+='</div>';
+      if(_smOn){
+        html+='<div style="font-size:11px;color:var(--mu);margin-bottom:4px">Source: <span style="color:var(--tx)">'+_esc(_smSrcLabel)+'</span></div>';
+        html+='<div style="font-size:10px;color:var(--mu);margin-bottom:6px">';
+        if(r.server_routing_active){
+          html+='<span style="color:var(--ok)">● Active</span> — audio routing server-side';
+        } else if(_smSrc){
+          html+='<span style="color:var(--wn)">⏳ Starting…</span>';
+        } else {
+          html+='<span style="color:var(--mu)">No source configured — select below and save</span>';
+        }
+        html+='</div>';
+      }
+      // Source selector for server-managed rooms: always show + a save button
+      html+='<div style="display:flex;gap:6px;align-items:flex-end">';
+      html+='<div style="flex:1"><label style="font-size:10px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Server Source</label>';
+      html+='<select id="smSrc_'+r.id+'" class="src-sel" style="margin-top:3px">';
+      html+='<option value="none">None</option>';
+      _streamSources.forEach(function(s){
+        var _sv='stream:'+(s.site||'local')+':'+s.idx;
+        var _sel=_smSrc&&_smSrc.site===(s.site||'local')&&_smSrc.idx===s.idx?' selected':'';
+        html+='<option value="'+_esc(_sv)+'"'+_sel+'>'+(s.active?'🟢 ':'⚪ ')+_esc(s.name)+'</option>';
+      });
+      html+='</select></div>';
+      html+='<button class="btn bp bs" onclick="saveServerSource(\''+r.id+'\')" style="margin-bottom:1px">💾 Save</button>';
+      html+='</div>';
+      html+='</div>';
+    }
 
     // Output config panel
     var outCfg=r.output||{};
@@ -2755,12 +3222,15 @@ def _client_feed_poller(monitor_ref, hub_url, site_name, secret):
 # ─── Plugin registration ──────────────────────────────────────────────────────
 
 def register(app, ctx):
-    global _log
-    login_required = ctx["login_required"]
-    csrf_protect   = ctx["csrf_protect"]
-    monitor        = ctx["monitor"]
-    BUILD          = ctx["BUILD"]
-    _log = monitor.log
+    global _log, _monitor_ref, _listen_reg_ref
+    login_required  = ctx["login_required"]
+    csrf_protect    = ctx["csrf_protect"]
+    monitor         = ctx["monitor"]
+    listen_registry = ctx["listen_registry"]
+    BUILD           = ctx["BUILD"]
+    _log             = monitor.log
+    _monitor_ref     = monitor
+    _listen_reg_ref  = listen_registry
 
     try:
         from flask import request, jsonify, render_template_string as rts, make_response
@@ -2778,6 +3248,16 @@ def register(app, ctx):
 
     # Load permanent rooms from disk
     _load_rooms()
+
+    # Start server-side routing for permanent rooms that have it configured
+    if _is_hub:
+        _has_sm = False
+        for _rid, _room in list(_rooms.items()):
+            if _room.get("permanent") and _room.get("server_managed") and _room.get("source"):
+                _has_sm = True
+                _start_source_routing(_rid)
+        if _has_sm and _AIORTC:
+            _ensure_aio_loop()
 
     # Start cleanup thread
     threading.Thread(target=_cleanup_thread, daemon=True, name="IPLinkCleanup").start()
@@ -2931,6 +3411,10 @@ def register(app, ctx):
             room["talent_ip"]  = request.remote_addr or ""
             _touch(room)
         _log(f"[IPLink] Offer received for room '{room['name']}' from {room['talent_ip']}")
+        # Permanent server-managed rooms: auto-accept offer with aiortc (no browser needed)
+        if room.get("permanent") and room.get("server_managed") and _AIORTC and _ServerAudioTrack:
+            loop = _ensure_aio_loop()
+            _asyncio.run_coroutine_threadsafe(_server_accept_offer(room_id), loop)
         return jsonify({"ok": True})
 
     # Hub gets talent's offer
@@ -2983,6 +3467,12 @@ def register(app, ctx):
                 return jsonify({"ok": True})   # null candidate = end of candidates
             if side == "talent":
                 room["talent_ice"].append(cand)
+                # Server-managed room: immediately forward candidate to aiortc PC
+                if (room.get("permanent") and room.get("server_managed")
+                        and _AIORTC and _aio_loop and room_id in _server_pcs):
+                    _asyncio.run_coroutine_threadsafe(
+                        _server_add_ice(room_id, cand), _aio_loop
+                    )
             elif side == "hub":
                 room["hub_ice"].append(cand)
             _touch(room)
@@ -3248,6 +3738,90 @@ def register(app, ctx):
             _save_rooms()
         _log(f"[IPLink] Room '{room['name']}' output set to {out_type} via {site_out}")
         return jsonify({"ok": True, "output": {k: v for k, v in output.items() if not k.startswith("_")}})
+
+    # ── Server-managed routing (permanent rooms only) ──────────────────────────
+
+    @app.post("/api/iplink/room/<room_id>/source")
+    @login_required
+    @csrf_protect
+    def iplink_set_source(room_id):
+        """Save the server-side audio source for a permanent room and restart
+        the source pipeline.  Non-permanent rooms ignore this call."""
+        room = _get_room(room_id)
+        if not room:
+            return jsonify({"error": "Not found"}), 404
+        if not room.get("permanent"):
+            return jsonify({"error": "Only permanent rooms support server-side source"}), 400
+
+        data     = request.get_json(silent=True) or {}
+        src_type = str(data.get("type", "none"))
+
+        if src_type in ("none", ""):
+            source = None
+        elif src_type == "stream":
+            site = str(data.get("site", "local")).strip() or "local"
+            idx  = int(data.get("idx", 0))
+            name = str(data.get("name", "")).strip()
+            source = {"type": "stream", "site": site, "idx": idx, "name": name}
+        else:
+            return jsonify({"error": "Invalid source type"}), 400
+
+        with _lock:
+            room["source"] = source
+        if room.get("permanent"):
+            _save_rooms()
+
+        # Restart the source pipeline if server_managed is on
+        if room.get("server_managed"):
+            _stop_source_routing(room_id)
+            if source:
+                _start_source_routing(room_id)
+
+        _log(f"[IPLink] Room '{room['name']}' source → {source}")
+        return jsonify({"ok": True, "source": source})
+
+    @app.post("/api/iplink/room/<room_id>/server_managed")
+    @login_required
+    @csrf_protect
+    def iplink_set_server_managed(room_id):
+        """Enable or disable server-managed routing for a permanent room."""
+        room = _get_room(room_id)
+        if not room:
+            return jsonify({"error": "Not found"}), 404
+        if not room.get("permanent"):
+            return jsonify({"error": "Only permanent rooms support server-managed mode"}), 400
+
+        data    = request.get_json(silent=True) or {}
+        enabled = bool(data.get("enabled", False))
+
+        with _lock:
+            room["server_managed"] = enabled
+
+        if room.get("permanent"):
+            _save_rooms()
+
+        if enabled:
+            if _AIORTC:
+                _ensure_aio_loop()
+            if room.get("source"):
+                _start_source_routing(room_id)
+        else:
+            _stop_source_routing(room_id)
+
+        _log(f"[IPLink] Room '{room['name']}' server_managed → {enabled}")
+        return jsonify({"ok": True, "server_managed": enabled,
+                        "webrtc_available": _AIORTC and _HAS_NP})
+
+    @app.get("/api/iplink/capabilities")
+    @login_required
+    def iplink_capabilities():
+        """Return server capabilities for the IP Link plugin."""
+        return jsonify({
+            "server_webrtc":    _AIORTC and bool(_ServerAudioTrack),
+            "server_routing":   True,
+            "aiortc_installed": _AIORTC,
+            "numpy_installed":  _HAS_NP,
+        })
 
     # ── Output PCM chunk (browser posts received audio for Livewire relay) ─────
     @app.post("/api/iplink/room/<room_id>/output_chunk")
