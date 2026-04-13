@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.11",
+    "version": "1.4.12",
 }
 
 import asyncio as _asyncio
@@ -2154,10 +2154,19 @@ function _renderRooms(rooms){
     // Escape/Enter may not fire blur in all browsers:
     sel.addEventListener('keydown',  function(e){ if(e.key==='Escape'||e.key==='Enter') _srcSelOpen=false; });
   }
+  function _wireInput(inp){
+    // Guard text/number inputs — same flag, blocks innerHTML rebuild while focused
+    if(!inp) return;
+    inp.addEventListener('focus', function(){ _srcSelOpen=true; });
+    inp.addEventListener('blur',  function(){ _srcSelOpen=false; });
+  }
   rooms.forEach(function(r){
     _wireSel(document.getElementById('rc_src_'+r.id));
     _wireSel(document.getElementById('smSrc_'+r.id));
     _wireSel(document.getElementById('olwsite_'+r.id));
+    _wireInput(document.getElementById('olw_'+r.id));
+    _wireInput(document.getElementById('omaddr_'+r.id));
+    _wireInput(document.getElementById('omport_'+r.id));
   });
   // Populate stream options on the newly-created global selector
   _populateSourceSelectors();
