@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.6",
+    "version": "1.3.7",
 }
 
 import json
@@ -664,13 +664,11 @@ function _fillSrcSel(sel, curVal, fixedCount){
 }
 
 function _populateSourceSelectors(){
+  // Only updates the GLOBAL selector — per-room selectors are inlined by
+  // _renderRooms with the correct selected= attribute, so they never need
+  // a post-render population step.
   var gsel=document.getElementById('globalSrcSel');
   if(gsel) _fillSrcSel(gsel, gsel.value, 1);   // 1 fixed: mic
-  // Per-room selectors (rebuilt by _renderRooms each poll cycle)
-  document.querySelectorAll('[id^="rc_src_"]').forEach(function(sel){
-    var rid=sel.id.replace('rc_src_','');
-    _fillSrcSel(sel, _roomSrc[rid]||'global', 2);   // 2 fixed: default↑, mic
-  });
 }
 
 function _srcLabel(val){
@@ -754,11 +752,13 @@ function _injectStreamAudio(roomId, streamUrl){
   gainNode.connect(dest);
 
   // Hidden audio element — pulls the MP3 live relay for this stream.
-  // muted=true prevents any sound from the element reaching the browser's
-  // speakers directly.  createMediaElementSource diverts decoded audio into
-  // the Web Audio graph exclusively (gainNode → dest → WebRTC track).
+  // IMPORTANT: do NOT set audio.muted — in Chrome, muted zeros the audio data
+  // BEFORE it enters the Web Audio graph, silencing the MediaStreamDestination
+  // and the WebRTC track.  Local playback suppression is handled by the graph
+  // topology: srcNode connects only to gainNode → dest (MediaStreamDestination).
+  // Nothing is connected to ctx.destination, so the browser's speakers are
+  // bypassed per the Web Audio spec.
   var audio=new Audio(streamUrl);
-  audio.muted=true;                      // must be set BEFORE play() to avoid flash
   audio.crossOrigin='use-credentials';   // send session cookie (same origin)
   var srcNode=ctx.createMediaElementSource(audio);
   srcNode.connect(gainNode);
@@ -1322,10 +1322,18 @@ function _renderRooms(rooms){
       html+='</div>';
     }
     // ── Per-room audio source selector ────────────────────────────────────────
+    // Stream options are inlined at render time from _streamSources so the
+    // correct selected= attribute is baked in. No post-render population step
+    // needed; the dropdown never resets to "global" on the 1.5 s re-render.
+    var _curSrc=_roomSrc[r.id]||'global';
     html+='<div style="margin:8px 0 4px"><label style="font-size:10px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Audio Source</label>';
     html+='<select id="rc_src_'+r.id+'" class="src-sel" onchange="_onRoomSrcChange(\''+r.id+'\',this.value)" style="margin-top:4px">';
-    html+='<option value="global">↑ Default source</option>';
-    html+='<option value="mic">🎤 Hub Microphone</option>';
+    html+='<option value="global"'+(_curSrc==='global'?' selected':'')+'>↑ Default source</option>';
+    html+='<option value="mic"'+(_curSrc==='mic'?' selected':'')+'>🎤 Hub Microphone</option>';
+    _streamSources.forEach(function(s){
+      var _sv='stream:'+(s.site||'local')+':'+s.idx;
+      html+='<option value="'+_esc(_sv)+'"'+(_sv===_curSrc?' selected':'')+'>'+(_esc(s.active?'🟢 ':'⚪ '))+_esc(s.name)+(s.stereo?' · stereo':'')+'</option>';
+    });
     html+='</select>';
     // IFB source status badge — shows current selection state below the dropdown
     var _rsv=_roomSrc[r.id]||'';
@@ -1340,7 +1348,6 @@ function _renderRooms(rooms){
       html+='<div id="rc_srcbadge_'+r.id+'" class="rc-src-badge" style="display:none"></div>';
     }
     html+='</div>';
-    // (stream options are added by _populateSourceSelectors() after innerHTML is set)
 
     // Output config panel
     var outCfg=r.output||{};
