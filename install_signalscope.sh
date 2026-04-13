@@ -1391,6 +1391,17 @@ main() {
   step "Installing optional SNMP library (pysnmp)"
   python -m pip install pysnmp || warn "pysnmp not available — Codec Monitor will use HTTP/TCP fallback for SNMP devices (Prodys Quantum ST, APT WorldCast)"
 
+  step "Installing optional WebRTC stack (aiortc) for IP Link server-side routing"
+  # aiortc enables server-side WebRTC in the IP Link plugin — talent codecs stay
+  # connected and Livewire output runs even when no browser is open.
+  # av (PyAV) and numpy are also required; numpy is already installed above.
+  # On Raspberry Pi this may take a few minutes to compile from source.
+  if python -m pip install "aiortc" "av"; then
+    ok "aiortc installed — IP Link server-side WebRTC available"
+  else
+    warn "aiortc not available — IP Link will fall back to browser-managed WebRTC (Livewire server routing still works)"
+  fi
+
   step "Installing/checking ONNX stack"
   python -m pip install onnx || warn "Failed to install onnx"
   if ! python -m pip install onnxruntime; then
