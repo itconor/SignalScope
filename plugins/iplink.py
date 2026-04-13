@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.3",
+    "version": "1.4.4",
 }
 
 import asyncio as _asyncio
@@ -333,20 +333,32 @@ def _start_source_routing(room_id: str):
 
 
 def _stop_source_routing(room_id: str):
-    """Stop the server-side audio pipeline for a room (safe to call if not running)."""
+    """Stop the source thread for a room (safe to call if not running).
+    Does NOT close the RTCPeerConnection — call _close_server_pc() for that.
+    The PC is managed exclusively by _server_accept_offer (which tears down the
+    old PC at the start) and by _close_server_pc (called when server routing is
+    explicitly disabled or a room is deleted).  Never close the PC here — doing
+    so would kill the freshly-created PC that _server_accept_offer just set up."""
     entry = _src_threads.pop(room_id, None)
     if entry:
-        entry[1].set()  # signal stop
-    if _AIORTC and _aio_loop:
-        pc  = _server_pcs.pop(room_id, None)
-        trk = _server_tracks.pop(room_id, None)
-        if pc:
-            _asyncio.run_coroutine_threadsafe(pc.close(), _aio_loop)
-        if trk:
-            try:
-                trk.stop()
-            except Exception:
-                pass
+        entry[1].set()  # signal thread to exit
+
+
+def _close_server_pc(room_id: str):
+    """Close the server-side RTCPeerConnection and audio track for a room.
+    Call this only when server routing is being explicitly torn down (disabling
+    server_managed, deleting a room).  Do NOT call from _stop_source_routing."""
+    if not (_AIORTC and _aio_loop):
+        return
+    pc  = _server_pcs.pop(room_id, None)
+    trk = _server_tracks.pop(room_id, None)
+    if pc:
+        _asyncio.run_coroutine_threadsafe(pc.close(), _aio_loop)
+    if trk:
+        try:
+            trk.stop()
+        except Exception:
+            pass
 
 
 # ── Server-side WebRTC coroutines (run on _aio_loop) ──────────────────────────
@@ -3421,6 +3433,9 @@ def register(app, ctx):
         sender = _lw_senders.pop(room_id, None)
         if sender:
             sender.stop()
+        # Stop server-side audio pipeline and WebRTC PC (if any)
+        _stop_source_routing(room_id)
+        _close_server_pc(room_id)
         if room:
             if room.get("permanent"):
                 _save_rooms()
@@ -3868,6 +3883,7 @@ def register(app, ctx):
                 _start_source_routing(room_id)
         else:
             _stop_source_routing(room_id)
+            _close_server_pc(room_id)
 
         _log(f"[IPLink] Room '{room['name']}' server_managed → {enabled}")
         return jsonify({"ok": True, "server_managed": enabled,
