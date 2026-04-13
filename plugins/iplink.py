@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.7",
+    "version": "1.3.8",
 }
 
 import json
@@ -563,8 +563,22 @@ var _outputCapture  = {}; // room_id → {node, reader}
 var _lwWorkletUrl   = null;
 var _streamSources  = []; // cached list from /api/iplink/streams (never cleared on empty response)
 var _roomSrc        = {}; // room_id → 'global' | 'mic' | 'stream:SITE:IDX'
-var _feedAudio      = {}; // room_id → HTMLAudioElement (stream feed via createMediaElementSource)
-var _feedCtx        = {}; // room_id → AudioContext (for stream feed; closed on source change)
+var _feedAudio      = {}; // room_id → HTMLAudioElement (stream feed)
+var _feedNodes      = {}; // room_id → {srcNode, gainNode, dest} — Web Audio nodes for active feed
+// Single shared AudioContext for ALL stream feeds.
+// Created/resumed on the first user gesture so it is always in "running" state
+// by the time _injectStreamAudio is called (even from async callbacks).
+// createMediaElementSource only redirects audio away from speakers when the
+// context is running — if the context is suspended, Chrome lets the audio
+// element play through speakers AND delivers silence to the Web Audio graph.
+var _sharedAudioCtx = null;
+function _ensureAudioCtx(){
+  if(!_sharedAudioCtx||_sharedAudioCtx.state==='closed'){
+    _sharedAudioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:48000});
+  }
+  if(_sharedAudioCtx.state==='suspended') _sharedAudioCtx.resume().catch(function(){});
+  return _sharedAudioCtx;
+}
 
 var STUN = {{stun|tojson}};
 var BASE = window.location.origin;
@@ -589,6 +603,7 @@ function _saveSett(){
 
 // When the global default source changes, re-apply to any connected room using 'global'
 document.getElementById('globalSrcSel').addEventListener('change',function(){
+  _ensureAudioCtx(); // pre-activate shared context while still in user-gesture
   Object.keys(_pcs).forEach(function(roomId){
     if(_pcs[roomId]&&_pcs[roomId]!==true&&(!_roomSrc[roomId]||_roomSrc[roomId]==='global')){
       _applySourceForRoom(roomId);
@@ -687,6 +702,7 @@ function _srcLabel(val){
 }
 
 function _onRoomSrcChange(roomId, val){
+  _ensureAudioCtx(); // pre-activate shared context while still in user-gesture
   _roomSrc[roomId]=val;
   // Update status badge immediately without waiting for the next _renderRooms cycle
   var badge=document.getElementById('rc_srcbadge_'+roomId);
@@ -721,28 +737,34 @@ setInterval(_loadOutputSites, 15000);
 
 // ─── Stream audio injection ───────────────────────────────────────────────────
 function _stopFeed(roomId){
-  // Stop audio element feed (current approach: createMediaElementSource)
   var a=_feedAudio[roomId];
   if(a){ try{a.pause();a.src='';}catch(e){} delete _feedAudio[roomId]; }
-  var c=_feedCtx[roomId];
-  if(c){ try{c.close();}catch(e){} delete _feedCtx[roomId]; }
-  // Stop legacy PCM reader (kept for backwards-compat)
+  // Disconnect Web Audio nodes but do NOT close _sharedAudioCtx — it is reused
+  var nodes=_feedNodes[roomId];
+  if(nodes){
+    try{nodes.srcNode.disconnect();}catch(e){}
+    try{nodes.gainNode.disconnect();}catch(e){}
+    delete _feedNodes[roomId];
+  }
   if(_feedReader[roomId]){ try{_feedReader[roomId].cancel();}catch(e){} delete _feedReader[roomId]; }
+  delete _sendGain[roomId];
 }
 
 function _injectStreamAudio(roomId, streamUrl){
-  // Inject a SignalScope live stream into the WebRTC sender for a room.
+  // Architecture: a hidden <audio> element feeds the hub's live-relay MP3 into a
+  // shared Web Audio graph (srcNode → gainNode → MediaStreamDestinationNode).
+  // The destination stream track is given to WebRTC via replaceTrack so the
+  // talent hears the injected stream instead of the hub microphone.
   //
-  // Architecture: a hidden <audio> element fetches the hub's existing live-relay
-  // MP3 endpoint (works for both local inputs and remote client-site streams
-  // without requiring any additional plugin on client nodes).
-  // createMediaElementSource captures the decoded audio into a Web Audio graph
-  // (this also silences it locally — no echo to speakers) and routes it through
-  // a GainNode → MediaStreamDestinationNode → replaceTrack on the WebRTC sender.
+  // CRITICAL: the AudioContext MUST be in "running" state when
+  // createMediaElementSource is called.  If the context is suspended, Chrome
+  // lets the audio element play through speakers AND sends silence to the Web
+  // Audio graph (and hence the WebRTC track).  _ensureAudioCtx() is called
+  // synchronously from every user-gesture handler so the context is always
+  // running by the time we reach here (even via async callbacks).
   _stopFeed(roomId);
-  var ctx=new(window.AudioContext||window.webkitAudioContext)();
-  ctx.resume().catch(function(){});
-  _feedCtx[roomId]=ctx;
+
+  var ctx=_ensureAudioCtx(); // shared running context — never suspended here
 
   var gainNode=ctx.createGain();
   gainNode.gain.value=(_sendVol[roomId]||100)/100;
@@ -751,17 +773,14 @@ function _injectStreamAudio(roomId, streamUrl){
   var dest=ctx.createMediaStreamDestination();
   gainNode.connect(dest);
 
-  // Hidden audio element — pulls the MP3 live relay for this stream.
-  // IMPORTANT: do NOT set audio.muted — in Chrome, muted zeros the audio data
-  // BEFORE it enters the Web Audio graph, silencing the MediaStreamDestination
-  // and the WebRTC track.  Local playback suppression is handled by the graph
-  // topology: srcNode connects only to gainNode → dest (MediaStreamDestination).
-  // Nothing is connected to ctx.destination, so the browser's speakers are
-  // bypassed per the Web Audio spec.
   var audio=new Audio(streamUrl);
-  audio.crossOrigin='use-credentials';   // send session cookie (same origin)
+  audio.crossOrigin='use-credentials';
   var srcNode=ctx.createMediaElementSource(audio);
   srcNode.connect(gainNode);
+  // srcNode → gainNode → dest (MediaStreamDestination).  Nothing connects to
+  // ctx.destination, so no speaker output from this element.
+
+  _feedNodes[roomId]={srcNode:srcNode,gainNode:gainNode,dest:dest};
   _feedAudio[roomId]=audio;
 
   audio.play().catch(function(e){
@@ -773,23 +792,26 @@ function _injectStreamAudio(roomId, streamUrl){
   if(pc&&pc!==true){
     var track=dest.stream.getAudioTracks()[0];
     if(track){
-      var audioSenders=pc.getSenders().filter(function(s){return s.track&&s.track.kind==='audio';});
-      if(audioSenders.length){
-        audioSenders.forEach(function(s){
+      var senders=pc.getSenders().filter(function(s){return s.track&&s.track.kind==='audio';});
+      if(senders.length){
+        senders.forEach(function(s){
           s.replaceTrack(track).catch(function(e){
             console.warn('[IPLink] replaceTrack failed:',e.message||e);
           });
         });
       } else {
         console.warn('[IPLink] No audio sender — adding track via addTrack');
-        try{ pc.addTrack(track); }catch(e){ console.warn('[IPLink] addTrack failed:',e); }
+        try{ pc.addTrack(track,dest.stream); }catch(e){ console.warn('[IPLink] addTrack failed:',e); }
       }
     }
   }
 }
 
 function _applySourceForRoom(roomId){
-  // Per-room selection takes precedence; 'global' falls back to the default selector
+  // Per-room selection takes precedence; 'global' falls back to the default selector.
+  // URL is built client-side (no server round-trip) so _injectStreamAudio is called
+  // synchronously — keeping us inside the user-gesture context so the shared
+  // AudioContext is still running when createMediaElementSource is invoked.
   var srcVal=_roomSrc[roomId]||'global';
   if(srcVal==='global'){
     var gsel=document.getElementById('globalSrcSel');
@@ -797,7 +819,6 @@ function _applySourceForRoom(roomId){
   }
   if(srcVal==='mic'){
     _stopFeed(roomId);
-    // Restore mic track
     if(_micStream){
       var pc=_pcs[roomId];
       if(pc&&pc!==true){
@@ -806,30 +827,13 @@ function _applySourceForRoom(roomId){
       }
     }
   } else if(srcVal.indexOf('stream:')===0){
-    // format: "stream:SITE:IDX"
+    // Build the live-relay URL directly — format: "stream:SITE:IDX"
     var parts=srcVal.split(':');
     var site=parts[1], idx=parseInt(parts[2]);
-    fetch('/api/iplink/room/'+roomId+'/feed',{
-      method:'POST',credentials:'same-origin',headers:csrfHdr(),
-      body:JSON.stringify({stream_idx:idx, site:site})
-    }).then(function(r){
-      if(!r.ok){
-        r.json().then(function(d){
-          _showConnErr(roomId, 'Stream source error: '+(d.error||r.status)+'. Is the site connected?');
-        }).catch(function(){
-          _showConnErr(roomId, 'Stream source error: HTTP '+r.status);
-        });
-        return Promise.reject('feed-post-failed');
-      }
-      return r.json();
-    })
-    .then(function(d){
-      if(d.stream_url){
-        _injectStreamAudio(roomId, d.stream_url);
-      } else {
-        _showConnErr(roomId, 'Stream source error: no URL returned');
-      }
-    }).catch(function(e){ if(e!=='feed-post-failed') console.warn('[IPLink] feed error:',e); });
+    var streamUrl=(site==='local')
+      ? '/stream/'+idx+'/live'
+      : '/hub/site/'+encodeURIComponent(site)+'/stream/'+idx+'/live';
+    _injectStreamAudio(roomId, streamUrl);
   }
 }
 
@@ -1001,6 +1005,7 @@ function _showConnErr(roomId, msg){
 
 function acceptCall(roomId){
   if(_pcs[roomId]) return;   // already connecting, ignore double-click
+  _ensureAudioCtx(); // pre-activate shared AudioContext while still in user-gesture
   // Mark as connecting immediately — _renderRooms checks this every 1.5 s
   // and will show "Connecting…" rather than re-rendering the Accept button.
   _pcs[roomId] = true;
