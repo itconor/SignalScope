@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.7",
+    "version": "1.4.8",
 }
 
 import asyncio as _asyncio
@@ -178,9 +178,13 @@ if _AIORTC and _HAS_NP:
                     self._buf += b'\x00' * self.FRAME_B  # silence pad on stall
             frame_bytes = self._buf[:self.FRAME_B]
             self._buf   = self._buf[self.FRAME_B:]
-            samples = _np.frombuffer(frame_bytes, dtype=_np.int16).astype(_np.float32) / 32768.0
-            frame   = _av.AudioFrame.from_ndarray(samples.reshape(1, -1),
-                                                   format='fltp', layout='mono')
+            # aiortc's Opus encoder requires s16 (signed 16-bit interleaved), not fltp.
+            # Our PCM is already S16LE from ffmpeg — pass it directly without conversion.
+            frame = _av.AudioFrame.from_ndarray(
+                _np.frombuffer(frame_bytes, dtype=_np.int16).reshape(1, -1),
+                format='s16',
+                layout='mono',
+            )
             frame.sample_rate = self.RATE
             frame.pts         = self._pts
             frame.time_base   = self._tb
