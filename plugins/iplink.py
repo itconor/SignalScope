@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.10",
+    "version": "1.4.11",
 }
 
 import asyncio as _asyncio
@@ -65,13 +65,15 @@ _lw_relay_slots  = {}   # slot_id → queue.Queue  (hub→client PCM relay)
 _lw_relay_closed = set()  # slot_ids that are closed/done
 
 # ── Server-side routing (permanent rooms) ─────────────────────────────────────
-_INTERNAL_TOKEN = secrets.token_hex(32)  # used for internal server-to-server calls
-_aio_loop       = None   # asyncio event loop (background thread) for aiortc
-_server_pcs     = {}     # room_id → RTCPeerConnection (server-side WebRTC)
-_server_tracks  = {}     # room_id → _ServerAudioTrack
-_src_threads    = {}     # room_id → (Thread, Event)
-_monitor_ref    = None   # set in register()
-_listen_reg_ref = None   # set in register()
+_INTERNAL_TOKEN     = secrets.token_hex(32)  # used for internal server-to-server calls
+_aio_loop           = None   # asyncio event loop (background thread) for aiortc
+_server_pcs         = {}     # room_id → RTCPeerConnection (server-side WebRTC)
+_server_tracks      = {}     # room_id → _ServerAudioTrack (source → talent IFB)
+_talent_tracks      = {}     # room_id → incoming MediaStreamTrack from talent mic
+_talent_recv_tasks  = {}     # room_id → asyncio.Task running _talent_recv_loop
+_src_threads        = {}     # room_id → (Thread, Event)
+_monitor_ref        = None   # set in register()
+_listen_reg_ref     = None   # set in register()
 
 
 class _LivewireSender:
@@ -224,30 +226,31 @@ def _mono_to_dual_mono(pcm_mono: bytes) -> bytes:
 
 
 def _route_pcm_chunk(room_id: str, pcm: bytes):
-    """Deliver one PCM chunk to:  (a) server-side WebRTC track → talent,
-    (b) Livewire/AES67 multicast — hub-local sender or remote-site relay queue.
+    """Route source PCM to the server-side WebRTC track → talent IFB ONLY.
+    The Livewire output carries the TALENT'S audio (mix-minus), not the source.
     Called from the source thread — must be thread-safe.
-
-    PCM input is always mono S16LE 48 kHz.  The Livewire path upmixes to
-    dual-mono stereo (L=R) so receivers get standard n_ch=2 L24 packets.
+    PCM is mono S16LE 48 kHz.
     """
-    # (a) aiortc audio track
     if _AIORTC and _aio_loop:
         trk = _server_tracks.get(room_id)
         if trk:
             _asyncio.run_coroutine_threadsafe(trk._push(pcm), _aio_loop)
-    # (b) Livewire / AES67 multicast output
+
+
+def _route_lw_chunk(room_id: str, pcm_mono: bytes):
+    """Route talent PCM to the room's Livewire/AES67 output (mix-minus output).
+    Called from the talent recv loop (asyncio thread) — thread-safe via GIL on dicts.
+    PCM is mono S16LE 48 kHz; upmixed to dual-mono stereo for Livewire standard.
+    """
     room = _rooms.get(room_id)
     if not room:
         return
     out = room.get("output", {})
     if out.get("type") not in ("livewire", "multicast"):
         return
-    # Standard Livewire is always stereo — upmix mono PCM to dual-mono
-    pcm_stereo = _mono_to_dual_mono(pcm)
+    pcm_stereo = _mono_to_dual_mono(pcm_mono)
     site_out = out.get("site", "hub")
     if site_out == "hub":
-        # Hub-local UDP multicast (n_ch=2 = standard Livewire stereo)
         addr = out.get("address", "")
         if not addr:
             return
@@ -257,8 +260,6 @@ def _route_pcm_chunk(room_id: str, pcm: bytes):
             _lw_senders[room_id] = sender
         sender.feed(pcm_stereo)
     else:
-        # Remote client site — push stereo PCM into the relay queue that
-        # _client_lw_output_thread reads from via /api/iplink/output_stream/<slot_id>.
         slot_id = out.get("_slot_id")
         if slot_id:
             q = _lw_relay_slots.get(slot_id)
@@ -266,7 +267,44 @@ def _route_pcm_chunk(room_id: str, pcm: bytes):
                 try:
                     q.put_nowait(pcm_stereo)
                 except _queue.Full:
-                    pass   # drop — client is too slow or disconnected
+                    pass
+
+
+async def _talent_recv_loop(room_id: str, track_in):
+    """Read decoded Opus frames from the talent's mic track and route to
+    the room's Livewire/AES67 output — this is the mix-minus contribution feed.
+
+    The talent sends Opus audio which aiortc decodes to fltp/48 kHz AudioFrames.
+    We resample to s16 mono and call _route_lw_chunk so the studio receives the
+    talent's voice on the Livewire channel while the talent hears the source (IFB).
+    """
+    try:
+        resampler = _av.AudioResampler(format='s16', layout='mono', rate=48000)
+    except Exception as exc:
+        if _log:
+            _log(f"[IPLink] Talent recv loop: AudioResampler init failed: {exc}")
+        return
+    try:
+        while True:
+            try:
+                frame = await _asyncio.wait_for(track_in.recv(), timeout=5.0)
+            except _asyncio.TimeoutError:
+                if not _rooms.get(room_id):
+                    break
+                continue
+            except _asyncio.CancelledError:
+                break
+            except Exception:
+                break
+            try:
+                for rf in resampler.resample(frame):
+                    _route_lw_chunk(room_id, bytes(rf.planes[0]))
+            except Exception:
+                pass
+    except _asyncio.CancelledError:
+        pass
+    if _log:
+        _log(f"[IPLink] Talent recv loop ended (room {room_id[:8]})")
 
 
 def _local_source_loop(room_id: str, idx: int, stop_evt: threading.Event):
@@ -465,13 +503,17 @@ def _stop_source_routing(room_id: str):
 
 
 def _close_server_pc(room_id: str):
-    """Close the server-side RTCPeerConnection and audio track for a room.
+    """Close the server-side RTCPeerConnection, source track, and talent recv loop.
     Call this only when server routing is being explicitly torn down (disabling
     server_managed, deleting a room).  Do NOT call from _stop_source_routing."""
     if not (_AIORTC and _aio_loop):
         return
-    pc  = _server_pcs.pop(room_id, None)
-    trk = _server_tracks.pop(room_id, None)
+    pc   = _server_pcs.pop(room_id, None)
+    trk  = _server_tracks.pop(room_id, None)
+    task = _talent_recv_tasks.pop(room_id, None)
+    _talent_tracks.pop(room_id, None)
+    if task and not task.done():
+        _aio_loop.call_soon_threadsafe(task.cancel)
     if pc:
         _asyncio.run_coroutine_threadsafe(pc.close(), _aio_loop)
     if trk:
@@ -548,9 +590,18 @@ async def _server_accept_offer(room_id: str):
 
     @pc.on("track")
     def _on_track(track_in):
-        # Acknowledge incoming audio from talent (IFB/talkback)
         if _log:
             _log(f"[IPLink] Server received {track_in.kind} track from talent (room {room_id[:8]})")
+        if track_in.kind != "audio":
+            return
+        # Store talent track and start the mix-minus recv loop:
+        # talent mic → _talent_recv_loop → _route_lw_chunk → Livewire output
+        _talent_tracks[room_id] = track_in
+        old_task = _talent_recv_tasks.pop(room_id, None)
+        if old_task and not old_task.done():
+            old_task.cancel()
+        task = _aio_loop.create_task(_talent_recv_loop(room_id, track_in))
+        _talent_recv_tasks[room_id] = task
 
     pc.addTrack(track)
     try:
