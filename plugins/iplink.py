@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.2",
+    "version": "1.4.3",
 }
 
 import asyncio as _asyncio
@@ -382,23 +382,43 @@ async def _server_accept_offer(room_id: str):
     ))
     _server_pcs[room_id] = pc
 
+    # Use regular def (not async def) — async def handlers with threading.Lock
+    # block the entire asyncio event loop, preventing ICE connectivity checks.
+    # Simple dict assignments are safe under the GIL without locking.
     @pc.on("connectionstatechange")
-    async def _on_state():
+    def _on_state():
         state = pc.connectionState
-        with _lock:
+        r = _rooms.get(room_id)
+        if not r:
+            return
+        if state == "connected":
+            r["status"]       = "connected"
+            r["connected_at"] = time.time()
+            if _log:
+                _log(f"[IPLink] Server PC connected: room '{r['name']}'")
+        elif state in ("failed", "disconnected", "closed"):
+            r["status"]           = "disconnected"
+            r["disconnected_at"]  = time.time()
+            if _log:
+                _log(f"[IPLink] Server PC {state}: room '{r['name']}'")
+
+    @pc.on("iceconnectionstatechange")
+    def _on_ice_state():
+        if _log:
             r = _rooms.get(room_id)
-            if not r:
-                return
-            if state == "connected":
-                r["status"]       = "connected"
-                r["connected_at"] = time.time()
-                if _log:
-                    _log(f"[IPLink] Server PC connected: room '{r['name']}'")
-            elif state in ("failed", "disconnected", "closed"):
-                r["status"]           = "disconnected"
-                r["disconnected_at"]  = time.time()
-                if _log:
-                    _log(f"[IPLink] Server PC {state}: room '{r['name']}'")
+            _log(f"[IPLink] Server ICE state: {pc.iceConnectionState} "
+                 f"(room '{r['name'] if r else room_id[:8]}')")
+
+    @pc.on("icegatheringstatechange")
+    def _on_ice_gathering():
+        if _log:
+            _log(f"[IPLink] Server ICE gathering: {pc.iceGatheringState} (room {room_id[:8]})")
+
+    @pc.on("track")
+    def _on_track(track_in):
+        # Acknowledge incoming audio from talent (IFB/talkback)
+        if _log:
+            _log(f"[IPLink] Server received {track_in.kind} track from talent (room {room_id[:8]})")
 
     pc.addTrack(track)
     try:
@@ -420,12 +440,26 @@ async def _server_accept_offer(room_id: str):
         # The answer SDP has no candidates until gathering completes.
         # We MUST wait here — otherwise the talent receives an answer with no
         # server candidates and the connection can never be established.
-        for _ in range(300):   # up to 30 s (100 ms steps)
+        _ice_done = _asyncio.Event()
+
+        @pc.on("icegatheringstatechange")
+        def _on_ice_gather_done():
             if pc.iceGatheringState == "complete":
-                break
-            await _asyncio.sleep(0.1)
+                _ice_done.set()
+
+        # Trigger immediately if already complete (race-free)
+        if pc.iceGatheringState == "complete":
+            _ice_done.set()
+
+        try:
+            await _asyncio.wait_for(_ice_done.wait(), timeout=30.0)
+        except _asyncio.TimeoutError:
+            if _log:
+                _log(f"[IPLink] ICE gathering timed out after 30 s (room {room_id[:8]}); "
+                     f"state: {pc.iceGatheringState}")
 
         final_sdp = pc.localDescription.sdp   # now contains all ICE candidates
+        cand_count = final_sdp.count("\na=candidate:")
         with _lock:
             r = _rooms.get(room_id)
             if r:
@@ -435,16 +469,24 @@ async def _server_accept_offer(room_id: str):
         if _log:
             r = _rooms.get(room_id)
             _log(f"[IPLink] Server answer ready for room '{r['name'] if r else room_id[:8]}' "
-                 f"(ICE state: {pc.iceGatheringState})")
+                 f"({cand_count} candidates, ICE state: {pc.iceGatheringState})")
         _start_source_routing(room_id)
     except Exception as exc:
+        import traceback as _tb
         if _log:
-            _log(f"[IPLink] Server offer accept failed for {room_id[:8]}: {exc}")
+            _log(f"[IPLink] Server offer accept failed for {room_id[:8]}: {exc}\n"
+                 + _tb.format_exc())
 
 
 async def _server_add_ice(room_id: str, cand_data: dict):
     """Add a talent ICE candidate to the server-side peer connection.
-    Silently no-ops if the PC doesn't exist or remote description isn't set yet."""
+    Waits briefly for remoteDescription to be set (handles fast-arriving candidates)."""
+    # Poll briefly — talent can POST candidates before setRemoteDescription completes
+    for _ in range(50):   # up to 5 s (100 ms steps)
+        pc = _server_pcs.get(room_id)
+        if pc and pc.remoteDescription is not None:
+            break
+        await _asyncio.sleep(0.1)
     pc = _server_pcs.get(room_id)
     if not pc or pc.remoteDescription is None:
         return
@@ -1932,6 +1974,7 @@ function _renderRooms(rooms){
   rooms.forEach(function(r){
     _wireSel(document.getElementById('rc_src_'+r.id));
     _wireSel(document.getElementById('smSrc_'+r.id));
+    _wireSel(document.getElementById('olwsite_'+r.id));
   });
   // Populate stream options on the newly-created global selector
   _populateSourceSelectors();
