@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.2",
+    "version": "1.5.3",
 }
 
 import asyncio as _asyncio
@@ -479,11 +479,14 @@ class _SipAcctMgr:
                         self._reg_refire = 0.0
                         self._register()
                     continue
+                if _log:
+                    first_line = (msg_text or '').split('\n')[0].strip()
+                    _log(f"[IPLink SIP] {self._user()} ← WS: {first_line}")
                 try:
                     msg = _psip_parse(msg_text)
                     self._handle(msg)
                 except Exception as exc:
-                    if _log: _log(f"[IPLink SIP] {self._user()} parse error: {exc}")
+                    if _log: _log(f"[IPLink SIP] {self._user()} parse error: {exc}\nraw={repr(msg_text[:200])}")
         finally:
             with self._ws_lock: self._ws = None
             ws.close()
