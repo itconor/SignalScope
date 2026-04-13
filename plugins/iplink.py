@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.8",
+    "version": "1.3.9",
 }
 
 import json
@@ -707,18 +707,24 @@ function _onRoomSrcChange(roomId, val){
   // Update status badge immediately without waiting for the next _renderRooms cycle
   var badge=document.getElementById('rc_srcbadge_'+roomId);
   if(badge){
-    var connected=_pcs[roomId]&&_pcs[roomId]!==true;
+    var connected=!!(_pcs[roomId]&&_pcs[roomId]!==true);
     if(!val||val==='global'||val==='mic'){
       badge.style.display='none';
     } else {
       var lbl=_srcLabel(val)||val;
-      badge.textContent=connected?lbl+' — injecting':lbl+' — pre-selected (apply on connect)';
+      badge.textContent=connected ? lbl+' — sending to talent' : lbl+' — ready, waiting for call';
       badge.className='rc-src-badge'+(connected?' rc-src-active':' rc-src-pending');
       badge.style.display='';
     }
   }
-  // Apply immediately if the room has an active WebRTC connection
-  if(_pcs[roomId]&&_pcs[roomId]!==true) _applySourceForRoom(roomId);
+  // Always apply regardless of PC state.
+  // If no active PC: _injectStreamAudio warms up the audio feed (starts the
+  // stream, sets up the Web Audio graph) so it is ready the moment a call
+  // connects.  replaceTrack inside _injectStreamAudio is guarded by the PC
+  // check — it only fires when a real RTCPeerConnection exists.
+  // When acceptCall() later establishes a PC, it calls _applySourceForRoom()
+  // again which runs replaceTrack on the already-warmed feed.
+  _applySourceForRoom(roomId);
 }
 
 _loadStreamSources();
@@ -1346,8 +1352,14 @@ function _renderRooms(rooms){
     var _connected=!!(_pcs[r.id]&&_pcs[r.id]!==true);
     var _feedActive=!!_feedAudio[r.id];
     if(_rsLbl){
-      var _badgeCls='rc-src-badge'+(_connected?' rc-src-active':' rc-src-pending');
-      var _badgeTxt=_feedActive?_rsLbl+' — injecting':_rsLbl+(_connected?'':' — pre-selected (apply on connect)');
+      // Badge states:
+      //   feed active + PC active  → green  "sending to talent"
+      //   feed active + no PC      → muted  "ready, waiting for call"
+      //   no feed yet              → muted  "loading…"
+      var _badgeCls='rc-src-badge'+(_feedActive&&_connected?' rc-src-active':' rc-src-pending');
+      var _badgeTxt=_feedActive
+        ? (_connected ? _rsLbl+' — sending to talent' : _rsLbl+' — ready, waiting for call')
+        : _rsLbl+' — loading\u2026';
       html+='<div id="rc_srcbadge_'+r.id+'" class="'+_badgeCls+'">'+_esc(_badgeTxt)+'</div>';
     } else {
       html+='<div id="rc_srcbadge_'+r.id+'" class="rc-src-badge" style="display:none"></div>';
