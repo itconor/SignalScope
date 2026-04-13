@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.4.12",
+    "version": "1.5.0",
 }
 
 import asyncio as _asyncio
@@ -74,6 +74,11 @@ _talent_recv_tasks  = {}     # room_id → asyncio.Task running _talent_recv_loo
 _src_threads        = {}     # room_id → (Thread, Event)
 _monitor_ref        = None   # set in register()
 _listen_reg_ref     = None   # set in register()
+
+# ── Server-side SIP account managers ─────────────────────────────────────────
+_SIP_ACCTS_PATH    = os.path.join(_BASE_DIR, "iplink_sip_accounts.json")
+_sip_acct_mgrs     = {}   # account_id → _SipAcctMgr
+_sip_pending_calls = {}   # account_id → {caller, time, call_id, _invite}
 
 
 class _LivewireSender:
@@ -144,6 +149,748 @@ class _LivewireSender:
             self._sock.close()
         except Exception:
             pass
+
+
+# ── Minimal pure-Python WebSocket client for SIP over WebSocket ───────────────
+class _MinimalWsClient:
+    """Pure-Python WebSocket client for SIP over WebSocket (RFC 7118 / RFC 6455).
+    No external dependencies. Text frames only (SIP messages are text).
+    """
+    def __init__(self, url, protocols=None):
+        import urllib.parse as _up
+        p = _up.urlparse(url)
+        self._host   = p.hostname
+        self._port   = p.port or (443 if p.scheme == 'wss' else 80)
+        self._path   = p.path or '/'
+        if p.query: self._path += '?' + p.query
+        self._secure = p.scheme == 'wss'
+        self._protos = protocols or []
+        self._sock   = None
+        self._buf    = b''
+
+    def connect(self, timeout=15):
+        import ssl as _ssl
+        raw = socket.create_connection((self._host, self._port), timeout=timeout)
+        if self._secure:
+            ctx = _ssl.create_default_context()
+            self._sock = ctx.wrap_socket(raw, server_hostname=self._host)
+        else:
+            self._sock = raw
+        self._sock.settimeout(timeout)
+        self._handshake()
+
+    def _handshake(self):
+        import base64 as _b64
+        key = _b64.b64encode(os.urandom(16)).decode()
+        hdrs = [
+            f'GET {self._path} HTTP/1.1',
+            f'Host: {self._host}:{self._port}',
+            'Upgrade: websocket',
+            'Connection: Upgrade',
+            f'Sec-WebSocket-Key: {key}',
+            'Sec-WebSocket-Version: 13',
+        ]
+        if self._protos:
+            hdrs.append(f'Sec-WebSocket-Protocol: {",".join(self._protos)}')
+        hdrs += ['', '']
+        self._sock.sendall('\r\n'.join(hdrs).encode())
+        resp = b''
+        while b'\r\n\r\n' not in resp:
+            chunk = self._sock.recv(4096)
+            if not chunk: raise EOFError('WS handshake: connection closed')
+            resp += chunk
+        if b'101' not in resp.split(b'\r\n')[0]:
+            raise Exception(f'WS upgrade failed: {resp[:120]}')
+
+    def send(self, text):
+        data = text.encode('utf-8')
+        mask = os.urandom(4)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        n = len(data)
+        if n < 126:
+            hdr = struct.pack('!BB', 0x81, 0x80 | n)
+        elif n < 65536:
+            hdr = struct.pack('!BBH', 0x81, 0xFE, n)
+        else:
+            hdr = struct.pack('!BBQ', 0x81, 0xFF, n)
+        self._sock.sendall(hdr + mask + masked)
+
+    def recv(self, timeout=1.0):
+        """Read one text frame; returns str or None on timeout."""
+        self._sock.settimeout(timeout)
+        try:
+            return self._read_frame()
+        except socket.timeout:
+            return None
+
+    def _read_frame(self):
+        while True:
+            while len(self._buf) < 2:
+                d = self._sock.recv(4096)
+                if not d: raise EOFError('WS closed')
+                self._buf += d
+            b0, b1 = self._buf[0], self._buf[1]
+            opcode  = b0 & 0x0F
+            masked  = bool(b1 & 0x80)
+            plen    = b1 & 0x7F
+            hlen    = 2
+            if plen == 126:
+                while len(self._buf) < 4: self._buf += self._sock.recv(4096)
+                plen = struct.unpack('!H', self._buf[2:4])[0]; hlen = 4
+            elif plen == 127:
+                while len(self._buf) < 10: self._buf += self._sock.recv(4096)
+                plen = struct.unpack('!Q', self._buf[2:10])[0]; hlen = 10
+            mk = b''
+            if masked:
+                mk = self._buf[hlen:hlen+4]; hlen += 4
+            total = hlen + plen
+            while len(self._buf) < total:
+                d = self._sock.recv(max(4096, total - len(self._buf)))
+                if not d: raise EOFError('WS closed')
+                self._buf += d
+            payload = self._buf[hlen:total]
+            self._buf = self._buf[total:]
+            if masked:
+                payload = bytes(b ^ mk[i % 4] for i, b in enumerate(payload))
+            if opcode == 0x8:  raise EOFError('WS close frame')
+            if opcode == 0x9:  self._pong(payload); continue   # ping
+            if opcode == 0xA:  continue                         # pong
+            if opcode in (0x1, 0x2): return payload.decode('utf-8', errors='replace')
+
+    def _pong(self, payload):
+        n = len(payload)
+        self._sock.sendall(struct.pack('!BB', 0x8A, n) + payload)
+
+    def close(self):
+        try:
+            if self._sock:
+                self._sock.sendall(struct.pack('!BB', 0x88, 0x80) + os.urandom(4))
+                self._sock.close()
+        except Exception:
+            pass
+        self._sock = None
+
+
+# ── Python SIP utilities ──────────────────────────────────────────────────────
+import hashlib as _hashlib
+
+def _psip_rand(n):
+    c = 'abcdef0123456789'
+    return ''.join(random.choices(c, k=n))
+
+def _psip_branch():  return 'z9hG4bK' + _psip_rand(12)
+def _psip_tag():     return _psip_rand(10)
+def _psip_cid(host): return _psip_rand(14) + '@' + (host or 'ss')
+
+def _psip_md5(s):
+    return _hashlib.md5(s.encode()).hexdigest()
+
+def _psip_digest(method, uri, auth, user, pwd):
+    realm = auth.get('realm', ''); nonce = auth.get('nonce', '')
+    qop_raw = auth.get('qop', '')
+    qop = qop_raw.split(',')[0].strip() if qop_raw else None
+    ha1  = _psip_md5(f'{user}:{realm}:{pwd}')
+    ha2  = _psip_md5(f'{method.upper()}:{uri}')
+    nc   = '00000001'; cnonce = _psip_rand(8)
+    if qop in ('auth', 'auth-int'):
+        resp = _psip_md5(f'{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}')
+        return (f'Digest username="{user}",realm="{realm}",nonce="{nonce}",'
+                f'uri="{uri}",algorithm=MD5,qop=auth,nc={nc},cnonce="{cnonce}",'
+                f'response="{resp}"')
+    resp = _psip_md5(f'{ha1}:{nonce}:{ha2}')
+    return f'Digest username="{user}",realm="{realm}",nonce="{nonce}",uri="{uri}",algorithm=MD5,response="{resp}"'
+
+def _psip_parse_www_auth(h):
+    import re as _re
+    r = {}
+    for m in _re.finditer(r'(\w+)=(?:"([^"]+)"|([^,\s]+))', h):
+        r[m.group(1)] = m.group(2) if m.group(2) is not None else m.group(3)
+    return r
+
+def _psip_parse(raw: str) -> dict:
+    sep = raw.find('\r\n\r\n')
+    lsep = '\r\n'
+    if sep < 0:
+        sep = raw.find('\n\n'); lsep = '\n'
+    if sep < 0:
+        hdr_part = raw; body = ''
+    else:
+        hdr_part = raw[:sep]
+        body     = raw[sep + (4 if lsep == '\r\n' else 2):]
+    lines  = hdr_part.split(lsep)
+    fl     = lines[0].strip()
+    hdrs   = {}
+    for ln in lines[1:]:
+        if ':' not in ln: continue
+        k, v = ln.split(':', 1)
+        k = k.strip().lower(); v = v.strip()
+        hdrs[k] = (hdrs[k] + '\r\n' + v) if k in hdrs else v
+    is_resp = fl.startswith('SIP/2.0')
+    if is_resp:
+        parts = fl.split(None, 2)
+        return {'is_response': True, 'status': int(parts[1]) if len(parts)>1 else 0,
+                'reason': parts[2] if len(parts)>2 else '', 'method': None, 'uri': None,
+                'headers': hdrs, 'body': body}
+    parts = fl.split(None, 2)
+    return {'is_response': False, 'status': None, 'reason': None,
+            'method': parts[0] if parts else '', 'uri': parts[1] if len(parts)>1 else '',
+            'headers': hdrs, 'body': body}
+
+def _psip_extract_tag(h):
+    import re as _re
+    m = _re.search(r';tag=([^\s;,>]+)', h or '')
+    return m.group(1) if m else None
+
+def _psip_extract_uri(h):
+    import re as _re
+    m = _re.search(r'<([^>]+)>', h or '')
+    if m: return m.group(1)
+    m = _re.search(r'(sips?:[^\s;,>]+)', h or '')
+    return m.group(1) if m else (h or '').strip()
+
+def _psip_extract_display(h):
+    import re as _re
+    m = _re.search(r'"([^"]+)"', h or '')
+    return m.group(1) if m else None
+
+def _psip_build_req(method, uri, hdrs, body):
+    lines = [f'{method} {uri} SIP/2.0']
+    for k, v in hdrs.items(): lines.append(f'{k}: {v}')
+    lines.append(f'Content-Length: {len(body.encode()) if body else 0}')
+    lines.append('')
+    if body: lines.append(body)
+    return '\r\n'.join(lines)
+
+def _psip_build_resp(req: dict, status: int, reason: str, extra: dict, body: str) -> str:
+    lines = [f'SIP/2.0 {status} {reason}']
+    via = req['headers'].get('via', '')
+    for v in via.split('\r\n'):
+        if v.strip(): lines.append(f'Via: {v.strip()}')
+    to_hdr = req['headers'].get('to', '')
+    if status >= 200 and ';tag=' not in to_hdr:
+        to_hdr += f';tag={_psip_tag()}'
+    lines.append(f'From: {req["headers"].get("from", "")}')
+    lines.append(f'To: {to_hdr}')
+    if 'call-id' in req['headers']: lines.append(f'Call-ID: {req["headers"]["call-id"]}')
+    if 'cseq'    in req['headers']: lines.append(f'CSeq: {req["headers"]["cseq"]}')
+    for k, v in extra.items(): lines.append(f'{k}: {v}')
+    lines.append(f'Content-Length: {len(body.encode()) if body else 0}')
+    lines.append('')
+    if body: lines.append(body)
+    return '\r\n'.join(lines)
+
+
+# ── Server-side SIP account manager ──────────────────────────────────────────
+class _SipAcctMgr:
+    """Manages one SIP account: WebSocket connection, registration, and call bridging."""
+
+    def __init__(self, cfg: dict):
+        self.id           = cfg['id']
+        self.cfg          = dict(cfg)
+        self.status       = 'idle'     # idle|connecting|registering|registered|incall|error
+        self.error_msg    = ''
+        self.call_room_id = None       # room_id of active call (if any)
+        self.call_caller  = ''         # display name of active call
+        self._stop        = threading.Event()
+        self._thread      = None
+        self._ws          = None
+        self._ws_lock     = threading.Lock()
+        # SIP registration state
+        self._realm       = ''
+        self._reg_csq     = 0
+        self._reg_cid     = ''
+        self._reg_from_tag= ''
+        self._reg_attempts= 0
+        self._reg_refire  = 0.0        # monotonic time to re-register
+        # Outbound call state
+        self._call_csq      = 0
+        self._call_cid      = ''
+        self._call_from_tag = ''
+        self._call_to_tag   = ''
+        self._call_uri      = ''
+        self._out_room_id   = None
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def start(self):
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name=f"SIP-{self.cfg.get('username','?')}")
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        with self._ws_lock:
+            if self._ws:
+                try: self._ws.close()
+                except Exception: pass
+
+    def update_cfg(self, cfg: dict):
+        """Update config live — will reconnect on next loop iteration."""
+        self.cfg = dict(cfg)
+        self.stop()
+        time.sleep(0.5)
+        self.start()
+
+    # ── Main thread ───────────────────────────────────────────────────────────
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                self._connect_and_run()
+            except EOFError as e:
+                if not self._stop.is_set():
+                    self.status = 'error'; self.error_msg = 'Disconnected'
+                    if _log: _log(f"[IPLink SIP] {self._user()} disconnected: {e}")
+                    self._stop.wait(15)
+            except Exception as e:
+                if not self._stop.is_set():
+                    self.status = 'error'; self.error_msg = str(e)[:80]
+                    if _log: _log(f"[IPLink SIP] {self._user()} error: {e}")
+                    self._stop.wait(30)
+
+    def _connect_and_run(self):
+        if not self.cfg.get('enabled'):
+            self.status = 'idle'; self._stop.wait(60); return
+        server = self.cfg.get('server', '').strip()
+        if not server:
+            self.status = 'idle'; self._stop.wait(60); return
+
+        self.status = 'connecting'
+        ws = _MinimalWsClient(server, protocols=['sip'])
+        ws.connect(timeout=15)
+        with self._ws_lock: self._ws = ws
+
+        # Reset SIP registration state
+        self._realm = self.cfg.get('domain', '').strip() or self._ws_hostname()
+        self._reg_cid      = _psip_cid(self._ws_hostname())
+        self._reg_from_tag = _psip_tag()
+        self._reg_csq      = 0
+        self._reg_attempts = 0
+        self._reg_refire   = 0.0
+
+        self._register()
+
+        try:
+            while not self._stop.is_set():
+                msg_text = ws.recv(timeout=1.0)
+                if msg_text is None:
+                    if self._reg_refire and time.monotonic() >= self._reg_refire:
+                        self._reg_refire = 0.0
+                        self._register()
+                    continue
+                try:
+                    msg = _psip_parse(msg_text)
+                    self._handle(msg)
+                except Exception as exc:
+                    if _log: _log(f"[IPLink SIP] {self._user()} parse error: {exc}")
+        finally:
+            with self._ws_lock: self._ws = None
+            ws.close()
+
+    # ── SIP message handler ───────────────────────────────────────────────────
+
+    def _handle(self, msg: dict):
+        if msg['is_response']:
+            cseq = msg['headers'].get('cseq', '')
+            method = cseq.split()[-1].upper() if cseq else ''
+            st = msg['status']
+            if method == 'REGISTER':
+                self._handle_reg_resp(st, msg)
+            elif method == 'INVITE':
+                self._handle_invite_resp(st, msg)
+        else:
+            m = (msg.get('method') or '').upper()
+            if m == 'INVITE':
+                self._handle_incoming(msg)
+            elif m == 'BYE':
+                self._ws_send(_psip_build_resp(msg, 200, 'OK', {}, ''))
+                self._end_call()
+            elif m == 'CANCEL':
+                self._ws_send(_psip_build_resp(msg, 200, 'OK', {}, ''))
+                inv = _sip_pending_calls.get(self.id, {}).get('_invite')
+                if (inv and inv['headers'].get('call-id') ==
+                        msg['headers'].get('call-id')):
+                    self._ws_send(_psip_build_resp(inv, 487, 'Request Terminated', {}, ''))
+                    _sip_pending_calls.pop(self.id, None)
+                if self.status == 'incall':
+                    self.status = 'registered'
+            elif m == 'OPTIONS':
+                self._ws_send(_psip_build_resp(msg, 200, 'OK',
+                    {'Allow': 'INVITE,ACK,CANCEL,OPTIONS,BYE', 'Accept': 'application/sdp'}, ''))
+            elif m == 'ACK':
+                pass  # call fully established
+
+    # ── REGISTER ──────────────────────────────────────────────────────────────
+
+    def _register(self, auth_hdr=None):
+        self._reg_csq += 1
+        dom = self._domain()
+        hdrs = {
+            'Via':         f'SIP/2.0/WS {self._ws_host()};branch={_psip_branch()};rport',
+            'Max-Forwards': '70',
+            'From':        f'"{self._display()}" <{self._self_uri()}>;tag={self._reg_from_tag}',
+            'To':          f'<{self._self_uri()}>',
+            'Call-ID':     self._reg_cid,
+            'CSeq':        f'{self._reg_csq} REGISTER',
+            'Contact':     f'{self._contact()};+sip.ice',
+            'Expires':     '600',
+            'Allow':       'INVITE,ACK,CANCEL,OPTIONS,BYE',
+            'User-Agent':  'SignalScope-IPLink/2.0',
+        }
+        if auth_hdr: hdrs['Authorization'] = auth_hdr
+        self._ws_send(_psip_build_req('REGISTER', f'sip:{dom}', hdrs, ''))
+        self.status = 'registering'
+
+    def _handle_reg_resp(self, st: int, msg: dict):
+        if st == 200:
+            self._reg_attempts = 0
+            self.status = 'registered'
+            self.error_msg = ''
+            import re as _re
+            exp_raw = msg['headers'].get('contact', '')
+            m = _re.search(r'expires=(\d+)', exp_raw, _re.I)
+            exp = int(m.group(1)) if m else 600
+            self._reg_refire = time.monotonic() + exp * 0.85
+            if _log: _log(f"[IPLink SIP] {self._user()} registered (expires={exp}s)")
+        elif st in (401, 407):
+            self._reg_attempts += 1
+            if self._reg_attempts > 3:
+                self.status = 'error'
+                self.error_msg = 'Auth failed — check username/password'
+                return
+            www_h = (msg['headers'].get('www-authenticate') or
+                     msg['headers'].get('proxy-authenticate') or '')
+            auth  = _psip_parse_www_auth(www_h)
+            if auth.get('realm') and not self._realm:
+                self._realm = auth['realm']
+            reg_uri = f'sip:{self._domain()}'
+            self._register(_psip_digest('REGISTER', reg_uri, auth,
+                                        self.cfg['username'], self.cfg.get('password', '')))
+        elif st >= 400:
+            self.status = 'error'
+            self.error_msg = f'Registration failed ({st})'
+
+    # ── Incoming INVITE ───────────────────────────────────────────────────────
+
+    def _handle_incoming(self, msg: dict):
+        if self.status == 'incall':
+            self._ws_send(_psip_build_resp(msg, 486, 'Busy Here', {}, ''))
+            return
+        self._ws_send(_psip_build_resp(msg, 100, 'Trying', {}, ''))
+        caller_from = msg['headers'].get('from', '')
+        disp = _psip_extract_display(caller_from)
+        uri_part = _psip_extract_uri(caller_from).replace('sip:', '').split('@')[0]
+        caller_name = disp or uri_part or 'Unknown'
+        invite_sdp = msg.get('body', '')
+
+        room_id = self._find_room()
+
+        if (room_id and invite_sdp and 'a=fingerprint' in invite_sdp
+                and _AIORTC and _ServerAudioTrack):
+            # WebRTC-capable PBX — bridge via aiortc
+            self.status       = 'incall'
+            self.call_room_id = room_id
+            self.call_caller  = caller_name
+            loop = _ensure_aio_loop()
+            fut  = _asyncio.run_coroutine_threadsafe(
+                _server_accept_sip_invite(room_id, invite_sdp, self), loop)
+            threading.Thread(target=self._finish_answer, args=(msg, fut, room_id),
+                             daemon=True, name=f'SIP-ans-{self.id[:6]}').start()
+        else:
+            # No room, no WebRTC SDP, or no aiortc — notify hub UI
+            self._ws_send(_psip_build_resp(msg, 180, 'Ringing', {'Contact': self._contact()}, ''))
+            _sip_pending_calls[self.id] = {
+                'caller': caller_name,
+                'call_id': msg['headers'].get('call-id', ''),
+                'time': time.time(),
+                '_invite': msg,
+            }
+            self.status       = 'incall'
+            self.call_caller  = caller_name
+            self.call_room_id = None
+            if _log: _log(f"[IPLink SIP] {self._user()}: incoming from {caller_name} (no room assigned)")
+
+    def _finish_answer(self, invite_msg: dict, fut, room_id: str):
+        """Wait for aiortc to create answer SDP, then send 200 OK."""
+        try:
+            answer_sdp = fut.result(timeout=35.0)
+        except Exception as e:
+            if _log: _log(f"[IPLink SIP] {self._user()} answer failed: {e}")
+            self._ws_send(_psip_build_resp(invite_msg, 500, 'Server Error', {}, ''))
+            self._end_call(); return
+        if not answer_sdp:
+            self._ws_send(_psip_build_resp(invite_msg, 500, 'Server Error', {}, ''))
+            self._end_call(); return
+        self._ws_send(_psip_build_resp(invite_msg, 200, 'OK', {
+            'Contact': self._contact(), 'Content-Type': 'application/sdp',
+        }, answer_sdp))
+        if _log: _log(f"[IPLink SIP] {self._user()}: 200 OK sent, room={room_id[:8]}")
+
+    def _handle_invite_resp(self, st: int, msg: dict):
+        """Handle response to our outbound INVITE."""
+        if st in (180, 183):
+            pass  # ringing
+        elif st == 200:
+            to_tag = _psip_extract_tag(msg['headers'].get('to', ''))
+            self._call_to_tag = to_tag or ''
+            cseq_num = (msg['headers'].get('cseq', '1 INVITE').split()[0])
+            ack_hdrs = {
+                'Via':          f'SIP/2.0/WS {self._ws_host()};branch={_psip_branch()};rport',
+                'Max-Forwards': '70',
+                'From':         f'"{self._display()}" <{self._self_uri()}>;tag={self._call_from_tag}',
+                'To':           msg['headers'].get('to', ''),
+                'Call-ID':      self._call_cid,
+                'CSeq':         f'{cseq_num} ACK',
+                'Contact':      self._contact(),
+            }
+            self._ws_send(_psip_build_req('ACK', self._call_uri, ack_hdrs, ''))
+            sdp = msg.get('body', '')
+            if sdp and 'a=fingerprint' in sdp and self._out_room_id and _AIORTC:
+                room_id = self._out_room_id
+                self.status = 'incall'; self.call_room_id = room_id
+                loop = _ensure_aio_loop()
+                _asyncio.run_coroutine_threadsafe(
+                    _server_accept_sip_invite(room_id, sdp, self), loop)
+        elif st >= 400:
+            if _log: _log(f"[IPLink SIP] {self._user()}: INVITE failed {st}")
+            self._end_call()
+
+    # ── Outbound call ─────────────────────────────────────────────────────────
+
+    def dial(self, target: str, room_id: str):
+        """Make an outbound SIP call to target, optionally bridged to room_id."""
+        if self.status not in ('registered',):
+            raise ValueError('Not registered')
+        dom = self._domain()
+        self._call_uri = (target if target.startswith('sip:') else
+                         (target if '@' in target else f'sip:{target}@{dom}'))
+        self._call_cid       = _psip_cid(dom)
+        self._call_from_tag  = _psip_tag()
+        self._call_to_tag    = ''
+        self._call_csq       = 0
+        self._out_room_id    = room_id or None
+        if _AIORTC and _aio_loop:
+            loop = _ensure_aio_loop()
+            _asyncio.run_coroutine_threadsafe(self._do_outbound_invite(), loop)
+        else:
+            raise ValueError('aiortc not available for server-side calls')
+
+    async def _do_outbound_invite(self):
+        """Create aiortc offer and send SIP INVITE."""
+        try:
+            room_id = self._out_room_id
+            if room_id:
+                old_pc = _server_pcs.pop(room_id, None)
+                if old_pc:
+                    try: await old_pc.close()
+                    except Exception: pass
+                track = _ServerAudioTrack()
+                _server_tracks[room_id] = track
+                pc = _RTCPC(configuration=_RTCCfg(
+                    iceServers=[_RTCISrv(urls=u) for u in _STUN_SERVERS]))
+                _server_pcs[room_id] = pc
+
+                @pc.on("track")
+                def _on_track(track_in):
+                    if track_in.kind != "audio": return
+                    _talent_tracks[room_id] = track_in
+                    old = _talent_recv_tasks.pop(room_id, None)
+                    if old and not old.done(): old.cancel()
+                    t = _aio_loop.create_task(_talent_recv_loop(room_id, track_in))
+                    _talent_recv_tasks[room_id] = t
+
+                pc.addTrack(track)
+                offer = await pc.createOffer()
+                await pc.setLocalDescription(offer)
+
+                _ice_done = _asyncio.Event()
+
+                @pc.on("icegatheringstatechange")
+                def _on_ice():
+                    if pc.iceGatheringState == "complete": _ice_done.set()
+                if pc.iceGatheringState == "complete": _ice_done.set()
+                try: await _asyncio.wait_for(_ice_done.wait(), timeout=30.0)
+                except _asyncio.TimeoutError: pass
+
+                offer_sdp = pc.localDescription.sdp
+                _start_source_routing(room_id)
+            else:
+                offer_sdp = ''
+            self._send_invite_msg(self._call_uri, offer_sdp)
+        except Exception as e:
+            if _log: _log(f"[IPLink SIP] {self._user()} outbound invite error: {e}")
+            self._end_call()
+
+    def _send_invite_msg(self, uri: str, sdp: str):
+        self._call_csq += 1
+        hdrs = {
+            'Via':          f'SIP/2.0/WS {self._ws_host()};branch={_psip_branch()};rport',
+            'Max-Forwards': '70',
+            'From':         f'"{self._display()}" <{self._self_uri()}>;tag={self._call_from_tag}',
+            'To':           f'<{uri}>',
+            'Call-ID':      self._call_cid,
+            'CSeq':         f'{self._call_csq} INVITE',
+            'Contact':      self._contact(),
+            'Allow':        'INVITE,ACK,CANCEL,OPTIONS,BYE',
+        }
+        if sdp:
+            hdrs['Content-Type'] = 'application/sdp'
+        self._ws_send(_psip_build_req('INVITE', uri, hdrs, sdp))
+        self.status = 'incall'
+
+    # ── End call ──────────────────────────────────────────────────────────────
+
+    def _end_call(self):
+        """Clean up call state and close aiortc PC."""
+        room_id = self.call_room_id
+        self.call_room_id = None
+        self.call_caller  = ''
+        if self.status == 'incall':
+            self.status = 'registered'
+        _sip_pending_calls.pop(self.id, None)
+        if room_id:
+            _stop_source_routing(room_id)
+            _close_server_pc(room_id)
+
+    def hangup(self):
+        """Send BYE for current call."""
+        if self.status == 'incall':
+            uri = self._call_uri or self._self_uri()
+            to_hdr = f'<{uri}>' + (f';tag={self._call_to_tag}' if self._call_to_tag else '')
+            self._call_csq += 1
+            hdrs = {
+                'Via':          f'SIP/2.0/WS {self._ws_host()};branch={_psip_branch()};rport',
+                'Max-Forwards': '70',
+                'From':         f'"{self._display()}" <{self._self_uri()}>;tag={self._call_from_tag}',
+                'To':           to_hdr,
+                'Call-ID':      self._call_cid or _psip_cid(self._domain()),
+                'CSeq':         f'{self._call_csq} BYE',
+            }
+            self._ws_send(_psip_build_req('BYE', uri, hdrs, ''))
+        self._end_call()
+
+    def accept_call(self, room_id: str):
+        """Accept a pending incoming call and bridge it into room_id."""
+        pending = _sip_pending_calls.pop(self.id, None)
+        if not pending:
+            return
+        invite_msg = pending.get('_invite')
+        if not invite_msg:
+            return
+        invite_sdp = invite_msg.get('body', '')
+        self.call_room_id = room_id
+        if invite_sdp and 'a=fingerprint' in invite_sdp and _AIORTC and _ServerAudioTrack:
+            loop = _ensure_aio_loop()
+            fut  = _asyncio.run_coroutine_threadsafe(
+                _server_accept_sip_invite(room_id, invite_sdp, self), loop)
+            threading.Thread(target=self._finish_answer, args=(invite_msg, fut, room_id),
+                             daemon=True, name=f'SIP-acc-{self.id[:6]}').start()
+        else:
+            self._ws_send(_psip_build_resp(invite_msg, 200, 'OK', {
+                'Contact': self._contact(),
+            }, ''))
+            if _log: _log(f"[IPLink SIP] {self._user()}: accepted call into room {room_id[:8]}")
+
+    def decline_call(self):
+        """Decline a pending incoming call."""
+        pending = _sip_pending_calls.pop(self.id, None)
+        if pending and pending.get('_invite'):
+            self._ws_send(_psip_build_resp(pending['_invite'], 603, 'Decline', {}, ''))
+        self._end_call()
+        if _log: _log(f"[IPLink SIP] {self._user()}: declined incoming call")
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _find_room(self):
+        """Find a permanent room assigned to this account."""
+        for rid, r in _rooms.items():
+            if r.get('sip_account_id') == self.id and r.get('permanent'):
+                return rid
+        return None
+
+    def _ws_send(self, text: str):
+        with self._ws_lock:
+            if self._ws:
+                try: self._ws.send(text)
+                except Exception as e:
+                    if _log: _log(f"[IPLink SIP] {self._user()} send error: {e}")
+
+    def _user(self):      return self.cfg.get('username', '?')
+    def _display(self):   return self.cfg.get('display_name', '') or self.cfg.get('username', 'Studio')
+    def _domain(self):    return self._realm or self.cfg.get('domain', '').strip() or self._ws_hostname()
+
+    def _ws_hostname(self):
+        try:
+            from urllib.parse import urlparse as _up
+            u = _up(self.cfg.get('server', ''))
+            return u.hostname or 'ss'
+        except Exception: return 'ss'
+
+    def _ws_host(self):
+        try:
+            from urllib.parse import urlparse as _up
+            u = _up(self.cfg.get('server', ''))
+            h = u.hostname or 'ss'
+            return f'{h}:{u.port}' if u.port else h
+        except Exception: return 'ss'
+
+    def _self_uri(self):  return f'sip:{self._user()}@{self._domain()}'
+    def _contact(self):   return f'<sip:{self._user()}@{self._ws_hostname()};transport=ws>'
+
+    def status_dict(self) -> dict:
+        return {
+            'id':           self.id,
+            'label':        self.cfg.get('label', '') or self.cfg.get('username', ''),
+            'username':     self.cfg.get('username', ''),
+            'domain':       self.cfg.get('domain', ''),
+            'server':       self.cfg.get('server', ''),
+            'display_name': self.cfg.get('display_name', ''),
+            'enabled':      bool(self.cfg.get('enabled', True)),
+            'status':       self.status,
+            'error_msg':    self.error_msg,
+            'call_room_id': self.call_room_id,
+            'call_caller':  self.call_caller,
+            'pending_call': _sip_pending_calls.get(self.id, {}).get('caller', ''),
+        }
+
+
+# ── SIP account persistence ───────────────────────────────────────────────────
+
+def _load_sip_accounts() -> list:
+    try:
+        with open(_SIP_ACCTS_PATH) as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        if _log: _log(f"[IPLink] Failed to load SIP accounts: {e}")
+        return []
+
+def _save_sip_accounts(accounts: list):
+    try:
+        with open(_SIP_ACCTS_PATH, 'w') as fh:
+            json.dump(accounts, fh, indent=2)
+    except Exception as e:
+        if _log: _log(f"[IPLink] Failed to save SIP accounts: {e}")
+
+def _sync_sip_managers(accounts: list):
+    """Start managers for new/updated accounts, stop removed ones."""
+    desired = {a['id']: a for a in accounts}
+    # Stop removed
+    for aid in list(_sip_acct_mgrs.keys()):
+        if aid not in desired:
+            _sip_acct_mgrs.pop(aid).stop()
+    # Add/update
+    for aid, cfg in desired.items():
+        if aid in _sip_acct_mgrs:
+            if _sip_acct_mgrs[aid].cfg != cfg:
+                _sip_acct_mgrs[aid].update_cfg(cfg)
+        else:
+            mgr = _SipAcctMgr(cfg)
+            _sip_acct_mgrs[aid] = mgr
+            if cfg.get('enabled'):
+                mgr.start()
 
 
 # ── Server-side audio track (aiortc) ──────────────────────────────────────────
@@ -701,6 +1448,78 @@ async def _server_add_ice(room_id: str, cand_data: dict):
         pass   # candidate parse failures are non-fatal
 
 
+async def _server_accept_sip_invite(room_id: str, invite_sdp: str, acct_mgr):
+    """Answer an incoming or outbound SIP INVITE using aiortc.
+    Returns the answer SDP string, or None on failure.
+    Creates the same server-side WebRTC pipeline as _server_accept_offer:
+      _ServerAudioTrack -> source audio -> SIP caller (IFB)
+      SIP caller's mic -> _talent_recv_loop -> Livewire output (mix-minus)
+    """
+    if not _AIORTC or not _ServerAudioTrack:
+        return None
+
+    old_pc = _server_pcs.pop(room_id, None)
+    if old_pc:
+        try: await old_pc.close()
+        except Exception: pass
+
+    track = _ServerAudioTrack()
+    _server_tracks[room_id] = track
+    pc = _RTCPC(configuration=_RTCCfg(
+        iceServers=[_RTCISrv(urls=u) for u in _STUN_SERVERS]))
+    _server_pcs[room_id] = pc
+
+    @pc.on("connectionstatechange")
+    def _on_state():
+        state = pc.connectionState
+        r = _rooms.get(room_id)
+        if r:
+            if state == "connected":
+                r["status"] = "connected"; r["connected_at"] = time.time()
+                if _log: _log(f"[IPLink SIP] Call connected: room '{r['name']}'")
+            elif state in ("failed", "disconnected", "closed"):
+                r["status"] = "disconnected"
+                if acct_mgr:
+                    acct_mgr.call_room_id = None
+                    if acct_mgr.status == 'incall':
+                        acct_mgr.status = 'registered'
+                if _log: _log(f"[IPLink SIP] Call {state}: room '{r.get('name', room_id[:8])}'")
+
+    @pc.on("track")
+    def _on_track(track_in):
+        if track_in.kind != "audio": return
+        _talent_tracks[room_id] = track_in
+        old = _talent_recv_tasks.pop(room_id, None)
+        if old and not old.done(): old.cancel()
+        t = _aio_loop.create_task(_talent_recv_loop(room_id, track_in))
+        _talent_recv_tasks[room_id] = t
+
+    pc.addTrack(track)
+    try:
+        await pc.setRemoteDescription(_RTCSDesc(sdp=invite_sdp, type="offer"))
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+
+        _ice_done = _asyncio.Event()
+
+        @pc.on("icegatheringstatechange")
+        def _on_ice():
+            if pc.iceGatheringState == "complete": _ice_done.set()
+        if pc.iceGatheringState == "complete": _ice_done.set()
+
+        try: await _asyncio.wait_for(_ice_done.wait(), timeout=30.0)
+        except _asyncio.TimeoutError:
+            if _log: _log(f"[IPLink SIP] ICE gathering timed out (room {room_id[:8]})")
+
+        final_sdp = pc.localDescription.sdp
+        _start_source_routing(room_id)
+        return final_sdp
+    except Exception as exc:
+        import traceback as _tb
+        if _log: _log(f"[IPLink SIP] Accept invite error ({room_id[:8]}): {exc}\n{_tb.format_exc()}")
+        return None
+
+
 # ── Persistent room save / load ────────────────────────────────────────────────
 
 def _save_rooms():
@@ -722,6 +1541,7 @@ def _save_rooms():
             "created":       r["created"],
             "server_managed": r.get("server_managed", False),
             "source":        r.get("source"),          # {site, idx, name} or None
+            "sip_account_id": r.get("sip_account_id"),
         }
     try:
         with open(_ROOMS_PATH, "w") as fh:
@@ -753,6 +1573,7 @@ def _load_rooms():
                 room["created"]        = r.get("created", time.time())
                 room["server_managed"] = r.get("server_managed", False)
                 room["source"]         = r.get("source")
+                room["sip_account_id"] = r.get("sip_account_id")
                 _rooms[rid]            = room
                 loaded += 1
     if _log and loaded:
@@ -803,6 +1624,7 @@ def _new_room(name: str, quality: str = "broadcast") -> dict:
         "output":        {"type": "speaker"},   # speaker | livewire | multicast
         "server_managed": False,                 # permanent rooms only: server handles routing
         "source":        None,                   # {site, idx, name} — server-side audio source
+        "sip_account_id": None,                  # SIP account assigned to this room (permanent only)
         "created":       time.time(),
         "last_active":  time.time(),
         "status":       "waiting",        # waiting | offer_received | connected | disconnected
@@ -843,6 +1665,7 @@ def _room_public(room: dict) -> dict:
     r["server_managed"]        = bool(room.get("server_managed", False))
     r["source"]                = room.get("source")
     r["server_routing_active"] = room.get("id", "") in _src_threads
+    r["sip_account_id"]        = room.get("sip_account_id")
     if room["connected_at"]:
         r["duration_s"] = round(time.time() - room["connected_at"])
     return r
@@ -977,7 +1800,7 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
     <div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h1 style="font-size:20px;font-weight:700">🎙 IP Link</h1>
-        <span class="sip-pill sip-off" id="sipStatusPill"><span class="sip-sdot"></span><span id="sipStatusTxt">SIP: Off</span></span>
+        <span class="sip-pill sip-off" id="sipStatusPill" style="display:none"><span class="sip-sdot"></span><span id="sipStatusTxt">SIP</span></span>
       </div>
       <p style="font-size:12px;color:var(--mu);margin-top:4px">Browser-based contribution codec — share a link or take SIP calls from any device</p>
     </div>
@@ -1015,42 +1838,14 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
     </div>
   </div>
 
-  <!-- SIP: incoming call banner -->
-  <div class="sip-incoming-banner" id="sipIncomingBanner">
+  <!-- SIP: incoming call banner (server-side) -->
+  <div class="sip-incoming-banner" id="sipIncomingBanner" style="display:none">
     <span style="font-size:22px">📞</span>
     <div style="flex:1">
       <div style="font-weight:700;font-size:14px">Incoming SIP Call</div>
-      <div style="font-size:12px;color:var(--wn)" id="sipCallerName">Unknown caller</div>
+      <div style="font-size:12px;color:var(--wn)" id="sipCallerInfo">Unknown caller</div>
     </div>
-    <button class="btn bp bs" id="sipAnswerBtn">✅ Answer</button>
-    <button class="btn bd bs" id="sipRejectBtn">✗ Decline</button>
-  </div>
-
-  <!-- SIP: active call card -->
-  <div class="sip-call-card" id="sipCallCard">
-    <div class="rc-hdr">
-      <span style="font-size:18px">☎️</span>
-      <span class="rc-name" id="sipCallRemote">SIP Call</span>
-      <span class="badge b-ok">🔴 Live</span>
-    </div>
-    <div class="rc-body">
-      <div class="lvl-wrap">
-        <span class="lvl-label" style="font-size:10px">Remote</span>
-        <div class="lvl-outer"><div class="lvl-fill" id="sipRemoteLvl" style="width:0%"></div></div>
-        <span class="lvl-val" id="sipRemoteLvlVal">—</span>
-      </div>
-      <div class="lvl-wrap">
-        <span class="lvl-label" style="font-size:10px">Mic</span>
-        <div class="lvl-outer"><div class="lvl-fill" id="sipMicLvl" style="width:0%;background:var(--acc)"></div></div>
-        <span class="lvl-val" id="sipMicLvlVal">—</span>
-      </div>
-      <div class="rc-row"><span class="rc-lbl">Duration</span><span id="sipCallDur">—</span></div>
-      <div class="rc-row" id="sipRttRow" style="display:none"><span class="rc-lbl">RTT</span><span id="sipRttVal">—</span></div>
-      <div class="actions">
-        <button class="btn bg bs" id="sipMuteBtn">🎤 Mic ON</button>
-        <button class="btn bd bs" id="sipHangupBtn">✗ Hang Up</button>
-      </div>
-    </div>
+    <button class="btn bg bs" id="sipDismissBtn">✗ Dismiss</button>
   </div>
 
   <!-- Settings panel -->
@@ -1087,58 +1882,80 @@ select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;
   <div id="roomGrid"></div>
   <p id="noRooms" style="color:var(--mu);font-size:13px;display:none">No rooms yet — create one to generate a shareable link for your contributor.</p>
 
-  <!-- SIP section: dial + settings -->
+  <!-- SIP Accounts section (server-side managed) -->
   <div class="card" style="margin-top:16px">
-    <div class="ch">☎ SIP Calls</div>
-    <div class="cb">
-      <div style="display:flex;gap:8px;margin-bottom:10px">
-        <input id="sipDialInput" placeholder="Extension, number, or sip:user@domain" style="flex:1">
-        <button class="btn bp" id="sipDialBtn">📞 Call</button>
-      </div>
-      <div id="sipCallErrMsg" style="display:none;color:var(--al);font-size:12px;margin-bottom:8px;padding:6px 10px;background:#2a0a0a;border-radius:6px;border:1px solid #991b1b"></div>
-      <details id="sipSettingsDetails">
-        <summary>SIP Account Settings</summary>
-        <div style="margin-top:14px">
-          <div id="sipSaveMsg" style="margin-bottom:10px"></div>
+    <div class="ch">☎ SIP Accounts</div>
+    <div class="cb" id="sipAcctList">
+      <p style="color:var(--mu);font-size:12px">Loading…</p>
+    </div>
+    <div class="cb" style="border-top:1px solid var(--bor);padding-top:12px">
+      <details id="sipAddDetails">
+        <summary>＋ Add SIP Account</summary>
+        <div style="margin-top:14px" id="sipAddForm">
+          <div id="sipAddMsg" style="margin-bottom:8px"></div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
             <div class="field" style="grid-column:1/-1">
+              <label>Label (friendly name)</label>
+              <input id="sipAddLabel" placeholder="Studio 1">
+            </div>
+            <div class="field" style="grid-column:1/-1">
               <label>WebSocket Server URL</label>
-              <input id="sipServer" placeholder="wss://pbx.example.com:8089/ws" autocomplete="off" spellcheck="false">
+              <input id="sipAddServer" placeholder="wss://pbx.example.com:8089/ws" autocomplete="off" spellcheck="false">
             </div>
             <div class="field">
               <label>SIP Username</label>
-              <input id="sipUser" autocomplete="off" spellcheck="false">
+              <input id="sipAddUser" autocomplete="off" spellcheck="false">
             </div>
             <div class="field">
               <label>Password</label>
-              <input id="sipPass" type="password" autocomplete="new-password">
+              <input id="sipAddPass" type="password" autocomplete="new-password">
             </div>
             <div class="field">
               <label>SIP Domain / Realm</label>
-              <input id="sipDomain" placeholder="pbx.example.com" autocomplete="off" spellcheck="false">
+              <input id="sipAddDomain" placeholder="pbx.example.com" autocomplete="off" spellcheck="false">
             </div>
             <div class="field">
               <label>Display Name</label>
-              <input id="sipDisplayName" value="Studio">
+              <input id="sipAddDisplay" placeholder="Studio">
             </div>
           </div>
-          <div style="margin-top:4px;margin-bottom:14px">
-            <label style="font-size:12px;color:var(--tx);cursor:pointer;display:block;line-height:1.5">
-              <input type="checkbox" id="sipEnabled" style="accent-color:var(--acc);vertical-align:middle;margin-right:5px">Auto-connect when page loads
+          <div style="margin:8px 0">
+            <label style="cursor:pointer;font-size:12px;color:var(--tx)">
+              <input type="checkbox" id="sipAddEnabled" checked style="accent-color:var(--acc);margin-right:5px">
+              Auto-connect on startup
             </label>
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn bp" id="sipSaveBtn">💾 Save &amp; Connect</button>
-            <button class="btn bg" id="sipDisconnectBtn">Disconnect</button>
-          </div>
+          <button class="btn bp" id="sipAddBtn">＋ Add Account</button>
         </div>
       </details>
     </div>
   </div>
 
-  <!-- Hidden audio elements -->
+  <!-- SIP: dial panel (shown only when accounts are registered) -->
+  <div class="card" style="margin-top:16px;display:none" id="sipDialCard">
+    <div class="ch">📞 Make a SIP Call</div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end">
+        <div class="field" style="margin:0">
+          <label>Account</label>
+          <select id="sipDialAcct"></select>
+        </div>
+        <div class="field" style="margin:0">
+          <label>Number / Extension / SIP URI</label>
+          <input id="sipDialTarget" placeholder="1001 or sip:user@domain">
+        </div>
+        <button class="btn bp" id="sipDialBtn">📞 Call</button>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <span style="font-size:12px;color:var(--mu)">Bridge to room:</span>
+        <select id="sipDialRoom" style="flex:1"></select>
+      </div>
+      <div id="sipDialMsg" style="display:none;margin-top:8px;font-size:12px;padding:6px 10px;background:#2a0a0a;border-radius:6px;border:1px solid #991b1b;color:var(--al)"></div>
+    </div>
+  </div>
+
+  <!-- Hidden audio element for hub -->
   <audio id="hubAudio" autoplay playsinline style="display:none"></audio>
-  <audio id="sipAudio" autoplay playsinline style="display:none"></audio>
 </main>
 
 <script nonce="{{csp_nonce()}}">
@@ -1167,6 +1984,8 @@ var _outputCapture  = {}; // room_id → {node, reader}
 var _lwWorkletUrl   = null;
 var _streamSources  = []; // cached list from /api/iplink/streams (never cleared on empty response)
 var _roomSrc        = {}; // room_id → 'global' | 'mic' | 'stream:SITE:IDX'
+var _sipAccts       = []; // cached list from /api/iplink/sip/accounts
+var _roomsList      = []; // cached room list (for SIP dial room selector)
 var _srcSelOpen     = false; // true while a per-room source <select> is open — blocks _renderRooms innerHTML rebuild
 var _feedAudio      = {}; // room_id → HTMLAudioElement (stream feed)
 var _feedNodes      = {}; // room_id → {srcNode, gainNode, dest} — Web Audio nodes for active feed
@@ -2072,6 +2891,30 @@ function _renderRooms(rooms){
       html+='</div>';
     }
 
+    // ── SIP account assignment (permanent rooms only) ─────────────────────────
+    if(r.permanent){
+      var _sipAcct=r.sip_account_id?_sipAccts.find(function(a){return a.id===r.sip_account_id;}):null;
+      var _sipBadge='';
+      if(_sipAcct){
+        if(_sipAcct.status==='incall'&&_sipAcct.call_room_id===r.id)
+          _sipBadge='<span class="badge b-ok" style="font-size:10px;margin-left:4px">📞 SIP Live</span>';
+        else if(_sipAcct.status==='registered')
+          _sipBadge='<span class="badge b-mu" style="font-size:10px;margin-left:4px">☎ '+_esc(_sipAcct.username)+'</span>';
+        else if(_sipAcct.pending_call)
+          _sipBadge='<span class="badge b-wn" style="font-size:10px;margin-left:4px">📞 Incoming</span>';
+      }
+      html+='<div style="margin:6px 0 2px;display:flex;align-items:center;gap:6px">';
+      html+='<label style="font-size:10px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap">SIP Ext</label>';
+      html+='<select id="rc_sip_'+r.id+'" class="rc-sip-sel src-sel" style="flex:1">';
+      html+='<option value="">— None —</option>';
+      _sipAccts.forEach(function(a){
+        html+='<option value="'+_esc(a.id)+'"'+(r.sip_account_id===a.id?' selected':'')+'>'+_esc(a.label||a.username)+'</option>';
+      });
+      html+='</select>';
+      html+=_sipBadge;
+      html+='</div>';
+    }
+
     // Output config panel
     var outCfg=r.output||{};
     var outOpen=!!_outPanelOpen[r.id];
@@ -2164,6 +3007,7 @@ function _renderRooms(rooms){
     _wireSel(document.getElementById('rc_src_'+r.id));
     _wireSel(document.getElementById('smSrc_'+r.id));
     _wireSel(document.getElementById('olwsite_'+r.id));
+    _wireSel(document.getElementById('rc_sip_'+r.id));
     _wireInput(document.getElementById('olw_'+r.id));
     _wireInput(document.getElementById('omaddr_'+r.id));
     _wireInput(document.getElementById('omport_'+r.id));
@@ -2180,6 +3024,7 @@ function _refreshRooms(){
     .then(function(r){return r.json();})
     .then(function(d){
       var rooms=d.rooms||[];
+      _roomsList=rooms;
       // Detect new offer_received rooms for ringtone + auto-accept
       var anyOffer=false;
       rooms.forEach(function(r){
@@ -2247,10 +3092,10 @@ document.getElementById('createSubmit').addEventListener('click',function(){
 document.getElementById('cName').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('createSubmit').click();});
 
 // ════════════════════════════════════════════════════════════════════════════
-// SIP CLIENT  (pure JS over WebSocket, no dependencies)
+// SIP Account management (server-side SIP; browser just polls for status)
 // ════════════════════════════════════════════════════════════════════════════
 
-// ── Compact MD5 (RFC 1321) — required for SIP digest auth ──────────────────
+// NOTE: _md5 is kept for _sipMungeSdp below — do not remove
 function _md5(s){
   function ad(x,y){var l=(x&0xffff)+(y&0xffff);var m=(x>>16)+(y>>16)+(l>>16);return(m<<16)|(l&0xffff)}
   function rl(n,c){return(n<<c)|(n>>>(32-c))}
@@ -2284,729 +3129,235 @@ function _md5(s){
   return rh(a)+rh(b)+rh(c)+rh(d);
 }
 
-// ── SIP state ──────────────────────────────────────────────────────────────
+// ── SIP server-polling ─────────────────────────────────────────────────────
+// (Old browser-side SIP client removed — server now holds registration)
+var _sipPollTimer = null;
+
+function _sipStartPoll(){
+  if(_sipPollTimer) return;
+  _sipPollStatus();
+  _sipPollTimer = setInterval(_sipPollStatus, 3000);
+}
+
+function _sipPollStatus(){
+  fetch('/api/iplink/sip/accounts',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      _sipAccts = d.accounts || [];
+      _renderSipAcctList();
+      _checkIncomingCalls();
+      _updateDialPanel();
+      _updateSipPill();
+    }).catch(function(){});
+}
+
+function _updateSipPill(){
+  var pill=document.getElementById('sipStatusPill');
+  var txt=document.getElementById('sipStatusTxt');
+  if(!pill||!txt) return;
+  var registered=_sipAccts.filter(function(a){return a.status==='registered'||a.status==='incall';});
+  if(!_sipAccts.length){ pill.style.display='none'; return; }
+  pill.style.display='';
+  if(_sipAccts.some(function(a){return a.status==='incall';})){
+    pill.className='sip-pill sip-incall'; txt.textContent='SIP: In Call';
+  } else if(registered.length){
+    pill.className='sip-pill sip-conn'; txt.textContent='SIP: '+registered.length+' Registered';
+  } else if(_sipAccts.some(function(a){return a.status==='error';})){
+    pill.className='sip-pill sip-err'; txt.textContent='SIP: Error';
+  } else {
+    pill.className='sip-pill sip-off'; txt.textContent='SIP: Connecting…';
+  }
+}
+
+function _renderSipAcctList(){
+  var el=document.getElementById('sipAcctList');
+  if(!el) return;
+  if(!_sipAccts.length){
+    el.innerHTML='<p style="color:var(--mu);font-size:12px">No SIP accounts configured. Add one below to enable server-held SIP registration.</p>';
+    return;
+  }
+  var statusMap={
+    idle:       ['b-mu','Idle'],
+    connecting: ['b-mu','Connecting\u2026'],
+    registering:['b-mu','Registering\u2026'],
+    registered: ['b-ok','Registered \u2713'],
+    incall:     ['b-ok','In Call \ud83d\udcde'],
+    error:      ['b-al','Error'],
+  };
+  el.innerHTML=_sipAccts.map(function(a){
+    var info=statusMap[a.status]||['b-mu',a.status];
+    var callInfo='';
+    if(a.status==='incall'&&a.call_caller) callInfo='<span style="font-size:11px;color:var(--wn)">\ud83d\udcde '+_esc(a.call_caller)+'</span> ';
+    if(a.pending_call) callInfo='<span style="font-size:11px;color:var(--wn)">\ud83d\udcde Incoming: '+_esc(a.pending_call)+'</span> ';
+    var errInfo=a.error_msg?'<div style="font-size:11px;color:var(--al);margin-top:4px">'+_esc(a.error_msg)+'</div>':'';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bor)">'
+      +'<div style="flex:1"><span style="font-weight:600">'+_esc(a.label||a.username)+'</span> '
+      +'<span style="font-size:11px;color:var(--mu)">'+_esc(a.username)+'@'+_esc(a.domain||'?')+'</span>'
+      +errInfo+'</div>'
+      +callInfo
+      +'<span class="badge '+info[0]+'">'+info[1]+'</span> '
+      +(a.status==='incall'?'<button class="btn bd bs sip-hangup-btn" data-id="'+_esc(a.id)+'">&#x2717; Hang up</button> ':'')
+      +'<button class="btn bd bs sip-del-btn" data-id="'+_esc(a.id)+'">Delete</button>'
+      +'</div>';
+  }).join('');
+}
+
+function _checkIncomingCalls(){
+  var banner=document.getElementById('sipIncomingBanner');
+  if(!banner) return;
+  var pending=_sipAccts.filter(function(a){ return a.pending_call; });
+  if(pending.length){
+    var a=pending[0];
+    var ci=document.getElementById('sipCallerInfo');
+    if(ci) ci.textContent=a.pending_call+' \u2192 '+(a.label||a.username);
+    banner.style.display='flex';
+  } else {
+    banner.style.display='none';
+  }
+}
+
+function _updateDialPanel(){
+  var card=document.getElementById('sipDialCard');
+  if(!card) return;
+  var registered=_sipAccts.filter(function(a){return a.status==='registered';});
+  card.style.display=registered.length?'':'none';
+  var sel=document.getElementById('sipDialAcct');
+  if(sel){
+    var cur=sel.value;
+    sel.innerHTML=registered.map(function(a){
+      return '<option value="'+_esc(a.id)+'"'+(a.id===cur?' selected':'')+'>'+_esc(a.label||a.username)+'</option>';
+    }).join('');
+  }
+  var roomSel=document.getElementById('sipDialRoom');
+  if(roomSel){
+    var curR=roomSel.value;
+    roomSel.innerHTML='<option value="">— No room —</option>'+_roomsList.map(function(r){
+      return '<option value="'+_esc(r.id)+'"'+(r.id===curR?' selected':'')+'>'+_esc(r.name)+'</option>';
+    }).join('');
+  }
+}
+
+// ── Account CRUD ──────────────────────────────────────────────────────────
+function _sipAddAccount(){
+  var cfg={
+    id: (window.crypto&&window.crypto.randomUUID)?window.crypto.randomUUID():(Math.random().toString(36).slice(2)+Date.now().toString(36)),
+    label:        (document.getElementById('sipAddLabel')||{}).value||'',
+    server:       (document.getElementById('sipAddServer')||{}).value||'',
+    username:     (document.getElementById('sipAddUser')||{}).value||'',
+    password:     (document.getElementById('sipAddPass')||{}).value||'',
+    domain:       (document.getElementById('sipAddDomain')||{}).value||'',
+    display_name: (document.getElementById('sipAddDisplay')||{}).value||'Studio',
+    enabled:      (document.getElementById('sipAddEnabled')||{checked:true}).checked,
+  };
+  cfg.label=cfg.label.trim(); cfg.server=cfg.server.trim(); cfg.username=cfg.username.trim(); cfg.domain=cfg.domain.trim(); cfg.display_name=cfg.display_name.trim()||'Studio';
+  if(!cfg.server||!cfg.username){
+    var m=document.getElementById('sipAddMsg');
+    if(m) m.innerHTML='<div class="msg msg-err">Server URL and username are required</div>';
+    return;
+  }
+  fetch('/api/iplink/sip/accounts',{method:'POST',credentials:'same-origin',headers:csrfHdr(),body:JSON.stringify({account:cfg})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){
+        var det=document.getElementById('sipAddDetails');
+        if(det) det.open=false;
+        ['sipAddLabel','sipAddServer','sipAddUser','sipAddPass','sipAddDomain','sipAddDisplay'].forEach(function(id){
+          var el=document.getElementById(id); if(el) el.value='';
+        });
+        var em=document.getElementById('sipAddMsg'); if(em) em.innerHTML='';
+        _sipPollStatus();
+      } else if(d.error){
+        var m=document.getElementById('sipAddMsg');
+        if(m) m.innerHTML='<div class="msg msg-err">'+_esc(d.error)+'</div>';
+      }
+    }).catch(function(e){
+      var m=document.getElementById('sipAddMsg');
+      if(m) m.innerHTML='<div class="msg msg-err">'+_esc(''+e)+'</div>';
+    });
+}
+
+function _sipDeleteAccount(id){
+  if(!confirm('Delete this SIP account?')) return;
+  fetch('/api/iplink/sip/accounts/'+encodeURIComponent(id)+'/delete',
+    {method:'POST',credentials:'same-origin',headers:csrfHdr(),body:JSON.stringify({})})
+    .then(function(){_sipPollStatus();}).catch(function(){});
+}
+
+function _sipHangupAccount(id){
+  fetch('/api/iplink/sip/accounts/'+encodeURIComponent(id)+'/hangup',
+    {method:'POST',credentials:'same-origin',headers:csrfHdr(),body:JSON.stringify({})})
+    .then(function(){_sipPollStatus();}).catch(function(){});
+}
+
+function _sipDial(){
+  var acctId=(document.getElementById('sipDialAcct')||{}).value;
+  var target=((document.getElementById('sipDialTarget')||{}).value||'').trim();
+  var roomId=(document.getElementById('sipDialRoom')||{}).value;
+  var msg=document.getElementById('sipDialMsg');
+  if(!acctId||!target){if(msg){msg.textContent='Select an account and enter a number';msg.style.display='';}return;}
+  fetch('/api/iplink/sip/accounts/'+encodeURIComponent(acctId)+'/call',
+    {method:'POST',credentials:'same-origin',headers:csrfHdr(),body:JSON.stringify({target:target,room_id:roomId||''})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.error&&msg){msg.textContent=d.error;msg.style.display='';}
+      else if(msg){msg.style.display='none';}
+      _sipPollStatus();
+    }).catch(function(e){if(msg){msg.textContent=''+e;msg.style.display='';}});
+}
+
+// ── Room SIP assignment ───────────────────────────────────────────────────
+function _sipAssignRoom(roomId, acctId){
+  fetch('/api/iplink/room/'+encodeURIComponent(roomId)+'/sip_account',
+    {method:'POST',credentials:'same-origin',headers:csrfHdr(),body:JSON.stringify({sip_account_id:acctId||null})})
+    .catch(function(){});
+}
+
+// ── Event delegation ──────────────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var del=e.target.closest('.sip-del-btn');
+  if(del){ _sipDeleteAccount(del.dataset.id); return; }
+  var hup=e.target.closest('.sip-hangup-btn');
+  if(hup){ _sipHangupAccount(hup.dataset.id); return; }
+});
+document.addEventListener('change',function(e){
+  var sel=e.target.closest('.rc-sip-sel');
+  if(sel){
+    var rid=sel.id.replace('rc_sip_','');
+    _sipAssignRoom(rid,sel.value);
+  }
+});
+document.getElementById('sipAddBtn').addEventListener('click',_sipAddAccount);
+document.getElementById('sipDialBtn').addEventListener('click',_sipDial);
+(document.getElementById('sipDismissBtn')||{addEventListener:function(){}}).addEventListener('click',function(){
+  var b=document.getElementById('sipIncomingBanner');if(b)b.style.display='none';
+});
+(document.getElementById('sipDialTarget')||{addEventListener:function(){}}).addEventListener('keydown',function(e){
+  if(e.key==='Enter') _sipDial();
+});
+
+_sipStartPoll();
+
+// ── Kept for _sipMungeSdp compatibility (used in browser WebRTC answer) ───
 var _sip = {
   ws:null, state:'idle', cfg:null,
   regCsq:0, callCsq:0,
   regCid:null, regFromTag:null,
   callCid:null, callFromTag:null, callToTag:null, callUri:null,
-  myToTag:null,          // our tag in incoming call responses
-  inInvite:null,         // pending incoming INVITE message
-  pc:null,               // RTCPeerConnection for SIP call
+  myToTag:null,
+  inInvite:null,
+  pc:null,
   micStream:null, remoteAnalyser:null, micAnalyser:null,
   callStart:null, micMuted:false,
   regTimer:null, retryTimer:null, regTimeoutTimer:null, durTimer:null, regAuthAttempts:0,
-  realm:null,    // learned from server's 401 WWW-Authenticate realm= during REGISTER
+  realm:null,
 };
 
-// ── Utilities ──────────────────────────────────────────────────────────────
+// ── Minimal compat stubs (needed by _sipMungeSdp which is used in browser WebRTC) ──
 function _sipRand(n){var c='abcdef0123456789',s='';for(var i=0;i<n;i++)s+=c[Math.floor(Math.random()*c.length)];return s;}
-function _sipBranch(){return 'z9hG4bK'+_sipRand(12);}
-function _sipTag(){return _sipRand(10);}
-function _sipCid(host){return _sipRand(14)+'@'+(host||'ss');}
-
-function _sipWsHostname(){try{return new URL(_sip.cfg.server).hostname;}catch(e){return 'ss';}}
-function _sipWsHost(){try{var u=new URL(_sip.cfg.server);return u.hostname+(u.port?':'+u.port:'');}catch(e){return 'ss';}}
-// Domain priority: explicit config → realm from server's 401 challenge → WS hostname.
-// The realm is the correct SIP domain for all URIs (REGISTER, INVITE, From, To).
-// Using the WS hostname alone causes 484 when the server's SIP realm differs.
-function _sipDomain(){return (_sip.cfg.domain||'').trim()||_sip.realm||_sipWsHostname();}
-function _sipSelfUri(){return 'sip:'+_sip.cfg.username+'@'+_sipDomain();}
-function _sipContact(){return '<sip:'+_sip.cfg.username+'@'+_sipWsHostname()+';transport=ws>';}
-
 function _sipExtractTag(h){var m=(h||'').match(/;tag=([^\s;,>]+)/);return m?m[1]:null;}
 function _sipExtractURI(h){var m=(h||'').match(/<([^>]+)>/);if(m)return m[1];m=(h||'').match(/(sips?:[^\s;,>]+)/);return m?m[1]:(h||'').trim();}
 function _sipExtractDisplay(h){var m=(h||'').match(/"([^"]+)"/);return m?m[1]:null;}
 
-function _sipParseWWWAuth(h){
-  var r={},re=/(\w+)=(?:"([^"]+)"|([^,\s]+))/g,m;
-  while((m=re.exec(h))!==null)r[m[1]]=m[2]!==undefined?m[2]:m[3];
-  return r;
-}
-
-function _sipDigest(method,uri,auth,user,pass){
-  var realm=auth.realm||'',nonce=auth.nonce||'';
-  var qop=auth.qop?(auth.qop.split(',')[0].trim()):null;
-  var ha1=_md5(user+':'+realm+':'+pass);
-  var ha2=_md5(method.toUpperCase()+':'+uri);
-  var nc='00000001',cnonce=_sipRand(8),resp;
-  if(qop==='auth'||qop==='auth-int'){
-    resp=_md5(ha1+':'+nonce+':'+nc+':'+cnonce+':auth:'+ha2);
-    return 'Digest username="'+user+'",realm="'+realm+'",nonce="'+nonce+'",uri="'+uri+'",nc='+nc+',cnonce="'+cnonce+'",qop=auth,response="'+resp+'",algorithm=MD5';
-  }
-  resp=_md5(ha1+':'+nonce+':'+ha2);
-  return 'Digest username="'+user+'",realm="'+realm+'",nonce="'+nonce+'",uri="'+uri+'",response="'+resp+'",algorithm=MD5';
-}
-
-// ── SIP message builder ────────────────────────────────────────────────────
-function _sipBuildReq(method,uri,hdrs,body){
-  var lines=[method+' '+uri+' SIP/2.0'];
-  Object.keys(hdrs).forEach(function(k){lines.push(k+': '+hdrs[k]);});
-  lines.push('Content-Length: '+(body?body.length:0));
-  lines.push('');
-  if(body)lines.push(body);
-  return lines.join('\r\n');
-}
-
-// ── SIP message parser ─────────────────────────────────────────────────────
-function _sipParse(raw){
-  var sep=raw.indexOf('\r\n\r\n'), sepLen=4;
-  if(sep<0){sep=raw.indexOf('\n\n'); sepLen=2;}
-  var hdrSec=sep>=0?raw.substring(0,sep):raw;
-  var body=sep>=0?raw.substring(sep+sepLen):'';
-  var lines=hdrSec.split(/\r?\n/);
-  var fl=lines[0], hdrs={};
-  var compact={v:'via',f:'from',t:'to',m:'contact',i:'call-id',l:'content-length',c:'content-type'};
-  for(var i=1;i<lines.length;i++){
-    var ln=lines[i]; if(!ln.trim())continue;
-    var col=ln.indexOf(':'); if(col<0)continue;
-    var k=ln.substring(0,col).trim().toLowerCase();
-    var v=ln.substring(col+1).trim();
-    k=compact[k]||k;
-    hdrs[k]=hdrs[k]!==undefined?hdrs[k]+'\r\n'+v:v;
-  }
-  var rm=fl.match(/^SIP\/2\.0\s+(\d+)\s+(.*)/);
-  return{isResponse:!!rm,status:rm?parseInt(rm[1]):null,reason:rm?rm[2]:null,
-         method:!rm?fl.split(' ')[0]:null,uri:!rm?fl.split(' ')[1]:null,
-         headers:hdrs,body:body};
-}
-
-// ── SIP response builder (echoes request Via/From/To/Call-ID/CSeq) ─────────
-function _sipBuildResp(req,status,reason,extraHdrs,body){
-  var lines=['SIP/2.0 '+status+' '+reason];
-  // Echo Via (all lines)
-  var via=req.headers['via']||'';
-  via.split('\r\n').forEach(function(v){if(v.trim())lines.push('Via: '+v.trim());});
-  // From: copy exactly
-  if(req.headers['from'])lines.push('From: '+req.headers['from']);
-  // To: add our tag for 2xx
-  var toHdr=req.headers['to']||'';
-  if(status>=200&&!toHdr.match(/;tag=/)){
-    if(!_sip.myToTag)_sip.myToTag=_sipTag();
-    toHdr+=';tag='+_sip.myToTag;
-  }
-  lines.push('To: '+toHdr);
-  if(req.headers['call-id'])lines.push('Call-ID: '+req.headers['call-id']);
-  if(req.headers['cseq'])   lines.push('CSeq: '+req.headers['cseq']);
-  Object.keys(extraHdrs).forEach(function(k){lines.push(k+': '+extraHdrs[k]);});
-  lines.push('Content-Length: '+(body?body.length:0));
-  lines.push('');
-  if(body)lines.push(body);
-  return lines.join('\r\n');
-}
-
-// ── Low-level send ─────────────────────────────────────────────────────────
-function _sipSend(msg){
-  if(_sip.ws&&_sip.ws.readyState===1){
-    console.debug('[IPLink SIP] >>>\n'+msg);
-    _sip.ws.send(msg);
-  }
-}
-
-// ── REGISTER ───────────────────────────────────────────────────────────────
-function _sipRegister(authHdr){
-  var cfg=_sip.cfg, dom=_sipDomain(), wshn=_sipWsHostname();
-  _sip.regCsq++;
-  var hdrs={
-    'Via':         'SIP/2.0/WS '+wshn+';branch='+_sipBranch()+';rport',
-    'Max-Forwards':'70',
-    'From':        '"'+cfg.display_name+'" <'+_sipSelfUri()+'>;tag='+_sip.regFromTag,
-    'To':          '<'+_sipSelfUri()+'>',
-    'Call-ID':     _sip.regCid,
-    'CSeq':        _sip.regCsq+' REGISTER',
-    'Contact':     _sipContact()+';+sip.ice',
-    'Expires':     '600',
-    'Allow':       'INVITE,ACK,CANCEL,OPTIONS,BYE,INFO',
-    'User-Agent':  'SignalScope-IPLink/1.1',
-  };
-  if(authHdr)hdrs['Authorization']=authHdr;
-  _sipSend(_sipBuildReq('REGISTER','sip:'+dom,hdrs,''));
-  _sipSetState('registering');
-  // Timeout: if no response in 15 s, show an error rather than spinning forever
-  clearTimeout(_sip.regTimeoutTimer);
-  _sip.regTimeoutTimer=setTimeout(function(){
-    if(_sip.state==='registering'){
-      _sipSetState('error','Registration timed out — no response from server. Check the server URL and that it accepts SIP over WebSocket.');
-    }
-  },15000);
-}
-
-// ── Connect to SIP server ──────────────────────────────────────────────────
-// Listen for CSP violations — if the browser blocks the SIP WebSocket due to
-// Content-Security-Policy, a securitypolicyviolation event fires before onerror.
-var _sipCspBlocked = false;
-document.addEventListener('securitypolicyviolation', function(e){
-  if(_sip.cfg && _sip.cfg.server && e.blockedURI &&
-     _sip.cfg.server.indexOf(e.blockedURI.replace(/^wss?:/,'')) >= 0){
-    _sipCspBlocked = true;
-    _sipSetState('error','WebSocket blocked by browser security policy (CSP). Reload this page and try again — if it persists, contact your SignalScope administrator.');
-  }
-});
-
-function _sipConnect(cfg){
-  _sipStop();
-  _sip.cfg=cfg;
-  _sip.realm=null;  // reset; will be learned from server's 401 challenge
-  _sip.regCid=_sipCid(_sipDomain());
-  _sip.regFromTag=_sipTag();
-  _sip.regCsq=0;
-  _sipCspBlocked=false;
-  _sipSetState('connecting');
-  try{
-    _sip.ws=new WebSocket(cfg.server,['sip']);
-    _sip.ws.onopen=function(){_sipRegister();};
-    _sip.ws.onmessage=function(e){_sipHandleMsg(e.data);};
-    _sip.ws.onerror=function(ev){
-      if(_sipCspBlocked) return; // already shown CSP error
-      var hint='';
-      if(location.protocol==='https:'&&cfg.server.indexOf('wss://')!==0){
-        hint=' — hub is on HTTPS, server URL must use wss:// not ws://';
-      } else {
-        hint=' — possible causes: (1) cert not trusted — open '+cfg.server.replace('wss://','https://')+' in a new tab; (2) wrong port or server not running; (3) firewall blocking the port';
-      }
-      _sipSetState('error','WebSocket error'+hint);
-    };
-    _sip.ws.onclose=function(){
-      if(_sip.state==='idle'||_sipCspBlocked)return;
-      _sipSetState('error','Disconnected');
-      _sip.retryTimer=setTimeout(function(){if(_sip.cfg)_sipConnect(_sip.cfg);},30000);
-    };
-  }catch(e){_sipSetState('error',e.message);}
-}
-
-function _sipStop(){
-  clearTimeout(_sip.regTimer);clearTimeout(_sip.retryTimer);clearTimeout(_sip.regTimeoutTimer);clearInterval(_sip.durTimer);
-  if(_sip.ws){try{_sip.ws.close();}catch(e){}_sip.ws=null;}
-  _sipCleanupCall();
-  _sip.state='idle'; _sipUpdateUI();
-}
-
-// ── Incoming INVITE ────────────────────────────────────────────────────────
-function _sipHandleInvite(msg){
-  _sipSend(_sipBuildResp(msg,100,'Trying',{},''));
-  _sip.inInvite=msg;
-  _sip.myToTag=null;   // will be created on first 2xx
-  _sipSetState('incoming');
-}
-
-function sipAnswerCall(){
-  if(!_sip.inInvite)return;
-  var inv=_sip.inInvite;
-  _sipSend(_sipBuildResp(inv,180,'Ringing',{'Contact':_sipContact()},''));
-  // Hide the incoming banner immediately — use 'dialling' so call card renders
-  // with the caller's name while we set up WebRTC (state→'incall' after ACK).
-  _sipSetState('dialling');
-  navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false})
-    .then(function(stream){
-      _sip.micStream=stream;
-      _sip.pc=new RTCPeerConnection({iceServers:STUN.map(function(u){return{urls:u};})});
-      stream.getTracks().forEach(function(t){_sip.pc.addTrack(t,stream);});
-      _sip.pc.ontrack=function(e){
-        var a=document.getElementById('sipAudio');
-        if(a&&e.streams[0]){a.srcObject=e.streams[0];_sipSetupRemoteMeter(e.streams[0]);}
-      };
-      // Only tear down on 'failed' — 'disconnected' is temporary and ICE may recover.
-      _sip.pc.onconnectionstatechange=function(){
-        var cs=_sip.pc.connectionState;
-        if(cs==='failed'){
-          _sipCleanupCall();_sipSetState('registered');
-          _sipShowCallErr('Call ended: connection failed');
-        }
-      };
-      return _sip.pc.setRemoteDescription({type:'offer',sdp:inv.body});
-    })
-    .then(function(){return _sip.pc.createAnswer();})
-    .then(function(ans){return _sip.pc.setLocalDescription(ans);})
-    .then(function(){
-      return new Promise(function(res){
-        if(_sip.pc.iceGatheringState==='complete'){res();return;}
-        _sip.pc.onicegatheringstatechange=function(){if(_sip.pc.iceGatheringState==='complete')res();};
-        setTimeout(res,3000);
-      });
-    })
-    .then(function(){
-      var sdp=_sip.pc.localDescription.sdp;
-      _sipSend(_sipBuildResp(inv,200,'OK',{'Contact':_sipContact(),'Content-Type':'application/sdp'},sdp));
-      _sip.callCid=inv.headers['call-id']||'';
-      _sipSetMicMeter(_sip.micStream);
-      _sip.callStart=Date.now();
-      _sipSetState('incall');
-    })
-    .catch(function(e){
-      // Properly clean up so the incoming banner doesn't stick around.
-      _sipSend(_sipBuildResp(inv,500,'Internal Error',{},''));
-      console.error('SIP answer error:',e);
-      _sipCleanupCall();
-      _sipSetState('registered');
-      _sipShowCallErr('Could not answer call: '+(e.message||e));
-    });
-}
-
-function sipDeclineCall(){
-  if(_sip.inInvite)_sipSend(_sipBuildResp(_sip.inInvite,603,'Decline',{},''));
-  _sip.inInvite=null;
-  _sipSetState('registered');
-}
-
-// ── Outgoing INVITE ────────────────────────────────────────────────────────
-function sipDial(target){
-  var t=(target||'').trim();
-  if(!t){_sipShowCallErr('Enter an extension or SIP URI');return;}
-  if(_sip.state!=='registered'){_sipShowCallErr('Not registered — check SIP settings');return;}
-  var dom=_sipDomain();  // explicit config → learned realm → WS hostname
-  // Build the call URI.  A SIP URI must have a host part (sip:user@host).
-  // sip:ext with no @host is invalid — the server parses it as host=ext and
-  // returns 484.  Always append the domain; _sipDomain() uses the realm
-  // learned from the server's REGISTER challenge so it's always correct.
-  _sip.callUri = t.match(/^sips?:/i) ? t
-               : t.indexOf('@')>=0   ? 'sip:'+t
-               : 'sip:'+t+'@'+dom;
-  _sip.callCid=_sipCid(dom);
-  _sip.callFromTag=_sipTag();
-  _sip.callToTag=null;
-  _sip.callCsq=0;
-  _sip.myToTag=null;
-  navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false})
-    .then(function(stream){
-      _sip.micStream=stream;
-      _sip.pc=new RTCPeerConnection({iceServers:STUN.map(function(u){return{urls:u};})});
-      stream.getTracks().forEach(function(t){_sip.pc.addTrack(t,stream);});
-      _sip.pc.ontrack=function(e){
-        var a=document.getElementById('sipAudio');
-        if(a&&e.streams[0]){a.srcObject=e.streams[0];_sipSetupRemoteMeter(e.streams[0]);}
-      };
-      _sip.pc.onconnectionstatechange=function(){
-        var cs=_sip.pc.connectionState;
-        if(cs==='failed'){
-          _sipCleanupCall();_sipSetState('registered');
-          _sipShowCallErr('Call ended: connection failed');
-        }
-      };
-      return _sip.pc.createOffer({offerToReceiveAudio:true});
-    })
-    .then(function(offer){return _sip.pc.setLocalDescription(offer);})
-    .then(function(){
-      return new Promise(function(res){
-        if(_sip.pc.iceGatheringState==='complete'){res();return;}
-        _sip.pc.onicegatheringstatechange=function(){if(_sip.pc.iceGatheringState==='complete')res();};
-        setTimeout(res,3000);
-      });
-    })
-    .then(function(){
-      _sipSetMicMeter(_sip.micStream);
-      _sipSendInvite(_sip.callUri,_sipMungeSdp(_sip.pc.localDescription.sdp));
-      _sipSetState('dialling');
-    })
-    .catch(function(e){_sipShowCallErr('Microphone error: '+e.message);});
-}
-
-function _sipSendInvite(uri,sdp){
-  var cfg=_sip.cfg, dom=_sipDomain();
-  _sip.callCsq++;
-  var hdrs={
-    'Via':          'SIP/2.0/WS '+_sipWsHostname()+';branch='+_sipBranch()+';rport',
-    'Max-Forwards': '70',
-    'From':         '"'+cfg.display_name+'" <'+_sipSelfUri()+'>;tag='+_sip.callFromTag,
-    'To':           '<'+uri+'>',
-    'Call-ID':      _sip.callCid,
-    'CSeq':         _sip.callCsq+' INVITE',
-    'Contact':      _sipContact(),
-    'Allow':        'INVITE,ACK,CANCEL,OPTIONS,BYE',
-    'Content-Type': 'application/sdp',
-  };
-  _sipSend(_sipBuildReq('INVITE',uri,hdrs,sdp));
-}
-
-function _sipSendAck(okMsg,uri){
-  var cfg=_sip.cfg;
-  // RFC 3261 §17.1.1.3: ACK CSeq MUST equal the INVITE CSeq — do NOT increment.
-  // The sequence number counter is only incremented for new requests (INVITE, BYE, etc).
-  var cseqNum = (okMsg.headers['cseq']||'1 INVITE').match(/^(\d+)/);
-  var cseq = (cseqNum ? cseqNum[1] : _sip.callCsq) + ' ACK';
-  var toHdr=okMsg.headers['to']||('<'+uri+'>');
-  var hdrs={
-    'Via':          'SIP/2.0/WS '+_sipWsHostname()+';branch='+_sipBranch()+';rport',
-    'Max-Forwards': '70',
-    'From':         '"'+cfg.display_name+'" <'+_sipSelfUri()+'>;tag='+_sip.callFromTag,
-    'To':           toHdr,
-    'Call-ID':      _sip.callCid,
-    'CSeq':         cseq,
-    'Contact':      _sipContact(),
-  };
-  _sipSend(_sipBuildReq('ACK',uri,hdrs,''));
-}
-
-function _sipSendBye(){
-  var cfg=_sip.cfg, dom=_sipDomain();
-  var uri=_sip.callUri||_sipSelfUri();
-  var toHdr='<'+uri+'>'+((_sip.callToTag)?';tag='+_sip.callToTag:'');
-  _sip.callCsq++;
-  var hdrs={
-    'Via':          'SIP/2.0/WS '+_sipWsHostname()+';branch='+_sipBranch()+';rport',
-    'Max-Forwards': '70',
-    'From':         '"'+cfg.display_name+'" <'+_sipSelfUri()+'>;tag='+(_sip.callFromTag||_sipTag()),
-    'To':           toHdr,
-    'Call-ID':      _sip.callCid||_sipCid(dom),
-    'CSeq':         _sip.callCsq+' BYE',
-  };
-  _sipSend(_sipBuildReq('BYE',uri,hdrs,''));
-}
-
-function sipHangup(){
-  if(_sip.state==='incoming'){sipDeclineCall();return;}
-  if(_sip.state==='incall'||_sip.state==='dialling')_sipSendBye();
-  _sipCleanupCall();
-  _sipSetState(_sip.state==='idle'?'idle':'registered');
-}
-
-// ── Main message handler ───────────────────────────────────────────────────
-function _sipHandleMsg(raw){
-  console.debug('[IPLink SIP] <<<\n'+raw);
-  var msg=_sipParse(raw);
-  if(msg.isResponse){
-    var csqH=msg.headers['cseq']||'';
-    var method=csqH.replace(/^\d+\s+/,'').toUpperCase().trim();
-    var st=msg.status;
-    if(method==='REGISTER'){
-      clearTimeout(_sip.regTimeoutTimer);  // got a response — cancel the 15 s timeout
-      if(st===200){
-        _sip.regAuthAttempts=0;
-        _sipSetState('registered');
-        var exp=parseInt(((msg.headers['contact']||'').match(/expires=(\d+)/)||[])[1]||'600');
-        clearTimeout(_sip.regTimer);
-        _sip.regTimer=setTimeout(function(){if(_sip.state==='registered')_sipRegister();},exp*900);
-      }else if(st===401||st===407){
-        _sip.regAuthAttempts=(_sip.regAuthAttempts||0)+1;
-        if(_sip.regAuthAttempts>2){
-          _sipSetState('error','Authentication failed — check your SIP username and password.');
-          return;
-        }
-        var wwwH=msg.headers['www-authenticate']||msg.headers['proxy-authenticate']||'';
-        var auth=_sipParseWWWAuth(wwwH);
-        // Learn the server's SIP realm from the challenge — this is the correct
-        // domain for all SIP URIs (INVITE Request-URI, From, To).  Store it so
-        // that bare extensions dial as sip:ext@realm rather than sip:ext (invalid)
-        // or sip:ext@ws-hostname (404/484 if the hostname isn't the SIP realm).
-        if(auth.realm && !_sip.realm) _sip.realm = auth.realm;
-        var regUri='sip:'+_sipDomain();
-        _sipRegister(_sipDigest('REGISTER',regUri,auth,_sip.cfg.username,_sip.cfg.password));
-      }else if(st>=400){
-        _sipSetState('error','Registration failed ('+st+')');
-      }
-    }else if(method==='INVITE'){
-      if(st===180||st===183){
-        _sipSetState('dialling');
-        var pill=document.getElementById('sipStatusPill');
-        if(pill)pill.querySelector('span:last-child').textContent='SIP: Ringing…';
-      }else if(st===200){
-        // Always ACK immediately — server retransmits 200 until it gets an ACK.
-        _sipSendAck(msg, _sip.callUri);
-        // Guard against duplicate 200 OK processing (server retransmits until ACK
-        // is received; the PC is already in 'stable' after the first processing
-        // and setRemoteDescription would fail with "Called in wrong state: stable").
-        if(_sip.state==='incall'){ return; }
-        _sip.callToTag=_sipExtractTag(msg.headers['to']||'');
-        var sdp=msg.body;
-        if(_sip.pc&&sdp){
-          // Ensure SDP ends with \r\n
-          var answerSdp = sdp.endsWith('\r\n') ? sdp : sdp + '\r\n';
-          console.debug('[IPLink SIP] 200 OK answer SDP:\n', answerSdp);
-          _sip.pc.setRemoteDescription({type:'answer', sdp:answerSdp})
-            .then(function(){
-              _sip.callStart=Date.now();
-              _sipSetState('incall');
-            }).catch(function(e){
-              console.error('[IPLink SIP] setRemoteDescription on answer failed:', e.message);
-              console.debug('[IPLink SIP] answer SDP that was rejected:\n', answerSdp);
-              _sipCleanupCall();
-              _sipSetState('registered');
-              _sipShowCallErr('Call answered but media failed: '+e.message+' — check server logs for rtpengine errors');
-            });
-        } else if(_sip.pc && !sdp){
-          _sip.callStart=Date.now();
-          _sipSetState('incall');
-        }
-      }else if(st>=400){
-        // RFC 3261 §17.1.1.3: non-2xx INVITE responses MUST be ACKed.
-        // Build the ACK from the response headers directly — do NOT use
-        // _sip.callCid / _sip.callFromTag because _sipCleanupCall() may have
-        // already nulled them (server retransmits the 4xx until it gets an ACK).
-        // The 4xx echoes Call-ID, From, CSeq from the original INVITE, so we
-        // always have everything we need in msg.headers.
-        // Use the To URI from the 4xx response as the ACK Request-URI.
-        // _sip.callUri may already be null if _sipCleanupCall() ran on a
-        // previous retransmission. The To header reliably contains the callee.
-        var _ackUri = _sipExtractURI(msg.headers['to']) || _sip.callUri || _sipSelfUri();
-        var _ackHdrs = {
-          'Via':          'SIP/2.0/WS '+_sipWsHostname()+';branch='+_sipBranch()+';rport',
-          'Max-Forwards': '70',
-          'From':         msg.headers['from']  || '',
-          'To':           msg.headers['to']    || '',
-          'Call-ID':      msg.headers['call-id']|| '',
-          'CSeq':         (msg.headers['cseq'] || '1 INVITE').replace(/INVITE$/i, 'ACK'),
-          'Contact':      _sipContact(),
-        };
-        _sipSend(_sipBuildReq('ACK', _ackUri, _ackHdrs, ''));
-        var reason=st+' '+(msg.reason||'');
-        var hint='';
-        if(st===404) hint=' — extension not found on server';
-        else if(st===484) hint=' — check the dial string and SIP Domain/Realm setting';
-        else if(st===486||st===600) hint=' — destination busy';
-        else if(st===403) hint=' — forbidden (check dial permissions)';
-        else if(st===488) hint=' — server rejected codec/SDP (check WebRTC support on server)';
-        else if(st===500) hint=' — server internal error (check dial plan / extension exists)';
-        console.warn('[IPLink SIP] INVITE failed '+reason+' — check browser DevTools console for full SIP traffic (filter: IPLink SIP)');
-        _sipCleanupCall();
-        _sipSetState('registered');
-        _sipShowCallErr('Call failed: '+reason+hint);
-      }
-    }else if(method==='BYE'){
-      if(st===200){_sipCleanupCall();_sipSetState('registered');}
-    }
-  }else{
-    var m=msg.method;
-    if(m==='INVITE'){
-      if(_sip.state==='incall'||_sip.state==='incoming'||_sip.state==='dialling'){
-        // Re-INVITE or second call while busy: decline
-        _sipSend(_sipBuildResp(msg,486,'Busy Here',{},''));
-      }else{
-        _sipHandleInvite(msg);
-      }
-    }else if(m==='BYE'){
-      _sipSend(_sipBuildResp(msg,200,'OK',{},''));
-      _sipCleanupCall();_sipSetState('registered');
-    }else if(m==='CANCEL'){
-      if(_sip.inInvite&&(_sip.inInvite.headers['call-id']||'')===(msg.headers['call-id']||'')){
-        _sipSend(_sipBuildResp(msg,200,'OK',{},''));
-        _sipSend(_sipBuildResp(_sip.inInvite,487,'Request Terminated',{},''));
-        _sip.inInvite=null;_sipSetState('registered');
-      }
-    }else if(m==='OPTIONS'){
-      _sipSend(_sipBuildResp(msg,200,'OK',{'Allow':'INVITE,ACK,CANCEL,OPTIONS,BYE','Accept':'application/sdp'},''));
-    }else if(m==='ACK'){
-      // ACK to our 200 OK — call now fully established.
-      // State is 'incall' if sipAnswerCall() finished before ACK arrived,
-      // or 'dialling' if ACK arrived before the promise chain completed.
-      if(_sip.state==='incoming'||_sip.state==='dialling'){
-        if(!_sip.callStart)_sip.callStart=Date.now();
-        _sipSetState('incall');
-      }
-    }
-  }
-}
-
-// ── Level meters for SIP ───────────────────────────────────────────────────
-function _sipSetMicMeter(stream){
-  try{
-    var ctx=new(window.AudioContext||window.webkitAudioContext)();
-    var src=ctx.createMediaStreamSource(stream);
-    var an=ctx.createAnalyser();an.fftSize=512;src.connect(an);
-    _sip.micAnalyser=an;
-  }catch(e){}
-}
-function _sipSetupRemoteMeter(stream){
-  try{
-    var ctx=new(window.AudioContext||window.webkitAudioContext)();
-    var src=ctx.createMediaStreamSource(stream);
-    var an=ctx.createAnalyser();an.fftSize=512;src.connect(an);
-    _sip.remoteAnalyser=an;
-  }catch(e){}
-}
-function _sipReadLevel(an){
-  if(!an)return 0;
-  var buf=new Uint8Array(an.frequencyBinCount);
-  an.getByteTimeDomainData(buf);
-  var sq=0;for(var i=0;i<buf.length;i++){var s=(buf[i]-128)/128;sq+=s*s;}
-  return Math.sqrt(sq/buf.length);
-}
-
-// ── UI update ──────────────────────────────────────────────────────────────
-function _sipSetState(state,errMsg){_sip.state=state;_sipUpdateUI(errMsg);}
-
-function _sipUpdateUI(errMsg){
-  var s=_sip.state;
-  var pill=document.getElementById('sipStatusPill');
-  var txt=document.getElementById('sipStatusTxt');
-  var banner=document.getElementById('sipIncomingBanner');
-  var callCard=document.getElementById('sipCallCard');
-  var dialBtn=document.getElementById('sipDialBtn');
-  var map={
-    idle:      ['sip-off','SIP: Off'],
-    connecting:['sip-off','SIP: Connecting…'],
-    registering:['sip-off','SIP: Registering…'],
-    registered:['sip-conn','SIP: Registered'],
-    incoming:  ['sip-ring','SIP: Incoming call'],
-    dialling:  ['sip-conn','SIP: Calling…'],
-    incall:    ['sip-incall','SIP: On call'],
-    error:     ['sip-err','SIP: '+(errMsg||'Error')],
-  };
-  var info=map[s]||['sip-off',s];
-  if(pill){pill.className='sip-pill '+info[0];}
-  if(txt){txt.textContent=info[1];}
-  // Incoming banner
-  if(banner){
-    if(s==='incoming'&&_sip.inInvite){
-      var fromH=_sip.inInvite.headers['from']||'';
-      var disp=_sipExtractDisplay(fromH);
-      var uri=_sipExtractURI(fromH).replace(/^sip:/i,'').split('@')[0];
-      var name=disp?(disp+' ('+uri+')'):(uri||'Unknown');
-      var cn=document.getElementById('sipCallerName');
-      if(cn)cn.textContent=name;
-      banner.style.display='flex';
-    }else{
-      banner.style.display='none';
-    }
-  }
-  // Active call card
-  if(callCard){
-    if(s==='incall'||s==='dialling'){
-      callCard.style.display='';
-      var remEl=document.getElementById('sipCallRemote');
-      if(remEl){
-        var r=_sip.callUri||((_sip.inInvite)?_sipExtractURI(_sip.inInvite.headers['from']||''):'');
-        remEl.textContent=r.replace(/^sip:/i,'');
-      }
-    }else{
-      callCard.style.display='none';
-    }
-  }
-  // Dial button enable/disable
-  if(dialBtn)dialBtn.disabled=(s!=='registered');
-  // Stop duration timer if not in call
-  if(s!=='incall'&&s!=='dialling'){
-    clearInterval(_sip.durTimer);_sip.durTimer=null;
-    var dur=document.getElementById('sipCallDur');
-    if(dur)dur.textContent='—';
-  } else if(!_sip.durTimer){
-    _sip.durTimer=setInterval(function(){
-      var dur=document.getElementById('sipCallDur');
-      if(dur&&_sip.callStart)dur.textContent=_fmt(Math.floor((Date.now()-_sip.callStart)/1000));
-    },1000);
-  }
-}
-
-function _sipShowCallErr(msg){
-  var el=document.getElementById('sipCallErrMsg');
-  if(!el)return;
-  el.textContent=msg;el.style.display='';
-  setTimeout(function(){el.style.display='none';},6000);
-}
-
-// ── Mic mute toggle ────────────────────────────────────────────────────────
-function _sipToggleMute(){
-  _sip.micMuted=!_sip.micMuted;
-  if(_sip.micStream)_sip.micStream.getAudioTracks().forEach(function(t){t.enabled=!_sip.micMuted;});
-  var btn=document.getElementById('sipMuteBtn');
-  if(btn)btn.textContent=_sip.micMuted?'🔇 Mic MUTED':'🎤 Mic ON';
-  if(_sip.micMuted){var el=document.getElementById('sipMicLvl');if(el)el.style.width='0%';}
-}
-
-// ── Cleanup ────────────────────────────────────────────────────────────────
-function _sipCleanupCall(){
-  clearInterval(_sip.durTimer);_sip.durTimer=null;
-  if(_sip.pc){try{_sip.pc.close();}catch(e){}_sip.pc=null;}
-  if(_sip.micStream){_sip.micStream.getTracks().forEach(function(t){t.stop();});_sip.micStream=null;}
-  var a=document.getElementById('sipAudio');if(a)a.srcObject=null;
-  _sip.remoteAnalyser=null;_sip.micAnalyser=null;
-  _sip.inInvite=null;_sip.callCid=null;_sip.callFromTag=null;
-  _sip.callToTag=null;_sip.callUri=null;_sip.callStart=null;_sip.micMuted=false;
-  _sip.myToTag=null;
-}
-
-// ── Level meter ticker ─────────────────────────────────────────────────────
-setInterval(function(){
-  if(_sip.state!=='incall')return;
-  var rl=_sipReadLevel(_sip.remoteAnalyser);
-  var ml=_sipReadLevel(_sip.micAnalyser);
-  var rf=document.getElementById('sipRemoteLvl'),rv=document.getElementById('sipRemoteLvlVal');
-  var mf=document.getElementById('sipMicLvl'),mv=document.getElementById('sipMicLvlVal');
-  if(rf)rf.style.width=(Math.min(rl*4,1)*100)+'%';
-  if(rv)rv.textContent=rl>0?Math.round(rl*100)+'%':'—';
-  if(!_sip.micMuted){if(mf)mf.style.width=(Math.min(ml*4,1)*100)+'%';if(mv)mv.textContent=ml>0?Math.round(ml*100)+'%':'—';}
-  // RTT from WebRTC stats
-  if(_sip.pc){
-    _sip.pc.getStats().then(function(report){
-      report.forEach(function(r){
-        if(r.type==='candidate-pair'&&r.state==='succeeded'&&r.currentRoundTripTime!=null){
-          var rtt=Math.round(r.currentRoundTripTime*1000);
-          var row=document.getElementById('sipRttRow'),val=document.getElementById('sipRttVal');
-          if(row)row.style.display='';
-          if(val)val.textContent=rtt+' ms';
-          val.style.color=rtt>100?'var(--wn)':'var(--ok)';
-        }
-      });
-    }).catch(function(){});
-  }
-},200);
-
-// ── SIP config save / load ─────────────────────────────────────────────────
-function sipSaveCfg(){
-  var cfg={
-    enabled:  document.getElementById('sipEnabled').checked,
-    server:   document.getElementById('sipServer').value.trim(),
-    username: document.getElementById('sipUser').value.trim(),
-    password: document.getElementById('sipPass').value,
-    domain:   document.getElementById('sipDomain').value.trim(),
-    display_name: document.getElementById('sipDisplayName').value.trim()||'Studio',
-  };
-  if(!cfg.server||!cfg.username){
-    var msg=document.getElementById('sipSaveMsg');
-    if(msg){msg.innerHTML='<div class="msg msg-err">Server URL and username are required</div>';return;}
-  }
-  fetch('/api/iplink/sip/config',{method:'POST',credentials:'same-origin',headers:csrfHdr(),body:JSON.stringify(cfg)})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      var msg=document.getElementById('sipSaveMsg');
-      if(msg)msg.innerHTML='<div class="msg msg-ok">Saved. Connecting…</div>';
-      setTimeout(function(){var m=document.getElementById('sipSaveMsg');if(m)m.innerHTML='';},3000);
-      _sipConnect(cfg);
-    })
-    .catch(function(e){
-      var msg=document.getElementById('sipSaveMsg');
-      if(msg)msg.innerHTML='<div class="msg msg-err">'+_esc(''+e)+'</div>';
-    });
-}
-
-function _sipLoadCfg(){
-  fetch('/api/iplink/sip/config',{credentials:'same-origin'})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if(d.server){
-        document.getElementById('sipServer').value=d.server||'';
-        document.getElementById('sipUser').value=d.username||'';
-        document.getElementById('sipDomain').value=d.domain||'';
-        document.getElementById('sipDisplayName').value=d.display_name||'Studio';
-        document.getElementById('sipEnabled').checked=!!d.enabled;
-        // Auto-connect if enabled (password returned from server for auto-connect only)
-        if(d.enabled&&d.server&&d.username&&d._autopass){
-          _sipConnect({server:d.server,username:d.username,password:d._autopass,
-                       domain:d.domain,display_name:d.display_name||'Studio'});
-        }
-      }
-    }).catch(function(){});
-}
-
-// ── Button wiring ──────────────────────────────────────────────────────────
-document.getElementById('sipAnswerBtn').addEventListener('click',sipAnswerCall);
-document.getElementById('sipRejectBtn').addEventListener('click',sipDeclineCall);
-document.getElementById('sipHangupBtn').addEventListener('click',sipHangup);
-document.getElementById('sipMuteBtn').addEventListener('click',_sipToggleMute);
-document.getElementById('sipDialBtn').addEventListener('click',function(){
-  sipDial(document.getElementById('sipDialInput').value);
-});
-document.getElementById('sipDialInput').addEventListener('keydown',function(e){
-  if(e.key==='Enter')sipDial(this.value);
-});
-document.getElementById('sipSaveBtn').addEventListener('click',sipSaveCfg);
-document.getElementById('sipDisconnectBtn').addEventListener('click',function(){
-  _sipStop();
-  var msg=document.getElementById('sipSaveMsg');
-  if(msg){msg.innerHTML='<div class="msg msg-ok">Disconnected</div>';setTimeout(function(){msg.innerHTML='';},3000);}
-});
-
-// ── Init ──────────────────────────────────────────────────────────────────
-_sipLoadCfg();
-_sipUpdateUI();
 </script>
 </body></html>"""
 
@@ -4294,5 +4645,122 @@ def register(app, ctx):
         _save_sip_cfg(cfg)
         _log(f"[IPLink] SIP config saved — server: {cfg.get('server','')}, user: {cfg.get('username','')}")
         return jsonify({"ok": True})
+
+    # ── SIP Accounts API ────────────────────────────────────────────────────────
+
+    @app.get("/api/iplink/sip/accounts")
+    @login_required
+    def iplink_sip_accounts_get():
+        accts = _load_sip_accounts()
+        statuses = []
+        for a in accts:
+            aid = a.get("id", "")
+            mgr = _sip_acct_mgrs.get(aid)
+            if mgr:
+                statuses.append(mgr.status_dict())
+            else:
+                statuses.append({
+                    "id": aid, "label": a.get("label", "") or a.get("username", ""),
+                    "username": a.get("username", ""), "domain": a.get("domain", ""),
+                    "server": a.get("server", ""), "display_name": a.get("display_name", ""),
+                    "enabled": bool(a.get("enabled", True)),
+                    "status": "disabled", "error_msg": "",
+                    "call_room_id": None, "call_caller": None, "pending_call": "",
+                })
+        return jsonify({"accounts": statuses})
+
+    @app.post("/api/iplink/sip/accounts")
+    @login_required
+    @csrf_protect
+    def iplink_sip_accounts_post():
+        data = request.get_json(silent=True) or {}
+        acct = data.get("account", {})
+        if not acct.get("server") or not acct.get("username"):
+            return jsonify({"ok": False, "error": "server and username are required"}), 400
+        accts = _load_sip_accounts()
+        if not acct.get("id"):
+            import uuid as _uuid
+            acct["id"] = str(_uuid.uuid4())[:8]
+        existing = next((i for i, a in enumerate(accts) if a.get("id") == acct["id"]), None)
+        if existing is not None:
+            accts[existing] = acct
+        else:
+            accts.append(acct)
+        _save_sip_accounts(accts)
+        _sync_sip_managers(accts)
+        return jsonify({"ok": True, "id": acct["id"]})
+
+    @app.post("/api/iplink/sip/accounts/<acct_id>/delete")
+    @login_required
+    @csrf_protect
+    def iplink_sip_account_delete(acct_id):
+        accts = _load_sip_accounts()
+        accts = [a for a in accts if a.get("id") != acct_id]
+        _save_sip_accounts(accts)
+        mgr = _sip_acct_mgrs.pop(acct_id, None)
+        if mgr:
+            mgr.stop()
+        return jsonify({"ok": True})
+
+    @app.post("/api/iplink/sip/accounts/<acct_id>/hangup")
+    @login_required
+    @csrf_protect
+    def iplink_sip_account_hangup(acct_id):
+        mgr = _sip_acct_mgrs.get(acct_id)
+        if mgr:
+            mgr.hangup()
+        return jsonify({"ok": True})
+
+    @app.post("/api/iplink/sip/accounts/<acct_id>/call")
+    @login_required
+    @csrf_protect
+    def iplink_sip_account_call(acct_id):
+        data = request.get_json(silent=True) or {}
+        room_id = data.get("room_id") or ""
+        action  = data.get("action") or "accept"
+        pending = _sip_pending_calls.get(acct_id)
+        if not pending:
+            return jsonify({"ok": False, "error": "no pending call"}), 404
+        mgr = _sip_acct_mgrs.get(acct_id)
+        if not mgr:
+            return jsonify({"ok": False, "error": "no account manager"}), 404
+        if action == "accept":
+            if not room_id:
+                return jsonify({"ok": False, "error": "room_id required"}), 400
+            room = _get_room(room_id)
+            if not room:
+                return jsonify({"ok": False, "error": "room not found"}), 404
+            mgr.accept_call(room_id)
+        else:
+            mgr.decline_call()
+        return jsonify({"ok": True})
+
+    @app.post("/api/iplink/room/<room_id>/sip_account")
+    @login_required
+    @csrf_protect
+    def iplink_room_set_sip_account(room_id):
+        data = request.get_json(silent=True) or {}
+        acct_id = data.get("sip_account_id")
+        with _lock:
+            room = _rooms.get(room_id)
+            if not room:
+                return jsonify({"ok": False, "error": "room not found"}), 404
+            room["sip_account_id"] = acct_id or None
+        _save_rooms()
+        # Update manager's assigned room (call_room_id is the live field)
+        for aid, mgr in list(_sip_acct_mgrs.items()):
+            if aid == acct_id:
+                if mgr.status not in ('incall',):
+                    mgr.call_room_id = room_id
+            elif mgr.call_room_id == room_id and mgr.status not in ('incall',):
+                mgr.call_room_id = None
+        return jsonify({"ok": True})
+
+    # ── Start SIP managers ──────────────────────────────────────────────────────
+    if _is_hub:
+        try:
+            _sync_sip_managers(_load_sip_accounts())
+        except Exception as _exc:
+            _log(f"[IPLink] SIP manager init error: {_exc}")
 
     _log(f"[IPLink] Plugin registered — v{SIGNALSCOPE_PLUGIN['version']} — mode={_mode} — {len(_STUN_SERVERS)} STUN server(s)")
