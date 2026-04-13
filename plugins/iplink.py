@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.3.5",
+    "version": "1.3.6",
 }
 
 import json
@@ -351,6 +351,10 @@ input[type=range].fader{flex:1;height:4px;accent-color:var(--acc);cursor:pointer
 .btn-onair.active{background:var(--al);color:#fff;border-color:var(--al);animation:pulse-border 1.2s infinite}
 /* Source selector */
 select.src-sel{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:4px 8px;font-size:12px;font-family:inherit;width:100%;margin-top:4px}
+/* IFB source status badge */
+.rc-src-badge{font-size:10px;font-weight:600;border-radius:4px;padding:3px 6px;margin-top:4px;display:inline-block}
+.rc-src-active{background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3)}
+.rc-src-pending{background:rgba(138,164,200,.12);color:var(--mu);border:1px solid rgba(138,164,200,.2)}
 /* Output config panel */
 .out-panel{background:#080f20;border:1px solid var(--bor);border-radius:8px;padding:10px 12px;margin-top:8px;font-size:12px}
 .out-panel label{display:block;padding:3px 0;cursor:pointer;color:var(--tx);line-height:1.6}
@@ -669,9 +673,37 @@ function _populateSourceSelectors(){
   });
 }
 
+function _srcLabel(val){
+  // Return a human-readable label for a source value (e.g. "stream:local:0")
+  if(!val||val==='global') return null;
+  if(val==='mic') return '🎤 Hub Microphone';
+  if(val.indexOf('stream:')===0){
+    var parts=val.split(':'), site=parts[1], idx=parseInt(parts[2]);
+    for(var i=0;i<_streamSources.length;i++){
+      var s=_streamSources[i];
+      if((s.site||'local')===site && s.idx===idx) return '📡 '+s.name;
+    }
+    return '📡 Stream '+idx+(site==='local'?'':' @ '+site);
+  }
+  return val;
+}
+
 function _onRoomSrcChange(roomId, val){
   _roomSrc[roomId]=val;
-  // Apply immediately if the room is already connected
+  // Update status badge immediately without waiting for the next _renderRooms cycle
+  var badge=document.getElementById('rc_srcbadge_'+roomId);
+  if(badge){
+    var connected=_pcs[roomId]&&_pcs[roomId]!==true;
+    if(!val||val==='global'||val==='mic'){
+      badge.style.display='none';
+    } else {
+      var lbl=_srcLabel(val)||val;
+      badge.textContent=connected?lbl+' — injecting':lbl+' — pre-selected (apply on connect)';
+      badge.className='rc-src-badge'+(connected?' rc-src-active':' rc-src-pending');
+      badge.style.display='';
+    }
+  }
+  // Apply immediately if the room has an active WebRTC connection
   if(_pcs[roomId]&&_pcs[roomId]!==true) _applySourceForRoom(roomId);
 }
 
@@ -721,9 +753,13 @@ function _injectStreamAudio(roomId, streamUrl){
   var dest=ctx.createMediaStreamDestination();
   gainNode.connect(dest);
 
-  // Hidden audio element — pulls the MP3 live relay for this stream
+  // Hidden audio element — pulls the MP3 live relay for this stream.
+  // muted=true prevents any sound from the element reaching the browser's
+  // speakers directly.  createMediaElementSource diverts decoded audio into
+  // the Web Audio graph exclusively (gainNode → dest → WebRTC track).
   var audio=new Audio(streamUrl);
-  audio.crossOrigin='use-credentials';  // send session cookie (same origin)
+  audio.muted=true;                      // must be set BEFORE play() to avoid flash
+  audio.crossOrigin='use-credentials';   // send session cookie (same origin)
   var srcNode=ctx.createMediaElementSource(audio);
   srcNode.connect(gainNode);
   _feedAudio[roomId]=audio;
@@ -1290,7 +1326,20 @@ function _renderRooms(rooms){
     html+='<select id="rc_src_'+r.id+'" class="src-sel" onchange="_onRoomSrcChange(\''+r.id+'\',this.value)" style="margin-top:4px">';
     html+='<option value="global">↑ Default source</option>';
     html+='<option value="mic">🎤 Hub Microphone</option>';
-    html+='</select></div>';
+    html+='</select>';
+    // IFB source status badge — shows current selection state below the dropdown
+    var _rsv=_roomSrc[r.id]||'';
+    var _rsLbl=_rsv&&_rsv!=='global'&&_rsv!=='mic'?_srcLabel(_rsv)||_rsv:'';
+    var _connected=!!(_pcs[r.id]&&_pcs[r.id]!==true);
+    var _feedActive=!!_feedAudio[r.id];
+    if(_rsLbl){
+      var _badgeCls='rc-src-badge'+(_connected?' rc-src-active':' rc-src-pending');
+      var _badgeTxt=_feedActive?_rsLbl+' — injecting':_rsLbl+(_connected?'':' — pre-selected (apply on connect)');
+      html+='<div id="rc_srcbadge_'+r.id+'" class="'+_badgeCls+'">'+_esc(_badgeTxt)+'</div>';
+    } else {
+      html+='<div id="rc_srcbadge_'+r.id+'" class="rc-src-badge" style="display:none"></div>';
+    }
+    html+='</div>';
     // (stream options are added by _populateSourceSelectors() after innerHTML is set)
 
     // Output config panel
