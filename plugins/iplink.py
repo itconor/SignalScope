@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.1",
+    "version": "1.5.2",
 }
 
 import asyncio as _asyncio
@@ -583,33 +583,49 @@ class _SipAcctMgr:
         uri_part = _psip_extract_uri(caller_from).replace('sip:', '').split('@')[0]
         caller_name = disp or uri_part or 'Unknown'
         invite_sdp = msg.get('body', '')
+        has_webrtc  = bool(invite_sdp and 'a=fingerprint' in invite_sdp)
+        room_id     = self._find_room()
 
-        room_id = self._find_room()
+        # Log enough detail to diagnose failures
+        if _log:
+            _log(f"[IPLink SIP] {self._user()}: INVITE from {caller_name} "
+                 f"— room={'assigned' if room_id else 'NONE'} "
+                 f"webrtc_sdp={has_webrtc} aiortc={_AIORTC and bool(_ServerAudioTrack)} "
+                 f"sdp_snippet={repr(invite_sdp[:120]) if invite_sdp else '(empty)'}")
 
-        if (room_id and invite_sdp and 'a=fingerprint' in invite_sdp
-                and _AIORTC and _ServerAudioTrack):
-            # WebRTC-capable PBX — bridge via aiortc
-            self.status       = 'incall'
-            self.call_room_id = room_id
-            self.call_caller  = caller_name
-            loop = _ensure_aio_loop()
-            fut  = _asyncio.run_coroutine_threadsafe(
-                _server_accept_sip_invite(room_id, invite_sdp, self), loop)
-            threading.Thread(target=self._finish_answer, args=(msg, fut, room_id),
-                             daemon=True, name=f'SIP-ans-{self.id[:6]}').start()
-        else:
-            # No room, no WebRTC SDP, or no aiortc — notify hub UI
-            self._ws_send(_psip_build_resp(msg, 180, 'Ringing', {'Contact': self._contact()}, ''))
-            _sip_pending_calls[self.id] = {
-                'caller': caller_name,
-                'call_id': msg['headers'].get('call-id', ''),
-                'time': time.time(),
-                '_invite': msg,
-            }
-            self.status       = 'incall'
-            self.call_caller  = caller_name
-            self.call_room_id = None
-            if _log: _log(f"[IPLink SIP] {self._user()}: incoming from {caller_name} (no room assigned)")
+        if not room_id:
+            # No permanent room assigned to this account — send 480 immediately
+            # so the caller gets a real error rather than hanging on 180 forever.
+            self._ws_send(_psip_build_resp(msg, 480, 'Temporarily Unavailable', {}, ''))
+            if _log: _log(f"[IPLink SIP] {self._user()}: declined (no room assigned) — "
+                          f"assign a permanent room to this SIP account in IP Link settings")
+            return
+
+        if not _AIORTC or not _ServerAudioTrack:
+            self._ws_send(_psip_build_resp(msg, 503, 'Service Unavailable', {}, ''))
+            if _log: _log(f"[IPLink SIP] {self._user()}: declined (aiortc not installed) — "
+                          f"pip install aiortc av numpy to enable server-side SIP bridging")
+            return
+
+        if not has_webrtc:
+            # PBX sent traditional RTP SDP (no ICE/DTLS) — we need WebRTC.
+            # Send 488 so the PBX knows to use WebRTC transport for this endpoint.
+            # In FreePBX/Asterisk: set the PJSIP endpoint's "WebRTC: Yes" option.
+            self._ws_send(_psip_build_resp(msg, 488, 'Not Acceptable Here', {}, ''))
+            if _log: _log(f"[IPLink SIP] {self._user()}: declined (no WebRTC SDP from PBX) — "
+                          f"enable WebRTC/DTLS on the PBX endpoint for this extension. "
+                          f"SDP preview: {repr(invite_sdp[:200])}")
+            return
+
+        # WebRTC SDP + room assigned + aiortc available → bridge
+        self.status       = 'incall'
+        self.call_room_id = room_id
+        self.call_caller  = caller_name
+        loop = _ensure_aio_loop()
+        fut  = _asyncio.run_coroutine_threadsafe(
+            _server_accept_sip_invite(room_id, invite_sdp, self), loop)
+        threading.Thread(target=self._finish_answer, args=(msg, fut, room_id),
+                         daemon=True, name=f'SIP-ans-{self.id[:6]}').start()
 
     def _finish_answer(self, invite_msg: dict, fut, room_id: str):
         """Wait for aiortc to create answer SDP, then send 200 OK."""
