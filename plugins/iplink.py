@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.12",
+    "version": "1.5.13",
 }
 
 import asyncio as _asyncio
@@ -365,14 +365,15 @@ def _psip_build_req(method, uri, hdrs, body):
     if body: lines.append(body)
     return '\r\n'.join(lines)
 
-def _psip_build_resp(req: dict, status: int, reason: str, extra: dict, body: str) -> str:
+def _psip_build_resp(req: dict, status: int, reason: str, extra: dict, body: str,
+                     _tag: str = None) -> str:
     lines = [f'SIP/2.0 {status} {reason}']
     via = req['headers'].get('via', '')
     for v in via.split('\r\n'):
         if v.strip(): lines.append(f'Via: {v.strip()}')
     to_hdr = req['headers'].get('to', '')
     if status >= 200 and ';tag=' not in to_hdr:
-        to_hdr += f';tag={_psip_tag()}'
+        to_hdr += f';tag={_tag or _psip_tag()}'
     lines.append(f'From: {req["headers"].get("from", "")}')
     lines.append(f'To: {to_hdr}')
     if 'call-id' in req['headers']: lines.append(f'Call-ID: {req["headers"]["call-id"]}')
@@ -585,13 +586,15 @@ class _SipAcctMgr:
         if self.status == 'incall':
             # Re-INVITE on an established plain-RTP call: reply 200 OK with the
             # same answer SDP so the call stays up. Returning 486 causes SipScope
-            # to tear down the call.
+            # to tear down the call. Use the stored _call_from_tag so the To tag
+            # in the 200 OK matches the tag we sent in the initial 200 OK — SipScope
+            # matches the dialog by this tag.
             room_id = self.call_room_id
             bridge  = _rtp_bridges.get(room_id) if room_id else None
             if bridge and bridge.get('answer_sdp'):
                 self._ws_send(_psip_build_resp(msg, 200, 'OK', {
                     'Contact': self._contact(), 'Content-Type': 'application/sdp',
-                }, bridge['answer_sdp']))
+                }, bridge['answer_sdp'], _tag=self._call_from_tag or None))
                 if _log: _log(f"[IPLink SIP] {self._user()}: re-INVITE answered with existing plain-RTP SDP")
             else:
                 self._ws_send(_psip_build_resp(msg, 486, 'Busy Here', {}, ''))
@@ -625,6 +628,17 @@ class _SipAcctMgr:
             # This is the typical path when the caller goes through rtpengine in
             # sip-to-sip mode (e.g. Linphone → SipScope → rtpengine → SignalScope).
             self.status = 'incall'; self.call_room_id = room_id; self.call_caller = caller_name
+            # Save dialog state so hangup() can send a correctly-formed BYE.
+            # For incoming calls our tag roles are reversed vs outbound:
+            #   _call_cid      = INVITE's Call-ID (BYE must use same)
+            #   _call_from_tag = our local tag placed in 200 OK To header (BYE From)
+            #   _call_to_tag   = caller's From tag (BYE To tag)
+            #   _call_uri      = caller's URI (BYE Request-URI and To URI)
+            self._call_cid      = msg['headers'].get('call-id', '')
+            self._call_from_tag = _psip_tag()           # generated here, reused in 200 OK
+            self._call_to_tag   = _psip_extract_tag(msg['headers'].get('from', '')) or ''
+            self._call_uri      = _psip_extract_uri(msg['headers'].get('from', ''))
+            self._call_csq      = 0
             answer_sdp = _sip_plain_rtp_bridge(room_id, invite_sdp, self)
             if not answer_sdp:
                 self._ws_send(_psip_build_resp(msg, 500, 'Server Error', {}, ''))
@@ -632,7 +646,7 @@ class _SipAcctMgr:
                 return
             self._ws_send(_psip_build_resp(msg, 200, 'OK', {
                 'Contact': self._contact(), 'Content-Type': 'application/sdp',
-            }, answer_sdp))
+            }, answer_sdp, _tag=self._call_from_tag))
             if _log: _log(f"[IPLink SIP] {self._user()}: plain RTP call accepted, room={room_id[:8]}")
             return
 
@@ -1757,55 +1771,105 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
     # every 20 ms of wall time. Without this, if ffmpeg buffers then bursts,
     # the Livewire sender gets a burst of packets → pitched-up audio downstream.
     #
-    # Because ffmpeg runs with -rw_timeout 0 (no timeout), it blocks indefinitely
-    # on stdout.read() when no RTP arrives. A watchdog thread kills recv_proc when
-    # stop_evt fires so that blocked read() returns immediately, allowing clean
-    # shutdown without the recv thread being stuck forever.
+    # ffmpeg's SDP/UDP demuxer has a built-in idle timeout (~10 s) that fires
+    # when no RTP arrives (e.g. during a Linphone re-INVITE renegotiation).
+    # Rather than fighting the timeout, we restart ffmpeg transparently — audio
+    # resumes automatically when RTP returns. A mutable container (_cur_proc)
+    # lets the watchdog kill whichever ffmpeg is currently running when stop_evt
+    # fires (BYE received or manual hangup), allowing clean shutdown.
+    #
+    # MAX_RESTARTS = 60 → survives up to ~10 min of periodic re-INVITEs.
+    _cur_proc = [recv_proc]     # mutable so watchdog always kills the live proc
+
     def _recv_watchdog():
         stop_evt.wait()
-        try: recv_proc.kill()
+        try: _cur_proc[0].kill()
         except Exception: pass
 
     threading.Thread(target=_recv_watchdog, daemon=True,
                      name=f'SIPrWd-{room_id[:8]}').start()
 
     def _recv_thread():
-        CHUNK     = 1920                        # 20 ms mono s16le 48 kHz
-        CHUNK_DUR = CHUNK / (48000 * 2)         # = 0.020 s
-        chunks    = 0
-        deadline  = None
+        CHUNK        = 1920                     # 20 ms mono s16le 48 kHz
+        CHUNK_DUR    = CHUNK / (48000 * 2)      # = 0.020 s
+        total_chunks = 0
+        restarts     = 0
+        MAX_RESTARTS = 60
+        deadline     = None
+
+        def _make_recv_proc():
+            return subprocess.Popen(
+                [ffmpeg_bin, '-y', '-v', 'warning',
+                 '-protocol_whitelist', 'file,rtp,udp,crypto',
+                 '-rw_timeout', '0',
+                 '-i', recv_sdp_path,
+                 '-f', 's16le', '-ar', '48000', '-ac', '1', 'pipe:1'],
+                stdout=subprocess.PIPE,
+                stderr=open(recv_stderr_path, 'w'),
+                stdin=subprocess.DEVNULL)
+
         try:
-            while True:                         # stop_evt handled by watchdog
-                data = recv_proc.stdout.read(CHUNK)
+            while not stop_evt.is_set():
+                data = _cur_proc[0].stdout.read(CHUNK)
                 if not data:
-                    break
+                    if stop_evt.is_set():
+                        break
+                    # ffmpeg exited — log stderr then restart
+                    try: _cur_proc[0].kill()
+                    except Exception: pass
+                    try:
+                        with open(recv_stderr_path) as _sf:
+                            _se = _sf.read()
+                        if _se.strip() and _log:
+                            _log(f"[IPLink SIP] ffmpeg recv restart {restarts+1}: {_se.strip()[-300:]}")
+                    except Exception: pass
+
+                    if restarts >= MAX_RESTARTS:
+                        if _log: _log(f"[IPLink SIP] plain RTP recv: max restarts reached, ending call")
+                        break
+                    restarts += 1
+                    time.sleep(0.5)      # allow OS to release UDP port
+                    if stop_evt.is_set():
+                        break
+                    try:
+                        _cur_proc[0] = _make_recv_proc()
+                        # Keep bridge dict current so _stop_rtp_bridge kills the right proc
+                        _b = _rtp_bridges.get(room_id)
+                        if _b: _b['recv_proc'] = _cur_proc[0]
+                    except Exception as _e:
+                        if _log: _log(f"[IPLink SIP] plain RTP recv restart failed: {_e}")
+                        break
+                    deadline = None      # reset pacing after restart
+                    continue
+
                 _route_lw_chunk(room_id, data)
-                if chunks == 0:
+                if total_chunks == 0:
                     if _log: _log(f"[IPLink SIP] plain RTP: first recv chunk → room {room_id[:8]}")
                     deadline = time.monotonic() + CHUNK_DUR
-                else:
+                elif deadline is not None:
                     deadline += CHUNK_DUR
                     slack = deadline - time.monotonic()
                     if 0 < slack < 0.5:          # sleep only if we're ahead
                         time.sleep(slack)
                     elif slack < -1.0:            # >1 s behind — reset
                         deadline = time.monotonic() + CHUNK_DUR
-                chunks += 1
+                total_chunks += 1
         finally:
-            if _log: _log(f"[IPLink SIP] plain RTP recv ended: room {room_id[:8]} ({chunks} chunks)")
-            try: recv_proc.kill()
+            if _log: _log(f"[IPLink SIP] plain RTP recv ended: room {room_id[:8]} "
+                          f"({total_chunks} chunks, {restarts} restarts)")
+            try: _cur_proc[0].kill()
             except Exception: pass
-            # Log ffmpeg stderr for diagnostics (last 500 chars)
+            # Log final ffmpeg stderr for diagnostics
             try:
                 with open(recv_stderr_path) as _sf:
                     _se = _sf.read()
                 if _se.strip() and _log:
-                    _log(f"[IPLink SIP] ffmpeg recv stderr: {_se[-500:]}")
-            except Exception:
-                pass
-            # Auto-hangup only if stop_evt wasn't already set (clean BYE/hangup
-            # sets it before killing recv_proc; if we get here without it set,
-            # ffmpeg crashed or lost audio without a SIP BYE — hang up the call).
+                    _log(f"[IPLink SIP] ffmpeg recv final stderr: {_se.strip()[-300:]}")
+            except Exception: pass
+            # Auto-hangup only if stop_evt was NOT already set by a clean BYE/hangup.
+            # A proper BYE arrival calls _end_call() which sets stop_evt before killing
+            # the proc — so if we land here with stop_evt clear, it means ffmpeg
+            # died permanently (max restarts or crash) without a SIP BYE.
             if not stop_evt.is_set() and acct_mgr and acct_mgr.status == 'incall':
                 stop_evt.set()
                 threading.Thread(target=acct_mgr.hangup, daemon=True,
