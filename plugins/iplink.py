@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.6",
+    "version": "1.5.7",
 }
 
 import asyncio as _asyncio
@@ -583,7 +583,18 @@ class _SipAcctMgr:
 
     def _handle_incoming(self, msg: dict):
         if self.status == 'incall':
-            self._ws_send(_psip_build_resp(msg, 486, 'Busy Here', {}, ''))
+            # Re-INVITE on an established plain-RTP call: reply 200 OK with the
+            # same answer SDP so the call stays up. Returning 486 causes SipScope
+            # to tear down the call.
+            room_id = self.call_room_id
+            bridge  = _rtp_bridges.get(room_id) if room_id else None
+            if bridge and bridge.get('answer_sdp'):
+                self._ws_send(_psip_build_resp(msg, 200, 'OK', {
+                    'Contact': self._contact(), 'Content-Type': 'application/sdp',
+                }, bridge['answer_sdp']))
+                if _log: _log(f"[IPLink SIP] {self._user()}: re-INVITE answered with existing plain-RTP SDP")
+            else:
+                self._ws_send(_psip_build_resp(msg, 486, 'Busy Here', {}, ''))
             return
         self._ws_send(_psip_build_resp(msg, 100, 'Trying', {}, ''))
         caller_from = msg['headers'].get('from', '')
@@ -1527,9 +1538,14 @@ async def _server_add_ice(room_id: str, cand_data: dict):
 # ── Plain RTP bridge (no ICE/DTLS — works through rtpengine NAT) ─────────────
 
 def _parse_sdp_rtp_endpoint(sdp: str):
-    """Return (host, port, payload_type, codec_name, clock_rate) from an SDP."""
+    """Return (host, port, payload_type, codec_name, clock_rate) from an SDP.
+
+    Prefers PCMU (PT 0) then PCMA (PT 8) then G722 (PT 9) over dynamic PTs
+    like Opus, since G.711 is universally supported and trivially decoded by ffmpeg.
+    Falls back to the first PT with a known rtpmap if no G.711/G.722 is offered.
+    """
     import re as _re
-    host = '127.0.0.1'; port = 0; pt = 0; codec = 'PCMU'; rate = 8000
+    host = '127.0.0.1'; port = 0; pts = []; rtpmaps = {}
     for line in sdp.splitlines():
         line = line.strip()
         if line.startswith('c=IN IP4 '):
@@ -1538,14 +1554,31 @@ def _parse_sdp_rtp_endpoint(sdp: str):
             parts = line.split()
             if len(parts) >= 4:
                 try:
-                    port = int(parts[1]); pt = int(parts[3])
+                    port = int(parts[1])
+                    pts = []
+                    for p in parts[3:]:
+                        if p.isdigit(): pts.append(int(p))
                 except ValueError:
                     pass
         elif line.startswith('a=rtpmap:'):
             m = _re.match(r'a=rtpmap:(\d+)\s+([\w-]+)/(\d+)', line)
-            if m and int(m.group(1)) == pt:
-                codec = m.group(2).upper(); rate = int(m.group(3))
-    return host, port, pt, codec, rate
+            if m:
+                rtpmaps[int(m.group(1))] = (m.group(2).upper(), int(m.group(3)))
+    # Fill in static payload type defaults (RFC 3551)
+    for static_pt, static_info in [(0, ('PCMU', 8000)), (8, ('PCMA', 8000)), (9, ('G722', 8000))]:
+        if static_pt in pts and static_pt not in rtpmaps:
+            rtpmaps[static_pt] = static_info
+    # Prefer PCMU → PCMA → G722 (simple codecs ffmpeg handles without issues)
+    for preferred in (0, 8, 9):
+        if preferred in pts and preferred in rtpmaps:
+            codec, rate = rtpmaps[preferred]
+            return host, port, preferred, codec, rate
+    # Fall back to first PT with a known rtpmap
+    for p in pts:
+        if p in rtpmaps:
+            codec, rate = rtpmaps[p]
+            return host, port, p, codec, rate
+    return host, port, 0, 'PCMU', 8000
 
 
 def _stop_rtp_bridge(room_id: str):
@@ -1607,11 +1640,11 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
 
     # Map to ffmpeg send codec (use offer codec for round-trip fidelity)
     if codec == 'PCMA':
-        ffmpeg_send_codec = 'pcm_alaw';  send_rate = 8000
+        ffmpeg_send_codec = 'pcm_alaw';  send_rate = 8000; rate = 8000
     elif codec == 'G722':
-        ffmpeg_send_codec = 'g722';      send_rate = 8000
-    else:  # default PCMU / anything else
-        ffmpeg_send_codec = 'pcm_mulaw'; send_rate = 8000; codec = 'PCMU'; pt = 0
+        ffmpeg_send_codec = 'g722';      send_rate = 8000; rate = 8000
+    else:  # PCMU or any unrecognised codec — fall back to PCMU/8000
+        ffmpeg_send_codec = 'pcm_mulaw'; send_rate = 8000; codec = 'PCMU'; pt = 0; rate = 8000
 
     # Write receive SDP file so ffmpeg knows which codec to decode
     recv_sdp_content = (
@@ -1666,10 +1699,11 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
     send_q     = _queue.Queue(maxsize=100)
     _rtp_send_queues[room_id] = send_q
     _rtp_bridges[room_id] = {
-        'recv_proc': recv_proc,
-        'send_proc': send_proc,
-        'stop_evt':  stop_evt,
-        'sdp_path':  recv_sdp_path,
+        'recv_proc':  recv_proc,
+        'send_proc':  send_proc,
+        'stop_evt':   stop_evt,
+        'sdp_path':   recv_sdp_path,
+        'answer_sdp': None,   # filled in below after answer_sdp is built
     }
 
     # Recv thread: ffmpeg stdout → _route_lw_chunk (caller mic → studio)
@@ -1738,6 +1772,9 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         f"a=rtpmap:{pt} {codec}/{rate}\r\n"
         "a=sendrecv\r\n"
     )
+
+    # Store answer SDP so re-INVITEs can be answered without restarting the bridge
+    _rtp_bridges[room_id]['answer_sdp'] = answer_sdp
 
     if _log:
         _log(f"[IPLink SIP] plain RTP bridge: room {room_id[:8]} "
