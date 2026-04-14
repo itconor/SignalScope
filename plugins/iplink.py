@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.9",
+    "version": "1.5.10",
 }
 
 import asyncio as _asyncio
@@ -1692,17 +1692,15 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         return None
 
     # Start receive ffmpeg: RTP from rtpengine → PCM s16le 48 kHz
-    # -reorder_queue_size: large jitter buffer for WAN packet reordering
-    # -max_delay 500000:   allow up to 0.5 s of buffering before dropping
-    # -fflags +genpts:     generate PTS if missing (handles damaged streams)
+    # aresample=async=1: compensates for any clock drift between sender and us
+    # without this, if Linphone's clock runs slightly fast, ffmpeg would produce
+    # samples at >48000 Hz effective rate → pitched-up audio at the destination.
     try:
         recv_proc = subprocess.Popen(
             [ffmpeg_bin, '-y', '-v', 'warning',
              '-protocol_whitelist', 'file,rtp,udp,crypto',
-             '-reorder_queue_size', '512',
-             '-max_delay', '500000',
              '-i', recv_sdp_path,
-             '-fflags', '+genpts',
+             '-af', 'aresample=async=1:first_pts=0',
              '-f', 's16le', '-ar', '48000', '-ac', '1', 'pipe:1'],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL)
@@ -1746,18 +1744,30 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
     }
 
     # Recv thread: ffmpeg stdout → _route_lw_chunk (caller mic → studio)
+    # Wall-clock pacing: sleep between reads to deliver exactly 20 ms of audio
+    # every 20 ms of wall time. Without this, if ffmpeg buffers then bursts,
+    # the Livewire sender gets a burst of packets → pitched-up audio downstream.
     def _recv_thread():
-        CHUNK = 1920   # 20 ms mono s16le 48 kHz (one Opus frame)
-        # Smaller chunks → fewer AES67 packets per burst → smoother delivery
-        chunks = 0
+        CHUNK     = 1920                        # 20 ms mono s16le 48 kHz
+        CHUNK_DUR = CHUNK / (48000 * 2)         # = 0.020 s
+        chunks    = 0
+        deadline  = None
         try:
             while not stop_evt.is_set():
                 data = recv_proc.stdout.read(CHUNK)
                 if not data:
                     break
                 _route_lw_chunk(room_id, data)
-                if chunks == 0 and _log:
-                    _log(f"[IPLink SIP] plain RTP: first recv chunk → room {room_id[:8]}")
+                if chunks == 0:
+                    if _log: _log(f"[IPLink SIP] plain RTP: first recv chunk → room {room_id[:8]}")
+                    deadline = time.monotonic() + CHUNK_DUR
+                else:
+                    deadline += CHUNK_DUR
+                    slack = deadline - time.monotonic()
+                    if 0 < slack < 0.5:          # sleep only if we're ahead
+                        time.sleep(slack)
+                    elif slack < -1.0:            # >1 s behind — reset
+                        deadline = time.monotonic() + CHUNK_DUR
                 chunks += 1
         finally:
             if _log: _log(f"[IPLink SIP] plain RTP recv ended: room {room_id[:8]} ({chunks} chunks)")
@@ -1770,14 +1780,30 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                                  name=f'SIPrHup-{room_id[:8]}').start()
 
     # Send thread: send_q → ffmpeg stdin → RTP (source IFB → caller)
+    # Wall-clock pacing: write one 20 ms chunk every 20 ms of wall time.
+    # Without pacing, burst delivery from the source loop causes Linphone's
+    # jitter buffer to overflow → glitches → call drop.
     def _send_thread():
-        chunks = 0
+        CHUNK_DUR = 1920 / (48000 * 2)          # = 0.020 s
+        chunks    = 0
+        deadline  = None
         try:
             while not stop_evt.is_set():
                 try:
                     pcm = send_q.get(timeout=0.5)
                 except _queue.Empty:
+                    deadline = None              # reset on gap in source audio
                     continue
+                # Pace to real-time before writing
+                if deadline is None:
+                    deadline = time.monotonic() + CHUNK_DUR
+                else:
+                    deadline += CHUNK_DUR
+                    slack = deadline - time.monotonic()
+                    if 0 < slack < 0.5:
+                        time.sleep(slack)
+                    elif slack < -1.0:           # >1 s behind — reset
+                        deadline = time.monotonic() + CHUNK_DUR
                 try:
                     send_proc.stdin.write(pcm)
                     send_proc.stdin.flush()
