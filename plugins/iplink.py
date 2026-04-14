@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.13",
+    "version": "1.5.14",
 }
 
 import asyncio as _asyncio
@@ -1671,7 +1671,13 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
     # For G.711: must resample from 48kHz to 8kHz for the encoder.
     if codec == 'OPUS':
         ffmpeg_send_codec = 'libopus'
-        send_extra = ['-b:a', '96k', '-payload_type', str(pt)]
+        send_extra = [
+            '-application', 'voip',     # OPUS_APPLICATION_VOIP: optimise for speech clarity
+            '-b:a', '32k',              # 32 kbps is excellent for voice; 96 k is overkill
+            '-vbr', 'off',              # CBR: consistent packet size eases jitter buffer
+            '-frame_duration', '20',    # explicit 20 ms frames
+            '-payload_type', str(pt),
+        ]
         send_ar    = []      # no -ar; libopus accepts 48kHz input directly
         # Opus rtpmap uses /48000/2 format (stereo mono both use /2)
         rtpmap_line = f"a=rtpmap:{pt} opus/48000/2\r\n"
@@ -1766,6 +1772,34 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         'answer_sdp':      None,   # filled in below after answer_sdp is built
     }
 
+    # Keepalive thread: ffmpeg's SDP/UDP demuxer has a ~10 s idle timeout that
+    # fires when no RTP arrives (typically during a Linphone re-INVITE pause).
+    # Send a minimal valid RTP packet to our own recv port every 5 s so that
+    # ffmpeg never sees 10 s of silence and never needs to restart.
+    # The keepalive is 12-byte RTP header + 1-byte Opus DTX comfort-noise TOC
+    # (0xf8 = CELT config, mono, 1 frame, empty payload = silence).  The packet
+    # is inaudible — the decoder produces <1 ms of silence per keepalive.
+    def _recv_keepalive():
+        import socket as _socket, struct as _struct, random as _random
+        _ssrc = _random.randint(1, 0x7FFFFFFF)
+        _seq  = _random.randint(0, 0xFFFF)
+        _ts   = _random.randint(0, 0xFFFFFFFF)
+        _pt   = pt
+        while not stop_evt.wait(5.0):
+            try:
+                hdr = _struct.pack('>BBHII',
+                                   0x80, _pt & 0x7F,
+                                   _seq & 0xFFFF, _ts & 0xFFFFFFFF, _ssrc)
+                with _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM) as _s:
+                    _s.sendto(hdr + b'\xf8', ('127.0.0.1', local_port))
+                _seq = (_seq + 1) & 0xFFFF
+                _ts  = (_ts + 960) & 0xFFFFFFFF   # 20 ms @ 48 kHz
+            except Exception:
+                pass
+
+    threading.Thread(target=_recv_keepalive, daemon=True,
+                     name=f'SIPrKA-{room_id[:8]}').start()
+
     # Recv thread: ffmpeg stdout → _route_lw_chunk (caller mic → studio)
     # Wall-clock pacing: sleep between reads to deliver exactly 20 ms of audio
     # every 20 ms of wall time. Without this, if ffmpeg buffers then bursts,
@@ -1828,7 +1862,7 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                         if _log: _log(f"[IPLink SIP] plain RTP recv: max restarts reached, ending call")
                         break
                     restarts += 1
-                    time.sleep(0.5)      # allow OS to release UDP port
+                    time.sleep(0.1)      # SO_REUSEADDR makes port available immediately
                     if stop_evt.is_set():
                         break
                     try:
