@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.8",
+    "version": "1.5.9",
 }
 
 import asyncio as _asyncio
@@ -1064,11 +1064,16 @@ def _route_pcm_chunk(room_id: str, pcm: bytes):
         trk = _server_tracks.get(room_id)
         if trk:
             _asyncio.run_coroutine_threadsafe(trk._push(pcm), _aio_loop)
-    # Feed plain-RTP IFB queue (non-zero only when a plain-RTP bridge is active)
+    # Feed plain-RTP IFB queue in 20 ms pieces (1920 bytes = one Opus frame).
+    # Rechunking here prevents sending 100 ms bursts that cause jitter at the caller.
     q = _rtp_send_queues.get(room_id)
     if q:
-        try: q.put_nowait(pcm)
-        except _queue.Full: pass
+        _RTP_CHUNK = 1920   # 20 ms mono s16le 48 kHz
+        for _i in range(0, len(pcm), _RTP_CHUNK):
+            _piece = pcm[_i:_i + _RTP_CHUNK]
+            if len(_piece) == _RTP_CHUNK:   # only full frames
+                try: q.put_nowait(_piece)
+                except _queue.Full: pass     # drop oldest-equivalent: just skip
 
 
 def _route_lw_chunk(room_id: str, pcm_mono: bytes):
@@ -1687,11 +1692,17 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         return None
 
     # Start receive ffmpeg: RTP from rtpengine → PCM s16le 48 kHz
+    # -reorder_queue_size: large jitter buffer for WAN packet reordering
+    # -max_delay 500000:   allow up to 0.5 s of buffering before dropping
+    # -fflags +genpts:     generate PTS if missing (handles damaged streams)
     try:
         recv_proc = subprocess.Popen(
             [ffmpeg_bin, '-y', '-v', 'warning',
              '-protocol_whitelist', 'file,rtp,udp,crypto',
+             '-reorder_queue_size', '512',
+             '-max_delay', '500000',
              '-i', recv_sdp_path,
+             '-fflags', '+genpts',
              '-f', 's16le', '-ar', '48000', '-ac', '1', 'pipe:1'],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL)
@@ -1722,7 +1733,9 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         return None
 
     stop_evt   = threading.Event()
-    send_q     = _queue.Queue(maxsize=100)
+    # 50 × 20 ms = 1 s max IFB queue depth — drop oldest if full so Linphone
+    # always hears near-live audio rather than building up a growing delay.
+    send_q     = _queue.Queue(maxsize=50)
     _rtp_send_queues[room_id] = send_q
     _rtp_bridges[room_id] = {
         'recv_proc':  recv_proc,
@@ -1734,7 +1747,8 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
 
     # Recv thread: ffmpeg stdout → _route_lw_chunk (caller mic → studio)
     def _recv_thread():
-        CHUNK = 9600   # 0.1 s mono s16le 48 kHz
+        CHUNK = 1920   # 20 ms mono s16le 48 kHz (one Opus frame)
+        # Smaller chunks → fewer AES67 packets per burst → smoother delivery
         chunks = 0
         try:
             while not stop_evt.is_set():
