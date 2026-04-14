@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.3",
+    "version": "1.5.4",
 }
 
 import asyncio as _asyncio
@@ -522,7 +522,8 @@ class _SipAcctMgr:
                 self._ws_send(_psip_build_resp(msg, 200, 'OK',
                     {'Allow': 'INVITE,ACK,CANCEL,OPTIONS,BYE', 'Accept': 'application/sdp'}, ''))
             elif m == 'ACK':
-                pass  # call fully established
+                if _log: _log(f"[IPLink SIP] {self._user()}: ACK received — call fully established")
+
 
     # ── REGISTER ──────────────────────────────────────────────────────────────
 
