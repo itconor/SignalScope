@@ -155,7 +155,7 @@
     "file": "iplink.py",
     "icon": "🎙",
     "description": "Browser-based IP codec and SIP softphone. WebRTC rooms with shareable talent URLs — low-latency Opus audio, bidirectional IFB, live level meters. Permanent rooms support server-side routing with Livewire/AES67 multicast output. Server-side SIP registration (hub holds multiple SIP accounts permanently — no browser needed). Requires aiortc, av, and numpy for server-side WebRTC.",
-    "version": "1.5.11",
+    "version": "1.5.12",
     "requirements": "aiortc av numpy",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/iplink.py"
   },

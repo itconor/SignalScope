@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.11",
+    "version": "1.5.12",
 }
 
 import asyncio as _asyncio
@@ -1696,15 +1696,17 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         return None
 
     # Start receive ffmpeg: RTP from rtpengine → PCM s16le 48 kHz
-    # No aresample filter — it accumulates a PTS-offset compensation buffer that
-    # crashes ffmpeg's internal state after ~15 s when Opus RTP starts with a
-    # random initial timestamp (standard per RFC 3550) and first_pts=0 is set.
-    # Wall-clock pacing in the recv thread handles rate differences instead.
+    # -rw_timeout 0: disable ffmpeg's I/O read timeout so it waits indefinitely
+    # for UDP packets. Without this, ffmpeg exits with "Connection timed out"
+    # after ~10 s of no RTP (e.g. during a Linphone re-INVITE renegotiation)
+    # which triggers an unintended auto-hangup mid-call.
+    # A watchdog thread kills recv_proc when stop_evt fires so shutdown is clean.
     recv_stderr_path = f"/tmp/iplink_rtp_recv_{room_id[:8]}.log"
     try:
         recv_proc = subprocess.Popen(
             [ffmpeg_bin, '-y', '-v', 'warning',
              '-protocol_whitelist', 'file,rtp,udp,crypto',
+             '-rw_timeout', '0',
              '-i', recv_sdp_path,
              '-f', 's16le', '-ar', '48000', '-ac', '1', 'pipe:1'],
             stdout=subprocess.PIPE,
@@ -1754,13 +1756,26 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
     # Wall-clock pacing: sleep between reads to deliver exactly 20 ms of audio
     # every 20 ms of wall time. Without this, if ffmpeg buffers then bursts,
     # the Livewire sender gets a burst of packets → pitched-up audio downstream.
+    #
+    # Because ffmpeg runs with -rw_timeout 0 (no timeout), it blocks indefinitely
+    # on stdout.read() when no RTP arrives. A watchdog thread kills recv_proc when
+    # stop_evt fires so that blocked read() returns immediately, allowing clean
+    # shutdown without the recv thread being stuck forever.
+    def _recv_watchdog():
+        stop_evt.wait()
+        try: recv_proc.kill()
+        except Exception: pass
+
+    threading.Thread(target=_recv_watchdog, daemon=True,
+                     name=f'SIPrWd-{room_id[:8]}').start()
+
     def _recv_thread():
         CHUNK     = 1920                        # 20 ms mono s16le 48 kHz
         CHUNK_DUR = CHUNK / (48000 * 2)         # = 0.020 s
         chunks    = 0
         deadline  = None
         try:
-            while not stop_evt.is_set():
+            while True:                         # stop_evt handled by watchdog
                 data = recv_proc.stdout.read(CHUNK)
                 if not data:
                     break
@@ -1788,7 +1803,9 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                     _log(f"[IPLink SIP] ffmpeg recv stderr: {_se[-500:]}")
             except Exception:
                 pass
-            # Auto-hangup if the bridge died unexpectedly (not a clean BYE)
+            # Auto-hangup only if stop_evt wasn't already set (clean BYE/hangup
+            # sets it before killing recv_proc; if we get here without it set,
+            # ffmpeg crashed or lost audio without a SIP BYE — hang up the call).
             if not stop_evt.is_set() and acct_mgr and acct_mgr.status == 'incall':
                 stop_evt.set()
                 threading.Thread(target=acct_mgr.hangup, daemon=True,
