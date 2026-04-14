@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.5",
+    "version": "1.5.6",
 }
 
 import asyncio as _asyncio
@@ -79,6 +79,10 @@ _listen_reg_ref     = None   # set in register()
 _SIP_ACCTS_PATH    = os.path.join(_BASE_DIR, "iplink_sip_accounts.json")
 _sip_acct_mgrs     = {}   # account_id → _SipAcctMgr
 _sip_pending_calls = {}   # account_id → {caller, time, call_id, _invite}
+
+# ── Plain RTP SIP bridges (non-ICE/non-WebRTC SIP callers via rtpengine) ─────
+_rtp_bridges     = {}   # room_id → {recv_proc, send_proc, stop_evt, sdp_path}
+_rtp_send_queues = {}   # room_id → queue.Queue  (source PCM → IFB RTP sender)
 
 
 class _LivewireSender:
@@ -605,20 +609,27 @@ class _SipAcctMgr:
                           f"assign a permanent room to this SIP account in IP Link settings")
             return
 
+        if not has_webrtc:
+            # Plain RTP offer (no ICE/DTLS) — bridge via ffmpeg without aiortc.
+            # This is the typical path when the caller goes through rtpengine in
+            # sip-to-sip mode (e.g. Linphone → SipScope → rtpengine → SignalScope).
+            self.status = 'incall'; self.call_room_id = room_id; self.call_caller = caller_name
+            answer_sdp = _sip_plain_rtp_bridge(room_id, invite_sdp, self)
+            if not answer_sdp:
+                self._ws_send(_psip_build_resp(msg, 500, 'Server Error', {}, ''))
+                self._end_call()
+                return
+            self._ws_send(_psip_build_resp(msg, 200, 'OK', {
+                'Contact': self._contact(), 'Content-Type': 'application/sdp',
+            }, answer_sdp))
+            if _log: _log(f"[IPLink SIP] {self._user()}: plain RTP call accepted, room={room_id[:8]}")
+            return
+
+        # WebRTC SDP — requires aiortc
         if not _AIORTC or not _ServerAudioTrack:
             self._ws_send(_psip_build_resp(msg, 503, 'Service Unavailable', {}, ''))
             if _log: _log(f"[IPLink SIP] {self._user()}: declined (aiortc not installed) — "
-                          f"pip install aiortc av numpy to enable server-side SIP bridging")
-            return
-
-        if not has_webrtc:
-            # PBX sent traditional RTP SDP (no ICE/DTLS) — we need WebRTC.
-            # Send 488 so the PBX knows to use WebRTC transport for this endpoint.
-            # In FreePBX/Asterisk: set the PJSIP endpoint's "WebRTC: Yes" option.
-            self._ws_send(_psip_build_resp(msg, 488, 'Not Acceptable Here', {}, ''))
-            if _log: _log(f"[IPLink SIP] {self._user()}: declined (no WebRTC SDP from PBX) — "
-                          f"enable WebRTC/DTLS on the PBX endpoint for this extension. "
-                          f"SDP preview: {repr(invite_sdp[:200])}")
+                          f"pip install aiortc av numpy to enable server-side WebRTC bridging")
             return
 
         # WebRTC SDP + room assigned + aiortc available → bridge
@@ -666,12 +677,17 @@ class _SipAcctMgr:
             }
             self._ws_send(_psip_build_req('ACK', self._call_uri, ack_hdrs, ''))
             sdp = msg.get('body', '')
-            if sdp and 'a=fingerprint' in sdp and self._out_room_id and _AIORTC:
+            if sdp and self._out_room_id:
                 room_id = self._out_room_id
                 self.status = 'incall'; self.call_room_id = room_id
-                loop = _ensure_aio_loop()
-                _asyncio.run_coroutine_threadsafe(
-                    _server_accept_sip_invite(room_id, sdp, self), loop)
+                if 'a=fingerprint' in sdp and _AIORTC:
+                    loop = _ensure_aio_loop()
+                    _asyncio.run_coroutine_threadsafe(
+                        _server_accept_sip_invite(room_id, sdp, self), loop)
+                elif 'a=fingerprint' not in sdp:
+                    threading.Thread(
+                        target=lambda: _sip_plain_rtp_bridge(room_id, sdp, self),
+                        daemon=True, name=f'SIPrBrg-{room_id[:8]}').start()
         elif st >= 400:
             if _log: _log(f"[IPLink SIP] {self._user()}: INVITE failed {st}")
             self._end_call()
@@ -762,7 +778,7 @@ class _SipAcctMgr:
     # ── End call ──────────────────────────────────────────────────────────────
 
     def _end_call(self):
-        """Clean up call state and close aiortc PC."""
+        """Clean up call state, close aiortc PC, and stop any plain-RTP bridge."""
         room_id = self.call_room_id
         self.call_room_id = None
         self.call_caller  = ''
@@ -772,6 +788,7 @@ class _SipAcctMgr:
         if room_id:
             _stop_source_routing(room_id)
             _close_server_pc(room_id)
+            _stop_rtp_bridge(room_id)
 
     def hangup(self):
         """Send BYE for current call."""
@@ -800,12 +817,24 @@ class _SipAcctMgr:
             return
         invite_sdp = invite_msg.get('body', '')
         self.call_room_id = room_id
-        if invite_sdp and 'a=fingerprint' in invite_sdp and _AIORTC and _ServerAudioTrack:
+        has_webrtc = bool(invite_sdp and 'a=fingerprint' in invite_sdp)
+        if has_webrtc and _AIORTC and _ServerAudioTrack:
             loop = _ensure_aio_loop()
             fut  = _asyncio.run_coroutine_threadsafe(
                 _server_accept_sip_invite(room_id, invite_sdp, self), loop)
             threading.Thread(target=self._finish_answer, args=(invite_msg, fut, room_id),
                              daemon=True, name=f'SIP-acc-{self.id[:6]}').start()
+        elif invite_sdp and not has_webrtc:
+            # Plain RTP offer — bridge via ffmpeg
+            answer_sdp = _sip_plain_rtp_bridge(room_id, invite_sdp, self)
+            if answer_sdp:
+                self._ws_send(_psip_build_resp(invite_msg, 200, 'OK', {
+                    'Contact': self._contact(), 'Content-Type': 'application/sdp',
+                }, answer_sdp))
+                if _log: _log(f"[IPLink SIP] {self._user()}: plain RTP accepted, room={room_id[:8]}")
+            else:
+                self._ws_send(_psip_build_resp(invite_msg, 500, 'Server Error', {}, ''))
+                self._end_call()
         else:
             self._ws_send(_psip_build_resp(invite_msg, 200, 'OK', {
                 'Contact': self._contact(),
@@ -1018,11 +1047,17 @@ def _route_pcm_chunk(room_id: str, pcm: bytes):
     The Livewire output carries the TALENT'S audio (mix-minus), not the source.
     Called from the source thread — must be thread-safe.
     PCM is mono S16LE 48 kHz.
+    Also feeds the plain-RTP send queue for SIP callers bridged without ICE.
     """
     if _AIORTC and _aio_loop:
         trk = _server_tracks.get(room_id)
         if trk:
             _asyncio.run_coroutine_threadsafe(trk._push(pcm), _aio_loop)
+    # Feed plain-RTP IFB queue (non-zero only when a plain-RTP bridge is active)
+    q = _rtp_send_queues.get(room_id)
+    if q:
+        try: q.put_nowait(pcm)
+        except _queue.Full: pass
 
 
 def _route_lw_chunk(room_id: str, pcm_mono: bytes):
@@ -1487,6 +1522,228 @@ async def _server_add_ice(room_id: str, cand_data: dict):
         await pc.addIceCandidate(rtc_c)
     except Exception:
         pass   # candidate parse failures are non-fatal
+
+
+# ── Plain RTP bridge (no ICE/DTLS — works through rtpengine NAT) ─────────────
+
+def _parse_sdp_rtp_endpoint(sdp: str):
+    """Return (host, port, payload_type, codec_name, clock_rate) from an SDP."""
+    import re as _re
+    host = '127.0.0.1'; port = 0; pt = 0; codec = 'PCMU'; rate = 8000
+    for line in sdp.splitlines():
+        line = line.strip()
+        if line.startswith('c=IN IP4 '):
+            host = line.split()[-1]
+        elif line.startswith('m=audio '):
+            parts = line.split()
+            if len(parts) >= 4:
+                try:
+                    port = int(parts[1]); pt = int(parts[3])
+                except ValueError:
+                    pass
+        elif line.startswith('a=rtpmap:'):
+            m = _re.match(r'a=rtpmap:(\d+)\s+([\w-]+)/(\d+)', line)
+            if m and int(m.group(1)) == pt:
+                codec = m.group(2).upper(); rate = int(m.group(3))
+    return host, port, pt, codec, rate
+
+
+def _stop_rtp_bridge(room_id: str):
+    """Stop the plain-RTP ffmpeg bridge for a room (safe to call if not active)."""
+    bridge = _rtp_bridges.pop(room_id, None)
+    _rtp_send_queues.pop(room_id, None)
+    if not bridge:
+        return
+    bridge['stop_evt'].set()
+    for key in ('recv_proc', 'send_proc'):
+        p = bridge.get(key)
+        if p:
+            try: p.kill()
+            except Exception: pass
+    sdp_path = bridge.get('sdp_path')
+    if sdp_path:
+        try: os.unlink(sdp_path)
+        except Exception: pass
+
+
+def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
+    """Bridge a plain-RTP SIP INVITE into room_id using ffmpeg (no ICE/DTLS).
+
+    Suitable for calls routed through rtpengine in sip-to-sip mode — works even
+    when rtpengine is behind NAT because we initiate UDP outbound (no STUN handshake).
+
+    Audio routing:
+      incoming RTP (Linphone mic) → ffmpeg decode → PCM → _route_lw_chunk  (mix-minus)
+      source PCM (IFB) → _rtp_send_queues[room_id] → ffmpeg encode → RTP → rtpengine → Linphone
+
+    Returns the answer SDP string, or None on failure.
+    """
+    import re as _re
+
+    ffmpeg_bin = shutil.which('ffmpeg')
+    if not ffmpeg_bin:
+        if _log: _log(f"[IPLink SIP] plain RTP bridge: ffmpeg not found (room {room_id[:8]})")
+        return None
+
+    rtp_host, rtp_port, pt, codec, rate = _parse_sdp_rtp_endpoint(invite_sdp)
+    if not rtp_port:
+        if _log: _log(f"[IPLink SIP] plain RTP bridge: could not parse offer SDP (room {room_id[:8]})")
+        return None
+
+    # Determine our outbound IP (reachable from rtpengine)
+    try:
+        _s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        _s.connect((rtp_host, rtp_port))
+        local_ip = _s.getsockname()[0]
+        _s.close()
+    except Exception:
+        local_ip = '0.0.0.0'
+
+    # Allocate a local UDP port for receiving RTP
+    _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    _sock.bind(('0.0.0.0', 0))
+    local_port = _sock.getsockname()[1]
+    _sock.close()
+
+    # Map to ffmpeg send codec (use offer codec for round-trip fidelity)
+    if codec == 'PCMA':
+        ffmpeg_send_codec = 'pcm_alaw';  send_rate = 8000
+    elif codec == 'G722':
+        ffmpeg_send_codec = 'g722';      send_rate = 8000
+    else:  # default PCMU / anything else
+        ffmpeg_send_codec = 'pcm_mulaw'; send_rate = 8000; codec = 'PCMU'; pt = 0
+
+    # Write receive SDP file so ffmpeg knows which codec to decode
+    recv_sdp_content = (
+        "v=0\r\n"
+        "o=- 0 0 IN IP4 0.0.0.0\r\n"
+        "s=IPLink RTP Bridge\r\n"
+        "c=IN IP4 0.0.0.0\r\n"
+        "t=0 0\r\n"
+        f"m=audio {local_port} RTP/AVP {pt}\r\n"
+        f"a=rtpmap:{pt} {codec}/{rate}\r\n"
+    )
+    recv_sdp_path = f"/tmp/iplink_rtp_{room_id[:8]}.sdp"
+    try:
+        with open(recv_sdp_path, 'w') as _fh:
+            _fh.write(recv_sdp_content)
+    except Exception as _e:
+        if _log: _log(f"[IPLink SIP] plain RTP: failed to write SDP file: {_e}")
+        return None
+
+    # Start receive ffmpeg: RTP from rtpengine → PCM s16le 48 kHz
+    try:
+        recv_proc = subprocess.Popen(
+            [ffmpeg_bin, '-y', '-v', 'warning',
+             '-protocol_whitelist', 'file,rtp,udp,crypto',
+             '-i', recv_sdp_path,
+             '-f', 's16le', '-ar', '48000', '-ac', '1', 'pipe:1'],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL)
+    except Exception as _e:
+        if _log: _log(f"[IPLink SIP] plain RTP recv ffmpeg failed: {_e}")
+        try: os.unlink(recv_sdp_path)
+        except Exception: pass
+        return None
+
+    # Start send ffmpeg: PCM s16le 48 kHz → codec → RTP to rtpengine
+    try:
+        send_proc = subprocess.Popen(
+            [ffmpeg_bin, '-y', '-v', 'warning',
+             '-f', 's16le', '-ar', '48000', '-ac', '1', '-i', 'pipe:0',
+             '-c:a', ffmpeg_send_codec, '-ar', str(send_rate),
+             '-f', 'rtp', f'rtp://{rtp_host}:{rtp_port}'],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+    except Exception as _e:
+        recv_proc.kill()
+        if _log: _log(f"[IPLink SIP] plain RTP send ffmpeg failed: {_e}")
+        try: os.unlink(recv_sdp_path)
+        except Exception: pass
+        return None
+
+    stop_evt   = threading.Event()
+    send_q     = _queue.Queue(maxsize=100)
+    _rtp_send_queues[room_id] = send_q
+    _rtp_bridges[room_id] = {
+        'recv_proc': recv_proc,
+        'send_proc': send_proc,
+        'stop_evt':  stop_evt,
+        'sdp_path':  recv_sdp_path,
+    }
+
+    # Recv thread: ffmpeg stdout → _route_lw_chunk (caller mic → studio)
+    def _recv_thread():
+        CHUNK = 9600   # 0.1 s mono s16le 48 kHz
+        chunks = 0
+        try:
+            while not stop_evt.is_set():
+                data = recv_proc.stdout.read(CHUNK)
+                if not data:
+                    break
+                _route_lw_chunk(room_id, data)
+                if chunks == 0 and _log:
+                    _log(f"[IPLink SIP] plain RTP: first recv chunk → room {room_id[:8]}")
+                chunks += 1
+        finally:
+            if _log: _log(f"[IPLink SIP] plain RTP recv ended: room {room_id[:8]} ({chunks} chunks)")
+            try: recv_proc.kill()
+            except Exception: pass
+            # Auto-hangup if the bridge died unexpectedly (not a clean BYE)
+            if not stop_evt.is_set() and acct_mgr and acct_mgr.status == 'incall':
+                stop_evt.set()
+                threading.Thread(target=acct_mgr.hangup, daemon=True,
+                                 name=f'SIPrHup-{room_id[:8]}').start()
+
+    # Send thread: send_q → ffmpeg stdin → RTP (source IFB → caller)
+    def _send_thread():
+        chunks = 0
+        try:
+            while not stop_evt.is_set():
+                try:
+                    pcm = send_q.get(timeout=0.5)
+                except _queue.Empty:
+                    continue
+                try:
+                    send_proc.stdin.write(pcm)
+                    send_proc.stdin.flush()
+                    if chunks == 0 and _log:
+                        _log(f"[IPLink SIP] plain RTP: first send chunk → {rtp_host}:{rtp_port}")
+                    chunks += 1
+                except Exception:
+                    break
+        finally:
+            try: send_proc.stdin.close()
+            except Exception: pass
+            try: send_proc.kill()
+            except Exception: pass
+            if _log: _log(f"[IPLink SIP] plain RTP send ended: room {room_id[:8]} ({chunks} chunks)")
+
+    threading.Thread(target=_recv_thread, daemon=True,
+                     name=f'SIPrRcv-{room_id[:8]}').start()
+    threading.Thread(target=_send_thread, daemon=True,
+                     name=f'SIPrSnd-{room_id[:8]}').start()
+
+    # Kick off source routing so IFB audio flows into the send queue
+    _start_source_routing(room_id)
+
+    # Build answer SDP (our receive endpoint)
+    answer_sdp = (
+        "v=0\r\n"
+        f"o=- {int(time.time())} {int(time.time())} IN IP4 {local_ip}\r\n"
+        "s=IPLink SIP Bridge\r\n"
+        f"c=IN IP4 {local_ip}\r\n"
+        "t=0 0\r\n"
+        f"m=audio {local_port} RTP/AVP {pt}\r\n"
+        f"a=rtpmap:{pt} {codec}/{rate}\r\n"
+        "a=sendrecv\r\n"
+    )
+
+    if _log:
+        _log(f"[IPLink SIP] plain RTP bridge: room {room_id[:8]} "
+             f"recv={local_ip}:{local_port} "
+             f"send→{rtp_host}:{rtp_port} codec={codec}/{rate}")
+    return answer_sdp
 
 
 async def _server_accept_sip_invite(room_id: str, invite_sdp: str, acct_mgr):
