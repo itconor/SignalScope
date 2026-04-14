@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.4",
+    "version": "1.5.5",
 }
 
 import asyncio as _asyncio
@@ -1513,6 +1513,7 @@ async def _server_accept_sip_invite(room_id: str, invite_sdp: str, acct_mgr):
     @pc.on("connectionstatechange")
     def _on_state():
         state = pc.connectionState
+        if _log: _log(f"[IPLink SIP] ICE connectionState → {state} (room {room_id[:8]})")
         r = _rooms.get(room_id)
         if r:
             if state == "connected":
@@ -1553,6 +1554,10 @@ async def _server_accept_sip_invite(room_id: str, invite_sdp: str, acct_mgr):
             if _log: _log(f"[IPLink SIP] ICE gathering timed out (room {room_id[:8]})")
 
         final_sdp = pc.localDescription.sdp
+        if _log:
+            cands = [l for l in final_sdp.splitlines() if l.startswith('a=candidate')]
+            _log(f"[IPLink SIP] answer SDP ICE candidates ({len(cands)}): " +
+                 " | ".join(cands[:6]))
         _start_source_routing(room_id)
         return final_sdp
     except Exception as exc:
