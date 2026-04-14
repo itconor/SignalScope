@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.7",
+    "version": "1.5.8",
 }
 
 import asyncio as _asyncio
@@ -1538,14 +1538,12 @@ async def _server_add_ice(room_id: str, cand_data: dict):
 # ── Plain RTP bridge (no ICE/DTLS — works through rtpengine NAT) ─────────────
 
 def _parse_sdp_rtp_endpoint(sdp: str):
-    """Return (host, port, payload_type, codec_name, clock_rate) from an SDP.
+    """Return (host, port, payload_type, codec_name, clock_rate, fmtp) from an SDP.
 
-    Prefers PCMU (PT 0) then PCMA (PT 8) then G722 (PT 9) over dynamic PTs
-    like Opus, since G.711 is universally supported and trivially decoded by ffmpeg.
-    Falls back to the first PT with a known rtpmap if no G.711/G.722 is offered.
+    Prefers Opus (full quality, no transcoding) then PCMU/PCMA/G722 as fallback.
     """
     import re as _re
-    host = '127.0.0.1'; port = 0; pts = []; rtpmaps = {}
+    host = '127.0.0.1'; port = 0; pts = []; rtpmaps = {}; fmtps = {}
     for line in sdp.splitlines():
         line = line.strip()
         if line.startswith('c=IN IP4 '):
@@ -1555,30 +1553,36 @@ def _parse_sdp_rtp_endpoint(sdp: str):
             if len(parts) >= 4:
                 try:
                     port = int(parts[1])
-                    pts = []
-                    for p in parts[3:]:
-                        if p.isdigit(): pts.append(int(p))
+                    pts = [int(p) for p in parts[3:] if p.isdigit()]
                 except ValueError:
                     pass
         elif line.startswith('a=rtpmap:'):
+            # handles opus/48000/2 (with optional channel count)
             m = _re.match(r'a=rtpmap:(\d+)\s+([\w-]+)/(\d+)', line)
             if m:
                 rtpmaps[int(m.group(1))] = (m.group(2).upper(), int(m.group(3)))
-    # Fill in static payload type defaults (RFC 3551)
-    for static_pt, static_info in [(0, ('PCMU', 8000)), (8, ('PCMA', 8000)), (9, ('G722', 8000))]:
-        if static_pt in pts and static_pt not in rtpmaps:
-            rtpmaps[static_pt] = static_info
-    # Prefer PCMU → PCMA → G722 (simple codecs ffmpeg handles without issues)
+        elif line.startswith('a=fmtp:'):
+            m = _re.match(r'a=fmtp:(\d+)\s+(.*)', line)
+            if m:
+                fmtps[int(m.group(1))] = m.group(2).strip()
+    # Fill static payload type defaults (RFC 3551)
+    for sp, si in [(0, ('PCMU', 8000)), (8, ('PCMA', 8000)), (9, ('G722', 8000))]:
+        if sp in pts and sp not in rtpmaps:
+            rtpmaps[sp] = si
+    # Prefer Opus (best quality, no conversion) → PCMU → PCMA → G722
+    for p in pts:
+        if p in rtpmaps and rtpmaps[p][0] == 'OPUS':
+            codec, rate = rtpmaps[p]
+            return host, port, p, codec, rate, fmtps.get(p, '')
     for preferred in (0, 8, 9):
         if preferred in pts and preferred in rtpmaps:
             codec, rate = rtpmaps[preferred]
-            return host, port, preferred, codec, rate
-    # Fall back to first PT with a known rtpmap
+            return host, port, preferred, codec, rate, fmtps.get(preferred, '')
     for p in pts:
         if p in rtpmaps:
             codec, rate = rtpmaps[p]
-            return host, port, p, codec, rate
-    return host, port, 0, 'PCMU', 8000
+            return host, port, p, codec, rate, fmtps.get(p, '')
+    return host, port, 0, 'PCMU', 8000, ''
 
 
 def _stop_rtp_bridge(room_id: str):
@@ -1618,7 +1622,7 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         if _log: _log(f"[IPLink SIP] plain RTP bridge: ffmpeg not found (room {room_id[:8]})")
         return None
 
-    rtp_host, rtp_port, pt, codec, rate = _parse_sdp_rtp_endpoint(invite_sdp)
+    rtp_host, rtp_port, pt, codec, rate, fmtp = _parse_sdp_rtp_endpoint(invite_sdp)
     if not rtp_port:
         if _log: _log(f"[IPLink SIP] plain RTP bridge: could not parse offer SDP (room {room_id[:8]})")
         return None
@@ -1638,15 +1642,33 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
     local_port = _sock.getsockname()[1]
     _sock.close()
 
-    # Map to ffmpeg send codec (use offer codec for round-trip fidelity)
-    if codec == 'PCMA':
-        ffmpeg_send_codec = 'pcm_alaw';  send_rate = 8000; rate = 8000
+    # Map codec name → ffmpeg encoder params.
+    # For Opus: no -ar resampling needed (libopus runs natively at 48kHz).
+    #           -payload_type tells ffmpeg which RTP PT to stamp on outgoing packets.
+    # For G.711: must resample from 48kHz to 8kHz for the encoder.
+    if codec == 'OPUS':
+        ffmpeg_send_codec = 'libopus'
+        send_extra = ['-b:a', '96k', '-payload_type', str(pt)]
+        send_ar    = []      # no -ar; libopus accepts 48kHz input directly
+        # Opus rtpmap uses /48000/2 format (stereo mono both use /2)
+        rtpmap_line = f"a=rtpmap:{pt} opus/48000/2\r\n"
+    elif codec == 'PCMA':
+        ffmpeg_send_codec = 'pcm_alaw'
+        send_extra = []; send_ar = ['-ar', '8000']; rate = 8000
+        rtpmap_line = f"a=rtpmap:{pt} PCMA/8000\r\n"
     elif codec == 'G722':
-        ffmpeg_send_codec = 'g722';      send_rate = 8000; rate = 8000
-    else:  # PCMU or any unrecognised codec — fall back to PCMU/8000
-        ffmpeg_send_codec = 'pcm_mulaw'; send_rate = 8000; codec = 'PCMU'; pt = 0; rate = 8000
+        ffmpeg_send_codec = 'g722'
+        send_extra = []; send_ar = ['-ar', '16000']; rate = 8000
+        rtpmap_line = f"a=rtpmap:{pt} G722/8000\r\n"
+    else:  # PCMU or unknown — fall back to PCMU/8000
+        ffmpeg_send_codec = 'pcm_mulaw'
+        send_extra = []; send_ar = ['-ar', '8000']
+        codec = 'PCMU'; pt = 0; rate = 8000
+        rtpmap_line = f"a=rtpmap:{pt} PCMU/8000\r\n"
 
-    # Write receive SDP file so ffmpeg knows which codec to decode
+    fmtp_line = (f"a=fmtp:{pt} {fmtp}\r\n") if fmtp else ""
+
+    # Write receive SDP file so ffmpeg knows the codec and binds to local_port
     recv_sdp_content = (
         "v=0\r\n"
         "o=- 0 0 IN IP4 0.0.0.0\r\n"
@@ -1654,7 +1676,7 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         "c=IN IP4 0.0.0.0\r\n"
         "t=0 0\r\n"
         f"m=audio {local_port} RTP/AVP {pt}\r\n"
-        f"a=rtpmap:{pt} {codec}/{rate}\r\n"
+        + rtpmap_line + fmtp_line
     )
     recv_sdp_path = f"/tmp/iplink_rtp_{room_id[:8]}.sdp"
     try:
@@ -1680,12 +1702,16 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         return None
 
     # Start send ffmpeg: PCM s16le 48 kHz → codec → RTP to rtpengine
+    send_cmd = (
+        [ffmpeg_bin, '-y', '-v', 'warning',
+         '-f', 's16le', '-ar', '48000', '-ac', '1', '-i', 'pipe:0',
+         '-c:a', ffmpeg_send_codec]
+        + send_ar + send_extra
+        + ['-f', 'rtp', f'rtp://{rtp_host}:{rtp_port}']
+    )
     try:
         send_proc = subprocess.Popen(
-            [ffmpeg_bin, '-y', '-v', 'warning',
-             '-f', 's16le', '-ar', '48000', '-ac', '1', '-i', 'pipe:0',
-             '-c:a', ffmpeg_send_codec, '-ar', str(send_rate),
-             '-f', 'rtp', f'rtp://{rtp_host}:{rtp_port}'],
+            send_cmd,
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
     except Exception as _e:
@@ -1761,7 +1787,7 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
     # Kick off source routing so IFB audio flows into the send queue
     _start_source_routing(room_id)
 
-    # Build answer SDP (our receive endpoint)
+    # Build answer SDP (our receive endpoint — same codec as offer)
     answer_sdp = (
         "v=0\r\n"
         f"o=- {int(time.time())} {int(time.time())} IN IP4 {local_ip}\r\n"
@@ -1769,7 +1795,7 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         f"c=IN IP4 {local_ip}\r\n"
         "t=0 0\r\n"
         f"m=audio {local_port} RTP/AVP {pt}\r\n"
-        f"a=rtpmap:{pt} {codec}/{rate}\r\n"
+        + rtpmap_line + fmtp_line +
         "a=sendrecv\r\n"
     )
 
