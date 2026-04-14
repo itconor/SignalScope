@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.10",
+    "version": "1.5.11",
 }
 
 import asyncio as _asyncio
@@ -1606,6 +1606,10 @@ def _stop_rtp_bridge(room_id: str):
     if sdp_path:
         try: os.unlink(sdp_path)
         except Exception: pass
+    stderr_path = bridge.get('recv_stderr_path')
+    if stderr_path:
+        try: os.unlink(stderr_path)
+        except Exception: pass
 
 
 def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
@@ -1692,17 +1696,19 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         return None
 
     # Start receive ffmpeg: RTP from rtpengine → PCM s16le 48 kHz
-    # aresample=async=1: compensates for any clock drift between sender and us
-    # without this, if Linphone's clock runs slightly fast, ffmpeg would produce
-    # samples at >48000 Hz effective rate → pitched-up audio at the destination.
+    # No aresample filter — it accumulates a PTS-offset compensation buffer that
+    # crashes ffmpeg's internal state after ~15 s when Opus RTP starts with a
+    # random initial timestamp (standard per RFC 3550) and first_pts=0 is set.
+    # Wall-clock pacing in the recv thread handles rate differences instead.
+    recv_stderr_path = f"/tmp/iplink_rtp_recv_{room_id[:8]}.log"
     try:
         recv_proc = subprocess.Popen(
             [ffmpeg_bin, '-y', '-v', 'warning',
              '-protocol_whitelist', 'file,rtp,udp,crypto',
              '-i', recv_sdp_path,
-             '-af', 'aresample=async=1:first_pts=0',
              '-f', 's16le', '-ar', '48000', '-ac', '1', 'pipe:1'],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=open(recv_stderr_path, 'w'),
             stdin=subprocess.DEVNULL)
     except Exception as _e:
         if _log: _log(f"[IPLink SIP] plain RTP recv ffmpeg failed: {_e}")
@@ -1736,11 +1742,12 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
     send_q     = _queue.Queue(maxsize=50)
     _rtp_send_queues[room_id] = send_q
     _rtp_bridges[room_id] = {
-        'recv_proc':  recv_proc,
-        'send_proc':  send_proc,
-        'stop_evt':   stop_evt,
-        'sdp_path':   recv_sdp_path,
-        'answer_sdp': None,   # filled in below after answer_sdp is built
+        'recv_proc':       recv_proc,
+        'send_proc':       send_proc,
+        'stop_evt':        stop_evt,
+        'sdp_path':        recv_sdp_path,
+        'recv_stderr_path': recv_stderr_path,
+        'answer_sdp':      None,   # filled in below after answer_sdp is built
     }
 
     # Recv thread: ffmpeg stdout → _route_lw_chunk (caller mic → studio)
@@ -1773,6 +1780,14 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
             if _log: _log(f"[IPLink SIP] plain RTP recv ended: room {room_id[:8]} ({chunks} chunks)")
             try: recv_proc.kill()
             except Exception: pass
+            # Log ffmpeg stderr for diagnostics (last 500 chars)
+            try:
+                with open(recv_stderr_path) as _sf:
+                    _se = _sf.read()
+                if _se.strip() and _log:
+                    _log(f"[IPLink SIP] ffmpeg recv stderr: {_se[-500:]}")
+            except Exception:
+                pass
             # Auto-hangup if the bridge died unexpectedly (not a clean BYE)
             if not stop_evt.is_set() and acct_mgr and acct_mgr.status == 'incall':
                 stop_evt.set()
