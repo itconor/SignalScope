@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.4.0",
+    "version":  "2.5.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -193,14 +193,12 @@ def register(app, ctx):
 
     @app.post("/api/wallboard/config")
     @login_required
-    @csrf_protect
     def wallboard_config_save():
         _cfg_save(request.get_json(force=True))
         return jsonify({"ok": True})
 
     @app.post("/api/wallboard/logo/<chain_id>")
     @login_required
-    @csrf_protect
     def wallboard_logo_upload(chain_id):
         if not re.match(r'^[a-zA-Z0-9_-]+$', chain_id):
             return jsonify({"error": "Invalid ID"}), 400
@@ -235,7 +233,6 @@ def register(app, ctx):
 
     @app.delete("/api/wallboard/logo/<chain_id>")
     @login_required
-    @csrf_protect
     def wallboard_logo_delete(chain_id):
         if not re.match(r'^[a-zA-Z0-9_-]+$', chain_id):
             return jsonify({"error": "Invalid ID"}), 400
@@ -248,7 +245,6 @@ def register(app, ctx):
     # ── Brand logo (page branding — e.g. company logo in header) ─────
     @app.post("/api/wallboard/brand")
     @login_required
-    @csrf_protect
     def wallboard_brand_upload():
         f = request.files.get("logo")
         if not f or not f.filename:
@@ -278,7 +274,6 @@ def register(app, ctx):
 
     @app.delete("/api/wallboard/brand")
     @login_required
-    @csrf_protect
     def wallboard_brand_delete():
         for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
             path = os.path.join(_LOGO_DIR, "_brand" + ext)
@@ -497,20 +492,30 @@ body::after{
 /* SLA text */
 .cc-sla{font-size:10px;color:var(--mu);font-weight:600;font-variant-numeric:tabular-nums;margin-top:-2px}
 /* Now playing on chain card */
-.cc-np{
-  width:100%;text-align:center;margin-top:2px;
-  font-size:10px;color:var(--acc);font-weight:600;
+.cc-np-wrap{width:100%;text-align:center;margin-top:2px}
+.cc-np-show{
+  font-size:9px;color:var(--mu);font-weight:600;
+  text-transform:uppercase;letter-spacing:.05em;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  min-height:14px;line-height:1.3;font-style:italic;
+  margin-bottom:2px;
 }
-.cc-np-artist{color:var(--tx);font-style:normal;font-weight:700}
+.cc-np-track{
+  font-size:11px;color:var(--acc);font-weight:600;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  line-height:1.3;
+}
+.cc-np-artist{color:var(--tx);font-weight:700}
+body.corp .cc-np-show{color:#86868b}
+body.corp .cc-np-track{color:#0071e3}
+body.corp .cc-np-artist{color:#1d1d1f}
 /* Artwork replaces logo/avatar when available */
 .cc-art{
-  width:80px;height:80px;border-radius:14px;object-fit:cover;
+  width:88px;height:88px;border-radius:14px;object-fit:cover;
   box-shadow:0 4px 18px rgba(0,0,0,.4);
   border:1px solid rgba(255,255,255,.08);
   transition:opacity .4s;
 }
+body.corp .cc-art{box-shadow:0 2px 12px rgba(0,0,0,.12);border-color:rgba(0,0,0,.06)}
 
 /* ═══ Meter scroll ═══ */
 #wb-scroll{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 20px 16px}
@@ -977,11 +982,16 @@ function renderChains(chains){
       if(i>0)nodes+='<span class="cc-arr">▸</span>';
       nodes+='<span class="cc-nd '+(n.status||'unknown')+'" title="'+_e(n.label||n.stream||n.name||'?')+'"></span>';
     });
-    // Now playing text
+    // Now playing text — show, artist, title
     var npHtml='';
-    if(np&&(np.artist||np.title)){
-      var txt=np.artist?'<span class="cc-np-artist">'+_e(np.artist)+'</span> — '+_e(np.title):_e(np.title);
-      npHtml='<div class="cc-np">'+txt+'</div>';
+    if(np&&(np.artist||np.title||np.show)){
+      npHtml='<div class="cc-np-wrap">';
+      if(np.show)npHtml+='<div class="cc-np-show">'+_e(np.show)+'</div>';
+      if(np.artist||np.title){
+        var track=np.artist?'<span class="cc-np-artist">'+_e(np.artist)+'</span> — '+_e(np.title):_e(np.title);
+        npHtml+='<div class="cc-np-track">'+track+'</div>';
+      }
+      npHtml+='</div>';
     }
     // Health bar
     var hp=ch.sla_pct;var hpW=hp!=null?Math.max(0,Math.min(100,hp)):100;
