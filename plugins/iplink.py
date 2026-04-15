@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.17",
+    "version": "1.5.18",
 }
 
 import asyncio as _asyncio
@@ -1085,20 +1085,14 @@ def _route_pcm_chunk(room_id: str, pcm: bytes):
     if q:
         _RTP_CHUNK = 1920   # 20 ms mono s16le 48 kHz
         _st = _sip_bridge_stats.get(room_id)
-        _target = _st.get('queue_target', 25) if _st else 25
         for _i in range(0, len(pcm), _RTP_CHUNK):
             _piece = pcm[_i:_i + _RTP_CHUNK]
             if len(_piece) == _RTP_CHUNK:   # only full frames
-                if q.qsize() < _target:
-                    try:
-                        q.put_nowait(_piece)
-                        if _st is not None:
-                            _st['chunks_recent'] = _st.get('chunks_recent', 0) + 1
-                    except _queue.Full:
-                        if _st is not None:
-                            _st['drops'] = _st.get('drops', 0) + 1
-                            _st['drops_recent'] = _st.get('drops_recent', 0) + 1
-                else:
+                try:
+                    q.put_nowait(_piece)
+                    if _st is not None:
+                        _st['chunks_recent'] = _st.get('chunks_recent', 0) + 1
+                except _queue.Full:
                     if _st is not None:
                         _st['drops'] = _st.get('drops', 0) + 1
                         _st['drops_recent'] = _st.get('drops_recent', 0) + 1
@@ -1622,6 +1616,7 @@ def _stop_rtp_bridge(room_id: str):
     """Stop the plain-RTP ffmpeg bridge for a room (safe to call if not active)."""
     bridge = _rtp_bridges.pop(room_id, None)
     _rtp_send_queues.pop(room_id, None)
+    _sip_bridge_stats.pop(room_id, None)
     if not bridge:
         return
     bridge['stop_evt'].set()
@@ -1690,8 +1685,6 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
             '-b:a', '32k',              # 32 kbps is excellent for voice; 96 k is overkill
             '-vbr', 'off',              # CBR: consistent packet size eases jitter buffer
             '-frame_duration', '20',    # explicit 20 ms frames
-            '-fec', '1',                # enable in-band forward error correction
-            '-packet_loss', '10',       # assume 10% loss to tune FEC aggressiveness
             '-payload_type', str(pt),
         ]
         send_ar    = []      # no -ar; libopus accepts 48kHz input directly
@@ -1790,13 +1783,11 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         'start_time':   time.time(),
         'recv_chunks':  0,
         'send_chunks':  0,
-        'drops':        0,        # IFB chunks dropped (send queue full beyond target)
+        'drops':        0,        # IFB chunks dropped because send queue was full
         'drops_recent': 0,
         'chunks_recent':0,
-        'queue_target': 50,       # adaptive target (chunks); start at 1 s
         'last_adapt':   time.monotonic(),
         'restarts':     0,
-        'jitter_ms':    None,    # estimated from adaptive queue target (ms)
         'pkt_loss_pct': None,    # IFB drop rate: drops / (send_chunks + drops)
     }
 
@@ -1985,28 +1976,13 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                     _st = _sip_bridge_stats.get(room_id)
                     if _st is not None:
                         _st['send_chunks'] = chunks
-                        # Adaptive jitter buffer: adjust queue_target every 5 s
+                        # Update IFB drop rate every ~5 s
                         _now = time.monotonic()
                         if _now - _st.get('last_adapt', _now) >= 5.0:
-                            _dr = _st.get('drops_recent', 0)
-                            _cr = max(_st.get('chunks_recent', 1), 1)
-                            _drop_rate = _dr / _cr
-                            _cur = _st.get('queue_target', 25)
-                            if _drop_rate > 0.05:        # >5% → grow buffer (max 3 s)
-                                _cur = min(150, int(_cur * 1.4))
-                            elif _drop_rate < 0.01:      # <1% → shrink toward 250 ms
-                                _cur = max(12, int(_cur * 0.92))
-                            _st['queue_target']   = _cur
-                            _st['drops_recent']   = 0
-                            _st['chunks_recent']  = 0
-                            _st['last_adapt']     = _now
-                            # Jitter estimate from adaptive buffer target (~30% of buffer depth)
-                            _st['jitter_ms'] = round(_cur * 20 * 0.3)
-                            # IFB drop rate: drops / (chunks_sent + drops)
                             _sc   = _st.get('send_chunks', 0)
-                            _dr2  = _st.get('drops', 0)
-                            _tot2 = max(_sc + _dr2, 1)
-                            _st['pkt_loss_pct'] = round(_dr2 / _tot2 * 100, 1)
+                            _dr   = _st.get('drops', 0)
+                            _st['pkt_loss_pct'] = round(_dr / max(_sc + _dr, 1) * 100, 1)
+                            _st['last_adapt']   = _now
                 except Exception:
                     break
         finally:
@@ -2293,9 +2269,6 @@ def _room_public(room: dict) -> dict:
             'send_chunks':  send_c,
             'drops':        drops,
             'restarts':     _st.get('restarts', 0),
-            'queue_target': _st.get('queue_target', 25),
-            'queue_depth':  q.qsize() if q else 0,
-            'jitter_ms':    _st.get('jitter_ms'),
             'pkt_loss_pct': loss,
         }
     return r
@@ -3560,9 +3533,8 @@ function _renderRooms(rooms){
       html+='<div><span style="color:var(--mu)">Duration</span> <span>'+_esc(_dStr)+'</span></div>';
       html+='<div><span style="color:var(--mu)">Quality</span> <span>'+_ql+'</span></div>';
       html+='<div><span style="color:var(--mu)">Restarts</span> <span style="color:'+(sb.restarts>0?'var(--wn)':'var(--ok)')+'">'+sb.restarts+'</span></div>';
-      if(sb.pkt_loss_pct!=null) html+='<div><span style="color:var(--mu)">Pkt loss</span> <span style="color:'+(sb.pkt_loss_pct>2?'var(--al)':sb.pkt_loss_pct>0.5?'var(--wn)':'var(--ok)')+'">'+sb.pkt_loss_pct+'%</span></div>';
-      if(sb.jitter_ms!=null)    html+='<div><span style="color:var(--mu)">Buffer jitter est.</span> <span>'+sb.jitter_ms+' ms</span></div>';
-      html+='<div><span style="color:var(--mu)">Buffer</span> <span>'+sb.queue_depth+'/'+sb.queue_target+' pkt</span></div>';
+      if(sb.pkt_loss_pct!=null) html+='<div><span style="color:var(--mu)">IFB drops</span> <span style="color:'+(sb.pkt_loss_pct>5?'var(--al)':sb.pkt_loss_pct>1?'var(--wn)':'var(--ok)')+'">'+sb.pkt_loss_pct+'%</span></div>';
+      html+='<div><span style="color:var(--mu)">Sent</span> <span>'+(sb.send_chunks||0)+' frames</span></div>';
       html+='</div>';
       html+='</div>';
     }
