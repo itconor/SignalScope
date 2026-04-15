@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.2.0",
+    "version":  "2.3.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -455,6 +455,21 @@ body::after{
 .cc-health-fill{height:100%;border-radius:3px;transition:width .6s ease,background .4s}
 /* SLA text */
 .cc-sla{font-size:10px;color:var(--mu);font-weight:600;font-variant-numeric:tabular-nums;margin-top:-2px}
+/* Now playing on chain card */
+.cc-np{
+  width:100%;text-align:center;margin-top:2px;
+  font-size:10px;color:var(--acc);font-weight:600;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  min-height:14px;line-height:1.3;font-style:italic;
+}
+.cc-np-artist{color:var(--tx);font-style:normal;font-weight:700}
+/* Artwork replaces logo/avatar when available */
+.cc-art{
+  width:80px;height:80px;border-radius:14px;object-fit:cover;
+  box-shadow:0 4px 18px rgba(0,0,0,.4);
+  border:1px solid rgba(255,255,255,.08);
+  transition:opacity .4s;
+}
 
 /* ═══ Meter scroll ═══ */
 #wb-scroll{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 20px 16px}
@@ -794,12 +809,26 @@ function renderChains(chains){
   chains.forEach(function(ch){
     var st=ch.display_status||ch.status||'unknown';
     var cls='cc cc-'+(st==='ok'||st==='pending'||st==='adbreak'?'ok':st==='fault'?'fault':'');
-    var hasLogo=_chainLogos[ch.id];
     var col=_colorFor(ch.name||'?');
-    var logo=hasLogo
-      ?'<img class="cc-logo" src="/wallboard/logo/'+_e(ch.id)+'?_='+(_chainLogos._ts||0)+'" alt="" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
-       +'<div class="cc-avatar" style="display:none;background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>'
-      :'<div class="cc-avatar" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
+
+    // Now-playing artwork from Planet Radio
+    var rpuid=(_cfg.chain_stations||{})[ch.id]||'';
+    var np=rpuid?(_npData[rpuid]||null):null;
+    var hasArt=np&&np.artwork;
+    var hasLogo=_chainLogos[ch.id];
+
+    // Priority: 1) NP artwork  2) uploaded logo  3) gradient avatar
+    var visual;
+    if(hasArt){
+      visual='<img class="cc-art" src="'+_e(np.artwork)+'" alt="" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+        +'<div class="cc-avatar" style="display:none;background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
+    }else if(hasLogo){
+      visual='<img class="cc-logo" src="/wallboard/logo/'+_e(ch.id)+'?_='+(_chainLogos._ts||0)+'" alt="" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+        +'<div class="cc-avatar" style="display:none;background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
+    }else{
+      visual='<div class="cc-avatar" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
+    }
+
     var sCls=st==='fault'?'s-fault':(st==='ok'||st==='pending'||st==='adbreak')?'s-ok':'s-unk';
     var sTxt=st==='fault'?'⚠ FAULT':(st==='ok'||st==='pending'||st==='adbreak')?'● ON AIR':'○ —';
     var nodes='';
@@ -807,14 +836,21 @@ function renderChains(chains){
       if(i>0)nodes+='<span class="cc-arr">▸</span>';
       nodes+='<span class="cc-nd '+(n.status||'unknown')+'" title="'+_e(n.label||n.stream||n.name||'?')+'"></span>';
     });
+    // Now playing text
+    var npHtml='';
+    if(np&&(np.artist||np.title)){
+      var txt=np.artist?'<span class="cc-np-artist">'+_e(np.artist)+'</span> — '+_e(np.title):_e(np.title);
+      npHtml='<div class="cc-np">'+txt+'</div>';
+    }
     // Health bar
     var hp=ch.sla_pct;var hpW=hp!=null?Math.max(0,Math.min(100,hp)):100;
     var hpCol=hpW>=99.5?'var(--ok)':hpW>=98?'var(--wn)':'var(--al)';
     var hpHtml='<div class="cc-health"><div class="cc-health-fill" style="width:'+hpW+'%;background:'+hpCol+'"></div></div>';
     var slaText=(hp!=null&&hp<100)?'<div class="cc-sla">'+hp.toFixed(1)+'% uptime</div>':'';
-    html+='<div class="'+cls+'" data-cid="'+_e(ch.id)+'">'+logo
+    html+='<div class="'+cls+'" data-cid="'+_e(ch.id)+'">'+visual
       +'<div class="cc-name" title="'+_e(ch.name)+'">'+_e(ch.name)+'</div>'
       +'<div class="cc-status '+sCls+'"><span class="cc-sdot"></span>'+sTxt+'</div>'
+      +npHtml
       +'<div class="cc-nodes">'+nodes+'</div>'
       +hpHtml+slaText+'</div>';
   });
@@ -956,8 +992,34 @@ function livePoll(){
     })});
   }).catch(function(){});
 }
-poll();chainPoll();livePoll();
-setInterval(poll,POLL_MS);setInterval(chainPoll,CHAIN_MS);setInterval(livePoll,LIVE_MS);
+/* ═══ Now Playing (Planet Radio) ═══ */
+var _npData={};       // rpuid → {artist,title,artwork}
+var _npStations=null; // [{rpuid,name},...]
+var NP_MS=15000;
+
+function npPoll(){
+  var map=_cfg.chain_stations||{};
+  var rpuids=[];Object.keys(map).forEach(function(cid){var r=map[cid];if(r&&rpuids.indexOf(r)<0)rpuids.push(r)});
+  if(!rpuids.length)return;
+  rpuids.forEach(function(rpuid){
+    fetch('/api/nowplaying/'+encodeURIComponent(rpuid),{credentials:'same-origin'})
+      .then(function(r){return r.ok?r.json():Promise.reject()})
+      .then(function(d){
+        _npData[rpuid]=d;
+        if(_lastChains)renderChains(_lastChains);
+      }).catch(function(){});
+  });
+}
+function loadNpStations(){
+  fetch('/api/nowplaying_stations',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():Promise.reject()})
+    .then(function(d){_npStations=d||[]})
+    .catch(function(){_npStations=[]});
+}
+loadNpStations();
+
+poll();chainPoll();livePoll();npPoll();
+setInterval(poll,POLL_MS);setInterval(chainPoll,CHAIN_MS);setInterval(livePoll,LIVE_MS);setInterval(npPoll,NP_MS);
 
 /* ═══ Ticker ═══ */
 function buildTicker(alerts){
@@ -977,14 +1039,24 @@ function buildTicker(alerts){
 function renderDrawerChains(){
   var el=document.getElementById('dr-chains');
   if(!_lastChains||!_lastChains.length){el.innerHTML='<span style="color:var(--mu);font-size:12px">No chains configured</span>';return}
+  var csMap=_cfg.chain_stations||{};
   var html='';_lastChains.forEach(function(ch){
     var hasLogo=_chainLogos[ch.id];var col=_colorFor(ch.name||'?');
     var logo=hasLogo?'<img class="dr-ch-logo" src="/wallboard/logo/'+_e(ch.id)+'?_='+Date.now()+'" alt="">'
       :'<div class="dr-ch-av" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
+    // Planet Radio station selector
+    var curRpuid=csMap[ch.id]||'';
+    var opts='<option value="">— None —</option>';
+    if(_npStations){_npStations.forEach(function(s){
+      opts+='<option value="'+_e(s.rpuid)+'"'+(s.rpuid===curRpuid?' selected':'')+'>'+_e(s.name)+'</option>';
+    })}
+    var selHtml='<select data-np-chain="'+_e(ch.id)+'" style="background:#0d1e40;border:1px solid var(--bor);border-radius:5px;color:var(--tx);padding:3px 6px;font-size:11px;max-width:160px;font-family:inherit">'+opts+'</select>';
     html+='<div class="dr-chain">'+logo+'<div class="dr-ch-info"><div class="dr-ch-name">'+_e(ch.name)+'</div>'
       +'<div class="dr-ch-actions"><button class="btn bp bs" data-upload-logo="'+_e(ch.id)+'">Upload Logo</button>'
       +(hasLogo?'<button class="btn bd bs" data-rm-logo="'+_e(ch.id)+'">Remove</button>':'')
-      +'</div></div></div>'});
+      +'</div>'
+      +'<div style="margin-top:4px;display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--mu);white-space:nowrap">Now Playing:</span>'+selHtml+'</div>'
+      +'</div></div>'});
   el.innerHTML=html;
 }
 
@@ -1018,6 +1090,13 @@ document.getElementById('wb-drawer').addEventListener('click',function(e){
   var ul=e.target.closest('[data-upload-logo]');if(ul){uploadLogo(ul.dataset.uploadLogo);return}
   var rm=e.target.closest('[data-rm-logo]');if(rm){removeLogo(rm.dataset.rmLogo);return}
   var sz=e.target.closest('[data-sz]');if(sz){setSize(sz.dataset.sz);saveConfig()}
+});
+document.getElementById('dr-chains').addEventListener('change',function(e){
+  var sel=e.target.closest('[data-np-chain]');if(!sel)return;
+  var cid=sel.dataset.npChain,rpuid=sel.value;
+  if(!_cfg.chain_stations)_cfg.chain_stations={};
+  if(rpuid)_cfg.chain_stations[cid]=rpuid;else delete _cfg.chain_stations[cid];
+  saveConfig();npPoll();
 });
 document.getElementById('dr-streams').addEventListener('change',function(e){
   var cb=e.target.closest('[data-stream-key]');if(!cb)return;
