@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.18",
+    "version": "1.5.19",
 }
 
 import asyncio as _asyncio
@@ -1629,10 +1629,11 @@ def _stop_rtp_bridge(room_id: str):
     if sdp_path:
         try: os.unlink(sdp_path)
         except Exception: pass
-    stderr_path = bridge.get('recv_stderr_path')
-    if stderr_path:
-        try: os.unlink(stderr_path)
-        except Exception: pass
+    for _key in ('recv_stderr_path', 'send_stderr_path'):
+        _p = bridge.get(_key)
+        if _p:
+            try: os.unlink(_p)
+            except Exception: pass
 
 
 def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
@@ -1755,11 +1756,12 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         + send_ar + send_extra
         + ['-f', 'rtp', f'rtp://{rtp_host}:{rtp_port}']
     )
+    send_stderr_path = f"/tmp/iplink_rtp_send_{room_id[:8]}.log"
     try:
         send_proc = subprocess.Popen(
             send_cmd,
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL)
+            stderr=open(send_stderr_path, 'w'))
     except Exception as _e:
         recv_proc.kill()
         if _log: _log(f"[IPLink SIP] plain RTP send ffmpeg failed: {_e}")
@@ -1792,34 +1794,35 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
     }
 
     _rtp_bridges[room_id] = {
-        'recv_proc':       recv_proc,
-        'send_proc':       send_proc,
-        'stop_evt':        stop_evt,
-        'sdp_path':        recv_sdp_path,
+        'recv_proc':        recv_proc,
+        'send_proc':        send_proc,
+        'stop_evt':         stop_evt,
+        'sdp_path':         recv_sdp_path,
         'recv_stderr_path': recv_stderr_path,
-        'answer_sdp':      None,   # filled in below after answer_sdp is built
+        'send_stderr_path': send_stderr_path,
+        'answer_sdp':       None,   # filled in below after answer_sdp is built
     }
 
-    # Keepalive thread: ffmpeg's SDP/UDP demuxer has a ~10 s idle timeout that
-    # fires when no RTP arrives (typically during a Linphone re-INVITE pause).
-    # Send a minimal valid RTP packet to our own recv port every 5 s so that
-    # ffmpeg never sees 10 s of silence and never needs to restart.
-    # The keepalive is 12-byte RTP header + 1-byte Opus DTX comfort-noise TOC
-    # (0xf8 = CELT config, mono, 1 frame, empty payload = silence).  The packet
-    # is inaudible — the decoder produces <1 ms of silence per keepalive.
+    # Keepalive thread: prevents ffmpeg's SDP/UDP demuxer from timing out when
+    # no real RTP arrives (e.g. during a Linphone re-INVITE renegotiation pause).
+    # Fires every 2 s — well within any plausible ffmpeg idle timeout.
+    # Each keepalive is a valid 12-byte RTP header + 2-byte Opus silence payload
+    # (TOC 0x78 = SILK, mono, 20 ms frame + 0x00 = minimal valid Opus frame).
+    # Timestamps advance by 960 (20 ms @ 48 kHz) so ffmpeg sees a legitimate stream.
     def _recv_keepalive():
         import socket as _socket, struct as _struct, random as _random
         _ssrc = _random.randint(1, 0x7FFFFFFF)
         _seq  = _random.randint(0, 0xFFFF)
         _ts   = _random.randint(0, 0xFFFFFFFF)
         _pt   = pt
-        while not stop_evt.wait(5.0):
+        while not stop_evt.wait(2.0):
             try:
                 hdr = _struct.pack('>BBHII',
                                    0x80, _pt & 0x7F,
                                    _seq & 0xFFFF, _ts & 0xFFFFFFFF, _ssrc)
+                # 2-byte Opus payload: TOC 0x78 (SILK NB 20 ms mono 1-frame) + 0x00 (SID/silence)
                 with _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM) as _s:
-                    _s.sendto(hdr + b'\xf8', ('127.0.0.1', local_port))
+                    _s.sendto(hdr + b'\x78\x00', ('127.0.0.1', local_port))
                 _seq = (_seq + 1) & 0xFFFF
                 _ts  = (_ts + 960) & 0xFFFFFFFF   # 20 ms @ 48 kHz
             except Exception:
@@ -1913,14 +1916,14 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                 if _st is not None: _st['recv_chunks'] = total_chunks
                 if total_chunks == 1:
                     if _log: _log(f"[IPLink SIP] plain RTP: first recv chunk → room {room_id[:8]}")
-                    deadline = time.monotonic() + CHUNK_DUR
+                    deadline = time.monotonic()   # start pacing from now; +CHUNK_DUR added next iter
                 elif deadline is not None:
                     deadline += CHUNK_DUR
                     slack = deadline - time.monotonic()
                     if 0 < slack < 0.5:          # sleep only if we're ahead
                         time.sleep(slack)
                     elif slack < -1.0:            # >1 s behind — reset
-                        deadline = time.monotonic() + CHUNK_DUR
+                        deadline = time.monotonic()
         finally:
             if _log: _log(f"[IPLink SIP] plain RTP recv ended: room {room_id[:8]} "
                           f"({total_chunks} chunks, {restarts} restarts)")
@@ -1943,30 +1946,45 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                                  name=f'SIPrHup-{room_id[:8]}').start()
 
     # Send thread: send_q → ffmpeg stdin → RTP (source IFB → caller)
-    # Wall-clock pacing: write one 20 ms chunk every 20 ms of wall time.
+    # Wall-clock pacing: deliver exactly one 20 ms frame every 20 ms.
     # Without pacing, burst delivery from the source loop causes Linphone's
     # jitter buffer to overflow → glitches → call drop.
+    #
+    # Restart loop (MAX_SEND_RESTARTS=10): if ffmpeg's RTP output exits for any
+    # reason (transient network error, rtpengine port change on re-INVITE, etc.)
+    # a new ffmpeg send process is started immediately — IFB audio resumes within
+    # one 20 ms frame rather than the call being silently one-way forever.
+    def _make_send_proc():
+        return subprocess.Popen(
+            send_cmd,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=open(send_stderr_path, 'w'))
+
     def _send_thread():
-        CHUNK_DUR = 1920 / (48000 * 2)          # = 0.020 s
-        chunks    = 0
-        deadline  = None
+        nonlocal send_proc
+        CHUNK_DUR       = 1920 / (48000 * 2)    # 0.020 s per 20 ms frame
+        chunks          = 0
+        deadline        = None
+        send_restarts   = 0
+        MAX_SEND_RESTARTS = 10
         try:
             while not stop_evt.is_set():
                 try:
                     pcm = send_q.get(timeout=0.5)
                 except _queue.Empty:
-                    deadline = None              # reset on gap in source audio
+                    deadline = None              # reset pacing on gap in source
                     continue
-                # Pace to real-time before writing
+                # Pace to real-time: set deadline = now on first chunk so the very
+                # next increment gives now+CHUNK_DUR (not now+2*CHUNK_DUR).
                 if deadline is None:
-                    deadline = time.monotonic() + CHUNK_DUR
+                    deadline = time.monotonic()
                 else:
                     deadline += CHUNK_DUR
                     slack = deadline - time.monotonic()
                     if 0 < slack < 0.5:
                         time.sleep(slack)
                     elif slack < -1.0:           # >1 s behind — reset
-                        deadline = time.monotonic() + CHUNK_DUR
+                        deadline = time.monotonic()
                 try:
                     send_proc.stdin.write(pcm)
                     send_proc.stdin.flush()
@@ -1983,14 +2001,40 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                             _dr   = _st.get('drops', 0)
                             _st['pkt_loss_pct'] = round(_dr / max(_sc + _dr, 1) * 100, 1)
                             _st['last_adapt']   = _now
-                except Exception:
-                    break
+                except Exception as _we:
+                    # send_proc died (BrokenPipeError or similar) — log and restart
+                    try:
+                        with open(send_stderr_path) as _sf:
+                            _se = _sf.read()
+                        if _se.strip() and _log:
+                            _log(f"[IPLink SIP] ffmpeg send exit (restart {send_restarts+1}): "
+                                 f"{_se.strip()[-200:]}")
+                    except Exception: pass
+                    if send_restarts >= MAX_SEND_RESTARTS or stop_evt.is_set():
+                        break
+                    send_restarts += 1
+                    _st = _sip_bridge_stats.get(room_id)
+                    if _st: _st['restarts'] = _st.get('restarts', 0) + 1
+                    try: send_proc.kill()
+                    except Exception: pass
+                    time.sleep(0.1)
+                    if stop_evt.is_set():
+                        break
+                    try:
+                        send_proc = _make_send_proc()
+                        _b = _rtp_bridges.get(room_id)
+                        if _b: _b['send_proc'] = send_proc
+                    except Exception as _re:
+                        if _log: _log(f"[IPLink SIP] plain RTP send restart failed: {_re}")
+                        break
+                    deadline = None              # reset pacing after restart
         finally:
             try: send_proc.stdin.close()
             except Exception: pass
             try: send_proc.kill()
             except Exception: pass
-            if _log: _log(f"[IPLink SIP] plain RTP send ended: room {room_id[:8]} ({chunks} chunks)")
+            if _log: _log(f"[IPLink SIP] plain RTP send ended: room {room_id[:8]} "
+                          f"({chunks} chunks, {send_restarts} restarts)")
 
     threading.Thread(target=_recv_thread, daemon=True,
                      name=f'SIPrRcv-{room_id[:8]}').start()
