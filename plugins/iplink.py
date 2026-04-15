@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.15",
+    "version": "1.5.16",
 }
 
 import asyncio as _asyncio
@@ -1794,11 +1794,8 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         'queue_target': 25,       # adaptive target (chunks); start at 500 ms
         'last_adapt':   time.monotonic(),
         'restarts':     0,
-        'jitter_ms':    None,
-        'rtt_ms':       None,
-        'pkt_loss_pct': None,
-        'rtcp_remote_ssrc': 0,
-        'our_ssrc':     __import__('random').randint(1, 0x7FFFFFFF),
+        'jitter_ms':    None,    # estimated from adaptive queue target (ms)
+        'pkt_loss_pct': None,    # estimated from drop counter
     }
 
     _rtp_bridges[room_id] = {
@@ -1809,118 +1806,6 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         'recv_stderr_path': recv_stderr_path,
         'answer_sdp':      None,   # filled in below after answer_sdp is built
     }
-
-    # RTCP thread: receive RTCP SR from rtpengine → parse quality stats → send RR back.
-    # Keeps rtpengine's quality-of-service bookkeeping alive and gives us RTT + jitter data.
-    rtcp_port_remote = rtp_port + 1   # standard RTCP port (rtp+1) unless rtcp-mux
-    def _rtcp_thread():
-        import socket as _socket, struct as _struct, time as _time
-        stats = _sip_bridge_stats.get(room_id, {})
-        our_ssrc = stats.get('our_ssrc', 0xCAFEBABE)
-        rtcp_local_port = local_port + 1
-
-        try:
-            sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-            sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-            sock.bind(('0.0.0.0', rtcp_local_port))
-            sock.settimeout(1.0)
-        except Exception as _e:
-            if _log: _log(f"[IPLink SIP] RTCP socket error (room {room_id[:8]}): {_e}")
-            return
-
-        remote_rtcp_addr = None
-        last_sr_compact  = 0          # compact NTP mid-bits from last SR
-        last_sr_mono     = 0.0        # monotonic time when SR was received
-        prev_recv_chunks = 0
-        prev_sr_pkt_cnt  = 0
-
-        try:
-            while not stop_evt.is_set():
-                try:
-                    data, addr = sock.recvfrom(1500)
-                except _socket.timeout:
-                    continue
-                if not data or len(data) < 8:
-                    continue
-
-                remote_rtcp_addr = (rtp_host, rtcp_port_remote)
-                offset = 0
-                while offset + 4 <= len(data):
-                    try:
-                        ver = (data[offset] >> 6) & 0x3
-                        if ver != 2:
-                            break
-                        pt      = data[offset + 1]
-                        pkt_len = (_struct.unpack_from('>H', data, offset + 2)[0] + 1) * 4
-                        if offset + pkt_len > len(data):
-                            break
-
-                        if pt == 200 and pkt_len >= 28:  # Sender Report
-                            (ssrc, ntp_msw, ntp_lsw,
-                             _rtp_ts, sr_pkt_cnt, _sr_oct) = \
-                                _struct.unpack_from('>IIIIII', data, offset + 4)
-                            last_sr_compact = ((ntp_msw & 0xFFFF) << 16) | (ntp_lsw >> 16)
-                            last_sr_mono    = _time.monotonic()
-                            stats = _sip_bridge_stats.get(room_id)
-                            if stats is not None:
-                                stats['rtcp_remote_ssrc'] = ssrc
-                                # Packet loss: compare SR counter with our recv count
-                                recv_now = stats.get('recv_chunks', 0)
-                                expected = sr_pkt_cnt - prev_sr_pkt_cnt
-                                got      = recv_now - prev_recv_chunks
-                                if expected > 0:
-                                    loss = max(0, expected - got)
-                                    loss_pct = round(loss / expected * 100, 1)
-                                    stats['pkt_loss_pct'] = loss_pct
-                                prev_sr_pkt_cnt  = sr_pkt_cnt
-                                prev_recv_chunks = recv_now
-
-                        offset += pkt_len
-                    except Exception:
-                        break
-
-                # Send RTCP RR back
-                if remote_rtcp_addr is None:
-                    remote_rtcp_addr = (rtp_host, rtcp_port_remote)
-                stats = _sip_bridge_stats.get(room_id)
-                if stats is None:
-                    continue
-                remote_ssrc    = stats.get('rtcp_remote_ssrc', 0)
-                recv_chunks    = stats.get('recv_chunks', 0)
-                drops_val      = stats.get('drops', 0)
-                total          = max(recv_chunks + drops_val, 1)
-                frac_lost      = min(255, int(drops_val / total * 256))
-                cum_lost       = min(0xFFFFFF, drops_val)
-                dlsr           = 0
-                if last_sr_mono > 0:
-                    dlsr_s = _time.monotonic() - last_sr_mono
-                    dlsr   = min(0xFFFFFFFF, int(dlsr_s * 65536))
-                    rtt_s  = max(0.0, dlsr_s - (1.0 / 65536 * last_sr_compact))
-                    stats['rtt_ms'] = round(rtt_s * 1000, 1)
-                # Estimate jitter from queue_target (rough heuristic in absence of RTP timestamps)
-                qt = stats.get('queue_target', 25)
-                stats['jitter_ms'] = round(qt * 20 * 0.3)   # ~30% of buffer target as jitter estimate
-
-                rr_block = (
-                    _struct.pack('>I', remote_ssrc) +
-                    _struct.pack('>I', (frac_lost << 24) | (cum_lost & 0xFFFFFF)) +
-                    _struct.pack('>I', recv_chunks & 0xFFFFFFFF) +
-                    _struct.pack('>I', stats.get('jitter_ms', 0) * 48) +   # convert ms → samples @ 48k
-                    _struct.pack('>I', last_sr_compact) +
-                    _struct.pack('>I', dlsr)
-                )
-                # RR header: V=2 P=0 RC=1 PT=201 length=7 (8 words - 1) + sender SSRC
-                rr_hdr = _struct.pack('>BBHI', 0x81, 201, 7, our_ssrc)
-                try:
-                    sock.sendto(rr_hdr + rr_block, remote_rtcp_addr)
-                except Exception:
-                    pass
-        finally:
-            try: sock.close()
-            except Exception: pass
-
-    threading.Thread(target=_rtcp_thread, daemon=True,
-                     name=f'SIPrRTCP-{room_id[:8]}').start()
 
     # Keepalive thread: ffmpeg's SDP/UDP demuxer has a ~10 s idle timeout that
     # fires when no RTP arrives (typically during a Linphone re-INVITE pause).
@@ -2113,6 +1998,11 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                             _st['drops_recent']   = 0
                             _st['chunks_recent']  = 0
                             _st['last_adapt']     = _now
+                            # Jitter estimate from adaptive buffer target (~30% of buffer depth)
+                            _st['jitter_ms'] = round(_cur * 20 * 0.3)
+                            # Packet loss estimate from drop rate
+                            _total = max(_st.get('recv_chunks', 0) + _st.get('drops', 0), 1)
+                            _st['pkt_loss_pct'] = round(_st.get('drops', 0) / _total * 100, 1)
                 except Exception:
                     break
         finally:
@@ -2402,7 +2292,6 @@ def _room_public(room: dict) -> dict:
             'queue_target': _st.get('queue_target', 25),
             'queue_depth':  q.qsize() if q else 0,
             'jitter_ms':    _st.get('jitter_ms'),
-            'rtt_ms':       _st.get('rtt_ms'),
             'pkt_loss_pct': loss,
         }
     return r
@@ -3668,8 +3557,7 @@ function _renderRooms(rooms){
       html+='<div><span style="color:var(--mu)">Quality</span> <span>'+_ql+'</span></div>';
       html+='<div><span style="color:var(--mu)">Restarts</span> <span style="color:'+(sb.restarts>0?'var(--wn)':'var(--ok)')+'">'+sb.restarts+'</span></div>';
       if(sb.pkt_loss_pct!=null) html+='<div><span style="color:var(--mu)">Pkt loss</span> <span style="color:'+(sb.pkt_loss_pct>2?'var(--al)':sb.pkt_loss_pct>0.5?'var(--wn)':'var(--ok)')+'">'+sb.pkt_loss_pct+'%</span></div>';
-      if(sb.jitter_ms!=null)    html+='<div><span style="color:var(--mu)">Jitter</span> <span>'+sb.jitter_ms+' ms</span></div>';
-      if(sb.rtt_ms!=null)       html+='<div><span style="color:var(--mu)">RTT</span> <span style="color:'+(sb.rtt_ms>150?'var(--wn)':'var(--ok)')+'">'+sb.rtt_ms+' ms</span></div>';
+      if(sb.jitter_ms!=null)    html+='<div><span style="color:var(--mu)">Buffer jitter est.</span> <span>'+sb.jitter_ms+' ms</span></div>';
       html+='<div><span style="color:var(--mu)">Buffer</span> <span>'+sb.queue_depth+'/'+sb.queue_target+' pkt</span></div>';
       html+='</div>';
       html+='</div>';
