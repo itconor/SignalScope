@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.9.1",
+    "version":  "2.9.2",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -73,21 +73,16 @@ def register(app, ctx):
     # our handler runs LAST (after signalscope has set its headers).
     def _wallboard_kiosk_headers(response):
         if getattr(g, '_wb_kiosk', False):
-            response.headers["X-Frame-Options"] = "ALLOWALL"
-            response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; "
-                "script-src 'self' 'unsafe-inline'; "
-                "style-src 'self' 'unsafe-inline'; "
-                "script-src-attr 'unsafe-inline'; "
-                "img-src 'self' data: blob: https: http:; "
-                "media-src 'self' blob:; "
-                "connect-src 'self'; "
-                "font-src 'self' data:; "
-                "frame-ancestors *; "
-                "form-action 'self'"
-            )
+            # Strip all security headers that could interfere with signage
+            for h in ('X-Frame-Options', 'Content-Security-Policy',
+                      'X-Content-Type-Options', 'Referrer-Policy',
+                      'Strict-Transport-Security'):
+                response.headers.pop(h, None)
         return response
-    app.after_request_funcs.setdefault(None, []).insert(0, _wallboard_kiosk_headers)
+    try:
+        app.after_request_funcs.setdefault(None, []).insert(0, _wallboard_kiosk_headers)
+    except Exception:
+        app.after_request(_wallboard_kiosk_headers)
 
     def _validate_wb_token():
         """Validate mobile API token from query string. Returns True if valid."""
@@ -121,16 +116,31 @@ def register(app, ctx):
             return redirect(url_for("login", next=request.path))
         return render_template_string(_TPL, build=BUILD)
 
-    # ── Kiosk route — for TV signage (Yodeck etc.) ──────────────────
-    # Bypasses session/cookie auth entirely. Token is embedded in the
-    # page so AJAX calls authenticate via header. No redirects, relaxed
-    # CSP/X-Frame-Options, minimal headers for maximum compatibility.
+    # ── Kiosk / TV route ────────────────────────────────────────────
+    # Token in the URL path — no query string, no redirects, no fuss.
+    # Usage: /wallboard/tv/YOUR_TOKEN
+    # Also keeps the old ?token= route for backwards compat.
+    @app.get("/wallboard/tv/<token>")
+    def wallboard_tv(token):
+        return _wallboard_kiosk_view(token)
+
     @app.get("/wallboard/kiosk")
     def wallboard_kiosk():
-        if not _validate_wb_token():
-            return "Invalid or missing token", 403
         token = request.args.get("token", "").strip() \
              or request.args.get("api_key", "").strip()
+        return _wallboard_kiosk_view(token)
+
+    def _wallboard_kiosk_view(token=None):
+        if not token:
+            return "Missing token", 403
+        import hmac as _hmac_mod
+        try:
+            expected = str(getattr(getattr(monitor.app_cfg, "mobile_api",
+                                           None), "token", "") or "").strip()
+        except Exception:
+            expected = ""
+        if not expected or not _hmac_mod.compare_digest(expected, token):
+            return "Invalid token", 403
         from flask import session
         session["logged_in"] = True
         session["login_ts"] = _time.time()
@@ -139,9 +149,6 @@ def register(app, ctx):
         if not session.get("_csrf"):
             import hashlib
             session["_csrf"] = hashlib.sha256(os.urandom(32)).hexdigest()
-        # Flag for after_request to apply relaxed headers
-        # (signalscope's _apply_security_headers runs first and overwrites
-        # any headers we set here, so we re-apply in our own after_request)
         g._wb_kiosk = True
         return render_template_string(_TPL, build=BUILD)
 
