@@ -57,3 +57,4 @@ static/.claude/
 *.swp
 *.swo
 CLAUDE.md
+plugins/wallboard_logos/
