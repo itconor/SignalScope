@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.7.0",
+    "version":  "2.8.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -66,8 +66,35 @@ def register(app, ctx):
     from flask import jsonify, render_template_string, request, send_file
 
     @app.get("/hub/wallboard")
-    @login_required
     def wallboard_page():
+        from flask import session
+        # Allow direct access with mobile API token for TV/kiosk use
+        # Usage: /hub/wallboard?token=YOUR_MOBILE_API_TOKEN
+        token = request.args.get("token", "").strip() \
+             or request.args.get("api_key", "").strip()
+        if token:
+            import hmac as _hmac_mod
+            cfg = monitor.app_cfg
+            expected = ""
+            try:
+                expected = str(getattr(getattr(cfg, "mobile_api", None),
+                                       "token", "") or "").strip()
+            except Exception:
+                pass
+            if expected and _hmac_mod.compare_digest(expected, token):
+                session["logged_in"] = True
+                session["login_ts"] = _time.time()
+                session["username"] = "wallboard"
+                session["role"] = "viewer"
+                if not session.get("_csrf"):
+                    import hashlib
+                    session["_csrf"] = hashlib.sha256(
+                        os.urandom(32)).hexdigest()
+        # Fall back to normal login_required check
+        cfg = monitor.app_cfg
+        if cfg.auth.enabled and not session.get("logged_in"):
+            from flask import redirect, url_for
+            return redirect(url_for("login", next=request.path))
         return render_template_string(_TPL, build=BUILD)
 
     @app.get("/api/wallboard/data")
