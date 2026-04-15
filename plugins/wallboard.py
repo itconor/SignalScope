@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.8.0",
+    "version":  "2.8.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -95,7 +95,18 @@ def register(app, ctx):
         if cfg.auth.enabled and not session.get("logged_in"):
             from flask import redirect, url_for
             return redirect(url_for("login", next=request.path))
-        return render_template_string(_TPL, build=BUILD)
+        resp = app.make_response(render_template_string(_TPL, build=BUILD))
+        # Allow embedding in iframes for TV signage (Yodeck etc.)
+        # when accessed with a valid token
+        if token and session.get("logged_in"):
+            resp.headers["X-Frame-Options"] = "ALLOWALL"
+            # Rewrite CSP to allow any frame ancestor
+            csp = resp.headers.get("Content-Security-Policy", "")
+            if csp:
+                csp = csp.replace("frame-ancestors 'self'",
+                                  "frame-ancestors *")
+                resp.headers["Content-Security-Policy"] = csp
+        return resp
 
     @app.get("/api/wallboard/data")
     @login_required
