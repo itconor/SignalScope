@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.6.0",
+    "version":  "2.7.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -409,7 +409,7 @@ body::after{
 #wb-chains:empty{padding:0}
 
 .cc{
-  min-width:240px;flex-shrink:0;
+  min-width:240px;max-width:420px;flex:1 1 240px;
   background:linear-gradient(160deg,rgba(13,35,70,.92),rgba(8,22,48,.96));
   border:1.5px solid rgba(23,168,255,.12);
   border-radius:20px;padding:20px 22px 16px;
@@ -446,6 +446,8 @@ body::after{
   50%{box-shadow:0 0 40px rgba(239,68,68,.2),0 0 80px rgba(239,68,68,.08),0 4px 24px rgba(0,0,0,.3)}
 }
 
+/* Visual container */
+.cc-visual{display:flex;align-items:center;justify-content:center}
 /* Logo / avatar */
 .cc-logo{
   width:72px;height:72px;border-radius:16px;object-fit:contain;
@@ -1055,65 +1057,124 @@ function updateHero(chains){
   }
 }
 
-/* ═══ Chains ═══ */
+/* ═══ Chains — DOM-diffing (no innerHTML rebuild, no image flicker) ═══ */
+function _ccStatusCls(st){return st==='fault'?'s-fault':(st==='ok'||st==='pending'||st==='adbreak')?'s-ok':'s-unk'}
+function _ccStatusTxt(st){return st==='fault'?'⚠ FAULT':(st==='ok'||st==='pending'||st==='adbreak')?'● ON AIR':'○ —'}
+function _ccCardCls(st){return'cc cc-'+(st==='ok'||st==='pending'||st==='adbreak'?'ok':st==='fault'?'fault':'')}
+
 function renderChains(chains){
   var el=document.getElementById('wb-chains');
   if(!chains||!chains.length){el.innerHTML='';return}
-  var html='';
-  chains.forEach(function(ch){
-    var st=ch.display_status||ch.status||'unknown';
-    var cls='cc cc-'+(st==='ok'||st==='pending'||st==='adbreak'?'ok':st==='fault'?'fault':'');
-    var col=_colorFor(ch.name||'?');
 
-    // Now-playing artwork from Planet Radio
-    var rpuid=(_cfg.chain_stations||{})[ch.id]||'';
+  // Build map of existing cards
+  var existingMap={};
+  el.querySelectorAll('.cc[data-cid]').forEach(function(c){existingMap[c.dataset.cid]=c});
+  var seenIds={};
+
+  chains.forEach(function(ch){
+    var cid=ch.id;
+    seenIds[cid]=true;
+    var st=ch.display_status||ch.status||'unknown';
+    var col=_colorFor(ch.name||'?');
+    var rpuid=(_cfg.chain_stations||{})[cid]||'';
     var np=rpuid?(_npData[rpuid]||null):null;
     var hasArt=np&&np.artwork;
-    var hasLogo=_chainLogos[ch.id];
+    var hasLogo=_chainLogos[cid];
 
-    // Priority: 1) NP artwork  2) uploaded logo  3) gradient avatar
-    var visual;
-    if(hasArt){
-      visual='<img class="cc-art" src="'+_e(np.artwork)+'" alt="" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
-        +'<div class="cc-avatar" style="display:none;background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
-    }else if(hasLogo){
-      visual='<img class="cc-logo" src="/wallboard/logo/'+_e(ch.id)+'?_='+(_chainLogos._ts||0)+'" alt="" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
-        +'<div class="cc-avatar" style="display:none;background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
-    }else{
-      visual='<div class="cc-avatar" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
+    var card=existingMap[cid];
+    if(!card){
+      // Create new card with stable structure
+      card=document.createElement('div');
+      card.dataset.cid=cid;
+      card.innerHTML=
+        '<div class="cc-visual"></div>'
+        +'<div class="cc-name"></div>'
+        +'<div class="cc-status"><span class="cc-sdot"></span><span class="cc-stxt"></span></div>'
+        +'<div class="cc-np-wrap"></div>'
+        +'<div class="cc-nodes"></div>'
+        +'<div class="cc-health"><div class="cc-health-fill"></div></div>'
+        +'<div class="cc-sla"></div>';
+      el.appendChild(card);
     }
 
-    var sCls=st==='fault'?'s-fault':(st==='ok'||st==='pending'||st==='adbreak')?'s-ok':'s-unk';
-    var sTxt=st==='fault'?'⚠ FAULT':(st==='ok'||st==='pending'||st==='adbreak')?'● ON AIR':'○ —';
-    var nodes='';
-    _flatN(ch.nodes||[]).forEach(function(n,i){
-      if(i>0)nodes+='<span class="cc-arr">▸</span>';
-      nodes+='<span class="cc-nd '+(n.status||'unknown')+'" title="'+_e(n.label||n.stream||n.name||'?')+'"></span>';
-    });
-    // Now playing text — show, artist, title
-    var npHtml='';
+    // Update class (status glow etc)
+    card.className=_ccCardCls(st);
+
+    // Update visual (logo/artwork/avatar) — only change src if different
+    var vizEl=card.querySelector('.cc-visual');
+    if(hasArt){
+      var artImg=vizEl.querySelector('.cc-art');
+      if(!artImg){
+        vizEl.innerHTML='<img class="cc-art" alt="">';
+        artImg=vizEl.querySelector('.cc-art');
+      }
+      if(artImg.src!==np.artwork)artImg.src=np.artwork;
+    }else if(hasLogo){
+      var logoImg=vizEl.querySelector('.cc-logo');
+      var logoUrl='/wallboard/logo/'+cid;
+      if(!logoImg||logoImg.className!=='cc-logo'){
+        vizEl.innerHTML='<img class="cc-logo" alt="">';
+        logoImg=vizEl.querySelector('.cc-logo');
+        logoImg.src=logoUrl;
+      }
+    }else{
+      var avEl=vizEl.querySelector('.cc-avatar');
+      if(!avEl){
+        vizEl.innerHTML='<div class="cc-avatar" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
+      }
+    }
+
+    // Name
+    var nameEl=card.querySelector('.cc-name');
+    if(nameEl.textContent!==ch.name){nameEl.textContent=ch.name;nameEl.title=ch.name}
+
+    // Status badge
+    var statusEl=card.querySelector('.cc-status');
+    var sCls=_ccStatusCls(st);
+    if(!statusEl.classList.contains(sCls)){statusEl.className='cc-status '+sCls}
+    var stxtEl=statusEl.querySelector('.cc-stxt');
+    var sTxt=_ccStatusTxt(st);
+    if(stxtEl&&stxtEl.textContent!==sTxt)stxtEl.textContent=sTxt;
+
+    // Now playing
+    var npWrap=card.querySelector('.cc-np-wrap');
     if(np&&(np.artist||np.title||np.show)){
-      npHtml='<div class="cc-np-wrap">';
-      if(np.show)npHtml+='<div class="cc-np-show">'+_e(np.show)+'</div>';
+      var npInner='';
+      if(np.show)npInner+='<div class="cc-np-show">'+_e(np.show)+'</div>';
       if(np.artist||np.title){
         var track=np.artist?'<span class="cc-np-artist">'+_e(np.artist)+'</span> — '+_e(np.title):_e(np.title);
-        npHtml+='<div class="cc-np-track">'+track+'</div>';
+        npInner+='<div class="cc-np-track">'+track+'</div>';
       }
-      npHtml+='</div>';
+      if(npWrap._lastNp!==npInner){npWrap.innerHTML=npInner;npWrap._lastNp=npInner}
+    }else{
+      if(npWrap.innerHTML){npWrap.innerHTML='';npWrap._lastNp=''}
     }
+
+    // Nodes
+    var nodesEl=card.querySelector('.cc-nodes');
+    var nodesHtml='';
+    _flatN(ch.nodes||[]).forEach(function(n,i){
+      if(i>0)nodesHtml+='<span class="cc-arr">▸</span>';
+      nodesHtml+='<span class="cc-nd '+(n.status||'unknown')+'" title="'+_e(n.label||n.stream||n.name||'?')+'"></span>';
+    });
+    if(nodesEl._lastHtml!==nodesHtml){nodesEl.innerHTML=nodesHtml;nodesEl._lastHtml=nodesHtml}
+
     // Health bar
     var hp=ch.sla_pct;var hpW=hp!=null?Math.max(0,Math.min(100,hp)):100;
     var hpCol=hpW>=99.5?'var(--ok)':hpW>=98?'var(--wn)':'var(--al)';
-    var hpHtml='<div class="cc-health"><div class="cc-health-fill" style="width:'+hpW+'%;background:'+hpCol+'"></div></div>';
-    var slaText=(hp!=null&&hp<100)?'<div class="cc-sla">'+hp.toFixed(1)+'% uptime</div>':'';
-    html+='<div class="'+cls+'" data-cid="'+_e(ch.id)+'">'+visual
-      +'<div class="cc-name" title="'+_e(ch.name)+'">'+_e(ch.name)+'</div>'
-      +'<div class="cc-status '+sCls+'"><span class="cc-sdot"></span>'+sTxt+'</div>'
-      +npHtml
-      +'<div class="cc-nodes">'+nodes+'</div>'
-      +hpHtml+slaText+'</div>';
+    var hpFill=card.querySelector('.cc-health-fill');
+    if(hpFill){hpFill.style.width=hpW+'%';hpFill.style.background=hpCol}
+
+    // SLA
+    var slaEl=card.querySelector('.cc-sla');
+    var slaTxt=(hp!=null&&hp<100)?hp.toFixed(1)+'% uptime':'';
+    if(slaEl&&slaEl.textContent!==slaTxt)slaEl.textContent=slaTxt;
   });
-  el.innerHTML=html;
+
+  // Remove cards for chains no longer present
+  Object.keys(existingMap).forEach(function(cid){
+    if(!seenIds[cid])existingMap[cid].remove();
+  });
 }
 function _flatN(nodes){var o=[];(nodes||[]).forEach(function(n){if(n.type==='stack')(n.nodes||[]).forEach(function(s){o.push(s)});else o.push(n)});return o}
 
