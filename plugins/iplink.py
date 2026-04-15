@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.16",
+    "version": "1.5.17",
 }
 
 import asyncio as _asyncio
@@ -1775,9 +1775,11 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         return None
 
     stop_evt   = threading.Event()
-    # 50 × 20 ms = 1 s max IFB queue depth — drop oldest if full so Linphone
-    # always hears near-live audio rather than building up a growing delay.
-    send_q     = _queue.Queue(maxsize=50)
+    # 200 × 20 ms = 4 s max IFB queue capacity.  Sources (Livewire) can deliver
+    # audio in large bursts; a small queue causes immediate overflow and false
+    # "high loss" readings.  The adaptive queue_target caps how deep we let it
+    # fill before dropping, keeping latency reasonable without burst-dropping.
+    send_q     = _queue.Queue(maxsize=200)
     _rtp_send_queues[room_id] = send_q
 
     # Initialise per-call stats (reset any leftover from previous call in this room)
@@ -1788,14 +1790,14 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         'start_time':   time.time(),
         'recv_chunks':  0,
         'send_chunks':  0,
-        'drops':        0,        # chunks dropped because send queue was full
+        'drops':        0,        # IFB chunks dropped (send queue full beyond target)
         'drops_recent': 0,
         'chunks_recent':0,
-        'queue_target': 25,       # adaptive target (chunks); start at 500 ms
+        'queue_target': 50,       # adaptive target (chunks); start at 1 s
         'last_adapt':   time.monotonic(),
         'restarts':     0,
         'jitter_ms':    None,    # estimated from adaptive queue target (ms)
-        'pkt_loss_pct': None,    # estimated from drop counter
+        'pkt_loss_pct': None,    # IFB drop rate: drops / (send_chunks + drops)
     }
 
     _rtp_bridges[room_id] = {
@@ -2000,9 +2002,11 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                             _st['last_adapt']     = _now
                             # Jitter estimate from adaptive buffer target (~30% of buffer depth)
                             _st['jitter_ms'] = round(_cur * 20 * 0.3)
-                            # Packet loss estimate from drop rate
-                            _total = max(_st.get('recv_chunks', 0) + _st.get('drops', 0), 1)
-                            _st['pkt_loss_pct'] = round(_st.get('drops', 0) / _total * 100, 1)
+                            # IFB drop rate: drops / (chunks_sent + drops)
+                            _sc   = _st.get('send_chunks', 0)
+                            _dr2  = _st.get('drops', 0)
+                            _tot2 = max(_sc + _dr2, 1)
+                            _st['pkt_loss_pct'] = round(_dr2 / _tot2 * 100, 1)
                 except Exception:
                     break
         finally:
@@ -2275,10 +2279,10 @@ def _room_public(room: dict) -> dict:
         recv_c = _st.get('recv_chunks', 0)
         send_c = _st.get('send_chunks', 0)
         drops  = _st.get('drops', 0)
-        total  = max(recv_c, 1)
         loss   = _st.get('pkt_loss_pct')
         if loss is None and drops > 0:
-            loss = round(drops / (total + drops) * 100, 1)
+            # IFB drop rate: drops / (chunks_sent_to_caller + drops)
+            loss = round(drops / max(send_c + drops, 1) * 100, 1)
         pub = r
         pub['sip_bridge'] = {
             'caller':       _st.get('caller', ''),
@@ -3545,8 +3549,8 @@ function _renderRooms(rooms){
     if(r.sip_bridge){
       var sb=r.sip_bridge;
       var _ql='🟢 Good';
-      if(sb.restarts>2||sb.pkt_loss_pct>5) _ql='🔴 Poor';
-      else if(sb.restarts>0||sb.pkt_loss_pct>1) _ql='🟡 Fair';
+      if(sb.restarts>5||sb.pkt_loss_pct>15) _ql='🔴 Poor';
+      else if(sb.restarts>1||sb.pkt_loss_pct>5) _ql='🟡 Fair';
       var _dur=sb.duration_s||0;
       var _dStr=(_dur>=3600?Math.floor(_dur/3600)+'h ':'')+(Math.floor((_dur%3600)/60)+'m ')+((_dur%60)+'s');
       html+='<div style="margin:6px 0 2px;border:1px solid var(--bor);border-radius:8px;padding:8px 10px;background:rgba(23,52,95,.18)">';
