@@ -101,11 +101,11 @@
   },
   {
     "id": "wallboard",
-    "name": "Wall Monitor",
+    "name": "Wallboard",
     "file": "wallboard.py",
     "icon": "📺",
-    "description": "Full-screen broadcast wall display for Yodeck and TV monitors. Station cards with 150 ms live VU meters, FM RDS / DAB DLS now-playing text, silence flash, SLA uptime, LUFS readout, AI status, and a scrolling alerts ticker. Hub-only.",
-    "version": "1.0.0",
+    "description": "TV-optimised broadcast wallboard with live chain status cards, station logos, PPM-style level meters, alert ticker, and full customisation. Upload logos per chain, select which streams to display, toggle LUFS/now-playing/hero banner. Gradient avatars, health bars, zone-coloured meters at 150 ms update rate. Hub-only.",
+    "version": "2.1.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/wallboard.py"
   },
