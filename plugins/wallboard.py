@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.5.0",
+    "version":  "2.6.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -270,6 +270,16 @@ def register(app, ctx):
             path = os.path.join(_LOGO_DIR, "_brand" + ext)
             if os.path.exists(path):
                 return send_file(path, max_age=60)
+        return '', 404
+
+    # ── Bauer brand assets (fonts, logos) ────────────────────────────
+    @app.get("/wallboard/asset/<path:filename>")
+    @login_required
+    def wallboard_asset_serve(filename):
+        safe = re.sub(r'[^a-zA-Z0-9._-]', '', filename)
+        path = os.path.join(_LOGO_DIR, safe)
+        if os.path.exists(path):
+            return send_file(path, max_age=86400)
         return '', 404
 
     @app.delete("/api/wallboard/brand")
@@ -671,6 +681,100 @@ body.corp .cc-art{box-shadow:0 2px 12px rgba(0,0,0,.12);border-color:rgba(0,0,0,
 
 :fullscreen #wb-scroll,:-webkit-full-screen #wb-scroll{padding:6px 20px 16px}
 
+/* ═══ Bauer Media branded theme ═══ */
+@font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Regular.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Light.otf') format('opentype');font-weight:300;font-style:normal;font-display:swap}
+
+body.bauer{
+  font-family:'BauerMediaSans',system-ui,sans-serif;
+  background:#4700A3;color:#fff;
+}
+body.bauer::after{
+  background:
+    radial-gradient(ellipse 800px 400px at 30% 20%,rgba(88,0,202,.4),transparent),
+    radial-gradient(ellipse 600px 300px at 70% 80%,rgba(63,20,156,.3),transparent);
+}
+body.bauer #wb-hdr{
+  background:linear-gradient(180deg,rgba(72,0,164,.98),rgba(55,0,130,.98));
+  border-bottom:1px solid rgba(255,255,255,.12);
+}
+body.bauer .wb-title{color:#fff}
+body.bauer .wb-sub{color:rgba(255,255,255,.6)}
+body.bauer #wb-clock{color:#fff;text-shadow:0 0 20px rgba(255,255,255,.15)}
+body.bauer .btn{background:rgba(255,255,255,.12);color:#fff}
+body.bauer .btn:hover{background:rgba(255,255,255,.2)}
+body.bauer .btn.bp,.bauer .btn.active{background:#fff;color:#4700A3}
+body.bauer #wb-hero{border-radius:20px}
+body.bauer #wb-hero.ok{background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(34,197,94,.06));border-color:rgba(34,197,94,.4)}
+body.bauer #wb-hero.fault{background:linear-gradient(135deg,rgba(255,59,48,.15),rgba(255,59,48,.06));border-color:rgba(255,59,48,.45)}
+body.bauer #wb-hero.loading{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.15)}
+body.bauer #wb-hero.ok .hero-title{color:#22c55e}
+body.bauer #wb-hero.fault .hero-title{color:#ff3b30}
+body.bauer #wb-hero.loading .hero-title{color:rgba(255,255,255,.5)}
+body.bauer .hero-sub{color:rgba(255,255,255,.55)}
+body.bauer #wb-hero.ok .hero-badge{background:rgba(34,197,94,.15);color:#22c55e;border-color:rgba(34,197,94,.3)}
+body.bauer #wb-hero.fault .hero-badge{background:rgba(255,59,48,.15);color:#ff3b30;border-color:rgba(255,59,48,.3)}
+body.bauer .cc{
+  background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);
+  box-shadow:0 4px 24px rgba(0,0,0,.2);backdrop-filter:blur(8px);
+}
+body.bauer .cc::before{background:linear-gradient(90deg,transparent 5%,rgba(255,255,255,.15) 50%,transparent 95%)}
+body.bauer .cc:hover{box-shadow:0 8px 32px rgba(0,0,0,.3);background:rgba(255,255,255,.12)}
+body.bauer .cc.cc-ok{border-color:rgba(34,197,94,.35)}
+body.bauer .cc.cc-ok::before{background:linear-gradient(90deg,transparent 5%,rgba(34,197,94,.25) 50%,transparent 95%)}
+body.bauer .cc.cc-fault{
+  border-color:rgba(255,59,48,.5);background:rgba(255,59,48,.08);
+  box-shadow:0 0 30px rgba(255,59,48,.12),0 4px 24px rgba(0,0,0,.2);
+}
+body.bauer .cc.cc-fault::before{background:linear-gradient(90deg,transparent 5%,rgba(255,59,48,.35) 50%,transparent 95%)}
+body.bauer .cc-name{color:#fff}
+body.bauer .cc-status.s-ok{background:rgba(34,197,94,.15);color:#22c55e;border-color:rgba(34,197,94,.3)}
+body.bauer .cc-status.s-fault{background:rgba(255,59,48,.15);color:#ff3b30;border-color:rgba(255,59,48,.35)}
+body.bauer .cc-np-show{color:rgba(255,255,255,.45)}
+body.bauer .cc-np-track{color:rgba(255,255,255,.85)}
+body.bauer .cc-np-artist{color:#fff}
+body.bauer .cc-sla{color:rgba(255,255,255,.4)}
+body.bauer .cc-health{background:rgba(255,255,255,.1)}
+body.bauer .wb-site-hdr{color:rgba(255,255,255,.45);border-bottom-color:rgba(255,255,255,.1)}
+body.bauer .wb-sdot{background:#22c55e}
+body.bauer .wb-sdot.off{background:#ff3b30}
+body.bauer .mc{
+  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+  box-shadow:0 2px 8px rgba(0,0,0,.15);
+}
+body.bauer .mc.mc-ok{border-color:rgba(34,197,94,.2)}
+body.bauer .mc.mc-alert{border-color:rgba(255,59,48,.45);box-shadow:0 0 16px rgba(255,59,48,.12)}
+body.bauer .mc.mc-warn{border-color:rgba(255,149,0,.3)}
+body.bauer .mc.mc-silent{border-color:rgba(255,59,48,.25)}
+body.bauer .mc-head{border-bottom-color:rgba(255,255,255,.06)}
+body.bauer .mc-name{color:#fff}
+body.bauer .mc-sub{color:rgba(255,255,255,.45)}
+body.bauer .mc-lev{color:#fff}
+body.bauer .mc-lev.lc-low{color:rgba(255,255,255,.35)}
+body.bauer .mc-lev.lc-warn{color:#ff9500}
+body.bauer .mc-lev.lc-alert{color:#ff3b30}
+body.bauer .mc-lufs{color:rgba(255,255,255,.4)}
+body.bauer .mc-np{color:rgba(255,255,255,.7)}
+body.bauer .sp-ok{background:rgba(34,197,94,.15);color:#22c55e}
+body.bauer .sp-al{background:rgba(255,59,48,.15);color:#ff3b30}
+body.bauer .sp-wn{background:rgba(255,149,0,.12);color:#ff9500}
+body.bauer .sp-si{background:rgba(255,255,255,.06);color:rgba(255,255,255,.4)}
+body.bauer .mtr-wrap,.bauer .mtr-lr{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.06)}
+body.bauer .mtr-wrap::after,.bauer .mtr-lr::after{opacity:.25}
+body.bauer #wb-ticker{background:rgba(55,0,130,.95);border-top:1px solid rgba(255,255,255,.1)}
+body.bauer #wb-ticker-label{background:#fff;color:#4700A3;font-weight:800}
+body.bauer .tk-item{color:rgba(255,255,255,.5)}
+body.bauer .tk-site{color:#fff}
+body.bauer .tk-al{color:#ff3b30}
+body.bauer .tk-ok{color:#22c55e}
+body.bauer .tk-time{color:rgba(255,255,255,.7)}
+body.bauer #wb-alert-badge{background:#ff3b30}
+/* Bauer logo in header */
+.wb-bauer-logo{height:36px;object-fit:contain;display:none;margin-right:4px}
+body.bauer .wb-bauer-logo{display:block}
+body.bauer .wb-logo{display:none}
+
 /* ═══ Corporate / Clean theme ═══ */
 body.corp{
   background:#f5f5f7;color:#1d1d1f;
@@ -754,6 +858,7 @@ body.has-brand .wb-brand{display:block}
 <body>
 
 <header id="wb-hdr">
+  <img class="wb-bauer-logo" src="/wallboard/asset/_bauer_logo_white.svg" alt="Bauer Media">
   <img class="wb-brand" id="wb-brand-img" src="/wallboard/brand" alt="" onerror="this.style.display='none'">
   <span class="wb-logo" id="wb-logo-emoji">📺</span>
   <div class="wb-titles">
@@ -808,6 +913,7 @@ body.has-brand .wb-brand{display:block}
     </div>
     <div class="dr-section">
       <div class="dr-stitle">Theme</div>
+      <label class="dr-toggle"><input type="checkbox" id="cfg-bauer"> Bauer Media branded</label>
       <label class="dr-toggle"><input type="checkbox" id="cfg-corp"> Corporate / clean mode</label>
     </div>
     <div class="dr-section">
@@ -850,7 +956,7 @@ var PEAK_HOLD=2500,PEAK_RATE=.45,DB_FLOOR=-80,ATTACK_RATE=600,DECAY_RATE=30;
 var _sizes={sm:120,md:155,lg:210};
 var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e0b'],['#9333e8','#a855f7'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316'],['#c81e1e','#ef4444']];
 
-var _cfg={card_size:'md',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,hide_hdr:false};
+var _cfg={card_size:'md',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false};
 var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={};
 var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false;
 var _allStreams=[];  // for stream selector
@@ -868,6 +974,7 @@ function applyConfig(){
   document.getElementById('cfg-ticker').checked=_cfg.show_ticker!==false;
   document.getElementById('cfg-hero').checked=_cfg.show_hero!==false;
   document.getElementById('cfg-corp').checked=!!_cfg.corp_mode;
+  document.getElementById('cfg-bauer').checked=!!_cfg.bauer_mode;
   document.getElementById('cfg-hide-hdr').checked=!!_cfg.hide_hdr;
   document.querySelectorAll('[data-sz]').forEach(function(b){b.classList.toggle('active',b.dataset.sz===_cfg.card_size)});
   applyVis();
@@ -878,8 +985,9 @@ function applyVis(){
   document.querySelectorAll('.wb-site-hdr').forEach(function(e){e.style.display=(_cfg.show_sites!==false)?'':'none'});
   document.getElementById('wb-ticker').style.display=(_cfg.show_ticker!==false)?'':'none';
   document.getElementById('wb-hero').style.display=(_cfg.show_hero!==false)?'':'none';
-  // Corporate theme
-  document.body.classList.toggle('corp',!!_cfg.corp_mode);
+  // Themes — mutually exclusive: bauer wins if both set
+  document.body.classList.toggle('bauer',!!_cfg.bauer_mode);
+  document.body.classList.toggle('corp',!!_cfg.corp_mode&&!_cfg.bauer_mode);
   // Hide header
   document.getElementById('wb-hdr').classList.toggle('hdr-hidden',!!_cfg.hide_hdr);
 }
@@ -1262,7 +1370,8 @@ document.getElementById('cfg-np').addEventListener('change',function(){_cfg.show
 document.getElementById('cfg-sites').addEventListener('change',function(){_cfg.show_sites=this.checked;applyVis();saveConfig()});
 document.getElementById('cfg-ticker').addEventListener('change',function(){_cfg.show_ticker=this.checked;applyVis();saveConfig()});
 document.getElementById('cfg-hero').addEventListener('change',function(){_cfg.show_hero=this.checked;applyVis();saveConfig()});
-document.getElementById('cfg-corp').addEventListener('change',function(){_cfg.corp_mode=this.checked;applyVis();saveConfig()});
+document.getElementById('cfg-corp').addEventListener('change',function(){_cfg.corp_mode=this.checked;if(this.checked)_cfg.bauer_mode=false;applyConfig();saveConfig()});
+document.getElementById('cfg-bauer').addEventListener('change',function(){_cfg.bauer_mode=this.checked;if(this.checked)_cfg.corp_mode=false;applyConfig();saveConfig()});
 document.getElementById('cfg-hide-hdr').addEventListener('change',function(){_cfg.hide_hdr=this.checked;applyVis();saveConfig()});
 document.getElementById('btn-brand-upload').addEventListener('click',function(){
   var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
