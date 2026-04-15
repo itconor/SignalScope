@@ -11,7 +11,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "IP Link",
     "url":     "/hub/iplink",
     "icon":    "🎙",
-    "version": "1.5.14",
+    "version": "1.5.15",
 }
 
 import asyncio as _asyncio
@@ -83,6 +83,7 @@ _sip_pending_calls = {}   # account_id → {caller, time, call_id, _invite}
 # ── Plain RTP SIP bridges (non-ICE/non-WebRTC SIP callers via rtpengine) ─────
 _rtp_bridges     = {}   # room_id → {recv_proc, send_proc, stop_evt, sdp_path}
 _rtp_send_queues = {}   # room_id → queue.Queue  (source PCM → IFB RTP sender)
+_sip_bridge_stats = {}  # room_id → live stats dict for active RTP bridges
 
 
 class _LivewireSender:
@@ -1083,11 +1084,24 @@ def _route_pcm_chunk(room_id: str, pcm: bytes):
     q = _rtp_send_queues.get(room_id)
     if q:
         _RTP_CHUNK = 1920   # 20 ms mono s16le 48 kHz
+        _st = _sip_bridge_stats.get(room_id)
+        _target = _st.get('queue_target', 25) if _st else 25
         for _i in range(0, len(pcm), _RTP_CHUNK):
             _piece = pcm[_i:_i + _RTP_CHUNK]
             if len(_piece) == _RTP_CHUNK:   # only full frames
-                try: q.put_nowait(_piece)
-                except _queue.Full: pass     # drop oldest-equivalent: just skip
+                if q.qsize() < _target:
+                    try:
+                        q.put_nowait(_piece)
+                        if _st is not None:
+                            _st['chunks_recent'] = _st.get('chunks_recent', 0) + 1
+                    except _queue.Full:
+                        if _st is not None:
+                            _st['drops'] = _st.get('drops', 0) + 1
+                            _st['drops_recent'] = _st.get('drops_recent', 0) + 1
+                else:
+                    if _st is not None:
+                        _st['drops'] = _st.get('drops', 0) + 1
+                        _st['drops_recent'] = _st.get('drops_recent', 0) + 1
 
 
 def _route_lw_chunk(room_id: str, pcm_mono: bytes):
@@ -1676,6 +1690,8 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
             '-b:a', '32k',              # 32 kbps is excellent for voice; 96 k is overkill
             '-vbr', 'off',              # CBR: consistent packet size eases jitter buffer
             '-frame_duration', '20',    # explicit 20 ms frames
+            '-fec', '1',                # enable in-band forward error correction
+            '-packet_loss', '10',       # assume 10% loss to tune FEC aggressiveness
             '-payload_type', str(pt),
         ]
         send_ar    = []      # no -ar; libopus accepts 48kHz input directly
@@ -1763,6 +1779,28 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
     # always hears near-live audio rather than building up a growing delay.
     send_q     = _queue.Queue(maxsize=50)
     _rtp_send_queues[room_id] = send_q
+
+    # Initialise per-call stats (reset any leftover from previous call in this room)
+    _sip_bridge_stats[room_id] = {
+        'caller':       acct_mgr.call_caller if acct_mgr else '',
+        'codec':        f'{codec}/{rate}',
+        'bitrate':      '32k' if codec == 'OPUS' else ('64k' if codec == 'G722' else '8k'),
+        'start_time':   time.time(),
+        'recv_chunks':  0,
+        'send_chunks':  0,
+        'drops':        0,        # chunks dropped because send queue was full
+        'drops_recent': 0,
+        'chunks_recent':0,
+        'queue_target': 25,       # adaptive target (chunks); start at 500 ms
+        'last_adapt':   time.monotonic(),
+        'restarts':     0,
+        'jitter_ms':    None,
+        'rtt_ms':       None,
+        'pkt_loss_pct': None,
+        'rtcp_remote_ssrc': 0,
+        'our_ssrc':     __import__('random').randint(1, 0x7FFFFFFF),
+    }
+
     _rtp_bridges[room_id] = {
         'recv_proc':       recv_proc,
         'send_proc':       send_proc,
@@ -1771,6 +1809,118 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
         'recv_stderr_path': recv_stderr_path,
         'answer_sdp':      None,   # filled in below after answer_sdp is built
     }
+
+    # RTCP thread: receive RTCP SR from rtpengine → parse quality stats → send RR back.
+    # Keeps rtpengine's quality-of-service bookkeeping alive and gives us RTT + jitter data.
+    rtcp_port_remote = rtp_port + 1   # standard RTCP port (rtp+1) unless rtcp-mux
+    def _rtcp_thread():
+        import socket as _socket, struct as _struct, time as _time
+        stats = _sip_bridge_stats.get(room_id, {})
+        our_ssrc = stats.get('our_ssrc', 0xCAFEBABE)
+        rtcp_local_port = local_port + 1
+
+        try:
+            sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+            sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            sock.bind(('0.0.0.0', rtcp_local_port))
+            sock.settimeout(1.0)
+        except Exception as _e:
+            if _log: _log(f"[IPLink SIP] RTCP socket error (room {room_id[:8]}): {_e}")
+            return
+
+        remote_rtcp_addr = None
+        last_sr_compact  = 0          # compact NTP mid-bits from last SR
+        last_sr_mono     = 0.0        # monotonic time when SR was received
+        prev_recv_chunks = 0
+        prev_sr_pkt_cnt  = 0
+
+        try:
+            while not stop_evt.is_set():
+                try:
+                    data, addr = sock.recvfrom(1500)
+                except _socket.timeout:
+                    continue
+                if not data or len(data) < 8:
+                    continue
+
+                remote_rtcp_addr = (rtp_host, rtcp_port_remote)
+                offset = 0
+                while offset + 4 <= len(data):
+                    try:
+                        ver = (data[offset] >> 6) & 0x3
+                        if ver != 2:
+                            break
+                        pt      = data[offset + 1]
+                        pkt_len = (_struct.unpack_from('>H', data, offset + 2)[0] + 1) * 4
+                        if offset + pkt_len > len(data):
+                            break
+
+                        if pt == 200 and pkt_len >= 28:  # Sender Report
+                            (ssrc, ntp_msw, ntp_lsw,
+                             _rtp_ts, sr_pkt_cnt, _sr_oct) = \
+                                _struct.unpack_from('>IIIIII', data, offset + 4)
+                            last_sr_compact = ((ntp_msw & 0xFFFF) << 16) | (ntp_lsw >> 16)
+                            last_sr_mono    = _time.monotonic()
+                            stats = _sip_bridge_stats.get(room_id)
+                            if stats is not None:
+                                stats['rtcp_remote_ssrc'] = ssrc
+                                # Packet loss: compare SR counter with our recv count
+                                recv_now = stats.get('recv_chunks', 0)
+                                expected = sr_pkt_cnt - prev_sr_pkt_cnt
+                                got      = recv_now - prev_recv_chunks
+                                if expected > 0:
+                                    loss = max(0, expected - got)
+                                    loss_pct = round(loss / expected * 100, 1)
+                                    stats['pkt_loss_pct'] = loss_pct
+                                prev_sr_pkt_cnt  = sr_pkt_cnt
+                                prev_recv_chunks = recv_now
+
+                        offset += pkt_len
+                    except Exception:
+                        break
+
+                # Send RTCP RR back
+                if remote_rtcp_addr is None:
+                    remote_rtcp_addr = (rtp_host, rtcp_port_remote)
+                stats = _sip_bridge_stats.get(room_id)
+                if stats is None:
+                    continue
+                remote_ssrc    = stats.get('rtcp_remote_ssrc', 0)
+                recv_chunks    = stats.get('recv_chunks', 0)
+                drops_val      = stats.get('drops', 0)
+                total          = max(recv_chunks + drops_val, 1)
+                frac_lost      = min(255, int(drops_val / total * 256))
+                cum_lost       = min(0xFFFFFF, drops_val)
+                dlsr           = 0
+                if last_sr_mono > 0:
+                    dlsr_s = _time.monotonic() - last_sr_mono
+                    dlsr   = min(0xFFFFFFFF, int(dlsr_s * 65536))
+                    rtt_s  = max(0.0, dlsr_s - (1.0 / 65536 * last_sr_compact))
+                    stats['rtt_ms'] = round(rtt_s * 1000, 1)
+                # Estimate jitter from queue_target (rough heuristic in absence of RTP timestamps)
+                qt = stats.get('queue_target', 25)
+                stats['jitter_ms'] = round(qt * 20 * 0.3)   # ~30% of buffer target as jitter estimate
+
+                rr_block = (
+                    _struct.pack('>I', remote_ssrc) +
+                    _struct.pack('>I', (frac_lost << 24) | (cum_lost & 0xFFFFFF)) +
+                    _struct.pack('>I', recv_chunks & 0xFFFFFFFF) +
+                    _struct.pack('>I', stats.get('jitter_ms', 0) * 48) +   # convert ms → samples @ 48k
+                    _struct.pack('>I', last_sr_compact) +
+                    _struct.pack('>I', dlsr)
+                )
+                # RR header: V=2 P=0 RC=1 PT=201 length=7 (8 words - 1) + sender SSRC
+                rr_hdr = _struct.pack('>BBHI', 0x81, 201, 7, our_ssrc)
+                try:
+                    sock.sendto(rr_hdr + rr_block, remote_rtcp_addr)
+                except Exception:
+                    pass
+        finally:
+            try: sock.close()
+            except Exception: pass
+
+    threading.Thread(target=_rtcp_thread, daemon=True,
+                     name=f'SIPrRTCP-{room_id[:8]}').start()
 
     # Keepalive thread: ffmpeg's SDP/UDP demuxer has a ~10 s idle timeout that
     # fires when no RTP arrives (typically during a Linphone re-INVITE pause).
@@ -1862,6 +2012,8 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                         if _log: _log(f"[IPLink SIP] plain RTP recv: max restarts reached, ending call")
                         break
                     restarts += 1
+                    _st = _sip_bridge_stats.get(room_id)
+                    if _st is not None: _st['restarts'] = restarts
                     time.sleep(0.1)      # SO_REUSEADDR makes port available immediately
                     if stop_evt.is_set():
                         break
@@ -1877,7 +2029,11 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                     continue
 
                 _route_lw_chunk(room_id, data)
-                if total_chunks == 0:
+                total_chunks += 1
+                # Update stats
+                _st = _sip_bridge_stats.get(room_id)
+                if _st is not None: _st['recv_chunks'] = total_chunks
+                if total_chunks == 1:
                     if _log: _log(f"[IPLink SIP] plain RTP: first recv chunk → room {room_id[:8]}")
                     deadline = time.monotonic() + CHUNK_DUR
                 elif deadline is not None:
@@ -1887,7 +2043,6 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                         time.sleep(slack)
                     elif slack < -1.0:            # >1 s behind — reset
                         deadline = time.monotonic() + CHUNK_DUR
-                total_chunks += 1
         finally:
             if _log: _log(f"[IPLink SIP] plain RTP recv ended: room {room_id[:8]} "
                           f"({total_chunks} chunks, {restarts} restarts)")
@@ -1940,6 +2095,24 @@ def _sip_plain_rtp_bridge(room_id: str, invite_sdp: str, acct_mgr):
                     if chunks == 0 and _log:
                         _log(f"[IPLink SIP] plain RTP: first send chunk → {rtp_host}:{rtp_port}")
                     chunks += 1
+                    _st = _sip_bridge_stats.get(room_id)
+                    if _st is not None:
+                        _st['send_chunks'] = chunks
+                        # Adaptive jitter buffer: adjust queue_target every 5 s
+                        _now = time.monotonic()
+                        if _now - _st.get('last_adapt', _now) >= 5.0:
+                            _dr = _st.get('drops_recent', 0)
+                            _cr = max(_st.get('chunks_recent', 1), 1)
+                            _drop_rate = _dr / _cr
+                            _cur = _st.get('queue_target', 25)
+                            if _drop_rate > 0.05:        # >5% → grow buffer (max 3 s)
+                                _cur = min(150, int(_cur * 1.4))
+                            elif _drop_rate < 0.01:      # <1% → shrink toward 250 ms
+                                _cur = max(12, int(_cur * 0.92))
+                            _st['queue_target']   = _cur
+                            _st['drops_recent']   = 0
+                            _st['chunks_recent']  = 0
+                            _st['last_adapt']     = _now
                 except Exception:
                     break
         finally:
@@ -2204,6 +2377,34 @@ def _room_public(room: dict) -> dict:
     r["sip_account_id"]        = room.get("sip_account_id")
     if room["connected_at"]:
         r["duration_s"] = round(time.time() - room["connected_at"])
+    # Include live RTP bridge stats if a plain-RTP SIP call is active in this room
+    rid = r.get('id', '')
+    if rid in _rtp_bridges:
+        _st = _sip_bridge_stats.get(rid, {})
+        q   = _rtp_send_queues.get(rid)
+        recv_c = _st.get('recv_chunks', 0)
+        send_c = _st.get('send_chunks', 0)
+        drops  = _st.get('drops', 0)
+        total  = max(recv_c, 1)
+        loss   = _st.get('pkt_loss_pct')
+        if loss is None and drops > 0:
+            loss = round(drops / (total + drops) * 100, 1)
+        pub = r
+        pub['sip_bridge'] = {
+            'caller':       _st.get('caller', ''),
+            'codec':        _st.get('codec', ''),
+            'bitrate':      _st.get('bitrate', ''),
+            'duration_s':   int(time.time() - _st.get('start_time', time.time())),
+            'recv_chunks':  recv_c,
+            'send_chunks':  send_c,
+            'drops':        drops,
+            'restarts':     _st.get('restarts', 0),
+            'queue_target': _st.get('queue_target', 25),
+            'queue_depth':  q.qsize() if q else 0,
+            'jitter_ms':    _st.get('jitter_ms'),
+            'rtt_ms':       _st.get('rtt_ms'),
+            'pkt_loss_pct': loss,
+        }
     return r
 
 
@@ -3448,6 +3649,29 @@ function _renderRooms(rooms){
       });
       html+='</select>';
       html+=_sipBadge;
+      html+='</div>';
+    }
+
+    // ── SIP bridge stats (only when a plain-RTP bridge is active) ───────────────
+    if(r.sip_bridge){
+      var sb=r.sip_bridge;
+      var _ql='🟢 Good';
+      if(sb.restarts>2||sb.pkt_loss_pct>5) _ql='🔴 Poor';
+      else if(sb.restarts>0||sb.pkt_loss_pct>1) _ql='🟡 Fair';
+      var _dur=sb.duration_s||0;
+      var _dStr=(_dur>=3600?Math.floor(_dur/3600)+'h ':'')+(Math.floor((_dur%3600)/60)+'m ')+((_dur%60)+'s');
+      html+='<div style="margin:6px 0 2px;border:1px solid var(--bor);border-radius:8px;padding:8px 10px;background:rgba(23,52,95,.18)">';
+      html+='<div style="font-size:11px;color:var(--acc);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📞 SIP Call — '+_esc(sb.caller||'Unknown')+'</div>';
+      html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 12px;font-size:11px">';
+      html+='<div><span style="color:var(--mu)">Codec</span> <span>'+_esc(sb.codec+(sb.bitrate?' · '+sb.bitrate:''))+'</span></div>';
+      html+='<div><span style="color:var(--mu)">Duration</span> <span>'+_esc(_dStr)+'</span></div>';
+      html+='<div><span style="color:var(--mu)">Quality</span> <span>'+_ql+'</span></div>';
+      html+='<div><span style="color:var(--mu)">Restarts</span> <span style="color:'+(sb.restarts>0?'var(--wn)':'var(--ok)')+'">'+sb.restarts+'</span></div>';
+      if(sb.pkt_loss_pct!=null) html+='<div><span style="color:var(--mu)">Pkt loss</span> <span style="color:'+(sb.pkt_loss_pct>2?'var(--al)':sb.pkt_loss_pct>0.5?'var(--wn)':'var(--ok)')+'">'+sb.pkt_loss_pct+'%</span></div>';
+      if(sb.jitter_ms!=null)    html+='<div><span style="color:var(--mu)">Jitter</span> <span>'+sb.jitter_ms+' ms</span></div>';
+      if(sb.rtt_ms!=null)       html+='<div><span style="color:var(--mu)">RTT</span> <span style="color:'+(sb.rtt_ms>150?'var(--wn)':'var(--ok)')+'">'+sb.rtt_ms+' ms</span></div>';
+      html+='<div><span style="color:var(--mu)">Buffer</span> <span>'+sb.queue_depth+'/'+sb.queue_target+' pkt</span></div>';
+      html+='</div>';
       html+='</div>';
     }
 
