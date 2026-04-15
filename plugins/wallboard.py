@@ -210,15 +210,16 @@ def register(app, ctx):
         ext = os.path.splitext(f.filename)[1].lower()
         if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
             return jsonify({"error": "Unsupported format"}), 400
-        f.seek(0, 2)
-        if f.tell() > 2 * 1024 * 1024:
+        # Read into memory to check size (avoids seek issues on WSGI streams)
+        data = f.read(2 * 1024 * 1024 + 1)
+        if len(data) > 2 * 1024 * 1024:
             return jsonify({"error": "File too large (max 2 MB)"}), 400
-        f.seek(0)
         os.makedirs(_LOGO_DIR, exist_ok=True)
         for old in os.listdir(_LOGO_DIR):
             if old.split(".")[0] == chain_id:
                 os.remove(os.path.join(_LOGO_DIR, old))
-        f.save(os.path.join(_LOGO_DIR, chain_id + ext))
+        with open(os.path.join(_LOGO_DIR, chain_id + ext), "wb") as out:
+            out.write(data)
         return jsonify({"ok": True})
 
     @app.get("/wallboard/logo/<chain_id>")
@@ -1002,7 +1003,7 @@ function renderDrawerStreams(){
 
 function uploadLogo(cid){
   var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
-  inp.onchange=function(){if(!inp.files[0])return;var fd=new FormData();fd.append('logo',inp.files[0]);
+  inp.onchange=function(){if(!inp.files[0])return;var fd=new FormData();fd.append('logo',inp.files[0]);fd.append('_csrf_token',_csrf());
     fetch('/api/wallboard/logo/'+encodeURIComponent(cid),{method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()},body:fd})
     .then(function(r){return r.json()}).then(function(d){if(d.ok){_chainLogos[cid]=true;_chainLogos._ts=Date.now();renderDrawerChains();if(_lastChains)renderChains(_lastChains)}}).catch(function(){})};
   inp.click();
