@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.9.2",
+    "version":  "2.9.3",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
