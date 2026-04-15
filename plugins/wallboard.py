@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.9.0",
+    "version":  "2.9.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -65,9 +65,12 @@ def register(app, ctx):
 
     from flask import jsonify, render_template_string, request, send_file, g
 
-    # After-request hook: re-apply relaxed headers for kiosk route
-    # (runs AFTER signalscope's _apply_security_headers overwrites them)
-    @app.after_request
+    # After-request hook: re-apply relaxed headers for kiosk route.
+    # Flask calls after_request handlers in REVERSE registration order.
+    # Plugins register AFTER signalscope, so our handler runs FIRST and
+    # signalscope's _apply_security_headers runs SECOND — overwriting us.
+    # Fix: insert at position 0 in the handler list so after reversal
+    # our handler runs LAST (after signalscope has set its headers).
     def _wallboard_kiosk_headers(response):
         if getattr(g, '_wb_kiosk', False):
             response.headers["X-Frame-Options"] = "ALLOWALL"
@@ -75,6 +78,7 @@ def register(app, ctx):
                 "default-src 'self'; "
                 "script-src 'self' 'unsafe-inline'; "
                 "style-src 'self' 'unsafe-inline'; "
+                "script-src-attr 'unsafe-inline'; "
                 "img-src 'self' data: blob: https: http:; "
                 "media-src 'self' blob:; "
                 "connect-src 'self'; "
@@ -83,6 +87,7 @@ def register(app, ctx):
                 "form-action 'self'"
             )
         return response
+    app.after_request_funcs.setdefault(None, []).insert(0, _wallboard_kiosk_headers)
 
     def _validate_wb_token():
         """Validate mobile API token from query string. Returns True if valid."""
