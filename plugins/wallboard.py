@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.3.0",
+    "version":  "2.4.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -241,6 +241,47 @@ def register(app, ctx):
             return jsonify({"error": "Invalid ID"}), 400
         for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
             path = os.path.join(_LOGO_DIR, chain_id + ext)
+            if os.path.exists(path):
+                os.remove(path)
+        return jsonify({"ok": True})
+
+    # ── Brand logo (page branding — e.g. company logo in header) ─────
+    @app.post("/api/wallboard/brand")
+    @login_required
+    @csrf_protect
+    def wallboard_brand_upload():
+        f = request.files.get("logo")
+        if not f or not f.filename:
+            return jsonify({"error": "No file"}), 400
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
+            return jsonify({"error": "Unsupported format"}), 400
+        data = f.read(2 * 1024 * 1024 + 1)
+        if len(data) > 2 * 1024 * 1024:
+            return jsonify({"error": "File too large (max 2 MB)"}), 400
+        os.makedirs(_LOGO_DIR, exist_ok=True)
+        for old in os.listdir(_LOGO_DIR):
+            if old.startswith("_brand."):
+                os.remove(os.path.join(_LOGO_DIR, old))
+        with open(os.path.join(_LOGO_DIR, "_brand" + ext), "wb") as out:
+            out.write(data)
+        return jsonify({"ok": True})
+
+    @app.get("/wallboard/brand")
+    @login_required
+    def wallboard_brand_serve():
+        for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
+            path = os.path.join(_LOGO_DIR, "_brand" + ext)
+            if os.path.exists(path):
+                return send_file(path, max_age=60)
+        return '', 404
+
+    @app.delete("/api/wallboard/brand")
+    @login_required
+    @csrf_protect
+    def wallboard_brand_delete():
+        for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
+            path = os.path.join(_LOGO_DIR, "_brand" + ext)
             if os.path.exists(path):
                 os.remove(path)
         return jsonify({"ok": True})
@@ -624,14 +665,94 @@ body::after{
 .dr-stream-site{font-size:9px;color:var(--mu);margin-left:auto;flex-shrink:0}
 
 :fullscreen #wb-scroll,:-webkit-full-screen #wb-scroll{padding:6px 20px 16px}
+
+/* ═══ Corporate / Clean theme ═══ */
+body.corp{
+  background:#f5f5f7;color:#1d1d1f;
+  font-family:'SF Pro Display',system-ui,-apple-system,sans-serif;
+}
+body.corp::after{display:none}
+body.corp #wb-hdr{
+  background:#fff;border-bottom:1px solid #e5e5e7;
+  backdrop-filter:none;
+}
+body.corp .wb-title{color:#1d1d1f}
+body.corp .wb-sub{color:#86868b}
+body.corp #wb-clock{color:#1d1d1f;text-shadow:none}
+body.corp .btn{background:#e5e5e7;color:#1d1d1f}
+body.corp .btn.bp,.corp .btn.active{background:#0071e3;color:#fff}
+body.corp #wb-hero{border-radius:18px}
+body.corp #wb-hero.ok{background:linear-gradient(135deg,rgba(52,199,89,.08),rgba(52,199,89,.03));border-color:rgba(52,199,89,.3)}
+body.corp #wb-hero.fault{background:linear-gradient(135deg,rgba(255,59,48,.08),rgba(255,59,48,.03));border-color:rgba(255,59,48,.3)}
+body.corp #wb-hero.ok .hero-title{color:#34c759}
+body.corp #wb-hero.fault .hero-title{color:#ff3b30}
+body.corp #wb-hero.ok .hero-badge{background:rgba(52,199,89,.1);color:#34c759;border-color:rgba(52,199,89,.25)}
+body.corp #wb-hero.fault .hero-badge{background:rgba(255,59,48,.1);color:#ff3b30;border-color:rgba(255,59,48,.25)}
+body.corp .hero-sub{color:#86868b}
+body.corp .cc{
+  background:#fff;border:1px solid #e5e5e7;
+  box-shadow:0 2px 12px rgba(0,0,0,.06);
+}
+body.corp .cc::before{background:none}
+body.corp .cc:hover{box-shadow:0 6px 20px rgba(0,0,0,.1)}
+body.corp .cc.cc-ok{border-color:rgba(52,199,89,.3);box-shadow:0 2px 12px rgba(0,0,0,.06)}
+body.corp .cc.cc-fault{
+  border-color:rgba(255,59,48,.4);background:#fff;
+  box-shadow:0 0 20px rgba(255,59,48,.08),0 2px 12px rgba(0,0,0,.06);
+}
+body.corp .cc-name{color:#1d1d1f}
+body.corp .cc-status.s-ok{background:rgba(52,199,89,.1);color:#34c759;border-color:rgba(52,199,89,.25)}
+body.corp .cc-status.s-fault{background:rgba(255,59,48,.1);color:#ff3b30;border-color:rgba(255,59,48,.25)}
+body.corp .cc-np{color:#0071e3}
+body.corp .cc-np-artist{color:#1d1d1f}
+body.corp .cc-sla{color:#86868b}
+body.corp .cc-health{background:rgba(0,0,0,.06)}
+body.corp .wb-site-hdr{color:#86868b;border-bottom-color:#e5e5e7}
+body.corp .wb-sdot{background:#34c759}
+body.corp .wb-sdot.off{background:#ff3b30}
+body.corp .mc{background:#fff;border:1px solid #e5e5e7;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+body.corp .mc.mc-ok{border-color:rgba(52,199,89,.2)}
+body.corp .mc.mc-alert{border-color:rgba(255,59,48,.4);box-shadow:0 0 12px rgba(255,59,48,.08)}
+body.corp .mc.mc-warn{border-color:rgba(255,149,0,.3)}
+body.corp .mc.mc-silent{border-color:rgba(255,59,48,.25)}
+body.corp .mc-head{border-bottom-color:#f0f0f2}
+body.corp .mc-name{color:#1d1d1f}
+body.corp .mc-sub{color:#86868b}
+body.corp .mc-lev{color:#1d1d1f}
+body.corp .mc-lev.lc-low{color:#86868b}
+body.corp .mc-lev.lc-warn{color:#ff9500}
+body.corp .mc-lev.lc-alert{color:#ff3b30}
+body.corp .mc-lufs{color:#86868b}
+body.corp .mc-np{color:#0071e3}
+body.corp .sp-ok{background:rgba(52,199,89,.1);color:#34c759}
+body.corp .sp-al{background:rgba(255,59,48,.1);color:#ff3b30}
+body.corp .sp-wn{background:rgba(255,149,0,.1);color:#ff9500}
+body.corp .sp-si{background:rgba(142,142,147,.1);color:#8e8e93}
+body.corp .mtr-wrap,.corp .mtr-lr{background:rgba(0,0,0,.04);border-color:rgba(0,0,0,.06)}
+body.corp .mtr-wrap::after,.corp .mtr-lr::after{opacity:.2}
+body.corp #wb-ticker{background:#fff;border-top:1px solid #e5e5e7}
+body.corp #wb-ticker-label{background:#ff9500}
+body.corp .tk-item{color:#86868b}
+body.corp .tk-site{color:#1d1d1f}
+body.corp .tk-al{color:#ff3b30}
+body.corp .tk-ok{color:#34c759}
+body.corp .tk-time{color:#ff9500}
+body.corp #wb-alert-badge{background:#ff3b30}
+/* Brand logo in header */
+.wb-brand{height:32px;object-fit:contain;margin-right:4px;display:none}
+body.corp .wb-brand{display:block}
+body.has-brand .wb-brand{display:block}
+/* Hide header toggle */
+#wb-hdr.hdr-hidden{display:none}
 </style>
 </head>
 <body>
 
 <header id="wb-hdr">
-  <span class="wb-logo">📺</span>
+  <img class="wb-brand" id="wb-brand-img" src="/wallboard/brand" alt="" onerror="this.style.display='none'">
+  <span class="wb-logo" id="wb-logo-emoji">📺</span>
   <div class="wb-titles">
-    <span class="wb-title">Wallboard</span>
+    <span class="wb-title" id="wb-title-text">Wallboard</span>
     <span class="wb-sub" id="wb-meta">Loading…</span>
   </div>
   <span id="wb-alert-badge" style="background:var(--al);color:#fff;border-radius:999px;padding:2px 10px;font-size:11px;font-weight:700;display:none"></span>
@@ -652,7 +773,7 @@ body::after{
     <div class="hero-icon" id="hero-icon">⏳</div>
     <div class="hero-body">
       <div class="hero-title" id="hero-title">Connecting…</div>
-      <div class="hero-sub" id="hero-sub">Waiting for chain status data.</div>
+      <div class="hero-sub" id="hero-sub">Waiting for station status data.</div>
     </div>
     <div class="hero-badge" id="hero-badge"></div>
   </div>
@@ -681,15 +802,29 @@ body::after{
       </div>
     </div>
     <div class="dr-section">
+      <div class="dr-stitle">Theme</div>
+      <label class="dr-toggle"><input type="checkbox" id="cfg-corp"> Corporate / clean mode</label>
+    </div>
+    <div class="dr-section">
       <div class="dr-stitle">Display</div>
       <label class="dr-toggle"><input type="checkbox" id="cfg-lufs" checked> LUFS-I readout</label>
       <label class="dr-toggle"><input type="checkbox" id="cfg-np" checked> Now playing text</label>
       <label class="dr-toggle"><input type="checkbox" id="cfg-sites" checked> Site headers</label>
       <label class="dr-toggle"><input type="checkbox" id="cfg-ticker" checked> Alert ticker</label>
       <label class="dr-toggle"><input type="checkbox" id="cfg-hero" checked> Status hero banner</label>
+      <label class="dr-toggle"><input type="checkbox" id="cfg-hide-hdr"> Hide header bar</label>
     </div>
     <div class="dr-section">
-      <div class="dr-stitle">Chain Logos</div>
+      <div class="dr-stitle">Page Branding</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <img id="dr-brand-preview" src="/wallboard/brand" alt="" style="height:28px;object-fit:contain;border-radius:4px" onerror="this.style.display='none'">
+        <button class="btn bp bs" id="btn-brand-upload">Upload Brand Logo</button>
+        <button class="btn bd bs" id="btn-brand-remove">Remove</button>
+      </div>
+      <div style="font-size:10px;color:var(--mu)">Displayed in the header bar. Works in both themes.</div>
+    </div>
+    <div class="dr-section">
+      <div class="dr-stitle">Station Branding</div>
       <div id="dr-chains"><span style="color:var(--mu);font-size:12px">Loading…</span></div>
     </div>
     <div class="dr-section">
@@ -710,7 +845,7 @@ var PEAK_HOLD=2500,PEAK_RATE=.45,DB_FLOOR=-80,ATTACK_RATE=600,DECAY_RATE=30;
 var _sizes={sm:120,md:155,lg:210};
 var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e0b'],['#9333e8','#a855f7'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316'],['#c81e1e','#ef4444']];
 
-var _cfg={card_size:'md',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[]};
+var _cfg={card_size:'md',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,hide_hdr:false};
 var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={};
 var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false;
 var _allStreams=[];  // for stream selector
@@ -727,6 +862,8 @@ function applyConfig(){
   document.getElementById('cfg-sites').checked=_cfg.show_sites!==false;
   document.getElementById('cfg-ticker').checked=_cfg.show_ticker!==false;
   document.getElementById('cfg-hero').checked=_cfg.show_hero!==false;
+  document.getElementById('cfg-corp').checked=!!_cfg.corp_mode;
+  document.getElementById('cfg-hide-hdr').checked=!!_cfg.hide_hdr;
   document.querySelectorAll('[data-sz]').forEach(function(b){b.classList.toggle('active',b.dataset.sz===_cfg.card_size)});
   applyVis();
 }
@@ -736,6 +873,10 @@ function applyVis(){
   document.querySelectorAll('.wb-site-hdr').forEach(function(e){e.style.display=(_cfg.show_sites!==false)?'':'none'});
   document.getElementById('wb-ticker').style.display=(_cfg.show_ticker!==false)?'':'none';
   document.getElementById('wb-hero').style.display=(_cfg.show_hero!==false)?'':'none';
+  // Corporate theme
+  document.body.classList.toggle('corp',!!_cfg.corp_mode);
+  // Hide header
+  document.getElementById('wb-hdr').classList.toggle('hdr-hidden',!!_cfg.hide_hdr);
 }
 function saveConfig(){
   _cfg.sort_level=_sortLev;
@@ -781,21 +922,21 @@ function updateHero(chains){
   var hero=document.getElementById('wb-hero'),ic=document.getElementById('hero-icon'),
       ti=document.getElementById('hero-title'),su=document.getElementById('hero-sub'),
       ba=document.getElementById('hero-badge');
-  if(!chains||!chains.length){hero.className='loading';ic.textContent='📡';ti.textContent='No chains configured';su.textContent='Add broadcast chains in Settings.';ba.textContent='';return}
+  if(!chains||!chains.length){hero.className='loading';ic.textContent='📡';ti.textContent='No stations configured';su.textContent='Add broadcast chains in Settings.';ba.textContent='';return}
   var faulted=chains.filter(function(c){return(c.display_status||c.status)==='fault'});
   if(!faulted.length){
     hero.className='ok';ic.textContent='✅';
-    ti.textContent='All Chains On Air';
-    su.textContent=chains.length+' chain'+(chains.length>1?'s':'')+' running normally — no action required.';
+    ti.textContent='All Stations On Air';
+    su.textContent=chains.length+' station'+(chains.length>1?'s':'')+' running normally — no action required.';
     ba.textContent='ALL CLEAR';
   }else if(faulted.length===1){
     hero.className='fault';ic.textContent='🔴';
-    ti.textContent=(faulted[0].name||'Chain')+' — SIGNAL FAULT';
+    ti.textContent=(faulted[0].name||'Station')+' — SIGNAL FAULT';
     su.textContent='Engineering have been alerted automatically.';
     ba.textContent='1 FAULT';
   }else{
     hero.className='fault';ic.textContent='🔴';
-    ti.textContent=faulted.length+' CHAIN FAULTS ACTIVE';
+    ti.textContent=faulted.length+' STATION FAULTS ACTIVE';
     su.textContent=faulted.map(function(c){return c.name}).slice(0,3).join(', ')+(faulted.length>3?' + '+(faulted.length-3)+' more':'');
     ba.textContent=faulted.length+' FAULTS';
   }
@@ -928,7 +1069,9 @@ function renderMeters(data){
   Object.keys(existing).forEach(function(k){if(!seen[k])existing[k].remove()});
   var total=flat.length,alerts=flat.filter(function(i){return(i.st.ai_status||'').indexOf('[ALERT]')>=0}).length;
   var silences=flat.filter(function(i){return i.st.silence_active}).length;
-  document.getElementById('wb-meta').textContent=total+' stream'+(total!==1?'s':'')+' · '+(data.sites||[]).length+' site'+((data.sites||[]).length!==1?'s':'')+(silences?' · '+silences+' silent':'');
+  var nChains=_lastChains?_lastChains.length:0;
+  document.getElementById('wb-meta').textContent=
+    (nChains?nChains+' station'+(nChains!==1?'s':'')+' · ':'')+total+' stream'+(total!==1?'s':'')+' · '+(data.sites||[]).length+' site'+((data.sites||[]).length!==1?'s':'')+(silences?' · '+silences+' silent':'');
   var badge=document.getElementById('wb-alert-badge');badge.textContent='⚠ '+alerts+' ALERT'+(alerts!==1?'S':'');badge.style.display=alerts>0?'inline-block':'none';
   applyVis();
   if(total===0&&!_allStreams.length)root.innerHTML='<div class="wb-empty"><div class="wb-empty-ico">📡</div><div style="font-size:15px;font-weight:700">No streams found</div><div style="font-size:12px">Connect a site or enable local monitoring.</div></div>';
@@ -1109,6 +1252,26 @@ document.getElementById('cfg-np').addEventListener('change',function(){_cfg.show
 document.getElementById('cfg-sites').addEventListener('change',function(){_cfg.show_sites=this.checked;applyVis();saveConfig()});
 document.getElementById('cfg-ticker').addEventListener('change',function(){_cfg.show_ticker=this.checked;applyVis();saveConfig()});
 document.getElementById('cfg-hero').addEventListener('change',function(){_cfg.show_hero=this.checked;applyVis();saveConfig()});
+document.getElementById('cfg-corp').addEventListener('change',function(){_cfg.corp_mode=this.checked;applyVis();saveConfig()});
+document.getElementById('cfg-hide-hdr').addEventListener('change',function(){_cfg.hide_hdr=this.checked;applyVis();saveConfig()});
+document.getElementById('btn-brand-upload').addEventListener('click',function(){
+  var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+  inp.onchange=function(){if(!inp.files[0])return;var fd=new FormData();fd.append('logo',inp.files[0]);fd.append('_csrf_token',_csrf());
+    fetch('/api/wallboard/brand',{method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()},body:fd})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){
+      var img=document.getElementById('dr-brand-preview');img.src='/wallboard/brand?_='+Date.now();img.style.display='';
+      var hImg=document.getElementById('wb-brand-img');hImg.src='/wallboard/brand?_='+Date.now();hImg.style.display='';
+      document.body.classList.add('has-brand');
+    }}).catch(function(){})};inp.click();
+});
+document.getElementById('btn-brand-remove').addEventListener('click',function(){
+  fetch('/api/wallboard/brand',{method:'DELETE',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()}})
+  .then(function(r){return r.json()}).then(function(d){if(d.ok){
+    document.getElementById('dr-brand-preview').style.display='none';
+    document.getElementById('wb-brand-img').style.display='none';
+    document.body.classList.remove('has-brand');
+  }}).catch(function(){});
+});
 document.getElementById('btn-sm').addEventListener('click',function(){setSize('sm');saveConfig()});
 document.getElementById('btn-md').addEventListener('click',function(){setSize('md');saveConfig()});
 document.getElementById('btn-lg').addEventListener('click',function(){setSize('lg');saveConfig()});
