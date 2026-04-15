@@ -100,6 +100,16 @@
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/push.py"
   },
   {
+    "id": "wallboard",
+    "name": "Wall Monitor",
+    "file": "wallboard.py",
+    "icon": "📺",
+    "description": "Full-screen broadcast wall display for Yodeck and TV monitors. Station cards with 150 ms live VU meters, FM RDS / DAB DLS now-playing text, silence flash, SLA uptime, LUFS readout, AI status, and a scrolling alerts ticker. Hub-only.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/wallboard.py"
+  },
+  {
     "id": "ptpclock",
     "name": "PTP Clock",
     "file": "ptpclock.py",
