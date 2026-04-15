@@ -120,31 +120,14 @@ def register(app, ctx):
     # Token in the URL path — no query string, no redirects, no fuss.
     # Usage: /wallboard/tv/YOUR_TOKEN
     # Also keeps the old ?token= route for backwards compat.
-    @app.get("/wallboard/tv/<token>")
-    def wallboard_tv(token):
-        return _wallboard_kiosk_view(token)
-
-    @app.get("/wallboard/kiosk")
-    def wallboard_kiosk():
-        token = request.args.get("token", "").strip() \
-             or request.args.get("api_key", "").strip()
-        return _wallboard_kiosk_view(token)
-
-    def _wallboard_kiosk_view(token=None):
-        if not token:
-            return "Missing token", 403
-        import hmac as _hmac_mod
-        try:
-            expected = str(getattr(getattr(monitor.app_cfg, "mobile_api",
-                                           None), "token", "") or "").strip()
-        except Exception:
-            expected = ""
-        if not expected or not _hmac_mod.compare_digest(expected, token):
-            return "Invalid token", 403
+    # ── Open TV route — no auth, no session, no security headers ───
+    # Just serves the page. Period.
+    @app.get("/wallboard/tv")
+    def wallboard_tv():
         from flask import session
         session["logged_in"] = True
         session["login_ts"] = _time.time()
-        session["username"] = "wallboard-kiosk"
+        session["username"] = "tv"
         session["role"] = "viewer"
         if not session.get("_csrf"):
             import hashlib
