@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "2.0.0",
+    "version":  "2.0.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -736,8 +736,9 @@ body::after{
 .sb-cols{display:flex;flex:1;height:100%;gap:0}
 .sb-col{
   flex:1;display:flex;flex-direction:column;align-items:center;
-  padding:28px 20px;position:relative;overflow:hidden;
+  padding:24px 28px;position:relative;overflow:hidden;
   border-right:1px solid rgba(255,255,255,.06);
+  min-width:0; /* allow flex shrink */
 }
 .sb-col:last-child{border-right:none}
 /* Colour glow at top of column */
@@ -752,29 +753,29 @@ body::after{
 
 /* ═══ Station logo — BIG ═══ */
 .sb-logo{
-  width:140px;height:140px;border-radius:28px;object-fit:contain;flex-shrink:0;
+  width:min(130px,20vh);height:min(130px,20vh);border-radius:24px;object-fit:contain;flex-shrink:0;
   background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.1);
   box-shadow:0 8px 32px rgba(0,0,0,.4);
-  margin-bottom:12px;position:relative;z-index:1;
+  margin-bottom:10px;position:relative;z-index:1;
 }
 .sb-logo-placeholder{
-  width:140px;height:140px;border-radius:28px;flex-shrink:0;
+  width:min(130px,20vh);height:min(130px,20vh);border-radius:24px;flex-shrink:0;
   background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.06);
   display:flex;align-items:center;justify-content:center;
-  font-size:48px;font-weight:800;color:rgba(255,255,255,.3);
-  margin-bottom:12px;position:relative;z-index:1;
+  font-size:44px;font-weight:800;color:rgba(255,255,255,.3);
+  margin-bottom:10px;position:relative;z-index:1;
 }
 
 /* ═══ Studio name + freq ═══ */
-.sb-studio-name{font-size:16px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mu);text-align:center;position:relative;z-index:1}
-.sb-station-name{font-size:28px;font-weight:700;text-align:center;margin-bottom:2px;position:relative;z-index:1;letter-spacing:-.01em}
-.sb-freq{font-size:12px;color:var(--mu);font-weight:400;text-align:center;margin-bottom:12px;position:relative;z-index:1}
+.sb-studio-name{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--mu);text-align:center;position:relative;z-index:1;width:100%;margin-bottom:10px}
+.sb-station-name{font-size:26px;font-weight:700;text-align:center;margin-bottom:2px;position:relative;z-index:1;letter-spacing:-.01em;width:100%}
+.sb-freq{font-size:11px;color:var(--mu);font-weight:400;text-align:center;margin-bottom:10px;position:relative;z-index:1}
 
 /* ═══ Mic Live ═══ */
 .sb-mic{
-  width:100%;padding:10px 16px;border-radius:12px;text-align:center;
-  font-size:20px;font-weight:700;letter-spacing:.06em;
-  transition:all .3s ease;margin-bottom:14px;position:relative;z-index:1;
+  width:100%;max-width:300px;padding:10px 16px;border-radius:12px;text-align:center;
+  font-size:18px;font-weight:700;letter-spacing:.06em;
+  transition:all .3s ease;margin-bottom:10px;position:relative;z-index:1;flex-shrink:0;
 }
 .sb-mic.live{
   background:linear-gradient(135deg,#c81e1e,#ef4444);color:#fff;
@@ -786,9 +787,9 @@ body::after{
 
 /* ═══ Chain status ═══ */
 .sb-chain-badge{
-  display:flex;align-items:center;justify-content:center;gap:6px;width:100%;
-  padding:8px 14px;border-radius:10px;font-size:14px;font-weight:700;
-  margin-bottom:14px;position:relative;z-index:1;
+  display:flex;align-items:center;justify-content:center;gap:6px;width:100%;max-width:300px;
+  padding:7px 14px;border-radius:10px;font-size:13px;font-weight:700;
+  margin-bottom:10px;position:relative;z-index:1;flex-shrink:0;
 }
 .sb-chain-badge.ok{background:rgba(34,197,94,.12);color:var(--ok);border:1px solid rgba(34,197,94,.25)}
 .sb-chain-badge.fault{background:rgba(239,68,68,.12);color:var(--al);border:1px solid rgba(239,68,68,.3);animation:sb-blink 1.2s ease-in-out infinite}
@@ -798,31 +799,35 @@ body::after{
 /* ═══ Show / Now Playing ═══ */
 .sb-np-zone{
   flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
-  width:100%;min-height:0;position:relative;z-index:1;gap:10px;padding:8px 0;
+  width:100%;min-height:0;position:relative;z-index:1;gap:8px;padding:6px 0;
+  overflow:hidden;
 }
 .sb-art{
-  width:160px;height:160px;border-radius:20px;object-fit:cover;flex-shrink:0;
+  width:min(160px,40vw);height:min(160px,40vw);border-radius:20px;object-fit:cover;flex-shrink:1;
   box-shadow:0 8px 36px rgba(0,0,0,.4);border:2px solid rgba(255,255,255,.1);
-  background:rgba(255,255,255,.06);
+  background:rgba(255,255,255,.06);min-height:0;
 }
 .sb-art-placeholder{
-  width:120px;height:120px;border-radius:20px;flex-shrink:0;
+  width:100px;height:100px;border-radius:20px;flex-shrink:1;
   background:rgba(255,255,255,.04);border:2px solid rgba(255,255,255,.04);
-  display:flex;align-items:center;justify-content:center;font-size:40px;opacity:.2;
+  display:flex;align-items:center;justify-content:center;font-size:36px;opacity:.2;min-height:0;
 }
-.sb-show-name{font-size:20px;font-weight:700;text-align:center;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sb-track{font-size:16px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sb-artist{font-size:14px;font-weight:700;text-align:center;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sb-np-label{font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+.sb-show-name{font-size:18px;font-weight:700;text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.3}
+.sb-track{font-size:15px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;width:100%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sb-artist{font-size:13px;font-weight:700;text-align:center;width:100%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sb-np-label{font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;font-weight:700;flex-shrink:0}
 .sb-idle{font-size:13px;color:var(--mu);text-align:center;font-style:italic;line-height:1.5}
 
 /* ═══ Vertical meters ═══ */
 .sb-meters{
-  display:flex;gap:8px;align-items:flex-end;justify-content:center;
-  width:100%;padding:10px 0;position:relative;z-index:1;
-  flex-shrink:0;height:160px;
+  display:flex;gap:6px;align-items:stretch;justify-content:center;
+  width:100%;max-width:300px;padding:8px 0;position:relative;z-index:1;
+  flex-shrink:0;height:140px;
 }
-.sb-vmeter{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;max-width:48px;height:100%}
+.sb-vmeter{display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;max-width:44px;height:100%}
 .sb-vbar{
   flex:1;width:100%;position:relative;
   background:linear-gradient(to top,rgba(34,197,94,.08) 0% 75%,rgba(245,158,11,.08) 75% 87.5%,rgba(239,68,68,.08) 87.5% 100%);
