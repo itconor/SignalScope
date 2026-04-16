@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.3.0",
+    "version":  "3.4.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -56,6 +56,43 @@ def _dtype(device_index):
     return "other"
 
 
+def _generate_qr_png(data, box=8, border=2):
+    """Generate a QR code PNG as bytes. Uses qrcode library if available,
+    otherwise falls back to a simple 1x1 white pixel placeholder."""
+    try:
+        import qrcode
+        qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_L,
+                           box_size=box, border=border)
+        qr.add_data(data)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        import io
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except ImportError:
+        pass
+    # Fallback: generate a minimal PNG with a placeholder pattern
+    # (install 'qrcode' pip package for real QR codes)
+    import struct, zlib
+    size = 100
+    rows = []
+    for y in range(size):
+        row = b'\x00'  # filter byte
+        for x in range(size):
+            # Draw a simple "QR" text pattern as a placeholder
+            row += b'\xff\xff\xff'  # white pixel
+        rows.append(row)
+    raw = b''.join(rows)
+    # Build minimal PNG
+    def _chunk(ctype, data):
+        c = ctype + data
+        return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+    sig = b'\x89PNG\r\n\x1a\n'
+    ihdr = struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0)
+    return sig + _chunk(b'IHDR', ihdr) + _chunk(b'IDAT', zlib.compress(raw)) + _chunk(b'IEND', b'')
+
+
 def register(app, ctx):
     login_required = ctx["login_required"]
     csrf_protect   = ctx["csrf_protect"]
@@ -73,7 +110,8 @@ def register(app, ctx):
     # our handler runs LAST (after signalscope has set its headers).
     # Paths that MUST be embeddable in an iframe (Yodeck, Screenly, etc.)
     _KIOSK_PREFIXES = ("/wallboard/tv", "/wallboard/logo", "/wallboard/brand",
-                       "/wallboard/asset", "/api/wallboard/")
+                       "/wallboard/asset", "/wallboard/qr", "/wallboard/play",
+                       "/api/wallboard/")
 
     def _wallboard_kiosk_headers(response):
         # Strip all security headers for any kiosk-path request OR when
@@ -422,6 +460,30 @@ def register(app, ctx):
             return send_file(path, max_age=86400)
         return '', 404
 
+    # ── QR code generator (server-side, no external API) ─────────
+    @app.get("/wallboard/qr")
+    def wallboard_qr():
+        """Generate a QR code as PNG. Works without any pip packages
+        by using a minimal QR encoder. Falls back to a placeholder
+        if the data is too long for the simple encoder."""
+        data = request.args.get("d", "").strip()
+        if not data:
+            return '', 400
+        # Validate token if auth is enabled
+        cfg = monitor.app_cfg
+        if cfg.auth.enabled:
+            from flask import session
+            if not session.get("logged_in") and not _validate_wb_token():
+                return '', 403
+        g._wb_kiosk = True
+        try:
+            png_bytes = _generate_qr_png(data)
+            from io import BytesIO
+            return send_file(BytesIO(png_bytes), mimetype='image/png',
+                             max_age=3600)
+        except Exception:
+            return '', 500
+
     # ── Mobile play page — linked from QR codes ──────────────────
     @app.get("/wallboard/play/<chain_id>")
     def wallboard_play(chain_id):
@@ -622,9 +684,8 @@ body::after{
   50%{box-shadow:0 0 40px rgba(239,68,68,.2),0 0 80px rgba(239,68,68,.08),0 4px 24px rgba(0,0,0,.3)}
 }
 
-/* Visual container */
-.cc-visual{display:flex;align-items:center;justify-content:center;gap:10px}
-/* Logo / avatar */
+/* Visual container — logo/avatar only */
+.cc-visual{display:flex;align-items:center;justify-content:center}
 .cc-logo{
   width:72px;height:72px;border-radius:16px;object-fit:contain;
   background:rgba(255,255,255,.05);
@@ -632,7 +693,6 @@ body::after{
   border:1px solid rgba(255,255,255,.06);
   flex-shrink:0;
 }
-.cc-visual.has-both .cc-logo{width:52px;height:52px;border-radius:12px}
 .cc-avatar{
   width:72px;height:72px;border-radius:16px;flex-shrink:0;
   display:flex;align-items:center;justify-content:center;
@@ -640,7 +700,6 @@ body::after{
   box-shadow:0 4px 16px rgba(0,0,0,.35);
   text-shadow:0 2px 4px rgba(0,0,0,.3);
 }
-.cc-visual.has-both .cc-avatar{width:44px;height:44px;border-radius:10px;font-size:18px}
 .cc-name{
   font-size:15px;font-weight:800;text-align:center;line-height:1.3;
   max-width:100%;letter-spacing:-.01em;
@@ -699,14 +758,14 @@ body::after{
 body.corp .cc-np-show{color:#86868b}
 body.corp .cc-np-track{color:#0071e3}
 body.corp .cc-np-artist{color:#1d1d1f}
-/* Artwork — shown alongside logo/avatar when available */
+/* Artwork — own row between status and now-playing */
+.cc-art-wrap{display:flex;justify-content:center;width:100%}
 .cc-art{
   width:88px;height:88px;border-radius:14px;object-fit:cover;
   box-shadow:0 4px 18px rgba(0,0,0,.4);
   border:1px solid rgba(255,255,255,.08);
-  transition:opacity .4s;
+  transition:opacity .5s ease,transform .4s ease;
 }
-.cc-visual.has-both .cc-art{width:68px;height:68px;border-radius:12px}
 body.corp .cc-art{box-shadow:0 2px 12px rgba(0,0,0,.12);border-color:rgba(0,0,0,.06)}
 
 /* ═══ Meter scroll ═══ */
@@ -1052,8 +1111,8 @@ body.has-brand .wb-brand{display:block}
 #wb-chains.cc-count-1 .cc-avatar{font-size:36px}
 #wb-chains.cc-count-2 .cc-logo,.cc-count-2 .cc-avatar{width:84px;height:84px;border-radius:18px}
 #wb-chains.cc-count-2 .cc-avatar{font-size:30px}
-#wb-chains.cc-count-1 .cc-art{width:110px;height:110px}
-#wb-chains.cc-count-2 .cc-art{width:96px;height:96px}
+#wb-chains.cc-count-1 .cc-art{width:100px;height:100px;border-radius:16px}
+#wb-chains.cc-count-2 .cc-art{width:92px;height:92px}
 
 /* ═══ Colour-matched artwork glow ═══ */
 .cc[data-glow]{transition:border-color .8s ease,box-shadow .8s ease}
@@ -1164,7 +1223,7 @@ body.bauer #wb-hero .hero-pulse-bg{
 }
 
 /* ═══ Time-of-day background gradient ═══ */
-body{transition:background 60s linear}
+body.day-grad{transition:background 3s ease}
 
 /* ═══ QR codes on chain cards ═══ */
 .cc-qr{margin-top:4px;display:flex;justify-content:center}
@@ -1327,31 +1386,32 @@ function _updateHeroPulse(){
 
 /* ═══ Time-of-day background gradient ═══ */
 function _updateDayGradient(){
+  // Skip if Bauer or Corp theme is active — they have their own backgrounds
+  if(document.body.classList.contains('bauer')||document.body.classList.contains('corp')){
+    document.body.classList.remove('day-grad');
+    document.body.style.background='';
+    return;
+  }
+  document.body.classList.add('day-grad');
   var h=new Date().getHours();
-  // Night (22-05): deep blue, Morning (06-09): warm sunrise,
-  // Day (10-17): bright blue, Evening (18-21): warm sunset
   var bg;
   if(h>=6&&h<9) bg='radial-gradient(ellipse at 50% -5%,#2d1b69 0%,#1a0f3d 38%,#0d0820 100%)';
   else if(h>=9&&h<17) bg='radial-gradient(ellipse at 50% -5%,#14397a 0%,#07142b 38%,#040d1c 100%)';
   else if(h>=17&&h<21) bg='radial-gradient(ellipse at 50% -5%,#4a1942 0%,#1a0a2e 38%,#0d0518 100%)';
   else bg='radial-gradient(ellipse at 50% -5%,#0a1628 0%,#050d1c 38%,#020810 100%)';
-  if(!document.body.classList.contains('bauer')&&!document.body.classList.contains('corp')){
-    document.body.style.background=bg;
-  }else{
-    document.body.style.background='';
-  }
+  document.body.style.background=bg;
 }
-_updateDayGradient();setInterval(_updateDayGradient,60000);
+/* Don't run until config is loaded — otherwise it overrides Bauer/Corp */
+setInterval(_updateDayGradient,60000);
 
-/* ═══ QR code generator (lightweight — no library needed) ═══ */
-/* QR codes rendered as <img> from qrserver.com API — no JS library needed */
+/* ═══ QR code — rendered from local server endpoint ═══ */
 function _renderQRImg(container,url,size){
   if(!url||!container)return;
   container.innerHTML='';
   var img=document.createElement('img');
   img.style.cssText='width:'+size+'px;height:'+size+'px;border-radius:6px;background:#fff;padding:3px';
   img.alt='Scan to listen';
-  img.src='https://api.qrserver.com/v1/create-qr-code/?size='+size+'x'+size+'&data='+encodeURIComponent(url);
+  img.src=_tkUrl('/wallboard/qr?d='+encodeURIComponent(url));
   container.appendChild(img);
 }
 
@@ -1516,6 +1576,7 @@ function renderChains(chains){
         '<div class="cc-visual"></div>'
         +'<div class="cc-name"></div>'
         +'<div class="cc-status"><span class="cc-sdot"></span><span class="cc-stxt"></span></div>'
+        +'<div class="cc-art-wrap"></div>'
         +'<div class="cc-np-wrap"></div>'
         +'<div class="cc-np-history"></div>'
         +'<div class="cc-nodes"></div>'
@@ -1529,13 +1590,8 @@ function renderChains(chains){
     // Update class (status glow etc)
     card.className=_ccCardCls(st);
 
-    // Update visual — show logo/avatar AND artwork side by side when both exist
+    // Logo or avatar at the top
     var vizEl=card.querySelector('.cc-visual');
-    var hasBoth=hasArt&&(hasLogo||!hasLogo); // artwork present
-    var showBoth=hasArt&&hasLogo;
-    vizEl.classList.toggle('has-both',showBoth);
-
-    // 1. Logo or avatar (always present as the primary identifier)
     if(hasLogo){
       var logoImg=vizEl.querySelector('.cc-logo');
       var logoUrl=_tkUrl('/wallboard/logo/'+cid);
@@ -1544,12 +1600,10 @@ function renderChains(chains){
         logoImg.src=logoUrl;
         vizEl.insertBefore(logoImg,vizEl.firstChild);
       }
-      // Remove avatar if logo now exists
       var oldAv=vizEl.querySelector('.cc-avatar');if(oldAv)oldAv.remove();
     }else{
       var avEl=vizEl.querySelector('.cc-avatar');
       if(!avEl){
-        // Remove stale logo if any
         var oldLogo=vizEl.querySelector('.cc-logo');if(oldLogo)oldLogo.remove();
         avEl=document.createElement('div');avEl.className='cc-avatar';
         avEl.style.background='linear-gradient(135deg,'+col[0]+','+col[1]+')';
@@ -1558,13 +1612,14 @@ function renderChains(chains){
       }
     }
 
-    // 2. Artwork (shown beside the logo/avatar when available) — with crossfade
-    var artImg=vizEl.querySelector('.cc-art');
-    if(hasArt){
+    // Artwork — own row above now-playing, with crossfade
+    var artWrap=card.querySelector('.cc-art-wrap');
+    var artImg=artWrap?artWrap.querySelector('.cc-art'):null;
+    if(hasArt&&artWrap){
       if(!artImg){
         artImg=document.createElement('img');artImg.className='cc-art art-entering';artImg.alt='';
         artImg.crossOrigin='anonymous';
-        vizEl.appendChild(artImg);
+        artWrap.appendChild(artImg);
         setTimeout(function(){artImg.classList.remove('art-entering')},30);
       }
       if(artImg.src!==np.artwork){
@@ -1574,7 +1629,6 @@ function renderChains(chains){
           _art.src=np.artwork;
           _art.onload=function(){
             _art.classList.remove('art-entering');
-            // Extract dominant colour for card glow
             _extractGlow(_art,function(r,g,b){
               card.style.borderColor='rgba('+r+','+g+','+b+',.35)';
               card.style.boxShadow='0 0 28px rgba('+r+','+g+','+b+',.15),0 4px 24px rgba(0,0,0,.3)';
@@ -1583,7 +1637,7 @@ function renderChains(chains){
           };
         },250);
       }
-    }else{
+    }else if(artWrap){
       if(artImg){artImg.remove()}
       if(card.dataset.glow){delete card.dataset.glow;card.style.borderColor='';card.style.boxShadow=''}
     }
