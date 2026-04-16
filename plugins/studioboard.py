@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.2.0",
+    "version":  "1.3.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -271,6 +271,43 @@ def register(app, ctx):
         studio["chains"] = data.get("chains", [])
         _cfg_save(cfg)
         return jsonify({"ok": True, "chains": studio["chains"]})
+
+    # ── Artwork proxy (for Yodeck — external URLs may be blocked) ─
+    @app.get("/studioboard/np_art/<rpuid>")
+    @login_required
+    def sb_np_art(rpuid):
+        """Proxy Planet Radio artwork through same origin."""
+        g._sb_kiosk = True
+        try:
+            import urllib.request
+            # Get the nowplaying data
+            url = f"https://listenapi.planetradio.co.uk/api9.2/stations_nowplaying/uk"
+            req = urllib.request.Request(url, headers={"User-Agent": "SignalScope"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+            items = data if isinstance(data, list) else data.get("data", [])
+            for s in items:
+                if str(s.get("stationCode", "")).strip() == rpuid:
+                    air = s.get("stationOnAir") or {}
+                    np = s.get("stationNowPlaying") or {}
+                    # Try show image first, then track artwork
+                    art_url = (air.get("episodeImageUrl") or air.get("episodeImage")
+                              or air.get("brandImageUrl") or air.get("presenterImageUrl")
+                              or air.get("showImageUrl") or air.get("imageUrl")
+                              or np.get("nowPlayingImage") or "")
+                    if art_url:
+                        if art_url.startswith("//"): art_url = "https:" + art_url
+                        req2 = urllib.request.Request(art_url, headers={"User-Agent": "SignalScope"})
+                        with urllib.request.urlopen(req2, timeout=10) as resp2:
+                            img_data = resp2.read()
+                            ctype = resp2.headers.get_content_type() or "image/jpeg"
+                        resp_out = make_response(img_data)
+                        resp_out.headers['Content-Type'] = ctype
+                        resp_out.headers['Cache-Control'] = 'public, max-age=60'
+                        return resp_out
+        except Exception:
+            pass
+        return '', 404
 
     # ── Log seen show names (called by display JS) ──────────────
 
@@ -743,10 +780,15 @@ body::after{
   font-size:64px;opacity:.3;
 }
 .sb-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
-.sb-show-name{font-size:28px;font-weight:700;letter-spacing:-.01em}
-.sb-track{font-size:22px;font-weight:300;color:rgba(255,255,255,.85);margin-top:4px}
-.sb-artist{font-size:18px;font-weight:700;color:#fff}
-.sb-np-label{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-top:12px}
+.sb-show-name{font-size:32px;font-weight:700;letter-spacing:-.01em;text-shadow:0 2px 8px rgba(0,0,0,.3)}
+.sb-track{font-size:24px;font-weight:300;color:rgba(255,255,255,.85);margin-top:6px}
+.sb-artist{font-size:20px;font-weight:700;color:#fff}
+.sb-np-label{font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-top:14px}
+
+/* ═══ Chain logo on studio card ═══ */
+.sb-chain-logo{width:48px;height:48px;border-radius:12px;object-fit:contain;
+  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);flex-shrink:0}
+.sb-grid-card .sb-chain-logo{width:36px;height:36px;border-radius:10px}
 
 /* ═══ Meters ═══ */
 .sb-meters{margin-top:auto;padding-top:16px}
@@ -766,19 +808,37 @@ body::after{
 .sb-meter-val.silent{color:var(--mu)}
 
 /* ═══ Multi-studio grid ═══ */
-.sb-grid{flex:1;display:grid;gap:16px;padding:0;min-height:0}
+.sb-grid{flex:1;display:grid;gap:20px;padding:0;min-height:0}
 .sb-grid-card{
-  background:rgba(255,255,255,.06);border:1.5px solid rgba(255,255,255,.1);
-  border-radius:20px;padding:20px;display:flex;flex-direction:column;
+  background:linear-gradient(160deg,rgba(255,255,255,.08),rgba(255,255,255,.02));
+  border:2px solid rgba(255,255,255,.12);
+  border-radius:24px;padding:24px;display:flex;flex-direction:column;
   overflow:hidden;position:relative;
+  backdrop-filter:blur(8px);
+  box-shadow:0 8px 32px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.06);
+  transition:border-color .5s,box-shadow .5s;
 }
-.sb-grid-card .sb-mic{font-size:18px;padding:8px 16px;border-radius:10px;margin-bottom:12px}
-.sb-grid-card .sb-art{width:120px;height:120px;border-radius:16px}
-.sb-grid-card .sb-art-placeholder{width:120px;height:120px;border-radius:16px;font-size:40px}
-.sb-grid-card .sb-show-name{font-size:20px}
-.sb-grid-card .sb-track{font-size:16px}
-.sb-grid-card .sb-artist{font-size:14px}
-.sb-grid-card .sb-studio-name{font-size:22px}
+/* Colour glow — set via inline style data-color */
+.sb-grid-card::before{
+  content:'';position:absolute;top:-1px;left:0;right:0;height:3px;
+  background:linear-gradient(90deg,transparent 5%,var(--card-color,rgba(255,255,255,.2)) 50%,transparent 95%);
+  border-radius:24px 24px 0 0;
+}
+.sb-grid-card::after{
+  content:'';position:absolute;inset:0;pointer-events:none;border-radius:24px;
+  background:radial-gradient(ellipse at 50% 0%,var(--card-glow,rgba(255,255,255,.03)),transparent 70%);
+}
+.sb-grid-card .sb-mic{font-size:20px;padding:10px 18px;border-radius:12px;margin-bottom:14px}
+.sb-grid-card .sb-art{width:140px;height:140px;border-radius:18px}
+.sb-grid-card .sb-art-placeholder{width:140px;height:140px;border-radius:18px;font-size:48px}
+.sb-grid-card .sb-show-name{font-size:22px}
+.sb-grid-card .sb-track{font-size:18px}
+.sb-grid-card .sb-artist{font-size:16px}
+.sb-grid-card .sb-studio-name{font-size:26px}
+/* On-air pulse on card border */
+.sb-grid-card.card-ok{border-color:rgba(34,197,94,.25)}
+.sb-grid-card.card-fault{border-color:rgba(239,68,68,.5);animation:sb-card-fault 1.5s ease-in-out infinite}
+@keyframes sb-card-fault{0%,100%{box-shadow:0 0 20px rgba(239,68,68,.1),0 8px 32px rgba(0,0,0,.3)}50%{box-shadow:0 0 40px rgba(239,68,68,.25),0 8px 32px rgba(0,0,0,.3)}}
 
 /* ═══ Clock ═══ */
 .sb-clock{font-size:28px;font-weight:300;font-variant-numeric:tabular-nums;letter-spacing:.05em;text-align:right}
@@ -821,19 +881,31 @@ function _getShowArt(studio){
   if(uploaded)return {type:'file',src:uploaded};
   // 2. Show image from Planet Radio API
   if(np.show_image)return {type:'url',src:np.show_image};
-  // 3. Track artwork
+  // 3. Track artwork from API
   if(np.artwork)return {type:'url',src:np.artwork};
+  // 4. Proxy artwork through our server (for Yodeck)
+  var rpuid=studio.np_rpuid;
+  if(rpuid)return {type:'proxy',src:rpuid};
   return null;
+}
+
+function _chainLogoHtml(ch,cls){
+  return '<img class="sb-chain-logo" src="'+_tkUrl('/wallboard/logo/'+_e(ch.id))+'" alt="" onerror="this.style.display=\'none\'">';
 }
 
 function renderSingle(studio){
   var el=document.getElementById('sb-content');
   var np=_getNp(studio);
+  var col=studio.color||'#17a8ff';
+  var rgb=_hexToRgb(col);
+
+  // Chain badges with logos
   var chainHtml='';
   (studio.chains||[]).forEach(function(ch){
     var cls=ch.status==='fault'?'fault':'ok';
     var txt=ch.status==='fault'?'FAULT':'ON AIR';
-    chainHtml+='<div class="sb-chain-badge '+cls+'"><span class="sb-chain-dot"></span>'+_e(ch.name)+' — '+txt+'</div>';
+    chainHtml+=_chainLogoHtml(ch)
+      +'<div class="sb-chain-badge '+cls+'"><span class="sb-chain-dot"></span>'+_e(ch.name)+' — '+txt+'</div>';
   });
 
   var micCls=studio.mic_live?'live':'clear';
@@ -844,7 +916,9 @@ function renderSingle(studio){
   if(art&&art.type==='file'){
     artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(art.src))+'" alt="">';
   }else if(art&&art.type==='url'){
-    artHtml='<img class="sb-art" src="'+_e(art.src)+'" alt="">';
+    artHtml='<img class="sb-art" src="'+_e(art.src)+'" alt="" onerror="this.src=\''+_tkUrl('/studioboard/np_art/'+_e(studio.np_rpuid||''))+'\';">';
+  }else if(art&&art.type==='proxy'){
+    artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/np_art/'+_e(art.src))+'" alt="" onerror="this.style.display=\'none\'">';
   }else{
     artHtml='<div class="sb-art-placeholder">🎙</div>';
   }
@@ -872,8 +946,11 @@ function renderSingle(studio){
       +'<div class="sb-meter-val '+cls+'">'+fmtLev(lev)+'</div></div>';
   });
 
-  var html='<div class="sb-hdr">'
-    +'<div><div class="sb-studio-name">'+_e(studio.name)+'</div>'
+  // Apply studio colour as ambient glow
+  el.style.cssText='--card-color:rgba('+rgb+',.5);--card-glow:rgba('+rgb+',.08)';
+
+  var html='<div class="sb-hdr" style="border-bottom:2px solid rgba('+rgb+',.2)">'
+    +'<div><div class="sb-studio-name" style="text-shadow:0 0 30px rgba('+rgb+',.3)">'+_e(studio.name)+'</div>'
     +(studio.freq?'<div class="sb-freq">'+_e(studio.freq)+'</div>':'')+'</div>'
     +'<div class="sb-status">'+chainHtml+'</div>'
     +'<div><div class="sb-clock" id="sb-clock"></div><div class="sb-clock-date" id="sb-clock-date"></div></div></div>'
@@ -891,6 +968,8 @@ function renderGrid(studios){
   var html='<div class="sb-grid" style="grid-template-columns:repeat('+cols+',1fr)">';
   studios.forEach(function(studio){
     var np=_getNp(studio);
+    var col=studio.color||'#17a8ff';
+    var rgb=_hexToRgb(col);
     var micCls=studio.mic_live?'live':'clear';
     var micTxt=studio.mic_live?'MIC LIVE':'CLEAR';
     var chainSt='ok';
@@ -899,15 +978,21 @@ function renderGrid(studios){
     var artHtml='';
     var art=_getShowArt(studio);
     if(art&&art.type==='file'){artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(art.src))+'" alt="">';}
-    else if(art&&art.type==='url'){artHtml='<img class="sb-art" src="'+_e(art.src)+'" alt="">';}
+    else if(art&&art.type==='url'){artHtml='<img class="sb-art" src="'+_e(art.src)+'" alt="" onerror="this.src=\''+_tkUrl('/studioboard/np_art/'+_e(studio.np_rpuid||''))+'\';">';}
+    else if(art&&art.type==='proxy'){artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/np_art/'+_e(art.src))+'" alt="" onerror="this.style.display=\'none\'">';}
     else{artHtml='<div class="sb-art-placeholder">🎙</div>';}
 
-    html+='<div class="sb-grid-card" style="border-color:rgba('+_hexToRgb(studio.color||'#17a8ff')+',.3)">'
-      +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">'
-      +'<div class="sb-studio-name" style="flex:1">'+_e(studio.name)+'</div>'
+    // Chain logos
+    var logosHtml='';
+    (studio.chains||[]).forEach(function(ch){logosHtml+=_chainLogoHtml(ch)});
+
+    html+='<div class="sb-grid-card card-'+chainSt+'" style="--card-color:rgba('+rgb+',.5);--card-glow:rgba('+rgb+',.1);border-color:rgba('+rgb+',.3)">'
+      +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+      +logosHtml
+      +'<div class="sb-studio-name" style="flex:1;text-shadow:0 0 20px rgba('+rgb+',.3)">'+_e(studio.name)+'</div>'
       +'<div class="sb-chain-badge '+chainSt+'"><span class="sb-chain-dot"></span>'+(chainSt==='fault'?'FAULT':'ON AIR')+'</div></div>'
       +'<div class="sb-mic '+micCls+'">'+micTxt+'</div>'
-      +'<div class="sb-show" style="gap:16px">'+artHtml
+      +'<div class="sb-show" style="gap:20px">'+artHtml
       +'<div class="sb-info">'
       +(np.show?'<div class="sb-show-name">'+_e(np.show)+'</div>':'')
       +(np.artist?'<div class="sb-artist">'+_e(np.artist)+'</div>':'')
