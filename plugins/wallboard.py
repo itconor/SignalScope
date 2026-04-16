@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.4.0",
+    "version":  "3.4.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -463,26 +463,27 @@ def register(app, ctx):
     # ── QR code generator (server-side, no external API) ─────────
     @app.get("/wallboard/qr")
     def wallboard_qr():
-        """Generate a QR code as PNG. Works without any pip packages
-        by using a minimal QR encoder. Falls back to a placeholder
-        if the data is too long for the simple encoder."""
+        """Generate a QR code as PNG using the qrcode pip package."""
         data = request.args.get("d", "").strip()
         if not data:
             return '', 400
-        # Validate token if auth is enabled
+        g._wb_kiosk = True
+        # Auth handled by before_request hook (token sets session)
         cfg = monitor.app_cfg
         if cfg.auth.enabled:
             from flask import session
-            if not session.get("logged_in") and not _validate_wb_token():
+            if not session.get("logged_in"):
                 return '', 403
-        g._wb_kiosk = True
         try:
             png_bytes = _generate_qr_png(data)
-            from io import BytesIO
-            return send_file(BytesIO(png_bytes), mimetype='image/png',
-                             max_age=3600)
         except Exception:
             return '', 500
+        from flask import make_response
+        resp = make_response(png_bytes)
+        resp.headers['Content-Type'] = 'image/png'
+        resp.headers['Cache-Control'] = 'public, max-age=3600'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
 
     # ── Mobile play page — linked from QR codes ──────────────────
     @app.get("/wallboard/play/<chain_id>")
@@ -1618,7 +1619,6 @@ function renderChains(chains){
     if(hasArt&&artWrap){
       if(!artImg){
         artImg=document.createElement('img');artImg.className='cc-art art-entering';artImg.alt='';
-        artImg.crossOrigin='anonymous';
         artWrap.appendChild(artImg);
         setTimeout(function(){artImg.classList.remove('art-entering')},30);
       }

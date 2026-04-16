@@ -105,7 +105,7 @@
     "file": "wallboard.py",
     "icon": "📺",
     "description": "TV-optimised broadcast wallboard with live chain status cards, station logos, PPM-style level meters, alert ticker, and full customisation. Upload logos per chain, select which streams to display, toggle LUFS/now-playing/hero banner. Gradient avatars, health bars, zone-coloured meters at 150 ms update rate. Hub-only.",
-    "version": "3.4.0",
+    "version": "3.4.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/wallboard.py"
   },
