@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.10.0",
+    "version":  "3.11.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -773,11 +773,10 @@ body::after{
 .cc-rx-fill{
   height:100%;border-radius:5px;
   background:linear-gradient(90deg,#22c55e 0%,#22c55e 75%,#f59e0b 87%,#ef4444 100%);
-  transition:width .15s ease;
 }
 .cc-rx-peak{
   position:absolute;top:0;bottom:0;width:3px;background:#fff;border-radius:2px;
-  box-shadow:0 0 4px rgba(255,255,255,.5);transition:left .15s ease;
+  box-shadow:0 0 4px rgba(255,255,255,.5);
 }
 .cc-rx-label{display:flex;justify-content:space-between;align-items:center;margin-top:3px}
 .cc-rx-name{font-size:10px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -1351,7 +1350,9 @@ function _tkUrl(u){if(!_wbTk)return u;return u+(u.indexOf('?')>=0?'&':'?')+'toke
 var _urlOverrides={{url_overrides|default("{}")|safe}};
 
 var POLL_MS=1500,LIVE_MS=150,CHAIN_MS=2000;
-var PEAK_HOLD=2500,PEAK_RATE=.45,DB_FLOOR=-80,ATTACK_RATE=600,DECAY_RATE=30;
+var PEAK_HOLD=2500,PEAK_RATE=.6,DB_FLOOR=-80;
+// Exponential time constants (seconds): attack fast, decay slow — natural VU feel
+var ATTACK_TC=0.05,DECAY_TC=0.7;
 var _sizes={sm:120,md:155,lg:210};
 var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e0b'],['#9333e8','#a855f7'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316'],['#c81e1e','#ef4444']];
 
@@ -1869,7 +1870,9 @@ function _meterRaf(ts){
   var dt=_rafTs?Math.min((ts-_rafTs)/1000,.1):0;_rafTs=ts;
   Object.keys(_targetLev).forEach(function(key){
     var target=_targetLev[key],cur=(_dispLev[key]!=null)?_dispLev[key]:target;
-    if(target>cur)cur=Math.min(target,cur+ATTACK_RATE*dt);else cur=Math.max(target,cur-DECAY_RATE*dt);
+    // Exponential smoothing — natural asymptotic approach, no linear snap
+    var alpha=1-Math.exp(-dt/(target>cur?ATTACK_TC:DECAY_TC));
+    cur=cur+(target-cur)*alpha;
     _dispLev[key]=cur;
     var chS='';if(key.length>2&&key.charAt(key.length-2)==='|')chS=key.charAt(key.length-1);
     if(chS==='L'||chS==='R'){
