@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.9.4",
+    "version":  "2.9.5",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -553,14 +553,16 @@ body::after{
 }
 
 /* Visual container */
-.cc-visual{display:flex;align-items:center;justify-content:center}
+.cc-visual{display:flex;align-items:center;justify-content:center;gap:10px}
 /* Logo / avatar */
 .cc-logo{
   width:72px;height:72px;border-radius:16px;object-fit:contain;
   background:rgba(255,255,255,.05);
   box-shadow:0 4px 16px rgba(0,0,0,.3);
   border:1px solid rgba(255,255,255,.06);
+  flex-shrink:0;
 }
+.cc-visual.has-both .cc-logo{width:52px;height:52px;border-radius:12px}
 .cc-avatar{
   width:72px;height:72px;border-radius:16px;flex-shrink:0;
   display:flex;align-items:center;justify-content:center;
@@ -568,6 +570,7 @@ body::after{
   box-shadow:0 4px 16px rgba(0,0,0,.35);
   text-shadow:0 2px 4px rgba(0,0,0,.3);
 }
+.cc-visual.has-both .cc-avatar{width:44px;height:44px;border-radius:10px;font-size:18px}
 .cc-name{
   font-size:15px;font-weight:800;text-align:center;line-height:1.3;
   max-width:100%;letter-spacing:-.01em;
@@ -626,13 +629,14 @@ body::after{
 body.corp .cc-np-show{color:#86868b}
 body.corp .cc-np-track{color:#0071e3}
 body.corp .cc-np-artist{color:#1d1d1f}
-/* Artwork replaces logo/avatar when available */
+/* Artwork — shown alongside logo/avatar when available */
 .cc-art{
   width:88px;height:88px;border-radius:14px;object-fit:cover;
   box-shadow:0 4px 18px rgba(0,0,0,.4);
   border:1px solid rgba(255,255,255,.08);
   transition:opacity .4s;
 }
+.cc-visual.has-both .cc-art{width:68px;height:68px;border-radius:12px}
 body.corp .cc-art{box-shadow:0 2px 12px rgba(0,0,0,.12);border-color:rgba(0,0,0,.06)}
 
 /* ═══ Meter scroll ═══ */
@@ -1210,28 +1214,45 @@ function renderChains(chains){
     // Update class (status glow etc)
     card.className=_ccCardCls(st);
 
-    // Update visual (logo/artwork/avatar) — only change src if different
+    // Update visual — show logo/avatar AND artwork side by side when both exist
     var vizEl=card.querySelector('.cc-visual');
-    if(hasArt){
-      var artImg=vizEl.querySelector('.cc-art');
-      if(!artImg){
-        vizEl.innerHTML='<img class="cc-art" alt="">';
-        artImg=vizEl.querySelector('.cc-art');
-      }
-      if(artImg.src!==np.artwork)artImg.src=np.artwork;
-    }else if(hasLogo){
+    var hasBoth=hasArt&&(hasLogo||!hasLogo); // artwork present
+    var showBoth=hasArt&&hasLogo;
+    vizEl.classList.toggle('has-both',showBoth);
+
+    // 1. Logo or avatar (always present as the primary identifier)
+    if(hasLogo){
       var logoImg=vizEl.querySelector('.cc-logo');
       var logoUrl=_tkUrl('/wallboard/logo/'+cid);
-      if(!logoImg||logoImg.className!=='cc-logo'){
-        vizEl.innerHTML='<img class="cc-logo" alt="">';
-        logoImg=vizEl.querySelector('.cc-logo');
+      if(!logoImg){
+        logoImg=document.createElement('img');logoImg.className='cc-logo';logoImg.alt='';
         logoImg.src=logoUrl;
+        vizEl.insertBefore(logoImg,vizEl.firstChild);
       }
+      // Remove avatar if logo now exists
+      var oldAv=vizEl.querySelector('.cc-avatar');if(oldAv)oldAv.remove();
     }else{
       var avEl=vizEl.querySelector('.cc-avatar');
       if(!avEl){
-        vizEl.innerHTML='<div class="cc-avatar" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
+        // Remove stale logo if any
+        var oldLogo=vizEl.querySelector('.cc-logo');if(oldLogo)oldLogo.remove();
+        avEl=document.createElement('div');avEl.className='cc-avatar';
+        avEl.style.background='linear-gradient(135deg,'+col[0]+','+col[1]+')';
+        avEl.textContent=_initial(ch.name||'?');
+        vizEl.insertBefore(avEl,vizEl.firstChild);
       }
+    }
+
+    // 2. Artwork (shown beside the logo/avatar when available)
+    var artImg=vizEl.querySelector('.cc-art');
+    if(hasArt){
+      if(!artImg){
+        artImg=document.createElement('img');artImg.className='cc-art';artImg.alt='';
+        vizEl.appendChild(artImg);
+      }
+      if(artImg.src!==np.artwork)artImg.src=np.artwork;
+    }else if(artImg){
+      artImg.remove();
     }
 
     // Name
