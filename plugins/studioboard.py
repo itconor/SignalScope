@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.1.0",
+    "version":  "1.2.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -586,6 +586,10 @@ function render(){
     html+='<button class="btn bp bs" data-art-upload="'+_e(st.id)+'">Upload Image</button></div>';
     html+='</div>';
 
+    // Save button
+    html+='<div style="margin:12px 0 8px"><button class="btn bp" data-save-studio="'+_e(st.id)+'">Save Changes</button>'
+      +'<span class="save-msg" data-save-msg="'+_e(st.id)+'" style="margin-left:10px;font-size:12px;color:var(--ok);display:none">Saved!</span></div>';
+
     // Mic Live API info
     html+='<div class="field"><label>Mic Live API</label>';
     html+='<div style="font-size:11px;color:var(--mu)">POST <code style="color:var(--acc)">/api/studioboard/mic/'+_e(st.id)+'?token=YOUR_TOKEN</code> with <code style="color:var(--acc)">{"live": true}</code> or <code style="color:var(--acc)">{"live": false}</code></div>';
@@ -610,7 +614,25 @@ document.getElementById('btn-add-studio').addEventListener('click',function(){
   _post('/api/studioboard/studio',{name:'New Studio'}).then(function(){loadAll()});
 });
 
+function saveFullStudio(sid){
+  var card=document.querySelector('.card[data-sid="'+sid+'"]');if(!card)return;
+  var data={};
+  var nameInput=card.querySelector('[data-field="name"]');if(nameInput)data.name=nameInput.value;
+  var colorInput=card.querySelector('[data-field="color"]');if(colorInput)data.color=colorInput.value;
+  var freqInput=card.querySelector('[data-field="freq"]');if(freqInput)data.freq=freqInput.value;
+  var chainsSel=card.querySelector('[data-chains]');if(chainsSel)data.chains=Array.from(chainsSel.selectedOptions).map(function(o){return o.value});
+  var inputsSel=card.querySelector('[data-inputs]');if(inputsSel)data.inputs=Array.from(inputsSel.selectedOptions).map(function(o){return o.value});
+  var npSel=card.querySelector('[data-np]');if(npSel)data.np_rpuid=npSel.value;
+  _post('/api/studioboard/studio/'+encodeURIComponent(sid),data).then(function(){
+    var msg=document.querySelector('[data-save-msg="'+sid+'"]');
+    if(msg){msg.style.display='inline';setTimeout(function(){msg.style.display='none'},2000)}
+    loadAll();
+  });
+}
+
 document.getElementById('studios-list').addEventListener('click',function(e){
+  var saveBtn=e.target.closest('[data-save-studio]');
+  if(saveBtn){saveFullStudio(saveBtn.dataset.saveStudio);return}
   var del=e.target.closest('[data-delete]');
   if(del){if(confirm('Delete this studio?'))_del('/api/studioboard/studio/'+encodeURIComponent(del.dataset.delete)).then(function(){loadAll()});return}
   var seenTag=e.target.closest('[data-seen-show]');
@@ -632,15 +654,7 @@ document.getElementById('studios-list').addEventListener('click',function(e){
   }
 });
 
-document.getElementById('studios-list').addEventListener('change',function(e){
-  var t=e.target;
-  var sid=t.dataset.sid||t.dataset.chains||t.dataset.inputs||t.dataset.np;
-  if(!sid)return;
-  if(t.dataset.field){saveStudio(sid,t.dataset.field,t.value);return}
-  if(t.dataset.chains){var vals=Array.from(t.selectedOptions).map(function(o){return o.value});saveStudio(t.dataset.chains,'chains',vals);return}
-  if(t.dataset.inputs){var vals=Array.from(t.selectedOptions).map(function(o){return o.value});saveStudio(t.dataset.inputs,'inputs',vals);return}
-  if(t.dataset.np){saveStudio(t.dataset.np,'np_rpuid',t.value);return}
-});
+/* Changes saved via the Save button — no auto-save on change */
 
 loadAll();
 })();
@@ -802,7 +816,14 @@ function _getNp(studio){
 function _getShowArt(studio){
   var np=_getNp(studio);
   var showName=(np.show||'').trim();
-  return (studio.show_artwork_map||{})[showName]||'';
+  // 1. Uploaded artwork matched by show name (highest priority)
+  var uploaded=(studio.show_artwork_map||{})[showName];
+  if(uploaded)return {type:'file',src:uploaded};
+  // 2. Show image from Planet Radio API
+  if(np.show_image)return {type:'url',src:np.show_image};
+  // 3. Track artwork
+  if(np.artwork)return {type:'url',src:np.artwork};
+  return null;
 }
 
 function renderSingle(studio){
@@ -819,12 +840,11 @@ function renderSingle(studio){
   var micTxt=studio.mic_live?'MIC LIVE':'CLEAR';
 
   var artHtml='';
-  var showArt=_getShowArt(studio);
-  var trackArt=np.artwork||'';
-  if(showArt){
-    artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(showArt))+'" alt="">';
-  }else if(trackArt){
-    artHtml='<img class="sb-art" src="'+_e(trackArt)+'" alt="">';
+  var art=_getShowArt(studio);
+  if(art&&art.type==='file'){
+    artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(art.src))+'" alt="">';
+  }else if(art&&art.type==='url'){
+    artHtml='<img class="sb-art" src="'+_e(art.src)+'" alt="">';
   }else{
     artHtml='<div class="sb-art-placeholder">🎙</div>';
   }
@@ -877,9 +897,9 @@ function renderGrid(studios){
     (studio.chains||[]).forEach(function(ch){if(ch.status==='fault')chainSt='fault'});
 
     var artHtml='';
-    var showArt=_getShowArt(studio);
-    if(showArt){artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(showArt))+'" alt="">';}
-    else if(np.artwork){artHtml='<img class="sb-art" src="'+_e(np.artwork)+'" alt="">';}
+    var art=_getShowArt(studio);
+    if(art&&art.type==='file'){artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(art.src))+'" alt="">';}
+    else if(art&&art.type==='url'){artHtml='<img class="sb-art" src="'+_e(art.src)+'" alt="">';}
     else{artHtml='<div class="sb-art-placeholder">🎙</div>';}
 
     html+='<div class="sb-grid-card" style="border-color:rgba('+_hexToRgb(studio.color||'#17a8ff')+',.3)">'
