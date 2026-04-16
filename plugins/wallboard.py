@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.5.1",
+    "version":  "3.6.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1192,6 +1192,38 @@ body.bauer .tk-site{font-family:'BauerMediaSans',system-ui,sans-serif}
 .cc-sparkline{width:100%;height:16px;margin-top:2px;position:relative}
 .cc-sparkline canvas{width:100%;height:100%;border-radius:3px}
 
+/* ═══ Frequency badge ═══ */
+.cc-freq{
+  font-size:10px;color:var(--mu);font-weight:600;letter-spacing:.04em;
+  text-align:center;opacity:.7;
+}
+body.bauer .cc-freq{color:rgba(255,255,255,.45)}
+
+/* ═══ On Air pulse ring ═══ */
+.cc-visual{position:relative}
+.cc-pulse-ring{
+  position:absolute;inset:-8px;border-radius:24px;
+  border:2px solid rgba(34,197,94,.4);
+  animation:pulse-ring 2.5s ease-out infinite;
+  pointer-events:none;
+}
+@keyframes pulse-ring{
+  0%{transform:scale(.95);opacity:.7}
+  70%{transform:scale(1.08);opacity:0}
+  100%{transform:scale(1.08);opacity:0}
+}
+.cc.cc-fault .cc-pulse-ring{display:none}
+body.bauer .cc-pulse-ring{border-color:rgba(34,197,94,.5)}
+
+/* ═══ Card entrance animation ═══ */
+.cc.cc-entering{opacity:0;transform:translateY(20px)}
+.cc{transition:border-color .4s,box-shadow .4s,transform .25s,opacity .5s ease}
+
+/* ═══ Clock with date ═══ */
+.wb-clock-wrap{display:flex;flex-direction:column;align-items:flex-end;gap:0}
+#wb-clock-date{font-size:10px;color:var(--mu);font-weight:500;letter-spacing:.03em;white-space:nowrap}
+body.bauer #wb-clock-date{color:rgba(255,255,255,.5)}
+
 /* ═══ Sound alert toggle ═══ */
 #btn-sound{position:relative}
 #btn-sound.active{background:var(--al);color:#fff}
@@ -1270,7 +1302,7 @@ body.day-grad{transition:background 3s ease}
     <a class="btn bs" href="/">⌂</a>
     <button class="btn bs" id="btn-sound" title="A">🔔</button>
     <button class="btn bp bs" id="btn-fs" title="F">⛶ Full</button>
-    <span id="wb-clock">--:--</span>
+    <div class="wb-clock-wrap"><span id="wb-clock">--:--</span><span id="wb-clock-date"></span></div>
   </div>
 </header>
 
@@ -1363,7 +1395,7 @@ var PEAK_HOLD=2500,PEAK_RATE=.45,DB_FLOOR=-80,ATTACK_RATE=600,DECAY_RATE=30;
 var _sizes={sm:120,md:155,lg:210};
 var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e0b'],['#9333e8','#a855f7'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316'],['#c81e1e','#ef4444']];
 
-var _cfg={card_size:'md',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false};
+var _cfg={card_size:'md',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false,chain_freq:{},chain_color:{}};
 var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={};
 var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false;
 var _allStreams=[];  // for stream selector
@@ -1439,6 +1471,7 @@ function _extractGlow(img,cb){
 }
 
 function _colorFor(n){var h=0;for(var i=0;i<n.length;i++)h=(h*31+n.charCodeAt(i))&0x7fffffff;return AVATAR_COLORS[h%AVATAR_COLORS.length]}
+function _hexToRgb(hex){hex=hex.replace('#','');if(hex.length===3)hex=hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];var n=parseInt(hex,16);return((n>>16)&255)+','+((n>>8)&255)+','+(n&255)}
 function _initial(n){return(n.match(/[A-Z0-9]/i)||[n[0]||'?'])[0].toUpperCase()}
 
 /* ── Config ── */
@@ -1485,8 +1518,12 @@ function isStreamVisible(site,name){
 }
 
 /* ── Clock ── */
+var _DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+var _MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
 function _tick(){var d=new Date(),h=d.getHours(),m=d.getMinutes(),s=d.getSeconds();
-  document.getElementById('wb-clock').textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(s<10?'0':'')+s}
+  document.getElementById('wb-clock').textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(s<10?'0':'')+s;
+  var dateEl=document.getElementById('wb-clock-date');
+  if(dateEl)dateEl.textContent=_DAYS[d.getDay()]+' '+d.getDate()+' '+_MONTHS[d.getMonth()]}
 setInterval(_tick,1000);_tick();
 
 function setSize(sz){_cfg.card_size=sz;document.documentElement.style.setProperty('--mc-w',_sizes[sz]+'px');
@@ -1582,8 +1619,9 @@ function renderChains(chains){
       card=document.createElement('div');
       card.dataset.cid=cid;
       card.innerHTML=
-        '<div class="cc-visual"></div>'
+        '<div class="cc-visual"><div class="cc-pulse-ring"></div></div>'
         +'<div class="cc-name"></div>'
+        +'<div class="cc-freq"></div>'
         +'<div class="cc-status"><span class="cc-sdot"></span><span class="cc-stxt"></span></div>'
         +'<div class="cc-art-wrap"></div>'
         +'<div class="cc-np-wrap"></div>'
@@ -1593,6 +1631,10 @@ function renderChains(chains){
         +'<div class="cc-health"><div class="cc-health-fill"></div></div>'
         +'<div class="cc-sla"></div>'
         +'<div class="cc-qr"></div>';
+      // Entrance animation — stagger by index
+      card.classList.add('cc-entering');
+      var _ci=Object.keys(seenIds).length;
+      setTimeout(function(){card.classList.remove('cc-entering')},100+_ci*120);
       el.appendChild(card);
     }
 
@@ -1653,6 +1695,18 @@ function renderChains(chains){
     // Name
     var nameEl=card.querySelector('.cc-name');
     if(nameEl.textContent!==ch.name){nameEl.textContent=ch.name;nameEl.title=ch.name}
+
+    // Frequency badge
+    var freqEl=card.querySelector('.cc-freq');
+    var freq=(_cfg.chain_freq||{})[cid]||'';
+    if(freqEl&&freqEl.textContent!==freq)freqEl.textContent=freq;
+
+    // Station colour theme
+    var sColor=(_cfg.chain_color||{})[cid]||'';
+    if(sColor&&!card.dataset.glow){
+      card.style.borderColor='rgba('+_hexToRgb(sColor)+',.25)';
+      card.style.boxShadow='0 0 20px rgba('+_hexToRgb(sColor)+',.08),0 4px 24px rgba(0,0,0,.3)';
+    }
 
     // Status badge
     var statusEl=card.querySelector('.cc-status');
@@ -2092,6 +2146,10 @@ function renderDrawerChains(){
       +(hasLogo?'<button class="btn bd bs" data-rm-logo="'+_e(ch.id)+'">Remove</button>':'')
       +'</div>'
       +'<div style="margin-top:4px;display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--mu);white-space:nowrap">Now Playing:</span>'+selHtml+'</div>'
+      +'<div style="margin-top:4px;display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--mu);white-space:nowrap">Frequency:</span>'
+      +'<input data-freq-chain="'+_e(ch.id)+'" type="text" placeholder="97.4 FM | DAB" value="'+_e((_cfg.chain_freq||{})[ch.id]||'')+'" style="flex:1;min-width:0;background:#0d1e40;border:1px solid var(--bor);border-radius:5px;color:var(--tx);padding:3px 6px;font-size:11px;font-family:inherit"></div>'
+      +'<div style="margin-top:4px;display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--mu);white-space:nowrap">Card colour:</span>'
+      +'<input data-color-chain="'+_e(ch.id)+'" type="color" value="'+((_cfg.chain_color||{})[ch.id]||'#17a8ff')+'" style="width:28px;height:22px;border:1px solid var(--bor);border-radius:4px;background:none;cursor:pointer;padding:0"></div>'
       +'</div></div>'});
   el.innerHTML=html;
 }
@@ -2128,11 +2186,19 @@ document.getElementById('wb-drawer').addEventListener('click',function(e){
   var sz=e.target.closest('[data-sz]');if(sz){setSize(sz.dataset.sz);saveConfig()}
 });
 document.getElementById('dr-chains').addEventListener('change',function(e){
-  var sel=e.target.closest('[data-np-chain]');if(!sel)return;
-  var cid=sel.dataset.npChain,rpuid=sel.value;
-  if(!_cfg.chain_stations)_cfg.chain_stations={};
-  if(rpuid)_cfg.chain_stations[cid]=rpuid;else delete _cfg.chain_stations[cid];
-  saveConfig();npPoll();
+  var sel=e.target.closest('[data-np-chain]');
+  if(sel){var cid=sel.dataset.npChain,rpuid=sel.value;
+    if(!_cfg.chain_stations)_cfg.chain_stations={};
+    if(rpuid)_cfg.chain_stations[cid]=rpuid;else delete _cfg.chain_stations[cid];
+    saveConfig();npPoll();return}
+  var freqInput=e.target.closest('[data-freq-chain]');
+  if(freqInput){if(!_cfg.chain_freq)_cfg.chain_freq={};
+    var v=freqInput.value.trim();if(v)_cfg.chain_freq[freqInput.dataset.freqChain]=v;else delete _cfg.chain_freq[freqInput.dataset.freqChain];
+    saveConfig();if(_lastChains)renderChains(_lastChains);return}
+  var colorInput=e.target.closest('[data-color-chain]');
+  if(colorInput){if(!_cfg.chain_color)_cfg.chain_color={};
+    _cfg.chain_color[colorInput.dataset.colorChain]=colorInput.value;
+    saveConfig();if(_lastChains)renderChains(_lastChains);return}
 });
 document.getElementById('dr-streams').addEventListener('change',function(e){
   var cb=e.target.closest('[data-stream-key]');if(!cb)return;
