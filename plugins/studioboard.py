@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.5.0",
+    "version":  "3.5.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -784,7 +784,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:27px}
 .trk{font-size:18px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;
   width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:24px}
-.idle{font-size:16px;color:var(--mu);text-align:center;font-style:italic;min-height:24px}
+.idle{font-size:24px;color:rgba(255,255,255,.4);text-align:center;font-style:italic;min-height:32px;line-height:1.4}
 /* RIGHT panel — meters */
 .rp{width:7%;min-width:80px;flex-shrink:0;display:flex;gap:3px;align-items:stretch;
   padding:16px 6px;z-index:1}
@@ -875,14 +875,19 @@ function updateCol(s,idx){
   var col=document.getElementById('col'+idx);
   if(col){var fl=false;(s.chains||[]).forEach(function(x){if(x.status==='fault')fl=true});
     col.classList.toggle('fault',fl)}
-  // Show/presenter image — ONLY np.show_image (episodeImageUrl), sticky cache
+  // Show/presenter image — episodeImageUrl via np.show_image
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
     var si=np.show_image||'';
-    if(si&&_artSrc['s'+idx]!==si){_artSrc['s'+idx]=si;showImg.src=si;
-      showImg.onload=function(){showImg.style.display=''};
-      showImg.onerror=function(){showImg.style.display='none'}}
-    // If empty right now, keep showing whatever was last loaded
+    if(si){
+      // Always set src if different OR if image is currently hidden
+      if(_artSrc['s'+idx]!==si||showImg.style.display==='none'){
+        _artSrc['s'+idx]=si;showImg.src=si;
+        showImg.style.display='';
+        showImg.onerror=function(){showImg.style.display='none'}
+      }
+    }
+    // When empty, keep whatever was last showing (sticky)
   }
   // Track artwork — separate, shown below the divider when a song is playing
   var artEl=document.getElementById('art'+idx);
