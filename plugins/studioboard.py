@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.5.1",
+    "version":  "3.6.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -964,7 +964,25 @@ function npPoll(){if(!D)return;(D.studios||[]).forEach(function(st){
           {method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
            body:JSON.stringify({show:sh})}).catch(function(){})}
       render()}).catch(function(){})})}
-poll();npPoll();live();
-setInterval(poll,1500);setInterval(live,150);setInterval(npPoll,10000);
+/* Fetch show images directly from Planet Radio API as backup */
+function showImgPoll(){
+  if(!D)return;
+  fetch('https://listenapi.planetradio.co.uk/api9.2/stations_nowplaying/GB')
+    .then(function(r){return r.ok?r.json():[]})
+    .then(function(data){
+      var items=Array.isArray(data)?data:(data.data||data.stations||[]);
+      var byCode={};items.forEach(function(s){if(s.stationCode)byCode[s.stationCode]=s});
+      (D.studios||[]).forEach(function(st){
+        var r=st.np_rpuid;if(!r)return;
+        var s=byCode[r];if(!s)return;
+        var air=s.stationOnAir||{};
+        var imgUrl=air.episodeImageUrl||'';
+        if(imgUrl&&NP[r]){NP[r].show_image=imgUrl}
+      });
+      render();
+    }).catch(function(){});
+}
+poll();npPoll();live();showImgPoll();
+setInterval(poll,1500);setInterval(live,150);setInterval(npPoll,10000);setInterval(showImgPoll,30000);
 })();
 </script></body></html>"""
