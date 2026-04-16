@@ -5167,15 +5167,9 @@ class NowPlayingPoller:
 
                 np  = s.get("stationNowPlaying") or {}
                 air = s.get("stationOnAir") or {}
-                # Find show/presenter image — check air object for any image field
-                show_img = ""
-                for k, v in air.items():
-                    if ("image" in k.lower() or "img" in k.lower() or
-                        "photo" in k.lower() or "picture" in k.lower()):
-                        url = _normalize_nowplaying_artwork_url(str(v or ""))
-                        if url:
-                            show_img = url
-                            break
+                # Show/presenter image — episodeImageUrl is the field
+                show_img = _normalize_nowplaying_artwork_url(
+                    air.get("episodeImageUrl", "") or "")
                 nowplaying[code] = {
                     "artist":  str(np.get("nowPlayingArtist","")).strip(),
                     "title":   str(np.get("nowPlayingTrack","")).strip(),

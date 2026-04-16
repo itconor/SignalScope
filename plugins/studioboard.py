@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.4.1",
+    "version":  "3.5.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -875,10 +875,10 @@ function updateCol(s,idx){
   var col=document.getElementById('col'+idx);
   if(col){var fl=false;(s.chains||[]).forEach(function(x){if(x.status==='fault')fl=true});
     col.classList.toggle('fault',fl)}
-  // Show/presenter image — use show_image, fall back to artwork, keep last one
+  // Show/presenter image — ONLY np.show_image (episodeImageUrl), sticky cache
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
-    var si=np.show_image||np.artwork||'';
+    var si=np.show_image||'';
     if(si&&_artSrc['s'+idx]!==si){_artSrc['s'+idx]=si;showImg.src=si;
       showImg.onload=function(){showImg.style.display=''};
       showImg.onerror=function(){showImg.style.display='none'}}
@@ -888,8 +888,7 @@ function updateCol(s,idx){
   var artEl=document.getElementById('art'+idx);
   if(artEl){
     var ta=np.artwork||'';
-    // Only show track art if there's a song AND it's different from the show image
-    if(ta&&(np.artist||np.title)&&ta!==_artSrc['s'+idx]){
+    if(ta&&(np.artist||np.title)){
       if(_artSrc['t'+idx]!==ta){artEl.src=ta;_artSrc['t'+idx]=ta;
         artEl.onload=function(){artEl.style.display=''};
         artEl.onerror=function(){artEl.style.display='none'}}
