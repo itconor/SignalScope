@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.9.0",
+    "version":  "3.10.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -731,6 +731,9 @@ body::after{
   letter-spacing:-.01em;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
+/* When logo is present the name is redundant — hide it, centre the badge */
+.cc[data-has-logo="1"] .cc-name{display:none}
+.cc[data-has-logo="1"] .cc-header-row{justify-content:center}
 /* Status badge */
 .cc-status{
   display:flex;align-items:center;gap:6px;
@@ -763,11 +766,6 @@ body::after{
 @keyframes nd-p{0%,100%{transform:scale(1)}50%{transform:scale(1.6);opacity:.5}}
 .cc-arr{color:var(--mu);font-size:8px;opacity:.35}
 
-/* Health bar */
-.cc-health{height:6px;background:rgba(0,0,0,.35);border-radius:3px;overflow:hidden;margin:6px 14px 0}
-.cc-health-fill{height:100%;border-radius:3px;transition:width .6s ease,background .4s}
-/* SLA text */
-.cc-sla{font-size:12px;color:var(--mu);font-weight:600;font-variant-numeric:tabular-nums;padding:2px 14px 0}
 
 /* ═══ Horizontal RX meter on chain card ═══ */
 .cc-rx-meter{margin:4px 14px 0}
@@ -1006,8 +1004,6 @@ body.bauer .cc-status.s-ok{background:rgba(34,197,94,.15);color:#22c55e;border-c
 body.bauer .cc-status.s-fault{background:rgba(255,59,48,.15);color:#ff3b30;border-color:rgba(255,59,48,.35)}
 body.bauer .cc-np-track{color:rgba(255,255,255,.85)}
 body.bauer .cc-np-artist{color:#fff}
-body.bauer .cc-sla{color:rgba(255,255,255,.4)}
-body.bauer .cc-health{background:rgba(255,255,255,.1)}
 body.bauer .wb-site-hdr{color:rgba(255,255,255,.45);border-bottom-color:rgba(255,255,255,.1)}
 body.bauer .wb-sdot{background:#22c55e}
 body.bauer .wb-sdot.off{background:#ff3b30}
@@ -1086,8 +1082,6 @@ body.corp .cc-status.s-ok{background:rgba(52,199,89,.1);color:#34c759;border-col
 body.corp .cc-status.s-fault{background:rgba(255,59,48,.1);color:#ff3b30;border-color:rgba(255,59,48,.25)}
 body.corp .cc-np{color:#0071e3}
 body.corp .cc-np-artist{color:#1d1d1f}
-body.corp .cc-sla{color:#86868b}
-body.corp .cc-health{background:rgba(0,0,0,.06)}
 body.corp .wb-site-hdr{color:#86868b;border-bottom-color:#e5e5e7}
 body.corp .wb-sdot{background:#34c759}
 body.corp .wb-sdot.off{background:#ff3b30}
@@ -1244,9 +1238,9 @@ body.bauer #wb-hero .hero-pulse-bg{
 /* ═══ Time-of-day background gradient ═══ */
 body.day-grad{transition:background 3s ease}
 
-/* ═══ QR codes on chain cards ═══ */
-.cc-qr{margin-top:4px;display:none;justify-content:center}
-.cc-qr.qr-visible{display:flex}
+/* ═══ QR codes — overlaid on banner corner ═══ */
+.cc-qr{position:absolute;bottom:6px;right:8px;display:none;z-index:2}
+.cc-qr.qr-visible{display:block}
 </style>
 </head>
 <body>
@@ -1580,7 +1574,7 @@ function renderChains(chains){
       card=document.createElement('div');
       card.dataset.cid=cid;
       card.innerHTML=
-        '<div class="cc-visual-banner"><div class="cc-pulse-ring"></div></div>'
+        '<div class="cc-visual-banner"><div class="cc-pulse-ring"></div><div class="cc-qr"></div></div>'
         +'<div class="cc-header-row">'
           +'<div class="cc-status"><span class="cc-sdot"></span><span class="cc-stxt"></span></div>'
           +'<div class="cc-name"></div>'
@@ -1589,10 +1583,7 @@ function renderChains(chains){
         +'<div class="cc-nodes"></div>'
         +'<div class="cc-rx-meter"><div class="cc-rx-bar"><div class="cc-rx-fill" style="width:0"></div><div class="cc-rx-peak" style="left:0"></div></div><div class="cc-rx-label"><span class="cc-rx-name"></span><span class="cc-rx-val rx-low">— dB</span></div></div>'
         +'<div class="cc-np-wrap"></div>'
-        +'<div class="cc-sparkline"><canvas></canvas></div>'
-        +'<div class="cc-health"><div class="cc-health-fill"></div></div>'
-        +'<div class="cc-sla"></div>'
-        +'<div class="cc-qr"></div>';
+        +'<div class="cc-sparkline"><canvas></canvas></div>';
       // Entrance animation — stagger by index
       card.classList.add('cc-entering');
       var _ci=Object.keys(seenIds).length;
@@ -1605,6 +1596,7 @@ function renderChains(chains){
 
     // Logo or avatar — fills the full-width banner at the top
     var vizEl=card.querySelector('.cc-visual-banner');
+    card.dataset.hasLogo=hasLogo?'1':'';
     if(hasLogo){
       var logoImg=vizEl.querySelector('.cc-logo');
       var logoUrl=_tkUrl('/wallboard/logo/'+cid);
@@ -1669,46 +1661,26 @@ function renderChains(chains){
     });
     if(nodesEl._lastHtml!==nodesHtml){nodesEl.innerHTML=nodesHtml;nodesEl._lastHtml=nodesHtml}
 
-    // RX meter — last node's level
-    var rxMeter=card.querySelector('.cc-rx-meter');
-    if(rxMeter){
-      var flatNodes=_flatN(ch.nodes||[]);
-      var lastNode=flatNodes.length?flatNodes[flatNodes.length-1]:null;
-      if(lastNode&&lastNode.site&&lastNode.stream){
-        var rxKey=lastNode.site+'|'+lastNode.stream;
-        var rxLev=(_targetLev[rxKey]!=null)?_targetLev[rxKey]:(_dispLev[rxKey]!=null?_dispLev[rxKey]:DB_FLOOR);
-        var rxPk=_peaks[rxKey]?_peaks[rxKey].val:DB_FLOOR;
-        var rxW=levToH(rxLev),rxPW=levToH(rxPk);
-        var rxFill=rxMeter.querySelector('.cc-rx-fill');
-        var rxPeak=rxMeter.querySelector('.cc-rx-peak');
-        var rxVal=rxMeter.querySelector('.cc-rx-val');
-        var rxName=rxMeter.querySelector('.cc-rx-name');
-        if(rxFill)rxFill.style.width=rxW+'%';
-        if(rxPeak){rxPeak.style.left=rxPW+'%';rxPeak.style.opacity=rxPk>DB_FLOOR?'.8':'0'}
-        if(rxVal){rxVal.textContent=fmtLev(rxLev);rxVal.className='cc-rx-val'+(rxLev>=-9?' rx-alert':rxLev>=-18?' rx-warn':rxLev<=-60?' rx-low':'')}
-        if(rxName&&!rxName._set){rxName.textContent=lastNode.label||lastNode.stream||'';rxName._set=true}
-      }
+    // RX meter — register key on card so _meterRaf drives the bar at 150 ms
+    var flatNodes=_flatN(ch.nodes||[]);
+    var lastNode=flatNodes.length?flatNodes[flatNodes.length-1]:null;
+    if(lastNode&&lastNode.site&&lastNode.stream){
+      var rxKey=lastNode.site+'|'+lastNode.stream;
+      card.dataset.rxKey=rxKey;
+      var rxName=card.querySelector('.cc-rx-name');
+      if(rxName&&!rxName._set){rxName.textContent=lastNode.label||lastNode.stream||'';rxName._set=true}
+    }else{
+      delete card.dataset.rxKey;
     }
 
-    // Health bar
-    var hp=ch.sla_pct;var hpW=hp!=null?Math.max(0,Math.min(100,hp)):100;
-    var hpCol=hpW>=99.5?'var(--ok)':hpW>=98?'var(--wn)':'var(--al)';
-    var hpFill=card.querySelector('.cc-health-fill');
-    if(hpFill){hpFill.style.width=hpW+'%';hpFill.style.background=hpCol}
-
-    // SLA
-    var slaEl=card.querySelector('.cc-sla');
-    var slaTxt=(hp!=null&&hp<100)?hp.toFixed(1)+'% uptime':'';
-    if(slaEl&&slaEl.textContent!==slaTxt)slaEl.textContent=slaTxt;
-
-    // QR code — static file, served exactly like logos
+    // QR code — overlaid on banner corner
     var qrEl=card.querySelector('.cc-qr');
     if(qrEl){
       if(_cfg.show_qr){
         qrEl.classList.add('qr-visible');
         if(!qrEl._rendered){
           var qrImg=document.createElement('img');
-          qrImg.style.cssText='width:80px;height:80px;border-radius:6px;background:#fff;padding:3px';
+          qrImg.style.cssText='width:54px;height:54px;border-radius:5px;background:#fff;padding:2px;box-shadow:0 2px 8px rgba(0,0,0,.4)';
           qrImg.alt='Scan to listen';
           qrImg.src=_tkUrl('/wallboard/qr/'+cid);
           qrEl.appendChild(qrImg);
@@ -1914,6 +1886,18 @@ function _meterRaf(ts){
     var pk=_peaks[key]?_peaks[key].val:DB_FLOOR,pkEl=mono?mono.querySelector('.mtr-peak'):null;
     if(pkEl){pkEl.style.bottom=levToH(pk)+'%';pkEl.style.opacity=pk>DB_FLOOR?'.82':'0'}
     var levEl=card.querySelector('.mc-lev');if(levEl){levEl.textContent=fmtLev(cur);levEl.className='mc-lev '+levCls(cur)}
+  });
+  // Chain card RX meters — driven at the same rAF cadence as meter wall
+  document.querySelectorAll('.cc[data-rx-key]').forEach(function(card){
+    var rxKey=card.dataset.rxKey;
+    var rxDisp=(_dispLev[rxKey]!=null)?_dispLev[rxKey]:DB_FLOOR;
+    var rxPk=_peaks[rxKey]?_peaks[rxKey].val:DB_FLOOR;
+    var rxFill=card.querySelector('.cc-rx-fill');
+    var rxPeak=card.querySelector('.cc-rx-peak');
+    var rxVal=card.querySelector('.cc-rx-val');
+    if(rxFill)rxFill.style.width=levToH(rxDisp)+'%';
+    if(rxPeak){rxPeak.style.left=levToH(rxPk)+'%';rxPeak.style.opacity=rxPk>DB_FLOOR?'.8':'0'}
+    if(rxVal){rxVal.textContent=fmtLev(rxDisp);rxVal.className='cc-rx-val'+(rxDisp>=-9?' rx-alert':rxDisp>=-18?' rx-warn':rxDisp<=-60?' rx-low':'')}
   });
   requestAnimationFrame(_meterRaf);
 }
