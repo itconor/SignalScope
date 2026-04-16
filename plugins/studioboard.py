@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.0.0",
+    "version":  "3.0.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -730,34 +730,34 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   background:radial-gradient(ellipse at 50% 0%,var(--cg,rgba(255,255,255,.04)),transparent 70%)}
 .col.fault{background:linear-gradient(180deg,rgba(239,68,68,.06),transparent 40%)}
 .col.fault::before{background:linear-gradient(90deg,transparent,rgba(239,68,68,.6),transparent)}
-.lp{width:200px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding:20px 14px;z-index:1}
-.logo{width:110px;height:110px;border-radius:22px;object-fit:contain;flex-shrink:0;
+.lp{width:260px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding:24px 18px;z-index:1}
+.logo{width:160px;height:160px;border-radius:28px;object-fit:contain;flex-shrink:0;
   background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.1);box-shadow:0 6px 28px rgba(0,0,0,.4);margin-bottom:8px}
-.logo-ph{width:110px;height:110px;border-radius:22px;flex-shrink:0;background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.06);
-  display:flex;align-items:center;justify-content:center;font-size:40px;font-weight:800;color:rgba(255,255,255,.25);margin-bottom:8px}
-.stn{font-size:20px;font-weight:700;text-align:center;margin-bottom:2px}
-.stu{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--mu);text-align:center;margin-bottom:4px}
-.frq{font-size:10px;color:var(--mu);text-align:center;margin-bottom:8px}
-.mic{width:100%;padding:8px 10px;border-radius:10px;text-align:center;font-size:15px;font-weight:700;letter-spacing:.06em;margin-bottom:6px;flex-shrink:0}
+.logo-ph{width:160px;height:160px;border-radius:28px;flex-shrink:0;background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.06);
+  display:flex;align-items:center;justify-content:center;font-size:56px;font-weight:800;color:rgba(255,255,255,.25);margin-bottom:8px}
+.stn{font-size:28px;font-weight:700;text-align:center;margin-bottom:2px}
+.stu{font-size:16px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--mu);text-align:center;margin-bottom:4px}
+.frq{font-size:14px;color:var(--mu);text-align:center;margin-bottom:8px}
+.mic{width:100%;padding:12px 14px;border-radius:12px;text-align:center;font-size:20px;font-weight:700;letter-spacing:.06em;margin-bottom:8px;flex-shrink:0}
 .mic.on{background:linear-gradient(135deg,#c81e1e,#ef4444);color:#fff;box-shadow:0 0 30px rgba(239,68,68,.3);animation:mp 1.5s ease-in-out infinite}
 .mic.off{background:rgba(255,255,255,.04);color:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.05)}
 @keyframes mp{0%,100%{box-shadow:0 0 30px rgba(239,68,68,.3)}50%{box-shadow:0 0 50px rgba(239,68,68,.5)}}
-.badge{display:flex;align-items:center;justify-content:center;gap:5px;width:100%;padding:5px 8px;border-radius:8px;font-size:11px;font-weight:700;margin-bottom:4px;flex-shrink:0}
+.badge{display:flex;align-items:center;justify-content:center;gap:5px;width:100%;padding:8px 12px;border-radius:10px;font-size:14px;font-weight:700;margin-bottom:4px;flex-shrink:0}
 .badge.ok{background:rgba(34,197,94,.1);color:var(--ok);border:1px solid rgba(34,197,94,.2)}
 .badge.ft{background:rgba(239,68,68,.1);color:var(--al);border:1px solid rgba(239,68,68,.25);animation:bl 1.2s ease-in-out infinite}
 @keyframes bl{0%,100%{opacity:1}50%{opacity:.5}}
 .dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 5px currentColor}
 .lp-spacer{flex:1}
 .cp{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;z-index:1;min-width:0;gap:8px;overflow:hidden}
-.art{width:min(180px,20vh);height:min(180px,20vh);border-radius:18px;object-fit:cover;flex-shrink:0;
+.art{width:min(240px,28vh);height:min(240px,28vh);border-radius:22px;object-fit:cover;flex-shrink:0;
   box-shadow:0 8px 32px rgba(0,0,0,.4);border:2px solid rgba(255,255,255,.1);background:rgba(255,255,255,.06)}
-.art-ph{width:100px;height:100px;border-radius:18px;flex-shrink:0;background:rgba(255,255,255,.03);border:2px solid rgba(255,255,255,.03);
+.art-ph{width:140px;height:140px;border-radius:22px;flex-shrink:0;background:rgba(255,255,255,.03);border:2px solid rgba(255,255,255,.03);
   display:flex;align-items:center;justify-content:center;font-size:32px;opacity:.15}
-.shw{font-size:20px;font-weight:700;text-align:center;width:100%;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.npl{font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;font-weight:700}
-.anm{font-size:15px;font-weight:700;text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.trk{font-size:16px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.idle{font-size:13px;color:var(--mu);text-align:center;font-style:italic;line-height:1.5}
+.shw{font-size:28px;font-weight:700;text-align:center;width:100%;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.npl{font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+.anm{font-size:22px;font-weight:700;text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trk{font-size:20px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.idle{font-size:16px;color:var(--mu);text-align:center;font-style:italic;line-height:1.5}
 .rp{width:120px;flex-shrink:0;display:flex;gap:3px;align-items:stretch;padding:16px 8px;z-index:1}
 .vm{display:flex;flex-direction:column;align-items:center;gap:2px;flex:1;min-width:0}
 .vb{flex:1;width:100%;position:relative;
@@ -768,7 +768,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .vf{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(to top,#22c55e 0%,#22c55e 75%,#f59e0b 82%,#ef4444 96%);
   border-radius:4px 4px 0 0;transition:height .1s linear}
 .vp{position:absolute;left:-1px;right:-1px;height:2px;background:#fff;border-radius:1px;box-shadow:0 0 3px rgba(255,255,255,.5);transition:bottom .1s linear}
-.vl{font-size:8px;font-weight:700;color:var(--mu);text-align:center;white-space:nowrap}
+.vl{font-size:10px;font-weight:700;color:var(--mu);text-align:center;white-space:nowrap}
 .vs{display:flex;gap:2px;flex:1;width:100%;height:100%}
 .vs .vb{flex:1}
 </style></head>
@@ -786,6 +786,7 @@ function RGB(h){h=h.replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h
 var DB=-80,D=null,NP={},SS={},LL={};
 function lh(d){return Math.max(0,Math.min(100,(d-DB)/(-DB)*100))}
 var IDLE=["Probably on an ad break...","Presenter's talking too much!","Getting ready for Make Me a Winner?","Music coming right up!","Hold tight, we'll be right back!","Loading the next banger..."];
+var _idleC={};
 function gNp(s){var r=s.np_rpuid||'';return r?(NP[r]||{}):{}}
 function gArt(s){var np=gNp(s),sn=(np.show||'').trim(),up=(s.show_artwork_map||{})[sn];
   if(up)return tk('/studioboard/art/'+up);if(np.show_image)return np.show_image;
@@ -799,7 +800,8 @@ function mkCol(s){
   var au=gArt(s),ah=au?'<img class=art src="'+E(au)+'" alt="" onerror="this.style.display=\'none\'">':'<div class=art-ph>🎙</div>';
   var nh='';if(np.show)nh+='<div class=shw>'+E(np.show)+'</div>';
   if(np.artist||np.title){nh+='<div class=npl>Now Playing</div>';if(np.artist)nh+='<div class=anm>'+E(np.artist)+'</div>';if(np.title)nh+='<div class=trk>'+E(np.title)+'</div>'}
-  else if(np.show){nh+='<div class=idle>'+E(IDLE[Math.floor(Math.random()*IDLE.length)])+'</div>'}
+  else if(np.show){if(!_idleC[s.id])_idleC[s.id]=IDLE[Math.floor(Math.random()*IDLE.length)];nh+='<div class=idle>'+E(_idleC[s.id])+'</div>'}
+  if(np.artist||np.title)delete _idleC[s.id]
   var mh='';(s.inputs||[]).forEach(function(i){
     var k=i.key||'',v=LL[k]||{},st=v.stereo||i.stereo||false;
     var l=v.level_dbfs!=null?v.level_dbfs:(i.level_dbfs!=null?i.level_dbfs:DB);
