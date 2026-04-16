@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.3.0",
+    "version":  "2.0.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -716,133 +716,138 @@ _TV_TPL = r"""<!doctype html>
 @font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Regular.otf{% if wb_token %}?token={{wb_token}}{% endif %}') format('opentype');font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Bold.otf{% if wb_token %}?token={{wb_token}}{% endif %}') format('opentype');font-weight:700;font-style:normal;font-display:swap}
 @font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Light.otf{% if wb_token %}?token={{wb_token}}{% endif %}') format('opentype');font-weight:300;font-style:normal;font-display:swap}
-:root{--bg:#4700A3;--acc:#fff;--ok:#22c55e;--al:#ef4444;--tx:#fff;--mu:rgba(255,255,255,.55)}
+/* Column layout redesign */
+:root{--bg:#4700A3;--ok:#22c55e;--al:#ef4444;--tx:#fff;--mu:rgba(255,255,255,.55)}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
 body{
   font-family:'BauerMediaSans',system-ui,sans-serif;
   background:var(--bg);color:var(--tx);
-  display:flex;flex-direction:column;
-  -webkit-user-select:none;user-select:none;
+  display:flex;-webkit-user-select:none;user-select:none;
 }
 body::after{
   content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
-  background:radial-gradient(ellipse 800px 400px at 30% 20%,rgba(88,0,202,.4),transparent),
-    radial-gradient(ellipse 600px 300px at 70% 80%,rgba(63,20,156,.3),transparent);
+  background:radial-gradient(ellipse 900px 500px at 30% 20%,rgba(88,0,202,.4),transparent),
+    radial-gradient(ellipse 700px 400px at 70% 80%,rgba(63,20,156,.3),transparent);
 }
-.sb-wrap{position:relative;z-index:1;flex:1;display:flex;flex-direction:column;padding:24px 32px}
 
-/* ═══ Header ═══ */
-.sb-hdr{display:flex;align-items:center;gap:16px;margin-bottom:20px}
-.sb-studio-name{font-size:36px;font-weight:700;letter-spacing:-.02em}
-.sb-freq{font-size:14px;color:var(--mu);font-weight:400}
-.sb-status{margin-left:auto;display:flex;align-items:center;gap:12px}
-.sb-chain-badge{
-  display:flex;align-items:center;gap:6px;
-  padding:8px 18px;border-radius:12px;font-size:14px;font-weight:700;
+/* ═══ Column layout — full height columns ═══ */
+#sb-content{position:relative;z-index:1;flex:1;display:flex;height:100%}
+.sb-cols{display:flex;flex:1;height:100%;gap:0}
+.sb-col{
+  flex:1;display:flex;flex-direction:column;align-items:center;
+  padding:28px 20px;position:relative;overflow:hidden;
+  border-right:1px solid rgba(255,255,255,.06);
 }
-.sb-chain-badge.ok{background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3)}
-.sb-chain-badge.fault{background:rgba(239,68,68,.15);color:var(--al);border:1px solid rgba(239,68,68,.35);animation:sb-blink 1.2s ease-in-out infinite}
-@keyframes sb-blink{0%,100%{opacity:1}50%{opacity:.55}}
-.sb-chain-dot{width:10px;height:10px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+.sb-col:last-child{border-right:none}
+/* Colour glow at top of column */
+.sb-col::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:4px;
+  background:linear-gradient(90deg,transparent,var(--col-color,rgba(255,255,255,.2)),transparent);
+}
+.sb-col::after{
+  content:'';position:absolute;top:0;left:0;right:0;height:200px;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 0%,var(--col-glow,rgba(255,255,255,.04)),transparent 70%);
+}
+
+/* ═══ Station logo — BIG ═══ */
+.sb-logo{
+  width:140px;height:140px;border-radius:28px;object-fit:contain;flex-shrink:0;
+  background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.1);
+  box-shadow:0 8px 32px rgba(0,0,0,.4);
+  margin-bottom:12px;position:relative;z-index:1;
+}
+.sb-logo-placeholder{
+  width:140px;height:140px;border-radius:28px;flex-shrink:0;
+  background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.06);
+  display:flex;align-items:center;justify-content:center;
+  font-size:48px;font-weight:800;color:rgba(255,255,255,.3);
+  margin-bottom:12px;position:relative;z-index:1;
+}
+
+/* ═══ Studio name + freq ═══ */
+.sb-studio-name{font-size:16px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mu);text-align:center;position:relative;z-index:1}
+.sb-station-name{font-size:28px;font-weight:700;text-align:center;margin-bottom:2px;position:relative;z-index:1;letter-spacing:-.01em}
+.sb-freq{font-size:12px;color:var(--mu);font-weight:400;text-align:center;margin-bottom:12px;position:relative;z-index:1}
 
 /* ═══ Mic Live ═══ */
 .sb-mic{
-  padding:14px 32px;border-radius:16px;text-align:center;
-  font-size:28px;font-weight:700;letter-spacing:.06em;
-  transition:all .3s ease;margin-bottom:20px;
+  width:100%;padding:10px 16px;border-radius:12px;text-align:center;
+  font-size:20px;font-weight:700;letter-spacing:.06em;
+  transition:all .3s ease;margin-bottom:14px;position:relative;z-index:1;
 }
 .sb-mic.live{
   background:linear-gradient(135deg,#c81e1e,#ef4444);color:#fff;
   box-shadow:0 0 40px rgba(239,68,68,.3),0 0 80px rgba(239,68,68,.15);
   animation:mic-pulse 1.5s ease-in-out infinite;
 }
-.sb-mic.clear{
-  background:rgba(255,255,255,.06);color:rgba(255,255,255,.25);
-  border:1px solid rgba(255,255,255,.1);
+.sb-mic.clear{background:rgba(255,255,255,.04);color:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.06)}
+@keyframes mic-pulse{0%,100%{box-shadow:0 0 40px rgba(239,68,68,.3)}50%{box-shadow:0 0 60px rgba(239,68,68,.5),0 0 120px rgba(239,68,68,.2)}}
+
+/* ═══ Chain status ═══ */
+.sb-chain-badge{
+  display:flex;align-items:center;justify-content:center;gap:6px;width:100%;
+  padding:8px 14px;border-radius:10px;font-size:14px;font-weight:700;
+  margin-bottom:14px;position:relative;z-index:1;
 }
-@keyframes mic-pulse{0%,100%{box-shadow:0 0 40px rgba(239,68,68,.3),0 0 80px rgba(239,68,68,.15)}50%{box-shadow:0 0 60px rgba(239,68,68,.5),0 0 120px rgba(239,68,68,.25)}}
+.sb-chain-badge.ok{background:rgba(34,197,94,.12);color:var(--ok);border:1px solid rgba(34,197,94,.25)}
+.sb-chain-badge.fault{background:rgba(239,68,68,.12);color:var(--al);border:1px solid rgba(239,68,68,.3);animation:sb-blink 1.2s ease-in-out infinite}
+@keyframes sb-blink{0%,100%{opacity:1}50%{opacity:.5}}
+.sb-chain-dot{width:8px;height:8px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
 
 /* ═══ Show / Now Playing ═══ */
-.sb-show{
-  flex:1;display:flex;align-items:center;gap:32px;
-  padding:20px 0;min-height:0;
+.sb-np-zone{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  width:100%;min-height:0;position:relative;z-index:1;gap:10px;padding:8px 0;
 }
 .sb-art{
-  width:220px;height:220px;border-radius:24px;object-fit:cover;flex-shrink:0;
-  box-shadow:0 8px 40px rgba(0,0,0,.4);border:2px solid rgba(255,255,255,.1);
+  width:160px;height:160px;border-radius:20px;object-fit:cover;flex-shrink:0;
+  box-shadow:0 8px 36px rgba(0,0,0,.4);border:2px solid rgba(255,255,255,.1);
   background:rgba(255,255,255,.06);
 }
 .sb-art-placeholder{
-  width:220px;height:220px;border-radius:24px;flex-shrink:0;
-  background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.06);
-  display:flex;align-items:center;justify-content:center;
-  font-size:64px;opacity:.3;
+  width:120px;height:120px;border-radius:20px;flex-shrink:0;
+  background:rgba(255,255,255,.04);border:2px solid rgba(255,255,255,.04);
+  display:flex;align-items:center;justify-content:center;font-size:40px;opacity:.2;
 }
-.sb-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
-.sb-show-name{font-size:32px;font-weight:700;letter-spacing:-.01em;text-shadow:0 2px 8px rgba(0,0,0,.3)}
-.sb-track{font-size:24px;font-weight:300;color:rgba(255,255,255,.85);margin-top:6px}
-.sb-artist{font-size:20px;font-weight:700;color:#fff}
-.sb-np-label{font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-top:14px}
+.sb-show-name{font-size:20px;font-weight:700;text-align:center;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sb-track{font-size:16px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sb-artist{font-size:14px;font-weight:700;text-align:center;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sb-np-label{font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+.sb-idle{font-size:13px;color:var(--mu);text-align:center;font-style:italic;line-height:1.5}
 
-/* ═══ Chain logo on studio card ═══ */
-.sb-chain-logo{width:48px;height:48px;border-radius:12px;object-fit:contain;
-  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);flex-shrink:0}
-.sb-grid-card .sb-chain-logo{width:36px;height:36px;border-radius:10px}
+/* ═══ Vertical meters ═══ */
+.sb-meters{
+  display:flex;gap:8px;align-items:flex-end;justify-content:center;
+  width:100%;padding:10px 0;position:relative;z-index:1;
+  flex-shrink:0;height:160px;
+}
+.sb-vmeter{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;max-width:48px;height:100%}
+.sb-vbar{
+  flex:1;width:100%;position:relative;
+  background:linear-gradient(to top,rgba(34,197,94,.08) 0% 75%,rgba(245,158,11,.08) 75% 87.5%,rgba(239,68,68,.08) 87.5% 100%);
+  border-radius:6px;overflow:hidden;border:1px solid rgba(255,255,255,.04);
+}
+.sb-vbar::after{
+  content:'';position:absolute;top:0;right:0;bottom:0;width:3px;
+  background:linear-gradient(to top,#22c55e 0% 75%,#f59e0b 75% 87.5%,#ef4444 87.5% 100%);
+  opacity:.25;
+}
+.sb-vfill{
+  position:absolute;bottom:0;left:0;right:0;
+  background:linear-gradient(to top,#22c55e 0%,#22c55e 75%,#f59e0b 82%,#ef4444 96%);
+  border-radius:6px 6px 0 0;transition:height .15s ease;
+}
+.sb-vpeak{
+  position:absolute;left:-1px;right:-1px;height:2px;background:#fff;border-radius:1px;
+  box-shadow:0 0 4px rgba(255,255,255,.5);transition:bottom .15s ease;
+}
+.sb-vlabel{font-size:9px;font-weight:700;color:var(--mu)}
+.sb-vval{font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--mu);text-align:center}
 
-/* ═══ Meters ═══ */
-.sb-meters{margin-top:auto;padding-top:16px}
-.sb-meter{display:flex;align-items:center;gap:12px;margin-bottom:8px}
-.sb-meter-label{font-size:12px;font-weight:600;color:var(--mu);min-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sb-meter-bar{flex:1;height:20px;background:rgba(255,255,255,.06);border-radius:6px;overflow:hidden;position:relative}
-.sb-meter-fill{
-  height:100%;border-radius:6px;
-  background:linear-gradient(90deg,#22c55e 0%,#22c55e 75%,#f59e0b 87%,#ef4444 100%);
-  transition:width .15s ease;
-}
-.sb-meter-peak{
-  position:absolute;top:0;bottom:0;width:3px;background:#fff;border-radius:2px;
-  box-shadow:0 0 6px rgba(255,255,255,.5);transition:left .15s ease;
-}
-.sb-meter-val{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;min-width:70px;text-align:right}
-.sb-meter-val.silent{color:var(--mu)}
-
-/* ═══ Multi-studio grid ═══ */
-.sb-grid{flex:1;display:grid;gap:20px;padding:0;min-height:0}
-.sb-grid-card{
-  background:linear-gradient(160deg,rgba(255,255,255,.08),rgba(255,255,255,.02));
-  border:2px solid rgba(255,255,255,.12);
-  border-radius:24px;padding:24px;display:flex;flex-direction:column;
-  overflow:hidden;position:relative;
-  backdrop-filter:blur(8px);
-  box-shadow:0 8px 32px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.06);
-  transition:border-color .5s,box-shadow .5s;
-}
-/* Colour glow — set via inline style data-color */
-.sb-grid-card::before{
-  content:'';position:absolute;top:-1px;left:0;right:0;height:3px;
-  background:linear-gradient(90deg,transparent 5%,var(--card-color,rgba(255,255,255,.2)) 50%,transparent 95%);
-  border-radius:24px 24px 0 0;
-}
-.sb-grid-card::after{
-  content:'';position:absolute;inset:0;pointer-events:none;border-radius:24px;
-  background:radial-gradient(ellipse at 50% 0%,var(--card-glow,rgba(255,255,255,.03)),transparent 70%);
-}
-.sb-grid-card .sb-mic{font-size:20px;padding:10px 18px;border-radius:12px;margin-bottom:14px}
-.sb-grid-card .sb-art{width:140px;height:140px;border-radius:18px}
-.sb-grid-card .sb-art-placeholder{width:140px;height:140px;border-radius:18px;font-size:48px}
-.sb-grid-card .sb-show-name{font-size:22px}
-.sb-grid-card .sb-track{font-size:18px}
-.sb-grid-card .sb-artist{font-size:16px}
-.sb-grid-card .sb-studio-name{font-size:26px}
-/* On-air pulse on card border */
-.sb-grid-card.card-ok{border-color:rgba(34,197,94,.25)}
-.sb-grid-card.card-fault{border-color:rgba(239,68,68,.5);animation:sb-card-fault 1.5s ease-in-out infinite}
-@keyframes sb-card-fault{0%,100%{box-shadow:0 0 20px rgba(239,68,68,.1),0 8px 32px rgba(0,0,0,.3)}50%{box-shadow:0 0 40px rgba(239,68,68,.25),0 8px 32px rgba(0,0,0,.3)}}
-
-/* ═══ Clock ═══ */
-.sb-clock{font-size:28px;font-weight:300;font-variant-numeric:tabular-nums;letter-spacing:.05em;text-align:right}
-.sb-clock-date{font-size:11px;color:var(--mu);text-align:right}
+/* ═══ Fault column ═══ */
+.sb-col.col-fault{background:linear-gradient(180deg,rgba(239,68,68,.06),transparent 40%)}
+.sb-col.col-fault::before{background:linear-gradient(90deg,transparent,rgba(239,68,68,.6),transparent)}
 </style>
 </head>
 <body>
@@ -889,127 +894,103 @@ function _getShowArt(studio){
   return null;
 }
 
-function _chainLogoHtml(ch,cls){
-  return '<img class="sb-chain-logo" src="'+_tkUrl('/wallboard/logo/'+_e(ch.id))+'" alt="" onerror="this.style.display=\'none\'">';
+var _IDLE_MSGS=[
+  "Probably on an ad break...",
+  "Presenter's talking too much!",
+  "Getting ready for Make Me a Winner?",
+  "Building the suspense...",
+  "Music coming right up!",
+  "Hold tight, we'll be right back!",
+  "The silence before the storm...",
+  "Loading the next banger...",
+];
+function _idleMsg(){return _IDLE_MSGS[Math.floor(Math.random()*_IDLE_MSGS.length)]}
+
+function renderColumn(studio){
+  var np=_getNp(studio);
+  var col=studio.color||'#17a8ff';
+  var rgb=_hexToRgb(col);
+  var chainSt='ok';
+  (studio.chains||[]).forEach(function(ch){if(ch.status==='fault')chainSt='fault'});
+  var micCls=studio.mic_live?'live':'clear';
+  var micTxt=studio.mic_live?'MIC LIVE':'CLEAR';
+
+  // Station logo — use first chain's logo
+  var logoHtml='';
+  var firstChain=(studio.chains||[])[0];
+  if(firstChain){
+    logoHtml='<img class="sb-logo" src="'+_tkUrl('/wallboard/logo/'+_e(firstChain.id))+'" alt="" onerror="this.className=\'sb-logo-placeholder\';this.outerHTML=\'<div class=sb-logo-placeholder>'+_e((studio.name||'?')[0])+'</div>\'">';
+  }else{
+    logoHtml='<div class="sb-logo-placeholder">'+_e((studio.name||'?')[0])+'</div>';
+  }
+
+  // Station name from first chain
+  var stationName=firstChain?firstChain.name:studio.name;
+
+  // Artwork
+  var artHtml='';
+  var art=_getShowArt(studio);
+  if(art&&art.type==='file'){artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(art.src))+'" alt="">';}
+  else if(art&&art.type==='url'){artHtml='<img class="sb-art" src="'+_e(art.src)+'" alt="" onerror="this.src=\''+_tkUrl('/studioboard/np_art/'+_e(studio.np_rpuid||''))+'\';">';}
+  else if(art&&art.type==='proxy'){artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/np_art/'+_e(art.src))+'" alt="" onerror="this.style.display=\'none\'">';}
+  else{artHtml='<div class="sb-art-placeholder">🎙</div>';}
+
+  // Now playing content
+  var npHtml='';
+  if(np.show)npHtml+='<div class="sb-show-name">'+_e(np.show)+'</div>';
+  if(np.artist||np.title){
+    npHtml+='<div class="sb-np-label">Now Playing</div>';
+    if(np.artist)npHtml+='<div class="sb-artist">'+_e(np.artist)+'</div>';
+    if(np.title)npHtml+='<div class="sb-track">'+_e(np.title)+'</div>';
+  }else if(np.show){
+    // Show but no song — witty idle message
+    npHtml+='<div class="sb-idle">'+_e(_idleMsg())+'</div>';
+  }
+
+  // Vertical meters
+  var meterHtml='';
+  (studio.inputs||[]).forEach(function(inp){
+    var lev=inp.level_dbfs!=null?inp.level_dbfs:DB_FLOOR;
+    var pk=inp.peak_dbfs!=null?inp.peak_dbfs:DB_FLOOR;
+    var h=levToW(lev),ph=levToW(pk);
+    var parts=(inp.name||'').split('|');var label=parts.length>1?parts[1]:inp.name;
+    // Shorten label
+    label=(label||'').replace(/^.*?-\s*/,'').substring(0,8);
+    meterHtml+='<div class="sb-vmeter">'
+      +'<div class="sb-vbar"><div class="sb-vfill" style="height:'+h+'%"></div>'
+      +'<div class="sb-vpeak" style="bottom:'+ph+'%;opacity:'+(pk>DB_FLOOR?.8:0)+'"></div></div>'
+      +'<div class="sb-vlabel">'+_e(label)+'</div></div>';
+  });
+
+  // Chain badge
+  var badgeHtml='';
+  (studio.chains||[]).forEach(function(ch){
+    var cls=ch.status==='fault'?'fault':'ok';
+    badgeHtml+='<div class="sb-chain-badge '+cls+'"><span class="sb-chain-dot"></span>'
+      +_e(ch.name)+' — '+(ch.status==='fault'?'FAULT':'ON AIR')+'</div>';
+  });
+
+  return '<div class="sb-col'+(chainSt==='fault'?' col-fault':'')+'" style="--col-color:rgba('+rgb+',.5);--col-glow:rgba('+rgb+',.08)">'
+    +logoHtml
+    +'<div class="sb-station-name" style="text-shadow:0 0 20px rgba('+rgb+',.4)">'+_e(stationName)+'</div>'
+    +'<div class="sb-studio-name">'+_e(studio.name)+'</div>'
+    +(studio.freq?'<div class="sb-freq">'+_e(studio.freq)+'</div>':'')
+    +'<div class="sb-mic '+micCls+'">'+micTxt+'</div>'
+    +badgeHtml
+    +'<div class="sb-np-zone">'+artHtml+npHtml+'</div>'
+    +'<div class="sb-meters">'+meterHtml+'</div>'
+    +'</div>';
 }
 
 function renderSingle(studio){
   var el=document.getElementById('sb-content');
-  var np=_getNp(studio);
-  var col=studio.color||'#17a8ff';
-  var rgb=_hexToRgb(col);
-
-  // Chain badges with logos
-  var chainHtml='';
-  (studio.chains||[]).forEach(function(ch){
-    var cls=ch.status==='fault'?'fault':'ok';
-    var txt=ch.status==='fault'?'FAULT':'ON AIR';
-    chainHtml+=_chainLogoHtml(ch)
-      +'<div class="sb-chain-badge '+cls+'"><span class="sb-chain-dot"></span>'+_e(ch.name)+' — '+txt+'</div>';
-  });
-
-  var micCls=studio.mic_live?'live':'clear';
-  var micTxt=studio.mic_live?'MIC LIVE':'CLEAR';
-
-  var artHtml='';
-  var art=_getShowArt(studio);
-  if(art&&art.type==='file'){
-    artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(art.src))+'" alt="">';
-  }else if(art&&art.type==='url'){
-    artHtml='<img class="sb-art" src="'+_e(art.src)+'" alt="" onerror="this.src=\''+_tkUrl('/studioboard/np_art/'+_e(studio.np_rpuid||''))+'\';">';
-  }else if(art&&art.type==='proxy'){
-    artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/np_art/'+_e(art.src))+'" alt="" onerror="this.style.display=\'none\'">';
-  }else{
-    artHtml='<div class="sb-art-placeholder">🎙</div>';
-  }
-
-  var npHtml='';
-  if(np.show){
-    npHtml+='<div class="sb-show-name">'+_e(np.show)+'</div>';
-  }
-  if(np.title||np.artist){
-    npHtml+='<div class="sb-np-label">Now Playing</div>';
-    if(np.artist)npHtml+='<div class="sb-artist">'+_e(np.artist)+'</div>';
-    if(np.title)npHtml+='<div class="sb-track">'+_e(np.title)+'</div>';
-  }
-
-  var metersHtml='';
-  (studio.inputs||[]).forEach(function(inp){
-    var lev=inp.level_dbfs!=null?inp.level_dbfs:DB_FLOOR;
-    var peak=inp.peak_dbfs!=null?inp.peak_dbfs:DB_FLOOR;
-    var w=levToW(lev),pw=levToW(peak);
-    var cls=lev<=DB_FLOOR?'silent':'';
-    metersHtml+='<div class="sb-meter">'
-      +'<div class="sb-meter-label">'+_e(inp.name)+'</div>'
-      +'<div class="sb-meter-bar"><div class="sb-meter-fill" style="width:'+w+'%"></div>'
-      +'<div class="sb-meter-peak" style="left:'+pw+'%"></div></div>'
-      +'<div class="sb-meter-val '+cls+'">'+fmtLev(lev)+'</div></div>';
-  });
-
-  // Apply studio colour as ambient glow
-  el.style.cssText='--card-color:rgba('+rgb+',.5);--card-glow:rgba('+rgb+',.08)';
-
-  var html='<div class="sb-hdr" style="border-bottom:2px solid rgba('+rgb+',.2)">'
-    +'<div><div class="sb-studio-name" style="text-shadow:0 0 30px rgba('+rgb+',.3)">'+_e(studio.name)+'</div>'
-    +(studio.freq?'<div class="sb-freq">'+_e(studio.freq)+'</div>':'')+'</div>'
-    +'<div class="sb-status">'+chainHtml+'</div>'
-    +'<div><div class="sb-clock" id="sb-clock"></div><div class="sb-clock-date" id="sb-clock-date"></div></div></div>'
-    +'<div class="sb-mic '+micCls+'">'+micTxt+'</div>'
-    +'<div class="sb-show">'+artHtml+'<div class="sb-info">'+npHtml+'</div></div>'
-    +'<div class="sb-meters">'+metersHtml+'</div>';
-  el.innerHTML=html;
-  _tick();
+  el.innerHTML='<div class="sb-cols">'+renderColumn(studio)+'</div>';
 }
 
 function renderGrid(studios){
   var el=document.getElementById('sb-content');
-  var n=studios.length;
-  var cols=n<=2?n:n<=4?2:3;
-  var html='<div class="sb-grid" style="grid-template-columns:repeat('+cols+',1fr)">';
-  studios.forEach(function(studio){
-    var np=_getNp(studio);
-    var col=studio.color||'#17a8ff';
-    var rgb=_hexToRgb(col);
-    var micCls=studio.mic_live?'live':'clear';
-    var micTxt=studio.mic_live?'MIC LIVE':'CLEAR';
-    var chainSt='ok';
-    (studio.chains||[]).forEach(function(ch){if(ch.status==='fault')chainSt='fault'});
-
-    var artHtml='';
-    var art=_getShowArt(studio);
-    if(art&&art.type==='file'){artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(art.src))+'" alt="">';}
-    else if(art&&art.type==='url'){artHtml='<img class="sb-art" src="'+_e(art.src)+'" alt="" onerror="this.src=\''+_tkUrl('/studioboard/np_art/'+_e(studio.np_rpuid||''))+'\';">';}
-    else if(art&&art.type==='proxy'){artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/np_art/'+_e(art.src))+'" alt="" onerror="this.style.display=\'none\'">';}
-    else{artHtml='<div class="sb-art-placeholder">🎙</div>';}
-
-    // Chain logos
-    var logosHtml='';
-    (studio.chains||[]).forEach(function(ch){logosHtml+=_chainLogoHtml(ch)});
-
-    html+='<div class="sb-grid-card card-'+chainSt+'" style="--card-color:rgba('+rgb+',.5);--card-glow:rgba('+rgb+',.1);border-color:rgba('+rgb+',.3)">'
-      +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
-      +logosHtml
-      +'<div class="sb-studio-name" style="flex:1;text-shadow:0 0 20px rgba('+rgb+',.3)">'+_e(studio.name)+'</div>'
-      +'<div class="sb-chain-badge '+chainSt+'"><span class="sb-chain-dot"></span>'+(chainSt==='fault'?'FAULT':'ON AIR')+'</div></div>'
-      +'<div class="sb-mic '+micCls+'">'+micTxt+'</div>'
-      +'<div class="sb-show" style="gap:20px">'+artHtml
-      +'<div class="sb-info">'
-      +(np.show?'<div class="sb-show-name">'+_e(np.show)+'</div>':'')
-      +(np.artist?'<div class="sb-artist">'+_e(np.artist)+'</div>':'')
-      +(np.title?'<div class="sb-track">'+_e(np.title)+'</div>':'')
-      +'</div></div>';
-
-    // Meters
-    (studio.inputs||[]).forEach(function(inp){
-      var lev=inp.level_dbfs!=null?inp.level_dbfs:DB_FLOOR;
-      var w=levToW(lev);
-      html+='<div class="sb-meter"><div class="sb-meter-label">'+_e(inp.name)+'</div>'
-        +'<div class="sb-meter-bar"><div class="sb-meter-fill" style="width:'+w+'%"></div></div>'
-        +'<div class="sb-meter-val'+(lev<=DB_FLOOR?' silent':'')+'">'+fmtLev(lev)+'</div></div>';
-    });
-
-    html+='</div>';
-  });
+  var html='<div class="sb-cols">';
+  studios.forEach(function(studio){html+=renderColumn(studio)});
   html+='</div>';
   el.innerHTML=html;
 }
