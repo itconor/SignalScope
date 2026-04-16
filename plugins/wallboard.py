@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.4.2",
+    "version":  "3.4.3",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -643,7 +643,7 @@ body::after{
 #wb-chains:empty{padding:0}
 
 .cc{
-  min-width:240px;max-width:420px;flex:1 1 240px;
+  min-width:240px;max-width:none;flex:1 1 240px;
   background:linear-gradient(160deg,rgba(13,35,70,.92),rgba(8,22,48,.96));
   border:1.5px solid rgba(23,168,255,.12);
   border-radius:20px;padding:20px 22px 16px;
@@ -1097,15 +1097,17 @@ body.has-brand .wb-brand{display:block}
 .cc-np-track,.cc-np-show{transition:opacity .35s ease,transform .35s ease}
 .cc-np-track.np-entering,.cc-np-show.np-entering{opacity:0;transform:translateY(8px)}
 
-/* ═══ Auto-scaling chain cards ═══ */
-#wb-chains.cc-count-1 .cc{min-width:420px;max-width:600px;flex:1 1 500px}
-#wb-chains.cc-count-2 .cc{min-width:320px;max-width:500px;flex:1 1 380px}
-#wb-chains.cc-count-3 .cc{min-width:280px;max-width:460px;flex:1 1 320px}
+/* ═══ Auto-scaling chain cards — fill the screen width ═══ */
+#wb-chains.cc-count-1 .cc{min-width:420px;max-width:none;flex:1 1 100%}
+#wb-chains.cc-count-2 .cc{min-width:320px;max-width:none;flex:1 1 45%}
+#wb-chains.cc-count-3 .cc{min-width:280px;max-width:none;flex:1 1 30%}
+#wb-chains.cc-count-4 .cc{max-width:none;flex:1 1 22%}
+#wb-chains.cc-count-5 .cc{max-width:none;flex:1 1 18%}
 #wb-chains.cc-count-1 .cc-name{font-size:22px}
 #wb-chains.cc-count-2 .cc-name{font-size:18px}
-#wb-chains.cc-count-1 .cc-logo,.cc-count-1 .cc-avatar{width:96px;height:96px;border-radius:20px}
+#wb-chains.cc-count-1 .cc-logo,#wb-chains.cc-count-1 .cc-avatar{width:96px;height:96px;border-radius:20px}
 #wb-chains.cc-count-1 .cc-avatar{font-size:36px}
-#wb-chains.cc-count-2 .cc-logo,.cc-count-2 .cc-avatar{width:84px;height:84px;border-radius:18px}
+#wb-chains.cc-count-2 .cc-logo,#wb-chains.cc-count-2 .cc-avatar{width:84px;height:84px;border-radius:18px}
 #wb-chains.cc-count-2 .cc-avatar{font-size:30px}
 #wb-chains.cc-count-1 .cc-art{width:100px;height:100px;border-radius:16px}
 #wb-chains.cc-count-2 .cc-art{width:92px;height:92px}
@@ -1222,10 +1224,8 @@ body.bauer #wb-hero .hero-pulse-bg{
 body.day-grad{transition:background 3s ease}
 
 /* ═══ QR codes on chain cards ═══ */
-.cc-qr{margin-top:4px;display:flex;justify-content:center}
-.cc-qr canvas{border-radius:6px;background:#fff;padding:3px}
-.cc-qr-url{display:none}
-body.show-qr .cc-qr-url{display:flex}
+.cc-qr{margin-top:4px;display:none;justify-content:center}
+.cc-qr.qr-visible{display:flex}
 </style>
 </head>
 <body>
@@ -1454,8 +1454,6 @@ function applyVis(){
   document.body.classList.toggle('corp',!!_cfg.corp_mode&&!_cfg.bauer_mode);
   // Hide header
   document.getElementById('wb-hdr').classList.toggle('hdr-hidden',!!_cfg.hide_hdr);
-  // QR codes
-  document.body.classList.toggle('show-qr',!!_cfg.show_qr);
   // Time-of-day gradient
   _updateDayGradient();
 }
@@ -1579,7 +1577,7 @@ function renderChains(chains){
         +'<div class="cc-sparkline"><canvas></canvas></div>'
         +'<div class="cc-health"><div class="cc-health-fill"></div></div>'
         +'<div class="cc-sla"></div>'
-        +'<div class="cc-qr cc-qr-url"></div>';
+        +'<div class="cc-qr"></div>';
       el.appendChild(card);
     }
 
@@ -1713,12 +1711,18 @@ function renderChains(chains){
 
     // QR code — links to mobile play page for the last node in the chain
     var qrEl=card.querySelector('.cc-qr');
-    if(qrEl&&_cfg.show_qr){
-      var playUrl=window.location.origin+'/wallboard/play/'+cid+(_wbTk?'?token='+encodeURIComponent(_wbTk):'');
-      if(qrEl._rendered!==playUrl){
-        _renderQRImg(qrEl,playUrl,80);qrEl._rendered=playUrl;
+    if(qrEl){
+      if(_cfg.show_qr){
+        qrEl.classList.add('qr-visible');
+        var playUrl=window.location.origin+'/wallboard/play/'+cid+(_wbTk?'?token='+encodeURIComponent(_wbTk):'');
+        if(qrEl._rendered!==playUrl){
+          _renderQRImg(qrEl,playUrl,80);qrEl._rendered=playUrl;
+        }
+      }else{
+        qrEl.classList.remove('qr-visible');
+        if(qrEl._rendered){qrEl.innerHTML='';qrEl._rendered=null}
       }
-    }else if(qrEl&&qrEl._rendered){qrEl.innerHTML='';qrEl._rendered=null}
+    }
   });
 
   // Remove cards for chains no longer present
@@ -1726,11 +1730,11 @@ function renderChains(chains){
     if(!seenIds[cid])existingMap[cid].remove();
   });
 
-  // Auto-scale: set count class on container
+  // Auto-scale: set count class on container so cards fill the width
   var chainsEl=document.getElementById('wb-chains');
   var n=chains.length;
-  ['cc-count-1','cc-count-2','cc-count-3'].forEach(function(c){chainsEl.classList.remove(c)});
-  if(n<=3)chainsEl.classList.add('cc-count-'+n);
+  ['cc-count-1','cc-count-2','cc-count-3','cc-count-4','cc-count-5'].forEach(function(c){chainsEl.classList.remove(c)});
+  if(n<=5)chainsEl.classList.add('cc-count-'+n);
 
   // Fault sound alert
   if(_cfg.sound_alert){
