@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.0.4",
+    "version":  "2.0.5",
 }
 
 import json
@@ -1725,6 +1725,17 @@ def register(app, ctx):
                 return jsonify({"ok": False,
                                 "error": f"Method '{method}' not found in WSDL",
                                 "raw": "Available: " + ", ".join(available) if available else ""})
+
+            # Remap kwargs keys case-insensitively to match WSDL parameter names.
+            # e.g. user types <StationId> but WSDL defines stationID → remap to stationID.
+            if kwargs:
+                try:
+                    import inspect as _inspect
+                    sig_params = list(_inspect.signature(svc_method).parameters.keys())
+                    lower_map  = {p.lower(): p for p in sig_params}
+                    kwargs = {lower_map.get(k.lower(), k): v for k, v in kwargs.items()}
+                except Exception:
+                    pass  # fall through with original keys
 
             result = svc_method(**kwargs)
 
