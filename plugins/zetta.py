@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.0.6",
+    "version":  "2.0.7",
 }
 
 import json
@@ -924,8 +924,8 @@ _PAGE_TPL = """<!DOCTYPE html>
           <div class="f" style="max-width:220px"><label>SOAP Method</label>
             <input id="dbg-method" placeholder="GetStationFull"></div>
         </div>
-        <div style="margin-top:8px"><label>Arguments (XML key/value pairs)</label>
-          <textarea id="dbg-body" rows="3" placeholder="<stationID>1</stationID>&#10;Leave blank for methods with no arguments (e.g. GetStations)"></textarea></div>
+        <div style="margin-top:8px"><label>Arguments (one per line: key:value)</label>
+          <textarea id="dbg-body" rows="3" placeholder="stationId:1&#10;Leave blank for methods with no arguments (e.g. GetStations)"></textarea></div>
         <div class="btn-row">
           <button class="btn bg bs" id="btn-dbg">&#x25B6; Call</button>
           <button class="btn bg bs" id="btn-wsdl">&#x1F4C4; WSDL Methods</button>
@@ -1692,25 +1692,28 @@ def register(app, ctx):
             sep    = "&" if "?" in url else "?"
             client = _make_zeep_client(url + sep + "wsdl", url)
 
-            # Parse body XML into kwargs: <stationID>1</stationID> → {"stationID": "1"}
+            # Parse body as "key:value" lines (one per line).
+            # e.g. "stationId:1" → {"stationId": 1}
             kwargs: dict = {}
-            if body.strip():
-                try:
-                    root = ET.fromstring(f"<_root_>{body}</_root_>")
-                    for child in root:
-                        tag = child.tag.split("}")[-1]
-                        # Coerce obvious types
-                        txt = (child.text or "").strip()
-                        if txt.lower() == "true":
-                            kwargs[tag] = True
-                        elif txt.lower() == "false":
-                            kwargs[tag] = False
-                        else:
-                            try:    kwargs[tag] = int(txt)
-                            except ValueError: kwargs[tag] = txt
-                except ET.ParseError as pe:
-                    return jsonify({"ok": False,
-                                    "error": f"Body XML parse error: {pe}", "raw": ""})
+            for raw_line in body.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                else:
+                    continue
+                k = k.strip()
+                v = v.strip()
+                if not k:
+                    continue
+                if v.lower() == "true":
+                    kwargs[k] = True
+                elif v.lower() == "false":
+                    kwargs[k] = False
+                else:
+                    try:    kwargs[k] = int(v)
+                    except ValueError: kwargs[k] = v
 
             svc_method = getattr(client.service, method, None)
             if svc_method is None:
