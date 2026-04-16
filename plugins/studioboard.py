@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "1.0.0",
+    "version":  "1.1.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -176,21 +176,9 @@ def register(app, ctx):
                                            "site": site, "name": name})
             except Exception:
                 pass
-        # Planet Radio stations from the nowplaying poller
-        np_stations = []
-        try:
-            from flask import current_app
-            poller = getattr(current_app, '_nowplaying_poller', None)
-            if not poller:
-                # Access via the module-level nowplaying_poller
-                import signalscope
-                poller = getattr(signalscope, 'nowplaying_poller', None)
-            if poller:
-                np_stations = poller.get_stations()
-        except Exception:
-            pass
-        return jsonify({"chains": chains, "inputs": inputs,
-                        "np_stations": np_stations})
+        # Planet Radio stations are fetched by the JS from
+        # /api/nowplaying_stations (main app endpoint)
+        return jsonify({"chains": chains, "inputs": inputs})
 
     # ── Studio CRUD ─────────────────────────────────────────────
 
@@ -284,6 +272,28 @@ def register(app, ctx):
         _cfg_save(cfg)
         return jsonify({"ok": True, "chains": studio["chains"]})
 
+    # ── Log seen show names (called by display JS) ──────────────
+
+    @app.post("/api/studioboard/seen_show/<studio_id>")
+    @login_required
+    def sb_seen_show(studio_id):
+        """Log a show name so the admin can see it for artwork mapping."""
+        data = request.get_json(force=True)
+        show = (data.get("show") or "").strip()
+        if not show:
+            return jsonify({"ok": True})
+        cfg = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if not studio:
+            return jsonify({"ok": True})
+        seen = studio.setdefault("seen_shows", [])
+        if show not in seen:
+            seen.insert(0, show)
+            if len(seen) > 50:
+                seen[:] = seen[:50]
+            _cfg_save(cfg)
+        return jsonify({"ok": True})
+
     # ── Show artwork upload ─────────────────────────────────────
 
     @app.post("/api/studioboard/artwork/<studio_id>/<show_name>")
@@ -374,18 +384,7 @@ def register(app, ctx):
             except Exception:
                 pass
 
-        # Get now playing data
-        np_data = {}
-        try:
-            import signalscope
-            poller = getattr(signalscope, 'nowplaying_poller', None)
-            if poller:
-                for studio in sb_cfg.get("studios", []):
-                    rpuid = studio.get("np_rpuid", "")
-                    if rpuid:
-                        np_data[studio["id"]] = poller.get_nowplaying(rpuid)
-        except Exception:
-            pass
+        # Now playing data is fetched by the JS from /api/nowplaying/<rpuid>
 
         for studio in sb_cfg.get("studios", []):
             sid = studio.get("id", "")
@@ -412,13 +411,6 @@ def register(app, ctx):
                     **lev,
                 })
 
-            # Now playing
-            np = np_data.get(sid, {})
-
-            # Show artwork lookup
-            show_name = (np.get("show") or "").strip()
-            show_art_file = (studio.get("show_artwork") or {}).get(show_name, "")
-
             studios_out.append({
                 "id": sid,
                 "name": studio.get("name", ""),
@@ -427,14 +419,9 @@ def register(app, ctx):
                 "mic_live": studio.get("mic_live", False),
                 "chains": s_chains,
                 "inputs": s_inputs,
-                "np": {
-                    "artist": np.get("artist", ""),
-                    "title": np.get("title", ""),
-                    "show": np.get("show", ""),
-                    "artwork": np.get("artwork", ""),
-                },
-                "show_art_file": show_art_file,
+                "np_rpuid": studio.get("np_rpuid", ""),
                 "show_artwork_map": studio.get("show_artwork", {}),
+                "seen_shows": studio.get("seen_shows", []),
             })
 
         return jsonify({"studios": studios_out})
@@ -516,10 +503,12 @@ function _del(url){return fetch(url,{method:'DELETE',credentials:'same-origin',h
 function loadAll(){
   Promise.all([
     fetch('/api/studioboard/config',{credentials:'same-origin'}).then(function(r){return r.json()}),
-    fetch('/api/studioboard/stations',{credentials:'same-origin'}).then(function(r){return r.json()})
+    fetch('/api/studioboard/stations',{credentials:'same-origin'}).then(function(r){return r.json()}),
+    fetch('/api/nowplaying_stations',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():[]}).catch(function(){return[]})
   ]).then(function(res){
     _studios=(res[0].studios||[]);
-    _chains=res[1].chains||[];_inputs=res[1].inputs||[];_npStations=res[1].np_stations||[];
+    _chains=res[1].chains||[];_inputs=res[1].inputs||[];
+    _npStations=res[2]||[];
     render();
   });
 }
@@ -527,7 +516,12 @@ function loadAll(){
 function render(){
   var el=document.getElementById('studios-list');
   if(!_studios.length){el.innerHTML='<div class="empty">No studios configured yet. Click "+ Add Studio" to get started.</div>';return}
-  var html='';
+  // All-studios display URL
+  var html='<div class="card"><div class="cb" style="padding:10px 14px">'
+    +'<div style="font-size:12px;font-weight:700;color:var(--acc);margin-bottom:4px">All Studios Display URL (Yodeck)</div>'
+    +'<div style="font-size:12px;color:var(--mu);word-break:break-all">/studioboard/tv?token=YOUR_TOKEN</div>'
+    +'<div style="font-size:10px;color:var(--mu);margin-top:4px">Shows all studios in a grid. Add <code style="color:var(--acc)">&amp;studio=ID</code> for a single studio.</div>'
+    +'</div></div>';
   _studios.forEach(function(st){
     html+='<div class="card" data-sid="'+_e(st.id)+'">';
     html+='<div class="ch"><div class="studio-hdr"><span class="studio-color" style="background:'+_e(st.color)+'"></span>'+_e(st.name)+'</div>';
@@ -577,6 +571,16 @@ function render(){
       });
       html+='</div>';
     }
+    // Seen show names — logged automatically from the API
+    var seen=st.seen_shows||[];
+    if(seen.length){
+      html+='<div style="margin-top:8px"><div style="font-size:10px;color:var(--mu);margin-bottom:4px">Recently seen shows (click to select):</div><div class="tags">';
+      seen.forEach(function(s){
+        var hasArt=artMap[s]?'  ✓':'';
+        html+='<span class="tag" data-seen-show="'+_e(st.id)+'" data-show="'+_e(s)+'" style="cursor:pointer">'+_e(s)+hasArt+'</span>';
+      });
+      html+='</div></div>';
+    }
     html+='<div style="margin-top:8px;display:flex;gap:8px;align-items:center">';
     html+='<input data-art-show="'+_e(st.id)+'" placeholder="Show name (exact match)" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 8px;font-size:12px;flex:1;font-family:inherit">';
     html+='<button class="btn bp bs" data-art-upload="'+_e(st.id)+'">Upload Image</button></div>';
@@ -609,6 +613,10 @@ document.getElementById('btn-add-studio').addEventListener('click',function(){
 document.getElementById('studios-list').addEventListener('click',function(e){
   var del=e.target.closest('[data-delete]');
   if(del){if(confirm('Delete this studio?'))_del('/api/studioboard/studio/'+encodeURIComponent(del.dataset.delete)).then(function(){loadAll()});return}
+  var seenTag=e.target.closest('[data-seen-show]');
+  if(seenTag){var sid=seenTag.dataset.seenShow;var showName=seenTag.dataset.show;
+    var inp=document.querySelector('input[data-art-show="'+sid+'"]');
+    if(inp)inp.value=showName;return}
   var artBtn=e.target.closest('[data-art-upload]');
   if(artBtn){
     var sid=artBtn.dataset.artUpload;
@@ -781,14 +789,25 @@ var _studioId='{{studio_id|default("")}}';
 function _tkUrl(u){if(!_wbTk)return u;return u+(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(_wbTk)}
 function _e(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 
-var POLL_MS=1500,DB_FLOOR=-80;
-var _lastData=null;
+var POLL_MS=1500,NP_MS=10000,DB_FLOOR=-80;
+var _lastData=null,_npData={},_seenShows={};
 
 function levToW(db){return Math.max(0,Math.min(100,(db-DB_FLOOR)/(-DB_FLOOR)*100))}
 function fmtLev(db){if(db<=DB_FLOOR)return'— dB';return(db>=0?'+':'')+db.toFixed(1)+' dB'}
 
+function _getNp(studio){
+  var rpuid=studio.np_rpuid||'';
+  return rpuid?(_npData[rpuid]||{}):{};
+}
+function _getShowArt(studio){
+  var np=_getNp(studio);
+  var showName=(np.show||'').trim();
+  return (studio.show_artwork_map||{})[showName]||'';
+}
+
 function renderSingle(studio){
   var el=document.getElementById('sb-content');
+  var np=_getNp(studio);
   var chainHtml='';
   (studio.chains||[]).forEach(function(ch){
     var cls=ch.status==='fault'?'fault':'ok';
@@ -800,8 +819,8 @@ function renderSingle(studio){
   var micTxt=studio.mic_live?'MIC LIVE':'CLEAR';
 
   var artHtml='';
-  var showArt=studio.show_art_file;
-  var trackArt=studio.np.artwork;
+  var showArt=_getShowArt(studio);
+  var trackArt=np.artwork||'';
   if(showArt){
     artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(showArt))+'" alt="">';
   }else if(trackArt){
@@ -811,13 +830,13 @@ function renderSingle(studio){
   }
 
   var npHtml='';
-  if(studio.np.show){
-    npHtml+='<div class="sb-show-name">'+_e(studio.np.show)+'</div>';
+  if(np.show){
+    npHtml+='<div class="sb-show-name">'+_e(np.show)+'</div>';
   }
-  if(studio.np.title||studio.np.artist){
+  if(np.title||np.artist){
     npHtml+='<div class="sb-np-label">Now Playing</div>';
-    if(studio.np.artist)npHtml+='<div class="sb-artist">'+_e(studio.np.artist)+'</div>';
-    if(studio.np.title)npHtml+='<div class="sb-track">'+_e(studio.np.title)+'</div>';
+    if(np.artist)npHtml+='<div class="sb-artist">'+_e(np.artist)+'</div>';
+    if(np.title)npHtml+='<div class="sb-track">'+_e(np.title)+'</div>';
   }
 
   var metersHtml='';
@@ -851,14 +870,16 @@ function renderGrid(studios){
   var cols=n<=2?n:n<=4?2:3;
   var html='<div class="sb-grid" style="grid-template-columns:repeat('+cols+',1fr)">';
   studios.forEach(function(studio){
+    var np=_getNp(studio);
     var micCls=studio.mic_live?'live':'clear';
     var micTxt=studio.mic_live?'MIC LIVE':'CLEAR';
     var chainSt='ok';
     (studio.chains||[]).forEach(function(ch){if(ch.status==='fault')chainSt='fault'});
 
     var artHtml='';
-    if(studio.show_art_file){artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(studio.show_art_file))+'" alt="">';}
-    else if(studio.np.artwork){artHtml='<img class="sb-art" src="'+_e(studio.np.artwork)+'" alt="">';}
+    var showArt=_getShowArt(studio);
+    if(showArt){artHtml='<img class="sb-art" src="'+_tkUrl('/studioboard/art/'+_e(showArt))+'" alt="">';}
+    else if(np.artwork){artHtml='<img class="sb-art" src="'+_e(np.artwork)+'" alt="">';}
     else{artHtml='<div class="sb-art-placeholder">🎙</div>';}
 
     html+='<div class="sb-grid-card" style="border-color:rgba('+_hexToRgb(studio.color||'#17a8ff')+',.3)">'
@@ -868,9 +889,9 @@ function renderGrid(studios){
       +'<div class="sb-mic '+micCls+'">'+micTxt+'</div>'
       +'<div class="sb-show" style="gap:16px">'+artHtml
       +'<div class="sb-info">'
-      +(studio.np.show?'<div class="sb-show-name">'+_e(studio.np.show)+'</div>':'')
-      +(studio.np.artist?'<div class="sb-artist">'+_e(studio.np.artist)+'</div>':'')
-      +(studio.np.title?'<div class="sb-track">'+_e(studio.np.title)+'</div>':'')
+      +(np.show?'<div class="sb-show-name">'+_e(np.show)+'</div>':'')
+      +(np.artist?'<div class="sb-artist">'+_e(np.artist)+'</div>':'')
+      +(np.title?'<div class="sb-track">'+_e(np.title)+'</div>':'')
       +'</div></div>';
 
     // Meters
@@ -919,7 +940,27 @@ function _tick(){
 }
 setInterval(_tick,1000);_tick();
 
-poll();setInterval(poll,POLL_MS);
+function npPoll(){
+  if(!_lastData)return;
+  (_lastData.studios||[]).forEach(function(st){
+    var rpuid=st.np_rpuid;if(!rpuid)return;
+    fetch(_tkUrl('/api/nowplaying/'+encodeURIComponent(rpuid)),{credentials:'same-origin'})
+      .then(function(r){return r.ok?r.json():{}})
+      .then(function(d){
+        _npData[rpuid]=d;
+        // Log seen show name
+        var show=(d.show||'').trim();
+        if(show&&!_seenShows[st.id+'|'+show]){
+          _seenShows[st.id+'|'+show]=true;
+          fetch(_tkUrl('/api/studioboard/seen_show/'+encodeURIComponent(st.id)),
+            {method:'POST',credentials:'same-origin',
+             headers:{'Content-Type':'application/json'},
+             body:JSON.stringify({show:show})}).catch(function(){});
+        }
+      }).catch(function(){});
+  });
+}
+poll();npPoll();setInterval(poll,POLL_MS);setInterval(npPoll,NP_MS);
 })();
 </script>
 </body>

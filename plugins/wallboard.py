@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.7.0",
+    "version":  "3.8.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -759,6 +759,27 @@ body::after{
 .cc-health-fill{height:100%;border-radius:3px;transition:width .6s ease,background .4s}
 /* SLA text */
 .cc-sla{font-size:13px;color:var(--mu);font-weight:600;font-variant-numeric:tabular-nums;margin-top:0}
+
+/* ═══ Horizontal RX meter on chain card ═══ */
+.cc-rx-meter{width:100%;margin-top:6px}
+.cc-rx-bar{width:100%;height:10px;background:rgba(0,0,0,.3);border-radius:5px;overflow:hidden;position:relative}
+.cc-rx-fill{
+  height:100%;border-radius:5px;
+  background:linear-gradient(90deg,#22c55e 0%,#22c55e 75%,#f59e0b 87%,#ef4444 100%);
+  transition:width .15s ease;
+}
+.cc-rx-peak{
+  position:absolute;top:0;bottom:0;width:3px;background:#fff;border-radius:2px;
+  box-shadow:0 0 4px rgba(255,255,255,.5);transition:left .15s ease;
+}
+.cc-rx-label{display:flex;justify-content:space-between;align-items:center;margin-top:3px}
+.cc-rx-name{font-size:10px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cc-rx-val{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;min-width:60px;text-align:right}
+.cc-rx-val.rx-low{color:var(--mu)}.cc-rx-val.rx-warn{color:var(--wn)}.cc-rx-val.rx-alert{color:var(--al)}
+body.bauer .cc-rx-bar{background:rgba(255,255,255,.08)}
+body.bauer .cc-rx-name{color:rgba(255,255,255,.4)}
+body.bauer .cc-rx-val{color:#fff}
+body.bauer .cc-rx-val.rx-low{color:rgba(255,255,255,.3)}
 /* Now playing on chain card */
 .cc-np-wrap{width:100%;text-align:center;margin-top:2px}
 .cc-np-show{
@@ -1627,6 +1648,7 @@ function renderChains(chains){
         +'<div class="cc-np-wrap"></div>'
         +'<div class="cc-np-history"></div>'
         +'<div class="cc-nodes"></div>'
+        +'<div class="cc-rx-meter"><div class="cc-rx-bar"><div class="cc-rx-fill" style="width:0"></div><div class="cc-rx-peak" style="left:0"></div></div><div class="cc-rx-label"><span class="cc-rx-name"></span><span class="cc-rx-val rx-low">— dB</span></div></div>'
         +'<div class="cc-sparkline"><canvas></canvas></div>'
         +'<div class="cc-health"><div class="cc-health-fill"></div></div>'
         +'<div class="cc-sla"></div>'
@@ -1766,6 +1788,27 @@ function renderChains(chains){
       nodesHtml+='<span class="cc-nd '+(n.status||'unknown')+'" title="'+_e(n.label||n.stream||n.name||'?')+'"></span>';
     });
     if(nodesEl._lastHtml!==nodesHtml){nodesEl.innerHTML=nodesHtml;nodesEl._lastHtml=nodesHtml}
+
+    // RX meter — last node's level
+    var rxMeter=card.querySelector('.cc-rx-meter');
+    if(rxMeter){
+      var flatNodes=_flatN(ch.nodes||[]);
+      var lastNode=flatNodes.length?flatNodes[flatNodes.length-1]:null;
+      if(lastNode&&lastNode.site&&lastNode.stream){
+        var rxKey=lastNode.site+'|'+lastNode.stream;
+        var rxLev=(_targetLev[rxKey]!=null)?_targetLev[rxKey]:(_dispLev[rxKey]!=null?_dispLev[rxKey]:DB_FLOOR);
+        var rxPk=_peaks[rxKey]?_peaks[rxKey].val:DB_FLOOR;
+        var rxW=levToH(rxLev),rxPW=levToH(rxPk);
+        var rxFill=rxMeter.querySelector('.cc-rx-fill');
+        var rxPeak=rxMeter.querySelector('.cc-rx-peak');
+        var rxVal=rxMeter.querySelector('.cc-rx-val');
+        var rxName=rxMeter.querySelector('.cc-rx-name');
+        if(rxFill)rxFill.style.width=rxW+'%';
+        if(rxPeak){rxPeak.style.left=rxPW+'%';rxPeak.style.opacity=rxPk>DB_FLOOR?'.8':'0'}
+        if(rxVal){rxVal.textContent=fmtLev(rxLev);rxVal.className='cc-rx-val'+(rxLev>=-9?' rx-alert':rxLev>=-18?' rx-warn':rxLev<=-60?' rx-low':'')}
+        if(rxName&&!rxName._set){rxName.textContent=lastNode.label||lastNode.stream||'';rxName._set=true}
+      }
+    }
 
     // Health bar
     var hp=ch.sla_pct;var hpW=hp!=null?Math.max(0,Math.min(100,hp)):100;
