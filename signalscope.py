@@ -2510,7 +2510,7 @@ Each stream learns its own "normal" baseline over 24 hours, then continuously
 monitors for deviations — silence, hiss, clipping, dropouts, distortion etc.
 Models are saved as .onnx files and persist across restarts.
 
-Author: Built on core from ITConor / JPDesignsNI
+Authors: Conor Ewings (ITConor) & James Pyper (JPDesignsNI / Jamespyper11@gmail.com)
 """
 
 import os, sys, json, math, time, wave, socket, struct, threading, io, hashlib, functools, queue, base64
@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.138"
+BUILD                  = "SignalScope-3.5.139"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -3767,6 +3767,29 @@ def _true_peak_dbtp(data: np.ndarray) -> float:
 # Prevents different raw names that produce the same stripped string from
 # colliding on disk (e.g. "BBC Radio 1" and "BBC.Radio.1" → both "BBCRadio1").
 _safe_name_registry: dict = {}   # raw_name → safe_name
+
+def _is_own_site(site_val: str, cfg) -> bool:
+    """Return True when ``site_val`` refers to the node this process is running on.
+
+    Treats the empty string, the literal "local", and the node's own configured
+    ``cfg.hub.site_name`` (falling back to ``socket.gethostname()``) as local.
+    Used by chain-fault / recovery-clip routing so that a chain node pointing
+    at the local machine's site name takes the direct ``_save_alert_wav`` path
+    instead of the HTTP-loopback ``push_pending_command`` round-trip — which is
+    the "hub+client mode" bug where local clips were double-stored in both
+    ``alert_snippets/<stream>/`` and ``alert_snippets/<site>_<stream>/`` and
+    ``_sync_pending_clips`` kept re-uploading the hub-side copies.
+    """
+    s = (site_val or "").strip()
+    if not s or s.lower() == "local":
+        return True
+    try:
+        own = (getattr(getattr(cfg, "hub", None), "site_name", "")
+               or socket.gethostname() or "").strip()
+    except Exception:
+        own = ""
+    return bool(own) and s == own
+
 
 def _safe_name(name: str) -> str:
     global _safe_name_registry
@@ -6152,9 +6175,28 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
 
     # Auto-queue for hub upload unless the caller (e.g. _cmd_save_clip) will
     # handle the upload itself to avoid sending the same clip twice.
-    if not _skip_hub_queue:
+    #
+    # In "hub" / "both" mode the clip is already on the hub's filesystem — any
+    # HTTP upload is a pointless loopback round-trip that also causes
+    # double-storage (alert_snippets/<stream>/ AND alert_snippets/<site>_<stream>/)
+    # and confuses _sync_pending_clips.  Skip the queue in those modes AND
+    # write a .hub marker next to the file so periodic sync ignores it.
+    try:
+        _hub_cfg = getattr(getattr(monitor, "app_cfg", None), "hub", None)
+        _mode    = getattr(_hub_cfg, "mode", "standalone") if _hub_cfg else "standalone"
+    except Exception:
+        _hub_cfg = None
+        _mode    = "standalone"
+
+    if _mode in ("hub", "both"):
+        # File lives on the same machine as the hub — mark it so
+        # _sync_pending_clips never tries to upload it.
         try:
-            _hub_cfg = getattr(getattr(monitor, "app_cfg", None), "hub", None)
+            open(os.path.splitext(path)[0] + ".hub", "w").close()
+        except Exception:
+            pass
+    elif not _skip_hub_queue:
+        try:
             if (_hub_cfg and getattr(_hub_cfg, "hub_url", "")
                     and getattr(_hub_cfg, "clip_auto_upload", True)):
                 monitor._hub_clip_queue.put_nowait(
@@ -12499,7 +12541,14 @@ class HubClient:
                             f"Buffer length: "
                             f"{len(_inp._audio_buffer) if hasattr(_inp,'_audio_buffer') else 'N/A'}")
                 return
-            if _cfg.hub.clip_auto_upload:
+            # In "hub"/"both" mode the clip is already on the hub's own
+            # filesystem — any HTTP upload is a pointless loopback.
+            # _save_alert_wav already wrote a .hub marker above so the
+            # periodic sync loop ignores it; nothing else to do.
+            if _cfg.hub.mode in ("hub", "both"):
+                monitor.log(f"[Hub] save_clip: local node is hub — upload skipped "
+                            f"({os.path.basename(clip_path)})")
+            elif _cfg.hub.clip_auto_upload:
                 hub_url = _cfg.hub.hub_url.rstrip("/")
                 secret  = _cfg.hub.secret_key
                 site    = _cfg.hub.site_name or socket.gethostname()
@@ -12688,10 +12737,26 @@ class HubClient:
         if not os.path.exists(snip_dir):
             return
 
+        # Only client-saved clip folders should ever be scanned: these are
+        # named after a local input (alert_snippets/<_safe_name(input.name)>/).
+        # Hub-received clips live under alert_snippets/<safe_site>_<safe_stream>/
+        # and must never be treated as pending uploads — scanning them caused
+        # an endless re-upload loop in "both" mode because the folder names
+        # don't map to any real input (the upload would then be saved back
+        # under alert_snippets/<safe_site>_<bogus>/ the next time around).
+        _local_input_folders = {
+            _safe_name(_i.name) for _i in cfg_obj.inputs if _i.name
+        }
+
         synced = 0
         for folder in sorted(os.listdir(snip_dir)):
             folder_path = os.path.join(snip_dir, folder)
             if not os.path.isdir(folder_path):
+                continue
+            if folder not in _local_input_folders:
+                # Not one of this node's own input folders — either a
+                # hub-received copy (<site>_<stream>) or an orphan from a
+                # renamed/deleted input.  Either way: do not upload.
                 continue
             for fname in sorted(os.listdir(folder_path)):
                 if not (fname.endswith(".wav") or fname.endswith(".mp3")):
@@ -14537,7 +14602,17 @@ class HubClient:
                 # delivered on-demand via the relay when viewed in Reports.
                 _eff_low_bw = getattr(self, '_low_bw', False) or getattr(cfg.hub, 'low_bw', False)
                 _cq = getattr(monitor, "_hub_clip_queue", None)
-                if _cq and cfg.hub.hub_url and not _eff_low_bw:
+                # In "hub"/"both" mode the clip is already on the hub filesystem —
+                # skip the loopback upload drain entirely.  (_save_alert_wav no
+                # longer enqueues in these modes, but drain defensively in case
+                # older entries are still in the queue after a config change.)
+                if _cq and cfg.hub.mode in ("hub", "both"):
+                    try:
+                        while True:
+                            _cq.get_nowait()
+                    except queue.Empty:
+                        pass
+                if _cq and cfg.hub.hub_url and cfg.hub.mode == "client" and not _eff_low_bw:
                     _hub_url_str = cfg.hub.hub_url.rstrip("/")
                     _secret      = cfg.hub.secret_key
                     _site        = (cfg.hub.site_name or socket.gethostname()).strip()
@@ -16490,7 +16565,7 @@ class HubServer:
                     _stream = _sn.get("stream", "")
                     _nlbl   = _sn.get("label", "") or f"pos{_ci+1}"
                     _clbl   = f"chain_{cname_safe}_recovery_pos{_ci}"
-                    if not _site or _site == "local":
+                    if _is_own_site(_site, cfg):
                         _lc = next((i for i in cfg.inputs if i.name == _stream and i.enabled), None)
                         if _lc:
                             # Use _stream_buffer snapshot (60 s rolling) so the recovery
@@ -16689,7 +16764,7 @@ class HubServer:
                 _stream = _sn.get("stream", "")
                 _clbl   = f"chain_{_cname_safe}_{_pos_label}"
 
-                if not _site or _site == "local":
+                if _is_own_site(_site, cfg):
                     # ── Local stream: save WAV and collect the clip path ───
                     _lc = next(
                         (i for i in cfg.inputs if i.name == _stream and i.enabled),
@@ -22610,10 +22685,10 @@ main a:hover{text-decoration:underline}
   </div>
 
   <div class="card">
-    <div class="ch">👤 Author &amp; project</div>
+    <div class="ch">👤 Authors &amp; project</div>
     <div class="cb">
-      <div class="row"><span class="rl">Built by</span><span class="rv">Conor Ewings</span></div>
-      <div class="row"><span class="rl">Contact</span><span class="rv"><a href="mailto:conor.ewings@gmail.com">conor.ewings@gmail.com</a></span></div>
+      <div class="row"><span class="rl">Authors</span><span class="rv">Conor Ewings (ITConor) &amp; James Pyper (JPDesignsNI)</span></div>
+      <div class="row"><span class="rl">Contact</span><span class="rv"><a href="mailto:conor.ewings@gmail.com">conor.ewings@gmail.com</a> &nbsp;·&nbsp; <a href="mailto:Jamespyper11@gmail.com">Jamespyper11@gmail.com</a></span></div>
       <div class="row"><span class="rl">Source code</span><span class="rv"><a href="https://github.com/itconor/SignalScope" target="_blank" rel="noopener noreferrer">github.com/itconor/SignalScope ↗</a></span></div>
       <div class="row"><span class="rl">Licence</span><span class="rv">MIT — free &amp; open source</span></div>
     </div>
@@ -29139,6 +29214,7 @@ var _chainData={
       {% endif %}
     </div>
   </div>
+  <div id="zetta_row_{{c.id|e}}" style="display:none;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 14px;border-bottom:1px solid var(--bor);background:rgba(0,0,0,.18)"></div>
   <div class="chain-visual" id="visual_{{c.id|e}}">
     {% for node in c.nodes %}
     {% if not loop.first %}<div class="chain-arrow">→</div>{% endif %}
@@ -31023,6 +31099,50 @@ document.addEventListener('keydown', function(e){
     showBuilder(null);
   }
 });
+
+// ── Zetta sequencer overlay ───────────────────────────────────────────────────
+(function(){
+  function _zCol(css){
+    if(css==='z-auto')    return {bg:'#4a0080',tx:'#00dd00'};
+    if(css==='z-live')    return {bg:'#000',   tx:'#00cc00'};
+    if(css==='z-queued')  return {bg:'#1a1200',tx:'#c8a000'};
+    if(css==='z-off-air') return {bg:'#aa0000',tx:'#ff6666'};
+    return {bg:'#1a1a2e',tx:'#888'};
+  }
+  function _zRefresh(){
+    fetch('/api/zetta/chain_stations',{credentials:'same-origin'})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        document.querySelectorAll('[id^="zetta_row_"]').forEach(function(row){
+          row.style.display='none';
+          row.innerHTML='';
+        });
+        Object.keys(d).forEach(function(cid){
+          var row=document.getElementById('zetta_row_'+cid);
+          if(!row) return;
+          var stns=d[cid];
+          if(!stns||!stns.length) return;
+          var html='<span style="font-size:10px;font-weight:700;color:var(--mu);'
+            +'text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;flex-shrink:0">'
+            +'&#x1F4FB; Zetta</span>';
+          stns.forEach(function(s){
+            var col=_zCol(s.css_state||'');
+            var label=s.station_name;
+            if(s.now_playing) label+='\u00a0\u2014\u00a0'+s.now_playing.title;
+            var esc=label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+            html+='<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;'
+              +'padding:2px 9px;border-radius:5px;background:'+col.bg+';color:'+col.tx+';'
+              +'white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;'
+              +'font-family:monospace" title="'+esc+'">'+esc+'</span>';
+          });
+          row.innerHTML=html;
+          row.style.display='flex';
+        });
+      }).catch(function(){});
+  }
+  _zRefresh();
+  setInterval(_zRefresh,5000);
+})();
 </script>
 </body></html>"""
 
