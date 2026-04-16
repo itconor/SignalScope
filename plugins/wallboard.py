@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.4.1",
+    "version":  "3.4.2",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -463,17 +463,12 @@ def register(app, ctx):
     # ── QR code generator (server-side, no external API) ─────────
     @app.get("/wallboard/qr")
     def wallboard_qr():
-        """Generate a QR code as PNG using the qrcode pip package."""
+        """Generate a QR code as PNG. No auth required — the encoded
+        URL is not sensitive (the token in it handles play auth)."""
         data = request.args.get("d", "").strip()
         if not data:
             return '', 400
         g._wb_kiosk = True
-        # Auth handled by before_request hook (token sets session)
-        cfg = monitor.app_cfg
-        if cfg.auth.enabled:
-            from flask import session
-            if not session.get("logged_in"):
-                return '', 403
         try:
             png_bytes = _generate_qr_png(data)
         except Exception:
