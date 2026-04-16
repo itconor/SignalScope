@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.6.0",
+    "version":  "3.6.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -736,12 +736,13 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 /* MAIN panel — single vertical stack, everything centred */
 .mp{flex:1;display:flex;flex-direction:column;align-items:center;
   padding:16px 20px;z-index:1;min-width:0;overflow:hidden}
-.logo{width:90%;max-width:300px;height:auto;border-radius:16px;object-fit:contain;flex-shrink:0;
-  margin-bottom:8px}
-.logo-ph{width:160px;height:160px;border-radius:24px;flex-shrink:0;
+/* Logo container — fixed height so all columns align below it */
+.logo-wrap{height:140px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-bottom:8px}
+.logo{width:90%;max-width:300px;max-height:130px;border-radius:16px;object-fit:contain}
+.logo-ph{width:130px;height:130px;border-radius:24px;
   background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.06);
   display:flex;align-items:center;justify-content:center;
-  font-size:60px;font-weight:800;color:rgba(255,255,255,.25);margin-bottom:8px}
+  font-size:52px;font-weight:800;color:rgba(255,255,255,.25)}
 .stn{font-size:32px;font-weight:700;text-align:center;margin-bottom:2px}
 .stu{font-size:30px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
   color:#fff;text-align:center;margin-bottom:6px}
@@ -778,12 +779,12 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* Now playing divider */
 .np-div{width:40%;height:1px;background:rgba(255,255,255,.06);margin:2px 0;flex-shrink:0}
-.npl{font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;
-  font-weight:700;margin-bottom:2px;min-height:14px}
-.anm{font-size:20px;font-weight:700;text-align:center;width:90%;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:27px}
-.trk{font-size:18px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;
-  width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:24px}
+.npl{font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;
+  font-weight:700;margin-bottom:2px;min-height:16px}
+.anm{font-size:24px;font-weight:700;text-align:center;width:90%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:32px}
+.trk{font-size:22px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;
+  width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:30px}
 .idle{font-size:24px;color:rgba(255,255,255,.4);text-align:center;font-style:italic;min-height:32px;line-height:1.4}
 /* RIGHT panel — meters */
 .rp{width:7%;min-width:80px;flex-shrink:0;display:flex;gap:3px;align-items:stretch;
@@ -842,7 +843,7 @@ function buildCol(s,idx){
     else{mh+='<div class=vm><div class=vb><div class=vf data-k="'+E(k)+'"></div><div class=vp data-p="'+E(k)+'"></div></div><div class=vl>'+E(nm)+'</div></div>'}
   });
   return '<div class=col id="col'+idx+'" style="--cc:rgba('+r+',.5);--cg:rgba('+r+',.08)">'
-    +'<div class=mp>'+lg
+    +'<div class=mp><div class=logo-wrap>'+lg+'</div>'
     +(fc?'':'<div class=stn style="text-shadow:0 0 20px rgba('+r+',.4)">'+E(sn)+'</div>')
     +'<div class=stu>'+E(s.name)+'</div>'
     +(s.freq?'<div class=frq>'+E(s.freq)+'</div>':'')
@@ -852,7 +853,7 @@ function buildCol(s,idx){
     +'<img class=art id="showimg'+idx+'" alt="" style="display:none">'
     +'<div class=shw id="shw'+idx+'"></div>'
     +'<div class=np-div></div>'
-    +'<img class=art id="art'+idx+'" alt="" style="display:none;width:min(140px,16vh);height:min(140px,16vh);border-radius:16px">'
+    +'<img class=art id="art'+idx+'" alt="" style="display:none">'
     +'<div class=npl id="npl'+idx+'"></div>'
     +'<div class=anm id="anm'+idx+'"></div>'
     +'<div class=trk id="trk'+idx+'"></div>'
