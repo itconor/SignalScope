@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.2.2",
+    "version":  "3.3.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -733,16 +733,15 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 /* MAIN panel — single vertical stack, everything centred */
 .mp{flex:1;display:flex;flex-direction:column;align-items:center;
   padding:16px 20px;z-index:1;min-width:0;overflow:hidden}
-.logo{width:180px;height:auto;max-height:140px;border-radius:24px;object-fit:contain;flex-shrink:0;
-  background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.1);
-  box-shadow:0 8px 36px rgba(0,0,0,.4);margin-bottom:8px}
-.logo-ph{width:140px;height:140px;border-radius:24px;flex-shrink:0;
+.logo{width:90%;max-width:300px;height:auto;border-radius:16px;object-fit:contain;flex-shrink:0;
+  margin-bottom:8px}
+.logo-ph{width:160px;height:160px;border-radius:24px;flex-shrink:0;
   background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.06);
   display:flex;align-items:center;justify-content:center;
-  font-size:52px;font-weight:800;color:rgba(255,255,255,.25);margin-bottom:8px}
-.stn{font-size:28px;font-weight:700;text-align:center;margin-bottom:2px}
-.stu{font-size:16px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;
-  color:var(--mu);text-align:center;margin-bottom:3px}
+  font-size:60px;font-weight:800;color:rgba(255,255,255,.25);margin-bottom:8px}
+.stn{font-size:32px;font-weight:700;text-align:center;margin-bottom:2px}
+.stu{font-size:22px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
+  color:#fff;text-align:center;margin-bottom:4px}
 .frq{font-size:13px;color:var(--mu);text-align:center;margin-bottom:8px}
 .mic{width:80%;max-width:300px;padding:10px 14px;border-radius:12px;text-align:center;
   font-size:20px;font-weight:700;letter-spacing:.06em;margin-bottom:5px;flex-shrink:0}
@@ -753,8 +752,8 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 @keyframes mp-pulse{0%,100%{box-shadow:0 0 30px rgba(239,68,68,.3)}
   50%{box-shadow:0 0 50px rgba(239,68,68,.5)}}
 .badge{display:flex;align-items:center;justify-content:center;gap:6px;
-  width:80%;max-width:300px;padding:7px 12px;border-radius:10px;font-size:15px;
-  font-weight:700;margin-bottom:4px;flex-shrink:0}
+  width:90%;padding:8px 14px;border-radius:10px;font-size:16px;
+  font-weight:700;margin-bottom:4px;flex-shrink:0;white-space:nowrap}
 .badge.ok{background:rgba(34,197,94,.1);color:var(--ok);border:1px solid rgba(34,197,94,.2)}
 .badge.ft{background:rgba(239,68,68,.1);color:var(--al);border:1px solid rgba(239,68,68,.25);
   animation:bl 1.2s ease-in-out infinite}
@@ -841,7 +840,7 @@ function buildCol(s,idx){
   });
   return '<div class=col id="col'+idx+'" style="--cc:rgba('+r+',.5);--cg:rgba('+r+',.08)">'
     +'<div class=mp>'+lg
-    +'<div class=stn style="text-shadow:0 0 20px rgba('+r+',.4)">'+E(sn)+'</div>'
+    +(fc?'':'<div class=stn style="text-shadow:0 0 20px rgba('+r+',.4)">'+E(sn)+'</div>')
     +'<div class=stu>'+E(s.name)+'</div>'
     +(s.freq?'<div class=frq>'+E(s.freq)+'</div>':'')
     +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
@@ -873,29 +872,15 @@ function updateCol(s,idx){
   var col=document.getElementById('col'+idx);
   if(col){var fl=false;(s.chains||[]).forEach(function(x){if(x.status==='fault')fl=true});
     col.classList.toggle('fault',fl)}
-  // Show/presenter image — ALWAYS try to show something
+  // Show/presenter image — ONLY show_image from API, NOT track artwork
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
-    // Priority: show_image > artwork > proxy (proxy always has something)
-    var si=np.show_image||np.artwork||'';
-    if(!si&&s.np_rpuid)si=tk('/studioboard/np_art/'+s.np_rpuid);
-    // Even if artwork is empty (talk segment), use proxy as it fetches fresh from API
-    if(!si&&s.np_rpuid)si=tk('/api/nowplaying_art/'+s.np_rpuid);
+    var si=np.show_image||'';
     if(si){
-      if(_artSrc['s'+idx]!==si){_artSrc['s'+idx]=si;
-        showImg.src=si;
+      if(_artSrc['s'+idx]!==si){_artSrc['s'+idx]=si;showImg.src=si;
         showImg.onload=function(){showImg.style.display=''};
-        showImg.onerror=function(){
-          // Chain of fallbacks
-          if(s.np_rpuid){
-            var proxy=tk('/studioboard/np_art/'+s.np_rpuid);
-            var mainProxy=tk('/api/nowplaying_art/'+s.np_rpuid);
-            if(showImg.src.indexOf('np_art')<0)showImg.src=proxy;
-            else if(showImg.src.indexOf('nowplaying_art')<0)showImg.src=mainProxy;
-            else showImg.style.display='none';
-          }else showImg.style.display='none';
-        }}
-    }else{showImg.style.display='none'}
+        showImg.onerror=function(){showImg.style.display='none'}}
+    }else{showImg.style.display='none';_artSrc['s'+idx]=''}
   }
   // Track artwork — separate, shown below the divider when a song is playing
   var artEl=document.getElementById('art'+idx);
