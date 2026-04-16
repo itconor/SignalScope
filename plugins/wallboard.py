@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.1.0",
+    "version":  "3.2.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -421,6 +421,42 @@ def register(app, ctx):
         if os.path.exists(path):
             return send_file(path, max_age=86400)
         return '', 404
+
+    # ── Mobile play page — linked from QR codes ──────────────────
+    @app.get("/wallboard/play/<chain_id>")
+    def wallboard_play(chain_id):
+        if not re.match(r'^[a-zA-Z0-9_-]+$', chain_id):
+            return '', 404
+        g._wb_kiosk = True
+        cfg = monitor.app_cfg
+        # Token auth or session
+        if cfg.auth.enabled:
+            from flask import session
+            if not _validate_wb_token() and not session.get("logged_in"):
+                return 'Unauthorised', 403
+            if _validate_wb_token():
+                session["logged_in"] = True
+                session["login_ts"] = _time.time()
+                session["username"] = "wallboard"
+                session["role"] = "viewer"
+        # Find the chain and its last node's live_url
+        chain = None
+        for ch in (cfg.signal_chains or []):
+            if ch.get("id") == chain_id:
+                chain = ch
+                break
+        if not chain:
+            return 'Chain not found', 404
+        chain_name = chain.get("name", "Station")
+        # Find logo
+        has_logo = _has_logo(chain_id)
+        token = request.args.get("token", "").strip() \
+             or request.args.get("api_key", "").strip() or ""
+        tk = ("?token=" + token) if token else ""
+        logo_url = ("/wallboard/logo/" + chain_id + tk) if has_logo else ""
+        return render_template_string(_PLAY_TPL,
+            chain_id=chain_id, chain_name=chain_name,
+            logo_url=logo_url, tk=tk, build=BUILD)
 
     @app.delete("/api/wallboard/brand")
     @login_required
@@ -1211,7 +1247,7 @@ var PEAK_HOLD=2500,PEAK_RATE=.45,DB_FLOOR=-80,ATTACK_RATE=600,DECAY_RATE=30;
 var _sizes={sm:120,md:155,lg:210};
 var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e0b'],['#9333e8','#a855f7'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316'],['#c81e1e','#ef4444']];
 
-var _cfg={card_size:'md',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false,chain_qr_urls:{}};
+var _cfg={card_size:'md',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false};
 var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={};
 var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false;
 var _allStreams=[];  // for stream selector
@@ -1573,14 +1609,14 @@ function renderChains(chains){
     var slaTxt=(hp!=null&&hp<100)?hp.toFixed(1)+'% uptime':'';
     if(slaEl&&slaEl.textContent!==slaTxt)slaEl.textContent=slaTxt;
 
-    // QR code (only render once per chain, and only when show_qr is on)
+    // QR code — links to mobile play page for the last node in the chain
     var qrEl=card.querySelector('.cc-qr');
-    var qrUrl=(_cfg.chain_qr_urls||{})[cid]||'';
-    if(qrEl&&_cfg.show_qr&&qrUrl&&!qrEl._rendered){
-      _renderQRImg(qrEl,qrUrl,80);qrEl._rendered=qrUrl;
-    }else if(qrEl&&(!_cfg.show_qr||!qrUrl)){
-      if(qrEl._rendered){qrEl.innerHTML='';qrEl._rendered=null}
-    }
+    if(qrEl&&_cfg.show_qr){
+      var playUrl=window.location.origin+'/wallboard/play/'+cid+(_wbTk?'?token='+encodeURIComponent(_wbTk):'');
+      if(qrEl._rendered!==playUrl){
+        _renderQRImg(qrEl,playUrl,80);qrEl._rendered=playUrl;
+      }
+    }else if(qrEl&&qrEl._rendered){qrEl.innerHTML='';qrEl._rendered=null}
   });
 
   // Remove cards for chains no longer present
@@ -1931,8 +1967,6 @@ function renderDrawerChains(){
       +(hasLogo?'<button class="btn bd bs" data-rm-logo="'+_e(ch.id)+'">Remove</button>':'')
       +'</div>'
       +'<div style="margin-top:4px;display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--mu);white-space:nowrap">Now Playing:</span>'+selHtml+'</div>'
-      +'<div style="margin-top:4px;display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--mu);white-space:nowrap">QR / Listen:</span>'
-      +'<input data-qr-chain="'+_e(ch.id)+'" type="text" placeholder="https://listen-url..." value="'+_e((_cfg.chain_qr_urls||{})[ch.id]||'')+'" style="flex:1;min-width:0;background:#0d1e40;border:1px solid var(--bor);border-radius:5px;color:var(--tx);padding:3px 6px;font-size:11px;font-family:inherit"></div>'
       +'</div></div>'});
   el.innerHTML=html;
 }
@@ -1969,22 +2003,11 @@ document.getElementById('wb-drawer').addEventListener('click',function(e){
   var sz=e.target.closest('[data-sz]');if(sz){setSize(sz.dataset.sz);saveConfig()}
 });
 document.getElementById('dr-chains').addEventListener('change',function(e){
-  var sel=e.target.closest('[data-np-chain]');
-  if(sel){
-    var cid=sel.dataset.npChain,rpuid=sel.value;
-    if(!_cfg.chain_stations)_cfg.chain_stations={};
-    if(rpuid)_cfg.chain_stations[cid]=rpuid;else delete _cfg.chain_stations[cid];
-    saveConfig();npPoll();return;
-  }
-  var qrInput=e.target.closest('[data-qr-chain]');
-  if(qrInput){
-    var cid=qrInput.dataset.qrChain,url=qrInput.value.trim();
-    if(!_cfg.chain_qr_urls)_cfg.chain_qr_urls={};
-    if(url)_cfg.chain_qr_urls[cid]=url;else delete _cfg.chain_qr_urls[cid];
-    // Clear rendered QR so it re-renders with new URL
-    document.querySelectorAll('.cc[data-cid="'+cid+'"] .cc-qr').forEach(function(el){el.innerHTML='';el._rendered=null});
-    saveConfig();if(_lastChains)renderChains(_lastChains);
-  }
+  var sel=e.target.closest('[data-np-chain]');if(!sel)return;
+  var cid=sel.dataset.npChain,rpuid=sel.value;
+  if(!_cfg.chain_stations)_cfg.chain_stations={};
+  if(rpuid)_cfg.chain_stations[cid]=rpuid;else delete _cfg.chain_stations[cid];
+  saveConfig();npPoll();
 });
 document.getElementById('dr-streams').addEventListener('change',function(e){
   var cb=e.target.closest('[data-stream-key]');if(!cb)return;
@@ -2040,6 +2063,118 @@ document.addEventListener('keydown',function(e){var tag=(e.target.tagName||'').t
   if(e.key==='Escape')closeDrawer();if(e.key==='1')setSize('sm');if(e.key==='2')setSize('md');if(e.key==='3')setSize('lg')});
 
 try{var lc=JSON.parse(localStorage.getItem('wb_cfg')||'{}');if(lc.card_size){_cfg=Object.assign(_cfg,lc);applyConfig();_cfgLoaded=true}}catch(e){}
+})();
+</script>
+</body>
+</html>"""
+
+# ═══ Mobile play page template ═══════════════════════════════════════════
+_PLAY_TPL = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="csrf-token" content="{{csrf_token()}}">
+<title>{{chain_name}} — Listen Live</title>
+<style nonce="{{csp_nonce()}}">
+:root{--bg:#07142b;--acc:#17a8ff;--ok:#22c55e;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{
+  font-family:system-ui,-apple-system,sans-serif;
+  background:radial-gradient(ellipse at 50% 30%,#14397a 0%,var(--bg) 50%,#040d1c 100%);
+  color:var(--tx);display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:24px;gap:20px;
+}
+.logo{width:120px;height:120px;border-radius:28px;object-fit:contain;
+  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);
+  box-shadow:0 8px 32px rgba(0,0,0,.4)}
+.name{font-size:24px;font-weight:800;text-align:center;letter-spacing:-.02em}
+.status{font-size:13px;color:var(--mu);text-align:center}
+.play-btn{
+  width:80px;height:80px;border-radius:50%;border:none;cursor:pointer;
+  background:var(--acc);color:#fff;font-size:32px;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 4px 24px rgba(23,168,255,.3);
+  transition:transform .15s,box-shadow .15s;
+}
+.play-btn:hover{transform:scale(1.08);box-shadow:0 6px 32px rgba(23,168,255,.4)}
+.play-btn:active{transform:scale(.95)}
+.play-btn.playing{background:var(--al)}
+.eq{display:flex;align-items:flex-end;gap:3px;height:24px;margin-top:8px}
+.eq-bar{width:4px;background:var(--acc);border-radius:2px;animation:eq 1s ease-in-out infinite}
+.eq-bar:nth-child(1){animation-delay:0s;height:40%}
+.eq-bar:nth-child(2){animation-delay:.15s;height:70%}
+.eq-bar:nth-child(3){animation-delay:.3s;height:50%}
+.eq-bar:nth-child(4){animation-delay:.1s;height:80%}
+.eq-bar:nth-child(5){animation-delay:.25s;height:60%}
+@keyframes eq{0%,100%{height:20%}50%{height:100%}}
+.eq.hidden{visibility:hidden}
+.powered{position:fixed;bottom:12px;font-size:10px;color:rgba(255,255,255,.2)}
+</style>
+</head>
+<body>
+{% if logo_url %}<img class="logo" src="{{logo_url}}" alt="">{% endif %}
+<div class="name">{{chain_name}}</div>
+<div class="status" id="status">Tap to listen</div>
+<button class="play-btn" id="play-btn">&#9654;</button>
+<div class="eq hidden" id="eq">
+  <div class="eq-bar"></div><div class="eq-bar"></div><div class="eq-bar"></div>
+  <div class="eq-bar"></div><div class="eq-bar"></div>
+</div>
+<div class="powered">{{build}}</div>
+<script nonce="{{csp_nonce()}}">
+(function(){
+var chainId='{{chain_id}}';
+var tk='{{tk}}';
+var audio=null,playing=false;
+var btn=document.getElementById('play-btn');
+var status=document.getElementById('status');
+var eq=document.getElementById('eq');
+
+// Fetch chain status to get last node's live_url
+function getStreamUrl(cb){
+  fetch('/api/chains/status'+(tk||''),{credentials:'same-origin'})
+    .then(function(r){return r.json()})
+    .then(function(d){
+      var chains=d.results||[];
+      for(var i=0;i<chains.length;i++){
+        if(chains[i].id!==chainId)continue;
+        var nodes=[];
+        (chains[i].nodes||[]).forEach(function(n){
+          if(n.type==='stack')(n.nodes||[]).forEach(function(s){nodes.push(s)});
+          else nodes.push(n);
+        });
+        if(nodes.length){
+          var last=nodes[nodes.length-1];
+          if(last.live_url){cb(last.live_url+(tk?'&':'?')+tk.slice(1));return}
+        }
+      }
+      status.textContent='Stream not available';
+    }).catch(function(){status.textContent='Connection error'});
+}
+
+btn.addEventListener('click',function(){
+  if(playing){
+    if(audio){audio.pause();audio.src=''}
+    playing=false;btn.innerHTML='&#9654;';btn.classList.remove('playing');
+    status.textContent='Tap to listen';eq.classList.add('hidden');return;
+  }
+  status.textContent='Connecting…';
+  getStreamUrl(function(url){
+    audio=new Audio(url);
+    audio.addEventListener('playing',function(){
+      playing=true;btn.innerHTML='&#9632;';btn.classList.add('playing');
+      status.textContent='Playing live';eq.classList.remove('hidden');
+    });
+    audio.addEventListener('error',function(){
+      status.textContent='Playback error — tap to retry';
+      playing=false;btn.innerHTML='&#9654;';btn.classList.remove('playing');
+      eq.classList.add('hidden');
+    });
+    audio.play().catch(function(){status.textContent='Tap again to play'});
+  });
+});
 })();
 </script>
 </body>
