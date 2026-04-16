@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.13.3",
+    "version":  "3.13.4",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1315,7 +1315,11 @@ body.day-grad{transition:background 3s ease}
 <aside id="wb-drawer">
   <div class="dr-hdr">
     <span class="dr-title">Wallboard Settings</span>
-    <button class="btn bg bs" id="btn-close-dr">✕ Close</button>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span id="dr-dirty" style="display:none;font-size:10px;font-weight:700;color:var(--wn)">● Unsaved</span>
+      <button class="btn bp bs" id="btn-save-dr">Save</button>
+      <button class="btn bg bs" id="btn-close-dr">✕ Close</button>
+    </div>
   </div>
   <div class="dr-body">
     <div class="dr-section">
@@ -1382,7 +1386,7 @@ var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e
 
 var _cfg={card_size:'lg',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false,chain_freq:{},chain_color:{}};
 var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={};
-var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false;
+var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false,_dirty=false;
 var _allStreams=[];  // for stream selector
 
 
@@ -1485,8 +1489,18 @@ function applyVis(){
   // Time-of-day gradient
   _updateDayGradient();
 }
+/* _localSave: update localStorage + mark dirty (no server POST).
+   Used by all live UI interactions so the page feels instant. */
+function _localSave(){
+  try{localStorage.setItem('wb_cfg',JSON.stringify(_cfg))}catch(e){}
+  _dirty=true;
+  var ind=document.getElementById('dr-dirty');if(ind)ind.style.display='';
+}
+/* saveConfig: persist to server. Called only by the Save button. */
 function saveConfig(){
   _cfg.sort_level=_sortLev;
+  _dirty=false;
+  var ind=document.getElementById('dr-dirty');if(ind)ind.style.display='none';
   fetch(_tkUrl('/api/wallboard/config'),{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
     body:JSON.stringify(_cfg)}).catch(function(){});
@@ -1509,7 +1523,7 @@ setInterval(_tick,1000);_tick();
 function setSize(sz){_cfg.card_size=sz;document.documentElement.style.setProperty('--mc-w',_sizes[sz]+'px');
   ['sm','md','lg'].forEach(function(s){var b=document.getElementById('btn-'+s);if(b)b.classList.toggle('active',s===sz)});
   document.querySelectorAll('[data-sz]').forEach(function(b){b.classList.toggle('active',b.dataset.sz===sz)})}
-function toggleSort(){_sortLev=!_sortLev;document.getElementById('btn-sort').classList.toggle('active',_sortLev);if(_lastData)renderMeters(_lastData);saveConfig()}
+function toggleSort(){_sortLev=!_sortLev;document.getElementById('btn-sort').classList.toggle('active',_sortLev);if(_lastData)renderMeters(_lastData);_localSave()}
 
 /* ── Fullscreen ── */
 function toggleFs(){var r=document.documentElement;if(!document.fullscreenElement)(r.requestFullscreen||r.webkitRequestFullscreen||function(){}).call(r);else(document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document)}
@@ -1518,9 +1532,8 @@ function _resetHide(){clearTimeout(_hideT);document.getElementById('wb-hdr').cla
 document.addEventListener('fullscreenchange',function(){var f=!!document.fullscreenElement;document.getElementById('btn-fs').textContent=f?'✕ Exit':'⛶ Full';if(f){_resetHide();document.addEventListener('mousemove',_resetHide)}else{clearTimeout(_hideT);document.getElementById('wb-hdr').classList.remove('hide');document.removeEventListener('mousemove',_resetHide)}});
 
 /* ── Drawer ── */
-var _drawerOpen=false;
-function openDrawer(){_drawerOpen=true;document.getElementById('wb-drawer').classList.add('open');document.getElementById('wb-overlay').classList.add('show');renderDrawerChains();renderDrawerStreams()}
-function closeDrawer(){_drawerOpen=false;document.getElementById('wb-drawer').classList.remove('open');document.getElementById('wb-overlay').classList.remove('show')}
+function openDrawer(){document.getElementById('wb-drawer').classList.add('open');document.getElementById('wb-overlay').classList.add('show');renderDrawerChains();renderDrawerStreams()}
+function closeDrawer(){document.getElementById('wb-drawer').classList.remove('open');document.getElementById('wb-overlay').classList.remove('show')}
 
 /* ── Helpers ── */
 function levToH(db){return Math.max(0,Math.min(100,(db-DB_FLOOR)/(-DB_FLOOR)*100))}
@@ -1943,9 +1956,9 @@ requestAnimationFrame(_meterRaf);
 /* ═══ Polling ═══ */
 function poll(){
   fetch(_tkUrl('/api/wallboard/data'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
-    /* Only sync server config when drawer is closed — prevents poll from
-       overwriting changes the user is actively making in the settings panel */
-    if(d.config){if(!_drawerOpen){_cfg=Object.assign(_cfg,d.config,_urlOverrides);applyConfig();}_cfgLoaded=true;}
+    /* Server config only applied on initial load or after an explicit Save.
+       _dirty=true means user has unsaved local changes — poll must not overwrite. */
+    if(d.config){if(!_dirty){_cfg=Object.assign(_cfg,d.config,_urlOverrides);applyConfig();}_cfgLoaded=true;}
     _chainLogos=d.chain_logos||{};_chainLogos._ts=Date.now();
     if(d.chain_faults)_loadFaultHistory(d.chain_faults);
     renderMeters(d);buildTicker(d.alerts||[]);
@@ -2084,38 +2097,38 @@ function removeLogo(cid){
 document.getElementById('wb-drawer').addEventListener('click',function(e){
   var ul=e.target.closest('[data-upload-logo]');if(ul){uploadLogo(ul.dataset.uploadLogo);return}
   var rm=e.target.closest('[data-rm-logo]');if(rm){removeLogo(rm.dataset.rmLogo);return}
-  var sz=e.target.closest('[data-sz]');if(sz){setSize(sz.dataset.sz);saveConfig()}
+  var sz=e.target.closest('[data-sz]');if(sz){setSize(sz.dataset.sz);_localSave()}
 });
 document.getElementById('dr-chains').addEventListener('change',function(e){
   var sel=e.target.closest('[data-np-chain]');
   if(sel){var cid=sel.dataset.npChain,rpuid=sel.value;
     if(!_cfg.chain_stations)_cfg.chain_stations={};
     if(rpuid)_cfg.chain_stations[cid]=rpuid;else delete _cfg.chain_stations[cid];
-    saveConfig();npPoll();return}
+    _localSave();npPoll();return}
   var freqInput=e.target.closest('[data-freq-chain]');
   if(freqInput){if(!_cfg.chain_freq)_cfg.chain_freq={};
     var v=freqInput.value.trim();if(v)_cfg.chain_freq[freqInput.dataset.freqChain]=v;else delete _cfg.chain_freq[freqInput.dataset.freqChain];
-    saveConfig();if(_lastChains)renderChains(_lastChains);return}
+    _localSave();if(_lastChains)renderChains(_lastChains);return}
   var colorInput=e.target.closest('[data-color-chain]');
   if(colorInput){if(!_cfg.chain_color)_cfg.chain_color={};
     _cfg.chain_color[colorInput.dataset.colorChain]=colorInput.value;
-    saveConfig();if(_lastChains)renderChains(_lastChains);return}
+    _localSave();if(_lastChains)renderChains(_lastChains);return}
 });
 document.getElementById('dr-streams').addEventListener('change',function(e){
   var cb=e.target.closest('[data-stream-key]');if(!cb)return;
   var k=cb.dataset.streamKey;var hs=_cfg.hidden_streams||[];
   if(cb.checked){hs=hs.filter(function(x){return x!==k})}else{if(hs.indexOf(k)<0)hs.push(k)}
-  _cfg.hidden_streams=hs;saveConfig();if(_lastData)renderMeters(_lastData);
+  _cfg.hidden_streams=hs;_localSave();if(_lastData)renderMeters(_lastData);
 });
-document.getElementById('cfg-lufs').addEventListener('change',function(){_cfg.show_lufs=this.checked;applyVis();saveConfig()});
-document.getElementById('cfg-np').addEventListener('change',function(){_cfg.show_np=this.checked;applyVis();saveConfig()});
-document.getElementById('cfg-sites').addEventListener('change',function(){_cfg.show_sites=this.checked;applyVis();saveConfig()});
-document.getElementById('cfg-ticker').addEventListener('change',function(){_cfg.show_ticker=this.checked;applyVis();saveConfig()});
-document.getElementById('cfg-hero').addEventListener('change',function(){_cfg.show_hero=this.checked;applyVis();saveConfig()});
-document.getElementById('cfg-corp').addEventListener('change',function(){_cfg.corp_mode=this.checked;if(this.checked)_cfg.bauer_mode=false;applyConfig();saveConfig()});
-document.getElementById('cfg-bauer').addEventListener('change',function(){_cfg.bauer_mode=this.checked;if(this.checked)_cfg.corp_mode=false;applyConfig();saveConfig()});
-document.getElementById('cfg-hide-hdr').addEventListener('change',function(){_cfg.hide_hdr=this.checked;applyVis();saveConfig()});
-document.getElementById('cfg-qr').addEventListener('change',function(){_cfg.show_qr=this.checked;applyVis();saveConfig();if(_lastChains)renderChains(_lastChains)});
+document.getElementById('cfg-lufs').addEventListener('change',function(){_cfg.show_lufs=this.checked;applyVis();_localSave()});
+document.getElementById('cfg-np').addEventListener('change',function(){_cfg.show_np=this.checked;applyVis();_localSave()});
+document.getElementById('cfg-sites').addEventListener('change',function(){_cfg.show_sites=this.checked;applyVis();_localSave()});
+document.getElementById('cfg-ticker').addEventListener('change',function(){_cfg.show_ticker=this.checked;applyVis();_localSave()});
+document.getElementById('cfg-hero').addEventListener('change',function(){_cfg.show_hero=this.checked;applyVis();_localSave()});
+document.getElementById('cfg-corp').addEventListener('change',function(){_cfg.corp_mode=this.checked;if(this.checked)_cfg.bauer_mode=false;applyConfig();_localSave()});
+document.getElementById('cfg-bauer').addEventListener('change',function(){_cfg.bauer_mode=this.checked;if(this.checked)_cfg.corp_mode=false;applyConfig();_localSave()});
+document.getElementById('cfg-hide-hdr').addEventListener('change',function(){_cfg.hide_hdr=this.checked;applyVis();_localSave()});
+document.getElementById('cfg-qr').addEventListener('change',function(){_cfg.show_qr=this.checked;applyVis();_localSave();if(_lastChains)renderChains(_lastChains)});
 document.getElementById('btn-brand-upload').addEventListener('click',function(){
   var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
   inp.onchange=function(){if(!inp.files[0])return;var fd=new FormData();fd.append('logo',inp.files[0]);fd.append('_csrf_token',_csrf());
@@ -2140,9 +2153,10 @@ if(_sbtn)_sbtn.addEventListener('click',function(){
   _cfg.sound_alert=!_cfg.sound_alert;
   this.classList.toggle('active',_cfg.sound_alert);
   if(_cfg.sound_alert){_playFaultTone()} // test tone on enable
-  saveConfig();
+  _localSave();
 });
 document.getElementById('btn-cfg').addEventListener('click',openDrawer);
+document.getElementById('btn-save-dr').addEventListener('click',saveConfig);
 document.getElementById('btn-close-dr').addEventListener('click',closeDrawer);
 document.getElementById('wb-overlay').addEventListener('click',closeDrawer);
 document.getElementById('btn-fs').addEventListener('click',toggleFs);
