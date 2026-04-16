@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.0.0",
+    "version":  "3.0.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1644,9 +1644,12 @@ function updateCard(el,st){
   el.classList.toggle('mc-alert',isA);el.classList.toggle('mc-warn',!isA&&isW);
   el.classList.toggle('mc-silent',!isA&&!isW&&isSil);el.classList.toggle('mc-ok',isOk);
   if(st.stereo)el.dataset.stereo='1';else delete el.dataset.stereo;
-  if(!_liveActive){var key=el.dataset.key,now=Date.now();if(key){_targetLev[key]=lev;_updPk(key,lev,now);
+  /* Always feed poll data into _targetLev as a fallback.  When livePoll
+     is active it overwrites at 150 ms — but if livePoll misses a site
+     (e.g. token-auth edge case) the 1.5 s poll data keeps bars moving. */
+  var key=el.dataset.key,now=Date.now();if(key){_targetLev[key]=lev;_updPk(key,lev,now);
     if(st.stereo&&st.level_dbfs_l!=null){_targetLev[key+'|L']=st.level_dbfs_l;_updPk(key+'|L',st.level_dbfs_l,now)}
-    if(st.stereo&&st.level_dbfs_r!=null){_targetLev[key+'|R']=st.level_dbfs_r;_updPk(key+'|R',st.level_dbfs_r,now)}}}
+    if(st.stereo&&st.level_dbfs_r!=null){_targetLev[key+'|R']=st.level_dbfs_r;_updPk(key+'|R',st.level_dbfs_r,now)}}
   var lufsEl=el.querySelector('.mc-lufs');if(lufsEl){var li=st.lufs_i;lufsEl.textContent=(li&&li>-70)?'LUFS-I '+li.toFixed(1):'LUFS-I —'}
   var npEl=el.querySelector('.mc-np');if(npEl)npEl.textContent=st.now_playing||'';
   var sp=el.querySelector('.sp');
