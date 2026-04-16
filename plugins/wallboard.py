@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "2.9.3",
+    "version":  "2.9.4",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -71,13 +71,27 @@ def register(app, ctx):
     # signalscope's _apply_security_headers runs SECOND — overwriting us.
     # Fix: insert at position 0 in the handler list so after reversal
     # our handler runs LAST (after signalscope has set its headers).
+    # Paths that MUST be embeddable in an iframe (Yodeck, Screenly, etc.)
+    _KIOSK_PREFIXES = ("/wallboard/tv", "/wallboard/logo", "/wallboard/brand",
+                       "/wallboard/asset", "/api/wallboard/")
+
     def _wallboard_kiosk_headers(response):
-        if getattr(g, '_wb_kiosk', False):
-            # Strip all security headers that could interfere with signage
+        # Strip all security headers for any kiosk-path request OR when
+        # the route explicitly set g._wb_kiosk.  This must fire even on
+        # error responses (403, 500) so the signage player can display them.
+        is_kiosk = getattr(g, '_wb_kiosk', False)
+        if not is_kiosk:
+            for pfx in _KIOSK_PREFIXES:
+                if request.path.startswith(pfx):
+                    is_kiosk = True
+                    break
+        if is_kiosk:
             for h in ('X-Frame-Options', 'Content-Security-Policy',
                       'X-Content-Type-Options', 'Referrer-Policy',
                       'Strict-Transport-Security'):
                 response.headers.pop(h, None)
+            # Allow any origin to embed and fetch from this page
+            response.headers['Access-Control-Allow-Origin'] = '*'
         return response
     try:
         app.after_request_funcs.setdefault(None, []).insert(0, _wallboard_kiosk_headers)
@@ -98,6 +112,31 @@ def register(app, ctx):
             return False
         return bool(expected and _hmac_mod.compare_digest(expected, token))
 
+    # ── Token-based auth for every request (Yodeck / kiosk iframes) ──
+    # Embedded browsers block third-party cookies so session auth fails
+    # on sub-requests (fetch, img src, css url).  If ?token= is present
+    # and valid, set session["logged_in"] in-memory for THIS request so
+    # @login_required passes without needing a persisted cookie.
+    @app.before_request
+    def _wb_token_before():
+        from flask import session as _sess
+        tok = request.args.get("token", "").strip() \
+           or request.args.get("api_key", "").strip()
+        if not tok:
+            return
+        # Mark kiosk mode so after_request strips security headers
+        g._wb_kiosk = True
+        if _sess.get("logged_in"):
+            return
+        if _validate_wb_token():
+            _sess["logged_in"] = True
+            _sess["login_ts"]  = _time.time()
+            _sess["username"]  = "wallboard"
+            _sess["role"]      = "viewer"
+            if not _sess.get("_csrf"):
+                import hashlib
+                _sess["_csrf"] = hashlib.sha256(os.urandom(32)).hexdigest()
+
     @app.get("/hub/wallboard")
     def wallboard_page():
         from flask import session
@@ -114,26 +153,28 @@ def register(app, ctx):
         if cfg.auth.enabled and not session.get("logged_in"):
             from flask import redirect, url_for
             return redirect(url_for("login", next=request.path))
-        return render_template_string(_TPL, build=BUILD)
+        token = request.args.get("token", "").strip() \
+             or request.args.get("api_key", "").strip() or ""
+        return render_template_string(_TPL, build=BUILD, wb_token=token)
 
     # ── Kiosk / TV route ────────────────────────────────────────────
-    # Token in the URL path — no query string, no redirects, no fuss.
-    # Usage: /wallboard/tv/YOUR_TOKEN
-    # Also keeps the old ?token= route for backwards compat.
-    # ── Open TV route — no auth, no session, no security headers ───
-    # Just serves the page. Period.
+    # Requires a valid mobile API token: /wallboard/tv?token=YOUR_TOKEN
+    # The token is embedded in the page and passed on every sub-request
+    # so the wallboard works in iframe-based signage players (Yodeck)
+    # where third-party cookies are blocked.
     @app.get("/wallboard/tv")
     def wallboard_tv():
-        from flask import session
-        session["logged_in"] = True
-        session["login_ts"] = _time.time()
-        session["username"] = "tv"
-        session["role"] = "viewer"
-        if not session.get("_csrf"):
-            import hashlib
-            session["_csrf"] = hashlib.sha256(os.urandom(32)).hexdigest()
         g._wb_kiosk = True
-        return render_template_string(_TPL, build=BUILD)
+        cfg = monitor.app_cfg
+        token = request.args.get("token", "").strip() \
+             or request.args.get("api_key", "").strip()
+        # If auth is enabled, require a valid token
+        if cfg.auth.enabled and not _validate_wb_token():
+            return ('<h2>Wallboard token required</h2>'
+                    '<p>Use: /wallboard/tv?token=YOUR_MOBILE_API_TOKEN</p>'
+                    '<p>The token is your Mobile API token from '
+                    'Settings.</p>'), 403
+        return render_template_string(_TPL, build=BUILD, wb_token=token)
 
     @app.get("/api/wallboard/data")
     @login_required
@@ -749,9 +790,9 @@ body.corp .cc-art{box-shadow:0 2px 12px rgba(0,0,0,.12);border-color:rgba(0,0,0,
 :fullscreen #wb-scroll,:-webkit-full-screen #wb-scroll{padding:6px 20px 16px}
 
 /* ═══ Bauer Media branded theme ═══ */
-@font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Regular.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
-@font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Light.otf') format('opentype');font-weight:300;font-style:normal;font-display:swap}
+@font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Regular.otf{% if wb_token %}?token={{wb_token}}{% endif %}') format('opentype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Bold.otf{% if wb_token %}?token={{wb_token}}{% endif %}') format('opentype');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:'BauerMediaSans';src:url('/wallboard/asset/BauerMediaSans-Light.otf{% if wb_token %}?token={{wb_token}}{% endif %}') format('opentype');font-weight:300;font-style:normal;font-display:swap}
 
 body.bauer{
   font-family:'BauerMediaSans',system-ui,sans-serif;
@@ -925,8 +966,8 @@ body.has-brand .wb-brand{display:block}
 <body>
 
 <header id="wb-hdr">
-  <img class="wb-bauer-logo" src="/wallboard/asset/_bauer_logo_white.svg" alt="Bauer Media">
-  <img class="wb-brand" id="wb-brand-img" src="/wallboard/brand" alt="" onerror="this.style.display='none'">
+  <img class="wb-bauer-logo" src="/wallboard/asset/_bauer_logo_white.svg{% if wb_token %}?token={{wb_token}}{% endif %}" alt="Bauer Media">
+  <img class="wb-brand" id="wb-brand-img" src="/wallboard/brand{% if wb_token %}?token={{wb_token}}{% endif %}" alt="" onerror="this.style.display='none'">
   <span class="wb-logo" id="wb-logo-emoji">📺</span>
   <div class="wb-titles">
     <span class="wb-title" id="wb-title-text">Wallboard</span>
@@ -995,7 +1036,7 @@ body.has-brand .wb-brand{display:block}
     <div class="dr-section">
       <div class="dr-stitle">Page Branding</div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-        <img id="dr-brand-preview" src="/wallboard/brand" alt="" style="height:28px;object-fit:contain;border-radius:4px" onerror="this.style.display='none'">
+        <img id="dr-brand-preview" src="/wallboard/brand{% if wb_token %}?token={{wb_token}}{% endif %}" alt="" style="height:28px;object-fit:contain;border-radius:4px" onerror="this.style.display='none'">
         <button class="btn bp bs" id="btn-brand-upload">Upload Brand Logo</button>
         <button class="btn bd bs" id="btn-brand-remove">Remove</button>
       </div>
@@ -1017,6 +1058,10 @@ body.has-brand .wb-brand{display:block}
 'use strict';
 function _e(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||''}
+
+/* Token for cookie-less auth (Yodeck / kiosk iframes) */
+var _wbTk='{{wb_token|default("")}}';
+function _tkUrl(u){if(!_wbTk)return u;return u+(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(_wbTk)}
 
 var POLL_MS=1500,LIVE_MS=150,CHAIN_MS=2000;
 var PEAK_HOLD=2500,PEAK_RATE=.45,DB_FLOOR=-80,ATTACK_RATE=600,DECAY_RATE=30;
@@ -1060,7 +1105,7 @@ function applyVis(){
 }
 function saveConfig(){
   _cfg.sort_level=_sortLev;
-  fetch('/api/wallboard/config',{method:'POST',credentials:'same-origin',
+  fetch(_tkUrl('/api/wallboard/config'),{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
     body:JSON.stringify(_cfg)}).catch(function(){});
   try{localStorage.setItem('wb_cfg',JSON.stringify(_cfg))}catch(e){}
@@ -1176,7 +1221,7 @@ function renderChains(chains){
       if(artImg.src!==np.artwork)artImg.src=np.artwork;
     }else if(hasLogo){
       var logoImg=vizEl.querySelector('.cc-logo');
-      var logoUrl='/wallboard/logo/'+cid;
+      var logoUrl=_tkUrl('/wallboard/logo/'+cid);
       if(!logoImg||logoImg.className!=='cc-logo'){
         vizEl.innerHTML='<img class="cc-logo" alt="">';
         logoImg=vizEl.querySelector('.cc-logo');
@@ -1353,20 +1398,20 @@ requestAnimationFrame(_meterRaf);
 
 /* ═══ Polling ═══ */
 function poll(){
-  fetch('/api/wallboard/data',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
+  fetch(_tkUrl('/api/wallboard/data'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
     if(d.config&&!_cfgLoaded){_cfg=Object.assign(_cfg,d.config);applyConfig();_cfgLoaded=true}
     _chainLogos=d.chain_logos||{};_chainLogos._ts=Date.now();
     renderMeters(d);buildTicker(d.alerts||[]);
   }).catch(function(){});
 }
 function chainPoll(){
-  fetch('/api/chains/status',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():Promise.reject()}).then(function(d){
+  fetch(_tkUrl('/api/chains/status'),{credentials:'same-origin'}).then(function(r){return r.ok?r.json():Promise.reject()}).then(function(d){
     _lastChains=d.results||[];
     updateHero(_lastChains);renderChains(_lastChains);
   }).catch(function(){});
 }
 function livePoll(){
-  fetch('/api/hub/live_levels',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():Promise.reject()}).then(function(data){
+  fetch(_tkUrl('/api/hub/live_levels'),{credentials:'same-origin'}).then(function(r){return r.ok?r.json():Promise.reject()}).then(function(data){
     _liveActive=true;var now=Date.now();
     Object.keys(data).forEach(function(siteName){(data[siteName]||[]).forEach(function(s){
       var key=siteName+'|'+s.name,lev=(s.level_dbfs==null)?DB_FLOOR:s.level_dbfs;
@@ -1389,7 +1434,7 @@ function npPoll(){
   var rpuids=[];Object.keys(map).forEach(function(cid){var r=map[cid];if(r&&rpuids.indexOf(r)<0)rpuids.push(r)});
   if(!rpuids.length)return;
   rpuids.forEach(function(rpuid){
-    fetch('/api/nowplaying/'+encodeURIComponent(rpuid),{credentials:'same-origin'})
+    fetch(_tkUrl('/api/nowplaying/'+encodeURIComponent(rpuid)),{credentials:'same-origin'})
       .then(function(r){return r.ok?r.json():Promise.reject()})
       .then(function(d){
         _npData[rpuid]=d;
@@ -1398,7 +1443,7 @@ function npPoll(){
   });
 }
 function loadNpStations(){
-  fetch('/api/nowplaying_stations',{credentials:'same-origin'})
+  fetch(_tkUrl('/api/nowplaying_stations'),{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():Promise.reject()})
     .then(function(d){_npStations=d||[]})
     .catch(function(){_npStations=[]});
@@ -1429,7 +1474,7 @@ function renderDrawerChains(){
   var csMap=_cfg.chain_stations||{};
   var html='';_lastChains.forEach(function(ch){
     var hasLogo=_chainLogos[ch.id];var col=_colorFor(ch.name||'?');
-    var logo=hasLogo?'<img class="dr-ch-logo" src="/wallboard/logo/'+_e(ch.id)+'?_='+Date.now()+'" alt="">'
+    var logo=hasLogo?'<img class="dr-ch-logo" src="'+_tkUrl('/wallboard/logo/'+_e(ch.id)+'?_='+Date.now())+'" alt="">'
       :'<div class="dr-ch-av" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
     // Planet Radio station selector
     var curRpuid=csMap[ch.id]||'';
@@ -1463,12 +1508,12 @@ function renderDrawerStreams(){
 function uploadLogo(cid){
   var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
   inp.onchange=function(){if(!inp.files[0])return;var fd=new FormData();fd.append('logo',inp.files[0]);fd.append('_csrf_token',_csrf());
-    fetch('/api/wallboard/logo/'+encodeURIComponent(cid),{method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()},body:fd})
+    fetch(_tkUrl('/api/wallboard/logo/'+encodeURIComponent(cid)),{method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()},body:fd})
     .then(function(r){return r.json()}).then(function(d){if(d.ok){_chainLogos[cid]=true;_chainLogos._ts=Date.now();renderDrawerChains();if(_lastChains)renderChains(_lastChains)}}).catch(function(){})};
   inp.click();
 }
 function removeLogo(cid){
-  fetch('/api/wallboard/logo/'+encodeURIComponent(cid),{method:'DELETE',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()}})
+  fetch(_tkUrl('/api/wallboard/logo/'+encodeURIComponent(cid)),{method:'DELETE',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()}})
   .then(function(r){return r.json()}).then(function(d){if(d.ok){delete _chainLogos[cid];_chainLogos._ts=Date.now();renderDrawerChains();if(_lastChains)renderChains(_lastChains)}}).catch(function(){});
 }
 
@@ -1502,15 +1547,15 @@ document.getElementById('cfg-hide-hdr').addEventListener('change',function(){_cf
 document.getElementById('btn-brand-upload').addEventListener('click',function(){
   var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
   inp.onchange=function(){if(!inp.files[0])return;var fd=new FormData();fd.append('logo',inp.files[0]);fd.append('_csrf_token',_csrf());
-    fetch('/api/wallboard/brand',{method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()},body:fd})
+    fetch(_tkUrl('/api/wallboard/brand'),{method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()},body:fd})
     .then(function(r){return r.json()}).then(function(d){if(d.ok){
-      var img=document.getElementById('dr-brand-preview');img.src='/wallboard/brand?_='+Date.now();img.style.display='';
-      var hImg=document.getElementById('wb-brand-img');hImg.src='/wallboard/brand?_='+Date.now();hImg.style.display='';
+      var img=document.getElementById('dr-brand-preview');img.src=_tkUrl('/wallboard/brand?_='+Date.now());img.style.display='';
+      var hImg=document.getElementById('wb-brand-img');hImg.src=_tkUrl('/wallboard/brand?_='+Date.now());hImg.style.display='';
       document.body.classList.add('has-brand');
     }}).catch(function(){})};inp.click();
 });
 document.getElementById('btn-brand-remove').addEventListener('click',function(){
-  fetch('/api/wallboard/brand',{method:'DELETE',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()}})
+  fetch(_tkUrl('/api/wallboard/brand'),{method:'DELETE',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()}})
   .then(function(r){return r.json()}).then(function(d){if(d.ok){
     document.getElementById('dr-brand-preview').style.display='none';
     document.getElementById('wb-brand-img').style.display='none';
