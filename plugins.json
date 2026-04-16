@@ -53,10 +53,10 @@
     "id": "zetta",
     "name": "Zetta Integration",
     "file": "zetta.py",
-    "icon": "\ud83d\udcfb",
-    "description": "RCS Zetta broadcast automation integration. Polls the Zetta SOAP service to show live now-playing data — title, artist, cart number, category — and detects commercial/spot blocks in real time. No extra pip packages required.",
-    "version": "1.0.4",
-    "requirements": "",
+    "icon": "📻",
+    "description": "RCS Zetta broadcast automation integration. Multi-instance SOAP monitor — shows live sequencer state per station: mode (Auto/Manual/Voice Track), status (PLAYING/QUEUED/NEXT), GAP, ETM, now-playing title/artist/cart/category, and upcoming queue. Detects commercial/spot blocks in real time. Per-station broadcast chain assignment with live status chips on the Broadcast Chains page. Includes a SOAP debug explorer. Requires zeep.",
+    "version": "2.0.4",
+    "requirements": "zeep",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/zetta.py"
   },
   {
