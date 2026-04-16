@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.6.1",
+    "version":  "3.6.2",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -390,10 +390,15 @@ def register(app, ctx):
                     maint = hub_server._chain_maintenance.get(cid, {})
                     result = hub_server.eval_chain(chain, maintenance=maint)
                     internal_state = hub_server._chain_fault_state.get(cid)
+                    # Only show fault when the monitor has confirmed it (alerted)
+                    # pending/adbreak/None = still deciding, show as ok
                     if internal_state == "alerted":
                         result["display_status"] = "fault"
-                    elif internal_state == "pending":
-                        result["display_status"] = "pending"
+                    elif internal_state in ("pending", "adbreak", None):
+                        # Chain might look faulted in eval but the monitor
+                        # hasn't confirmed yet — could be an ad break
+                        raw = result.get("status", "unknown")
+                        result["display_status"] = "ok" if raw == "fault" else raw
                     else:
                         result["display_status"] = result.get("status", "unknown")
                     chain_status[cid] = result
