@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.0.1",
+    "version":  "3.0.2",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -170,11 +170,36 @@ def register(app, ctx):
              or request.args.get("api_key", "").strip()
         # If auth is enabled, require a valid token
         if cfg.auth.enabled and not _validate_wb_token():
-            return ('<h2>Wallboard token required</h2>'
-                    '<p>Use: /wallboard/tv?token=YOUR_MOBILE_API_TOKEN</p>'
-                    '<p>The token is your Mobile API token from '
-                    'Settings.</p>'), 403
-        return render_template_string(_TPL, build=BUILD, wb_token=token)
+            from flask import make_response
+            resp = make_response(
+                '<h2>Wallboard token required</h2>'
+                '<p>Use: /wallboard/tv?token=YOUR_MOBILE_API_TOKEN</p>'
+                '<p>The token is your Mobile API token from '
+                'Settings.</p>', 403)
+            resp.headers.pop('X-Frame-Options', None)
+            resp.headers.pop('Content-Security-Policy', None)
+            return resp
+        from flask import make_response
+        resp = make_response(
+            render_template_string(_TPL, build=BUILD, wb_token=token))
+        # Belt-and-suspenders: set iframe-friendly headers directly on
+        # the response object so they survive any after-request handler
+        # ordering issues.  The kiosk after_request handler also strips
+        # these, but setting them here guarantees correctness.
+        resp.headers.pop('X-Frame-Options', None)
+        resp.headers.pop('Content-Security-Policy', None)
+        resp.headers.pop('X-Content-Type-Options', None)
+        resp.headers.pop('Referrer-Policy', None)
+        resp.headers.pop('Strict-Transport-Security', None)
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        resp.headers['Pragma'] = 'no-cache'
+        # Prevent Flask from setting a session cookie on kiosk responses —
+        # some embedded browsers (Yodeck) reject pages that set third-party
+        # cookies inside an iframe.
+        from flask import session as _ks
+        _ks.modified = False
+        return resp
 
     @app.get("/api/wallboard/data")
     @login_required
@@ -1200,7 +1225,7 @@ var _glowCanvas=null;
 function _extractGlow(img,cb){
   try{
     if(!_glowCanvas){_glowCanvas=document.createElement('canvas');_glowCanvas.width=1;_glowCanvas.height=1}
-    var ctx=_glowCanvas.getContext('2d',{willReadFrequently:true});
+    var ctx=_glowCanvas.getContext('2d');
     ctx.drawImage(img,0,0,1,1);
     var d=ctx.getImageData(0,0,1,1).data;
     cb(d[0],d[1],d[2]);
@@ -1222,7 +1247,7 @@ function applyConfig(){
   document.getElementById('cfg-corp').checked=!!_cfg.corp_mode;
   document.getElementById('cfg-bauer').checked=!!_cfg.bauer_mode;
   document.getElementById('cfg-hide-hdr').checked=!!_cfg.hide_hdr;
-  document.getElementById('btn-sound').classList.toggle('active',!!_cfg.sound_alert);
+  var _sb=document.getElementById('btn-sound');if(_sb)_sb.classList.toggle('active',!!_cfg.sound_alert);
   document.querySelectorAll('[data-sz]').forEach(function(b){b.classList.toggle('active',b.dataset.sz===_cfg.card_size)});
   applyVis();
 }
@@ -1903,7 +1928,8 @@ document.getElementById('btn-sm').addEventListener('click',function(){setSize('s
 document.getElementById('btn-md').addEventListener('click',function(){setSize('md');saveConfig()});
 document.getElementById('btn-lg').addEventListener('click',function(){setSize('lg');saveConfig()});
 document.getElementById('btn-sort').addEventListener('click',toggleSort);
-document.getElementById('btn-sound').addEventListener('click',function(){
+var _sbtn=document.getElementById('btn-sound');
+if(_sbtn)_sbtn.addEventListener('click',function(){
   _cfg.sound_alert=!_cfg.sound_alert;
   this.classList.toggle('active',_cfg.sound_alert);
   if(_cfg.sound_alert){_playFaultTone()} // test tone on enable
