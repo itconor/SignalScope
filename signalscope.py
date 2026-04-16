@@ -5172,6 +5172,10 @@ class NowPlayingPoller:
                     "title":   str(np.get("nowPlayingTrack","")).strip(),
                     "show":    str(air.get("episodeTitle","")).strip(),
                     "artwork": _normalize_nowplaying_artwork_url(np.get("nowPlayingImage","")),
+                    "show_image": _normalize_nowplaying_artwork_url(
+                        air.get("episodeImageUrl","") or air.get("episodeImage","")
+                        or air.get("brandImageUrl","") or air.get("presenterImageUrl","")
+                        or air.get("showImageUrl","") or air.get("imageUrl","") or ""),
                 }
 
             with self._lock:
