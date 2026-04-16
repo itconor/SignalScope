@@ -1942,7 +1942,7 @@ requestAnimationFrame(_meterRaf);
 /* ═══ Polling ═══ */
 function poll(){
   fetch(_tkUrl('/api/wallboard/data'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
-    if(d.config&&!_cfgLoaded){_cfg=Object.assign(_cfg,d.config,_urlOverrides);applyConfig();_cfgLoaded=true}
+    if(d.config){_cfg=Object.assign(_cfg,d.config,_urlOverrides);applyConfig();_cfgLoaded=true}
     _chainLogos=d.chain_logos||{};_chainLogos._ts=Date.now();
     if(d.chain_faults)_loadFaultHistory(d.chain_faults);
     renderMeters(d);buildTicker(d.alerts||[]);
@@ -2148,7 +2148,9 @@ document.addEventListener('keydown',function(e){var tag=(e.target.tagName||'').t
   if(e.key==='g'||e.key==='G'){document.getElementById('wb-drawer').classList.contains('open')?closeDrawer():openDrawer()}
   if(e.key==='Escape')closeDrawer()});
 
-try{var lc=JSON.parse(localStorage.getItem('wb_cfg')||'{}');if(lc.card_size){_cfg=Object.assign(_cfg,lc,_urlOverrides);applyConfig();_cfgLoaded=true}}catch(e){}
+/* Apply localStorage instantly for visual comfort before first poll arrives.
+   Does NOT set _cfgLoaded — server config from poll() always wins and overwrites. */
+try{var lc=JSON.parse(localStorage.getItem('wb_cfg')||'{}');if(lc.card_size){_cfg=Object.assign(_cfg,lc,_urlOverrides);applyConfig()}}catch(e){}
 })();
 </script>
 </body>
