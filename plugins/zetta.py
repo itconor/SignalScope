@@ -924,8 +924,8 @@ _PAGE_TPL = """<!DOCTYPE html>
           <div class="f" style="max-width:220px"><label>SOAP Method</label>
             <input id="dbg-method" placeholder="GetStationFull"></div>
         </div>
-        <div style="margin-top:8px"><label>Body XML</label>
-          <textarea id="dbg-body" rows="3" placeholder="<stationID>1</stationID><stationIDSpecified>true</stationIDSpecified>"></textarea></div>
+        <div style="margin-top:8px"><label>Arguments (XML key/value pairs)</label>
+          <textarea id="dbg-body" rows="3" placeholder="<stationID>1</stationID>&#10;Leave blank for methods with no arguments (e.g. GetStations)"></textarea></div>
         <div class="btn-row">
           <button class="btn bg bs" id="btn-dbg">&#x25B6; Call</button>
           <button class="btn bg bs" id="btn-wsdl">&#x1F4C4; WSDL Methods</button>
@@ -1672,7 +1672,7 @@ def register(app, ctx):
         if p: p.stop()
         return jsonify({"ok": True})
 
-    # ── Debug SOAP call ───────────────────────────────────────────────────────
+    # ── Debug SOAP call (zeep) ────────────────────────────────────────────────
     @app.post("/api/zetta/debug")
     @login_required
     @csrf_protect
@@ -1684,24 +1684,64 @@ def register(app, ctx):
         body   = str(data.get("body",   "")).strip()
         if not url or not method:
             return jsonify({"ok": False, "error": "url and method required", "raw": ""})
+        if not _zeep:
+            return jsonify({"ok": False,
+                            "error": "zeep not available — restart SignalScope to retry install",
+                            "raw": ""})
         try:
-            endpoint = _soap_endpoint(url)
-            ns = _ns(url)
-            _, raw = _soap_call(endpoint, method, body, ns)
+            sep    = "&" if "?" in url else "?"
+            client = _make_zeep_client(url + sep + "wsdl", url)
+
+            # Parse body XML into kwargs: <stationID>1</stationID> → {"stationID": "1"}
+            kwargs: dict = {}
+            if body.strip():
+                try:
+                    root = ET.fromstring(f"<_root_>{body}</_root_>")
+                    for child in root:
+                        tag = child.tag.split("}")[-1]
+                        # Coerce obvious types
+                        txt = (child.text or "").strip()
+                        if txt.lower() == "true":
+                            kwargs[tag] = True
+                        elif txt.lower() == "false":
+                            kwargs[tag] = False
+                        else:
+                            try:    kwargs[tag] = int(txt)
+                            except ValueError: kwargs[tag] = txt
+                except ET.ParseError as pe:
+                    return jsonify({"ok": False,
+                                    "error": f"Body XML parse error: {pe}", "raw": ""})
+
+            svc_method = getattr(client.service, method, None)
+            if svc_method is None:
+                # List available methods to help the user
+                try:
+                    available = sorted(str(op) for op in client.wsdl.services.values()
+                                       for p in op.ports.values()
+                                       for op2 in p.binding._operations.values()
+                                       for op in [op2.name])
+                except Exception:
+                    available = []
+                return jsonify({"ok": False,
+                                "error": f"Method '{method}' not found in WSDL",
+                                "raw": "Available: " + ", ".join(available) if available else ""})
+
+            result = svc_method(**kwargs)
+
+            # Serialize zeep object → readable string
             try:
-                import xml.dom.minidom as _md
-                pretty = _md.parseString(raw.encode()).toprettyxml(indent="  ")
-                raw = "\n".join(pretty.splitlines()[1:])
+                serialized = _zeep.helpers.serialize_object(result, target_cls=dict)
+                import json as _json
+                raw = _json.dumps(serialized, indent=2, default=str)
             except Exception:
-                pass
+                raw = str(result)
+
             return jsonify({"ok": True, "raw": raw})
-        except urllib.error.HTTPError as e:
-            return jsonify({"ok": False, "error": f"HTTP {e.code}: {e.reason}",
-                            "raw": e.read().decode("utf-8", errors="replace")})
+
         except Exception as e:
             return jsonify({"ok": False, "error": str(e), "raw": ""})
 
-    # ── WSDL methods ──────────────────────────────────────────────────────────
+    # ── WSDL methods (zeep) ───────────────────────────────────────────────────
     @app.post("/api/zetta/wsdl_methods")
     @login_required
     @csrf_protect
@@ -1711,11 +1751,23 @@ def register(app, ctx):
         url  = str(data.get("url", "")).strip()
         if not url:
             return jsonify({"error": "No URL", "methods": []})
-        _wsdl_cache.pop(url, None)
-        info = _wsdl_info(url)
-        if info["methods"]:
-            return jsonify({"namespace": info["ns"], "methods": sorted(info["methods"])})
-        return jsonify({"error": "No operations found", "namespace": info["ns"], "methods": []})
+        if not _zeep:
+            return jsonify({"error": "zeep not available", "methods": []})
+        try:
+            sep    = "&" if "?" in url else "?"
+            client = _make_zeep_client(url + sep + "wsdl", url)
+            methods = []
+            for svc in client.wsdl.services.values():
+                for port in svc.ports.values():
+                    for op_name in port.binding._operations:
+                        if op_name not in methods:
+                            methods.append(op_name)
+            ns = client.wsdl.target_namespace or ""
+            if methods:
+                return jsonify({"namespace": ns, "methods": sorted(methods)})
+            return jsonify({"error": "No operations found", "namespace": ns, "methods": []})
+        except Exception as e:
+            return jsonify({"error": str(e), "methods": []})
 
     # ── Discover stations ─────────────────────────────────────────────────────
     @app.post("/api/zetta/discover_stations")
