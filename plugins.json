@@ -185,7 +185,7 @@
     "file": "studioboard.py",
     "icon": "🎙",
     "description": "Large-format studio display for outside broadcast studios. Shows presenter/show info, now playing, live level meters, mic live status, and chain health. Fully configurable admin page for assigning chains, inputs, Planet Radio feeds, and show artwork per studio. REST API for mic live control from automation systems. Bauer branded. Hub-only.",
-    "version": "3.3.0",
+    "version": "3.3.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/studioboard.py"
   }

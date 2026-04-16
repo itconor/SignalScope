@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.3.0",
+    "version":  "3.3.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -872,15 +872,14 @@ function updateCol(s,idx){
   var col=document.getElementById('col'+idx);
   if(col){var fl=false;(s.chains||[]).forEach(function(x){if(x.status==='fault')fl=true});
     col.classList.toggle('fault',fl)}
-  // Show/presenter image — ONLY show_image from API, NOT track artwork
+  // Show/presenter image — keep showing last one until a new one arrives
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
     var si=np.show_image||'';
-    if(si){
-      if(_artSrc['s'+idx]!==si){_artSrc['s'+idx]=si;showImg.src=si;
-        showImg.onload=function(){showImg.style.display=''};
-        showImg.onerror=function(){showImg.style.display='none'}}
-    }else{showImg.style.display='none';_artSrc['s'+idx]=''}
+    if(si&&_artSrc['s'+idx]!==si){_artSrc['s'+idx]=si;showImg.src=si;
+      showImg.onload=function(){showImg.style.display=''};
+      showImg.onerror=function(){showImg.style.display='none'}}
+    // If no show_image right now, just leave whatever is already showing
   }
   // Track artwork — separate, shown below the divider when a song is playing
   var artEl=document.getElementById('art'+idx);
