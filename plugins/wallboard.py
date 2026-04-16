@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.0.2",
+    "version":  "3.1.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1080,6 +1080,26 @@ body.bauer .tk-site{font-family:'BauerMediaSans',system-ui,sans-serif}
 /* ═══ Sound alert toggle ═══ */
 #btn-sound{position:relative}
 #btn-sound.active{background:var(--al);color:#fff}
+
+/* ═══ Hero level pulse ═══ */
+#wb-hero.ok{position:relative;overflow:hidden}
+#wb-hero .hero-pulse-bg{
+  position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse at 30% 50%,rgba(34,197,94,.15),transparent 70%);
+  opacity:0;transition:opacity .15s ease;border-radius:inherit;
+}
+body.bauer #wb-hero .hero-pulse-bg{
+  background:radial-gradient(ellipse at 30% 50%,rgba(34,197,94,.2),transparent 70%);
+}
+
+/* ═══ Time-of-day background gradient ═══ */
+body{transition:background 60s linear}
+
+/* ═══ QR codes on chain cards ═══ */
+.cc-qr{margin-top:4px;display:flex;justify-content:center}
+.cc-qr canvas{border-radius:6px;background:#fff;padding:3px}
+.cc-qr-url{display:none}
+body.show-qr .cc-qr-url{display:flex}
 </style>
 </head>
 <body>
@@ -1108,6 +1128,7 @@ body.bauer .tk-site{font-family:'BauerMediaSans',system-ui,sans-serif}
 
 <div id="wb-content">
   <div id="wb-hero" class="loading">
+    <div class="hero-pulse-bg" id="hero-pulse-bg"></div>
     <div class="hero-icon" id="hero-icon">⏳</div>
     <div class="hero-body">
       <div class="hero-title" id="hero-title">Connecting…</div>
@@ -1153,6 +1174,7 @@ body.bauer .tk-site{font-family:'BauerMediaSans',system-ui,sans-serif}
       <label class="dr-toggle"><input type="checkbox" id="cfg-ticker" checked> Alert ticker</label>
       <label class="dr-toggle"><input type="checkbox" id="cfg-hero" checked> Status hero banner</label>
       <label class="dr-toggle"><input type="checkbox" id="cfg-hide-hdr"> Hide header bar</label>
+      <label class="dr-toggle"><input type="checkbox" id="cfg-qr"> Show QR codes on station cards</label>
     </div>
     <div class="dr-section">
       <div class="dr-stitle">Page Branding</div>
@@ -1189,7 +1211,7 @@ var PEAK_HOLD=2500,PEAK_RATE=.45,DB_FLOOR=-80,ATTACK_RATE=600,DECAY_RATE=30;
 var _sizes={sm:120,md:155,lg:210};
 var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e0b'],['#9333e8','#a855f7'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316'],['#c81e1e','#ef4444']];
 
-var _cfg={card_size:'md',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false};
+var _cfg={card_size:'md',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false,chain_qr_urls:{}};
 var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={};
 var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false;
 var _allStreams=[];  // for stream selector
@@ -1220,6 +1242,46 @@ function _playFaultTone(){
   }catch(e){}
 }
 
+/* ═══ Hero level pulse — breathes with average audio level ═══ */
+var _avgLevel=DB_FLOOR;
+function _updateHeroPulse(){
+  var pb=document.getElementById('hero-pulse-bg');
+  if(!pb)return;
+  // Map average level to opacity: -60dB → 0, -10dB → 0.9
+  var norm=Math.max(0,Math.min(1,(_avgLevel-DB_FLOOR)/(-10-DB_FLOOR)));
+  pb.style.opacity=norm*0.9;
+}
+
+/* ═══ Time-of-day background gradient ═══ */
+function _updateDayGradient(){
+  var h=new Date().getHours();
+  // Night (22-05): deep blue, Morning (06-09): warm sunrise,
+  // Day (10-17): bright blue, Evening (18-21): warm sunset
+  var bg;
+  if(h>=6&&h<9) bg='radial-gradient(ellipse at 50% -5%,#2d1b69 0%,#1a0f3d 38%,#0d0820 100%)';
+  else if(h>=9&&h<17) bg='radial-gradient(ellipse at 50% -5%,#14397a 0%,#07142b 38%,#040d1c 100%)';
+  else if(h>=17&&h<21) bg='radial-gradient(ellipse at 50% -5%,#4a1942 0%,#1a0a2e 38%,#0d0518 100%)';
+  else bg='radial-gradient(ellipse at 50% -5%,#0a1628 0%,#050d1c 38%,#020810 100%)';
+  if(!document.body.classList.contains('bauer')&&!document.body.classList.contains('corp')){
+    document.body.style.background=bg;
+  }else{
+    document.body.style.background='';
+  }
+}
+_updateDayGradient();setInterval(_updateDayGradient,60000);
+
+/* ═══ QR code generator (lightweight — no library needed) ═══ */
+/* QR codes rendered as <img> from qrserver.com API — no JS library needed */
+function _renderQRImg(container,url,size){
+  if(!url||!container)return;
+  container.innerHTML='';
+  var img=document.createElement('img');
+  img.style.cssText='width:'+size+'px;height:'+size+'px;border-radius:6px;background:#fff;padding:3px';
+  img.alt='Scan to listen';
+  img.src='https://api.qrserver.com/v1/create-qr-code/?size='+size+'x'+size+'&data='+encodeURIComponent(url);
+  container.appendChild(img);
+}
+
 /* ═══ Artwork colour extraction ═══ */
 var _glowCanvas=null;
 function _extractGlow(img,cb){
@@ -1247,6 +1309,7 @@ function applyConfig(){
   document.getElementById('cfg-corp').checked=!!_cfg.corp_mode;
   document.getElementById('cfg-bauer').checked=!!_cfg.bauer_mode;
   document.getElementById('cfg-hide-hdr').checked=!!_cfg.hide_hdr;
+  var _qrCb=document.getElementById('cfg-qr');if(_qrCb)_qrCb.checked=!!_cfg.show_qr;
   var _sb=document.getElementById('btn-sound');if(_sb)_sb.classList.toggle('active',!!_cfg.sound_alert);
   document.querySelectorAll('[data-sz]').forEach(function(b){b.classList.toggle('active',b.dataset.sz===_cfg.card_size)});
   applyVis();
@@ -1262,6 +1325,10 @@ function applyVis(){
   document.body.classList.toggle('corp',!!_cfg.corp_mode&&!_cfg.bauer_mode);
   // Hide header
   document.getElementById('wb-hdr').classList.toggle('hdr-hidden',!!_cfg.hide_hdr);
+  // QR codes
+  document.body.classList.toggle('show-qr',!!_cfg.show_qr);
+  // Time-of-day gradient
+  _updateDayGradient();
 }
 function saveConfig(){
   _cfg.sort_level=_sortLev;
@@ -1365,7 +1432,8 @@ function renderChains(chains){
         +'<div class="cc-nodes"></div>'
         +'<div class="cc-sparkline"><canvas></canvas></div>'
         +'<div class="cc-health"><div class="cc-health-fill"></div></div>'
-        +'<div class="cc-sla"></div>';
+        +'<div class="cc-sla"></div>'
+        +'<div class="cc-qr cc-qr-url"></div>';
       el.appendChild(card);
     }
 
@@ -1504,6 +1572,15 @@ function renderChains(chains){
     var slaEl=card.querySelector('.cc-sla');
     var slaTxt=(hp!=null&&hp<100)?hp.toFixed(1)+'% uptime':'';
     if(slaEl&&slaEl.textContent!==slaTxt)slaEl.textContent=slaTxt;
+
+    // QR code (only render once per chain, and only when show_qr is on)
+    var qrEl=card.querySelector('.cc-qr');
+    var qrUrl=(_cfg.chain_qr_urls||{})[cid]||'';
+    if(qrEl&&_cfg.show_qr&&qrUrl&&!qrEl._rendered){
+      _renderQRImg(qrEl,qrUrl,80);qrEl._rendered=qrUrl;
+    }else if(qrEl&&(!_cfg.show_qr||!qrUrl)){
+      if(qrEl._rendered){qrEl.innerHTML='';qrEl._rendered=null}
+    }
   });
 
   // Remove cards for chains no longer present
@@ -1775,15 +1852,19 @@ function chainPoll(){
 function livePoll(){
   fetch(_tkUrl('/api/hub/live_levels'),{credentials:'same-origin'}).then(function(r){return r.ok?r.json():Promise.reject()}).then(function(data){
     _liveActive=true;var now=Date.now();
+    var _levSum=0,_levN=0;
     Object.keys(data).forEach(function(siteName){(data[siteName]||[]).forEach(function(s){
       var key=siteName+'|'+s.name,lev=(s.level_dbfs==null)?DB_FLOOR:s.level_dbfs;
       _targetLev[key]=lev;_updPk(key,lev,now);
+      if(lev>DB_FLOOR){_levSum+=lev;_levN++}
       if(s.level_dbfs_l!=null&&s.level_dbfs_r!=null){
         _targetLev[key+'|L']=s.level_dbfs_l;_updPk(key+'|L',s.level_dbfs_l,now);
         _targetLev[key+'|R']=s.level_dbfs_r;_updPk(key+'|R',s.level_dbfs_r,now);
         var esc=key.replace(/\\/g,'\\\\').replace(/"/g,'\\"');
         var card=document.querySelector('.mc[data-key="'+esc+'"]');if(card)card.dataset.stereo='1'}
     })});
+    if(_levN)_avgLevel=_levSum/_levN;
+    _updateHeroPulse();
   }).catch(function(){});
 }
 /* ═══ Now Playing (Planet Radio) ═══ */
@@ -1850,6 +1931,8 @@ function renderDrawerChains(){
       +(hasLogo?'<button class="btn bd bs" data-rm-logo="'+_e(ch.id)+'">Remove</button>':'')
       +'</div>'
       +'<div style="margin-top:4px;display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--mu);white-space:nowrap">Now Playing:</span>'+selHtml+'</div>'
+      +'<div style="margin-top:4px;display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--mu);white-space:nowrap">QR / Listen:</span>'
+      +'<input data-qr-chain="'+_e(ch.id)+'" type="text" placeholder="https://listen-url..." value="'+_e((_cfg.chain_qr_urls||{})[ch.id]||'')+'" style="flex:1;min-width:0;background:#0d1e40;border:1px solid var(--bor);border-radius:5px;color:var(--tx);padding:3px 6px;font-size:11px;font-family:inherit"></div>'
       +'</div></div>'});
   el.innerHTML=html;
 }
@@ -1886,11 +1969,22 @@ document.getElementById('wb-drawer').addEventListener('click',function(e){
   var sz=e.target.closest('[data-sz]');if(sz){setSize(sz.dataset.sz);saveConfig()}
 });
 document.getElementById('dr-chains').addEventListener('change',function(e){
-  var sel=e.target.closest('[data-np-chain]');if(!sel)return;
-  var cid=sel.dataset.npChain,rpuid=sel.value;
-  if(!_cfg.chain_stations)_cfg.chain_stations={};
-  if(rpuid)_cfg.chain_stations[cid]=rpuid;else delete _cfg.chain_stations[cid];
-  saveConfig();npPoll();
+  var sel=e.target.closest('[data-np-chain]');
+  if(sel){
+    var cid=sel.dataset.npChain,rpuid=sel.value;
+    if(!_cfg.chain_stations)_cfg.chain_stations={};
+    if(rpuid)_cfg.chain_stations[cid]=rpuid;else delete _cfg.chain_stations[cid];
+    saveConfig();npPoll();return;
+  }
+  var qrInput=e.target.closest('[data-qr-chain]');
+  if(qrInput){
+    var cid=qrInput.dataset.qrChain,url=qrInput.value.trim();
+    if(!_cfg.chain_qr_urls)_cfg.chain_qr_urls={};
+    if(url)_cfg.chain_qr_urls[cid]=url;else delete _cfg.chain_qr_urls[cid];
+    // Clear rendered QR so it re-renders with new URL
+    document.querySelectorAll('.cc[data-cid="'+cid+'"] .cc-qr').forEach(function(el){el.innerHTML='';el._rendered=null});
+    saveConfig();if(_lastChains)renderChains(_lastChains);
+  }
 });
 document.getElementById('dr-streams').addEventListener('change',function(e){
   var cb=e.target.closest('[data-stream-key]');if(!cb)return;
@@ -1906,6 +2000,7 @@ document.getElementById('cfg-hero').addEventListener('change',function(){_cfg.sh
 document.getElementById('cfg-corp').addEventListener('change',function(){_cfg.corp_mode=this.checked;if(this.checked)_cfg.bauer_mode=false;applyConfig();saveConfig()});
 document.getElementById('cfg-bauer').addEventListener('change',function(){_cfg.bauer_mode=this.checked;if(this.checked)_cfg.corp_mode=false;applyConfig();saveConfig()});
 document.getElementById('cfg-hide-hdr').addEventListener('change',function(){_cfg.hide_hdr=this.checked;applyVis();saveConfig()});
+document.getElementById('cfg-qr').addEventListener('change',function(){_cfg.show_qr=this.checked;applyVis();saveConfig();if(_lastChains)renderChains(_lastChains)});
 document.getElementById('btn-brand-upload').addEventListener('click',function(){
   var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
   inp.onchange=function(){if(!inp.files[0])return;var fd=new FormData();fd.append('logo',inp.files[0]);fd.append('_csrf_token',_csrf());
