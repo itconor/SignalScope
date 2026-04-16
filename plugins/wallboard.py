@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.11.0",
+    "version":  "3.12.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -620,39 +620,38 @@ body::after{
 /* ═══ Content ═══ */
 #wb-content{flex:1;display:flex;flex-direction:column;overflow:hidden}
 
-/* ═══ Hero status ═══ */
+/* ═══ Hero status — compact strip ═══ */
 #wb-hero{
-  margin:10px 20px 0;border-radius:18px;
-  padding:16px 28px;display:flex;align-items:center;gap:20px;
+  margin:8px 20px 0;border-radius:10px;
+  padding:7px 14px;display:flex;align-items:center;gap:10px;
   transition:background .5s,border-color .5s,box-shadow .5s;flex-shrink:0;
 }
 #wb-hero.ok{
-  background:linear-gradient(135deg,rgba(34,197,94,.12),rgba(34,197,94,.04));
-  border:1.5px solid rgba(34,197,94,.35);
-  box-shadow:0 0 30px rgba(34,197,94,.05);
+  background:rgba(34,197,94,.06);
+  border:1px solid rgba(34,197,94,.25);
 }
 #wb-hero.fault{
   background:linear-gradient(135deg,rgba(239,68,68,.1),rgba(239,68,68,.04));
   border:1.5px solid rgba(239,68,68,.4);
-  box-shadow:0 0 30px rgba(239,68,68,.06);
+  box-shadow:0 0 20px rgba(239,68,68,.06);
   animation:hero-border 2.5s ease-in-out infinite;
 }
 @keyframes hero-border{
-  0%,100%{box-shadow:0 0 30px rgba(239,68,68,.06)}
-  50%{box-shadow:0 0 50px rgba(239,68,68,.12)}
+  0%,100%{box-shadow:0 0 20px rgba(239,68,68,.06)}
+  50%{box-shadow:0 0 36px rgba(239,68,68,.12)}
 }
-#wb-hero.loading{background:rgba(23,52,95,.35);border:1.5px solid var(--bor)}
-.hero-icon{font-size:52px;flex-shrink:0;line-height:1}
+#wb-hero.loading{background:rgba(23,52,95,.35);border:1px solid var(--bor)}
+.hero-icon{font-size:18px;flex-shrink:0;line-height:1}
 #wb-hero.fault .hero-icon{animation:hero-pulse 2s ease-in-out infinite}
-@keyframes hero-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.12)}}
-.hero-body{flex:1;min-width:0}
-.hero-title{font-size:26px;font-weight:800;letter-spacing:-.02em;margin-bottom:4px}
+@keyframes hero-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.15)}}
+.hero-body{flex:1;min-width:0;display:flex;align-items:center;gap:8px}
+.hero-title{font-size:14px;font-weight:700;letter-spacing:-.01em;white-space:nowrap}
 #wb-hero.ok .hero-title{color:var(--ok)}
 #wb-hero.fault .hero-title{color:var(--al)}
 #wb-hero.loading .hero-title{color:var(--mu)}
-.hero-sub{font-size:16px;color:var(--mu)}
-.hero-badge{font-size:16px;font-weight:700;padding:10px 22px;border-radius:12px;flex-shrink:0;letter-spacing:.02em}
-#wb-hero.ok .hero-badge{background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3)}
+.hero-sub{font-size:13px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hero-badge{font-size:12px;font-weight:800;padding:4px 12px;border-radius:7px;flex-shrink:0;letter-spacing:.03em;margin-left:auto}
+#wb-hero.ok .hero-badge{display:none}
 #wb-hero.fault .hero-badge{background:rgba(239,68,68,.15);color:var(--al);border:1px solid rgba(239,68,68,.3)}
 
 /* ═══ Chain strip ═══ */
@@ -974,15 +973,13 @@ body.bauer #wb-clock{color:#fff;text-shadow:0 0 20px rgba(255,255,255,.15)}
 body.bauer .btn{background:rgba(255,255,255,.12);color:#fff}
 body.bauer .btn:hover{background:rgba(255,255,255,.2)}
 body.bauer .btn.bp,.bauer .btn.active{background:#fff;color:#4700A3}
-body.bauer #wb-hero{border-radius:20px}
-body.bauer #wb-hero.ok{background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(34,197,94,.06));border-color:rgba(34,197,94,.4)}
-body.bauer #wb-hero.fault{background:linear-gradient(135deg,rgba(255,59,48,.15),rgba(255,59,48,.06));border-color:rgba(255,59,48,.45)}
+body.bauer #wb-hero.ok{background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.3)}
+body.bauer #wb-hero.fault{background:linear-gradient(135deg,rgba(255,59,48,.12),rgba(255,59,48,.04));border-color:rgba(255,59,48,.45)}
 body.bauer #wb-hero.loading{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.15)}
 body.bauer #wb-hero.ok .hero-title{color:#22c55e}
 body.bauer #wb-hero.fault .hero-title{color:#ff3b30}
 body.bauer #wb-hero.loading .hero-title{color:rgba(255,255,255,.5)}
 body.bauer .hero-sub{color:rgba(255,255,255,.55)}
-body.bauer #wb-hero.ok .hero-badge{background:rgba(34,197,94,.15);color:#22c55e;border-color:rgba(34,197,94,.3)}
 body.bauer #wb-hero.fault .hero-badge{background:rgba(255,59,48,.15);color:#ff3b30;border-color:rgba(255,59,48,.3)}
 body.bauer .cc{
   background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);
@@ -1057,9 +1054,8 @@ body.corp .wb-sub{color:#86868b}
 body.corp #wb-clock{color:#1d1d1f;text-shadow:none}
 body.corp .btn{background:#e5e5e7;color:#1d1d1f}
 body.corp .btn.bp,.corp .btn.active{background:#0071e3;color:#fff}
-body.corp #wb-hero{border-radius:18px}
-body.corp #wb-hero.ok{background:linear-gradient(135deg,rgba(52,199,89,.08),rgba(52,199,89,.03));border-color:rgba(52,199,89,.3)}
-body.corp #wb-hero.fault{background:linear-gradient(135deg,rgba(255,59,48,.08),rgba(255,59,48,.03));border-color:rgba(255,59,48,.3)}
+body.corp #wb-hero.ok{background:rgba(52,199,89,.05);border-color:rgba(52,199,89,.25)}
+body.corp #wb-hero.fault{background:rgba(255,59,48,.06);border-color:rgba(255,59,48,.3)}
 body.corp #wb-hero.ok .hero-title{color:#34c759}
 body.corp #wb-hero.fault .hero-title{color:#ff3b30}
 body.corp #wb-hero.ok .hero-badge{background:rgba(52,199,89,.1);color:#34c759;border-color:rgba(52,199,89,.25)}
@@ -1138,9 +1134,8 @@ body.has-brand .wb-brand{display:block}
 
 
 /* ═══ Bauer font sizing ═══ */
-body.bauer .hero-title{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:32px;font-weight:700;letter-spacing:-.03em}
-body.bauer .hero-sub{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:18px;font-weight:300}
-body.bauer .hero-badge{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:18px;font-weight:700}
+body.bauer .hero-title{font-family:'BauerMediaSans',system-ui,sans-serif;font-weight:700}
+body.bauer .hero-badge{font-family:'BauerMediaSans',system-ui,sans-serif;font-weight:700}
 body.bauer .cc-name{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:18px;font-weight:700}
 body.bauer .wb-title{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:22px;font-weight:700}
 body.bauer #wb-clock{font-family:'BauerMediaSans',system-ui,sans-serif;font-weight:300;font-size:42px}
@@ -1522,22 +1517,21 @@ function updateHero(chains){
   if(!faulted.length){
     hero.className='ok';ic.textContent='✅';
     ti.textContent='All Stations On Air';
-    su.textContent=chains.length+' station'+(chains.length>1?'s':'')+' running normally — no action required.';
-    ba.textContent='ALL CLEAR';
+    su.textContent='';ba.textContent='';
     if(faultOverlay)faultOverlay.classList.remove('active');
     if(faultBanner)faultBanner.classList.remove('active');
   }else if(faulted.length===1){
     hero.className='fault';ic.textContent='🔴';
     ti.textContent=(faulted[0].name||'Station')+' — SIGNAL FAULT';
-    su.textContent='Engineering have been alerted automatically.';
-    ba.textContent='1 FAULT';
+    su.textContent='Engineering alerted';
+    ba.textContent='FAULT';
     if(faultOverlay)faultOverlay.classList.add('active');
     if(faultBanner)faultBanner.classList.add('active');
     if(faultText)faultText.textContent='SIGNAL FAULT — '+(faulted[0].name||'STATION').toUpperCase();
   }else{
     hero.className='fault';ic.textContent='🔴';
-    ti.textContent=faulted.length+' STATION FAULTS ACTIVE';
-    su.textContent=faulted.map(function(c){return c.name}).slice(0,3).join(', ')+(faulted.length>3?' + '+(faulted.length-3)+' more':'');
+    ti.textContent=faulted.length+' FAULTS ACTIVE';
+    su.textContent=faulted.map(function(c){return c.name}).slice(0,4).join(', ')+(faulted.length>4?' + '+(faulted.length-4)+' more':'');
     ba.textContent=faulted.length+' FAULTS';
     if(faultOverlay)faultOverlay.classList.add('active');
     if(faultBanner)faultBanner.classList.add('active');
