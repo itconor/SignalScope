@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.2.1",
+    "version":  "3.2.2",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -873,21 +873,29 @@ function updateCol(s,idx){
   var col=document.getElementById('col'+idx);
   if(col){var fl=false;(s.chains||[]).forEach(function(x){if(x.status==='fault')fl=true});
     col.classList.toggle('fault',fl)}
-  // Show/presenter image — always shown, falls back through multiple sources
+  // Show/presenter image — ALWAYS try to show something
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
+    // Priority: show_image > artwork > proxy (proxy always has something)
     var si=np.show_image||np.artwork||'';
     if(!si&&s.np_rpuid)si=tk('/studioboard/np_art/'+s.np_rpuid);
+    // Even if artwork is empty (talk segment), use proxy as it fetches fresh from API
+    if(!si&&s.np_rpuid)si=tk('/api/nowplaying_art/'+s.np_rpuid);
     if(si){
-      if(_artSrc['s'+idx]!==si){showImg.src=si;_artSrc['s'+idx]=si;
+      if(_artSrc['s'+idx]!==si){_artSrc['s'+idx]=si;
+        showImg.src=si;
         showImg.onload=function(){showImg.style.display=''};
         showImg.onerror=function(){
-          // If direct URL fails, try proxy
-          if(s.np_rpuid&&showImg.src.indexOf('np_art')<0){
-            showImg.src=tk('/studioboard/np_art/'+s.np_rpuid);
-          }else{showImg.style.display='none'}
+          // Chain of fallbacks
+          if(s.np_rpuid){
+            var proxy=tk('/studioboard/np_art/'+s.np_rpuid);
+            var mainProxy=tk('/api/nowplaying_art/'+s.np_rpuid);
+            if(showImg.src.indexOf('np_art')<0)showImg.src=proxy;
+            else if(showImg.src.indexOf('nowplaying_art')<0)showImg.src=mainProxy;
+            else showImg.style.display='none';
+          }else showImg.style.display='none';
         }}
-    }else{showImg.style.display='none';_artSrc['s'+idx]=''}
+    }else{showImg.style.display='none'}
   }
   // Track artwork — separate, shown below the divider when a song is playing
   var artEl=document.getElementById('art'+idx);
