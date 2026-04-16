@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.4.4",
+    "version":  "3.5.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -56,20 +56,38 @@ def _dtype(device_index):
     return "other"
 
 
-def _generate_qr_svg(data):
-    """Generate a QR code as SVG string. Uses qrcode library with SVG
-    output (no Pillow dependency needed)."""
-    import qrcode, qrcode.image.svg
-    qr = qrcode.QRCode(version=None,
-                        error_correction=qrcode.constants.ERROR_CORRECT_L,
-                        box_size=10, border=2)
-    qr.add_data(data)
-    qr.make(fit=True)
-    img = qr.make_image(image_factory=qrcode.image.svg.SvgPathImage)
-    import io
-    buf = io.BytesIO()
-    img.save(buf)
-    return buf.getvalue()
+_QR_DIR = os.path.join(_BASE_DIR, "wallboard_qr")
+
+def _ensure_qr(chain_id, url):
+    """Generate a QR code SVG file on disk if it doesn't exist or the
+    URL has changed. Returns the filename."""
+    os.makedirs(_QR_DIR, exist_ok=True)
+    svg_path = os.path.join(_QR_DIR, chain_id + ".svg")
+    url_path = os.path.join(_QR_DIR, chain_id + ".url")
+    # Check if already generated for this URL
+    try:
+        if os.path.exists(svg_path) and os.path.exists(url_path):
+            with open(url_path) as f:
+                if f.read().strip() == url:
+                    return svg_path
+    except Exception:
+        pass
+    # Generate
+    try:
+        import qrcode, qrcode.image.svg
+        qr = qrcode.QRCode(version=None,
+                            error_correction=qrcode.constants.ERROR_CORRECT_L,
+                            box_size=10, border=2)
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(image_factory=qrcode.image.svg.SvgPathImage)
+        with open(svg_path, "wb") as f:
+            img.save(f)
+        with open(url_path, "w") as f:
+            f.write(url)
+    except Exception:
+        pass
+    return svg_path
 
 
 def register(app, ctx):
@@ -309,10 +327,22 @@ def register(app, ctx):
                 pass
 
         chain_logos = {}
+        chain_qr = {}
+        wb_cfg = _cfg_load()
         for ch in (cfg.signal_chains or []):
             cid = ch.get("id", "")
             if cid:
                 chain_logos[cid] = _has_logo(cid)
+                # Pre-generate QR codes if show_qr is enabled
+                if wb_cfg.get("show_qr"):
+                    token = request.args.get("token", "").strip() \
+                         or request.args.get("api_key", "").strip() or ""
+                    tk = ("?token=" + token) if token else ""
+                    play_url = request.host_url.rstrip("/") \
+                             + "/wallboard/play/" + cid + tk
+                    _ensure_qr(cid, play_url)
+                    chain_qr[cid] = os.path.exists(
+                        os.path.join(_QR_DIR, cid + ".svg"))
 
         alerts_out = []
         chain_fault_types = {"CHAIN_FAULT", "CHAIN_OK", "CHAIN_RECOVERED"}
@@ -440,29 +470,16 @@ def register(app, ctx):
         return '', 404
 
     # ── QR code generator (server-side, no external API) ─────────
-    @app.get("/wallboard/qr")
-    def wallboard_qr():
-        """Generate a QR code as SVG. No auth required — the encoded
-        URL is not sensitive (the token in it handles play auth)."""
-        data = request.args.get("d", "").strip()
-        if not data:
-            return '', 400
-        g._wb_kiosk = True
-        try:
-            svg_bytes = _generate_qr_svg(data)
-        except Exception as e:
-            # Return a visible error so we can debug
-            return '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80">' \
-                   '<rect width="80" height="80" fill="#fff"/>' \
-                   '<text x="5" y="40" font-size="8" fill="red">' \
-                   + str(e)[:60] + '</text></svg>', 200, \
-                   {'Content-Type': 'image/svg+xml'}
-        from flask import make_response
-        resp = make_response(svg_bytes)
-        resp.headers['Content-Type'] = 'image/svg+xml'
-        resp.headers['Cache-Control'] = 'public, max-age=3600'
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-        return resp
+    @app.get("/wallboard/qr/<chain_id>")
+    @login_required
+    def wallboard_qr_serve(chain_id):
+        """Serve a pre-generated QR code SVG file — same pattern as logos."""
+        if not re.match(r'^[a-zA-Z0-9_-]+$', chain_id):
+            return '', 404
+        path = os.path.join(_QR_DIR, chain_id + ".svg")
+        if os.path.exists(path):
+            return send_file(path, mimetype='image/svg+xml', max_age=60)
+        return '', 404
 
     # ── Mobile play page — linked from QR codes ──────────────────
     @app.get("/wallboard/play/<chain_id>")
@@ -1384,18 +1401,7 @@ function _updateDayGradient(){
 /* Don't run until config is loaded — otherwise it overrides Bauer/Corp */
 setInterval(_updateDayGradient,60000);
 
-/* ═══ QR code — rendered from local server endpoint (no auth) ═══ */
-function _renderQRImg(container,url,size){
-  if(!url||!container)return;
-  container.innerHTML='';
-  var img=document.createElement('img');
-  img.style.cssText='width:'+size+'px;height:'+size+'px;border-radius:6px;background:#fff;padding:3px';
-  img.alt='Scan to listen';
-  // No _tkUrl — QR endpoint has no auth requirement
-  img.src='/wallboard/qr?d='+encodeURIComponent(url);
-  img.onerror=function(){container.innerHTML='<span style="font-size:9px;color:var(--al)">QR error</span>'};
-  container.appendChild(img);
-}
+/* ═══ QR code — served as static file, same as logos ═══ */
 
 /* ═══ Artwork colour extraction ═══ */
 var _glowCanvas=null;
@@ -1695,14 +1701,18 @@ function renderChains(chains){
     var slaTxt=(hp!=null&&hp<100)?hp.toFixed(1)+'% uptime':'';
     if(slaEl&&slaEl.textContent!==slaTxt)slaEl.textContent=slaTxt;
 
-    // QR code — links to mobile play page for the last node in the chain
+    // QR code — static file, served exactly like logos
     var qrEl=card.querySelector('.cc-qr');
     if(qrEl){
       if(_cfg.show_qr){
         qrEl.classList.add('qr-visible');
-        var playUrl=window.location.origin+'/wallboard/play/'+cid+(_wbTk?'?token='+encodeURIComponent(_wbTk):'');
-        if(qrEl._rendered!==playUrl){
-          _renderQRImg(qrEl,playUrl,80);qrEl._rendered=playUrl;
+        if(!qrEl._rendered){
+          var qrImg=document.createElement('img');
+          qrImg.style.cssText='width:80px;height:80px;border-radius:6px;background:#fff;padding:3px';
+          qrImg.alt='Scan to listen';
+          qrImg.src=_tkUrl('/wallboard/qr/'+cid);
+          qrEl.appendChild(qrImg);
+          qrEl._rendered=true;
         }
       }else{
         qrEl.classList.remove('qr-visible');
