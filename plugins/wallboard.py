@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.4.3",
+    "version":  "3.4.4",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -56,41 +56,20 @@ def _dtype(device_index):
     return "other"
 
 
-def _generate_qr_png(data, box=8, border=2):
-    """Generate a QR code PNG as bytes. Uses qrcode library if available,
-    otherwise falls back to a simple 1x1 white pixel placeholder."""
-    try:
-        import qrcode
-        qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_L,
-                           box_size=box, border=border)
-        qr.add_data(data)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        import io
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
-    except ImportError:
-        pass
-    # Fallback: generate a minimal PNG with a placeholder pattern
-    # (install 'qrcode' pip package for real QR codes)
-    import struct, zlib
-    size = 100
-    rows = []
-    for y in range(size):
-        row = b'\x00'  # filter byte
-        for x in range(size):
-            # Draw a simple "QR" text pattern as a placeholder
-            row += b'\xff\xff\xff'  # white pixel
-        rows.append(row)
-    raw = b''.join(rows)
-    # Build minimal PNG
-    def _chunk(ctype, data):
-        c = ctype + data
-        return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-    sig = b'\x89PNG\r\n\x1a\n'
-    ihdr = struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0)
-    return sig + _chunk(b'IHDR', ihdr) + _chunk(b'IDAT', zlib.compress(raw)) + _chunk(b'IEND', b'')
+def _generate_qr_svg(data):
+    """Generate a QR code as SVG string. Uses qrcode library with SVG
+    output (no Pillow dependency needed)."""
+    import qrcode, qrcode.image.svg
+    qr = qrcode.QRCode(version=None,
+                        error_correction=qrcode.constants.ERROR_CORRECT_L,
+                        box_size=10, border=2)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(image_factory=qrcode.image.svg.SvgPathImage)
+    import io
+    buf = io.BytesIO()
+    img.save(buf)
+    return buf.getvalue()
 
 
 def register(app, ctx):
@@ -463,19 +442,24 @@ def register(app, ctx):
     # ── QR code generator (server-side, no external API) ─────────
     @app.get("/wallboard/qr")
     def wallboard_qr():
-        """Generate a QR code as PNG. No auth required — the encoded
+        """Generate a QR code as SVG. No auth required — the encoded
         URL is not sensitive (the token in it handles play auth)."""
         data = request.args.get("d", "").strip()
         if not data:
             return '', 400
         g._wb_kiosk = True
         try:
-            png_bytes = _generate_qr_png(data)
-        except Exception:
-            return '', 500
+            svg_bytes = _generate_qr_svg(data)
+        except Exception as e:
+            # Return a visible error so we can debug
+            return '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80">' \
+                   '<rect width="80" height="80" fill="#fff"/>' \
+                   '<text x="5" y="40" font-size="8" fill="red">' \
+                   + str(e)[:60] + '</text></svg>', 200, \
+                   {'Content-Type': 'image/svg+xml'}
         from flask import make_response
-        resp = make_response(png_bytes)
-        resp.headers['Content-Type'] = 'image/png'
+        resp = make_response(svg_bytes)
+        resp.headers['Content-Type'] = 'image/svg+xml'
         resp.headers['Cache-Control'] = 'public, max-age=3600'
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
@@ -1400,14 +1384,16 @@ function _updateDayGradient(){
 /* Don't run until config is loaded — otherwise it overrides Bauer/Corp */
 setInterval(_updateDayGradient,60000);
 
-/* ═══ QR code — rendered from local server endpoint ═══ */
+/* ═══ QR code — rendered from local server endpoint (no auth) ═══ */
 function _renderQRImg(container,url,size){
   if(!url||!container)return;
   container.innerHTML='';
   var img=document.createElement('img');
   img.style.cssText='width:'+size+'px;height:'+size+'px;border-radius:6px;background:#fff;padding:3px';
   img.alt='Scan to listen';
-  img.src=_tkUrl('/wallboard/qr?d='+encodeURIComponent(url));
+  // No _tkUrl — QR endpoint has no auth requirement
+  img.src='/wallboard/qr?d='+encodeURIComponent(url);
+  img.onerror=function(){container.innerHTML='<span style="font-size:9px;color:var(--al)">QR error</span>'};
   container.appendChild(img);
 }
 
