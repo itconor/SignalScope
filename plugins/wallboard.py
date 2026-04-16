@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.5.0",
+    "version":  "3.5.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -60,7 +60,7 @@ _QR_DIR = os.path.join(_BASE_DIR, "wallboard_qr")
 
 def _ensure_qr(chain_id, url):
     """Generate a QR code SVG file on disk if it doesn't exist or the
-    URL has changed. Returns the filename."""
+    URL has changed. Returns the file path."""
     os.makedirs(_QR_DIR, exist_ok=True)
     svg_path = os.path.join(_QR_DIR, chain_id + ".svg")
     url_path = os.path.join(_QR_DIR, chain_id + ".url")
@@ -72,21 +72,30 @@ def _ensure_qr(chain_id, url):
                     return svg_path
     except Exception:
         pass
-    # Generate
+    # Generate — try SVG first (no Pillow needed), fall back to PNG
     try:
-        import qrcode, qrcode.image.svg
+        import qrcode
         qr = qrcode.QRCode(version=None,
                             error_correction=qrcode.constants.ERROR_CORRECT_L,
                             box_size=10, border=2)
         qr.add_data(url)
         qr.make(fit=True)
-        img = qr.make_image(image_factory=qrcode.image.svg.SvgPathImage)
-        with open(svg_path, "wb") as f:
-            img.save(f)
+        try:
+            import qrcode.image.svg
+            img = qr.make_image(
+                image_factory=qrcode.image.svg.SvgPathImage)
+            with open(svg_path, "wb") as f:
+                img.save(f)
+        except Exception:
+            # SVG factory not available — try PNG and convert path
+            png_path = svg_path.replace(".svg", ".png")
+            img = qr.make_image(fill_color="black", back_color="white")
+            img.save(png_path)
+            svg_path = png_path
         with open(url_path, "w") as f:
             f.write(url)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[Wallboard] QR generation failed for {chain_id}: {e}")
     return svg_path
 
 
@@ -190,7 +199,13 @@ def register(app, ctx):
             return redirect(url_for("login", next=request.path))
         token = request.args.get("token", "").strip() \
              or request.args.get("api_key", "").strip() or ""
-        return render_template_string(_TPL, build=BUILD, wb_token=token)
+        url_overrides = {}
+        if request.args.get("show_qr") == "1":
+            url_overrides["show_qr"] = True
+        if request.args.get("bauer") == "1":
+            url_overrides["bauer_mode"] = True
+        return render_template_string(_TPL, build=BUILD, wb_token=token,
+                                      url_overrides=json.dumps(url_overrides))
 
     # ── Kiosk / TV route ────────────────────────────────────────────
     # Requires a valid mobile API token: /wallboard/tv?token=YOUR_TOKEN
@@ -215,8 +230,15 @@ def register(app, ctx):
             resp.headers.pop('Content-Security-Policy', None)
             return resp
         from flask import make_response
+        # URL params can override config: &show_qr=1, &bauer=1, etc.
+        url_overrides = {}
+        if request.args.get("show_qr") == "1":
+            url_overrides["show_qr"] = True
+        if request.args.get("bauer") == "1":
+            url_overrides["bauer_mode"] = True
         resp = make_response(
-            render_template_string(_TPL, build=BUILD, wb_token=token))
+            render_template_string(_TPL, build=BUILD, wb_token=token,
+                                  url_overrides=json.dumps(url_overrides)))
         # Belt-and-suspenders: set iframe-friendly headers directly on
         # the response object so they survive any after-request handler
         # ordering issues.  The kiosk after_request handler also strips
@@ -327,22 +349,20 @@ def register(app, ctx):
                 pass
 
         chain_logos = {}
-        chain_qr = {}
-        wb_cfg = _cfg_load()
+        token = request.args.get("token", "").strip() \
+             or request.args.get("api_key", "").strip() or ""
+        tk = ("?token=" + token) if token else ""
         for ch in (cfg.signal_chains or []):
             cid = ch.get("id", "")
             if cid:
                 chain_logos[cid] = _has_logo(cid)
-                # Pre-generate QR codes if show_qr is enabled
-                if wb_cfg.get("show_qr"):
-                    token = request.args.get("token", "").strip() \
-                         or request.args.get("api_key", "").strip() or ""
-                    tk = ("?token=" + token) if token else ""
+                # Always pre-generate QR codes (tiny SVG files)
+                try:
                     play_url = request.host_url.rstrip("/") \
                              + "/wallboard/play/" + cid + tk
                     _ensure_qr(cid, play_url)
-                    chain_qr[cid] = os.path.exists(
-                        os.path.join(_QR_DIR, cid + ".svg"))
+                except Exception:
+                    pass
 
         alerts_out = []
         chain_fault_types = {"CHAIN_FAULT", "CHAIN_OK", "CHAIN_RECOVERED"}
@@ -473,12 +493,13 @@ def register(app, ctx):
     @app.get("/wallboard/qr/<chain_id>")
     @login_required
     def wallboard_qr_serve(chain_id):
-        """Serve a pre-generated QR code SVG file — same pattern as logos."""
+        """Serve a pre-generated QR code file — same pattern as logos."""
         if not re.match(r'^[a-zA-Z0-9_-]+$', chain_id):
             return '', 404
-        path = os.path.join(_QR_DIR, chain_id + ".svg")
-        if os.path.exists(path):
-            return send_file(path, mimetype='image/svg+xml', max_age=60)
+        for ext, mime in [(".svg", "image/svg+xml"), (".png", "image/png")]:
+            path = os.path.join(_QR_DIR, chain_id + ext)
+            if os.path.exists(path):
+                return send_file(path, mimetype=mime, max_age=60)
         return '', 404
 
     # ── Mobile play page — linked from QR codes ──────────────────
@@ -1334,6 +1355,8 @@ function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).c
 /* Token for cookie-less auth (Yodeck / kiosk iframes) */
 var _wbTk='{{wb_token|default("")}}';
 function _tkUrl(u){if(!_wbTk)return u;return u+(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(_wbTk)}
+/* URL parameter overrides — e.g. &show_qr=1&bauer=1 */
+var _urlOverrides={{url_overrides|default("{}")|safe}};
 
 var POLL_MS=1500,LIVE_MS=150,CHAIN_MS=2000;
 var PEAK_HOLD=2500,PEAK_RATE=.45,DB_FLOOR=-80,ATTACK_RATE=600,DECAY_RATE=30;
@@ -1975,7 +1998,7 @@ requestAnimationFrame(_meterRaf);
 /* ═══ Polling ═══ */
 function poll(){
   fetch(_tkUrl('/api/wallboard/data'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
-    if(d.config&&!_cfgLoaded){_cfg=Object.assign(_cfg,d.config);applyConfig();_cfgLoaded=true}
+    if(d.config&&!_cfgLoaded){_cfg=Object.assign(_cfg,d.config,_urlOverrides);applyConfig();_cfgLoaded=true}
     _chainLogos=d.chain_logos||{};_chainLogos._ts=Date.now();
     if(d.chain_faults)_loadFaultHistory(d.chain_faults);
     renderMeters(d);buildTicker(d.alerts||[]);
@@ -2164,7 +2187,7 @@ document.addEventListener('keydown',function(e){var tag=(e.target.tagName||'').t
   if(e.key==='g'||e.key==='G'){document.getElementById('wb-drawer').classList.contains('open')?closeDrawer():openDrawer()}
   if(e.key==='Escape')closeDrawer();if(e.key==='1')setSize('sm');if(e.key==='2')setSize('md');if(e.key==='3')setSize('lg')});
 
-try{var lc=JSON.parse(localStorage.getItem('wb_cfg')||'{}');if(lc.card_size){_cfg=Object.assign(_cfg,lc);applyConfig();_cfgLoaded=true}}catch(e){}
+try{var lc=JSON.parse(localStorage.getItem('wb_cfg')||'{}');if(lc.card_size){_cfg=Object.assign(_cfg,lc,_urlOverrides);applyConfig();_cfgLoaded=true}}catch(e){}
 })();
 </script>
 </body>
