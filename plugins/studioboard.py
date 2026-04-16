@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.2.0",
+    "version":  "3.2.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -733,28 +733,28 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 /* MAIN panel — single vertical stack, everything centred */
 .mp{flex:1;display:flex;flex-direction:column;align-items:center;
   padding:16px 20px;z-index:1;min-width:0;overflow:hidden}
-.logo{width:120px;height:120px;border-radius:24px;object-fit:contain;flex-shrink:0;
+.logo{width:180px;height:auto;max-height:140px;border-radius:24px;object-fit:contain;flex-shrink:0;
   background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.1);
-  box-shadow:0 6px 28px rgba(0,0,0,.4);margin-bottom:6px}
-.logo-ph{width:120px;height:120px;border-radius:24px;flex-shrink:0;
+  box-shadow:0 8px 36px rgba(0,0,0,.4);margin-bottom:8px}
+.logo-ph{width:140px;height:140px;border-radius:24px;flex-shrink:0;
   background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.06);
   display:flex;align-items:center;justify-content:center;
-  font-size:44px;font-weight:800;color:rgba(255,255,255,.25);margin-bottom:6px}
-.stn{font-size:26px;font-weight:700;text-align:center;margin-bottom:1px}
-.stu{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;
-  color:var(--mu);text-align:center;margin-bottom:2px}
-.frq{font-size:12px;color:var(--mu);text-align:center;margin-bottom:6px}
-.mic{width:80%;max-width:280px;padding:8px 12px;border-radius:10px;text-align:center;
-  font-size:18px;font-weight:700;letter-spacing:.06em;margin-bottom:4px;flex-shrink:0}
+  font-size:52px;font-weight:800;color:rgba(255,255,255,.25);margin-bottom:8px}
+.stn{font-size:28px;font-weight:700;text-align:center;margin-bottom:2px}
+.stu{font-size:16px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;
+  color:var(--mu);text-align:center;margin-bottom:3px}
+.frq{font-size:13px;color:var(--mu);text-align:center;margin-bottom:8px}
+.mic{width:80%;max-width:300px;padding:10px 14px;border-radius:12px;text-align:center;
+  font-size:20px;font-weight:700;letter-spacing:.06em;margin-bottom:5px;flex-shrink:0}
 .mic.on{background:linear-gradient(135deg,#c81e1e,#ef4444);color:#fff;
   box-shadow:0 0 30px rgba(239,68,68,.3);animation:mp-pulse 1.5s ease-in-out infinite}
 .mic.off{background:rgba(255,255,255,.04);color:rgba(255,255,255,.12);
   border:1px solid rgba(255,255,255,.05)}
 @keyframes mp-pulse{0%,100%{box-shadow:0 0 30px rgba(239,68,68,.3)}
   50%{box-shadow:0 0 50px rgba(239,68,68,.5)}}
-.badge{display:flex;align-items:center;justify-content:center;gap:5px;
-  width:80%;max-width:280px;padding:5px 10px;border-radius:8px;font-size:13px;
-  font-weight:700;margin-bottom:3px;flex-shrink:0}
+.badge{display:flex;align-items:center;justify-content:center;gap:6px;
+  width:80%;max-width:300px;padding:7px 12px;border-radius:10px;font-size:15px;
+  font-weight:700;margin-bottom:4px;flex-shrink:0}
 .badge.ok{background:rgba(34,197,94,.1);color:var(--ok);border:1px solid rgba(34,197,94,.2)}
 .badge.ft{background:rgba(239,68,68,.1);color:var(--al);border:1px solid rgba(239,68,68,.25);
   animation:bl 1.2s ease-in-out infinite}
@@ -763,26 +763,26 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 /* Divider */
 .divider{width:50%;height:1px;background:rgba(255,255,255,.08);margin:6px 0;flex-shrink:0}
 /* Artwork */
-.art{width:min(180px,20vh);height:min(180px,20vh);border-radius:18px;object-fit:cover;flex-shrink:0;
-  box-shadow:0 8px 32px rgba(0,0,0,.4);border:2px solid rgba(255,255,255,.1);
-  background:rgba(255,255,255,.06);margin-bottom:6px}
+.art{width:min(200px,24vh);height:min(200px,24vh);border-radius:20px;object-fit:cover;flex-shrink:0;
+  box-shadow:0 8px 36px rgba(0,0,0,.4);border:2px solid rgba(255,255,255,.1);
+  background:rgba(255,255,255,.06);margin-bottom:8px}
 .art-ph{width:100px;height:100px;border-radius:18px;flex-shrink:0;
   background:rgba(255,255,255,.03);border:2px solid rgba(255,255,255,.03);
   display:flex;align-items:center;justify-content:center;
   font-size:36px;opacity:.15;margin-bottom:6px}
 /* Show name */
-.shw{font-size:22px;font-weight:700;text-align:center;width:90%;
-  line-height:1.3;margin-bottom:4px;min-height:29px;
+.shw{font-size:24px;font-weight:700;text-align:center;width:90%;
+  line-height:1.3;margin-bottom:4px;min-height:32px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* Now playing divider */
 .np-div{width:40%;height:1px;background:rgba(255,255,255,.06);margin:2px 0;flex-shrink:0}
 .npl{font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;
   font-weight:700;margin-bottom:2px;min-height:14px}
-.anm{font-size:18px;font-weight:700;text-align:center;width:90%;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:24px}
-.trk{font-size:16px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;
-  width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:22px}
-.idle{font-size:14px;color:var(--mu);text-align:center;font-style:italic;min-height:22px}
+.anm{font-size:20px;font-weight:700;text-align:center;width:90%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:27px}
+.trk{font-size:18px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;
+  width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:24px}
+.idle{font-size:16px;color:var(--mu);text-align:center;font-style:italic;min-height:24px}
 /* RIGHT panel — meters */
 .rp{width:7%;min-width:80px;flex-shrink:0;display:flex;gap:3px;align-items:stretch;
   padding:16px 6px;z-index:1}
@@ -850,7 +850,7 @@ function buildCol(s,idx){
     +'<img class=art id="showimg'+idx+'" alt="" style="display:none">'
     +'<div class=shw id="shw'+idx+'"></div>'
     +'<div class=np-div></div>'
-    +'<img class=art id="art'+idx+'" alt="" style="display:none;width:min(120px,14vh);height:min(120px,14vh);border-radius:14px">'
+    +'<img class=art id="art'+idx+'" alt="" style="display:none;width:min(140px,16vh);height:min(140px,16vh);border-radius:16px">'
     +'<div class=npl id="npl'+idx+'"></div>'
     +'<div class=anm id="anm'+idx+'"></div>'
     +'<div class=trk id="trk'+idx+'"></div>'
@@ -873,15 +873,21 @@ function updateCol(s,idx){
   var col=document.getElementById('col'+idx);
   if(col){var fl=false;(s.chains||[]).forEach(function(x){if(x.status==='fault')fl=true});
     col.classList.toggle('fault',fl)}
-  // Show/presenter image — always shown when available, separate from track art
+  // Show/presenter image — always shown, falls back through multiple sources
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
-    var si=np.show_image||'';
+    var si=np.show_image||np.artwork||'';
     if(!si&&s.np_rpuid)si=tk('/studioboard/np_art/'+s.np_rpuid);
-    if(si&&_artSrc['s'+idx]!==si){showImg.src=si;_artSrc['s'+idx]=si;
-      showImg.onload=function(){showImg.style.display=''};
-      showImg.onerror=function(){showImg.style.display='none'}}
-    else if(!si){showImg.style.display='none';_artSrc['s'+idx]=''}
+    if(si){
+      if(_artSrc['s'+idx]!==si){showImg.src=si;_artSrc['s'+idx]=si;
+        showImg.onload=function(){showImg.style.display=''};
+        showImg.onerror=function(){
+          // If direct URL fails, try proxy
+          if(s.np_rpuid&&showImg.src.indexOf('np_art')<0){
+            showImg.src=tk('/studioboard/np_art/'+s.np_rpuid);
+          }else{showImg.style.display='none'}
+        }}
+    }else{showImg.style.display='none';_artSrc['s'+idx]=''}
   }
   // Track artwork — separate, shown below the divider when a song is playing
   var artEl=document.getElementById('art'+idx);
