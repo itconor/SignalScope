@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.0.5",
+    "version":  "2.0.6",
 }
 
 import json
@@ -1728,12 +1728,31 @@ def register(app, ctx):
 
             # Remap kwargs keys case-insensitively to match WSDL parameter names.
             # e.g. user types <StationId> but WSDL defines stationID → remap to stationID.
+            # inspect.signature doesn't work on zeep proxies — read directly from WSDL.
             if kwargs:
                 try:
-                    import inspect as _inspect
-                    sig_params = list(_inspect.signature(svc_method).parameters.keys())
-                    lower_map  = {p.lower(): p for p in sig_params}
-                    kwargs = {lower_map.get(k.lower(), k): v for k, v in kwargs.items()}
+                    sig_params: list = []
+                    # Primary: navigate zeep WSDL internals (document/literal .asmx style)
+                    try:
+                        svc0  = list(client.wsdl.services.values())[0]
+                        port0 = list(svc0.ports.values())[0]
+                        op0   = port0.binding.get(method)
+                        body0 = getattr(op0.input, "body", None)
+                        if body0 is not None:
+                            t = getattr(body0, "type", None)
+                            if t is not None and hasattr(t, "elements"):
+                                sig_params = [name for name, _ in t.elements]
+                    except Exception:
+                        pass
+                    # Fallback: inspect.signature (works on some zeep versions)
+                    if not sig_params:
+                        import inspect as _inspect
+                        raw = list(_inspect.signature(svc_method).parameters.keys())
+                        if raw and raw not in (["args", "kwargs"], ["_args", "_kwargs"]):
+                            sig_params = raw
+                    if sig_params:
+                        lower_map = {p.lower(): p for p in sig_params}
+                        kwargs = {lower_map.get(k.lower(), k): v for k, v in kwargs.items()}
                 except Exception:
                     pass  # fall through with original keys
 
