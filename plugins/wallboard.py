@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.2.0",
+    "version":  "3.3.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1117,6 +1117,41 @@ body.bauer .tk-site{font-family:'BauerMediaSans',system-ui,sans-serif}
 #btn-sound{position:relative}
 #btn-sound.active{background:var(--al);color:#fff}
 
+/* ═══ Full-screen fault alert ═══ */
+#wb-fault-overlay{
+  position:fixed;inset:0;z-index:9998;pointer-events:none;
+  border:0px solid rgba(239,68,68,0);
+  transition:border-width .3s ease,border-color .3s ease;
+}
+#wb-fault-overlay.active{
+  border:6px solid rgba(239,68,68,.7);
+  animation:fault-border-pulse 1.5s ease-in-out infinite;
+}
+@keyframes fault-border-pulse{
+  0%,100%{border-color:rgba(239,68,68,.7);box-shadow:inset 0 0 60px rgba(239,68,68,.08)}
+  50%{border-color:rgba(239,68,68,.95);box-shadow:inset 0 0 120px rgba(239,68,68,.15)}
+}
+#wb-fault-banner{
+  position:fixed;top:0;left:0;right:0;z-index:9999;
+  background:linear-gradient(90deg,#c81e1e,#ef4444,#c81e1e);
+  color:#fff;text-align:center;
+  font-size:18px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+  padding:10px 20px;
+  transform:translateY(-100%);transition:transform .4s cubic-bezier(.4,0,.2,1);
+  box-shadow:0 4px 24px rgba(239,68,68,.4);
+  display:flex;align-items:center;justify-content:center;gap:12px;
+}
+#wb-fault-banner.active{transform:translateY(0)}
+#wb-fault-banner .fault-dot{
+  width:12px;height:12px;border-radius:50%;background:#fff;
+  animation:fault-dot-blink 1s ease-in-out infinite;
+}
+@keyframes fault-dot-blink{0%,100%{opacity:1}50%{opacity:.3}}
+body.bauer #wb-fault-banner{
+  background:linear-gradient(90deg,#8b0000,#c81e1e,#8b0000);
+  font-family:'BauerMediaSans',system-ui,sans-serif;
+}
+
 /* ═══ Hero level pulse ═══ */
 #wb-hero.ok{position:relative;overflow:hidden}
 #wb-hero .hero-pulse-bg{
@@ -1182,6 +1217,8 @@ body.show-qr .cc-qr-url{display:flex}
   <div id="wb-ticker-scroll"><div id="wb-ticker-inner"><span class="tk-item">No recent alerts</span></div></div>
 </div>
 
+<div id="wb-fault-overlay"></div>
+<div id="wb-fault-banner"><span class="fault-dot"></span><span id="fault-banner-text">SIGNAL FAULT</span><span class="fault-dot"></span></div>
 <div id="wb-overlay"></div>
 <aside id="wb-drawer">
   <div class="dr-hdr">
@@ -1410,23 +1447,39 @@ function updateHero(chains){
   var hero=document.getElementById('wb-hero'),ic=document.getElementById('hero-icon'),
       ti=document.getElementById('hero-title'),su=document.getElementById('hero-sub'),
       ba=document.getElementById('hero-badge');
-  if(!chains||!chains.length){hero.className='loading';ic.textContent='📡';ti.textContent='No stations configured';su.textContent='Add broadcast chains in Settings.';ba.textContent='';return}
+  var faultOverlay=document.getElementById('wb-fault-overlay');
+  var faultBanner=document.getElementById('wb-fault-banner');
+  var faultText=document.getElementById('fault-banner-text');
+  if(!chains||!chains.length){
+    hero.className='loading';ic.textContent='📡';ti.textContent='No stations configured';su.textContent='Add broadcast chains in Settings.';ba.textContent='';
+    if(faultOverlay)faultOverlay.classList.remove('active');
+    if(faultBanner)faultBanner.classList.remove('active');
+    return;
+  }
   var faulted=chains.filter(function(c){return(c.display_status||c.status)==='fault'});
   if(!faulted.length){
     hero.className='ok';ic.textContent='✅';
     ti.textContent='All Stations On Air';
     su.textContent=chains.length+' station'+(chains.length>1?'s':'')+' running normally — no action required.';
     ba.textContent='ALL CLEAR';
+    if(faultOverlay)faultOverlay.classList.remove('active');
+    if(faultBanner)faultBanner.classList.remove('active');
   }else if(faulted.length===1){
     hero.className='fault';ic.textContent='🔴';
     ti.textContent=(faulted[0].name||'Station')+' — SIGNAL FAULT';
     su.textContent='Engineering have been alerted automatically.';
     ba.textContent='1 FAULT';
+    if(faultOverlay)faultOverlay.classList.add('active');
+    if(faultBanner)faultBanner.classList.add('active');
+    if(faultText)faultText.textContent='SIGNAL FAULT — '+(faulted[0].name||'STATION').toUpperCase();
   }else{
     hero.className='fault';ic.textContent='🔴';
     ti.textContent=faulted.length+' STATION FAULTS ACTIVE';
     su.textContent=faulted.map(function(c){return c.name}).slice(0,3).join(', ')+(faulted.length>3?' + '+(faulted.length-3)+' more':'');
     ba.textContent=faulted.length+' FAULTS';
+    if(faultOverlay)faultOverlay.classList.add('active');
+    if(faultBanner)faultBanner.classList.add('active');
+    if(faultText)faultText.textContent=faulted.length+' SIGNAL FAULTS — '+faulted.map(function(c){return(c.name||'?').toUpperCase()}).join(' / ');
   }
 }
 
