@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.4.0",
+    "version":  "3.4.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -743,8 +743,8 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   display:flex;align-items:center;justify-content:center;
   font-size:60px;font-weight:800;color:rgba(255,255,255,.25);margin-bottom:8px}
 .stn{font-size:32px;font-weight:700;text-align:center;margin-bottom:2px}
-.stu{font-size:22px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
-  color:#fff;text-align:center;margin-bottom:4px}
+.stu{font-size:30px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+  color:#fff;text-align:center;margin-bottom:6px}
 .frq{font-size:13px;color:var(--mu);text-align:center;margin-bottom:8px}
 .mic{width:80%;max-width:300px;padding:10px 14px;border-radius:12px;text-align:center;
   font-size:20px;font-weight:700;letter-spacing:.06em;margin-bottom:5px;flex-shrink:0}
@@ -875,20 +875,21 @@ function updateCol(s,idx){
   var col=document.getElementById('col'+idx);
   if(col){var fl=false;(s.chains||[]).forEach(function(x){if(x.status==='fault')fl=true});
     col.classList.toggle('fault',fl)}
-  // Show/presenter image — keep showing last one until a new one arrives
+  // Show/presenter image — use show_image, fall back to artwork, keep last one
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
-    var si=np.show_image||'';
+    var si=np.show_image||np.artwork||'';
     if(si&&_artSrc['s'+idx]!==si){_artSrc['s'+idx]=si;showImg.src=si;
       showImg.onload=function(){showImg.style.display=''};
       showImg.onerror=function(){showImg.style.display='none'}}
-    // If no show_image right now, just leave whatever is already showing
+    // If empty right now, keep showing whatever was last loaded
   }
   // Track artwork — separate, shown below the divider when a song is playing
   var artEl=document.getElementById('art'+idx);
   if(artEl){
     var ta=np.artwork||'';
-    if(ta&&(np.artist||np.title)){
+    // Only show track art if there's a song AND it's different from the show image
+    if(ta&&(np.artist||np.title)&&ta!==_artSrc['s'+idx]){
       if(_artSrc['t'+idx]!==ta){artEl.src=ta;_artSrc['t'+idx]=ta;
         artEl.onload=function(){artEl.style.display=''};
         artEl.onerror=function(){artEl.style.display='none'}}
