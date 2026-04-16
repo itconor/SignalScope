@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.3.1",
+    "version":  "3.4.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -717,6 +717,9 @@ _TV_TPL = r"""<!doctype html>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
 body{font-family:'BM',system-ui,sans-serif;background:var(--bg);color:var(--tx);display:flex;-webkit-user-select:none;user-select:none}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:url('/wallboard/asset/_bauer_logo_white.svg{% if wb_token %}?token={{wb_token}}{% endif %}') center center/50% no-repeat;
+  opacity:.04}
 body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   background:radial-gradient(ellipse 900px 500px at 30% 20%,rgba(88,0,202,.4),transparent),
   radial-gradient(ellipse 700px 400px at 70% 80%,rgba(63,20,156,.3),transparent)}
