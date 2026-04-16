@@ -1656,7 +1656,9 @@ function renderChains(chains){
       var rgb=_hexToRgb(sColor);
       card.style.borderColor='rgba('+rgb+',.32)';
       card.style.boxShadow='0 0 32px rgba('+rgb+',.16),0 4px 24px rgba(0,0,0,.35)';
-      card.style.background='linear-gradient(160deg,rgba('+rgb+',.09) 0%,rgba(8,22,48,.96) 55%)';
+      card.style.background=
+        'linear-gradient(rgba('+rgb+',.13),rgba('+rgb+',.04)),'
+        +'linear-gradient(160deg,rgba(13,35,70,.92),rgba(8,22,48,.96))';
       var bannerEl=card.querySelector('.cc-visual-banner');
       if(bannerEl)bannerEl.style.background='linear-gradient(180deg,rgba('+rgb+',.3) 0%,rgba('+rgb+',.08) 100%)';
       card.dataset.glow='1';
