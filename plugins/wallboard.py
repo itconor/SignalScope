@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.8.0",
+    "version":  "3.9.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -668,8 +668,8 @@ body::after{
   min-width:280px;max-width:none;flex:1 1 280px;
   background:linear-gradient(160deg,rgba(13,35,70,.92),rgba(8,22,48,.96));
   border:1.5px solid rgba(23,168,255,.12);
-  border-radius:24px;padding:24px 26px 20px;
-  display:flex;flex-direction:column;align-items:center;gap:12px;
+  border-radius:24px;padding:0 0 16px;
+  display:flex;flex-direction:column;align-items:stretch;gap:0;
   position:relative;overflow:hidden;
   transition:border-color .4s,box-shadow .4s,transform .25s;
   box-shadow:0 4px 24px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.04);
@@ -702,32 +702,41 @@ body::after{
   50%{box-shadow:0 0 40px rgba(239,68,68,.2),0 0 80px rgba(239,68,68,.08),0 4px 24px rgba(0,0,0,.3)}
 }
 
-/* Visual container — logo/avatar only */
-.cc-visual{display:flex;align-items:center;justify-content:center}
+/* Logo/avatar banner — full-width headline at top of card */
+.cc-visual-banner{
+  width:100%;height:110px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  border-radius:22px 22px 0 0;overflow:hidden;
+  background:rgba(0,0,0,.22);position:relative;
+  margin-bottom:10px;
+}
 .cc-logo{
-  width:96px;height:96px;border-radius:20px;object-fit:contain;
-  background:rgba(255,255,255,.05);
-  box-shadow:0 4px 16px rgba(0,0,0,.3);
-  border:1px solid rgba(255,255,255,.06);
-  flex-shrink:0;
+  width:100%;height:100%;object-fit:contain;
+  padding:12px 24px;
 }
 .cc-avatar{
-  width:96px;height:96px;border-radius:20px;flex-shrink:0;
+  width:100%;height:100%;
   display:flex;align-items:center;justify-content:center;
-  font-size:34px;font-weight:800;color:#fff;
-  box-shadow:0 4px 16px rgba(0,0,0,.35);
-  text-shadow:0 2px 4px rgba(0,0,0,.3);
+  font-size:40px;font-weight:800;color:#fff;
+  text-shadow:0 2px 8px rgba(0,0,0,.4);
+}
+/* Station name + On Air badge — side by side */
+.cc-header-row{
+  display:flex;align-items:center;gap:10px;
+  padding:0 14px;margin-bottom:8px;
 }
 .cc-name{
-  font-size:20px;font-weight:800;text-align:center;line-height:1.3;
-  max-width:100%;letter-spacing:-.01em;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  flex:1;min-width:0;
+  font-size:17px;font-weight:800;line-height:1.25;
+  letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 /* Status badge */
 .cc-status{
-  display:flex;align-items:center;gap:8px;
-  padding:8px 20px;border-radius:12px;
-  font-size:15px;font-weight:800;letter-spacing:.04em;
+  display:flex;align-items:center;gap:6px;
+  padding:5px 10px;border-radius:9px;
+  font-size:13px;font-weight:800;letter-spacing:.03em;
+  flex-shrink:0;
 }
 .cc-status.s-ok{
   background:rgba(34,197,94,.15);color:var(--ok);
@@ -745,7 +754,7 @@ body::after{
 .cc-sdot{width:10px;height:10px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
 
 /* Node dots */
-.cc-nodes{display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:center;margin-top:2px}
+.cc-nodes{display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:flex-start;padding:0 14px;margin-bottom:6px}
 .cc-nd{width:10px;height:10px;border-radius:50%;transition:background .3s}
 .cc-nd.ok{background:var(--ok);box-shadow:0 0 5px rgba(34,197,94,.6)}
 .cc-nd.down,.cc-nd.fault{background:var(--al);box-shadow:0 0 8px rgba(239,68,68,.6);animation:nd-p 1s ease infinite}
@@ -755,13 +764,13 @@ body::after{
 .cc-arr{color:var(--mu);font-size:8px;opacity:.35}
 
 /* Health bar */
-.cc-health{width:100%;height:6px;background:rgba(0,0,0,.35);border-radius:3px;overflow:hidden;margin-top:6px}
+.cc-health{height:6px;background:rgba(0,0,0,.35);border-radius:3px;overflow:hidden;margin:6px 14px 0}
 .cc-health-fill{height:100%;border-radius:3px;transition:width .6s ease,background .4s}
 /* SLA text */
-.cc-sla{font-size:13px;color:var(--mu);font-weight:600;font-variant-numeric:tabular-nums;margin-top:0}
+.cc-sla{font-size:12px;color:var(--mu);font-weight:600;font-variant-numeric:tabular-nums;padding:2px 14px 0}
 
 /* ═══ Horizontal RX meter on chain card ═══ */
-.cc-rx-meter{width:100%;margin-top:6px}
+.cc-rx-meter{margin:4px 14px 0}
 .cc-rx-bar{width:100%;height:10px;background:rgba(0,0,0,.3);border-radius:5px;overflow:hidden;position:relative}
 .cc-rx-fill{
   height:100%;border-radius:5px;
@@ -780,32 +789,15 @@ body.bauer .cc-rx-bar{background:rgba(255,255,255,.08)}
 body.bauer .cc-rx-name{color:rgba(255,255,255,.4)}
 body.bauer .cc-rx-val{color:#fff}
 body.bauer .cc-rx-val.rx-low{color:rgba(255,255,255,.3)}
-/* Now playing on chain card */
-.cc-np-wrap{width:100%;text-align:center;margin-top:2px}
-.cc-np-show{
-  font-size:12px;color:var(--mu);font-weight:600;
-  text-transform:uppercase;letter-spacing:.05em;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  margin-bottom:3px;
-}
+/* Now playing — compact single line */
+.cc-np-wrap{padding:4px 14px 0;overflow:hidden}
 .cc-np-track{
-  font-size:14px;color:var(--acc);font-weight:600;
+  font-size:12px;color:var(--acc);font-weight:600;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  line-height:1.3;
 }
 .cc-np-artist{color:var(--tx);font-weight:700}
-body.corp .cc-np-show{color:#86868b}
 body.corp .cc-np-track{color:#0071e3}
 body.corp .cc-np-artist{color:#1d1d1f}
-/* Artwork — own row between status and now-playing */
-.cc-art-wrap{display:flex;justify-content:center;width:100%}
-.cc-art{
-  width:110px;height:110px;border-radius:16px;object-fit:cover;
-  box-shadow:0 4px 18px rgba(0,0,0,.4);
-  border:1px solid rgba(255,255,255,.08);
-  transition:opacity .5s ease,transform .4s ease;
-}
-body.corp .cc-art{box-shadow:0 2px 12px rgba(0,0,0,.12);border-color:rgba(0,0,0,.06)}
 
 /* ═══ Meter scroll ═══ */
 #wb-scroll{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 20px 16px}
@@ -1008,10 +1000,10 @@ body.bauer .cc.cc-fault{
   box-shadow:0 0 30px rgba(255,59,48,.12),0 4px 24px rgba(0,0,0,.2);
 }
 body.bauer .cc.cc-fault::before{background:linear-gradient(90deg,transparent 5%,rgba(255,59,48,.35) 50%,transparent 95%)}
+body.bauer .cc-visual-banner{background:rgba(255,255,255,.06)}
 body.bauer .cc-name{color:#fff}
 body.bauer .cc-status.s-ok{background:rgba(34,197,94,.15);color:#22c55e;border-color:rgba(34,197,94,.3)}
 body.bauer .cc-status.s-fault{background:rgba(255,59,48,.15);color:#ff3b30;border-color:rgba(255,59,48,.35)}
-body.bauer .cc-np-show{color:rgba(255,255,255,.45)}
 body.bauer .cc-np-track{color:rgba(255,255,255,.85)}
 body.bauer .cc-np-artist{color:#fff}
 body.bauer .cc-sla{color:rgba(255,255,255,.4)}
@@ -1134,11 +1126,6 @@ body.has-brand .wb-brand{display:block}
 /* Hide header toggle */
 #wb-hdr.hdr-hidden{display:none}
 
-/* ═══ Animated now-playing transitions ═══ */
-.cc-art{transition:opacity .5s ease,transform .4s ease}
-.cc-art.art-entering{opacity:0;transform:scale(.92)}
-.cc-np-track,.cc-np-show{transition:opacity .35s ease,transform .35s ease}
-.cc-np-track.np-entering,.cc-np-show.np-entering{opacity:0;transform:translateY(8px)}
 
 /* ═══ Auto-scaling chain cards — fill the screen width ═══ */
 #wb-chains.cc-count-1 .cc{min-width:420px;max-width:none;flex:1 1 100%}
@@ -1146,85 +1133,44 @@ body.has-brand .wb-brand{display:block}
 #wb-chains.cc-count-3 .cc{min-width:280px;max-width:none;flex:1 1 30%}
 #wb-chains.cc-count-4 .cc{max-width:none;flex:1 1 22%}
 #wb-chains.cc-count-5 .cc{max-width:none;flex:1 1 18%}
-#wb-chains.cc-count-1 .cc-name{font-size:28px}
-#wb-chains.cc-count-2 .cc-name{font-size:24px}
-#wb-chains.cc-count-1 .cc-logo,#wb-chains.cc-count-1 .cc-avatar{width:130px;height:130px;border-radius:28px}
-#wb-chains.cc-count-1 .cc-avatar{font-size:48px}
-#wb-chains.cc-count-2 .cc-logo,#wb-chains.cc-count-2 .cc-avatar{width:110px;height:110px;border-radius:24px}
-#wb-chains.cc-count-2 .cc-avatar{font-size:40px}
-#wb-chains.cc-count-1 .cc-art{width:140px;height:140px;border-radius:20px}
-#wb-chains.cc-count-2 .cc-art{width:120px;height:120px;border-radius:18px}
+#wb-chains.cc-count-1 .cc-name{font-size:24px}
+#wb-chains.cc-count-2 .cc-name{font-size:20px}
+#wb-chains.cc-count-1 .cc-visual-banner{height:150px}
+#wb-chains.cc-count-1 .cc-avatar{font-size:56px}
+#wb-chains.cc-count-2 .cc-visual-banner{height:130px}
+#wb-chains.cc-count-2 .cc-avatar{font-size:46px}
 
 /* ═══ Colour-matched artwork glow ═══ */
 .cc[data-glow]{transition:border-color .8s ease,box-shadow .8s ease}
 
-/* ═══ Spotlight hero ═══ */
-#wb-spotlight{
-  margin:8px 20px 0;border-radius:18px;flex-shrink:0;
-  padding:18px 28px;display:none;align-items:center;gap:22px;
-  background:linear-gradient(135deg,rgba(13,35,70,.85),rgba(8,22,48,.92));
-  border:1.5px solid rgba(23,168,255,.15);
-  box-shadow:0 4px 28px rgba(0,0,0,.3);
-  overflow:hidden;position:relative;
-  transition:opacity .6s ease;
-}
-#wb-spotlight.active{display:flex}
-.sl-art{width:120px;height:120px;border-radius:18px;object-fit:cover;flex-shrink:0;
-  box-shadow:0 4px 20px rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.08);
-  transition:opacity .6s ease}
-.sl-art.sl-entering{opacity:0}
-.sl-logo{width:60px;height:60px;border-radius:14px;object-fit:contain;flex-shrink:0;
-  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.06)}
-.sl-body{flex:1;min-width:0;transition:opacity .5s ease}
-.sl-body.sl-entering{opacity:0}
-.sl-station{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--mu);margin-bottom:6px}
-.sl-track{font-size:26px;font-weight:800;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sl-artist{font-size:20px;color:var(--acc);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}
-.sl-dots{position:absolute;bottom:8px;right:16px;display:flex;gap:5px}
-.sl-dot{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.2);transition:background .3s}
-.sl-dot.active{background:var(--acc)}
-body.bauer .sl-station{color:rgba(255,255,255,.5)}
-body.bauer .sl-artist{color:rgba(255,255,255,.75)}
-body.bauer #wb-spotlight{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.1)}
-
-/* ═══ Now-playing history ═══ */
-.cc-np-history{width:100%;text-align:center;margin-top:2px}
-.cc-np-hist-item{
-  font-size:11px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  line-height:1.5;transition:opacity .4s;
-}
-.cc-np-hist-item:nth-child(2){opacity:.55}
-.cc-np-hist-item:nth-child(3){opacity:.3}
 
 /* ═══ Bauer font sizing ═══ */
 body.bauer .hero-title{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:32px;font-weight:700;letter-spacing:-.03em}
 body.bauer .hero-sub{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:18px;font-weight:300}
 body.bauer .hero-badge{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:18px;font-weight:700}
-body.bauer .cc-name{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:22px;font-weight:700}
+body.bauer .cc-name{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:18px;font-weight:700}
 body.bauer .wb-title{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:22px;font-weight:700}
 body.bauer #wb-clock{font-family:'BauerMediaSans',system-ui,sans-serif;font-weight:300;font-size:42px}
-body.bauer .sl-track{font-family:'BauerMediaSans',system-ui,sans-serif;font-size:30px;font-weight:700}
-body.bauer .sl-artist{font-family:'BauerMediaSans',system-ui,sans-serif;font-weight:300;font-size:22px}
 body.bauer .cc-np-track{font-family:'BauerMediaSans',system-ui,sans-serif}
 body.bauer .cc-np-artist{font-family:'BauerMediaSans',system-ui,sans-serif;font-weight:700}
 body.bauer .tk-site{font-family:'BauerMediaSans',system-ui,sans-serif}
 
 /* ═══ Fault sparkline ═══ */
-.cc-sparkline{width:100%;height:16px;margin-top:2px;position:relative}
+.cc-sparkline{height:16px;margin:4px 14px 0;position:relative}
 .cc-sparkline canvas{width:100%;height:100%;border-radius:3px}
 
 /* ═══ Frequency badge ═══ */
 .cc-freq{
-  font-size:13px;color:var(--mu);font-weight:600;letter-spacing:.04em;
-  text-align:center;opacity:.7;
+  font-size:12px;color:var(--mu);font-weight:600;letter-spacing:.04em;
+  opacity:.7;padding:0 14px 2px;
 }
 body.bauer .cc-freq{color:rgba(255,255,255,.45)}
 
 /* ═══ On Air pulse ring ═══ */
-.cc-visual{position:relative}
+.cc-visual-banner{position:relative}
 .cc-pulse-ring{
-  position:absolute;inset:-8px;border-radius:24px;
-  border:2px solid rgba(34,197,94,.4);
+  position:absolute;inset:0;border-radius:22px 22px 0 0;
+  border:3px solid rgba(34,197,94,.5);
   animation:pulse-ring 2.5s ease-out infinite;
   pointer-events:none;
 }
@@ -1337,7 +1283,6 @@ body.day-grad{transition:background 3s ease}
     </div>
     <div class="hero-badge" id="hero-badge"></div>
   </div>
-  <div id="wb-spotlight"></div>
   <div id="wb-chains"></div>
   <div id="wb-scroll"><div id="wb-meters"></div></div>
 </div>
@@ -1421,12 +1366,7 @@ var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={};
 var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false;
 var _allStreams=[];  // for stream selector
 
-/* ═══ Now-playing history ═══ */
-var _npHistory={};  // cid → [{artist,title}, ...]
-var MAX_NP_HIST=3;
 
-/* ═══ Spotlight ═══ */
-var _slIdx=0,_slTimer=null,SL_INTERVAL=15000;
 
 /* ═══ Fault sound ═══ */
 var _prevFaultIds={};  // cid → 'fault'|'ok' — track transitions
@@ -1640,15 +1580,15 @@ function renderChains(chains){
       card=document.createElement('div');
       card.dataset.cid=cid;
       card.innerHTML=
-        '<div class="cc-visual"><div class="cc-pulse-ring"></div></div>'
-        +'<div class="cc-name"></div>'
+        '<div class="cc-visual-banner"><div class="cc-pulse-ring"></div></div>'
+        +'<div class="cc-header-row">'
+          +'<div class="cc-status"><span class="cc-sdot"></span><span class="cc-stxt"></span></div>'
+          +'<div class="cc-name"></div>'
+        +'</div>'
         +'<div class="cc-freq"></div>'
-        +'<div class="cc-status"><span class="cc-sdot"></span><span class="cc-stxt"></span></div>'
-        +'<div class="cc-art-wrap"></div>'
-        +'<div class="cc-np-wrap"></div>'
-        +'<div class="cc-np-history"></div>'
         +'<div class="cc-nodes"></div>'
         +'<div class="cc-rx-meter"><div class="cc-rx-bar"><div class="cc-rx-fill" style="width:0"></div><div class="cc-rx-peak" style="left:0"></div></div><div class="cc-rx-label"><span class="cc-rx-name"></span><span class="cc-rx-val rx-low">— dB</span></div></div>'
+        +'<div class="cc-np-wrap"></div>'
         +'<div class="cc-sparkline"><canvas></canvas></div>'
         +'<div class="cc-health"><div class="cc-health-fill"></div></div>'
         +'<div class="cc-sla"></div>'
@@ -1663,8 +1603,8 @@ function renderChains(chains){
     // Update class (status glow etc)
     card.className=_ccCardCls(st);
 
-    // Logo or avatar at the top
-    var vizEl=card.querySelector('.cc-visual');
+    // Logo or avatar — fills the full-width banner at the top
+    var vizEl=card.querySelector('.cc-visual-banner');
     if(hasLogo){
       var logoImg=vizEl.querySelector('.cc-logo');
       var logoUrl=_tkUrl('/wallboard/logo/'+cid);
@@ -1683,35 +1623,6 @@ function renderChains(chains){
         avEl.textContent=_initial(ch.name||'?');
         vizEl.insertBefore(avEl,vizEl.firstChild);
       }
-    }
-
-    // Artwork — own row above now-playing, with crossfade
-    var artWrap=card.querySelector('.cc-art-wrap');
-    var artImg=artWrap?artWrap.querySelector('.cc-art'):null;
-    if(hasArt&&artWrap){
-      if(!artImg){
-        artImg=document.createElement('img');artImg.className='cc-art art-entering';artImg.alt='';
-        artWrap.appendChild(artImg);
-        setTimeout(function(){artImg.classList.remove('art-entering')},30);
-      }
-      if(artImg.src!==np.artwork){
-        artImg.classList.add('art-entering');
-        var _art=artImg;
-        setTimeout(function(){
-          _art.src=np.artwork;
-          _art.onload=function(){
-            _art.classList.remove('art-entering');
-            _extractGlow(_art,function(r,g,b){
-              card.style.borderColor='rgba('+r+','+g+','+b+',.35)';
-              card.style.boxShadow='0 0 28px rgba('+r+','+g+','+b+',.15),0 4px 24px rgba(0,0,0,.3)';
-              card.dataset.glow='1';
-            });
-          };
-        },250);
-      }
-    }else if(artWrap){
-      if(artImg){artImg.remove()}
-      if(card.dataset.glow){delete card.dataset.glow;card.style.borderColor='';card.style.boxShadow=''}
     }
 
     // Name
@@ -1738,47 +1649,16 @@ function renderChains(chains){
     var sTxt=_ccStatusTxt(st);
     if(stxtEl&&stxtEl.textContent!==sTxt)stxtEl.textContent=sTxt;
 
-    // Now playing — with animated transitions and history tracking
+    // Now playing — compact single line
     var npWrap=card.querySelector('.cc-np-wrap');
-    var npKey=np?(np.artist||'')+'\t'+(np.title||''):'';
-    if(np&&(np.artist||np.title||np.show)){
+    if(npWrap){
       var npInner='';
-      if(np.show)npInner+='<div class="cc-np-show">'+_e(np.show)+'</div>';
-      if(np.artist||np.title){
+      if(np&&(np.artist||np.title)){
         var track=np.artist?'<span class="cc-np-artist">'+_e(np.artist)+'</span> — '+_e(np.title):_e(np.title);
-        npInner+='<div class="cc-np-track">'+track+'</div>';
+        npInner='<div class="cc-np-track">'+track+'</div>';
       }
-      if(npWrap._lastNp!==npInner){
-        // Track history
-        if(npWrap._lastNpKey&&npWrap._lastNpKey!==npKey){
-          var hist=_npHistory[cid]||[];
-          hist.unshift({artist:npWrap._lastArtist||'',title:npWrap._lastTitle||''});
-          if(hist.length>MAX_NP_HIST)hist.length=MAX_NP_HIST;
-          _npHistory[cid]=hist;
-        }
-        npWrap._lastArtist=np.artist||'';npWrap._lastTitle=np.title||'';
-        npWrap.innerHTML=npInner;npWrap._lastNp=npInner;
-        // Slide-in animation
-        npWrap.querySelectorAll('.cc-np-track,.cc-np-show').forEach(function(el){
-          el.classList.add('np-entering');
-          setTimeout(function(){el.classList.remove('np-entering')},30);
-        });
-      }
-    }else{
-      if(npWrap.innerHTML){npWrap.innerHTML='';npWrap._lastNp=''}
+      if(npWrap._lastNp!==npInner){npWrap.innerHTML=npInner;npWrap._lastNp=npInner}
     }
-    npWrap._lastNpKey=npKey;
-
-    // Now-playing history (last 3 tracks, fading)
-    var histEl=card.querySelector('.cc-np-history');
-    var hist=_npHistory[cid]||[];
-    if(hist.length&&np){
-      var hHtml='';hist.forEach(function(h){
-        var t=h.artist?(h.artist+' — '+h.title):h.title;
-        hHtml+='<div class="cc-np-hist-item">'+_e(t)+'</div>';
-      });
-      if(histEl._lastH!==hHtml){histEl.innerHTML=hHtml;histEl._lastH=hHtml}
-    }else if(histEl.innerHTML){histEl.innerHTML='';histEl._lastH=''}
 
     // Nodes
     var nodesEl=card.querySelector('.cc-nodes');
@@ -1866,9 +1746,6 @@ function renderChains(chains){
 
   // Sparklines — draw fault events on each card's canvas
   _drawSparklines(chains);
-
-  // Spotlight — update rotating hero
-  _updateSpotlight(chains);
 }
 function _flatN(nodes){var o=[];(nodes||[]).forEach(function(n){if(n.type==='stack')(n.nodes||[]).forEach(function(s){o.push(s)});else o.push(n)});return o}
 
@@ -1929,56 +1806,6 @@ function _drawSparklines(chains){
       ctx.fillStyle='rgba(239,68,68,.8)';ctx.fillRect(fx,1,Math.max(3,w-fx),h-2);
     }
   });
-}
-
-/* ═══ Spotlight — rotating now-playing hero ═══ */
-function _updateSpotlight(chains){
-  // Collect chains with now-playing data
-  var items=[];
-  (chains||[]).forEach(function(ch){
-    var rpuid=(_cfg.chain_stations||{})[ch.id]||'';
-    var np=rpuid?(_npData[rpuid]||null):null;
-    if(np&&(np.artist||np.title))items.push({chain:ch,np:np,rpuid:rpuid});
-  });
-  var sl=document.getElementById('wb-spotlight');
-  if(items.length<2){sl.classList.remove('active');clearInterval(_slTimer);_slTimer=null;return}
-  sl.classList.add('active');
-  if(_slIdx>=items.length)_slIdx=0;
-  var cur=items[_slIdx];
-  // Build/update DOM
-  var body=sl.querySelector('.sl-body');
-  if(!body){
-    sl.innerHTML='<img class="sl-logo" alt=""><img class="sl-art" alt="">'
-      +'<div class="sl-body"><div class="sl-station"></div><div class="sl-track"></div><div class="sl-artist"></div></div>'
-      +'<div class="sl-dots"></div>';
-    body=sl.querySelector('.sl-body');
-  }
-  var logoEl=sl.querySelector('.sl-logo'),artEl=sl.querySelector('.sl-art');
-  var stEl=body.querySelector('.sl-station'),trEl=body.querySelector('.sl-track'),arEl=body.querySelector('.sl-artist');
-  var hasLogo=_chainLogos[cur.chain.id];
-  if(hasLogo){logoEl.src=_tkUrl('/wallboard/logo/'+cur.chain.id);logoEl.style.display=''}
-  else logoEl.style.display='none';
-  if(cur.np.artwork){artEl.src=cur.np.artwork;artEl.style.display=''}
-  else artEl.style.display='none';
-  stEl.textContent=cur.chain.name||'';
-  trEl.textContent=cur.np.title||'';
-  arEl.textContent=cur.np.artist||'';
-  // Dots
-  var dots=sl.querySelector('.sl-dots');
-  var dHtml='';items.forEach(function(_,i){dHtml+='<span class="sl-dot'+(i===_slIdx?' active':'')+'"></span>'});
-  dots.innerHTML=dHtml;
-  // Auto-advance timer
-  if(!_slTimer)_slTimer=setInterval(function(){
-    _slIdx++;if(_slIdx>=items.length)_slIdx=0;
-    // Animate transition
-    var b=sl.querySelector('.sl-body'),a=sl.querySelector('.sl-art');
-    if(b)b.classList.add('sl-entering');if(a)a.classList.add('sl-entering');
-    setTimeout(function(){_updateSpotlight(_lastChains)},300);
-    setTimeout(function(){
-      var b2=sl.querySelector('.sl-body'),a2=sl.querySelector('.sl-art');
-      if(b2)b2.classList.remove('sl-entering');if(a2)a2.classList.remove('sl-entering');
-    },350);
-  },SL_INTERVAL);
 }
 
 /* ═══ Meters ═══ */
