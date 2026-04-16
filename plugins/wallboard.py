@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.13.2",
+    "version":  "3.13.3",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1518,8 +1518,9 @@ function _resetHide(){clearTimeout(_hideT);document.getElementById('wb-hdr').cla
 document.addEventListener('fullscreenchange',function(){var f=!!document.fullscreenElement;document.getElementById('btn-fs').textContent=f?'✕ Exit':'⛶ Full';if(f){_resetHide();document.addEventListener('mousemove',_resetHide)}else{clearTimeout(_hideT);document.getElementById('wb-hdr').classList.remove('hide');document.removeEventListener('mousemove',_resetHide)}});
 
 /* ── Drawer ── */
-function openDrawer(){document.getElementById('wb-drawer').classList.add('open');document.getElementById('wb-overlay').classList.add('show');renderDrawerChains();renderDrawerStreams()}
-function closeDrawer(){document.getElementById('wb-drawer').classList.remove('open');document.getElementById('wb-overlay').classList.remove('show')}
+var _drawerOpen=false;
+function openDrawer(){_drawerOpen=true;document.getElementById('wb-drawer').classList.add('open');document.getElementById('wb-overlay').classList.add('show');renderDrawerChains();renderDrawerStreams()}
+function closeDrawer(){_drawerOpen=false;document.getElementById('wb-drawer').classList.remove('open');document.getElementById('wb-overlay').classList.remove('show')}
 
 /* ── Helpers ── */
 function levToH(db){return Math.max(0,Math.min(100,(db-DB_FLOOR)/(-DB_FLOOR)*100))}
@@ -1942,7 +1943,9 @@ requestAnimationFrame(_meterRaf);
 /* ═══ Polling ═══ */
 function poll(){
   fetch(_tkUrl('/api/wallboard/data'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
-    if(d.config){_cfg=Object.assign(_cfg,d.config,_urlOverrides);applyConfig();_cfgLoaded=true}
+    /* Only sync server config when drawer is closed — prevents poll from
+       overwriting changes the user is actively making in the settings panel */
+    if(d.config){if(!_drawerOpen){_cfg=Object.assign(_cfg,d.config,_urlOverrides);applyConfig();}_cfgLoaded=true;}
     _chainLogos=d.chain_logos||{};_chainLogos._ts=Date.now();
     if(d.chain_faults)_loadFaultHistory(d.chain_faults);
     renderMeters(d);buildTicker(d.alerts||[]);
