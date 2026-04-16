@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.1.0",
+    "version":  "3.1.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -721,7 +721,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   background:radial-gradient(ellipse 900px 500px at 30% 20%,rgba(88,0,202,.4),transparent),
   radial-gradient(ellipse 700px 400px at 70% 80%,rgba(63,20,156,.3),transparent)}
 #sb{position:relative;z-index:1;flex:1;display:flex;height:100%}
-.cols{display:flex;flex:1;height:100%}
+.cols{display:flex;flex:1;height:100%;max-width:1920px;margin:0 auto}
 .col{flex:1;display:flex;position:relative;overflow:hidden;border-right:1px solid rgba(255,255,255,.06)}
 .col:last-child{border-right:none}
 .col::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;z-index:2;
@@ -731,15 +731,15 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .col.fault{background:linear-gradient(180deg,rgba(239,68,68,.06),transparent 40%)}
 .col.fault::before{background:linear-gradient(90deg,transparent,rgba(239,68,68,.6),transparent)}
 /* LEFT panel */
-.lp{width:260px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;
-  padding:30px 20px;z-index:1}
-.logo{width:160px;height:160px;border-radius:28px;object-fit:contain;flex-shrink:0;
+.lp{width:14%;min-width:180px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;
+  padding:24px 12px;z-index:1}
+.logo{width:85%;max-width:160px;aspect-ratio:1;border-radius:24px;object-fit:contain;flex-shrink:0;
   background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.1);
-  box-shadow:0 8px 36px rgba(0,0,0,.4);margin-bottom:14px}
-.logo-ph{width:160px;height:160px;border-radius:28px;flex-shrink:0;
+  box-shadow:0 8px 36px rgba(0,0,0,.4);margin-bottom:12px}
+.logo-ph{width:85%;max-width:160px;aspect-ratio:1;border-radius:24px;flex-shrink:0;
   background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.06);
   display:flex;align-items:center;justify-content:center;
-  font-size:56px;font-weight:800;color:rgba(255,255,255,.25);margin-bottom:14px}
+  font-size:48px;font-weight:800;color:rgba(255,255,255,.25);margin-bottom:12px}
 .stn{font-size:28px;font-weight:700;text-align:center;margin-bottom:4px;width:100%}
 .stu{font-size:16px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;
   color:var(--mu);text-align:center;margin-bottom:6px}
@@ -783,8 +783,8 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .idle{font-size:18px;color:var(--mu);text-align:center;font-style:italic;
   line-height:1.5;min-height:27px}
 /* RIGHT panel — meters */
-.rp{width:120px;flex-shrink:0;display:flex;gap:3px;align-items:stretch;
-  padding:20px 10px;z-index:1}
+.rp{width:7%;min-width:80px;flex-shrink:0;display:flex;gap:3px;align-items:stretch;
+  padding:16px 6px;z-index:1}
 .vm{display:flex;flex-direction:column;align-items:center;gap:2px;flex:1;min-width:0}
 .vb{flex:1;width:100%;position:relative;
   background:linear-gradient(to top,rgba(34,197,94,.06) 0% 75%,rgba(245,158,11,.06) 75% 87.5%,rgba(239,68,68,.06) 87.5% 100%);
