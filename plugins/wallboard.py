@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.13.4",
+    "version":  "3.13.5",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1496,15 +1496,21 @@ function _localSave(){
   _dirty=true;
   var ind=document.getElementById('dr-dirty');if(ind)ind.style.display='';
 }
-/* saveConfig: persist to server. Called only by the Save button. */
+/* saveConfig: persist to server. Called only by the Save button.
+   _dirty is cleared AFTER server confirms — prevents poll from applying
+   old config during the async POST window. */
 function saveConfig(){
   _cfg.sort_level=_sortLev;
-  _dirty=false;
-  var ind=document.getElementById('dr-dirty');if(ind)ind.style.display='none';
+  var payload=JSON.stringify(_cfg);
+  try{localStorage.setItem('wb_cfg',payload)}catch(e){}
   fetch(_tkUrl('/api/wallboard/config'),{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
-    body:JSON.stringify(_cfg)}).catch(function(){});
-  try{localStorage.setItem('wb_cfg',JSON.stringify(_cfg))}catch(e){}
+    body:payload})
+  .then(function(){
+    _dirty=false;
+    var ind=document.getElementById('dr-dirty');if(ind)ind.style.display='none';
+  })
+  .catch(function(){});
 }
 function isStreamVisible(site,name){
   var hs=_cfg.hidden_streams||[];if(!hs.length)return true;
