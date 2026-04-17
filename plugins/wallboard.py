@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.14.0",
+    "version":  "3.14.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -942,12 +942,12 @@ body.corp .cc-np-artist{color:#1d1d1f}
 .tk-sep{padding:0 14px;font-size:18px;color:var(--bor);opacity:.4}
 
 /* ═══ Settings drawer ═══ */
-#wb-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:190;opacity:0;pointer-events:none;transition:opacity .3s}
+#wb-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:490;opacity:0;pointer-events:none;transition:opacity .3s}
 #wb-overlay.show{opacity:1;pointer-events:auto}
 #wb-drawer{
   position:fixed;top:0;right:0;bottom:0;width:360px;
   background:linear-gradient(180deg,rgba(10,28,58,.98),rgba(5,14,30,.99));
-  border-left:1px solid var(--bor);z-index:200;
+  border-left:1px solid var(--bor);z-index:500;
   transform:translateX(100%);transition:transform .35s cubic-bezier(.4,0,.2,1);
   display:flex;flex-direction:column;box-shadow:-6px 0 28px rgba(0,0,0,.4);
 }
@@ -1276,6 +1276,14 @@ body.day-grad{transition:background 3s ease}
   padding:32px 60px 20px;gap:16px;overflow:hidden;
 }
 #wb-spotlight.sp-on{display:flex}
+#sp-exit-btn{
+  position:absolute;top:14px;right:18px;z-index:401;
+  background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);
+  border-radius:8px;color:rgba(255,255,255,.6);cursor:pointer;
+  font-size:12px;font-weight:700;padding:6px 12px;letter-spacing:.04em;
+  font-family:inherit;transition:background .15s,color .15s;
+}
+#sp-exit-btn:hover{background:rgba(255,255,255,.16);color:#fff}
 .sp-glow{
   position:absolute;inset:0;pointer-events:none;z-index:0;
   transition:background 1s ease;
@@ -1371,6 +1379,7 @@ body.day-grad{transition:background 3s ease}
 </div>
 
 <div id="wb-spotlight">
+  <button id="sp-exit-btn" title="Exit spotlight">⊗ Exit Spotlight</button>
   <div class="sp-glow" id="sp-glow"></div>
   <div id="sp-card">
     <div id="sp-visual"></div>
@@ -2083,6 +2092,19 @@ function _spStop(){
   var el=document.getElementById('wb-spotlight');
   if(el)el.classList.remove('sp-on');
 }
+/* Exit button on spotlight overlay — always reachable */
+(function(){
+  var exitBtn=document.getElementById('sp-exit-btn');
+  if(exitBtn){exitBtn.addEventListener('click',function(){
+    _cfg.show_spotlight=false;_localSave();_spStop();saveConfig();
+  });}
+  /* ESC key also exits spotlight */
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'&&document.getElementById('wb-spotlight').classList.contains('sp-on')){
+      _cfg.show_spotlight=false;_localSave();_spStop();saveConfig();
+    }
+  });
+})();
 function _spShow(){
   var chains=_lastChains||[];if(!chains.length)return;
   if(_spIdx>=chains.length)_spIdx=0;
