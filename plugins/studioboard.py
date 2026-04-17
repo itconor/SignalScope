@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.7.1",
+    "version":  "3.7.2",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
