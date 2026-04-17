@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.7.0",
+    "version":  "3.7.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -934,8 +934,8 @@ function buildCol(s,idx){
       +'<div class=vb><div class=vf data-k="'+E(k)+'|R"></div><div class=vp data-p="'+E(k)+'|R"></div></div></div><div class=vl>'+E(nm)+'</div></div>'}
     else{mh+='<div class=vm><div class=vb><div class=vf data-k="'+E(k)+'"></div><div class=vp data-p="'+E(k)+'"></div></div><div class=vl>'+E(nm)+'</div></div>'}
   });
-  /* Multi-layer colour tint — matches wallboard card approach */
-  var colBg='linear-gradient(rgba('+r+',.08),rgba('+r+',.03)),linear-gradient(180deg,rgba(9,18,50,.75),rgba(5,12,35,.9))';
+  /* Flat dark base + even colour tint — stays true to set colour top to bottom */
+  var colBg='linear-gradient(180deg,rgba('+r+',.18) 0%,rgba('+r+',.10) 100%),rgba(7,14,38,.88)';
   var mainContent=isEmpty
     /* Free / available studio */
     ?('<div class=free-band id="free-band'+idx+'">'
