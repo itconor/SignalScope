@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.6.2",
+    "version":  "3.7.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -271,6 +271,76 @@ def register(app, ctx):
         studio["chains"] = data.get("chains", [])
         _cfg_save(cfg)
         return jsonify({"ok": True, "chains": studio["chains"]})
+
+    # ── Station assign REST API ─────────────────────────────────
+    # POST /api/studioboard/assign
+    # Body: {studio_id, chain_id OR chain_name, [color], [clear:true]}
+    # Replaces the studio's chain assignment in one call — ideal for
+    # automation systems / broadcast consoles that want to say
+    # "Studio 1 is now Downtown FM".
+
+    @app.post("/api/studioboard/assign")
+    def sb_assign_station():
+        """Assign a chain/station to a studio by name or ID.
+        Replaces the current chain assignment. Auth via mobile API token."""
+        if not _validate_token():
+            token_hdr = request.headers.get("Authorization", "")
+            if token_hdr.startswith("Bearer "):
+                import hmac as _hmac_mod
+                tok = token_hdr[7:].strip()
+                try:
+                    expected = str(getattr(getattr(monitor.app_cfg, "mobile_api",
+                                                   None), "token", "") or "").strip()
+                    if not (expected and _hmac_mod.compare_digest(expected, tok)):
+                        return jsonify({"error": "Unauthorized"}), 403
+                except Exception:
+                    return jsonify({"error": "Unauthorized"}), 403
+            else:
+                return jsonify({"error": "Unauthorized"}), 403
+
+        data       = request.get_json(force=True)
+        studio_id  = (data.get("studio_id")  or "").strip()
+        chain_id   = (data.get("chain_id")   or "").strip()
+        chain_name = (data.get("chain_name") or "").strip()
+        color      = (data.get("color")      or "").strip()
+        clear      = bool(data.get("clear", False))
+
+        cfg = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if not studio:
+            return jsonify({"error": "Studio not found"}), 404
+
+        if clear:
+            studio["chains"] = []
+        else:
+            # Resolve chain by name when ID not supplied
+            if chain_name and not chain_id:
+                for ch in (monitor.app_cfg.signal_chains or []):
+                    if ch.get("name", "").lower() == chain_name.lower():
+                        chain_id = ch.get("id", "")
+                        break
+                if not chain_id:
+                    return jsonify({"error": f"Chain '{chain_name}' not found"}), 404
+
+            if chain_id:
+                studio["chains"] = [chain_id]
+                # Auto-borrow colour from wallboard config if not provided
+                if not color:
+                    try:
+                        wb_cfg_path = os.path.join(_BASE_DIR, "wallboard_cfg.json")
+                        with open(wb_cfg_path) as fwb:
+                            wb_cfg = json.load(fwb)
+                        c = (wb_cfg.get("chain_color") or {}).get(chain_id, "")
+                        if c:
+                            color = c
+                    except Exception:
+                        pass
+
+        if color:
+            studio["color"] = color
+
+        _cfg_save(cfg)
+        return jsonify({"ok": True, "studio": studio})
 
     # ── Artwork proxy (for Yodeck — external URLs may be blocked) ─
     @app.get("/studioboard/np_art/<rpuid>")
@@ -636,6 +706,13 @@ function render(){
     html+='<div class="field"><label>Mic Live API</label>';
     html+='<div style="font-size:11px;color:var(--mu)">POST <code style="color:var(--acc)">/api/studioboard/mic/'+_e(st.id)+'?token=YOUR_TOKEN</code> with <code style="color:var(--acc)">{"live": true}</code> or <code style="color:var(--acc)">{"live": false}</code></div>';
     html+='</div>';
+    html+='<div class="field"><label>Station Assign API</label>';
+    html+='<div style="font-size:11px;color:var(--mu)">POST <code style="color:var(--acc)">/api/studioboard/assign?token=YOUR_TOKEN</code><br>';
+    html+='Assign by ID: <code style="color:var(--acc)">{"studio_id":"'+_e(st.id)+'","chain_id":"CHAIN_ID"}</code><br>';
+    html+='Assign by name: <code style="color:var(--acc)">{"studio_id":"'+_e(st.id)+'","chain_name":"Downtown FM"}</code><br>';
+    html+='Clear / free: <code style="color:var(--acc)">{"studio_id":"'+_e(st.id)+'","clear":true}</code><br>';
+    html+='<span style="opacity:.7">Optional: add <code style="color:var(--acc)">"color":"#hex"</code> to override studio colour. Omit to auto-borrow from Wallboard chain colour.</span>';
+    html+='</div></div>';
 
     // Display URL
     html+='<div class="field"><label>Display URL (for Yodeck)</label>';
@@ -808,6 +885,11 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .vl{font-size:10px;font-weight:700;color:var(--mu);text-align:center;white-space:nowrap}
 .vs{display:flex;gap:2px;flex:1;width:100%;height:100%}
 .vs .vb{flex:1}
+/* Free / available studio */
+.free-band{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;text-align:center}
+.free-icon{font-size:80px;opacity:.35;line-height:1}
+.free-lbl{font-size:20px;font-weight:700;text-transform:uppercase;letter-spacing:.15em;color:var(--ok);opacity:.75}
+.free-msg{font-size:17px;font-weight:400;color:rgba(255,255,255,.38);line-height:1.6;max-width:85%}
 </style></head>
 <body>
 <div id="sb"><div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--mu)">
@@ -820,26 +902,31 @@ var T='{{wb_token|default("")}}',SID='{{studio_id|default("")}}';
 function tk(u){if(!T)return u;return u+(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(T)}
 function E(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function RGB(h){h=h.replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];var n=parseInt(h,16);return((n>>16)&255)+','+((n>>8)&255)+','+(n&255)}
-var DB=-80,D=null,NP={},SS={},LL={},_built=false,_idleC={},_artSrc={};
+
+var DB=-80,D=null,NP={},SS={},LL={},_built=false,_idleC={},_artSrc={},_lastSig='';
+/* Smooth meter state */
+var _targetLev={},_curLev={},_peakHold={},_peakTs={},_lastRaf=0;
+var ATTACK_TC=0.05,DECAY_TC=0.7,PEAK_HOLD_MS=2500;
+/* Fun messages for unassigned studios */
+var _FREE_MSG=['Studio is ready and waiting...','On standby — awaiting the stars!',
+  'Signal clear, studio is free','Empty stage, full of potential \uD83C\uDFAC',
+  'Mic check: all clear! \uD83C\uDFA4','The show must go on \u2014 just not yet \u2728'];
+
 function lh(d){return Math.max(0,Math.min(100,(d-DB)/(-DB)*100))}
 var IDLE=["Probably on an ad break...","Presenter's talking too much!",
   "Getting ready for Make Me a Winner?","Music coming right up!",
   "Hold tight, we'll be right back!","Loading the next banger..."];
 
 function gNp(s){var r=s.np_rpuid||'';return r?(NP[r]||{}):{}}
-function gArt(s){
-  var np=gNp(s),sn=(np.show||'').trim();
-  var up=(s.show_artwork_map||{})[sn];
-  if(up)return tk('/studioboard/art/'+up);
-  if(np.show_image)return np.show_image;
-  if(np.artwork)return np.artwork;
-  if(s.np_rpuid)return tk('/studioboard/np_art/'+s.np_rpuid);
-  return '';
-}
+
+/* Track structural changes (chain/input assignment) so DOM rebuilds when needed */
+function _sig(ss){return ss.map(function(s){return s.id+':'+(s.chains||[]).join(',')+'/'+(s.inputs||[]).join(',')}).join('|')}
 
 /* Build the DOM once, then update in place — no flicker */
 function buildCol(s,idx){
-  var c=s.color||'#17a8ff',r=RGB(c),fc=(s.chains||[])[0],sn=fc?fc.name:s.name;
+  var c=s.color||'#17a8ff',r=RGB(c);
+  var fc=(s.chains||[])[0],sn=fc?fc.name:s.name;
+  var isEmpty=!(s.chains&&s.chains.length)&&!(s.inputs&&s.inputs.length);
   var lg=fc?'<img class=logo src="'+tk('/wallboard/logo/'+E(fc.id))+'" alt="" onerror="this.outerHTML=\'<div class=logo-ph>'+E(sn[0])+'</div>\'">':'<div class=logo-ph>'+E((sn||'?')[0])+'</div>';
   var mh='';(s.inputs||[]).forEach(function(i){
     var k=i.key||'',st=i.stereo||false,nm=(i.name||'').replace(/^.*?\|/,'').replace(/^.*?-\s*/,'').substring(0,10);
@@ -847,27 +934,49 @@ function buildCol(s,idx){
       +'<div class=vb><div class=vf data-k="'+E(k)+'|R"></div><div class=vp data-p="'+E(k)+'|R"></div></div></div><div class=vl>'+E(nm)+'</div></div>'}
     else{mh+='<div class=vm><div class=vb><div class=vf data-k="'+E(k)+'"></div><div class=vp data-p="'+E(k)+'"></div></div><div class=vl>'+E(nm)+'</div></div>'}
   });
-  return '<div class=col id="col'+idx+'" style="--cc:rgba('+r+',.5);--cg:rgba('+r+',.08)">'
-    +'<div class=mp><div class=logo-wrap>'+lg+'</div>'
-    +(fc?'':'<div class=stn style="text-shadow:0 0 20px rgba('+r+',.4)">'+E(sn)+'</div>')
-    +'<div class=stu>'+E(s.name)+'</div>'
-    +(s.freq?'<div class=frq>'+E(s.freq)+'</div>':'')
-    +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
-    +'<div id="badges'+idx+'"></div>'
-    +'<div class=divider></div>'
-    +'<img class=art id="showimg'+idx+'" alt="" style="display:none">'
-    +'<div class=shw id="shw'+idx+'"></div>'
-    +'<div class=np-div></div>'
-    +'<img class=art id="art'+idx+'" alt="" style="display:none">'
-    +'<div class=npl id="npl'+idx+'"></div>'
-    +'<div class=anm id="anm'+idx+'"></div>'
-    +'<div class=trk id="trk'+idx+'"></div>'
-    +'<div class=idle id="idl'+idx+'"></div>'
-    +'</div>'
-    +(mh?'<div class=rp>'+mh+'</div>':'')+'</div>';
+  /* Multi-layer colour tint — matches wallboard card approach */
+  var colBg='linear-gradient(rgba('+r+',.08),rgba('+r+',.03)),linear-gradient(180deg,rgba(9,18,50,.75),rgba(5,12,35,.9))';
+  var mainContent=isEmpty
+    /* Free / available studio */
+    ?('<div class=free-band id="free-band'+idx+'">'
+      +'<div class=free-icon>\uD83C\uDFA4</div>'
+      +'<div class=stu>'+E(s.name)+'</div>'
+      +(s.freq?'<div class=frq>'+E(s.freq)+'</div>':'')
+      +'<div class=free-lbl>AVAILABLE</div>'
+      +'<div class=free-msg id="freemsg'+idx+'"></div>'
+      +'</div>')
+    /* Occupied studio — full content panel */
+    :('<div class=mp><div class=logo-wrap>'+lg+'</div>'
+      +(fc?'':'<div class=stn style="text-shadow:0 0 20px rgba('+r+',.4)">'+E(sn)+'</div>')
+      +'<div class=stu>'+E(s.name)+'</div>'
+      +(s.freq?'<div class=frq>'+E(s.freq)+'</div>':'')
+      +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
+      +'<div id="badges'+idx+'"></div>'
+      +'<div class=divider></div>'
+      +'<img class=art id="showimg'+idx+'" alt="" style="display:none">'
+      +'<div class=shw id="shw'+idx+'"></div>'
+      +'<div class=np-div></div>'
+      +'<img class=art id="art'+idx+'" alt="" style="display:none">'
+      +'<div class=npl id="npl'+idx+'"></div>'
+      +'<div class=anm id="anm'+idx+'"></div>'
+      +'<div class=trk id="trk'+idx+'"></div>'
+      +'<div class=idle id="idl'+idx+'"></div>'
+      +'</div>');
+  return '<div class=col id="col'+idx+'" style="--cc:rgba('+r+',.6);--cg:rgba('+r+',.12);background:'+colBg+';border-color:rgba('+r+',.22)">'
+    +mainContent
+    +((!isEmpty&&mh)?'<div class=rp>'+mh+'</div>':'')+'</div>';
 }
 
 function updateCol(s,idx){
+  /* Free / available studio — show idle message and bail */
+  var isEmpty=!(s.chains&&s.chains.length)&&!(s.inputs&&s.inputs.length);
+  var freeMsg=document.getElementById('freemsg'+idx);
+  if(freeMsg){
+    if(!_idleC[s.id+'|free'])_idleC[s.id+'|free']=_FREE_MSG[idx%_FREE_MSG.length];
+    if(freeMsg.textContent!==_idleC[s.id+'|free'])freeMsg.textContent=_idleC[s.id+'|free'];
+  }
+  if(isEmpty)return;
+
   var np=gNp(s);
   // Mic
   var mic=document.getElementById('mic'+idx);
@@ -881,21 +990,19 @@ function updateCol(s,idx){
   var col=document.getElementById('col'+idx);
   if(col){var fl=false;(s.chains||[]).forEach(function(x){if(x.status==='fault')fl=true});
     col.classList.toggle('fault',fl)}
-  // Show/presenter image — episodeImageUrl via np.show_image
+  // Show/presenter image
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
     var si=np.show_image||'';
     if(si){
-      // Always set src if different OR if image is currently hidden
       if(_artSrc['s'+idx]!==si||showImg.style.display==='none'){
         _artSrc['s'+idx]=si;showImg.src=si;
         showImg.style.display='';
         showImg.onerror=function(){showImg.style.display='none'}
       }
     }
-    // When empty, keep whatever was last showing (sticky)
   }
-  // Track artwork — separate, shown below the divider when a song is playing
+  // Track artwork
   var artEl=document.getElementById('art'+idx);
   if(artEl){
     var ta=np.artwork||'';
@@ -936,6 +1043,8 @@ function getStudios(){
 
 function render(){
   var ss=getStudios();if(!ss.length)return;
+  /* Rebuild DOM when chain/input assignment changes */
+  var newSig=_sig(ss);if(newSig!==_lastSig){_built=false;_lastSig=newSig;}
   if(!_built){
     var h='<div class=cols>';ss.forEach(function(s,i){h+=buildCol(s,i)});h+='</div>';
     document.getElementById('sb').innerHTML=h;_built=true;
@@ -945,21 +1054,49 @@ function render(){
 
 function poll(){fetch(tk('/api/studioboard/data'),{credentials:'same-origin'})
   .then(function(r){return r.json()}).then(function(d){D=d;render()}).catch(function(){})}
+
+/* Live levels — store targets for smooth RAF animation, no direct DOM writes */
 function live(){fetch(tk('/api/hub/live_levels'),{credentials:'same-origin'})
   .then(function(r){return r.ok?r.json():{}}).then(function(d){
     Object.keys(d).forEach(function(site){(d[site]||[]).forEach(function(s){
       var k=site+'|'+s.name;LL[k]=s;
-      document.querySelectorAll('[data-k="'+k+'"]').forEach(function(f){
-        f.style.height=lh(s.level_dbfs!=null?s.level_dbfs:DB)+'%'});
+      _targetLev[k]=lh(s.level_dbfs!=null?s.level_dbfs:DB);
+      _targetLev[k+'|pk']=lh(s.peak_dbfs!=null?s.peak_dbfs:DB);
       if(s.level_dbfs_l!=null){
-        document.querySelectorAll('[data-k="'+k+'|L"]').forEach(function(f){f.style.height=lh(s.level_dbfs_l)+'%'});
-        document.querySelectorAll('[data-k="'+k+'|R"]').forEach(function(f){f.style.height=lh(s.level_dbfs_r!=null?s.level_dbfs_r:DB)+'%'})}
-      document.querySelectorAll('[data-p="'+k+'"]').forEach(function(p){
-        var v=s.peak_dbfs!=null?s.peak_dbfs:DB;p.style.bottom=lh(v)+'%';p.style.opacity=v>DB?'.8':'0'});
-      if(s.level_dbfs_l!=null){['L','R'].forEach(function(ch){
-        document.querySelectorAll('[data-p="'+k+'|'+ch+'"]').forEach(function(p){
-          var v=s.peak_dbfs!=null?s.peak_dbfs:DB;p.style.bottom=lh(v)+'%';p.style.opacity=v>DB?'.8':'0'})})}
+        _targetLev[k+'|L']=lh(s.level_dbfs_l);
+        _targetLev[k+'|R']=lh(s.level_dbfs_r!=null?s.level_dbfs_r:DB);
+        _targetLev[k+'|L|pk']=lh(s.peak_dbfs!=null?s.peak_dbfs:DB);
+        _targetLev[k+'|R|pk']=lh(s.peak_dbfs!=null?s.peak_dbfs:DB);
+      }
     })})}).catch(function(){})}
+
+/* requestAnimationFrame loop — exponential attack/decay smoothing, peak hold */
+function _meterRaf(now){
+  requestAnimationFrame(_meterRaf);
+  if(!_lastRaf){_lastRaf=now;return;}
+  var dt=Math.min((now-_lastRaf)/1000,0.1);_lastRaf=now;
+  var keys=Object.keys(_targetLev);
+  for(var i=0;i<keys.length;i++){
+    var key=keys[i];
+    if(key.slice(-3)==='|pk')continue; /* skip peak entries in level loop */
+    var t=_targetLev[key]||0,c=_curLev[key]||0;
+    var tc=t>c?ATTACK_TC:DECAY_TC;
+    c=c+(t-c)*(1-Math.exp(-dt/tc));
+    _curLev[key]=c;
+    var pct=Math.max(0,Math.min(100,c));
+    document.querySelectorAll('[data-k="'+key+'"]').forEach(function(f){f.style.height=pct+'%'});
+    /* Peak hold */
+    var pkVal=_targetLev[key+'|pk']||0;
+    if(pkVal>=(_peakHold[key]||0)){_peakHold[key]=pkVal;_peakTs[key]=now;}
+    else if(now-(_peakTs[key]||0)>PEAK_HOLD_MS){_peakHold[key]=Math.max(0,(_peakHold[key]||0)-0.8);}
+    var ph=_peakHold[key]||0;
+    document.querySelectorAll('[data-p="'+key+'"]').forEach(function(p){
+      p.style.bottom=ph+'%';p.style.opacity=ph>1?'.8':'0';
+    });
+  }
+}
+requestAnimationFrame(_meterRaf);
+
 function npPoll(){if(!D)return;(D.studios||[]).forEach(function(st){
   var r=st.np_rpuid;if(!r)return;
   fetch(tk('/api/nowplaying/'+encodeURIComponent(r)),{credentials:'same-origin'})
