@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.13.5",
+    "version":  "3.14.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1267,6 +1267,67 @@ body.day-grad{transition:background 3s ease}
 /* ═══ QR codes — overlaid on banner corner ═══ */
 .cc-qr{position:absolute;bottom:6px;right:8px;display:none;z-index:2}
 .cc-qr.qr-visible{display:block}
+
+/* ═══ Spotlight mode ═══ */
+#wb-spotlight{
+  display:none;position:fixed;inset:0 0 56px 0;z-index:400;
+  background:rgba(3,8,20,.96);
+  flex-direction:column;align-items:center;justify-content:center;
+  padding:32px 60px 20px;gap:16px;overflow:hidden;
+}
+#wb-spotlight.sp-on{display:flex}
+.sp-glow{
+  position:absolute;inset:0;pointer-events:none;z-index:0;
+  transition:background 1s ease;
+}
+#sp-card{
+  position:relative;z-index:1;
+  width:100%;max-width:900px;
+  display:flex;flex-direction:column;align-items:center;gap:18px;
+}
+#sp-card.sp-enter{animation:sp-fade .5s cubic-bezier(.4,0,.2,1)}
+@keyframes sp-fade{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+#sp-visual{
+  width:160px;height:160px;flex-shrink:0;border-radius:26px;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,.06);
+  box-shadow:0 8px 48px rgba(0,0,0,.5);
+  transition:box-shadow .8s ease;
+}
+#sp-visual img{width:100%;height:100%;object-fit:contain;padding:14px}
+.sp-avatar-lg{
+  width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+  font-size:64px;font-weight:800;color:#fff;text-shadow:0 4px 20px rgba(0,0,0,.4);
+}
+#sp-name{
+  font-size:54px;font-weight:800;letter-spacing:-.025em;text-align:center;
+  line-height:1;color:#fff;text-shadow:0 2px 20px rgba(0,0,0,.3);
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+#sp-sub{display:flex;align-items:center;gap:14px}
+#sp-freq-lbl{font-size:18px;font-weight:600;color:var(--mu);letter-spacing:.05em}
+#sp-badge{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:8px 18px;border-radius:10px;
+  font-size:15px;font-weight:800;letter-spacing:.03em;
+}
+#sp-badge.s-ok{background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.3)}
+#sp-badge.s-fault{background:rgba(239,68,68,.15);color:var(--al);border:1px solid rgba(239,68,68,.35);animation:sb-blink 1.2s ease-in-out infinite}
+#sp-badge.s-unk{background:rgba(138,164,200,.08);color:var(--mu);border:1px solid rgba(138,164,200,.2)}
+#sp-bdot{width:12px;height:12px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor;display:inline-block}
+#sp-nodes{display:flex;align-items:center;gap:8px}
+#sp-nodes .cc-nd{width:14px;height:14px}
+#sp-nodes .cc-arr{font-size:12px}
+#sp-mrow{width:100%;max-width:760px;display:flex;align-items:center;gap:16px}
+#sp-mbar{flex:1;height:18px;border-radius:9px;overflow:hidden;position:relative;background:rgba(0,0,0,.4)}
+#sp-mfill{height:100%;border-radius:9px;background:linear-gradient(90deg,#22c55e 0%,#22c55e 75%,#f59e0b 87%,#ef4444 100%)}
+#sp-mpeak{position:absolute;top:0;bottom:0;width:4px;background:#fff;border-radius:2px;box-shadow:0 0 6px rgba(255,255,255,.5)}
+#sp-mlev{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.03em;min-width:116px;text-align:right;color:#fff}
+#sp-np{font-size:18px;color:var(--acc);font-weight:600;text-align:center;max-width:760px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#sp-footer{position:relative;z-index:1;width:100%;display:flex;flex-direction:column;align-items:center;gap:8px}
+#sp-counter{font-size:11px;color:var(--mu);font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+#sp-pbar{width:100%;max-width:900px;height:3px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}
+#sp-pfill{height:100%;background:var(--acc);border-radius:2px;width:100%}
 </style>
 </head>
 <body>
@@ -1309,6 +1370,27 @@ body.day-grad{transition:background 3s ease}
   <div id="wb-ticker-scroll"><div id="wb-ticker-inner"><span class="tk-item tk-mu"><span class="tk-chip">No recent alerts</span></span></div></div>
 </div>
 
+<div id="wb-spotlight">
+  <div class="sp-glow" id="sp-glow"></div>
+  <div id="sp-card">
+    <div id="sp-visual"></div>
+    <div id="sp-name"></div>
+    <div id="sp-sub">
+      <span id="sp-freq-lbl"></span>
+      <span id="sp-badge"><span id="sp-bdot"></span></span>
+    </div>
+    <div id="sp-nodes"></div>
+    <div id="sp-mrow">
+      <div id="sp-mbar"><div id="sp-mfill" style="width:0%"></div><div id="sp-mpeak" style="left:0%;opacity:.8"></div></div>
+      <div id="sp-mlev">— dB</div>
+    </div>
+    <div id="sp-np"></div>
+  </div>
+  <div id="sp-footer">
+    <div id="sp-counter"></div>
+    <div id="sp-pbar"><div id="sp-pfill"></div></div>
+  </div>
+</div>
 <div id="wb-fault-overlay"></div>
 <div id="wb-fault-banner"><span class="fault-dot"></span><span id="fault-banner-text">SIGNAL FAULT</span><span class="fault-dot"></span></div>
 <div id="wb-overlay"></div>
@@ -1334,6 +1416,15 @@ body.day-grad{transition:background 3s ease}
       <div class="dr-stitle">Theme</div>
       <label class="dr-toggle"><input type="checkbox" id="cfg-bauer"> Bauer Media branded</label>
       <label class="dr-toggle"><input type="checkbox" id="cfg-corp"> Corporate / clean mode</label>
+    </div>
+    <div class="dr-section">
+      <div class="dr-stitle">Spotlight Mode</div>
+      <label class="dr-toggle"><input type="checkbox" id="cfg-spotlight"> Auto-cycle stations</label>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:2px">
+        <span style="font-size:11px;color:var(--mu)">Seconds per station</span>
+        <input id="cfg-spotlight-secs" type="number" min="5" max="60" value="10"
+          style="width:52px;background:#0d1e40;border:1px solid var(--bor);border-radius:5px;color:var(--tx);padding:3px 6px;font-size:12px;font-family:inherit">
+      </div>
     </div>
     <div class="dr-section">
       <div class="dr-stitle">Display</div>
@@ -1384,7 +1475,7 @@ var ATTACK_TC=0.05,DECAY_TC=0.7;
 var _sizes={sm:120,md:155,lg:210};
 var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e0b'],['#9333e8','#a855f7'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316'],['#c81e1e','#ef4444']];
 
-var _cfg={card_size:'lg',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false,chain_freq:{},chain_color:{}};
+var _cfg={card_size:'lg',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false,chain_freq:{},chain_color:{},show_spotlight:false,spotlight_secs:10};
 var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={};
 var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false,_dirty=false;
 var _allStreams=[];  // for stream selector
@@ -1471,6 +1562,8 @@ function applyConfig(){
   document.getElementById('cfg-bauer').checked=!!_cfg.bauer_mode;
   document.getElementById('cfg-hide-hdr').checked=!!_cfg.hide_hdr;
   var _qrCb=document.getElementById('cfg-qr');if(_qrCb)_qrCb.checked=!!_cfg.show_qr;
+  var _spCb=document.getElementById('cfg-spotlight');if(_spCb)_spCb.checked=!!_cfg.show_spotlight;
+  var _spSecs=document.getElementById('cfg-spotlight-secs');if(_spSecs)_spSecs.value=_cfg.spotlight_secs||10;
   var _sb=document.getElementById('btn-sound');if(_sb)_sb.classList.toggle('active',!!_cfg.sound_alert);
   document.querySelectorAll('[data-sz]').forEach(function(b){b.classList.toggle('active',b.dataset.sz===_cfg.card_size)});
   applyVis();
@@ -1488,6 +1581,9 @@ function applyVis(){
   document.getElementById('wb-hdr').classList.toggle('hdr-hidden',!!_cfg.hide_hdr);
   // Time-of-day gradient
   _updateDayGradient();
+  // Spotlight
+  if(_cfg.show_spotlight){if(!_spTimer&&_lastChains&&_lastChains.length)_spStart();}
+  else _spStop();
 }
 /* _localSave: update localStorage + mark dirty (no server POST).
    Used by all live UI interactions so the page feels instant. */
@@ -1955,9 +2051,120 @@ function _meterRaf(ts){
     if(rxPeak){rxPeak.style.left=levToH(rxPk)+'%';rxPeak.style.opacity=rxPk>DB_FLOOR?'.8':'0'}
     if(rxVal){rxVal.textContent=fmtLev(rxDisp);rxVal.className='cc-rx-val'+(rxDisp>=-9?' rx-alert':rxDisp>=-18?' rx-warn':rxDisp<=-60?' rx-low':'')}
   });
+  // Spotlight level meter
+  if(_spRxKey){
+    var spD=(_dispLev[_spRxKey]!=null)?_dispLev[_spRxKey]:DB_FLOOR;
+    var spPk=_peaks[_spRxKey]?_peaks[_spRxKey].val:DB_FLOOR;
+    var spF=document.getElementById('sp-mfill'),spP=document.getElementById('sp-mpeak'),spL=document.getElementById('sp-mlev');
+    if(spF)spF.style.width=levToH(spD)+'%';
+    if(spP){spP.style.left=levToH(spPk)+'%';spP.style.opacity=spPk>DB_FLOOR?'.8':'0';}
+    if(spL){spL.textContent=fmtLev(spD);spL.style.color=spD>=-9?'var(--al)':spD>=-18?'var(--wn)':'#fff';}
+  }
   requestAnimationFrame(_meterRaf);
 }
 requestAnimationFrame(_meterRaf);
+
+/* ═══ Spotlight mode ═══ */
+var _spIdx=0,_spTimer=null,_spRxKey=null;
+
+function _spStart(){
+  if(_spTimer)clearInterval(_spTimer);
+  if(!_lastChains||!_lastChains.length)return;
+  _spIdx=0;_spShow();
+  var ms=Math.max(5,Math.min(60,parseInt(_cfg.spotlight_secs)||10))*1000;
+  _spTimer=setInterval(function(){
+    if(!_lastChains||!_lastChains.length)return;
+    _spIdx=(_spIdx+1)%_lastChains.length;_spShow();
+  },ms);
+}
+function _spStop(){
+  if(_spTimer){clearInterval(_spTimer);_spTimer=null;}
+  _spRxKey=null;
+  var el=document.getElementById('wb-spotlight');
+  if(el)el.classList.remove('sp-on');
+}
+function _spShow(){
+  var chains=_lastChains||[];if(!chains.length)return;
+  if(_spIdx>=chains.length)_spIdx=0;
+  var ch=chains[_spIdx];
+  var el=document.getElementById('wb-spotlight');if(!el)return;
+  el.classList.add('sp-on');
+
+  // Entrance animation
+  var card=document.getElementById('sp-card');
+  if(card){card.classList.remove('sp-enter');void card.offsetWidth;card.classList.add('sp-enter');}
+
+  var cid=ch.id;
+  var st=ch.display_status||ch.status||'unknown';
+  var sColor=(_cfg.chain_color||{})[cid]||'';
+  var col=_colorFor(ch.name||'?');
+
+  // Colour wash
+  var glow=document.getElementById('sp-glow');
+  if(glow)glow.style.background=sColor
+    ?'radial-gradient(ellipse 80% 60% at 50% 40%,rgba('+_hexToRgb(sColor)+',.18),transparent)'
+    :'';
+  var pf=document.getElementById('sp-pfill');
+  if(pf)pf.style.background=sColor?'rgba('+_hexToRgb(sColor)+',1)':'';
+
+  // Visual
+  var viz=document.getElementById('sp-visual');
+  if(viz){
+    viz.style.boxShadow=sColor
+      ?'0 8px 60px rgba('+_hexToRgb(sColor)+',.45),0 8px 48px rgba(0,0,0,.5)'
+      :'0 8px 48px rgba(0,0,0,.5)';
+    if(_chainLogos[cid]){
+      viz.innerHTML='<img src="'+_tkUrl('/wallboard/logo/'+cid)+'" alt="">';
+    }else{
+      viz.innerHTML='<div class="sp-avatar-lg" style="background:linear-gradient(135deg,'+col[0]+','+col[1]+')">'+_initial(ch.name||'?')+'</div>';
+    }
+  }
+
+  // Name, freq, status
+  var nameEl=document.getElementById('sp-name');if(nameEl)nameEl.textContent=ch.name||'';
+  var freqEl=document.getElementById('sp-freq-lbl');if(freqEl)freqEl.textContent=(_cfg.chain_freq||{})[cid]||'';
+  var bdg=document.getElementById('sp-badge');
+  if(bdg){
+    var isFault=st==='fault',isOk=st==='ok'||st==='pending'||st==='adbreak';
+    bdg.className=isFault?'s-fault':isOk?'s-ok':'s-unk';
+    bdg.innerHTML='<span id="sp-bdot"></span>'+(isFault?'⚠ SIGNAL FAULT':'● ON AIR');
+  }
+
+  // Nodes
+  var nr=document.getElementById('sp-nodes');
+  if(nr){var nh='';_flatN(ch.nodes||[]).forEach(function(n,i){
+    if(i>0)nh+='<span class="cc-arr">▸</span>';
+    nh+='<span class="cc-nd '+(n.status||'unknown')+'" title="'+_e(n.label||n.stream||n.name||'?')+'"></span>';
+  });nr.innerHTML=nh;}
+
+  // RX meter key
+  var fn=_flatN(ch.nodes||[]);var ln=fn.length?fn[fn.length-1]:null;
+  _spRxKey=ln&&ln.site&&ln.stream?ln.site+'|'+ln.stream:null;
+
+  // Now playing
+  _spRefreshNP();
+
+  // Counter
+  var ctr=document.getElementById('sp-counter');
+  if(ctr)ctr.textContent='Station '+(_spIdx+1)+' of '+chains.length;
+
+  // Progress bar
+  var secs=Math.max(5,Math.min(60,parseInt(_cfg.spotlight_secs)||10));
+  if(pf){pf.style.transition='none';pf.style.width='100%';void pf.offsetWidth;
+    pf.style.transition='width '+secs+'s linear';pf.style.width='0%';}
+}
+function _spRefreshNP(){
+  if(!_spTimer||!_lastChains)return;
+  var ch=_lastChains[_spIdx];if(!ch)return;
+  var rpuid=(_cfg.chain_stations||{})[ch.id]||'';
+  var np=rpuid?(_npData[rpuid]||null):null;
+  var npEl=document.getElementById('sp-np');
+  if(npEl){
+    if(np&&(np.artist||np.title)){
+      npEl.innerHTML=np.artist?'<strong style="color:var(--tx)">'+_e(np.artist)+'</strong> — '+_e(np.title):_e(np.title);
+    }else{npEl.textContent='';}
+  }
+}
 
 /* ═══ Polling ═══ */
 function poll(){
@@ -1974,6 +2181,7 @@ function chainPoll(){
   fetch(_tkUrl('/api/chains/status'),{credentials:'same-origin'}).then(function(r){return r.ok?r.json():Promise.reject()}).then(function(d){
     _lastChains=d.results||[];
     updateHero(_lastChains);renderChains(_lastChains);
+    if(_cfg.show_spotlight){if(!_spTimer&&_lastChains.length)_spStart();else _spRefreshNP();}
   }).catch(function(){});
 }
 function livePoll(){
@@ -2009,6 +2217,7 @@ function npPoll(){
       .then(function(d){
         _npData[rpuid]=d;
         if(_lastChains)renderChains(_lastChains);
+        _spRefreshNP();
       }).catch(function(){});
   });
 }
@@ -2125,6 +2334,19 @@ document.getElementById('dr-streams').addEventListener('change',function(e){
   var k=cb.dataset.streamKey;var hs=_cfg.hidden_streams||[];
   if(cb.checked){hs=hs.filter(function(x){return x!==k})}else{if(hs.indexOf(k)<0)hs.push(k)}
   _cfg.hidden_streams=hs;_localSave();if(_lastData)renderMeters(_lastData);
+});
+var _spCbEl=document.getElementById('cfg-spotlight');
+if(_spCbEl)_spCbEl.addEventListener('change',function(){
+  _cfg.show_spotlight=this.checked;
+  if(this.checked&&_lastChains&&_lastChains.length)_spStart();else _spStop();
+  _localSave();
+});
+var _spSecsEl=document.getElementById('cfg-spotlight-secs');
+if(_spSecsEl)_spSecsEl.addEventListener('change',function(){
+  _cfg.spotlight_secs=Math.max(5,Math.min(60,parseInt(this.value)||10));
+  this.value=_cfg.spotlight_secs;
+  if(_spTimer){clearInterval(_spTimer);_spTimer=null;_spStart();}
+  _localSave();
 });
 document.getElementById('cfg-lufs').addEventListener('change',function(){_cfg.show_lufs=this.checked;applyVis();_localSave()});
 document.getElementById('cfg-np').addEventListener('change',function(){_cfg.show_np=this.checked;applyVis();_localSave()});
