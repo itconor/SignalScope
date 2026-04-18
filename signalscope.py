@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.148"
+BUILD                  = "SignalScope-3.5.149"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -9256,6 +9256,12 @@ class MonitorManager:
                     pass
 
             # ── Disable USB autosuspend for this dongle (silent, no-root attempt)
+            # Three sysfs knobs, each progressively more effective:
+            #  power/autosuspend         — idle delay in seconds; -1 = never suspend
+            #  power/autosuspend_delay_ms — same in milliseconds (newer kernels)
+            #  power/control             — "on" = runtime PM disabled (most reliable)
+            # Without root the writes may fail silently; the permanent fix is the
+            # udev rule at Settings → Maintenance → USB Autosuspend Fix.
             try:
                 import glob as _glob
                 _as_serial = session.serial
@@ -9274,8 +9280,19 @@ class MonitorManager:
                                 _fixed = True
                             except Exception:
                                 pass
+                        # "on" = permanently prevent runtime PM suspend (most reliable knob)
+                        _cf = os.path.join(_udir, 'power', 'control')
+                        try:
+                            with open(_cf, 'w') as _ff: _ff.write('on')
+                            _fixed = True
+                        except Exception:
+                            pass
                         if _fixed:
                             self.log(f"[{name}] USB autosuspend disabled for {_as_serial}")
+                        else:
+                            self.log(f"[{name}] USB autosuspend: could not write sysfs for "
+                                     f"{_as_serial} — apply the fix in Settings → Maintenance → "
+                                     f"USB Autosuspend Fix to prevent recurring rtl_tcp crashes")
                         break
             except Exception:
                 pass
@@ -9440,6 +9457,8 @@ class MonitorManager:
                 "opening rtl-sdr failed",
                 "error while opening device",
                 "inputfactory:error while opening device",
+                # rtl_tcp proxy crashed mid-session — welle-cli prints this and exits
+                "rtl-tcp connection closed",
             )
             try:
                 for raw in session.proc.stderr:
@@ -9551,6 +9570,35 @@ class MonitorManager:
         session.stderr_thread.start()
         session.poll_thread = threading.Thread(target=_poll_mux, daemon=True)
         session.poll_thread.start()
+
+        # ── rtl_tcp mid-session watchdog (Pi only) ───────────────────────────
+        # When rtl_tcp crashes mid-session (e.g. USB autosuspend kicks in after
+        # a couple of minutes), welle-cli may take several seconds to detect the
+        # TCP drop and print "RTL-TCP connection closed" before exiting.  This
+        # watchdog fires the instant rtl_tcp's process exits and propagates the
+        # failure to all DAB consumers immediately — without waiting for _poll_mux
+        # to notice welle-cli exit on its 1 s polling cadence.
+        # The _read_stderr fatal marker "rtl-tcp connection closed" provides a
+        # second fast path from welle-cli's own error output.
+        if getattr(session, 'rtl_tcp_proc', None) is not None:
+            def _watch_rtl_tcp(_proc=session.rtl_tcp_proc, _chan=session.channel):
+                _proc.wait()
+                if session.stop_evt.is_set():
+                    return  # normal shutdown — expected exit, ignore
+                self.log(
+                    f"[DAB {_chan}] rtl_tcp proxy exited unexpectedly — marking DAB "
+                    f"session failed. If this repeats every few minutes the cause is "
+                    f"USB autosuspend on Raspberry Pi 5 — apply the fix in "
+                    f"Settings → Maintenance → USB Autosuspend Fix."
+                )
+                session.failed = True
+                session.ready.set()
+                try:
+                    session.stop_evt.set()
+                except Exception:
+                    pass
+            threading.Thread(target=_watch_rtl_tcp, daemon=True,
+                             name=f"RtlTcpWatchdog-{session.channel}").start()
 
         # ── Service endpoint pre-warmer ──────────────────────────────────────
         # Without -C, welle-cli decodes the full ensemble simultaneously.

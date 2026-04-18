@@ -2,6 +2,26 @@
 
 ---
 
+## SignalScope-3.5.149 — 2026-04-18
+
+### Fixed — rtl_tcp crashes every ~2 minutes on Raspberry Pi 5 (3.5.149)
+
+On Raspberry Pi 5, the RP1 USB controller's runtime power management suspends the RTL-SDR dongle mid-session, causing rtl_tcp to exit with "Signal caught, exiting!" approximately every 2 minutes. When rtl_tcp dies, welle-cli loses its TCP connection and exits, tearing down all DAB monitoring streams until the session restarts.
+
+Three changes to reduce impact and recovery time:
+
+**1. rtl_tcp mid-session watchdog thread.** A new `RtlTcpWatchdog-{channel}` thread waits on `rtl_tcp_proc.wait()`. The instant rtl_tcp exits (and `stop_evt` is not set), the watchdog marks `session.failed = True` and fires `stop_evt` — immediately signalling all 8 consumer audio loops to break out and restart. Previously, consumers waited for `_poll_mux` (1 s cadence) to notice welle-cli had exited, adding up to several seconds of lag before recovery began.
+
+**2. "rtl-tcp connection closed" added to welle-cli fatal markers.** When rtl_tcp dies, welle-cli prints "Error: RTL-TCP connection closed" to stderr. This is now treated as a fatal marker by `_read_stderr` — it sets `session.failed = True` and `session.stop_evt` immediately, providing a second fast recovery path alongside the watchdog.
+
+**3. `power/control` added to autosuspend disable.** The sysfs block that runs at session startup now also writes `"on"` to `power/control` (in addition to `autosuspend = -1` and `autosuspend_delay_ms = -1`). Writing `"on"` disables runtime PM at the kernel level and is the most reliable way to prevent autosuspend. The permanent fix remains the udev rule at Settings → Maintenance → USB Autosuspend Fix.
+
+**Rule**: The `RtlTcpWatchdog` thread must check `session.stop_evt.is_set()` before marking the session failed — a normal shutdown terminates rtl_tcp intentionally and should not be propagated as a failure.
+**Rule**: "rtl-tcp connection closed" is a fatal welle-cli marker. Never remove it from `fatal_markers` — without it, session failure detection after an rtl_tcp crash falls back to `_poll_mux`'s 1 s cycle.
+**Rule**: If rtl_tcp keeps crashing despite these changes, the root cause is USB autosuspend that requires a udev rule to fix permanently. Direct users to Settings → Maintenance → USB Autosuspend Fix.
+
+---
+
 ## Studio Board v3.8.0 — 2026-04-18
 
 ### Added — Zetta automation queue display (studioboard v3.8.0)
