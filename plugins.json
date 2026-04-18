@@ -185,7 +185,7 @@
     "file": "studioboard.py",
     "icon": "🎙",
     "description": "Large-format studio display for outside broadcast studios. Shows presenter/show info, now playing, live level meters, mic live status, chain health, and Zetta automation queue. Fully configurable admin page for assigning chains, inputs, Planet Radio feeds, Zetta stations, and show artwork per studio. REST API for mic live and station assignment from automation systems. Chain colour takeover, smooth RAF meters, free-studio messaging. Bauer branded. Hub-only.",
-    "version": "3.8.0",
+    "version": "3.9.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/studioboard.py"
   }

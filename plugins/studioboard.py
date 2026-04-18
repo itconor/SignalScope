@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.8.0",
+    "version":  "3.9.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -906,7 +906,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .vl{font-size:10px;font-weight:700;color:var(--mu);text-align:center;white-space:nowrap}
 .vs{display:flex;gap:2px;flex:1;width:100%;height:100%}
 .vs .vb{flex:1}
-/* Zetta queue panel — pinned at bottom of main panel */
+/* Zetta strip (legacy — no Zetta station key, just a compact footer) */
 .zq{width:92%;margin-top:auto;padding-top:7px;flex-shrink:0;border-top:1px solid rgba(255,255,255,.1)}
 .zq-spot{text-align:center;font-size:13px;font-weight:800;letter-spacing:.12em;color:#f59e0b;
   background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:8px;
@@ -924,6 +924,50 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   text-overflow:ellipsis;white-space:nowrap}
 .zq-row-spot .zq-row-title{color:rgba(245,158,11,.7);font-style:italic}
 .zq-row-dur{font-size:10px;color:var(--mu);flex-shrink:0}
+/* ── Full Zetta now-playing section (replaces Planet Radio text when Zetta configured) ── */
+.zq-main{width:100%;padding-top:10px;flex:1;display:flex;flex-direction:column;
+  align-items:center;min-height:0;border-top:1px solid rgba(255,255,255,.08)}
+/* Horizontal now-playing row: artwork thumbnail + text */
+.zm-now{display:flex;align-items:center;gap:14px;width:92%;margin-bottom:10px}
+.zm-art{width:72px;height:72px;border-radius:12px;object-fit:cover;flex-shrink:0;
+  border:2px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);
+  box-shadow:0 4px 20px rgba(0,0,0,.4)}
+.zm-art-ph{width:72px;height:72px;border-radius:12px;flex-shrink:0;
+  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);
+  display:flex;align-items:center;justify-content:center;font-size:28px;opacity:.3}
+.zm-text{flex:1;min-width:0}
+.zm-mode{font-size:9px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;
+  color:rgba(255,255,255,.38);margin-bottom:4px}
+.zm-artist{font-size:22px;font-weight:700;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;line-height:1.2}
+.zm-title{font-size:17px;font-weight:300;color:rgba(255,255,255,.7);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+/* Progress bar */
+.zm-prog-wrap{width:92%;height:4px;background:rgba(255,255,255,.12);
+  border-radius:2px;overflow:hidden;margin-bottom:3px}
+.zm-prog-fill{height:100%;
+  background:linear-gradient(90deg,rgba(255,255,255,.45),rgba(255,255,255,.88));
+  border-radius:2px;transition:width .5s linear}
+.zm-time{font-size:11px;color:rgba(255,255,255,.32);margin-bottom:10px;
+  width:92%;text-align:right}
+/* Queue rows */
+.zm-queue{width:92%;border-top:1px solid rgba(255,255,255,.08);padding-top:6px}
+.zm-q-row{display:flex;align-items:center;gap:6px;padding:5px 0;
+  border-bottom:1px solid rgba(255,255,255,.04)}
+.zm-q-row:last-child{border-bottom:none}
+.zm-q-lbl{font-size:9px;color:rgba(255,255,255,.32);text-transform:uppercase;
+  letter-spacing:.07em;flex-shrink:0;min-width:32px;font-weight:700}
+.zm-q-title{flex:1;font-size:13px;color:rgba(255,255,255,.52);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zm-q-spot .zm-q-title{color:rgba(245,158,11,.62);font-style:italic}
+.zm-q-dur{font-size:11px;color:rgba(255,255,255,.28);flex-shrink:0}
+/* Ad break */
+.zm-spot{font-size:15px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;
+  color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.18);
+  border-radius:10px;padding:14px 22px;margin:16px 0;text-align:center;width:88%}
+.zm-etm{font-size:13px;color:rgba(255,255,255,.42);margin-bottom:6px}
+.zm-wait{font-size:14px;color:rgba(255,255,255,.22);text-align:center;
+  margin-top:24px;font-style:italic}
 /* Free / available studio */
 .free-band{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;text-align:center}
 .free-icon{font-size:80px;opacity:.35;line-height:1}
@@ -984,7 +1028,10 @@ function buildCol(s,idx){
       +'<div class=free-lbl>AVAILABLE</div>'
       +'<div class=free-msg id="freemsg'+idx+'"></div>'
       +'</div>')
-    /* Occupied studio — full content panel */
+    /* Occupied studio — full content panel.
+       When Zetta is configured the Planet Radio text stack is replaced with the
+       compact Zetta now-playing section; the artwork thumbnail is still served
+       from the Planet Radio feed since Zetta carries no artwork. */
     :('<div class=mp><div class=logo-wrap>'+lg+'</div>'
       +(fc?'':'<div class=stn style="text-shadow:0 0 20px rgba('+r+',.4)">'+E(sn)+'</div>')
       +'<div class=stu>'+E(s.name)+'</div>'
@@ -992,15 +1039,19 @@ function buildCol(s,idx){
       +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
       +'<div id="badges'+idx+'"></div>'
       +'<div class=divider></div>'
-      +'<img class=art id="showimg'+idx+'" alt="" style="display:none">'
-      +'<div class=shw id="shw'+idx+'"></div>'
-      +'<div class=np-div></div>'
-      +'<img class=art id="art'+idx+'" alt="" style="display:none">'
-      +'<div class=npl id="npl'+idx+'"></div>'
-      +'<div class=anm id="anm'+idx+'"></div>'
-      +'<div class=trk id="trk'+idx+'"></div>'
-      +'<div class=idle id="idl'+idx+'"></div>'
-      +'<div class=zq id="zq'+idx+'"></div>'
+      +(s.zetta_station_key
+        /* Zetta layout — artwork thumbnail + full sequencer data */
+        ?'<div class=zq-main id="zq'+idx+'"></div>'
+        /* Planet Radio layout — show image, now-playing text, legacy Zetta strip */
+        :('<img class=art id="showimg'+idx+'" alt="" style="display:none">'
+          +'<div class=shw id="shw'+idx+'"></div>'
+          +'<div class=np-div></div>'
+          +'<img class=art id="art'+idx+'" alt="" style="display:none">'
+          +'<div class=npl id="npl'+idx+'"></div>'
+          +'<div class=anm id="anm'+idx+'"></div>'
+          +'<div class=trk id="trk'+idx+'"></div>'
+          +'<div class=idle id="idl'+idx+'"></div>'
+          +'<div class=zq id="zq'+idx+'"></div>'))
       +'</div>');
   return '<div class=col id="col'+idx+'" style="--cc:rgba('+r+',.6);--cg:rgba('+r+',.12);background:'+colBg+';border-color:rgba('+r+',.22)">'
     +mainContent
@@ -1073,33 +1124,77 @@ function updateCol(s,idx){
       if(idl.textContent!==_idleC[s.id])idl.textContent=_idleC[s.id];
     }else if(idl)idl.textContent='';
   }
-  // Zetta queue panel
+  // Zetta main panel — full sequencer now-playing section
   var zEl=document.getElementById('zq'+idx);
   if(zEl&&s.zetta_station_key){
     var zd=_ZD[s.zetta_station_key]||null;
     var zh='';
-    if(zd){
-      if(zd.is_spot){
-        zh='<div class="zq-spot">⏸ AD BREAK — '+E(zd.etm||'')+'</div>';
-      }else if(zd.now_playing){
-        var _elapX=_ZT?(Date.now()-_ZT)/1000:0;
-        var _rem=Math.max(0,(zd.remaining_seconds||0)-_elapX);
-        var _dur=zd.duration_seconds||0;
-        var _pct=_dur>0?Math.min(100,Math.round((1-_rem/_dur)*100)):0;
-        zh='<div class="zq-np">'
-          +'<div class="zq-np-title">'+E(zd.now_playing.title)+'</div>'
-          +'<div class="zq-prog-wrap"><div class="zq-prog-fill" id="zqpf'+idx+'" style="width:'+_pct+'%"></div></div>'
-          +'</div>';
+    if(!zd){
+      zh='<div class="zm-wait">Waiting for Zetta data\u2026</div>';
+    }else if(zd.is_spot){
+      /* Ad break state — big banner + queue of what's coming up */
+      zh='<div class="zm-spot">\u23F8\uFE0F AD BREAK</div>';
+      if(zd.etm)zh+='<div class="zm-etm">Back on air at '+E(zd.etm)+'</div>';
+      var _sq=zd.queue||[];
+      if(_sq.length){
+        zh+='<div class="zm-queue">';
+        _sq.slice(0,4).forEach(function(q,qi){
+          zh+='<div class="zm-q-row'+(q.is_spot?' zm-q-spot':'')+'">'
+            +'<span class="zm-q-lbl">'+(qi===0?'NEXT':'')+'</span>'
+            +'<span class="zm-q-title">'+E(q.title||q.raw_title||'')+'</span>'
+            +'<span class="zm-q-dur">'+E(q.duration||'')+'</span>'
+            +'</div>';
+        });
+        zh+='</div>';
       }
-      (zd.queue||[]).slice(0,3).forEach(function(q,qi){
-        zh+='<div class="zq-row'+(q.is_spot?' zq-row-spot':'')+'">'
-           +'<span class="zq-next">'+(qi===0?'NEXT':'')+'</span>'
-           +'<span class="zq-row-title">'+E(q.title)+'</span>'
-           +'<span class="zq-row-dur">'+E(q.duration)+'</span>'
-           +'</div>';
-      });
+    }else if(zd.now_playing){
+      /* Programme music — artwork thumb (from Planet Radio feed) + Zetta metadata */
+      /* Build zh WITHOUT inline progress style so the string stays stable across
+         RAF ticks; we update the fill width & countdown text separately below. */
+      var _au=np.artwork||''; /* np = gNp(s) declared at top of updateCol */
+      var _zart=_au
+        ?'<img class="zm-art" src="'+E(_au)+'" alt="" onerror="this.className=\'zm-art zm-art-ph\';this.removeAttribute(\'src\')">'
+        :'<div class="zm-art zm-art-ph">\uD83C\uDFA4</div>';
+      var _zartist=E(zd.now_playing.raw_artist||zd.now_playing.artist||'');
+      var _ztitle=E(zd.now_playing.raw_title||zd.now_playing.title||'');
+      var _zlbl=E(zd.now_playing.category||zd.mode||'');
+      zh='<div class="zm-now">'
+        +_zart
+        +'<div class="zm-text">'
+        +(_zlbl?'<div class="zm-mode">'+_zlbl+'</div>':'')
+        +'<div class="zm-artist">'+_zartist+'</div>'
+        +'<div class="zm-title">'+_ztitle+'</div>'
+        +'</div></div>'
+        +'<div class="zm-prog-wrap"><div class="zm-prog-fill" id="zqpf'+idx+'"></div></div>'
+        +'<div class="zm-time" id="zqtm'+idx+'"></div>';
+      var _nq=zd.queue||[];
+      if(_nq.length){
+        zh+='<div class="zm-queue">';
+        _nq.slice(0,4).forEach(function(q,qi){
+          zh+='<div class="zm-q-row'+(q.is_spot?' zm-q-spot':'')+'">'
+            +'<span class="zm-q-lbl">'+(qi===0?'NEXT':'')+'</span>'
+            +'<span class="zm-q-title">'+E(q.title||q.raw_title||'')+'</span>'
+            +'<span class="zm-q-dur">'+E(q.duration||'')+'</span>'
+            +'</div>';
+        });
+        zh+='</div>';
+      }
+    }else{
+      zh='<div class="zm-wait">'+E(zd.mode||'No sequencer data')+'</div>';
     }
     if(zEl.innerHTML!==zh)zEl.innerHTML=zh;
+    /* Immediately paint the progress / countdown after any DOM rebuild */
+    if(zd&&zd.now_playing&&!zd.is_spot){
+      var _ex2=_ZT?(Date.now()-_ZT)/1000:0;
+      var _rem2=Math.max(0,(zd.remaining_seconds||0)-_ex2);
+      var _dur2=zd.duration_seconds||0;
+      var _pct2=_dur2>0?Math.min(100,(1-_rem2/_dur2)*100):0;
+      var _rs2=Math.round(_rem2);
+      var _pfEl=document.getElementById('zqpf'+idx);
+      if(_pfEl)_pfEl.style.width=_pct2.toFixed(1)+'%';
+      var _tmEl=document.getElementById('zqtm'+idx);
+      if(_tmEl)_tmEl.textContent='-'+Math.floor(_rs2/60)+':'+(_rs2%60<10?'0':'')+(_rs2%60);
+    }
   }
 }
 
@@ -1206,19 +1301,21 @@ function pollZetta(){
       render();
     }).catch(function(){});
 }
-/* Smooth progress bar between Zetta polls */
+/* Smooth progress bar + countdown timer between Zetta polls (500 ms) */
 setInterval(function(){
   if(!D||!_ZT)return;
   (D.studios||[]).forEach(function(s,i){
     if(!s.zetta_station_key)return;
     var zd=_ZD[s.zetta_station_key];
     if(!zd||zd.is_spot||!zd.now_playing)return;
-    var el=document.getElementById('zqpf'+i);if(!el)return;
     var ex=(Date.now()-_ZT)/1000;
     var rem=Math.max(0,(zd.remaining_seconds||0)-ex);
     var dur=zd.duration_seconds||0;
-    var pct=dur>0?Math.min(100,Math.round((1-rem/dur)*100)):0;
-    el.style.width=pct+'%';
+    var pct=dur>0?(1-rem/dur)*100:0;
+    var pfEl=document.getElementById('zqpf'+i);
+    if(pfEl)pfEl.style.width=Math.min(100,pct).toFixed(1)+'%';
+    var tmEl=document.getElementById('zqtm'+i);
+    if(tmEl){var rs=Math.round(rem);tmEl.textContent='-'+Math.floor(rs/60)+':'+(rs%60<10?'0':'')+rs%60;}
   });
 },500);
 poll();npPoll();live();showImgPoll();pollZetta();
