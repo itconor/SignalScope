@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.21",
+    "version":  "2.1.22",
 }
 
 import json
@@ -193,6 +193,55 @@ _zeep_clients_cache: Dict[str, Any] = {}
 # Read by signalscope.py _chains_monitor_loop via monitor._zetta_chain_state.
 _chain_zetta_state: Dict[str, dict] = {}
 
+# Previous chain state snapshot — used by _rebuild_chain_zetta_state to detect
+# mode changes, computer failovers, and GAP threshold crossings between polls.
+_prev_chain_zetta_state: Dict[str, dict] = {}
+
+# Cached reference to signalscope._alert_log_append — resolved once on first use
+# via the same sys.modules scan pattern used by other plugins (e.g. codec.py).
+_zetta_alert_fn = None
+
+# GAP alert threshold — warn when GAP drops below this many seconds.
+_GAP_WARN_SECS: float = 15.0
+
+def _get_zetta_alert_fn():
+    """Return signalscope._alert_log_append, or None if not yet loaded."""
+    global _zetta_alert_fn
+    if _zetta_alert_fn:
+        return _zetta_alert_fn
+    import sys as _sys
+    for _mod in _sys.modules.values():
+        if hasattr(_mod, "_alert_log_append") and hasattr(_mod, "hub_reports"):
+            _zetta_alert_fn = _mod._alert_log_append
+            return _zetta_alert_fn
+    return None
+
+def _fire_zetta_alert(chain_name: str, atype: str, message: str) -> None:
+    """Write a Zetta automation alert into the hub alert log."""
+    import uuid as _uuid, time as _time
+    fn = _get_zetta_alert_fn()
+    if not fn:
+        return
+    try:
+        fn({
+            "id":            str(_uuid.uuid4()),
+            "ts":            _time.strftime("%Y-%m-%d %H:%M:%S"),
+            "stream":        chain_name,
+            "type":          atype,
+            "message":       message,
+            "level_dbfs":    None,
+            "rtp_loss_pct":  None,
+            "rtp_jitter_ms": None,
+            "clip":          "",
+            "ptp_state":     "",
+            "ptp_offset_us": 0,
+            "ptp_drift_us":  0,
+            "ptp_jitter_us": 0,
+            "ptp_gm":        "",
+        })
+    except Exception:
+        pass
+
 # Per-station Zetta state: "iid:sid" → full station data dict.
 # Same key format as studioboard's zetta_station_key — the studioboard data
 # endpoint reads this via monitor._zetta_station_state so the TV page gets
@@ -265,6 +314,7 @@ def _rebuild_chain_zetta_state() -> None:
                     "duration_seconds":  float(_sd.get("duration_seconds") or 0),
                     "etm":               _sd.get("etm") or "",
                     "gap":               _sd.get("gap") or "",
+                    "gap_seconds":       float(_sd.get("gap_seconds") or 0),
                     "computer_name":     _sd.get("computer_name") or "",
                     "station_name":      _sd.get("station_name") or "",
                     "mode":              _mode_int,
@@ -275,6 +325,52 @@ def _rebuild_chain_zetta_state() -> None:
                 }
     except Exception:
         return   # never crash — chain fault logic and studioboard fall back gracefully
+
+    # ── State-change alerts ───────────────────────────────────────────────────
+    # Compare new state against previous state and fire automation health alerts.
+    # Only fires when both old and new entries exist (skips first-run and
+    # chains that drop off / come online).
+    try:
+        for _cid, _new in _new_chain.items():
+            _old = _prev_chain_zetta_state.get(_cid)
+            if not _old:
+                continue   # first seen — no comparison yet
+            _cname = _new.get("station_name") or _cid
+
+            # Mode change (e.g. Auto → Manual, Manual → Off Air)
+            _old_mode = int(_old.get("mode") or 0)
+            _new_mode = int(_new.get("mode") or 0)
+            if _old_mode != _new_mode:
+                _old_mname = MODE_NAMES.get(_old_mode, "Unknown")
+                _new_mname = MODE_NAMES.get(_new_mode, "Unknown")
+                _fire_zetta_alert(
+                    _cname, "ZETTA_MODE_CHANGE",
+                    f"Zetta mode changed: {_old_mname} → {_new_mname}"
+                    + (f" ({_new.get('computer_name')})" if _new.get("computer_name") else ""),
+                )
+
+            # Computer/machine failover (primary → backup Zetta machine)
+            _old_comp = (_old.get("computer_name") or "").strip()
+            _new_comp = (_new.get("computer_name") or "").strip()
+            if _old_comp and _new_comp and _old_comp != _new_comp:
+                _fire_zetta_alert(
+                    _cname, "ZETTA_FAILOVER",
+                    f"Zetta machine changed: {_old_comp} → {_new_comp} — automation may have failed over",
+                )
+
+            # GAP low — only alert on the crossing (above → below threshold)
+            _old_gap = float(_old.get("gap_seconds") or 0)
+            _new_gap = float(_new.get("gap_seconds") or 0)
+            if (_old_gap >= _GAP_WARN_SECS) and (0 < _new_gap < _GAP_WARN_SECS):
+                _fire_zetta_alert(
+                    _cname, "ZETTA_GAP_LOW",
+                    f"Zetta GAP low: {_new.get('gap', '?')} — risk of dead air if ad break is late",
+                )
+    except Exception:
+        pass   # never crash — state-change alerts are best-effort
+
+    _prev_chain_zetta_state.clear()
+    _prev_chain_zetta_state.update(_new_chain)
     _chain_zetta_state.clear()
     _chain_zetta_state.update(_new_chain)
     _station_zetta_state.clear()
@@ -627,6 +723,7 @@ def _parse_station_full(root: ET.Element, station_id: str, spot_cats: list) -> d
         "status_name":      STATION_STATE_NAMES.get(status, "QUEUED"),
         "css_state":        _get_css_state(mode, status),
         "gap":              _fmt_gap(gap_s),
+        "gap_seconds":      gap_s,
         "etm":              etm_str,
         "now_playing":      now_playing,
         "queue":            queue_items,
@@ -724,6 +821,7 @@ def _parse_station_full_zeep(result, station_id: str, friendly_name: str, spot_c
         "status_name":   STATION_STATE_NAMES.get(status, "QUEUED"),
         "css_state":     _get_css_state(mode, status),
         "gap":           _fmt_gap(gap_s),
+        "gap_seconds":   gap_s,
         "etm":           etm_str,
         "now_playing":   now_playing,
         "queue":         queue_items,

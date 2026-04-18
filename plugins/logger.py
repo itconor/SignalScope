@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.6.2",
+    "version": "1.6.3",
 }
 
 import datetime
@@ -753,6 +753,19 @@ def register(app, ctx):
     def api_logger_get_config():
         with _cfg_lock:
             return jsonify(dict(_cfg))
+
+    @app.get("/api/logger/chains")
+    @login_req
+    def api_logger_chains():
+        """Return configured signal chains for Zetta now-playing assignment."""
+        chains = []
+        if _monitor:
+            for ch in (getattr(_monitor.app_cfg, "signal_chains", None) or []):
+                cid  = str(ch.get("id", "") or "").strip()
+                name = str(ch.get("name", "") or "").strip()
+                if cid and name:
+                    chains.append({"id": cid, "name": name})
+        return jsonify({"chains": chains})
 
     @app.post("/api/logger/config")
     @login_req
@@ -2330,10 +2343,36 @@ class _MetaPoller(threading.Thread):
     def _poll_once(self):
         with _cfg_lock:
             scfg = _cfg.get("streams", {}).get(self.stream_name, {})
-        url = str(scfg.get("nowplaying_url", "") or "").strip()
+        url             = str(scfg.get("nowplaying_url", "") or "").strip()
+        zetta_chain_id  = str(scfg.get("zetta_chain_id", "") or "").strip()
 
         info = None
-        if url:
+
+        # ── Zetta source (highest priority when configured and fresh) ────────
+        # Reads directly from monitor._zetta_chain_state — no network call.
+        # Skips ad breaks (asset_type 2) so compliance log shows music only.
+        if zetta_chain_id and _monitor:
+            try:
+                _zcs = getattr(_monitor, "_zetta_chain_state", {}) or {}
+                _zd  = _zcs.get(zetta_chain_id, {})
+                _zts = float(_zd.get("ts") or 0)
+                if _zd and (time.time() - _zts) < 60:
+                    _np = _zd.get("now_playing")
+                    if _np and int(_np.get("asset_type") or 0) != 2:
+                        _title  = (_np.get("raw_title")  or _np.get("title")  or "").strip()
+                        _artist = (_np.get("raw_artist") or "").strip()
+                        if _title:
+                            info = {
+                                "title":      _title,
+                                "artist":     _artist,
+                                "show_name":  "",
+                                "presenter":  "",
+                            }
+            except Exception as e:
+                _log(f"[Logger] MetaPoller ({self.slug}): Zetta error: {e}")
+
+        # ── Planet Radio / custom URL (secondary) ────────────────────────────
+        if not info and url:
             try:
                 req  = _urllib_req.Request(url, headers={"User-Agent": "SignalScope-Logger/1.4"})
                 resp = _urllib_req.urlopen(req, timeout=10)
@@ -2376,7 +2415,9 @@ def _reconcile_meta_pollers():
         for s in streams:
             slug = s["slug"]
             scfg = _stream_cfg(s["name"])
-            should_poll = scfg.get("enabled") or bool(scfg.get("nowplaying_url", "").strip())
+            should_poll = (scfg.get("enabled")
+                          or bool(scfg.get("nowplaying_url", "").strip())
+                          or bool(scfg.get("zetta_chain_id", "").strip()))
             if should_poll:
                 if slug not in _meta_pollers or not _meta_pollers[slug].is_alive():
                     t = _MetaPoller(s["name"], slug)
@@ -2416,6 +2457,7 @@ def _stream_cfg(stream_name):
         "retain_days":            int(s.get("retain_days", _DEFAULT_RETAIN)),
         "base_dir":               s.get("base_dir", ""),
         "nowplaying_url":         str(s.get("nowplaying_url", "") or "").strip(),
+        "zetta_chain_id":         str(s.get("zetta_chain_id", "") or "").strip(),
         "rec_format":             fmt,
         "silence_threshold_dbfs": sil_db,
         "silence_min_duration_s": sil_dur,
@@ -3948,6 +3990,7 @@ var _markOut     = null;
 var _scrubDrag   = false;
 var _cfg         = {streams:{}};
 var _planetStations = [];  // [{rpuid, name}] from /api/nowplaying_stations
+var _loggerChains   = [];  // [{id, name}] from /api/logger/chains — for Zetta NP assignment
 var _tlZoom = 1;           // current horizontal zoom level (1/2/4/8)
 var _tlExp  = false;       // expanded row height mode
 var _metaEvents  = [];   // metadata events for the current day
@@ -5130,6 +5173,13 @@ function loadSettingsPanel(){
         renderSettingsRows();
       }
     }).catch(function(){});
+    // Fetch signal chains for Zetta now-playing assignment dropdown
+    _get('/api/logger/chains').then(function(d){
+      if(d&&Array.isArray(d.chains)&&d.chains.length){
+        _loggerChains = d.chains;
+        renderSettingsRows();
+      }
+    }).catch(function(){});
   }).catch(function(err){
     document.getElementById('disk-info').textContent = '⚠ Settings failed to load — check server logs';
     console.error('loadSettingsPanel failed:', err);
@@ -5259,6 +5309,19 @@ function renderSettingsRows(){
       +' style="width:100%;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:7px 9px;border-radius:6px;font-size:12px;font-family:monospace;outline:none">'
       +'<div style="font-size:11px;color:var(--mu);margin-top:4px">Planet Radio, Triton, or any JSON endpoint returning artist/title/show. Polled every 30 s. Leave blank to fall back to DLS/RDS.</div>'
       +'</div>'
+      +(_loggerChains.length
+        ?'<div class="np-url-row" style="margin-top:10px">'
+          +'<label style="font-size:11px;color:var(--mu);font-weight:600;letter-spacing:.03em;text-transform:uppercase;display:block;margin-bottom:5px">Zetta Now-Playing Source</label>'
+          +'<select data-stream="'+_esc(s.name)+'" data-key="zetta_chain_id" style="width:100%;background:#173a69;border:1px solid var(--bor);color:var(--tx);padding:7px 9px;border-radius:6px;font-size:12px">'
+          +'<option value="">— None —</option>'
+          +_loggerChains.map(function(ch){
+            var sel=(sc.zetta_chain_id===ch.id)?' selected':'';
+            return '<option value="'+_esc(ch.id)+'"'+sel+'>'+_esc(ch.name)+'</option>';
+          }).join('')
+          +'</select>'
+          +'<div style="font-size:11px;color:var(--mu);margin-top:4px">Use Zetta sequencer data as the primary now-playing source (overrides URL above). Skips ad breaks. Requires Zetta plugin with this chain assigned.</div>'
+          +'</div>'
+        :'')
       +'</div>';
     var chk = card.querySelector('input[type=checkbox]');
     chk.addEventListener('change', function(){

@@ -2,6 +2,30 @@
 
 ---
 
+### SignalScope-3.5.157 + zetta v2.1.22 + logger v1.6.3 — 2026-04-18
+
+**Fault attribution — Zetta automation state stamped on every chain fault event**
+- `CHAIN_FAULT` alert log entries now include `zetta_mode` (Auto/Manual/Off Air etc.), `zetta_is_spot` (was it during an ad break?), and `zetta_computer` (which Zetta machine was running). All empty/false when Zetta is not configured for the chain.
+- Makes it immediately clear in the fault history and Reports whether a silence was a genuine signal loss or an automation issue (wrong mode, nothing playing).
+
+**SLA / on-air % adjustment — scheduled off-air excluded**
+- When Zetta reports a chain's sequencer as intentionally stopped (OFF_AIR mode, no active track, not a spot break), chain faults during that period no longer count as downtime in the SLA on-air % metric.
+- Mirrors the existing ad break overshoot exclusion — overnight shutdowns, daypart endings, and planned maintenance that Zetta knows about are excluded automatically.
+
+**Zetta automation health alerts (zetta v2.1.22)**
+- `ZETTA_MODE_CHANGE` — fires when a chain's Zetta sequencer mode changes (e.g. Auto → Manual). Appears in the hub alert log and Reports.
+- `ZETTA_FAILOVER` — fires when the Zetta computer name changes for a chain (primary → backup machine failover).
+- `ZETTA_GAP_LOW` — fires when GAP drops below 15 s, warning of impending dead air risk if the next break runs late.
+- State-change comparison happens inside `_rebuild_chain_zetta_state()` on every Zetta poll cycle (~3 s). First-seen chains are skipped (no false alerts on startup).
+
+**Logger Zetta now-playing (logger v1.6.3)**
+- Each recording stream can now have a Zetta Chain assigned as its now-playing source (Settings → Logger → stream card → "Zetta Now-Playing Source" dropdown).
+- When assigned and Zetta data is fresh, Zetta track metadata is used instead of a Planet Radio / custom URL fetch — more accurate (directly from automation) with no polling delay.
+- Ad breaks (`asset_type 2`) are automatically skipped — compliance log shows music tracks only, not spot blocks.
+- Priority order: Zetta (if configured and fresh) → Planet Radio/custom URL → DLS/RDS fallback.
+
+---
+
 ### wallboard v3.14.7 + zetta v2.1.21 — 2026-04-18
 
 **Full Zetta sequencer on wallboard chain cards**

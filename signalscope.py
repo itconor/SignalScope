@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.156"
+BUILD                  = "SignalScope-3.5.157"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16460,10 +16460,13 @@ class HubServer:
                         self._chain_sla_last_write[cid] = now
                         # Only count as downtime when an alert has actually fired,
                         # and the fault is NOT an adbreak-overshoot (long ad break
-                        # that exceeded the confirmation window — genuine faults only).
+                        # that exceeded the confirmation window — genuine faults only),
+                        # and Zetta is not reporting the chain as intentionally off-air
+                        # (sequencer stopped / OFF_AIR mode — scheduled downtime that
+                        # should not penalise the on-air SLA percentage).
                         _is_real_fault = (self._chain_fault_state.get(cid) == "alerted"
                                           and not self._chain_fault_adbreak.get(cid, False))
-                        sla_val = 0.0 if _is_real_fault else 1.0
+                        sla_val = 0.0 if (_is_real_fault and not _zetta_stopped) else 1.0
                         try:
                             metrics_db.write([(f"chain/{cid}", "chain_status", now, sla_val)])
                         except Exception:
@@ -17056,21 +17059,26 @@ class HubServer:
 
         # ── Write to alert log (always — even for hub-only chains with no local nodes) ──
         _alert_log_append({
-            "id":            str(uuid.uuid4()),
-            "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
-            "stream":        chain_label,
-            "type":          "CHAIN_FAULT",
-            "message":       msg,
-            "level_dbfs":    fn.get("level"),
-            "rtp_loss_pct":  fn.get("rtp_loss_pct"),
-            "rtp_jitter_ms": None,
-            "clip":          os.path.basename(fault_clip) if fault_clip else "",
-            "ptp_state":     "",
-            "ptp_offset_us": 0,
-            "ptp_drift_us":  0,
-            "ptp_jitter_us": 0,
-            "ptp_gm":        "",
-            "zetta_stopped": _zetta_fire_stopped,
+            "id":             str(uuid.uuid4()),
+            "ts":             time.strftime("%Y-%m-%d %H:%M:%S"),
+            "stream":         chain_label,
+            "type":           "CHAIN_FAULT",
+            "message":        msg,
+            "level_dbfs":     fn.get("level"),
+            "rtp_loss_pct":   fn.get("rtp_loss_pct"),
+            "rtp_jitter_ms":  None,
+            "clip":           os.path.basename(fault_clip) if fault_clip else "",
+            "ptp_state":      "",
+            "ptp_offset_us":  0,
+            "ptp_drift_us":   0,
+            "ptp_jitter_us":  0,
+            "ptp_gm":         "",
+            # Zetta automation context at fault time — all empty/False when Zetta
+            # is not configured for this chain or data is stale.
+            "zetta_stopped":  _zetta_fire_stopped,
+            "zetta_mode":     (_zcs_fire.get("mode_name") or "") if _zcs_fire else "",
+            "zetta_is_spot":  bool(_zcs_fire.get("is_spot")) if _zcs_fire else False,
+            "zetta_computer": (_zcs_fire.get("computer_name") or "") if _zcs_fire else "",
         })
 
         # ── Send notification (skip if cascade-suppressed or cooldown active) ─
