@@ -21,6 +21,16 @@ Progress bar stays smooth between polls by tracking elapsed time since the last 
 
 ---
 
+## SignalScope-3.5.148 — 2026-04-18
+
+### Added — One-time migration of existing level_drift thresholds to new defaults (3.5.148)
+
+On first boot after upgrade, `load_config()` checks every input for the old default values (`level_drift_db == 8.0` and/or `level_drift_min_duration == 60.0`) and updates them to the new defaults (12.0 dB / 180.0 s). The updated config is saved to disk immediately. Inputs where the user had already set custom values (anything other than exactly 8.0 / 60.0) are left unchanged. On every subsequent boot the values are already 12.0/180.0 so the check is a silent no-op.
+
+**Rule**: Do not remove the migration block from `load_config()` — it is safe to leave indefinitely as a no-op once migrated. The exact-equality checks (`== 8.0`, `== 60.0`) ensure only the old defaults are touched.
+
+---
+
 ## SignalScope-3.5.147 — 2026-04-18
 
 ### Fixed — LEVEL_DRIFT fires repeatedly every ~2 min for as long as drift persists (3.5.147)

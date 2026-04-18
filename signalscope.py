@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.147"
+BUILD                  = "SignalScope-3.5.148"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -3445,7 +3445,7 @@ def load_config() -> AppConfig:
             tags=str(item.get("tags", "") or ""),
         ))
     e = raw.get("email", {}); w = raw.get("webhook", {}); n = raw.get("network", {}); h = raw.get("hub", {}); pv = raw.get("pushover", {}); au = raw.get("auth", {}); ma = raw.get("mobile_api", {})
-    return AppConfig(
+    cfg = AppConfig(
         inputs=inputs,
         sdr_devices=sdr_devices,
         email=EmailConfig(
@@ -3532,6 +3532,33 @@ def load_config() -> AppConfig:
         signal_chains=raw.get("signal_chains", []),
         ab_groups=raw.get("ab_groups", []),
     )
+
+    # ── One-time migration: raise level_drift defaults (3.5.148) ─────────────
+    # Update any input still carrying the old defaults (8.0 dB / 60.0 s) to
+    # the new less-noisy defaults (12.0 dB / 180.0 s).  Inputs with custom
+    # values set by the user are left unchanged.  After this runs the values
+    # are already 12.0/180.0 so the check is a no-op on every subsequent boot.
+    _ld_migrated = []
+    for _inp in cfg.inputs:
+        _changed = False
+        if _inp.level_drift_db == 8.0:
+            _inp.level_drift_db = 12.0
+            _changed = True
+        if _inp.level_drift_min_duration == 60.0:
+            _inp.level_drift_min_duration = 180.0
+            _changed = True
+        if _changed:
+            _ld_migrated.append(_inp.name)
+    if _ld_migrated:
+        try:
+            save_config(cfg)
+            print(f"[CONFIG] Level-drift defaults migrated to 12 dB / 180 s "
+                  f"for: {', '.join(_ld_migrated)}")
+        except Exception as _me:
+            print(f"[CONFIG] Level-drift migration save failed: {_me}")
+    # ── End migration ─────────────────────────────────────────────────────────
+
+    return cfg
 
 
 def _atomic_json_write(path, data):
