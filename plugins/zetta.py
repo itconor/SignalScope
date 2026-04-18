@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.0",
+    "version":  "2.1.1",
 }
 
 import json
@@ -178,6 +178,9 @@ _wsdl_cache:      dict = {}
 # Remote state: data pushed from client sites (keyed instance_id → station_id → data)
 _remote_state:    Dict[str, Dict[str, dict]] = {}
 _remote_state_lock = threading.Lock()
+# Pending discovery requests: site_name → {url, evt, result}
+_discover_pending: Dict[str, dict] = {}
+_discover_lock    = threading.Lock()
 
 # ── Utility formatters ─────────────────────────────────────────────────────────
 def _fmt_dur(sec) -> str:
@@ -752,11 +755,6 @@ _PAGE_CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);
      color:var(--tx);font-family:system-ui,sans-serif;font-size:13px}
-.topbar{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
-  border-bottom:1px solid var(--bor);padding:12px 20px;
-  display:flex;align-items:center;gap:12px}
-.topbar a{color:var(--mu);text-decoration:none;font-size:13px}.topbar a:hover{color:var(--tx)}
-.topbar a.nav-active,.topbar a:hover{color:var(--tx)}
 h1{font-size:16px;font-weight:700}
 .page{padding:20px}
 .card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;
@@ -868,9 +866,7 @@ _PAGE_TPL = """<!DOCTYPE html>
 <title>Zetta Sequencer — SignalScope</title>
 <style nonce="{{csp_nonce()}}">""" + _PAGE_CSS + """</style>
 </head><body>
-<div class="topbar">
-  {{topnav("zetta")|safe}}
-</div>
+{{topnav("zetta")|safe}}
 <div class="page">
   <div class="tabs">
     <div class="tab act" data-tab="t-seq">&#127932; Sequencer</div>
@@ -1122,9 +1118,13 @@ function _discoverStations(btn){
   var sfEl    = document.getElementById(urlSrc);
   var url     = (sfEl&&sfEl.value.trim())||'';
   if(!url){_msg(msgId,'Enter a Status Feed URL or SOAP URL first.','var(--al)');return;}
+  // Find the poll_site select in the nearest form context
+  var ctx=btn.closest('.inst-acc-body,.new-inst-form');
+  var psEl=ctx?ctx.querySelector('.if-pollsite,#ni-pollsite'):null;
+  var poll_site=(psEl&&psEl.value)||'';
   btn.disabled=true;
-  _msg(msgId,'Discovering stations\u2026','var(--mu)');
-  _f('/api/zetta/discover_stations',{method:'POST',body:JSON.stringify({url:url})})
+  _msg(msgId,poll_site?'Asking site \u201c'+poll_site+'\u201d to discover stations\u2026':'Discovering stations\u2026','var(--mu)');
+  _f('/api/zetta/discover_stations',{method:'POST',body:JSON.stringify({url:url,poll_site:poll_site})})
     .then(function(r){return r.json();})
     .then(function(d){
       btn.disabled=false;
@@ -1744,7 +1744,13 @@ def register(app, ctx):
                     "timeout":         inst.get("timeout", 6),
                     "poll_interval":   inst.get("poll_interval", 10),
                 })
-        return jsonify({"instances": matching})
+        # Include any pending discovery command for this site
+        discover_cmd = None
+        with _discover_lock:
+            entry = _discover_pending.get(site)
+            if entry and not entry.get("evt").is_set():
+                discover_cmd = {"url": entry["url"]}
+        return jsonify({"instances": matching, "discover_cmd": discover_cmd})
 
     # ── Client site data push endpoint ────────────────────────────────────────
     # Client nodes POST station data here after polling Zetta locally.
@@ -1819,7 +1825,40 @@ def register(app, ctx):
                         _log.debug("[Zetta client] config fetch: %s", _e)
                         time.sleep(15)
                         continue
-                    _instances = _config.get("instances", [])
+                    _instances   = _config.get("instances", [])
+                    _disc_cmd    = _config.get("discover_cmd")
+                    # Handle any pending discover command from the hub
+                    if _disc_cmd:
+                        _disc_url = (_disc_cmd.get("url") or "").strip()
+                        if _disc_url:
+                            try:
+                                _disc_stations = _sf_get_stations(_disc_url, timeout=10)
+                                _disc_result   = {"ok": True, "stations": _disc_stations} \
+                                                 if _disc_stations else \
+                                                 {"ok": False, "error": "No stations returned", "stations": []}
+                            except Exception as _de:
+                                _disc_result = {"ok": False, "error": str(_de), "stations": []}
+                            _disc_body = json.dumps({"result": _disc_result}).encode()
+                            _ts_d = time.time()
+                            if _secret:
+                                _key_d  = _hs_c.sha256(f"{_secret}:signing".encode()).digest()
+                                _sig_d  = _hm_c.new(_key_d, f"{_ts_d:.0f}:".encode() + _disc_body, _hs_c.sha256).hexdigest()
+                            else:
+                                _sig_d = ""
+                            try:
+                                _dr = urllib.request.Request(
+                                    f"{_hub_url}/api/zetta/discover_result",
+                                    data=_disc_body, method="POST",
+                                    headers={
+                                        "Content-Type": "application/json",
+                                        "X-Site":    _site,
+                                        "X-Hub-Sig": _sig_d,
+                                        "X-Hub-Ts":  f"{_ts_d:.0f}",
+                                    },
+                                )
+                                urllib.request.urlopen(_dr, timeout=10).close()
+                            except Exception as _dre:
+                                _log.debug("[Zetta client] discover_result push: %s", _dre)
                     if not _instances:
                         time.sleep(15)
                         continue
@@ -2042,31 +2081,77 @@ def register(app, ctx):
     @csrf_protect
     def zetta_discover_stations():
         from flask import request, jsonify
-        data = request.get_json(silent=True) or {}
-        url  = str(data.get("url", "")).strip()
+        data      = request.get_json(silent=True) or {}
+        url       = str(data.get("url",       "")).strip()
+        poll_site = str(data.get("poll_site", "")).strip()
         if not url:
             return jsonify({"ok": False, "error": "No URL provided", "stations": []})
-        try:
-            if not _zeep:
+
+        if poll_site:
+            # Hub can't reach Zetta directly — queue a discover command for the
+            # client site and wait for it to push results back.
+            evt = threading.Event()
+            with _discover_lock:
+                _discover_pending[poll_site] = {
+                    "url": url, "evt": evt, "result": None, "ts": time.time()
+                }
+            got = evt.wait(timeout=35)
+            with _discover_lock:
+                entry  = _discover_pending.pop(poll_site, {})
+                result = entry.get("result")
+            if not got or result is None:
                 return jsonify({"ok": False,
-                                "error": "zeep not available — restart SignalScope to retry install",
+                                "error": f"Site '{poll_site}' did not respond in time — "
+                                         "is it online and connected to the hub?",
                                 "stations": []})
-            sep    = "&" if "?" in url else "?"
-            client = _make_zeep_client(url + sep + "wsdl", url)
-            raw    = client.service.GetStations()
-            results = []
-            for s in (raw or []):
-                sid  = getattr(s, "ID", None)
-                name = getattr(s, "Name", None)
-                if sid is not None:
-                    results.append({"id": str(sid), "name": str(name or sid)})
-            if not results:
+            return jsonify(result)
+
+        # Hub-direct: use raw SOAP (no zeep required)
+        try:
+            stations = _sf_get_stations(url, timeout=10)
+            if not stations:
                 return jsonify({"ok": False,
                                 "error": "No stations returned by GetStations",
                                 "stations": []})
-            return jsonify({"ok": True, "stations": results})
+            return jsonify({"ok": True, "stations": stations})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e), "stations": []})
+
+    # ── Discover result (client pushes GetStations results back to hub) ────────
+    @app.post("/api/zetta/discover_result")
+    def zetta_discover_result():
+        import hashlib as _hs, hmac as _hm
+        from flask import request, jsonify
+        site = request.headers.get("X-Site", "").strip()
+        if not site:
+            return jsonify({"ok": False}), 400
+        sdata = (hub_server._sites or {}).get(site, {})
+        if not sdata.get("_approved"):
+            return jsonify({"ok": False}), 403
+        # Optional HMAC verification
+        secret = getattr(getattr(monitor.app_cfg, "hub", None), "secret_key", "") or ""
+        if secret:
+            sig  = request.headers.get("X-Hub-Sig", "")
+            ts_s = request.headers.get("X-Hub-Ts",  "0")
+            body = request.get_data()
+            try:
+                ts = float(ts_s)
+                if abs(time.time() - ts) > 120:
+                    return jsonify({"ok": False, "error": "timestamp expired"}), 403
+                key      = _hs.sha256(f"{secret}:signing".encode()).digest()
+                expected = _hm.new(key, f"{ts:.0f}:".encode() + body, _hs.sha256).hexdigest()
+                if not _hm.compare_digest(sig, expected):
+                    return jsonify({"ok": False, "error": "bad signature"}), 403
+            except Exception:
+                return jsonify({"ok": False, "error": "auth error"}), 403
+        payload = request.get_json(silent=True) or {}
+        result  = payload.get("result")
+        with _discover_lock:
+            entry = _discover_pending.get(site)
+            if entry:
+                entry["result"] = result
+                entry["evt"].set()
+        return jsonify({"ok": True})
 
     # ── Chain stations map (used by Broadcast Chains page) ───────────────────
     @app.get("/api/zetta/chain_stations")
@@ -2109,4 +2194,4 @@ def register(app, ctx):
                 return True
         return False
 
-    monitor.log("[Zetta] Plugin v2.0 registered — /hub/zetta")
+    monitor.log("[Zetta] Plugin v2.1.1 registered — /hub/zetta")
