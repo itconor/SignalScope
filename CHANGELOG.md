@@ -2,6 +2,15 @@
 
 ---
 
+### wallboard v3.14.6 — 2026-04-18
+
+**Fix Zetta ad detection and empty now-playing on wallboard**
+- AD BREAK detection now uses `asset_type === 2` (Zetta's native ASSET_SPOT integer) directly in JS, same approach as Studio Board. Removes the backend-computed `is_spot` flag that was causing false positives.
+- Fixed empty now-playing when Zetta has a track playing: the `now_playing` dict sent to the browser now includes `asset_type`, and the JS condition correctly renders track info when `asset_type !== 2`.
+- Fixed Planet Radio fallback: previously the fallback only ran when the chain had no Zetta entry at all. Now it also runs when a chain has Zetta data but no active now-playing (e.g. sequencer idle/stopped), so the card is never blank.
+
+---
+
 ### zetta v2.1.20 — 2026-04-18
 
 **Fix broken nav header layout**

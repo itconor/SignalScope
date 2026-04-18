@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.14.5",
+    "version":  "3.14.6",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -393,11 +393,11 @@ def register(app, ctx):
                 continue   # stale — Zetta unreachable
             _np = _zd.get("now_playing") or {}
             zetta_out[_cid] = {
-                "is_spot":    bool(_zd.get("is_spot")),
                 "mode_name":  _zd.get("mode_name", ""),
                 "now_playing": {
-                    "title":  (_np.get("raw_title") or _np.get("title") or "").strip(),
-                    "artist": (_np.get("raw_artist") or "").strip(),
+                    "title":      (_np.get("raw_title") or _np.get("title") or "").strip(),
+                    "artist":     (_np.get("raw_artist") or "").strip(),
+                    "asset_type": int(_np.get("asset_type") or 0),
                 } if _np else None,
             }
 
@@ -1893,15 +1893,15 @@ function renderChains(chains){
     if(npWrap){
       var npInner='';
       var zd=_zetChains[cid];
-      if(zd){
-        if(zd.is_spot){
-          npInner='<div class="cc-zet-ad">AD BREAK</div>';
-        } else if(zd.now_playing&&(zd.now_playing.artist||zd.now_playing.title)){
-          var zt=zd.now_playing;
-          var ztrack=zt.artist?'<span class="cc-np-artist">'+_e(zt.artist)+'</span> — '+_e(zt.title):_e(zt.title);
-          npInner='<div class="cc-np-track">'+ztrack+'</div>';
-        }
+      var zdNp=zd&&zd.now_playing;
+      /* asset_type 2 = ASSET_SPOT in Zetta — native check, same as Studio Board */
+      if(zdNp&&zdNp.asset_type===2){
+        npInner='<div class="cc-zet-ad">AD BREAK</div>';
+      } else if(zdNp&&(zdNp.artist||zdNp.title)){
+        var ztrack=zdNp.artist?'<span class="cc-np-artist">'+_e(zdNp.artist)+'</span> — '+_e(zdNp.title):_e(zdNp.title);
+        npInner='<div class="cc-np-track">'+ztrack+'</div>';
       } else if(np&&(np.artist||np.title)){
+        /* Planet Radio fallback — runs when no Zetta now_playing data */
         var track=np.artist?'<span class="cc-np-artist">'+_e(np.artist)+'</span> — '+_e(np.title):_e(np.title);
         npInner='<div class="cc-np-track">'+track+'</div>';
       }
