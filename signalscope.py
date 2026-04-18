@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.142"
+BUILD                  = "SignalScope-3.5.143"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -29076,7 +29076,17 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
       <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%">
     </div>
 
-    <!-- Quick timing — always visible, non-collapsible -->
+    <!-- Signal path -->
+    <div>
+      <div class="blk-hdr">
+        <span>Signal Path <span style="font-size:10px;color:var(--mu);font-weight:400">— left = source, right = destination</span></span>
+        <span style="font-size:11px;color:var(--mu)">Each position can stack multiple streams</span>
+      </div>
+      <div id="builder_nodes" style="display:flex;flex-direction:column;gap:8px;margin:10px 0 8px"></div>
+      <button class="btn bg bs" id="btn_add_node" type="button">＋ Add Position</button>
+    </div>
+
+    <!-- Alert Timing — always visible, non-collapsible, placed below signal path so it's visible while editing nodes -->
     <div class="blk-collapsible" id="blk_quick_timing">
       <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px;font-weight:600;background:#0a1e42;border-bottom:1px solid var(--bor)">
         <span>⏱ Alert Timing</span>
@@ -29097,17 +29107,12 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
           <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:100%">
           <div class="field-hint">0 = no repeat</div>
         </div>
+        <div class="adv-field">
+          <label title="Mark the node where ad audio is injected. If this node is silent during a fault, the fault is real (not an ad break) and fires immediately.">Ad mix-in node</label>
+          <select id="builder_mixin_idx" style="width:100%"><option value="">— None —</option></select>
+          <div class="field-hint">Silent here = real fault, not ad break</div>
+        </div>
       </div>
-    </div>
-
-    <!-- Signal path -->
-    <div>
-      <div class="blk-hdr">
-        <span>Signal Path <span style="font-size:10px;color:var(--mu);font-weight:400">— left = source, right = destination</span></span>
-        <span style="font-size:11px;color:var(--mu)">Each position can stack multiple streams</span>
-      </div>
-      <div id="builder_nodes" style="display:flex;flex-direction:column;gap:8px;margin:10px 0 8px"></div>
-      <button class="btn bg bs" id="btn_add_node" type="button">＋ Add Position</button>
     </div>
 
     <!-- Advanced settings — collapsible -->
@@ -29122,11 +29127,6 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
             <label title="Universal hold-off before any CHAIN_FAULT fires — applies to ALL fault types. Use to prevent alerts from brief silences between songs.">Fault hold-off (s)</label>
             <input type="number" id="builder_fault_holdoff" min="0" max="300" step="5" value="0" style="width:90px">
             <div class="field-hint">0 = off · applies to all faults</div>
-          </div>
-          <div class="adv-field">
-            <label title="Mark the node where ad audio is injected. Silent here = real fault, not ad break.">Ad mix-in node</label>
-            <select id="builder_mixin_idx" style="width:100%"><option value="">— None —</option></select>
-            <div class="field-hint">Silent here = bypass delay</div>
           </div>
           <div class="adv-field">
             <label title="Suppress notifications if this upstream chain is also faulted.">Upstream chain (cascade)</label>
@@ -29465,13 +29465,28 @@ function _addNodeRowToGroup(group, nd){
   var streamDiv=document.createElement('div');
   var streamLbl=document.createElement('label');streamLbl.textContent='Stream';
   var streamSel=document.createElement('select');streamSel.className='nst';streamSel.style.width='100%';
+  function _getStreamOpt(site,stream){
+    return _opts.find(function(o){return o.site===site&&o.stream===stream;})||null;
+  }
+  function _autoFillThresh(){
+    // Only fill if the user hasn't already typed a value
+    if(threshIn&&threshIn.value.trim()===''){
+      var opt=_getStreamOpt(siteSel.value,streamSel.value);
+      if(opt&&opt.silence_threshold_dbfs!=null){
+        threshIn.placeholder=String(opt.silence_threshold_dbfs)+' (stream default)';
+      } else {
+        threshIn.placeholder='e.g. −55';
+      }
+    }
+  }
   function fillStreams(){
     streamSel.innerHTML='';
     streamsFor(siteSel.value).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;streamSel.appendChild(o);});
     if(nd&&nd.stream)streamSel.value=nd.stream;
+    _autoFillThresh();
   }
   siteSel.addEventListener('change',function(){fillStreams();_refreshCompSels();_refreshMixinSel();_updatePreview();});
-  streamSel.addEventListener('change',function(){_refreshCompSels();_refreshMixinSel();_updatePreview();});
+  streamSel.addEventListener('change',function(){_autoFillThresh();_refreshCompSels();_refreshMixinSel();_updatePreview();});
   streamDiv.appendChild(streamLbl);streamDiv.appendChild(streamSel);
   streamWrap.appendChild(siteDiv);streamWrap.appendChild(streamDiv);
   nodeWrap.appendChild(streamWrap);
@@ -31192,13 +31207,15 @@ def api_chains_streams():
     # Local streams on this node
     for inp in cfg.inputs:
         if inp.enabled:
-            options.append({"site": "local", "site_label": f"This node (local)", "stream": inp.name})
+            options.append({"site": "local", "site_label": f"This node (local)", "stream": inp.name,
+                            "silence_threshold_dbfs": inp.silence_threshold_dbfs})
     # Remote hub sites
     if hub_server:
         for site in hub_server.get_sites():
             sname = site.get("site", "")
             for s in site.get("streams", []):
-                options.append({"site": sname, "site_label": sname, "stream": s.get("name", "")})
+                options.append({"site": sname, "site_label": sname, "stream": s.get("name", ""),
+                                "silence_threshold_dbfs": s.get("silence_threshold_dbfs")})
     return jsonify({"options": options})
 
 
