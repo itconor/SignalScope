@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.150"
+BUILD                  = "SignalScope-3.5.151"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -30373,9 +30373,10 @@ function refreshStatus(){
       var isPending=(ds==='pending');
       var remaining=chain.adbreak_remaining;
 
+      var isZettaSpot=!!(chain.zetta_suppressed);
       if(badge){
         if(isAdbreak){
-          var cdStr=remaining>0?(' — '+remaining+'s'):'';
+          var cdStr=(!isZettaSpot&&remaining>0)?(' — '+remaining+'s'):'';
           badge.textContent='AD BREAK'+cdStr;
           badge.className='badge badge-adbreak';
         } else if(isPending){
@@ -30421,8 +30422,12 @@ function refreshStatus(){
       }
       if(fl){
         if(isAdbreak){
-          var secs=remaining>0?remaining+'s remaining':'confirming…';
-          fl.textContent='↳ Likely ad break — '+secs+' before fault alert';
+          if(isZettaSpot){
+            fl.textContent='↳ Zetta confirms ad break — fault suppressed';
+          } else {
+            var secs=remaining>0?remaining+'s remaining':'confirming…';
+            fl.textContent='↳ Likely ad break — '+secs+' before fault alert';
+          }
         } else if(isPending){
           fl.textContent='↳ Fault detected — confirming ('+( remaining||'…')+'s remaining)';
         } else if(chain.fault_node){
@@ -31958,12 +31963,24 @@ def api_chains_status():
             adbreak_candidate = result.get("adbreak_candidate", False)
             chain_status = result.get("status", "unknown")
 
+            # Check whether Zetta is definitively confirming an ad break for this chain.
+            # When true, we suppress the heuristic countdown entirely — Zetta is the
+            # authoritative source and knows exactly when the break ends.
+            _zcs_api     = monitor._zetta_chain_state.get(cid, {})
+            _zcs_api_age = now - float(_zcs_api.get("ts", 0) or 0)
+            _zetta_spot_api = bool(_zcs_api) and _zcs_api_age < 60 and bool(_zcs_api.get("is_spot"))
+
             if internal_state == "pending" and adbreak_candidate and since is not None:
-                # Monitor loop has confirmed the pending/adbreak state — show countdown
+                # Monitor loop has confirmed the pending/adbreak state
                 hub_server._chain_api_pre_pending_since.pop(cid, None)
                 result["display_status"] = "adbreak"
-                remaining = max(0.0, min_fault_secs - (now - since))
-                result["adbreak_remaining"] = round(remaining)
+                if _zetta_spot_api:
+                    # Zetta is definitive — no countdown, clear message
+                    result["adbreak_remaining"] = None
+                    result["zetta_suppressed"]  = True
+                else:
+                    remaining = max(0.0, min_fault_secs - (now - since))
+                    result["adbreak_remaining"] = round(remaining)
             elif internal_state == "pending" and since is not None:
                 # Pending but not an adbreak candidate
                 hub_server._chain_api_pre_pending_since.pop(cid, None)
@@ -31984,7 +32001,11 @@ def api_chains_status():
                     result["display_status"] = "adbreak"
                 else:
                     result["display_status"] = "pending"
-                result["adbreak_remaining"] = round(max(0.0, min_fault_secs - (now - pre_since)))
+                if _zetta_spot_api and adbreak_candidate:
+                    result["adbreak_remaining"] = None
+                    result["zetta_suppressed"]  = True
+                else:
+                    result["adbreak_remaining"] = round(max(0.0, min_fault_secs - (now - pre_since)))
             else:
                 result["display_status"] = chain_status
                 result["adbreak_remaining"] = None

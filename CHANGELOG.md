@@ -2,6 +2,20 @@
 
 ---
 
+## SignalScope-3.5.151 — 2026-04-18
+
+### Fixed — Broadcast Chains shows heuristic countdown during Zetta-confirmed ad break (3.5.151)
+
+When a chain linked to a Zetta station entered a silent-pending state during an ad break, the chain header showed "AD BREAK — 306s" and "↳ Likely ad break — 306s remaining before fault alert" — a heuristic countdown guessing when the break might end. But Zetta is definitive: `is_spot=True` means we already *know* it's an ad break and exactly when it ends.
+
+**Fix**: `api_chains_status()` now reads `monitor._zetta_chain_state` for each chain. When Zetta data is fresh (<60s) and `is_spot=True`, `zetta_suppressed=True` is added to the response and `adbreak_remaining` is set to `null`. The chain page JS reads `chain.zetta_suppressed`:
+- Badge: "AD BREAK" (no countdown suffix)
+- Footer: "↳ Zetta confirms ad break — fault suppressed"
+
+The heuristic countdown message only appears when Zetta is not linked or Zetta data is stale/absent.
+
+---
+
 ## SignalScope-3.5.150 — 2026-04-18
 
 ### Fixed — Zetta data frozen on Studio Board TV page (studioboard v3.10.0, zetta v2.1.13)
