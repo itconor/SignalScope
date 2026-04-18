@@ -343,14 +343,11 @@ _HUB_TPL = r"""<!doctype html>
   <div class="card">
     <div class="ch">⚙ Configuration</div>
     <div class="cb">
-      <div class="field" style="margin-bottom:14px">
-        <label>Audio interface (multicast reception)</label>
-        <div style="display:flex;align-items:center;gap:10px">
-          <code style="font-size:13px;color:var(--tx)">{{iface_ip}}</code>
-          <a href="/settings#network" class="btn bg bs">Change in Settings ↗</a>
-        </div>
-        <p style="font-size:11px;color:var(--mu);margin-top:4px">Set under Settings → Hub &amp; Network → Audio interface IP. A restart is required after changing it.</p>
-      </div>
+      <p style="font-size:12px;color:var(--mu);margin-bottom:14px">
+        This hub does not listen for LWAP multicast. Source data is pushed here by each
+        connected client node every {{push_interval}}s. Configure the audio interface and
+        stale timeout on each client's Livewire page.
+      </p>
       <div class="field">
         <label>Source stale timeout (seconds)</label>
         <input type="number" id="cfg-timeout" min="30" max="3600" value="{{timeout}}" style="max-width:160px">
@@ -617,11 +614,17 @@ def register(app, ctx):
     if is_hub:
         _load_hub_data()
 
-    # Start the LWAP monitor on all node types
+    # Start the LWAP monitor only on nodes that are on the Livewire network
+    # (client, standalone, or "both").  Pure hub nodes receive source data
+    # from clients via /api/livewire/report — they never join the multicast group.
     if _lw_monitor is not None:
         _lw_monitor.stop()
-    _lw_monitor = _LivewireMonitor(iface_ip, timeout, monitor_ref.log)
-    _lw_monitor.start()
+    if mode != "hub":
+        _lw_monitor = _LivewireMonitor(iface_ip, timeout, monitor_ref.log)
+        _lw_monitor.start()
+    else:
+        _lw_monitor = None
+        monitor_ref.log("[Livewire] Hub mode — LWAP listener not started (display-only)")
 
     # Client → hub pusher thread
     if is_client:
@@ -680,9 +683,9 @@ def register(app, ctx):
         pcfg2 = _load_cfg()
         return render_template_string(
             _HUB_TPL,
-            iface_ip=iface_ip,
             timeout=int(pcfg2.get("source_timeout", _DEF_TIMEOUT)),
             is_hub=is_hub,
+            push_interval=_PUSH_INTERVAL,
         )
 
     @app.post("/api/livewire/report")
@@ -748,8 +751,8 @@ def register(app, ctx):
                     "stale":      sum(1 for x in srcs if x["status"] == "stale"),
                 }
 
-        # Own local sources (hub/both/standalone)
-        if mode in ("hub", "both", "standalone") and _lw_monitor:
+        # Own local sources (both/standalone only — pure hub never listens)
+        if mode in ("both", "standalone") and _lw_monitor:
             own      = _lw_monitor.get_sources()
             own_name = site_name or "(hub)"
             # Don't overwrite a remote-reported entry for the same site name

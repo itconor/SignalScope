@@ -2,6 +2,14 @@
 
 ---
 
+## livewire v1.0.2 — 2026-04-18
+
+### Fixed — hub mode no longer joins Livewire multicast
+
+Pure hub nodes (`mode = hub`) now skip the LWAP listener entirely. The hub is display-only — it receives source tables pushed by client nodes every 30 s and has no reason to join `239.192.255.3:4001`. The hub Livewire page now explains this and points users to configure the audio interface on each client node. `both` mode (hub + local monitoring) still listens as before.
+
+---
+
 ## livewire v1.0.1 — 2026-04-18
 
 ### Fixed — LWAP multicast join on wrong NIC
