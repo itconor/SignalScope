@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.146"
+BUILD                  = "SignalScope-3.5.147"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -2855,8 +2855,8 @@ class InputConfig:
     # Fires when the stream audio level has drifted by more than drift_db
     # — catches transmitter gain loss, AGC failure, fader accidents, etc.
     alert_on_level_drift:     bool  = False   # off by default — programmes vary in loudness
-    level_drift_db:           float = 8.0     # minimum drift to alert (dB)
-    level_drift_min_duration: float = 60.0    # drift must persist this long (s) before alerting
+    level_drift_db:           float = 12.0    # minimum drift to alert (dB) — raised from 8 to reduce false positives
+    level_drift_min_duration: float = 180.0   # drift must persist this long (s) before alerting
 
     # Sustained overmodulation
     # Fires when a large fraction of audio chunks exceed the clip threshold
@@ -7407,6 +7407,12 @@ def analyse_chunk(cfg: InputConfig, sender: AlertSender, log_fn,
                         sender.send(f"LEVEL DRIFT on {cfg.name}", msg, clip,
                             alert_type="LEVEL_DRIFT", stream=cfg.name, level_dbfs=lev)
                     log_fn(f"[ALERT] {msg}")
+                # Re-baseline the slow EMA to the current fast EMA so the new
+                # level becomes the new normal. Without this the two EMAs stay
+                # diverged and the alert fires again every ~2 min indefinitely.
+                # A second alert only fires if the level drifts AGAIN from this
+                # new baseline — one alert per actual drift event, not per minute.
+                cfg._ld_ema_slow = cfg._ld_ema_fast
                 cfg._ld_drift_secs = 0.0
     else:
         # Reset EMA counters when stream is silent so drift doesn't accumulate

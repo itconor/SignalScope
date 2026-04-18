@@ -21,6 +21,24 @@ Progress bar stays smooth between polls by tracking elapsed time since the last 
 
 ---
 
+## SignalScope-3.5.147 — 2026-04-18
+
+### Fixed — LEVEL_DRIFT fires repeatedly every ~2 min for as long as drift persists (3.5.147)
+
+Two bugs caused excessive LEVEL_DRIFT noise:
+
+**1. No re-baselining after alert fires.** After LEVEL_DRIFT fires, `_ld_drift_secs` was reset to 0 but the fast and slow EMAs were left diverged. Because the stream had simply settled at a new loudness level, the two EMAs stayed apart and `_ld_drift_secs` quickly accumulated again, firing a second alert ~2 minutes later, then a third, and so on indefinitely until the stream level happened to return to the pre-drift average. This produced streams of identical LEVEL_DRIFT alerts in Reports.
+
+Fix: after LEVEL_DRIFT fires, `cfg._ld_ema_slow = cfg._ld_ema_fast` — the new level is adopted as the new baseline. A follow-up alert only fires if the level drifts *again* from this new reference point. One alert per actual drift event, not one per minute.
+
+**2. Defaults too sensitive for broadcast programming.** Default threshold 8 dB fired on normal inter-song loudness variation. Default min_duration 60 s meant a single loud commercial block was enough to fire.
+
+New defaults: `level_drift_db = 12.0` (was 8.0), `level_drift_min_duration = 180.0 s` (was 60.0 s). Existing per-stream configs are unchanged — only new inputs start with the higher defaults.
+
+**Rule**: After `LEVEL_DRIFT` fires, always re-baseline `cfg._ld_ema_slow = cfg._ld_ema_fast`. Never leave the EMAs diverged after an alert — the new level IS the new normal.
+
+---
+
 ## SignalScope-3.5.146 — 2026-04-18
 
 ### Fixed — Hub Reports shows CHAIN_FAULT for LEVEL_DRIFT and other non-chain events (3.5.146)
