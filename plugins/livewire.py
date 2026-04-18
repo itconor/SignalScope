@@ -144,13 +144,18 @@ class _LivewireMonitor:
     """
 
     def __init__(self, iface_ip: str, timeout: int, log_fn):
-        self.iface_ip = iface_ip or "0.0.0.0"
-        self.timeout  = int(timeout or _DEF_TIMEOUT)
-        self.log      = log_fn
+        self.iface_ip    = iface_ip or "0.0.0.0"
+        self.timeout     = int(timeout or _DEF_TIMEOUT)
+        self.log         = log_fn
         self._sources: dict = {}
-        self._lock    = threading.Lock()
-        self._stop    = threading.Event()
-        self._thread  = None
+        self._lock       = threading.Lock()
+        self._stop       = threading.Event()
+        self._thread     = None
+        # Diagnostics
+        self._pkt_rx     = 0    # total UDP packets received
+        self._pkt_parsed = 0    # packets that parsed successfully
+        self._sock_ok    = None # True/False after open attempt
+        self._last_raw   = b""  # raw bytes of most recent packet
 
     def start(self):
         self._stop.clear()
@@ -188,6 +193,26 @@ class _LivewireMonitor:
 
     # ── internals ────────────────────────────────────────────────────────────
 
+    def get_debug(self) -> dict:
+        """Diagnostic snapshot for /api/livewire/debug."""
+        last_hex = self._last_raw[:256].hex() if self._last_raw else ""
+        last_txt = ""
+        if self._last_raw:
+            try:
+                last_txt = self._last_raw[:256].decode("utf-8", errors="replace") \
+                               .replace("\x00", "·")
+            except Exception:
+                pass
+        return {
+            "socket_ok":   self._sock_ok,
+            "pkt_rx":      self._pkt_rx,
+            "pkt_parsed":  self._pkt_parsed,
+            "last_raw_hex": last_hex,
+            "last_raw_txt": last_txt,
+            "iface_ip":    self.iface_ip,
+            "sources":     len(self._sources),
+        }
+
     def _open_socket(self):
         try:
             s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM, _sock.IPPROTO_UDP)
@@ -201,8 +226,10 @@ class _LivewireMonitor:
                                _sock.inet_aton(_LWAP_GROUP),
                                _sock.inet_aton(self.iface_ip))
             s.setsockopt(_sock.IPPROTO_IP, _sock.IP_ADD_MEMBERSHIP, mreq)
+            self._sock_ok = True
             return s
         except Exception as e:
+            self._sock_ok = False
             self.log(f"[Livewire] Socket open failed: {e}")
             return None
 
@@ -220,6 +247,8 @@ class _LivewireMonitor:
             if ready:
                 try:
                     data, addr = sock.recvfrom(4096)
+                    self._pkt_rx  += 1
+                    self._last_raw = data
                     self._process(data, addr[0])
                 except Exception as e:
                     if not self._stop.is_set():
@@ -233,6 +262,7 @@ class _LivewireMonitor:
         p = _parse_lwap(data, sender_ip)
         if not p:
             return
+        self._pkt_parsed += 1
         cid = p["cid"]
         now = time.time()
         with self._lock:
@@ -783,6 +813,20 @@ def register(app, ctx):
         sources = _lw_monitor.get_sources() if _lw_monitor else []
         stats   = _lw_monitor.get_stats()   if _lw_monitor else {}
         return jsonify({"sources": sources, "stats": stats})
+
+    @app.get("/api/livewire/debug")
+    @login_required
+    def livewire_debug():
+        """Diagnostic endpoint — shows socket state, packet counts, last raw packet."""
+        if _lw_monitor:
+            d = _lw_monitor.get_debug()
+        else:
+            d = {"socket_ok": None, "pkt_rx": 0, "pkt_parsed": 0,
+                 "last_raw_hex": "", "last_raw_txt": "", "iface_ip": iface_ip, "sources": 0}
+        d["mode"]     = mode
+        d["hub_url"]  = hub_url
+        d["site"]     = site_name
+        return jsonify(d)
 
     @app.post("/api/livewire/config")
     @login_required
