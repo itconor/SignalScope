@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.144"
+BUILD                  = "SignalScope-3.5.145"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -29097,11 +29097,6 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
       <div id="adv_body" style="display:none">
         <div class="adv-grid">
           <div class="adv-field">
-            <label title="Universal hold-off before any CHAIN_FAULT fires — applies to ALL fault types. Use to prevent alerts from brief silences between songs.">Fault hold-off (s)</label>
-            <input type="number" id="builder_fault_holdoff" min="0" max="300" step="5" value="0" style="width:90px">
-            <div class="field-hint">0 = off · applies to all faults</div>
-          </div>
-          <div class="adv-field">
             <label title="Suppress notifications if this upstream chain is also faulted.">Upstream chain (cascade)</label>
             <select id="builder_upstream_chain" style="width:100%"><option value="">— None —</option></select>
             <div class="field-hint">Suppress if upstream faulted</div>
@@ -29154,9 +29149,14 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
     </div>
     <div class="timing-quick">
       <div class="adv-field">
-        <label title="How long silence must persist before a CHAIN_FAULT alert fires.">Min silence before alert (s)</label>
-        <input type="number" id="builder_min_fault" min="0" max="3600" step="5" value="0" style="width:100%">
-        <div class="field-hint">0 = instant · 30 = wait 30 s</div>
+        <label title="Universal hold-off before any CHAIN_FAULT fires — applies to ALL fault types. Use to prevent alerts from brief silences between songs.">Min silence before alert (s)</label>
+        <input type="number" id="builder_fault_holdoff" min="0" max="300" step="5" value="0" style="width:100%">
+        <div class="field-hint">0 = instant · e.g. 10 = wait 10 s</div>
+      </div>
+      <div class="adv-field">
+        <label title="Maximum ad break duration. Pre-mix-in silence shorter than this is treated as an ad break and suppressed. Has no effect without an Ad mix-in node set.">Max ad break (s)</label>
+        <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:100%">
+        <div class="field-hint">0 = off · requires mix-in node</div>
       </div>
       <div class="adv-field">
         <label>Confirm recovery (s)</label>
@@ -29752,7 +29752,6 @@ function showBuilder(chain){
   }
   // Auto-expand Advanced if any non-default values
   var _hasAdv=(
-    parseInt(document.getElementById('builder_fault_holdoff').value||'0')>0||
     parseInt(document.getElementById('builder_fault_shift_grace').value||'0')>0||
     parseFloat(document.getElementById('builder_trend_alert').value||'0')!==0||
     parseFloat(document.getElementById('builder_clip_seconds').value||'0')>0||

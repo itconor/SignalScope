@@ -2,6 +2,21 @@
 
 ---
 
+## SignalScope-3.5.145 — 2026-04-18
+
+### Fixed — Alert Timing fields mislabelled; "Min silence before alert" was ad break window (3.5.145)
+
+`min_fault_seconds` is the **ad break tolerance window** — how long a pre-mix-in node can be silent before it's treated as a real fault rather than an ad break. `fault_holdoff_seconds` is the true **universal hold-off** before any CHAIN_FAULT fires (all fault types). The pinned Alert Timing panel had these backwards: the "Min silence before alert" label was bound to `min_fault_seconds` (the ad break window), so users setting a 330 s ad break tolerance saw it incorrectly described as their alert delay.
+
+Fix:
+- "Min silence before alert (s)" → now bound to `fault_holdoff_seconds` (the true universal alert delay, was buried in Advanced Settings)
+- "Max ad break (s)" → now bound to `min_fault_seconds` (ad break tolerance, only active when a mix-in node is set; hint clarifies this)
+- `fault_holdoff_seconds` removed from Advanced Settings (now in the pinned panel)
+
+**Rule**: In the chain builder Alert Timing panel, `builder_fault_holdoff` maps to `fault_holdoff_seconds` (universal alert delay) and `builder_min_fault` maps to `min_fault_seconds` (ad break window). Never swap these.
+
+---
+
 ## SignalScope-3.5.144 — 2026-04-18
 
 ### Fixed — Alert Timing panel invisible when chain drawer has many nodes (3.5.144)
