@@ -2,6 +2,16 @@
 
 ---
 
+### wallboard v3.14.7 + zetta v2.1.21 — 2026-04-18
+
+**Full Zetta sequencer on wallboard chain cards**
+- Wallboard chain cards now show the full Zetta sequencer view (same as Studio Board) instead of a single line of text. Displays: artwork placeholder, artist, title, AD badge, progress bar with live countdown, ETM (back-on-air time during ad breaks), queue of upcoming items, and Zetta computer/machine name.
+- Progress bar and countdown timer update at ~5 fps via a dedicated `requestAnimationFrame` loop using `data-zet-pf`/`data-zet-tm` attributes — no ID conflicts between multiple chain cards.
+- When sequencer is idle (no now_playing), shows the current mode name (e.g. "Auto", "Manual") dimmed in place of artist/title.
+- zetta.py `_chain_zetta_state` now includes `queue`, `remaining_seconds`, `duration_seconds`, `etm`, `gap`, `computer_name`, and `station_name` — previously only `now_playing`, `mode`, and `ts` were stored for chains.
+
+---
+
 ### wallboard v3.14.6 — 2026-04-18
 
 **Fix Zetta ad detection and empty now-playing on wallboard**

@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.20",
+    "version":  "2.1.21",
 }
 
 import json
@@ -257,14 +257,21 @@ def _rebuild_chain_zetta_state() -> None:
                     and (_mode_int == MODE_OFF_AIR or _status_i == ST_QUEUED)
                 )
                 _new_chain[_cid] = {
-                    "is_spot":     _is_spot,
-                    "is_stopped":  _is_stopped,
-                    "now_playing": _np,
-                    "mode":        _mode_int,
-                    "mode_name":   MODE_NAMES.get(_mode_int, "Unknown"),
-                    "ts":          _ts,
-                    "instance_id": _iid,
-                    "station_id":  _sid,
+                    "is_spot":           _is_spot,
+                    "is_stopped":        _is_stopped,
+                    "now_playing":       _np,
+                    "queue":             _sd.get("queue") or [],
+                    "remaining_seconds": float(_sd.get("remaining_seconds") or 0),
+                    "duration_seconds":  float(_sd.get("duration_seconds") or 0),
+                    "etm":               _sd.get("etm") or "",
+                    "gap":               _sd.get("gap") or "",
+                    "computer_name":     _sd.get("computer_name") or "",
+                    "station_name":      _sd.get("station_name") or "",
+                    "mode":              _mode_int,
+                    "mode_name":         MODE_NAMES.get(_mode_int, "Unknown"),
+                    "ts":                _ts,
+                    "instance_id":       _iid,
+                    "station_id":        _sid,
                 }
     except Exception:
         return   # never crash — chain fault logic and studioboard fall back gracefully

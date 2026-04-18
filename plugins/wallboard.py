@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.14.6",
+    "version":  "3.14.7",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -393,12 +393,26 @@ def register(app, ctx):
                 continue   # stale — Zetta unreachable
             _np = _zd.get("now_playing") or {}
             zetta_out[_cid] = {
-                "mode_name":  _zd.get("mode_name", ""),
+                "mode_name":         _zd.get("mode_name", ""),
+                "computer_name":     _zd.get("computer_name") or "",
+                "station_name":      _zd.get("station_name") or "",
+                "remaining_seconds": float(_zd.get("remaining_seconds") or 0),
+                "duration_seconds":  float(_zd.get("duration_seconds") or 0),
+                "etm":               _zd.get("etm") or "",
+                "ts":                float(_zd.get("ts") or 0),
                 "now_playing": {
                     "title":      (_np.get("raw_title") or _np.get("title") or "").strip(),
                     "artist":     (_np.get("raw_artist") or "").strip(),
                     "asset_type": int(_np.get("asset_type") or 0),
                 } if _np else None,
+                "queue": [
+                    {
+                        "title":      (q.get("raw_title") or q.get("title") or "").strip(),
+                        "asset_type": int(q.get("asset_type") or 0),
+                        "duration":   q.get("duration") or "",
+                    }
+                    for q in (_zd.get("queue") or [])[:4]
+                ],
             }
 
         return jsonify({
@@ -811,7 +825,7 @@ body.bauer .cc-rx-val.rx-low{color:rgba(255,255,255,.3)}
 .cc-np-artist{color:var(--tx);font-weight:700}
 body.corp .cc-np-track{color:#0071e3}
 body.corp .cc-np-artist{color:#1d1d1f}
-/* Zetta now-playing & AD BREAK badge */
+/* Zetta AD BREAK badge (fallback text mode) */
 .cc-zet-ad{
   display:inline-flex;align-items:center;gap:5px;
   font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
@@ -820,6 +834,41 @@ body.corp .cc-np-artist{color:#1d1d1f}
 }
 .cc-zet-ad::before{content:'●';font-size:9px;animation:zet-pulse 1.2s ease-in-out infinite}
 @keyframes zet-pulse{0%,100%{opacity:1}50%{opacity:.3}}
+/* ── Zetta full sequencer (cc-np-wrap → cc-zet-seq) ── */
+.cc-zet-seq{width:100%;padding-top:4px}
+.zm-now{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.zm-art-ph{width:48px;height:48px;border-radius:10px;flex-shrink:0;
+  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);
+  display:flex;align-items:center;justify-content:center;font-size:22px;opacity:.4}
+.zm-text{flex:1;min-width:0}
+.zm-mode{font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;
+  color:rgba(255,255,255,.38);margin-bottom:3px}
+.zm-artist{font-size:15px;font-weight:700;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;line-height:1.2}
+.zm-title{font-size:12px;font-weight:300;color:rgba(255,255,255,.65);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
+.zm-prog-wrap{width:100%;height:3px;background:rgba(255,255,255,.12);
+  border-radius:2px;overflow:hidden;margin-bottom:3px}
+.zm-prog-fill{height:100%;
+  background:linear-gradient(90deg,rgba(255,255,255,.45),rgba(255,255,255,.88));
+  border-radius:2px;transition:width .4s linear}
+.zm-prog-ad{background:#f59e0b!important}
+.zm-time{font-size:10px;color:rgba(255,255,255,.32);margin-bottom:8px;text-align:right}
+.zm-queue{border-top:1px solid rgba(255,255,255,.07);padding-top:5px}
+.zm-q-row{display:flex;align-items:center;gap:5px;padding:4px 0;
+  border-bottom:1px solid rgba(255,255,255,.04)}
+.zm-q-row:last-child{border-bottom:none}
+.zm-q-lbl{font-size:9px;color:rgba(255,255,255,.32);text-transform:uppercase;
+  letter-spacing:.07em;flex-shrink:0;min-width:28px;font-weight:700}
+.zm-q-title{flex:1;font-size:12px;color:rgba(255,255,255,.5);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zm-q-spot .zm-q-title{color:rgba(245,158,11,.62);font-style:italic}
+.zm-q-dur{font-size:10px;color:rgba(255,255,255,.28);flex-shrink:0}
+.zm-now-ad{border-left:3px solid #f59e0b;padding-left:8px;
+  background:rgba(245,158,11,.06);border-radius:6px}
+.zm-ad-badge{font-size:9px;font-weight:800;letter-spacing:.1em;color:#f59e0b;
+  background:rgba(245,158,11,.18);border:1px solid rgba(245,158,11,.4);
+  border-radius:4px;padding:2px 6px;flex-shrink:0;align-self:flex-start}
 
 /* ═══ Meter scroll ═══ */
 #wb-scroll{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 20px 16px}
@@ -1888,20 +1937,52 @@ function renderChains(chains){
     var sTxt=_ccStatusTxt(st);
     if(stxtEl&&stxtEl.textContent!==sTxt)stxtEl.textContent=sTxt;
 
-    // Now playing — Zetta (primary, auto-resolved) or Planet Radio (fallback)
+    // Now playing — Zetta full sequencer (primary) or Planet Radio text (fallback)
     var npWrap=card.querySelector('.cc-np-wrap');
     if(npWrap){
       var npInner='';
       var zd=_zetChains[cid];
       var zdNp=zd&&zd.now_playing;
-      /* asset_type 2 = ASSET_SPOT in Zetta — native check, same as Studio Board */
-      if(zdNp&&zdNp.asset_type===2){
-        npInner='<div class="cc-zet-ad">AD BREAK</div>';
-      } else if(zdNp&&(zdNp.artist||zdNp.title)){
-        var ztrack=zdNp.artist?'<span class="cc-np-artist">'+_e(zdNp.artist)+'</span> — '+_e(zdNp.title):_e(zdNp.title);
-        npInner='<div class="cc-np-track">'+ztrack+'</div>';
+      if(zd){
+        /* ── Zetta full sequencer ── */
+        var _isSpot=(zdNp&&zdNp.asset_type===2);
+        var _zartist=zdNp?_e(zdNp.artist||''):'';
+        var _ztitle=zdNp?_e(zdNp.title||''):'';
+        var _zart='<div class="zm-art-ph">🎤</div>';
+        var _zcomp=zd.computer_name?('<div class="zm-mode">'+_e(zd.computer_name)+'</div>'):'';
+        /* now row */
+        var _znow='<div class="zm-now'+(_isSpot?' zm-now-ad':'') +'">'
+          +(_isSpot?'<div class="zm-ad-badge">AD</div>':'')
+          +_zart
+          +'<div class="zm-text">'
+          +_zcomp
+          +(zdNp?('<div class="zm-artist">'+_zartist+'</div>'
+            +'<div class="zm-title">'+_ztitle+'</div>')
+            :'<div class="zm-artist" style="opacity:.4">'+_e(zd.mode_name||'Idle')+'</div>')
+          +'</div></div>';
+        /* progress + ETM */
+        var _zprog='<div class="zm-prog-wrap"><div class="zm-prog-fill'+(_isSpot?' zm-prog-ad':'')
+          +'" data-zet-pf="'+_e(cid)+'"></div></div>'
+          +'<div class="zm-time" data-zet-tm="'+_e(cid)+'"></div>';
+        /* back-on-air / ETM line */
+        var _zetm=(_isSpot&&zd.etm)?('<div class="zm-mode" style="margin-bottom:4px">Back on air '+_e(zd.etm)+'</div>'):'';
+        /* queue */
+        var _zq='';
+        var _nq=zd.queue||[];
+        if(_nq.length&&!_isSpot){
+          _zq='<div class="zm-queue">';
+          _nq.slice(0,3).forEach(function(q,qi){
+            _zq+='<div class="zm-q-row'+(q.asset_type===2?' zm-q-spot':'')+'">'
+              +'<span class="zm-q-lbl">'+(qi===0?'NEXT':'')+'</span>'
+              +'<span class="zm-q-title">'+_e(q.title||'')+'</span>'
+              +'<span class="zm-q-dur">'+_e(q.duration||'')+'</span>'
+              +'</div>';
+          });
+          _zq+='</div>';
+        }
+        npInner='<div class="cc-zet-seq">'+_znow+_zprog+_zetm+_zq+'</div>';
       } else if(np&&(np.artist||np.title)){
-        /* Planet Radio fallback — runs when no Zetta now_playing data */
+        /* Planet Radio fallback — only when no Zetta entry at all for this chain */
         var track=np.artist?'<span class="cc-np-artist">'+_e(np.artist)+'</span> — '+_e(np.title):_e(np.title);
         npInner='<div class="cc-np-track">'+track+'</div>';
       }
@@ -2172,6 +2253,32 @@ function _meterRaf(ts){
   requestAnimationFrame(_meterRaf);
 }
 requestAnimationFrame(_meterRaf);
+
+/* ═══ Zetta progress RAF ═══ */
+/* Runs at ~5 fps — updates progress bar width and countdown timer for each
+   chain card that has an active Zetta now_playing.  Uses data-zet-pf / data-zet-tm
+   attributes so multiple chains never collide on IDs. */
+var _zetRafLast=0;
+function _zetRaf(ts){
+  requestAnimationFrame(_zetRaf);
+  if(ts-_zetRafLast<200)return; /* ~5 fps */
+  _zetRafLast=ts;
+  var now=Date.now()/1000;
+  Object.keys(_zetChains).forEach(function(cid){
+    var zd=_zetChains[cid];
+    if(!zd||!zd.now_playing||!zd.ts)return;
+    var ex=Math.max(0,now-zd.ts);
+    var rem=Math.max(0,(zd.remaining_seconds||0)-ex);
+    var dur=zd.duration_seconds||0;
+    var pct=dur>0?Math.min(100,(1-rem/dur)*100):0;
+    var rs=Math.round(rem);
+    var pfEl=document.querySelector('[data-zet-pf="'+cid+'"]');
+    if(pfEl)pfEl.style.width=pct.toFixed(1)+'%';
+    var tmEl=document.querySelector('[data-zet-tm="'+cid+'"]');
+    if(tmEl)tmEl.textContent='-'+Math.floor(rs/60)+':'+(rs%60<10?'0':'')+(rs%60);
+  });
+}
+requestAnimationFrame(_zetRaf);
 
 /* ═══ Fault screen ═══ */
 var _fsActive=false,_fsSnoozeUntil=0,_fsSnoozeTimer=null;
