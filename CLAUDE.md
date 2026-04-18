@@ -883,3 +883,48 @@ Fix: registered `_jinja_safe_lkey` as the `safe_lkey` Jinja2 filter (`re.sub(r'[
 **Rule**: Any Jinja2 template that generates an element `id` from a site-name + stream-name combination MUST use `|safe_lkey` (not `|replace(...)` chains). The filter is registered at app startup and mirrors the JS `_liveKey` / `_wLiveKey` functions exactly. Never add new replace chains for this purpose — they will miss characters.
 
 **Rule**: The JS `_liveKey(site, stream)` and `_wLiveKey(site, stream)` functions in `HUB_TPL` and `HUB_WALL_TPL` use `replace(/[^a-zA-Z0-9|]/g, '_')`. The `safe_lkey` Python filter uses `re.sub(r'[^a-zA-Z0-9|]', '_', s)`. These are equivalent. Never change either without updating the other.
+
+---
+
+## Zetta Integration Rules
+
+### Ad break detection — ALWAYS use `asset_type === 2` in JS
+
+`ASSET_SPOT = 2` is Zetta's native integer type for commercial/spot items. This is the **only correct** way to detect ad breaks in any plugin that displays Zetta now-playing data.
+
+```javascript
+// CORRECT — native Zetta type check, same as Studio Board
+var _isSpot = (zd.now_playing && zd.now_playing.asset_type === 2);
+
+// WRONG — do not use backend-computed boolean flags
+var _isSpot = zd.is_spot;  // ❌ unreliable, caused false positives
+```
+
+**Rule**: Any plugin that reads Zetta now-playing data and needs to show an AD BREAK badge MUST check `zd.now_playing.asset_type === 2` directly in JS. Never use a backend-computed `is_spot` boolean — it has caused false positives in the past and is unnecessary since `asset_type` is always present in `now_playing`.
+
+**Rule**: The backend must pass `asset_type` through in the `now_playing` dict it sends to the browser. Do not strip it. Minimum required fields in any `now_playing` dict sent to JS:
+```python
+"now_playing": {
+    "title":      (_np.get("raw_title") or _np.get("title") or "").strip(),
+    "artist":     (_np.get("raw_artist") or "").strip(),
+    "asset_type": int(_np.get("asset_type") or 0),  # MUST include — 2 = spot
+} if _np else None,
+```
+
+**Rule**: The Planet Radio / other fallback now-playing source must trigger when `zd.now_playing` is null/falsy — NOT only when the entire `zd` chain entry is absent. Pattern for JS rendering:
+```javascript
+var zdNp = zd && zd.now_playing;
+if (zdNp && zdNp.asset_type === 2) {
+    // AD BREAK badge
+} else if (zdNp && (zdNp.artist || zdNp.title)) {
+    // Zetta track display
+} else if (np && (np.artist || np.title)) {
+    // Planet Radio fallback — runs when no Zetta now_playing (sequencer idle etc.)
+}
+```
+
+### `_zetta_chain_state` — per-chain Zetta data (for wallboard, chain fault logic)
+Module-level dict in `zetta.py`, keyed by `chain_id`. Built by `_rebuild_chain_zetta_state()` after every poll. Exposed as `monitor._zetta_chain_state`. The `now_playing` value is the full parsed dict from `_parse_station_full` / `_parse_station_full_zeep`, which includes `raw_title`, `raw_artist`, `asset_type`, `duration_seconds`, etc.
+
+### `_station_zetta_state` / `monitor._zetta_live_station_data()` — per-station Zetta data (for studioboard)
+Keyed by `"iid:sid"` (instance ID + station ID). Studioboard calls `monitor._zetta_live_station_data()` and passes the full station dict straight to the browser with no field stripping — this is why studioboard has always worked correctly with `asset_type`.
