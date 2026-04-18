@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.10.2",
+    "version":  "3.10.3",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1157,7 +1157,8 @@ function updateCol(s,idx){
         :'<div class="zm-art zm-art-ph">\uD83C\uDFA4</div>';
       var _zartist=E(zd.now_playing.raw_artist||zd.now_playing.artist||'');
       var _ztitle=E(zd.now_playing.raw_title||zd.now_playing.title||'');
-      var _isSpot=!!(zd.now_playing.is_spot);
+      /* asset_type 2 = ASSET_SPOT in Zetta — use raw Zetta type, not category string matching */
+      var _isSpot=(zd.now_playing.asset_type===2);
       /* Build zh WITHOUT inline progress style so string stays stable between RAF ticks */
       zh='<div class="zm-now'+ (_isSpot?' zm-now-ad':'') +'">'
         +(_isSpot?'<div class="zm-ad-badge">AD</div>':'')
@@ -1173,7 +1174,7 @@ function updateCol(s,idx){
       if(_nq.length){
         zh+='<div class="zm-queue">';
         _nq.slice(0,4).forEach(function(q,qi){
-          zh+='<div class="zm-q-row'+(q.is_spot?' zm-q-spot':'')+'">'
+          zh+='<div class="zm-q-row'+(q.asset_type===2?' zm-q-spot':'')+'">'
             +'<span class="zm-q-lbl">'+(qi===0?'NEXT':'')+'</span>'
             +'<span class="zm-q-title">'+E(q.title||q.raw_title||'')+'</span>'
             +'<span class="zm-q-dur">'+E(q.duration||'')+'</span>'

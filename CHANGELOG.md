@@ -2,6 +2,18 @@
 
 ---
 
+## SignalScope-3.5.155 — 2026-04-18
+
+### Fixed — Studioboard AD badge on every track including music (studioboard v3.10.3)
+
+All tracks — music and spots alike — were showing the amber "AD" badge on the studioboard TV page.
+
+**Root cause**: Spot detection was using `is_spot` from the Zetta parsers, which is derived from category name string matching. The matching code had a bug where an empty category string (`""`) always evaluated as a match (`"" in "SPOT"` is `True` in Python), flagging every track with no Zetta category as a spot. Most music tracks have no category in Zetta, so all were flagged.
+
+**Fix**: The studioboard now uses `asset_type === 2` (Zetta's own `ASSET_SPOT` type code) directly from the parsed event data, instead of the derived `is_spot` flag. This is the raw Zetta classification — a song is always `asset_type=1`, a spot is always `asset_type=2`. No string matching, no false positives. Applied to both the now-playing row and the upcoming queue items.
+
+---
+
 ## SignalScope-3.5.154 — 2026-04-18
 
 ### Fixed — Zetta `is_spot` false positive on music tracks with no category (zetta v2.1.15)
