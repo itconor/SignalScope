@@ -2,6 +2,18 @@
 
 ---
 
+## SignalScope-3.5.144 — 2026-04-18
+
+### Fixed — Alert Timing panel invisible when chain drawer has many nodes (3.5.144)
+
+The "Alert Timing" section (Min silence before alert, Confirm recovery, Re-alert after, Ad mix-in node) was inside `drawer-body` — the scrollable flex container. With chains that have 4+ node positions, the body content pushed Alert Timing far below the visible viewport and users could not scroll to it because the drawer footer overlapped.
+
+Fix: Alert Timing is now a `<div class="drawer-timing">` element with `flex-shrink:0` sitting between `drawer-body` and `drawer-footer`. It is pinned above the footer and always visible regardless of how many signal path nodes the chain has. The scrollable body ends at the comparators section; Alert Timing is always in view.
+
+**Rule**: Alert Timing fields (`builder_min_fault`, `builder_min_recovery`, `builder_min_alert_interval`, `builder_mixin_idx`) MUST remain in the `.drawer-timing` fixed panel, NOT inside `.drawer-body`. Moving them back inside the scrollable body causes them to be invisible for chains with ≥4 nodes.
+
+---
+
 ## SignalScope-3.5.140 — 2026-04-17
 
 ### Fixed — Chain editor silently dropped per-node silence settings on save (3.5.140)

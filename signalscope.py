@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.143"
+BUILD                  = "SignalScope-3.5.144"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -28918,6 +28918,8 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 .builder-backdrop.open{opacity:1;pointer-events:auto}
 .drawer-hdr{padding:13px 16px;border-bottom:1px solid var(--bor);display:flex;align-items:center;gap:10px;flex-shrink:0;background:#06101e}
 .drawer-body{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+.drawer-timing{flex-shrink:0;border-top:2px solid var(--acc);background:#07142b}
+.drawer-timing .timing-quick{padding:10px 14px}
 .drawer-footer{padding:11px 16px;border-top:1px solid var(--bor);display:flex;align-items:center;gap:8px;flex-shrink:0;background:#06101e}
 /* ── Preview ── */
 .preview-wrap{background:#060e1c;border:1px solid var(--bor);border-radius:10px;padding:12px 16px;min-height:68px;display:flex;align-items:center;flex-wrap:nowrap;overflow-x:auto;gap:0}
@@ -29086,35 +29088,6 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
       <button class="btn bg bs" id="btn_add_node" type="button">＋ Add Position</button>
     </div>
 
-    <!-- Alert Timing — always visible, non-collapsible, placed below signal path so it's visible while editing nodes -->
-    <div class="blk-collapsible" id="blk_quick_timing">
-      <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px;font-weight:600;background:#0a1e42;border-bottom:1px solid var(--bor)">
-        <span>⏱ Alert Timing</span>
-      </div>
-      <div id="quick_timing_body" class="timing-quick">
-        <div class="adv-field">
-          <label title="How long silence must persist before a CHAIN_FAULT alert fires. Use to avoid alerts from brief gaps between songs.">Min silence before alert (s)</label>
-          <input type="number" id="builder_min_fault" min="0" max="3600" step="5" value="0" style="width:100%">
-          <div class="field-hint">0 = instant · 30 = wait 30 s</div>
-        </div>
-        <div class="adv-field">
-          <label title="Audio must be restored for this long before a recovery notification fires.">Confirm recovery (s)</label>
-          <input type="number" id="builder_min_recovery" min="0" max="3600" step="30" value="0" style="width:100%">
-          <div class="field-hint">0 = immediate</div>
-        </div>
-        <div class="adv-field">
-          <label title="Minimum time between repeated alert notifications for the same chain.">Re-alert after (min)</label>
-          <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:100%">
-          <div class="field-hint">0 = no repeat</div>
-        </div>
-        <div class="adv-field">
-          <label title="Mark the node where ad audio is injected. If this node is silent during a fault, the fault is real (not an ad break) and fires immediately.">Ad mix-in node</label>
-          <select id="builder_mixin_idx" style="width:100%"><option value="">— None —</option></select>
-          <div class="field-hint">Silent here = real fault, not ad break</div>
-        </div>
-      </div>
-    </div>
-
     <!-- Advanced settings — collapsible -->
     <div class="blk-collapsible" id="blk_advanced">
       <div class="blk-collapsible-hdr" data-target="adv_body">
@@ -29170,6 +29143,35 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
           <button class="btn bg bs" type="button" id="btn_add_comp">＋ Add Comparator</button>
           <button class="btn bg bs" type="button" id="btn_add_e2e">↔ Add End-to-End</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Alert Timing — pinned above footer, always visible regardless of scroll -->
+  <div class="drawer-timing">
+    <div style="display:flex;align-items:center;gap:8px;padding:7px 14px;font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--bor)">
+      <span>⏱ Alert Timing</span>
+    </div>
+    <div class="timing-quick">
+      <div class="adv-field">
+        <label title="How long silence must persist before a CHAIN_FAULT alert fires.">Min silence before alert (s)</label>
+        <input type="number" id="builder_min_fault" min="0" max="3600" step="5" value="0" style="width:100%">
+        <div class="field-hint">0 = instant · 30 = wait 30 s</div>
+      </div>
+      <div class="adv-field">
+        <label>Confirm recovery (s)</label>
+        <input type="number" id="builder_min_recovery" min="0" max="3600" step="30" value="0" style="width:100%">
+        <div class="field-hint">0 = immediate</div>
+      </div>
+      <div class="adv-field">
+        <label>Re-alert after (min)</label>
+        <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:100%">
+        <div class="field-hint">0 = no repeat</div>
+      </div>
+      <div class="adv-field">
+        <label title="Mark the node where ad audio is injected. Silent here = real fault, not ad break.">Ad mix-in node</label>
+        <select id="builder_mixin_idx" style="width:100%"><option value="">— None —</option></select>
+        <div class="field-hint">Silent here = real fault, not ad break</div>
       </div>
     </div>
   </div>
