@@ -2,6 +2,25 @@
 
 ---
 
+## SignalScope-3.5.156 — 2026-04-18
+
+### Added — Livewire plugin v1.0.0 + source picker in Add/Edit Input form
+
+New **Livewire** plugin (`plugins/livewire.py`) for Axia Livewire source discovery:
+- Passively listens on `239.192.255.3:4001` (LWAP) for Axia Livewire source advertisements on all node types (hub, client, standalone).
+- Client nodes push their source table to the hub every 30 s via signed `POST /api/livewire/report`.
+- Hub stores per-site source tables in `plugins/livewire_data.json` and serves `/hub/livewire` — per-site cards with online/stale pill badges and a full Node · Stream ID · Friendly Name · Multicast · Last Seen · Status table.
+- **Create Input** buttons add Livewire RTP inputs directly from any row (hub routes via `add_input` command; client/standalone calls `/inputs/add_dab_bulk`). Uses the stream ID as `device_index` — SignalScope's `_parse_device()` converts it to `239.192.x.y:5004`.
+- Configurable audio interface IP and source stale timeout per node.
+- No third-party packages required.
+
+**Settings → Inputs → Add/Edit Input** — when the Livewire plugin is loaded, the "Livewire / RTP / HTTP" source type now shows a **"Select from Livewire discovery"** dropdown above the manual Stream ID field:
+- Sources grouped by node in `<optgroup>` labels; stale sources shown in amber with ⚠.
+- Selecting a source fills Stream ID, pre-fills Name (if empty), and ticks stereo on.
+- The picker is server-side gated (`{% if livewire_available %}`) — it is never rendered if the plugin is not loaded.
+
+---
+
 ### studioboard v3.10.5 / zetta v2.1.17 — 2026-04-18
 
 **Larger idle/automation text for TV readability**

@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.155"
+BUILD                  = "SignalScope-3.5.156"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -21410,7 +21410,18 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
 
   <!-- Generic source address (Livewire / RTP / HTTP) -->
   <div id="src_other">
-    <label>Stream ID, Address or URL
+    {% if livewire_available %}
+    <!-- Livewire discovery picker (only rendered when the Livewire plugin is loaded) -->
+    <div id="lw_picker_wrap" style="margin-top:10px">
+      <label>Select from Livewire discovery
+        <select id="lw_picker" style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
+          <option value="">— choose a discovered source —</option>
+        </select>
+      </label>
+      <p class="help" id="lw_picker_status" style="margin-top:3px">Loading Livewire sources…</p>
+    </div>
+    {% endif %}
+    <label style="margin-top:10px">Stream ID, Address or URL
       <input type="text" id="device_index_other" placeholder="21811  or  239.192.85.19:5004  or  http://stream.example.com/live.mp3">
     </label>
     <p class="help">Livewire stream ID (auto-maps to multicast), raw IP:port, or HTTP/HTTPS URL. HTTP requires ffmpeg on PATH.</p>
@@ -21732,7 +21743,10 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
   }
 
   // Wire up source type switching
-  document.getElementById("src_type").addEventListener("change", srcTypeChanged);
+  document.getElementById("src_type").addEventListener("change", function(){
+    srcTypeChanged();
+    if(document.getElementById("src_type").value === "other") lwPickerLoad();
+  });
 
   // Wire up live updates
   ["device_index_other","fm_freq","fm_serial","fm_gain","dab_serial","dab_channel","sound_device"]
@@ -21741,6 +21755,74 @@ details.acard>.acard-body{border-top:1px solid var(--bor)}
       if(el) el.addEventListener("input", updateHiddenField);
       if(el) el.addEventListener("change", updateHiddenField);
     });
+
+  // ── Livewire discovery picker (only present when plugin is loaded) ─────────
+  {% if livewire_available %}
+  var _lwLoaded = false;
+  function lwPickerLoad(){
+    if(_lwLoaded) return;
+    fetch("/api/livewire/sources_local", {credentials:"same-origin"})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var sources = d.sources || [];
+        var wrap    = document.getElementById("lw_picker_wrap");
+        var sel     = document.getElementById("lw_picker");
+        var status  = document.getElementById("lw_picker_status");
+        if(!wrap || !sel) return;
+        while(sel.options.length > 1) sel.remove(1);
+        if(!sources.length){
+          status.textContent = "No Livewire sources discovered yet — check the Livewire plugin is installed and the multicast interface is correct.";
+          _lwLoaded = false;
+          return;
+        }
+        var nodes = {};
+        sources.forEach(function(s){
+          var n = s.node_name || s.node_ip || "Unknown";
+          if(!nodes[n]) nodes[n] = [];
+          nodes[n].push(s);
+        });
+        var online = sources.filter(function(s){ return s.status === "online"; }).length;
+        var stale  = sources.length - online;
+        var parts  = [];
+        if(online) parts.push(online + " online");
+        if(stale)  parts.push(stale  + " stale");
+        status.textContent = sources.length + " source" + (sources.length===1?"":"s") + " discovered"
+                           + (parts.length ? " (" + parts.join(", ") + ")" : "") + ".";
+        Object.keys(nodes).sort().forEach(function(node){
+          var grp = document.createElement("optgroup");
+          grp.label = node;
+          nodes[node].forEach(function(s){
+            var opt = document.createElement("option");
+            opt.value            = String(s.cid);
+            opt.dataset.name     = s.name || ("LW-" + s.cid);
+            opt.dataset.status   = s.status || "stale";
+            opt.textContent      = (s.name || ("ID " + s.cid))
+                                 + "  [" + s.cid + "]"
+                                 + (s.status === "stale" ? " ⚠ stale" : "");
+            if(s.status !== "online") opt.style.color = "var(--wn)";
+            grp.appendChild(opt);
+          });
+          sel.appendChild(grp);
+        });
+        _lwLoaded = true;
+      })
+      .catch(function(){});
+  }
+
+  document.getElementById("lw_picker").addEventListener("change", function(){
+    var opt = this.options[this.selectedIndex];
+    if(!opt || !opt.value) return;
+    document.getElementById("device_index_other").value = opt.value;
+    var nameField = document.getElementById("inp_name");
+    if(nameField && !nameField.value.trim()) nameField.value = opt.dataset.name || "";
+    var stereoChk = document.getElementById("inp_stereo");
+    if(stereoChk) stereoChk.checked = true;
+    updateHiddenField();
+  });
+
+  // Load immediately if the Livewire/RTP tab is already selected
+  if(document.getElementById("src_type").value === "other") lwPickerLoad();
+  {% endif %}
 
   function soundRefresh(){
     var sel = document.getElementById("sound_device");
@@ -23324,7 +23406,8 @@ def input_add():
         save_config(monitor.app_cfg); flash(f"Added '{inp.name}'."); return redirect(url_for("inputs_list"))
     return render_template_string(INPUT_FORM_TPL, cmp_search=int(COMPARE_SEARCH_SECS),title="Add Input",
         sdr_devices=monitor.app_cfg.sdr_devices,
-        inp=InputConfig(name="",device_index=""),all_names=[i.name for i in monitor.app_cfg.inputs])
+        inp=InputConfig(name="",device_index=""),all_names=[i.name for i in monitor.app_cfg.inputs],
+        livewire_available=any(p.get("id")=="livewire" for p in _plugins))
 
 @app.post("/inputs/add_dab_bulk")
 @login_required
@@ -23405,7 +23488,8 @@ def input_edit(idx):
         flash(f"Updated '{old_inp.name}'."); return redirect(url_for("inputs_list"))
     return render_template_string(INPUT_FORM_TPL, cmp_search=int(COMPARE_SEARCH_SECS),title="Edit Input",
         sdr_devices=monitor.app_cfg.sdr_devices,
-        inp=inps[idx],all_names=[i.name for i in inps])
+        inp=inps[idx],all_names=[i.name for i in inps],
+        livewire_available=any(p.get("id")=="livewire" for p in _plugins))
 
 @app.post("/inputs/<int:idx>/delete")
 @login_required
