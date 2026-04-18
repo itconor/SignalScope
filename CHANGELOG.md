@@ -2,6 +2,18 @@
 
 ---
 
+## SignalScope-3.5.152 — 2026-04-18
+
+### Fixed — Studio Board Zetta data stale / stuck on previous state (studioboard v3.10.1, zetta v2.1.14)
+
+The Studio Board TV page was showing Zetta state from one or more poll cycles ago — e.g. showing AD BREAK when the Zetta plugin showed a song actively playing. The Zetta plugin's sequencer view reads data directly from the live poller state (same source as `/api/zetta/status_full`) and is always current. The studioboard was reading from `_station_zetta_state`, a snapshot dict updated only when `_rebuild_chain_zetta_state()` ran (end of each poll cycle). Between polls, the snapshot was stale.
+
+**Fix**: `zetta.py` now exposes `monitor._zetta_live_station_data` — a callable that reads directly from `_pollers[iid].get_state()` / `_remote_state` at call time, exactly like `status_full` does. The studioboard data endpoint calls this once per request (before the studios loop) and uses the resulting fresh dict instead of `_station_zetta_state`. The stale snapshot path is no longer used for the studioboard.
+
+**Rule**: The studioboard `/api/studioboard/data` endpoint MUST read Zetta state via `monitor._zetta_live_station_data()` — never from `monitor._zetta_station_state` (snapshot). The snapshot is still updated by `_rebuild_chain_zetta_state()` for the chain fault suppression logic in signalscope.py but must not be used for display.
+
+---
+
 ## SignalScope-3.5.151 — 2026-04-18
 
 ### Fixed — Broadcast Chains shows heuristic countdown during Zetta-confirmed ad break (3.5.151)

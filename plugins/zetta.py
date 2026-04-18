@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.13",
+    "version":  "2.1.14",
 }
 
 import json
@@ -2534,4 +2534,34 @@ def register(app, ctx):
     monitor._zetta_chain_state   = _chain_zetta_state
     monitor._zetta_station_state = _station_zetta_state
 
-    monitor.log("[Zetta] Plugin v2.1.13 registered — /hub/zetta")
+    # Live-read function: reads DIRECTLY from _pollers / _remote_state at call
+    # time rather than from the _station_zetta_state snapshot.  Used by the
+    # studioboard data endpoint so TV pages see the same up-to-date state as the
+    # Zetta sequencer plugin (which also reads the live source via status_full).
+    def _zetta_live_station_data() -> dict:
+        """Return current 'iid:sid' → station_dict, freshly read from live sources."""
+        try:
+            _cfg = _load_cfg()
+            _out: Dict[str, dict] = {}
+            for _inst in _cfg.get("instances", []):
+                _iid = _inst.get("id", "")
+                _ps  = (_inst.get("poll_site") or "").strip()
+                if _iid in _pollers and not _ps:
+                    _sdata = _pollers[_iid].get_state()
+                else:
+                    with _remote_state_lock:
+                        _sdata = dict(_remote_state.get(_iid, {}))
+                for _stn in _inst.get("stations", []):
+                    _sid = str(_stn.get("id", "")).strip()
+                    if not _sid:
+                        continue
+                    _sd = _sdata.get(_sid)
+                    if _sd is not None:
+                        _out[f"{_iid}:{_sid}"] = _sd
+            return _out
+        except Exception:
+            return {}
+
+    monitor._zetta_live_station_data = _zetta_live_station_data
+
+    monitor.log("[Zetta] Plugin v2.1.14 registered — /hub/zetta")

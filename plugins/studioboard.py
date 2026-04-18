@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.10.0",
+    "version":  "3.10.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -451,6 +451,16 @@ def register(app, ctx):
         now = _time.time()
         studios_out = []
 
+        # Read live Zetta station data once per request — uses the same live
+        # source as /api/zetta/status_full so the TV page is always current.
+        _zetta_live_fn = getattr(monitor, "_zetta_live_station_data", None)
+        _zetta_live: dict = {}
+        if _zetta_live_fn:
+            try:
+                _zetta_live = _zetta_live_fn()
+            except Exception:
+                pass
+
         # Get chain status
         chain_status = {}
         try:
@@ -525,7 +535,7 @@ def register(app, ctx):
 
             _zskey = studio.get("zetta_station_key", "")
             _zetta_data = (
-                getattr(monitor, "_zetta_station_state", {}).get(_zskey)
+                _zetta_live.get(_zskey)
                 if _zskey else None
             )
             studios_out.append({
