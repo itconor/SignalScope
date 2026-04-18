@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.5",
+    "version":  "2.1.6",
 }
 
 import json
@@ -1120,6 +1120,9 @@ document.getElementById('instances-list').addEventListener('click',function(e){
       .then(function(d){if(d.ok)location.reload();});
     return;
   }
+  // Remove station row (× button) — server-rendered rows need delegated handler
+  var rm=e.target.closest('.st-rm');
+  if(rm){var row=rm.closest('.st-row');if(row)row.remove();return;}
   // Add station within instance
   var as=e.target.closest('.btn-inst-add-stn');
   if(as){
@@ -2279,4 +2282,4 @@ def register(app, ctx):
                         "instance_count": len(snapshot),
                         "total_stations": sum(len(v) for v in snapshot.values())})
 
-    monitor.log("[Zetta] Plugin v2.1.5 registered — /hub/zetta")
+    monitor.log("[Zetta] Plugin v2.1.6 registered — /hub/zetta")
