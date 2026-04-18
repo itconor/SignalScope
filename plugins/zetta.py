@@ -554,15 +554,30 @@ def _parse_station_full_zeep(result, station_id: str, friendly_name: str, spot_c
     }
 
 def _sf_get_stations(sf_url: str, timeout: int) -> list:
-    ns = _ns(sf_url, timeout)
-    root, _ = _soap_call(sf_url, "GetStations", "", ns, timeout)
+    ns  = _ns(sf_url, timeout)
+    ep  = _soap_endpoint(sf_url, timeout)   # resolve actual SOAP POST URL from WSDL
+    root, raw_xml = _soap_call(ep, "GetStations", "", ns, timeout)
     results = []
+    seen = set()
+    # Walk every element — Zetta wraps station entries in various tag names
+    # depending on version/edition. Accept any of the known patterns.
+    _STATION_TAGS = {
+        "Station", "StationInfo", "StationDetails",
+        "GetStationsResult", "GetStationsResultItem",
+        "StationData", "StationStatus",
+    }
     for el in root.iter():
-        if el.tag.split("}")[-1] in ("Station", "StationInfo", "StationDetails"):
-            sid  = _find(el, "ID", "Id", "StationID", "StationId")
-            name = _find(el, "Name", "StationName", "CallLetters", "DisplayName")
-            if sid:
+        tag = el.tag.split("}")[-1]
+        if tag in _STATION_TAGS:
+            sid  = _find(el, "ID", "Id", "StationID", "StationId", "stationID", "stationId")
+            name = _find(el, "Name", "StationName", "CallLetters", "DisplayName", "LongName")
+            if sid and sid not in seen:
+                seen.add(sid)
                 results.append({"id": sid, "name": name or sid})
+    if not results:
+        # Log raw XML so the admin can see what Zetta actually returned
+        _log.warning("[Zetta] GetStations returned no results. Endpoint: %s  Raw: %s",
+                     ep, raw_xml[:800] if raw_xml else "(empty)")
     return results
 
 
