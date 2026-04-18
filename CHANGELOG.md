@@ -2,6 +2,14 @@
 
 ---
 
+## zetta v2.1.23 — 2026-04-19
+
+### Fixed — Zetta nav item now visible on client nodes
+
+Removed `hub_only: True` from `SIGNALSCOPE_PLUGIN`. The Zetta page (`/hub/zetta`) works correctly on client nodes — the flag was preventing the nav item from appearing, forcing users to type the URL manually.
+
+---
+
 ## livewire v1.0.4 — 2026-04-18
 
 ### Fixed — correct binary TLV parser; passive-only (no TCP polling)

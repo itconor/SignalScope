@@ -20,8 +20,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":    "Zetta",
     "url":      "/hub/zetta",
     "icon":     "📻",
-    "hub_only": True,
-    "version":  "2.1.22",
+    "version":  "2.1.23",
 }
 
 import json
