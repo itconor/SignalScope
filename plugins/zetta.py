@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.8",
+    "version":  "2.1.9",
 }
 
 import json
@@ -39,15 +39,20 @@ _log = logging.getLogger("zetta_plugin")
 # ── zeep (preferred SOAP client) ───────────────────────────────────────────────
 _zeep = None
 
-def _make_zeep_client(wsdl_url: str, base_url: str):
+def _make_zeep_client(wsdl_url: str, base_url: str, operation_timeout: int = 20):
     """Create a zeep Client that rewrites any WSDL-internal hostname/port to the
     user-supplied base_url. This handles Zetta servers whose WSDL advertises an
     internal Windows hostname (e.g. rcs-bel-svr02.radioplayout.net) that is not
-    resolvable from the SignalScope server."""
+    resolvable from the SignalScope server.
+    operation_timeout: per-SOAP-call timeout in seconds (default 20)."""
     from urllib.parse import urlparse, urlunparse
     user = urlparse(base_url)
+    _op_timeout = operation_timeout
 
     class _RewriteSession(_zeep.transports.Transport):
+        def __init__(self):
+            super().__init__(operation_timeout=_op_timeout)
+
         def _rewrite(self, url):
             try:
                 p = urlparse(url)
@@ -178,6 +183,11 @@ _wsdl_cache:      dict = {}
 # Remote state: data pushed from client sites (keyed instance_id → station_id → data)
 _remote_state:    Dict[str, Dict[str, dict]] = {}
 _remote_state_lock = threading.Lock()
+# Remote zeep availability reported by client sites (instance_id → {zeep_ok, site, ts})
+_remote_zeep_status: Dict[str, dict] = {}
+_remote_zeep_lock   = threading.Lock()
+# Zeep client cache: sf_url → zeep.Client (avoids recreating on every poll cycle)
+_zeep_clients_cache: Dict[str, Any] = {}
 # Pending discovery requests: site_name → {url, evt, result}
 _discover_pending: Dict[str, dict] = {}
 _discover_lock    = threading.Lock()
@@ -228,42 +238,67 @@ _SOAP_ENV_12 = (
 )
 
 def _soap_call(url: str, method: str, body_xml: str, ns: str, timeout: int = 6):
-    # Try SOAP 1.2 first (application/soap+xml), fall back to SOAP 1.1 (text/xml).
-    # Falls back on HTTP 415 OR on connection reset — some servers RST the connection
-    # rather than returning 415 when they receive an application/soap+xml request.
+    # Try SOAP 1.2 first (required by Zetta WCF/IIS endpoints).
+    # Retries up to 3 times on TCP connection reset (RST) — RST is transient and does
+    # NOT mean the server wants SOAP 1.1.  Only fall back to SOAP 1.1 when the server
+    # explicitly returns HTTP 415 (Unsupported Media Type) to our SOAP 1.2 request.
+    import socket as _sock
     _last_err = None
-    for content_type, envelope, action_header in [
-        ("application/soap+xml; charset=utf-8",
-         _SOAP_ENV_12, {"Content-Type": "application/soap+xml; charset=utf-8; action=\"{ns}{method}\""}),
-        ("text/xml; charset=utf-8",
-         _SOAP_ENV_11, {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": '"{ns}{method}"'}),
-    ]:
-        env = envelope.format(method=method, ns=ns, body=body_xml)
-        headers = {k: v.format(ns=ns, method=method) for k, v in action_header.items()}
-        req = urllib.request.Request(url, data=env.encode("utf-8"),
-                                     headers=headers, method="POST")
+    _try_11   = False
+
+    for _attempt in range(3):
+        env = _SOAP_ENV_12.format(method=method, ns=ns, body=body_xml)
+        req = urllib.request.Request(
+            url,
+            data=env.encode("utf-8"),
+            headers={"Content-Type":
+                     f"application/soap+xml; charset=utf-8; action=\"{ns}{method}\""},
+            method="POST",
+        )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 raw = r.read()
             return ET.fromstring(raw), raw.decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
             if e.code == 415:
-                _last_err = e
-                continue   # wrong SOAP version — try the other one
+                _try_11 = True
+                break      # Server requires SOAP 1.1 — switch below
             raise
-        except (ConnectionResetError, BrokenPipeError) as e:
-            # Server reset the TCP connection — may be rejecting this SOAP version
+        except (ConnectionResetError, BrokenPipeError, _sock.error) as e:
             _last_err = e
-            continue
-        except urllib.error.URLError as e:
-            # urllib wraps socket-level errors in URLError
-            if isinstance(getattr(e, "reason", None), (ConnectionResetError, BrokenPipeError)):
-                _last_err = e
+            if _attempt < 2:
+                time.sleep(0.5)
                 continue
+            break          # Exhausted retries on SOAP 1.2
+        except urllib.error.URLError as e:
+            if isinstance(getattr(e, "reason", None),
+                          (ConnectionResetError, BrokenPipeError, _sock.error)):
+                _last_err = e
+                if _attempt < 2:
+                    time.sleep(0.5)
+                    continue
+                break
             raise
-    if _last_err:
-        raise _last_err
-    raise RuntimeError("Both SOAP 1.1 and 1.2 failed for this endpoint")
+
+    if not _try_11:
+        if _last_err:
+            raise _last_err
+        raise RuntimeError("SOAP 1.2 failed unexpectedly")
+
+    # SOAP 1.1 fallback — server returned HTTP 415 to our SOAP 1.2 request
+    env = _SOAP_ENV_11.format(method=method, ns=ns, body=body_xml)
+    req = urllib.request.Request(
+        url,
+        data=env.encode("utf-8"),
+        headers={
+            "Content-Type": "text/xml; charset=utf-8",
+            "SOAPAction":   f'"{ns}{method}"',
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+    return ET.fromstring(raw), raw.decode("utf-8", errors="replace")
 
 def _wsdl_info(url: str, timeout: int = 6) -> dict:
     if url in _wsdl_cache:
@@ -1273,8 +1308,19 @@ function _renderBox(s,c,iid){
 
 function _renderInst(inst,chains){
   var c=inst.colors||{};
+  var zeepChip='';
+  if(inst.poll_site){
+    var _zpid='zzeep-'+_esc(inst.id);
+    if(inst.zeep_ok===true)
+      zeepChip='<span id="'+_zpid+'" class="chain-badge chain-ok" style="font-size:10px">&#x2714; zeep on '+_esc(inst.poll_site)+'</span>';
+    else if(inst.zeep_ok===false)
+      zeepChip='<span id="'+_zpid+'" class="chain-badge chain-fault" style="font-size:10px">&#x26A0; zeep missing on '+_esc(inst.poll_site)+'</span>';
+    else
+      zeepChip='<span id="'+_zpid+'" class="chain-badge chain-unknown" style="font-size:10px">&#x25CF; zeep \u2014 '+_esc(inst.poll_site)+'</span>';
+  }
   var header='<div class="inst-header">'
     +'<span class="inst-title">'+_esc(inst.name||inst.id)+'</span>'
+    +zeepChip
     +'</div>';
 
   var stns=Object.values(inst.stations||{});
@@ -1336,6 +1382,20 @@ function _refreshSeq(){
       d.instances.forEach(function(inst){
         var iid=inst.id;
         var c=inst.colors||{};
+        // Update zeep status chip for remote-polled instances
+        var zcEl=document.getElementById('zzeep-'+iid);
+        if(zcEl&&inst.poll_site){
+          if(inst.zeep_ok===true){
+            zcEl.className='chain-badge chain-ok';
+            zcEl.innerHTML='&#x2714; zeep on '+_esc(inst.poll_site);
+          } else if(inst.zeep_ok===false){
+            zcEl.className='chain-badge chain-fault';
+            zcEl.innerHTML='&#x26A0; zeep missing on '+_esc(inst.poll_site);
+          } else {
+            zcEl.className='chain-badge chain-unknown';
+            zcEl.innerHTML='&#x25CF; zeep \u2014 '+_esc(inst.poll_site);
+          }
+        }
         var stns=Object.values(inst.stations||{});
         stns.forEach(function(s){
           var sid=s.station_id;
@@ -1660,11 +1720,19 @@ def register(app, ctx):
                             placeholder["chain_status"] = cs
                     state[sid] = placeholder
 
+            # zeep availability reported by the remote polling site
+            _zeep_info = {}
+            if poll_site:
+                with _remote_zeep_lock:
+                    _zeep_info = dict(_remote_zeep_status.get(iid, {}))
+
             out_insts.append({
                 "id":         iid,
                 "name":       inst.get("name", iid),
-                "connected":  p.sf_health.get("ok") is not False if p else False,
-                "last_error": p.sf_health.get("error") if p else None,
+                "poll_site":  poll_site,
+                "connected":  sf_health.get("ok") is not False,
+                "last_error": sf_health.get("error"),
+                "zeep_ok":    _zeep_info.get("zeep_ok"),  # None until first push received
                 "colors":     colors,
                 "stations":   state,
             })
@@ -1855,6 +1923,15 @@ def register(app, ctx):
                 if iid not in _remote_state:
                     _remote_state[iid] = {}
                 _remote_state[iid][sid] = stn_data
+        # Track zeep availability on the polling site for the hub status indicator.
+        zeep_ok_flag = payload.get("zeep_ok")
+        if zeep_ok_flag is not None:
+            with _remote_zeep_lock:
+                _remote_zeep_status[iid] = {
+                    "zeep_ok": bool(zeep_ok_flag),
+                    "site":    site,
+                    "ts":      time.time(),
+                }
         return jsonify({"ok": True})
 
     # ── Client-side Zetta polling loop ────────────────────────────────────────
@@ -1927,8 +2004,9 @@ def register(app, ctx):
                     if not _instances:
                         time.sleep(15)
                         continue
-                    # Poll all instances — sequential SOAP calls, single batch push per instance.
-                    # _soap_call now falls back SOAP 1.2 → SOAP 1.1 on connection reset.
+                    # Poll all instances — zeep is primary (auto-detects SOAP version from
+                    # WSDL, uses requests.Session keep-alive, respects operation_timeout).
+                    # Raw _soap_call is the fallback when zeep is unavailable.
                     for _inst in _instances:
                         _iid      = _inst.get("id", "")
                         _sf_url   = (_inst.get("sf_url") or "").strip()
@@ -1937,14 +2015,33 @@ def register(app, ctx):
                         _timeout  = int(_inst.get("timeout", 6) or 6)
                         if not _sf_url or not _stations:
                             continue
-                        try:
-                            _ns_val = _ns(_sf_url, _timeout)
-                            _ep     = _soap_endpoint(_sf_url, _timeout)
-                        except Exception:
-                            continue
 
-                        # Poll stations sequentially — one at a time.
-                        # _soap_call tries SOAP 1.2 then SOAP 1.1 (including on RST).
+                        # ── Primary: zeep (reads WSDL → uses correct SOAP version) ───
+                        _zcl = None
+                        _ensure_zeep()
+                        if _zeep is not None:
+                            _zcl = _zeep_clients_cache.get(_sf_url)
+                            if _zcl is None:
+                                try:
+                                    _sep = "&" if "?" in _sf_url else "?"
+                                    _zcl = _make_zeep_client(
+                                        _sf_url + _sep + "wsdl", _sf_url,
+                                        operation_timeout=max(15, _timeout * 3))
+                                    _zeep_clients_cache[_sf_url] = _zcl
+                                    _log.debug("[Zetta client] zeep client created for %s", _sf_url)
+                                except Exception as _ze:
+                                    _log.debug("[Zetta client] zeep init: %s", _ze)
+
+                        # ── Fallback: raw SOAP (WSDL-cached; fast after first call) ──
+                        _ep = _ns_val = None
+                        if _zcl is None:
+                            try:
+                                _ns_val = _ns(_sf_url, _timeout)
+                                _ep     = _soap_endpoint(_sf_url, _timeout)
+                            except Exception:
+                                continue  # No zeep client AND can't reach WSDL — skip
+
+                        # ── Poll each station sequentially ───────────────────────────
                         _results = {}
                         for _st in _stations:
                             _sid  = str(_st.get("id",   "")).strip()
@@ -1952,12 +2049,27 @@ def register(app, ctx):
                             if not _sid:
                                 continue
                             try:
-                                _body  = f"<stationID>{_sid}</stationID>"
-                                _root, _ = _soap_call(
-                                    _ep, "GetStationFull", _body, _ns_val, _timeout)
-                                _results[_sid] = _parse_station_full(_root, _sid, _s_cats)
+                                if _zcl is not None:
+                                    _zr = _zcl.service.GetStationFull(stationID=int(_sid))
+                                    _results[_sid] = _parse_station_full_zeep(
+                                        _zr, _sid, _snam, _s_cats)
+                                elif _ep is not None:
+                                    _body = f"<stationID>{_sid}</stationID>"
+                                    _root, _ = _soap_call(
+                                        _ep, "GetStationFull", _body, _ns_val, _timeout)
+                                    _results[_sid] = _parse_station_full(_root, _sid, _s_cats)
+                                else:
+                                    _results[_sid] = {
+                                        "station_id":   _sid,
+                                        "station_name": _snam,
+                                        "error":        "No SOAP client available — install zeep",
+                                        "ts":           time.time()}
                             except Exception as _pe:
-                                _log.debug("[Zetta] station %s: %s", _sid, _pe)
+                                _log.debug("[Zetta client] station %s: %s", _sid, _pe)
+                                if _zcl is not None:
+                                    # Zeep error — invalidate cache so next cycle reconnects
+                                    _zeep_clients_cache.pop(_sf_url, None)
+                                    _zcl = None
                                 _results[_sid] = {
                                     "station_id":   _sid,
                                     "station_name": _snam,
@@ -1967,9 +2079,11 @@ def register(app, ctx):
                         if not _results:
                             continue
 
-                        # Single batch push for all stations in this instance
+                        # Single batch push — include zeep_ok so hub can show a status
+                        # chip on the Zetta page indicating whether zeep is installed here.
                         _push_body = json.dumps({
                             "instance_id": _iid,
+                            "zeep_ok":     _zeep is not None,
                             "batch":       [{"station_id": _sid, "data": _sd}
                                             for _sid, _sd in _results.items()],
                         }).encode()
@@ -2297,8 +2411,11 @@ def register(app, ctx):
             snapshot = {iid: {sid: {k: v for k, v in sdata.items() if k != "queue"}
                                for sid, sdata in stations.items()}
                         for iid, stations in _remote_state.items()}
+        with _remote_zeep_lock:
+            zeep_snapshot = dict(_remote_zeep_status)
         return jsonify({"remote_state": snapshot,
                         "instance_count": len(snapshot),
-                        "total_stations": sum(len(v) for v in snapshot.values())})
+                        "total_stations": sum(len(v) for v in snapshot.values()),
+                        "site_zeep_status": zeep_snapshot})
 
-    monitor.log("[Zetta] Plugin v2.1.6 registered — /hub/zetta")
+    monitor.log("[Zetta] Plugin v2.1.9 registered — /hub/zetta")
