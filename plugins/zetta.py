@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.6",
+    "version":  "2.1.7",
 }
 
 import json
@@ -1906,8 +1906,11 @@ def register(app, ctx):
                     if not _instances:
                         time.sleep(15)
                         continue
-                    # Poll all instances — parallel SOAP calls, single batch push per instance
-                    import concurrent.futures as _cf
+                    # Poll all instances — sequential SOAP calls over a persistent
+                    # keep-alive connection, then a single batch push per instance.
+                    # Parallel connections cause [Errno 104] Connection reset on Zetta servers.
+                    import http.client as _hc
+                    from urllib.parse import urlparse as _uparse
                     for _inst in _instances:
                         _iid      = _inst.get("id", "")
                         _sf_url   = (_inst.get("sf_url") or "").strip()
@@ -1922,28 +1925,98 @@ def register(app, ctx):
                         except Exception:
                             continue
 
-                        # Poll all stations in parallel threads
-                        def _poll_station(_st, _ep=_ep, _ns_val=_ns_val,
-                                          _s_cats=_s_cats, _timeout=_timeout):
-                            _sid = str(_st.get("id", "")).strip()
-                            if not _sid:
-                                return None
-                            try:
-                                _body = f"<stationID>{_sid}</stationID>"
-                                _root, _ = _soap_call(_ep, "GetStationFull",
-                                                      _body, _ns_val, _timeout)
-                                return _sid, _parse_station_full(_root, _sid, _s_cats)
-                            except Exception as _pe:
-                                _log.debug("[Zetta client] station %s: %s", _sid, _pe)
-                                return _sid, {"station_id": _sid,
-                                              "error": str(_pe), "ts": time.time()}
+                        # Open one persistent HTTP connection for all stations in this instance
+                        _ep_p    = _uparse(_ep)
+                        _ep_host = _ep_p.hostname or "localhost"
+                        _ep_port = _ep_p.port or (443 if _ep_p.scheme == "https" else 80)
+                        _ep_pth  = (_ep_p.path or "/") + (
+                            "?" + _ep_p.query if _ep_p.query else "")
 
-                        _results = {}
-                        _workers = min(len(_stations), 8)
-                        with _cf.ThreadPoolExecutor(max_workers=_workers) as _ex:
-                            for _r in _ex.map(_poll_station, _stations):
-                                if _r:
-                                    _results[_r[0]] = _r[1]
+                        def _new_zconn(_scheme=_ep_p.scheme, _host=_ep_host,
+                                       _port=_ep_port, _to=_timeout):
+                            if _scheme == "https":
+                                import ssl as _ssl_m
+                                _ctx = _ssl_m.create_default_context()
+                                _ctx.check_hostname = False
+                                _ctx.verify_mode    = _ssl_m.CERT_NONE
+                                return _hc.HTTPSConnection(
+                                    _host, _port, timeout=_to + 4, context=_ctx)
+                            return _hc.HTTPConnection(_host, _port, timeout=_to + 4)
+
+                        _z_conn         = _new_zconn()
+                        _need_reconnect = False
+                        _results        = {}
+
+                        for _st in _stations:
+                            _sid  = str(_st.get("id",   "")).strip()
+                            _snam = str(_st.get("name", _sid))
+                            if not _sid:
+                                continue
+
+                            # Reconnect if previous response asked us to or connection broke
+                            if _need_reconnect:
+                                try: _z_conn.close()
+                                except Exception: pass
+                                try:
+                                    _z_conn = _new_zconn()
+                                    _need_reconnect = False
+                                except Exception as _rce:
+                                    _results[_sid] = {
+                                        "station_id": _sid, "station_name": _snam,
+                                        "error": str(_rce), "ts": time.time()}
+                                    continue
+
+                            # Build SOAP 1.2 request (keep-alive)
+                            _body = f"<stationID>{_sid}</stationID>"
+                            _env  = _SOAP_ENV_12.format(
+                                method="GetStationFull", ns=_ns_val, body=_body)
+                            _data = _env.encode("utf-8")
+                            _req_hdrs = {
+                                "Content-Type":   (
+                                    f'application/soap+xml; charset=utf-8;'
+                                    f' action="{_ns_val}GetStationFull"'),
+                                "Content-Length": str(len(_data)),
+                                "Connection":     "keep-alive",
+                            }
+                            try:
+                                _z_conn.request("POST", _ep_pth,
+                                                body=_data, headers=_req_hdrs)
+                                _resp = _z_conn.getresponse()
+                                _raw  = _resp.read()
+                                if _resp.getheader("Connection", "").lower() == "close":
+                                    _need_reconnect = True
+                                if _resp.status == 415:
+                                    # Server only accepts SOAP 1.1 — retry via _soap_call
+                                    _need_reconnect = True
+                                    _root, _ = _soap_call(
+                                        _ep, "GetStationFull", _body, _ns_val, _timeout)
+                                elif _resp.status not in (200, 202):
+                                    raise RuntimeError(f"HTTP {_resp.status}")
+                                else:
+                                    _root = ET.fromstring(_raw)
+                                _results[_sid] = _parse_station_full(_root, _sid, _s_cats)
+                            except (_hc.RemoteDisconnected, _hc.CannotSendRequest,
+                                    ConnectionResetError, BrokenPipeError, OSError) as _ce:
+                                # Lost connection — reconnect and retry this station once
+                                _need_reconnect = True
+                                try:
+                                    _root, _ = _soap_call(
+                                        _ep, "GetStationFull", _body, _ns_val, _timeout)
+                                    _results[_sid] = _parse_station_full(
+                                        _root, _sid, _s_cats)
+                                except Exception as _re:
+                                    _log.debug("[Zetta] station %s retry: %s", _sid, _re)
+                                    _results[_sid] = {
+                                        "station_id": _sid, "station_name": _snam,
+                                        "error": str(_re), "ts": time.time()}
+                            except Exception as _pe:
+                                _log.debug("[Zetta] station %s: %s", _sid, _pe)
+                                _results[_sid] = {
+                                    "station_id": _sid, "station_name": _snam,
+                                    "error": str(_pe), "ts": time.time()}
+
+                        try: _z_conn.close()
+                        except Exception: pass
 
                         if not _results:
                             continue
