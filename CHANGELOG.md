@@ -2,6 +2,22 @@
 
 ---
 
+## SignalScope-3.5.150 — 2026-04-18
+
+### Fixed — Zetta data frozen on Studio Board TV page (studioboard v3.10.0, zetta v2.1.13)
+
+The Studio Board TV page called `/api/zetta/status_full` directly via `pollZetta()` to retrieve Zetta sequencer state. That endpoint uses `@login_required`, which is incompatible with the studioboard kiosk URL-token auth — the kiosk prefix only covers `/api/studioboard/…`, not `/api/zetta/…`. In kiosk mode (TV screens with no browser session), the Zetta fetch silently failed after the first page load and `_ZD` was never updated again, leaving the Zetta panel permanently frozen.
+
+**Fix**: Zetta station state is now bundled directly into `/api/studioboard/data` (which is in the kiosk prefix):
+
+- `zetta.py`: `_rebuild_chain_zetta_state()` now builds a second dict, `_station_zetta_state` (keyed `"iid:sid"`), containing the full station state for every polled Zetta station. Exposed on monitor via `monitor._zetta_station_state`.
+- `signalscope.py`: `MonitorManager.__init__` declares `self._zetta_station_state: dict = {}` so the attribute always exists before the Zetta plugin loads.
+- `studioboard.py`: Data endpoint reads `monitor._zetta_station_state` and includes `"zetta": <state>` per studio. TV JS reads `s.zetta` directly from the poll response — `pollZetta()` and the `_ZD`/`_ZT` globals are removed entirely. The 500 ms progress interpolator uses `zd.ts` (Unix timestamp set by the Zetta poller in Python) to extrapolate elapsed time accurately between polls.
+
+**Rule**: Never call `/api/zetta/…` from the Studio Board TV page. Zetta data must be bundled into `/api/studioboard/data` — the only endpoint in the kiosk-auth prefix that the TV page can reach without a browser session.
+
+---
+
 ## SignalScope-3.5.149 — 2026-04-18
 
 ### Fixed — rtl_tcp crashes every ~2 minutes on Raspberry Pi 5 (3.5.149)
