@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.0.7",
+    "version":  "2.1.0",
 }
 
 import json
@@ -171,10 +171,13 @@ _COLOR_FIELDS = [
 ]
 
 # ── Module-level state ─────────────────────────────────────────────────────────
-_cfg_lock    = threading.Lock()
-_pollers:    Dict[str, "_InstancePoller"] = {}
-_cfg_path    = ""
-_wsdl_cache: dict = {}
+_cfg_lock         = threading.Lock()
+_pollers:         Dict[str, "_InstancePoller"] = {}
+_cfg_path         = ""
+_wsdl_cache:      dict = {}
+# Remote state: data pushed from client sites (keyed instance_id → station_id → data)
+_remote_state:    Dict[str, Dict[str, dict]] = {}
+_remote_state_lock = threading.Lock()
 
 # ── Utility formatters ─────────────────────────────────────────────────────────
 def _fmt_dur(sec) -> str:
@@ -614,6 +617,12 @@ class _InstancePoller:
             return False
 
     def _poll_once(self):
+        # If polling is delegated to a remote client site, skip direct polling —
+        # data arrives via POST /api/zetta/site_data from the client.
+        with _cfg_lock:
+            if self.cfg.get("poll_site", ""):
+                return
+
         if self._client is None:
             if not _zeep or not self._connect():
                 return
@@ -819,8 +828,10 @@ textarea{font-family:monospace;font-size:11px;resize:vertical}
 input[type=color]{width:38px;height:28px;padding:2px;border-radius:4px;cursor:pointer}
 .row{display:flex;gap:10px;flex-wrap:wrap}
 .row .f{flex:1;min-width:140px}
-.btn{border:none;border-radius:8px;padding:5px 12px;font-size:13px;font-weight:600;
-  cursor:pointer;font-family:inherit}.btn:hover{filter:brightness(1.15)}
+.btn{display:inline-block;text-decoration:none;border:none;border-radius:8px;
+  padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.btn:hover{filter:brightness(1.15)}
+.nav-active{background:var(--acc)!important;color:#fff!important}
 .btn.bp{background:var(--acc);color:#fff}
 .btn.bd{background:var(--al);color:#fff}
 .btn.bg{background:rgba(255,255,255,.06);color:var(--tx);border:1px solid var(--bor)}
@@ -892,6 +903,10 @@ _PAGE_TPL = """<!DOCTYPE html>
               <input id="ni-interval" type="number" value="10" min="5" max="120"></div>
             <div class="f" style="max-width:120px"><label>Timeout (s)</label>
               <input id="ni-timeout" type="number" value="6" min="2" max="30"></div>
+            <div class="f"><label title="Which site makes SOAP calls to Zetta. Use when hub cannot reach Zetta directly.">Polling site</label>
+              <select id="ni-pollsite"><option value="">(hub polls directly)</option></select>
+              <div class="hint">Select a client site if the hub cannot reach Zetta.</div>
+            </div>
           </div>
           <div><label>Spot categories (comma-separated)</label>
             <input id="ni-spots" value="SPOT,SPOTS,COMMERCIAL,COMMS,PROMO,PROMOS"></div>
@@ -942,6 +957,7 @@ _PAGE_TPL = """<!DOCTYPE html>
 
 <script nonce="{{csp_nonce()}}">
 var _CHAINS = {{chains_json|safe}};
+var _SITES  = {{sites_json|safe}};
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function _csrf(){
   return (document.querySelector('meta[name="csrf-token"]')||{}).content
@@ -983,6 +999,13 @@ function _stRow(container,id,name,chainId){
 
 // ── New instance form ────────────────────────────────────────────────────────
 document.getElementById('btn-new-inst').addEventListener('click',function(){
+  // Populate polling-site dropdown from connected sites
+  var ps=document.getElementById('ni-pollsite');
+  ps.innerHTML='<option value="">(hub polls directly)</option>';
+  (_SITES||[]).forEach(function(s){
+    var o=document.createElement('option');
+    o.value=s;o.textContent=s;ps.appendChild(o);
+  });
   document.getElementById('new-inst-form').style.display='block';
   this.style.display='none';
 });
@@ -1002,12 +1025,13 @@ document.getElementById('btn-ni-save').addEventListener('click',function(){
     if(id) stns.push({id:id,name:nm||id,chain_id:cid});
   });
   var p={
-    name:     document.getElementById('ni-name').value.trim(),
-    sf_url:   document.getElementById('ni-sfurl').value.trim(),
-    interval: parseInt(document.getElementById('ni-interval').value)||10,
-    timeout:  parseInt(document.getElementById('ni-timeout').value)||6,
-    spots:    document.getElementById('ni-spots').value,
-    stations: stns,
+    name:      document.getElementById('ni-name').value.trim(),
+    sf_url:    document.getElementById('ni-sfurl').value.trim(),
+    interval:  parseInt(document.getElementById('ni-interval').value)||10,
+    timeout:   parseInt(document.getElementById('ni-timeout').value)||6,
+    spots:     document.getElementById('ni-spots').value,
+    stations:  stns,
+    poll_site: document.getElementById('ni-pollsite').value,
   };
   if(!p.name){_msg('ni-msg','Name is required.','var(--al)');return;}
   if(!p.sf_url){_msg('ni-msg','Status Feed URL is required.','var(--al)');return;}
@@ -1044,13 +1068,14 @@ document.getElementById('instances-list').addEventListener('click',function(e){
     var colors={};
     form.querySelectorAll('.color-inp').forEach(function(c){colors[c.dataset.key]=c.value;});
     var p={
-      name:     form.querySelector('.if-name').value.trim(),
-      sf_url:   form.querySelector('.if-sfurl').value.trim(),
-      interval: parseInt(form.querySelector('.if-interval').value)||10,
-      timeout:  parseInt(form.querySelector('.if-timeout').value)||6,
-      spots:    form.querySelector('.if-spots').value,
-      stations: stns,
-      colors:   colors,
+      name:      form.querySelector('.if-name').value.trim(),
+      sf_url:    form.querySelector('.if-sfurl').value.trim(),
+      interval:  parseInt(form.querySelector('.if-interval').value)||10,
+      timeout:   parseInt(form.querySelector('.if-timeout').value)||6,
+      spots:     form.querySelector('.if-spots').value,
+      stations:  stns,
+      colors:    colors,
+      poll_site: (form.querySelector('.if-pollsite')||{}).value||'',
     };
     _f('/api/zetta/instance/'+encodeURIComponent(iid)+'/save',
        {method:'POST',body:JSON.stringify(p)})
@@ -1374,11 +1399,19 @@ document.getElementById('dbg-methods').addEventListener('click',function(e){
 
 
 # ── Instance accordion HTML builder (server-side) ─────────────────────────────
-def _inst_accordion_html(instances: list, signal_chains: list) -> str:
+def _inst_accordion_html(instances: list, signal_chains: list, sites: list = None) -> str:
     """Render editable accordion panels for each configured instance."""
     import html as _h
 
     def _e(s): return _h.escape(str(s or ""))
+
+    # Build polling-site options
+    def _site_opts_for(current):
+        opts = '<option value="">(hub polls directly)</option>'
+        for s in (sites or []):
+            sel = 'selected' if s == current else ''
+            opts += f'<option value="{_e(s)}" {sel}>{_e(s)}</option>'
+        return opts
 
     # Build chain options HTML (no selection) for per-station rows
     chain_opts_base = '<option value="">(no chain)</option>' + "".join(
@@ -1441,6 +1474,10 @@ def _inst_accordion_html(instances: list, signal_chains: list) -> str:
     <div class="row" style="margin-top:8px">
       <div class="f" style="max-width:130px"><label>Poll interval (s)</label><input type="number" class="if-interval" value="{_e(inst.get("poll_interval",10))}"></div>
       <div class="f" style="max-width:120px"><label>Timeout (s)</label><input type="number" class="if-timeout" value="{_e(inst.get("timeout",6))}"></div>
+      <div class="f"><label title="Which SignalScope site makes SOAP calls to Zetta. Use this when the hub cannot reach the Zetta server directly (e.g. hub is in a data centre, Zetta is on the broadcast LAN).">Polling site</label>
+        <select class="if-pollsite">{_site_opts_for(inst.get("poll_site",""))}</select>
+        <div class="hint">Hub polls directly when blank. Select a client site if the hub cannot reach Zetta.</div>
+      </div>
     </div>
     <div style="margin-top:8px">
       <label>Spot categories</label>
@@ -1497,10 +1534,17 @@ def register(app, ctx):
             {"id": c.get("id", ""), "name": c.get("name", "")}
             for c in chains
         ])
+        # Connected + approved client sites for the polling-site dropdown
+        sites = sorted(
+            s for s, sd in (hub_server._sites or {}).items()
+            if sd.get("_approved")
+        )
+        sites_json = json.dumps(sites)
         return render_template_string(
             _PAGE_TPL,
-            instances_html=Markup(_inst_accordion_html(insts, chains)),
+            instances_html=Markup(_inst_accordion_html(insts, chains, sites)),
             chains_json=chains_json,
+            sites_json=sites_json,
         )
 
     # ── Full status for sequencer display ────────────────────────────────────
@@ -1513,10 +1557,26 @@ def register(app, ctx):
 
         out_insts = []
         for inst in cfg.get("instances", []):
-            iid = inst.get("id", "")
-            p   = _pollers.get(iid)
-            state    = p.get_state() if p else {}
-            sf_health = p.sf_health  if p else {"ok": None}
+            iid        = inst.get("id", "")
+            poll_site  = inst.get("poll_site", "")
+            p          = _pollers.get(iid)
+            if poll_site:
+                # Data comes from client push — use _remote_state
+                with _remote_state_lock:
+                    state = dict(_remote_state.get(iid, {}))
+                last_push = max((v.get("ts", 0) for v in state.values()), default=0)
+                age = time.time() - last_push if last_push else None
+                sf_health = {
+                    "ok": bool(state) and (age is not None and age < 60),
+                    "error": "" if (state and age is not None and age < 60)
+                             else (f"No data from site '{poll_site}'" if not state
+                                   else f"Last update {int(age)}s ago"),
+                    "ts": last_push,
+                    "poll_site": poll_site,
+                }
+            else:
+                state     = p.get_state() if p else {}
+                sf_health = p.sf_health   if p else {"ok": None}
             colors   = _merge_colors(inst.get("colors", {}))
 
             # Enrich state with friendly name and per-station chain status
@@ -1600,6 +1660,7 @@ def register(app, ctx):
             "poll_interval":    max(5, min(120, int(data.get("interval", 10) or 10))),
             "timeout":          max(2, min(30,  int(data.get("timeout",  6)  or 6))),
             "spot_categories":  [c.strip().upper() for c in raw_s if c.strip()] or DEFAULT_SPOT_CATS,
+            "poll_site":        str(data.get("poll_site", "")).strip(),
             "stations": [
                 {
                     "id":       str(s.get("id","")).strip(),
@@ -1634,6 +1695,7 @@ def register(app, ctx):
             "poll_interval":    max(5,  min(120, int(data.get("interval", inst.get("poll_interval",10)) or 10))),
             "timeout":          max(2,  min(30,  int(data.get("timeout",  inst.get("timeout", 6))    or 6))),
             "spot_categories":  [c.strip().upper() for c in raw_s if c.strip()] or DEFAULT_SPOT_CATS,
+            "poll_site":        str(data.get("poll_site", inst.get("poll_site", ""))).strip(),
             "stations": [
                 {
                     "id":       str(s.get("id","")).strip(),
@@ -1657,6 +1719,178 @@ def register(app, ctx):
             _pollers[iid] = np
             np.start()
         return jsonify({"ok": True})
+
+    # ── Client site config endpoint ───────────────────────────────────────────
+    # Client nodes call this to find out which Zetta instances they should poll.
+    # Returns instance config filtered to instances assigned to the requesting site.
+    @app.get("/api/zetta/site_config")
+    def zetta_site_config():
+        from flask import request, jsonify
+        site = request.headers.get("X-Site", "").strip()
+        if not site:
+            return jsonify({"instances": []}), 400
+        sdata = (hub_server._sites or {}).get(site, {})
+        if not sdata.get("_approved"):
+            return jsonify({"instances": []}), 403
+        cfg = _load_cfg()
+        matching = []
+        for inst in cfg.get("instances", []):
+            if inst.get("poll_site", "") == site:
+                matching.append({
+                    "id":              inst.get("id", ""),
+                    "sf_url":          inst.get("status_feed_url", ""),
+                    "stations":        inst.get("stations", []),
+                    "spot_categories": inst.get("spot_categories", DEFAULT_SPOT_CATS),
+                    "timeout":         inst.get("timeout", 6),
+                    "poll_interval":   inst.get("poll_interval", 10),
+                })
+        return jsonify({"instances": matching})
+
+    # ── Client site data push endpoint ────────────────────────────────────────
+    # Client nodes POST station data here after polling Zetta locally.
+    @app.post("/api/zetta/site_data")
+    def zetta_site_data():
+        import hashlib as _hs, hmac as _hm
+        from flask import request, jsonify
+        site = request.headers.get("X-Site", "").strip()
+        if not site:
+            return jsonify({"ok": False}), 400
+        sdata = (hub_server._sites or {}).get(site, {})
+        if not sdata.get("_approved"):
+            return jsonify({"ok": False}), 403
+        # Optional HMAC verification
+        secret = getattr(getattr(monitor.app_cfg, "hub", None), "secret_key", "") or ""
+        if secret:
+            sig  = request.headers.get("X-Hub-Sig", "")
+            ts_s = request.headers.get("X-Hub-Ts",  "0")
+            body = request.get_data()
+            try:
+                ts = float(ts_s)
+                if abs(time.time() - ts) > 120:
+                    return jsonify({"ok": False, "error": "timestamp expired"}), 403
+                key      = _hs.sha256(f"{secret}:signing".encode()).digest()
+                expected = _hm.new(key, f"{ts:.0f}:".encode() + body, _hs.sha256).hexdigest()
+                if not _hm.compare_digest(sig, expected):
+                    return jsonify({"ok": False, "error": "bad signature"}), 403
+            except Exception:
+                return jsonify({"ok": False, "error": "auth error"}), 403
+        payload = request.get_json(silent=True) or {}
+        iid     = str(payload.get("instance_id", "")).strip()
+        sid     = str(payload.get("station_id",  "")).strip()
+        stn_data = payload.get("data", {})
+        if not iid or not sid or not isinstance(stn_data, dict):
+            return jsonify({"ok": False, "error": "missing fields"}), 400
+        with _remote_state_lock:
+            if iid not in _remote_state:
+                _remote_state[iid] = {}
+            _remote_state[iid][sid] = stn_data
+        return jsonify({"ok": True})
+
+    # ── Client-side Zetta polling loop ────────────────────────────────────────
+    # Runs only on client nodes: polls hub for Zetta config, calls SOAP locally
+    # (client has LAN access to Zetta), pushes results back to hub.
+    cfg_ss  = monitor.app_cfg
+    mode    = getattr(getattr(cfg_ss, "hub", None), "mode", "standalone") or "standalone"
+    hub_url = (getattr(getattr(cfg_ss, "hub", None), "hub_url", "") or "").rstrip("/")
+
+    if mode == "client" and hub_url:
+        import hashlib as _hs_c, hmac as _hm_c
+
+        def _client_zetta_loop():
+            while True:
+                try:
+                    _cfg_ss   = monitor.app_cfg
+                    _hub_url  = (getattr(getattr(_cfg_ss, "hub", None), "hub_url", "") or "").rstrip("/")
+                    _site     = getattr(getattr(_cfg_ss, "hub", None), "site_name", "") or ""
+                    _secret   = getattr(getattr(_cfg_ss, "hub", None), "secret_key", "") or ""
+                    _mode     = getattr(getattr(_cfg_ss, "hub", None), "mode", "") or ""
+                    if _mode != "client" or not _hub_url or not _site:
+                        time.sleep(15)
+                        continue
+                    # Fetch which instances this site should poll
+                    try:
+                        _req = urllib.request.Request(
+                            f"{_hub_url}/api/zetta/site_config",
+                            headers={"X-Site": _site},
+                        )
+                        with urllib.request.urlopen(_req, timeout=8) as _r:
+                            _config = json.loads(_r.read())
+                    except Exception as _e:
+                        _log.debug("[Zetta client] config fetch: %s", _e)
+                        time.sleep(15)
+                        continue
+                    _instances = _config.get("instances", [])
+                    if not _instances:
+                        time.sleep(15)
+                        continue
+                    # Poll each instance's stations using raw SOAP (no zeep needed on client)
+                    for _inst in _instances:
+                        _iid      = _inst.get("id", "")
+                        _sf_url   = (_inst.get("sf_url") or "").strip()
+                        _stations = _inst.get("stations", [])
+                        _s_cats   = _inst.get("spot_categories", DEFAULT_SPOT_CATS)
+                        _timeout  = int(_inst.get("timeout", 6) or 6)
+                        if not _sf_url or not _stations:
+                            continue
+                        try:
+                            _ns_val = _ns(_sf_url, _timeout)
+                            _ep     = _soap_endpoint(_sf_url, _timeout)
+                        except Exception:
+                            continue
+                        for _st in _stations:
+                            _sid = str(_st.get("id", "")).strip()
+                            if not _sid:
+                                continue
+                            try:
+                                _body = f"<stationID>{_sid}</stationID>"
+                                _root, _ = _soap_call(_ep, "GetStationFull",
+                                                      _body, _ns_val, _timeout)
+                                _sdata = _parse_station_full(_root, _sid, _s_cats)
+                            except Exception as _pe:
+                                _log.debug("[Zetta client] station %s: %s", _sid, _pe)
+                                _sdata = {"station_id": _sid,
+                                          "error": str(_pe), "ts": time.time()}
+                            # Push result to hub
+                            _push_body = json.dumps({
+                                "instance_id": _iid,
+                                "station_id":  _sid,
+                                "data":        _sdata,
+                            }).encode()
+                            _ts = time.time()
+                            if _secret:
+                                _key = _hs_c.sha256(f"{_secret}:signing".encode()).digest()
+                                _sig = _hm_c.new(
+                                    _key,
+                                    f"{_ts:.0f}:".encode() + _push_body,
+                                    _hs_c.sha256,
+                                ).hexdigest()
+                            else:
+                                _sig = ""
+                            try:
+                                _push_req = urllib.request.Request(
+                                    f"{_hub_url}/api/zetta/site_data",
+                                    data=_push_body, method="POST",
+                                    headers={
+                                        "Content-Type": "application/json",
+                                        "X-Site":       _site,
+                                        "X-Hub-Sig":    _sig,
+                                        "X-Hub-Ts":     f"{_ts:.0f}",
+                                    },
+                                )
+                                urllib.request.urlopen(_push_req, timeout=8).close()
+                            except Exception as _upe:
+                                _log.debug("[Zetta client] push station %s: %s", _sid, _upe)
+                    # Respect poll interval from first instance (all share one loop)
+                    _sleep = int((_instances[0].get("poll_interval") or 10))
+                    for _ in range(max(1, _sleep)):
+                        time.sleep(1)
+                except Exception as _le:
+                    _log.debug("[Zetta client] loop error: %s", _le)
+                    time.sleep(15)
+
+        threading.Thread(target=_client_zetta_loop, daemon=True,
+                         name="ZettaClientPoll").start()
+        monitor.log("[Zetta] Client polling thread started")
 
     # ── Delete instance ───────────────────────────────────────────────────────
     @app.post("/api/zetta/instance/<iid>/delete")
