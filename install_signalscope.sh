@@ -1391,6 +1391,9 @@ main() {
   step "Installing optional SNMP library (pysnmp)"
   python -m pip install pysnmp || warn "pysnmp not available — Codec Monitor will use HTTP/TCP fallback for SNMP devices (Prodys Quantum ST, APT WorldCast)"
 
+  step "Installing optional Zetta SOAP client (zeep)"
+  python -m pip install zeep || warn "zeep not available — Zetta plugin station discovery and sequencer polling will be unavailable"
+
   step "Installing optional WebRTC stack (aiortc) for IP Link server-side routing"
   # aiortc enables server-side WebRTC in the IP Link plugin — talent codecs stay
   # connected and Livewire output runs even when no browser is open.
