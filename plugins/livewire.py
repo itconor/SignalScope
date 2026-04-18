@@ -13,7 +13,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Livewire",
     "url":     "/livewire",
     "icon":    "🔗",
-    "version": "1.0.3",
+    "version": "1.0.4",
 }
 
 import json, os, struct, threading, time, urllib.request
@@ -68,72 +68,128 @@ def _save_hub_data():
         pass
 
 
-# ── LWAP parser ───────────────────────────────────────────────────────────────
+# ── Binary LWAP TLV parser ────────────────────────────────────────────────────
+#
+# Axia Livewire nodes send binary TLV packets to 239.192.255.3:4001.
+#
+# Packet layout (reference: github.com/nick-prater/read_lw_sources):
+#   16-byte header  [0x03 0x00 0x02 0x07 | counter(4) | padding(8)]
+#   Sequence of phrases:  [4-byte ASCII opcode] [1-byte type] [N-byte value]
+#
+# Type codes:
+#   0x00 / 0x07  →  1 byte  (uint8)
+#   0x01         →  4 bytes (uint32 big-endian OR IPv4 address)
+#   0x03         →  2-byte length prefix + N bytes of string (NUL-terminated)
+#   0x06 / 0x08  →  2 bytes (uint16 big-endian)
+#   0x09         →  8 bytes (padding, ignored)
+#
+# Key opcodes:
+#   ADVT  advertisement type  0x01=full (has sources), 0x02=summary (heartbeat only)
+#   INIP  node IPv4 address
+#   ATRN  node display name (string)
+#   PSID  Livewire channel number (uint32)
+#   FSID  source multicast IPv4 address
+#   PSNM  source display name (string)
+#
+# Type 2 (ADVT=0x02) summary packets carry no source data — they are frequent
+# heartbeats confirming a node is alive.  Type 1 (ADVT=0x01) full packets
+# contain complete source sections and are sent on startup, on config change,
+# and periodically (typically every 30–60 seconds).
 
 def _parse_lwap(data: bytes, sender_ip: str):
     """
-    Parse one Livewire Advertisement Protocol UDP datagram.
+    Parse a binary Axia LWAP TLV packet.
 
-    Real LWAP packets are NUL-byte or newline-separated ASCII key=value
-    pairs (NOT a verb-based format).  Known fields:
-        ch=<channel>      — Livewire channel number (required)
-        srcn=<name>       — human-readable source name
-        src=<addr>        — multicast address (dotted quad)
-        rate=<hz>         — sample rate, e.g. 48000
-        fmt=<fmt>         — e.g. L24, L20, MP3
-        type=<n>          — 0=standard, 1=surround
-
-    Returns a dict or None if the packet can't be parsed / has no channel.
+    Returns a dict:
+        {
+          "adv_type":  1 (full) or 2 (summary),
+          "node_ip":   "10.x.x.x",
+          "node_name": "StA-Node1",
+          "sources":   [{"cid": 6031, "name": "PGM1", "multicast": "239.192.23.143"}, ...]
+        }
+    Returns None if the packet is not a valid binary LWAP packet.
     """
-    try:
-        text = data.decode("utf-8", errors="ignore")
-    except Exception:
+    if len(data) < 20 or data[0] != 0x03:
         return None
 
-    # Split on both NUL bytes and newlines
-    pairs = text.replace("\x00", "\n").splitlines()
+    pos       = 16   # skip 16-byte header
+    adv_type  = 0
+    node_ip   = sender_ip
+    node_name = sender_ip
+    sources   = []
+    cur_src   = None   # source being assembled (set when PSID seen)
 
-    fields: dict = {}
-    for pair in pairs:
-        pair = pair.strip()
-        if "=" not in pair:
+    while pos + 5 <= len(data):
+        # ── read opcode ───────────────────────────────────────────────────
+        try:
+            opcode = data[pos:pos+4].decode("ascii")
+        except Exception:
+            break
+        typ  = data[pos+4]
+        pos += 5
+
+        # ── read value ────────────────────────────────────────────────────
+        val_bytes = None
+        val_int   = None
+
+        if typ in (0x00, 0x07):          # 1-byte integer
+            if pos + 1 > len(data): break
+            val_int   = data[pos]
+            val_bytes = data[pos:pos+1]
+            pos += 1
+        elif typ == 0x01:                # 4-byte (IP or uint32)
+            if pos + 4 > len(data): break
+            val_bytes = data[pos:pos+4]
+            val_int   = int.from_bytes(val_bytes, "big")
+            pos += 4
+        elif typ == 0x03:                # length-prefixed string
+            if pos + 2 > len(data): break
+            slen = (data[pos] << 8) | data[pos+1]
+            pos += 2
+            if pos + slen > len(data): break
+            val_bytes = data[pos:pos+slen]
+            pos += slen
+        elif typ in (0x06, 0x08):        # 2-byte integer
+            if pos + 2 > len(data): break
+            val_bytes = data[pos:pos+2]
+            val_int   = (data[pos] << 8) | data[pos+1]
+            pos += 2
+        elif typ == 0x09:                # 8-byte padding
+            pos += 8
             continue
-        k, _, v = pair.partition("=")
-        fields[k.strip().lower()] = v.strip()
+        else:
+            break   # unknown type — stop
 
-    if not fields:
-        return None
+        # ── dispatch ──────────────────────────────────────────────────────
+        if opcode == "ADVT":
+            adv_type = val_int or 0
 
-    # Channel number is required
-    try:
-        cid = int(fields.get("ch", ""))
-    except (ValueError, TypeError):
-        return None
+        elif opcode == "INIP" and val_bytes and len(val_bytes) == 4:
+            node_ip = ".".join(str(b) for b in val_bytes)
 
-    # Multicast address comes directly from the packet's src= field.
-    # Fall back to deriving it from the channel ID if absent.
-    address = fields.get("src", "") or _lw_ip(cid)
+        elif opcode == "ATRN" and val_bytes:
+            # NUL-terminated string; strip padding
+            name = val_bytes.split(b"\x00")[0].decode("latin-1", errors="ignore").strip()
+            if name:
+                node_name = name
 
-    # Source name: srcn= preferred, fall back to src= (address as label)
-    name = fields.get("srcn", "") or fields.get("src", "")
+        elif opcode == "PSID" and val_bytes and len(val_bytes) == 4:
+            cid = int.from_bytes(val_bytes, "big")
+            if cid > 0:
+                cur_src = {"cid": cid, "name": f"Source {cid}", "multicast": _lw_ip(cid)}
+                sources.append(cur_src)
 
-    return {
-        "cid":       cid,
-        "name":      name,
-        "node_name": sender_ip,   # no node-name field in LWAP; use sender IP
-        "node_ip":   sender_ip,
-        "multicast": address,
-        "sample_rate": _safe_int(fields.get("rate", "48000"), 48000),
-        "fmt":         fields.get("fmt", ""),
-        "src_type":    _safe_int(fields.get("type", "0"), 0),
-    }
+        elif opcode == "FSID" and val_bytes and len(val_bytes) == 4 and cur_src:
+            mc = ".".join(str(b) for b in val_bytes)
+            if mc not in ("0.0.0.0", "239.192.0.0"):
+                cur_src["multicast"] = mc
 
+        elif opcode == "PSNM" and val_bytes and cur_src:
+            name = val_bytes.split(b"\x00")[0].decode("latin-1", errors="ignore").strip()
+            if name:
+                cur_src["name"] = name
 
-def _safe_int(s: str, default: int) -> int:
-    try:
-        return int(s)
-    except (TypeError, ValueError):
-        return default
+    return {"adv_type": adv_type, "node_ip": node_ip, "node_name": node_name, "sources": sources}
 
 
 # ── Monitor ───────────────────────────────────────────────────────────────────
@@ -149,14 +205,17 @@ class _LivewireMonitor:
         self.timeout     = int(timeout or _DEF_TIMEOUT)
         self.log         = log_fn
         self._sources: dict = {}
+        self._nodes:   dict = {}   # node_ip → {last_seen, name}
         self._lock       = threading.Lock()
         self._stop       = threading.Event()
         self._thread     = None
         # Diagnostics
-        self._pkt_rx     = 0    # total UDP packets received
-        self._pkt_parsed = 0    # packets that parsed successfully
-        self._sock_ok    = None # True/False after open attempt
-        self._last_raw   = b""  # raw bytes of most recent packet
+        self._pkt_rx       = 0    # total UDP packets received
+        self._pkt_parsed   = 0    # packets that parsed successfully (valid binary LWAP)
+        self._pkt_type1    = 0    # type 1 (full) packets — carry source data
+        self._sock_ok      = None # True/False after open attempt
+        self._last_raw     = b""  # raw bytes of most recent packet
+        self._last_adv_type = 0   # ADVT value of last parsed packet
 
     def start(self):
         self._stop.clear()
@@ -190,7 +249,8 @@ class _LivewireMonitor:
             total  = len(self._sources)
             online = sum(1 for s in self._sources.values()
                          if now - s["last_seen"] <= self.timeout)
-        return {"total": total, "online": online, "stale": total - online}
+            nodes  = len(self._nodes)
+        return {"total": total, "online": online, "stale": total - online, "nodes": nodes}
 
     # ── internals ────────────────────────────────────────────────────────────
 
@@ -204,14 +264,19 @@ class _LivewireMonitor:
                                .replace("\x00", "·")
             except Exception:
                 pass
+        with self._lock:
+            nodes = {ip: n.get("name", ip) for ip, n in self._nodes.items()}
         return {
-            "socket_ok":   self._sock_ok,
-            "pkt_rx":      self._pkt_rx,
-            "pkt_parsed":  self._pkt_parsed,
-            "last_raw_hex": last_hex,
-            "last_raw_txt": last_txt,
-            "iface_ip":    self.iface_ip,
-            "sources":     len(self._sources),
+            "socket_ok":     self._sock_ok,
+            "pkt_rx":        self._pkt_rx,
+            "pkt_parsed":    self._pkt_parsed,
+            "pkt_type1":     self._pkt_type1,
+            "last_adv_type": self._last_adv_type,
+            "last_raw_hex":  last_hex,
+            "last_raw_txt":  last_txt,
+            "iface_ip":      self.iface_ip,
+            "nodes":         nodes,
+            "sources":       len(self._sources),
         }
 
     def _open_socket(self):
@@ -261,39 +326,46 @@ class _LivewireMonitor:
 
     def _process(self, data: bytes, sender_ip: str):
         p = _parse_lwap(data, sender_ip)
-        if not p:
+        if p is None:
             return
-        self._pkt_parsed += 1
-        cid = p["cid"]
-        now = time.time()
+
+        self._pkt_parsed    += 1
+        self._last_adv_type  = p["adv_type"]
+        if p["adv_type"] == 1:
+            self._pkt_type1 += 1
+        node_ip   = p["node_ip"]
+        node_name = p["node_name"]
+        now       = time.time()
+
         with self._lock:
-            ex = self._sources.get(cid)
-            if ex:
-                ex["last_seen"] = now
-                if p["name"]:
-                    ex["name"] = p["name"]
-                ex["multicast"] = p["multicast"] or ex["multicast"]
-                ex["node_ip"]   = sender_ip
-                # Clear stale flag on refresh
-                if ex.get("stale"):
-                    self.log(f"[Livewire] Source recovered: ID={cid} '{ex['name']}'")
-                    ex["stale"] = False
-            else:
-                self._sources[cid] = {
-                    "cid":         cid,
-                    "name":        p["name"],
-                    "node_name":   sender_ip,
-                    "node_ip":     sender_ip,
-                    "multicast":   p["multicast"],
-                    "sample_rate": p.get("sample_rate", 48000),
-                    "fmt":         p.get("fmt", ""),
-                    "last_seen":   now,
-                    "first_seen":  now,
-                    "stale":       False,
-                }
+            # Always update node last-seen (both type 1 and type 2 packets)
+            if node_ip not in self._nodes:
+                self.log(f"[Livewire] Node online: {node_name} ({node_ip})")
+            self._nodes[node_ip] = {"last_seen": now, "name": node_name}
+
+            # Only type 1 (full advertisement) packets carry source data
+            if p["adv_type"] == 1 and p["sources"]:
+                # Replace all sources previously known from this node
+                for cid in [c for c, s in self._sources.items()
+                             if s.get("node_ip") == node_ip]:
+                    del self._sources[cid]
+
+                for src in p["sources"]:
+                    cid   = src["cid"]
+                    first = self._sources[cid]["first_seen"] \
+                            if cid in self._sources else now
+                    self._sources[cid] = {
+                        "cid":        cid,
+                        "name":       src["name"],
+                        "node_name":  node_name,
+                        "node_ip":    node_ip,
+                        "multicast":  src["multicast"],
+                        "last_seen":  now,
+                        "first_seen": first,
+                    }
                 self.log(
-                    f"[Livewire] New source: ID={cid} "
-                    f"'{p['name']}' @ {p['multicast']}"
+                    f"[Livewire] {node_name} ({node_ip}): "
+                    f"{len(p['sources'])} sources"
                 )
 
 

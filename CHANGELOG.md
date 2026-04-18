@@ -2,6 +2,14 @@
 
 ---
 
+## livewire v1.0.4 — 2026-04-18
+
+### Fixed — correct binary TLV parser; passive-only (no TCP polling)
+
+Replaced the text key=value parser with a correct binary TLV implementation matching the actual Axia LWAP protocol (reference: github.com/nick-prater/read_lw_sources). Packets are 16-byte header + sequence of `[4-byte opcode][1-byte type][N-byte value]` phrases. Source data (PSID channel number, PSNM name, FSID multicast address) is extracted passively from **Type 1** (ADVT=0x01) full advertisement packets. **Type 2** (ADVT=0x02) summary packets are heartbeat-only and update node last-seen time without changing the source table. Node display name comes from the ATRN field; node IP from INIP. No TCP connections are made. The debug endpoint now also reports `pkt_type1` and `last_adv_type` to confirm type 1 packets are being received.
+
+---
+
 ## livewire v1.0.3 — 2026-04-18
 
 ### Fixed — LWAP packet parser rewritten for real protocol format
