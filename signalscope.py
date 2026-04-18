@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.140"
+BUILD                  = "SignalScope-3.5.141"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -29498,7 +29498,9 @@ function _addNodeRowToGroup(group, nd){
   optPanel.appendChild(mkField('Machine tag',machineIn));
   optPanel.appendChild(mkField('Silence on (dBFS)',threshIn));
   optPanel.appendChild(mkField('Silence off (dBFS)',offThreshIn));
-  optPanel.appendChild(mkField('Min silence (s)',minSilIn));
+  var _msf=mkField('Min silence (s)',minSilIn);
+  var _msh=document.createElement('div');_msh.className='field-hint';_msh.textContent='blank = use input setting (default 10 s)';
+  _msf.appendChild(_msh);optPanel.appendChild(_msf);
   optPanel.appendChild(offlineRow);
   optsBtn.addEventListener('click',function(){
     var open=optPanel.classList.toggle('open');
