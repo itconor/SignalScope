@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.1",
+    "version":  "2.1.2",
 }
 
 import json
@@ -2222,4 +2222,4 @@ def register(app, ctx):
                 return True
         return False
 
-    monitor.log("[Zetta] Plugin v2.1.1 registered — /hub/zetta")
+    monitor.log("[Zetta] Plugin v2.1.2 registered — /hub/zetta")
