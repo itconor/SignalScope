@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.10",
+    "version":  "2.1.11",
 }
 
 import json
@@ -1945,6 +1945,10 @@ def register(app, ctx):
         import hashlib as _hs_c, hmac as _hm_c
 
         def _client_zetta_loop():
+            # Play-start tracking so countdown timers work on the hub.
+            # Keyed "iid|sid" — persists across poll cycles so elapsed time is correct.
+            _c_last_guid  = {}  # "iid|sid" → last event_guid seen
+            _c_play_start = {}  # "iid|sid" → time.time() when that track started
             while True:
                 try:
                     _cfg_ss   = monitor.app_cfg
@@ -2075,6 +2079,25 @@ def register(app, ctx):
                                     "station_name": _snam,
                                     "error":        str(_pe),
                                     "ts":           time.time()}
+
+                            # Track play-start times so the hub can drive countdown timers.
+                            # Mirrors the logic in _InstancePoller._poll_once().
+                            _tk = f"{_iid}|{_sid}"
+                            _np = _results.get(_sid, {}).get("now_playing")
+                            if _np and not _results[_sid].get("error"):
+                                _guid = _np.get("event_guid", "")
+                                if _guid != _c_last_guid.get(_tk):
+                                    _c_last_guid[_tk]  = _guid
+                                    _c_play_start[_tk] = time.time()
+                                _dur     = float(_np.get("duration_seconds") or 0)
+                                _elapsed = time.time() - _c_play_start.get(_tk, time.time())
+                                _results[_sid]["duration_seconds"]  = _dur
+                                _results[_sid]["remaining_seconds"] = max(0.0, _dur - _elapsed)
+                                _results[_sid]["play_start_time"]   = _c_play_start.get(_tk, 0.0)
+                            else:
+                                _results[_sid].setdefault("duration_seconds",  0)
+                                _results[_sid].setdefault("remaining_seconds", 0)
+                                _results[_sid].setdefault("play_start_time",   0.0)
 
                         if not _results:
                             continue
@@ -2418,4 +2441,4 @@ def register(app, ctx):
                         "total_stations": sum(len(v) for v in snapshot.values()),
                         "site_zeep_status": zeep_snapshot})
 
-    monitor.log("[Zetta] Plugin v2.1.10 registered — /hub/zetta")
+    monitor.log("[Zetta] Plugin v2.1.11 registered — /hub/zetta")
