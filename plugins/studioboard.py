@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.10.1",
+    "version":  "3.10.2",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -977,10 +977,12 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .zm-q-spot .zm-q-title{color:rgba(245,158,11,.62);font-style:italic}
 .zm-q-dur{font-size:11px;color:rgba(255,255,255,.28);flex-shrink:0}
-/* Ad break */
-.zm-spot{font-size:15px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;
-  color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.18);
-  border-radius:10px;padding:14px 22px;margin:16px 0;text-align:center;width:88%}
+/* Ad break — amber tint on now row, inline AD badge */
+.zm-now-ad{border-left:3px solid #f59e0b;padding-left:10px;background:rgba(245,158,11,.06);border-radius:8px}
+.zm-ad-badge{font-size:10px;font-weight:800;letter-spacing:.1em;color:#f59e0b;
+  background:rgba(245,158,11,.18);border:1px solid rgba(245,158,11,.4);
+  border-radius:5px;padding:2px 7px;flex-shrink:0;align-self:flex-start}
+.zm-prog-ad{background:#f59e0b!important}
 .zm-etm{font-size:13px;color:rgba(255,255,255,.42);margin-bottom:6px}
 .zm-wait{font-size:14px;color:rgba(255,255,255,.22);text-align:center;
   margin-top:24px;font-style:italic}
@@ -1140,48 +1142,32 @@ function updateCol(s,idx){
       if(idl.textContent!==_idleC[s.id])idl.textContent=_idleC[s.id];
     }else if(idl)idl.textContent='';
   }
-  // Zetta main panel — full sequencer now-playing section
+  // Zetta main panel — mirror Zetta plugin: always show now_playing, never hide it
   var zEl=document.getElementById('zq'+idx);
   if(zEl&&s.zetta_station_key){
     var zd=(s.zetta_station_key&&s.zetta)?s.zetta:null;
     var zh='';
     if(!zd){
       zh='<div class="zm-wait">Waiting for Zetta data\u2026</div>';
-    }else if(zd.is_spot){
-      /* Ad break state — big banner + queue of what's coming up */
-      zh='<div class="zm-spot">\u23F8\uFE0F AD BREAK</div>';
-      if(zd.etm)zh+='<div class="zm-etm">Back on air at '+E(zd.etm)+'</div>';
-      var _sq=zd.queue||[];
-      if(_sq.length){
-        zh+='<div class="zm-queue">';
-        _sq.slice(0,4).forEach(function(q,qi){
-          zh+='<div class="zm-q-row'+(q.is_spot?' zm-q-spot':'')+'">'
-            +'<span class="zm-q-lbl">'+(qi===0?'NEXT':'')+'</span>'
-            +'<span class="zm-q-title">'+E(q.title||q.raw_title||'')+'</span>'
-            +'<span class="zm-q-dur">'+E(q.duration||'')+'</span>'
-            +'</div>';
-        });
-        zh+='</div>';
-      }
     }else if(zd.now_playing){
-      /* Programme music — artwork thumb (from Planet Radio feed) + Zetta metadata */
-      /* Build zh WITHOUT inline progress style so the string stays stable across
-         RAF ticks; we update the fill width & countdown text separately below. */
+      /* Always show now-playing — spot or music. Amber badge if it's an ad. */
       var _au=np.artwork||''; /* np = gNp(s) declared at top of updateCol */
       var _zart=_au
         ?'<img class="zm-art" src="'+E(_au)+'" alt="" onerror="this.className=\'zm-art zm-art-ph\';this.removeAttribute(\'src\')">'
         :'<div class="zm-art zm-art-ph">\uD83C\uDFA4</div>';
       var _zartist=E(zd.now_playing.raw_artist||zd.now_playing.artist||'');
       var _ztitle=E(zd.now_playing.raw_title||zd.now_playing.title||'');
-      var _zlbl=E(zd.now_playing.category||zd.mode||'');
-      zh='<div class="zm-now">'
+      var _isSpot=!!(zd.now_playing.is_spot);
+      /* Build zh WITHOUT inline progress style so string stays stable between RAF ticks */
+      zh='<div class="zm-now'+ (_isSpot?' zm-now-ad':'') +'">'
+        +(_isSpot?'<div class="zm-ad-badge">AD</div>':'')
         +_zart
         +'<div class="zm-text">'
-        +(_zlbl?'<div class="zm-mode">'+_zlbl+'</div>':'')
+        +(_isSpot&&zd.etm?'<div class="zm-mode">Back on air '+E(zd.etm)+'</div>':'')
         +'<div class="zm-artist">'+_zartist+'</div>'
         +'<div class="zm-title">'+_ztitle+'</div>'
         +'</div></div>'
-        +'<div class="zm-prog-wrap"><div class="zm-prog-fill" id="zqpf'+idx+'"></div></div>'
+        +'<div class="zm-prog-wrap"><div class="zm-prog-fill'+ (_isSpot?' zm-prog-ad':'') +'" id="zqpf'+idx+'"></div></div>'
         +'<div class="zm-time" id="zqtm'+idx+'"></div>';
       var _nq=zd.queue||[];
       if(_nq.length){
@@ -1196,11 +1182,11 @@ function updateCol(s,idx){
         zh+='</div>';
       }
     }else{
-      zh='<div class="zm-wait">'+E(zd.mode||'No sequencer data')+'</div>';
+      zh='<div class="zm-wait">'+E(zd.mode_name||zd.mode||'No sequencer data')+'</div>';
     }
     if(zEl.innerHTML!==zh)zEl.innerHTML=zh;
     /* Immediately paint the progress / countdown after any DOM rebuild */
-    if(zd&&zd.now_playing&&!zd.is_spot){
+    if(zd&&zd.now_playing){
       var _ex2=zd.ts?Math.max(0,Date.now()/1000-zd.ts):0;
       var _rem2=Math.max(0,(zd.remaining_seconds||0)-_ex2);
       var _dur2=zd.duration_seconds||0;
@@ -1312,7 +1298,7 @@ setInterval(function(){
   (D.studios||[]).forEach(function(s,i){
     if(!s.zetta_station_key)return;
     var zd=s.zetta;
-    if(!zd||zd.is_spot||!zd.now_playing||!zd.ts)return;
+    if(!zd||!zd.now_playing||!zd.ts)return;
     var ex=Math.max(0,Date.now()/1000-zd.ts);
     var rem=Math.max(0,(zd.remaining_seconds||0)-ex);
     var dur=zd.duration_seconds||0;
