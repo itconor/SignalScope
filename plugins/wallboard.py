@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.14.2",
+    "version":  "3.14.3",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -562,7 +562,7 @@ _TPL = r"""<!doctype html>
   --bg:#07142b;--sur:#0d2346;--bor:#17345f;
   --acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;
   --tx:#eef5ff;--mu:#8aa4c8;
-  --mc-w:155px;--radius:16px;
+  --mc-w:200px;--radius:16px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
@@ -703,7 +703,7 @@ body::after{
 
 /* Logo/avatar banner — full-width headline at top of card */
 .cc-visual-banner{
-  width:100%;height:110px;flex-shrink:0;
+  width:100%;height:140px;flex-shrink:0;
   display:flex;align-items:center;justify-content:center;
   border-radius:22px 22px 0 0;overflow:hidden;
   background:rgba(0,0,0,.22);position:relative;
@@ -716,7 +716,7 @@ body::after{
 .cc-avatar{
   width:100%;height:100%;
   display:flex;align-items:center;justify-content:center;
-  font-size:40px;font-weight:800;color:#fff;
+  font-size:52px;font-weight:800;color:#fff;
   text-shadow:0 2px 8px rgba(0,0,0,.4);
 }
 /* Station name + On Air badge — side by side */
@@ -726,7 +726,7 @@ body::after{
 }
 .cc-name{
   flex:1;min-width:0;
-  font-size:20px;font-weight:800;line-height:1.25;
+  font-size:26px;font-weight:800;line-height:1.25;
   letter-spacing:-.01em;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
@@ -735,9 +735,9 @@ body::after{
 .cc[data-has-logo="1"] .cc-header-row{justify-content:center}
 /* Status badge */
 .cc-status{
-  display:flex;align-items:center;gap:6px;
-  padding:6px 12px;border-radius:9px;
-  font-size:15px;font-weight:800;letter-spacing:.03em;
+  display:flex;align-items:center;gap:8px;
+  padding:8px 16px;border-radius:10px;
+  font-size:20px;font-weight:800;letter-spacing:.03em;
   flex-shrink:0;
 }
 .cc-status.s-ok{
@@ -753,11 +753,11 @@ body::after{
 }
 .cc-status.s-unk{background:rgba(138,164,200,.08);color:var(--mu);border:1px solid rgba(138,164,200,.2)}
 @keyframes sb-blink{0%,100%{opacity:1}50%{opacity:.55}}
-.cc-sdot{width:10px;height:10px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+.cc-sdot{width:13px;height:13px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
 
 /* Node dots */
-.cc-nodes{display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:flex-start;padding:0 14px;margin-bottom:6px}
-.cc-nd{width:10px;height:10px;border-radius:50%;transition:background .3s}
+.cc-nodes{display:flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-start;padding:0 14px;margin-bottom:6px}
+.cc-nd{width:13px;height:13px;border-radius:50%;transition:background .3s}
 .cc-nd.ok{background:var(--ok);box-shadow:0 0 5px rgba(34,197,94,.6)}
 .cc-nd.down,.cc-nd.fault{background:var(--al);box-shadow:0 0 8px rgba(239,68,68,.6);animation:nd-p 1s ease infinite}
 .cc-nd.offline{background:var(--wn);box-shadow:0 0 4px rgba(245,158,11,.4)}
@@ -768,7 +768,7 @@ body::after{
 
 /* ═══ Horizontal RX meter on chain card ═══ */
 .cc-rx-meter{margin:4px 14px 0}
-.cc-rx-bar{width:100%;height:10px;background:rgba(0,0,0,.3);border-radius:5px;overflow:hidden;position:relative}
+.cc-rx-bar{width:100%;height:14px;background:rgba(0,0,0,.3);border-radius:5px;overflow:hidden;position:relative}
 .cc-rx-fill{
   height:100%;border-radius:5px;
   background:linear-gradient(90deg,#22c55e 0%,#22c55e 75%,#f59e0b 87%,#ef4444 100%);
@@ -778,8 +778,8 @@ body::after{
   box-shadow:0 0 4px rgba(255,255,255,.5);
 }
 .cc-rx-label{display:flex;justify-content:space-between;align-items:center;margin-top:3px}
-.cc-rx-name{font-size:10px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cc-rx-val{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;min-width:66px;text-align:right}
+.cc-rx-name{font-size:12px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cc-rx-val{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;min-width:66px;text-align:right}
 .cc-rx-val.rx-low{color:var(--mu)}.cc-rx-val.rx-warn{color:var(--wn)}.cc-rx-val.rx-alert{color:var(--al)}
 body.bauer .cc-rx-bar{background:rgba(255,255,255,.08)}
 body.bauer .cc-rx-name{color:rgba(255,255,255,.4)}
@@ -788,7 +788,7 @@ body.bauer .cc-rx-val.rx-low{color:rgba(255,255,255,.3)}
 /* Now playing — compact single line */
 .cc-np-wrap{padding:5px 14px 0;overflow:hidden}
 .cc-np-track{
-  font-size:13px;color:var(--acc);font-weight:600;
+  font-size:16px;color:var(--acc);font-weight:600;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .cc-np-artist{color:var(--tx);font-weight:700}
@@ -804,14 +804,14 @@ body.corp .cc-np-artist{color:#1d1d1f}
 .wb-site{margin-bottom:12px}
 .wb-site-hdr{
   display:flex;align-items:center;gap:7px;
-  font-size:10px;font-weight:700;color:var(--mu);
+  font-size:13px;font-weight:700;color:var(--mu);
   text-transform:uppercase;letter-spacing:.09em;
-  margin-bottom:7px;padding-bottom:4px;border-bottom:1px solid rgba(23,52,95,.5);
+  margin-bottom:9px;padding-bottom:5px;border-bottom:1px solid rgba(23,52,95,.5);
 }
-.wb-sdot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex-shrink:0}
+.wb-sdot{width:9px;height:9px;border-radius:50%;background:var(--ok);flex-shrink:0}
 .wb-sdot.off{background:var(--al)}
 
-.wb-grid{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(var(--mc-w),1fr))}
+.wb-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(var(--mc-w),1fr))}
 
 /* ═══ Meter card ═══ */
 .mc{
@@ -826,17 +826,17 @@ body.corp .cc-np-artist{color:#1d1d1f}
 .mc.mc-silent{border-color:rgba(239,68,68,.3);box-shadow:0 0 12px rgba(239,68,68,.06)}
 .mc.mc-ok{border-color:rgba(34,197,94,.2);box-shadow:inset 0 1px 0 rgba(34,197,94,.06)}
 
-.mc-head{padding:7px 10px 5px;border-bottom:1px solid rgba(255,255,255,.04)}
-.mc-name{font-size:11.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3}
-.mc-sub{font-size:9px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.mc-head{padding:10px 12px 7px;border-bottom:1px solid rgba(255,255,255,.04)}
+.mc-name{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3}
+.mc-sub{font-size:11px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
 
-.mc-body{flex:1;display:flex;flex-direction:row;align-items:stretch;padding:9px 10px 7px;gap:10px}
+.mc-body{flex:1;display:flex;flex-direction:row;align-items:stretch;padding:12px 12px 10px;gap:14px}
 
 /* Vertical bar — narrow pillar on the left */
 .mtr-wrap{
   position:relative;
-  flex:0 0 24px;width:24px;max-width:24px;
-  min-height:70px;
+  flex:0 0 34px;width:34px;max-width:34px;
+  min-height:95px;
   background:linear-gradient(to top,rgba(34,197,94,.06) 0% 75%,rgba(245,158,11,.06) 75% 87.5%,rgba(239,68,68,.06) 87.5% 100%);
   border-radius:5px;overflow:hidden;border:1px solid rgba(255,255,255,.03);
 }
@@ -857,7 +857,7 @@ body.corp .cc-np-artist{color:#1d1d1f}
 }
 
 /* L/R stereo bars — twin narrow pillars */
-.mtr-stereo{display:flex;gap:4px;flex:0 0 36px;width:36px;min-height:70px}
+.mtr-stereo{display:flex;gap:4px;flex:0 0 50px;width:50px;min-height:95px}
 .mtr-ch{display:flex;flex-direction:column;align-items:center;flex:1;gap:2px}
 .mtr-lr{
   position:relative;width:100%;flex:1;
@@ -869,18 +869,18 @@ body.corp .cc-np-artist{color:#1d1d1f}
   background:linear-gradient(to top,#22c55e 0% 75%,#f59e0b 75% 87.5%,#ef4444 87.5% 100%);
   opacity:.3;pointer-events:none;
 }
-.mtr-ch-label{font-size:9px;font-weight:700;color:var(--mu);line-height:1}
+.mtr-ch-label{font-size:11px;font-weight:700;color:var(--mu);line-height:1}
 .mc:not([data-stereo="1"]) .mtr-stereo{display:none}
 .mc[data-stereo="1"] .mtr-mono{display:none}
 
 /* Info panel — fills horizontal space to the right of the bar */
 .mc-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;justify-content:flex-start}
-.mc-lev{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.03em;text-align:left;line-height:1.1}
+.mc-lev{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.03em;text-align:left;line-height:1.1}
 .mc-lev.lc-low{color:var(--mu)}.mc-lev.lc-warn{color:var(--wn)}.mc-lev.lc-alert{color:var(--al)}
-.mc-lufs{font-size:10px;color:var(--mu);text-align:left}
-.mc-np{font-size:11px;color:var(--acc);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;padding:0;text-align:left}
+.mc-lufs{font-size:13px;color:var(--mu);text-align:left}
+.mc-np{font-size:14px;color:var(--acc);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;padding:0;text-align:left}
 .mc-foot{display:flex;align-items:center;gap:4px;margin-top:auto;padding-top:4px}
-.sp{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;line-height:1.4}
+.sp{display:inline-flex;align-items:center;gap:3px;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:700;line-height:1.4}
 .sp-ok{background:rgba(34,197,94,.12);color:var(--ok)}
 .sp-al{background:rgba(239,68,68,.14);color:var(--al)}
 .sp-wn{background:rgba(245,158,11,.12);color:var(--wn)}
@@ -1154,12 +1154,12 @@ body.has-brand .wb-brand{display:block}
 #wb-chains.cc-count-3 .cc{min-width:280px;max-width:none;flex:1 1 30%}
 #wb-chains.cc-count-4 .cc{max-width:none;flex:1 1 22%}
 #wb-chains.cc-count-5 .cc{max-width:none;flex:1 1 18%}
-#wb-chains.cc-count-1 .cc-name{font-size:30px}
-#wb-chains.cc-count-2 .cc-name{font-size:26px}
-#wb-chains.cc-count-1 .cc-visual-banner{height:150px}
-#wb-chains.cc-count-1 .cc-avatar{font-size:56px}
-#wb-chains.cc-count-2 .cc-visual-banner{height:130px}
-#wb-chains.cc-count-2 .cc-avatar{font-size:46px}
+#wb-chains.cc-count-1 .cc-name{font-size:40px}
+#wb-chains.cc-count-2 .cc-name{font-size:34px}
+#wb-chains.cc-count-1 .cc-visual-banner{height:190px}
+#wb-chains.cc-count-1 .cc-avatar{font-size:72px}
+#wb-chains.cc-count-2 .cc-visual-banner{height:165px}
+#wb-chains.cc-count-2 .cc-avatar{font-size:58px}
 
 /* ═══ Colour-matched artwork glow ═══ */
 .cc[data-glow]{transition:border-color .8s ease,box-shadow .8s ease}
