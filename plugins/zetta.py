@@ -2081,33 +2081,33 @@ def register(app, ctx):
     @csrf_protect
     def zetta_discover_stations():
         from flask import request, jsonify
-        data      = request.get_json(silent=True) or {}
-        url       = str(data.get("url",       "")).strip()
-        poll_site = str(data.get("poll_site", "")).strip()
-        if not url:
-            return jsonify({"ok": False, "error": "No URL provided", "stations": []})
-
-        if poll_site:
-            # Hub can't reach Zetta directly — queue a discover command for the
-            # client site and wait for it to push results back.
-            evt = threading.Event()
-            with _discover_lock:
-                _discover_pending[poll_site] = {
-                    "url": url, "evt": evt, "result": None, "ts": time.time()
-                }
-            got = evt.wait(timeout=35)
-            with _discover_lock:
-                entry  = _discover_pending.pop(poll_site, {})
-                result = entry.get("result")
-            if not got or result is None:
-                return jsonify({"ok": False,
-                                "error": f"Site '{poll_site}' did not respond in time — "
-                                         "is it online and connected to the hub?",
-                                "stations": []})
-            return jsonify(result)
-
-        # Hub-direct: use raw SOAP (no zeep required)
         try:
+            data      = request.get_json(silent=True) or {}
+            url       = str(data.get("url",       "")).strip()
+            poll_site = str(data.get("poll_site", "")).strip()
+            if not url:
+                return jsonify({"ok": False, "error": "No URL provided", "stations": []})
+
+            if poll_site:
+                # Hub can't reach Zetta directly — queue a discover command for the
+                # client site and wait for it to push results back.
+                evt = threading.Event()
+                with _discover_lock:
+                    _discover_pending[poll_site] = {
+                        "url": url, "evt": evt, "result": None, "ts": time.time()
+                    }
+                got = evt.wait(timeout=25)
+                with _discover_lock:
+                    entry  = _discover_pending.pop(poll_site, {})
+                    result = entry.get("result")
+                if not got or result is None:
+                    return jsonify({"ok": False,
+                                    "error": f"Site '{poll_site}' did not respond in time — "
+                                             "is it online and connected to the hub?",
+                                    "stations": []})
+                return jsonify(result)
+
+            # Hub-direct: use raw SOAP (no zeep required)
             stations = _sf_get_stations(url, timeout=10)
             if not stations:
                 return jsonify({"ok": False,
@@ -2115,6 +2115,7 @@ def register(app, ctx):
                                 "stations": []})
             return jsonify({"ok": True, "stations": stations})
         except Exception as e:
+            _log.exception("[Zetta] discover_stations error")
             return jsonify({"ok": False, "error": str(e), "stations": []})
 
     # ── Discover result (client pushes GetStations results back to hub) ────────
