@@ -18,6 +18,13 @@ The Livewire plugin now reads the audio interface IP directly from **Settings �
 
 ---
 
+## zetta v2.1.19 — 2026-04-18
+
+**is_spot uses asset type only — category string matching removed**
+- The category fallback introduced in v2.1.18 still risked false positives (e.g. a non-spot item whose category happened to contain a configured spot keyword). `is_spot` is now set solely from `AssetType == 2` (Zetta's own `ASSET_SPOT` integer code) in both the raw-XML and zeep parsers. This is the same signal the Studio Board already uses in its AD badge logic. Category string matching is gone entirely.
+
+---
+
 ## SignalScope-3.5.156 — 2026-04-18
 
 ### Added — Livewire plugin v1.0.0 + source picker in Add/Edit Input form
@@ -34,6 +41,21 @@ New **Livewire** plugin (`plugins/livewire.py`) for Axia Livewire source discove
 - Sources grouped by node in `<optgroup>` labels; stale sources shown in amber with ⚠.
 - Selecting a source fills Stream ID, pre-fills Name (if empty), and ticks stereo on.
 - The picker is server-side gated (`{% if livewire_available %}`) — it is never rendered if the plugin is not loaded.
+
+---
+
+### zetta v2.1.18 — 2026-04-18
+
+**Faster polling — default interval reduced from 10 s to 3 s**
+- The Zetta SOAP poller previously defaulted to 10-second intervals. Combined with the 10-second chain evaluation cycle, worst-case latency from an ad break starting to the chain receiving the suppression signal was ~20 s — long enough for a false fault alert to fire if the confirmation delay was short.
+- Default poll interval is now **3 s**. Worst-case is now ~13 s and average is under 10 s.
+- Minimum configurable interval lowered from 5 s to 3 s (UI input now enforces `min=3`).
+- **Existing installs**: if `poll_interval` is stored as 10 in your config, lower it to 3 in **Settings → Zetta → Edit instance** and save.
+
+**is_spot now uses Zetta asset type as primary check**
+- Previously spot detection relied entirely on category string matching (`spot_categories` list). If a track's category field was blank or used unexpected naming, `is_spot` was always `False` — the chain never received the ad-break suppression signal even during a real commercial break.
+- Both parsers (`_parse_station_full` raw XML and `_parse_station_full_zeep`) now set `is_spot = True` whenever `AssetType == 2` (Zetta's own `ASSET_SPOT` integer code), regardless of category. Category matching is still applied as a secondary belt-and-braces check.
+- This means ad-break chain suppression works correctly even with an empty or unconfigured `spot_categories` list, and is immune to category naming variations across Zetta installations.
 
 ---
 

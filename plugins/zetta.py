@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.17",
+    "version":  "2.1.19",
 }
 
 import json
@@ -579,7 +579,10 @@ def _parse_station_full(root: ET.Element, station_id: str, spot_cats: list) -> d
         if len(display) > 45:
             display = display[:42] + "…"
 
-        is_spot = (bool(raw_cat) and any(sc in raw_cat for sc in sc_upper)) if sc_upper else False
+        # Use Zetta's own integer asset type — ASSET_SPOT = 2 — as the sole is_spot signal.
+        # Category string matching was removed: it produced false positives when
+        # categories were empty or named differently across installations.
+        is_spot = (asset_t == ASSET_SPOT)
 
         parsed = {
             "title":            display,
@@ -681,7 +684,10 @@ def _parse_station_full_zeep(result, station_id: str, friendly_name: str, spot_c
         if len(display) > 45:
             display = display[:42] + "…"
 
-        is_spot = (bool(raw_cat) and any(sc in raw_cat for sc in sc_upper)) if sc_upper else False
+        # Use Zetta's own integer asset type — ASSET_SPOT = 2 — as the sole is_spot signal.
+        # Category string matching was removed: it produced false positives when
+        # categories were empty or named differently across installations.
+        is_spot = (asset_t == ASSET_SPOT)
 
         parsed = {
             "title": display, "raw_title": title, "raw_artist": artist,
@@ -871,7 +877,7 @@ class _InstancePoller:
                 self.log(f"[Zetta] '{self.iid}' loop error: {e}")
                 self._client = None
             with _cfg_lock:
-                interval = int(self.cfg.get("poll_interval", 10) or 10)
+                interval = int(self.cfg.get("poll_interval", 3) or 3)
             for _ in range(max(1, interval)):
                 if not self.running: return
                 time.sleep(1)
@@ -894,7 +900,7 @@ def _load_cfg() -> dict:
                 "url":             raw.get("url", ""),
                 "status_feed_url": raw.get("status_feed_url", ""),
                 "stations":        raw.get("stations", []),
-                "poll_interval":   raw.get("poll_interval", 10),
+                "poll_interval":   raw.get("poll_interval", 3),
                 "timeout":         raw.get("timeout", 6),
                 "spot_categories": raw.get("spot_categories", DEFAULT_SPOT_CATS),
                 "chain_id":        "",
@@ -1699,7 +1705,7 @@ def _inst_accordion_html(instances: list, signal_chains: list, sites: list = Non
       <div class="f"><label>Status Feed URL</label><input class="if-sfurl" id="if-sfurl-{_e(iid)}" value="{_e(inst.get("status_feed_url",""))}"></div>
     </div>
     <div class="row" style="margin-top:8px">
-      <div class="f" style="max-width:130px"><label>Poll interval (s)</label><input type="number" class="if-interval" value="{_e(inst.get("poll_interval",10))}"></div>
+      <div class="f" style="max-width:130px"><label>Poll interval (s)</label><input type="number" class="if-interval" min="3" max="120" value="{_e(inst.get("poll_interval",3))}"></div>
       <div class="f" style="max-width:120px"><label>Timeout (s)</label><input type="number" class="if-timeout" value="{_e(inst.get("timeout",6))}"></div>
       <div class="f"><label title="Which SignalScope site makes SOAP calls to Zetta. Use this when the hub cannot reach the Zetta server directly (e.g. hub is in a data centre, Zetta is on the broadcast LAN).">Polling site</label>
         <select class="if-pollsite">{_site_opts_for(inst.get("poll_site",""))}</select>
@@ -1893,8 +1899,8 @@ def register(app, ctx):
             "id":               iid,
             "name":             name,
             "status_feed_url":  sf_url,
-            "poll_interval":    max(5, min(120, int(data.get("interval", 10) or 10))),
-            "timeout":          max(2, min(30,  int(data.get("timeout",  6)  or 6))),
+            "poll_interval":    max(3, min(120, int(data.get("interval", 3) or 3))),
+            "timeout":          max(2, min(30,  int(data.get("timeout",  6) or 6))),
             "spot_categories":  [c.strip().upper() for c in raw_s if c.strip()] or DEFAULT_SPOT_CATS,
             "poll_site":        str(data.get("poll_site", "")).strip(),
             "stations": [
@@ -1928,7 +1934,7 @@ def register(app, ctx):
         inst.update({
             "name":             str(data.get("name",    inst["name"])).strip(),
             "status_feed_url":  str(data.get("sf_url",  inst.get("status_feed_url",""))).strip(),
-            "poll_interval":    max(5,  min(120, int(data.get("interval", inst.get("poll_interval",10)) or 10))),
+            "poll_interval":    max(3,  min(120, int(data.get("interval", inst.get("poll_interval",3)) or 3))),
             "timeout":          max(2,  min(30,  int(data.get("timeout",  inst.get("timeout", 6))    or 6))),
             "spot_categories":  [c.strip().upper() for c in raw_s if c.strip()] or DEFAULT_SPOT_CATS,
             "poll_site":        str(data.get("poll_site", inst.get("poll_site", ""))).strip(),
@@ -1978,7 +1984,7 @@ def register(app, ctx):
                     "stations":        inst.get("stations", []),
                     "spot_categories": inst.get("spot_categories", DEFAULT_SPOT_CATS),
                     "timeout":         inst.get("timeout", 6),
-                    "poll_interval":   inst.get("poll_interval", 10),
+                    "poll_interval":   inst.get("poll_interval", 3),
                 })
         # Include any pending discovery command for this site
         discover_cmd = None
@@ -2255,7 +2261,7 @@ def register(app, ctx):
                             _log.warning("[Zetta client] batch push failed: %s", _upe)
 
                     # Respect poll interval from first instance
-                    _sleep = int((_instances[0].get("poll_interval") or 10))
+                    _sleep = int((_instances[0].get("poll_interval") or 3))
                     for _ in range(max(1, _sleep)):
                         time.sleep(1)
                 except Exception as _le:
