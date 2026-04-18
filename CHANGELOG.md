@@ -2,6 +2,25 @@
 
 ---
 
+## Studio Board v3.8.0 — 2026-04-18
+
+### Added — Zetta automation queue display (studioboard v3.8.0)
+
+Each studio on the TV display can now show a live queue strip from the Zetta automation system, pulling data from the Zetta plugin already running on the hub.
+
+**Admin page**: A new "Zetta Station (queue display)" dropdown appears per studio, populated from all Zetta instances and stations. Select the station that corresponds to the studio's on-air chain and save.
+
+**TV display**: When a Zetta station is linked, a queue panel is pinned at the bottom of the studio's column:
+- **Normal play**: now-playing title with a smooth real-time progress bar (updated every 500 ms between 5 s Zetta polls)
+- **Ad break**: amber "⏸ AD BREAK" banner with the ETM (Estimated Time of Music) from Zetta
+- **Queue rows**: up to 3 upcoming items showing title and duration, with "NEXT" label on the first. Ad/spot items shown in amber italic.
+
+Progress bar stays smooth between polls by tracking elapsed time since the last fetch and counting down `remaining_seconds` client-side.
+
+**Rule**: `zetta_station_key` is stored as `"instanceId:stationId"` (colon-separated). The TV JS polls `/api/zetta/status_full` every 5 s and builds `_ZD[key]` from it. Never change the key format without updating both the admin select-builder and the TV JS lookup.
+
+---
+
 ## SignalScope-3.5.145 — 2026-04-18
 
 ### Fixed — Alert Timing fields mislabelled; "Min silence before alert" was ad break window (3.5.145)

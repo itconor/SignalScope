@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.7.2",
+    "version":  "3.8.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -211,7 +211,7 @@ def register(app, ctx):
         if not studio:
             return jsonify({"error": "Studio not found"}), 404
         for key in ("name", "color", "chains", "inputs", "np_rpuid",
-                    "freq", "show_artwork"):
+                    "freq", "show_artwork", "zetta_station_key"):
             if key in data:
                 studio[key] = data[key]
         _cfg_save(cfg)
@@ -534,6 +534,7 @@ def register(app, ctx):
                 "np_rpuid": studio.get("np_rpuid", ""),
                 "show_artwork_map": studio.get("show_artwork", {}),
                 "seen_shows": studio.get("seen_shows", []),
+                "zetta_station_key": studio.get("zetta_station_key", ""),
             })
 
         return jsonify({"studios": studios_out})
@@ -606,7 +607,7 @@ select[multiple]{min-height:100px}
 <script nonce="{{csp_nonce()}}">
 (function(){
 'use strict';
-var _studios=[], _chains=[], _inputs=[], _npStations=[];
+var _studios=[], _chains=[], _inputs=[], _npStations=[], _zStations=[];
 function _e(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||''}
 function _post(url,data){return fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},body:JSON.stringify(data)})}
@@ -616,11 +617,19 @@ function loadAll(){
   Promise.all([
     fetch('/api/studioboard/config',{credentials:'same-origin'}).then(function(r){return r.json()}),
     fetch('/api/studioboard/stations',{credentials:'same-origin'}).then(function(r){return r.json()}),
-    fetch('/api/nowplaying_stations',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():[]}).catch(function(){return[]})
+    fetch('/api/nowplaying_stations',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():[]}).catch(function(){return[]}),
+    fetch('/api/zetta/status_full',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():{}}).catch(function(){return{}})
   ]).then(function(res){
     _studios=(res[0].studios||[]);
     _chains=res[1].chains||[];_inputs=res[1].inputs||[];
     _npStations=res[2]||[];
+    // Build flat Zetta station list from status_full
+    _zStations=[];
+    ((res[3]||{}).instances||[]).forEach(function(inst){
+      Object.keys(inst.stations||{}).forEach(function(sid){
+        _zStations.push({key:inst.id+':'+sid,label:(inst.name||inst.id)+' / '+(inst.stations[sid].station_name||sid)});
+      });
+    });
     render();
   });
 }
@@ -670,6 +679,17 @@ function render(){
       var sel=(st.np_rpuid===s.rpuid)?' selected':'';
       html+='<option value="'+_e(s.rpuid)+'"'+sel+'>'+_e(s.name)+'</option>';
     });
+    html+='</select></div>';
+
+    // Zetta station
+    html+='<div class="field"><label>Zetta Station (queue display)</label>';
+    html+='<select data-zetta="'+_e(st.id)+'">';
+    html+='<option value="">— None —</option>';
+    _zStations.forEach(function(z){
+      var sel=(st.zetta_station_key===z.key)?' selected':'';
+      html+='<option value="'+_e(z.key)+'"'+sel+'>'+_e(z.label)+'</option>';
+    });
+    if(!_zStations.length)html+='<option disabled>Zetta plugin not active</option>';
     html+='</select></div>';
 
     // Show artwork
@@ -742,6 +762,7 @@ function saveFullStudio(sid){
   var chainsSel=card.querySelector('[data-chains]');if(chainsSel)data.chains=Array.from(chainsSel.selectedOptions).map(function(o){return o.value});
   var inputsSel=card.querySelector('[data-inputs]');if(inputsSel)data.inputs=Array.from(inputsSel.selectedOptions).map(function(o){return o.value});
   var npSel=card.querySelector('[data-np]');if(npSel)data.np_rpuid=npSel.value;
+  var zettaSel=card.querySelector('[data-zetta]');if(zettaSel)data.zetta_station_key=zettaSel.value;
   _post('/api/studioboard/studio/'+encodeURIComponent(sid),data).then(function(){
     var msg=document.querySelector('[data-save-msg="'+sid+'"]');
     if(msg){msg.style.display='inline';setTimeout(function(){msg.style.display='none'},2000)}
@@ -885,6 +906,24 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .vl{font-size:10px;font-weight:700;color:var(--mu);text-align:center;white-space:nowrap}
 .vs{display:flex;gap:2px;flex:1;width:100%;height:100%}
 .vs .vb{flex:1}
+/* Zetta queue panel — pinned at bottom of main panel */
+.zq{width:92%;margin-top:auto;padding-top:7px;flex-shrink:0;border-top:1px solid rgba(255,255,255,.1)}
+.zq-spot{text-align:center;font-size:13px;font-weight:800;letter-spacing:.12em;color:#f59e0b;
+  background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:8px;
+  padding:5px 10px;margin-bottom:4px}
+.zq-np{margin-bottom:4px}
+.zq-np-title{font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;margin-bottom:3px;text-align:center;opacity:.9}
+.zq-prog-wrap{height:3px;background:rgba(255,255,255,.1);border-radius:2px;overflow:hidden}
+.zq-prog-fill{height:100%;background:rgba(255,255,255,.5);border-radius:2px;transition:width .5s linear}
+.zq-row{display:flex;align-items:center;gap:5px;padding:3px 0;
+  border-top:1px solid rgba(255,255,255,.05)}
+.zq-next{font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:.05em;
+  flex-shrink:0;min-width:28px}
+.zq-row-title{flex:1;font-size:11px;color:rgba(255,255,255,.55);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.zq-row-spot .zq-row-title{color:rgba(245,158,11,.7);font-style:italic}
+.zq-row-dur{font-size:10px;color:var(--mu);flex-shrink:0}
 /* Free / available studio */
 .free-band{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;text-align:center}
 .free-icon{font-size:80px;opacity:.35;line-height:1}
@@ -903,7 +942,7 @@ function tk(u){if(!T)return u;return u+(u.indexOf('?')>=0?'&':'?')+'token='+enco
 function E(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function RGB(h){h=h.replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];var n=parseInt(h,16);return((n>>16)&255)+','+((n>>8)&255)+','+(n&255)}
 
-var DB=-80,D=null,NP={},SS={},LL={},_built=false,_idleC={},_artSrc={},_lastSig='';
+var DB=-80,D=null,NP={},SS={},LL={},_ZD={},_ZT=0,_built=false,_idleC={},_artSrc={},_lastSig='';
 /* Smooth meter state */
 var _targetLev={},_curLev={},_peakHold={},_peakTs={},_lastRaf=0;
 var ATTACK_TC=0.05,DECAY_TC=0.7,PEAK_HOLD_MS=2500;
@@ -920,7 +959,7 @@ var IDLE=["Probably on an ad break...","Presenter's talking too much!",
 function gNp(s){var r=s.np_rpuid||'';return r?(NP[r]||{}):{}}
 
 /* Track structural changes (chain/input assignment) so DOM rebuilds when needed */
-function _sig(ss){return ss.map(function(s){return s.id+':'+(s.chains||[]).join(',')+'/'+(s.inputs||[]).join(',')}).join('|')}
+function _sig(ss){return ss.map(function(s){return s.id+':'+(s.chains||[]).join(',')+'/'+(s.inputs||[]).join(',')+'/'+(s.zetta_station_key||'')}).join('|')}
 
 /* Build the DOM once, then update in place — no flicker */
 function buildCol(s,idx){
@@ -961,6 +1000,7 @@ function buildCol(s,idx){
       +'<div class=anm id="anm'+idx+'"></div>'
       +'<div class=trk id="trk'+idx+'"></div>'
       +'<div class=idle id="idl'+idx+'"></div>'
+      +'<div class=zq id="zq'+idx+'"></div>'
       +'</div>');
   return '<div class=col id="col'+idx+'" style="--cc:rgba('+r+',.6);--cg:rgba('+r+',.12);background:'+colBg+';border-color:rgba('+r+',.22)">'
     +mainContent
@@ -1032,6 +1072,34 @@ function updateCol(s,idx){
       if(!_idleC[s.id])_idleC[s.id]=IDLE[Math.floor(Math.random()*IDLE.length)];
       if(idl.textContent!==_idleC[s.id])idl.textContent=_idleC[s.id];
     }else if(idl)idl.textContent='';
+  }
+  // Zetta queue panel
+  var zEl=document.getElementById('zq'+idx);
+  if(zEl&&s.zetta_station_key){
+    var zd=_ZD[s.zetta_station_key]||null;
+    var zh='';
+    if(zd){
+      if(zd.is_spot){
+        zh='<div class="zq-spot">⏸ AD BREAK — '+E(zd.etm||'')+'</div>';
+      }else if(zd.now_playing){
+        var _elapX=_ZT?(Date.now()-_ZT)/1000:0;
+        var _rem=Math.max(0,(zd.remaining_seconds||0)-_elapX);
+        var _dur=zd.duration_seconds||0;
+        var _pct=_dur>0?Math.min(100,Math.round((1-_rem/_dur)*100)):0;
+        zh='<div class="zq-np">'
+          +'<div class="zq-np-title">'+E(zd.now_playing.title)+'</div>'
+          +'<div class="zq-prog-wrap"><div class="zq-prog-fill" id="zqpf'+idx+'" style="width:'+_pct+'%"></div></div>'
+          +'</div>';
+      }
+      (zd.queue||[]).slice(0,3).forEach(function(q,qi){
+        zh+='<div class="zq-row'+(q.is_spot?' zq-row-spot':'')+'">'
+           +'<span class="zq-next">'+(qi===0?'NEXT':'')+'</span>'
+           +'<span class="zq-row-title">'+E(q.title)+'</span>'
+           +'<span class="zq-row-dur">'+E(q.duration)+'</span>'
+           +'</div>';
+      });
+    }
+    if(zEl.innerHTML!==zh)zEl.innerHTML=zh;
   }
 }
 
@@ -1125,7 +1193,35 @@ function showImgPoll(){
       render();
     }).catch(function(){});
 }
-poll();npPoll();live();showImgPoll();
-setInterval(poll,1500);setInterval(live,150);setInterval(npPoll,10000);setInterval(showImgPoll,30000);
+function pollZetta(){
+  fetch(tk('/api/zetta/status_full'),{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():{}})
+    .then(function(d){
+      _ZT=Date.now();_ZD={};
+      (d.instances||[]).forEach(function(inst){
+        Object.keys(inst.stations||{}).forEach(function(sid){
+          _ZD[inst.id+':'+sid]=inst.stations[sid];
+        });
+      });
+      render();
+    }).catch(function(){});
+}
+/* Smooth progress bar between Zetta polls */
+setInterval(function(){
+  if(!D||!_ZT)return;
+  (D.studios||[]).forEach(function(s,i){
+    if(!s.zetta_station_key)return;
+    var zd=_ZD[s.zetta_station_key];
+    if(!zd||zd.is_spot||!zd.now_playing)return;
+    var el=document.getElementById('zqpf'+i);if(!el)return;
+    var ex=(Date.now()-_ZT)/1000;
+    var rem=Math.max(0,(zd.remaining_seconds||0)-ex);
+    var dur=zd.duration_seconds||0;
+    var pct=dur>0?Math.min(100,Math.round((1-rem/dur)*100)):0;
+    el.style.width=pct+'%';
+  });
+},500);
+poll();npPoll();live();showImgPoll();pollZetta();
+setInterval(poll,1500);setInterval(live,150);setInterval(npPoll,10000);setInterval(showImgPoll,30000);setInterval(pollZetta,5000);
 })();
 </script></body></html>"""
