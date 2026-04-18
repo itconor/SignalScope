@@ -8822,6 +8822,11 @@ class MonitorManager:
         # sequencer-stopped labelling.  Zetta plugin replaces this dict reference
         # via monitor._zetta_chain_state = _chain_zetta_state at load time.
         self._zetta_chain_state: dict = {}
+        # "iid:sid" → full station Zetta state dict.  Populated by the Zetta
+        # plugin so the studioboard data endpoint can bundle it into /api/studioboard/data
+        # (which is in the kiosk-auth prefix) rather than requiring a separate
+        # /api/zetta/ call (which is NOT in the kiosk prefix).
+        self._zetta_station_state: dict = {}
 
     def register_plugin_cmd_handler(self, cmd_type: str, handler) -> None:
         """Register a handler for a plugin-specific heartbeat command type."""

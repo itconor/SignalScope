@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.9.0",
+    "version":  "3.10.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -523,6 +523,11 @@ def register(app, ctx):
                     **lev,
                 })
 
+            _zskey = studio.get("zetta_station_key", "")
+            _zetta_data = (
+                getattr(monitor, "_zetta_station_state", {}).get(_zskey)
+                if _zskey else None
+            )
             studios_out.append({
                 "id": sid,
                 "name": studio.get("name", ""),
@@ -534,7 +539,8 @@ def register(app, ctx):
                 "np_rpuid": studio.get("np_rpuid", ""),
                 "show_artwork_map": studio.get("show_artwork", {}),
                 "seen_shows": studio.get("seen_shows", []),
-                "zetta_station_key": studio.get("zetta_station_key", ""),
+                "zetta_station_key": _zskey,
+                "zetta": _zetta_data,
             })
 
         return jsonify({"studios": studios_out})
@@ -986,7 +992,7 @@ function tk(u){if(!T)return u;return u+(u.indexOf('?')>=0?'&':'?')+'token='+enco
 function E(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function RGB(h){h=h.replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];var n=parseInt(h,16);return((n>>16)&255)+','+((n>>8)&255)+','+(n&255)}
 
-var DB=-80,D=null,NP={},SS={},LL={},_ZD={},_ZT=0,_built=false,_idleC={},_artSrc={},_lastSig='';
+var DB=-80,D=null,NP={},SS={},LL={},_built=false,_idleC={},_artSrc={},_lastSig='';
 /* Smooth meter state */
 var _targetLev={},_curLev={},_peakHold={},_peakTs={},_lastRaf=0;
 var ATTACK_TC=0.05,DECAY_TC=0.7,PEAK_HOLD_MS=2500;
@@ -1127,7 +1133,7 @@ function updateCol(s,idx){
   // Zetta main panel — full sequencer now-playing section
   var zEl=document.getElementById('zq'+idx);
   if(zEl&&s.zetta_station_key){
-    var zd=_ZD[s.zetta_station_key]||null;
+    var zd=(s.zetta_station_key&&s.zetta)?s.zetta:null;
     var zh='';
     if(!zd){
       zh='<div class="zm-wait">Waiting for Zetta data\u2026</div>';
@@ -1185,7 +1191,7 @@ function updateCol(s,idx){
     if(zEl.innerHTML!==zh)zEl.innerHTML=zh;
     /* Immediately paint the progress / countdown after any DOM rebuild */
     if(zd&&zd.now_playing&&!zd.is_spot){
-      var _ex2=_ZT?(Date.now()-_ZT)/1000:0;
+      var _ex2=zd.ts?Math.max(0,Date.now()/1000-zd.ts):0;
       var _rem2=Math.max(0,(zd.remaining_seconds||0)-_ex2);
       var _dur2=zd.duration_seconds||0;
       var _pct2=_dur2>0?Math.min(100,(1-_rem2/_dur2)*100):0;
@@ -1288,27 +1294,16 @@ function showImgPoll(){
       render();
     }).catch(function(){});
 }
-function pollZetta(){
-  fetch(tk('/api/zetta/status_full'),{credentials:'same-origin'})
-    .then(function(r){return r.ok?r.json():{}})
-    .then(function(d){
-      _ZT=Date.now();_ZD={};
-      (d.instances||[]).forEach(function(inst){
-        Object.keys(inst.stations||{}).forEach(function(sid){
-          _ZD[inst.id+':'+sid]=inst.stations[sid];
-        });
-      });
-      render();
-    }).catch(function(){});
-}
-/* Smooth progress bar + countdown timer between Zetta polls (500 ms) */
+/* Smooth progress bar + countdown timer between data polls (500 ms).
+   Zetta data now arrives bundled in /api/studioboard/data (poll()), so
+   pollZetta() is gone — we just extrapolate elapsed time from zd.ts. */
 setInterval(function(){
-  if(!D||!_ZT)return;
+  if(!D)return;
   (D.studios||[]).forEach(function(s,i){
     if(!s.zetta_station_key)return;
-    var zd=_ZD[s.zetta_station_key];
-    if(!zd||zd.is_spot||!zd.now_playing)return;
-    var ex=(Date.now()-_ZT)/1000;
+    var zd=s.zetta;
+    if(!zd||zd.is_spot||!zd.now_playing||!zd.ts)return;
+    var ex=Math.max(0,Date.now()/1000-zd.ts);
     var rem=Math.max(0,(zd.remaining_seconds||0)-ex);
     var dur=zd.duration_seconds||0;
     var pct=dur>0?(1-rem/dur)*100:0;
@@ -1318,7 +1313,7 @@ setInterval(function(){
     if(tmEl){var rs=Math.round(rem);tmEl.textContent='-'+Math.floor(rs/60)+':'+(rs%60<10?'0':'')+rs%60;}
   });
 },500);
-poll();npPoll();live();showImgPoll();pollZetta();
-setInterval(poll,1500);setInterval(live,150);setInterval(npPoll,10000);setInterval(showImgPoll,30000);setInterval(pollZetta,5000);
+poll();npPoll();live();showImgPoll();
+setInterval(poll,1500);setInterval(live,150);setInterval(npPoll,10000);setInterval(showImgPoll,30000);
 })();
 </script></body></html>"""

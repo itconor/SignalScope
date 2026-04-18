@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.12",
+    "version":  "2.1.13",
 }
 
 import json
@@ -193,40 +193,55 @@ _zeep_clients_cache: Dict[str, Any] = {}
 # Read by signalscope.py _chains_monitor_loop via monitor._zetta_chain_state.
 _chain_zetta_state: Dict[str, dict] = {}
 
+# Per-station Zetta state: "iid:sid" → full station data dict.
+# Same key format as studioboard's zetta_station_key — the studioboard data
+# endpoint reads this via monitor._zetta_station_state so the TV page gets
+# Zetta data bundled with studio data (no separate auth-sensitive Zetta fetch).
+_station_zetta_state: Dict[str, dict] = {}
+
 
 def _rebuild_chain_zetta_state() -> None:
-    """Rebuild the per-chain Zetta state consumed by signalscope.py chain fault logic.
+    """Rebuild per-chain and per-station Zetta state dicts.
 
-    Iterates all configured instances and their stations.  For each station that
-    has a ``chain_id`` set, snapshots the current Zetta sequencer state (is_spot,
-    now_playing, mode, …) and writes it into the module-level
-    ``_chain_zetta_state`` dict keyed by chain_id.
+    * ``_chain_zetta_state`` (chain_id keyed): consumed by signalscope.py
+      _chains_monitor_loop for definitive ad-break suppression.
+    * ``_station_zetta_state`` ("iid:sid" keyed): consumed by the studioboard
+      data endpoint to bundle Zetta now-playing data into the studio data
+      response (avoiding a separate, auth-gated API call from the TV page).
 
-    Called after every hub-side poll cycle AND after every client-side push so
-    the chain fault logic always has up-to-date Zetta knowledge.  The function
-    never raises — on any error it leaves the dict unchanged.
+    Called after every hub-side poll and every client-push.  Never raises.
     """
     _now = time.time()
-    _new: Dict[str, dict] = {}
+    _new_chain:   Dict[str, dict] = {}
+    _new_station: Dict[str, dict] = {}
     try:
         _cfg = _load_cfg()
         for _inst in _cfg.get("instances", []):
-            _iid      = _inst.get("id", "")
-            _ps       = (_inst.get("poll_site") or "").strip()
-            # Get current station state: direct pollers for hub-side, remote for client-pushed
+            _iid = _inst.get("id", "")
+            _ps  = (_inst.get("poll_site") or "").strip()
+            # Hub-direct polling or client-pushed remote state
             if _iid in _pollers and not _ps:
                 _sdata: Dict[str, dict] = _pollers[_iid].get_state()
             else:
                 with _remote_state_lock:
                     _sdata = dict(_remote_state.get(_iid, {}))
+
             for _stn in _inst.get("stations", []):
-                _cid = (_stn.get("chain_id") or "").strip()
                 _sid = str(_stn.get("id", "")).strip()
-                if not _cid or not _sid:
+                if not _sid:
                     continue
                 _sd  = _sdata.get(_sid, {})
                 _ts  = float(_sd.get("ts", 0) or 0)
-                # Skip stale data (>60 s) or errored data that is stale (>30 s)
+
+                # ── Station state dict (all stations, for studioboard) ──────
+                _station_key = f"{_iid}:{_sid}"
+                _new_station[_station_key] = _sd   # full dict including ts
+
+                # ── Chain state dict (only stations with chain_id, for chain fault logic) ──
+                _cid = (_stn.get("chain_id") or "").strip()
+                if not _cid:
+                    continue
+                # Skip stale (>60 s) or errored-and-stale (>30 s) data
                 if _now - _ts > 60:
                     continue
                 if _sd.get("error") and _now - _ts > 30:
@@ -235,14 +250,13 @@ def _rebuild_chain_zetta_state() -> None:
                 _np       = _sd.get("now_playing")
                 _mode_int = int(_sd.get("mode") or 0)
                 _status_i = int(_sd.get("status") or 0)
-                # "Stopped" = not in a spot break AND no active track AND sequencer is idle.
-                # MODE_OFF_AIR (4) or ST_QUEUED (1) with no now_playing = automation stopped.
+                # "Stopped" = not in a spot break, no active track, sequencer idle/off-air
                 _is_stopped = (
                     not _is_spot
                     and _np is None
                     and (_mode_int == MODE_OFF_AIR or _status_i == ST_QUEUED)
                 )
-                _new[_cid] = {
+                _new_chain[_cid] = {
                     "is_spot":     _is_spot,
                     "is_stopped":  _is_stopped,
                     "now_playing": _np,
@@ -253,9 +267,11 @@ def _rebuild_chain_zetta_state() -> None:
                     "station_id":  _sid,
                 }
     except Exception:
-        return   # never crash chain fault logic
+        return   # never crash — chain fault logic and studioboard fall back gracefully
     _chain_zetta_state.clear()
-    _chain_zetta_state.update(_new)
+    _chain_zetta_state.update(_new_chain)
+    _station_zetta_state.clear()
+    _station_zetta_state.update(_new_station)
 # Pending discovery requests: site_name → {url, evt, result}
 _discover_pending: Dict[str, dict] = {}
 _discover_lock    = threading.Lock()
@@ -2515,6 +2531,7 @@ def register(app, ctx):
 
     # Expose the chain-Zetta state dict on the monitor so _chains_monitor_loop
     # in signalscope.py can read it directly without importing this plugin module.
-    monitor._zetta_chain_state = _chain_zetta_state
+    monitor._zetta_chain_state   = _chain_zetta_state
+    monitor._zetta_station_state = _station_zetta_state
 
-    monitor.log("[Zetta] Plugin v2.1.12 registered — /hub/zetta")
+    monitor.log("[Zetta] Plugin v2.1.13 registered — /hub/zetta")
