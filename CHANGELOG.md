@@ -21,6 +21,18 @@ Progress bar stays smooth between polls by tracking elapsed time since the last 
 
 ---
 
+## SignalScope-3.5.146 — 2026-04-18
+
+### Fixed — Hub Reports shows CHAIN_FAULT for LEVEL_DRIFT and other non-chain events (3.5.146)
+
+`hub_clip_upload` derived the hub alert type from the clip label using a fragile substring chain that fell through to a hardcoded `"CHAIN_FAULT"` default for anything unrecognised. The label `"level_drift"` matched none of the conditions (`"silence"`, `"clip"`, `"hiss"`, `"rtp_loss"`, `"lufs_*"`, `"ai_"`, `"compare"`, `"glitch"`) so every LEVEL_DRIFT clip arriving at the hub was logged as CHAIN_FAULT. The same bug affected `mains_hum`, `dc_offset`, `phase_reversal`, `overmod`, `mono_on_stereo`, `stereo_imbalance`, `over_compression`, `tone_detect`, `hf_loss`, and `dead_channel`.
+
+Fix: replaced the substring chain with a complete exact-match lookup dict (`_CLIP_LABEL_MAP`) covering all labels used in `_save_alert_wav` calls across the codebase. `ai_*` labels are caught by a `startswith("ai_")` check. `"chain"` in label maps to `CHAIN_FAULT`. Any remaining unknown label derives its type directly from the label string (uppercased) rather than defaulting to CHAIN_FAULT.
+
+**Rule**: Any new `_save_alert_wav(cfg, label, ...)` call site MUST add the label to `_CLIP_LABEL_MAP` in `hub_clip_upload`. Never rely on the fallback for production alert types — the fallback exists only for future unknown labels to produce a meaningful type rather than silently misclassifying as CHAIN_FAULT.
+
+---
+
 ## SignalScope-3.5.145 — 2026-04-18
 
 ### Fixed — Alert Timing fields mislabelled; "Min silence before alert" was ad break window (3.5.145)

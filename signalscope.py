@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.145"
+BUILD                  = "SignalScope-3.5.146"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -26967,28 +26967,44 @@ def hub_clip_upload():
     except Exception:
         return jsonify({"error": "bad base64"}), 400
 
-    # Derive a human-readable alert type from the label
+    # Map the clip label to the correct hub alert type.
+    # Use an exact-match lookup first so that e.g. "level_drift" doesn't
+    # fall through to the old catch-all CHAIN_FAULT default.
     _lbl_lower = label.lower()
-    if "silence" in _lbl_lower:
-        _alert_type = "SILENCE"
-    elif "clip" in _lbl_lower and "chain" not in _lbl_lower:
-        _alert_type = "CLIP_DISTORTION"
-    elif "hiss" in _lbl_lower:
-        _alert_type = "HISS"
-    elif "rtp_loss" in _lbl_lower:
-        _alert_type = "RTP_LOSS"
-    elif "lufs_tp" in _lbl_lower:
-        _alert_type = "LUFS_TP_EXCEEDED"
-    elif "lufs_i" in _lbl_lower:
-        _alert_type = "LUFS_INTEGRATED_EXCEEDED"
-    elif "ai_" in _lbl_lower:
+    _CLIP_LABEL_MAP = {
+        "silence":              "SILENCE",
+        "silence_end":          "SILENCE",
+        "clip":                 "CLIP_DISTORTION",
+        "hiss":                 "HISS",
+        "rtp_loss":             "RTP_LOSS",
+        "rtp_loss_warn":        "RTP_LOSS",
+        "lufs_tp":              "LUFS_TP_EXCEEDED",
+        "lufs_i":               "LUFS_INTEGRATED_EXCEEDED",
+        "glitch":               "GLITCH",
+        "glitch_sustained":     "GLITCH",
+        "compare_post_silent":  "COMPARATOR",
+        "compare_pre_dropout":  "COMPARATOR",
+        "level_drift":          "LEVEL_DRIFT",
+        "mains_hum":            "MAINS_HUM",
+        "dc_offset":            "DC_OFFSET",
+        "phase_reversal":       "PHASE_REVERSAL",
+        "overmod":              "OVERMOD",
+        "mono_on_stereo":       "MONO_ON_STEREO",
+        "stereo_imbalance":     "STEREO_IMBALANCE",
+        "over_compression":     "OVER_COMPRESSION",
+        "tone_detect":          "TONE_DETECT",
+        "hf_loss":              "HF_LOSS",
+        "dead_channel":         "DEAD_CHANNEL",
+    }
+    if _lbl_lower in _CLIP_LABEL_MAP:
+        _alert_type = _CLIP_LABEL_MAP[_lbl_lower]
+    elif _lbl_lower.startswith("ai_"):
         _alert_type = "AI_ANOMALY"
-    elif "compare" in _lbl_lower:
-        _alert_type = "COMPARATOR"
-    elif "glitch" in _lbl_lower:
-        _alert_type = "GLITCH"
-    else:
+    elif "chain" in _lbl_lower:
         _alert_type = "CHAIN_FAULT"
+    else:
+        # Derive from the label rather than wrongly calling it CHAIN_FAULT
+        _alert_type = _lbl_lower.replace(" ", "_").upper()
 
     # Save under alert_snippets/<site>_<stream>/ on the hub.
     # Use the sender's timestamp so the filename is stable across retries.
