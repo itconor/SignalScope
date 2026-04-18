@@ -2,6 +2,14 @@
 
 ---
 
+## livewire v1.0.1 — 2026-04-18
+
+### Fixed — LWAP multicast join on wrong NIC
+
+The Livewire plugin now reads the audio interface IP directly from **Settings → Hub & Network → Audio interface IP** (the system-wide `network.audio_interface_ip` setting) instead of maintaining its own separate field in plugin config. Previously the plugin defaulted to `0.0.0.0`, which caused `IP_ADD_MEMBERSHIP` to join the `239.192.255.3` LWAP multicast group on the default-route NIC rather than the Livewire audio NIC — resulting in no LWAP packets being received even when Livewire RTP streams were flowing normally. The interface is now shown read-only in the plugin config page with a link to Settings.
+
+---
+
 ## SignalScope-3.5.156 — 2026-04-18
 
 ### Added — Livewire plugin v1.0.0 + source picker in Add/Edit Input form

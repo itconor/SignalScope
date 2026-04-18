@@ -343,17 +343,19 @@ _HUB_TPL = r"""<!doctype html>
   <div class="card">
     <div class="ch">⚙ Configuration</div>
     <div class="cb">
-      <div class="row2">
-        <div class="field">
-          <label>Audio interface IP (for multicast reception)</label>
-          <input type="text" id="cfg-iface" placeholder="0.0.0.0" value="{{iface_ip}}">
+      <div class="field" style="margin-bottom:14px">
+        <label>Audio interface (multicast reception)</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <code style="font-size:13px;color:var(--tx)">{{iface_ip}}</code>
+          <a href="/settings#network" class="btn bg bs">Change in Settings ↗</a>
         </div>
-        <div class="field">
-          <label>Source stale timeout (seconds)</label>
-          <input type="number" id="cfg-timeout" min="30" max="3600" value="{{timeout}}">
-        </div>
+        <p style="font-size:11px;color:var(--mu);margin-top:4px">Set under Settings → Hub &amp; Network → Audio interface IP. A restart is required after changing it.</p>
       </div>
-      <button class="btn bp bs" id="cfg-save-btn">Save config</button>
+      <div class="field">
+        <label>Source stale timeout (seconds)</label>
+        <input type="number" id="cfg-timeout" min="30" max="3600" value="{{timeout}}" style="max-width:160px">
+      </div>
+      <button class="btn bp bs" id="cfg-save-btn">Save</button>
     </div>
   </div>
 </main>
@@ -449,10 +451,7 @@ document.getElementById('cfg-save-btn').addEventListener('click',function(){
   var csrf=_getCsrf();
   fetch('/api/livewire/config',{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRFToken':csrf},
-    body:JSON.stringify({
-      audio_iface:document.getElementById('cfg-iface').value.trim()||'0.0.0.0',
-      source_timeout:parseInt(document.getElementById('cfg-timeout').value)||300
-    })
+    body:JSON.stringify({source_timeout:parseInt(document.getElementById('cfg-timeout').value)||300})
   }).then(function(r){return r.json();})
   .then(function(d){_showMsg(d.ok?'Config saved.':'Error: '+(d.error||'?'),!d.ok);});
 });
@@ -489,17 +488,19 @@ _CLIENT_TPL = r"""<!doctype html>
   <div class="card">
     <div class="ch">⚙ Configuration</div>
     <div class="cb">
-      <div class="row2">
-        <div class="field">
-          <label>Audio interface IP (for multicast reception)</label>
-          <input type="text" id="cfg-iface" placeholder="0.0.0.0" value="{{iface_ip}}">
+      <div class="field" style="margin-bottom:14px">
+        <label>Audio interface (multicast reception)</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <code style="font-size:13px;color:var(--tx)">{{iface_ip}}</code>
+          <a href="/settings#network" class="btn bg bs">Change in Settings ↗</a>
         </div>
-        <div class="field">
-          <label>Source stale timeout (seconds)</label>
-          <input type="number" id="cfg-timeout" min="30" max="3600" value="{{timeout}}">
-        </div>
+        <p style="font-size:11px;color:var(--mu);margin-top:4px">Set under Settings → Hub &amp; Network → Audio interface IP. A restart is required after changing it.</p>
       </div>
-      <button class="btn bp bs" id="cfg-save-btn">Save config</button>
+      <div class="field">
+        <label>Source stale timeout (seconds)</label>
+        <input type="number" id="cfg-timeout" min="30" max="3600" value="{{timeout}}" style="max-width:160px">
+      </div>
+      <button class="btn bp bs" id="cfg-save-btn">Save</button>
     </div>
   </div>
 </main>
@@ -605,10 +606,12 @@ def register(app, ctx):
     is_hub    = mode in ("hub", "both")
     is_client = mode == "client" and bool(hub_url)
 
-    # Load plugin config
-    pcfg     = _load_cfg()
-    iface_ip = pcfg.get("audio_iface",     "0.0.0.0")
-    timeout  = int(pcfg.get("source_timeout", _DEF_TIMEOUT))
+    # Always use the system audio interface (Settings → Hub & Network → Audio interface IP).
+    # This ensures the multicast group is joined on the correct Livewire NIC.
+    iface_ip = (getattr(getattr(cfg_ss, "network", None), "audio_interface_ip", "") or "0.0.0.0")
+
+    pcfg    = _load_cfg()
+    timeout = int(pcfg.get("source_timeout", _DEF_TIMEOUT))
 
     # Load persisted hub data if we're holding it
     if is_hub:
@@ -664,7 +667,7 @@ def register(app, ctx):
         return render_template_string(
             _CLIENT_TPL,
             site_name=site_name,
-            iface_ip=pcfg2.get("audio_iface", "0.0.0.0"),
+            iface_ip=iface_ip,
             timeout=int(pcfg2.get("source_timeout", _DEF_TIMEOUT)),
             _LWAP_GROUP=_LWAP_GROUP,
             _LWAP_PORT=_LWAP_PORT,
@@ -677,7 +680,7 @@ def register(app, ctx):
         pcfg2 = _load_cfg()
         return render_template_string(
             _HUB_TPL,
-            iface_ip=pcfg2.get("audio_iface", "0.0.0.0"),
+            iface_ip=iface_ip,
             timeout=int(pcfg2.get("source_timeout", _DEF_TIMEOUT)),
             is_hub=is_hub,
         )
@@ -773,12 +776,11 @@ def register(app, ctx):
     @login_required
     @csrf_protect
     def livewire_config_save():
-        """Save plugin configuration: audio_iface and source_timeout."""
+        """Save plugin configuration: source_timeout only.
+        Audio interface is always read from Settings → Hub & Network."""
         data        = request.get_json(silent=True) or {}
-        iface_new   = str(data.get("audio_iface",     "0.0.0.0")).strip() or "0.0.0.0"
         timeout_new = max(30, min(3600, int(data.get("source_timeout", _DEF_TIMEOUT) or _DEF_TIMEOUT)))
-        _save_cfg({"audio_iface": iface_new, "source_timeout": timeout_new})
+        _save_cfg({"source_timeout": timeout_new})
         if _lw_monitor:
-            _lw_monitor.iface_ip = iface_new
-            _lw_monitor.timeout  = timeout_new
+            _lw_monitor.timeout = timeout_new
         return jsonify({"ok": True})
