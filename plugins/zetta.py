@@ -539,7 +539,7 @@ def _parse_station_full(root: ET.Element, station_id: str, spot_cats: list) -> d
         if len(display) > 45:
             display = display[:42] + "…"
 
-        is_spot = any(sc in raw_cat or raw_cat in sc for sc in sc_upper) if sc_upper else False
+        is_spot = (bool(raw_cat) and any(sc in raw_cat for sc in sc_upper)) if sc_upper else False
 
         parsed = {
             "title":            display,
@@ -650,7 +650,7 @@ def _parse_station_full_zeep(result, station_id: str, friendly_name: str, spot_c
         if len(display) > 45:
             display = display[:42] + "…"
 
-        is_spot = any(sc in raw_cat or raw_cat in sc for sc in sc_upper) if sc_upper else False
+        is_spot = (bool(raw_cat) and any(sc in raw_cat for sc in sc_upper)) if sc_upper else False
 
         parsed = {
             "title": display, "raw_title": title, "raw_artist": artist,

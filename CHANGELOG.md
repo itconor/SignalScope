@@ -2,6 +2,18 @@
 
 ---
 
+## SignalScope-3.5.154 — 2026-04-18
+
+### Fixed — Zetta `is_spot` false positive on music tracks with no category (zetta v2.1.15)
+
+All music tracks with no Zetta category were incorrectly flagged as spots (`is_spot=True`), causing the studioboard to show amber "AD" badges on every song.
+
+**Root cause**: `is_spot` detection used `raw_cat in sc` as part of the bidirectional substring check. In Python, `"" in "SPOT"` evaluates to `True` — so any track where Zetta returns an empty category string was always matched as a spot regardless of content.
+
+**Fix**: Both parsers (`_parse_station_full` and `_parse_station_full_zeep`) now require `raw_cat` to be non-empty before attempting the match: `is_spot = (bool(raw_cat) and any(sc in raw_cat for sc in sc_upper)) if sc_upper else False`. Empty category → `is_spot=False`. Tracks must have a non-empty category that actually contains one of the configured spot-category keywords to be flagged.
+
+---
+
 ## SignalScope-3.5.153 — 2026-04-18
 
 ### Fixed — Studio Board shows AD BREAK instead of now-playing (studioboard v3.10.2)
