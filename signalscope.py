@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.139"
+BUILD                  = "SignalScope-3.5.140"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -15501,7 +15501,10 @@ class HubServer:
                 down = True
             # If client-side silence detector has already confirmed silence,
             # force down regardless of instantaneous level.
-            if inp._silence_secs >= inp.silence_min_duration:
+            # Per-node chain override takes priority over input-level setting.
+            _node_smd = node.get("silence_min_duration")
+            _chain_min_secs = float(_node_smd) if _node_smd is not None else inp.silence_min_duration
+            if inp._silence_secs >= _chain_min_secs:
                 down = True
             is_rtp = not dev.startswith(("fm://", "dab://", "http://", "https://", "sound://"))
             # Recent glitches in last 5 minutes
@@ -29485,6 +29488,8 @@ function _addNodeRowToGroup(group, nd){
   threshIn.step='0.5';threshIn.min='-120';threshIn.max='0';
   var offThreshIn=document.createElement('input');offThreshIn.type='number';offThreshIn.className='noth';offThreshIn.placeholder='e.g. −30';offThreshIn.style.width='100%';
   offThreshIn.step='0.5';offThreshIn.min='-120';offThreshIn.max='0';
+  var minSilIn=document.createElement('input');minSilIn.type='number';minSilIn.className='nsmd';minSilIn.placeholder='e.g. 10';minSilIn.style.width='100%';
+  minSilIn.step='0.5';minSilIn.min='0.5';minSilIn.max='300';
   var offlineRow=document.createElement('div');offlineRow.style.cssText='display:flex;align-items:center;gap:6px;grid-column:1/-1;margin-top:4px';
   var offlineCb=document.createElement('input');offlineCb.type='checkbox';offlineCb.className='nonl';
   var offlineLbl=document.createElement('label');offlineLbl.style.cssText='font-size:12px;color:var(--tx);margin:0;cursor:pointer';offlineLbl.textContent='Alert when this stream goes offline';
@@ -29493,6 +29498,7 @@ function _addNodeRowToGroup(group, nd){
   optPanel.appendChild(mkField('Machine tag',machineIn));
   optPanel.appendChild(mkField('Silence on (dBFS)',threshIn));
   optPanel.appendChild(mkField('Silence off (dBFS)',offThreshIn));
+  optPanel.appendChild(mkField('Min silence (s)',minSilIn));
   optPanel.appendChild(offlineRow);
   optsBtn.addEventListener('click',function(){
     var open=optPanel.classList.toggle('open');
@@ -29510,8 +29516,9 @@ function _addNodeRowToGroup(group, nd){
     if(nd.machine)machineIn.value=nd.machine;
     if(nd.silence_threshold_dbfs!==undefined&&nd.silence_threshold_dbfs!==null)threshIn.value=nd.silence_threshold_dbfs;
     if(nd.silence_off_threshold_dbfs!==undefined&&nd.silence_off_threshold_dbfs!==null)offThreshIn.value=nd.silence_off_threshold_dbfs;
+    if(nd.silence_min_duration!==undefined&&nd.silence_min_duration!==null)minSilIn.value=nd.silence_min_duration;
     if(nd.offline_notify)offlineCb.checked=true;
-    if(nd.label||nd.machine||nd.silence_threshold_dbfs||nd.offline_notify){
+    if(nd.label||nd.machine||nd.silence_threshold_dbfs||nd.silence_min_duration||nd.offline_notify){
       optPanel.classList.add('open');optsBtn.textContent='▲ Less';
     }
   } else { fillStreams(); }
@@ -29779,7 +29786,7 @@ function saveChain(){
     var mode=modeSel?modeSel.value:'all';
     var subNodes=[];
     rows.forEach(function(row){
-      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl'),m=row.querySelector('.nm'),nth=row.querySelector('.nth'),noth=row.querySelector('.noth'),nonl=row.querySelector('.nonl');
+      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl'),m=row.querySelector('.nm'),nth=row.querySelector('.nth'),noth=row.querySelector('.noth'),nsmd=row.querySelector('.nsmd'),nonl=row.querySelector('.nonl');
       if(s&&st2&&st2.value){
         var nd2={site:s.value,stream:st2.value,label:(l?l.value.trim():'')};
         var mval=m?m.value.trim():'';if(mval)nd2.machine=mval;
@@ -29787,6 +29794,8 @@ function saveChain(){
         if(tval!==null&&!isNaN(tval))nd2.silence_threshold_dbfs=tval;
         var otval=noth&&noth.value.trim()!==''?parseFloat(noth.value):null;
         if(otval!==null&&!isNaN(otval))nd2.silence_off_threshold_dbfs=otval;
+        var smdval=nsmd&&nsmd.value.trim()!==''?parseFloat(nsmd.value):null;
+        if(smdval!==null&&!isNaN(smdval)&&smdval>0)nd2.silence_min_duration=smdval;
         if(nonl&&nonl.checked)nd2.offline_notify=true;
         subNodes.push(nd2);
       }
@@ -33878,6 +33887,24 @@ def api_chains_save():
             node = {"site": site, "stream": stream, "label": label}
             if machine:
                 node["machine"] = machine
+            # Preserve per-node silence threshold overrides
+            for f in ("silence_threshold_dbfs", "silence_off_threshold_dbfs"):
+                if n.get(f) is not None:
+                    try:
+                        node[f] = float(n[f])
+                    except (ValueError, TypeError):
+                        pass
+            # Per-node minimum silence duration override (seconds)
+            smd = n.get("silence_min_duration")
+            if smd is not None and smd != "":
+                try:
+                    v = float(smd)
+                    if v > 0:
+                        node["silence_min_duration"] = v
+                except (ValueError, TypeError):
+                    pass
+            if n.get("offline_notify"):
+                node["offline_notify"] = True
             return node
         return None
 

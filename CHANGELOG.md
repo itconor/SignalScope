@@ -2,6 +2,18 @@
 
 ---
 
+## SignalScope-3.5.140 — 2026-04-17
+
+### Fixed — Chain editor silently dropped per-node silence settings on save (3.5.140)
+
+`_clean_single_node()` in `api_chains_save` only preserved `site`, `stream`, `label`, and `machine` — discarding `silence_threshold_dbfs`, `silence_off_threshold_dbfs`, and `offline_notify` that the UI collected and the JS sent. Any per-node threshold override a user configured was lost on every save.
+
+Fix: `_clean_single_node()` now preserves all three fields. Additionally, a new `silence_min_duration` per-node override is supported — the node's "⋯ Options" panel shows a **Min silence (s)** field that controls how long that specific chain position must be silent before it's counted as down, independently of the input's own setting. The chain evaluation (`_eval_one_node`) reads `node.get("silence_min_duration")` as an override for `inp.silence_min_duration` on local inputs.
+
+**Rule**: `_clean_single_node()` MUST preserve `silence_threshold_dbfs`, `silence_off_threshold_dbfs`, `silence_min_duration`, and `offline_notify` in addition to the four identity fields. Never reduce it back to identity-only.
+
+---
+
 ## IP Link v1.1.31 — 2026-04-12
 
 ### Fixed — SIP call connects but media fails: "Called in wrong state: stable" (plugin v1.1.31)
