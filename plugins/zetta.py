@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.2",
+    "version":  "2.1.3",
 }
 
 import json
@@ -2189,10 +2189,19 @@ def register(app, ctx):
         cfg = _load_cfg()
         result: Dict[str, list] = {}
         for inst in cfg.get("instances", []):
-            iid = inst.get("id", "")
-            p   = _pollers.get(iid)
-            state = p.get_state() if p else {}
-            connected = p.sf_health.get("ok") is not False if p else False
+            iid       = inst.get("id", "")
+            poll_site = inst.get("poll_site", "")
+            p         = _pollers.get(iid)
+            if poll_site:
+                # Data comes from client push — use _remote_state
+                with _remote_state_lock:
+                    state = dict(_remote_state.get(iid, {}))
+                last_push = max((v.get("ts", 0) for v in state.values()), default=0)
+                age       = time.time() - last_push if last_push else None
+                connected = bool(state) and (age is not None and age < 60)
+            else:
+                state     = p.get_state() if p else {}
+                connected = p.sf_health.get("ok") is not False if p else False
             for stn in inst.get("stations", []):
                 cid = str(stn.get("chain_id", "") or "").strip()
                 if not cid:
@@ -2216,10 +2225,15 @@ def register(app, ctx):
     def is_spot_block(station_id: str) -> bool:
         """Return True if any Zetta instance reports this station in a spot break."""
         sid = str(station_id)
+        # Check local pollers
         for p in _pollers.values():
-            st = p.get_state().get(sid, {})
-            if st.get("is_spot"):
+            if p.get_state().get(sid, {}).get("is_spot"):
                 return True
+        # Check remote state (client-polled instances)
+        with _remote_state_lock:
+            for iid_state in _remote_state.values():
+                if iid_state.get(sid, {}).get("is_spot"):
+                    return True
         return False
 
-    monitor.log("[Zetta] Plugin v2.1.2 registered — /hub/zetta")
+    monitor.log("[Zetta] Plugin v2.1.3 registered — /hub/zetta")
