@@ -21,6 +21,21 @@ New **Livewire** plugin (`plugins/livewire.py`) for Axia Livewire source discove
 
 ---
 
+### zetta v2.1.18 — 2026-04-18
+
+**Faster polling — default interval reduced from 10 s to 3 s**
+- The Zetta SOAP poller previously defaulted to 10-second intervals. Combined with the 10-second chain evaluation cycle, worst-case latency from an ad break starting to the chain receiving the suppression signal was ~20 s — long enough for a false fault alert to fire if the confirmation delay was short.
+- Default poll interval is now **3 s**. Worst-case is now ~13 s and average is under 10 s.
+- Minimum configurable interval lowered from 5 s to 3 s (UI input now enforces `min=3`).
+- **Existing installs**: if `poll_interval` is stored as 10 in your config, lower it to 3 in **Settings → Zetta → Edit instance** and save.
+
+**is_spot now uses Zetta asset type as primary check**
+- Previously spot detection relied entirely on category string matching (`spot_categories` list). If a track's category field was blank or used unexpected naming, `is_spot` was always `False` — the chain never received the ad-break suppression signal even during a real commercial break.
+- Both parsers (`_parse_station_full` raw XML and `_parse_station_full_zeep`) now set `is_spot = True` whenever `AssetType == 2` (Zetta's own `ASSET_SPOT` integer code), regardless of category. Category matching is still applied as a secondary belt-and-braces check.
+- This means ad-break chain suppression works correctly even with an empty or unconfigured `spot_categories` list, and is immune to category naming variations across Zetta installations.
+
+---
+
 ### studioboard v3.10.5 / zetta v2.1.17 — 2026-04-18
 
 **Larger idle/automation text for TV readability**
