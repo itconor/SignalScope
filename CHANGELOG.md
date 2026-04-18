@@ -2,6 +2,14 @@
 
 ---
 
+## zetta v2.1.24 — 2026-04-19
+
+### Added — `/zetta` short URL redirects to `/hub/zetta`
+
+Nav link now uses `/zetta` — cleaner URL on both hub and client nodes. `/hub/zetta` continues to work as before so any existing bookmarks are unaffected.
+
+---
+
 ## zetta v2.1.23 — 2026-04-19
 
 ### Fixed — Zetta nav item now visible on client nodes

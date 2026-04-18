@@ -18,9 +18,9 @@
 SIGNALSCOPE_PLUGIN = {
     "id":       "zetta",
     "label":    "Zetta",
-    "url":      "/hub/zetta",
+    "url":      "/zetta",
     "icon":     "📻",
-    "version":  "2.1.23",
+    "version":  "2.1.24",
 }
 
 import json
@@ -1862,6 +1862,12 @@ def register(app, ctx):
     _restart_pollers(monitor.log)
 
     # ── Main page ────────────────────────────────────────────────────────────
+    @app.get("/zetta")
+    @login_required
+    def zetta_redirect():
+        from flask import redirect
+        return redirect("/hub/zetta")
+
     @app.get("/hub/zetta")
     @login_required
     def zetta_page():
