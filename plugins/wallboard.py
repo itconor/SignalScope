@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.14.3",
+    "version":  "3.14.4",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1250,6 +1250,54 @@ body.bauer #wb-fault-banner{
   font-family:'BauerMediaSans',system-ui,sans-serif;
 }
 
+/* ═══ Full-screen fault takeover ═══ */
+#wb-fault-screen{
+  display:none;position:fixed;inset:0;z-index:9997;
+  background:radial-gradient(ellipse 100% 80% at 50% 20%,rgba(120,10,10,.95),rgba(6,1,1,.99) 65%);
+  flex-direction:column;align-items:center;justify-content:center;
+  overflow:hidden;
+}
+#wb-fault-screen.fs-on{display:flex;animation:fs-in .4s cubic-bezier(.4,0,.2,1)}
+@keyframes fs-in{from{opacity:0;transform:scale(1.04)}to{opacity:1;transform:scale(1)}}
+#wfs-glow{
+  position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse 70% 50% at 50% 25%,rgba(239,68,68,.25),transparent 70%);
+  animation:wfs-breathe 2s ease-in-out infinite;
+}
+@keyframes wfs-breathe{0%,100%{opacity:.7}50%{opacity:1}}
+#wfs-body{
+  position:relative;z-index:1;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  text-align:center;padding:40px 60px;gap:20px;flex:1;
+}
+#wfs-icon{font-size:96px;line-height:1;animation:wfs-icon-pulse 1s ease-in-out infinite}
+@keyframes wfs-icon-pulse{0%,100%{transform:scale(1);filter:drop-shadow(0 0 24px rgba(239,68,68,.6))}
+  50%{transform:scale(1.08);filter:drop-shadow(0 0 48px rgba(239,68,68,.9))}}
+#wfs-title{
+  font-size:80px;font-weight:900;color:#ef4444;
+  letter-spacing:.1em;text-transform:uppercase;
+  text-shadow:0 0 80px rgba(239,68,68,.5),0 4px 12px rgba(0,0,0,.6);
+  line-height:1;
+}
+#wfs-chains{font-size:40px;font-weight:700;color:#fff;letter-spacing:.04em;text-shadow:0 2px 8px rgba(0,0,0,.5)}
+#wfs-sub{font-size:20px;color:rgba(255,255,255,.45);letter-spacing:.06em;text-transform:uppercase}
+#wfs-detected{font-size:15px;color:rgba(255,255,255,.25);margin-top:4px}
+#wfs-footer{
+  position:relative;z-index:1;
+  display:flex;flex-direction:column;align-items:center;gap:10px;
+  padding-bottom:80px;
+}
+#wfs-dismiss{
+  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);
+  color:rgba(255,255,255,.45);cursor:pointer;font-size:14px;font-weight:600;
+  padding:10px 28px;border-radius:10px;font-family:inherit;
+  transition:background .15s,color .15s;letter-spacing:.05em;text-transform:uppercase;
+}
+#wfs-dismiss:hover{background:rgba(255,255,255,.12);color:#fff}
+#wfs-snooze-label{font-size:12px;color:rgba(255,255,255,.2);letter-spacing:.04em}
+#wfs-pbar{width:280px;height:3px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden}
+#wfs-pfill{height:100%;background:rgba(239,68,68,.5);border-radius:2px;width:100%}
+
 /* ═══ Hero level pulse ═══ */
 #wb-hero.ok{position:relative;overflow:hidden}
 #wb-hero .hero-pulse-bg{
@@ -1398,6 +1446,21 @@ body.day-grad{transition:background 3s ease}
   <div id="sp-footer">
     <div id="sp-counter"></div>
     <div id="sp-pbar"><div id="sp-pfill"></div></div>
+  </div>
+</div>
+<div id="wb-fault-screen">
+  <div id="wfs-glow"></div>
+  <div id="wfs-body">
+    <div id="wfs-icon">🔴</div>
+    <div id="wfs-title">SIGNAL FAULT</div>
+    <div id="wfs-chains"></div>
+    <div id="wfs-sub">Engineering has been alerted</div>
+    <div id="wfs-detected"></div>
+  </div>
+  <div id="wfs-footer">
+    <button id="wfs-dismiss">Acknowledge — snooze for 2 minutes</button>
+    <div id="wfs-snooze-label">Re-alerting in…</div>
+    <div id="wfs-pbar"><div id="wfs-pfill"></div></div>
   </div>
 </div>
 <div id="wb-fault-overlay"></div>
@@ -1691,6 +1754,8 @@ function updateHero(chains){
     if(faultBanner)faultBanner.classList.add('active');
     if(faultText)faultText.textContent=faulted.length+' SIGNAL FAULTS — '+faulted.map(function(c){return(c.name||'?').toUpperCase()}).join(' / ');
   }
+  /* Full-screen fault takeover */
+  _faultScreenUpdate(faulted);
 }
 
 /* ═══ Chains — DOM-diffing (no innerHTML rebuild, no image flicker) ═══ */
@@ -2072,6 +2137,57 @@ function _meterRaf(ts){
   requestAnimationFrame(_meterRaf);
 }
 requestAnimationFrame(_meterRaf);
+
+/* ═══ Fault screen ═══ */
+var _fsActive=false,_fsSnoozeUntil=0,_fsSnoozeTimer=null;
+var _FS_SNOOZE_SECS=120; /* re-alert after 2 minutes */
+
+function _faultScreenShow(faulted){
+  _fsActive=true;
+  /* Pause spotlight — fault takes priority */
+  if(_spTimer){clearInterval(_spTimer);_spTimer=null;}
+  var spEl=document.getElementById('wb-spotlight');
+  if(spEl)spEl.classList.remove('sp-on');
+  /* Populate content */
+  var chains=document.getElementById('wfs-chains');
+  if(chains)chains.textContent=faulted.map(function(c){return(c.name||'?').toUpperCase()}).join('  /  ');
+  var det=document.getElementById('wfs-detected');
+  if(det)det.textContent='Detected at '+new Date().toLocaleTimeString();
+  /* Show */
+  var el=document.getElementById('wb-fault-screen');
+  if(el)el.classList.add('fs-on');
+  /* Progress bar counts DOWN — when empty, re-alert fires */
+  var pf=document.getElementById('wfs-pfill');
+  if(pf){pf.style.transition='none';pf.style.width='100%';void pf.offsetWidth;
+    pf.style.transition='width '+_FS_SNOOZE_SECS+'s linear';pf.style.width='0%';}
+  /* Auto-snooze after timer */
+  if(_fsSnoozeTimer)clearTimeout(_fsSnoozeTimer);
+  _fsSnoozeTimer=setTimeout(function(){_faultScreenHide(true);},_FS_SNOOZE_SECS*1000);
+}
+function _faultScreenHide(snooze){
+  _fsActive=false;
+  var el=document.getElementById('wb-fault-screen');
+  if(el)el.classList.remove('fs-on');
+  if(_fsSnoozeTimer){clearTimeout(_fsSnoozeTimer);_fsSnoozeTimer=null;}
+  _fsSnoozeUntil=snooze?(Date.now()+_FS_SNOOZE_SECS*1000):0;
+  /* Resume spotlight if it was on and fault cleared */
+  if(!snooze&&_cfg.show_spotlight&&_lastChains&&_lastChains.length)_spStart();
+}
+function _faultScreenUpdate(faulted){
+  var now=Date.now();
+  if(faulted.length>0){
+    if(!_fsActive&&now>_fsSnoozeUntil)_faultScreenShow(faulted);
+  }else{
+    /* Fault resolved — clear everything */
+    _fsSnoozeUntil=0;
+    if(_fsActive)_faultScreenHide(false);
+  }
+}
+/* Dismiss button */
+(function(){
+  var btn=document.getElementById('wfs-dismiss');
+  if(btn)btn.addEventListener('click',function(){_faultScreenHide(true);});
+})();
 
 /* ═══ Spotlight mode ═══ */
 var _spIdx=0,_spTimer=null,_spRxKey=null;
