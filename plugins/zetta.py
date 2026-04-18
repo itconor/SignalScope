@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.19",
+    "version":  "2.1.20",
 }
 
 import json
@@ -956,6 +956,9 @@ _PAGE_CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);
      color:var(--tx);font-family:system-ui,sans-serif;font-size:13px}
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));
+       border-bottom:1px solid var(--bor);padding:12px 20px;
+       display:flex;align-items:center;gap:12px}
 h1{font-size:16px;font-weight:700}
 .page{padding:20px}
 .card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;

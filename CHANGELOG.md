@@ -2,6 +2,13 @@
 
 ---
 
+### zetta v2.1.20 — 2026-04-18
+
+**Fix broken nav header layout**
+- `_PAGE_CSS` was missing the `header{display:flex;align-items:center;gap:12px}` rule. Without it the `<header>` element rendered by `topnav()` defaulted to `display:block`, causing the logo, version badge, and nav items to stack vertically into three separate rows. Added the required header flex rule, matching every other SignalScope plugin page.
+
+---
+
 ### wallboard v3.14.5 — 2026-04-18
 
 **Zetta now-playing and AD BREAK badge on chain cards**
