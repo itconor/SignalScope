@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.18",
+    "version":  "2.1.19",
 }
 
 import json
@@ -579,11 +579,10 @@ def _parse_station_full(root: ET.Element, station_id: str, spot_cats: list) -> d
         if len(display) > 45:
             display = display[:42] + "…"
 
-        # Primary: Zetta asset type 2 = ASSET_SPOT — reliable regardless of category config.
-        # Secondary: category string matching as belt-and-braces fallback.
-        is_spot = (asset_t == ASSET_SPOT) or (
-            (bool(raw_cat) and any(sc in raw_cat for sc in sc_upper)) if sc_upper else False
-        )
+        # Use Zetta's own integer asset type — ASSET_SPOT = 2 — as the sole is_spot signal.
+        # Category string matching was removed: it produced false positives when
+        # categories were empty or named differently across installations.
+        is_spot = (asset_t == ASSET_SPOT)
 
         parsed = {
             "title":            display,
@@ -685,11 +684,10 @@ def _parse_station_full_zeep(result, station_id: str, friendly_name: str, spot_c
         if len(display) > 45:
             display = display[:42] + "…"
 
-        # Primary: Zetta asset type 2 = ASSET_SPOT — reliable regardless of category config.
-        # Secondary: category string matching as belt-and-braces fallback.
-        is_spot = (asset_t == ASSET_SPOT) or (
-            (bool(raw_cat) and any(sc in raw_cat for sc in sc_upper)) if sc_upper else False
-        )
+        # Use Zetta's own integer asset type — ASSET_SPOT = 2 — as the sole is_spot signal.
+        # Category string matching was removed: it produced false positives when
+        # categories were empty or named differently across installations.
+        is_spot = (asset_t == ASSET_SPOT)
 
         parsed = {
             "title": display, "raw_title": title, "raw_artist": artist,

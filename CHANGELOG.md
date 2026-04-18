@@ -2,6 +2,13 @@
 
 ---
 
+### zetta v2.1.19 — 2026-04-18
+
+**is_spot uses asset type only — category string matching removed**
+- The category fallback introduced in v2.1.18 still risked false positives (e.g. a non-spot item whose category happened to contain a configured spot keyword). `is_spot` is now set solely from `AssetType == 2` (Zetta's own `ASSET_SPOT` integer code) in both the raw-XML and zeep parsers. This is the same signal the Studio Board already uses in its AD badge logic. Category string matching is gone entirely.
+
+---
+
 ## SignalScope-3.5.156 — 2026-04-18
 
 ### Added — Livewire plugin v1.0.0 + source picker in Add/Edit Input form
