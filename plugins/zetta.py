@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.16",
+    "version":  "2.1.17",
 }
 
 import json
@@ -2595,4 +2595,22 @@ def register(app, ctx):
 
     monitor._zetta_live_station_data = _zetta_live_station_data
 
-    monitor.log("[Zetta] Plugin v2.1.14 registered — /hub/zetta")
+    def _zetta_station_chain_map() -> dict:
+        """Return {'iid:sid' → chain_id} from current Zetta config.
+        Used by studioboard to map Zetta computer_name → chain for auto-follow."""
+        out: dict = {}
+        try:
+            for inst in _load_cfg().get("instances", []):
+                iid = inst.get("id", "")
+                for stn in inst.get("stations", []):
+                    sid = str(stn.get("id", "")).strip()
+                    cid = str(stn.get("chain_id", "")).strip()
+                    if sid and cid:
+                        out[f"{iid}:{sid}"] = cid
+        except Exception:
+            pass
+        return out
+
+    monitor._zetta_station_chain_map = _zetta_station_chain_map
+
+    monitor.log("[Zetta] Plugin v2.1.16 registered — /hub/zetta")

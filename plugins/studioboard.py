@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.10.4",
+    "version":  "3.10.5",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -211,7 +211,8 @@ def register(app, ctx):
         if not studio:
             return jsonify({"error": "Studio not found"}), 404
         for key in ("name", "color", "chains", "inputs", "np_rpuid",
-                    "freq", "show_artwork", "zetta_station_key"):
+                    "freq", "show_artwork", "zetta_station_key",
+                    "zetta_follow", "zetta_computer"):
             if key in data:
                 studio[key] = data[key]
         _cfg_save(cfg)
@@ -461,6 +462,41 @@ def register(app, ctx):
             except Exception:
                 pass
 
+        # Build computer_name → {chain_id, last_input_key} for Follow Zetta feature.
+        # Reads _zetta_station_chain_map (iid:sid → chain_id) and matches against
+        # live station computer_name to produce a single lookup dict.
+        _z_computer_chain: dict = {}
+        _z_chain_map_fn = getattr(monitor, "_zetta_station_chain_map", None)
+        if _z_chain_map_fn:
+            try:
+                _z_chain_map = _z_chain_map_fn()
+                for _zkey, _zsd in _zetta_live.items():
+                    _cn = (_zsd.get("computer_name") or "").strip().upper()
+                    _cid = _z_chain_map.get(_zkey, "")
+                    if _cn and _cid:
+                        # Find the last RX node key from the chain config
+                        _last_inp = None
+                        for _ch in (cfg_app.signal_chains or []):
+                            if _ch.get("id") == _cid:
+                                _nodes = _ch.get("nodes", [])
+                                if _nodes:
+                                    _ln = _nodes[-1]
+                                    if _ln.get("type") == "stack":
+                                        _subs = _ln.get("nodes", [])
+                                        if _subs:
+                                            _ss = _subs[-1]
+                                            _site = _ss.get("site",""); _strm = _ss.get("stream","")
+                                            if _site and _strm:
+                                                _last_inp = f"{_site}|{_strm}"
+                                    else:
+                                        _site = _ln.get("site",""); _strm = _ln.get("stream","")
+                                        if _site and _strm:
+                                            _last_inp = f"{_site}|{_strm}"
+                                break
+                        _z_computer_chain[_cn] = {"chain_id": _cid, "last_input": _last_inp}
+            except Exception:
+                pass
+
         # Get chain status
         chain_status = {}
         try:
@@ -510,34 +546,66 @@ def register(app, ctx):
 
         for studio in sb_cfg.get("studios", []):
             sid = studio.get("id", "")
-            # Resolve chains
-            s_chains = []
-            for cid in (studio.get("chains") or []):
-                cs = chain_status.get(cid, {})
-                s_chains.append({
-                    "id": cid,
-                    "name": cs.get("name", cid),
-                    "status": cs.get("display_status", "unknown"),
-                    "sla_pct": cs.get("sla_pct"),
-                })
 
-            # Resolve inputs
-            s_inputs = []
-            for ikey in (studio.get("inputs") or []):
-                lev = levels.get(ikey, {})
-                parts = ikey.split("|", 1)
-                s_inputs.append({
-                    "key": ikey,
-                    "name": parts[1] if len(parts) > 1 else ikey,
-                    "site": parts[0] if len(parts) > 1 else "",
-                    **lev,
-                })
+            # ── Follow Zetta assignment (auto mode) ──────────────────────
+            _zfollow = bool(studio.get("zetta_follow", False))
+            _zcomp   = (studio.get("zetta_computer") or "").strip().upper()
+            _zfollow_active = False
+            _zfollow_chain_name = ""
+
+            if _zfollow and _zcomp and _zcomp in _z_computer_chain:
+                _zauto = _z_computer_chain[_zcomp]
+                _zauto_cid = _zauto["chain_id"]
+                _zauto_inp = _zauto["last_input"]
+                _cs = chain_status.get(_zauto_cid, {})
+                s_chains = [{
+                    "id": _zauto_cid,
+                    "name": _cs.get("name", _zauto_cid),
+                    "status": _cs.get("display_status", "unknown"),
+                    "sla_pct": _cs.get("sla_pct"),
+                }]
+                # Level meter: last RX node of this chain
+                s_inputs = []
+                if _zauto_inp:
+                    _lev = levels.get(_zauto_inp, {})
+                    _pts = _zauto_inp.split("|", 1)
+                    s_inputs = [{
+                        "key": _zauto_inp,
+                        "name": _pts[1] if len(_pts) > 1 else _zauto_inp,
+                        "site": _pts[0] if len(_pts) > 1 else "",
+                        **_lev,
+                    }]
+                _zfollow_active = True
+                _zfollow_chain_name = _cs.get("name", "")
+            elif _zfollow and _zcomp:
+                # Follow enabled but computer not found in Zetta → show as free
+                s_chains = []
+                s_inputs = []
+                _zfollow_active = False
+            else:
+                # ── Manual assignment ────────────────────────────────────
+                s_chains = []
+                for cid in (studio.get("chains") or []):
+                    cs = chain_status.get(cid, {})
+                    s_chains.append({
+                        "id": cid,
+                        "name": cs.get("name", cid),
+                        "status": cs.get("display_status", "unknown"),
+                        "sla_pct": cs.get("sla_pct"),
+                    })
+                s_inputs = []
+                for ikey in (studio.get("inputs") or []):
+                    lev = levels.get(ikey, {})
+                    parts = ikey.split("|", 1)
+                    s_inputs.append({
+                        "key": ikey,
+                        "name": parts[1] if len(parts) > 1 else ikey,
+                        "site": parts[0] if len(parts) > 1 else "",
+                        **lev,
+                    })
 
             _zskey = studio.get("zetta_station_key", "")
-            _zetta_data = (
-                _zetta_live.get(_zskey)
-                if _zskey else None
-            )
+            _zetta_data = _zetta_live.get(_zskey) if _zskey else None
             studios_out.append({
                 "id": sid,
                 "name": studio.get("name", ""),
@@ -551,6 +619,9 @@ def register(app, ctx):
                 "seen_shows": studio.get("seen_shows", []),
                 "zetta_station_key": _zskey,
                 "zetta": _zetta_data,
+                "zetta_follow": _zfollow,
+                "zetta_follow_active": _zfollow_active,
+                "zetta_follow_chain": _zfollow_chain_name,
             })
 
         return jsonify({"studios": studios_out})
@@ -708,6 +779,16 @@ function render(){
     if(!_zStations.length)html+='<option disabled>Zetta plugin not active</option>';
     html+='</select></div>';
 
+    // Follow Zetta Assignment
+    html+='<div class="field" style="margin-top:12px;padding:12px;background:rgba(23,168,255,.06);border:1px solid rgba(23,168,255,.18);border-radius:8px">';
+    html+='<label style="color:var(--acc);margin-bottom:8px;display:block">Follow Zetta Assignment</label>';
+    html+='<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:8px">';
+    html+='<input type="checkbox" data-zetta-follow="'+_e(st.id)+'"'+(st.zetta_follow?' checked':'')+'>';
+    html+='Auto-assign chain and level meter based on which station Zetta is running on this computer</label>';
+    html+='<input data-zetta-computer="'+_e(st.id)+'" value="'+_e(st.zetta_computer||'')+'" placeholder="Zetta computer name, e.g. BEL-STUDIO1" style="width:100%;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:12px;font-family:inherit">';
+    html+='<div style="font-size:10px;color:var(--mu);margin-top:6px">When enabled, the Broadcast Chain and level meters update automatically when Zetta assigns a station to this computer. The manual Chain and Input selections above are ignored while active. If the computer is not found in Zetta, the studio shows as free.</div>';
+    html+='</div>';
+
     // Show artwork
     html+='<div class="field"><label>Show Artwork / Presenter Images</label>';
     html+='<div style="font-size:11px;color:var(--mu);margin-bottom:6px">Upload images matched to show names from the Planet Radio API. When a show is on air, its image appears on the display.</div>';
@@ -779,6 +860,8 @@ function saveFullStudio(sid){
   var inputsSel=card.querySelector('[data-inputs]');if(inputsSel)data.inputs=Array.from(inputsSel.selectedOptions).map(function(o){return o.value});
   var npSel=card.querySelector('[data-np]');if(npSel)data.np_rpuid=npSel.value;
   var zettaSel=card.querySelector('[data-zetta]');if(zettaSel)data.zetta_station_key=zettaSel.value;
+  var zFollowChk=card.querySelector('[data-zetta-follow]');if(zFollowChk)data.zetta_follow=zFollowChk.checked;
+  var zCompInp=card.querySelector('[data-zetta-computer]');if(zCompInp)data.zetta_computer=(zCompInp.value||'').trim().toUpperCase();
   _post('/api/studioboard/studio/'+encodeURIComponent(sid),data).then(function(){
     var msg=document.querySelector('[data-save-msg="'+sid+'"]');
     if(msg){msg.style.display='inline';setTimeout(function(){msg.style.display='none'},2000)}
@@ -904,7 +987,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:32px}
 .trk{font-size:22px;font-weight:300;color:rgba(255,255,255,.8);text-align:center;
   width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:30px}
-.idle{font-size:24px;color:rgba(255,255,255,.4);text-align:center;font-style:italic;min-height:32px;line-height:1.4}
+.idle{font-size:36px;color:rgba(255,255,255,.4);text-align:center;font-style:italic;min-height:40px;line-height:1.3}
 /* RIGHT panel — meters */
 .rp{width:7%;min-width:80px;flex-shrink:0;display:flex;gap:3px;align-items:stretch;
   padding:16px 6px;z-index:1}
@@ -984,8 +1067,12 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   border-radius:5px;padding:2px 7px;flex-shrink:0;align-self:flex-start}
 .zm-prog-ad{background:#f59e0b!important}
 .zm-etm{font-size:13px;color:rgba(255,255,255,.42);margin-bottom:6px}
-.zm-wait{font-size:14px;color:rgba(255,255,255,.22);text-align:center;
-  margin-top:24px;font-style:italic}
+.zm-wait{font-size:28px;color:rgba(255,255,255,.35);text-align:center;
+  margin-top:24px;font-style:italic;line-height:1.35}
+/* Follow Zetta indicator */
+.zfollow-badge{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--acc);
+  background:rgba(23,168,255,.12);border:1px solid rgba(23,168,255,.3);
+  border-radius:4px;padding:2px 7px;margin-bottom:4px;flex-shrink:0}
 /* Free / available studio */
 .free-band{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;text-align:center}
 .free-icon{font-size:80px;opacity:.35;line-height:1}
@@ -1089,16 +1176,18 @@ function buildCol(s,idx){
       +(fc?'':'<div class=stn style="text-shadow:0 0 20px rgba('+r+',.4)">'+E(sn)+'</div>')
       +'<div class=stu>'+E(s.name)+'</div>'
       +(s.freq?'<div class=frq>'+E(s.freq)+'</div>':'')
+      +'<div id="zfbadge'+idx+'" style="display:none" class="zfollow-badge">\u21bb ZETTA AUTO</div>'
       +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
       +'<div id="badges'+idx+'"></div>'
       +'<div class=divider></div>'
+      /* Show name + image always present so updateCol can populate them */
+      +'<img class=art id="showimg'+idx+'" alt="" style="display:none">'
+      +'<div class=shw id="shw'+idx+'"></div>'
       +(s.zetta_station_key
         /* Zetta layout — artwork thumbnail + full sequencer data */
         ?'<div class=zq-main id="zq'+idx+'"></div>'
-        /* Planet Radio layout — show image, now-playing text, legacy Zetta strip */
-        :('<img class=art id="showimg'+idx+'" alt="" style="display:none">'
-          +'<div class=shw id="shw'+idx+'"></div>'
-          +'<div class=np-div></div>'
+        /* Planet Radio layout — now-playing text, legacy Zetta strip */
+        :('<div class=np-div></div>'
           +'<img class=art id="art'+idx+'" alt="" style="display:none">'
           +'<div class=npl id="npl'+idx+'"></div>'
           +'<div class=anm id="anm'+idx+'"></div>'
@@ -1122,6 +1211,9 @@ function updateCol(s,idx){
   if(isEmpty)return;
 
   var np=gNp(s);
+  // Follow Zetta badge
+  var zfb=document.getElementById('zfbadge'+idx);
+  if(zfb){zfb.style.display=s.zetta_follow_active?'':'none';}
   // Mic
   var mic=document.getElementById('mic'+idx);
   if(mic){mic.className='mic '+(s.mic_live?'on':'off');mic.textContent=s.mic_live?'MIC LIVE':'CLEAR'}

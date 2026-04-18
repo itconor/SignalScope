@@ -2,6 +2,30 @@
 
 ---
 
+### studioboard v3.10.5 / zetta v2.1.17 — 2026-04-18
+
+**Larger idle/automation text for TV readability**
+- Idle message text increased from 24px → 36px
+- Zetta "no track" message increased from 14px → 28px — readable across the room
+
+**Show name / presenter image restored on Zetta studios**
+- `showimg` and `shw` elements were missing from the Zetta layout path in `buildCol`, so show names and presenter images never appeared on studios with a Zetta station assigned. Both elements are now always rendered and `updateCol` populates them as before.
+
+**Follow Zetta Assignment — new per-studio toggle**
+In Studio Board settings, each studio now has a "Follow Zetta Assignment" section:
+- **Toggle**: "Auto-assign chain and level meter based on which station Zetta is running on this computer"
+- **Computer name field**: enter the Zetta sequencer computer name (e.g. `BEL-STUDIO1`) — this is the `computer_name` / `ProcessingComputerName` reported by Zetta in its station metadata
+- When enabled: the Broadcast Chain and level meter for that studio update automatically whenever Zetta assigns a station to that computer. The manual Chain and Input selections are ignored while active.
+- When the computer name is not found in any live Zetta station, the studio shows as free (no chain)
+- A small `↻ ZETTA AUTO` badge appears on the TV display when auto-follow is active
+- Manual mode (toggle off) works exactly as before — no behaviour change
+
+Level meter auto-assignment uses the **last node** in the matched chain's signal path (the final receive point).
+
+`zetta.py` exposes `monitor._zetta_station_chain_map()` — a callable returning `{iid:sid → chain_id}` from current Zetta config, used by the studioboard to resolve computer_name → chain without importing the Zetta module.
+
+---
+
 ### zetta v2.1.16 — 2026-04-18
 
 **Fixed — ETM "Back on air" time shown in UTC instead of London time**
