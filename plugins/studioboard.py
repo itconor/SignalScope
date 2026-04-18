@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.10.3",
+    "version":  "3.10.4",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1004,7 +1004,7 @@ function tk(u){if(!T)return u;return u+(u.indexOf('?')>=0?'&':'?')+'token='+enco
 function E(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function RGB(h){h=h.replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];var n=parseInt(h,16);return((n>>16)&255)+','+((n>>8)&255)+','+(n&255)}
 
-var DB=-80,D=null,NP={},SS={},LL={},_built=false,_idleC={},_artSrc={},_lastSig='';
+var DB=-80,D=null,NP={},SS={},LL={},_built=false,_artSrc={},_lastSig='';
 /* Smooth meter state */
 var _targetLev={},_curLev={},_peakHold={},_peakTs={},_lastRaf=0;
 var ATTACK_TC=0.05,DECAY_TC=0.7,PEAK_HOLD_MS=2500;
@@ -1014,9 +1014,44 @@ var _FREE_MSG=['Studio is ready and waiting...','On standby — awaiting the sta
   'Mic check: all clear! \uD83C\uDFA4','The show must go on \u2014 just not yet \u2728'];
 
 function lh(d){return Math.max(0,Math.min(100,(d-DB)/(-DB)*100))}
-var IDLE=["Probably on an ad break...","Presenter's talking too much!",
-  "Getting ready for Make Me a Winner?","Music coming right up!",
-  "Hold tight, we'll be right back!","Loading the next banger..."];
+
+/* Witty automation messages — rotate every 9 seconds */
+var IDLE=[
+  /* DJ on mic / long links */
+  "Mic\u2019s live \u2014 the DJ\u2019s at it again! \uD83C\uDFA4",
+  "Presenter\u2019s doing a very long read\u2026 \uD83D\uDE05",
+  "Still talking\u2026 we promise music is coming!",
+  "DJ going deep on that link\u2026 \uD83D\uDD57",
+  "The presenter\u2019s really going for it today!",
+  "Long link incoming\u2026 grab a brew \u2615",
+  /* Make Me A Winner */
+  "Make Me A Winner time! \uD83C\uDFC6",
+  "Getting ready for Make Me a Winner\u2026",
+  "Could you be today\u2019s winner? \uD83C\uDF89",
+  "Someone\u2019s about to win big! \uD83C\uDF1F",
+  "Make Me A Winner \u2014 the nation holds its breath!",
+  "Will they pick up? The tension is real! \uD83D\uDCF1",
+  /* General */
+  "Music coming right up!",
+  "Hold tight, we\u2019ll be right back!",
+  "Loading the next banger\u2026 \uD83D\uDD25",
+  "Probably on an ad break\u2026",
+  "Back with more music in just a moment!",
+  "The hits keep coming \uD83C\uDFB6",
+  "Stand by for more great radio!",
+  "On air and sounding great \uD83D\uDCFB",
+];
+var _idleIdx={},_idleTs={},_IDLE_MS=9000;
+function _idleMsg(key){
+  var now=Date.now();
+  if(!_idleTs[key]||now-_idleTs[key]>_IDLE_MS){
+    _idleTs[key]=now;
+    var cur=_idleIdx[key]||0;
+    /* Step forward, skip current to avoid repeat */
+    _idleIdx[key]=(cur+1+Math.floor(Math.random()*(IDLE.length-1)))%IDLE.length;
+  }
+  return IDLE[_idleIdx[key]||0];
+}
 
 function gNp(s){var r=s.np_rpuid||'';return r?(NP[r]||{}):{}}
 
@@ -1081,8 +1116,8 @@ function updateCol(s,idx){
   var isEmpty=!(s.chains&&s.chains.length)&&!(s.inputs&&s.inputs.length);
   var freeMsg=document.getElementById('freemsg'+idx);
   if(freeMsg){
-    if(!_idleC[s.id+'|free'])_idleC[s.id+'|free']=_FREE_MSG[idx%_FREE_MSG.length];
-    if(freeMsg.textContent!==_idleC[s.id+'|free'])freeMsg.textContent=_idleC[s.id+'|free'];
+    var _fm=_FREE_MSG[idx%_FREE_MSG.length];
+    if(freeMsg.textContent!==_fm)freeMsg.textContent=_fm;
   }
   if(isEmpty)return;
 
@@ -1134,12 +1169,11 @@ function updateCol(s,idx){
     if(anm){var av=np.artist||'';if(anm.textContent!==av)anm.textContent=av}
     if(trk){var tv=np.title||'';if(trk.textContent!==tv)trk.textContent=tv}
     if(idl)idl.textContent='';
-    delete _idleC[s.id];
   }else{
     if(npl)npl.textContent='';if(anm)anm.textContent='';if(trk)trk.textContent='';
     if(np.show&&idl){
-      if(!_idleC[s.id])_idleC[s.id]=IDLE[Math.floor(Math.random()*IDLE.length)];
-      if(idl.textContent!==_idleC[s.id])idl.textContent=_idleC[s.id];
+      var _im=_idleMsg(s.id);
+      if(idl.textContent!==_im)idl.textContent=_im;
     }else if(idl)idl.textContent='';
   }
   // Zetta main panel — mirror Zetta plugin: always show now_playing, never hide it
@@ -1183,7 +1217,8 @@ function updateCol(s,idx){
         zh+='</div>';
       }
     }else{
-      zh='<div class="zm-wait">'+E(zd.mode_name||zd.mode||'No sequencer data')+'</div>';
+      /* No now-playing — show rotating witty message instead of mode name */
+      zh='<div class="zm-wait">'+E(_idleMsg('z|'+s.id))+'</div>';
     }
     if(zEl.innerHTML!==zh)zEl.innerHTML=zh;
     /* Immediately paint the progress / countdown after any DOM rebuild */

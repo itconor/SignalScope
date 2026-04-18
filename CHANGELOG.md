@@ -2,6 +2,22 @@
 
 ---
 
+### zetta v2.1.16 — 2026-04-18
+
+**Fixed — ETM "Back on air" time shown in UTC instead of London time**
+
+The `TargetGapTimeUtc` field from Zetta is UTC. Both parsers (`_parse_station_full` and `_parse_station_full_zeep`) were formatting it directly with `strftime`, displaying UTC time on the studioboard. Added `_utc_to_london()` (BST/GMT aware, no external dependencies) and `_fmt_london_etm()` helper. Both ETM paths now convert UTC → Europe/London before display. Uses `zoneinfo.ZoneInfo` when available (Python 3.9+), falls back to built-in BST rule calculation.
+
+### studioboard v3.10.4 — 2026-04-18
+
+**Improved — Witty messages rotate every 9 seconds; show in Zetta panel when no track playing**
+
+- Expanded IDLE messages array with DJ-on-mic quips, Make Me A Winner competition lines, and general witty station messages
+- Messages now rotate every 9 seconds (previously picked once at random and stuck forever)
+- Zetta panel: when no track is in PLAYING state (DJ live on mic, between items), shows rotating witty message instead of the raw Zetta mode name ("Auto"/"automation")
+
+---
+
 ## SignalScope-3.5.155 — 2026-04-18
 
 ### Fixed — Studioboard AD badge on every track including music (studioboard v3.10.3)

@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.15",
+    "version":  "2.1.16",
 }
 
 import json
@@ -277,6 +277,57 @@ _discover_pending: Dict[str, dict] = {}
 _discover_lock    = threading.Lock()
 
 # ── Utility formatters ─────────────────────────────────────────────────────────
+
+def _utc_to_london(dt_utc):
+    """Convert a naive UTC datetime to London local time (handles BST/GMT without zoneinfo)."""
+    from datetime import datetime as _dt, timedelta as _td
+    import calendar as _cal
+    def _last_sun(y, m):
+        for w in reversed(_cal.monthcalendar(y, m)):
+            if w[6]: return _dt(y, m, w[6], 1, 0, 0)
+    bst_start = _last_sun(dt_utc.year, 3)   # last Sunday March  01:00 UTC
+    bst_end   = _last_sun(dt_utc.year, 10)  # last Sunday October 01:00 UTC
+    return dt_utc + _td(hours=1) if bst_start <= dt_utc < bst_end else dt_utc
+
+def _fmt_london_etm(etm_raw) -> str:
+    """Parse a Zetta ETM value (UTC datetime or string) and return HH:MM:SS in London time."""
+    from datetime import datetime as _dt, timezone as _tz
+    etm_str = "--:--:--"
+    if not etm_raw:
+        return etm_str
+    try:
+        if isinstance(etm_raw, _dt):
+            dt = etm_raw.replace(tzinfo=_tz.utc) if etm_raw.tzinfo is None else etm_raw
+            try:
+                from zoneinfo import ZoneInfo
+                dt = dt.astimezone(ZoneInfo("Europe/London"))
+            except ImportError:
+                import datetime as _datetime
+                utc_naive = dt.replace(tzinfo=None) - dt.utcoffset() if dt.utcoffset() else dt.replace(tzinfo=None)
+                dt = _utc_to_london(utc_naive).replace()
+            etm_str = dt.strftime("%H:%M:%S")
+        else:
+            s = str(etm_raw)
+            cleaned = _parse_zetta_ts(s) if "_parse_zetta_ts" in dir() else s
+            for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    dt_naive = _dt.strptime(cleaned, fmt)
+                    try:
+                        from zoneinfo import ZoneInfo
+                        dt = dt_naive.replace(tzinfo=_tz.utc).astimezone(ZoneInfo("Europe/London"))
+                    except ImportError:
+                        dt = _utc_to_london(dt_naive)
+                    etm_str = dt.strftime("%H:%M:%S")
+                    break
+                except ValueError:
+                    pass
+            else:
+                # Bare HH:MM:SS — take as-is (ambiguous, leave unchanged)
+                etm_str = s[:8]
+    except Exception:
+        pass
+    return etm_str
+
 def _fmt_dur(sec) -> str:
     s = int(sec or 0)
     if s <= 0: return "00:00"
@@ -487,19 +538,8 @@ def _parse_station_full(root: ET.Element, station_id: str, spot_cats: list) -> d
     try:   gap_s  = float(gap_raw)
     except: gap_s = 0.0
 
-    # Format ETM
-    etm_str = "--:--:--"
-    if etm_raw:
-        try:
-            from datetime import datetime
-            cleaned = _parse_zetta_ts(str(etm_raw))
-            for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%H:%M:%S"):
-                try:
-                    etm_str = datetime.strptime(cleaned, fmt).strftime("%H:%M:%S"); break
-                except ValueError:
-                    pass
-        except Exception:
-            etm_str = str(etm_raw)[:8]
+    # Format ETM — convert UTC to London time
+    etm_str = _fmt_london_etm(etm_raw)
 
     # Parse queue events
     now_playing = None
@@ -607,17 +647,8 @@ def _parse_station_full_zeep(result, station_id: str, friendly_name: str, spot_c
         mode = MODE_UNKNOWN; status = ST_QUEUED; gap_s = 0.0; etm_utc = None
         computer_name = None
 
-    # Format ETM
-    etm_str = "--:--:--"
-    if etm_utc is not None:
-        try:
-            from datetime import datetime
-            if isinstance(etm_utc, datetime):
-                etm_str = etm_utc.strftime("%H:%M:%S")
-            else:
-                etm_str = str(etm_utc)[:8]
-        except Exception:
-            pass
+    # Format ETM — convert UTC to London time
+    etm_str = _fmt_london_etm(etm_utc)
 
     # Parse queue events
     now_playing = None
