@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.11",
+    "version":  "2.1.12",
 }
 
 import json
@@ -188,6 +188,74 @@ _remote_zeep_status: Dict[str, dict] = {}
 _remote_zeep_lock   = threading.Lock()
 # Zeep client cache: sf_url → zeep.Client (avoids recreating on every poll cycle)
 _zeep_clients_cache: Dict[str, Any] = {}
+# Per-chain Zetta state: chain_id → {is_spot, is_stopped, now_playing, mode, ts, ...}
+# Built after every hub-direct poll and every client-push update.
+# Read by signalscope.py _chains_monitor_loop via monitor._zetta_chain_state.
+_chain_zetta_state: Dict[str, dict] = {}
+
+
+def _rebuild_chain_zetta_state() -> None:
+    """Rebuild the per-chain Zetta state consumed by signalscope.py chain fault logic.
+
+    Iterates all configured instances and their stations.  For each station that
+    has a ``chain_id`` set, snapshots the current Zetta sequencer state (is_spot,
+    now_playing, mode, …) and writes it into the module-level
+    ``_chain_zetta_state`` dict keyed by chain_id.
+
+    Called after every hub-side poll cycle AND after every client-side push so
+    the chain fault logic always has up-to-date Zetta knowledge.  The function
+    never raises — on any error it leaves the dict unchanged.
+    """
+    _now = time.time()
+    _new: Dict[str, dict] = {}
+    try:
+        _cfg = _load_cfg()
+        for _inst in _cfg.get("instances", []):
+            _iid      = _inst.get("id", "")
+            _ps       = (_inst.get("poll_site") or "").strip()
+            # Get current station state: direct pollers for hub-side, remote for client-pushed
+            if _iid in _pollers and not _ps:
+                _sdata: Dict[str, dict] = _pollers[_iid].get_state()
+            else:
+                with _remote_state_lock:
+                    _sdata = dict(_remote_state.get(_iid, {}))
+            for _stn in _inst.get("stations", []):
+                _cid = (_stn.get("chain_id") or "").strip()
+                _sid = str(_stn.get("id", "")).strip()
+                if not _cid or not _sid:
+                    continue
+                _sd  = _sdata.get(_sid, {})
+                _ts  = float(_sd.get("ts", 0) or 0)
+                # Skip stale data (>60 s) or errored data that is stale (>30 s)
+                if _now - _ts > 60:
+                    continue
+                if _sd.get("error") and _now - _ts > 30:
+                    continue
+                _is_spot  = bool(_sd.get("is_spot", False))
+                _np       = _sd.get("now_playing")
+                _mode_int = int(_sd.get("mode") or 0)
+                _status_i = int(_sd.get("status") or 0)
+                # "Stopped" = not in a spot break AND no active track AND sequencer is idle.
+                # MODE_OFF_AIR (4) or ST_QUEUED (1) with no now_playing = automation stopped.
+                _is_stopped = (
+                    not _is_spot
+                    and _np is None
+                    and (_mode_int == MODE_OFF_AIR or _status_i == ST_QUEUED)
+                )
+                _new[_cid] = {
+                    "is_spot":     _is_spot,
+                    "is_stopped":  _is_stopped,
+                    "now_playing": _np,
+                    "mode":        _mode_int,
+                    "mode_name":   MODE_NAMES.get(_mode_int, "Unknown"),
+                    "ts":          _ts,
+                    "instance_id": _iid,
+                    "station_id":  _sid,
+                }
+    except Exception:
+        return   # never crash chain fault logic
+    _chain_zetta_state.clear()
+    _chain_zetta_state.update(_new)
 # Pending discovery requests: site_name → {url, evt, result}
 _discover_pending: Dict[str, dict] = {}
 _discover_lock    = threading.Lock()
@@ -745,6 +813,8 @@ class _InstancePoller:
                 with self.lock:
                     self._state.setdefault(sid, {})["error"] = str(e)
                     self._state[sid]["station_id"] = sid
+        # Refresh the chain→Zetta-state map that signalscope.py reads.
+        _rebuild_chain_zetta_state()
 
     def _loop(self):
         while self.running:
@@ -1932,6 +2002,8 @@ def register(app, ctx):
                     "site":    site,
                     "ts":      time.time(),
                 }
+        # Refresh the chain→Zetta-state map that signalscope.py reads.
+        _rebuild_chain_zetta_state()
         return jsonify({"ok": True})
 
     # ── Client-side Zetta polling loop ────────────────────────────────────────
@@ -2441,4 +2513,8 @@ def register(app, ctx):
                         "total_stations": sum(len(v) for v in snapshot.values()),
                         "site_zeep_status": zeep_snapshot})
 
-    monitor.log("[Zetta] Plugin v2.1.11 registered — /hub/zetta")
+    # Expose the chain-Zetta state dict on the monitor so _chains_monitor_loop
+    # in signalscope.py can read it directly without importing this plugin module.
+    monitor._zetta_chain_state = _chain_zetta_state
+
+    monitor.log("[Zetta] Plugin v2.1.12 registered — /hub/zetta")

@@ -8816,6 +8816,12 @@ class MonitorManager:
         # receive commands delivered through the standard heartbeat ACK
         # without requiring changes to signalscope.py per plugin.
         self._plugin_cmd_handlers: Dict[str, object] = {}
+        # Per-chain Zetta state: populated by the Zetta plugin after each poll.
+        # chain_id → {is_spot, is_stopped, now_playing, mode, mode_name, ts, ...}
+        # Used by _chains_monitor_loop for definitive ad-break suppression and
+        # sequencer-stopped labelling.  Zetta plugin replaces this dict reference
+        # via monitor._zetta_chain_state = _chain_zetta_state at load time.
+        self._zetta_chain_state: dict = {}
 
     def register_plugin_cmd_handler(self, cmd_type: str, handler) -> None:
         """Register a handler for a plugin-specific heartbeat command type."""
@@ -15996,6 +16002,20 @@ class HubServer:
                     adbreak_gap_tol      = max(0, int(chain.get("adbreak_gap_tolerance_seconds", 5) or 5))
                     fault_holdoff_secs   = max(0, int(chain.get("fault_holdoff_seconds", 0) or 0))
 
+                    # ── Zetta-definitive state for this chain ─────────────────────
+                    # When the Zetta plugin has linked a station to this chain it
+                    # writes authoritative ad-break / sequencer-stopped state into
+                    # monitor._zetta_chain_state after every poll cycle.  We use it
+                    # in place of the heuristic mixin-node / countdown approach —
+                    # but only when data is present and fresh (< 60 s old).
+                    # Falls back to normal behaviour transparently when Zetta is not
+                    # configured for this chain or data is stale.
+                    _zcs      = monitor._zetta_chain_state.get(cid, {})
+                    _zcs_age  = now - float(_zcs.get("ts", 0) or 0)
+                    _zetta_on      = bool(_zcs) and _zcs_age < 60   # linked + fresh
+                    _zetta_spot    = _zetta_on and bool(_zcs.get("is_spot"))
+                    _zetta_stopped = _zetta_on and bool(_zcs.get("is_stopped"))
+
                     # Work out whether the confirmation window should apply.
                     #
                     # The delay only makes sense for nodes BEFORE the mix-in point
@@ -16098,6 +16118,25 @@ class HubServer:
                         # Clear hold-off whenever chain is not faulted
                         self._chain_fault_holdoff_since.pop(cid, None)
 
+                    # ── Zetta: definitive ad-break suppression ────────────────────
+                    # When Zetta is linked to this chain and confirms an ad break is
+                    # in progress we hold in "pending" state (amber in UI) without
+                    # any countdown — we know exactly when the break ends.  The
+                    # mixin-node / confirmation-window heuristics are bypassed
+                    # entirely for Zetta-linked chains while is_spot is True.
+                    # If Zetta is not linked or data is stale this is a no-op and
+                    # normal chain-fault logic applies unchanged.
+                    if _zetta_spot and curr == "fault":
+                        if prev not in ("pending", "alerted"):
+                            monitor.log(
+                                f"[Chain] '{result['name']}' — "
+                                f"Zetta confirms ad break in progress, fault suppressed.")
+                        self._chain_fault_state[cid] = "pending"
+                        self._chain_fault_since.setdefault(cid, now)
+                        self._set_pending_fault_meta(cid, result.get("fault_index"), True)
+                        self._chain_fault_holdoff_since.pop(cid, None)
+                        continue   # skip normal fault/recovery handling for this cycle
+
                     # ── Fault detection ──────────────────────────────────────
                     if curr == "fault":
                         if prev == "ok":
@@ -16115,10 +16154,12 @@ class HubServer:
                                     f"({round(now - _last_rec)}s < {round(2 * _tail)}s) — confirmation skipped.")
                                 # Fall through with min_fault_secs treated as 0
                                 min_fault_secs = 0
-                            if min_fault_secs == 0 or mixin_is_down or fault_is_post_mixin or any_post_mixin_fault:
+                            if (min_fault_secs == 0 or mixin_is_down or fault_is_post_mixin
+                                    or any_post_mixin_fault or _zetta_on):
                                 # Alert immediately:
                                 #  - no confirmation delay configured, OR
                                 #  - mix-in point itself is also silent (can't be an ad break), OR
+                                #  - Zetta linked + fresh: definitively NOT an ad break, OR
                                 #  - fault is at/after the mix-in point, OR
                                 #  - any node at/after the mix-in point is faulted (even if
                                 #    the primary fault_idx is pre-mixin)
@@ -16216,6 +16257,16 @@ class HubServer:
                                         f"({_elapsed_so_far}s / {min_fault_secs}s elapsed).")
                             elapsed = now - self._chain_fault_since.get(cid, now)
                             pending_adbreak = bool(pending_meta.get("adbreak_candidate", False))
+                            # ── Zetta: break definitively ended — fire immediately ─────────
+                            # The confirmation window may have started as an ad-break
+                            # candidate (heuristic guess), but Zetta now confirms the break
+                            # is over and the chain is still silent.  No need to wait for
+                            # the window — alert now.
+                            if _zetta_on and not _zetta_spot and pending_adbreak:
+                                monitor.log(
+                                    f"[Chain] '{result['name']}' — Zetta: ad break ended "
+                                    f"but chain still silent — alerting immediately.")
+                                elapsed = min_fault_secs   # satisfy elapsed >= min_fault_secs
                             # ── Ad-break schedule learning: dynamic confirmation window ──
                             # When we have enough history for this chain, shorten the window
                             # if the break time doesn't match any known schedule slot, or
@@ -16945,6 +16996,27 @@ class HubServer:
 
         # ── Check cascade suppression (Change 7) ─────────────────────────────
         cid = chain.get("id", "")
+
+        # ── Zetta sequencer stopped note ─────────────────────────────────────
+        # If Zetta is linked to this chain and confirms the sequencer is NOT in
+        # an ad break AND has no active track (e.g., Off Air mode or daypart
+        # ended), append a note so engineers know to check automation rather
+        # than hunting for a hardware fault.
+        _zcs_fire     = monitor._zetta_chain_state.get(cid, {})
+        _zcs_fire_age = now - float(_zcs_fire.get("ts", 0) or 0)
+        _zetta_fire_stopped = (
+            bool(_zcs_fire) and _zcs_fire_age < 60
+            and bool(_zcs_fire.get("is_stopped"))
+            and not bool(_zcs_fire.get("is_spot"))
+        )
+        if _zetta_fire_stopped:
+            _zm_name = (_zcs_fire.get("mode_name") or "").strip()
+            msg += (
+                " [Zetta: sequencer not playing"
+                + (f" — mode: {_zm_name}" if _zm_name else "")
+                + " — check automation system]"
+            )
+
         upstream_id = chain.get("upstream_chain_id", "")
         cascade_suppressed = False
         _cascaded_from_name = ""
@@ -16993,6 +17065,7 @@ class HubServer:
             "ptp_drift_us":  0,
             "ptp_jitter_us": 0,
             "ptp_gm":        "",
+            "zetta_stopped": _zetta_fire_stopped,
         })
 
         # ── Send notification (skip if cascade-suppressed or cooldown active) ─
