@@ -58,7 +58,10 @@ Once complete, open `http://localhost:5000`. The setup wizard will guide you thr
 | **Codec Monitor plugin** | Real-time connection monitor for contribution codecs (Comrex ACCESS/BRIC-Link, Tieline, Prodys, APT/WorldCast); SNMP + HTTP scraping; CODEC_FAULT/CODEC_RECOVERY alerts; iOS mobile API — installed via Settings → Plugins |
 | **Push Server plugin** | Centralised APNs/FCM push notification server — one hub delivers notifications for all connected SignalScope installations — installed via Settings → Plugins |
 | **PTP Clock plugin** | Full-screen GPS-accurate wall clock; digital or analogue studio-clock display; live PTP offset/jitter; custom branding via URL parameter — installed via Settings → Plugins |
-| **Zetta Integration plugin** | RCS Zetta broadcast automation integration; polls SOAP service for now-playing data, detects commercial blocks, provides WSDL discovery — installed via Settings → Plugins |
+| **Wallboard plugin** | TV-optimised broadcast wallboard with live chain status cards, station logos, PPM-style level meters, alert ticker, LUFS/now-playing readout, gradient avatars, and zone-coloured meters at 150 ms update rate — installed via Settings → Plugins |
+| **Studio Board plugin** | Large-format studio display for outside broadcast studios; presenter/show info, live level meters, mic live status, chain health, Zetta automation queue, rotating witty automation messages; Follow Zetta Assignment automatically assigns chain and meter based on Zetta sequencer computer name — installed via Settings → Plugins |
+| **IP Link plugin** | Browser-based IP codec and SIP softphone; WebRTC rooms with shareable talent URLs, low-latency Opus audio, bidirectional IFB, live level meters; permanent rooms with server-side routing; server-side SIP registration (hub holds multiple SIP accounts permanently) — installed via Settings → Plugins |
+| **Zetta Integration plugin** | RCS Zetta broadcast automation integration; polls SOAP service for live sequencer data (now-playing, queue, mode, gap, ETM), spot/ad break detection by Zetta asset type, chain fault suppression during confirmed ad breaks, ETM displayed in London time, WSDL discovery and SOAP debug console; exposes data to Studio Board — installed via Settings → Plugins |
 | **Morning Report plugin** | Auto-generated daily briefing at 06:00 covering fault summary, chain health, hourly heatmap, and notable patterns — installed via Settings → Plugins |
 | **Signal Path Latency plugin** | Tracks comparator delay measurements over 90 days, SVG sparklines, drift/alert badges — installed via Settings → Plugins |
 | **Icecast Streaming plugin** | Re-stream any monitored input to Icecast2; per-stream stereo toggle; hub overview shows live listener counts from all sites — installed via Settings → Plugins |
@@ -441,13 +444,49 @@ Full-screen GPS-accurate studio wall clock at `/hub/ptpclock`:
 - Custom branding via `?brand=` URL parameter
 - Link it from a studio display for a broadcast-quality clock with zero additional hardware
 
+#### Wallboard (`wallboard.py`)
+TV-optimised broadcast status wallboard at `/hub/wallboard`:
+- Full-screen chain status cards with station logos, gradient avatar badges, and zone-coloured level meters
+- PPM-style level bars updating at 150 ms — same real-time cadence as the hub live dashboard
+- Alert ticker scrolling across the bottom of the screen
+- LUFS-I readout and now-playing text per chain (RDS/DLS/metadata)
+- Fully configurable: upload a logo per chain, select which chains appear, toggle LUFS display and hero banner
+- Health bars and chain status colours (OK / AD BREAK / FAULT) at a glance
+- Hub-only
+
+#### Studio Board (`studioboard.py`)
+Large-format studio display for outside broadcast studios and broadcast control rooms at `/hub/studioboard`:
+- Per-studio cards showing presenter info, show name, live level meters, mic live status, and chain health
+- **Zetta automation queue** — shows current item, next-up queue, mode (Auto/Manual/Voice Track), and ETM in London time (BST/GMT auto-corrected)
+- **Spot/ad break detection** by Zetta asset type (integer type code, not category string matching) — the AD badge only appears on confirmed commercial items
+- **Follow Zetta Assignment** — per-studio toggle: configure the Zetta computer name (e.g. `bel-studio1`) and the board auto-assigns the chain and final-RX level meter based on whichever Zetta sequencer is active on that computer. Moving a show to a different studio moves it on the board automatically
+- **Rotating witty automation messages** during ad breaks and DJ links — messages cycle every 9 seconds with show-specific references (competition reads, long sets, etc.)
+- Presenter/show name and artwork updated from now-playing metadata
+- REST API for mic live state and station assignment from automation systems
+- Kiosk URL at `/studioboard?kiosk=1` — suitable for Yodeck or any screen player; uses a separate token, no login required
+- Free-studio messaging, chain colour takeover, smooth 150 ms RAF meter updates
+- Hub-only
+
+#### IP Link (`iplink.py`)
+Browser-based IP codec and SIP softphone at `/hub/iplink`:
+- **WebRTC rooms** with shareable talent URLs — talent opens a link in any browser with no app required
+- Low-latency Opus audio with bidirectional IFB (talkback) channel and live level meters
+- **Permanent rooms** with server-side routing — the room stays active without any browser connected; supports Livewire/AES67 multicast output from a permanent room
+- **Server-side SIP registration** — the hub holds multiple SIP accounts permanently so incoming SIP calls ring in the browser without any local SIP client or agent
+- Room-level gain and monitor-mix controls
+- Requires `aiortc`, `av`, and `numpy` for server-side WebRTC media processing
+- Hub-only
+
 #### Zetta Integration (`zetta.py`)
 RCS Zetta broadcast automation integration at `/hub/zetta`:
-- Polls the Zetta SOAP service to show live now-playing data (title, artist, cart number, category)
-- Detects commercial/spot blocks in real time
-- Provides `/api/zetta/status` for chain and external integration
-- Includes WSDL discovery and raw SOAP debug console
-- No additional pip packages required
+- Polls the Zetta SOAP service to show live now-playing data (title, artist, cart number, category) per station
+- Detects commercial/spot blocks in real time using Zetta's **asset type** field (integer type code — reliably identifies ads regardless of category naming conventions)
+- Fires alerts and suppresses false chain faults during confirmed ad breaks
+- **ETM displayed in London time** (BST/GMT automatically correct) — Zetta always reports ETM as UTC
+- Provides `/api/zetta/status` for chain integration and external consumers
+- **Studio Board integration** — Studio Board reads live Zetta data directly; the Follow Zetta Assignment feature uses `ProcessingComputerName` from the SOAP response to auto-assign chain and level meter per studio
+- WSDL discovery and raw SOAP debug console for diagnostics
+- Requires `zeep` for enhanced parsing; falls back to raw HTTP SOAP if not installed
 
 #### Morning Report (`morning_report.py`)
 Daily broadcast engineering briefing at `/hub/morning_report`:
