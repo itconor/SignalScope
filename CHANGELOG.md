@@ -2,6 +2,16 @@
 
 ---
 
+## SignalScope-3.5.153 — 2026-04-18
+
+### Fixed — Studio Board shows AD BREAK instead of now-playing (studioboard v3.10.2)
+
+The studioboard replaced the entire now-playing display with a full-screen AD BREAK banner when `is_spot=True`. The Zetta plugin never does this — it always shows what's actually playing and colour-codes the row differently for spots.
+
+**Fix**: studioboard now mirrors the Zetta plugin exactly. Always renders `now_playing` title/artist regardless of spot status. When the playing item is a spot: amber left-border on the now-playing row, small "AD" badge, ETM shown inline as "Back on air HH:MM:SS", amber progress bar. Music tracks show normally. Queue always visible below.
+
+---
+
 ## SignalScope-3.5.152 — 2026-04-18
 
 ### Fixed — Studio Board Zetta data stale / stuck on previous state (studioboard v3.10.1, zetta v2.1.14)
