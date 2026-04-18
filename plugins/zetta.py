@@ -554,13 +554,26 @@ def _parse_station_full_zeep(result, station_id: str, friendly_name: str, spot_c
     }
 
 def _sf_get_stations(sf_url: str, timeout: int) -> list:
+    """Call GetStations on the Zetta StatusFeed. Prefers zeep (correct namespace/endpoint
+    resolution); falls back to raw SOAP if zeep is unavailable."""
+    # ── zeep path (preferred) ──────────────────────────────────────────────────
+    if _ensure_zeep():
+        sep    = "&" if "?" in sf_url else "?"
+        client = _make_zeep_client(sf_url + sep + "wsdl", sf_url)
+        raw    = client.service.GetStations()
+        results = []
+        for s in (raw or []):
+            sid  = getattr(s, "ID",   None)
+            name = getattr(s, "Name", None)
+            if sid is not None:
+                results.append({"id": str(sid), "name": str(name or sid)})
+        return results
+    # ── raw SOAP fallback ──────────────────────────────────────────────────────
     ns  = _ns(sf_url, timeout)
-    ep  = _soap_endpoint(sf_url, timeout)   # resolve actual SOAP POST URL from WSDL
+    ep  = _soap_endpoint(sf_url, timeout)
     root, raw_xml = _soap_call(ep, "GetStations", "", ns, timeout)
     results = []
-    seen = set()
-    # Walk every element — Zetta wraps station entries in various tag names
-    # depending on version/edition. Accept any of the known patterns.
+    seen    = set()
     _STATION_TAGS = {
         "Station", "StationInfo", "StationDetails",
         "GetStationsResult", "GetStationsResultItem",
@@ -575,9 +588,8 @@ def _sf_get_stations(sf_url: str, timeout: int) -> list:
                 seen.add(sid)
                 results.append({"id": sid, "name": name or sid})
     if not results:
-        # Log raw XML so the admin can see what Zetta actually returned
-        _log.warning("[Zetta] GetStations returned no results. Endpoint: %s  Raw: %s",
-                     ep, raw_xml[:800] if raw_xml else "(empty)")
+        _log.warning("[Zetta] GetStations (raw SOAP) returned no results. ep=%s raw=%s",
+                     ep, raw_xml[:600] if raw_xml else "(empty)")
     return results
 
 
