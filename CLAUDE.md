@@ -8,16 +8,22 @@ SignalScope is a broadcast signal intelligence platform. Single Python file (`si
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **`gh` CLI path**: `/opt/homebrew/bin/gh` — always use this full path, it is installed and working
 
-### MANDATORY release checklist — every single fix, no exceptions
+### MANDATORY release checklist — two separate flows depending on what changed
 
-1. **`BUILD`** in `signalscope.py` — increment (e.g. 3.5.153 → 3.5.154)
-2. **Plugin `SIGNALSCOPE_PLUGIN["version"]`** inside the `.py` file itself — increment (e.g. `"version": "2.1.14"` → `"version": "2.1.15"`). **This is what SignalScope compares at runtime to decide if an update is available. Forgetting this causes the plugin to offer the same update in a loop forever.**
-3. **`plugins.json`** — update the matching entry's `"version"` to match step 2
-4. **`CHANGELOG.md`** — add an entry at the top
-5. `git add` all changed files, `git commit`, `git push`
-6. `/opt/homebrew/bin/gh release create v{BUILD_VERSION} --title "..." --notes "..."`
+#### Plugin-only change (only files inside `plugins/` were modified)
+1. **Plugin `SIGNALSCOPE_PLUGIN["version"]`** inside the `.py` file itself — increment (e.g. `"2.1.14"` → `"2.1.15"`). **Both the file AND plugins.json must match or the installed plugin loops offering the same update forever.**
+2. **`plugins.json`** — update the matching entry's `"version"` to match step 1
+3. **`CHANGELOG.md`** — add an entry at the top
+4. `git add` changed files, `git commit`, `git push`
+5. **NO `BUILD` bump. NO `gh release create`.** Plugin updates do NOT touch `signalscope.py` and do NOT get a SignalScope release.
 
-**Rule**: Steps 2 and 3 must ALWAYS match. If you bump one, you bump both. Missing step 2 is the most common mistake — the installed plugin keeps its old version string, SignalScope always sees a mismatch with plugins.json, and the update offer loops forever.
+#### Main app change (`signalscope.py` was modified)
+1. **`BUILD`** in `signalscope.py` — increment (e.g. `3.5.154` → `3.5.155`)
+2. **`CHANGELOG.md`** — add an entry at the top
+3. `git add` changed files, `git commit`, `git push`
+4. `/opt/homebrew/bin/gh release create v{BUILD_VERSION} --title "SignalScope-X.Y.Z" --notes "..."`
+
+**Rule**: NEVER bump `BUILD` or create a `gh release` for a plugin-only change. NEVER create a release that says "SignalScope-X.Y.Z" when only a plugin file changed. The two flows are completely separate.
 
 ---
 
