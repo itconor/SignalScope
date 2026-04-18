@@ -9,10 +9,11 @@
 # Authors: Conor Ewings (ITConor) & James Pyper (JPDesignsNI)
 
 SIGNALSCOPE_PLUGIN = {
-    "id":    "livewire",
-    "label": "Livewire",
-    "url":   "/livewire",
-    "icon":  "🔗",
+    "id":      "livewire",
+    "label":   "Livewire",
+    "url":     "/livewire",
+    "icon":    "🔗",
+    "version": "1.0.3",
 }
 
 import json, os, struct, threading, time, urllib.request
