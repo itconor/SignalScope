@@ -2236,4 +2236,17 @@ def register(app, ctx):
                     return True
         return False
 
+    # ── Remote state debug ────────────────────────────────────────────────────
+    @app.get("/api/zetta/remote_state_debug")
+    @login_required
+    def zetta_remote_state_debug():
+        from flask import jsonify
+        with _remote_state_lock:
+            snapshot = {iid: {sid: {k: v for k, v in sdata.items() if k != "queue"}
+                               for sid, sdata in stations.items()}
+                        for iid, stations in _remote_state.items()}
+        return jsonify({"remote_state": snapshot,
+                        "instance_count": len(snapshot),
+                        "total_stations": sum(len(v) for v in snapshot.values())})
+
     monitor.log("[Zetta] Plugin v2.1.3 registered — /hub/zetta")
