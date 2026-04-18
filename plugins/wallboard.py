@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.14.4",
+    "version":  "3.14.5",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -385,12 +385,29 @@ def register(app, ctx):
             if atype in chain_fault_types and entry["chain_id"]:
                 chain_faults.append(entry)
 
+        # Zetta now-playing — keyed by chain_id, auto-resolved from Zetta config
+        zetta_out = {}
+        _zzcs = getattr(monitor, "_zetta_chain_state", {}) or {}
+        for _cid, _zd in _zzcs.items():
+            if (now - float(_zd.get("ts", 0) or 0)) > 60:
+                continue   # stale — Zetta unreachable
+            _np = _zd.get("now_playing") or {}
+            zetta_out[_cid] = {
+                "is_spot":    bool(_zd.get("is_spot")),
+                "mode_name":  _zd.get("mode_name", ""),
+                "now_playing": {
+                    "title":  (_np.get("raw_title") or _np.get("title") or "").strip(),
+                    "artist": (_np.get("raw_artist") or "").strip(),
+                } if _np else None,
+            }
+
         return jsonify({
             "sites": sites_out,
             "chain_logos": chain_logos,
             "alerts": alerts_out[:20],
             "chain_faults": chain_faults,
             "config": _cfg_load(),
+            "zetta": zetta_out,
         })
 
     @app.get("/api/wallboard/config")
@@ -794,6 +811,15 @@ body.bauer .cc-rx-val.rx-low{color:rgba(255,255,255,.3)}
 .cc-np-artist{color:var(--tx);font-weight:700}
 body.corp .cc-np-track{color:#0071e3}
 body.corp .cc-np-artist{color:#1d1d1f}
+/* Zetta now-playing & AD BREAK badge */
+.cc-zet-ad{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+  padding:2px 9px;border-radius:5px;
+  background:#7c2d12;color:#fbbf24;border:1px solid #b45309;
+}
+.cc-zet-ad::before{content:'●';font-size:9px;animation:zet-pulse 1.2s ease-in-out infinite}
+@keyframes zet-pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
 /* ═══ Meter scroll ═══ */
 #wb-scroll{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 20px 16px}
@@ -1548,7 +1574,7 @@ var _sizes={sm:120,md:155,lg:210};
 var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e0b'],['#9333e8','#a855f7'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316'],['#c81e1e','#ef4444']];
 
 var _cfg={card_size:'lg',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false,chain_freq:{},chain_color:{},show_spotlight:false,spotlight_secs:10};
-var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={};
+var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={},_zetChains={};
 var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false,_dirty=false;
 var _allStreams=[];  // for stream selector
 
@@ -1862,11 +1888,20 @@ function renderChains(chains){
     var sTxt=_ccStatusTxt(st);
     if(stxtEl&&stxtEl.textContent!==sTxt)stxtEl.textContent=sTxt;
 
-    // Now playing — compact single line
+    // Now playing — Zetta (primary, auto-resolved) or Planet Radio (fallback)
     var npWrap=card.querySelector('.cc-np-wrap');
     if(npWrap){
       var npInner='';
-      if(np&&(np.artist||np.title)){
+      var zd=_zetChains[cid];
+      if(zd){
+        if(zd.is_spot){
+          npInner='<div class="cc-zet-ad">AD BREAK</div>';
+        } else if(zd.now_playing&&(zd.now_playing.artist||zd.now_playing.title)){
+          var zt=zd.now_playing;
+          var ztrack=zt.artist?'<span class="cc-np-artist">'+_e(zt.artist)+'</span> — '+_e(zt.title):_e(zt.title);
+          npInner='<div class="cc-np-track">'+ztrack+'</div>';
+        }
+      } else if(np&&(np.artist||np.title)){
         var track=np.artist?'<span class="cc-np-artist">'+_e(np.artist)+'</span> — '+_e(np.title):_e(np.title);
         npInner='<div class="cc-np-track">'+track+'</div>';
       }
@@ -2311,6 +2346,7 @@ function poll(){
        _dirty=true means user has unsaved local changes — poll must not overwrite. */
     if(d.config){if(!_dirty){_cfg=Object.assign(_cfg,d.config,_urlOverrides);applyConfig();}_cfgLoaded=true;}
     _chainLogos=d.chain_logos||{};_chainLogos._ts=Date.now();
+    _zetChains=d.zetta||{};
     if(d.chain_faults)_loadFaultHistory(d.chain_faults);
     renderMeters(d);buildTicker(d.alerts||[]);
   }).catch(function(){});

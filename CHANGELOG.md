@@ -2,6 +2,17 @@
 
 ---
 
+### wallboard v3.14.5 — 2026-04-18
+
+**Zetta now-playing and AD BREAK badge on chain cards**
+- Wallboard chain cards now show live Zetta data automatically — no configuration required. The wallboard reads `monitor._zetta_chain_state` (the same chain-keyed dict used for chain fault suppression) and maps it to the correct card by `chain_id`.
+- When a chain has an active Zetta station and a track is playing, the track title and artist are shown in the now-playing row of the card (primary source, replaces Planet Radio where both are present).
+- When `AssetType == 2` (ASSET_SPOT) — commercial break — the card shows an amber pulsing **AD BREAK** badge instead of a track name.
+- Falls back to the existing Planet Radio / custom now-playing source if no Zetta data is available for a chain.
+- Data is refreshed at the same cadence as the chain poll (every 10 s).
+
+---
+
 ## livewire v1.0.2 — 2026-04-18
 
 ### Fixed — hub mode no longer joins Livewire multicast
