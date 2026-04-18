@@ -32,7 +32,7 @@ import time
 import xml.etree.ElementTree as ET
 import urllib.request
 import urllib.error
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 _log = logging.getLogger("zetta_plugin")
 
