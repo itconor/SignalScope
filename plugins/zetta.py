@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.4",
+    "version":  "2.1.5",
 }
 
 import json
@@ -1809,14 +1809,28 @@ def register(app, ctx):
                 return jsonify({"ok": False, "error": "auth error"}), 403
         payload = request.get_json(silent=True) or {}
         iid     = str(payload.get("instance_id", "")).strip()
-        sid     = str(payload.get("station_id",  "")).strip()
-        stn_data = payload.get("data", {})
-        if not iid or not sid or not isinstance(stn_data, dict):
-            return jsonify({"ok": False, "error": "missing fields"}), 400
-        with _remote_state_lock:
-            if iid not in _remote_state:
-                _remote_state[iid] = {}
-            _remote_state[iid][sid] = stn_data
+        if not iid:
+            return jsonify({"ok": False, "error": "missing instance_id"}), 400
+        # Accept both batch (list) and single-station payloads
+        batch = payload.get("batch")
+        if batch and isinstance(batch, list):
+            with _remote_state_lock:
+                if iid not in _remote_state:
+                    _remote_state[iid] = {}
+                for entry in batch:
+                    sid      = str(entry.get("station_id", "")).strip()
+                    stn_data = entry.get("data", {})
+                    if sid and isinstance(stn_data, dict):
+                        _remote_state[iid][sid] = stn_data
+        else:
+            sid      = str(payload.get("station_id", "")).strip()
+            stn_data = payload.get("data", {})
+            if not sid or not isinstance(stn_data, dict):
+                return jsonify({"ok": False, "error": "missing fields"}), 400
+            with _remote_state_lock:
+                if iid not in _remote_state:
+                    _remote_state[iid] = {}
+                _remote_state[iid][sid] = stn_data
         return jsonify({"ok": True})
 
     # ── Client-side Zetta polling loop ────────────────────────────────────────
@@ -1889,7 +1903,8 @@ def register(app, ctx):
                     if not _instances:
                         time.sleep(15)
                         continue
-                    # Poll each instance's stations using raw SOAP (no zeep needed on client)
+                    # Poll all instances — parallel SOAP calls, single batch push per instance
+                    import concurrent.futures as _cf
                     for _inst in _instances:
                         _iid      = _inst.get("id", "")
                         _sf_url   = (_inst.get("sf_url") or "").strip()
@@ -1903,50 +1918,65 @@ def register(app, ctx):
                             _ep     = _soap_endpoint(_sf_url, _timeout)
                         except Exception:
                             continue
-                        for _st in _stations:
+
+                        # Poll all stations in parallel threads
+                        def _poll_station(_st, _ep=_ep, _ns_val=_ns_val,
+                                          _s_cats=_s_cats, _timeout=_timeout):
                             _sid = str(_st.get("id", "")).strip()
                             if not _sid:
-                                continue
+                                return None
                             try:
                                 _body = f"<stationID>{_sid}</stationID>"
                                 _root, _ = _soap_call(_ep, "GetStationFull",
                                                       _body, _ns_val, _timeout)
-                                _sdata = _parse_station_full(_root, _sid, _s_cats)
+                                return _sid, _parse_station_full(_root, _sid, _s_cats)
                             except Exception as _pe:
                                 _log.debug("[Zetta client] station %s: %s", _sid, _pe)
-                                _sdata = {"station_id": _sid,
-                                          "error": str(_pe), "ts": time.time()}
-                            # Push result to hub
-                            _push_body = json.dumps({
-                                "instance_id": _iid,
-                                "station_id":  _sid,
-                                "data":        _sdata,
-                            }).encode()
-                            _ts = time.time()
-                            if _secret:
-                                _key = _hs_c.sha256(f"{_secret}:signing".encode()).digest()
-                                _sig = _hm_c.new(
-                                    _key,
-                                    f"{_ts:.0f}:".encode() + _push_body,
-                                    _hs_c.sha256,
-                                ).hexdigest()
-                            else:
-                                _sig = ""
-                            try:
-                                _push_req = urllib.request.Request(
-                                    f"{_hub_url}/api/zetta/site_data",
-                                    data=_push_body, method="POST",
-                                    headers={
-                                        "Content-Type": "application/json",
-                                        "X-Site":       _site,
-                                        "X-Hub-Sig":    _sig,
-                                        "X-Hub-Ts":     f"{_ts:.0f}",
-                                    },
-                                )
-                                urllib.request.urlopen(_push_req, timeout=8).close()
-                            except Exception as _upe:
-                                _log.debug("[Zetta client] push station %s: %s", _sid, _upe)
-                    # Respect poll interval from first instance (all share one loop)
+                                return _sid, {"station_id": _sid,
+                                              "error": str(_pe), "ts": time.time()}
+
+                        _results = {}
+                        _workers = min(len(_stations), 8)
+                        with _cf.ThreadPoolExecutor(max_workers=_workers) as _ex:
+                            for _r in _ex.map(_poll_station, _stations):
+                                if _r:
+                                    _results[_r[0]] = _r[1]
+
+                        if not _results:
+                            continue
+
+                        # Single batch push for all stations in this instance
+                        _push_body = json.dumps({
+                            "instance_id": _iid,
+                            "batch":       [{"station_id": _sid, "data": _sd}
+                                            for _sid, _sd in _results.items()],
+                        }).encode()
+                        _ts = time.time()
+                        if _secret:
+                            _key = _hs_c.sha256(f"{_secret}:signing".encode()).digest()
+                            _sig = _hm_c.new(
+                                _key,
+                                f"{_ts:.0f}:".encode() + _push_body,
+                                _hs_c.sha256,
+                            ).hexdigest()
+                        else:
+                            _sig = ""
+                        try:
+                            _push_req = urllib.request.Request(
+                                f"{_hub_url}/api/zetta/site_data",
+                                data=_push_body, method="POST",
+                                headers={
+                                    "Content-Type": "application/json",
+                                    "X-Site":       _site,
+                                    "X-Hub-Sig":    _sig,
+                                    "X-Hub-Ts":     f"{_ts:.0f}",
+                                },
+                            )
+                            urllib.request.urlopen(_push_req, timeout=15).close()
+                        except Exception as _upe:
+                            _log.warning("[Zetta client] batch push failed: %s", _upe)
+
+                    # Respect poll interval from first instance
                     _sleep = int((_instances[0].get("poll_interval") or 10))
                     for _ in range(max(1, _sleep)):
                         time.sleep(1)
@@ -2249,4 +2279,4 @@ def register(app, ctx):
                         "instance_count": len(snapshot),
                         "total_stations": sum(len(v) for v in snapshot.values())})
 
-    monitor.log("[Zetta] Plugin v2.1.4 registered — /hub/zetta")
+    monitor.log("[Zetta] Plugin v2.1.5 registered — /hub/zetta")
