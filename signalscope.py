@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.141"
+BUILD                  = "SignalScope-3.5.142"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -29076,17 +29076,16 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
       <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%">
     </div>
 
-    <!-- Quick timing — always visible -->
+    <!-- Quick timing — always visible, non-collapsible -->
     <div class="blk-collapsible" id="blk_quick_timing">
-      <div class="blk-collapsible-hdr open" data-target="quick_timing_body">
+      <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px;font-weight:600;background:#0a1e42;border-bottom:1px solid var(--bor)">
         <span>⏱ Alert Timing</span>
-        <span class="blk-caret">▶</span>
       </div>
       <div id="quick_timing_body" class="timing-quick">
         <div class="adv-field">
-          <label title="How long silence must persist before an alert fires. Prevents false alarms from brief gaps.">Wait before alerting (s)</label>
-          <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:100%">
-          <div class="field-hint">0 = instant · 30 = 30 sec</div>
+          <label title="How long silence must persist before a CHAIN_FAULT alert fires. Use to avoid alerts from brief gaps between songs.">Min silence before alert (s)</label>
+          <input type="number" id="builder_min_fault" min="0" max="3600" step="5" value="0" style="width:100%">
+          <div class="field-hint">0 = instant · 30 = wait 30 s</div>
         </div>
         <div class="adv-field">
           <label title="Audio must be restored for this long before a recovery notification fires.">Confirm recovery (s)</label>
@@ -29094,9 +29093,9 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
           <div class="field-hint">0 = immediate</div>
         </div>
         <div class="adv-field">
-          <label title="Minimum time between repeated alert notifications for the same chain.">Repeat alert after (min)</label>
+          <label title="Minimum time between repeated alert notifications for the same chain.">Re-alert after (min)</label>
           <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:100%">
-          <div class="field-hint">0 = no limit</div>
+          <div class="field-hint">0 = no repeat</div>
         </div>
       </div>
     </div>
@@ -29490,10 +29489,6 @@ function _addNodeRowToGroup(group, nd){
   offThreshIn.step='0.5';offThreshIn.min='-120';offThreshIn.max='0';
   var minSilIn=document.createElement('input');minSilIn.type='number';minSilIn.className='nsmd';minSilIn.placeholder='e.g. 10';minSilIn.style.width='100%';
   minSilIn.step='0.5';minSilIn.min='0.5';minSilIn.max='300';
-  var offlineRow=document.createElement('div');offlineRow.style.cssText='display:flex;align-items:center;gap:6px;grid-column:1/-1;margin-top:4px';
-  var offlineCb=document.createElement('input');offlineCb.type='checkbox';offlineCb.className='nonl';
-  var offlineLbl=document.createElement('label');offlineLbl.style.cssText='font-size:12px;color:var(--tx);margin:0;cursor:pointer';offlineLbl.textContent='Alert when this stream goes offline';
-  offlineRow.appendChild(offlineCb);offlineRow.appendChild(offlineLbl);
   optPanel.appendChild(mkField('Label',labelIn));
   optPanel.appendChild(mkField('Machine tag',machineIn));
   optPanel.appendChild(mkField('Silence on (dBFS)',threshIn));
@@ -29501,7 +29496,6 @@ function _addNodeRowToGroup(group, nd){
   var _msf=mkField('Min silence (s)',minSilIn);
   var _msh=document.createElement('div');_msh.className='field-hint';_msh.textContent='blank = use input setting (default 10 s)';
   _msf.appendChild(_msh);optPanel.appendChild(_msf);
-  optPanel.appendChild(offlineRow);
   optsBtn.addEventListener('click',function(){
     var open=optPanel.classList.toggle('open');
     optsBtn.textContent=open?'▲ Less':'⋯ Options';
@@ -29519,8 +29513,7 @@ function _addNodeRowToGroup(group, nd){
     if(nd.silence_threshold_dbfs!==undefined&&nd.silence_threshold_dbfs!==null)threshIn.value=nd.silence_threshold_dbfs;
     if(nd.silence_off_threshold_dbfs!==undefined&&nd.silence_off_threshold_dbfs!==null)offThreshIn.value=nd.silence_off_threshold_dbfs;
     if(nd.silence_min_duration!==undefined&&nd.silence_min_duration!==null)minSilIn.value=nd.silence_min_duration;
-    if(nd.offline_notify)offlineCb.checked=true;
-    if(nd.label||nd.machine||nd.silence_threshold_dbfs||nd.silence_min_duration||nd.offline_notify){
+    if(nd.label||nd.machine||nd.silence_threshold_dbfs||nd.silence_min_duration){
       optPanel.classList.add('open');optsBtn.textContent='▲ Less';
     }
   } else { fillStreams(); }
@@ -29788,7 +29781,7 @@ function saveChain(){
     var mode=modeSel?modeSel.value:'all';
     var subNodes=[];
     rows.forEach(function(row){
-      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl'),m=row.querySelector('.nm'),nth=row.querySelector('.nth'),noth=row.querySelector('.noth'),nsmd=row.querySelector('.nsmd'),nonl=row.querySelector('.nonl');
+      var s=row.querySelector('.ns'),st2=row.querySelector('.nst'),l=row.querySelector('.nl'),m=row.querySelector('.nm'),nth=row.querySelector('.nth'),noth=row.querySelector('.noth'),nsmd=row.querySelector('.nsmd');
       if(s&&st2&&st2.value){
         var nd2={site:s.value,stream:st2.value,label:(l?l.value.trim():'')};
         var mval=m?m.value.trim():'';if(mval)nd2.machine=mval;
@@ -29798,7 +29791,6 @@ function saveChain(){
         if(otval!==null&&!isNaN(otval))nd2.silence_off_threshold_dbfs=otval;
         var smdval=nsmd&&nsmd.value.trim()!==''?parseFloat(nsmd.value):null;
         if(smdval!==null&&!isNaN(smdval)&&smdval>0)nd2.silence_min_duration=smdval;
-        if(nonl&&nonl.checked)nd2.offline_notify=true;
         subNodes.push(nd2);
       }
     });
