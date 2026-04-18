@@ -2,7 +2,7 @@
 
 ---
 
-### studioboard v3.10.5 — 2026-04-18
+### studioboard v3.10.5 / zetta v2.1.17 — 2026-04-18
 
 **Larger idle/automation text for TV readability**
 - Idle message text increased from 24px → 36px
