@@ -21,7 +21,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/zetta",
     "icon":     "📻",
     "hub_only": True,
-    "version":  "2.1.2",
+    "version":  "2.1.3",
 }
 
 import json
@@ -558,20 +558,50 @@ def _sf_get_stations(sf_url: str, timeout: int) -> list:
     resolution); falls back to raw SOAP if zeep is unavailable."""
     # ── zeep path (preferred) ──────────────────────────────────────────────────
     if _ensure_zeep():
-        sep    = "&" if "?" in sf_url else "?"
-        client = _make_zeep_client(sf_url + sep + "wsdl", sf_url)
-        raw    = client.service.GetStations()
-        results = []
-        for s in (raw or []):
-            sid  = getattr(s, "ID",   None)
-            name = getattr(s, "Name", None)
-            if sid is not None:
-                results.append({"id": str(sid), "name": str(name or sid)})
-        return results
+        base = sf_url.rstrip("/")
+        sep  = "&" if "?" in sf_url else "?"
+        # Zetta WCF services sometimes expose WSDL only on specific sub-paths.
+        # Try the most common variants in order.
+        wsdl_candidates = [
+            sf_url + sep + "wsdl",           # e.g. /StatusFeed/?wsdl
+            base + "/Basic?wsdl",             # e.g. /StatusFeed/Basic?wsdl
+            base + "?wsdl",                   # e.g. /StatusFeed?wsdl (no trailing slash)
+            base + "/singleWsdl",             # WCF mex alternative
+            sf_url + sep + "singleWsdl",
+        ]
+        last_err = None
+        for wsdl_url in wsdl_candidates:
+            try:
+                client = _make_zeep_client(wsdl_url, sf_url)
+                raw    = client.service.GetStations()
+                results = []
+                for s in (raw or []):
+                    sid  = getattr(s, "ID",   None)
+                    name = getattr(s, "Name", None)
+                    if sid is not None:
+                        results.append({"id": str(sid), "name": str(name or sid)})
+                return results
+            except Exception as e:
+                _log.debug("[Zetta] GetStations zeep attempt %s failed: %s", wsdl_url, e)
+                last_err = e
+        # All zeep attempts failed — log and fall through to raw SOAP
+        _log.warning("[Zetta] zeep GetStations failed for all WSDL candidates (%s) — "
+                     "trying raw SOAP", last_err)
     # ── raw SOAP fallback ──────────────────────────────────────────────────────
-    ns  = _ns(sf_url, timeout)
-    ep  = _soap_endpoint(sf_url, timeout)
-    root, raw_xml = _soap_call(ep, "GetStations", "", ns, timeout)
+    # Try the configured URL and /Basic sub-path (common Zetta WCF binding)
+    base = sf_url.rstrip("/")
+    _raw_candidates = [sf_url, base + "/Basic"]
+    ns   = _ns(sf_url, timeout)
+    root, raw_xml, ep = None, "", sf_url
+    for _ep_try in _raw_candidates:
+        try:
+            root, raw_xml = _soap_call(_ep_try, "GetStations", "", ns, timeout)
+            ep = _ep_try
+            break
+        except Exception as _re:
+            _log.debug("[Zetta] raw SOAP GetStations on %s: %s", _ep_try, _re)
+    if root is None:
+        raise RuntimeError(f"GetStations failed on all endpoints for {sf_url}")
     results = []
     seen    = set()
     _STATION_TAGS = {
@@ -2222,4 +2252,4 @@ def register(app, ctx):
                 return True
         return False
 
-    monitor.log("[Zetta] Plugin v2.1.2 registered — /hub/zetta")
+    monitor.log("[Zetta] Plugin v2.1.3 registered — /hub/zetta")
