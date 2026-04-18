@@ -2,6 +2,14 @@
 
 ---
 
+## livewire v1.0.3 — 2026-04-18
+
+### Fixed — LWAP packet parser rewritten for real protocol format
+
+The previous parser expected a verb-based format (`SRC <id> <name>`) that does not match real Axia Livewire Advertisement Protocol packets. Real LWAP packets are NUL-byte or newline-separated `key=value` pairs: `ch=<channel>`, `srcn=<name>`, `src=<multicast_addr>`, `rate=`, `fmt=`, `type=`. Every real packet was silently rejected, producing an empty source table. The parser now correctly reads these fields. The multicast address is taken directly from the `src=` field rather than being derived from the channel number.
+
+---
+
 ### SignalScope-3.5.157 + zetta v2.1.22 + logger v1.6.3 — 2026-04-18
 
 **Fault attribution — Zetta automation state stamped on every chain fault event**

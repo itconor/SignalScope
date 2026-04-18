@@ -71,58 +71,68 @@ def _save_hub_data():
 
 def _parse_lwap(data: bytes, sender_ip: str):
     """
-    Parse one LWAP UDP datagram.
-    Returns a dict {verb, cid, ...} or None.
+    Parse one Livewire Advertisement Protocol UDP datagram.
+
+    Real LWAP packets are NUL-byte or newline-separated ASCII key=value
+    pairs (NOT a verb-based format).  Known fields:
+        ch=<channel>      — Livewire channel number (required)
+        srcn=<name>       — human-readable source name
+        src=<addr>        — multicast address (dotted quad)
+        rate=<hz>         — sample rate, e.g. 48000
+        fmt=<fmt>         — e.g. L24, L20, MP3
+        type=<n>          — 0=standard, 1=surround
+
+    Returns a dict or None if the packet can't be parsed / has no channel.
     """
     try:
-        text = data.decode("ascii", errors="ignore").strip()
+        text = data.decode("utf-8", errors="ignore")
     except Exception:
         return None
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if not lines:
+
+    # Split on both NUL bytes and newlines
+    pairs = text.replace("\x00", "\n").splitlines()
+
+    fields: dict = {}
+    for pair in pairs:
+        pair = pair.strip()
+        if "=" not in pair:
+            continue
+        k, _, v = pair.partition("=")
+        fields[k.strip().lower()] = v.strip()
+
+    if not fields:
         return None
 
-    parts = lines[0].split(None, 2)
-    verb  = parts[0].upper() if parts else ""
+    # Channel number is required
+    try:
+        cid = int(fields.get("ch", ""))
+    except (ValueError, TypeError):
+        return None
 
-    if verb == "SRC":
-        if len(parts) < 2:
-            return None
-        try:
-            cid = int(parts[1])
-        except ValueError:
-            return None
-        name      = parts[2].strip('"') if len(parts) > 2 else ""
-        node_name = sender_ip
-        node_ip   = sender_ip
-        for line in lines[1:]:
-            if "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            k = k.strip().lower()
-            v = v.strip().strip('"')
-            if k in ("name", "node_name", "hostname"):
-                node_name = v
-            elif k in ("ip", "src_ip", "node_ip"):
-                node_ip = v
-        return {
-            "verb":      "SRC",
-            "cid":       cid,
-            "name":      name,
-            "node_name": node_name,
-            "node_ip":   node_ip,
-            "multicast": _lw_ip(cid),
-        }
+    # Multicast address comes directly from the packet's src= field.
+    # Fall back to deriving it from the channel ID if absent.
+    address = fields.get("src", "") or _lw_ip(cid)
 
-    elif verb == "NSRC":
-        if len(parts) < 2:
-            return None
-        try:
-            return {"verb": "NSRC", "cid": int(parts[1])}
-        except ValueError:
-            return None
+    # Source name: srcn= preferred, fall back to src= (address as label)
+    name = fields.get("srcn", "") or fields.get("src", "")
 
-    return None
+    return {
+        "cid":       cid,
+        "name":      name,
+        "node_name": sender_ip,   # no node-name field in LWAP; use sender IP
+        "node_ip":   sender_ip,
+        "multicast": address,
+        "sample_rate": _safe_int(fields.get("rate", "48000"), 48000),
+        "fmt":         fields.get("fmt", ""),
+        "src_type":    _safe_int(fields.get("type", "0"), 0),
+    }
+
+
+def _safe_int(s: str, default: int) -> int:
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return default
 
 
 # ── Monitor ───────────────────────────────────────────────────────────────────
@@ -224,36 +234,35 @@ class _LivewireMonitor:
         if not p:
             return
         cid = p["cid"]
-        if p["verb"] == "SRC":
-            with self._lock:
-                ex = self._sources.get(cid)
-                if ex:
-                    ex["last_seen"] = time.time()
-                    if p["name"]:
-                        ex["name"] = p["name"]
-                    if p["node_name"] and p["node_name"] != sender_ip:
-                        ex["node_name"] = p["node_name"]
-                    ex["node_ip"] = p["node_ip"]
-                else:
-                    self._sources[cid] = {
-                        "cid":        cid,
-                        "name":       p["name"],
-                        "node_name":  p["node_name"],
-                        "node_ip":    p["node_ip"],
-                        "multicast":  p["multicast"],
-                        "last_seen":  time.time(),
-                        "first_seen": time.time(),
-                    }
-                    self.log(
-                        f"[Livewire] New source: ID={cid} "
-                        f"'{p['name']}' node={p['node_name']}"
-                    )
-        elif p["verb"] == "NSRC":
-            with self._lock:
-                removed = self._sources.pop(cid, None)
-            if removed:
+        now = time.time()
+        with self._lock:
+            ex = self._sources.get(cid)
+            if ex:
+                ex["last_seen"] = now
+                if p["name"]:
+                    ex["name"] = p["name"]
+                ex["multicast"] = p["multicast"] or ex["multicast"]
+                ex["node_ip"]   = sender_ip
+                # Clear stale flag on refresh
+                if ex.get("stale"):
+                    self.log(f"[Livewire] Source recovered: ID={cid} '{ex['name']}'")
+                    ex["stale"] = False
+            else:
+                self._sources[cid] = {
+                    "cid":         cid,
+                    "name":        p["name"],
+                    "node_name":   sender_ip,
+                    "node_ip":     sender_ip,
+                    "multicast":   p["multicast"],
+                    "sample_rate": p.get("sample_rate", 48000),
+                    "fmt":         p.get("fmt", ""),
+                    "last_seen":   now,
+                    "first_seen":  now,
+                    "stale":       False,
+                }
                 self.log(
-                    f"[Livewire] Withdrawn: ID={cid} '{removed.get('name', '?')}'"
+                    f"[Livewire] New source: ID={cid} "
+                    f"'{p['name']}' @ {p['multicast']}"
                 )
 
 
