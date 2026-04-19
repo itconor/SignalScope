@@ -2,6 +2,23 @@
 
 ---
 
+### brandscreen v1.0.0 — 2026-04-19
+
+**New plugin: animated full-screen studio branding display**
+
+- Per-station configuration panel at `/hub/brandscreen` — add/edit/delete stations, upload logos, set colours, choose animations, configure now-playing source.
+- **Background styles**: `particles` (floating particle canvas in brand colour), `aurora` (animated radial gradient), `waves` (SVG wave shapes), `minimal` (clean dark gradient).
+- **Logo animations**: `orbit` (two counter-rotating elliptical rings with glowing dots), `pulse` (expanding concentric rings), `glow` (pulsing drop-shadow), `float` (gentle vertical drift), `static`.
+- **Broadcast clock**: large thin-weight HH:MM:SS with full date, top-right.
+- **On Air badge**: red pulsing dot + "ON AIR" text, shown automatically when Zetta reports a non-spot track playing.
+- **Now Playing lower third**: source can be Zetta (select station from dropdown), any JSON API URL (with dot-notation field mapping), or manual text. "AD BREAK" badge shown on spot blocks (asset_type == 2).
+- **Message-from-hub**: type a message in the admin panel and it appears as a flashing amber banner on the screen. Clear to dismiss.
+- **Token-based kiosk auth**: each station gets a unique token URL (`/brandscreen/<id>?token=xxx`) for unauthenticated display use. Token regeneration in admin panel.
+- **Anti-burn-in**: `step-end` 90 s pixel drift animation on the screen wrapper.
+- Config stored in `plugins/brandscreen_cfg.json`; logos in `plugins/brandscreen_logos/`.
+
+---
+
 ### studioboard v3.11.0 / wallboard v3.15.0 — 2026-04-19
 
 **studioboard v3.11.0: themes, clock, big countdown, message-from-hub, anti-burn-in**
