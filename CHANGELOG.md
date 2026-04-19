@@ -2,6 +2,17 @@
 
 ---
 
+### SignalScope-3.5.161 — 2026-04-19
+
+**Fix: sites lose approval state on restart (intermittent)**
+
+Root cause: `_save_snapshot()` runs in a daemon thread. Python kills all daemon threads immediately when the process exits (Ctrl+C, SIGTERM, systemd restart). If a 10-second heartbeat snapshot write happened to be in flight at the moment of shutdown, `hub_state.json` was left truncated. On the next startup `json.load()` threw `JSONDecodeError`; the except silently caught it; `_sites` stayed empty; every previously-approved site had to be re-approved. Only happened intermittently because it required the restart to land during the brief write window.
+
+Fixes:
+- `_save_snapshot()` now uses an **atomic write**: JSON is written to `hub_state.json.tmp` first, then `os.replace()` swaps it in. `os.replace()` is atomic on POSIX — the file is always either the previous complete version or the new complete version, never a partial write.
+- Before replacing, the current good file is promoted to `hub_state.json.bak` as a fallback.
+- `_load_state()` now tries the `.bak` file if the primary is absent or fails to parse, logs a warning, and continues. Previously a single corrupt file silently wiped all site state.
+
 ### brandscreen v1.2.7 — 2026-04-19
 
 **Fix: Yodeck still required multiple reloads — JS API calls missing token**

@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.160"
+BUILD                  = "SignalScope-3.5.161"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -15202,38 +15202,74 @@ class HubServer:
             print(f"[HubServer] Could not load fault log from DB: {e}")
 
     def _load_state(self):
-        """Load previously seen sites from disk so hub survives restarts."""
+        """Load previously seen sites from disk so hub survives restarts.
+
+        Tries hub_state.json first.  If that file is absent or corrupt (e.g.
+        truncated by a mid-write process kill), falls back to hub_state.json.bak
+        so that site approval state is not silently lost on restart.
+        """
+        def _try_load(path):
+            with open(path, "r") as f:
+                return json.load(f)
+
+        saved = None
+        for candidate in (HUB_STATE_PATH, HUB_STATE_PATH + ".bak"):
+            if not os.path.exists(candidate):
+                continue
+            try:
+                saved = _try_load(candidate)
+                if candidate.endswith(".bak"):
+                    print(f"[HubServer] Primary state file corrupt — loaded from backup: {candidate}")
+                break
+            except Exception as e:
+                print(f"[HubServer] Could not load state from {candidate}: {e}")
+
+        if saved is None:
+            return
+
         try:
-            if os.path.exists(HUB_STATE_PATH):
-                with open(HUB_STATE_PATH, "r") as f:
-                    saved = json.load(f)
-                for name, data in saved.items():
-                    # Mark as stale so they show as offline until next heartbeat
-                    data["_received"] = data.get("_received", 0)
-                    data.pop("_client_addr", None)   # IP may have changed
-                    self._sites[name] = data
-                print(f"[HubServer] Loaded {len(saved)} site(s) from state file")
-                # Pre-populate notified IDs from saved alert history so that
-                # existing alerts are not re-forwarded as new events after restart.
-                with self._notified_lock:
-                    for data in self._sites.values():
-                        for evt in data.get("recent_alerts", []):
-                            eid = evt.get("id", "")
-                            if eid:
-                                self._notified_ids[eid] = True
-                print(f"[HubServer] Pre-seeded {len(self._notified_ids)} alert ID(s) to prevent restart spam")
+            for name, data in saved.items():
+                # Mark as stale so they show as offline until next heartbeat
+                data["_received"] = data.get("_received", 0)
+                data.pop("_client_addr", None)   # IP may have changed
+                self._sites[name] = data
+            print(f"[HubServer] Loaded {len(saved)} site(s) from state file")
+            # Pre-populate notified IDs from saved alert history so that
+            # existing alerts are not re-forwarded as new events after restart.
+            with self._notified_lock:
+                for data in self._sites.values():
+                    for evt in data.get("recent_alerts", []):
+                        eid = evt.get("id", "")
+                        if eid:
+                            self._notified_ids[eid] = True
+            print(f"[HubServer] Pre-seeded {len(self._notified_ids)} alert ID(s) to prevent restart spam")
         except Exception as e:
-            print(f"[HubServer] Could not load state: {e}")
+            print(f"[HubServer] Could not process state: {e}")
 
     def _save_snapshot(self, snapshot: dict):
         """Persist a snapshot of site data to disk.
         Sites are never auto-pruned — only explicit removal via the hub UI deletes a site.
+
+        Uses an atomic write (temp file → os.replace) so a crash or SIGKILL mid-write
+        never leaves hub_state.json in a corrupt/truncated state.  Before replacing,
+        the current file is copied to hub_state.json.bak as a fallback for _load_state.
         """
         try:
             save = {name: {k: v for k, v in data.items() if k not in ("_client_addr",)}
                     for name, data in snapshot.items()}
-            with open(HUB_STATE_PATH, "w") as f:
+            tmp_path = HUB_STATE_PATH + ".tmp"
+            with open(tmp_path, "w") as f:
                 json.dump(save, f)
+            # Promote current file to .bak before replacing — gives _load_state a
+            # second chance if the new file ever gets corrupted (shouldn't happen
+            # with os.replace, but belt-and-braces).
+            bak_path = HUB_STATE_PATH + ".bak"
+            if os.path.exists(HUB_STATE_PATH):
+                try:
+                    os.replace(HUB_STATE_PATH, bak_path)
+                except Exception:
+                    pass
+            os.replace(tmp_path, HUB_STATE_PATH)
         except Exception as e:
             print(f"[HubServer] Could not save state: {e}")
 
