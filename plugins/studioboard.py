@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.13.4",
+    "version":  "3.13.5",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1146,8 +1146,11 @@ body.corp #page-bg{display:none}
    phase is perfectly synchronised. z-index:0 keeps waves behind .mp/.rp (z-index:1)
    so photos, text, and meters all appear in front of the animated background.
    The colour is the vivid brand colour at ~25% opacity over the solid dark card bg. ── */
-.col-wave{position:absolute;bottom:0;height:130px;width:100vw;overflow:visible;z-index:0;pointer-events:none}
-.col-wave svg{display:block;width:200%}
+.col-wave{position:absolute;bottom:0;height:40vh;width:100vw;overflow:visible;z-index:0;pointer-events:none}
+/* height:100% ensures the SVG fills the container exactly — without it the SVG sizes
+   itself by viewBox aspect ratio, making it taller than the container so the wave fill
+   (lower half of the viewBox) is below the visible area and invisible. */
+.col-wave svg{display:block;width:200%;height:100%}
 .col-wave .pw1{animation:pw-slide 9s  linear infinite}
 .col-wave .pw2{animation:pw-slide 13s linear infinite reverse;opacity:.6}
 @keyframes pw-slide{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
