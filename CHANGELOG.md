@@ -2,6 +2,18 @@
 
 ---
 
+### studioboard v3.13.3 — 2026-04-19
+
+**Rework: waves move to background layer, change colour per card**
+
+- Removed the full-page `#page-waves` overlay (was at z-index:2 above all card content). Replaced with per-card `<div class="col-wave">` elements at z-index:0 inside each `.col` — behind `.mp`/`.rp` content (z-index:1), so presenter photos, text, and meters all appear in front of the wave.
+- Each card's wave SVG is 200vw wide, offset left by the card's viewport x position (`left:-Xpx`) so all cards share the same wave coordinate space. The card's existing `overflow:hidden` clips the wave to that column. All cards use the same CSS `@keyframes pw-slide` animation with no delay — phase-synchronised → seamless continuous wave sweep across the full display.
+- Each card injects its own brand colour (vivid, ~25-27% opacity) into its wave paths via `_posColWaves()`. The wave changes colour cleanly at each card boundary.
+- Card background is now fully opaque (removed `.78/.76` alpha that existed to let the old global wave bleed through). `_posColWaves()` is called after DOM rebuild (`requestAnimationFrame`) and on `window.resize`.
+- No `mix-blend-mode` — plain alpha compositing over the solid dark brand background gives a clear but subtle animated undulation.
+
+---
+
 ### studioboard v3.13.2 — 2026-04-19
 
 **Fix: waves invisible — wave fill was using dark brand shade instead of vivid brand colour**

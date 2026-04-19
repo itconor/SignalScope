@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.13.2",
+    "version":  "3.13.3",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1136,18 +1136,20 @@ body.corp .cnt-num.cnt-urgent{color:#dc2626}
 #page-bg{position:fixed;inset:0;z-index:0;pointer-events:none;
   background:linear-gradient(180deg,#122d5a 0%,#0d1f3e 100%)}
 body.corp #page-bg{display:none}
-/* ── Page-wide waves — single continuous effect flowing across all studio cards ──
-   z-index:2 puts waves ABOVE the cards (z-index:1). mix-blend-mode:screen means
-   the wave brightens whatever dark surface it passes over (screen formula: lighter
-   result), so the wave glows through all cards simultaneously without hiding content.
-   pointer-events:none ensures cards remain fully interactive beneath the overlay. ── */
-#page-waves{position:fixed;bottom:0;left:0;width:100%;overflow:hidden;
-  z-index:2;pointer-events:none;mix-blend-mode:screen}
-#page-waves svg{display:block;width:200%}
-#page-waves .pw1{animation:pw-slide 9s  linear infinite}
-#page-waves .pw2{animation:pw-slide 13s linear infinite reverse;opacity:.65}
+/* ── Per-card wave — background layer, behind card content ──
+   .col has position:relative + overflow:hidden (clips wave to column boundary).
+   Each .col-wave is 200vw wide, positioned left:-cardViewportX so it starts
+   at viewport x=0 in every column — making the wave continuous across all cards.
+   All cards share the same @keyframes pw-slide animation with no delay so the
+   phase is perfectly synchronised. z-index:0 keeps waves behind .mp/.rp (z-index:1)
+   so photos, text, and meters all appear in front of the animated background.
+   The colour is the vivid brand colour at ~25% opacity over the solid dark card bg. ── */
+.col-wave{position:absolute;bottom:0;height:130px;width:100vw;overflow:visible;z-index:0;pointer-events:none}
+.col-wave svg{display:block;width:200%}
+.col-wave .pw1{animation:pw-slide 9s  linear infinite}
+.col-wave .pw2{animation:pw-slide 13s linear infinite reverse;opacity:.6}
 @keyframes pw-slide{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-body.corp #page-waves{display:none}
+body.corp .col-wave{display:none}
 .col:last-child{border-right:none}
 .col::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;z-index:2;
   background:linear-gradient(90deg,transparent,var(--cc,rgba(255,255,255,.2)),transparent)}
@@ -1302,16 +1304,6 @@ body.corp #page-waves{display:none}
 <body>
 <!-- Full-page brand-derived gradient background; updated by JS on first render() -->
 <div id="page-bg"></div>
-<!-- Single waves effect — spans full viewport width, flows visually across all cards -->
-<div id="page-waves">
-  <svg class="pw1" viewBox="0 0 1440 110" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
-    <path class="pwp" data-op="0.72" d="M0,55 C240,95 480,15 720,55 C960,95 1200,15 1440,55 L1440,110 L0,110Z" fill="rgba(23,168,255,0.72)"/>
-    <path class="pwp" data-op="0.45" d="M0,70 C360,30 720,90 1080,55 C1260,38 1380,65 1440,60 L1440,110 L0,110Z" fill="rgba(23,168,255,0.45)"/>
-  </svg>
-  <svg class="pw2" viewBox="0 0 1440 80" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
-    <path class="pwp" data-op="0.58" d="M0,40 C180,72 540,10 720,40 C900,70 1260,10 1440,40 L1440,80 L0,80Z" fill="rgba(23,168,255,0.58)"/>
-  </svg>
-</div>
 <div id="sb-hdr">
   <span id="sb-hdr-clock">--:--:--</span>
   <span id="sb-hdr-date"></span>
@@ -1357,24 +1349,37 @@ function _deriveBg(hex){
 /* Extract "r,g,b" from a hex colour string */
 function _hexRgb(hex){var n=parseInt(hex.replace('#',''),16);return((n>>16)&255)+','+((n>>8)&255)+','+(n&255)}
 
-/* Update the full-page gradient and wave colours from the primary studio brand colour.
-   Skipped for corp theme (light background). In bauer mode, page-bg is not updated
-   (body class controls the purple), but waves are still coloured by the studio brand.
-   IMPORTANT: waves use the vivid brand colour itself (via RGB(color)), NOT the dark
-   derived shade (bg.rgb). mix-blend-mode:screen on dark cards needs a bright source
-   colour to produce a visible glow — a dark-on-dark source is imperceptible. */
-function _updatePageWaves(color){
-  var isCorp=document.body.classList.contains('corp');
-  var isBauer=document.body.classList.contains('bauer');
-  if(isCorp)return;
+/* Update the full-page gradient background from the primary studio brand colour.
+   Skipped for corp theme (light background) and bauer (body class controls purple). */
+function _updatePageBg(color){
+  if(document.body.classList.contains('corp')||document.body.classList.contains('bauer'))return;
   var bg=_deriveBg(color);
-  if(!isBauer){
-    var pbg=document.getElementById('page-bg');
-    if(pbg)pbg.style.background='linear-gradient(180deg,'+bg.mid+' 0%,'+bg.dark+' 100%)';
-  }
-  var wrgb=RGB(color);  // vivid brand colour — bright enough for screen-blend glow
-  document.querySelectorAll('#page-waves .pwp').forEach(function(p){
-    p.setAttribute('fill','rgba('+wrgb+','+p.dataset.op+')');
+  var pbg=document.getElementById('page-bg');
+  if(pbg)pbg.style.background='linear-gradient(180deg,'+bg.mid+' 0%,'+bg.dark+' 100%)';
+}
+
+/* Build / update per-card wave overlays.  Called once after DOM rebuild and on resize.
+   Each card gets a 200vw-wide wave SVG positioned left:-cardLeft so all cards share
+   the same wave coordinate space — the wave reads as one continuous sweep across the
+   full display. The card's overflow:hidden clips it to that column's boundary.
+   Colour is the vivid brand colour at low opacity, visible over the solid dark card bg. */
+function _posColWaves(){
+  var ss=getStudios();
+  ss.forEach(function(s,idx){
+    var col=document.getElementById('col'+idx);
+    var cw =document.getElementById('cw'+idx);
+    if(!col||!cw)return;
+    var x=Math.round(col.getBoundingClientRect().left);
+    cw.style.left=(-x)+'px';
+    var r=RGB(s.color||'#17a8ff');
+    cw.innerHTML=
+      '<svg class="pw1" viewBox="0 0 1440 110" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">'
+      +'<path d="M0,55 C240,95 480,15 720,55 C960,95 1200,15 1440,55 L1440,110 L0,110Z" fill="rgba('+r+',.27)"/>'
+      +'<path d="M0,70 C360,30 720,90 1080,55 C1260,38 1380,65 1440,60 L1440,110 L0,110Z" fill="rgba('+r+',.16)"/>'
+      +'</svg>'
+      +'<svg class="pw2" viewBox="0 0 1440 80" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">'
+      +'<path d="M0,40 C180,72 540,10 720,40 C900,70 1260,10 1440,40 L1440,80 L0,80Z" fill="rgba('+r+',.20)"/>'
+      +'</svg>';
   });
 }
 
@@ -1469,12 +1474,10 @@ function buildCol(s,idx){
       +'<div class=vb><div class=vf data-k="'+E(k)+'|R"></div><div class=vp data-p="'+E(k)+'|R"></div></div></div><div class=vl>'+E(nm)+'</div></div>'}
     else{mh+='<div class=vm><div class=vb><div class=vf data-k="'+E(k)+'"></div><div class=vp data-p="'+E(k)+'"></div></div><div class=vl>'+E(nm)+'</div></div>'}
   });
-  /* Brandscreen-style: derive dark/mid shades of the brand colour so the card
-     background clearly reads as the brand colour (not just a faint tint over black).
-     Slight alpha (0.78/0.76) lets the page-wave background show through, making the
-     waves appear to flow across all cards as a single continuous effect. */
+  /* Brandscreen-style: derive dark/mid shades of the brand colour for a solid card bg.
+     Fully opaque so the in-card wave (at z-index:0) shows clearly against the base colour. */
   var _dbg=_deriveBg(c);
-  var colBg='linear-gradient(180deg,rgba('+_hexRgb(_dbg.mid)+',.78) 0%,rgba('+_hexRgb(_dbg.dark)+',.76) 100%)';
+  var colBg='linear-gradient(180deg,'+_dbg.mid+' 0%,'+_dbg.dark+' 100%)';
   var mainContent=isEmpty
     /* Free / available studio */
     ?('<div class=free-band id="free-band'+idx+'">'
@@ -1513,6 +1516,8 @@ function buildCol(s,idx){
           +'<div class=zq id="zq'+idx+'"></div>'))
       +'</div>');
   return '<div class=col id="col'+idx+'" style="--cc:rgba('+r+',.6);--cg:rgba('+r+',.12);background:'+colBg+';border-color:rgba('+r+',.22)">'
+    /* Wave background — positioned by _posColWaves() after DOM build */
+    +'<div class="col-wave" id="cw'+idx+'"></div>'
     +mainContent
     +((!isEmpty&&mh)?'<div class=rp>'+mh+'</div>':'')+'</div>';
 }
@@ -1680,10 +1685,12 @@ function render(){
   if(!_built){
     var h='<div class=cols>';ss.forEach(function(s,i){h+=buildCol(s,i)});h+='</div>';
     document.getElementById('sb').innerHTML=h;_built=true;
+    /* Position per-card waves after layout — use rAF so getBoundingClientRect() is valid */
+    requestAnimationFrame(_posColWaves);
   }
   ss.forEach(function(s,i){updateCol(s,i)});
-  /* Drive page background and waves from the first studio's brand colour */
-  _updatePageWaves((ss[0]&&ss[0].color)||'#17a8ff');
+  /* Drive page background from the first studio's brand colour */
+  _updatePageBg((ss[0]&&ss[0].color)||'#17a8ff');
 }
 
 function poll(){fetch(tk('/api/studioboard/data'),{credentials:'same-origin'})
@@ -1788,5 +1795,7 @@ setInterval(function(){
 },500);
 poll();npPoll();live();showImgPoll();
 setInterval(poll,1500);setInterval(live,150);setInterval(npPoll,10000);setInterval(showImgPoll,30000);
+/* Re-position per-card waves on resize (card widths/positions change) */
+window.addEventListener('resize',_posColWaves);
 })();
 </script></body></html>"""
