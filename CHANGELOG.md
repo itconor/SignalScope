@@ -2,6 +2,26 @@
 
 ---
 
+### SignalScope-3.5.158 + morning_report v1.2.4 — 2026-04-18
+
+**Broadcast Chains fault log — Zetta badges**
+- Each fault log row now shows the Zetta automation context at fault time: mode name (Auto/Manual/Off Air), machine name, and a purple "AD BREAK" badge if the fault occurred during a spot break.
+- Data comes from the new `zetta_mode`, `zetta_is_spot`, `zetta_computer` columns added to `chain_fault_log`. DB migration runs automatically on first start.
+- Engineers can instantly see whether a fault was a genuine signal outage or an automation/scheduling issue.
+
+**Push notifications — Zetta context**
+- Push notification bodies for chain faults now include Zetta automation context when available: mode name (e.g. "Mode: Manual"), machine name, and "During ad break" suffix.
+- Both the direct fault path and the shared-fault aggregation path are enriched.
+- Context is appended in brackets after the fault message, keeping the notification concise (180-char limit enforced).
+
+**Morning Report — Automation Health section (morning_report v1.2.4)**
+- New "Automation Health" section appears in the morning report when Zetta data is present.
+- Counts and lists all Zetta events from yesterday: failovers (machine changeovers), mode changes (Auto → Manual etc.), and GAP warnings.
+- Shows count of chain faults that occurred during ad breaks (expected, not genuine loss) and faults that occurred in Manual mode (may be intentional off-air).
+- Helps broadcast engineers triage overnight automation issues without digging through raw alert logs.
+
+---
+
 ## livewire v1.1.1 — 2026-04-18
 
 ### Fixed — accordion state and node sort order

@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.2.3",
+    "version":  "1.2.4",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -551,6 +551,41 @@ def _generate_report(hub_server, monitor) -> dict:
         except Exception:
             pass
 
+    # ── Automation Health (Zetta) ──────────────────────────────────────────────
+    # Zetta-specific event types from the alert log
+    _ZETTA_TYPES = {"ZETTA_MODE_CHANGE", "ZETTA_FAILOVER", "ZETTA_GAP_LOW"}
+    zetta_events_y = [e for e in y_events if e.get("type") in _ZETTA_TYPES]
+
+    _zh_mode_changes = [
+        {"stream": e.get("stream", ""), "message": e.get("message", ""), "ts": e.get("ts", "")}
+        for e in zetta_events_y if e.get("type") == "ZETTA_MODE_CHANGE"
+    ]
+    _zh_failovers = [
+        {"stream": e.get("stream", ""), "message": e.get("message", ""), "ts": e.get("ts", "")}
+        for e in zetta_events_y if e.get("type") == "ZETTA_FAILOVER"
+    ]
+    _zh_gap_warnings = [
+        {"stream": e.get("stream", ""), "message": e.get("message", ""), "ts": e.get("ts", "")}
+        for e in zetta_events_y if e.get("type") == "ZETTA_GAP_LOW"
+    ]
+
+    # CHAIN_FAULT events stamped with Zetta context
+    _chain_fault_events_y = [e for e in y_events if e.get("type") == "CHAIN_FAULT"]
+    _ad_break_faults = [e for e in _chain_fault_events_y if e.get("zetta_is_spot")]
+    _manual_faults   = [e for e in _chain_fault_events_y
+                        if (e.get("zetta_mode") and e.get("zetta_mode") != "Auto"
+                            and not e.get("zetta_is_spot"))]
+
+    automation_health = {
+        "mode_changes":      _zh_mode_changes,
+        "failovers":         _zh_failovers,
+        "gap_warnings":      _zh_gap_warnings,
+        "ad_break_faults":   len(_ad_break_faults),
+        "manual_faults":     len(_manual_faults),
+        "total_auto_events": len(zetta_events_y),
+        "has_zetta_data":    bool(zetta_events_y or _ad_break_faults or _manual_faults),
+    }
+
     # ── Assemble report ────────────────────────────────────────────────────────
     cfg = _load_cfg()
     report_h, report_m = _parse_time(cfg.get("report_time", "06:00"))
@@ -568,6 +603,7 @@ def _generate_report(hub_server, monitor) -> dict:
         "hourly_counts":   hourly_counts,
         "patterns":        patterns,
         "stream_quality":  stream_quality,
+        "automation_health": automation_health,
     }
     return report
 
@@ -918,6 +954,98 @@ tr:hover td{background:rgba(255,255,255,.03)}
   <div class="no-data">No audio chains found.</div>
   {% endif %}
 </div>
+
+{# ── Automation Health (Zetta) ── #}
+{% set ah = report.automation_health %}
+{% if ah and ah.has_zetta_data %}
+<div class="sec">
+  <div class="sec-hdr">🤖 Automation Health</div>
+  <p style="font-size:11px;color:var(--mu);margin-bottom:10px">Events from the Zetta broadcast automation system yesterday. Mode changes and failovers may indicate automation issues. Faults during ad breaks are expected and do not represent genuine audio loss.</p>
+  <div class="aag-grid" style="margin-bottom:16px">
+    <div class="aag-card">
+      <div class="aag-val" style="color:{% if ah.failovers %}var(--al){% else %}var(--ok){% endif %}">{{ah.failovers|length}}</div>
+      <div class="aag-lbl">Failover Event{% if ah.failovers|length != 1 %}s{% endif %}</div>
+    </div>
+    <div class="aag-card">
+      <div class="aag-val" style="color:{% if ah.mode_changes %}var(--wn){% else %}var(--ok){% endif %}">{{ah.mode_changes|length}}</div>
+      <div class="aag-lbl">Mode Change{% if ah.mode_changes|length != 1 %}s{% endif %}</div>
+    </div>
+    <div class="aag-card">
+      <div class="aag-val" style="color:{% if ah.gap_warnings %}var(--wn){% else %}var(--ok){% endif %}">{{ah.gap_warnings|length}}</div>
+      <div class="aag-lbl">GAP Warning{% if ah.gap_warnings|length != 1 %}s{% endif %}</div>
+    </div>
+    <div class="aag-card">
+      <div class="aag-val" style="color:var(--mu)">{{ah.ad_break_faults}}</div>
+      <div class="aag-lbl">Faults During Ad Breaks</div>
+    </div>
+    <div class="aag-card">
+      <div class="aag-val" style="color:var(--mu)">{{ah.manual_faults}}</div>
+      <div class="aag-lbl">Faults in Manual Mode</div>
+    </div>
+  </div>
+  {% if ah.failovers %}
+  <div style="margin-bottom:14px">
+    <div style="font-size:11px;font-weight:700;color:var(--al);margin-bottom:6px">🔴 Failover Events</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Time</th><th>Chain</th><th>Detail</th></tr></thead>
+      <tbody>
+        {% for ev in ah.failovers %}
+        <tr>
+          <td style="white-space:nowrap;color:var(--mu);font-variant-numeric:tabular-nums">{{ev.ts}}</td>
+          <td><b>{{ev.stream}}</b></td>
+          <td style="color:var(--mu)">{{ev.message}}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+  {% endif %}
+  {% if ah.mode_changes %}
+  <div style="margin-bottom:14px">
+    <div style="font-size:11px;font-weight:700;color:var(--wn);margin-bottom:6px">⚠️ Mode Changes</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Time</th><th>Chain</th><th>Detail</th></tr></thead>
+      <tbody>
+        {% for ev in ah.mode_changes %}
+        <tr>
+          <td style="white-space:nowrap;color:var(--mu);font-variant-numeric:tabular-nums">{{ev.ts}}</td>
+          <td><b>{{ev.stream}}</b></td>
+          <td style="color:var(--mu)">{{ev.message}}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+  {% endif %}
+  {% if ah.gap_warnings %}
+  <div style="margin-bottom:14px">
+    <div style="font-size:11px;font-weight:700;color:var(--wn);margin-bottom:6px">⏱ GAP Warnings</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Time</th><th>Chain</th><th>Detail</th></tr></thead>
+      <tbody>
+        {% for ev in ah.gap_warnings %}
+        <tr>
+          <td style="white-space:nowrap;color:var(--mu);font-variant-numeric:tabular-nums">{{ev.ts}}</td>
+          <td><b>{{ev.stream}}</b></td>
+          <td style="color:var(--mu)">{{ev.message}}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+  {% endif %}
+  {% if ah.ad_break_faults > 0 %}
+  <div style="padding:8px 12px;background:rgba(91,33,182,.1);border:1px solid rgba(124,58,237,.3);border-radius:8px;font-size:12px;margin-bottom:6px">
+    ℹ️ <b>{{ah.ad_break_faults}}</b> chain fault{% if ah.ad_break_faults != 1 %}s{% endif %} occurred while Zetta was playing an ad break — these are expected and do not represent genuine audio loss.
+  </div>
+  {% endif %}
+  {% if ah.manual_faults > 0 %}
+  <div style="padding:8px 12px;background:rgba(138,164,200,.06);border:1px solid var(--bor);border-radius:8px;font-size:12px">
+    ℹ️ <b>{{ah.manual_faults}}</b> chain fault{% if ah.manual_faults != 1 %}s{% endif %} occurred while Zetta was in Manual mode — these may represent intentional off-air periods.
+  </div>
+  {% endif %}
+</div>
+{% endif %}
 
 {# ── Fault Timeline Heatmap ── #}
 <div class="sec">

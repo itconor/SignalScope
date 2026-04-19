@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.157"
+BUILD                  = "SignalScope-3.5.158"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -5469,6 +5469,25 @@ class MetricsDB:
                     print("[MetricsDB] Migrated chain_fault_log: added message column")
                 except _sqlite3.OperationalError:
                     pass
+                # Migration: add Zetta automation context columns
+                try:
+                    conn.execute("ALTER TABLE chain_fault_log ADD COLUMN zetta_mode TEXT DEFAULT ''")
+                    conn.commit()
+                    print("[MetricsDB] Migrated chain_fault_log: added zetta_mode column")
+                except _sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE chain_fault_log ADD COLUMN zetta_is_spot INTEGER DEFAULT 0")
+                    conn.commit()
+                    print("[MetricsDB] Migrated chain_fault_log: added zetta_is_spot column")
+                except _sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE chain_fault_log ADD COLUMN zetta_computer TEXT DEFAULT ''")
+                    conn.commit()
+                    print("[MetricsDB] Migrated chain_fault_log: added zetta_computer column")
+                except _sqlite3.OperationalError:
+                    pass
                 # Migration: add stream_sla_history table (Sprint 4)
                 try:
                     conn.execute(
@@ -5552,15 +5571,19 @@ class MetricsDB:
             self._conn = None
 
     def fault_log_update_meta(self, entry_id: str, message: str = "", cascaded_from: str = "",
-                              adbreak_overshoot: bool = False):
-        """Update message, cascaded_from and adbreak_overshoot fields for a fault entry."""
+                              adbreak_overshoot: bool = False, zetta_mode: str = "",
+                              zetta_is_spot: bool = False, zetta_computer: str = ""):
+        """Update message, cascaded_from, adbreak_overshoot and Zetta context fields for a fault entry."""
         try:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._connect()
                 self._db_execute(
-                    "UPDATE chain_fault_log SET message=?, cascaded_from=?, adbreak_overshoot=? WHERE id=?",
-                    (message, cascaded_from, 1 if adbreak_overshoot else 0, entry_id),
+                    "UPDATE chain_fault_log SET message=?, cascaded_from=?, adbreak_overshoot=?,"
+                    " zetta_mode=?, zetta_is_spot=?, zetta_computer=? WHERE id=?",
+                    (message, cascaded_from, 1 if adbreak_overshoot else 0,
+                     zetta_mode or "", 1 if zetta_is_spot else 0, zetta_computer or "",
+                     entry_id),
                 )
                 self._conn.commit()
         except Exception as e:
@@ -5633,7 +5656,8 @@ class MetricsDB:
                 cur = self._db_execute(
                     "SELECT id, chain_id, ts_start, fault_node_label, fault_site,"
                     " fault_stream, rtp_loss_pct, ts_recovered, clips,"
-                    " adbreak_overshoot, cascaded_from, message"
+                    " adbreak_overshoot, cascaded_from, message,"
+                    " zetta_mode, zetta_is_spot, zetta_computer"
                     " FROM chain_fault_log WHERE chain_id=?"
                     " ORDER BY ts_start DESC LIMIT ?",
                     (chain_id, limit),
@@ -5662,6 +5686,9 @@ class MetricsDB:
                 "adbreak_overshoot": bool(r[9]) if len(r) > 9 else False,
                 "cascaded_from":    r[10] or "" if len(r) > 10 else "",
                 "message":          r[11] or "" if len(r) > 11 else "",
+                "zetta_mode":       r[12] or "" if len(r) > 12 else "",
+                "zetta_is_spot":    bool(r[13]) if len(r) > 13 else False,
+                "zetta_computer":   r[14] or "" if len(r) > 14 else "",
             })
         return entries
 
@@ -17043,9 +17070,15 @@ class HubServer:
         if _flog_target:
             _flog_target["message"] = msg
             _flog_target["cascaded_from"] = _cascaded_from_name
+            _flog_target["zetta_mode"]     = (_zcs_fire.get("mode_name") or "") if _zcs_fire else ""
+            _flog_target["zetta_is_spot"]  = bool(_zcs_fire.get("is_spot")) if _zcs_fire else False
+            _flog_target["zetta_computer"] = (_zcs_fire.get("computer_name") or "") if _zcs_fire else ""
             metrics_db.fault_log_update_meta(
                 _flog_target.get("id", ""), msg, _cascaded_from_name,
-                bool(_flog_target.get("adbreak_overshoot", False))
+                bool(_flog_target.get("adbreak_overshoot", False)),
+                zetta_mode=_flog_target["zetta_mode"],
+                zetta_is_spot=_flog_target["zetta_is_spot"],
+                zetta_computer=_flog_target["zetta_computer"],
             )
 
         # ── Check per-chain notification cooldown (Change 4) ─────────────────
@@ -17086,10 +17119,16 @@ class HubServer:
             if _use_shared_aggregation:
                 # Shared-fault aggregation (Change 5): defer notification via timer
                 pending = self._chain_shared_fault_pending.get(fault_machine)
+                _zcfx = _zcs_fire or {}
                 chain_info = {
                     "cid": cid, "name": chain_label, "msg": msg,
                     "fault_clip": fault_clip,
                     "cooldown_mins": int(chain.get("min_alert_interval_minutes", 0) or 0),
+                    "zetta_context": {
+                        "mode_name":     (_zcfx.get("mode_name") or "").strip(),
+                        "computer_name": (_zcfx.get("computer_name") or "").strip(),
+                        "is_spot":       bool(_zcfx.get("is_spot")),
+                    } if _zcs_fire else None,
                 }
                 if pending is None:
                     # Start new aggregation window
@@ -17126,9 +17165,22 @@ class HubServer:
 
                 # ── Push notification (server relay or direct APNs/FCM) ───────────
                 try:
+                    _push_body = msg[:180]
+                    if _zcs_fire:
+                        _zctx_parts = []
+                        _zm_push = (_zcs_fire.get("mode_name") or "").strip()
+                        _zcomp_push = (_zcs_fire.get("computer_name") or "").strip()
+                        if _zm_push:
+                            _zctx_parts.append(f"Mode: {_zm_push}")
+                        if _zcomp_push:
+                            _zctx_parts.append(f"Machine: {_zcomp_push}")
+                        if bool(_zcs_fire.get("is_spot")):
+                            _zctx_parts.append("During ad break")
+                        if _zctx_parts:
+                            _push_body = (msg[:150] + " [" + ", ".join(_zctx_parts) + "]")[:180]
                     _dispatch_push(
                         title=f"Fault: {chain_label}",
-                        body=msg[:180],
+                        body=_push_body,
                         data={"type": "chain_fault", "chain_id": cid},
                     )
                 except Exception as e:
@@ -17171,7 +17223,19 @@ class HubServer:
                     except Exception as _e:
                         monitor.log(f"[Chain] Shared-fault single notify error: {_e}")
                     try:
-                        _dispatch_push(title=f"Fault: {chain_label}", body=msg[:180],
+                        _push_body_sh = msg[:180]
+                        _zcf_sh = info.get("zetta_context")
+                        if _zcf_sh:
+                            _zctx_sh = []
+                            if _zcf_sh.get("mode_name"):
+                                _zctx_sh.append(f"Mode: {_zcf_sh['mode_name']}")
+                            if _zcf_sh.get("computer_name"):
+                                _zctx_sh.append(f"Machine: {_zcf_sh['computer_name']}")
+                            if _zcf_sh.get("is_spot"):
+                                _zctx_sh.append("During ad break")
+                            if _zctx_sh:
+                                _push_body_sh = (msg[:150] + " [" + ", ".join(_zctx_sh) + "]")[:180]
+                        _dispatch_push(title=f"Fault: {chain_label}", body=_push_body_sh,
                                        data={"type": "chain_fault", "chain_id": cid})
                     except Exception:
                         pass
@@ -30869,11 +30933,20 @@ function loadFaultLog(cid, body, arrow, _nRefresh){
           noteCell+='<button class="flog-note-add-btn btn bg bs" style="font-size:10px" data-fid="'+_esc(fid)+'">📝 Add Note</button>';
         }
         noteCell+='</td>';
+        // Zetta automation context badge — shows mode, machine, and AD-break flag
+        var zetBadge='';
+        if(ev.zetta_mode||ev.zetta_computer||ev.zetta_is_spot){
+          var _zbParts=[];
+          if(ev.zetta_is_spot) _zbParts.push('<span style="background:#5b21b6;border:1px solid #7c3aed;border-radius:4px;font-size:9px;padding:1px 5px;color:#ddd6fe">AD BREAK</span>');
+          if(ev.zetta_mode)    _zbParts.push('<span style="font-size:9px;color:var(--mu)">📻 '+_esc(ev.zetta_mode)+'</span>');
+          if(ev.zetta_computer)_zbParts.push('<span style="font-size:9px;color:var(--mu)">🖥 '+_esc(ev.zetta_computer)+'</span>');
+          if(_zbParts.length)  zetBadge='<br><span style="display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap">'+_zbParts.join('')+'</span>';
+        }
         // data-ts enables click-to-replay: clicking the row jumps the history
         // time-travel view to the fault's start time
         html+='<tr class="flog-row" data-fid="'+_esc(fid)+'" data-ts="'+ev.ts_start+'" title="Click to view all chains at this moment">'
              +'<td><span class="flog-dt">'+dt+'</span> <span class="flog-view-hint">🕐</span></td>'
-             +'<td>'+_esc(ev.fault_node_label)+'</td><td>'+_esc(ev.fault_site)+'</td>'
+             +'<td>'+_esc(ev.fault_node_label)+zetBadge+'</td><td>'+_esc(ev.fault_site)+'</td>'
              +rtpCell+clipsCell+'<td>'+dur+'</td>'+noteCell+'</tr>';
       });
       html+='</tbody></table>';
