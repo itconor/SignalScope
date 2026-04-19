@@ -2,6 +2,12 @@
 
 ---
 
+### brandscreen v1.2.12 — 2026-04-19
+
+**Fix: orbit rings glitching — caused by animationDuration changes at 150 ms**
+
+Changing `animationDuration` on a running CSS animation every 150 ms causes the browser to restart the animation from the current point with the new duration, producing a visible jump/glitch on every update. Removed all `animationDuration` modifications from `_applyLevel()`. Orbit rings now react to audio via opacity (0.18→0.78 / 0.06→0.44) and a gentle `scale()` on the orbit container (0.94→1.06) — both properties animate smoothly without triggering animation restarts.
+
 ### brandscreen v1.2.11 — 2026-04-19
 
 **Fix: audio reactivity never worked — wrong response key format**

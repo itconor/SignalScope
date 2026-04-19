@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.11",
+    "version":  "1.2.12",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1007,6 +1007,7 @@ var _bloomCore= document.getElementById('lev-bloom-core');
 var _bgPulse  = document.getElementById('bg-pulse');
 var _vignette = document.getElementById('vignette');
 var _beatFlash= document.getElementById('beat-flash');
+var _orbWrap  = document.querySelector('.orbit-wrap');
 var _orb1     = document.querySelector('.orb1');
 var _orb2     = document.querySelector('.orb2');
 var _prngs    = document.querySelectorAll('.prng');
@@ -1061,15 +1062,13 @@ function _applyLevel(raw){
       ' drop-shadow(0 0 ' + Math.round(glowPx*2.5) + 'px rgba(' + _brandRgb + ',' + glowOp2.toFixed(2) + '))';
   }
 
-  // ── Orbit rings: speed + opacity (quiet: ghostly, loud: blazing) ───────────
-  if(_orb1){
-    _orb1.style.animationDuration = Math.max(1.2, 15 - _levSnap * 13.8).toFixed(2) + 's';
-    _orb1.style.opacity           = (0.18 + _levSnap * 0.74).toFixed(2);  // 0.18→0.92
-  }
-  if(_orb2){
-    _orb2.style.animationDuration = Math.max(2.0, 22 - _levSnap * 20).toFixed(2)   + 's';
-    _orb2.style.opacity           = (0.08 + _levSnap * 0.52).toFixed(2);  // 0.08→0.60
-  }
+  // ── Orbit rings: opacity + gentle container scale ─────────────────────────
+  // Do NOT change animationDuration — mid-flight duration changes cause the
+  // browser to restart the animation, producing visible glitching every 150 ms.
+  // Instead: fade rings in/out and gently breathe the container size.
+  if(_orb1) _orb1.style.opacity = (0.18 + _levSnap * 0.60).toFixed(2);  // 0.18→0.78
+  if(_orb2) _orb2.style.opacity = (0.06 + _levSnap * 0.38).toFixed(2);  // 0.06→0.44
+  if(_orbWrap) _orbWrap.style.transform = 'scale(' + (0.94 + _levSnap * 0.12).toFixed(3) + ')';
 
   // ── Pulse rings: speed ─────────────────────────────────────────────────────
   if(_prngs.length){
