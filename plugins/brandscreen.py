@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.7",
+    "version":  "1.2.8",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -122,13 +122,16 @@ def _brand_palette(hex_colour):
     _rh, _gh, _bh = colorsys.hsv_to_rgb(h, 1.0, 1.0)
     _hl = 0.299 * _rh + 0.587 * _gh + 0.114 * _bh  # 0.114 (blue) → 0.587 (green)
 
-    def _pv(target_luma):
+    def _pv(target_luma, vcap):
         """V needed so this hue achieves approx target_luma perceived brightness."""
-        return max(0.05, min(0.35, target_luma / max(_hl, 0.15)))
+        return max(0.04, min(vcap, target_luma / max(_hl, 0.15)))
 
-    dp = _hsv(_pv(0.022))  # very deep — near black, hue-tinted
-    dk = _hsv(_pv(0.052))  # dark base
-    md = _hsv(_pv(0.092))  # mid — clearly coloured, not just black
+    # Targets raised vs v1.2.6 — red/blue were still near-black on TV screens.
+    # Per-level V caps prevent bright hues (yellow, green) blowing out while
+    # letting dark hues (red, blue) reach a genuinely visible brand colour.
+    dp = _hsv(_pv(0.040, 0.45))   # deep  — hue-tinted, not near-black
+    dk = _hsv(_pv(0.090, 0.52))   # dark  — clearly coloured
+    md = _hsv(_pv(0.180, 0.62))   # mid   — unmistakably the brand colour
 
     def _hex3(t): return f"#{t[0]:02x}{t[1]:02x}{t[2]:02x}"
     return {
@@ -829,6 +832,22 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 /* Glow: base drop-shadow always present via logo-img filter; JS intensifies it via --glow-size */
 .la-glow #logo-img{transition:filter .1s linear}
 
+/* ── Audio-reactive overlays (all presets) ───────────────────────────────── */
+/* Vignette: dark frame around screen edges. At silence it darkens to frame the
+   logo in a pool of light. On loud audio it lifts — the whole screen "opens". */
+#vignette{position:fixed;inset:0;z-index:4;pointer-events:none;
+  background:radial-gradient(ellipse 72% 66% at 50% 46%,transparent 22%,rgba(0,0,0,.9) 100%);
+  opacity:.76;will-change:opacity;transition:opacity .12s ease-out}
+/* Beat flash: brand-colour radial wash that fires above 0.45 threshold */
+#beat-flash{position:fixed;inset:0;z-index:5;pointer-events:none;
+  background:radial-gradient(ellipse 90% 80% at 50% 47%,rgba(var(--brand-rgb),.42) 0%,transparent 68%);
+  opacity:0;will-change:opacity;transition:opacity .06s ease-out}
+/* Inner bloom core: sharp punchy "lamp" at the logo centre — sits above the
+   large soft bloom and gives a distinct bright source that pulses with beats */
+#lev-bloom-core{position:absolute;width:16vw;height:16vw;border-radius:50%;pointer-events:none;z-index:4;
+  background:radial-gradient(circle,rgba(var(--brand-rgb),1) 0%,rgba(var(--brand-rgb),.48) 36%,transparent 70%);
+  filter:blur(4px);transform:scale(0.06);opacity:0;will-change:transform,opacity}
+
 /* ── Now-playing lower third ─────────────────────────────────────────────── */
 #lower{flex-shrink:0;padding:0 48px 30px;display:none;flex-direction:column;align-items:center;text-align:center}
 #lower.vis{display:flex}
@@ -878,8 +897,11 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
   </div>
 
   <div id="bg-pulse"></div>
+  <div id="vignette"></div>
+  <div id="beat-flash"></div>
   <div id="centre">
     <div id="lev-bloom"></div>
+    <div id="lev-bloom-core"></div>
     {% if logo_anim == 'orbit' %}
     <div class="orbit-wrap"><div class="orb orb1"></div><div class="orb orb2"></div></div>
     {% elif logo_anim == 'pulse' %}
@@ -971,58 +993,103 @@ if(_bgStyle==='particles' && _hasStation){
 }
 
 // ── Audio-level reactive animations ─────────────────────────────────────────
-// _lev     — slow smooth tracker (background, gradual shifts)
-// _levSnap — fast snap tracker (beat-responsive elements)
-var _lev     = 0;
-var _levSnap = 0;
-var _bloom   = document.getElementById('lev-bloom');
-var _bgPulse = document.getElementById('bg-pulse');
-var _orb1    = document.querySelector('.orb1');
-var _orb2    = document.querySelector('.orb2');
-var _prngs   = document.querySelectorAll('.prng');
-var _logoImg = document.getElementById('logo-img');
+// _lev     — slow ambient tracker (gradual background energy)
+// _levSnap — fast beat tracker (immediate logo/ring response)
+var _lev      = 0;
+var _levSnap  = 0;
+var _bloom    = document.getElementById('lev-bloom');
+var _bloomCore= document.getElementById('lev-bloom-core');
+var _bgPulse  = document.getElementById('bg-pulse');
+var _vignette = document.getElementById('vignette');
+var _beatFlash= document.getElementById('beat-flash');
+var _orb1     = document.querySelector('.orb1');
+var _orb2     = document.querySelector('.orb2');
+var _prngs    = document.querySelectorAll('.prng');
+var _logoImg  = document.getElementById('logo-img');
+var _npTitle  = document.getElementById('np-title');
+var _waveWrap = document.querySelector('.wave-wrap');
+// Background element for hue-shift (skip aurora — it has its own CSS animation)
+var _bgEl     = _bgStyle!=='aurora' ? (
+  document.querySelector('.bg-particles-base') ||
+  document.querySelector('.bg-waves') ||
+  document.querySelector('.bg-minimal') ) : null;
 
 function _applyLevel(raw){
-  // Slow tracker: fast attack / very slow decay — holds the "energy floor"
-  _lev     = _lev     * (raw > _lev     ? 0.55 : 0.18) + raw * (raw > _lev     ? 0.45 : 0.82) * 0;
-  _lev     = _lev     + (raw - _lev)     * (raw > _lev     ? 0.45 : 0.18);
-  // Fast snap tracker: responds to every beat and dip quickly
+  // Slow tracker: ambient energy floor
+  _lev     = _lev + (raw - _lev) * (raw > _lev ? 0.45 : 0.18);
+  // Fast snap tracker: beat-responsive
   _levSnap = _levSnap + (raw - _levSnap) * (raw > _levSnap ? 0.65 : 0.38);
 
-  // ── Bloom: large blurred glow behind logo — most visible effect
-  // Scale 0.1 (silence) → 3.2 (peak); bright inner core always shows
+  // ── Outer bloom: large soft halo — grows from tiny to screen-filling ───────
   var bScale = 0.12 + _levSnap * 3.1;
-  var bOp    = Math.min(0.95, 0.28 + _levSnap * 0.70);
+  var bOp    = Math.min(0.92, 0.25 + _levSnap * 0.70);
   _bloom.style.transform = 'scale(' + bScale.toFixed(3) + ')';
   _bloom.style.opacity   = bOp.toFixed(3);
 
-  // ── Background screen brightening (full-screen radial wash)
-  if(_bgPulse) _bgPulse.style.opacity = (_levSnap * 0.85).toFixed(3);
-
-  // ── Logo scale pulse — most perceptible on a big image
-  if(_logoImg){
-    var logoScale = 1.0 + _levSnap * 0.09;
-    var glowPx  = Math.round(30 + _levSnap * 200);
-    var glowOp  = Math.min(1, 0.2 + _levSnap * 0.85);
-    var glowOp2 = Math.min(0.7, _levSnap * 0.6);
-    _logoImg.style.transform = 'scale(' + logoScale.toFixed(4) + ')';
-    _logoImg.style.filter =
-      'drop-shadow(0 0 ' + glowPx + 'px rgba(' + _brandRgb + ',' + glowOp.toFixed(2) + '))' +
-      ' drop-shadow(0 0 ' + Math.round(glowPx * 2.5) + 'px rgba(' + _brandRgb + ',' + glowOp2.toFixed(2) + '))';
+  // ── Inner bloom core: sharp "lamp" at logo centre — the punchy heartbeat ──
+  if(_bloomCore){
+    _bloomCore.style.transform = 'scale(' + (0.06 + _levSnap * 2.4).toFixed(3) + ')';
+    _bloomCore.style.opacity   = Math.min(0.92, _levSnap * 0.98).toFixed(3);
   }
 
-  // ── Orbit: dramatically wider speed range (15s silence → 1.2s peak)
-  if(_orb1){ _orb1.style.animationDuration = Math.max(1.2, 15 - _levSnap * 13.8).toFixed(2) + 's'; }
-  if(_orb2){ _orb2.style.animationDuration = Math.max(2.0, 22 - _levSnap * 20).toFixed(2)   + 's'; }
+  // ── Background brightening wash ────────────────────────────────────────────
+  if(_bgPulse) _bgPulse.style.opacity = (_levSnap * 0.92).toFixed(3);
 
-  // ── Pulse rings: wide range (3.5s → 0.25s)
+  // ── Vignette breath — at silence: dark frame (logo pops from darkness)
+  //    at peak: edges lift completely — screen "opens up" around the logo ─────
+  if(_vignette) _vignette.style.opacity = Math.max(0.02, 0.76 - _levSnap * 0.75).toFixed(3);
+
+  // ── Beat flash: brand-colour radial wash, fires above 0.45 threshold ───────
+  if(_beatFlash) _beatFlash.style.opacity = Math.max(0, (_levSnap - 0.45) * 0.40).toFixed(3);
+
+  // ── Logo: bigger scale + brightness/saturation pump + glow ─────────────────
+  if(_logoImg){
+    var logoScale = 1.0 + _levSnap * 0.22;               // 1.0→1.22  (was 0.09)
+    var bright    = (1.0 + _levSnap * 0.60).toFixed(2);  // 1.0→1.60 brightness
+    var sat       = (1.0 + _levSnap * 1.10).toFixed(2);  // 1.0→2.10 saturation
+    var glowPx    = Math.round(30 + _levSnap * 200);
+    var glowOp    = Math.min(1, 0.2 + _levSnap * 0.85);
+    var glowOp2   = Math.min(0.7, _levSnap * 0.6);
+    _logoImg.style.transform = 'scale(' + logoScale.toFixed(4) + ')';
+    _logoImg.style.filter =
+      'brightness(' + bright + ') saturate(' + sat + ')' +
+      ' drop-shadow(0 0 ' + glowPx + 'px rgba(' + _brandRgb + ',' + glowOp.toFixed(2) + '))' +
+      ' drop-shadow(0 0 ' + Math.round(glowPx*2.5) + 'px rgba(' + _brandRgb + ',' + glowOp2.toFixed(2) + '))';
+  }
+
+  // ── Orbit rings: speed + opacity (quiet: ghostly, loud: blazing) ───────────
+  if(_orb1){
+    _orb1.style.animationDuration = Math.max(1.2, 15 - _levSnap * 13.8).toFixed(2) + 's';
+    _orb1.style.opacity           = (0.18 + _levSnap * 0.74).toFixed(2);  // 0.18→0.92
+  }
+  if(_orb2){
+    _orb2.style.animationDuration = Math.max(2.0, 22 - _levSnap * 20).toFixed(2)   + 's';
+    _orb2.style.opacity           = (0.08 + _levSnap * 0.52).toFixed(2);  // 0.08→0.60
+  }
+
+  // ── Pulse rings: speed ─────────────────────────────────────────────────────
   if(_prngs.length){
     var pd = Math.max(0.25, 3.5 - _levSnap * 3.25).toFixed(3) + 's';
     _prngs.forEach(function(p){ p.style.animationDuration = pd; });
   }
 
-  // ── Particle speed (particles background)
-  if(_bgStyle==='particles') _speedMult = 1 + _levSnap * 8;
+  // ── Background hue-shift: colour breathes 0→22° with energy ───────────────
+  // Skipped for aurora (already has its own CSS animation filter)
+  if(_bgEl) _bgEl.style.filter = 'hue-rotate(' + (_levSnap * 22).toFixed(1) + 'deg)';
+
+  // ── Waves preset: pump wave height with level (bottom-anchored scaleY) ─────
+  if(_waveWrap){
+    _waveWrap.style.transformOrigin = 'bottom center';
+    _waveWrap.style.transform = 'scaleY(' + (1 + _levSnap * 0.6).toFixed(3) + ')';
+  }
+
+  // ── Particle speed ─────────────────────────────────────────────────────────
+  if(_bgStyle==='particles') _speedMult = 1 + _levSnap * 12;  // was 8
+
+  // ── Now-playing title glow: text halos with the brand colour on beats ───────
+  if(_npTitle) _npTitle.style.textShadow =
+    '0 0 ' + Math.round(_levSnap * 50) + 'px rgba(' + _brandRgb + ',' +
+    Math.min(0.9, _levSnap * 0.9).toFixed(2) + ')';
 }
 
 // Poll live_levels at 150 ms when a stream is configured

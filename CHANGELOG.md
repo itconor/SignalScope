@@ -2,6 +2,26 @@
 
 ---
 
+### brandscreen v1.2.8 — 2026-04-19
+
+**Fix: brand colours still too dark on TV screens (red/blue near-black)**
+**Add: dramatically improved audio-reactive effects**
+
+**Background palette fix:**
+The v1.2.6 perceptual V compensation used target luminances that were still too low for TV display (dp=0.022, md=0.092). Red and blue hues clamped near black at those values. New targets: dp=0.040, dk=0.090, md=0.180, with per-level V caps (dp=0.45, dk=0.52, md=0.62) so bright hues stay suitably dark while red and blue reach a genuinely visible brand colour (red bg_mid ≈ `#990f0f`, blue bg_mid ≈ `#0a0a9e`).
+
+**New audio-reactive effects (all presets):**
+- **Vignette breathing** — dark frame around screen edges lifts as audio energy rises. At silence: logo pops from darkness. At peak: edges open completely — the whole screen floods with light. Most visible effect from 3+ metres.
+- **Beat flash** — brand-colour radial wash fires above 0.45 threshold (~0.22 opacity max). Visible colour pulse on loud transients.
+- **Inner bloom core** — new `#lev-bloom-core` (16vw, blur:4px): sharp punchy "lamp" at logo centre that flashes with beats, separate from the large soft outer bloom.
+- **Bigger logo scale** — 1.0→1.22 (was 1.09). ~2× more visible at studio viewing distance.
+- **Logo brightness+saturation pump** — `brightness(1.0→1.60) saturate(1.0→2.10)`. Logo visibly glows and saturates on beats.
+- **Orbit ring opacity** — rings fade 0.18→0.92 / 0.08→0.60 with level (quiet: ghostly, loud: blazing) in addition to speed change.
+- **Background hue-shift** — all presets except aurora hue-rotate 0→22° with energy. Subtle colour breathing on every beat.
+- **Wave amplitude** — waves preset scaleY(1→1.6), anchored at bottom. Waves visibly rise with the music.
+- **Particle speed** — raised to 12× at peak (was 8×).
+- **NP title glow** — now-playing text gets brand-colour halo pulsing with beats.
+
 ### SignalScope-3.5.161 — 2026-04-19
 
 **Fix: sites lose approval state on restart (intermittent)**
