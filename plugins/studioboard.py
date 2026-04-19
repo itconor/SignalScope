@@ -2,7 +2,7 @@
 # Large-format display for outside broadcast studios.
 # Drop into the plugins/ subdirectory.
 
-import os, json, re, time as _time, uuid as _uuid
+import os, json, re, time as _time, uuid as _uuid, threading as _threading, urllib.request as _urllib_req
 
 SIGNALSCOPE_PLUGIN = {
     "id":       "studioboard",
@@ -10,13 +10,107 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.11.0",
+    "version":  "3.12.0",
 }
 
-_BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-_APP_DIR   = os.path.dirname(_BASE_DIR)
-_CFG_PATH  = os.path.join(_BASE_DIR, "studioboard_cfg.json")
-_ART_DIR   = os.path.join(_BASE_DIR, "studioboard_art")
+_BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
+_APP_DIR       = os.path.dirname(_BASE_DIR)
+_CFG_PATH      = os.path.join(_BASE_DIR, "studioboard_cfg.json")
+_ART_DIR       = os.path.join(_BASE_DIR, "studioboard_art")
+_IMG_CACHE_DIR = os.path.join(_BASE_DIR, "studioboard_img_cache")
+
+# ── Presenter / show image cache ──────────────────────────────────
+# Background thread downloads show images from Planet Radio so the
+# display always has a local copy — no CDN latency on page load and
+# images remain available even when the API is temporarily unavailable.
+
+_img_cache    = {}           # rpuid → {"url": str, "path": str, "ctype": str}
+_img_cache_lk = _threading.Lock()
+
+def _safe_rpuid(rpuid):
+    return re.sub(r'[^a-zA-Z0-9_-]', '_', str(rpuid))
+
+def _img_cache_load_disk():
+    """Pre-populate _img_cache from files already on disk (survives server restart)."""
+    if not os.path.isdir(_IMG_CACHE_DIR):
+        return
+    for fname in os.listdir(_IMG_CACHE_DIR):
+        m = re.match(r'^show_([a-zA-Z0-9_-]+)\.(jpg|jpeg|png|webp)$', fname)
+        if not m:
+            continue
+        safe = m.group(1)
+        ext  = m.group(2)
+        ctype = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+        path  = os.path.join(_IMG_CACHE_DIR, fname)
+        with _img_cache_lk:
+            # Stored by safe key; resolved at serve time
+            _img_cache.setdefault(safe, {"url": "", "path": path, "ctype": ctype})
+
+def _download_show_img(rpuid, img_url):
+    """Download img_url, save to _IMG_CACHE_DIR, update _img_cache. Returns True on success."""
+    try:
+        if img_url.startswith("//"): img_url = "https:" + img_url
+        req = _urllib_req.Request(img_url, headers={"User-Agent": "SignalScope/studioboard"})
+        with _urllib_req.urlopen(req, timeout=15) as resp:
+            data  = resp.read()
+            ctype = resp.headers.get_content_type() or "image/jpeg"
+        ext = (".jpg"  if "jpeg" in ctype or ctype.endswith("jpg")  else
+               ".png"  if "png"  in ctype else
+               ".webp" if "webp" in ctype else ".jpg")
+        os.makedirs(_IMG_CACHE_DIR, exist_ok=True)
+        path = os.path.join(_IMG_CACHE_DIR, f"show_{_safe_rpuid(rpuid)}{ext}")
+        with open(path, "wb") as f:
+            f.write(data)
+        entry = {"url": img_url, "path": path, "ctype": ctype}
+        with _img_cache_lk:
+            _img_cache[rpuid] = entry
+            _img_cache[_safe_rpuid(rpuid)] = entry   # alias for serve lookup
+        return True
+    except Exception:
+        return False
+
+def _refresh_show_images():
+    """Fetch Planet Radio API and download any new/changed show images."""
+    cfg    = _cfg_load()
+    rpuids = {s.get("np_rpuid") for s in cfg.get("studios", []) if s.get("np_rpuid")}
+    if not rpuids:
+        return
+    try:
+        url = "https://listenapi.planetradio.co.uk/api9.2/stations_nowplaying/GB"
+        req = _urllib_req.Request(url, headers={"User-Agent": "SignalScope/studioboard"})
+        with _urllib_req.urlopen(req, timeout=15) as resp:
+            raw = json.loads(resp.read().decode())
+        items    = raw if isinstance(raw, list) else raw.get("data", raw.get("stations", []))
+        by_code  = {str(s.get("stationCode", "")).strip(): s for s in items}
+        for rpuid in rpuids:
+            sdata = by_code.get(rpuid)
+            if not sdata:
+                continue
+            air     = sdata.get("stationOnAir") or {}
+            img_url = (air.get("episodeImageUrl") or air.get("episodeImage")
+                      or air.get("brandImageUrl") or air.get("presenterImageUrl")
+                      or air.get("showImageUrl") or air.get("imageUrl") or "")
+            if not img_url:
+                continue
+            if img_url.startswith("//"): img_url = "https:" + img_url
+            with _img_cache_lk:
+                cached = _img_cache.get(rpuid) or _img_cache.get(_safe_rpuid(rpuid)) or {}
+            if (cached.get("url") == img_url
+                    and cached.get("path") and os.path.exists(cached["path"])):
+                continue   # already have this image
+            _download_show_img(rpuid, img_url)
+    except Exception:
+        pass
+
+def _img_cache_poller_fn():
+    """Background daemon thread: refresh presenter/show images every 60 s."""
+    _time.sleep(5)    # brief startup delay so Flask is fully up
+    while True:
+        try:
+            _refresh_show_images()
+        except Exception:
+            pass
+        _time.sleep(60)
 
 # ── Config helpers ──────────────────────────────────────────────
 
@@ -52,7 +146,7 @@ def register(app, ctx):
 
     # ── Kiosk header stripping (same pattern as wallboard) ──────
     _KIOSK_PREFIXES = ("/studioboard/tv", "/studioboard/art",
-                       "/api/studioboard/")
+                       "/studioboard/cached_show_img/", "/api/studioboard/")
 
     def _sb_kiosk_headers(response):
         is_kiosk = getattr(g, '_sb_kiosk', False)
@@ -469,6 +563,27 @@ def register(app, ctx):
             return send_file(path, max_age=300)
         return '', 404
 
+    @app.get("/studioboard/cached_show_img/<rpuid>")
+    @login_required
+    def sb_cached_show_img(rpuid):
+        """Serve server-cached presenter/show image for this rpuid.
+        Falls back to 404 if image not yet downloaded (first startup).
+        The background thread populates the cache within ~5 s of startup."""
+        g._sb_kiosk = True
+        key = (rpuid or "").strip()
+        with _img_cache_lk:
+            cached = _img_cache.get(key) or _img_cache.get(_safe_rpuid(key)) or {}
+        path  = cached.get("path", "")
+        ctype = cached.get("ctype", "image/jpeg")
+        if path and os.path.exists(path):
+            with open(path, "rb") as fh:
+                data = fh.read()
+            resp = make_response(data)
+            resp.headers["Content-Type"]  = ctype
+            resp.headers["Cache-Control"] = "public, max-age=300"
+            return resp
+        return "", 404
+
     # ── Live data endpoint for display ──────────────────────────
 
     @app.get("/api/studioboard/data")
@@ -653,6 +768,13 @@ def register(app, ctx):
             })
 
         return jsonify({"studios": studios_out})
+
+    # ── Start background presenter image cache thread ─────────────
+    # Pre-load any images already on disk from a previous run, then
+    # start the poller that keeps the cache fresh every 60 s.
+    _img_cache_load_disk()
+    _threading.Thread(target=_img_cache_poller_fn, daemon=True,
+                      name="SB-ImgCache").start()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1249,6 +1371,11 @@ function _idleMsg(key){
 
 function gNp(s){var r=s.np_rpuid||'';return r?(NP[r]||{}):{}}
 
+/* djb2-style hash of a URL string — used to cache-bust cached show images when
+   the source URL changes (new show = new episodeImageUrl = new hash = browser
+   discards its cached copy and fetches the freshly downloaded server image). */
+function _urlHash(u){var h=5381;for(var i=0;i<Math.min(u.length,200);i++)h=((h<<5)+h)^u.charCodeAt(i);return(h>>>0).toString(36)}
+
 /* Track structural changes (chain/input assignment) so DOM rebuilds when needed */
 function _sig(ss){return ss.map(function(s){return s.id+':'+(s.chains||[]).join(',')+'/'+(s.inputs||[]).join(',')+'/'+(s.zetta_station_key||'')}).join('|')}
 
@@ -1337,16 +1464,23 @@ function updateCol(s,idx){
   // Big countdown — show when Zetta has now_playing
   var cntW=document.getElementById('cnt'+idx);
   if(cntW)cntW.classList.toggle('cnt-active',!!(s.zetta_station_key&&s.zetta&&s.zetta.now_playing));
-  // Show/presenter image
+  // Show/presenter image — served from server cache so it's always available,
+  // even when the Planet Radio API is slow or temporarily down.
+  // Cache-bust via hash of the source URL: when the show changes, episodeImageUrl
+  // changes → hash changes → browser discards old cached image → fetches new one.
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
+    var rpuid=s.np_rpuid||'';
     var si=np.show_image||'';
-    if(si){
-      if(_artSrc['s'+idx]!==si||showImg.style.display==='none'){
-        _artSrc['s'+idx]=si;showImg.src=si;
+    if(rpuid&&si){
+      var cachedSrc='/studioboard/cached_show_img/'+encodeURIComponent(rpuid)+'?v='+_urlHash(si);
+      if(_artSrc['s'+idx]!==cachedSrc||showImg.style.display==='none'){
+        _artSrc['s'+idx]=cachedSrc;showImg.src=cachedSrc;
         showImg.style.display='';
-        showImg.onerror=function(){showImg.style.display='none'}
+        showImg.onerror=function(){showImg.style.display='none'};
       }
+    } else if(!si){
+      showImg.style.display='none';
     }
   }
   // Track artwork

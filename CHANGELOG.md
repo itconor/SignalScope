@@ -2,6 +2,20 @@
 
 ---
 
+### studioboard v3.12.0 — 2026-04-19
+
+**Feature: server-side presenter/show image cache**
+
+Previously the display set `<img src="https://cdn.planetradio.co.uk/...">` directly. Every time the page loaded (or the display panel rendered) the browser fetched the image fresh from the Planet Radio CDN — slow on first load, and blank if the API was temporarily unavailable.
+
+- New background daemon thread (`SB-ImgCache`) starts at plugin load. After a 5 s startup delay it fetches `listenapi.planetradio.co.uk/api9.2/stations_nowplaying/GB`, extracts the `episodeImageUrl` for every configured studio's `np_rpuid`, downloads the image, and saves it to `plugins/studioboard_img_cache/show_{rpuid}.jpg`. Repeats every 60 s.
+- On server restart, existing cached images are pre-loaded from disk into memory — no re-download needed until the source URL changes.
+- New route `GET /studioboard/cached_show_img/<rpuid>` serves the cached image with `Cache-Control: public, max-age=300`. Returns 404 only before the first poll completes (~5 s after startup).
+- `updateCol` JS: `showImg.src` now points to `/studioboard/cached_show_img/<rpuid>?v=<hash>` instead of the raw CDN URL. The `v` parameter is a djb2 hash of the current source URL — when the show changes (new `episodeImageUrl`), the hash changes, the browser fetches fresh from the local endpoint, which already has the new image downloaded. `onerror` hides the element if the cache is not yet populated.
+- `showImgPoll()` continues running unchanged — it keeps `NP[r].show_image` populated (the raw URL is still needed for hash computation).
+
+---
+
 ### SignalScope-3.5.162 — 2026-04-19
 
 **Fix: Zetta ad-break suppression — spot latch prevents false CHAIN_FAULT/RECOVERY during ad breaks**
