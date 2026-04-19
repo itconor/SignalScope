@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.5",
+    "version":  "1.2.6",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -112,9 +112,23 @@ def _brand_palette(hex_colour):
         rr, gg, bb = colorsys.hsv_to_rgb(h, sat, val)
         return (int(rr * 255), int(gg * 255), int(bb * 255))
 
-    dp = _hsv(0.06)   # very deep — near black but hue-tinted
-    dk = _hsv(0.13)   # dark base
-    md = _hsv(0.22)   # mid — visible in gradient centre
+    # ── Perceptual V compensation ─────────────────────────────────────────────
+    # Different hues have very different perceived luminance at the same V.
+    # Red (luma weight 0.299) at V=0.22 → #380303 ≈ black.
+    # Blue (luma weight 0.114) at V=0.22 → dark navy, clearly visible.
+    # Solution: compute this hue's relative luminance at full saturation/value,
+    # then scale V so all hues achieve the same *perceived* background darkness.
+    # Cap the result so bright hues (yellow/green) don't blow out.
+    _rh, _gh, _bh = colorsys.hsv_to_rgb(h, 1.0, 1.0)
+    _hl = 0.299 * _rh + 0.587 * _gh + 0.114 * _bh  # 0.114 (blue) → 0.587 (green)
+
+    def _pv(target_luma):
+        """V needed so this hue achieves approx target_luma perceived brightness."""
+        return max(0.05, min(0.35, target_luma / max(_hl, 0.15)))
+
+    dp = _hsv(_pv(0.022))  # very deep — near black, hue-tinted
+    dk = _hsv(_pv(0.052))  # dark base
+    md = _hsv(_pv(0.092))  # mid — clearly coloured, not just black
 
     def _hex3(t): return f"#{t[0]:02x}{t[1]:02x}{t[2]:02x}"
     return {

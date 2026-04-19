@@ -2,6 +2,17 @@
 
 ---
 
+### brandscreen v1.2.6 — 2026-04-19
+
+**Fix: red (and warm-colour) brand screens appeared nearly black**
+
+Root cause: `_brand_palette()` used fixed V values (0.06 / 0.13 / 0.22) for all hues. At these values, red puts virtually all brightness into the R channel with near-zero G and B, giving bg_mid = `#380303` — indistinguishable from black. Blue at the same V produces a visible dark navy because the G channel carries significant luminance. The perceived darkness of a hue at a given V depends on its relative luminance weight (red ≈ 0.299, green ≈ 0.587, blue ≈ 0.114).
+
+Fix: `_brand_palette()` now computes the hue's relative luminance (`_hl = 0.299·R + 0.587·G + 0.114·B` at full saturation/value) and uses perceptually-normalised V values (`target_luma / _hl`, clamped 0.05–0.35). All hues now achieve approximately the same perceived background darkness:
+- Red `#ff0000` bg_mid: was `#380303` (≈ black) → now `#510404` (clearly dark crimson)
+- Blue `#17a8ff` bg_mid: minimal change, stays dark navy
+- Green bg_mid: stays dark forest green
+
 ### brandscreen v1.2.5 — 2026-04-19
 
 **Fix: Yodeck required multiple refreshes before page loaded**
