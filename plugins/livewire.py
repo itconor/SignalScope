@@ -567,6 +567,13 @@ function _esc(s){var d=document.createElement('div');d.textContent=String(s);ret
 function _escA(s){return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 
 /* ── Node grouping ─────────────────────────────────────────────────────── */
+function _cmpIp(a,b){
+  var ap=(a||'0.0.0.0').split('.').map(Number);
+  var bp=(b||'0.0.0.0').split('.').map(Number);
+  for(var i=0;i<4;i++){if(ap[i]!==bp[i])return ap[i]-bp[i];}
+  return 0;
+}
+
 function _groupNodes(srcs){
   var nodes={}, order=[];
   for(var i=0;i<srcs.length;i++){
@@ -578,9 +585,7 @@ function _groupNodes(srcs){
     }
     nodes[key].sources.push(s);
   }
-  order.sort(function(a,b){
-    return nodes[a].name.toLowerCase()<nodes[b].name.toLowerCase()?-1:1;
-  });
+  order.sort(function(a,b){return _cmpIp(nodes[a].ip,nodes[b].ip);});
   return {nodes:nodes,order:order};
 }
 
@@ -600,9 +605,14 @@ function _sortSources(srcs,col,dir){
   return sorted;
 }
 
-/* ── Accordion toggle ──────────────────────────────────────────────────── */
+/* ── Accordion toggle + persistent open state ──────────────────────────── */
+var _nodeOpenState={};  /* nodeKey → bool, persists across refreshes */
+
 function _toggleNode(hdr){
-  hdr.parentElement.classList.toggle('node-open');
+  var node=hdr.parentElement;
+  node.classList.toggle('node-open');
+  var key=node.dataset.nodeKey;
+  if(key) _nodeOpenState[key]=node.classList.contains('node-open');
 }
 
 /* ── Search ────────────────────────────────────────────────────────────── */
@@ -684,7 +694,9 @@ function _renderNodeAccordion(containerId, srcs, showAdd, site, isLocal, expandF
     var on=nd.sources.filter(function(s){return s.status==='online';}).length;
     var st=nd.sources.filter(function(s){return s.status==='stale';}).length;
     var tbId='tb-'+btoa(key).replace(/[^a-zA-Z0-9]/g,'').slice(0,16)+'_'+ni;
-    var openCls=(expandFirst&&ni===0)?' node-open':'';
+    /* Use persisted state; default first node open only on very first render */
+    if(!(key in _nodeOpenState)) _nodeOpenState[key]=(ni===0);
+    var openCls=_nodeOpenState[key]?' node-open':'';
     html+='<div class="lw-node'+openCls+'" data-node-key="'+_escA(key)+'">';
     html+='<div class="node-hdr" onclick="_toggleNode(this)">';
     html+='<span class="node-name">'+_esc(nd.name)+'</span>';
