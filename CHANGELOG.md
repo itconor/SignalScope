@@ -2,6 +2,15 @@
 
 ---
 
+### brandscreen v1.2.0 — 2026-04-19
+
+**Brand-hued backgrounds, oversized logo, and audio-level reactivity**
+
+- **Brand colour prominence**: background colours now derived from the station's brand hue using HSV interpolation (`colorsys`). `bg_deep` (V=0.06), `bg_dark` (V=0.13), and `bg_mid` (V=0.22) are computed at the brand hue/saturation — a blue station gives deep navy backgrounds, red gives deep crimson, etc. Aurora blobs, wave fills, and particle colours all inherit the same hue so the entire screen reads as "in brand".
+- **Large logo**: logo now fills most of the screen — `width:68vw; max-width:1100px; max-height:52vh`. Orbit rings scaled to `84vw×34vw` and `63vw×26vw` in viewport units so they correctly surround the logo at any screen size. Pulse rings scaled to `48vw`.
+- **Audio level reactivity**: assign any SignalScope-monitored audio stream to a station. Screen polls `/api/hub/live_levels` at 150 ms and drives: orbit ring spin speed, pulse ring tempo, logo drop-shadow intensity, particle speed, and a new centre bloom element (`#lev-bloom`) that pulses with the audio level. EMA smoothing (fast attack α=0.45, slow decay α=0.12) gives smooth motion without jitter.
+- Level key stored in station config as `level_key` (`"site|stream"` format). Dropdown in admin panel lists all approved sites' active streams.
+
 ### brandscreen v1.1.0 — 2026-04-19
 
 **Studios + REST API: instant SSE-driven station assignment changes**
