@@ -2,6 +2,14 @@
 
 ---
 
+### studioboard v3.13.1 — 2026-04-19
+
+**Fix: waves invisible — move to z-index:2 with mix-blend-mode:screen**
+
+Waves were at z-index:0 (behind `#sb` at z-index:1). With cards at 78% alpha, only 22% showed through, and the wave colour was nearly identical to the dark card background — imperceptible. Fix: `#page-waves` raised to z-index:2 (above cards) with `mix-blend-mode:screen`. Screen blending brightens whatever dark surface the wave passes over without hiding card content. Wave path fill opacity raised to 0.72/0.45/0.58 (was 0.52/0.30/0.40) so the screen blend has enough light intensity to register clearly on dark brand-coloured card backgrounds.
+
+---
+
 ### studioboard v3.13.0 — 2026-04-19
 
 **Feature: brandscreen-style card colours + single flowing waves background**

@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.13.0",
+    "version":  "3.13.1",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1136,9 +1136,13 @@ body.corp .cnt-num.cnt-urgent{color:#dc2626}
 #page-bg{position:fixed;inset:0;z-index:0;pointer-events:none;
   background:linear-gradient(180deg,#122d5a 0%,#0d1f3e 100%)}
 body.corp #page-bg{display:none}
-/* ── Page-wide waves — single continuous effect flowing across all studio cards ── */
+/* ── Page-wide waves — single continuous effect flowing across all studio cards ──
+   z-index:2 puts waves ABOVE the cards (z-index:1). mix-blend-mode:screen means
+   the wave brightens whatever dark surface it passes over (screen formula: lighter
+   result), so the wave glows through all cards simultaneously without hiding content.
+   pointer-events:none ensures cards remain fully interactive beneath the overlay. ── */
 #page-waves{position:fixed;bottom:0;left:0;width:100%;overflow:hidden;
-  z-index:0;pointer-events:none}
+  z-index:2;pointer-events:none;mix-blend-mode:screen}
 #page-waves svg{display:block;width:200%}
 #page-waves .pw1{animation:pw-slide 9s  linear infinite}
 #page-waves .pw2{animation:pw-slide 13s linear infinite reverse;opacity:.65}
@@ -1301,11 +1305,11 @@ body.corp #page-waves{display:none}
 <!-- Single waves effect — spans full viewport width, flows visually across all cards -->
 <div id="page-waves">
   <svg class="pw1" viewBox="0 0 1440 110" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
-    <path class="pwp" data-op="0.52" d="M0,55 C240,95 480,15 720,55 C960,95 1200,15 1440,55 L1440,110 L0,110Z" fill="rgba(23,168,255,0.52)"/>
-    <path class="pwp" data-op="0.30" d="M0,70 C360,30 720,90 1080,55 C1260,38 1380,65 1440,60 L1440,110 L0,110Z" fill="rgba(23,168,255,0.30)"/>
+    <path class="pwp" data-op="0.72" d="M0,55 C240,95 480,15 720,55 C960,95 1200,15 1440,55 L1440,110 L0,110Z" fill="rgba(23,168,255,0.72)"/>
+    <path class="pwp" data-op="0.45" d="M0,70 C360,30 720,90 1080,55 C1260,38 1380,65 1440,60 L1440,110 L0,110Z" fill="rgba(23,168,255,0.45)"/>
   </svg>
   <svg class="pw2" viewBox="0 0 1440 80" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
-    <path class="pwp" data-op="0.40" d="M0,40 C180,72 540,10 720,40 C900,70 1260,10 1440,40 L1440,80 L0,80Z" fill="rgba(23,168,255,0.40)"/>
+    <path class="pwp" data-op="0.58" d="M0,40 C180,72 540,10 720,40 C900,70 1260,10 1440,40 L1440,80 L0,80Z" fill="rgba(23,168,255,0.58)"/>
   </svg>
 </div>
 <div id="sb-hdr">
