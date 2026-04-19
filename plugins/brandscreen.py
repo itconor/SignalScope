@@ -1,10 +1,12 @@
 # brandscreen.py — SignalScope Brand Screen plugin
-# Animated full-screen studio branding display with live now-playing,
-# broadcast clock, orbit rings / particle backgrounds, and message-from-hub.
+# Animated full-screen studio branding display with studios, stations,
+# live now-playing, orbit rings, SSE-driven instant assignment changes.
 # Drop into the plugins/ subdirectory.
 
-import os, json, uuid, threading, mimetypes
-from flask import request, jsonify, render_template_string, send_file, session
+import os, json, uuid, threading, mimetypes, functools
+import queue as _queue
+from flask import (request, jsonify, render_template_string,
+                   send_file, session, Response, stream_with_context)
 
 SIGNALSCOPE_PLUGIN = {
     "id":       "brandscreen",
@@ -12,13 +14,15 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.0.0",
+    "version":  "1.1.0",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _CFG_PATH = os.path.join(_BASE_DIR, "brandscreen_cfg.json")
 _LOGO_DIR = os.path.join(_BASE_DIR, "brandscreen_logos")
 _LOCK     = threading.Lock()
+_NOTIFY   = {}              # studio_id → list[queue.Queue]  (SSE subscribers)
+_NLOCK    = threading.Lock()
 
 os.makedirs(_LOGO_DIR, exist_ok=True)
 
@@ -29,7 +33,7 @@ def _cfg_load():
         with open(_CFG_PATH) as f:
             return json.load(f)
     except Exception:
-        return {"stations": []}
+        return {"stations": [], "studios": [], "api_key": ""}
 
 def _cfg_save(cfg):
     with _LOCK:
@@ -38,6 +42,12 @@ def _cfg_save(cfg):
 
 def _get_station(cfg, sid):
     for s in cfg.get("stations", []):
+        if s.get("id") == sid:
+            return s
+    return None
+
+def _get_studio(cfg, sid):
+    for s in cfg.get("studios", []):
         if s.get("id") == sid:
             return s
     return None
@@ -61,13 +71,75 @@ def _new_station():
         "np_api_artist_path": "now_playing.song.artist",
         "np_manual":          "",
         "message":            "",
-        "token":              str(uuid.uuid4()).replace("-", ""),
     }
+
+def _new_studio():
+    return {
+        "id":         str(uuid.uuid4())[:8],
+        "name":       "Studio",
+        "station_id": "",
+        "token":      str(uuid.uuid4()).replace("-", ""),
+    }
+
+def _ensure_api_key(cfg):
+    if not cfg.get("api_key"):
+        cfg["api_key"] = str(uuid.uuid4()).replace("-", "")
+        _cfg_save(cfg)
+    return cfg["api_key"]
+
+# ─────────────────────────────── SSE notification infrastructure ─────────────
+
+def _notify_studio(studio_id):
+    """Fire assignment_changed to all SSE subscribers for this studio."""
+    with _NLOCK:
+        qs = list(_NOTIFY.get(studio_id, []))
+    for q in qs:
+        try:
+            q.put_nowait("assignment_changed")
+        except _queue.Full:
+            pass
+
+def _sse_stream(studio_id):
+    q = _queue.Queue(maxsize=8)
+    with _NLOCK:
+        _NOTIFY.setdefault(studio_id, []).append(q)
+    try:
+        yield "data: connected\n\n"
+        while True:
+            try:
+                msg = q.get(timeout=25)
+                yield f"data: {msg}\n\n"
+            except _queue.Empty:
+                yield ": keepalive\n\n"
+    finally:
+        with _NLOCK:
+            try:
+                _NOTIFY[studio_id].remove(q)
+            except (ValueError, KeyError):
+                pass
+
+# ─────────────────────────────────────── API key auth decorator ───────────────
+
+def _make_api_auth():
+    """Returns a decorator that allows logged-in sessions OR valid Bearer key."""
+    def _api_auth(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            if session.get("logged_in"):
+                return f(*args, **kwargs)
+            auth  = request.headers.get("Authorization", "")
+            token = auth.removeprefix("Bearer ").strip() if auth else ""
+            cfg   = _cfg_load()
+            key   = cfg.get("api_key", "")
+            if key and token == key:
+                return f(*args, **kwargs)
+            return jsonify({"error": "Unauthorized — provide a valid Bearer token"}), 401
+        return wrapper
+    return _api_auth
 
 # ─────────────────────────────────────── now-playing resolver ─────────────────
 
 def _resolve_np(station, monitor):
-    """Return {title, artist, is_spot} or None."""
     src = station.get("np_source", "none")
     try:
         if src == "zetta":
@@ -112,7 +184,6 @@ def _logo_file(sid):
     return None, None
 
 def _hex_rgb(h):
-    """Return (r, g, b) from a #RRGGBB string."""
     h = (h or "#000000").lstrip("#")
     return int(h[:2], 16), int(h[2:4], 16), int(h[4:], 16)
 
@@ -124,7 +195,7 @@ _ADMIN_TPL = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
-<title>Brand Screen — Admin</title>
+<title>Brand Screen</title>
 <style nonce="{{csp_nonce()}}">
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -132,33 +203,38 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:12px}
 .btn{border:none;border-radius:8px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;text-decoration:none;display:inline-block}
 .btn:hover{filter:brightness(1.15)}.bp{background:var(--acc);color:#fff}.bd{background:var(--al);color:#fff}.bg{background:#132040;color:var(--tx)}.bs{font-size:11px;padding:3px 9px}
-.card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;margin-bottom:16px}
-main{max-width:940px;margin:0 auto;padding:24px 16px}
-.sc{background:var(--sur);border:1px solid var(--bor);border-radius:12px;margin-bottom:12px;overflow:hidden}
-.sc-head{display:flex;align-items:center;gap:14px;padding:12px 16px}
-.sc-logo{width:88px;height:48px;border-radius:6px;background:#0a1a3a;border:1px solid var(--bor);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0}
+main{max-width:960px;margin:0 auto;padding:20px 16px}
+.tab-nav{display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid var(--bor);padding-bottom:0}
+.tab-btn{background:none;border:none;color:var(--mu);font-size:13px;font-weight:600;padding:8px 18px;cursor:pointer;border-radius:8px 8px 0 0;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:inherit}
+.tab-btn:hover{color:var(--tx)}.tab-btn.active{color:var(--acc);border-bottom-color:var(--acc);background:rgba(23,168,255,.06)}
+.tab-panel{display:none}.tab-panel.active{display:block}
+.card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;margin-bottom:14px}
+.ch{padding:9px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54);font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em}
+.cb{padding:14px}
+.sc{background:var(--sur);border:1px solid var(--bor);border-radius:10px;margin-bottom:10px;overflow:hidden}
+.sc-head{display:flex;align-items:center;gap:12px;padding:11px 14px}
+.sc-logo{width:80px;height:44px;border-radius:6px;background:#0a1a3a;border:1px solid var(--bor);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0}
 .sc-logo img{max-width:100%;max-height:100%;object-fit:contain}
 .sc-meta{flex:1;min-width:0}.sc-name{font-weight:700;font-size:14px;margin-bottom:2px}.sc-sub{font-size:11px;color:var(--mu)}
 .sc-actions{display:flex;gap:6px;align-items:center;flex-shrink:0}
-.sc-body{padding:16px;border-top:1px solid var(--bor);display:none}.sc-body.open{display:block}
+.sc-body{padding:14px;border-top:1px solid var(--bor);display:none}.sc-body.open{display:block}
 .field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
 .field label{font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
 input[type=text],input[type=url],select,textarea{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;font-family:inherit;width:100%}
-input[type=text]:focus,input[type=url]:focus,select:focus,textarea:focus{border-color:var(--acc);outline:none}
+input[type=text]:focus,input[type=url]:focus,select:focus{border-color:var(--acc);outline:none}
 input[type=color]{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:2px 4px;height:32px;cursor:pointer;width:100%}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
-.sep{border:none;border-top:1px solid var(--bor);margin:14px 0}
+.sep{border:none;border-top:1px solid var(--bor);margin:12px 0}
 .slabel{font-size:11px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
-.logo-preview{width:128px;height:64px;border-radius:6px;background:#0a1a3a;border:1px solid var(--bor);display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px}
-.logo-preview img{max-width:100%;max-height:100%;object-fit:contain}
-.token-row{display:flex;gap:6px;align-items:center}
-.token-row input{font-family:monospace;font-size:11px;color:var(--mu)}
-.screen-url{font-family:monospace;font-size:11px;color:var(--acc);word-break:break-all;background:#071428;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;margin-top:6px;cursor:pointer}
+.logo-prev{width:120px;height:60px;border-radius:6px;background:#0a1a3a;border:1px solid var(--bor);display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px}
+.logo-prev img{max-width:100%;max-height:100%;object-fit:contain}
+.row-url{font-family:monospace;font-size:11px;color:var(--acc);word-break:break-all;background:#071428;border:1px solid var(--bor);border-radius:6px;padding:7px 10px;cursor:pointer;margin-top:5px}
+.tok-row{display:flex;gap:6px;align-items:center}
+.tok-row input{font-family:monospace;font-size:11px;color:var(--mu)}
 .msg-box{border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;display:none}
 .msg-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
 .msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
-.empty-state{text-align:center;padding:60px 24px;color:var(--mu)}
 .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
 .b-ok{background:rgba(34,197,94,.12);color:var(--ok);border:1px solid rgba(34,197,94,.25)}
 .b-mu{background:rgba(138,164,200,.1);color:var(--mu);border:1px solid rgba(138,164,200,.2)}
@@ -166,32 +242,95 @@ input[type=color]{background:#0d1e40;border:1px solid var(--bor);border-radius:6
 .cb-row input[type=checkbox]{width:14px;height:14px;accent-color:var(--acc);flex-shrink:0}
 .np-fields{display:none}.np-fields.open{display:block}
 .hint{font-size:11px;color:var(--mu);margin-top:4px}
-.colour-swatch{width:16px;height:16px;border-radius:4px;border:1px solid rgba(255,255,255,.2);flex-shrink:0;display:inline-block}
+.swatch{width:14px;height:14px;border-radius:3px;flex-shrink:0;border:1px solid rgba(255,255,255,.15)}
+.studio-assign{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mu)}
+.studio-assign .swatch{width:12px;height:12px}
+.empty-state{text-align:center;padding:48px 24px;color:var(--mu)}
+pre.api-eg{background:#050e20;border:1px solid var(--bor);border-radius:8px;padding:14px;font-size:12px;color:#8ad;overflow-x:auto;white-space:pre-wrap;line-height:1.6;margin-top:8px}
+.api-key-val{font-family:monospace;font-size:12px;background:#050e20;border:1px solid var(--bor);border-radius:6px;padding:8px 12px;color:var(--acc);word-break:break-all}
+table{width:100%;border-collapse:collapse}
+th{color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.05em;text-align:left;padding:6px 8px;border-bottom:1px solid var(--bor)}
+td{padding:6px 8px;font-size:12px;border-bottom:1px solid rgba(23,52,95,.4)}
+td code{font-size:11px;background:#050e20;padding:2px 6px;border-radius:4px;color:var(--acc)}
 </style>
 </head>
 <body>
 <header>
   <span style="font-size:20px">📺</span>
   <span style="font-weight:700;font-size:15px">Brand Screen</span>
-  <span style="color:var(--mu);font-size:12px;margin-left:4px">Animated studio displays</span>
+  <span style="color:var(--mu);font-size:12px;margin-left:4px">Studios &amp; stations</span>
 </header>
 <main>
   <div id="msg" class="msg-box"></div>
-  <div style="margin-bottom:18px">
-    <button class="btn bp" id="add-btn">＋ Add Station</button>
+  <nav class="tab-nav" id="tab-nav">
+    <button class="tab-btn active" data-tab="studios">Studios</button>
+    <button class="tab-btn" data-tab="stations">Stations</button>
+    <button class="tab-btn" data-tab="api">REST API</button>
+  </nav>
+
+  <!-- ── Studios tab ───────────────────────────────────────────────────── -->
+  <div class="tab-panel active" id="tp-studios">
+    <div style="margin-bottom:14px"><button class="btn bp" id="add-studio-btn">＋ Add Studio</button></div>
+    <div id="studio-list"></div>
   </div>
-  <div id="list"></div>
+
+  <!-- ── Stations tab ──────────────────────────────────────────────────── -->
+  <div class="tab-panel" id="tp-stations">
+    <div style="margin-bottom:14px"><button class="btn bp" id="add-station-btn">＋ Add Station</button></div>
+    <div id="station-list"></div>
+  </div>
+
+  <!-- ── REST API tab ──────────────────────────────────────────────────── -->
+  <div class="tab-panel" id="tp-api">
+    <div class="card">
+      <div class="ch">API Key</div>
+      <div class="cb">
+        <p style="color:var(--mu);font-size:12px;margin-bottom:12px">Use this key to change studio station assignments from any automation system — Zetta, Node-RED, shell scripts, or any HTTP client.</p>
+        <div class="slabel">Bearer token</div>
+        <div class="api-key-val" id="api-key-display">{{api_key|e}}</div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn bg bs" data-action="copy-api-key">Copy</button>
+          <button class="btn bd bs" data-action="regen-api-key">Regenerate</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ch">Endpoints</div>
+      <div class="cb">
+        <div class="slabel">Change station assignment</div>
+        <pre class="api-eg" id="eg-assign">PUT {{origin}}/api/brandscreen/studio/{studio_id}/station
+Authorization: Bearer {{api_key|e}}
+Content-Type: application/json
+
+{"station_id": "{station_id}"}</pre>
+        <p class="hint" style="margin-top:8px">The browser display updates instantly — no reload needed. To unassign, send <code>{"station_id": ""}</code>.</p>
+        <hr class="sep">
+        <div class="slabel" style="margin-bottom:8px">List all studios &amp; stations</div>
+        <pre class="api-eg">GET {{origin}}/api/brandscreen/studios
+Authorization: Bearer {{api_key|e}}</pre>
+        <hr class="sep">
+        <div class="slabel" style="margin-bottom:8px">Studio &amp; station reference</div>
+        <table id="api-ref-table">
+          <thead><tr><th>Name</th><th>Type</th><th>ID</th></tr></thead>
+          <tbody id="api-ref-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </main>
 
 <input type="file" id="logo-input" accept="image/png,image/svg+xml,image/jpeg,image/webp,image/gif" style="display:none">
 
 <script nonce="{{csp_nonce()}}">
+var _studios  = {{studios_json|safe}};
 var _stations = {{stations_json|safe}};
 var _zetStations = {{zet_json|safe}};
 var _currentLogoSid = null;
+var _origin = location.origin;
 
 function _csrf(){ return (document.querySelector('meta[name="csrf-token"]')||{}).content||''; }
 function _post(url,data){ return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},body:JSON.stringify(data)}); }
+function _put(url,data){ return fetch(url,{method:'PUT',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},body:JSON.stringify(data)}); }
 function _del(url){ return fetch(url,{method:'DELETE',headers:{'X-CSRFToken':_csrf()}}); }
 
 function _msg(txt,ok){
@@ -200,56 +339,117 @@ function _msg(txt,ok){
   el.textContent=txt; el.style.display='block';
   clearTimeout(el._t); el._t=setTimeout(function(){el.style.display='none';},4500);
 }
-
-var _BG_LABELS   = {particles:'Particles',aurora:'Aurora',waves:'Waves',minimal:'Minimal'};
-var _ANIM_LABELS = {orbit:'Orbit rings',pulse:'Pulse',glow:'Glow',float:'Float',none:'Static'};
-var _NP_LABELS   = {zetta:'Zetta',json_api:'JSON API',manual:'Manual',none:'None'};
-
 function _esc(s){var d=document.createElement('div');d.appendChild(document.createTextNode(s||''));return d.innerHTML;}
-function _sid(s){return s.id;}
+function _v(id){var el=document.getElementById(id);return el?(el.type==='checkbox'?el.checked:el.value):null;}
+function _stById(id){return _stations.find(function(s){return s.id===id;})||null;}
+function _sdById(id){return _studios.find(function(s){return s.id===id;})||null;}
+var _BG_L={particles:'Particles',aurora:'Aurora',waves:'Waves',minimal:'Minimal'};
+var _AN_L={orbit:'Orbit rings',pulse:'Pulse',glow:'Glow',float:'Float',none:'Static'};
+var _NP_L={zetta:'Zetta',json_api:'JSON API',manual:'Manual',none:'None'};
 
-function render(){
-  var el=document.getElementById('list');
-  if(!_stations.length){
-    el.innerHTML='<div class="empty-state"><div style="font-size:40px;margin-bottom:12px">📺</div><div>No stations yet — click <b>Add Station</b> to create your first brand screen.</div></div>';
+// ── Tab navigation ─────────────────────────────────────────────────────────
+document.getElementById('tab-nav').addEventListener('click',function(e){
+  var btn=e.target.closest('.tab-btn'); if(!btn) return;
+  document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
+  document.querySelectorAll('.tab-panel').forEach(function(p){p.classList.remove('active');});
+  btn.classList.add('active');
+  document.getElementById('tp-'+btn.dataset.tab).classList.add('active');
+});
+
+// ── Studios render ────────────────────────────────────────────────────────
+function renderStudios(){
+  var el=document.getElementById('studio-list');
+  if(!_studios.length){
+    el.innerHTML='<div class="empty-state"><div style="font-size:36px;margin-bottom:10px">🖥️</div><div>No studios yet.</div><div style="margin-top:6px;font-size:12px">A studio is a physical display screen. Add one and assign it a station.</div></div>';
     return;
   }
-  el.innerHTML=_stations.map(function(s){
-    var lImg=s._has_logo
-      ?'<img src="/api/brandscreen/logo/'+s.id+'?t='+Date.now()+'" alt="">'
-      :'<span style="font-size:22px;opacity:.25">📺</span>';
-    return '<div class="sc" id="sc-'+s.id+'">'
+  el.innerHTML=_studios.map(function(sd){
+    var st=_stById(sd.station_id||'');
+    var assignHtml=st
+      ?'<span class="swatch" style="background:'+_esc(st.brand_colour)+'"></span>'+_esc(st.name)
+      :'<span style="opacity:.5">— unassigned —</span>';
+    return '<div class="sc" id="sd-'+sd.id+'">'
       +'<div class="sc-head">'
-      +'<div class="sc-logo">'+lImg+'</div>'
-      +'<div class="sc-meta">'
-      +'<div class="sc-name">'+_esc(s.name)+'</div>'
-      +'<div class="sc-sub">'+(_BG_LABELS[s.bg_style]||s.bg_style)+' &nbsp;·&nbsp; '+(_ANIM_LABELS[s.logo_anim]||s.logo_anim)+' &nbsp;·&nbsp; NP: '+(_NP_LABELS[s.np_source]||s.np_source)+'</div>'
+      +'<div style="flex:1;min-width:0">'
+      +'<div class="sc-name">'+_esc(sd.name)+'</div>'
+      +'<div class="studio-assign" style="margin-top:3px">'+assignHtml+'</div>'
       +'</div>'
       +'<div class="sc-actions">'
-      +'<span class="badge '+(s.enabled?'b-ok':'b-mu')+'">'+(s.enabled?'● On':'○ Off')+'</span>'
-      +'<button class="btn bg bs" data-action="toggle-edit" data-sid="'+s.id+'">Edit</button>'
-      +'<a class="btn bg bs" href="/brandscreen/'+s.id+'?token='+s.token+'" target="_blank">Preview ↗</a>'
-      +'<button class="btn bd bs" data-action="delete" data-sid="'+s.id+'">Delete</button>'
+      +'<button class="btn bg bs" data-action="toggle-sd" data-sid="'+sd.id+'">Edit</button>'
+      +'<a class="btn bg bs" href="/brandscreen/studio/'+sd.id+'?token='+sd.token+'" target="_blank">Preview ↗</a>'
+      +'<button class="btn bd bs" data-action="del-sd" data-sid="'+sd.id+'">Delete</button>'
       +'</div>'
       +'</div>'
-      +'<div class="sc-body" id="scb-'+s.id+'">'
-      +_editForm(s)
+      +'<div class="sc-body" id="sdb-'+sd.id+'">'
+      +_studioEditForm(sd)
       +'</div>'
       +'</div>';
   }).join('');
 }
 
-function _editForm(s){
+function _studioEditForm(sd){
+  var stOpts=_stations.map(function(st){
+    return '<option value="'+st.id+'"'+(sd.station_id===st.id?' selected':'')+'>'+_esc(st.name)+'</option>';
+  }).join('');
+  var screenUrl=_origin+'/brandscreen/studio/'+sd.id+'?token='+sd.token;
+  return '<div class="grid2" style="margin-bottom:12px">'
+    +'<div class="field"><label>Studio Name</label><input type="text" id="sd-name-'+sd.id+'" value="'+_esc(sd.name)+'"></div>'
+    +'<div class="field"><label>Assigned Station</label>'
+    +'<select id="sd-st-'+sd.id+'"><option value="">— none —</option>'+stOpts+'</select>'
+    +'</div></div>'
+    +'<div class="slabel">Screen URL</div>'
+    +'<div class="tok-row" style="margin-bottom:6px">'
+    +'<input type="text" value="'+_esc(sd.token)+'" readonly>'
+    +'<button class="btn bg bs" data-action="regen-sd-tok" data-sid="'+sd.id+'">Regenerate</button>'
+    +'</div>'
+    +'<div class="row-url" id="sd-url-'+sd.id+'" title="Click to copy">'+_esc(screenUrl)+'</div>'
+    +'<p class="hint" style="margin-top:5px">Open full-screen on your studio display. Token authenticates automatically.</p>'
+    +'<div style="display:flex;gap:8px;margin-top:14px">'
+    +'<button class="btn bp" data-action="save-sd" data-sid="'+sd.id+'">Save</button>'
+    +'<button class="btn bg" data-action="toggle-sd" data-sid="'+sd.id+'">Cancel</button>'
+    +'</div>';
+}
+
+// ── Stations render ───────────────────────────────────────────────────────
+function renderStations(){
+  var el=document.getElementById('station-list');
+  if(!_stations.length){
+    el.innerHTML='<div class="empty-state"><div style="font-size:36px;margin-bottom:10px">📡</div><div>No stations yet.</div><div style="margin-top:6px;font-size:12px">A station is a brand config (logo, colours, animations). Add one and assign it to a studio.</div></div>';
+    return;
+  }
+  el.innerHTML=_stations.map(function(s){
+    var lImg=s._has_logo?'<img src="/api/brandscreen/logo/'+s.id+'?t='+Date.now()+'" alt="">':'<span style="font-size:20px;opacity:.25">📺</span>';
+    return '<div class="sc" id="st-'+s.id+'">'
+      +'<div class="sc-head">'
+      +'<div class="sc-logo">'+lImg+'</div>'
+      +'<div class="sc-meta">'
+      +'<div class="sc-name" style="display:flex;align-items:center;gap:8px">'
+      +'<span class="swatch" style="background:'+_esc(s.brand_colour)+'"></span>'
+      +_esc(s.name)+'</div>'
+      +'<div class="sc-sub">'+(_BG_L[s.bg_style]||s.bg_style)+' &nbsp;·&nbsp; '+(_AN_L[s.logo_anim]||s.logo_anim)+' &nbsp;·&nbsp; NP: '+(_NP_L[s.np_source]||s.np_source)+'</div>'
+      +'</div>'
+      +'<div class="sc-actions">'
+      +'<span class="badge '+(s.enabled?'b-ok':'b-mu')+'">'+(s.enabled?'On':'Off')+'</span>'
+      +'<button class="btn bg bs" data-action="toggle-st" data-sid="'+s.id+'">Edit</button>'
+      +'<button class="btn bd bs" data-action="del-st" data-sid="'+s.id+'">Delete</button>'
+      +'</div>'
+      +'</div>'
+      +'<div class="sc-body" id="stb-'+s.id+'">'
+      +_stationEditForm(s)
+      +'</div>'
+      +'</div>';
+  }).join('');
+}
+
+function _stationEditForm(s){
   var zetOpts=_zetStations.map(function(z){
     return '<option value="'+_esc(z.key)+'"'+(s.np_zetta_key===z.key?' selected':'')+'>'+_esc(z.name)+'</option>';
   }).join('');
-  return '<div class="slabel">Identity</div>'
-    +'<div class="grid2">'
+  return '<div class="grid2">'
     +'<div class="field"><label>Station Name</label><input type="text" id="f-name-'+s.id+'" value="'+_esc(s.name)+'"></div>'
-    +'<div class="field" style="justify-content:flex-end">'
-    +'<label style="margin-bottom:6px">Screen</label>'
+    +'<div class="field" style="justify-content:flex-end"><label style="margin-bottom:6px">Status</label>'
     +'<label style="display:flex;align-items:center;gap:8px;cursor:pointer">'
-    +'<input type="checkbox" id="f-en-'+s.id+'" style="accent-color:var(--acc);width:16px;height:16px"'+(s.enabled?' checked':'')+'>'
+    +'<input type="checkbox" id="f-en-'+s.id+'"'+(s.enabled?' checked':'')+' style="accent-color:var(--acc);width:16px;height:16px">'
     +'<span style="font-size:13px">Enabled</span></label>'
     +'</div></div>'
     +'<div class="grid2">'
@@ -257,39 +457,36 @@ function _editForm(s){
     +'<div class="field"><label>Accent Colour</label><input type="color" id="f-accent-'+s.id+'" value="'+_esc(s.accent_colour)+'"></div>'
     +'</div>'
     +'<hr class="sep">'
-    +'<div class="slabel">Animation &amp; Display</div>'
+    +'<div class="slabel">Animation</div>'
     +'<div class="grid2">'
-    +'<div class="field"><label>Background Style</label>'
-    +'<select id="f-bg-'+s.id+'">'
+    +'<div class="field"><label>Background</label><select id="f-bg-'+s.id+'">'
     +'<option value="particles"'+(s.bg_style==='particles'?' selected':'')+'>✦ Particles</option>'
     +'<option value="aurora"'+(s.bg_style==='aurora'?' selected':'')+'>◎ Aurora</option>'
     +'<option value="waves"'+(s.bg_style==='waves'?' selected':'')+'>⌇ Waves</option>'
     +'<option value="minimal"'+(s.bg_style==='minimal'?' selected':'')+'>▪ Minimal</option>'
     +'</select></div>'
-    +'<div class="field"><label>Logo Animation</label>'
-    +'<select id="f-anim-'+s.id+'">'
+    +'<div class="field"><label>Logo Animation</label><select id="f-anim-'+s.id+'">'
     +'<option value="orbit"'+(s.logo_anim==='orbit'?' selected':'')+'>⊙ Orbit rings</option>'
     +'<option value="pulse"'+(s.logo_anim==='pulse'?' selected':'')+'>◉ Pulse</option>'
     +'<option value="glow"'+(s.logo_anim==='glow'?' selected':'')+'>✦ Glow</option>'
     +'<option value="float"'+(s.logo_anim==='float'?' selected':'')+'>↕ Float</option>'
     +'<option value="none"'+(s.logo_anim==='none'?' selected':'')+'>— Static</option>'
-    +'</select></div>'
-    +'</div>'
+    +'</select></div></div>'
     +'<div class="grid3" style="margin-bottom:8px">'
-    +'<div class="cb-row"><input type="checkbox" id="f-clk-'+s.id+'"'+(s.show_clock?' checked':'')+'><label for="f-clk-'+s.id+'">Broadcast Clock</label></div>'
+    +'<div class="cb-row"><input type="checkbox" id="f-clk-'+s.id+'"'+(s.show_clock?' checked':'')+'><label for="f-clk-'+s.id+'">Clock</label></div>'
     +'<div class="cb-row"><input type="checkbox" id="f-oair-'+s.id+'"'+(s.show_on_air?' checked':'')+'><label for="f-oair-'+s.id+'">On Air Badge</label></div>'
     +'<div class="cb-row"><input type="checkbox" id="f-np-'+s.id+'"'+(s.show_now_playing?' checked':'')+'><label for="f-np-'+s.id+'">Now Playing</label></div>'
     +'</div>'
     +'<hr class="sep">'
     +'<div class="slabel">Logo</div>'
-    +'<div class="logo-preview" id="lp-'+s.id+'">'
-    +(s._has_logo?'<img src="/api/brandscreen/logo/'+s.id+'?t='+Date.now()+'" alt="">':'<span style="font-size:32px;opacity:.2">📺</span>')
+    +'<div class="logo-prev" id="lp-'+s.id+'">'
+    +(s._has_logo?'<img src="/api/brandscreen/logo/'+s.id+'?t='+Date.now()+'" alt="">':'<span style="font-size:28px;opacity:.2">📺</span>')
     +'</div>'
-    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<div style="display:flex;gap:8px;align-items:center">'
     +'<button class="btn bg bs" data-action="upload-logo" data-sid="'+s.id+'">Upload Logo</button>'
     +(s._has_logo?'<button class="btn bd bs" data-action="del-logo" data-sid="'+s.id+'">Remove</button>':'')
     +'</div>'
-    +'<p class="hint" style="margin-top:6px">PNG, SVG, JPG or WebP — transparent background PNG gives best results on any background colour.</p>'
+    +'<p class="hint" style="margin-top:5px">PNG with transparent background recommended. SVG, JPG, WebP also supported.</p>'
     +'<hr class="sep">'
     +'<div class="slabel">Now Playing Source</div>'
     +'<div class="field"><label>Source</label>'
@@ -300,170 +497,187 @@ function _editForm(s){
     +'<option value="manual"'+(s.np_source==='manual'?' selected':'')+'>Manual text</option>'
     +'</select></div>'
     +'<div class="np-fields'+(s.np_source==='zetta'?' open':'')+'" id="npf-zetta-'+s.id+'">'
-    +'<div class="field"><label>Zetta Station</label>'
-    +'<select id="f-zpkey-'+s.id+'"><option value="">— choose —</option>'+zetOpts+'</select>'
-    +(zetOpts?'':'<p class="hint">No Zetta stations detected. Is the Zetta plugin installed and connected?</p>')
+    +'<div class="field"><label>Zetta Station</label><select id="f-zpkey-'+s.id+'">'
+    +'<option value="">— choose —</option>'+zetOpts+'</select>'
+    +(zetOpts?'':'<p class="hint">No Zetta stations found — is the Zetta plugin active?</p>')
     +'</div></div>'
     +'<div class="np-fields'+(s.np_source==='json_api'?' open':'')+'" id="npf-json-'+s.id+'">'
     +'<div class="field"><label>API URL</label><input type="url" id="f-npurl-'+s.id+'" value="'+_esc(s.np_api_url)+'"></div>'
     +'<div class="grid2">'
-    +'<div class="field"><label>Title field (dot path)</label><input type="text" id="f-nptpath-'+s.id+'" value="'+_esc(s.np_api_title_path)+'"></div>'
-    +'<div class="field"><label>Artist field (dot path)</label><input type="text" id="f-npapath-'+s.id+'" value="'+_esc(s.np_api_artist_path)+'"></div>'
-    +'</div><p class="hint">Example: <code>now_playing.song.title</code></p>'
+    +'<div class="field"><label>Title path</label><input type="text" id="f-nptpath-'+s.id+'" value="'+_esc(s.np_api_title_path)+'"></div>'
+    +'<div class="field"><label>Artist path</label><input type="text" id="f-npapath-'+s.id+'" value="'+_esc(s.np_api_artist_path)+'"></div>'
+    +'</div><p class="hint">Dot notation, e.g. <code>now_playing.song.title</code></p>'
     +'</div>'
     +'<div class="np-fields'+(s.np_source==='manual'?' open':'')+'" id="npf-manual-'+s.id+'">'
-    +'<div class="field"><label>Display Text</label><input type="text" id="f-npman-'+s.id+'" value="'+_esc(s.np_manual)+'" placeholder="Always shown as now-playing text"></div>'
+    +'<div class="field"><label>Display text</label><input type="text" id="f-npman-'+s.id+'" value="'+_esc(s.np_manual)+'"></div>'
     +'</div>'
     +'<hr class="sep">'
     +'<div class="slabel">Live Message</div>'
-    +'<div class="field"><label>Message (amber banner on screen — clear to dismiss)</label>'
-    +'<input type="text" id="f-msg-'+s.id+'" value="'+_esc(s.message)+'" placeholder="Leave blank for no banner" maxlength="200">'
+    +'<div class="field"><label>Message (amber banner on screen — blank to clear)</label>'
+    +'<input type="text" id="f-msg-'+s.id+'" value="'+_esc(s.message)+'" maxlength="200">'
     +'</div>'
-    +'<hr class="sep">'
-    +'<div class="slabel">Screen Access</div>'
-    +'<div class="token-row" style="margin-bottom:6px">'
-    +'<input type="text" value="'+_esc(s.token)+'" readonly>'
-    +'<button class="btn bg bs" data-action="regen-token" data-sid="'+s.id+'">Regenerate</button>'
-    +'</div>'
-    +'<div class="screen-url" id="surl-'+s.id+'" title="Click to copy">'
-    +_esc(location.origin+'/brandscreen/'+s.id+'?token='+s.token)
-    +'</div>'
-    +'<p class="hint" style="margin-top:6px">Open this URL in a full-screen browser on your studio display. The token authenticates automatically.</p>'
-    +'<div style="display:flex;gap:8px;margin-top:16px">'
-    +'<button class="btn bp" data-action="save" data-sid="'+s.id+'">Save</button>'
-    +'<button class="btn bg" data-action="toggle-edit" data-sid="'+s.id+'">Cancel</button>'
+    +'<div style="display:flex;gap:8px;margin-top:14px">'
+    +'<button class="btn bp" data-action="save-st" data-sid="'+s.id+'">Save</button>'
+    +'<button class="btn bg" data-action="toggle-st" data-sid="'+s.id+'">Cancel</button>'
     +'</div>';
 }
 
-function _v(id){ var el=document.getElementById(id); return el?(el.type==='checkbox'?el.checked:el.value):null; }
-function _sid2s(sid){ return _stations.find(function(s){return s.id===sid;})||null; }
-
-function _toggleEdit(sid){
-  var el=document.getElementById('scb-'+sid);
-  if(el) el.classList.toggle('open');
+// ── API reference table ───────────────────────────────────────────────────
+function renderApiRef(){
+  var rows='';
+  _studios.forEach(function(sd){
+    rows+='<tr><td>'+_esc(sd.name)+'</td><td style="color:var(--wn)">Studio</td><td><code>'+_esc(sd.id)+'</code></td></tr>';
+  });
+  _stations.forEach(function(st){
+    rows+='<tr><td>'+_esc(st.name)+'</td><td style="color:var(--acc)">Station</td><td><code>'+_esc(st.id)+'</code></td></tr>';
+  });
+  document.getElementById('api-ref-body').innerHTML=rows;
 }
 
-function _npSrcChanged(sid){
-  var src=_v('f-npsrc-'+sid);
-  ['zetta','json_api','manual'].forEach(function(k){
-    var el=document.getElementById('npf-'+k+'-'+sid);
-    if(el){ el.className='np-fields'+(src===k?' open':''); }
+// ── Studio actions ────────────────────────────────────────────────────────
+function _addStudio(){
+  _post('/api/brandscreen/studio',{}).then(function(r){return r.json();}).then(function(d){
+    if(d.error){_msg(d.error,false);return;}
+    _studios.push(d.studio); renderStudios(); renderApiRef();
+    document.getElementById('sdb-'+d.studio.id).classList.add('open');
+    _msg('Studio created.',true);
+  });
+}
+function _saveSd(sid){
+  var sd=_sdById(sid); if(!sd) return;
+  var data={name:_v('sd-name-'+sid)||sd.name, station_id:_v('sd-st-'+sid)||''};
+  _post('/api/brandscreen/studio/'+sid, data).then(function(r){return r.json();}).then(function(d){
+    if(d.error){_msg(d.error,false);return;}
+    Object.assign(sd,d.studio); renderStudios(); renderApiRef();
+    _msg('Studio saved.',true);
+  });
+}
+function _delSd(sid){
+  if(!confirm('Delete this studio?')) return;
+  _del('/api/brandscreen/studio/'+sid).then(function(r){return r.json();}).then(function(d){
+    if(d.error){_msg(d.error,false);return;}
+    _studios=_studios.filter(function(s){return s.id!==sid;}); renderStudios(); renderApiRef();
+    _msg('Studio deleted.',true);
+  });
+}
+function _regenSdTok(sid){
+  if(!confirm('Regenerate token? The current screen URL will stop working.')) return;
+  _post('/api/brandscreen/studio/'+sid+'/regen_token',{}).then(function(r){return r.json();}).then(function(d){
+    if(d.error){_msg(d.error,false);return;}
+    var sd=_sdById(sid); if(sd) sd.token=d.token;
+    renderStudios(); document.getElementById('sdb-'+sid).classList.add('open');
+    _msg('Token regenerated.',true);
   });
 }
 
+// ── Station actions ───────────────────────────────────────────────────────
 function _addStation(){
   _post('/api/brandscreen/station',{}).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
-    _stations.push(d.station);
-    render();
-    _toggleEdit(d.station.id);
-    _msg('Station created — configure it below.',true);
-  }).catch(function(){_msg('Request failed',false);});
+    _stations.push(d.station); renderStations(); renderApiRef();
+    document.getElementById('stb-'+d.station.id).classList.add('open');
+    _msg('Station created.',true);
+  });
 }
-
-function _save(sid){
-  var s=_sid2s(sid);if(!s)return;
+function _saveSt(sid){
+  var s=_stById(sid); if(!s) return;
   var data={
-    name:               _v('f-name-'+sid)||s.name,
-    enabled:            !!_v('f-en-'+sid),
-    brand_colour:       _v('f-brand-'+sid)||s.brand_colour,
-    accent_colour:      _v('f-accent-'+sid)||s.accent_colour,
-    bg_style:           _v('f-bg-'+sid)||s.bg_style,
-    logo_anim:          _v('f-anim-'+sid)||s.logo_anim,
-    show_clock:         !!_v('f-clk-'+sid),
-    show_on_air:        !!_v('f-oair-'+sid),
-    show_now_playing:   !!_v('f-np-'+sid),
-    np_source:          _v('f-npsrc-'+sid)||'none',
-    np_zetta_key:       _v('f-zpkey-'+sid)||'',
-    np_api_url:         _v('f-npurl-'+sid)||'',
-    np_api_title_path:  _v('f-nptpath-'+sid)||'',
-    np_api_artist_path: _v('f-npapath-'+sid)||'',
-    np_manual:          _v('f-npman-'+sid)||'',
-    message:            _v('f-msg-'+sid)||'',
+    name:_v('f-name-'+sid)||s.name, enabled:!!_v('f-en-'+sid),
+    brand_colour:_v('f-brand-'+sid)||s.brand_colour, accent_colour:_v('f-accent-'+sid)||s.accent_colour,
+    bg_style:_v('f-bg-'+sid)||s.bg_style, logo_anim:_v('f-anim-'+sid)||s.logo_anim,
+    show_clock:!!_v('f-clk-'+sid), show_on_air:!!_v('f-oair-'+sid), show_now_playing:!!_v('f-np-'+sid),
+    np_source:_v('f-npsrc-'+sid)||'none', np_zetta_key:_v('f-zpkey-'+sid)||'',
+    np_api_url:_v('f-npurl-'+sid)||'', np_api_title_path:_v('f-nptpath-'+sid)||'',
+    np_api_artist_path:_v('f-npapath-'+sid)||'', np_manual:_v('f-npman-'+sid)||'',
+    message:_v('f-msg-'+sid)||'',
   };
-  _post('/api/brandscreen/station/'+sid,data).then(function(r){return r.json();}).then(function(d){
+  _post('/api/brandscreen/station/'+sid, data).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
-    Object.assign(s,d.station);
-    render(); _toggleEdit(sid);
-    _msg('Saved.',true);
-  }).catch(function(){_msg('Save failed',false);});
+    Object.assign(s,d.station); renderStations(); renderStudios();
+    _msg('Station saved.',true);
+  });
 }
-
-function _deleteStation(sid){
-  if(!confirm('Delete this station? This cannot be undone.'))return;
+function _delSt(sid){
+  if(!confirm('Delete this station? Any studios assigned to it will become unassigned.')) return;
   _del('/api/brandscreen/station/'+sid).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
     _stations=_stations.filter(function(s){return s.id!==sid;});
-    render(); _msg('Deleted.',true);
+    _studios.forEach(function(sd){if(sd.station_id===sid)sd.station_id='';});
+    renderStations(); renderStudios(); renderApiRef();
+    _msg('Station deleted.',true);
   });
 }
-
-function _uploadLogo(sid){
-  _currentLogoSid=sid;
-  document.getElementById('logo-input').value='';
-  document.getElementById('logo-input').click();
-}
-
+function _uploadLogo(sid){ _currentLogoSid=sid; document.getElementById('logo-input').value=''; document.getElementById('logo-input').click(); }
 function _doUpload(file){
-  if(!file||!_currentLogoSid)return;
+  if(!file||!_currentLogoSid) return;
   var sid=_currentLogoSid;
   var fd=new FormData(); fd.append('logo',file);
   fetch('/api/brandscreen/logo/'+sid,{method:'POST',headers:{'X-CSRFToken':_csrf()},body:fd})
     .then(function(r){return r.json();}).then(function(d){
       if(d.error){_msg(d.error,false);return;}
-      var s=_sid2s(sid);if(s)s._has_logo=true;
-      render(); _msg('Logo uploaded.',true);
+      var s=_stById(sid); if(s) s._has_logo=true;
+      renderStations(); _msg('Logo uploaded.',true);
     });
 }
-
 function _delLogo(sid){
-  if(!confirm('Remove this logo?'))return;
+  if(!confirm('Remove logo?')) return;
   _del('/api/brandscreen/logo/'+sid).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
-    var s=_sid2s(sid);if(s)s._has_logo=false;
-    render(); _msg('Logo removed.',true);
+    var s=_stById(sid); if(s) s._has_logo=false;
+    renderStations(); _msg('Logo removed.',true);
+  });
+}
+function _npSrcChanged(sid){
+  var src=_v('f-npsrc-'+sid);
+  ['zetta','json_api','manual'].forEach(function(k){
+    var el=document.getElementById('npf-'+k+'-'+sid);
+    if(el) el.className='np-fields'+(src===k?' open':'');
   });
 }
 
-function _regenToken(sid){
-  if(!confirm('Regenerate token? The current screen URL will stop working.'))return;
-  _post('/api/brandscreen/station/'+sid+'/regen_token',{}).then(function(r){return r.json();}).then(function(d){
+// ── API key actions ───────────────────────────────────────────────────────
+function _copyApiKey(){
+  var val=document.getElementById('api-key-display').textContent;
+  navigator.clipboard&&navigator.clipboard.writeText(val.trim());
+  _msg('API key copied.',true);
+}
+function _regenApiKey(){
+  if(!confirm('Regenerate API key? All integrations using the current key will break.')) return;
+  _post('/api/brandscreen/regen_api_key',{}).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
-    var s=_sid2s(sid);if(s)s.token=d.token;
-    render(); _toggleEdit(sid);
-    _msg('Token regenerated — update the URL on your display.',true);
+    document.getElementById('api-key-display').textContent=d.api_key;
+    document.getElementById('eg-assign').textContent=document.getElementById('eg-assign').textContent.replace(/Bearer \S+/,'Bearer '+d.api_key);
+    _msg('API key regenerated — update your integrations.',true);
   });
 }
 
-// ── Event delegation ──────────────────────────────────────────────────────────
-document.getElementById('add-btn').addEventListener('click',_addStation);
-
-document.getElementById('logo-input').addEventListener('change',function(){
-  _doUpload(this.files[0]);
-});
-
-document.getElementById('list').addEventListener('click',function(e){
-  var btn=e.target.closest('[data-action]');
-  if(!btn)return;
+// ── Master event delegation ───────────────────────────────────────────────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('[data-action]'); if(!btn) return;
   var a=btn.dataset.action, sid=btn.dataset.sid;
-  if(a==='toggle-edit')  _toggleEdit(sid);
-  else if(a==='save')    _save(sid);
-  else if(a==='delete')  _deleteStation(sid);
+  if(a==='toggle-sd'){ var el=document.getElementById('sdb-'+sid); if(el) el.classList.toggle('open'); }
+  else if(a==='save-sd')     _saveSd(sid);
+  else if(a==='del-sd')      _delSd(sid);
+  else if(a==='regen-sd-tok') _regenSdTok(sid);
+  else if(a==='toggle-st'){ var el2=document.getElementById('stb-'+sid); if(el2) el2.classList.toggle('open'); }
+  else if(a==='save-st')     _saveSt(sid);
+  else if(a==='del-st')      _delSt(sid);
   else if(a==='upload-logo') _uploadLogo(sid);
   else if(a==='del-logo')    _delLogo(sid);
-  else if(a==='regen-token') _regenToken(sid);
+  else if(a==='copy-api-key') _copyApiKey();
+  else if(a==='regen-api-key') _regenApiKey();
+  // Copy screen URL on click
+  var url=e.target.closest('.row-url');
+  if(url){ navigator.clipboard&&navigator.clipboard.writeText(url.textContent.trim()); _msg('URL copied.',true); }
 });
-
-document.getElementById('list').addEventListener('click',function(e){
-  var su=e.target.closest('.screen-url');
-  if(su){ navigator.clipboard&&navigator.clipboard.writeText(su.textContent.trim());_msg('URL copied.',true); }
-});
-
-document.getElementById('list').addEventListener('change',function(e){
+document.getElementById('add-studio-btn').addEventListener('click',_addStudio);
+document.getElementById('add-station-btn').addEventListener('click',_addStation);
+document.getElementById('logo-input').addEventListener('change',function(){ _doUpload(this.files[0]); });
+document.addEventListener('change',function(e){
   if(e.target.dataset.npSel) _npSrcChanged(e.target.dataset.npSel);
 });
 
-render();
+renderStudios(); renderStations(); renderApiRef();
 </script>
 </body>
 </html>"""
@@ -480,118 +694,75 @@ _SCREEN_TPL = """<!doctype html>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{width:100%;height:100%;overflow:hidden;background:#04091a;font-family:system-ui,sans-serif;color:#fff}
 :root{--brand:{{brand|e}};--brand-rgb:{{brand_rgb|e}};--accent:{{accent|e}}}
-
-/* ── Background layers ───────────────────────────────────────────────────── */
-#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
+canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 .bg-aurora{position:fixed;inset:0;z-index:0;
-  background:
-    radial-gradient(ellipse 60% 50% at 15% 20%,rgba(var(--brand-rgb),.22) 0%,transparent 70%),
+  background:radial-gradient(ellipse 60% 50% at 15% 20%,rgba(var(--brand-rgb),.22) 0%,transparent 70%),
     radial-gradient(ellipse 50% 45% at 85% 80%,rgba(var(--brand-rgb),.16) 0%,transparent 70%),
-    radial-gradient(ellipse 80% 60% at 50% 110%,rgba(var(--brand-rgb),.10) 0%,transparent 70%),
-    #04091a;
+    radial-gradient(ellipse 80% 60% at 50% 110%,rgba(var(--brand-rgb),.10) 0%,transparent 70%),#04091a;
   animation:aurora 14s ease-in-out infinite alternate}
-@keyframes aurora{
-  0%  {background-size:120% 100%,100% 120%,140% 80%;background-position:0% 0%,100% 100%,50% 100%}
-  100%{background-size:140% 110%,120% 100%,160% 90%;background-position:20% 10%,80% 90%,60% 100%}}
-.bg-waves{position:fixed;inset:0;z-index:0;
-  background:radial-gradient(ellipse at top,#0a1830 0%,#04091a 60%)}
+@keyframes aurora{0%{filter:hue-rotate(0deg)}100%{filter:hue-rotate(8deg)}}
+.bg-waves{position:fixed;inset:0;z-index:0;background:radial-gradient(ellipse at top,#0a1830 0%,#04091a 60%)}
 .wave-wrap{position:fixed;bottom:0;left:0;width:100%;overflow:hidden;z-index:0}
 .wave-wrap svg{display:block;width:200%;animation:wave-slide 10s linear infinite}
-.wave-wrap svg+svg{animation-direction:reverse;opacity:.55;margin-top:-30px}
+.wave-wrap svg+svg{animation-direction:reverse;opacity:.55}
 @keyframes wave-slide{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-.bg-minimal{position:fixed;inset:0;z-index:0;
-  background:radial-gradient(ellipse at top,#0a1830 0%,#04091a 55%)}
-
-/* ── Main layout ─────────────────────────────────────────────────────────── */
+.bg-minimal{position:fixed;inset:0;z-index:0;background:radial-gradient(ellipse at top,#0a1830 0%,#04091a 55%)}
 #screen{position:relative;z-index:1;width:100%;height:100vh;display:flex;flex-direction:column;
-  animation:px-drift 90s step-end infinite}
+  animation:px-drift 90s step-end infinite;transition:opacity .6s ease}
 @keyframes px-drift{0%,100%{transform:translate(0,0)}25%{transform:translate(1px,0)}50%{transform:translate(1px,1px)}75%{transform:translate(0,1px)}}
-
-/* ── Top bar ─────────────────────────────────────────────────────────────── */
+#screen.fade-out{opacity:0}
 #top-bar{display:flex;align-items:flex-start;justify-content:space-between;padding:24px 36px 0;flex-shrink:0}
-
 #on-air{display:none;align-items:center;gap:8px;
   background:rgba(239,68,68,.12);border:1.5px solid rgba(239,68,68,.45);border-radius:8px;
   padding:6px 18px;font-size:12px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;color:#ef4444}
 #on-air.vis{display:flex}
 .oa-dot{width:8px;height:8px;border-radius:50%;background:#ef4444;animation:oab 1.2s ease-in-out infinite}
 @keyframes oab{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.25;transform:scale(.7)}}
-
 #clock-wrap{text-align:right;display:none}
 #clock-wrap.vis{display:block}
-#clock-time{font-size:30px;font-weight:200;letter-spacing:.08em;font-variant-numeric:tabular-nums;
-  color:rgba(255,255,255,.9)}
+#clock-time{font-size:30px;font-weight:200;letter-spacing:.08em;font-variant-numeric:tabular-nums;color:rgba(255,255,255,.9)}
 #clock-date{font-size:11px;color:rgba(255,255,255,.35);letter-spacing:.07em;text-transform:uppercase;margin-top:2px}
-
-/* ── Centre / logo zone ──────────────────────────────────────────────────── */
 #centre{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
 .logo-zone{position:relative;display:flex;align-items:center;justify-content:center}
-
 #logo-img{max-width:300px;max-height:180px;object-fit:contain;position:relative;z-index:10;display:block}
 #logo-ph{font-size:90px;opacity:.12;position:relative;z-index:10}
-
-/* ── Orbit rings ─────────────────────────────────────────────────────────── */
 .orbit-wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
 .orb{position:absolute;border-radius:50%;border:1.5px solid var(--brand)}
-.orb1{width:380px;height:150px;opacity:.38;
-  animation:orb-s1 10s linear infinite}
+.orb1{width:380px;height:150px;opacity:.38;animation:orb-s1 10s linear infinite}
 .orb1::before{content:'';position:absolute;width:10px;height:10px;border-radius:50%;
-  background:var(--brand);box-shadow:0 0 12px 3px var(--brand);
-  top:-5px;left:calc(50% - 5px)}
-.orb2{width:290px;height:106px;opacity:.22;border-style:dashed;
-  animation:orb-s2 15s linear infinite reverse}
+  background:var(--brand);box-shadow:0 0 12px 3px var(--brand);top:-5px;left:calc(50% - 5px)}
+.orb2{width:290px;height:106px;opacity:.22;border-style:dashed;animation:orb-s2 15s linear infinite reverse}
 .orb2::before{content:'';position:absolute;width:7px;height:7px;border-radius:50%;
-  background:var(--brand);box-shadow:0 0 8px 2px var(--brand);
-  bottom:-3.5px;left:calc(50% - 3.5px)}
+  background:var(--brand);box-shadow:0 0 8px 2px var(--brand);bottom:-3.5px;left:calc(50% - 3.5px)}
 @keyframes orb-s1{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes orb-s2{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-
-/* ── Pulse rings ─────────────────────────────────────────────────────────── */
 .pulse-wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
-.prng{position:absolute;width:220px;height:220px;border-radius:50%;
-  border:2px solid var(--brand);opacity:0;
-  animation:pulse-out 3.2s ease-out infinite}
-.prng:nth-child(2){animation-delay:1.07s}
-.prng:nth-child(3){animation-delay:2.13s}
+.prng{position:absolute;width:220px;height:220px;border-radius:50%;border:2px solid var(--brand);opacity:0;animation:pulse-out 3.2s ease-out infinite}
+.prng:nth-child(2){animation-delay:1.07s}.prng:nth-child(3){animation-delay:2.13s}
 @keyframes pulse-out{0%{transform:scale(.55);opacity:.72}100%{transform:scale(2.1);opacity:0}}
-
-/* ── Logo animations ─────────────────────────────────────────────────────── */
 .la-float .logo-zone{animation:lo-float 4s ease-in-out infinite}
 @keyframes lo-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-14px)}}
 .la-glow #logo-img{animation:lo-glow 2.8s ease-in-out infinite}
-@keyframes lo-glow{
-  0%,100%{filter:drop-shadow(0 0 4px rgba(var(--brand-rgb),.5))}
-  50%    {filter:drop-shadow(0 0 24px rgba(var(--brand-rgb),.9)) drop-shadow(0 0 60px rgba(var(--brand-rgb),.5))}}
-
-/* ── Now-playing lower third ─────────────────────────────────────────────── */
+@keyframes lo-glow{0%,100%{filter:drop-shadow(0 0 4px rgba(var(--brand-rgb),.5))}50%{filter:drop-shadow(0 0 24px rgba(var(--brand-rgb),.9)) drop-shadow(0 0 60px rgba(var(--brand-rgb),.5))}}
 #lower{flex-shrink:0;padding:0 48px 36px;display:none;flex-direction:column;align-items:center;text-align:center}
 #lower.vis{display:flex}
 #np-line{width:56px;height:1.5px;background:linear-gradient(90deg,transparent,var(--brand),transparent);margin-bottom:10px}
 #np-label{font-size:9px;font-weight:700;letter-spacing:.22em;color:var(--brand);text-transform:uppercase;margin-bottom:10px}
-#np-title{font-size:24px;font-weight:300;letter-spacing:.02em;color:rgba(255,255,255,.95);margin-bottom:5px;
-  max-width:820px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#np-artist{font-size:14px;color:rgba(255,255,255,.45);
-  max-width:600px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#np-spot{display:none;margin-top:10px;padding:3px 16px;border-radius:20px;
-  background:rgba(245,158,11,.13);color:#f59e0b;border:1px solid rgba(245,158,11,.35);
-  font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+#np-title{font-size:24px;font-weight:300;letter-spacing:.02em;color:rgba(255,255,255,.95);margin-bottom:5px;max-width:820px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#np-artist{font-size:14px;color:rgba(255,255,255,.45);max-width:600px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#np-spot{display:none;margin-top:10px;padding:3px 16px;border-radius:20px;background:rgba(245,158,11,.13);color:#f59e0b;border:1px solid rgba(245,158,11,.35);font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
 #np-spot.vis{display:inline-block}
-
-/* ── Message banner ──────────────────────────────────────────────────────── */
-#msg-bar{flex-shrink:0;display:none;align-items:center;justify-content:center;gap:10px;
-  background:rgba(245,158,11,.92);padding:11px 28px;
-  font-size:15px;font-weight:600;color:#1a0900;
-  animation:msg-flash 2.5s ease-in-out infinite}
+#msg-bar{flex-shrink:0;display:none;align-items:center;justify-content:center;gap:10px;background:rgba(245,158,11,.92);padding:11px 28px;font-size:15px;font-weight:600;color:#1a0900;animation:msg-flash 2.5s ease-in-out infinite}
 #msg-bar.vis{display:flex}
 @keyframes msg-flash{0%,100%{opacity:1}50%{opacity:.8}}
+#waiting{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;color:rgba(255,255,255,.3);z-index:20;display:none}
+#waiting.vis{display:flex}
 </style>
 </head>
 <body class="la-{{logo_anim|e}}">
 
-{% if bg_style == 'particles' %}
-<canvas id="cv"></canvas>
-{% elif bg_style == 'aurora' %}
-<div class="bg-aurora"></div>
+{% if bg_style == 'particles' %}<canvas id="cv"></canvas>
+{% elif bg_style == 'aurora' %}<div class="bg-aurora"></div>
 {% elif bg_style == 'waves' %}
 <div class="bg-waves"></div>
 <div class="wave-wrap">
@@ -603,19 +774,13 @@ html,body{width:100%;height:100%;overflow:hidden;background:#04091a;font-family:
     <path d="M0,40 C180,70 540,10 720,40 C900,70 1260,10 1440,40 L1440,80 L0,80Z" fill="rgba({{brand_rgb}},0.10)"/>
   </svg>
 </div>
-{% else %}
-<div class="bg-minimal"></div>
-{% endif %}
+{% else %}<div class="bg-minimal"></div>{% endif %}
 
 <div id="screen">
   <div id="top-bar">
     <div id="on-air"><div class="oa-dot"></div>ON AIR</div>
-    <div id="clock-wrap">
-      <div id="clock-time">--:--:--</div>
-      <div id="clock-date"></div>
-    </div>
+    <div id="clock-wrap"><div id="clock-time">--:--:--</div><div id="clock-date"></div></div>
   </div>
-
   <div id="centre">
     {% if logo_anim == 'orbit' %}
     <div class="orbit-wrap"><div class="orb orb1"></div><div class="orb orb2"></div></div>
@@ -623,11 +788,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#04091a;font-family:
     <div class="pulse-wrap"><div class="prng"></div><div class="prng"></div><div class="prng"></div></div>
     {% endif %}
     <div class="logo-zone">
-      {% if has_logo %}<img id="logo-img" src="/api/brandscreen/logo/{{sid|e}}" alt="{{sname|e}}">
-      {% else %}<div id="logo-ph">📺</div>{% endif %}
+      {% if has_logo %}<img id="logo-img" src="/api/brandscreen/logo/{{station_id|e}}" alt="{{sname|e}}">
+      {% elif station_id %}<div id="logo-ph">📺</div>
+      {% endif %}
     </div>
   </div>
-
   <div id="lower">
     <div id="np-line"></div>
     <div id="np-label">Now Playing</div>
@@ -635,100 +800,99 @@ html,body{width:100%;height:100%;overflow:hidden;background:#04091a;font-family:
     <div id="np-artist"></div>
     <div id="np-spot">Ad Break</div>
   </div>
-
   <div id="msg-bar"><span>📢</span><span id="msg-txt"></span></div>
 </div>
+<div id="waiting"><div style="font-size:40px">🖥️</div><div style="font-size:16px">{{studio_name|e}}</div><div style="font-size:13px">Waiting for station assignment…</div></div>
 
 <script nonce="{{csp_nonce()}}">
-var _sid      = '{{sid|e}}';
-var _bgStyle  = '{{bg_style|e}}';
-var _brandRgb = '{{brand_rgb|e}}';
-var _showClock= {{show_clock|lower}};
-var _showOair = {{show_on_air|lower}};
-var _showNP   = {{show_now_playing|lower}};
+var _studioId  = '{{studio_id|e}}';
+var _stationId = '{{station_id|e}}';
+var _bgStyle   = '{{bg_style|e}}';
+var _brandRgb  = '{{brand_rgb|e}}';
+var _showClock = {{show_clock|lower}};
+var _showOair  = {{show_on_air|lower}};
+var _showNP    = {{show_now_playing|lower}};
+var _hasStation= !!_stationId;
 
-// ── Clock ──────────────────────────────────────────────────────────────────
-if(_showClock){
-  var _cwrap=document.getElementById('clock-wrap');
-  _cwrap.classList.add('vis');
+if(!_hasStation){ document.getElementById('waiting').classList.add('vis'); }
+
+// ── Clock ───────────────────────────────────────────────────────────────
+if(_showClock&&_hasStation){
+  document.getElementById('clock-wrap').classList.add('vis');
   var _DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  var _MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
+  var _MON=['January','February','March','April','May','June','July','August','September','October','November','December'];
   function _tick(){
     var n=new Date();
-    var hh=String(n.getHours()).padStart(2,'0');
-    var mm=String(n.getMinutes()).padStart(2,'0');
-    var ss=String(n.getSeconds()).padStart(2,'0');
-    document.getElementById('clock-time').textContent=hh+':'+mm+':'+ss;
-    document.getElementById('clock-date').textContent=_DAYS[n.getDay()]+' '+n.getDate()+' '+_MONTHS[n.getMonth()]+' '+n.getFullYear();
+    document.getElementById('clock-time').textContent=
+      String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0')+':'+String(n.getSeconds()).padStart(2,'0');
+    document.getElementById('clock-date').textContent=
+      _DAYS[n.getDay()]+' '+n.getDate()+' '+_MON[n.getMonth()]+' '+n.getFullYear();
   }
   _tick(); setInterval(_tick,1000);
 }
 
-// ── Particles canvas ───────────────────────────────────────────────────────
-if(_bgStyle==='particles'){
+// ── Particles ───────────────────────────────────────────────────────────
+if(_bgStyle==='particles'&&_hasStation){
   var cv=document.getElementById('cv');
   var ctx=cv.getContext('2d');
   var _rgb=_brandRgb.split(',').map(Number);
-  var pts=[];
   function _resize(){cv.width=window.innerWidth;cv.height=window.innerHeight;}
-  function _pt(){
-    return{x:Math.random()*cv.width,y:cv.height+Math.random()*120,
-      r:0.8+Math.random()*2.2,sp:0.25+Math.random()*0.55,
-      dr:(Math.random()-.5)*0.25,al:0.08+Math.random()*0.38,
-      al2:0.08+Math.random()*0.38};
-  }
   _resize(); window.addEventListener('resize',_resize);
   cv.style.display='block';
+  var pts=[]; function _pt(){return{x:Math.random()*cv.width,y:cv.height+Math.random()*120,r:.8+Math.random()*2.2,sp:.25+Math.random()*.55,dr:(Math.random()-.5)*.25,al:.08+Math.random()*.38};}
   for(var i=0;i<90;i++){var p=_pt();if(i<45)p.y=Math.random()*cv.height;pts.push(p);}
   function _draw(){
     ctx.clearRect(0,0,cv.width,cv.height);
     pts.forEach(function(p){
-      p.y-=p.sp; p.x+=p.dr;
+      p.y-=p.sp;p.x+=p.dr;
       if(p.y<-8||p.x<-8||p.x>cv.width+8) Object.assign(p,_pt());
-      ctx.beginPath();
-      ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
-      ctx.fillStyle='rgba('+_rgb[0]+','+_rgb[1]+','+_rgb[2]+','+p.al+')';
-      ctx.fill();
+      ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+      ctx.fillStyle='rgba('+_rgb[0]+','+_rgb[1]+','+_rgb[2]+','+p.al+')';ctx.fill();
     });
     requestAnimationFrame(_draw);
   }
   _draw();
 }
 
-// ── Live data poll ─────────────────────────────────────────────────────────
-function _apply(d){
-  // Now playing
-  if(_showNP){
+// ── Now playing ─────────────────────────────────────────────────────────
+function _applyNP(d){
+  if(_showNP&&_hasStation){
     document.getElementById('lower').classList.add('vis');
     var np=d.np||{};
-    var title=np.title||'';
-    var artist=np.artist||'';
-    var isSpot=np.is_spot||false;
+    var title=np.title||'',artist=np.artist||'',isSpot=np.is_spot||false;
     document.getElementById('np-title').textContent=title||'—';
     var aEl=document.getElementById('np-artist');
     aEl.textContent=artist; aEl.style.display=artist?'':'none';
-    var sEl=document.getElementById('np-spot');
-    isSpot?sEl.classList.add('vis'):sEl.classList.remove('vis');
+    isSpot?document.getElementById('np-spot').classList.add('vis'):document.getElementById('np-spot').classList.remove('vis');
     if(_showOair){
-      var oEl=document.getElementById('on-air');
-      (title&&!isSpot)?oEl.classList.add('vis'):oEl.classList.remove('vis');
+      (title&&!isSpot)?document.getElementById('on-air').classList.add('vis'):document.getElementById('on-air').classList.remove('vis');
     }
   }
-  // Message banner
-  var mb=document.getElementById('msg-bar');
-  var mt=document.getElementById('msg-txt');
   var msg=(d.message||'').trim();
-  if(msg){mt.textContent=msg;mb.classList.add('vis');}
+  var mb=document.getElementById('msg-bar');
+  if(msg){document.getElementById('msg-txt').textContent=msg;mb.classList.add('vis');}
   else{mb.classList.remove('vis');}
 }
 
 function _poll(){
-  fetch('/api/brandscreen/data/'+_sid,{credentials:'same-origin'})
-    .then(function(r){return r.json();})
-    .then(function(d){if(d&&d.enabled!==false)_apply(d);})
-    .catch(function(){});
+  if(!_stationId) return;
+  fetch('/api/brandscreen/data/'+_stationId,{credentials:'same-origin'})
+    .then(function(r){return r.json();}).then(_applyNP).catch(function(){});
 }
-_poll(); setInterval(_poll,10000);
+if(_hasStation){ _poll(); setInterval(_poll,10000); }
+
+// ── SSE — instant assignment updates ────────────────────────────────────
+if(_studioId){
+  var _es=new EventSource('/api/brandscreen/events/studio/'+_studioId,{withCredentials:true});
+  _es.onmessage=function(e){
+    if(e.data==='assignment_changed'){
+      // Fade out, then reload — server will render the new station
+      document.getElementById('screen').classList.add('fade-out');
+      setTimeout(function(){ location.replace(location.href); }, 600);
+    }
+  };
+  // On SSE error, reconnect is automatic (EventSource spec)
+}
 </script>
 </body>
 </html>"""
@@ -740,28 +904,35 @@ def register(app, ctx):
     csrf_protect   = ctx["csrf_protect"]
     monitor        = ctx["monitor"]
 
-    # ── Token-based kiosk auth for screen pages ───────────────────────────────
+    api_auth = _make_api_auth()
+
+    # ── Token-based kiosk auth ────────────────────────────────────────────────
     @app.before_request
     def _bs_token_before():
-        if request.path.startswith("/brandscreen/"):
+        p = request.path
+        if p.startswith("/brandscreen/"):
             token = (request.args.get("token") or "").strip()
             if token:
                 cfg = _cfg_load()
                 for s in cfg.get("stations", []):
                     if s.get("token") == token:
                         session["logged_in"] = True
-                        break
+                        return
+                for s in cfg.get("studios", []):
+                    if s.get("token") == token:
+                        session["logged_in"] = True
+                        return
 
     # ── Admin page ────────────────────────────────────────────────────────────
     @app.get("/hub/brandscreen")
     @login_required
     def bs_admin():
         cfg      = _cfg_load()
-        stations = cfg.get("stations", [])
+        stations = [dict(s) for s in cfg.get("stations", [])]
+        studios  = list(cfg.get("studios", []))
         for s in stations:
             p, _ = _logo_file(s["id"])
             s["_has_logo"] = p is not None
-        # Collect available Zetta stations
         zet = []
         try:
             data = getattr(monitor, "_zetta_live_station_data", lambda: {})()
@@ -771,29 +942,71 @@ def register(app, ctx):
             zet.sort(key=lambda z: z["name"])
         except Exception:
             pass
+        api_key = _ensure_api_key(cfg)
         return render_template_string(
             _ADMIN_TPL,
             stations_json=json.dumps(stations),
+            studios_json=json.dumps(studios),
             zet_json=json.dumps(zet),
+            api_key=api_key,
+            origin=request.host_url.rstrip("/"),
         )
 
-    # ── Screen display page ───────────────────────────────────────────────────
+    # ── Studio screen page ────────────────────────────────────────────────────
+    @app.get("/brandscreen/studio/<studio_id>")
+    @login_required
+    def bs_studio_screen(studio_id):
+        cfg    = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if not studio:
+            return "Studio not found", 404
+        sid = studio.get("station_id", "")
+        st  = _get_station(cfg, sid) if sid else None
+        if st and not st.get("enabled", True):
+            st = None
+        # Render with station config (or blank defaults if unassigned)
+        brand  = (st or {}).get("brand_colour", "#17a8ff")
+        accent = (st or {}).get("accent_colour", "#ffffff")
+        r, g, b = _hex_rgb(brand)
+        p, _   = _logo_file(sid) if sid else (None, None)
+        return render_template_string(
+            _SCREEN_TPL,
+            studio_id=studio_id,
+            studio_name=studio.get("name", ""),
+            station_id=sid if st else "",
+            sname=(st or {}).get("name", studio.get("name", "")),
+            brand=brand,
+            accent=accent,
+            brand_rgb=f"{r},{g},{b}",
+            bg_style=(st or {}).get("bg_style", "minimal"),
+            logo_anim=(st or {}).get("logo_anim", "none"),
+            show_clock=(st or {}).get("show_clock", True),
+            show_on_air=(st or {}).get("show_on_air", True),
+            show_now_playing=(st or {}).get("show_now_playing", True),
+            has_logo=p is not None,
+        )
+
+    # ── Direct station screen (backward compat) ───────────────────────────────
     @app.get("/brandscreen/<station_id>")
     @login_required
-    def bs_screen(station_id):
+    def bs_station_screen(station_id):
+        if station_id == "studio":
+            return "Not found", 404
         cfg = _cfg_load()
         s   = _get_station(cfg, station_id)
         if not s:
             return "Station not found", 404
         if not s.get("enabled", True):
-            return "Screen is disabled", 403
+            return "Screen disabled", 403
         p, _   = _logo_file(station_id)
         brand  = s.get("brand_colour", "#17a8ff")
         accent = s.get("accent_colour", "#ffffff")
         r, g, b = _hex_rgb(brand)
         return render_template_string(
             _SCREEN_TPL,
-            sid=station_id,
+            studio_id="",
+            studio_name="",
+            station_id=station_id,
             sname=s.get("name", ""),
             brand=brand,
             accent=accent,
@@ -806,7 +1019,17 @@ def register(app, ctx):
             has_logo=p is not None,
         )
 
-    # ── Data API (public — screen polls this) ─────────────────────────────────
+    # ── SSE stream for studio ─────────────────────────────────────────────────
+    @app.get("/api/brandscreen/events/studio/<studio_id>")
+    @login_required
+    def bs_events(studio_id):
+        return Response(
+            stream_with_context(_sse_stream(studio_id)),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # ── Now-playing data (public) ─────────────────────────────────────────────
     @app.get("/api/brandscreen/data/<station_id>")
     def bs_data(station_id):
         cfg = _cfg_load()
@@ -814,13 +1037,41 @@ def register(app, ctx):
         if not s:
             return jsonify({"error": "not found"}), 404
         np_data = _resolve_np(s, monitor) if s.get("show_now_playing") else None
+        return jsonify({"enabled": s.get("enabled", True), "np": np_data, "message": s.get("message", "")})
+
+    # ── List all studios + stations (REST API) ────────────────────────────────
+    @app.get("/api/brandscreen/studios")
+    @api_auth
+    def bs_list():
+        cfg = _cfg_load()
         return jsonify({
-            "enabled": s.get("enabled", True),
-            "np":      np_data,
-            "message": s.get("message", ""),
+            "studios":  cfg.get("studios", []),
+            "stations": [{k: v for k, v in s.items() if not k.startswith("_")}
+                         for s in cfg.get("stations", [])],
         })
 
-    # ── Logo serve (public) ───────────────────────────────────────────────────
+    # ── REST API: change studio station assignment ─────────────────────────────
+    @app.route("/api/brandscreen/studio/<studio_id>/station", methods=["PUT", "POST"])
+    @api_auth
+    def bs_assign_station(studio_id):
+        cfg    = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if not studio:
+            return jsonify({"error": "Studio not found"}), 404
+        data       = request.get_json(force=True) or {}
+        station_id = (data.get("station_id") or "").strip()
+        if station_id and not _get_station(cfg, station_id):
+            return jsonify({"error": "Station not found"}), 404
+        studio["station_id"] = station_id
+        _cfg_save(cfg)
+        _notify_studio(studio_id)
+        return jsonify({
+            "ok":         True,
+            "studio_id":  studio_id,
+            "station_id": station_id,
+        })
+
+    # ── Logo endpoints (public GET, auth'd POST/DELETE) ───────────────────────
     @app.get("/api/brandscreen/logo/<station_id>")
     def bs_logo_get(station_id):
         p, ext = _logo_file(station_id)
@@ -829,7 +1080,6 @@ def register(app, ctx):
         mt, _ = mimetypes.guess_type(f"x.{ext}")
         return send_file(p, mimetype=mt or "image/png")
 
-    # ── Logo upload ───────────────────────────────────────────────────────────
     @app.post("/api/brandscreen/logo/<station_id>")
     @login_required
     @csrf_protect
@@ -837,13 +1087,13 @@ def register(app, ctx):
         cfg = _cfg_load()
         if not _get_station(cfg, station_id):
             return jsonify({"error": "Station not found"}), 404
-        f = request.files.get("logo")
+        f  = request.files.get("logo")
         if not f:
-            return jsonify({"error": "No file provided"}), 400
+            return jsonify({"error": "No file"}), 400
         fn  = (f.filename or "").lower()
         ext = fn.rsplit(".", 1)[-1] if "." in fn else ""
         if ext not in ("png", "svg", "jpg", "jpeg", "webp", "gif"):
-            return jsonify({"error": "Unsupported file type (use PNG, SVG, JPG or WebP)"}), 400
+            return jsonify({"error": "Unsupported type — use PNG, SVG, JPG or WebP"}), 400
         for e in ("png", "svg", "jpg", "jpeg", "webp", "gif"):
             old = os.path.join(_LOGO_DIR, f"{station_id}.{e}")
             if os.path.exists(old):
@@ -851,7 +1101,6 @@ def register(app, ctx):
         f.save(os.path.join(_LOGO_DIR, f"{station_id}.{ext}"))
         return jsonify({"ok": True})
 
-    # ── Logo delete ───────────────────────────────────────────────────────────
     @app.delete("/api/brandscreen/logo/<station_id>")
     @login_required
     @csrf_protect
@@ -862,7 +1111,55 @@ def register(app, ctx):
                 os.remove(p)
         return jsonify({"ok": True})
 
-    # ── Station create ────────────────────────────────────────────────────────
+    # ── Studio CRUD ───────────────────────────────────────────────────────────
+    @app.post("/api/brandscreen/studio")
+    @login_required
+    @csrf_protect
+    def bs_studio_create():
+        cfg = _cfg_load()
+        s   = _new_studio()
+        cfg.setdefault("studios", []).append(s)
+        _cfg_save(cfg)
+        return jsonify({"ok": True, "studio": s})
+
+    @app.post("/api/brandscreen/studio/<studio_id>")
+    @login_required
+    @csrf_protect
+    def bs_studio_save(studio_id):
+        cfg = _cfg_load()
+        s   = _get_studio(cfg, studio_id)
+        if not s:
+            return jsonify({"error": "Studio not found"}), 404
+        data = request.get_json(force=True) or {}
+        for k in ("name", "station_id"):
+            if k in data:
+                s[k] = data[k]
+        _cfg_save(cfg)
+        _notify_studio(studio_id)
+        return jsonify({"ok": True, "studio": s})
+
+    @app.delete("/api/brandscreen/studio/<studio_id>")
+    @login_required
+    @csrf_protect
+    def bs_studio_delete(studio_id):
+        cfg = _cfg_load()
+        cfg["studios"] = [s for s in cfg.get("studios", []) if s.get("id") != studio_id]
+        _cfg_save(cfg)
+        return jsonify({"ok": True})
+
+    @app.post("/api/brandscreen/studio/<studio_id>/regen_token")
+    @login_required
+    @csrf_protect
+    def bs_studio_regen(studio_id):
+        cfg = _cfg_load()
+        s   = _get_studio(cfg, studio_id)
+        if not s:
+            return jsonify({"error": "Studio not found"}), 404
+        s["token"] = str(uuid.uuid4()).replace("-", "")
+        _cfg_save(cfg)
+        return jsonify({"ok": True, "token": s["token"]})
+
+    # ── Station CRUD ──────────────────────────────────────────────────────────
     @app.post("/api/brandscreen/station")
     @login_required
     @csrf_protect
@@ -874,7 +1171,6 @@ def register(app, ctx):
         s["_has_logo"] = False
         return jsonify({"ok": True, "station": s})
 
-    # ── Station save ──────────────────────────────────────────────────────────
     @app.post("/api/brandscreen/station/<station_id>")
     @login_required
     @csrf_protect
@@ -898,13 +1194,17 @@ def register(app, ctx):
         s["_has_logo"] = p is not None
         return jsonify({"ok": True, "station": s})
 
-    # ── Station delete ────────────────────────────────────────────────────────
     @app.delete("/api/brandscreen/station/<station_id>")
     @login_required
     @csrf_protect
     def bs_station_delete(station_id):
         cfg = _cfg_load()
         cfg["stations"] = [s for s in cfg.get("stations", []) if s.get("id") != station_id]
+        # Unassign from any studios
+        for sd in cfg.get("studios", []):
+            if sd.get("station_id") == station_id:
+                sd["station_id"] = ""
+                _notify_studio(sd["id"])
         _cfg_save(cfg)
         for e in ("png", "svg", "jpg", "jpeg", "webp", "gif"):
             p = os.path.join(_LOGO_DIR, f"{station_id}.{e}")
@@ -912,15 +1212,12 @@ def register(app, ctx):
                 os.remove(p)
         return jsonify({"ok": True})
 
-    # ── Token regenerate ──────────────────────────────────────────────────────
-    @app.post("/api/brandscreen/station/<station_id>/regen_token")
+    # ── API key management ────────────────────────────────────────────────────
+    @app.post("/api/brandscreen/regen_api_key")
     @login_required
     @csrf_protect
-    def bs_station_regen(station_id):
+    def bs_regen_api_key():
         cfg = _cfg_load()
-        s   = _get_station(cfg, station_id)
-        if not s:
-            return jsonify({"error": "Station not found"}), 404
-        s["token"] = str(uuid.uuid4()).replace("-", "")
+        cfg["api_key"] = str(uuid.uuid4()).replace("-", "")
         _cfg_save(cfg)
-        return jsonify({"ok": True, "token": s["token"]})
+        return jsonify({"ok": True, "api_key": cfg["api_key"]})

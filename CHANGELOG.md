@@ -2,6 +2,18 @@
 
 ---
 
+### brandscreen v1.1.0 — 2026-04-19
+
+**Studios + REST API: instant SSE-driven station assignment changes**
+
+- Added **Studios** — physical display screens, each assigned a Station (brand config). Studio screen URL is `/brandscreen/studio/<id>?token=...`. Direct station URLs (`/brandscreen/<id>`) still work.
+- **Instant updates via SSE**: browsers watching a studio screen subscribe to `GET /api/brandscreen/events/studio/<id>`. When the station assignment changes (via UI or REST API), the server fires an SSE event and the browser fades out and reloads with the new station config — no manual refresh needed.
+- **REST API** for automation: `PUT /api/brandscreen/studio/<id>/station` with `Authorization: Bearer <api_key>` body `{"station_id": "..."}`. Instant propagation to all connected displays. Documented in the new **REST API** tab of the admin panel.
+- Admin panel redesigned into three tabs: **Studios**, **Stations**, **REST API**.
+- REST API tab shows the API key, example cURL commands, and a reference table of all studio/station IDs.
+- API key auto-generated on first use, shown and regeneratable in admin panel.
+- Studio deletion gracefully unassigns from all studios; affected displays update via SSE.
+
 ### brandscreen v1.0.0 — 2026-04-19
 
 **New plugin: animated full-screen studio branding display**
