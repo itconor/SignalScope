@@ -2,6 +2,15 @@
 
 ---
 
+## livewire v1.1.1 — 2026-04-18
+
+### Fixed — accordion state and node sort order
+
+- Accordion open/close state now persists across data refreshes (auto-expand only fires the first time a node is seen)
+- Node groups sorted by IP address (numeric) instead of display name
+
+---
+
 ## livewire v1.1.0 — 2026-04-18
 
 ### Changed — accordion node display, sortable columns, search bar, stale alerts

@@ -55,7 +55,7 @@
     "file": "livewire.py",
     "icon": "🔗",
     "description": "Axia Livewire source discovery. Listens for LWAP advertisements on 239.192.255.3:4001 and builds a live inventory of sources across all connected sites — Node, Stream ID, friendly name, multicast address, and online/stale status. Client nodes push their source tables to the hub every 30 s. Sources grouped by node with accordion display, sortable columns (Stream ID, Last Seen, Status), and live search. Stale-source alerts via email, webhook, and push with per-channel configuration. Create Input buttons on client nodes. Hub-only overview shows all sites.",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/livewire.py"
   },

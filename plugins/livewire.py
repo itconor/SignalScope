@@ -13,7 +13,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Livewire",
     "url":     "/livewire",
     "icon":    "🔗",
-    "version": "1.1.0",
+    "version": "1.1.1",
 }
 
 import json, os, struct, sys, threading, time, urllib.request, uuid
