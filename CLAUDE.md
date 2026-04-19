@@ -900,7 +900,13 @@ var _isSpot = (zd.now_playing && zd.now_playing.asset_type === 2);
 var _isSpot = zd.is_spot;  // ❌ unreliable, caused false positives
 ```
 
-**Rule**: Any plugin that reads Zetta now-playing data and needs to show an AD BREAK badge MUST check `zd.now_playing.asset_type === 2` directly in JS. Never use a backend-computed `is_spot` boolean — it has caused false positives in the past and is unnecessary since `asset_type` is always present in `now_playing`.
+**Rule**: Anywhere that needs to detect an ad break — JS **or** Python backend — MUST check `asset_type == 2` (ASSET_SPOT) directly on the `now_playing` dict. Never read the backend-computed `is_spot` boolean; it has caused false positives and lags.
+
+JS: `zd.now_playing.asset_type === 2`
+
+Python (reading from `_zetta_chain_state`): `int((_zcs.get("now_playing") or {}).get("asset_type") or 0) == 2`
+
+`now_playing` is `None` when the sequencer is idle — the `or {}` guard safely returns `False` (0 ≠ 2) in that case.
 
 **Rule**: The backend must pass `asset_type` through in the `now_playing` dict it sends to the browser. Do not strip it. Minimum required fields in any `now_playing` dict sent to JS:
 ```python

@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.159"
+BUILD                  = "SignalScope-3.5.160"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16045,7 +16045,12 @@ class HubServer:
                     _zcs      = monitor._zetta_chain_state.get(cid, {})
                     _zcs_age  = now - float(_zcs.get("ts", 0) or 0)
                     _zetta_on      = bool(_zcs) and _zcs_age < 60   # linked + fresh
-                    _zetta_spot    = _zetta_on and bool(_zcs.get("is_spot"))
+                    # Use asset_type == 2 (ASSET_SPOT) directly — same rule as JS asset_type === 2.
+                    # Never use the backend-computed is_spot boolean; it can lag or produce
+                    # false positives. now_playing is None when idle → asset_type defaults to 0.
+                    _zetta_spot    = _zetta_on and (
+                        int((_zcs.get("now_playing") or {}).get("asset_type") or 0) == 2
+                    )
                     _zetta_stopped = _zetta_on and bool(_zcs.get("is_stopped"))
 
                     # Work out whether the confirmation window should apply.
@@ -17057,7 +17062,7 @@ class HubServer:
         _zetta_fire_stopped = (
             bool(_zcs_fire) and _zcs_fire_age < 60
             and bool(_zcs_fire.get("is_stopped"))
-            and not bool(_zcs_fire.get("is_spot"))
+            and int((_zcs_fire.get("now_playing") or {}).get("asset_type") or 0) != 2
         )
         if _zetta_fire_stopped:
             _zm_name = (_zcs_fire.get("mode_name") or "").strip()
@@ -17086,7 +17091,9 @@ class HubServer:
             _flog_target["message"] = msg
             _flog_target["cascaded_from"] = _cascaded_from_name
             _flog_target["zetta_mode"]     = (_zcs_fire.get("mode_name") or "") if _zcs_fire else ""
-            _flog_target["zetta_is_spot"]  = bool(_zcs_fire.get("is_spot")) if _zcs_fire else False
+            _flog_target["zetta_is_spot"]  = (
+                int((_zcs_fire.get("now_playing") or {}).get("asset_type") or 0) == 2
+            ) if _zcs_fire else False
             _flog_target["zetta_computer"] = (_zcs_fire.get("computer_name") or "") if _zcs_fire else ""
             metrics_db.fault_log_update_meta(
                 _flog_target.get("id", ""), msg, _cascaded_from_name,
@@ -17125,7 +17132,9 @@ class HubServer:
             # is not configured for this chain or data is stale.
             "zetta_stopped":  _zetta_fire_stopped,
             "zetta_mode":     (_zcs_fire.get("mode_name") or "") if _zcs_fire else "",
-            "zetta_is_spot":  bool(_zcs_fire.get("is_spot")) if _zcs_fire else False,
+            "zetta_is_spot":  (
+                int((_zcs_fire.get("now_playing") or {}).get("asset_type") or 0) == 2
+            ) if _zcs_fire else False,
             "zetta_computer": (_zcs_fire.get("computer_name") or "") if _zcs_fire else "",
         })
 
@@ -17142,7 +17151,7 @@ class HubServer:
                     "zetta_context": {
                         "mode_name":     (_zcfx.get("mode_name") or "").strip(),
                         "computer_name": (_zcfx.get("computer_name") or "").strip(),
-                        "is_spot":       bool(_zcfx.get("is_spot")),
+                        "is_spot":       int((_zcfx.get("now_playing") or {}).get("asset_type") or 0) == 2,
                     } if _zcs_fire else None,
                 }
                 if pending is None:
@@ -17189,7 +17198,7 @@ class HubServer:
                             _zctx_parts.append(f"Mode: {_zm_push}")
                         if _zcomp_push:
                             _zctx_parts.append(f"Machine: {_zcomp_push}")
-                        if bool(_zcs_fire.get("is_spot")):
+                        if int((_zcs_fire.get("now_playing") or {}).get("asset_type") or 0) == 2:
                             _zctx_parts.append("During ad break")
                         if _zctx_parts:
                             _push_body = (msg[:150] + " [" + ", ".join(_zctx_parts) + "]")[:180]
@@ -32148,7 +32157,8 @@ def api_chains_status():
             # authoritative source and knows exactly when the break ends.
             _zcs_api     = monitor._zetta_chain_state.get(cid, {})
             _zcs_api_age = now - float(_zcs_api.get("ts", 0) or 0)
-            _zetta_spot_api = bool(_zcs_api) and _zcs_api_age < 60 and bool(_zcs_api.get("is_spot"))
+            _zetta_spot_api = (bool(_zcs_api) and _zcs_api_age < 60
+                               and int((_zcs_api.get("now_playing") or {}).get("asset_type") or 0) == 2)
 
             if internal_state == "pending" and adbreak_candidate and since is not None:
                 # Monitor loop has confirmed the pending/adbreak state

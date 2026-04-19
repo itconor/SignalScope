@@ -2,6 +2,25 @@
 
 ---
 
+### SignalScope-3.5.160 — 2026-04-19
+
+**Fix: replace all `is_spot` boolean reads with `asset_type == 2` check**
+
+The `is_spot` backend-computed boolean was being read directly from `_zetta_chain_state` in several places in signalscope.py. The project rule (mirrored from the JS `asset_type === 2` pattern) is that ad-break detection must always go directly to `asset_type` on the `now_playing` dict — never through a pre-computed boolean.
+
+Fixed locations:
+- Chain eval loop: `_zetta_spot` — drives definitive ad-break suppression and confirmation-window bypass logic
+- `_fire_chain_fault` `_zetta_fire_stopped` guard — ensures "sequencer stopped" note only fires when chain is NOT in a spot break
+- Fault log back-patch `zetta_is_spot` field (in-memory entry and DB via `fault_log_update_meta`)
+- Alert log `_alert_log_append` dict `zetta_is_spot` field
+- `chain_info.zetta_context["is_spot"]` for shared-fault aggregation carry-through
+- Push notification ad-break context suffix
+- Chain status API `_zetta_spot_api`
+
+Python pattern: `int((_zcs.get("now_playing") or {}).get("asset_type") or 0) == 2` — safe when `now_playing` is `None` (idle sequencer).
+
+---
+
 ### SignalScope-3.5.159 — 2026-04-19
 
 **Fix: spurious chain fault clips at start of every Zetta ad break**
