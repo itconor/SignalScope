@@ -2,6 +2,14 @@
 
 ---
 
+### studioboard v3.13.4 — 2026-04-19
+
+**Remove clock header bar — clock moves to top-left of first card**
+
+`#sb-hdr` (42 px header stripe with clock and date) removed entirely, freeing the full viewport height for studio cards. Clock and date are now rendered as `.card-clock` — `position:absolute; top:14px; left:16px; z-index:3` inside card 0 only. Text uses `rgba(255,255,255,.9)` with a soft `text-shadow` for readability against the brand-coloured card background. Corp theme variant inverts to dark text. `_sbTick()` unchanged — targets the same `#sb-hdr-clock` / `#sb-hdr-date` IDs.
+
+---
+
 ### studioboard v3.13.3 — 2026-04-19
 
 **Rework: waves move to background layer, change colour per card**
