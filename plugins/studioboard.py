@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.10.5",
+    "version":  "3.11.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -380,6 +380,33 @@ def register(app, ctx):
             pass
         return '', 404
 
+    # ── Message to display ─────────────────────────────────────────
+
+    @app.post("/api/studioboard/message/<studio_id>")
+    @login_required
+    def sb_message_set(studio_id):
+        """Set a message to display on the studio TV screen."""
+        data = request.get_json(force=True)
+        cfg = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if not studio:
+            return jsonify({"error": "Studio not found"}), 404
+        studio["message"] = (data.get("message") or "").strip()[:200]
+        _cfg_save(cfg)
+        return jsonify({"ok": True, "message": studio["message"]})
+
+    @app.delete("/api/studioboard/message/<studio_id>")
+    @login_required
+    def sb_message_clear(studio_id):
+        """Clear the display message for a studio."""
+        cfg = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if not studio:
+            return jsonify({"error": "Studio not found"}), 404
+        studio.pop("message", None)
+        _cfg_save(cfg)
+        return jsonify({"ok": True})
+
     # ── Log seen show names (called by display JS) ──────────────
 
     @app.post("/api/studioboard/seen_show/<studio_id>")
@@ -622,6 +649,7 @@ def register(app, ctx):
                 "zetta_follow": _zfollow,
                 "zetta_follow_active": _zfollow_active,
                 "zetta_follow_chain": _zfollow_chain_name,
+                "message": (studio.get("message") or "").strip(),
             })
 
         return jsonify({"studios": studios_out})
@@ -815,6 +843,16 @@ function render(){
     html+='<button class="btn bp bs" data-art-upload="'+_e(st.id)+'">Upload Image</button></div>';
     html+='</div>';
 
+    // Message to Display
+    html+='<div class="field" style="margin-top:12px">';
+    html+='<label>Message to Display</label>';
+    html+='<div style="font-size:11px;color:var(--mu);margin-bottom:6px">Shows a banner on the TV display. Leave blank to hide.</div>';
+    html+='<textarea data-msg="'+_e(st.id)+'" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:12px;width:100%;min-height:52px;resize:vertical;font-family:inherit">'+_e(st.message||'')+'</textarea>';
+    html+='<div style="display:flex;gap:8px;margin-top:6px">';
+    html+='<button class="btn bp bs" data-msg-send="'+_e(st.id)+'">📡 Send to Display</button>';
+    html+='<button class="btn bd bs" data-msg-clear="'+_e(st.id)+'">Clear</button>';
+    html+='</div></div>';
+
     // Save button
     html+='<div style="margin:12px 0 8px"><button class="btn bp" data-save-studio="'+_e(st.id)+'">Save Changes</button>'
       +'<span class="save-msg" data-save-msg="'+_e(st.id)+'" style="margin-left:10px;font-size:12px;color:var(--ok);display:none">Saved!</span></div>';
@@ -878,6 +916,12 @@ document.getElementById('studios-list').addEventListener('click',function(e){
   if(seenTag){var sid=seenTag.dataset.seenShow;var showName=seenTag.dataset.show;
     var inp=document.querySelector('input[data-art-show="'+sid+'"]');
     if(inp)inp.value=showName;return}
+  var msgSend=e.target.closest('[data-msg-send]');
+  if(msgSend){var sid=msgSend.dataset.msgSend;var ta=document.querySelector('[data-msg="'+sid+'"]');
+    _post('/api/studioboard/message/'+encodeURIComponent(sid),{message:(ta?ta.value:'').trim()}).then(function(){loadAll()});return}
+  var msgClear=e.target.closest('[data-msg-clear]');
+  if(msgClear){fetch('/api/studioboard/message/'+encodeURIComponent(msgClear.dataset.msgClear),
+    {method:'DELETE',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()}}).then(function(){loadAll()});return}
   var artBtn=e.target.closest('[data-art-upload]');
   if(artBtn){
     var sid=artBtn.dataset.artUpload;
@@ -915,19 +959,57 @@ _TV_TPL = r"""<!doctype html>
 @font-face{font-family:'BM';src:url('/wallboard/asset/BauerMediaSans-Regular.otf{% if wb_token %}?token={{wb_token}}{% endif %}') format('opentype');font-weight:400}
 @font-face{font-family:'BM';src:url('/wallboard/asset/BauerMediaSans-Bold.otf{% if wb_token %}?token={{wb_token}}{% endif %}') format('opentype');font-weight:700}
 @font-face{font-family:'BM';src:url('/wallboard/asset/BauerMediaSans-Light.otf{% if wb_token %}?token={{wb_token}}{% endif %}') format('opentype');font-weight:300}
-:root{--bg:#4700A3;--ok:#22c55e;--al:#ef4444;--tx:#fff;--mu:rgba(255,255,255,.5)}
+/* ── Default dark theme ── */
+:root{--bg:#07142b;--ok:#22c55e;--al:#ef4444;--wn:#f59e0b;--tx:#eef5ff;--mu:rgba(255,255,255,.45);--acc:#17a8ff}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
-body{font-family:'BM',system-ui,sans-serif;background:var(--bg);color:var(--tx);display:flex;-webkit-user-select:none;user-select:none}
-body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);display:flex;flex-direction:column;-webkit-user-select:none;user-select:none}
+/* ── Bauer theme ── */
+body.bauer{font-family:'BM',system-ui,sans-serif;background:#4700A3}
+body.bauer::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   background:url('/wallboard/asset/_bauer_logo_white.svg{% if wb_token %}?token={{wb_token}}{% endif %}') center center/50% no-repeat;
   opacity:.04}
-body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+body.bauer::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
   background:radial-gradient(ellipse 900px 500px at 30% 20%,rgba(88,0,202,.4),transparent),
   radial-gradient(ellipse 700px 400px at 70% 80%,rgba(63,20,156,.3),transparent)}
-#sb{position:relative;z-index:1;flex:1;display:flex;height:100%}
+/* ── Corporate / Clean theme ── */
+body.corp{background:#f0f4f8;color:#1d2d40;font-family:system-ui,sans-serif}
+body.corp #sb-hdr{background:rgba(255,255,255,.92);border-bottom-color:#c8d8e8}
+body.corp #sb-hdr-clock,body.corp #sb-hdr-date{color:#1d2d40}
+body.corp .col{border-color:rgba(0,0,0,.08)}
+body.corp .mp .stn,body.corp .mp .stu{color:#1d2d40}
+body.corp .frq,body.corp .npl,body.corp .vl{color:#6b82a0}
+#sb{position:relative;z-index:1;flex:1;display:flex;min-height:0}
 .cols{display:flex;flex:1;height:100%;max-width:1920px;margin:0 auto}
 .col{flex:1;display:flex;position:relative;overflow:hidden;border-right:1px solid rgba(255,255,255,.06)}
+/* ── Clock header ── */
+#sb-hdr{flex-shrink:0;height:42px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:100;background:rgba(0,0,0,.32);border-bottom:1px solid rgba(255,255,255,.06);backdrop-filter:blur(6px)}
+#sb-hdr-clock{font-size:26px;font-weight:200;font-variant-numeric:tabular-nums;letter-spacing:.06em;color:var(--tx)}
+#sb-hdr-date{font-size:12px;color:var(--mu);letter-spacing:.04em}
+body.bauer #sb-hdr{background:rgba(50,0,120,.5);border-bottom-color:rgba(255,255,255,.1)}
+body.bauer #sb-hdr-clock,body.bauer #sb-hdr-date{color:#fff}
+/* ── Hub message banner ── */
+#sb-msg{flex-shrink:0;display:none;align-items:center;justify-content:center;gap:10px;
+  padding:10px 24px;background:rgba(245,158,11,.9);color:#000;
+  font-size:17px;font-weight:700;letter-spacing:.03em;text-align:center;
+  animation:sb-msg-flash 2.5s ease-in-out infinite;z-index:99}
+@keyframes sb-msg-flash{0%,100%{opacity:1}50%{opacity:.82}}
+body.bauer #sb-msg{background:rgba(245,158,11,.92)}
+/* ── Large countdown timer ── */
+.cnt-wrap{display:none;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0;padding:6px 0 2px}
+.cnt-wrap.cnt-active{display:flex}
+.cnt-num{font-size:68px;font-weight:200;font-variant-numeric:tabular-nums;line-height:1;letter-spacing:.02em;color:var(--tx)}
+.cnt-num.cnt-low{color:var(--wn);font-weight:400}
+.cnt-num.cnt-urgent{color:var(--al);font-weight:700;animation:cnt-pulse 1s ease-in-out infinite}
+@keyframes cnt-pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.cnt-label{font-size:9px;text-transform:uppercase;letter-spacing:.16em;color:var(--mu);font-weight:700;margin-top:2px}
+body.bauer .cnt-num{color:#fff}
+body.corp .cnt-num{color:#1d2d40}
+body.corp .cnt-num.cnt-low{color:#b45309}
+body.corp .cnt-num.cnt-urgent{color:#dc2626}
+/* ── Anti-burn-in pixel drift ── */
+@keyframes sb-px-drift{0%,100%{transform:translate(0,0)}25%{transform:translate(1px,0)}50%{transform:translate(1px,1px)}75%{transform:translate(0,1px)}}
+#sb{animation:sb-px-drift 90s step-end infinite}
 .col:last-child{border-right:none}
 .col::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;z-index:2;
   background:linear-gradient(90deg,transparent,var(--cc,rgba(255,255,255,.2)),transparent)}
@@ -1080,6 +1162,11 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .free-msg{font-size:17px;font-weight:400;color:rgba(255,255,255,.38);line-height:1.6;max-width:85%}
 </style></head>
 <body>
+<div id="sb-hdr">
+  <span id="sb-hdr-clock">--:--:--</span>
+  <span id="sb-hdr-date"></span>
+</div>
+<div id="sb-msg">📡 <span id="sb-msg-text"></span></div>
 <div id="sb"><div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--mu)">
 <div style="text-align:center"><div style="font-size:48px;margin-bottom:12px">🎙</div>
 <div style="font-size:18px;font-weight:700">Connecting…</div></div></div></div>
@@ -1092,6 +1179,26 @@ function E(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/
 function RGB(h){h=h.replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];var n=parseInt(h,16);return((n>>16)&255)+','+((n>>8)&255)+','+(n&255)}
 
 var DB=-80,D=null,NP={},SS={},LL={},_built=false,_artSrc={},_lastSig='';
+
+/* Theme detection — URL param ?theme=bauer|corp|dark, persisted in sessionStorage */
+(function(){
+  var _tp=(new URLSearchParams(location.search)).get('theme')||sessionStorage.getItem('sb_theme')||'dark';
+  sessionStorage.setItem('sb_theme',_tp);
+  if(_tp==='bauer')document.body.classList.add('bauer');
+  else if(_tp==='corp')document.body.classList.add('corp');
+})();
+
+/* Clock */
+var _SBDAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+var _SBMONS=['January','February','March','April','May','June','July','August','September','October','November','December'];
+function _sbTick(){
+  var d=new Date(),h=d.getHours(),m=d.getMinutes(),sec=d.getSeconds();
+  var ck=document.getElementById('sb-hdr-clock');
+  if(ck)ck.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(sec<10?'0':'')+sec;
+  var dt=document.getElementById('sb-hdr-date');
+  if(dt)dt.textContent=_SBDAYS[d.getDay()]+' '+d.getDate()+' '+_SBMONS[d.getMonth()];
+}
+setInterval(_sbTick,1000);_sbTick();
 /* Smooth meter state */
 var _targetLev={},_curLev={},_peakHold={},_peakTs={},_lastRaf=0;
 var ATTACK_TC=0.05,DECAY_TC=0.7,PEAK_HOLD_MS=2500;
@@ -1179,6 +1286,7 @@ function buildCol(s,idx){
       +'<div id="zfbadge'+idx+'" style="display:none" class="zfollow-badge">\u21bb ZETTA AUTO</div>'
       +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
       +'<div id="badges'+idx+'"></div>'
+      +'<div class="cnt-wrap" id="cnt'+idx+'"><div class="cnt-num" id="cntn'+idx+'">--:--</div><div class="cnt-label">Time Remaining</div></div>'
       +'<div class=divider></div>'
       /* Show name + image always present so updateCol can populate them */
       +'<img class=art id="showimg'+idx+'" alt="" style="display:none">'
@@ -1226,6 +1334,9 @@ function updateCol(s,idx){
   var col=document.getElementById('col'+idx);
   if(col){var fl=false;(s.chains||[]).forEach(function(x){if(x.status==='fault')fl=true});
     col.classList.toggle('fault',fl)}
+  // Big countdown — show when Zetta has now_playing
+  var cntW=document.getElementById('cnt'+idx);
+  if(cntW)cntW.classList.toggle('cnt-active',!!(s.zetta_station_key&&s.zetta&&s.zetta.now_playing));
   // Show/presenter image
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
@@ -1268,6 +1379,17 @@ function updateCol(s,idx){
       if(idl.textContent!==_im)idl.textContent=_im;
     }else if(idl)idl.textContent='';
   }
+  // Hub message banner (per-studio)
+  var _smsgEl=document.getElementById('sb-msg');
+  var _smsgTxt=document.getElementById('sb-msg-text');
+  if(_smsgEl&&_smsgTxt){
+    var _studios=getStudios();
+    // Show message if ANY visible studio has one (multi-studio: show first message found)
+    var _anyMsg='';_studios.forEach(function(st){if(st.message&&!_anyMsg)_anyMsg=st.message;});
+    _smsgEl.style.display=_anyMsg?'flex':'none';
+    if(_smsgTxt.textContent!==_anyMsg)_smsgTxt.textContent=_anyMsg;
+  }
+
   // Zetta main panel — mirror Zetta plugin: always show now_playing, never hide it
   var zEl=document.getElementById('zq'+idx);
   if(zEl&&s.zetta_station_key){
@@ -1433,8 +1555,16 @@ setInterval(function(){
     var pct=dur>0?(1-rem/dur)*100:0;
     var pfEl=document.getElementById('zqpf'+i);
     if(pfEl)pfEl.style.width=Math.min(100,pct).toFixed(1)+'%';
+    var rs=Math.round(rem);
     var tmEl=document.getElementById('zqtm'+i);
-    if(tmEl){var rs=Math.round(rem);tmEl.textContent='-'+Math.floor(rs/60)+':'+(rs%60<10?'0':'')+rs%60;}
+    if(tmEl)tmEl.textContent='-'+Math.floor(rs/60)+':'+(rs%60<10?'0':'')+rs%60;
+    /* Big countdown — prominent display for presenters */
+    var cntN=document.getElementById('cntn'+i);
+    if(cntN){
+      var cs=Math.floor(rs/60)+':'+(rs%60<10?'0':'')+(rs%60);
+      if(cntN.textContent!==cs)cntN.textContent=cs;
+      cntN.className='cnt-num'+(rem<15?' cnt-urgent':rem<30?' cnt-low':'');
+    }
   });
 },500);
 poll();npPoll();live();showImgPoll();

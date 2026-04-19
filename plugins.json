@@ -114,8 +114,8 @@
     "name": "Wallboard",
     "file": "wallboard.py",
     "icon": "📺",
-    "description": "TV-optimised broadcast wallboard with live chain status cards, station logos, PPM-style level meters, alert ticker, and full customisation. Upload logos per chain, select which streams to display, toggle LUFS/now-playing/hero banner. Gradient avatars, health bars, zone-coloured meters at 150 ms update rate. Hub-only.",
-    "version": "3.14.7",
+    "description": "TV-optimised broadcast wallboard with live chain status cards, station logos, PPM-style level meters, alert ticker, and full customisation. Upload logos per chain, select which streams to display, toggle LUFS/now-playing/hero banner. Gradient avatars, health bars, zone-coloured meters at 150 ms update rate. Zetta mode badges on chain cards, drag-to-reorder chain cards via settings drawer, anti-burn-in pixel drift. Hub-only.",
+    "version": "3.15.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/wallboard.py"
   },
@@ -194,8 +194,8 @@
     "name": "Studio Board",
     "file": "studioboard.py",
     "icon": "🎙",
-    "description": "Large-format studio display for outside broadcast studios. Shows presenter/show info, now playing, live level meters, mic live status, chain health, and Zetta automation queue. Fully configurable admin page for assigning chains, inputs, Planet Radio feeds, Zetta stations, and show artwork per studio. REST API for mic live and station assignment from automation systems. Chain colour takeover, smooth RAF meters, free-studio messaging. Bauer branded. Hub-only.",
-    "version": "3.10.5",
+    "description": "Large-format studio display for outside broadcast studios. Shows presenter/show info, now playing, live level meters, mic live status, chain health, and Zetta automation queue. Fully configurable admin page for assigning chains, inputs, Planet Radio feeds, Zetta stations, and show artwork per studio. REST API for mic live and station assignment from automation systems. Chain colour takeover, smooth RAF meters, free-studio messaging. Themeable (dark/Bauer/corp via ?theme=), clock header, big presenter countdown timer, message-from-hub banner, anti-burn-in pixel drift. Hub-only.",
+    "version": "3.11.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/studioboard.py"
   }

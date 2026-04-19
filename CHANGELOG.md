@@ -2,6 +2,25 @@
 
 ---
 
+### studioboard v3.11.0 / wallboard v3.15.0 — 2026-04-19
+
+**studioboard v3.11.0: themes, clock, big countdown, message-from-hub, anti-burn-in**
+
+- Themeable TV display: `?theme=dark` (default), `?theme=bauer` (Bauer purple brand), `?theme=corp` (clean light-mode). Theme persisted in `sessionStorage` so the URL param only needs to be set once. Dark theme is now a proper dark blue gradient instead of the always-on Bauer purple.
+- Clock header bar at the top of the TV display with live HH:MM:SS and full date.
+- Big countdown timer for presenters: when Zetta is configured and a track is playing, a large font-size `MM:SS` countdown appears on screen. Turns amber at 30 s, red and pulsing at 15 s.
+- Message-from-hub banner: admin can type a message in the studio admin page and send it to the TV display. The message appears as a flashing amber banner at the top of the screen. Clear button removes it.
+- Anti-burn-in pixel drift: the `#sb` wrapper shifts 1 px in a 4-step pattern over 90 s using a `step-end` CSS animation.
+- New API endpoints: `POST /api/studioboard/message/<studio_id>` and `DELETE /api/studioboard/message/<studio_id>`.
+
+**wallboard v3.15.0: Zetta mode badge, chain reorder, anti-burn-in**
+
+- Zetta mode badge on chain cards: when the Zetta-linked sequencer is in Manual or Voice Track mode (anything other than Auto), a small badge appears in the card header. Amber for Manual, purple for Voice Track.
+- Chain card reorder: up/down arrow buttons in the settings drawer allow reordering chain cards on the wallboard. Order is persisted in `localStorage` via `chain_order` in `_cfg`.
+- Anti-burn-in pixel drift: `#wb-hdr`, `#wb-content`, and `#wb-ticker` shift 1 px in a 4-step loop over 120 s.
+
+---
+
 ### SignalScope-3.5.160 — 2026-04-19
 
 **Fix: replace all `is_spot` boolean reads with `asset_type == 2` check**

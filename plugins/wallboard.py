@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.14.7",
+    "version":  "3.15.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -1459,6 +1459,18 @@ body.day-grad{transition:background 3s ease}
 #sp-counter{font-size:11px;color:var(--mu);font-weight:700;letter-spacing:.1em;text-transform:uppercase}
 #sp-pbar{width:100%;max-width:900px;height:3px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}
 #sp-pfill{height:100%;background:var(--acc);border-radius:2px;width:100%}
+
+/* ═══ Zetta mode badge on chain cards ═══ */
+.cc-mode-badge{
+  font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+  padding:2px 8px;border-radius:4px;margin-left:auto;flex-shrink:0;white-space:nowrap;
+}
+.cc-mode-badge.mode-manual{background:rgba(245,158,11,.14);color:#f59e0b;border:1px solid rgba(245,158,11,.35)}
+.cc-mode-badge.mode-voice{background:rgba(167,139,250,.12);color:#a78bfa;border:1px solid rgba(167,139,250,.3)}
+
+/* ═══ Anti-burn-in pixel drift ═══ */
+@keyframes px-drift{0%,100%{transform:translate(0,0)}25%{transform:translate(1px,0)}50%{transform:translate(1px,1px)}75%{transform:translate(0,1px)}}
+#wb-hdr,#wb-content,#wb-ticker{animation:px-drift 120s step-end infinite}
 </style>
 </head>
 <body>
@@ -1622,7 +1634,7 @@ var ATTACK_TC=0.05,DECAY_TC=0.7;
 var _sizes={sm:120,md:155,lg:210};
 var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e0b'],['#9333e8','#a855f7'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316'],['#c81e1e','#ef4444']];
 
-var _cfg={card_size:'lg',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false,chain_freq:{},chain_color:{},show_spotlight:false,spotlight_secs:10};
+var _cfg={card_size:'lg',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false,chain_freq:{},chain_color:{},show_spotlight:false,spotlight_secs:10,chain_order:[]};
 var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={},_zetChains={};
 var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false,_dirty=false;
 var _allStreams=[];  // for stream selector
@@ -1842,6 +1854,15 @@ function renderChains(chains){
   var el=document.getElementById('wb-chains');
   if(!chains||!chains.length){el.innerHTML='';return}
 
+  // Apply user-defined chain order
+  if(_cfg.chain_order&&_cfg.chain_order.length){
+    var _co=_cfg.chain_order;
+    chains=chains.slice().sort(function(a,b){
+      var ia=_co.indexOf(a.id),ib=_co.indexOf(b.id);
+      if(ia<0)ia=99999;if(ib<0)ib=99999;return ia-ib;
+    });
+  }
+
   // Build map of existing cards
   var existingMap={};
   el.querySelectorAll('.cc[data-cid]').forEach(function(c){existingMap[c.dataset.cid]=c});
@@ -1867,6 +1888,7 @@ function renderChains(chains){
         +'<div class="cc-header-row">'
           +'<div class="cc-status"><span class="cc-sdot"></span><span class="cc-stxt"></span></div>'
           +'<div class="cc-name"></div>'
+          +'<div class="cc-mode-badge" style="display:none"></div>'
         +'</div>'
         +'<div class="cc-freq"></div>'
         +'<div class="cc-nodes"></div>'
@@ -1936,6 +1958,16 @@ function renderChains(chains){
     var stxtEl=statusEl.querySelector('.cc-stxt');
     var sTxt=_ccStatusTxt(st);
     if(stxtEl&&stxtEl.textContent!==sTxt)stxtEl.textContent=sTxt;
+
+    // Zetta mode badge — show when not Auto
+    var modeEl=card.querySelector('.cc-mode-badge');
+    if(modeEl){
+      var _zdm=_zetChains[cid];var _mn=(_zdm&&_zdm.mode_name)||'';
+      var _notAuto=_mn&&_mn.toLowerCase()!=='auto';
+      modeEl.style.display=_notAuto?'':'none';
+      if(_notAuto){modeEl.textContent=_mn.toUpperCase();
+        modeEl.className='cc-mode-badge'+(_mn.toLowerCase().indexOf('voice')>=0?' mode-voice':' mode-manual');}
+    }
 
     // Now playing — Zetta full sequencer (primary) or Planet Radio text (fallback)
     var npWrap=card.querySelector('.cc-np-wrap');
@@ -2551,7 +2583,12 @@ function renderDrawerChains(){
       opts+='<option value="'+_e(s.rpuid)+'"'+(s.rpuid===curRpuid?' selected':'')+'>'+_e(s.name)+'</option>';
     })}
     var selHtml='<select data-np-chain="'+_e(ch.id)+'" style="background:#0d1e40;border:1px solid var(--bor);border-radius:5px;color:var(--tx);padding:3px 6px;font-size:11px;max-width:160px;font-family:inherit">'+opts+'</select>';
-    html+='<div class="dr-chain">'+logo+'<div class="dr-ch-info"><div class="dr-ch-name">'+_e(ch.name)+'</div>'
+    html+='<div class="dr-chain">'
+      +'<div style="display:flex;flex-direction:column;gap:2px;flex-shrink:0;margin-right:4px">'
+      +'<button class="btn bg bs" data-order-up="'+_e(ch.id)+'" style="padding:1px 5px;font-size:10px;line-height:1.4">▲</button>'
+      +'<button class="btn bg bs" data-order-down="'+_e(ch.id)+'" style="padding:1px 5px;font-size:10px;line-height:1.4">▼</button>'
+      +'</div>'
+      +logo+'<div class="dr-ch-info"><div class="dr-ch-name">'+_e(ch.name)+'</div>'
       +'<div class="dr-ch-actions"><button class="btn bp bs" data-upload-logo="'+_e(ch.id)+'">Upload Logo</button>'
       +(hasLogo?'<button class="btn bd bs" data-rm-logo="'+_e(ch.id)+'">Remove</button>':'')
       +'</div>'
@@ -2593,6 +2630,16 @@ function removeLogo(cid){
 document.getElementById('wb-drawer').addEventListener('click',function(e){
   var ul=e.target.closest('[data-upload-logo]');if(ul){uploadLogo(ul.dataset.uploadLogo);return}
   var rm=e.target.closest('[data-rm-logo]');if(rm){removeLogo(rm.dataset.rmLogo);return}
+  var ou=e.target.closest('[data-order-up]');
+  if(ou){var _ocid=ou.dataset.orderUp;
+    var _ord=(_cfg.chain_order&&_cfg.chain_order.length)?_cfg.chain_order.slice():(_lastChains||[]).map(function(c){return c.id});
+    var _oi=_ord.indexOf(_ocid);if(_oi>0){_ord.splice(_oi-1,0,_ord.splice(_oi,1)[0]);}
+    _cfg.chain_order=_ord;_localSave();renderDrawerChains();if(_lastChains)renderChains(_lastChains);return;}
+  var od=e.target.closest('[data-order-down]');
+  if(od){var _ocid=od.dataset.orderDown;
+    var _ord=(_cfg.chain_order&&_cfg.chain_order.length)?_cfg.chain_order.slice():(_lastChains||[]).map(function(c){return c.id});
+    var _oi=_ord.indexOf(_ocid);if(_oi>=0&&_oi<_ord.length-1){_ord.splice(_oi+1,0,_ord.splice(_oi,1)[0]);}
+    _cfg.chain_order=_ord;_localSave();renderDrawerChains();if(_lastChains)renderChains(_lastChains);return;}
   var sz=e.target.closest('[data-sz]');if(sz){setSize(sz.dataset.sz);_localSave()}
 });
 document.getElementById('dr-chains').addEventListener('change',function(e){
