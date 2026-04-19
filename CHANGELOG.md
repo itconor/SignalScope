@@ -2,6 +2,14 @@
 
 ---
 
+### studioboard v3.12.1 — 2026-04-19
+
+**Fix: cached show image URL missing kiosk token**
+
+In kiosk/Yodeck mode with auth enabled, `showImg.src` was set to `/studioboard/cached_show_img/<rpuid>?v=<hash>` without the `?token=` parameter. The `@login_required` check on that route would redirect the browser to the login page, causing a broken image. Fixed by wrapping the URL with `tk()` — the same helper used by all `fetch()` calls in the TV template — which appends `&token=TOKEN` when a kiosk token is configured.
+
+---
+
 ### studioboard v3.12.0 — 2026-04-19
 
 **Feature: server-side presenter/show image cache**

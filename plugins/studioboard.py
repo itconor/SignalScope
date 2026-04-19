@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.12.0",
+    "version":  "3.12.1",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1473,7 +1473,8 @@ function updateCol(s,idx){
     var rpuid=s.np_rpuid||'';
     var si=np.show_image||'';
     if(rpuid&&si){
-      var cachedSrc='/studioboard/cached_show_img/'+encodeURIComponent(rpuid)+'?v='+_urlHash(si);
+      // tk() appends &token=TOKEN in kiosk mode so @login_required passes for the img request
+      var cachedSrc=tk('/studioboard/cached_show_img/'+encodeURIComponent(rpuid)+'?v='+_urlHash(si));
       if(_artSrc['s'+idx]!==cachedSrc||showImg.style.display==='none'){
         _artSrc['s'+idx]=cachedSrc;showImg.src=cachedSrc;
         showImg.style.display='';
