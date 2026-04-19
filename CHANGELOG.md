@@ -2,6 +2,12 @@
 
 ---
 
+### brandscreen v1.2.1 — 2026-04-19
+
+**Fix: stream list always empty in audio reactivity dropdown**
+
+- `_get_streams()` was reading `hub_server._sites["inputs"]` — wrong key. The heartbeat data structure uses `"streams"` not `"inputs"`, and each stream dict uses `"name"` not `"stream"`. Switched to `hub_server.get_sites()` (same method studioboard uses) which returns the correctly shaped list. Connected streams now appear in the audio input dropdown in the station admin panel.
+
 ### brandscreen v1.2.0 — 2026-04-19
 
 **Brand-hued backgrounds, oversized logo, and audio-level reactivity**

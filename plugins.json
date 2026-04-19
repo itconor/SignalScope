@@ -5,7 +5,7 @@
     "file": "brandscreen.py",
     "icon": "📺",
     "description": "Animated full-screen studio branding display. Studios (physical screens) are assigned Stations (brand configs) — change the assignment instantly via REST API and all browsers update in real time over SSE. Per-station logo upload, brand colour, background style (particles, aurora, waves, minimal), and logo animation (orbit rings, pulse, glow, float). Background hue derived from brand colour — the entire screen lives in your brand palette. Logo fills most of the screen. Assign a live audio stream to animate orbit rings, pulse tempo, bloom, and particles with real audio levels at 150 ms. Broadcast clock, On Air badge, live now-playing from Zetta or any JSON API, message-from-hub amber banner. Token-auth kiosk URL per studio. Anti-burn-in pixel drift. Hub-only.",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/brandscreen.py"
   },

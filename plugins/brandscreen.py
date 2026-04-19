@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.0",
+    "version":  "1.2.1",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1088,16 +1088,15 @@ def register(app, ctx):
     def _get_streams():
         streams = []
         try:
-            for site_name, site_data in (hub_server._sites or {}).items():
-                if not site_data.get("_approved"):
-                    continue
-                for inp in (site_data.get("inputs") or []):
-                    stream = inp.get("stream") or inp.get("name") or ""
-                    if stream:
-                        key = f"{site_name}|{stream}"
-                        streams.append({"key": key, "site": site_name,
-                                        "stream": stream,
-                                        "label": f"{site_name} / {stream}"})
+            for sd in (hub_server.get_sites() or []):
+                site = sd.get("name") or sd.get("site", "")
+                for s in (sd.get("streams") or []):
+                    name = (s.get("name") or "").strip()
+                    if name:
+                        key = f"{site}|{name}"
+                        streams.append({"key": key, "site": site,
+                                        "stream": name,
+                                        "label": f"{site} / {name}"})
         except Exception:
             pass
         return sorted(streams, key=lambda x: x["label"])
