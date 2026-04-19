@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.2",
+    "version":  "1.2.3",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -764,9 +764,13 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 #centre{flex:1;display:flex;align-items:center;justify-content:center;position:relative;overflow:visible}
 
 /* Audio-reactive centre bloom — always present, driven by JS */
-#lev-bloom{position:absolute;width:60vw;height:60vw;border-radius:50%;pointer-events:none;z-index:3;
-  background:radial-gradient(circle,rgba(var(--brand-rgb),.55) 0%,transparent 65%);
-  transform:scale(0);will-change:transform,opacity}
+#lev-bloom{position:absolute;width:80vw;height:80vw;border-radius:50%;pointer-events:none;z-index:3;
+  background:radial-gradient(circle,rgba(var(--brand-rgb),1) 0%,rgba(var(--brand-rgb),.7) 18%,transparent 68%);
+  filter:blur(32px);transform:scale(0.05);opacity:0.3;will-change:transform,opacity}
+/* Full-screen level-reactive background brightening */
+#bg-pulse{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(ellipse 90% 80% at 50% 48%,rgba(var(--brand-rgb),.18) 0%,transparent 72%);
+  opacity:0;will-change:opacity}
 
 .logo-zone{position:relative;display:flex;align-items:center;justify-content:center;z-index:10}
 /* Logo fills the stage — large is the point */
@@ -775,7 +779,9 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
   max-height:52vh;
   object-fit:contain;
   display:block;
-  filter:drop-shadow(0 0 40px rgba(var(--brand-rgb),.25))}
+  filter:drop-shadow(0 0 40px rgba(var(--brand-rgb),.25));
+  transition:transform .09s ease-out,filter .09s ease-out;
+  will-change:transform,filter}
 #logo-ph{font-size:clamp(60px,12vw,160px);opacity:.1;z-index:10}
 
 /* ── Orbit rings — scaled in vw so they wrap the large logo ─────────────── */
@@ -857,6 +863,7 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
     <div id="clock-wrap"><div id="clock-time">--:--:--</div><div id="clock-date"></div></div>
   </div>
 
+  <div id="bg-pulse"></div>
   <div id="centre">
     <div id="lev-bloom"></div>
     {% if logo_anim == 'orbit' %}
@@ -944,48 +951,58 @@ if(_bgStyle==='particles' && _hasStation){
 }
 
 // ── Audio-level reactive animations ─────────────────────────────────────────
-var _lev = 0;          // smoothed 0–1
-var _levPk = 0;        // peak hold
-var _bloom = document.getElementById('lev-bloom');
-var _orb1  = document.querySelector('.orb1');
-var _orb2  = document.querySelector('.orb2');
-var _prngs = document.querySelectorAll('.prng');
+// _lev     — slow smooth tracker (background, gradual shifts)
+// _levSnap — fast snap tracker (beat-responsive elements)
+var _lev     = 0;
+var _levSnap = 0;
+var _bloom   = document.getElementById('lev-bloom');
+var _bgPulse = document.getElementById('bg-pulse');
+var _orb1    = document.querySelector('.orb1');
+var _orb2    = document.querySelector('.orb2');
+var _prngs   = document.querySelectorAll('.prng');
 var _logoImg = document.getElementById('logo-img');
 
 function _applyLevel(raw){
-  // Fast attack, slower decay
-  var alpha = raw > _lev ? 0.45 : 0.12;
-  _lev = _lev * (1 - alpha) + raw * alpha;
-  _levPk = Math.max(_levPk * 0.97, raw);
+  // Slow tracker: fast attack / very slow decay — holds the "energy floor"
+  _lev     = _lev     * (raw > _lev     ? 0.55 : 0.18) + raw * (raw > _lev     ? 0.45 : 0.82) * 0;
+  _lev     = _lev     + (raw - _lev)     * (raw > _lev     ? 0.45 : 0.18);
+  // Fast snap tracker: responds to every beat and dip quickly
+  _levSnap = _levSnap + (raw - _levSnap) * (raw > _levSnap ? 0.65 : 0.38);
 
-  // ── Bloom (universal) — central light emanating from behind logo
-  var bloomScale = _lev * 1.6;
-  var bloomOpacity = 0.18 + _lev * 0.62;
-  _bloom.style.transform = 'scale(' + bloomScale + ')';
-  _bloom.style.opacity   = bloomOpacity;
+  // ── Bloom: large blurred glow behind logo — most visible effect
+  // Scale 0.1 (silence) → 3.2 (peak); bright inner core always shows
+  var bScale = 0.12 + _levSnap * 3.1;
+  var bOp    = Math.min(0.95, 0.28 + _levSnap * 0.70);
+  _bloom.style.transform = 'scale(' + bScale.toFixed(3) + ')';
+  _bloom.style.opacity   = bOp.toFixed(3);
 
-  // ── Particle speed
-  if(_bgStyle==='particles') _speedMult = 1 + _lev * 3.5;
+  // ── Background screen brightening (full-screen radial wash)
+  if(_bgPulse) _bgPulse.style.opacity = (_levSnap * 0.85).toFixed(3);
 
-  // ── Orbit: speed up with level (10s→3s, 16s→4s)
-  if(_orb1){ _orb1.style.animationDuration = (10 - _lev * 7)  + 's'; }
-  if(_orb2){ _orb2.style.animationDuration = (16 - _lev * 11) + 's'; }
+  // ── Logo scale pulse — most perceptible on a big image
+  if(_logoImg){
+    var logoScale = 1.0 + _levSnap * 0.09;
+    var glowPx  = Math.round(30 + _levSnap * 200);
+    var glowOp  = Math.min(1, 0.2 + _levSnap * 0.85);
+    var glowOp2 = Math.min(0.7, _levSnap * 0.6);
+    _logoImg.style.transform = 'scale(' + logoScale.toFixed(4) + ')';
+    _logoImg.style.filter =
+      'drop-shadow(0 0 ' + glowPx + 'px rgba(' + _brandRgb + ',' + glowOp.toFixed(2) + '))' +
+      ' drop-shadow(0 0 ' + Math.round(glowPx * 2.5) + 'px rgba(' + _brandRgb + ',' + glowOp2.toFixed(2) + '))';
+  }
 
-  // ── Pulse: faster and more energetic
+  // ── Orbit: dramatically wider speed range (15s silence → 1.2s peak)
+  if(_orb1){ _orb1.style.animationDuration = Math.max(1.2, 15 - _levSnap * 13.8).toFixed(2) + 's'; }
+  if(_orb2){ _orb2.style.animationDuration = Math.max(2.0, 22 - _levSnap * 20).toFixed(2)   + 's'; }
+
+  // ── Pulse rings: wide range (3.5s → 0.25s)
   if(_prngs.length){
-    var pd = Math.max(0.6, 3.2 - _lev * 2.4) + 's';
+    var pd = Math.max(0.25, 3.5 - _levSnap * 3.25).toFixed(3) + 's';
     _prngs.forEach(function(p){ p.style.animationDuration = pd; });
   }
 
-  // ── Glow: intensify drop-shadow on logo image
-  if(_logoImg){
-    var glowPx  = Math.round(40 + _lev * 80);
-    var glowOp  = (0.25 + _lev * 0.75).toFixed(2);
-    var glowOp2 = (0.0  + _lev * 0.45).toFixed(2);
-    _logoImg.style.filter =
-      'drop-shadow(0 0 ' + glowPx + 'px rgba(' + _brandRgb + ',' + glowOp + '))' +
-      (_lev > 0.3 ? ' drop-shadow(0 0 ' + Math.round(glowPx*2) + 'px rgba(' + _brandRgb + ',' + glowOp2 + '))' : '');
-  }
+  // ── Particle speed (particles background)
+  if(_bgStyle==='particles') _speedMult = 1 + _levSnap * 8;
 }
 
 // Poll live_levels at 150 ms when a stream is configured

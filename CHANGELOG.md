@@ -2,6 +2,19 @@
 
 ---
 
+### brandscreen v1.2.3 — 2026-04-19
+
+**Dramatically more visible audio reactivity**
+
+- Two-tracker EMA system: `_lev` (slow, 0.45 attack / 0.18 decay) holds the energy floor for smooth background effects; `_levSnap` (fast, 0.65 attack / 0.38 decay) snaps to beats and dips quickly for beat-responsive elements.
+- **Bloom**: brighter core gradient (100% → 70% → 0%), larger (80vw), `filter:blur(32px)` — now looks like a real light source behind the logo. Scale range 0.12→3.2 (was 0→1.6), opacity 0.28→0.95.
+- **Logo scale pulse**: logo scale 1.0→1.09 on every beat — most perceptible effect on a large image. CSS `transition` keeps it smooth.
+- **Logo glow**: double drop-shadow, 30px→230px range (was 40px→120px).
+- **Orbit speed**: 15s→1.2s range (was 10s→3s) — orbit rings visibly sprint on peaks.
+- **Pulse ring tempo**: 3.5s→0.25s (was 3.2s→0.6s).
+- **Full-screen background wash** (`#bg-pulse`): brand-coloured radial overlay, opacity 0→0.85, makes the whole screen brighten with the audio.
+- **Particle speed**: multiplier 1→9 (was 1→3.5).
+
 ### brandscreen v1.2.2 — 2026-04-19
 
 **Fix: Zetta station dropdown always empty**
