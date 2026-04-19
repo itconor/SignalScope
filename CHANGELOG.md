@@ -2,6 +2,13 @@
 
 ---
 
+### brandscreen v1.2.2 — 2026-04-19
+
+**Fix: Zetta station dropdown always empty**
+
+- Zetta stations were built server-side from `_zetta_live_station_data()`, which only returns stations with an active live poller response. If Zetta hasn't polled yet at page-load time the list was empty.
+- Switched to the same approach as studioboard: fetch `/api/zetta/status_full` from the browser on page load, parse `instances[].stations` to build the list, then render. Stations now appear as long as the Zetta plugin is installed and configured, regardless of poll timing.
+
 ### brandscreen v1.2.1 — 2026-04-19
 
 **Fix: stream list always empty in audio reactivity dropdown**

@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.1",
+    "version":  "1.2.2",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -345,7 +345,7 @@ Authorization: Bearer {{api_key|e}}</pre>
 <script nonce="{{csp_nonce()}}">
 var _studios  = {{studios_json|safe}};
 var _stations = {{stations_json|safe}};
-var _zetStations = {{zet_json|safe}};
+var _zetStations = [];
 var _streams  = {{streams_json|safe}};
 var _currentLogoSid = null;
 
@@ -669,7 +669,21 @@ document.addEventListener('change',function(e){
   if(e.target.dataset.npSel) _npSrcChanged(e.target.dataset.npSel);
 });
 
-renderStudios(); renderStations(); renderApiRef();
+// Fetch Zetta stations from status_full (same source as studioboard)
+fetch('/api/zetta/status_full',{credentials:'same-origin'})
+  .then(function(r){return r.ok?r.json():{};}).catch(function(){return{};})
+  .then(function(d){
+    _zetStations=[];
+    ((d.instances)||[]).forEach(function(inst){
+      Object.keys(inst.stations||{}).forEach(function(sid){
+        var stn=inst.stations[sid];
+        _zetStations.push({key:inst.id+':'+sid,
+          name:(inst.name||inst.id)+' / '+(stn.station_name||stn.name||sid)});
+      });
+    });
+    _zetStations.sort(function(a,b){return a.name<b.name?-1:1;});
+    renderStudios(); renderStations(); renderApiRef();
+  });
 </script>
 </body>
 </html>"""
@@ -1110,21 +1124,11 @@ def register(app, ctx):
         for s in stations:
             p, _ = _logo_file(s["id"])
             s["_has_logo"] = p is not None
-        zet = []
-        try:
-            data = getattr(monitor, "_zetta_live_station_data", lambda: {})()
-            for key, sd in (data or {}).items():
-                name = sd.get("station_name") or sd.get("name") or key
-                zet.append({"key": key, "name": name})
-            zet.sort(key=lambda z: z["name"])
-        except Exception:
-            pass
         api_key = _ensure_api_key(cfg)
         return render_template_string(
             _ADMIN_TPL,
             stations_json=json.dumps(stations),
             studios_json=json.dumps(cfg.get("studios", [])),
-            zet_json=json.dumps(zet),
             streams_json=json.dumps(_get_streams()),
             api_key=api_key,
             origin=request.host_url.rstrip("/"),
