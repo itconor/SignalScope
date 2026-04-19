@@ -2,6 +2,15 @@
 
 ---
 
+### brandscreen v1.2.4 — 2026-04-19
+
+**Yodeck / kiosk browser compatibility**
+
+- Added `_bs_kiosk_headers` after_request hook: strips `X-Frame-Options`, `Content-Security-Policy`, `X-Content-Type-Options`, `Referrer-Policy`, and `Strict-Transport-Security` for all `/brandscreen/` and `/api/brandscreen/` paths, and adds `Access-Control-Allow-Origin: *`. This is the same mechanism used by the Studio Board plugin and is required for Yodeck's Chromium browser to load and display the page.
+- Updated `_bs_token_before` to set `g._bs_kiosk = True` and populate the full session (`login_ts`, `username`, `role`, `_csrf`) on token validation — matching Studio Board's pattern.
+- Screen routes (`/brandscreen/studio/<id>` and `/brandscreen/<id>`) now do their own auth check instead of using `@login_required`, so a valid `?token=` in the URL is sufficient without a pre-existing session cookie. SSE endpoint likewise no longer requires a session decorator.
+- Both screen routes call `make_response()` and explicitly remove security headers on the response object as a belt-and-braces measure alongside the after_request handler.
+
 ### brandscreen v1.2.3 — 2026-04-19
 
 **Dramatically more visible audio reactivity**

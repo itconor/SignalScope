@@ -4,10 +4,10 @@
 # brand-hued backgrounds, and audio-level reactive animations.
 # Drop into the plugins/ subdirectory.
 
-import os, json, uuid, threading, mimetypes, functools, colorsys
+import os, json, uuid, threading, mimetypes, functools, colorsys, time as _time, hashlib
 import queue as _queue
 from flask import (request, jsonify, render_template_string,
-                   send_file, session, Response, stream_with_context)
+                   send_file, session, Response, stream_with_context, g, make_response)
 
 SIGNALSCOPE_PLUGIN = {
     "id":       "brandscreen",
@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.3",
+    "version":  "1.2.4",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1077,18 +1077,58 @@ def register(app, ctx):
 
     api_auth = _make_api_auth()
 
+    # ── Kiosk: strip security headers so Yodeck can load the page ────────────
+    _KIOSK_PREFIXES = ("/brandscreen/", "/api/brandscreen/")
+
+    def _bs_kiosk_headers(response):
+        is_kiosk = getattr(g, "_bs_kiosk", False)
+        if not is_kiosk:
+            for pfx in _KIOSK_PREFIXES:
+                if request.path.startswith(pfx):
+                    is_kiosk = True
+                    break
+        if is_kiosk:
+            for h in ("X-Frame-Options", "Content-Security-Policy",
+                      "X-Content-Type-Options", "Referrer-Policy",
+                      "Strict-Transport-Security"):
+                response.headers.pop(h, None)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+
+    try:
+        app.after_request_funcs.setdefault(None, []).insert(0, _bs_kiosk_headers)
+    except Exception:
+        app.after_request(_bs_kiosk_headers)
+
     # ── Token-based kiosk auth ────────────────────────────────────────────────
+    def _validate_bs_token(token):
+        """Return True if token matches any studio or station token in config."""
+        if not token:
+            return False
+        cfg = _cfg_load()
+        for s in list(cfg.get("stations", [])) + list(cfg.get("studios", [])):
+            if s.get("token") == token:
+                return True
+        return False
+
     @app.before_request
     def _bs_token_before():
         p = request.path
-        if p.startswith("/brandscreen/"):
-            token = (request.args.get("token") or "").strip()
-            if token:
-                cfg = _cfg_load()
-                for s in list(cfg.get("stations", [])) + list(cfg.get("studios", [])):
-                    if s.get("token") == token:
-                        session["logged_in"] = True
-                        return
+        if not any(p.startswith(pfx) for pfx in _KIOSK_PREFIXES):
+            return
+        token = (request.args.get("token") or "").strip()
+        if not token:
+            return
+        g._bs_kiosk = True
+        if session.get("logged_in"):
+            return
+        if _validate_bs_token(token):
+            session["logged_in"] = True
+            session["login_ts"]  = _time.time()
+            session["username"]  = "brandscreen"
+            session["role"]      = "viewer"
+            if not session.get("_csrf"):
+                session["_csrf"] = hashlib.sha256(os.urandom(32)).hexdigest()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def _screen_params(st, studio_id="", studio_name=""):
@@ -1153,9 +1193,15 @@ def register(app, ctx):
 
     # ── Studio screen ─────────────────────────────────────────────────────────
     @app.get("/brandscreen/studio/<studio_id>")
-    @login_required
     def bs_studio_screen(studio_id):
-        cfg    = _cfg_load()
+        g._bs_kiosk = True
+        cfg     = _cfg_load()
+        app_cfg = monitor.app_cfg
+        token   = (request.args.get("token") or "").strip()
+        if getattr(getattr(app_cfg, "auth", None), "enabled", False):
+            if not session.get("logged_in") and not _validate_bs_token(token):
+                return ("<h2>Token required</h2>"
+                        "<p>Open this URL with <code>?token=YOUR_TOKEN</code></p>"), 403
         studio = _get_studio(cfg, studio_id)
         if not studio:
             return "Studio not found", 404
@@ -1163,28 +1209,39 @@ def register(app, ctx):
         st  = _get_station(cfg, sid) if sid else None
         if st and not st.get("enabled", True):
             st = None
-        return render_template_string(
+        resp = make_response(render_template_string(
             _SCREEN_TPL,
             **_screen_params(st, studio_id=studio_id, studio_name=studio.get("name", "")),
-        )
+        ))
+        for h in ("X-Frame-Options", "Content-Security-Policy", "X-Content-Type-Options"):
+            resp.headers.pop(h, None)
+        return resp
 
     # ── Direct station screen (backward compat) ───────────────────────────────
     @app.get("/brandscreen/<station_id>")
-    @login_required
     def bs_station_screen(station_id):
         if station_id == "studio":
             return "Not found", 404
-        cfg = _cfg_load()
-        s   = _get_station(cfg, station_id)
+        g._bs_kiosk = True
+        cfg     = _cfg_load()
+        app_cfg = monitor.app_cfg
+        token   = (request.args.get("token") or "").strip()
+        if getattr(getattr(app_cfg, "auth", None), "enabled", False):
+            if not session.get("logged_in") and not _validate_bs_token(token):
+                return ("<h2>Token required</h2>"
+                        "<p>Open this URL with <code>?token=YOUR_TOKEN</code></p>"), 403
+        s = _get_station(cfg, station_id)
         if not s:
             return "Station not found", 404
         if not s.get("enabled", True):
             return "Screen disabled", 403
-        return render_template_string(_SCREEN_TPL, **_screen_params(s))
+        resp = make_response(render_template_string(_SCREEN_TPL, **_screen_params(s)))
+        for h in ("X-Frame-Options", "Content-Security-Policy", "X-Content-Type-Options"):
+            resp.headers.pop(h, None)
+        return resp
 
     # ── SSE ───────────────────────────────────────────────────────────────────
     @app.get("/api/brandscreen/events/studio/<studio_id>")
-    @login_required
     def bs_events(studio_id):
         return Response(
             stream_with_context(_sse_stream(studio_id)),
