@@ -2,6 +2,16 @@
 
 ---
 
+### studioboard v3.13.5 — 2026-04-19
+
+**Fix: waves invisible on 1080p TV — SVG height mismatch**
+
+Root cause: `.col-wave svg` had no explicit height, so the browser sized each SVG by its viewBox aspect ratio (`width:200%` on a 1920px display → SVG width=3840px → height=3840×110/1440=293px). The container was only 130px tall at `bottom:0`, so the wave fill area (lower half of the viewBox, pixels 146–293px from SVG top) sat entirely below the container bottom edge and was clipped by the card's `overflow:hidden`. Only the transparent top of the SVG was visible — appearing as nothing or a 1–2px sliver.
+
+Fix: added `height:100%` to `.col-wave svg` so the SVG always fills the container exactly. Container height raised from `130px` to `40vh` (432px on a 1080p display). Wave fill now occupies the bottom 216px of each card (~20% of card height) — clearly visible as a background effect behind presenter content.
+
+---
+
 ### studioboard v3.13.4 — 2026-04-19
 
 **Remove clock header bar — clock moves to top-left of first card**
