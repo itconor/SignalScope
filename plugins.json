@@ -10,6 +10,16 @@
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/brandscreen.py"
   },
   {
+    "id": "pdm",
+    "name": "25/7 PDM",
+    "file": "pdm.py",
+    "icon": "⏱",
+    "description": "25/7 Programme Delay Manager monitor. Installed on client nodes — connects to the PDM unit via TCP, polls delay depth at 1 Hz, and pushes live data to the hub every 2 s. Hub displays a pill per reporting site showing delay in ms and frame equivalents at 25/30 fps. Configurable IP address and port.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/pdm.py"
+  },
+  {
     "id": "scanner",
     "name": "FM Scanner",
     "file": "scanner.py",
