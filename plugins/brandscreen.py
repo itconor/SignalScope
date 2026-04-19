@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.4",
+    "version":  "1.2.5",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1113,9 +1113,8 @@ def register(app, ctx):
 
     @app.before_request
     def _bs_token_before():
-        p = request.path
-        if not any(p.startswith(pfx) for pfx in _KIOSK_PREFIXES):
-            return
+        # Fire for any path that carries a token — kiosk pages + any API
+        # calls the JS makes that include the token as a query param
         token = (request.args.get("token") or "").strip()
         if not token:
             return
@@ -1191,17 +1190,33 @@ def register(app, ctx):
             origin=request.host_url.rstrip("/"),
         )
 
+    def _kiosk_response(html):
+        """Wrap an HTML string in a kiosk-safe Response: strip all security
+        headers, set CORS + Cache-Control, and suppress session-cookie writing.
+        Mirrors the approach used by studioboard_tv()."""
+        resp = make_response(html)
+        for h in ("X-Frame-Options", "Content-Security-Policy",
+                  "X-Content-Type-Options", "Referrer-Policy",
+                  "Strict-Transport-Security"):
+            resp.headers.pop(h, None)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        # Do NOT persist the session cookie — the token in the URL is the
+        # sole auth mechanism for kiosk/Yodeck mode.
+        session.modified = False
+        return resp
+
     # ── Studio screen ─────────────────────────────────────────────────────────
     @app.get("/brandscreen/studio/<studio_id>")
     def bs_studio_screen(studio_id):
         g._bs_kiosk = True
-        cfg     = _cfg_load()
         app_cfg = monitor.app_cfg
         token   = (request.args.get("token") or "").strip()
         if getattr(getattr(app_cfg, "auth", None), "enabled", False):
             if not session.get("logged_in") and not _validate_bs_token(token):
                 return ("<h2>Token required</h2>"
                         "<p>Open this URL with <code>?token=YOUR_TOKEN</code></p>"), 403
+        cfg    = _cfg_load()
         studio = _get_studio(cfg, studio_id)
         if not studio:
             return "Studio not found", 404
@@ -1209,13 +1224,10 @@ def register(app, ctx):
         st  = _get_station(cfg, sid) if sid else None
         if st and not st.get("enabled", True):
             st = None
-        resp = make_response(render_template_string(
+        return _kiosk_response(render_template_string(
             _SCREEN_TPL,
             **_screen_params(st, studio_id=studio_id, studio_name=studio.get("name", "")),
         ))
-        for h in ("X-Frame-Options", "Content-Security-Policy", "X-Content-Type-Options"):
-            resp.headers.pop(h, None)
-        return resp
 
     # ── Direct station screen (backward compat) ───────────────────────────────
     @app.get("/brandscreen/<station_id>")
@@ -1223,22 +1235,19 @@ def register(app, ctx):
         if station_id == "studio":
             return "Not found", 404
         g._bs_kiosk = True
-        cfg     = _cfg_load()
         app_cfg = monitor.app_cfg
         token   = (request.args.get("token") or "").strip()
         if getattr(getattr(app_cfg, "auth", None), "enabled", False):
             if not session.get("logged_in") and not _validate_bs_token(token):
                 return ("<h2>Token required</h2>"
                         "<p>Open this URL with <code>?token=YOUR_TOKEN</code></p>"), 403
-        s = _get_station(cfg, station_id)
+        cfg = _cfg_load()
+        s   = _get_station(cfg, station_id)
         if not s:
             return "Station not found", 404
         if not s.get("enabled", True):
             return "Screen disabled", 403
-        resp = make_response(render_template_string(_SCREEN_TPL, **_screen_params(s)))
-        for h in ("X-Frame-Options", "Content-Security-Policy", "X-Content-Type-Options"):
-            resp.headers.pop(h, None)
-        return resp
+        return _kiosk_response(render_template_string(_SCREEN_TPL, **_screen_params(s)))
 
     # ── SSE ───────────────────────────────────────────────────────────────────
     @app.get("/api/brandscreen/events/studio/<studio_id>")

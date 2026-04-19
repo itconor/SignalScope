@@ -2,6 +2,17 @@
 
 ---
 
+### brandscreen v1.2.5 — 2026-04-19
+
+**Fix: Yodeck required multiple refreshes before page loaded**
+
+Root cause: `session.modified = False` was missing. On first load, `_bs_token_before` set `session["logged_in"] = True` and Flask wrote a `Set-Cookie` header. Yodeck's browser didn't reliably send that cookie on subsequent requests (JS fetch calls), causing auth to fail until the cookie happened to be present. The page worked "eventually" after several refreshes.
+
+Fixes:
+- Added `_kiosk_response()` helper (mirrors studioboard_tv exactly): removes all 5 security headers, sets `Access-Control-Allow-Origin: *` and `Cache-Control: no-cache, no-store, must-revalidate`, and calls `session.modified = False` to suppress `Set-Cookie`. The token in the URL is now the sole auth mechanism — no session cookie needed.
+- `_bs_token_before` now fires for any request carrying a `?token=` parameter (not just `/brandscreen/` prefixes), so JS fetch calls that forward the token are also authenticated.
+- Both screen routes (`/brandscreen/studio/<id>` and `/brandscreen/<id>`) use `_kiosk_response()`.
+
 ### brandscreen v1.2.4 — 2026-04-19
 
 **Yodeck / kiosk browser compatibility**
