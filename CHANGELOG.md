@@ -2,6 +2,20 @@
 
 ---
 
+### brandscreen v1.2.10 — 2026-04-19
+
+**Fix: audio reactivity never fired — all effects stayed at zero**
+
+Root cause: the level poll was gated on `if(_levelKey && _hasStation)`. `_levelKey` is only set if an audio stream has been explicitly selected in the station's settings (Brand Screen → edit station → Audio Reactive dropdown). If nothing was selected — which is the default — `_levelKey` is an empty string, the condition is false, `_pollLevel()` never runs, and `_applyLevel()` is never called. Every visual effect (bloom, vignette, beat flash, orbit opacity, logo scale, brightness, etc.) requires `_applyLevel()` to set its value, so they all stayed permanently at zero.
+
+Additionally, even when `_applyLevel(0)` would have been called, it was never called once at startup — so the silence-state values (vignette at 0.18, orbit rings at baseline opacity, etc.) were never initialised.
+
+Fixes:
+- Poll always runs whenever a station is displayed (`if(_hasStation)`) — no `_levelKey` requirement.
+- When `_levelKey` is empty, the poll **auto-selects the loudest stream** on the hub (`Object.keys(d).forEach` scan for highest `level_dbfs`). Reactivity works out of the box with zero configuration. Configuring a specific stream in settings still works and takes priority.
+- `_applyLevel(0)` is called once immediately on page load so all effects initialise to their correct silence-state values before the first poll returns.
+- `fetch` error handling improved: checks `r.ok` and throws on non-2xx so auth failures (401, 403) are caught by the `.catch` path rather than silently parsed as empty JSON.
+
 ### brandscreen v1.2.9 — 2026-04-19
 
 **Fix: majority of screen still black despite brand colour set**

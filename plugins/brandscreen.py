@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.9",
+    "version":  "1.2.10",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1096,26 +1096,51 @@ function _applyLevel(raw){
     Math.min(0.9, _levSnap * 0.9).toFixed(2) + ')';
 }
 
-// Poll live_levels at 150 ms when a stream is configured
-if(_levelKey && _hasStation){
+// ── Live level poll ──────────────────────────────────────────────────────────
+// Always runs when a station is displayed — _levelKey targets a specific
+// stream if configured; otherwise auto-selects the loudest stream on the hub
+// so reactivity works out of the box with no settings required.
+if(_hasStation){
+  // Initialise visual state immediately so effects show at silence values
+  // rather than staying at zero until the first poll returns.
+  _applyLevel(0);
+
   var _levErr = 0;
   function _pollLevel(){
     fetch(_tk('/api/hub/live_levels'),{credentials:'same-origin'})
-      .then(function(r){return r.json();})
+      .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
       .then(function(d){
         _levErr = 0;
-        var e = d[_levelKey];
+        var e = null;
+        if(_levelKey){
+          // Specific stream configured — use it
+          e = d[_levelKey] || null;
+        } else {
+          // No stream configured — auto-pick loudest active stream
+          var best = -Infinity;
+          Object.keys(d).forEach(function(k){
+            var v = d[k];
+            if(v && v.level_dbfs != null && v.level_dbfs > best){
+              best = v.level_dbfs; e = v;
+            }
+          });
+        }
         if(e && e.level_dbfs != null){
-          // Map -60 dBFS→0.0,  0 dBFS→1.0
+          // Map −60 dBFS → 0.0,  0 dBFS → 1.0
           var raw = Math.max(0, Math.min(1, (e.level_dbfs + 60) / 60));
           _applyLevel(raw);
         } else {
           _applyLevel(0);
         }
       })
-      .catch(function(){ _levErr++; if(_levErr>10) _applyLevel(0); });
+      .catch(function(err){
+        _levErr++;
+        // After 10 consecutive failures stop hammering and hold at silence
+        if(_levErr > 10) _applyLevel(0);
+      });
   }
-  _pollLevel(); setInterval(_pollLevel, 150);
+  _pollLevel();
+  setInterval(_pollLevel, 150);
 }
 
 // ── Now-playing poll ────────────────────────────────────────────────────────
