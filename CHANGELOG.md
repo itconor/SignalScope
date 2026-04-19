@@ -2,6 +2,23 @@
 
 ---
 
+### brandscreen v1.2.9 — 2026-04-19
+
+**Fix: majority of screen still black despite brand colour set**
+
+Root cause — three compounding issues:
+1. **Palette V values still too low**: the luma-target approach produced colours like `#4d0202` for red's `bg_dark` — clearly dark on a calibrated monitor but reading as near-black on a studio TV at distance.
+2. **Body background was `bg_deep`**: body fills screen corners and any area outside the radial gradient ellipse. With near-black `bg_deep`, every corner was black regardless of the gradient.
+3. **Gradient ellipses too small**: `circle at 50% 42%` with stop at `bg_deep` at 100% — the majority of the screen area sits in the gradient's outer half where it blends toward bg_deep (near-black).
+4. **Vignette at 0.76 opacity × rgba(0,0,0,.9)** was effectively a 68% black overlay on all edges — crushing any brand colour that had managed to survive the gradient.
+
+Fixes:
+- **New palette formula**: fixed base V values (dp=0.28, dk=0.42, md=0.58) that are bold enough to register on any TV. A hue-luminance cap (`_cap = max(0.22, 1 - _hl × 1.2)`) scales down V only for naturally bright hues (yellow/lime) that would otherwise blow out — dark hues (red, blue) get the full base V. Results: red `bg_dark` ≈ `#6b1212`, `bg_mid` ≈ `#941313`; blue `bg_dark` ≈ `#12126b`, `bg_mid` ≈ `#131394`; green `bg_dark` ≈ `#125e12`, `bg_mid` ≈ `#138412`.
+- **Body background → `bg_dark`**: corners now show brand colour instead of near-black.
+- **Gradient ellipses → 110% × 105%**: oversized so `bg_mid` and `bg_dark` fill the entire screen. Third dark stop removed — gradient runs from bg_mid at center to bg_dark at edges (body = bg_dark fills the rest).
+- **Aurora blobs raised** to 0.70 / 0.60 / 0.35 opacity (was 0.58 / 0.48 / 0.28) to match brighter base.
+- **Vignette**: base opacity 0.76 → 0.18, rgba alpha 0.9 → 0.65. Effective edge darkening: 0.12 (was 0.68). JS range: 0.18→0.01 (was 0.76→0.02). Remains as a subtle depth accent, no longer a black mask.
+
 ### brandscreen v1.2.8 — 2026-04-19
 
 **Fix: brand colours still too dark on TV screens (red/blue near-black)**

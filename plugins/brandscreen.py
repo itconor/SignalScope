@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.8",
+    "version":  "1.2.9",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -99,11 +99,11 @@ def _brand_palette(hex_colour):
     bg_deep_rgb as comma-separated r,g,b.
     """
     r, g, b = _hex_rgb(hex_colour)
-    # Achromatic (white/grey/black) — fall back to neutral dark
+    # Achromatic (white/grey/black) — fall back to neutral dark navy
     if max(r, g, b) - min(r, g, b) < 12:
         return {
-            "bg_deep": "#030509", "bg_dark": "#060c18",
-            "bg_mid":  "#0a1328", "bg_deep_rgb": "3,5,9",
+            "bg_deep": "#070f24", "bg_dark": "#0d1f3e",
+            "bg_mid":  "#122d5a", "bg_deep_rgb": "7,15,36",
         }
     h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
     sat = min(max(s, 0.55), 0.95)
@@ -112,26 +112,29 @@ def _brand_palette(hex_colour):
         rr, gg, bb = colorsys.hsv_to_rgb(h, sat, val)
         return (int(rr * 255), int(gg * 255), int(bb * 255))
 
-    # ── Perceptual V compensation ─────────────────────────────────────────────
-    # Different hues have very different perceived luminance at the same V.
-    # Red (luma weight 0.299) at V=0.22 → #380303 ≈ black.
-    # Blue (luma weight 0.114) at V=0.22 → dark navy, clearly visible.
-    # Solution: compute this hue's relative luminance at full saturation/value,
-    # then scale V so all hues achieve the same *perceived* background darkness.
-    # Cap the result so bright hues (yellow/green) don't blow out.
+    # ── Brand-colour V calculation ────────────────────────────────────────────
+    # Goal: backgrounds that are CLEARLY the brand colour on a TV screen at
+    # studio viewing distance, not near-black with a faint hue tint.
+    #
+    # Strategy: use fixed V base values (0.28 / 0.42 / 0.58) that are high
+    # enough to register on any display.  Then cap V downward only for hues
+    # that are naturally very bright (yellow, lime) so they don't blow out.
+    # Dark hues (blue, red, purple) get the full base — they need high V to
+    # produce a visible colour.
     _rh, _gh, _bh = colorsys.hsv_to_rgb(h, 1.0, 1.0)
-    _hl = 0.299 * _rh + 0.587 * _gh + 0.114 * _bh  # 0.114 (blue) → 0.587 (green)
+    _hl = 0.299 * _rh + 0.587 * _gh + 0.114 * _bh  # luma weight of this hue
 
-    def _pv(target_luma, vcap):
-        """V needed so this hue achieves approx target_luma perceived brightness."""
-        return max(0.04, min(vcap, target_luma / max(_hl, 0.15)))
+    # _cap: headroom for bright hues.  Yellow ≈ 0.22, green ≈ 0.30,
+    # red ≈ 0.64, blue ≈ 0.86.  Dark hues are unconstrained (cap > base).
+    _cap = max(0.22, 1.0 - _hl * 1.2)
 
-    # Targets raised vs v1.2.6 — red/blue were still near-black on TV screens.
-    # Per-level V caps prevent bright hues (yellow, green) blowing out while
-    # letting dark hues (red, blue) reach a genuinely visible brand colour.
-    dp = _hsv(_pv(0.040, 0.45))   # deep  — hue-tinted, not near-black
-    dk = _hsv(_pv(0.090, 0.52))   # dark  — clearly coloured
-    md = _hsv(_pv(0.180, 0.62))   # mid   — unmistakably the brand colour
+    def _pv(base, ca, cb):
+        """Clamp base V for bright hues; dark hues use base unchanged."""
+        return min(base, _cap * ca + cb)
+
+    dp = _hsv(_pv(0.28, 0.50, 0.10))  # deep  — clearly hue-tinted, not black
+    dk = _hsv(_pv(0.42, 0.70, 0.16))  # dark  — solidly the brand colour
+    md = _hsv(_pv(0.58, 1.00, 0.22))  # mid   — bold brand colour, fills the room
 
     def _hex3(t): return f"#{t[0]:02x}{t[1]:02x}{t[2]:02x}"
     return {
@@ -718,9 +721,10 @@ _SCREEN_TPL = """<!doctype html>
 html,body{width:100%;height:100%;overflow:hidden;font-family:system-ui,sans-serif;color:#fff}
 
 /* ── Brand-derived base colour ──────────────────────────────────────────── */
-/* bg_deep / bg_mid are computed from the brand colour's hue in Python,
-   so the whole environment feels 'in' the brand colour, not just dark */
-body{background:{{bg_deep}}}
+/* bg_dark is the body fill — corners of every preset show brand colour,
+   not black.  bg_mid is the brighter centre; bg_deep is used only for the
+   very inner shadow layer of the vignette. */
+body{background:{{bg_dark}}}
 :root{
   --brand:{{brand|e}};--brand-rgb:{{brand_rgb|e}};--accent:{{accent|e}};
   --bg-deep:{{bg_deep|e}};--bg-dark:{{bg_dark|e}};--bg-mid:{{bg_mid|e}};
@@ -729,23 +733,24 @@ body{background:{{bg_deep}}}
 /* ── Backgrounds ─────────────────────────────────────────────────────────── */
 canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 
-/* Particles: deep brand-hued radial so particles glow against a coloured sky */
+/* Particles: large ellipse fills the full viewport — whole screen is the brand
+   colour.  Center glows with bg_mid; edges settle on bg_dark (= body). */
 .bg-particles-base{position:fixed;inset:0;z-index:0;
-  background:radial-gradient(circle at 50% 42%,var(--bg-mid) 0%,var(--bg-dark) 45%,var(--bg-deep) 100%)}
+  background:radial-gradient(ellipse 110% 105% at 50% 42%,var(--bg-mid) 0%,var(--bg-dark) 62%)}
 
-/* Aurora: vivid radial blooms at high opacity */
+/* Aurora: full-hue base + vivid radial blooms covering entire screen */
 .bg-aurora{position:fixed;inset:0;z-index:0;background:var(--bg-dark);
   animation:aurora-drift 16s ease-in-out infinite alternate}
 .bg-aurora::before{content:'';position:fixed;inset:0;z-index:0;
   background:
-    radial-gradient(ellipse 75% 65% at 18% 22%,rgba(var(--brand-rgb),.58) 0%,transparent 62%),
-    radial-gradient(ellipse 65% 58% at 82% 78%,rgba(var(--brand-rgb),.48) 0%,transparent 62%),
-    radial-gradient(ellipse 90% 75% at 50% 50%,rgba(var(--brand-rgb),.28) 0%,transparent 68%)}
+    radial-gradient(ellipse 85% 75% at 18% 22%,rgba(var(--brand-rgb),.70) 0%,transparent 62%),
+    radial-gradient(ellipse 75% 68% at 82% 78%,rgba(var(--brand-rgb),.60) 0%,transparent 62%),
+    radial-gradient(ellipse 100% 85% at 50% 50%,rgba(var(--brand-rgb),.35) 0%,transparent 72%)}
 @keyframes aurora-drift{
   0%  {filter:hue-rotate(0deg)   brightness(1)}
-  100%{filter:hue-rotate(12deg)  brightness(1.08)}}
+  100%{filter:hue-rotate(14deg)  brightness(1.10)}}
 
-/* Waves */
+/* Waves: top-to-bottom brand gradient — the whole screen is the brand colour */
 .bg-waves{position:fixed;inset:0;z-index:0;
   background:linear-gradient(180deg,var(--bg-mid) 0%,var(--bg-dark) 100%)}
 .wave-wrap{position:fixed;bottom:0;left:0;width:100%;overflow:hidden;z-index:1;pointer-events:none}
@@ -754,9 +759,9 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 .wave-wrap svg.w2{animation:wave-slide 13s linear infinite reverse;opacity:.65}
 @keyframes wave-slide{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
 
-/* Minimal */
+/* Minimal: oversized ellipse so bg_mid fills the screen; bg_dark at edges */
 .bg-minimal{position:fixed;inset:0;z-index:0;
-  background:radial-gradient(circle at 50% 40%,var(--bg-mid) 0%,var(--bg-dark) 55%,var(--bg-deep) 100%)}
+  background:radial-gradient(ellipse 110% 105% at 50% 40%,var(--bg-mid) 0%,var(--bg-dark) 62%)}
 
 /* ── Screen layout ───────────────────────────────────────────────────────── */
 #screen{position:relative;z-index:2;width:100%;height:100vh;display:flex;flex-direction:column;
@@ -833,11 +838,11 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 .la-glow #logo-img{transition:filter .1s linear}
 
 /* ── Audio-reactive overlays (all presets) ───────────────────────────────── */
-/* Vignette: dark frame around screen edges. At silence it darkens to frame the
-   logo in a pool of light. On loud audio it lifts — the whole screen "opens". */
+/* Vignette: very subtle dark edge that lifts on beats. Base opacity is low
+   so it adds depth without crushing the brand colour at the screen edges. */
 #vignette{position:fixed;inset:0;z-index:4;pointer-events:none;
-  background:radial-gradient(ellipse 72% 66% at 50% 46%,transparent 22%,rgba(0,0,0,.9) 100%);
-  opacity:.76;will-change:opacity;transition:opacity .12s ease-out}
+  background:radial-gradient(ellipse 72% 66% at 50% 46%,transparent 25%,rgba(0,0,0,.65) 100%);
+  opacity:.18;will-change:opacity;transition:opacity .12s ease-out}
 /* Beat flash: brand-colour radial wash that fires above 0.45 threshold */
 #beat-flash{position:fixed;inset:0;z-index:5;pointer-events:none;
   background:radial-gradient(ellipse 90% 80% at 50% 47%,rgba(var(--brand-rgb),.42) 0%,transparent 68%);
@@ -1035,9 +1040,8 @@ function _applyLevel(raw){
   // ── Background brightening wash ────────────────────────────────────────────
   if(_bgPulse) _bgPulse.style.opacity = (_levSnap * 0.92).toFixed(3);
 
-  // ── Vignette breath — at silence: dark frame (logo pops from darkness)
-  //    at peak: edges lift completely — screen "opens up" around the logo ─────
-  if(_vignette) _vignette.style.opacity = Math.max(0.02, 0.76 - _levSnap * 0.75).toFixed(3);
+  // ── Vignette breath — subtle edge darkening that lifts on loud audio ────────
+  if(_vignette) _vignette.style.opacity = Math.max(0.01, 0.18 - _levSnap * 0.17).toFixed(3);
 
   // ── Beat flash: brand-colour radial wash, fires above 0.45 threshold ───────
   if(_beatFlash) _beatFlash.style.opacity = Math.max(0, (_levSnap - 0.45) * 0.40).toFixed(3);
