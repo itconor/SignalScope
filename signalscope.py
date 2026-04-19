@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.161"
+BUILD                  = "SignalScope-3.5.162"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -14938,6 +14938,13 @@ class HubServer:
         # Used for fault_holdoff_seconds: delays ALL fault types (including post-mixin)
         # before firing CHAIN_FAULT.  Cleared on recovery.
         self._chain_fault_holdoff_since: dict = {}
+        # Zetta spot latch — cid → epoch ts when _zetta_spot last TRUE.
+        # Keeps suppression alive for _SPOT_LATCH_S seconds after the last confirmed
+        # spot so inter-ad gaps (now_playing=None for ~1 s between consecutive spots)
+        # and SOAP poll jitter don't cause false CHAIN_FAULT/RECOVERY alerts.
+        # Cleared when chain returns to "ok" so a genuine fault after the break ends
+        # is never masked.
+        self._chain_zetta_spot_latch_ts: dict = {}
         # API-layer pre-pending fault onset — cid → epoch seconds
         # Tracks when api_chains_status first saw a fault BEFORE the monitor loop
         # had a chance to set _chain_fault_state to "pending".  Used so the
@@ -16084,8 +16091,20 @@ class HubServer:
                     # Use asset_type == 2 (ASSET_SPOT) directly — same rule as JS asset_type === 2.
                     # Never use the backend-computed is_spot boolean; it can lag or produce
                     # false positives. now_playing is None when idle → asset_type defaults to 0.
-                    _zetta_spot    = _zetta_on and (
+                    _zetta_spot_raw = _zetta_on and (
                         int((_zcs.get("now_playing") or {}).get("asset_type") or 0) == 2
+                    )
+                    # Spot latch: keep suppression alive for _SPOT_LATCH_S seconds after the
+                    # last confirmed spot so inter-ad gaps (now_playing=None between consecutive
+                    # spots) and SOAP poll jitter don't trigger false CHAIN_FAULT/RECOVERY.
+                    # The latch is cleared when the chain returns to "ok" (audio restored), so
+                    # a genuine fault after the ad break ends is never masked.
+                    _SPOT_LATCH_S = 30
+                    if _zetta_spot_raw:
+                        self._chain_zetta_spot_latch_ts[cid] = now
+                    _spot_latch_age = now - self._chain_zetta_spot_latch_ts.get(cid, 0)
+                    _zetta_spot    = _zetta_on and (
+                        _zetta_spot_raw or (0 < _spot_latch_age < _SPOT_LATCH_S)
                     )
                     _zetta_stopped = _zetta_on and bool(_zcs.get("is_stopped"))
 
@@ -16469,6 +16488,9 @@ class HubServer:
                             self._chain_fault_since.pop(cid, None)
                             self._chain_fault_index.pop(cid, None)
                             self._chain_fault_holdoff_since.pop(cid, None)
+                            # Clear the spot latch: audio has returned, so any future
+                            # fault after the break is genuine and must not be suppressed.
+                            self._chain_zetta_spot_latch_ts.pop(cid, None)
                         # prev == "ok": already ok, nothing to do
 
                     # ── pending_recovery → fault: abort recovery ─────────────

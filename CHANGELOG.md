@@ -2,6 +2,18 @@
 
 ---
 
+### SignalScope-3.5.162 — 2026-04-19
+
+**Fix: Zetta ad-break suppression — spot latch prevents false CHAIN_FAULT/RECOVERY during ad breaks**
+
+Between consecutive spots in an ad break, Zetta's SOAP sequencer briefly reports `now_playing = None` for ~1 s while it queues the next spot. With the 10 s chain monitor loop and 3 s Zetta poll, this window was wide enough to drop `_zetta_spot` to False, bypassing the suppression guard at line 16202 and firing a CHAIN_FAULT → CHAIN_RECOVERY pair on what was a perfectly normal commercial break.
+
+Fix: added a 30-second spot latch (`_chain_zetta_spot_latch_ts` dict on `HubServer`). When `asset_type == 2` (ASSET_SPOT) is confirmed, the latch timestamp is updated. `_zetta_spot` stays True for the full 30 s following the last confirmed spot, covering inter-ad gaps and SOAP jitter. The latch is cleared immediately when the chain returns to `curr == "ok"` so any genuine fault after the break ends fires normally.
+
+No change to the `asset_type == 2` detection rule — never reads the backend-computed `is_spot` boolean.
+
+---
+
 ### brandscreen v1.3.0 — 2026-04-19
 
 **Feature: four new radio-station background styles + three new logo animations**
