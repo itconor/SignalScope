@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.13.3",
+    "version":  "3.13.4",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1096,20 +1096,22 @@ body.bauer::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:
   radial-gradient(ellipse 700px 400px at 70% 80%,rgba(63,20,156,.3),transparent)}
 /* ── Corporate / Clean theme ── */
 body.corp{background:#f0f4f8;color:#1d2d40;font-family:system-ui,sans-serif}
-body.corp #sb-hdr{background:rgba(255,255,255,.92);border-bottom-color:#c8d8e8}
-body.corp #sb-hdr-clock,body.corp #sb-hdr-date{color:#1d2d40}
 body.corp .col{border-color:rgba(0,0,0,.08)}
 body.corp .mp .stn,body.corp .mp .stu{color:#1d2d40}
 body.corp .frq,body.corp .npl,body.corp .vl{color:#6b82a0}
 #sb{position:relative;z-index:1;flex:1;display:flex;min-height:0}
 .cols{display:flex;flex:1;height:100%;max-width:1920px;margin:0 auto}
 .col{flex:1;display:flex;position:relative;overflow:hidden;border-right:1px solid rgba(255,255,255,.06)}
-/* ── Clock header ── */
-#sb-hdr{flex-shrink:0;height:42px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:100;background:rgba(0,0,0,.32);border-bottom:1px solid rgba(255,255,255,.06);backdrop-filter:blur(6px)}
-#sb-hdr-clock{font-size:26px;font-weight:200;font-variant-numeric:tabular-nums;letter-spacing:.06em;color:var(--tx)}
-#sb-hdr-date{font-size:12px;color:var(--mu);letter-spacing:.04em}
-body.bauer #sb-hdr{background:rgba(50,0,120,.5);border-bottom-color:rgba(255,255,255,.1)}
-body.bauer #sb-hdr-clock,body.bauer #sb-hdr-date{color:#fff}
+/* ── In-card clock — overlaid on top-left of first card (col0) ── */
+.card-clock{position:absolute;top:14px;left:16px;z-index:3;pointer-events:none;line-height:1}
+#sb-hdr-clock{display:block;font-size:22px;font-weight:200;font-variant-numeric:tabular-nums;
+  letter-spacing:.06em;color:rgba(255,255,255,.9);
+  text-shadow:0 1px 6px rgba(0,0,0,.5)}
+#sb-hdr-date{display:block;font-size:10px;color:rgba(255,255,255,.5);
+  letter-spacing:.05em;margin-top:3px;
+  text-shadow:0 1px 4px rgba(0,0,0,.4)}
+body.corp #sb-hdr-clock{color:rgba(0,0,0,.65)}
+body.corp #sb-hdr-date{color:rgba(0,0,0,.4)}
 /* ── Hub message banner ── */
 #sb-msg{flex-shrink:0;display:none;align-items:center;justify-content:center;gap:10px;
   padding:10px 24px;background:rgba(245,158,11,.9);color:#000;
@@ -1304,10 +1306,6 @@ body.corp .col-wave{display:none}
 <body>
 <!-- Full-page brand-derived gradient background; updated by JS on first render() -->
 <div id="page-bg"></div>
-<div id="sb-hdr">
-  <span id="sb-hdr-clock">--:--:--</span>
-  <span id="sb-hdr-date"></span>
-</div>
 <div id="sb-msg">📡 <span id="sb-msg-text"></span></div>
 <div id="sb"><div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--mu)">
 <div style="text-align:center"><div style="font-size:48px;margin-bottom:12px">🎙</div>
@@ -1518,6 +1516,8 @@ function buildCol(s,idx){
   return '<div class=col id="col'+idx+'" style="--cc:rgba('+r+',.6);--cg:rgba('+r+',.12);background:'+colBg+';border-color:rgba('+r+',.22)">'
     /* Wave background — positioned by _posColWaves() after DOM build */
     +'<div class="col-wave" id="cw'+idx+'"></div>'
+    /* Clock overlaid on top-left corner of the first card only */
+    +(idx===0?'<div class="card-clock"><span id="sb-hdr-clock">--:--:--</span><span id="sb-hdr-date"></span></div>':'')
     +mainContent
     +((!isEmpty&&mh)?'<div class=rp>'+mh+'</div>':'')+'</div>';
 }
