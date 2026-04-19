@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.12",
+    "version":  "1.3.0",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -382,8 +382,8 @@ function _esc(s){var d=document.createElement('div');d.appendChild(document.crea
 function _v(id){var el=document.getElementById(id);return el?(el.type==='checkbox'?el.checked:el.value):null;}
 function _stById(id){return _stations.find(function(s){return s.id===id;})||null;}
 function _sdById(id){return _studios.find(function(s){return s.id===id;})||null;}
-var _BG_L={particles:'Particles',aurora:'Aurora',waves:'Waves',minimal:'Minimal'};
-var _AN_L={orbit:'Orbit rings',pulse:'Pulse',glow:'Glow',float:'Float',none:'Static'};
+var _BG_L={particles:'Particles',aurora:'Aurora',waves:'Waves',minimal:'Minimal',beams:'Beams',grid:'Grid',burst:'Burst',haze:'Haze'};
+var _AN_L={orbit:'Orbit rings',pulse:'Pulse',glow:'Glow',float:'Float',spin:'Spin',glitch:'Glitch',bounce:'Bounce',none:'Static'};
 var _NP_L={zetta:'Zetta',json_api:'JSON API',manual:'Manual',none:'None'};
 
 document.getElementById('tab-nav').addEventListener('click',function(e){
@@ -493,6 +493,10 @@ function _stationForm(s){
     +'<option value="particles"'+(s.bg_style==='particles'?' selected':'')+'>✦ Particles</option>'
     +'<option value="aurora"'+(s.bg_style==='aurora'?' selected':'')+'>◎ Aurora</option>'
     +'<option value="waves"'+(s.bg_style==='waves'?' selected':'')+'>⌇ Waves</option>'
+    +'<option value="beams"'+(s.bg_style==='beams'?' selected':'')+'>🔦 Beams</option>'
+    +'<option value="grid"'+(s.bg_style==='grid'?' selected':'')+'>⊞ Grid</option>'
+    +'<option value="burst"'+(s.bg_style==='burst'?' selected':'')+'>✸ Burst</option>'
+    +'<option value="haze"'+(s.bg_style==='haze'?' selected':'')+'>🌫 Haze</option>'
     +'<option value="minimal"'+(s.bg_style==='minimal'?' selected':'')+'>▪ Minimal</option>'
     +'</select></div>'
     +'<div class="field"><label>Logo Animation</label><select id="f-anim-'+s.id+'">'
@@ -500,6 +504,9 @@ function _stationForm(s){
     +'<option value="pulse"'+(s.logo_anim==='pulse'?' selected':'')+'>◉ Pulse</option>'
     +'<option value="glow"'+(s.logo_anim==='glow'?' selected':'')+'>✦ Glow</option>'
     +'<option value="float"'+(s.logo_anim==='float'?' selected':'')+'>↕ Float</option>'
+    +'<option value="spin"'+(s.logo_anim==='spin'?' selected':'')+'>↻ Spin</option>'
+    +'<option value="glitch"'+(s.logo_anim==='glitch'?' selected':'')+'>⚡ Glitch</option>'
+    +'<option value="bounce"'+(s.logo_anim==='bounce'?' selected':'')+'>↑ Bounce</option>'
     +'<option value="none"'+(s.logo_anim==='none'?' selected':'')+'>— Static</option>'
     +'</select></div></div>'
     +'<div class="grid3" style="margin-bottom:8px">'
@@ -508,7 +515,7 @@ function _stationForm(s){
     +'<div class="cb-row"><input type="checkbox" id="f-np-'+s.id+'"'+(s.show_now_playing?' checked':'')+'><label for="f-np-'+s.id+'">Now Playing</label></div>'
     +'</div>'
     +'<hr class="sep">'
-    +'<div class="slabel">Audio Level <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0">— drives orbit speed, glow, pulse rate &amp; particle intensity</span></div>'
+    +'<div class="slabel">Audio Level <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0">— drives orbit opacity, spin speed, bounce, pulse rate, glow, beams, burst, grid &amp; particles</span></div>'
     +'<div class="field"><label>Input Stream</label>'
     +'<select id="f-lvkey-'+s.id+'">'
     +'<option value="">— none (static animations) —</option>'
@@ -763,6 +770,76 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 .bg-minimal{position:fixed;inset:0;z-index:0;
   background:radial-gradient(ellipse 110% 105% at 50% 40%,var(--bg-mid) 0%,var(--bg-dark) 62%)}
 
+/* Beams: sweeping concert spotlight columns rising from the floor */
+.bg-beams{position:fixed;inset:0;z-index:0;background:var(--bg-dark);overflow:hidden}
+.bg-beams::after{content:'';position:absolute;bottom:0;left:0;right:0;height:44%;
+  background:radial-gradient(ellipse 70% 100% at 50% 100%,rgba(var(--brand-rgb),.32) 0%,transparent 68%);pointer-events:none}
+.beam{position:absolute;bottom:-5%;width:6vw;height:115vh;transform-origin:bottom center;
+  background:linear-gradient(to top,rgba(var(--brand-rgb),.52) 0%,rgba(var(--brand-rgb),.12) 52%,transparent 86%);
+  filter:blur(22px);will-change:opacity,transform}
+.b1{left:13%;animation:bsw1 22s ease-in-out infinite}
+.b2{left:34%;animation:bsw2 28s ease-in-out infinite}
+.b3{left:58%;animation:bsw3 24s ease-in-out infinite}
+.b4{left:80%;animation:bsw4 32s ease-in-out infinite}
+@keyframes bsw1{0%,100%{opacity:.07;transform:rotate(-34deg)}50%{opacity:.28;transform:rotate(-17deg)}}
+@keyframes bsw2{0%,100%{opacity:.20;transform:rotate(-8deg)}50%{opacity:.40;transform:rotate(10deg)}}
+@keyframes bsw3{0%,100%{opacity:.16;transform:rotate(15deg)}50%{opacity:.09;transform:rotate(-5deg)}}
+@keyframes bsw4{0%,100%{opacity:.07;transform:rotate(36deg)}50%{opacity:.24;transform:rotate(21deg)}}
+
+/* Grid: synthwave perspective scrolling broadcast grid */
+.bg-grid{position:fixed;inset:0;z-index:0;background:var(--bg-dark);overflow:hidden}
+.bg-grid::before{content:'';position:absolute;left:50%;top:35%;transform:translate(-50%,-50%);
+  width:52vw;height:12vw;border-radius:50%;
+  background:radial-gradient(circle,rgba(var(--brand-rgb),.42) 0%,transparent 68%);
+  filter:blur(30px);pointer-events:none}
+.bg-grid-plane{position:absolute;width:220%;left:-60%;top:32%;bottom:0;
+  transform-origin:50% 100%;transform:perspective(580px) rotateX(64deg);
+  background-image:linear-gradient(rgba(var(--brand-rgb),.32) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(var(--brand-rgb),.32) 1px,transparent 1px);
+  background-size:80px 80px;animation:grid-scroll 3.0s linear infinite;will-change:background-position}
+.bg-grid-fade{position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(to bottom,var(--bg-dark) 0%,transparent 26%,transparent 50%,var(--bg-dark) 100%)}
+@keyframes grid-scroll{0%{background-position:0 0}100%{background-position:0 80px}}
+
+/* Burst: slowly rotating sunray starburst — bold, energetic */
+.bg-burst{position:fixed;inset:0;z-index:0;background:var(--bg-dark);overflow:hidden;
+  display:flex;align-items:center;justify-content:center}
+.burst-rays{position:absolute;width:210vmax;height:210vmax;
+  background:repeating-conic-gradient(rgba(var(--brand-rgb),.11) 0deg 8deg,transparent 8deg 30deg);
+  animation:burst-spin 70s linear infinite;will-change:transform}
+.burst-core{position:absolute;width:58vmin;height:58vmin;border-radius:50%;
+  background:radial-gradient(circle,rgba(var(--brand-rgb),.44) 0%,rgba(var(--brand-rgb),.08) 52%,transparent 70%);
+  filter:blur(24px)}
+@keyframes burst-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+
+/* Haze: drifting atmospheric blobs — broadcast studio mood lighting */
+.bg-haze{position:fixed;inset:0;z-index:0;background:var(--bg-dark)}
+.haze-blob{position:absolute;border-radius:50%;filter:blur(88px)}
+.hz1{width:80vw;height:80vw;top:-18%;left:-18%;
+  background:rgba(var(--brand-rgb),.30);animation:hz1 22s ease-in-out infinite alternate}
+.hz2{width:65vw;height:65vw;bottom:-14%;right:-12%;
+  background:rgba(var(--brand-rgb),.24);animation:hz2 30s ease-in-out infinite alternate;animation-delay:-10s}
+.hz3{width:52vw;height:52vw;top:22%;left:24%;
+  background:rgba(var(--brand-rgb),.17);animation:hz3 38s ease-in-out infinite alternate;animation-delay:-18s}
+@keyframes hz1{0%{transform:translate(0,0) scale(1)}100%{transform:translate(14vw,9vh) scale(1.22)}}
+@keyframes hz2{0%{transform:translate(0,0) scale(1)}100%{transform:translate(-11vw,-8vh) scale(1.16)}}
+@keyframes hz3{0%{transform:translate(0,0) scale(1)}50%{transform:translate(9vw,-12vh) scale(0.88)}100%{transform:translate(-7vw,7vh) scale(1.12)}}
+
+/* Glitch: digital broadcast interference — CSS transform-only (no filter, so JS glow still applies) */
+.la-glitch #logo-img{animation:lo-glitch 6s steps(1) infinite}
+@keyframes lo-glitch{
+  0%,86%,100%{transform:translate(0,0) skewX(0deg)}
+  87%{transform:translate(-6px,0) skewX(-5deg)}
+  88%{transform:translate(5px,-2px) skewX(3deg)}
+  89%{transform:translate(-3px,2px)}
+  90%,92%{transform:translate(0,0)}
+  91%,93%{transform:translate(-4px,0) skewX(-2deg)}
+  94%{transform:translate(4px,0) skewX(2deg)}
+  95%{transform:translate(0,-3px)}
+  96%{transform:translate(-2px,0)}
+  97%{transform:translate(3px,2px) skewX(1deg)}
+  98%{transform:translate(0,0) skewX(-0.5deg)}}
+
 /* ── Screen layout ───────────────────────────────────────────────────────── */
 #screen{position:relative;z-index:2;width:100%;height:100vh;display:flex;flex-direction:column;
   animation:px-drift 90s step-end infinite;transition:opacity .55s ease}
@@ -874,7 +951,7 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 </style>
 </head>
 
-<body>
+<body class="la-{{logo_anim|e}}">
 {% if bg_style == 'particles' %}
 <div class="bg-particles-base"></div>
 <canvas id="cv"></canvas>
@@ -890,6 +967,27 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
   <svg class="w2" viewBox="0 0 1440 80" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
     <path d="M0,40 C180,72 540,10 720,40 C900,70 1260,10 1440,40 L1440,80 L0,80Z" fill="rgba({{brand_rgb}},0.28)"/>
   </svg>
+</div>
+{% elif bg_style == 'beams' %}
+<div class="bg-beams">
+  <div class="beam b1"></div><div class="beam b2"></div>
+  <div class="beam b3"></div><div class="beam b4"></div>
+</div>
+{% elif bg_style == 'grid' %}
+<div class="bg-grid">
+  <div class="bg-grid-plane"></div>
+  <div class="bg-grid-fade"></div>
+</div>
+{% elif bg_style == 'burst' %}
+<div class="bg-burst">
+  <div class="burst-rays"></div>
+  <div class="burst-core"></div>
+</div>
+{% elif bg_style == 'haze' %}
+<div class="bg-haze">
+  <div class="haze-blob hz1"></div>
+  <div class="haze-blob hz2"></div>
+  <div class="haze-blob hz3"></div>
 </div>
 {% else %}
 <div class="bg-minimal"></div>
@@ -1014,11 +1112,20 @@ var _prngs    = document.querySelectorAll('.prng');
 var _logoImg  = document.getElementById('logo-img');
 var _npTitle  = document.getElementById('np-title');
 var _waveWrap = document.querySelector('.wave-wrap');
+// New background element refs (null when bg is a different preset — safe to guard)
+var _beams    = document.querySelectorAll('.beam');
+var _hBlobs   = document.querySelectorAll('.haze-blob');
+var _burstRays= document.querySelector('.burst-rays');
+var _gridPlane= document.querySelector('.bg-grid-plane');
 // Background element for hue-shift (skip aurora — it has its own CSS animation)
 var _bgEl     = _bgStyle!=='aurora' ? (
   document.querySelector('.bg-particles-base') ||
   document.querySelector('.bg-waves') ||
-  document.querySelector('.bg-minimal') ) : null;
+  document.querySelector('.bg-minimal') ||
+  document.querySelector('.bg-beams') ||
+  document.querySelector('.bg-grid') ||
+  document.querySelector('.bg-burst') ||
+  document.querySelector('.bg-haze') ) : null;
 
 function _applyLevel(raw){
   // Slow tracker: ambient energy floor
@@ -1049,13 +1156,17 @@ function _applyLevel(raw){
 
   // ── Logo: bigger scale + brightness/saturation pump + glow ─────────────────
   if(_logoImg){
-    var logoScale = 1.0 + _levSnap * 0.22;               // 1.0→1.22  (was 0.09)
+    var logoScale = 1.0 + _levSnap * 0.22;               // 1.0→1.22
     var bright    = (1.0 + _levSnap * 0.60).toFixed(2);  // 1.0→1.60 brightness
     var sat       = (1.0 + _levSnap * 1.10).toFixed(2);  // 1.0→2.10 saturation
     var glowPx    = Math.round(30 + _levSnap * 200);
     var glowOp    = Math.min(1, 0.2 + _levSnap * 0.85);
     var glowOp2   = Math.min(0.7, _levSnap * 0.6);
-    _logoImg.style.transform = 'scale(' + logoScale.toFixed(4) + ')';
+    // spin/bounce RAF loops own transform; glitch CSS keyframes own transform —
+    // don't overwrite with a plain scale() or they'll fight each other
+    if(_logoAnim !== 'spin' && _logoAnim !== 'bounce' && _logoAnim !== 'glitch'){
+      _logoImg.style.transform = 'scale(' + logoScale.toFixed(4) + ')';
+    }
     _logoImg.style.filter =
       'brightness(' + bright + ') saturate(' + sat + ')' +
       ' drop-shadow(0 0 ' + glowPx + 'px rgba(' + _brandRgb + ',' + glowOp.toFixed(2) + '))' +
@@ -1087,13 +1198,66 @@ function _applyLevel(raw){
   }
 
   // ── Particle speed ─────────────────────────────────────────────────────────
-  if(_bgStyle==='particles') _speedMult = 1 + _levSnap * 12;  // was 8
+  if(_bgStyle==='particles') _speedMult = 1 + _levSnap * 12;
+
+  // ── Beams: brighten beam columns with level ─────────────────────────────────
+  if(_beams.length) _beams.forEach(function(b){
+    b.style.filter = 'blur(22px) brightness(' + (1 + _levSnap * 1.4).toFixed(2) + ')';
+  });
+
+  // ── Burst: pulse ray opacity with level ────────────────────────────────────
+  if(_burstRays) _burstRays.style.opacity = (0.65 + _levSnap * 0.35).toFixed(2);
+
+  // ── Grid: brighten grid lines with level ───────────────────────────────────
+  if(_gridPlane) _gridPlane.style.filter = 'brightness(' + (1 + _levSnap * 1.2).toFixed(2) + ')';
+
+  // ── Haze: breathe blob brightness with level ───────────────────────────────
+  if(_hBlobs.length) _hBlobs.forEach(function(b){
+    b.style.filter = 'blur(88px) brightness(' + (1 + _levSnap * 0.9).toFixed(2) + ')';
+  });
 
   // ── Now-playing title glow: text halos with the brand colour on beats ───────
   if(_npTitle) _npTitle.style.textShadow =
     '0 0 ' + Math.round(_levSnap * 50) + 'px rgba(' + _brandRgb + ',' +
     Math.min(0.9, _levSnap * 0.9).toFixed(2) + ')';
 }
+
+// ── Spin logo animation — JS RAF drives continuous rotation ────────────────
+// Speed scales with audio level: 0.25 deg/frame at silence → 3.5 deg/frame at full.
+// Owns _logoImg.style.transform in spin mode — _applyLevel skips it.
+var _spinAngle = 0;
+(function _spinLoop(){
+  if(_logoAnim === 'spin'){
+    var spd = 0.25 + _levSnap * 3.25;
+    _spinAngle = (_spinAngle + spd) % 360;
+    if(_logoImg){
+      var sc = (1.0 + _levSnap * 0.14).toFixed(3);
+      _logoImg.style.transform = 'rotate(' + _spinAngle.toFixed(1) + 'deg) scale(' + sc + ')';
+    }
+  }
+  requestAnimationFrame(_spinLoop);
+})();
+
+// ── Bounce logo animation — elastic physics bounce on audio beats ───────────
+// Kicks upward when the fast snap level rises sharply; gravity + damping do the rest.
+// Owns _logoImg.style.transform in bounce mode — _applyLevel skips it.
+var _bounceY = 0, _bounceVy = 0, _prevSnapLev = 0;
+(function _bounceLoop(){
+  if(_logoAnim === 'bounce'){
+    var dSnap = _levSnap - _prevSnapLev;
+    if(dSnap > 0.10 && _levSnap > 0.28){ _bounceVy = -(10 + _levSnap * 20); }
+    _prevSnapLev = _levSnap;
+    _bounceVy += 3.8;                            // gravity (px/frame)
+    _bounceY   = Math.min(_bounceY + _bounceVy, 0); // floor at 0
+    if(_bounceY >= 0){ _bounceVy *= -0.38; }     // floor rebound
+    if(Math.abs(_bounceVy) < 0.2 && _bounceY > -0.5){ _bounceY = 0; _bounceVy = 0; }
+    if(_logoImg){
+      var sc = (1.0 + _levSnap * 0.10).toFixed(3);
+      _logoImg.style.transform = 'translateY(' + _bounceY.toFixed(1) + 'px) scale(' + sc + ')';
+    }
+  }
+  requestAnimationFrame(_bounceLoop);
+})();
 
 // ── Live level poll ──────────────────────────────────────────────────────────
 // Initialise visual state at silence values immediately so all effects

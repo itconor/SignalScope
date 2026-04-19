@@ -2,6 +2,29 @@
 
 ---
 
+### brandscreen v1.3.0 — 2026-04-19
+
+**Feature: four new radio-station background styles + three new logo animations**
+
+**New backgrounds** (selectable in Settings → Stations → Background):
+
+- **Beams** — four sweeping concert spotlight columns anchored at the floor, oscillating slowly in angle and opacity. Each beam brightens with audio level at 150 ms. Floor glow at the base for warmth.
+- **Grid** — synthwave/broadcast perspective grid receding into the horizon. Grid lines scroll toward the viewer at a steady pace; a horizon glow sits at the vanishing point. Grid line brightness reacts to audio.
+- **Burst** — large rotating starburst/sunray conic-gradient pattern. Rotates slowly (70 s/revolution). Ray opacity pulses with audio level.
+- **Haze** — three large blurred atmospheric blobs drifting independently around the screen. Blob brightness breathes with audio level. Evokes broadcast studio haze/concert fog.
+
+All new backgrounds inherit the existing audio reactive overlays (bloom, bg-pulse, beat-flash, vignette, hue-rotate) on top of their own per-preset reactivity.
+
+**New logo animations** (selectable in Settings → Stations → Logo Animation):
+
+- **Spin** — continuous rotation driven by a JS RAF loop. Speed scales with audio: 0.25 deg/frame at silence → 3.5 deg/frame at full level. Does not use `animationDuration` so no glitch on update.
+- **Glitch** — digital broadcast interference. CSS `steps(1)` keyframe animation with translate + skewX jumps. Runs at a natural broadcast-artifact rate. The existing JS glow/brightness effects still apply on top (filter is not set by the keyframes). Body class `la-glitch` activates it.
+- **Bounce** — elastic physics bounce. A JS RAF loop applies gravity (3.8 px/frame) and kicks the logo upward when the fast level snap rises sharply. Bounce strength scales with level. Damped rebound (0.38 coefficient) for a natural feel.
+
+**Also fixed**: `la-float` and `la-glow` CSS rules were defined but never activated — the body class was never set. The `<body>` tag now renders `class="la-{{logo_anim}}"` from the Jinja2 template so all logo-animation CSS rules correctly apply.
+
+**`_applyLevel` transform gating**: The logo scale transform is now skipped for `spin`, `bounce`, and `glitch` modes, preventing the per-mode RAF loops and CSS keyframes from fighting the 150 ms JS update.
+
 ### brandscreen v1.2.12 — 2026-04-19
 
 **Fix: orbit rings glitching — caused by animationDuration changes at 150 ms**
