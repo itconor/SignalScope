@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.6",
+    "version":  "1.2.7",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -908,16 +908,22 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 </div>
 
 <script nonce="{{csp_nonce()}}">
-var _studioId  = '{{studio_id|e}}';
-var _stationId = '{{station_id|e}}';
-var _bgStyle   = '{{bg_style|e}}';
-var _brandRgb  = '{{brand_rgb|e}}';
-var _logoAnim  = '{{logo_anim|e}}';
-var _showClock = {{show_clock|lower}};
-var _showOair  = {{show_on_air|lower}};
-var _showNP    = {{show_now_playing|lower}};
-var _levelKey  = '{{level_key|e}}';   // "site|stream" or ""
-var _hasStation= !!_stationId;
+var _studioId   = '{{studio_id|e}}';
+var _stationId  = '{{station_id|e}}';
+var _bgStyle    = '{{bg_style|e}}';
+var _brandRgb   = '{{brand_rgb|e}}';
+var _logoAnim   = '{{logo_anim|e}}';
+var _showClock  = {{show_clock|lower}};
+var _showOair   = {{show_on_air|lower}};
+var _showNP     = {{show_now_playing|lower}};
+var _levelKey   = '{{level_key|e}}';   // "site|stream" or ""
+// Kiosk token: embedded server-side so JS sub-requests can pass it as
+// a query param (?token=...) without relying on session cookies.
+// Mirrors the wb_token pattern used by wallboard.py for Yodeck compat.
+var _kioskToken = '{{kiosk_token|e}}';
+var _hasStation = !!_stationId;
+// Helper — append ?token= to a URL when running in kiosk mode
+function _tk(url){ return _kioskToken ? (url + (url.indexOf('?')>=0?'&':'?') + 'token=' + encodeURIComponent(_kioskToken)) : url; }
 
 if(!_hasStation){ document.getElementById('waiting').classList.add('vis'); }
 
@@ -1023,7 +1029,7 @@ function _applyLevel(raw){
 if(_levelKey && _hasStation){
   var _levErr = 0;
   function _pollLevel(){
-    fetch('/api/hub/live_levels',{credentials:'same-origin'})
+    fetch(_tk('/api/hub/live_levels'),{credentials:'same-origin'})
       .then(function(r){return r.json();})
       .then(function(d){
         _levErr = 0;
@@ -1062,14 +1068,14 @@ function _applyNP(d){
 }
 function _pollNP(){
   if(!_stationId) return;
-  fetch('/api/brandscreen/data/'+_stationId,{credentials:'same-origin'})
+  fetch(_tk('/api/brandscreen/data/'+_stationId),{credentials:'same-origin'})
     .then(function(r){return r.json();}).then(_applyNP).catch(function(){});
 }
 if(_hasStation){ _pollNP(); setInterval(_pollNP, 10000); }
 
 // ── SSE — instant studio assignment updates ─────────────────────────────────
 if(_studioId){
-  var _es = new EventSource('/api/brandscreen/events/studio/'+_studioId,{withCredentials:true});
+  var _es = new EventSource(_tk('/api/brandscreen/events/studio/'+_studioId),{withCredentials:true});
   _es.onmessage = function(e){
     if(e.data==='assignment_changed'){
       document.getElementById('screen').classList.add('fade-out');
@@ -1144,7 +1150,7 @@ def register(app, ctx):
                 session["_csrf"] = hashlib.sha256(os.urandom(32)).hexdigest()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
-    def _screen_params(st, studio_id="", studio_name=""):
+    def _screen_params(st, studio_id="", studio_name="", kiosk_token=""):
         """Build render_template_string kwargs for the screen template."""
         brand  = (st or {}).get("brand_colour", "#17a8ff")
         accent = (st or {}).get("accent_colour", "#ffffff")
@@ -1167,6 +1173,7 @@ def register(app, ctx):
             show_now_playing=(st or {}).get("show_now_playing", True),
             has_logo=p is not None,
             level_key=lk,
+            kiosk_token=kiosk_token,
         )
 
     def _get_streams():
@@ -1240,7 +1247,8 @@ def register(app, ctx):
             st = None
         return _kiosk_response(render_template_string(
             _SCREEN_TPL,
-            **_screen_params(st, studio_id=studio_id, studio_name=studio.get("name", "")),
+            **_screen_params(st, studio_id=studio_id, studio_name=studio.get("name", ""),
+                             kiosk_token=token),
         ))
 
     # ── Direct station screen (backward compat) ───────────────────────────────
@@ -1261,7 +1269,8 @@ def register(app, ctx):
             return "Station not found", 404
         if not s.get("enabled", True):
             return "Screen disabled", 403
-        return _kiosk_response(render_template_string(_SCREEN_TPL, **_screen_params(s)))
+        return _kiosk_response(render_template_string(_SCREEN_TPL,
+                                                       **_screen_params(s, kiosk_token=token)))
 
     # ── SSE ───────────────────────────────────────────────────────────────────
     @app.get("/api/brandscreen/events/studio/<studio_id>")

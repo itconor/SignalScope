@@ -2,6 +2,19 @@
 
 ---
 
+### brandscreen v1.2.7 — 2026-04-19
+
+**Fix: Yodeck still required multiple reloads — JS API calls missing token**
+
+Root cause: `session.modified = False` prevents Flask persisting the session cookie, making the token in the URL the sole auth mechanism. However, the three JS sub-requests the screen page makes (`/api/hub/live_levels`, `/api/brandscreen/data/…`, SSE `/api/brandscreen/events/studio/…`) were constructed as plain URLs with no `?token=` parameter. Without the session cookie and without the token in the URL, these calls all received 401/redirect responses — the screen loaded blank and required a refresh until the browser happened to cache a valid session.
+
+Fix (mirrors wallboard's `wb_token` pattern exactly):
+- `_screen_params()` now accepts and returns `kiosk_token` — the raw `?token=` value from the request URL.
+- Both screen routes (`/brandscreen/studio/<id>` and `/brandscreen/<id>`) pass `kiosk_token=token` into the template context.
+- Template embeds `var _kioskToken = '{{kiosk_token|e}}';` and a `_tk(url)` helper that appends `?token=…` to any URL when `_kioskToken` is set.
+- All three JS API calls now use `_tk(url)`: live levels poll, now-playing poll, and SSE EventSource.
+- `_bs_token_before` (added v1.2.5) validates any request carrying `?token=` and sets `session["logged_in"]` in-memory for that request, so these sub-requests are now authenticated on every call without needing a cookie.
+
 ### brandscreen v1.2.6 — 2026-04-19
 
 **Fix: red (and warm-colour) brand screens appeared nearly black**
