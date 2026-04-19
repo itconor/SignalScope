@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.158"
+BUILD                  = "SignalScope-3.5.159"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16186,12 +16186,23 @@ class HubServer:
                                     f"({round(now - _last_rec)}s < {round(2 * _tail)}s) — confirmation skipped.")
                                 # Fall through with min_fault_secs treated as 0
                                 min_fault_secs = 0
+                            # _zetta_on bypasses the confirmation window ONLY for
+                            # non-adbreak-candidate faults.  For adbreak candidates,
+                            # Zetta's is_spot may lag by up to one poll cycle (~3 s)
+                            # after the break starts — accepting "not a spot" too
+                            # eagerly causes spurious clip saves at the very start of
+                            # every ad break.  The confirmation window absorbs the lag;
+                            # the _zetta_on early-fire path in the pending block below
+                            # still fires quickly for genuine faults once Zetta has
+                            # confirmed the break is over and the chain remains silent.
+                            _adbreak_cand = result.get("adbreak_candidate", False)
+                            _zetta_on_bypass = _zetta_on and not _adbreak_cand
                             if (min_fault_secs == 0 or mixin_is_down or fault_is_post_mixin
-                                    or any_post_mixin_fault or _zetta_on):
+                                    or any_post_mixin_fault or _zetta_on_bypass):
                                 # Alert immediately:
                                 #  - no confirmation delay configured, OR
                                 #  - mix-in point itself is also silent (can't be an ad break), OR
-                                #  - Zetta linked + fresh: definitively NOT an ad break, OR
+                                #  - Zetta linked + fresh + NOT an adbreak candidate, OR
                                 #  - fault is at/after the mix-in point, OR
                                 #  - any node at/after the mix-in point is faulted (even if
                                 #    the primary fault_idx is pre-mixin)
@@ -16203,6 +16214,10 @@ class HubServer:
                                     monitor.log(
                                         f"[Chain] '{result['name']}' — post mix-in node faulted "
                                         f"(node {fault_idx}), bypassing {min_fault_secs}s confirmation window.")
+                                elif min_fault_secs > 0 and _zetta_on_bypass:
+                                    monitor.log(
+                                        f"[Chain] '{result['name']}' — Zetta confirms not an ad break, "
+                                        f"bypassing {min_fault_secs}s confirmation window.")
                                 self._chain_fault_state[cid] = "alerted"
                                 self._chain_fault_since.pop(cid, None)
                                 # Track flap events

@@ -2,6 +2,18 @@
 
 ---
 
+### SignalScope-3.5.159 — 2026-04-19
+
+**Fix: spurious chain fault clips at start of every Zetta ad break**
+
+Root cause: when a chain has Zetta linked and `min_fault_secs > 0`, the `_zetta_on` flag (Zetta data present and fresh within 60 s) was included in the condition that bypasses the confirmation window entirely (`_fire_chain_fault` fires on the same evaluation cycle). This is correct for non-adbreak-candidate faults — Zetta confirming "this is not a spot break" means fire immediately. However, Zetta's `is_spot` flag can lag by up to one poll cycle (~3 s) after an ad break starts. During that window: codecs are already silent, `_zetta_on=True`, `_zetta_spot=False` (stale) → confirmation window bypassed → `_fire_chain_fault` called → clips saved → 3 s later Zetta updates and says "ad break active" — too late.
+
+Fix: `_zetta_on` only bypasses the confirmation window for non-adbreak-candidate faults. For adbreak-candidate chains (pre-mixin silence where an ad break is possible), the normal confirmation window runs regardless of Zetta state. The existing `_zetta_on and not _zetta_spot` early-fire path inside the pending block (which fires within ~3–6 s for genuine faults once Zetta confirms the break ended and silence persists) is unaffected.
+
+Net effect: for Zetta-linked chains with `min_fault_secs` set, ad-break-start false positives are fully eliminated. For real faults on adbreak-candidate chains, alerting is delayed by at most one Zetta poll cycle (~3–6 s) beyond the configured `min_fault_secs`.
+
+---
+
 ### SignalScope-3.5.158 + morning_report v1.2.4 — 2026-04-18
 
 **Broadcast Chains fault log — Zetta badges**
