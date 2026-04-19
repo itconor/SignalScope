@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.2.10",
+    "version":  "1.2.11",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1097,14 +1097,17 @@ function _applyLevel(raw){
 }
 
 // ── Live level poll ──────────────────────────────────────────────────────────
-// Always runs when a station is displayed — _levelKey targets a specific
-// stream if configured; otherwise auto-selects the loudest stream on the hub
-// so reactivity works out of the box with no settings required.
-if(_hasStation){
-  // Initialise visual state immediately so effects show at silence values
-  // rather than staying at zero until the first poll returns.
-  _applyLevel(0);
+// Initialise visual state at silence values immediately so all effects
+// (bloom, vignette, orbit opacity, etc.) render correctly from first paint.
+_applyLevel(0);
 
+// /api/hub/live_levels returns a NESTED structure:
+//   { "site_name": [ {name, level_dbfs, ...}, ... ], ... }
+// _levelKey is "site|stream" — must split to look up d[site][stream].
+if(_levelKey && _hasStation){
+  var _lkSep  = _levelKey.indexOf('|');
+  var _lkSite = _lkSep >= 0 ? _levelKey.slice(0, _lkSep) : _levelKey;
+  var _lkName = _lkSep >= 0 ? _levelKey.slice(_lkSep + 1) : '';
   var _levErr = 0;
   function _pollLevel(){
     fetch(_tk('/api/hub/live_levels'),{credentials:'same-origin'})
@@ -1112,18 +1115,11 @@ if(_hasStation){
       .then(function(d){
         _levErr = 0;
         var e = null;
-        if(_levelKey){
-          // Specific stream configured — use it
-          e = d[_levelKey] || null;
-        } else {
-          // No stream configured — auto-pick loudest active stream
-          var best = -Infinity;
-          Object.keys(d).forEach(function(k){
-            var v = d[k];
-            if(v && v.level_dbfs != null && v.level_dbfs > best){
-              best = v.level_dbfs; e = v;
-            }
-          });
+        var siteArr = d[_lkSite];
+        if(Array.isArray(siteArr)){
+          for(var i=0;i<siteArr.length;i++){
+            if(siteArr[i].name === _lkName){ e = siteArr[i]; break; }
+          }
         }
         if(e && e.level_dbfs != null){
           // Map −60 dBFS → 0.0,  0 dBFS → 1.0
@@ -1133,14 +1129,9 @@ if(_hasStation){
           _applyLevel(0);
         }
       })
-      .catch(function(err){
-        _levErr++;
-        // After 10 consecutive failures stop hammering and hold at silence
-        if(_levErr > 10) _applyLevel(0);
-      });
+      .catch(function(){ _levErr++; if(_levErr > 10) _applyLevel(0); });
   }
-  _pollLevel();
-  setInterval(_pollLevel, 150);
+  _pollLevel(); setInterval(_pollLevel, 150);
 }
 
 // ── Now-playing poll ────────────────────────────────────────────────────────

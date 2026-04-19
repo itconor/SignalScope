@@ -2,6 +2,27 @@
 
 ---
 
+### brandscreen v1.2.11 — 2026-04-19
+
+**Fix: audio reactivity never worked — wrong response key format**
+
+Root cause: `/api/hub/live_levels` returns a nested structure:
+`{ "site_name": [ {name, level_dbfs, ...}, ... ], ... }`
+
+The JS was doing `d[_levelKey]` where `_levelKey = "site|stream"` — that key never exists in the response. `e` was always `undefined`, the level check always fell through to `_applyLevel(0)`, and `_levSnap` was permanently zero regardless of what audio was playing.
+
+Fix: split `_levelKey` on `|` to get site and stream name separately, then look up `d[site]` to get the array and find the matching stream by name:
+```javascript
+var _lkSite = _levelKey.slice(0, _levelKey.indexOf('|'));
+var _lkName = _levelKey.slice(_levelKey.indexOf('|') + 1);
+var siteArr = d[_lkSite];
+// find entry where entry.name === _lkName
+```
+
+Also: `_applyLevel(0)` is now called once at page load so all effects initialise to their silence-state values immediately.
+
+Reverted the auto-loudest-stream picker added in v1.2.10 — that was an unrequested behaviour change.
+
 ### brandscreen v1.2.10 — 2026-04-19
 
 **Fix: audio reactivity never fired — all effects stayed at zero**
