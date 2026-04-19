@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.13.1",
+    "version":  "3.13.2",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1359,7 +1359,10 @@ function _hexRgb(hex){var n=parseInt(hex.replace('#',''),16);return((n>>16)&255)
 
 /* Update the full-page gradient and wave colours from the primary studio brand colour.
    Skipped for corp theme (light background). In bauer mode, page-bg is not updated
-   (body class controls the purple), but waves are still coloured by the studio brand. */
+   (body class controls the purple), but waves are still coloured by the studio brand.
+   IMPORTANT: waves use the vivid brand colour itself (via RGB(color)), NOT the dark
+   derived shade (bg.rgb). mix-blend-mode:screen on dark cards needs a bright source
+   colour to produce a visible glow — a dark-on-dark source is imperceptible. */
 function _updatePageWaves(color){
   var isCorp=document.body.classList.contains('corp');
   var isBauer=document.body.classList.contains('bauer');
@@ -1369,8 +1372,9 @@ function _updatePageWaves(color){
     var pbg=document.getElementById('page-bg');
     if(pbg)pbg.style.background='linear-gradient(180deg,'+bg.mid+' 0%,'+bg.dark+' 100%)';
   }
+  var wrgb=RGB(color);  // vivid brand colour — bright enough for screen-blend glow
   document.querySelectorAll('#page-waves .pwp').forEach(function(p){
-    p.setAttribute('fill','rgba('+bg.rgb+','+p.dataset.op+')');
+    p.setAttribute('fill','rgba('+wrgb+','+p.dataset.op+')');
   });
 }
 

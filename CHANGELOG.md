@@ -2,6 +2,14 @@
 
 ---
 
+### studioboard v3.13.2 — 2026-04-19
+
+**Fix: waves invisible — wave fill was using dark brand shade instead of vivid brand colour**
+
+Root cause: `_updatePageWaves()` updated wave path fills with `rgba(bg.rgb, opacity)` where `bg.rgb` is the *dark* derived shade (V≈0.42) of the brand colour — essentially the same dark hue as the card background. With `mix-blend-mode:screen`, a dark source on a dark destination produces minimal brightening (imperceptible glow). Fix: wave paths now use `rgba(RGB(color), opacity)` — the vivid brand colour itself (e.g. `#17a8ff` at full brightness and saturation). Screen-blending a bright, saturated colour over a dark card surface produces a clearly visible glow that sweeps across all studios as the wave animates.
+
+---
+
 ### studioboard v3.13.1 — 2026-04-19
 
 **Fix: waves invisible — move to z-index:2 with mix-blend-mode:screen**
