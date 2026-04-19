@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.12.1",
+    "version":  "3.13.0",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1132,6 +1132,18 @@ body.corp .cnt-num.cnt-urgent{color:#dc2626}
 /* ── Anti-burn-in pixel drift ── */
 @keyframes sb-px-drift{0%,100%{transform:translate(0,0)}25%{transform:translate(1px,0)}50%{transform:translate(1px,1px)}75%{transform:translate(0,1px)}}
 #sb{animation:sb-px-drift 90s step-end infinite}
+/* ── Full-page brand background — coloured by JS from first studio's brand colour ── */
+#page-bg{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:linear-gradient(180deg,#122d5a 0%,#0d1f3e 100%)}
+body.corp #page-bg{display:none}
+/* ── Page-wide waves — single continuous effect flowing across all studio cards ── */
+#page-waves{position:fixed;bottom:0;left:0;width:100%;overflow:hidden;
+  z-index:0;pointer-events:none}
+#page-waves svg{display:block;width:200%}
+#page-waves .pw1{animation:pw-slide 9s  linear infinite}
+#page-waves .pw2{animation:pw-slide 13s linear infinite reverse;opacity:.65}
+@keyframes pw-slide{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+body.corp #page-waves{display:none}
 .col:last-child{border-right:none}
 .col::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;z-index:2;
   background:linear-gradient(90deg,transparent,var(--cc,rgba(255,255,255,.2)),transparent)}
@@ -1284,6 +1296,18 @@ body.corp .cnt-num.cnt-urgent{color:#dc2626}
 .free-msg{font-size:17px;font-weight:400;color:rgba(255,255,255,.38);line-height:1.6;max-width:85%}
 </style></head>
 <body>
+<!-- Full-page brand-derived gradient background; updated by JS on first render() -->
+<div id="page-bg"></div>
+<!-- Single waves effect — spans full viewport width, flows visually across all cards -->
+<div id="page-waves">
+  <svg class="pw1" viewBox="0 0 1440 110" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+    <path class="pwp" data-op="0.52" d="M0,55 C240,95 480,15 720,55 C960,95 1200,15 1440,55 L1440,110 L0,110Z" fill="rgba(23,168,255,0.52)"/>
+    <path class="pwp" data-op="0.30" d="M0,70 C360,30 720,90 1080,55 C1260,38 1380,65 1440,60 L1440,110 L0,110Z" fill="rgba(23,168,255,0.30)"/>
+  </svg>
+  <svg class="pw2" viewBox="0 0 1440 80" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+    <path class="pwp" data-op="0.40" d="M0,40 C180,72 540,10 720,40 C900,70 1260,10 1440,40 L1440,80 L0,80Z" fill="rgba(23,168,255,0.40)"/>
+  </svg>
+</div>
 <div id="sb-hdr">
   <span id="sb-hdr-clock">--:--:--</span>
   <span id="sb-hdr-date"></span>
@@ -1299,6 +1323,52 @@ var T='{{wb_token|default("")}}',SID='{{studio_id|default("")}}';
 function tk(u){if(!T)return u;return u+(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(T)}
 function E(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function RGB(h){h=h.replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];var n=parseInt(h,16);return((n>>16)&255)+','+((n>>8)&255)+','+(n&255)}
+
+/* ── Brand colour derivation — port of brandscreen's _derive_brand_bg() ────────
+   Given a brand hex, returns {dark, mid, rgb} where dark/mid are hex strings of
+   deep and medium dark shades in the same hue, and rgb is "r,g,b" for the dark
+   shade. Used to colour card backgrounds and the full-page wave background. */
+function _deriveBg(hex){
+  hex=hex.replace('#','');if(hex.length===3)hex=hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+  var ri=parseInt(hex.slice(0,2),16),gi=parseInt(hex.slice(2,4),16),bi=parseInt(hex.slice(4,6),16);
+  var r=ri/255,g=gi/255,b=bi/255,mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;
+  if(d<12/255)return{dark:'#0d1f3e',mid:'#122d5a',rgb:'13,31,62'};
+  var h,s=d/mx;
+  if(mx===r)h=(g-b)/d;else if(mx===g)h=(b-r)/d+2;else h=(r-g)/d+4;
+  h=((h/6)%1+1)%1;
+  var sat=Math.min(Math.max(s,0.55),0.95);
+  function _hv(hh,ss,vv){
+    var hi=Math.floor(hh*6),f=hh*6-hi,p=vv*(1-ss),q=vv*(1-ss*f),t=vv*(1-ss*(1-f)),rr,gg,bb;
+    if(hi===0){rr=vv;gg=t;bb=p}else if(hi===1){rr=q;gg=vv;bb=p}else if(hi===2){rr=p;gg=vv;bb=t}
+    else if(hi===3){rr=p;gg=q;bb=vv}else if(hi===4){rr=t;gg=p;bb=vv}else{rr=vv;gg=p;bb=q}
+    return[Math.round(rr*255),Math.round(gg*255),Math.round(bb*255)];
+  }
+  var fc=_hv(h,1,1),hl=0.299*fc[0]/255+0.587*fc[1]/255+0.114*fc[2]/255;
+  var cap=Math.max(0.22,1-hl*1.2);
+  function pv(base,ca,cb){return Math.min(base,cap*ca+cb)}
+  var dk=_hv(h,sat,pv(0.42,0.70,0.16)),md=_hv(h,sat,pv(0.58,1.00,0.22));
+  function h3(t){return'#'+('0'+t[0].toString(16)).slice(-2)+('0'+t[1].toString(16)).slice(-2)+('0'+t[2].toString(16)).slice(-2)}
+  return{dark:h3(dk),mid:h3(md),rgb:dk[0]+','+dk[1]+','+dk[2]};
+}
+/* Extract "r,g,b" from a hex colour string */
+function _hexRgb(hex){var n=parseInt(hex.replace('#',''),16);return((n>>16)&255)+','+((n>>8)&255)+','+(n&255)}
+
+/* Update the full-page gradient and wave colours from the primary studio brand colour.
+   Skipped for corp theme (light background). In bauer mode, page-bg is not updated
+   (body class controls the purple), but waves are still coloured by the studio brand. */
+function _updatePageWaves(color){
+  var isCorp=document.body.classList.contains('corp');
+  var isBauer=document.body.classList.contains('bauer');
+  if(isCorp)return;
+  var bg=_deriveBg(color);
+  if(!isBauer){
+    var pbg=document.getElementById('page-bg');
+    if(pbg)pbg.style.background='linear-gradient(180deg,'+bg.mid+' 0%,'+bg.dark+' 100%)';
+  }
+  document.querySelectorAll('#page-waves .pwp').forEach(function(p){
+    p.setAttribute('fill','rgba('+bg.rgb+','+p.dataset.op+')');
+  });
+}
 
 var DB=-80,D=null,NP={},SS={},LL={},_built=false,_artSrc={},_lastSig='';
 
@@ -1391,8 +1461,12 @@ function buildCol(s,idx){
       +'<div class=vb><div class=vf data-k="'+E(k)+'|R"></div><div class=vp data-p="'+E(k)+'|R"></div></div></div><div class=vl>'+E(nm)+'</div></div>'}
     else{mh+='<div class=vm><div class=vb><div class=vf data-k="'+E(k)+'"></div><div class=vp data-p="'+E(k)+'"></div></div><div class=vl>'+E(nm)+'</div></div>'}
   });
-  /* Flat dark base + even colour tint — stays true to set colour top to bottom */
-  var colBg='linear-gradient(180deg,rgba('+r+',.18) 0%,rgba('+r+',.10) 100%),rgba(7,14,38,.88)';
+  /* Brandscreen-style: derive dark/mid shades of the brand colour so the card
+     background clearly reads as the brand colour (not just a faint tint over black).
+     Slight alpha (0.78/0.76) lets the page-wave background show through, making the
+     waves appear to flow across all cards as a single continuous effect. */
+  var _dbg=_deriveBg(c);
+  var colBg='linear-gradient(180deg,rgba('+_hexRgb(_dbg.mid)+',.78) 0%,rgba('+_hexRgb(_dbg.dark)+',.76) 100%)';
   var mainContent=isEmpty
     /* Free / available studio */
     ?('<div class=free-band id="free-band'+idx+'">'
@@ -1600,6 +1674,8 @@ function render(){
     document.getElementById('sb').innerHTML=h;_built=true;
   }
   ss.forEach(function(s,i){updateCol(s,i)});
+  /* Drive page background and waves from the first studio's brand colour */
+  _updatePageWaves((ss[0]&&ss[0].color)||'#17a8ff');
 }
 
 function poll(){fetch(tk('/api/studioboard/data'),{credentials:'same-origin'})

@@ -2,6 +2,26 @@
 
 ---
 
+### studioboard v3.13.0 — 2026-04-19
+
+**Feature: brandscreen-style card colours + single flowing waves background**
+
+**Card backgrounds (Goal 1 — brandscreen colour approach)**
+
+Previously cards used `rgba(brand, .18/.10)` tint over a near-black `rgba(7,14,38,.88)` base — effectively just dark navy with a faint hue hint. Now cards use `_deriveBg()`, a JS port of brandscreen's `_derive_brand_bg()` Python function. It derives a `dark` (V≈0.42) and `mid` (V≈0.58) shade in exactly the brand hue at boosted saturation — the same values brandscreen uses to fill the whole screen. Cards are now clearly and visibly the brand colour, not just barely-tinted black.
+
+**Page-wide waves (Goal 2 — single effect flowing across all cards)**
+
+Two fixed elements added before the header in the body:
+- `#page-bg`: full-viewport fixed gradient (`mid → dark` in first studio's brand colour); updated by `_updatePageWaves()` on every `render()` call.
+- `#page-waves`: fixed bottom-anchored wave SVGs (3 paths, same shapes as brandscreen Waves preset), animated with `pw-slide` (9 s / 13 s reverse). Wave fill colours are set from the first studio's brand colour RGB.
+
+Cards have 78/76% alpha backgrounds (down from ~88% opaque) so the waves are visible flowing through all card backgrounds simultaneously — a single continuous animation spanning the full display width. Cards still clearly show their individual brand colours via the derived dark/mid shades, top border line (`--cc`), and top radial glow (`--cg`).
+
+Bauer theme: `#page-bg` update skipped (body class controls the purple), waves still coloured from studio brand. Corp theme: both `#page-bg` and `#page-waves` hidden via CSS (`display:none`), no change to corp appearance.
+
+---
+
 ### studioboard v3.12.1 — 2026-04-19
 
 **Fix: cached show image URL missing kiosk token**
