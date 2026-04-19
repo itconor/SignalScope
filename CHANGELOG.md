@@ -2,6 +2,19 @@
 
 ---
 
+## livewire v1.1.0 — 2026-04-18
+
+### Changed — accordion node display, sortable columns, search bar, stale alerts
+
+- Sources are now grouped by node (name + IP) with collapsible accordion cards; first node expanded by default
+- Sortable columns: Stream ID (numeric), Last Seen, and Status — click column header to toggle asc/desc
+- Search bar filters across node name, IP, source name, stream ID, and multicast address simultaneously
+- Hub overview no longer shows "+ Input" buttons (inputs should be added from the client node's page)
+- Alert configuration section added to both hub and client pages: master "Alert on stale source" toggle plus per-channel checkboxes (Email, Webhook, Push notification) that use the existing Settings notification configuration
+- Stale alerts fire through `_alert_log_append` (visible in Hub Reports) and selected notification channels; alerts de-duplicate per stale episode and reset on source recovery
+
+---
+
 ## zetta v2.1.24 — 2026-04-19
 
 ### Added — `/zetta` short URL redirects to `/hub/zetta`

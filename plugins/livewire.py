@@ -13,10 +13,10 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Livewire",
     "url":     "/livewire",
     "icon":    "🔗",
-    "version": "1.0.4",
+    "version": "1.1.0",
 }
 
-import json, os, struct, threading, time, urllib.request
+import json, os, struct, sys, threading, time, urllib.request, uuid
 import select as _sel
 import socket as _sock
 from flask import jsonify, redirect, render_template_string, request
@@ -33,6 +33,7 @@ _DEF_TIMEOUT   = 300   # seconds before a source is marked stale
 _lw_monitor = None
 _hub_data   = {}       # site_name → {sources:[...], updated_at:float}
 _hub_lock   = threading.Lock()
+_alert_cfg  = {}       # live copy of alert config, updated on save
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -42,15 +43,22 @@ def _lw_ip(cid: int) -> str:
     return f"239.192.{(cid >> 8) & 0xFF}.{cid & 0xFF}"
 
 def _load_cfg() -> dict:
+    global _alert_cfg
     try:
         with open(_CFG_PATH) as f:
-            return json.load(f)
+            d = json.load(f)
+            _alert_cfg = d
+            return d
     except Exception:
         return {}
 
 def _save_cfg(d: dict):
+    global _alert_cfg
+    existing = _load_cfg()
+    existing.update(d)
+    _alert_cfg = existing
     with open(_CFG_PATH, "w") as f:
-        json.dump(d, f, indent=2)
+        json.dump(existing, f, indent=2)
 
 def _load_hub_data():
     global _hub_data
@@ -192,6 +200,69 @@ def _parse_lwap(data: bytes, sender_ip: str):
     return {"adv_type": adv_type, "node_ip": node_ip, "node_name": node_name, "sources": sources}
 
 
+# ── Alert helpers ─────────────────────────────────────────────────────────────
+
+def _fire_lw_stale_alert(log_fn, node_name: str, cid: int, source_name: str, age_s: int):
+    """
+    Fire a LW_STALE alert through the configured channels.
+    Uses the same sys.modules pattern as azuracast.py to avoid circular imports.
+    """
+    subject = f"Livewire stale: {source_name} (ch {cid})"
+    body    = (f"Node: {node_name}\n"
+               f"Source: {source_name} (channel {cid})\n"
+               f"Last seen: {age_s}s ago")
+
+    # 1. Append to SignalScope alert log (shows in Hub Reports)
+    for mod in sys.modules.values():
+        if hasattr(mod, "_alert_log_append") and hasattr(mod, "hub_reports"):
+            try:
+                mod._alert_log_append({
+                    "id":            str(uuid.uuid4()),
+                    "ts":            time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "stream":        source_name,
+                    "type":          "LW_STALE",
+                    "message":       body,
+                    "level_dbfs":    None,
+                    "rtp_loss_pct":  None,
+                    "rtp_jitter_ms": None,
+                    "clip":          "",
+                    "ptp_state":     "",
+                    "ptp_offset_us": 0,
+                    "ptp_drift_us":  0,
+                    "ptp_jitter_us": 0,
+                    "ptp_gm":        "",
+                })
+            except Exception as e:
+                log_fn(f"[Livewire] Alert log error: {e}")
+            break
+
+    # 2. Send notifications through selected channels
+    acfg = _alert_cfg
+    for mod in sys.modules.values():
+        if hasattr(mod, "AlertSender") and hasattr(mod, "hub_reports"):
+            try:
+                # We need monitor.app_cfg; find it via the AppMonitor singleton
+                for m2 in sys.modules.values():
+                    if hasattr(m2, "AppMonitor"):
+                        monitor_inst = getattr(m2, "_monitor_instance", None)
+                        if monitor_inst is None:
+                            break
+                        cfg = monitor_inst.app_cfg
+                        sender = mod.AlertSender(cfg, log_fn)
+                        if acfg.get("alert_email", True):
+                            sender._email(subject, body, None)
+                        if acfg.get("alert_webhook", True):
+                            sender._webhook(subject, body,
+                                            alert_type="LW_STALE",
+                                            stream=source_name)
+                        if acfg.get("alert_push", True):
+                            sender._pushover(subject, body, None)
+                        break
+            except Exception as e:
+                log_fn(f"[Livewire] Notification error: {e}")
+            break
+
+
 # ── Monitor ───────────────────────────────────────────────────────────────────
 
 class _LivewireMonitor:
@@ -209,13 +280,16 @@ class _LivewireMonitor:
         self._lock       = threading.Lock()
         self._stop       = threading.Event()
         self._thread     = None
+        # Stale alert tracking
+        self._stale_alerted: set = set()   # cids already alerted
+        self._last_alert_check   = 0.0
         # Diagnostics
-        self._pkt_rx       = 0    # total UDP packets received
-        self._pkt_parsed   = 0    # packets that parsed successfully (valid binary LWAP)
-        self._pkt_type1    = 0    # type 1 (full) packets — carry source data
-        self._sock_ok      = None # True/False after open attempt
-        self._last_raw     = b""  # raw bytes of most recent packet
-        self._last_adv_type = 0   # ADVT value of last parsed packet
+        self._pkt_rx        = 0
+        self._pkt_parsed    = 0
+        self._pkt_type1     = 0
+        self._sock_ok       = None
+        self._last_raw      = b""
+        self._last_adv_type = 0
 
     def start(self):
         self._stop.clear()
@@ -229,7 +303,7 @@ class _LivewireMonitor:
             self._thread.join(timeout=3.0)
 
     def get_sources(self) -> list:
-        """Return sources sorted by node name then channel name."""
+        """Return sources sorted by node name then channel ID."""
         now = time.time()
         with self._lock:
             out = []
@@ -240,7 +314,7 @@ class _LivewireMonitor:
                     "age_s":  int(age),
                     "status": "online" if age <= self.timeout else "stale",
                 })
-        out.sort(key=lambda s: (s.get("node_name", "").lower(), s.get("name", "").lower()))
+        out.sort(key=lambda s: (s.get("node_name", "").lower(), s.get("cid", 0)))
         return out
 
     def get_stats(self) -> dict:
@@ -304,6 +378,7 @@ class _LivewireMonitor:
         if sock is None:
             self.log("[Livewire] Multicast socket unavailable — source discovery inactive.")
             return
+        self._last_alert_check = time.time()
         while not self._stop.is_set():
             try:
                 ready, _, _ = _sel.select([sock], [], [], 1.0)
@@ -319,6 +394,11 @@ class _LivewireMonitor:
                 except Exception as e:
                     if not self._stop.is_set():
                         self.log(f"[Livewire] recv error: {e}")
+            # Periodic stale alert check every 60 seconds
+            now = time.time()
+            if now - self._last_alert_check >= 60.0:
+                self._check_stale_alerts(now)
+                self._last_alert_check = now
         try:
             sock.close()
         except Exception:
@@ -363,10 +443,40 @@ class _LivewireMonitor:
                         "last_seen":  now,
                         "first_seen": first,
                     }
+                    # Clear stale alert flag if recovered
+                    self._stale_alerted.discard(cid)
                 self.log(
                     f"[Livewire] {node_name} ({node_ip}): "
                     f"{len(p['sources'])} sources"
                 )
+
+    def _check_stale_alerts(self, now: float):
+        """Fire LW_STALE alerts for newly stale sources (once per stale episode)."""
+        if not _alert_cfg.get("alert_on_stale"):
+            return
+        with self._lock:
+            sources_snap = list(self._sources.items())
+        for cid, src in sources_snap:
+            age = now - src["last_seen"]
+            is_stale = age > self.timeout
+            if is_stale and cid not in self._stale_alerted:
+                self._stale_alerted.add(cid)
+                self.log(
+                    f"[Livewire] Stale alert: ch={cid} '{src['name']}' "
+                    f"({int(age)}s since last seen)"
+                )
+                try:
+                    _fire_lw_stale_alert(
+                        self.log,
+                        src.get("node_name", ""),
+                        cid,
+                        src.get("name", f"ch {cid}"),
+                        int(age),
+                    )
+                except Exception as e:
+                    self.log(f"[Livewire] Alert fire error: {e}")
+            elif not is_stale:
+                self._stale_alerted.discard(cid)
 
 
 # ── Shared CSS ────────────────────────────────────────────────────────────────
@@ -409,6 +519,30 @@ input:focus{outline:none;border-color:var(--acc)}
 .msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b;display:block!important}
 .empty{padding:24px;text-align:center;color:var(--mu);font-size:13px}
 code{font-family:monospace;font-size:12px;color:var(--mu)}
+/* Search bar */
+.lw-search-bar{margin-bottom:16px;display:flex;gap:10px;align-items:center}
+.lw-search{flex:1;max-width:400px;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;color:var(--tx);padding:8px 12px;font-size:13px}
+.lw-search:focus{outline:none;border-color:var(--acc)}
+.lw-search-count{font-size:12px;color:var(--mu)}
+/* Node accordion */
+.lw-node{border-bottom:1px solid var(--bor)}
+.lw-node:last-child{border-bottom:none}
+.node-hdr{padding:10px 14px;display:flex;align-items:center;gap:8px;cursor:pointer;background:rgba(14,34,66,.4);user-select:none;transition:background .15s}
+.node-hdr:hover{background:rgba(23,52,95,.5)}
+.node-name{font-weight:700;font-size:13px}
+.node-ip{font-size:11px;color:var(--mu);margin-left:4px;font-family:monospace}
+.node-arrow{margin-left:auto;font-size:11px;color:var(--mu);transition:transform .2s;flex-shrink:0}
+.node-open>.node-hdr .node-arrow{transform:rotate(90deg)}
+.node-body{display:none;overflow:auto}
+.node-open>.node-body{display:block}
+/* Sortable columns */
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{color:var(--acc)}
+th.sort-asc::after{content:' ▲';color:var(--acc)}
+th.sort-desc::after{content:' ▼';color:var(--acc)}
+/* Alert config */
+.alert-channel-label{display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px;font-size:13px;font-weight:normal}
+.alert-channel-label input{width:auto}
 """
 
 _SHARED_JS = r"""
@@ -429,8 +563,204 @@ function _fmtAge(s){
 function _pill(status){
   return '<span class="badge '+(status==='online'?'b-ok':'b-al')+'">'+status+'</span>';
 }
-function _esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
-function _escA(s){return s.replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function _esc(s){var d=document.createElement('div');d.textContent=String(s);return d.innerHTML;}
+function _escA(s){return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+/* ── Node grouping ─────────────────────────────────────────────────────── */
+function _groupNodes(srcs){
+  var nodes={}, order=[];
+  for(var i=0;i<srcs.length;i++){
+    var s=srcs[i];
+    var key=(s.node_ip||'')+'||'+(s.node_name||'');
+    if(!nodes[key]){
+      nodes[key]={name:s.node_name||s.node_ip||'Unknown',ip:s.node_ip||'',sources:[]};
+      order.push(key);
+    }
+    nodes[key].sources.push(s);
+  }
+  order.sort(function(a,b){
+    return nodes[a].name.toLowerCase()<nodes[b].name.toLowerCase()?-1:1;
+  });
+  return {nodes:nodes,order:order};
+}
+
+/* ── Sort state ────────────────────────────────────────────────────────── */
+var _sortState={};  /* nodeKey → {col,dir} */
+
+function _sortSources(srcs,col,dir){
+  var sorted=srcs.slice();
+  sorted.sort(function(a,b){
+    var av=a[col], bv=b[col];
+    if(typeof av==='string') av=av.toLowerCase();
+    if(typeof bv==='string') bv=bv.toLowerCase();
+    if(av<bv) return dir==='asc'?-1:1;
+    if(av>bv) return dir==='asc'?1:-1;
+    return 0;
+  });
+  return sorted;
+}
+
+/* ── Accordion toggle ──────────────────────────────────────────────────── */
+function _toggleNode(hdr){
+  hdr.parentElement.classList.toggle('node-open');
+}
+
+/* ── Search ────────────────────────────────────────────────────────────── */
+function _applySearch(q){
+  q=q.toLowerCase().trim();
+  var total=0, shown=0;
+  document.querySelectorAll('.lw-src-row').forEach(function(r){
+    total++;
+    var txt=(r.dataset.search||'').toLowerCase();
+    var vis=!q||txt.indexOf(q)!==-1;
+    r.style.display=vis?'':'none';
+    if(vis) shown++;
+  });
+  /* Show/hide entire node blocks if all their rows are hidden */
+  document.querySelectorAll('.lw-node').forEach(function(n){
+    if(!q){n.style.display='';return;}
+    var hasVis=false;
+    n.querySelectorAll('.lw-src-row').forEach(function(r){if(r.style.display!=='none')hasVis=true;});
+    /* Also match node name/ip itself */
+    var nHdr=n.querySelector('.node-hdr');
+    var nTxt=nHdr?(nHdr.textContent||'').toLowerCase():'';
+    if(!hasVis&&nTxt.indexOf(q)!==-1){
+      n.querySelectorAll('.lw-src-row').forEach(function(r){r.style.display='';});
+      hasVis=true;
+    }
+    n.style.display=hasVis?'':'none';
+  });
+  /* Also hide empty site cards on hub */
+  document.querySelectorAll('.lw-site-card').forEach(function(c){
+    if(!q){c.style.display='';return;}
+    var hasVis=false;
+    c.querySelectorAll('.lw-node').forEach(function(n){if(n.style.display!=='none')hasVis=true;});
+    c.style.display=hasVis?'':'none';
+  });
+  var cnt=document.getElementById('lw-search-count');
+  if(cnt) cnt.textContent=q?(shown+' result'+(shown!==1?'s':'')):'';
+}
+
+/* ── Render rows for a node ────────────────────────────────────────────── */
+function _renderRows(tbodyId, srcs, showAdd, site, isLocal){
+  var tbody=document.getElementById(tbodyId);
+  if(!tbody) return;
+  var html='';
+  for(var j=0;j<srcs.length;j++){
+    var s=srcs[j];
+    var searchTxt=[s.node_name||'',s.node_ip||'',s.name||'',String(s.cid),s.multicast||''].join(' ').toLowerCase();
+    html+='<tr class="lw-src-row" data-search="'+_escA(searchTxt)+'">';
+    html+='<td><code>'+s.cid+'</code></td>';
+    html+='<td>'+_esc(s.name||'')+'</td>';
+    html+='<td><code>'+_esc(s.multicast||'')+'</code></td>';
+    html+='<td class="ts">'+_fmtAge(s.age_s||0)+'</td>';
+    html+='<td>'+_pill(s.status||'stale')+'</td>';
+    if(showAdd){
+      html+='<td>'
+           +'<button class="btn bp bs lw-add-btn"'
+           +' data-site="'+_escA(site||'')+'"'
+           +' data-local="'+(isLocal?'1':'0')+'"'
+           +' data-cid="'+s.cid+'"'
+           +' data-name="'+_escA(s.name||('LW-'+s.cid))+'"'
+           +'>+ Input</button>'
+           +'</td>';
+    }
+    html+='</tr>';
+  }
+  tbody.innerHTML=html;
+}
+
+/* ── Render accordion nodes for a source list ──────────────────────────── */
+function _renderNodeAccordion(containerId, srcs, showAdd, site, isLocal, expandFirst){
+  var el=document.getElementById(containerId);
+  if(!el) return;
+  if(!srcs||!srcs.length){
+    el.innerHTML='<div class="empty">No sources discovered yet.</div>';
+    return;
+  }
+  var grp=_groupNodes(srcs), html='';
+  for(var ni=0;ni<grp.order.length;ni++){
+    var key=grp.order[ni], nd=grp.nodes[key];
+    var on=nd.sources.filter(function(s){return s.status==='online';}).length;
+    var st=nd.sources.filter(function(s){return s.status==='stale';}).length;
+    var tbId='tb-'+btoa(key).replace(/[^a-zA-Z0-9]/g,'').slice(0,16)+'_'+ni;
+    var openCls=(expandFirst&&ni===0)?' node-open':'';
+    html+='<div class="lw-node'+openCls+'" data-node-key="'+_escA(key)+'">';
+    html+='<div class="node-hdr" onclick="_toggleNode(this)">';
+    html+='<span class="node-name">'+_esc(nd.name)+'</span>';
+    html+='<span class="node-ip">'+_esc(nd.ip)+'</span>';
+    html+='<span class="ch-pills" style="margin-left:12px">';
+    if(on) html+='<span class="badge b-ok">'+on+' online</span>';
+    if(st) html+='<span class="badge b-al">'+st+' stale</span>';
+    if(!on&&!st) html+='<span class="badge b-mu">no sources</span>';
+    html+='</span>';
+    html+='<span class="node-arrow">▶</span>';
+    html+='</div>';
+    html+='<div class="node-body">';
+    html+='<table><thead><tr>';
+    html+='<th class="sortable" data-col="cid" data-node="'+_escA(key)+'" data-tbody="'+tbId+'">Stream ID</th>';
+    html+='<th>Friendly Name</th>';
+    html+='<th>Multicast</th>';
+    html+='<th class="sortable" data-col="age_s" data-node="'+_escA(key)+'" data-tbody="'+tbId+'">Last Seen</th>';
+    html+='<th class="sortable" data-col="status" data-node="'+_escA(key)+'" data-tbody="'+tbId+'">Status</th>';
+    if(showAdd) html+='<th></th>';
+    html+='</tr></thead>';
+    html+='<tbody id="'+tbId+'"></tbody>';
+    html+='</table>';
+    html+='</div></div>';
+  }
+  el.innerHTML=html;
+
+  /* Render rows and attach sort handlers */
+  for(var ni2=0;ni2<grp.order.length;ni2++){
+    var key2=grp.order[ni2], nd2=grp.nodes[key2];
+    var ss=_sortState[key2];
+    var sorted=ss?_sortSources(nd2.sources,ss.col,ss.dir):nd2.sources;
+    var tbId2='tb-'+btoa(key2).replace(/[^a-zA-Z0-9]/g,'').slice(0,16)+'_'+ni2;
+    _renderRows(tbId2, sorted, showAdd, site, isLocal);
+  }
+
+  /* Sort column click handler (delegated) */
+  el.querySelectorAll('th.sortable').forEach(function(th){
+    th.addEventListener('click',function(){
+      var col=th.dataset.col, nk=th.dataset.node, tb=th.dataset.tbody;
+      var cur=_sortState[nk]||{col:'cid',dir:'asc'};
+      var newDir=(cur.col===col&&cur.dir==='asc')?'desc':'asc';
+      _sortState[nk]={col:col,dir:newDir};
+      /* Update all th classes in this thead */
+      th.closest('thead').querySelectorAll('th.sortable').forEach(function(h){
+        h.classList.remove('sort-asc','sort-desc');
+      });
+      th.classList.add(newDir==='asc'?'sort-asc':'sort-desc');
+      /* Re-render tbody */
+      var nd3=null;
+      for(var k in ({__dummy:1})){} /* scope trick */
+      document.querySelectorAll('.lw-node').forEach(function(n){
+        if(n.dataset.nodeKey===nk){
+          /* find sources from current rendered rows */
+        }
+      });
+      /* Get sources from stored _grpCache */
+      if(_grpCache[nk]){
+        _renderRows(tb, _sortSources(_grpCache[nk],col,newDir), showAdd, site, isLocal);
+      }
+      /* Re-apply search */
+      var sq=document.getElementById('lw-search');
+      if(sq&&sq.value) _applySearch(sq.value);
+    });
+  });
+}
+
+var _grpCache={};  /* nodeKey → sources array, for sort re-render */
+
+function _buildGrpCache(srcs){
+  _grpCache={};
+  var grp=_groupNodes(srcs);
+  for(var ni=0;ni<grp.order.length;ni++){
+    var key=grp.order[ni];
+    _grpCache[key]=grp.nodes[key].sources;
+  }
+}
 """
 
 
@@ -450,6 +780,14 @@ _HUB_TPL = r"""<!doctype html>
     <p>Axia Livewire source discovery — all connected sites</p>
   </div>
   <div id="msg"></div>
+
+  <div class="lw-search-bar">
+    <input type="search" class="lw-search" id="lw-search"
+           placeholder="Search node, name, stream ID, multicast…"
+           oninput="_applySearch(this.value)">
+    <span class="lw-search-count" id="lw-search-count"></span>
+  </div>
+
   <div id="sites"></div>
 
   <div class="card">
@@ -467,10 +805,34 @@ _HUB_TPL = r"""<!doctype html>
       <button class="btn bp bs" id="cfg-save-btn">Save</button>
     </div>
   </div>
+
+  <div class="card">
+    <div class="ch">🔔 Alert Configuration</div>
+    <div class="cb">
+      <label class="alert-channel-label" style="margin-bottom:12px;font-weight:600">
+        <input type="checkbox" id="alert-on-stale" {{'checked' if alert_on_stale else ''}}>
+        Alert when a source goes stale
+      </label>
+      <div id="alert-channels" style="margin-left:20px;{{'opacity:.4;pointer-events:none' if not alert_on_stale else ''}}">
+        <p style="font-size:11px;color:var(--mu);margin-bottom:10px">Alert channels (uses Settings configuration):</p>
+        <label class="alert-channel-label">
+          <input type="checkbox" id="alert-email" {{'checked' if alert_email else ''}}> 📧 Email
+        </label>
+        <label class="alert-channel-label">
+          <input type="checkbox" id="alert-webhook" {{'checked' if alert_webhook else ''}}> 🔗 Webhook
+        </label>
+        <label class="alert-channel-label">
+          <input type="checkbox" id="alert-push" {{'checked' if alert_push else ''}}> 📱 Push notification
+        </label>
+      </div>
+      <button class="btn bp bs" id="alert-save-btn" style="margin-top:12px">Save</button>
+    </div>
+  </div>
 </main>
 <script nonce="{{csp_nonce()}}">
 """ + _SHARED_JS + r"""
-var _isHub = {{is_hub|lower}};
+var _isHub = true;
+var _allSrcs = {};  /* site → flat source list for cache */
 
 function _renderSites(data){
   var names=Object.keys(data).sort(), html='';
@@ -484,77 +846,31 @@ function _renderSites(data){
     var site=names[i], sd=data[site];
     var srcs=sd.sources||[], on=sd.online||0, st=sd.stale||0;
     var updAge=sd.updated_at?Math.floor(Date.now()/1000-sd.updated_at):null;
-    html+='<div class="card">';
+    html+='<div class="card lw-site-card">';
     html+='<div class="ch">📡 '+_esc(site);
     html+='<span class="ch-pills">';
-    if(on) html+='<span class="badge b-ok">'+on+' online</span> ';
-    if(st) html+='<span class="badge b-al">'+st+' stale</span>';
+    if(on)  html+='<span class="badge b-ok">'+on+' online</span>';
+    if(st)  html+='<span class="badge b-al">'+st+' stale</span>';
     if(!on&&!st) html+='<span class="badge b-mu">no sources</span>';
     if(updAge!==null) html+='<span class="ts" style="margin-left:8px">updated '+_fmtAge(updAge)+'</span>';
     html+='</span></div>';
-    html+='<div class="cb">';
-    if(!srcs.length){
-      html+='<div class="empty">No sources discovered on this site yet.</div>';
-    } else {
-      html+='<table><thead><tr>'
-           +'<th>Node</th><th>Stream ID</th><th>Friendly Name</th>'
-           +'<th>Multicast</th><th>Last Seen</th><th>Status</th><th></th>'
-           +'</tr></thead><tbody>';
-      for(var j=0;j<srcs.length;j++){
-        var s=srcs[j];
-        var local=sd._local?'1':'0';
-        html+='<tr>'
-             +'<td>'+_esc(s.node_name||'')+' <div class="ts mu">'+_esc(s.node_ip||'')+'</div></td>'
-             +'<td><code>'+s.cid+'</code></td>'
-             +'<td>'+_esc(s.name||'')+'</td>'
-             +'<td><code>'+_esc(s.multicast||'')+'</code></td>'
-             +'<td class="ts">'+_fmtAge(s.age_s||0)+'</td>'
-             +'<td>'+_pill(s.status||'stale')+'</td>'
-             +'<td>'
-             +'<button class="btn bp bs lw-add-btn"'
-             +' data-site="'+_escA(site)+'"'
-             +' data-local="'+local+'"'
-             +' data-cid="'+s.cid+'"'
-             +' data-name="'+_escA(s.name||('LW-'+s.cid))+'"'
-             +'>+ Input</button>'
-             +'</td></tr>';
-      }
-      html+='</tbody></table>';
-    }
-    html+='</div></div>';
+    html+='<div id="site-nodes-'+i+'"></div>';
+    html+='</div>';
+    _allSrcs[site]={idx:i,srcs:srcs};
   }
   document.getElementById('sites').innerHTML=html;
-}
 
-document.addEventListener('click',function(e){
-  var btn=e.target.closest('.lw-add-btn');
-  if(!btn) return;
-  var site=btn.dataset.site, cid=parseInt(btn.dataset.cid,10);
-  var name=btn.dataset.name, local=btn.dataset.local==='1';
-  btn.disabled=true;
-  var csrf=_getCsrf(), url, body;
-  if(local||!_isHub){
-    url='/inputs/add_dab_bulk';
-    body=JSON.stringify({services:[{name:name,device_index:String(cid),stereo:true}]});
-  } else {
-    url='/api/hub/site/'+encodeURIComponent(site)+'/input/add';
-    body=JSON.stringify({name:name,device_index:String(cid),stereo:true,
-                         alert_on_silence:true,alert_on_clip:true});
+  /* Render accordion nodes per site */
+  for(var si=0;si<names.length;si++){
+    var sname=names[si], sd2=_allSrcs[sname];
+    _buildGrpCache(sd2.srcs);
+    _renderNodeAccordion('site-nodes-'+sd2.idx, sd2.srcs, false, sname, false, true);
   }
-  fetch(url,{method:'POST',credentials:'same-origin',
-    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:body})
-  .then(function(r){return r.json();})
-  .then(function(d){
-    btn.disabled=false;
-    if(d.ok||d.added){
-      _showMsg('"'+name+'" '+(local||!_isHub
-        ?'added to inputs.'
-        :'queued for '+site+' — active on next heartbeat.'),false);
-    } else {
-      _showMsg('Error: '+(d.error||JSON.stringify(d)),true);
-    }
-  }).catch(function(e){btn.disabled=false;_showMsg('Request failed: '+e,true);});
-});
+
+  /* Re-apply search */
+  var sq=document.getElementById('lw-search');
+  if(sq&&sq.value.trim()) _applySearch(sq.value);
+}
 
 document.getElementById('cfg-save-btn').addEventListener('click',function(){
   var csrf=_getCsrf();
@@ -563,6 +879,25 @@ document.getElementById('cfg-save-btn').addEventListener('click',function(){
     body:JSON.stringify({source_timeout:parseInt(document.getElementById('cfg-timeout').value)||300})
   }).then(function(r){return r.json();})
   .then(function(d){_showMsg(d.ok?'Config saved.':'Error: '+(d.error||'?'),!d.ok);});
+});
+
+document.getElementById('alert-on-stale').addEventListener('change',function(){
+  var ch=document.getElementById('alert-channels');
+  ch.style.opacity=this.checked?'1':'0.4';
+  ch.style.pointerEvents=this.checked?'':'none';
+});
+document.getElementById('alert-save-btn').addEventListener('click',function(){
+  var csrf=_getCsrf();
+  fetch('/api/livewire/alert_config',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},
+    body:JSON.stringify({
+      alert_on_stale: document.getElementById('alert-on-stale').checked,
+      alert_email:    document.getElementById('alert-email').checked,
+      alert_webhook:  document.getElementById('alert-webhook').checked,
+      alert_push:     document.getElementById('alert-push').checked,
+    })
+  }).then(function(r){return r.json();})
+  .then(function(d){_showMsg(d.ok?'Alert config saved.':'Error: '+(d.error||'?'),!d.ok);});
 });
 
 function _refresh(){
@@ -592,7 +927,21 @@ _CLIENT_TPL = r"""<!doctype html>
     <p>Local Axia Livewire source discovery — <strong>{{site_name}}</strong></p>
   </div>
   <div id="msg"></div>
-  <div id="local-tbl"></div>
+
+  <div class="lw-search-bar">
+    <input type="search" class="lw-search" id="lw-search"
+           placeholder="Search node, name, stream ID, multicast…"
+           oninput="_applySearch(this.value)">
+    <span class="lw-search-count" id="lw-search-count"></span>
+  </div>
+
+  <div class="card">
+    <div class="ch">
+      📡 Local sources
+      <span class="ch-pills" id="local-pills"></span>
+    </div>
+    <div id="local-nodes"></div>
+  </div>
 
   <div class="card">
     <div class="ch">⚙ Configuration</div>
@@ -612,51 +961,51 @@ _CLIENT_TPL = r"""<!doctype html>
       <button class="btn bp bs" id="cfg-save-btn">Save</button>
     </div>
   </div>
+
+  <div class="card">
+    <div class="ch">🔔 Alert Configuration</div>
+    <div class="cb">
+      <label class="alert-channel-label" style="margin-bottom:12px;font-weight:600">
+        <input type="checkbox" id="alert-on-stale" {{'checked' if alert_on_stale else ''}}>
+        Alert when a source goes stale
+      </label>
+      <div id="alert-channels" style="margin-left:20px;{{'opacity:.4;pointer-events:none' if not alert_on_stale else ''}}">
+        <p style="font-size:11px;color:var(--mu);margin-bottom:10px">Alert channels (uses Settings configuration):</p>
+        <label class="alert-channel-label">
+          <input type="checkbox" id="alert-email" {{'checked' if alert_email else ''}}> 📧 Email
+        </label>
+        <label class="alert-channel-label">
+          <input type="checkbox" id="alert-webhook" {{'checked' if alert_webhook else ''}}> 🔗 Webhook
+        </label>
+        <label class="alert-channel-label">
+          <input type="checkbox" id="alert-push" {{'checked' if alert_push else ''}}> 📱 Push notification
+        </label>
+      </div>
+      <button class="btn bp bs" id="alert-save-btn" style="margin-top:12px">Save</button>
+    </div>
+  </div>
 </main>
 <script nonce="{{csp_nonce()}}">
 """ + _SHARED_JS + r"""
+var _isHub = false;
+var _localSrcs = [];
+
 function _renderLocal(srcs){
+  _localSrcs = srcs;
   var on=srcs.filter(function(s){return s.status==='online';}).length;
   var st=srcs.filter(function(s){return s.status==='stale';}).length;
-  var html='<div class="card">';
-  html+='<div class="ch">📡 Local sources';
-  html+='<span class="ch-pills">';
-  if(on) html+='<span class="badge b-ok">'+on+' online</span> ';
-  if(st) html+='<span class="badge b-al">'+st+' stale</span>';
-  if(!on&&!st) html+='<span class="badge b-mu">no sources</span>';
-  html+='</span></div>';
-  html+='<div class="cb">';
-  if(!srcs.length){
-    html+='<div class="empty">No sources discovered yet. '
-         +'Listening on {{_LWAP_GROUP}}:{{_LWAP_PORT}} — '
-         +'check that this machine can receive Livewire multicast.</div>';
-  } else {
-    html+='<table><thead><tr>'
-         +'<th>Node</th><th>Stream ID</th><th>Friendly Name</th>'
-         +'<th>Multicast</th><th>Last Seen</th><th>Status</th><th></th>'
-         +'</tr></thead><tbody>';
-    for(var j=0;j<srcs.length;j++){
-      var s=srcs[j];
-      html+='<tr>'
-           +'<td>'+_esc(s.node_name||'')+' <div class="ts mu">'+_esc(s.node_ip||'')+'</div></td>'
-           +'<td><code>'+s.cid+'</code></td>'
-           +'<td>'+_esc(s.name||'')+'</td>'
-           +'<td><code>'+_esc(s.multicast||'')+'</code></td>'
-           +'<td class="ts">'+_fmtAge(s.age_s||0)+'</td>'
-           +'<td>'+_pill(s.status||'stale')+'</td>'
-           +'<td>'
-           +'<button class="btn bp bs lw-add-btn"'
-           +' data-cid="'+s.cid+'"'
-           +' data-name="'+_escA(s.name||('LW-'+s.cid))+'"'
-           +'>+ Input</button>'
-           +'</td></tr>';
-    }
-    html+='</tbody></table>';
-  }
-  html+='</div></div>';
-  document.getElementById('local-tbl').innerHTML=html;
+  var pills='';
+  if(on) pills+='<span class="badge b-ok">'+on+' online</span> ';
+  if(st) pills+='<span class="badge b-al">'+st+' stale</span>';
+  if(!on&&!st) pills+='<span class="badge b-mu">no sources</span>';
+  document.getElementById('local-pills').innerHTML=pills;
+  _buildGrpCache(srcs);
+  _renderNodeAccordion('local-nodes', srcs, true, '', true, true);
+  var sq=document.getElementById('lw-search');
+  if(sq&&sq.value.trim()) _applySearch(sq.value);
 }
 
+/* + Input click handler */
 document.addEventListener('click',function(e){
   var btn=e.target.closest('.lw-add-btn');
   if(!btn) return;
@@ -671,19 +1020,35 @@ document.addEventListener('click',function(e){
     btn.disabled=false;
     if(d.ok||d.added) _showMsg('"'+name+'" added to inputs.',false);
     else _showMsg('Error: '+(d.error||JSON.stringify(d)),true);
-  }).catch(function(e){btn.disabled=false;_showMsg('Request failed: '+e,true);});
+  }).catch(function(e2){btn.disabled=false;_showMsg('Request failed: '+e2,true);});
 });
 
 document.getElementById('cfg-save-btn').addEventListener('click',function(){
   var csrf=_getCsrf();
   fetch('/api/livewire/config',{method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRFToken':csrf},
-    body:JSON.stringify({
-      audio_iface:document.getElementById('cfg-iface').value.trim()||'0.0.0.0',
-      source_timeout:parseInt(document.getElementById('cfg-timeout').value)||300
-    })
+    body:JSON.stringify({source_timeout:parseInt(document.getElementById('cfg-timeout').value)||300})
   }).then(function(r){return r.json();})
   .then(function(d){_showMsg(d.ok?'Config saved.':'Error: '+(d.error||'?'),!d.ok);});
+});
+
+document.getElementById('alert-on-stale').addEventListener('change',function(){
+  var ch=document.getElementById('alert-channels');
+  ch.style.opacity=this.checked?'1':'0.4';
+  ch.style.pointerEvents=this.checked?'':'none';
+});
+document.getElementById('alert-save-btn').addEventListener('click',function(){
+  var csrf=_getCsrf();
+  fetch('/api/livewire/alert_config',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},
+    body:JSON.stringify({
+      alert_on_stale: document.getElementById('alert-on-stale').checked,
+      alert_email:    document.getElementById('alert-email').checked,
+      alert_webhook:  document.getElementById('alert-webhook').checked,
+      alert_push:     document.getElementById('alert-push').checked,
+    })
+  }).then(function(r){return r.json();})
+  .then(function(d){_showMsg(d.ok?'Alert config saved.':'Error: '+(d.error||'?'),!d.ok);});
 });
 
 function _refresh(){
@@ -700,7 +1065,7 @@ setInterval(_refresh,15000);
 # ── register ──────────────────────────────────────────────────────────────────
 
 def register(app, ctx):
-    global _lw_monitor, _hub_data
+    global _lw_monitor, _hub_data, _alert_cfg
 
     login_required = ctx["login_required"]
     csrf_protect   = ctx["csrf_protect"]
@@ -716,7 +1081,6 @@ def register(app, ctx):
     is_client = mode == "client" and bool(hub_url)
 
     # Always use the system audio interface (Settings → Hub & Network → Audio interface IP).
-    # This ensures the multicast group is joined on the correct Livewire NIC.
     iface_ip = (getattr(getattr(cfg_ss, "network", None), "audio_interface_ip", "") or "0.0.0.0")
 
     pcfg    = _load_cfg()
@@ -784,6 +1148,10 @@ def register(app, ctx):
             site_name=site_name,
             iface_ip=iface_ip,
             timeout=int(pcfg2.get("source_timeout", _DEF_TIMEOUT)),
+            alert_on_stale=bool(pcfg2.get("alert_on_stale", False)),
+            alert_email=bool(pcfg2.get("alert_email", True)),
+            alert_webhook=bool(pcfg2.get("alert_webhook", True)),
+            alert_push=bool(pcfg2.get("alert_push", True)),
             _LWAP_GROUP=_LWAP_GROUP,
             _LWAP_PORT=_LWAP_PORT,
         )
@@ -798,6 +1166,10 @@ def register(app, ctx):
             timeout=int(pcfg2.get("source_timeout", _DEF_TIMEOUT)),
             is_hub=is_hub,
             push_interval=_PUSH_INTERVAL,
+            alert_on_stale=bool(pcfg2.get("alert_on_stale", False)),
+            alert_email=bool(pcfg2.get("alert_email", True)),
+            alert_webhook=bool(pcfg2.get("alert_webhook", True)),
+            alert_push=bool(pcfg2.get("alert_push", True)),
         )
 
     @app.post("/api/livewire/report")
@@ -912,4 +1284,18 @@ def register(app, ctx):
         _save_cfg({"source_timeout": timeout_new})
         if _lw_monitor:
             _lw_monitor.timeout = timeout_new
+        return jsonify({"ok": True})
+
+    @app.post("/api/livewire/alert_config")
+    @login_required
+    @csrf_protect
+    def livewire_alert_config_save():
+        """Save alert configuration: which channels to notify on stale source."""
+        data = request.get_json(silent=True) or {}
+        _save_cfg({
+            "alert_on_stale": bool(data.get("alert_on_stale", False)),
+            "alert_email":    bool(data.get("alert_email",    True)),
+            "alert_webhook":  bool(data.get("alert_webhook",  True)),
+            "alert_push":     bool(data.get("alert_push",     True)),
+        })
         return jsonify({"ok": True})
