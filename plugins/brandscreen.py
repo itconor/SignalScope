@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.3",
+    "version":  "1.3.4",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -874,12 +874,22 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
   background:radial-gradient(ellipse 110% 105% at 50% 40%,var(--bg-mid) 0%,var(--bg-dark) 62%)}
 
 /* Beams: sweeping concert spotlight columns rising from the floor */
-.bg-beams{position:fixed;inset:0;z-index:0;background:var(--bg-dark);overflow:hidden}
+/* overflow:hidden removed — on Raspberry Pi / Yodeck, overflow:hidden on a
+   parent of will-change:transform children creates a clipping stacking context
+   that Pi's compositor can fail to render, producing a black rectangle for one
+   frame. The viewport already clips beams that extend outside it. */
+.bg-beams{position:fixed;inset:0;z-index:0;background:var(--bg-dark)}
 .bg-beams::after{content:'';position:absolute;bottom:0;left:0;right:0;height:44%;
   background:radial-gradient(ellipse 70% 100% at 50% 100%,rgba(var(--brand-rgb),.32) 0%,transparent 68%);pointer-events:none}
-.beam{position:absolute;bottom:-5%;width:6vw;height:115vh;transform-origin:bottom center;
-  background:linear-gradient(to top,rgba(var(--brand-rgb),.52) 0%,rgba(var(--brand-rgb),.12) 52%,transparent 86%);
-  filter:blur(22px);will-change:opacity,transform}
+/* filter:blur() removed from beams — each blurred beam is promoted to its own
+   GPU compositor texture (blur kernel adds ~130px padding on all sides). Four
+   beams × ~1.4 MB each = ~5.6 MB of GPU memory, causing texture eviction and
+   the black-flash on Pi. Beam is made 9vw wide (was 6vw) and gradient softened
+   to visually approximate the blurred look without the filter. */
+.beam{position:absolute;bottom:-5%;width:9vw;height:115vh;transform-origin:bottom center;
+  border-radius:50% 50% 0 0 / 3% 3% 0 0;
+  background:linear-gradient(to top,rgba(var(--brand-rgb),.38) 0%,rgba(var(--brand-rgb),.09) 55%,transparent 84%);
+  will-change:opacity,transform}
 .b1{left:13%;animation:bsw1 22s ease-in-out infinite}
 .b2{left:34%;animation:bsw2 28s ease-in-out infinite}
 .b3{left:58%;animation:bsw3 24s ease-in-out infinite}
@@ -905,7 +915,8 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 @keyframes grid-scroll{0%{background-position:0 0}100%{background-position:0 80px}}
 
 /* Burst: slowly rotating sunray starburst — bold, energetic */
-.bg-burst{position:fixed;inset:0;z-index:0;background:var(--bg-dark);overflow:hidden;
+/* overflow:hidden removed for the same Pi compositor reason as bg-beams */
+.bg-burst{position:fixed;inset:0;z-index:0;background:var(--bg-dark);
   display:flex;align-items:center;justify-content:center}
 .burst-rays{position:absolute;width:210vmax;height:210vmax;
   background:repeating-conic-gradient(rgba(var(--brand-rgb),.11) 0deg 8deg,transparent 8deg 30deg);
@@ -966,9 +977,14 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 #centre{flex:1;display:flex;align-items:center;justify-content:center;position:relative;overflow:visible}
 
 /* Audio-reactive centre bloom — always present, driven by JS */
+/* filter:blur(32px) removed — at 80vw width (1536px on 1920p) the GPU texture
+   needed to render this element with blur is (1536+192)²≈11.9 MB. When the Pi
+   runs out of GPU memory, this layer is evicted and renders as a black circle.
+   Gradient extended to 78% transparent (was 68%) to keep a soft fade without
+   the blur. The JS RAF loop drives opacity/scale so the glow still pulses. */
 #lev-bloom{position:absolute;width:80vw;height:80vw;border-radius:50%;pointer-events:none;z-index:3;
-  background:radial-gradient(circle,rgba(var(--brand-rgb),1) 0%,rgba(var(--brand-rgb),.7) 18%,transparent 68%);
-  filter:blur(32px);transform:scale(0.05);opacity:0.3;will-change:transform,opacity}
+  background:radial-gradient(circle,rgba(var(--brand-rgb),.82) 0%,rgba(var(--brand-rgb),.50) 22%,rgba(var(--brand-rgb),.14) 55%,transparent 78%);
+  transform:scale(0.05);opacity:0.3;will-change:transform,opacity}
 /* Full-screen level-reactive background brightening */
 #bg-pulse{position:fixed;inset:0;z-index:1;pointer-events:none;
   background:radial-gradient(ellipse 90% 80% at 50% 48%,rgba(var(--brand-rgb),.18) 0%,transparent 72%);
@@ -1029,9 +1045,11 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
   opacity:0;will-change:opacity}
 /* Inner bloom core: sharp punchy "lamp" at the logo centre — sits above the
    large soft bloom and gives a distinct bright source that pulses with beats */
+/* filter:blur(4px) removed — even a small blur forces a larger GPU texture
+   allocation; at 16vw the saving is modest but every MB counts on Pi. */
 #lev-bloom-core{position:absolute;width:16vw;height:16vw;border-radius:50%;pointer-events:none;z-index:4;
-  background:radial-gradient(circle,rgba(var(--brand-rgb),1) 0%,rgba(var(--brand-rgb),.48) 36%,transparent 70%);
-  filter:blur(4px);transform:scale(0.06);opacity:0;will-change:transform,opacity}
+  background:radial-gradient(circle,rgba(var(--brand-rgb),1) 0%,rgba(var(--brand-rgb),.42) 40%,transparent 72%);
+  transform:scale(0.06);opacity:0;will-change:transform,opacity}
 
 /* ── Now-playing lower third ─────────────────────────────────────────────── */
 #lower{flex-shrink:0;padding:0 48px 30px;display:none;flex-direction:column;align-items:center;text-align:center}

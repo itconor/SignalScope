@@ -2,6 +2,45 @@
 
 ---
 
+### Brand Screen 1.3.4 — 2026-04-20
+
+**Fix: part-of-screen black flash on Raspberry Pi / Yodeck players**
+
+Diagnosed from video footage: the left-centre area of the screen flashed black
+for one frame at irregular intervals, visible only on Yodeck (Pi) not desktop.
+Root cause: GPU compositor texture eviction due to memory pressure.
+
+On Raspberry Pi Chromium, every element with `filter:blur()` AND `will-change`
+is promoted to its own GPU compositor layer. The blur kernel requires the GPU
+texture to be larger than the element's DOM size (3× blur radius of padding on
+all sides). When the Pi GPU memory budget is exhausted, Chromium evicts the
+lowest-priority layer texture and renders it as solid black for that frame.
+
+**Textures removed:**
+- `#lev-bloom` `filter:blur(32px)` — this single element at 80vw width produced
+  a `(1536+192)²≈11.9 MB` GPU texture. When evicted, a large dark circle
+  appeared over the centre of the screen.
+- `.beam` `filter:blur(22px)` — four beam elements × ~1.4 MB each = ~5.6 MB.
+  The beam at `left:13%` was the first to be evicted, causing the dark patch
+  seen in the left-centre of the screen in the video.
+- `#lev-bloom-core` `filter:blur(4px)` — smaller contribution but freed.
+
+**Compensations:**
+- `#lev-bloom` gradient extended to 78% transparent (was 68%) for a softer
+  natural fade without the blur.
+- Beam width increased from `6vw` to `9vw` with `border-radius` rounding and
+  a softer gradient to approximate the blurred spotlight look.
+- `#lev-bloom-core` gradient stop pushed to 72% for smoother fade.
+
+**`overflow:hidden` removed from `.bg-beams` and `.bg-burst`** — on Pi
+Chromium, an `overflow:hidden` parent that contains `will-change:transform`
+children creates a compositor clipping stacking context. When the clipping
+layer fails to render (GPU OOM), the entire clipped region is filled with
+black for one frame. The viewport already clips any beams or burst rays that
+extend outside its bounds, so `overflow:hidden` was redundant.
+
+---
+
 ### Brand Screen 1.3.3 — 2026-04-20
 
 **Fix: animation glitching on Raspberry Pi / Yodeck players**
