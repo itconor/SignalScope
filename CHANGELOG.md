@@ -2,6 +2,21 @@
 
 ---
 
+### SignalScope-3.5.166 — 2026-04-20
+
+**Fix: Hub Reports table — huge gap caused by long site/stream names**
+
+Root cause: `.site-badge` had `white-space:nowrap` but no `max-width`, so a site name like `(Northern Ireland - Cool FM & National DAB)` forced the Site column to ~320 px. With `table-layout:auto` (the default), this content-driven expansion overrode the `<th style="width:110px">` hint, blowing out the table layout and creating a large blank gap.
+
+Fixes:
+- `table{table-layout:fixed}` — column widths are now set by `<th>` declarations, not by cell content.
+- `.site-badge{display:block;overflow:hidden;text-overflow:ellipsis;max-width:100%}` — long site names truncate with `…` within the column width. Full name shown on hover via `title` attribute.
+- Stream column cell: same `white-space:nowrap;overflow:hidden;text-overflow:ellipsis` + `title` tooltip.
+- Column widths rebalanced: Site 110 → 160 px; Time 130 → 110 px; gives Detail column more working room.
+- Detail cell: `word-break:break-word` so long fault messages (e.g. DLS text) wrap cleanly.
+
+---
+
 ### SignalScope-3.5.165 — 2026-04-20
 
 **Fix: Zetta ad-break grace period now only applies when mix-in is healthy**

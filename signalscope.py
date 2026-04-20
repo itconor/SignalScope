@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.165"
+BUILD                  = "SignalScope-3.5.166"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -35433,9 +35433,9 @@ main{padding:18px 20px 24px}
 .sc-val{font-size:24px;font-weight:800;line-height:1.1}.sc-lbl{font-size:11px;color:var(--mu);margin-top:4px;text-transform:uppercase;letter-spacing:.08em}
 .metrics-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.metric-chip{padding:8px 10px;border:1px solid var(--bor);border-radius:999px;background:#12305c;font-size:12px}.metric-chip strong{color:var(--tx)}
 .table-wrap{border:1px solid var(--bor);border-radius:12px;overflow-x:auto;overflow-y:visible;background:rgba(13,35,70,.96);box-shadow:0 4px 10px rgba(0,0,0,.14)}
-table{width:100%;border-collapse:collapse}
-thead th{text-align:left;padding:8px 10px;background:#12305c;border-bottom:2px solid var(--bor);font-size:11px;color:#c5dcff;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;position:sticky;top:0;z-index:2}
-tbody td{padding:8px 10px;border-bottom:1px solid var(--bor);vertical-align:top}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+thead th{text-align:left;padding:8px 10px;background:#12305c;border-bottom:2px solid var(--bor);font-size:11px;color:#c5dcff;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;position:sticky;top:0;z-index:2;overflow:hidden}
+tbody td{padding:8px 10px;border-bottom:1px solid var(--bor);vertical-align:top;overflow:hidden}
 tbody tr:nth-child(even) td{background:rgba(255,255,255,.018)}
 tbody tr:hover td{background:rgba(23,168,255,.06) !important}
 tr.ev-silence td:first-child{border-left:3px solid var(--wn)}
@@ -35443,7 +35443,7 @@ tr.ev-alert td:first-child{border-left:3px solid var(--al)}
 tr.ev-ok td:first-child{border-left:3px solid var(--ok)}
 tr.ev-info td:first-child{border-left:3px solid var(--acc)}
 .type-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
-.site-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;background:#1e2a3a;color:var(--acc);white-space:nowrap}
+.site-badge{display:block;padding:2px 7px;border-radius:999px;font-size:11px;background:#1e2a3a;color:var(--acc);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .offline-site{opacity:0.6}
 .t-silence{background:#173a69;color:#93c5fd}.t-clip{background:#3a1e1e;color:#fca5a5}
 .t-hiss{background:#2a2a1e;color:#fde68a}.t-rtp{background:#173a69;color:#c4b5fd}
@@ -35540,15 +35540,15 @@ tr.ev-info td:first-child{border-left:3px solid var(--acc)}
   <table id="evt_table">
     <thead>
       <tr>
-        <th style="width:130px">Time</th>
-        <th style="width:110px">Site</th>
-        <th style="width:120px">Stream</th>
+        <th style="width:110px">Time</th>
+        <th style="width:160px">Site</th>
+        <th style="width:110px">Stream</th>
         <th style="width:95px">Type</th>
-        <th style="width:110px">Chain</th>
+        <th style="width:120px">Chain</th>
         <th>Detail</th>
-        <th style="width:75px">Level</th>
+        <th style="width:70px">Level</th>
         <th style="width:70px">RTP Loss</th>
-        <th style="width:90px">Clip</th>
+        <th style="width:85px">Clip</th>
       </tr>
     </thead>
     <tbody id="evt_body">
@@ -35558,12 +35558,12 @@ tr.ev-info td:first-child{border-left:3px solid var(--acc)}
     {% set is_chain_row = tl == 'chain_fault' %}
     {% set ev_row_cls = 'ev-alert' if ('ALERT' in (e.type or '') or 'FAULT' in (e.type or '') or e.type in ('SILENCE','STUDIO_FAULT','STL_FAULT','TX_DOWN','RTP_LOSS')) else ('ev-silence' if ('WARN' in (e.type or '') or e.type == 'RTP_LOSS_WARN') else ('ev-ok' if ('OK' in (e.type or '') or e.type == 'RECOVERY') else 'ev-info')) %}
     <tr data-id="{{e.id or ''}}" data-site="{{e._site}}" data-stream="{{e.stream or ''}}" data-type="{{e.type or ''}}" data-ts="{{e.ts or ''}}" data-clip="{{e.clip or ''}}" data-chain="{{e._chain or ''}}" class="{{ev_row_cls}} {{'chain-row ' if is_chain_row else ''}}{{'offline-site' if not e._online else ''}}">
-      <td style="color:var(--mu);font-size:12px;white-space:nowrap">{{e.ts or ''}}</td>
-      <td><span class="site-badge">{{e._site}}</span></td>
-      <td><strong>{{e.stream or ''}}</strong></td>
+      <td style="color:var(--mu);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{e.ts or ''}}</td>
+      <td><span class="site-badge" title="{{e._site|e}}">{{e._site}}</span></td>
+      <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{{e.stream or ''}}"><strong>{{e.stream or ''}}</strong></td>
       <td><span class="type-badge t-{{tc}}">{{e.type or ''}}</span></td>
       <td>{% if e._chain %}<span class="chain-badge" title="Broadcast chain">⛓ {{e._chain}}</span>{% else %}—{% endif %}</td>
-      <td style="font-size:12px">{{e.message or ''}}{%- if e.get('zetta_now_playing') %}<br><span style="font-size:10px;color:var(--mu)">🎵 {{e.zetta_now_playing|e}}</span>{% endif %}</td>
+      <td style="font-size:12px;word-break:break-word">{{e.message or ''}}{%- if e.get('zetta_now_playing') %}<br><span style="font-size:10px;color:var(--mu)">🎵 {{e.zetta_now_playing|e}}</span>{% endif %}</td>
       <td>
         {% if e.level_dbfs and e.level_dbfs > -120 %}
         <span style="font-size:12px;color:{{'var(--al)' if e.level_dbfs<=-55 else 'var(--ok)'}}">{{e.level_dbfs}} dB</span>
