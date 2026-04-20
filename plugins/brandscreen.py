@@ -542,7 +542,7 @@ function _studioForm(sd){
     +'<button class="btn bp bs" data-action="takeover-send" data-sid="'+sd.id+'">▶ Send Takeover</button>'
     +'<button class="btn bd bs" data-action="takeover-clear" data-sid="'+sd.id+'">✕ Clear</button>'
     +'</div>'
-    +'<p class="hint" style="margin-top:5px">Instantly overlays this studio\'s screen with large title and text in the station brand colours. Background follows the assigned station palette.</p>';
+    +'<p class="hint" style="margin-top:5px">Instantly overlays this studio&#39;s screen with large title and text in the station brand colours. Background follows the assigned station palette.</p>';
 }
 
 // ── Stations ──────────────────────────────────────────────────────────────
