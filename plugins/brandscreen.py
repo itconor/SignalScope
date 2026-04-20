@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.2",
+    "version":  "1.3.3",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1021,11 +1021,12 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
    so it adds depth without crushing the brand colour at the screen edges. */
 #vignette{position:fixed;inset:0;z-index:4;pointer-events:none;
   background:radial-gradient(ellipse 72% 66% at 50% 46%,transparent 25%,rgba(0,0,0,.65) 100%);
-  opacity:.18;will-change:opacity;transition:opacity .12s ease-out}
+  opacity:.18;will-change:opacity}
 /* Beat flash: brand-colour radial wash that fires above 0.45 threshold */
+/* No CSS transition — RAF loop at 60fps provides smooth interpolation natively */
 #beat-flash{position:fixed;inset:0;z-index:5;pointer-events:none;
   background:radial-gradient(ellipse 90% 80% at 50% 47%,rgba(var(--brand-rgb),.42) 0%,transparent 68%);
-  opacity:0;will-change:opacity;transition:opacity .06s ease-out}
+  opacity:0;will-change:opacity}
 /* Inner bloom core: sharp punchy "lamp" at the logo centre — sits above the
    large soft bloom and gives a distinct bright source that pulses with beats */
 #lev-bloom-core{position:absolute;width:16vw;height:16vw;border-radius:50%;pointer-events:none;z-index:4;
@@ -1258,23 +1259,23 @@ function _applyEffects(){
   // ── Beat flash: brand-colour radial wash, fires above 0.45 threshold ───────
   if(_beatFlash) _beatFlash.style.opacity = Math.max(0, (_levSnap - 0.45) * 0.40).toFixed(3);
 
-  // ── Logo: bigger scale + brightness/saturation pump + glow ─────────────────
+  // ── Logo: bigger scale + brightness/saturation pump ────────────────────────
+  // drop-shadow() removed from the JS filter — a dynamically-sized drop-shadow
+  // (up to 575 px radius) requires the GPU to re-blur the full element alpha
+  // channel every frame, which causes visible glitching on Raspberry Pi /
+  // Yodeck players. The reactive glow effect is provided by #lev-bloom and
+  // #lev-bloom-core (transform+opacity — GPU-composited, free). brightness()
+  // and saturate() are cheap single-pass GPU filters and stay.
   if(_logoImg){
     var logoScale = 1.0 + _levSnap * 0.22;               // 1.0→1.22
     var bright    = (1.0 + _levSnap * 0.60).toFixed(2);  // 1.0→1.60 brightness
     var sat       = (1.0 + _levSnap * 1.10).toFixed(2);  // 1.0→2.10 saturation
-    var glowPx    = Math.round(30 + _levSnap * 200);
-    var glowOp    = Math.min(1, 0.2 + _levSnap * 0.85);
-    var glowOp2   = Math.min(0.7, _levSnap * 0.6);
-    // spin/bounce RAF loops own transform; glitch CSS keyframes own transform —
+    // spin/bounce RAF loop owns transform; glitch CSS keyframes own transform —
     // don't overwrite with a plain scale() or they'll fight each other
     if(_logoAnim !== 'spin' && _logoAnim !== 'bounce' && _logoAnim !== 'glitch'){
       _logoImg.style.transform = 'scale(' + logoScale.toFixed(4) + ')';
     }
-    _logoImg.style.filter =
-      'brightness(' + bright + ') saturate(' + sat + ')' +
-      ' drop-shadow(0 0 ' + glowPx + 'px rgba(' + _brandRgb + ',' + glowOp.toFixed(2) + '))' +
-      ' drop-shadow(0 0 ' + Math.round(glowPx*2.5) + 'px rgba(' + _brandRgb + ',' + glowOp2.toFixed(2) + '))';
+    _logoImg.style.filter = 'brightness(' + bright + ') saturate(' + sat + ')';
   }
 
   // ── Orbit rings: opacity + gentle container scale ─────────────────────────
@@ -1290,9 +1291,8 @@ function _applyEffects(){
   // opacity so rings brighten on beats and fade at silence.
   if(_pulseWrap) _pulseWrap.style.opacity = Math.min(1, _levSnap * 2.2).toFixed(3);
 
-  // ── Background hue-shift: colour breathes 0→22° with energy ───────────────
-  // Skipped for aurora (already has its own CSS animation filter)
-  if(_bgEl) _bgEl.style.filter = 'hue-rotate(' + (_levSnap * 22).toFixed(1) + 'deg)';
+  // Background hue-shift intentionally omitted — applying hue-rotate() to a
+  // full-screen element every frame is expensive on Raspberry Pi / Yodeck.
 
   // ── Waves preset: pump wave height with level (bottom-anchored scaleY) ─────
   if(_waveWrap){
@@ -1303,21 +1303,28 @@ function _applyEffects(){
   // ── Particle speed ─────────────────────────────────────────────────────────
   if(_bgStyle==='particles') _speedMult = 1 + _levSnap * 12;
 
-  // ── Beams: brighten beam columns with level ─────────────────────────────────
-  if(_beams.length) _beams.forEach(function(b){
-    b.style.filter = 'blur(22px) brightness(' + (1 + _levSnap * 1.4).toFixed(2) + ')';
-  });
+  // ── Beams: raise opacity with level — blur is fixed in CSS, not re-applied ──
+  // Mutating filter:blur() from JS forces a full repaint of each beam element
+  // every frame; swapping to opacity means the GPU reuses the cached blurred
+  // texture and only adjusts the alpha — compositor-only, no repaint.
+  if(_beams.length){
+    var _bOp = (0.5 + _levSnap * 0.5).toFixed(2);
+    _beams.forEach(function(b){ b.style.opacity = _bOp; });
+  }
 
   // ── Burst: pulse ray opacity with level ────────────────────────────────────
   if(_burstRays) _burstRays.style.opacity = (0.65 + _levSnap * 0.35).toFixed(2);
 
-  // ── Grid: brighten grid lines with level ───────────────────────────────────
-  if(_gridPlane) _gridPlane.style.filter = 'brightness(' + (1 + _levSnap * 1.2).toFixed(2) + ')';
+  // ── Grid: raise opacity with level (no per-frame filter mutation) ──────────
+  if(_gridPlane) _gridPlane.style.opacity = (0.6 + _levSnap * 0.4).toFixed(2);
 
-  // ── Haze: breathe blob brightness with level ───────────────────────────────
-  if(_hBlobs.length) _hBlobs.forEach(function(b){
-    b.style.filter = 'blur(88px) brightness(' + (1 + _levSnap * 0.9).toFixed(2) + ')';
-  });
+  // ── Haze: breathe blob opacity with level — blur is fixed in CSS ───────────
+  // blur(88px) is baked into CSS and the GPU caches it; only opacity changes
+  // here so no per-frame repaint is triggered.
+  if(_hBlobs.length){
+    var _hOp = (0.5 + _levSnap * 0.5).toFixed(2);
+    _hBlobs.forEach(function(b){ b.style.opacity = _hOp; });
+  }
 
   // ── Now-playing title glow: text halos with the brand colour on beats ───────
   if(_npTitle) _npTitle.style.textShadow =
@@ -1325,55 +1332,45 @@ function _applyEffects(){
     Math.min(0.9, _levSnap * 0.9).toFixed(2) + ')';
 }
 
-// ── Spin logo animation — JS RAF drives continuous rotation ────────────────
-// Speed scales with audio level: 0.25 deg/frame at silence → 3.5 deg/frame at full.
-// Owns _logoImg.style.transform in spin mode — _applyEffects skips it.
-var _spinAngle = 0;
-(function _spinLoop(){
-  if(_logoAnim === 'spin'){
-    var spd = 0.25 + _levSnap * 3.25;
-    _spinAngle = (_spinAngle + spd) % 360;
-    if(_logoImg){
-      var sc = (1.0 + _levSnap * 0.14).toFixed(3);
-      _logoImg.style.transform = 'rotate(' + _spinAngle.toFixed(1) + 'deg) scale(' + sc + ')';
-    }
-  }
-  requestAnimationFrame(_spinLoop);
-})();
-
-// ── Bounce logo animation — elastic physics bounce on audio beats ───────────
-// Kicks upward when the fast snap level rises sharply; gravity + damping do the rest.
-// Owns _logoImg.style.transform in bounce mode — _applyEffects skips it.
-var _bounceY = 0, _bounceVy = 0, _prevSnapLev = 0;
-(function _bounceLoop(){
-  if(_logoAnim === 'bounce'){
-    var dSnap = _levSnap - _prevSnapLev;
-    if(dSnap > 0.10 && _levSnap > 0.28){ _bounceVy = -(10 + _levSnap * 20); }
-    _prevSnapLev = _levSnap;
-    _bounceVy += 3.8;                            // gravity (px/frame)
-    _bounceY   = Math.min(_bounceY + _bounceVy, 0); // floor at 0
-    if(_bounceY >= 0){ _bounceVy *= -0.38; }     // floor rebound
-    if(Math.abs(_bounceVy) < 0.2 && _bounceY > -0.5){ _bounceY = 0; _bounceVy = 0; }
-    if(_logoImg){
-      var sc = (1.0 + _levSnap * 0.10).toFixed(3);
-      _logoImg.style.transform = 'translateY(' + _bounceY.toFixed(1) + 'px) scale(' + sc + ')';
-    }
-  }
-  requestAnimationFrame(_bounceLoop);
-})();
-
-// ── 60 fps RAF render loop ──────────────────────────────────────────────────
-// EMA smoothing happens here so effects update every ~16.7 ms rather than
-// jumping to a new value every 150 ms poll. Alpha values are per-frame
-// equivalents of the original per-150ms coefficients:
+// ── Single merged 60 fps RAF loop ──────────────────────────────────────────
+// Consolidating EMA smoothing, spin, bounce, and _applyEffects into ONE
+// requestAnimationFrame registration reduces per-frame scheduling overhead —
+// important on Raspberry Pi / Yodeck where three independent rAF callbacks
+// add measurable CPU cost even when two of them early-exit immediately.
+//
+// EMA alpha values (per-frame equivalents of per-150ms targets):
 //   per-frame = 1 - (1 - alpha_150ms)^(1/9)   [9 frames ≈ 150 ms at 60 fps]
 //   _lev      attack 0.45 → 0.066   decay 0.18 → 0.022
 //   _levSnap  attack 0.65 → 0.12    decay 0.38 → 0.055
-(function _levRaf(){
+var _spinAngle = 0;
+var _bounceY = 0, _bounceVy = 0, _prevSnapLev = 0;
+(function _raf(){
+  // EMA smoothing toward _rawLev (updated every 150 ms by level poll)
   _lev     = _lev     + (_rawLev - _lev)     * (_rawLev > _lev     ? 0.066 : 0.022);
   _levSnap = _levSnap + (_rawLev - _levSnap) * (_rawLev > _levSnap ? 0.12  : 0.055);
+
+  // Spin logo — owns _logoImg.style.transform in spin mode (_applyEffects skips it)
+  if(_logoAnim === 'spin'){
+    _spinAngle = (_spinAngle + 0.25 + _levSnap * 3.25) % 360;
+    if(_logoImg)
+      _logoImg.style.transform = 'rotate(' + _spinAngle.toFixed(1) + 'deg) scale(' + (1.0 + _levSnap * 0.14).toFixed(3) + ')';
+  }
+
+  // Bounce logo — elastic physics, owns transform in bounce mode
+  if(_logoAnim === 'bounce'){
+    var _dSnap = _levSnap - _prevSnapLev;
+    if(_dSnap > 0.10 && _levSnap > 0.28){ _bounceVy = -(10 + _levSnap * 20); }
+    _prevSnapLev = _levSnap;
+    _bounceVy += 3.8;
+    _bounceY   = Math.min(_bounceY + _bounceVy, 0);
+    if(_bounceY >= 0){ _bounceVy *= -0.38; }
+    if(Math.abs(_bounceVy) < 0.2 && _bounceY > -0.5){ _bounceY = 0; _bounceVy = 0; }
+    if(_logoImg)
+      _logoImg.style.transform = 'translateY(' + _bounceY.toFixed(1) + 'px) scale(' + (1.0 + _levSnap * 0.10).toFixed(3) + ')';
+  }
+
   _applyEffects();
-  requestAnimationFrame(_levRaf);
+  requestAnimationFrame(_raf);
 })();
 
 // ── Live level poll ──────────────────────────────────────────────────────────

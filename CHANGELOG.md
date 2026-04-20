@@ -2,6 +2,42 @@
 
 ---
 
+### Brand Screen 1.3.3 — 2026-04-20
+
+**Fix: animation glitching on Raspberry Pi / Yodeck players**
+
+Several per-frame GPU operations were causing visible glitching on Pi-based
+Chromium kiosk players (Yodeck) while appearing fine in desktop browsers:
+
+- **Dynamic `drop-shadow()` removed from logo JS filter** — the logo was being
+  given two `drop-shadow()` calls with radii up to 575 px on every frame. On Pi,
+  `drop-shadow` requires rendering the element alpha to an off-screen buffer and
+  applying a Gaussian blur — at 575 px radius this is catastrophic at 60 fps.
+  The reactive glow is already provided by `#lev-bloom` / `#lev-bloom-core` which
+  use `transform` + `opacity` (GPU-composited, zero repaint cost). Logo filter
+  is now `brightness()` + `saturate()` only — both single-pass GPU operations.
+
+- **Beams/haze/grid switched from `filter` mutation to `opacity` mutation** —
+  `blur()` is fixed in CSS and the GPU caches the blurred texture. Changing only
+  `opacity` reuses that texture (compositor pass only, no repaint). Previously
+  `style.filter = 'blur(22px) brightness(X)'` / `'blur(88px) brightness(X)'`
+  forced full repaint of each element every frame.
+
+- **Background `hue-rotate()` removed** — applying `hue-rotate()` to a
+  full-screen background element every frame performs a pixel-level colour
+  transform on the entire viewport on each tick.
+
+- **Three separate `requestAnimationFrame` loops merged into one** — `_spinLoop`,
+  `_bounceLoop`, and `_levRaf` were three independent RAF registrations. Merged
+  into a single `_raf()` loop that runs EMA smoothing, spin/bounce logic, and
+  `_applyEffects()` in one callback.
+
+- **CSS `transition` removed from `#vignette` and `#beat-flash`** — these
+  elements are updated at 60 fps by the RAF loop, so the CSS transitions were
+  redundant and created new transition instances on every frame.
+
+---
+
 ### SignalScope-3.5.168 — 2026-04-20
 
 **Fix: treat "news bed" / "sport bed" titles as spots for chain silence suppression**
