@@ -2,6 +2,28 @@
 
 ---
 
+### Brand Screen 1.3.2 / Producer View 1.4.3 / Listener 1.1.7 — 2026-04-20
+
+**Feature: cross-navigation between Producer, Listener, and Brand Screen admin**
+
+- **Producer View** header: new purple **📺 Brand Screen** button appears alongside "Listen Live" when the Brand Screen plugin is installed. Routes to `/hub/brandscreen`.
+- **Listener** header: same purple **📺 Brand Screen** button alongside "Producer View".
+- **Brand Screen admin**: header redesigned to match the Producer View / Listener style exactly — sticky gradient header, same font sizes, `hdr-powered` link, and back-nav pill. New **🎙 Producer** and **🎧 Listen** nav buttons appear conditionally when those plugins are installed.
+
+**Feature: Brand Screen admin first-time onboarding panel**
+
+A "Getting started" panel is shown automatically when no stations or studios have been configured yet. Numbered steps explain the concepts clearly:
+1. Create a Station (brand configuration — logo, colours, animations)
+2. Upload a logo and set brand colour (full background theme auto-derived)
+3. Create a Studio (a physical display screen in your building)
+4. Assign station to studio, copy the Screen URL, open full-screen on the display
+
+Onboard action buttons ("Create First Station / Studio") switch to the relevant tab and open the new item's edit panel immediately. The panel disappears once any station or studio exists.
+
+Tab labels updated with emoji and live count chips (e.g. "🖥 Studios  2") so the layout is immediately clear to new users.
+
+---
+
 ### Brand Screen 1.3.1 — 2026-04-20
 
 **Fix: audio-reactive animation jitter — 60 fps RAF smoothing**

@@ -9,7 +9,7 @@ SIGNALSCOPE_PLUGIN = {
     "hub_only":   True,
     "user_role":  True,
     "role_label": "Producer",
-    "version":    "1.4.2",
+    "version":    "1.4.3",
 }
 
 import json, os, time, urllib.parse
@@ -253,6 +253,8 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 @media(max-width:700px){.hdr-powered{display:none}}
 .hdr-listen{font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#1a7fe8,#17a8ff);padding:8px 18px;border-radius:20px;text-decoration:none;display:flex;align-items:center;gap:7px;box-shadow:0 2px 12px rgba(23,168,255,.35);transition:filter .2s,box-shadow .2s}
 .hdr-listen:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
+.hdr-brandscreen{font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#5b21b6,#8b5cf6);padding:8px 18px;border-radius:20px;text-decoration:none;display:flex;align-items:center;gap:7px;box-shadow:0 2px 12px rgba(139,92,246,.35);transition:filter .2s,box-shadow .2s}
+.hdr-brandscreen:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(139,92,246,.5)}
 
 /* ── Live status hero ── */
 .status-hero{margin:20px 24px 0;max-width:1400px;margin-left:auto;margin-right:auto;border-radius:20px;padding:28px 32px;display:flex;align-items:center;gap:24px;transition:background .4s,border-color .4s}
@@ -405,6 +407,7 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
   <div style="flex:1"></div>
   <a href="/" class="hdr-powered">Powered by SignalScope</a>
   <div class="hdr-right">
+    {% if has_brandscreen %}<a href="/hub/brandscreen" class="hdr-brandscreen">📺 Brand Screen</a>{% endif %}
     {% if has_listener %}<a href="/listener" class="hdr-listen">🎧 Listen Live</a>{% endif %}
     {% if username %}<div class="hdr-user">👤 {{username}}</div>{% endif %}
     <a href="/logout" class="hdr-signout" id="_pres-signout">Sign out</a>
@@ -800,10 +803,15 @@ def register(app, ctx):
             str(rule) == "/listener"
             for rule in app.url_map.iter_rules()
         )
+        has_brandscreen = any(
+            str(rule) == "/hub/brandscreen"
+            for rule in app.url_map.iter_rules()
+        )
         ticket_url = _read_cfg().get("ticket_url", "")
         return render_template_string(
             _PRODUCER_TPL, BUILD=BUILD, username=username,
             has_listener=has_listener,
+            has_brandscreen=has_brandscreen,
             ticket_url=ticket_url,
             is_admin=is_admin,
         )

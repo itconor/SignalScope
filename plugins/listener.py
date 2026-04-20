@@ -7,7 +7,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/listener",
     "icon":     "🎧",
     "hub_only": True,
-    "version":  "1.1.6",
+    "version":  "1.1.7",
 }
 
 # ─── Template ─────────────────────────────────────────────────────────────────
@@ -40,6 +40,8 @@ a{color:var(--acc);text-decoration:none}
 @media(max-width:700px){.hdr-powered{display:none}}
 .hdr-producer{font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#1a7fe8,#17a8ff);padding:8px 18px;border-radius:20px;text-decoration:none;display:flex;align-items:center;gap:7px;box-shadow:0 2px 12px rgba(23,168,255,.35);transition:filter .2s,box-shadow .2s}
 .hdr-producer:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
+.hdr-brandscreen{font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#5b21b6,#8b5cf6);padding:8px 18px;border-radius:20px;text-decoration:none;display:flex;align-items:center;gap:7px;box-shadow:0 2px 12px rgba(139,92,246,.35);transition:filter .2s,box-shadow .2s}
+.hdr-brandscreen:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(139,92,246,.5)}
 
 /* ── Greeting ── */
 .greeting{padding:28px 24px 6px;max-width:1400px;margin:0 auto}
@@ -215,6 +217,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
   <div style="flex:1"></div>
   <a href="/" class="hdr-powered">Powered by SignalScope</a>
   <div class="hdr-right">
+    {% if has_brandscreen %}<a href="/hub/brandscreen" class="hdr-brandscreen">📺 Brand Screen</a>{% endif %}
     {% if has_presenter %}<a href="/producer" class="hdr-producer">🎙 Producer View</a>{% endif %}
     {% if username %}<div class="hdr-user">👤 {{username}}</div>{% endif %}
     <a href="/" class="hdr-back">← Back</a>
@@ -977,9 +980,14 @@ def register(app, ctx):
             str(rule) == "/producer"
             for rule in app.url_map.iter_rules()
         )
+        has_brandscreen = any(
+            str(rule) == "/hub/brandscreen"
+            for rule in app.url_map.iter_rules()
+        )
         return render_template_string(
             _LISTENER_TPL,
-            BUILD         = BUILD,
-            username      = username,
-            has_presenter = has_presenter,
+            BUILD           = BUILD,
+            username        = username,
+            has_presenter   = has_presenter,
+            has_brandscreen = has_brandscreen,
         )

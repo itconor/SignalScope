@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.1",
+    "version":  "1.3.2",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -254,11 +254,36 @@ _ADMIN_TPL = """<!doctype html>
 <style nonce="{{csp_nonce()}}">
 :root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-family:system-ui,sans-serif;font-size:13px;min-height:100vh}
-header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:12px}
+body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-family:system-ui,sans-serif;font-size:14px;min-height:100vh}
+/* ── Header — matches Producer View / Listener exactly ── */
+.hdr{background:linear-gradient(180deg,rgba(10,31,65,.97),rgba(9,24,48,.97));border-bottom:1px solid var(--bor);padding:14px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:50;backdrop-filter:blur(8px)}
+.hdr-logo{font-size:22px}
+.hdr-title{font-size:17px;font-weight:700;letter-spacing:-.02em}
+.hdr-sub{font-size:11px;color:var(--mu);margin-top:1px}
+.hdr-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.hdr-nav{font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#1a7fe8,#17a8ff);padding:8px 18px;border-radius:20px;text-decoration:none;display:flex;align-items:center;gap:7px;box-shadow:0 2px 12px rgba(23,168,255,.35);transition:filter .2s,box-shadow .2s}
+.hdr-nav:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
+.hdr-back{font-size:12px;color:var(--mu);background:rgba(23,52,95,.4);padding:5px 12px;border-radius:20px;border:1px solid var(--bor);text-decoration:none;transition:color .2s}
+.hdr-back:hover{color:var(--tx)}
+.hdr-powered{font-size:11px;color:var(--mu);opacity:.55;text-decoration:none;letter-spacing:.03em;white-space:nowrap;transition:opacity .2s}
+.hdr-powered:hover{opacity:.9}
+@media(max-width:700px){.hdr-powered{display:none}.hdr{padding:12px 16px}}
 .btn{border:none;border-radius:8px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;text-decoration:none;display:inline-block}
 .btn:hover{filter:brightness(1.15)}.bp{background:var(--acc);color:#fff}.bd{background:var(--al);color:#fff}.bg{background:#132040;color:var(--tx)}.bs{font-size:11px;padding:3px 9px}
 main{max-width:960px;margin:0 auto;padding:20px 16px}
+/* ── Onboarding — shown on first visit when no stations/studios exist ── */
+.onboard{background:linear-gradient(135deg,rgba(23,168,255,.09),rgba(23,168,255,.04));border:1px solid rgba(23,168,255,.22);border-radius:18px;padding:28px 32px;margin-bottom:24px}
+.onboard-title{font-size:20px;font-weight:800;letter-spacing:-.02em;color:var(--tx);margin-bottom:6px}
+.onboard-sub{font-size:13px;color:var(--mu);margin-bottom:22px;line-height:1.5}
+.onboard-steps{display:flex;flex-direction:column;gap:12px}
+.onboard-step{display:flex;align-items:flex-start;gap:16px;padding:14px 18px;background:rgba(0,0,0,.18);border-radius:12px;border:1px solid rgba(23,52,95,.55)}
+.onboard-num{width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff;font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.onboard-step-title{font-size:13px;font-weight:700;color:var(--tx);margin-bottom:4px}
+.onboard-step-desc{font-size:12px;color:var(--mu);line-height:1.55}
+/* ── Tab count chips ── */
+.tab-count{font-size:10px;font-weight:600;color:var(--mu);background:rgba(23,52,95,.7);padding:1px 6px;border-radius:10px;margin-left:5px;vertical-align:middle}
+.tab-btn.active .tab-count{color:rgba(23,168,255,.75);background:rgba(23,168,255,.12)}
+@media(max-width:640px){main{padding:16px 12px}.onboard{padding:18px 16px}.onboard-step{gap:12px}}
 .tab-nav{display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid var(--bor)}
 .tab-btn{background:none;border:none;color:var(--mu);font-size:13px;font-weight:600;padding:8px 18px;cursor:pointer;border-radius:8px 8px 0 0;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:inherit}
 .tab-btn:hover{color:var(--tx)}.tab-btn.active{color:var(--acc);border-bottom-color:var(--acc);background:rgba(23,168,255,.06)}
@@ -307,17 +332,65 @@ td code{font-size:11px;background:#050e20;padding:2px 6px;border-radius:4px;colo
 </style>
 </head>
 <body>
-<header>
-  <span style="font-size:20px">📺</span>
-  <span style="font-weight:700;font-size:15px">Brand Screen</span>
-  <span style="color:var(--mu);font-size:12px;margin-left:4px">Studios &amp; stations</span>
+<header class="hdr">
+  <span class="hdr-logo">📺</span>
+  <div>
+    <div class="hdr-title">Brand Screen</div>
+    <div class="hdr-sub">Studios &amp; stations</div>
+  </div>
+  <div style="flex:1"></div>
+  <a href="/" class="hdr-powered">Powered by SignalScope</a>
+  <div class="hdr-right">
+    {% if has_presenter %}<a href="/producer" class="hdr-nav">🎙 Producer</a>{% endif %}
+    {% if has_listener %}<a href="/listener" class="hdr-nav">🎧 Listen</a>{% endif %}
+    <a href="/" class="hdr-back">← Dashboard</a>
+  </div>
 </header>
 <main>
   <div id="msg" class="msg-box"></div>
+
+  <!-- ── Getting started — shown only when nothing is configured yet ── -->
+  <div class="onboard" id="onboard-panel" style="display:none">
+    <div class="onboard-title">👋 Getting started with Brand Screen</div>
+    <div class="onboard-sub">Brand Screen shows animated full-screen branding on your studio displays and updates them in real time. Follow these four steps to get set up.</div>
+    <div class="onboard-steps">
+      <div class="onboard-step">
+        <div class="onboard-num">1</div>
+        <div style="flex:1">
+          <div class="onboard-step-title">Create a Station (brand configuration)</div>
+          <div class="onboard-step-desc" style="margin-bottom:10px">A <strong style="color:var(--tx)">Station</strong> holds your brand — logo, colours, background style, and logo animation. Create one for each radio brand or channel you want to display.</div>
+          <button class="btn bp bs" id="onboard-add-station">＋ Create First Station</button>
+        </div>
+      </div>
+      <div class="onboard-step">
+        <div class="onboard-num">2</div>
+        <div style="flex:1">
+          <div class="onboard-step-title">Upload a logo &amp; set your brand colour</div>
+          <div class="onboard-step-desc">Open the station you just created and upload a PNG logo with a transparent background. Set your brand colour — the entire background theme (gradients, particles, glow) is derived from it automatically. Your logo fills most of the screen.</div>
+        </div>
+      </div>
+      <div class="onboard-step">
+        <div class="onboard-num">3</div>
+        <div style="flex:1">
+          <div class="onboard-step-title">Create a Studio (a physical display screen)</div>
+          <div class="onboard-step-desc" style="margin-bottom:10px">A <strong style="color:var(--tx)">Studio</strong> represents a screen in your building — "Studio 1 Screen", "Reception Display", etc. Each studio shows one station at a time and can be switched instantly without touching the display.</div>
+          <button class="btn bg bs" id="onboard-add-studio">＋ Create First Studio</button>
+        </div>
+      </div>
+      <div class="onboard-step">
+        <div class="onboard-num">4</div>
+        <div style="flex:1">
+          <div class="onboard-step-title">Assign a station and open the screen URL</div>
+          <div class="onboard-step-desc">In the Studios tab, open a studio, assign your station to it, and copy the <strong style="color:var(--tx)">Screen URL</strong>. Open that URL full-screen in a browser on your studio display — it authenticates automatically. The display updates in real time when you change the assignment here.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <nav class="tab-nav" id="tab-nav">
-    <button class="tab-btn active" data-tab="studios">Studios</button>
-    <button class="tab-btn" data-tab="stations">Stations</button>
-    <button class="tab-btn" data-tab="api">REST API</button>
+    <button class="tab-btn active" data-tab="studios">🖥 Studios<span class="tab-count" id="tc-studios"></span></button>
+    <button class="tab-btn" data-tab="stations">📡 Stations<span class="tab-count" id="tc-stations"></span></button>
+    <button class="tab-btn" data-tab="api">🔗 REST API</button>
   </nav>
 
   <div class="tab-panel active" id="tp-studios">
@@ -396,6 +469,7 @@ document.getElementById('tab-nav').addEventListener('click',function(e){
 
 // ── Studios ───────────────────────────────────────────────────────────────
 function renderStudios(){
+  if(typeof _checkOnboard==='function') _checkOnboard();
   var el=document.getElementById('studio-list');
   if(!_studios.length){
     el.innerHTML='<div class="empty-state"><div style="font-size:36px;margin-bottom:10px">🖥️</div>No studios yet.<br><span style="font-size:12px;margin-top:6px;display:block">A studio is a physical display screen. Add one and assign it a station.</span></div>';
@@ -443,6 +517,7 @@ function _studioForm(sd){
 
 // ── Stations ──────────────────────────────────────────────────────────────
 function renderStations(){
+  if(typeof _checkOnboard==='function') _checkOnboard();
   var el=document.getElementById('station-list');
   if(!_stations.length){
     el.innerHTML='<div class="empty-state"><div style="font-size:36px;margin-bottom:10px">📡</div>No stations yet.<br><span style="font-size:12px;margin-top:6px;display:block">A station is a brand config (logo, colours, animations). Assign it to one or more studios.</span></div>';
@@ -692,6 +767,34 @@ document.addEventListener('click',function(e){
 document.getElementById('add-studio-btn').addEventListener('click',_addStudio);
 document.getElementById('add-station-btn').addEventListener('click',_addStation);
 document.getElementById('logo-input').addEventListener('change',function(){ _doUpload(this.files[0]); });
+
+// ── Onboarding panel ──────────────────────────────────────────────────────
+// Shown when there are no stations AND no studios. Buttons wire to the same
+// actions as the tab Add buttons, then switch to the relevant tab.
+function _checkOnboard(){
+  var panel=document.getElementById('onboard-panel');
+  if(panel) panel.style.display=(_stations.length===0&&_studios.length===0)?'block':'none';
+  // Update tab count chips
+  var tcs=document.getElementById('tc-studios');
+  var tct=document.getElementById('tc-stations');
+  if(tcs) tcs.textContent=_studios.length?'  '+_studios.length:'';
+  if(tct) tct.textContent=_stations.length?'  '+_stations.length:'';
+}
+(function(){
+  var obs=document.getElementById('onboard-add-station');
+  if(obs) obs.addEventListener('click',function(){
+    _addStation();
+    // switch to stations tab so the new form is visible
+    var stBtn=document.querySelector('[data-tab="stations"]');
+    if(stBtn) stBtn.click();
+  });
+  var osd=document.getElementById('onboard-add-studio');
+  if(osd) osd.addEventListener('click',function(){
+    _addStudio();
+    var sdBtn=document.querySelector('[data-tab="studios"]');
+    if(sdBtn) sdBtn.click();
+  });
+})();
 document.addEventListener('change',function(e){
   if(e.target.dataset.npSel) _npSrcChanged(e.target.dataset.npSel);
 });
@@ -1464,6 +1567,8 @@ def register(app, ctx):
             p, _ = _logo_file(s["id"])
             s["_has_logo"] = p is not None
         api_key = _ensure_api_key(cfg)
+        has_presenter = any(str(r) == "/producer" for r in app.url_map.iter_rules())
+        has_listener  = any(str(r) == "/listener"  for r in app.url_map.iter_rules())
         return render_template_string(
             _ADMIN_TPL,
             stations_json=json.dumps(stations),
@@ -1471,6 +1576,8 @@ def register(app, ctx):
             streams_json=json.dumps(_get_streams()),
             api_key=api_key,
             origin=request.host_url.rstrip("/"),
+            has_presenter=has_presenter,
+            has_listener=has_listener,
         )
 
     def _kiosk_response(html):
