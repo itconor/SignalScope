@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.13.6",
+    "version":  "3.14.0",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -74,6 +74,7 @@ def _refresh_show_images():
     """Fetch Planet Radio API and download any new/changed show images."""
     cfg    = _cfg_load()
     rpuids = {s.get("np_rpuid") for s in cfg.get("studios", []) if s.get("np_rpuid")}
+    rpuids |= {b.get("np_rpuid") for b in cfg.get("brands", []) if b.get("np_rpuid")}
     if not rpuids:
         return
     try:
@@ -118,9 +119,12 @@ def _img_cache_poller_fn():
 def _cfg_load():
     try:
         with open(_CFG_PATH) as f:
-            return json.load(f)
+            cfg = json.load(f)
     except Exception:
-        return {"studios": []}
+        return {"studios": [], "brands": []}
+    if _cfg_migrate(cfg):
+        _cfg_save(cfg)
+    return cfg
 
 def _cfg_save(c):
     with open(_CFG_PATH, "w") as f:
@@ -131,6 +135,57 @@ def _get_studio(cfg, studio_id):
         if s.get("id") == studio_id:
             return s
     return None
+
+def _get_brand(cfg, brand_id):
+    for b in cfg.get("brands", []):
+        if b.get("id") == brand_id:
+            return b
+    return None
+
+def _new_brand(name="New Brand"):
+    return {
+        "id": str(_uuid.uuid4())[:8],
+        "name": name,
+        "color": "#17a8ff",
+        "chains": [], "inputs": [],
+        "np_rpuid": "", "freq": "",
+        "zetta_station_key": "",
+        "zetta_follow": False,
+        "zetta_computer": "",
+    }
+
+def _cfg_migrate(cfg):
+    """One-time: lift brand settings from studios into Brand objects.
+    Returns True when migration was performed (caller should save)."""
+    if "brands" in cfg:
+        return False
+    brands = []
+    for studio in cfg.get("studios", []):
+        has_config = bool(
+            studio.get("chains") or studio.get("inputs") or
+            studio.get("np_rpuid") or studio.get("freq") or
+            studio.get("zetta_station_key") or studio.get("zetta_computer") or
+            (studio.get("color", "#17a8ff") not in ("#17a8ff", ""))
+        )
+        if not has_config:
+            studio.setdefault("color", "#17a8ff")
+            continue
+        brand = {
+            "id": str(_uuid.uuid4())[:8],
+            "name": studio.get("name", "Unnamed"),
+            "color": studio.pop("color", "#17a8ff"),
+            "chains": studio.pop("chains", []),
+            "inputs": studio.pop("inputs", []),
+            "np_rpuid": studio.pop("np_rpuid", ""),
+            "freq": studio.pop("freq", ""),
+            "zetta_station_key": studio.pop("zetta_station_key", ""),
+            "zetta_follow": studio.pop("zetta_follow", False),
+            "zetta_computer": studio.pop("zetta_computer", ""),
+        }
+        studio["brand_id"] = brand["id"]
+        brands.append(brand)
+    cfg["brands"] = brands
+    return True
 
 
 # ── Plugin registration ─────────────────────────────────────────
@@ -285,11 +340,7 @@ def register(app, ctx):
         studio = {
             "id": str(_uuid.uuid4())[:8],
             "name": (data.get("name") or "New Studio").strip(),
-            "color": data.get("color", "#17a8ff"),
-            "chains": [],
-            "inputs": [],
-            "np_rpuid": "",
-            "freq": "",
+            "brand_id": data.get("brand_id", ""),
             "show_artwork": {},
             "mic_live": False,
         }
@@ -305,9 +356,10 @@ def register(app, ctx):
         studio = _get_studio(cfg, studio_id)
         if not studio:
             return jsonify({"error": "Studio not found"}), 404
-        for key in ("name", "color", "chains", "inputs", "np_rpuid",
-                    "freq", "show_artwork", "zetta_station_key",
-                    "zetta_follow", "zetta_computer"):
+        for key in ("name", "brand_id", "show_artwork",
+                    # legacy direct fields — kept for backward compat with /assign
+                    "color", "chains", "inputs", "np_rpuid", "freq",
+                    "zetta_station_key", "zetta_follow", "zetta_computer"):
             if key in data:
                 studio[key] = data[key]
         _cfg_save(cfg)
@@ -321,6 +373,95 @@ def register(app, ctx):
                           if s.get("id") != studio_id]
         _cfg_save(cfg)
         return jsonify({"ok": True})
+
+    # ── Brand CRUD ──────────────────────────────────────────────
+
+    @app.get("/api/studioboard/brands")
+    @login_required
+    def sb_brands_list():
+        return jsonify(_cfg_load().get("brands", []))
+
+    @app.post("/api/studioboard/brand")
+    @login_required
+    def sb_brand_create():
+        data = request.get_json(force=True) or {}
+        cfg = _cfg_load()
+        brand = _new_brand((data.get("name") or "New Brand").strip())
+        cfg.setdefault("brands", []).append(brand)
+        _cfg_save(cfg)
+        return jsonify({"ok": True, "brand": brand})
+
+    @app.post("/api/studioboard/brand/<brand_id>")
+    @login_required
+    def sb_brand_update(brand_id):
+        data = request.get_json(force=True) or {}
+        cfg = _cfg_load()
+        brand = _get_brand(cfg, brand_id)
+        if not brand:
+            return jsonify({"error": "Brand not found"}), 404
+        for key in ("name", "color", "chains", "inputs", "np_rpuid",
+                    "freq", "zetta_station_key", "zetta_follow", "zetta_computer"):
+            if key in data:
+                brand[key] = data[key]
+        _cfg_save(cfg)
+        return jsonify({"ok": True, "brand": brand})
+
+    @app.delete("/api/studioboard/brand/<brand_id>")
+    @login_required
+    def sb_brand_delete(brand_id):
+        cfg = _cfg_load()
+        cfg["brands"] = [b for b in cfg.get("brands", []) if b.get("id") != brand_id]
+        # Unassign from any studios using this brand
+        for studio in cfg.get("studios", []):
+            if studio.get("brand_id") == brand_id:
+                studio.pop("brand_id", None)
+        _cfg_save(cfg)
+        return jsonify({"ok": True})
+
+    # ── Brand assignment REST API ────────────────────────────────────
+    # POST /api/studioboard/studio/<id>/brand
+    # Body: {"brand_id": "abc123"} OR {"brand_name": "Cool FM"} OR {"brand_id": ""} to unassign
+
+    @app.post("/api/studioboard/studio/<studio_id>/brand")
+    def sb_studio_assign_brand(studio_id):
+        """Assign or unassign a brand preset to a studio.
+        Accepts mobile API token in query string or Bearer header."""
+        if not _validate_token():
+            token_hdr = request.headers.get("Authorization", "")
+            if token_hdr.startswith("Bearer "):
+                import hmac as _hmac_mod
+                tok = token_hdr[7:].strip()
+                try:
+                    expected = str(getattr(getattr(monitor.app_cfg, "mobile_api",
+                                                   None), "token", "") or "").strip()
+                    if not (expected and _hmac_mod.compare_digest(expected, tok)):
+                        return jsonify({"error": "Unauthorized"}), 403
+                except Exception:
+                    return jsonify({"error": "Unauthorized"}), 403
+            else:
+                return jsonify({"error": "Unauthorized"}), 403
+        data = request.get_json(force=True) or {}
+        brand_id   = (data.get("brand_id")   or "").strip()
+        brand_name = (data.get("brand_name") or "").strip()
+        cfg = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if not studio:
+            return jsonify({"error": "Studio not found"}), 404
+        if brand_name and not brand_id:
+            for b in cfg.get("brands", []):
+                if b.get("name", "").lower() == brand_name.lower():
+                    brand_id = b.get("id", "")
+                    break
+            if not brand_id:
+                return jsonify({"error": f"Brand '{brand_name}' not found"}), 404
+        if brand_id and not _get_brand(cfg, brand_id):
+            return jsonify({"error": "Brand not found"}), 404
+        studio["brand_id"] = brand_id
+        _cfg_save(cfg)
+        brand = _get_brand(cfg, brand_id) if brand_id else None
+        return jsonify({"ok": True, "studio_id": studio_id,
+                        "brand_id": brand_id,
+                        "brand_name": brand.get("name", "") if brand else ""})
 
     # ── Mic Live REST API ───────────────────────────────────────
 
@@ -690,9 +831,14 @@ def register(app, ctx):
         for studio in sb_cfg.get("studios", []):
             sid = studio.get("id", "")
 
+            # Resolve brand settings: brand takes precedence; studio direct storage is legacy fallback
+            brand_id = studio.get("brand_id", "")
+            _brand   = _get_brand(sb_cfg, brand_id) if brand_id else None
+            _src     = _brand if _brand else studio
+
             # ── Follow Zetta assignment (auto mode) ──────────────────────
-            _zfollow = bool(studio.get("zetta_follow", False))
-            _zcomp   = (studio.get("zetta_computer") or "").strip().upper()
+            _zfollow = bool(_src.get("zetta_follow", False))
+            _zcomp   = (_src.get("zetta_computer") or "").strip().upper()
             _zfollow_active = False
             _zfollow_chain_name = ""
 
@@ -728,7 +874,7 @@ def register(app, ctx):
             else:
                 # ── Manual assignment ────────────────────────────────────
                 s_chains = []
-                for cid in (studio.get("chains") or []):
+                for cid in (_src.get("chains") or []):
                     cs = chain_status.get(cid, {})
                     s_chains.append({
                         "id": cid,
@@ -737,7 +883,7 @@ def register(app, ctx):
                         "sla_pct": cs.get("sla_pct"),
                     })
                 s_inputs = []
-                for ikey in (studio.get("inputs") or []):
+                for ikey in (_src.get("inputs") or []):
                     lev = levels.get(ikey, {})
                     parts = ikey.split("|", 1)
                     s_inputs.append({
@@ -747,13 +893,13 @@ def register(app, ctx):
                         **lev,
                     })
 
-            _zskey = studio.get("zetta_station_key", "")
+            _zskey = _src.get("zetta_station_key", "")
             _zetta_data = _zetta_live.get(_zskey) if _zskey else None
             # Server-side image download timestamp — used by JS for cache-busting.
             # Changes when the background poller downloads a new presenter image,
             # ensuring the browser only requests the new URL after the server has
             # the new image (eliminates race where browser caches a stale image).
-            _rpuid = studio.get("np_rpuid", "")
+            _rpuid = _src.get("np_rpuid", "")
             _img_ts = 0
             if _rpuid:
                 with _img_cache_lk:
@@ -762,8 +908,8 @@ def register(app, ctx):
             studios_out.append({
                 "id": sid,
                 "name": studio.get("name", ""),
-                "color": studio.get("color", "#17a8ff"),
-                "freq": studio.get("freq", ""),
+                "color": _src.get("color", "#17a8ff"),
+                "freq": _src.get("freq", ""),
                 "mic_live": studio.get("mic_live", False),
                 "chains": s_chains,
                 "inputs": s_inputs,
@@ -777,6 +923,7 @@ def register(app, ctx):
                 "zetta_follow_active": _zfollow_active,
                 "zetta_follow_chain": _zfollow_chain_name,
                 "message": (studio.get("message") or "").strip(),
+                "brand_id": brand_id,
             })
 
         return jsonify({"studios": studios_out})
@@ -810,58 +957,125 @@ header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));b
 .btn{display:inline-flex;align-items:center;gap:4px;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;border:none;color:var(--tx);background:var(--bor);text-decoration:none;font-family:inherit}
 .btn:hover{filter:brightness(1.2)}.btn.bp{background:var(--acc);color:#fff}.btn.bd{background:var(--al);color:#fff}
 .btn.bs{padding:4px 10px;font-size:11px;border-radius:6px}
-.main{padding:20px;max-width:900px;margin:0 auto}
+/* Tab nav */
+.tabs{display:flex;gap:2px;padding:0 20px;border-bottom:1px solid var(--bor);background:rgba(7,20,43,.7)}
+.tab{padding:10px 18px;font-size:12px;font-weight:700;color:var(--mu);cursor:pointer;border-bottom:2px solid transparent;background:none;border-top:none;border-left:none;border-right:none;font-family:inherit;text-transform:uppercase;letter-spacing:.06em}
+.tab:hover{color:var(--tx)}.tab.active{color:var(--acc);border-bottom-color:var(--acc)}
+.pane{display:none}.pane.active{display:block}
+.main{padding:20px;max-width:960px;margin:0 auto}
+/* Cards */
 .card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;margin-bottom:16px;overflow:hidden}
 .ch{padding:10px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54);font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em}
 .cb{padding:14px}
+/* Expandable brand card */
+.sc{background:var(--sur);border:1px solid var(--bor);border-radius:12px;margin-bottom:12px;overflow:hidden}
+.sc-head{padding:10px 14px;display:flex;align-items:center;gap:10px;cursor:pointer;background:linear-gradient(180deg,#143766,#102b54)}
+.sc-head:hover{background:linear-gradient(180deg,#1a4580,#13345f)}
+.sc-title{font-size:13px;font-weight:700;flex:1}
+.sc-body{display:none;padding:14px;border-top:1px solid var(--bor)}
+.sc.open .sc-body{display:block}
+.sc-caret{font-size:10px;color:var(--mu);transition:transform .2s}
+.sc.open .sc-caret{transform:rotate(180deg)}
+/* Fields */
 .field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
 .field label{font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-.field input,.field select{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:7px 10px;font-size:13px;font-family:inherit}
-.field input:focus,.field select:focus{border-color:var(--acc);outline:none}
+.field input,.field select,.field textarea{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:7px 10px;font-size:13px;font-family:inherit}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--acc);outline:none}
 .field input[type="color"]{width:50px;height:32px;padding:2px;cursor:pointer}
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
 .row>.field{flex:1;min-width:150px}
 .tag{display:inline-flex;align-items:center;gap:4px;background:rgba(23,168,255,.12);color:var(--acc);padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600}
-.tag .x{cursor:pointer;opacity:.6;font-size:13px}.tag .x:hover{opacity:1}
+.tag.cur{cursor:pointer}.tag.cur:hover{background:rgba(23,168,255,.22)}
 .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .empty{color:var(--mu);font-size:12px;text-align:center;padding:40px 20px}
-.studio-hdr{display:flex;align-items:center;gap:10px;flex:1}
-.studio-color{width:14px;height:14px;border-radius:50%;flex-shrink:0;border:2px solid rgba(255,255,255,.15)}
+.swatch{width:14px;height:14px;border-radius:50%;flex-shrink:0;border:2px solid rgba(255,255,255,.15)}
+.msg{padding:8px 14px;border-radius:8px;font-size:12px;margin-bottom:12px}
+.msg-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
+.msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
+select[multiple]{min-height:90px}
+.hint{font-size:11px;color:var(--mu);line-height:1.5;margin-top:3px}
+.section-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--mu);padding:10px 0 6px;margin-top:4px;border-top:1px solid rgba(255,255,255,.06)}
+.api-block{background:#040d1e;border:1px solid var(--bor);border-radius:8px;padding:12px 14px;font-family:monospace;font-size:12px;color:#c9d8ef;margin:8px 0;white-space:pre-wrap;word-break:break-all}
 .art-grid{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .art-item{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.03);border:1px solid var(--bor);border-radius:8px;padding:6px 10px}
 .art-item img{width:40px;height:40px;border-radius:6px;object-fit:cover}
 .art-item .art-name{font-size:11px;font-weight:600}
-.msg{padding:8px 14px;border-radius:8px;font-size:12px;margin-bottom:12px}
-.msg-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
-.msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
-select[multiple]{min-height:100px}
 </style>
 </head>
 <body>
 <header>
   <span style="font-size:22px">🎙</span>
-  <div>
-    <div class="hdr-title">Studio Board</div>
-    <div class="hdr-sub">Configure studio displays for SignalScope</div>
-  </div>
+  <div><div class="hdr-title">Studio Board</div><div class="hdr-sub">Configure studio displays</div></div>
   <div style="margin-left:auto;display:flex;gap:8px">
     <a class="btn bs" href="/">← Hub</a>
-    <button class="btn bp bs" id="btn-add-studio">+ Add Studio</button>
+    <button class="btn bp bs" id="btn-add" style="display:none">+ Add</button>
   </div>
 </header>
-<div class="main">
+<nav class="tabs">
+  <button class="tab active" data-tab="studios">Studios</button>
+  <button class="tab" data-tab="brands">Brands</button>
+  <button class="tab" data-tab="api">API</button>
+</nav>
+<div id="msg-bar" style="display:none" class="msg" style="border-radius:0;margin:0"></div>
+
+<div class="pane active main" id="pane-studios">
   <div id="studios-list"><div class="empty">Loading…</div></div>
+</div>
+<div class="pane main" id="pane-brands">
+  <div id="brands-list"><div class="empty">Loading…</div></div>
+</div>
+<div class="pane main" id="pane-api">
+  <div id="api-docs"></div>
 </div>
 
 <script nonce="{{csp_nonce()}}">
 (function(){
 'use strict';
-var _studios=[], _chains=[], _inputs=[], _npStations=[], _zStations=[];
-function _e(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
-function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||''}
-function _post(url,data){return fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},body:JSON.stringify(data)})}
-function _del(url){return fetch(url,{method:'DELETE',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()}})}
+var _studios=[], _brands=[], _chains=[], _inputs=[], _npStations=[], _zStations=[];
+var _activeTab='studios';
 
+function _getCsrf(){
+  return (document.querySelector('meta[name="csrf-token"]')||{}).content
+      || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1] || '';
+}
+function _e(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function _post(url,data){return fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRFToken':_getCsrf()},body:JSON.stringify(data)})}
+function _del(url){return fetch(url,{method:'DELETE',credentials:'same-origin',headers:{'X-CSRFToken':_getCsrf()}})}
+function _showMsg(txt,ok){
+  var el=document.getElementById('msg-bar');
+  el.className='msg '+(ok?'msg-ok':'msg-err');
+  el.textContent=txt;el.style.display='';
+  clearTimeout(_showMsg._t);
+  _showMsg._t=setTimeout(function(){el.style.display='none'},3500);
+}
+function _brandName(bid){
+  var b=_brands.find(function(x){return x.id===bid});
+  return b?b.name:'— None —';
+}
+
+/* ── Tab switching ───────────────────────────────────── */
+document.querySelector('.tabs').addEventListener('click',function(e){
+  var tab=e.target.closest('.tab');if(!tab)return;
+  var id=tab.dataset.tab;_activeTab=id;
+  document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('active',t.dataset.tab===id)});
+  document.querySelectorAll('.pane').forEach(function(p){p.classList.remove('active')});
+  document.getElementById('pane-'+id).classList.add('active');
+  document.getElementById('btn-add').style.display=(id==='studios'||id==='brands')?'':'none';
+  document.getElementById('btn-add').textContent=id==='studios'?'+ Add Studio':'+ Add Brand';
+  if(id==='api')buildApiDocs();
+});
+document.getElementById('btn-add').style.display='';
+document.getElementById('btn-add').textContent='+ Add Studio';
+
+document.getElementById('btn-add').addEventListener('click',function(){
+  if(_activeTab==='studios'){
+    _post('/api/studioboard/studio',{name:'New Studio'}).then(function(){loadAll()});
+  } else if(_activeTab==='brands'){
+    _post('/api/studioboard/brand',{name:'New Brand'}).then(function(){loadAll()});
+  }
+});
+
+/* ── Data load ───────────────────────────────────────── */
 function loadAll(){
   Promise.all([
     fetch('/api/studioboard/config',{credentials:'same-origin'}).then(function(r){return r.json()}),
@@ -870,208 +1084,320 @@ function loadAll(){
     fetch('/api/zetta/status_full',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():{}}).catch(function(){return{}})
   ]).then(function(res){
     _studios=(res[0].studios||[]);
+    _brands=(res[0].brands||[]);
     _chains=res[1].chains||[];_inputs=res[1].inputs||[];
     _npStations=res[2]||[];
-    // Build flat Zetta station list from status_full
     _zStations=[];
     ((res[3]||{}).instances||[]).forEach(function(inst){
       Object.keys(inst.stations||{}).forEach(function(sid){
         _zStations.push({key:inst.id+':'+sid,label:(inst.name||inst.id)+' / '+(inst.stations[sid].station_name||sid)});
       });
     });
-    render();
+    renderStudios();
+    renderBrands();
   });
 }
 
-function render(){
+/* ── Studios tab ─────────────────────────────────────── */
+function renderStudios(){
   var el=document.getElementById('studios-list');
-  if(!_studios.length){el.innerHTML='<div class="empty">No studios configured yet. Click "+ Add Studio" to get started.</div>';return}
-  // All-studios display URL
-  var html='<div class="card"><div class="cb" style="padding:10px 14px">'
-    +'<div style="font-size:12px;font-weight:700;color:var(--acc);margin-bottom:4px">All Studios Display URL (Yodeck)</div>'
-    +'<div style="font-size:12px;color:var(--mu);word-break:break-all">/studioboard/tv?token=YOUR_TOKEN</div>'
-    +'<div style="font-size:10px;color:var(--mu);margin-top:4px">Shows all studios in a grid. Add <code style="color:var(--acc)">&amp;studio=ID</code> for a single studio.</div>'
+  if(!_studios.length){el.innerHTML='<div class="empty">No studios yet. Click "+ Add Studio" to get started.</div>';return}
+  var allUrl='<div class="card"><div class="cb" style="padding:10px 14px">'
+    +'<div style="font-size:12px;font-weight:700;color:var(--acc);margin-bottom:3px">All Studios Display URL (Yodeck)</div>'
+    +'<code style="font-size:12px;color:var(--tx)">/studioboard/tv?token=YOUR_TOKEN</code>'
+    +'<div class="hint">All studios in a grid. Append <code style="color:var(--acc)">&amp;studio=STUDIO_ID</code> for one studio.</div>'
     +'</div></div>';
+  var html=allUrl;
   _studios.forEach(function(st){
-    html+='<div class="card" data-sid="'+_e(st.id)+'">';
-    html+='<div class="ch"><div class="studio-hdr"><span class="studio-color" style="background:'+_e(st.color)+'"></span>'+_e(st.name)+'</div>';
-    html+='<button class="btn bd bs" data-delete="'+_e(st.id)+'">Delete</button></div>';
-    html+='<div class="cb">';
-    // Name + colour
-    html+='<div class="row"><div class="field"><label>Studio Name</label><input data-field="name" data-sid="'+_e(st.id)+'" value="'+_e(st.name)+'"></div>';
-    html+='<div class="field"><label>Colour</label><input type="color" data-field="color" data-sid="'+_e(st.id)+'" value="'+_e(st.color||'#17a8ff')+'"></div>';
-    html+='<div class="field"><label>Frequency</label><input data-field="freq" data-sid="'+_e(st.id)+'" value="'+_e(st.freq||'')+'" placeholder="97.4 FM | DAB"></div></div>';
-
-    // Chains
-    html+='<div class="field"><label>Broadcast Chains</label>';
-    html+='<select data-chains="'+_e(st.id)+'" multiple>';
-    _chains.forEach(function(ch){
-      var sel=(st.chains||[]).indexOf(ch.id)>=0?' selected':'';
-      html+='<option value="'+_e(ch.id)+'"'+sel+'>'+_e(ch.name)+'</option>';
+    var bName=_brandName(st.brand_id||'');
+    var brandOpts='<option value="">— None —</option>';
+    _brands.forEach(function(b){
+      var sel=(st.brand_id===b.id)?' selected':'';
+      brandOpts+='<option value="'+_e(b.id)+'"'+sel+'>'+_e(b.name)+'</option>';
     });
-    html+='</select></div>';
+    html+='<div class="sc open" data-sid="'+_e(st.id)+'">'
+      +'<div class="sc-head">'
+      +'<span class="swatch" style="background:'+_e(_brandColor(st.brand_id))+'"></span>'
+      +'<span class="sc-title">'+_e(st.name)+'</span>'
+      +'<span style="font-size:11px;color:var(--mu);margin-right:8px">'+_e(bName)+'</span>'
+      +'<button class="btn bd bs" data-action="del-studio" data-sid="'+_e(st.id)+'">Delete</button>'
+      +'<span class="sc-caret">▼</span>'
+      +'</div>'
+      +'<div class="sc-body">'
+      +'<div class="row">'
+      +'<div class="field"><label>Studio Name</label><input data-f="name" value="'+_e(st.name)+'"></div>'
+      +'<div class="field" style="max-width:260px"><label>Brand</label>'
+      +'<select data-f="brand_id">'+brandOpts+'</select></div>'
+      +'</div>'
 
-    // Inputs for meters
-    html+='<div class="field"><label>Level Meter Inputs</label>';
-    html+='<select data-inputs="'+_e(st.id)+'" multiple>';
-    _inputs.forEach(function(inp){
-      var sel=(st.inputs||[]).indexOf(inp.key)>=0?' selected':'';
-      html+='<option value="'+_e(inp.key)+'"'+sel+'>'+_e(inp.site)+' — '+_e(inp.name)+'</option>';
-    });
-    html+='</select></div>';
+      // Message
+      +'<div class="section-label">Message to Display</div>'
+      +'<div class="field"><textarea data-f="message" rows="2" style="resize:vertical">'+_e(st.message||'')+'</textarea>'
+      +'<div class="hint">Shows a flashing amber banner on the TV display. Leave blank to hide.</div></div>'
+      +'<div style="display:flex;gap:8px;margin-bottom:12px">'
+      +'<button class="btn bp bs" data-action="msg-send" data-sid="'+_e(st.id)+'">&#128225; Send</button>'
+      +'<button class="btn bd bs" data-action="msg-clear" data-sid="'+_e(st.id)+'">Clear</button>'
+      +'</div>'
 
-    // Planet Radio
-    html+='<div class="field"><label>Now Playing (Planet Radio)</label>';
-    html+='<select data-np="'+_e(st.id)+'">';
-    html+='<option value="">— None —</option>';
-    _npStations.forEach(function(s){
-      var sel=(st.np_rpuid===s.rpuid)?' selected':'';
-      html+='<option value="'+_e(s.rpuid)+'"'+sel+'>'+_e(s.name)+'</option>';
-    });
-    html+='</select></div>';
+      // Artwork
+      +'<div class="section-label">Show Artwork / Presenter Images</div>'
+      +'<div class="hint" style="margin-bottom:8px">Upload images keyed to show names from Planet Radio. The matching image appears when that show is on air.</div>'
+      +_artHtml(st)
 
-    // Zetta station
-    html+='<div class="field"><label>Zetta Station (queue display)</label>';
-    html+='<select data-zetta="'+_e(st.id)+'">';
-    html+='<option value="">— None —</option>';
-    _zStations.forEach(function(z){
-      var sel=(st.zetta_station_key===z.key)?' selected':'';
-      html+='<option value="'+_e(z.key)+'"'+sel+'>'+_e(z.label)+'</option>';
-    });
-    if(!_zStations.length)html+='<option disabled>Zetta plugin not active</option>';
-    html+='</select></div>';
+      // Save
+      +'<div style="margin:14px 0 10px;display:flex;align-items:center;gap:10px">'
+      +'<button class="btn bp" data-action="save-studio" data-sid="'+_e(st.id)+'">Save Studio</button>'
+      +'</div>'
 
-    // Follow Zetta Assignment
-    html+='<div class="field" style="margin-top:12px;padding:12px;background:rgba(23,168,255,.06);border:1px solid rgba(23,168,255,.18);border-radius:8px">';
-    html+='<label style="color:var(--acc);margin-bottom:8px;display:block">Follow Zetta Assignment</label>';
-    html+='<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:8px">';
-    html+='<input type="checkbox" data-zetta-follow="'+_e(st.id)+'"'+(st.zetta_follow?' checked':'')+'>';
-    html+='Auto-assign chain and level meter based on which station Zetta is running on this computer</label>';
-    html+='<input data-zetta-computer="'+_e(st.id)+'" value="'+_e(st.zetta_computer||'')+'" placeholder="Zetta computer name, e.g. BEL-STUDIO1" style="width:100%;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:12px;font-family:inherit">';
-    html+='<div style="font-size:10px;color:var(--mu);margin-top:6px">When enabled, the Broadcast Chain and level meters update automatically when Zetta assigns a station to this computer. The manual Chain and Input selections above are ignored while active. If the computer is not found in Zetta, the studio shows as free.</div>';
-    html+='</div>';
-
-    // Show artwork
-    html+='<div class="field"><label>Show Artwork / Presenter Images</label>';
-    html+='<div style="font-size:11px;color:var(--mu);margin-bottom:6px">Upload images matched to show names from the Planet Radio API. When a show is on air, its image appears on the display.</div>';
-    var artMap=st.show_artwork||{};
-    if(Object.keys(artMap).length){
-      html+='<div class="art-grid">';
-      Object.keys(artMap).forEach(function(showName){
-        html+='<div class="art-item"><img src="/studioboard/art/'+_e(artMap[showName])+'" alt=""><div><div class="art-name">'+_e(showName)+'</div></div></div>';
-      });
-      html+='</div>';
-    }
-    // Seen show names — logged automatically from the API
-    var seen=st.seen_shows||[];
-    if(seen.length){
-      html+='<div style="margin-top:8px"><div style="font-size:10px;color:var(--mu);margin-bottom:4px">Recently seen shows (click to select):</div><div class="tags">';
-      seen.forEach(function(s){
-        var hasArt=artMap[s]?'  ✓':'';
-        html+='<span class="tag" data-seen-show="'+_e(st.id)+'" data-show="'+_e(s)+'" style="cursor:pointer">'+_e(s)+hasArt+'</span>';
-      });
-      html+='</div></div>';
-    }
-    html+='<div style="margin-top:8px;display:flex;gap:8px;align-items:center">';
-    html+='<input data-art-show="'+_e(st.id)+'" placeholder="Show name (exact match)" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 8px;font-size:12px;flex:1;font-family:inherit">';
-    html+='<button class="btn bp bs" data-art-upload="'+_e(st.id)+'">Upload Image</button></div>';
-    html+='</div>';
-
-    // Message to Display
-    html+='<div class="field" style="margin-top:12px">';
-    html+='<label>Message to Display</label>';
-    html+='<div style="font-size:11px;color:var(--mu);margin-bottom:6px">Shows a banner on the TV display. Leave blank to hide.</div>';
-    html+='<textarea data-msg="'+_e(st.id)+'" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:12px;width:100%;min-height:52px;resize:vertical;font-family:inherit">'+_e(st.message||'')+'</textarea>';
-    html+='<div style="display:flex;gap:8px;margin-top:6px">';
-    html+='<button class="btn bp bs" data-msg-send="'+_e(st.id)+'">📡 Send to Display</button>';
-    html+='<button class="btn bd bs" data-msg-clear="'+_e(st.id)+'">Clear</button>';
-    html+='</div></div>';
-
-    // Save button
-    html+='<div style="margin:12px 0 8px"><button class="btn bp" data-save-studio="'+_e(st.id)+'">Save Changes</button>'
-      +'<span class="save-msg" data-save-msg="'+_e(st.id)+'" style="margin-left:10px;font-size:12px;color:var(--ok);display:none">Saved!</span></div>';
-
-    // Mic Live API info
-    html+='<div class="field"><label>Mic Live API</label>';
-    html+='<div style="font-size:11px;color:var(--mu)">POST <code style="color:var(--acc)">/api/studioboard/mic/'+_e(st.id)+'?token=YOUR_TOKEN</code> with <code style="color:var(--acc)">{"live": true}</code> or <code style="color:var(--acc)">{"live": false}</code></div>';
-    html+='</div>';
-    html+='<div class="field"><label>Station Assign API</label>';
-    html+='<div style="font-size:11px;color:var(--mu)">POST <code style="color:var(--acc)">/api/studioboard/assign?token=YOUR_TOKEN</code><br>';
-    html+='Assign by ID: <code style="color:var(--acc)">{"studio_id":"'+_e(st.id)+'","chain_id":"CHAIN_ID"}</code><br>';
-    html+='Assign by name: <code style="color:var(--acc)">{"studio_id":"'+_e(st.id)+'","chain_name":"Downtown FM"}</code><br>';
-    html+='Clear / free: <code style="color:var(--acc)">{"studio_id":"'+_e(st.id)+'","clear":true}</code><br>';
-    html+='<span style="opacity:.7">Optional: add <code style="color:var(--acc)">"color":"#hex"</code> to override studio colour. Omit to auto-borrow from Wallboard chain colour.</span>';
-    html+='</div></div>';
-
-    // Display URL
-    html+='<div class="field"><label>Display URL (for Yodeck)</label>';
-    html+='<div style="font-size:11px;color:var(--acc);word-break:break-all">/studioboard/tv?token=YOUR_TOKEN&amp;studio='+_e(st.id)+'</div>';
-    html+='</div>';
-
-    html+='</div></div>';
+      // APIs
+      +'<div class="section-label">APIs for this studio</div>'
+      +'<div class="hint"><b>Mic live:</b> POST <code style="color:var(--acc)">/api/studioboard/mic/'+_e(st.id)+'?token=TOKEN</code> &#8594; <code style="color:var(--acc)">{"live":true}</code></div>'
+      +'<div class="hint" style="margin-top:4px"><b>Brand preset:</b> POST <code style="color:var(--acc)">/api/studioboard/studio/'+_e(st.id)+'/brand?token=TOKEN</code> &#8594; <code style="color:var(--acc)">{"brand_name":"Cool FM"}</code> or <code style="color:var(--acc)">{"brand_id":"abc123"}</code></div>'
+      +'<div class="hint" style="margin-top:4px"><b>Display:</b> <code style="color:var(--acc)">/studioboard/tv?token=TOKEN&amp;studio='+_e(st.id)+'</code></div>'
+      +'</div></div>';
   });
   el.innerHTML=html;
 }
 
-function saveStudio(sid,field,value){
-  var data={};data[field]=value;
-  _post('/api/studioboard/studio/'+encodeURIComponent(sid),data).then(function(){loadAll()});
+function _brandColor(brand_id){
+  var b=_brands.find(function(x){return x.id===brand_id});
+  return b?(b.color||'#17a8ff'):'#17a8ff';
 }
 
-document.getElementById('btn-add-studio').addEventListener('click',function(){
-  _post('/api/studioboard/studio',{name:'New Studio'}).then(function(){loadAll()});
-});
+function _artHtml(st){
+  var artMap=st.show_artwork||{};var seen=st.seen_shows||[];
+  var html='';
+  if(Object.keys(artMap).length){
+    html+='<div class="art-grid">';
+    Object.keys(artMap).forEach(function(showName){
+      html+='<div class="art-item"><img src="/studioboard/art/'+_e(artMap[showName])+'" alt=""><div><div class="art-name">'+_e(showName)+'</div></div></div>';
+    });
+    html+='</div>';
+  }
+  if(seen.length){
+    html+='<div style="margin-top:6px"><div class="hint" style="margin-bottom:3px">Recently seen shows (click to fill name):</div><div class="tags">';
+    seen.forEach(function(s){
+      var hasArt=artMap[s]?' &#10003;':'';
+      html+='<span class="tag cur" data-action="fill-show" data-sid="'+_e(st.id)+'" data-show="'+_e(s)+'">'+_e(s)+hasArt+'</span>';
+    });
+    html+='</div></div>';
+  }
+  html+='<div style="margin-top:8px;display:flex;gap:8px;align-items:center">'
+    +'<input data-art-show="'+_e(st.id)+'" placeholder="Show name (exact match)" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 8px;font-size:12px;flex:1;font-family:inherit">'
+    +'<button class="btn bp bs" data-action="art-upload" data-sid="'+_e(st.id)+'">Upload Image</button></div>';
+  return html;
+}
 
-function saveFullStudio(sid){
-  var card=document.querySelector('.card[data-sid="'+sid+'"]');if(!card)return;
-  var data={};
-  var nameInput=card.querySelector('[data-field="name"]');if(nameInput)data.name=nameInput.value;
-  var colorInput=card.querySelector('[data-field="color"]');if(colorInput)data.color=colorInput.value;
-  var freqInput=card.querySelector('[data-field="freq"]');if(freqInput)data.freq=freqInput.value;
-  var chainsSel=card.querySelector('[data-chains]');if(chainsSel)data.chains=Array.from(chainsSel.selectedOptions).map(function(o){return o.value});
-  var inputsSel=card.querySelector('[data-inputs]');if(inputsSel)data.inputs=Array.from(inputsSel.selectedOptions).map(function(o){return o.value});
-  var npSel=card.querySelector('[data-np]');if(npSel)data.np_rpuid=npSel.value;
-  var zettaSel=card.querySelector('[data-zetta]');if(zettaSel)data.zetta_station_key=zettaSel.value;
-  var zFollowChk=card.querySelector('[data-zetta-follow]');if(zFollowChk)data.zetta_follow=zFollowChk.checked;
-  var zCompInp=card.querySelector('[data-zetta-computer]');if(zCompInp)data.zetta_computer=(zCompInp.value||'').trim().toUpperCase();
-  _post('/api/studioboard/studio/'+encodeURIComponent(sid),data).then(function(){
-    var msg=document.querySelector('[data-save-msg="'+sid+'"]');
-    if(msg){msg.style.display='inline';setTimeout(function(){msg.style.display='none'},2000)}
-    loadAll();
+/* ── Brands tab ──────────────────────────────────────── */
+function renderBrands(){
+  var el=document.getElementById('brands-list');
+  if(!_brands.length){el.innerHTML='<div class="empty">No brands yet. Click "+ Add Brand" to create your first station preset.</div>';return}
+  var html='';
+  _brands.forEach(function(b){
+    var users=_studios.filter(function(s){return s.brand_id===b.id}).map(function(s){return s.name});
+    var usedBy=users.length?'Used by: <b>'+users.map(_e).join(', ')+'</b>':'<span style="color:var(--mu)">Not assigned to any studio</span>';
+
+    var chainOpts='';_chains.forEach(function(ch){
+      var sel=(b.chains||[]).indexOf(ch.id)>=0?' selected':'';
+      chainOpts+='<option value="'+_e(ch.id)+'"'+sel+'>'+_e(ch.name)+'</option>';
+    });
+    var inputOpts='';_inputs.forEach(function(inp){
+      var sel=(b.inputs||[]).indexOf(inp.key)>=0?' selected':'';
+      inputOpts+='<option value="'+_e(inp.key)+'"'+sel+'>'+_e(inp.site)+' &#8212; '+_e(inp.name)+'</option>';
+    });
+    var npOpts='<option value="">&#8212; None &#8212;</option>';
+    _npStations.forEach(function(s){
+      var sel=(b.np_rpuid===s.rpuid)?' selected':'';
+      npOpts+='<option value="'+_e(s.rpuid)+'"'+sel+'>'+_e(s.name)+'</option>';
+    });
+    var zOpts='<option value="">&#8212; None &#8212;</option>';
+    _zStations.forEach(function(z){
+      var sel=(b.zetta_station_key===z.key)?' selected':'';
+      zOpts+='<option value="'+_e(z.key)+'"'+sel+'>'+_e(z.label)+'</option>';
+    });
+    if(!_zStations.length)zOpts+='<option disabled>Zetta plugin not active</option>';
+
+    html+='<div class="sc" data-bid="'+_e(b.id)+'">'
+      +'<div class="sc-head" data-action="toggle-brand" data-bid="'+_e(b.id)+'">'
+      +'<span class="swatch" style="background:'+_e(b.color||'#17a8ff')+'"></span>'
+      +'<span class="sc-title">'+_e(b.name)+'</span>'
+      +'<span style="font-size:11px;color:var(--mu);margin-right:8px">'+usedBy+'</span>'
+      +'<button class="btn bd bs" data-action="del-brand" data-bid="'+_e(b.id)+'">Delete</button>'
+      +'<span class="sc-caret">&#9660;</span>'
+      +'</div>'
+      +'<div class="sc-body">'
+      +'<div class="row">'
+      +'<div class="field"><label>Brand Name</label><input data-f="name" value="'+_e(b.name)+'"></div>'
+      +'<div class="field" style="max-width:100px"><label>Colour</label><input type="color" data-f="color" value="'+_e(b.color||'#17a8ff')+'"></div>'
+      +'<div class="field"><label>Frequency / Tagline</label><input data-f="freq" value="'+_e(b.freq||'')+'" placeholder="97.4 FM | DAB"></div>'
+      +'</div>'
+      +'<div class="field"><label>Broadcast Chains</label>'
+      +'<select data-f="chains" multiple>'+chainOpts+'</select></div>'
+      +'<div class="field"><label>Level Meter Inputs</label>'
+      +'<select data-f="inputs" multiple>'+inputOpts+'</select></div>'
+      +'<div class="row">'
+      +'<div class="field"><label>Now Playing (Planet Radio)</label>'
+      +'<select data-f="np_rpuid">'+npOpts+'</select></div>'
+      +'<div class="field"><label>Zetta Station</label>'
+      +'<select data-f="zetta_station_key">'+zOpts+'</select></div>'
+      +'</div>'
+      +'<div class="field" style="padding:12px;background:rgba(23,168,255,.06);border:1px solid rgba(23,168,255,.18);border-radius:8px">'
+      +'<label style="color:var(--acc);margin-bottom:8px;display:block">Follow Zetta Assignment</label>'
+      +'<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:8px">'
+      +'<input type="checkbox" data-f="zetta_follow"'+(b.zetta_follow?' checked':'')+'>'
+      +'Auto-assign chain and level meter when Zetta switches station on this computer</label>'
+      +'<input data-f="zetta_computer" value="'+_e(b.zetta_computer||'')+'" placeholder="Zetta computer name, e.g. BEL-STUDIO1" style="width:100%;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:12px;font-family:inherit">'
+      +'<div class="hint" style="margin-top:5px">When enabled, Chain and level meters update automatically when Zetta assigns a station to this computer. Manual selections above are ignored while active.</div>'
+      +'</div>'
+      +'<div style="margin-top:12px;display:flex;align-items:center;gap:10px">'
+      +'<button class="btn bp" data-action="save-brand" data-bid="'+_e(b.id)+'">Save Brand</button>'
+      +'</div>'
+      +'</div></div>';
   });
+  el.innerHTML=html;
 }
 
-document.getElementById('studios-list').addEventListener('click',function(e){
-  var saveBtn=e.target.closest('[data-save-studio]');
-  if(saveBtn){saveFullStudio(saveBtn.dataset.saveStudio);return}
-  var del=e.target.closest('[data-delete]');
-  if(del){if(confirm('Delete this studio?'))_del('/api/studioboard/studio/'+encodeURIComponent(del.dataset.delete)).then(function(){loadAll()});return}
-  var seenTag=e.target.closest('[data-seen-show]');
-  if(seenTag){var sid=seenTag.dataset.seenShow;var showName=seenTag.dataset.show;
-    var inp=document.querySelector('input[data-art-show="'+sid+'"]');
-    if(inp)inp.value=showName;return}
-  var msgSend=e.target.closest('[data-msg-send]');
-  if(msgSend){var sid=msgSend.dataset.msgSend;var ta=document.querySelector('[data-msg="'+sid+'"]');
-    _post('/api/studioboard/message/'+encodeURIComponent(sid),{message:(ta?ta.value:'').trim()}).then(function(){loadAll()});return}
-  var msgClear=e.target.closest('[data-msg-clear]');
-  if(msgClear){fetch('/api/studioboard/message/'+encodeURIComponent(msgClear.dataset.msgClear),
-    {method:'DELETE',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()}}).then(function(){loadAll()});return}
-  var artBtn=e.target.closest('[data-art-upload]');
-  if(artBtn){
-    var sid=artBtn.dataset.artUpload;
-    var showInput=document.querySelector('input[data-art-show="'+sid+'"]');
+/* ── API docs tab ────────────────────────────────────── */
+function buildApiDocs(){
+  var el=document.getElementById('api-docs');
+  if(el.innerHTML)return;
+  var html='<div class="card"><div class="ch">REST API Reference</div><div class="cb">';
+
+  html+='<div class="section-label">Mic Live</div>'
+    +'<div class="hint">Toggle mic live status for a studio (from audio consoles, Node-RED, etc).</div>'
+    +'<div class="api-block">POST /api/studioboard/mic/{studio_id}?token=TOKEN\nBody: {"live": true}</div>';
+
+  html+='<div class="section-label">Brand Preset Assignment</div>'
+    +'<div class="hint">Assign a brand preset to a studio by name or ID. Instantly updates the display. Designed for automation systems.</div>'
+    +'<div class="api-block">POST /api/studioboard/studio/{studio_id}/brand?token=TOKEN\n\nAssign by name:  {"brand_name": "Cool FM"}\nAssign by ID:    {"brand_id": "abc123"}\nUnassign:        {"brand_id": ""}</div>';
+
+  html+='<div class="section-label">Legacy Chain Assign (backward compat)</div>'
+    +'<div class="hint">Directly assign a chain to a studio without using brand presets. Still works &#8212; consider migrating to Brand Preset Assignment.</div>'
+    +'<div class="api-block">POST /api/studioboard/assign?token=TOKEN\n\nAssign by ID:    {"studio_id": "abc", "chain_id": "xyz"}\nAssign by name:  {"studio_id": "abc", "chain_name": "Downtown FM"}\nClear:           {"studio_id": "abc", "clear": true}\nOptional:        "color": "#17a8ff"</div>';
+
+  if(_studios.length){
+    html+='<div class="section-label">Studio IDs</div><div class="tags" style="margin-bottom:8px">';
+    _studios.forEach(function(s){
+      html+='<span class="tag">'+_e(s.name)+' &#8594; <code>'+_e(s.id)+'</code></span>';
+    });
+    html+='</div>';
+  }
+  if(_brands.length){
+    html+='<div class="section-label">Brand IDs</div><div class="tags" style="margin-bottom:8px">';
+    _brands.forEach(function(b){
+      html+='<span class="tag">'+_e(b.name)+' &#8594; <code>'+_e(b.id)+'</code></span>';
+    });
+    html+='</div>';
+  }
+
+  html+='</div></div>';
+  el.innerHTML=html;
+}
+
+/* ── Save helpers ────────────────────────────────────── */
+function saveStudio(sid){
+  var card=document.querySelector('.sc[data-sid="'+sid+'"]');if(!card)return;
+  var data={};
+  var f=function(key){var el=card.querySelector('[data-f="'+key+'"]');return el?el.value:undefined};
+  data.name=f('name')||'';
+  data.brand_id=f('brand_id')||'';
+  var msgEl=card.querySelector('[data-f="message"]');
+  if(msgEl)data.message=msgEl.value;
+  _post('/api/studioboard/studio/'+encodeURIComponent(sid),data)
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.error){_showMsg(d.error,false);return}
+      _showMsg('Studio saved.',true);loadAll();
+    });
+}
+
+function saveBrand(bid){
+  var card=document.querySelector('.sc[data-bid="'+bid+'"]');if(!card)return;
+  var data={};
+  var fv=function(key){var el=card.querySelector('[data-f="'+key+'"]');return el?el.value:undefined};
+  data.name=fv('name')||'';
+  data.color=fv('color')||'#17a8ff';
+  data.freq=fv('freq')||'';
+  data.np_rpuid=fv('np_rpuid')||'';
+  data.zetta_station_key=fv('zetta_station_key')||'';
+  var chainsSel=card.querySelector('[data-f="chains"]');
+  data.chains=chainsSel?Array.from(chainsSel.selectedOptions).map(function(o){return o.value}):[];
+  var inputsSel=card.querySelector('[data-f="inputs"]');
+  data.inputs=inputsSel?Array.from(inputsSel.selectedOptions).map(function(o){return o.value}):[];
+  var zfChk=card.querySelector('[data-f="zetta_follow"]');
+  data.zetta_follow=zfChk?zfChk.checked:false;
+  var zcInp=card.querySelector('[data-f="zetta_computer"]');
+  data.zetta_computer=zcInp?(zcInp.value||'').trim().toUpperCase():'';
+  _post('/api/studioboard/brand/'+encodeURIComponent(bid),data)
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.error){_showMsg(d.error,false);return}
+      _showMsg('Brand saved.',true);loadAll();
+    });
+}
+
+/* ── Event delegation ────────────────────────────────── */
+document.addEventListener('click',function(e){
+  // Toggle brand/studio expand
+  var th=e.target.closest('[data-action="toggle-brand"]');
+  if(th){var sc=th.closest('.sc');if(sc)sc.classList.toggle('open');return}
+  var sh=e.target.closest('.sc-head');
+  if(sh&&!e.target.closest('button')){var sc=sh.closest('.sc');if(sc)sc.classList.toggle('open');return}
+
+  var a=e.target.closest('[data-action]');
+  if(!a)return;
+  var action=a.dataset.action;
+
+  if(action==='save-studio'){saveStudio(a.dataset.sid);return}
+  if(action==='save-brand'){saveBrand(a.dataset.bid);return}
+
+  if(action==='del-studio'){
+    if(confirm('Delete this studio?'))
+      _del('/api/studioboard/studio/'+encodeURIComponent(a.dataset.sid)).then(function(){loadAll()});
+    return;
+  }
+  if(action==='del-brand'){
+    if(confirm('Delete this brand? Studios using it will become unassigned.'))
+      _del('/api/studioboard/brand/'+encodeURIComponent(a.dataset.bid)).then(function(){loadAll()});
+    return;
+  }
+
+  if(action==='msg-send'){
+    var sid=a.dataset.sid;
+    var card=document.querySelector('.sc[data-sid="'+sid+'"]');
+    var ta=card?card.querySelector('[data-f="message"]'):null;
+    _post('/api/studioboard/message/'+encodeURIComponent(sid),{message:ta?ta.value.trim():''})
+      .then(function(){_showMsg('Message sent.',true);loadAll()});
+    return;
+  }
+  if(action==='msg-clear'){
+    _del('/api/studioboard/message/'+encodeURIComponent(a.dataset.sid)).then(function(){_showMsg('Cleared.',true);loadAll()});
+    return;
+  }
+
+  if(action==='fill-show'){
+    var sid=a.dataset.sid;
+    var inp=document.querySelector('[data-art-show="'+sid+'"]');
+    if(inp)inp.value=a.dataset.show;
+    return;
+  }
+  if(action==='art-upload'){
+    var sid=a.dataset.sid;
+    var showInput=document.querySelector('[data-art-show="'+sid+'"]');
     var showName=(showInput?showInput.value:'').trim();
     if(!showName){alert('Enter the show name first');return}
-    var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
-    inp.onchange=function(){if(!inp.files[0])return;var fd=new FormData();fd.append('artwork',inp.files[0]);
+    var fileInp=document.createElement('input');fileInp.type='file';fileInp.accept='image/*';
+    fileInp.onchange=function(){
+      if(!fileInp.files[0])return;
+      var fd=new FormData();fd.append('artwork',fileInp.files[0]);
       fetch('/api/studioboard/artwork/'+encodeURIComponent(sid)+'/'+encodeURIComponent(showName),
-        {method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':_csrf()},body:fd})
-        .then(function(r){return r.json()}).then(function(d){if(d.ok)loadAll()});
-    };inp.click();
+        {method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':_getCsrf()},body:fd})
+        .then(function(r){return r.json()}).then(function(d){
+          if(d.ok){_showMsg('Image uploaded.',true);loadAll();}
+          else _showMsg(d.error||'Upload failed',false);
+        });
+    };fileInp.click();
+    return;
   }
 });
-
-/* Changes saved via the Save button — no auto-save on change */
 
 loadAll();
 })();

@@ -2,6 +2,32 @@
 
 ---
 
+### Studio Board 3.14.0 — 2026-04-20
+
+**Feature: Brands — station presets, new admin UI, brand assignment REST API**
+
+Splits the flat per-studio config into two separate concepts:
+
+- **Studios** — physical screens: name, assigned brand, message, show artwork
+- **Brands** — station presets: colour, chains, inputs, Planet Radio feed,
+  frequency, Zetta station, Follow Zetta assignment
+
+**Seamless migration**: On first startup after upgrade, brand fields are
+automatically lifted from each studio into a new Brand object and linked
+back. No data is lost. The TV display is unaffected.
+
+New admin tabs:
+- **Studios** — assign a brand preset to each screen, send messages, manage artwork
+- **Brands** — create/edit/delete presets with all station config fields
+- **API** — reference docs for all REST APIs with live studio/brand IDs
+
+New REST endpoint:
+`POST /api/studioboard/studio/{studio_id}/brand?token=TOKEN`
+Body: `{"brand_name": "Cool FM"}` or `{"brand_id": "abc123"}` or `{"brand_id": ""}` to unassign.
+Instant display update — automation systems can switch brand in one call.
+
+---
+
 ### Studio Board 3.13.6 — 2026-04-20
 
 **Fix: countdown timer repositioned below presenter image/name**
