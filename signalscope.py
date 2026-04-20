@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.164"
+BUILD                  = "SignalScope-3.5.165"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16413,27 +16413,41 @@ class HubServer:
                             # ── Zetta: break definitively ended — fire after grace ────────
                             # The confirmation window may have started as an ad-break
                             # candidate (heuristic guess), but Zetta now says it is NOT
-                            # a spot.  We do NOT fire immediately: Zetta SOAP polling lags
-                            # 1–3 poll cycles behind real-time, so at the very start of an
-                            # ad break Zetta may say "not a spot" for several seconds before
-                            # asset_type==2 is confirmed.  Firing immediately here causes
-                            # false CHAIN_FAULT alerts at the start of every ad break.
+                            # a spot.  We do NOT fire immediately when there is still audio
+                            # downstream of the mix-in point (strong signal: an ad break is
+                            # filling the silence): Zetta SOAP polling lags 1–3 poll cycles
+                            # behind real-time, so at the very start of an ad break Zetta
+                            # may say "not a spot" for several seconds before asset_type==2
+                            # is confirmed.  Firing immediately here causes false CHAIN_FAULT
+                            # alerts at the start of every ad break.
                             #
-                            # Instead: track when Zetta first said "not a spot" while in
-                            # pending state (_chain_zetta_no_spot_since).  Only fire early
-                            # after _ZETTA_GRACE_S seconds of consistent "not a spot" —
-                            # enough time for the SOAP poller to confirm the break.  If
-                            # Zetta does confirm (asset_type==2) the spot-latch at line
-                            # ~16264 suppresses the fault and resets this timer.
+                            # Grace period (_ZETTA_GRACE_S) ONLY applies when the mix-in
+                            # feed is still up and no post-mixin node is faulted — i.e. the
+                            # silence is pre-mixin and audio is still flowing downstream.
+                            # If the mix-in is also silent or a post-mixin node has failed,
+                            # the effective_mixin_is_down / effective_post_mixin checks below
+                            # fire immediately anyway, so no delay is needed here either.
                             if _zetta_on and not _zetta_spot and pending_adbreak:
                                 _ZETTA_GRACE_S = 20  # must be > max SOAP poll interval
-                                _zns_ts = self._chain_zetta_no_spot_since.setdefault(cid, now)
-                                _zns_age = now - _zns_ts
-                                if _zns_age >= _ZETTA_GRACE_S:
+                                # Is the mixin healthy (audio still present downstream)?
+                                _mixin_healthy = not mixin_is_down and not any_post_mixin_fault
+                                if _mixin_healthy:
+                                    # High-confidence ad break candidate — apply grace period
+                                    _zns_ts = self._chain_zetta_no_spot_since.setdefault(cid, now)
+                                    _zns_age = now - _zns_ts
+                                    if _zns_age >= _ZETTA_GRACE_S:
+                                        monitor.log(
+                                            f"[Chain] '{result['name']}' — Zetta: no ad break "
+                                            f"confirmed for {round(_zns_age)}s (mixin healthy) — alerting.")
+                                        elapsed = min_fault_secs
+                                    # else: still within grace, let normal elapsed logic decide
+                                else:
+                                    # Mix-in is also silent or post-mixin fault — not an ad break.
+                                    # Fire immediately (same as original behaviour).
                                     monitor.log(
-                                        f"[Chain] '{result['name']}' — Zetta: no ad break "
-                                        f"confirmed for {round(_zns_age)}s — alerting.")
-                                    elapsed = min_fault_secs   # satisfy elapsed >= min_fault_secs
+                                        f"[Chain] '{result['name']}' — Zetta: ad break ended "
+                                        f"but chain still silent — alerting immediately.")
+                                    elapsed = min_fault_secs
                             # ── Ad-break schedule learning: dynamic confirmation window ──
                             # When we have enough history for this chain, shorten the window
                             # if the break time doesn't match any known schedule slot, or

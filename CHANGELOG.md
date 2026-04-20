@@ -2,6 +2,16 @@
 
 ---
 
+### SignalScope-3.5.165 — 2026-04-20
+
+**Fix: Zetta ad-break grace period now only applies when mix-in is healthy**
+
+The 20 s grace period introduced in 3.5.164 was applied to all `pending_adbreak` chains regardless of downstream state, adding an unwanted 20 s delay to genuine faults.
+
+Fix: grace only fires when `not mixin_is_down and not any_post_mixin_fault` — i.e. there is still audio present after the mix-in point, which is the strong indicator that the pre-mixin silence is an ad break. When the mix-in feed is also silent or a post-mixin node is faulted, there can be no ad fill and the chain fires immediately as before. Because `effective_mixin_is_down` and `effective_post_mixin` would bypass the confirmation window on the very next line anyway, the two code paths are now consistent.
+
+---
+
 ### SignalScope-3.5.164 — 2026-04-19
 
 **Fix: false CHAIN_FAULT alerts at start of ad breaks (Zetta SOAP poll lag)**
