@@ -2,6 +2,22 @@
 
 ---
 
+### SignalScope-3.5.168 — 2026-04-20
+
+**Fix: treat "news bed" / "sport bed" titles as spots for chain silence suppression**
+
+News and sport beds played from a split/mixin point during a news bulletin are not
+always tagged `asset_type=2` in Zetta (they may be music category or untagged).
+This caused the chain to alert on the bed silence even though the mixin was
+deliberately playing the bed.
+
+Fix: `_zetta_spot_raw` now also fires when the Zetta `now_playing` title contains
+`"news bed"` or `"sport bed"` (case-insensitive substring match). This feeds into
+the same spot latch and post-spot grace machinery, so the chain behaves identically
+to a normal ad break for the full 30 s latch + 90 s post-spot grace window.
+
+---
+
 ### SignalScope-3.5.167 — 2026-04-20
 
 **Fix: Zetta ad-break exit false silence alert (Zetta pre-roll)**

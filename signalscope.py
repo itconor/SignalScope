@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.167"
+BUILD                  = "SignalScope-3.5.168"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16134,8 +16134,11 @@ class HubServer:
                     # Use asset_type == 2 (ASSET_SPOT) directly — same rule as JS asset_type === 2.
                     # Never use the backend-computed is_spot boolean; it can lag or produce
                     # false positives. now_playing is None when idle → asset_type defaults to 0.
+                    _zetta_np_title = ((_zcs.get("now_playing") or {}).get("title") or "").lower()
+                    _BED_KEYWORDS   = ("news bed", "sport bed")
                     _zetta_spot_raw = _zetta_on and (
                         int((_zcs.get("now_playing") or {}).get("asset_type") or 0) == 2
+                        or any(kw in _zetta_np_title for kw in _BED_KEYWORDS)
                     )
                     # Spot latch: keep suppression alive for _SPOT_LATCH_S seconds after the
                     # last confirmed spot so inter-ad gaps (now_playing=None between consecutive
