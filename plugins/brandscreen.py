@@ -15,15 +15,17 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.4",
+    "version":  "1.3.5",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _CFG_PATH = os.path.join(_BASE_DIR, "brandscreen_cfg.json")
 _LOGO_DIR = os.path.join(_BASE_DIR, "brandscreen_logos")
 _LOCK     = threading.Lock()
-_NOTIFY   = {}              # studio_id → list[queue.Queue]
-_NLOCK    = threading.Lock()
+_NOTIFY    = {}              # studio_id → list[queue.Queue]
+_NLOCK     = threading.Lock()
+_takeovers = {}              # studio_id → {"title":str,"text":str,"ts":float}
+_TLOCK     = threading.Lock()
 
 os.makedirs(_LOGO_DIR, exist_ok=True)
 
@@ -146,14 +148,18 @@ def _brand_palette(hex_colour):
 
 # ─────────────────────────────────────── SSE notification ────────────────────
 
-def _notify_studio(studio_id):
+def _notify_studio_msg(studio_id, msg):
+    """Push an arbitrary SSE data string to every listener on studio_id."""
     with _NLOCK:
         qs = list(_NOTIFY.get(studio_id, []))
     for q in qs:
         try:
-            q.put_nowait("assignment_changed")
+            q.put_nowait(msg)
         except _queue.Full:
             pass
+
+def _notify_studio(studio_id):
+    _notify_studio_msg(studio_id, "assignment_changed")
 
 def _sse_stream(studio_id):
     q = _queue.Queue(maxsize=8)
@@ -422,6 +428,17 @@ Content-Type: application/json
 </pre>
       <p class="hint" style="margin-top:6px">The browser display updates instantly via SSE — no reload needed. Send <code>{"station_id":""}</code> to unassign.</p>
       <hr class="sep">
+      <div class="slabel" style="margin-bottom:8px">Full-screen takeover</div>
+      <pre class="api-eg" id="eg-takeover">POST {{origin}}/api/brandscreen/studio/{studio_id}/takeover
+Authorization: Bearer {{api_key|e}}
+Content-Type: application/json
+
+{"title": "BREAKING", "text": "Your message here"}</pre>
+      <p class="hint" style="margin-top:6px">Instantly overlays the studio display with large title (brand colour) and body text. Background colours follow the station brand palette. Display updates in real time — no reload needed.</p>
+      <pre class="api-eg" style="margin-top:8px">DELETE {{origin}}/api/brandscreen/studio/{studio_id}/takeover
+Authorization: Bearer {{api_key|e}}</pre>
+      <p class="hint" style="margin-top:6px">Clears the takeover and returns to normal branding.</p>
+      <hr class="sep">
       <div class="slabel" style="margin-bottom:8px">List studios &amp; stations</div>
       <pre class="api-eg">GET {{origin}}/api/brandscreen/studios
 Authorization: Bearer {{api_key|e}}</pre>
@@ -512,7 +529,20 @@ function _studioForm(sd){
     +'<div style="display:flex;gap:8px;margin-top:14px">'
     +'<button class="btn bp" data-action="save-sd" data-sid="'+sd.id+'">Save</button>'
     +'<button class="btn bg" data-action="toggle-sd" data-sid="'+sd.id+'">Cancel</button>'
-    +'</div>';
+    +'</div>'
+    +'<hr class="sep">'
+    +'<div class="slabel">Full-Screen Takeover</div>'
+    +'<div class="grid2" style="margin-bottom:8px">'
+    +'<div class="field"><label>Title (large, brand colour)</label>'
+    +'<input type="text" id="sd-to-title-'+sd.id+'" placeholder="BREAKING NEWS" maxlength="80"></div>'
+    +'<div class="field"><label>Body text</label>'
+    +'<input type="text" id="sd-to-text-'+sd.id+'" placeholder="Your message here…" maxlength="200"></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn bp bs" data-action="takeover-send" data-sid="'+sd.id+'">▶ Send Takeover</button>'
+    +'<button class="btn bd bs" data-action="takeover-clear" data-sid="'+sd.id+'">✕ Clear</button>'
+    +'</div>'
+    +'<p class="hint" style="margin-top:5px">Instantly overlays this studio\'s screen with large title and text in the station brand colours. Background follows the assigned station palette.</p>';
 }
 
 // ── Stations ──────────────────────────────────────────────────────────────
@@ -761,6 +791,22 @@ document.addEventListener('click',function(e){
   else if(a==='del-logo')    _delLogo(sid);
   else if(a==='copy-api-key')  _copyApiKey();
   else if(a==='regen-api-key') _regenApiKey();
+  else if(a==='takeover-send'){
+    var _toTitle=(_v('sd-to-title-'+sid)||'').trim();
+    var _toText=(_v('sd-to-text-'+sid)||'').trim();
+    _post('/api/brandscreen/studio/'+sid+'/takeover',{title:_toTitle,text:_toText})
+      .then(function(r){return r.json();}).then(function(d){
+        if(d.error){_msg(d.error,false);return;}
+        _msg('Takeover sent.',true);
+      });
+  }
+  else if(a==='takeover-clear'){
+    _del('/api/brandscreen/studio/'+sid+'/takeover')
+      .then(function(r){return r.json();}).then(function(d){
+        if(d.error){_msg(d.error,false);return;}
+        _msg('Takeover cleared.',true);
+      });
+  }
   var url=e.target.closest('.row-url');
   if(url){ navigator.clipboard&&navigator.clipboard.writeText(url.textContent.trim()); _msg('URL copied.',true); }
 });
@@ -1069,6 +1115,23 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 /* ── Waiting (no station) ────────────────────────────────────────────────── */
 #waiting{position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;color:rgba(255,255,255,.3);z-index:20}
 #waiting.vis{display:flex}
+
+/* ── Full-screen takeover overlay ────────────────────────────────────────── */
+/* Sits above everything (z-index:50). Background uses brand-derived deep/dark
+   colours so the palette is preserved. Title is brand-coloured at TV-legible
+   size; body text is bright white. No filter:blur on any element — Pi safe. */
+#takeover{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:clamp(16px,3.5vh,52px);
+  background:linear-gradient(160deg,var(--bg-deep) 0%,var(--bg-dark) 100%);
+  padding:6vw;text-align:center;
+  opacity:0;pointer-events:none;transition:opacity .6s ease}
+#takeover.vis{opacity:1;pointer-events:auto}
+#takeover-title{font-size:clamp(48px,9vw,160px);font-weight:700;
+  color:var(--brand);letter-spacing:-.025em;line-height:1.05;
+  text-shadow:0 0 80px rgba(var(--brand-rgb),.55),0 0 180px rgba(var(--brand-rgb),.22)}
+#takeover-text{font-size:clamp(22px,4vw,72px);font-weight:300;
+  color:rgba(255,255,255,.92);letter-spacing:.01em;line-height:1.3;
+  max-width:82vw}
 </style>
 </head>
 
@@ -1151,6 +1214,10 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
   <div style="font-size:40px">🖥️</div>
   <div style="font-size:16px">{{studio_name|e}}</div>
   <div style="font-size:13px">Waiting for station assignment…</div>
+</div>
+<div id="takeover">
+  <div id="takeover-title"></div>
+  <div id="takeover-text"></div>
 </div>
 
 <script nonce="{{csp_nonce()}}">
@@ -1453,15 +1520,34 @@ function _pollNP(){
 }
 if(_hasStation){ _pollNP(); setInterval(_pollNP, 10000); }
 
-// ── SSE — instant studio assignment updates ─────────────────────────────────
+// ── Full-screen takeover ─────────────────────────────────────────────────────
+function _showTakeover(title, text){
+  document.getElementById('takeover-title').textContent = title || '';
+  document.getElementById('takeover-text').textContent  = text  || '';
+  document.getElementById('takeover').classList.add('vis');
+}
+function _clearTakeover(){
+  document.getElementById('takeover').classList.remove('vis');
+}
+
+// ── SSE — instant studio assignment / takeover updates ───────────────────────
 if(_studioId){
   var _es = new EventSource(_tk('/api/brandscreen/events/studio/'+_studioId),{withCredentials:true});
   _es.onmessage = function(e){
     if(e.data==='assignment_changed'){
       document.getElementById('screen').classList.add('fade-out');
       setTimeout(function(){ location.replace(location.href); }, 580);
+    } else if(e.data.indexOf('takeover:') === 0){
+      try{ var _td=JSON.parse(e.data.slice(9)); _showTakeover(_td.title,_td.text); }catch(ex){}
+    } else if(e.data==='takeover_clear'){
+      _clearTakeover();
     }
   };
+  // Restore active takeover on page load / reload
+  fetch(_tk('/api/brandscreen/studio/'+_studioId+'/takeover'),{credentials:'same-origin'})
+    .then(function(r){ return r.ok?r.json():{}; })
+    .then(function(d){ if(d.active) _showTakeover(d.title,d.text); })
+    .catch(function(){});
 }
 </script>
 </body>
@@ -1842,6 +1928,40 @@ def register(app, ctx):
             if os.path.exists(p):
                 os.remove(p)
         return jsonify({"ok": True})
+
+    # ── Takeover API ──────────────────────────────────────────────────────────
+
+    @app.route("/api/brandscreen/studio/<studio_id>/takeover", methods=["POST", "PUT"])
+    @api_auth
+    def bs_takeover_set(studio_id):
+        cfg = _cfg_load()
+        if not _get_studio(cfg, studio_id):
+            return jsonify({"error": "Studio not found"}), 404
+        data  = request.get_json(force=True) or {}
+        title = (data.get("title") or "").strip()
+        text  = (data.get("text")  or "").strip()
+        with _TLOCK:
+            _takeovers[studio_id] = {"title": title, "text": text, "ts": _time.time()}
+        _notify_studio_msg(studio_id, "takeover:" + json.dumps({"title": title, "text": text}))
+        return jsonify({"ok": True})
+
+    @app.delete("/api/brandscreen/studio/<studio_id>/takeover")
+    @api_auth
+    def bs_takeover_clear(studio_id):
+        with _TLOCK:
+            _takeovers.pop(studio_id, None)
+        _notify_studio_msg(studio_id, "takeover_clear")
+        return jsonify({"ok": True})
+
+    @app.get("/api/brandscreen/studio/<studio_id>/takeover")
+    @api_auth
+    def bs_takeover_get(studio_id):
+        with _TLOCK:
+            t = dict(_takeovers.get(studio_id) or {})
+        if t:
+            return jsonify({"active": True, "title": t.get("title", ""),
+                            "text": t.get("text", ""), "ts": t.get("ts", 0)})
+        return jsonify({"active": False})
 
     # ── API key ───────────────────────────────────────────────────────────────
     @app.post("/api/brandscreen/regen_api_key")

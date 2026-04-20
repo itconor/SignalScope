@@ -2,6 +2,24 @@
 
 ---
 
+### Brand Screen 1.3.5 — 2026-04-20
+
+**Feature: full-screen takeover REST API per studio**
+
+External applications can now push a full-screen text overlay to any Brand
+Screen studio via a REST API call, then clear it when done — without touching
+the station assignment or reloading the display.
+
+- `POST /api/brandscreen/studio/{studio_id}/takeover` with `{"title":"…","text":"…"}` — immediately overlays the display with large title (brand colour, `clamp(48px,9vw,160px)`) and body text (white, `clamp(22px,4vw,72px)`). Background uses the station's brand-derived palette so the colour scheme is preserved. Delivered to the browser instantly via SSE — no reload.
+- `DELETE /api/brandscreen/studio/{studio_id}/takeover` — clears the overlay and returns to normal branding.
+- `GET /api/brandscreen/studio/{studio_id}/takeover` — returns current takeover state (`{"active": true/false, "title", "text"}`). Used on page load to restore an active takeover after a browser reload.
+- All three routes accept either a Bearer API key or an authenticated session.
+- The active takeover is stored in memory (`_takeovers` dict); it survives SSE reconnects (page-load fetch restores it) but clears on plugin/server restart.
+- Admin UI: each studio card now has **Title** and **Body text** fields plus **▶ Send Takeover** / **✕ Clear** buttons below the screen URL section. REST API tab documents the new endpoints.
+- Screen template: `#takeover` overlay div, `_showTakeover(title,text)` and `_clearTakeover()` JS functions; SSE `onmessage` handles `takeover:` and `takeover_clear` message types.
+
+---
+
 ### Brand Screen 1.3.4 — 2026-04-20
 
 **Fix: part-of-screen black flash on Raspberry Pi / Yodeck players**
