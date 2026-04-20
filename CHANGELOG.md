@@ -2,6 +2,26 @@
 
 ---
 
+### Brand Screen 1.3.1 — 2026-04-20
+
+**Fix: audio-reactive animation jitter — 60 fps RAF smoothing**
+
+Three root causes combined to produce visible jitter in the Brand Screen animations:
+
+1. **150 ms poll drove all effects directly** — `_applyLevel(raw)` was called from `setInterval(..., 150)`, so every visual effect (logo scale, bloom, orbit rings, etc.) jumped to a new value 6–7 times per second instead of moving smoothly.
+
+2. **CSS `transition` fought JS updates** — `#logo-img` had `transition:transform .09s ease-out,filter .09s ease-out`. With the JS overwriting the property every 150 ms, the browser restarted the CSS transition each poll tick, creating a 90 ms interpolation that was immediately interrupted. Removed; smoothing is now entirely JS/RAF.
+
+3. **Pulse rings `animationDuration` changed every poll** — any change to `animationDuration` causes the browser to restart the CSS keyframe animation from 0%, producing a visible flash every 150 ms. Replaced with `pulse-wrap` opacity scaling — the animation always runs at its fixed 3.2 s cadence; audio level scales how visible the rings are.
+
+Fix: decoupled data acquisition from rendering:
+- `_pollLevel()` now only sets `_rawLev` (the target) every 150 ms — no visual changes.
+- A new `(function _levRaf(){...})(requestAnimationFrame)` loop runs at 60 fps, advances `_lev` / `_levSnap` EMAs toward `_rawLev` each frame, and calls `_applyEffects()`.
+- EMA coefficients converted from per-150ms to per-frame: `alpha_frame = 1 - (1-alpha_150)^(1/9)`. Ambient tracker: attack 0.45→0.066, decay 0.18→0.022. Beat tracker: attack 0.65→0.12, decay 0.38→0.055. Overall response feel is preserved.
+- `_pulseWrap` DOM ref cached at startup (no per-frame querySelector).
+
+---
+
 ### SignalScope-3.5.166 — 2026-04-20
 
 **Fix: Hub Reports table — huge gap caused by long site/stream names**

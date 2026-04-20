@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.0",
+    "version":  "1.3.1",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -879,7 +879,6 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
   object-fit:contain;
   display:block;
   filter:drop-shadow(0 0 40px rgba(var(--brand-rgb),.25));
-  transition:transform .09s ease-out,filter .09s ease-out;
   will-change:transform,filter}
 #logo-ph{font-size:clamp(60px,12vw,160px);opacity:.1;z-index:10}
 
@@ -912,7 +911,7 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 .la-float .logo-zone{animation:lo-float 4s ease-in-out infinite}
 @keyframes lo-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-18px)}}
 /* Glow: base drop-shadow always present via logo-img filter; JS intensifies it via --glow-size */
-.la-glow #logo-img{transition:filter .1s linear}
+/* No transition on logo-img — RAF loop at 60fps provides smoothing natively */
 
 /* ── Audio-reactive overlays (all presets) ───────────────────────────────── */
 /* Vignette: very subtle dark edge that lifts on beats. Base opacity is low
@@ -1096,8 +1095,11 @@ if(_bgStyle==='particles' && _hasStation){
 }
 
 // ── Audio-level reactive animations ─────────────────────────────────────────
-// _lev     — slow ambient tracker (gradual background energy)
-// _levSnap — fast beat tracker (immediate logo/ring response)
+// _rawLev  — latest poll target (updated every 150 ms by _pollLevel)
+// _lev     — slow ambient EMA (driven by RAF loop at 60 fps toward _rawLev)
+// _levSnap — fast beat EMA    (driven by RAF loop at 60 fps toward _rawLev)
+// Decoupling poll from render prevents the 150 ms jump-to-value jitter.
+var _rawLev   = 0;
 var _lev      = 0;
 var _levSnap  = 0;
 var _bloom    = document.getElementById('lev-bloom');
@@ -1109,6 +1111,7 @@ var _orbWrap  = document.querySelector('.orbit-wrap');
 var _orb1     = document.querySelector('.orb1');
 var _orb2     = document.querySelector('.orb2');
 var _prngs    = document.querySelectorAll('.prng');
+var _pulseWrap= document.querySelector('.pulse-wrap');
 var _logoImg  = document.getElementById('logo-img');
 var _npTitle  = document.getElementById('np-title');
 var _waveWrap = document.querySelector('.wave-wrap');
@@ -1127,11 +1130,9 @@ var _bgEl     = _bgStyle!=='aurora' ? (
   document.querySelector('.bg-burst') ||
   document.querySelector('.bg-haze') ) : null;
 
-function _applyLevel(raw){
-  // Slow tracker: ambient energy floor
-  _lev     = _lev + (raw - _lev) * (raw > _lev ? 0.45 : 0.18);
-  // Fast snap tracker: beat-responsive
-  _levSnap = _levSnap + (raw - _levSnap) * (raw > _levSnap ? 0.65 : 0.38);
+// _applyEffects: called at 60 fps by the RAF loop; reads _lev / _levSnap
+// which are already smoothed — no EMA computation here.
+function _applyEffects(){
 
   // ── Outer bloom: large soft halo — grows from tiny to screen-filling ───────
   var bScale = 0.12 + _levSnap * 3.1;
@@ -1181,11 +1182,10 @@ function _applyLevel(raw){
   if(_orb2) _orb2.style.opacity = (0.06 + _levSnap * 0.38).toFixed(2);  // 0.06→0.44
   if(_orbWrap) _orbWrap.style.transform = 'scale(' + (0.94 + _levSnap * 0.12).toFixed(3) + ')';
 
-  // ── Pulse rings: speed ─────────────────────────────────────────────────────
-  if(_prngs.length){
-    var pd = Math.max(0.25, 3.5 - _levSnap * 3.25).toFixed(3) + 's';
-    _prngs.forEach(function(p){ p.style.animationDuration = pd; });
-  }
+  // ── Pulse rings: visibility — never change animationDuration (causes restart jitter)
+  // The CSS animation cycles at its fixed 3.2 s rate; JS scales the pulse-wrap
+  // opacity so rings brighten on beats and fade at silence.
+  if(_pulseWrap) _pulseWrap.style.opacity = Math.min(1, _levSnap * 2.2).toFixed(3);
 
   // ── Background hue-shift: colour breathes 0→22° with energy ───────────────
   // Skipped for aurora (already has its own CSS animation filter)
@@ -1224,7 +1224,7 @@ function _applyLevel(raw){
 
 // ── Spin logo animation — JS RAF drives continuous rotation ────────────────
 // Speed scales with audio level: 0.25 deg/frame at silence → 3.5 deg/frame at full.
-// Owns _logoImg.style.transform in spin mode — _applyLevel skips it.
+// Owns _logoImg.style.transform in spin mode — _applyEffects skips it.
 var _spinAngle = 0;
 (function _spinLoop(){
   if(_logoAnim === 'spin'){
@@ -1240,7 +1240,7 @@ var _spinAngle = 0;
 
 // ── Bounce logo animation — elastic physics bounce on audio beats ───────────
 // Kicks upward when the fast snap level rises sharply; gravity + damping do the rest.
-// Owns _logoImg.style.transform in bounce mode — _applyLevel skips it.
+// Owns _logoImg.style.transform in bounce mode — _applyEffects skips it.
 var _bounceY = 0, _bounceVy = 0, _prevSnapLev = 0;
 (function _bounceLoop(){
   if(_logoAnim === 'bounce'){
@@ -1259,10 +1259,23 @@ var _bounceY = 0, _bounceVy = 0, _prevSnapLev = 0;
   requestAnimationFrame(_bounceLoop);
 })();
 
+// ── 60 fps RAF render loop ──────────────────────────────────────────────────
+// EMA smoothing happens here so effects update every ~16.7 ms rather than
+// jumping to a new value every 150 ms poll. Alpha values are per-frame
+// equivalents of the original per-150ms coefficients:
+//   per-frame = 1 - (1 - alpha_150ms)^(1/9)   [9 frames ≈ 150 ms at 60 fps]
+//   _lev      attack 0.45 → 0.066   decay 0.18 → 0.022
+//   _levSnap  attack 0.65 → 0.12    decay 0.38 → 0.055
+(function _levRaf(){
+  _lev     = _lev     + (_rawLev - _lev)     * (_rawLev > _lev     ? 0.066 : 0.022);
+  _levSnap = _levSnap + (_rawLev - _levSnap) * (_rawLev > _levSnap ? 0.12  : 0.055);
+  _applyEffects();
+  requestAnimationFrame(_levRaf);
+})();
+
 // ── Live level poll ──────────────────────────────────────────────────────────
-// Initialise visual state at silence values immediately so all effects
-// (bloom, vignette, orbit opacity, etc.) render correctly from first paint.
-_applyLevel(0);
+// Poll sets _rawLev every 150 ms; the RAF loop above smoothly interpolates
+// toward it and applies all effects — no visual jump on each poll tick.
 
 // /api/hub/live_levels returns a NESTED structure:
 //   { "site_name": [ {name, level_dbfs, ...}, ... ], ... }
@@ -1285,14 +1298,13 @@ if(_levelKey && _hasStation){
           }
         }
         if(e && e.level_dbfs != null){
-          // Map −60 dBFS → 0.0,  0 dBFS → 1.0
-          var raw = Math.max(0, Math.min(1, (e.level_dbfs + 60) / 60));
-          _applyLevel(raw);
+          // Map −60 dBFS → 0.0,  0 dBFS → 1.0 — just set target; RAF loop smooths
+          _rawLev = Math.max(0, Math.min(1, (e.level_dbfs + 60) / 60));
         } else {
-          _applyLevel(0);
+          _rawLev = 0;
         }
       })
-      .catch(function(){ _levErr++; if(_levErr > 10) _applyLevel(0); });
+      .catch(function(){ _levErr++; if(_levErr > 10) _rawLev = 0; });
   }
   _pollLevel(); setInterval(_pollLevel, 150);
 }
