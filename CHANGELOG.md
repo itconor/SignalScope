@@ -2,6 +2,36 @@
 
 ---
 
+### Studio Board 3.13.6 — 2026-04-20
+
+**Fix: countdown timer repositioned below presenter image/name**
+
+The big Zetta countdown timer (`.cnt-wrap`) was rendered between the chain
+badges and the presenter image. Moved it to after the show name (`.shw`) so
+the order is: logo → station → studio → frequency → mic → badges → divider →
+presenter image → show name → **countdown** → now-playing section. The timer is
+now visually attached to the presenter/show block rather than floating between
+metadata and artwork.
+
+**Fix: stale presenter images on Yodeck kiosk**
+
+Root cause: race condition between the server image-download cycle (every 60 s)
+and the browser requesting a new cache-busted URL. When a show changed and
+Planet Radio returned a new `episodeImageUrl`, the browser immediately computed
+a new `?v=<hash>` (from the source URL) and fetched the server cache endpoint.
+If the background poller hadn't yet downloaded the new image, the server
+returned the OLD image under the NEW cache-bust URL. The browser (and Yodeck's
+Chromium) then stored that wrong image for up to 5 minutes (`max-age=300`),
+so the display showed the previous presenter even after the server caught up.
+
+Fix: the `?v=` cache-bust parameter is now driven by `show_img_ts` — a
+server-side Unix timestamp written to `_img_cache` each time a new presenter
+image is successfully downloaded. `/api/studioboard/data` includes
+`show_img_ts` per studio. The browser only requests a new image URL AFTER the
+server confirms the new file is on disk, eliminating the race entirely.
+
+---
+
 ### Brand Screen 1.3.6 — 2026-04-20
 
 **Fix: admin page completely broken after 1.3.5 (JS syntax error)**

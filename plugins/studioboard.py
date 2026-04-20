@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.13.5",
+    "version":  "3.13.6",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -44,7 +44,8 @@ def _img_cache_load_disk():
         path  = os.path.join(_IMG_CACHE_DIR, fname)
         with _img_cache_lk:
             # Stored by safe key; resolved at serve time
-            _img_cache.setdefault(safe, {"url": "", "path": path, "ctype": ctype})
+            _img_cache.setdefault(safe, {"url": "", "path": path, "ctype": ctype,
+                                         "ts": int(os.path.getmtime(path))})
 
 def _download_show_img(rpuid, img_url):
     """Download img_url, save to _IMG_CACHE_DIR, update _img_cache. Returns True on success."""
@@ -61,7 +62,7 @@ def _download_show_img(rpuid, img_url):
         path = os.path.join(_IMG_CACHE_DIR, f"show_{_safe_rpuid(rpuid)}{ext}")
         with open(path, "wb") as f:
             f.write(data)
-        entry = {"url": img_url, "path": path, "ctype": ctype}
+        entry = {"url": img_url, "path": path, "ctype": ctype, "ts": int(_time.time())}
         with _img_cache_lk:
             _img_cache[rpuid] = entry
             _img_cache[_safe_rpuid(rpuid)] = entry   # alias for serve lookup
@@ -748,6 +749,16 @@ def register(app, ctx):
 
             _zskey = studio.get("zetta_station_key", "")
             _zetta_data = _zetta_live.get(_zskey) if _zskey else None
+            # Server-side image download timestamp — used by JS for cache-busting.
+            # Changes when the background poller downloads a new presenter image,
+            # ensuring the browser only requests the new URL after the server has
+            # the new image (eliminates race where browser caches a stale image).
+            _rpuid = studio.get("np_rpuid", "")
+            _img_ts = 0
+            if _rpuid:
+                with _img_cache_lk:
+                    _ic = _img_cache.get(_rpuid) or _img_cache.get(_safe_rpuid(_rpuid)) or {}
+                _img_ts = _ic.get("ts", 0)
             studios_out.append({
                 "id": sid,
                 "name": studio.get("name", ""),
@@ -756,7 +767,8 @@ def register(app, ctx):
                 "mic_live": studio.get("mic_live", False),
                 "chains": s_chains,
                 "inputs": s_inputs,
-                "np_rpuid": studio.get("np_rpuid", ""),
+                "np_rpuid": _rpuid,
+                "show_img_ts": _img_ts,
                 "show_artwork_map": studio.get("show_artwork", {}),
                 "seen_shows": studio.get("seen_shows", []),
                 "zetta_station_key": _zskey,
@@ -1499,11 +1511,11 @@ function buildCol(s,idx){
       +'<div id="zfbadge'+idx+'" style="display:none" class="zfollow-badge">\u21bb ZETTA AUTO</div>'
       +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
       +'<div id="badges'+idx+'"></div>'
-      +'<div class="cnt-wrap" id="cnt'+idx+'"><div class="cnt-num" id="cntn'+idx+'">--:--</div><div class="cnt-label">Time Remaining</div></div>'
       +'<div class=divider></div>'
       /* Show name + image always present so updateCol can populate them */
       +'<img class=art id="showimg'+idx+'" alt="" style="display:none">'
       +'<div class=shw id="shw'+idx+'"></div>'
+      +'<div class="cnt-wrap" id="cnt'+idx+'"><div class="cnt-num" id="cntn'+idx+'">--:--</div><div class="cnt-label">Time Remaining</div></div>'
       +(s.zetta_station_key
         /* Zetta layout — artwork thumbnail + full sequencer data */
         ?'<div class=zq-main id="zq'+idx+'"></div>'
@@ -1554,23 +1566,23 @@ function updateCol(s,idx){
   // Big countdown — show when Zetta has now_playing
   var cntW=document.getElementById('cnt'+idx);
   if(cntW)cntW.classList.toggle('cnt-active',!!(s.zetta_station_key&&s.zetta&&s.zetta.now_playing));
-  // Show/presenter image — served from server cache so it's always available,
-  // even when the Planet Radio API is slow or temporarily down.
-  // Cache-bust via hash of the source URL: when the show changes, episodeImageUrl
-  // changes → hash changes → browser discards old cached image → fetches new one.
+  // Show/presenter image — served from the server-side image cache.
+  // Cache-bust param = server download timestamp (show_img_ts from /api/studioboard/data).
+  // This changes only AFTER the background poller has confirmed the new image is on disk,
+  // preventing the Yodeck/browser caching race where a new URL hash is requested before
+  // the server has finished downloading the new image (which would cache the wrong image).
   var showImg=document.getElementById('showimg'+idx);
   if(showImg){
     var rpuid=s.np_rpuid||'';
-    var si=np.show_image||'';
-    if(rpuid&&si){
+    if(rpuid&&s.show_img_ts){
       // tk() appends &token=TOKEN in kiosk mode so @login_required passes for the img request
-      var cachedSrc=tk('/studioboard/cached_show_img/'+encodeURIComponent(rpuid)+'?v='+_urlHash(si));
+      var cachedSrc=tk('/studioboard/cached_show_img/'+encodeURIComponent(rpuid)+'?v='+(s.show_img_ts||0));
       if(_artSrc['s'+idx]!==cachedSrc||showImg.style.display==='none'){
         _artSrc['s'+idx]=cachedSrc;showImg.src=cachedSrc;
         showImg.style.display='';
         showImg.onerror=function(){showImg.style.display='none'};
       }
-    } else if(!si){
+    } else if(!s.show_img_ts){
       showImg.style.display='none';
     }
   }
