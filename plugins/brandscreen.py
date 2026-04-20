@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.5",
+    "version":  "1.3.6",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))

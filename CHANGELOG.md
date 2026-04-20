@@ -2,6 +2,21 @@
 
 ---
 
+### Brand Screen 1.3.6 — 2026-04-20
+
+**Fix: admin page completely broken after 1.3.5 (JS syntax error)**
+
+In Python triple-quoted strings `\"\"\"…\"\"\"`, the sequence `\'` produces a
+plain `'` — the backslash is stripped. The hint text in `_studioForm` contained
+`studio's`, which rendered as a literal apostrophe inside a single-quoted
+JavaScript string, terminating the string early. The rest of the `<script>`
+block failed to parse: no stations or studios rendered, no buttons responded.
+
+Fix: replaced `\'` with the HTML entity `&#39;` so the apostrophe is safe
+inside both the Python string and the JS string.
+
+---
+
 ### Brand Screen 1.3.5 — 2026-04-20
 
 **Feature: full-screen takeover REST API per studio**
