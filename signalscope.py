@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.163"
+BUILD                  = "SignalScope-3.5.164"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -5506,6 +5506,12 @@ class MetricsDB:
                     print("[MetricsDB] Migrated chain_fault_log: added zetta_computer column")
                 except _sqlite3.OperationalError:
                     pass
+                try:
+                    conn.execute("ALTER TABLE chain_fault_log ADD COLUMN zetta_now_playing TEXT DEFAULT ''")
+                    conn.commit()
+                    print("[MetricsDB] Migrated chain_fault_log: added zetta_now_playing column")
+                except _sqlite3.OperationalError:
+                    pass
                 # Migration: add stream_sla_history table (Sprint 4)
                 try:
                     conn.execute(
@@ -5590,7 +5596,8 @@ class MetricsDB:
 
     def fault_log_update_meta(self, entry_id: str, message: str = "", cascaded_from: str = "",
                               adbreak_overshoot: bool = False, zetta_mode: str = "",
-                              zetta_is_spot: bool = False, zetta_computer: str = ""):
+                              zetta_is_spot: bool = False, zetta_computer: str = "",
+                              zetta_now_playing: str = ""):
         """Update message, cascaded_from, adbreak_overshoot and Zetta context fields for a fault entry."""
         try:
             with self._lock:
@@ -5598,10 +5605,10 @@ class MetricsDB:
                     self._conn = self._connect()
                 self._db_execute(
                     "UPDATE chain_fault_log SET message=?, cascaded_from=?, adbreak_overshoot=?,"
-                    " zetta_mode=?, zetta_is_spot=?, zetta_computer=? WHERE id=?",
+                    " zetta_mode=?, zetta_is_spot=?, zetta_computer=?, zetta_now_playing=? WHERE id=?",
                     (message, cascaded_from, 1 if adbreak_overshoot else 0,
                      zetta_mode or "", 1 if zetta_is_spot else 0, zetta_computer or "",
-                     entry_id),
+                     zetta_now_playing or "", entry_id),
                 )
                 self._conn.commit()
         except Exception as e:
@@ -5675,7 +5682,7 @@ class MetricsDB:
                     "SELECT id, chain_id, ts_start, fault_node_label, fault_site,"
                     " fault_stream, rtp_loss_pct, ts_recovered, clips,"
                     " adbreak_overshoot, cascaded_from, message,"
-                    " zetta_mode, zetta_is_spot, zetta_computer"
+                    " zetta_mode, zetta_is_spot, zetta_computer, zetta_now_playing"
                     " FROM chain_fault_log WHERE chain_id=?"
                     " ORDER BY ts_start DESC LIMIT ?",
                     (chain_id, limit),
@@ -5704,9 +5711,10 @@ class MetricsDB:
                 "adbreak_overshoot": bool(r[9]) if len(r) > 9 else False,
                 "cascaded_from":    r[10] or "" if len(r) > 10 else "",
                 "message":          r[11] or "" if len(r) > 11 else "",
-                "zetta_mode":       r[12] or "" if len(r) > 12 else "",
-                "zetta_is_spot":    bool(r[13]) if len(r) > 13 else False,
-                "zetta_computer":   r[14] or "" if len(r) > 14 else "",
+                "zetta_mode":        r[12] or "" if len(r) > 12 else "",
+                "zetta_is_spot":     bool(r[13]) if len(r) > 13 else False,
+                "zetta_computer":    r[14] or "" if len(r) > 14 else "",
+                "zetta_now_playing": r[15] or "" if len(r) > 15 else "",
             })
         return entries
 
@@ -14974,6 +14982,12 @@ class HubServer:
         # Cleared when chain returns to "ok" so a genuine fault after the break ends
         # is never masked.
         self._chain_zetta_spot_latch_ts: dict = {}
+        # Tracks when Zetta first reported "not a spot" while the chain was in pending
+        # state.  Used to add a _ZETTA_GRACE_S grace period at the START of an ad break:
+        # Zetta SOAP polling lags ~1–3 poll cycles behind real-time, so we must not fire
+        # immediately just because Zetta hasn't confirmed asset_type==2 yet.  Reset when
+        # Zetta confirms the break (spot latch fires) or the chain returns to "ok".
+        self._chain_zetta_no_spot_since: dict = {}
         # API-layer pre-pending fault onset — cid → epoch seconds
         # Tracks when api_chains_status first saw a fault BEFORE the monitor loop
         # had a chance to set _chain_fault_state to "pending".  Used so the
@@ -16256,6 +16270,9 @@ class HubServer:
                         self._chain_fault_since.setdefault(cid, now)
                         self._set_pending_fault_meta(cid, result.get("fault_index"), True)
                         self._chain_fault_holdoff_since.pop(cid, None)
+                        # Zetta confirmed a spot — reset the "not-spot-since" grace timer
+                        # so a subsequent silence after the break gets a fresh window.
+                        self._chain_zetta_no_spot_since.pop(cid, None)
                         continue   # skip normal fault/recovery handling for this cycle
 
                     # ── Fault detection ──────────────────────────────────────
@@ -16393,16 +16410,30 @@ class HubServer:
                                         f"({_elapsed_so_far}s / {min_fault_secs}s elapsed).")
                             elapsed = now - self._chain_fault_since.get(cid, now)
                             pending_adbreak = bool(pending_meta.get("adbreak_candidate", False))
-                            # ── Zetta: break definitively ended — fire immediately ─────────
+                            # ── Zetta: break definitively ended — fire after grace ────────
                             # The confirmation window may have started as an ad-break
-                            # candidate (heuristic guess), but Zetta now confirms the break
-                            # is over and the chain is still silent.  No need to wait for
-                            # the window — alert now.
+                            # candidate (heuristic guess), but Zetta now says it is NOT
+                            # a spot.  We do NOT fire immediately: Zetta SOAP polling lags
+                            # 1–3 poll cycles behind real-time, so at the very start of an
+                            # ad break Zetta may say "not a spot" for several seconds before
+                            # asset_type==2 is confirmed.  Firing immediately here causes
+                            # false CHAIN_FAULT alerts at the start of every ad break.
+                            #
+                            # Instead: track when Zetta first said "not a spot" while in
+                            # pending state (_chain_zetta_no_spot_since).  Only fire early
+                            # after _ZETTA_GRACE_S seconds of consistent "not a spot" —
+                            # enough time for the SOAP poller to confirm the break.  If
+                            # Zetta does confirm (asset_type==2) the spot-latch at line
+                            # ~16264 suppresses the fault and resets this timer.
                             if _zetta_on and not _zetta_spot and pending_adbreak:
-                                monitor.log(
-                                    f"[Chain] '{result['name']}' — Zetta: ad break ended "
-                                    f"but chain still silent — alerting immediately.")
-                                elapsed = min_fault_secs   # satisfy elapsed >= min_fault_secs
+                                _ZETTA_GRACE_S = 20  # must be > max SOAP poll interval
+                                _zns_ts = self._chain_zetta_no_spot_since.setdefault(cid, now)
+                                _zns_age = now - _zns_ts
+                                if _zns_age >= _ZETTA_GRACE_S:
+                                    monitor.log(
+                                        f"[Chain] '{result['name']}' — Zetta: no ad break "
+                                        f"confirmed for {round(_zns_age)}s — alerting.")
+                                    elapsed = min_fault_secs   # satisfy elapsed >= min_fault_secs
                             # ── Ad-break schedule learning: dynamic confirmation window ──
                             # When we have enough history for this chain, shorten the window
                             # if the break time doesn't match any known schedule slot, or
@@ -16520,6 +16551,8 @@ class HubServer:
                             # Clear the spot latch: audio has returned, so any future
                             # fault after the break is genuine and must not be suppressed.
                             self._chain_zetta_spot_latch_ts.pop(cid, None)
+                            # Clear the no-spot grace timer: fresh window for next fault.
+                            self._chain_zetta_no_spot_since.pop(cid, None)
                         # prev == "ok": already ok, nothing to do
 
                     # ── pending_recovery → fault: abort recovery ─────────────
@@ -17151,6 +17184,24 @@ class HubServer:
             and bool(_zcs_fire.get("is_stopped"))
             and int((_zcs_fire.get("now_playing") or {}).get("asset_type") or 0) != 2
         )
+        # ── Zetta now-playing at fault time ──────────────────────────────────
+        # Capture the track playing at the exact moment of the fault so it
+        # appears in the chain fault history alongside the fault entry.
+        # Only stored when NOT an ad break (asset_type != 2); ad breaks store
+        # "AD BREAK" via zetta_is_spot instead.
+        _zetta_fire_np   = (_zcs_fire.get("now_playing") or {}) if _zcs_fire else {}
+        _zetta_fire_at   = int(_zetta_fire_np.get("asset_type") or 0)
+        _zetta_fire_now_playing = ""
+        if _zcs_fire and _zcs_fire_age < 60 and _zetta_fire_np:
+            _np_title  = (_zetta_fire_np.get("raw_title") or _zetta_fire_np.get("title") or "").strip()
+            _np_artist = (_zetta_fire_np.get("raw_artist") or "").strip()
+            if _zetta_fire_at == 2:
+                _zetta_fire_now_playing = "AD BREAK"
+            elif _np_title or _np_artist:
+                _zetta_fire_now_playing = (
+                    f"{_np_title} — {_np_artist}" if _np_title and _np_artist
+                    else _np_title or _np_artist
+                )
         if _zetta_fire_stopped:
             _zm_name = (_zcs_fire.get("mode_name") or "").strip()
             msg += (
@@ -17177,17 +17228,19 @@ class HubServer:
         if _flog_target:
             _flog_target["message"] = msg
             _flog_target["cascaded_from"] = _cascaded_from_name
-            _flog_target["zetta_mode"]     = (_zcs_fire.get("mode_name") or "") if _zcs_fire else ""
-            _flog_target["zetta_is_spot"]  = (
+            _flog_target["zetta_mode"]        = (_zcs_fire.get("mode_name") or "") if _zcs_fire else ""
+            _flog_target["zetta_is_spot"]     = (
                 int((_zcs_fire.get("now_playing") or {}).get("asset_type") or 0) == 2
             ) if _zcs_fire else False
-            _flog_target["zetta_computer"] = (_zcs_fire.get("computer_name") or "") if _zcs_fire else ""
+            _flog_target["zetta_computer"]    = (_zcs_fire.get("computer_name") or "") if _zcs_fire else ""
+            _flog_target["zetta_now_playing"] = _zetta_fire_now_playing
             metrics_db.fault_log_update_meta(
                 _flog_target.get("id", ""), msg, _cascaded_from_name,
                 bool(_flog_target.get("adbreak_overshoot", False)),
                 zetta_mode=_flog_target["zetta_mode"],
                 zetta_is_spot=_flog_target["zetta_is_spot"],
                 zetta_computer=_flog_target["zetta_computer"],
+                zetta_now_playing=_flog_target["zetta_now_playing"],
             )
 
         # ── Check per-chain notification cooldown (Change 4) ─────────────────
@@ -17217,12 +17270,13 @@ class HubServer:
             "ptp_gm":         "",
             # Zetta automation context at fault time — all empty/False when Zetta
             # is not configured for this chain or data is stale.
-            "zetta_stopped":  _zetta_fire_stopped,
-            "zetta_mode":     (_zcs_fire.get("mode_name") or "") if _zcs_fire else "",
-            "zetta_is_spot":  (
+            "zetta_stopped":      _zetta_fire_stopped,
+            "zetta_mode":         (_zcs_fire.get("mode_name") or "") if _zcs_fire else "",
+            "zetta_is_spot":      (
                 int((_zcs_fire.get("now_playing") or {}).get("asset_type") or 0) == 2
             ) if _zcs_fire else False,
-            "zetta_computer": (_zcs_fire.get("computer_name") or "") if _zcs_fire else "",
+            "zetta_computer":     (_zcs_fire.get("computer_name") or "") if _zcs_fire else "",
+            "zetta_now_playing":  _zetta_fire_now_playing,
         })
 
         # ── Send notification (skip if cascade-suppressed or cooldown active) ─
@@ -31044,11 +31098,12 @@ function loadFaultLog(cid, body, arrow, _nRefresh){
           noteCell+='<button class="flog-note-add-btn btn bg bs" style="font-size:10px" data-fid="'+_esc(fid)+'">📝 Add Note</button>';
         }
         noteCell+='</td>';
-        // Zetta automation context badge — shows mode, machine, and AD-break flag
+        // Zetta automation context badge — shows mode, machine, AD-break flag, and now-playing
         var zetBadge='';
-        if(ev.zetta_mode||ev.zetta_computer||ev.zetta_is_spot){
+        if(ev.zetta_mode||ev.zetta_computer||ev.zetta_is_spot||ev.zetta_now_playing){
           var _zbParts=[];
           if(ev.zetta_is_spot) _zbParts.push('<span style="background:#5b21b6;border:1px solid #7c3aed;border-radius:4px;font-size:9px;padding:1px 5px;color:#ddd6fe">AD BREAK</span>');
+          if(ev.zetta_now_playing&&!ev.zetta_is_spot) _zbParts.push('<span style="font-size:9px;color:var(--tx)">🎵 '+_esc(ev.zetta_now_playing)+'</span>');
           if(ev.zetta_mode)    _zbParts.push('<span style="font-size:9px;color:var(--mu)">📻 '+_esc(ev.zetta_mode)+'</span>');
           if(ev.zetta_computer)_zbParts.push('<span style="font-size:9px;color:var(--mu)">🖥 '+_esc(ev.zetta_computer)+'</span>');
           if(_zbParts.length)  zetBadge='<br><span style="display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap">'+_zbParts.join('')+'</span>';
@@ -35494,7 +35549,7 @@ tr.ev-info td:first-child{border-left:3px solid var(--acc)}
       <td><strong>{{e.stream or ''}}</strong></td>
       <td><span class="type-badge t-{{tc}}">{{e.type or ''}}</span></td>
       <td>{% if e._chain %}<span class="chain-badge" title="Broadcast chain">⛓ {{e._chain}}</span>{% else %}—{% endif %}</td>
-      <td style="font-size:12px">{{e.message or ''}}</td>
+      <td style="font-size:12px">{{e.message or ''}}{%- if e.get('zetta_now_playing') %}<br><span style="font-size:10px;color:var(--mu)">🎵 {{e.zetta_now_playing|e}}</span>{% endif %}</td>
       <td>
         {% if e.level_dbfs and e.level_dbfs > -120 %}
         <span style="font-size:12px;color:{{'var(--al)' if e.level_dbfs<=-55 else 'var(--ok)'}}">{{e.level_dbfs}} dB</span>

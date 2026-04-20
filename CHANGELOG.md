@@ -2,6 +2,22 @@
 
 ---
 
+### SignalScope-3.5.164 — 2026-04-19
+
+**Fix: false CHAIN_FAULT alerts at start of ad breaks (Zetta SOAP poll lag)**
+
+Root cause: when silence was first detected at the start of an ad break, `_zetta_spot_raw` was `False` because the Zetta SOAP poller hadn't yet returned `asset_type==2` for the new spot (typically 1–3 poll cycles, ~3–10 s). In the "pending" evaluation path, the check `if _zetta_on and not _zetta_spot and pending_adbreak` immediately set `elapsed = min_fault_secs`, bypassing the confirmation window entirely and firing the alert within seconds. Zetta would then confirm the ad break a few seconds later — too late.
+
+Fix: introduced `_chain_zetta_no_spot_since` dict (per-chain, per-HubServer). The "Zetta says not a spot → fire" logic now requires Zetta to have said "not a spot" for `_ZETTA_GRACE_S = 20` consecutive seconds before it forces the fault. This gives the SOAP poller enough time to confirm `asset_type==2` at the start of a break. If Zetta does confirm the break (spot latch fires at line ~16264), `_chain_zetta_no_spot_since` is reset immediately. The timer is also reset when the chain returns to "ok" so the next fault gets a clean window. For genuine faults (Zetta consistently says "not a spot" for 20+ seconds), the early-fire logic still works — just with a 20 s minimum delay rather than immediately.
+
+**Feature: Zetta now-playing shown in chain fault history and Hub Reports**
+
+Each chain fault log entry now records what was playing in Zetta at the moment the fault fired (`zetta_now_playing`). Stored in SQLite (new `chain_fault_log.zetta_now_playing` column with auto-migration), the in-memory fault log, and `alert_log.json`. Displayed:
+- Broadcast Chains fault history: 🎵 "Title — Artist" below the fault-point cell (alongside existing AD BREAK / mode / machine badges). AD BREAK entries show the purple badge instead of a track name (already confirmed by `zetta_is_spot`).
+- Hub Reports Detail column: same 🎵 subtitle under the fault message.
+
+---
+
 ### SignalScope-3.5.163 — 2026-04-19
 
 **Fix: Hub Reports — duplicate alert rows when client and hub both hold the same event**
