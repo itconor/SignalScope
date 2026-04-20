@@ -2,6 +2,19 @@
 
 ---
 
+### SignalScope-3.5.163 — 2026-04-19
+
+**Fix: Hub Reports — duplicate alert rows when client and hub both hold the same event**
+
+When a fault occurs on a client node the client includes the event in its heartbeat `recent_alerts`. The same event is also uploaded to the hub (as a clip or via `_alert_log_append`) and written to `alert_log.json`. Previously `hub_reports()` added the hub-log copy first and then added the client-heartbeat copy again because the `seen_ids` dedup set was only populated after the client pass. Result: every faulted stream showed the same row twice — once with a direct clip URL (hub copy) and once without (client heartbeat copy).
+
+Three-part fix:
+1. **`_add_history` writes a `.meta` sidecar** alongside each silence/AI clip WAV on the client node, recording the `entry_id` generated when the alert-log event is created.
+2. **Queue drain reads the `.meta` sidecar** so `_upload_clip_inner` receives the original `entry_id` instead of `""`. The hub then stores the clip against the existing event rather than creating a new UUID — both copies share the same ID.
+3. **`hub_reports()` processes hub `alert_log.json` first** (Pass 1) and client `recent_alerts` second (Pass 2). Any event whose ID is already in `seen_ids` from Pass 1 is skipped in Pass 2. Hub events are preferred because they carry direct clip URLs; proxied client URLs are only used as fallback when the hub does not hold the clip.
+
+---
+
 ### studioboard v3.13.5 — 2026-04-19
 
 **Fix: waves invisible on 1080p TV — SVG height mismatch**

@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.162"
+BUILD                  = "SignalScope-3.5.163"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -4064,6 +4064,24 @@ def _add_history(cfg: InputConfig, kind: str, msg: str, clip_path: str = ""):
     if len(cfg._history) > 300:
         cfg._history = cfg._history[-300:]
     _alert_log_append(event)
+    # Write a .meta sidecar alongside the clip so _upload_clip_inner can pass the
+    # correct entry_id to the hub.  Without this the hub generates a fresh UUID,
+    # causing hub_reports() to show the same alert twice — once as the site row
+    # (from recent_alerts) and again as the hub row (from the hub alert log).
+    # Only write if no .meta already exists (chain-fault clips write their own).
+    if clip_path and os.path.exists(clip_path):
+        _meta_path = os.path.splitext(clip_path)[0] + ".meta"
+        if not os.path.exists(_meta_path):
+            try:
+                with open(_meta_path, "w") as _mf:
+                    json.dump({
+                        "entry_id":   event["id"],
+                        "stream":     cfg.name,
+                        "label":      kind,
+                        "level_dbfs": event["level_dbfs"],
+                    }, _mf)
+            except Exception:
+                pass
 
 
 def _load_acks():
@@ -14745,9 +14763,20 @@ class HubClient:
                     while _drained < 2:
                         try:
                             _sn, _lbl, _cpath, _lev = _cq.get_nowait()
+                            # Read entry_id from the .meta sidecar written by
+                            # _add_history so hub_reports() can deduplicate against
+                            # the client's recent_alerts event for the same fault.
+                            _eid = ""
+                            try:
+                                _meta_p = os.path.splitext(_cpath)[0] + ".meta"
+                                if os.path.exists(_meta_p):
+                                    with open(_meta_p) as _mf:
+                                        _eid = json.loads(_mf.read()).get("entry_id", "")
+                            except Exception:
+                                pass
                             threading.Thread(
                                 target=self._upload_clip,
-                                args=(_hub_url_str, _secret, _site, _sn, _lbl, "", ""),
+                                args=(_hub_url_str, _secret, _site, _sn, _lbl, "", "", _eid),
                                 kwargs={"clip_path": _cpath, "level_dbfs": _lev},
                                 daemon=True, name="AutoClipUpload",
                             ).start()
@@ -34781,56 +34810,57 @@ def hub_reports():
                     if cname not in stream_to_chains[sname]:
                         stream_to_chains[sname].append(cname)
 
-    # Merge all sites' recent_alerts, tagging each with site name and chain membership
+    # Build all_events in two passes, with the hub's own alert log processed FIRST.
+    # This means when a client uploads a clip (hub writes the same entry_id to its
+    # alert log), the hub row wins and the client recent_alerts row is suppressed.
+    # The hub row is preferred because its clip URL is a direct local path, not a
+    # proxy round-trip to the client site.  In both-mode the hub is also a client —
+    # its own recent_alerts rows are suppressed by seen_ids just as before.
     all_events = []
     seen_ids: set = set()
-    for s in sites:
-        client_addr = s.get("_client_addr","")
-        site_name   = s.get("site","?")
-        for ev in s.get("recent_alerts", []):
-            merged = dict(ev)
-            merged["_site"]        = site_name
-            merged["_client_addr"] = client_addr
-            merged["_online"]      = s.get("online", False)
-            ev_stream = merged.get("stream","")
-            # CHAIN_FAULT events may have stream = chain name (hub-side main entry)
-            # OR stream = input name (per-node entry via _cmd_save_clip → _add_history).
-            # Use stream_to_chains lookup for input-name entries; pass chain names through.
-            if merged.get("type") == "CHAIN_FAULT":
-                if ev_stream in chain_names_set:
-                    merged["_chain"] = ev_stream
-                else:
-                    merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
-            else:
-                merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
-            all_events.append(merged)
-            if ev.get("id"):
-                seen_ids.add(ev["id"])
 
-    # Also merge the hub's own alert log.  CHAIN_FAULT events are written here
-    # by _fire_chain_fault() but are never included in any site's recent_alerts
-    # in pure hub-mode deployments, so they would always show as "0" above.
-    # In both-mode nodes the hub IS a client site and its recent_alerts already
-    # carries these events; seen_ids deduplication prevents double-counting.
+    def _chain_tag(ev_stream: str, ev_type: str) -> str:
+        if ev_type == "CHAIN_FAULT":
+            if ev_stream in chain_names_set:
+                return ev_stream
+            return ", ".join(stream_to_chains.get(ev_stream, []))
+        # For uploaded-clip hub entries the stream is "site / stream"; try the
+        # bare stream part for chain lookup so the chain column is populated.
+        bare = ev_stream.split(" / ", 1)[-1] if " / " in ev_stream else ev_stream
+        return ", ".join(stream_to_chains.get(bare, []) or stream_to_chains.get(ev_stream, []))
+
+    # Pass 1 — hub's own alert log (CHAIN_FAULT, uploaded clips, hub-side events).
+    # These are preferred: a hub copy of a client clip has a local clip URL.
     for ev in _alert_log_load(2000):
         eid = ev.get("id", "")
         if eid and eid in seen_ids:
             continue
         merged = dict(ev)
-        merged["_site"]        = "(hub)"
+        merged.setdefault("_site", "(hub)")
         merged["_client_addr"] = ""
         merged["_online"]      = True
-        ev_stream = merged.get("stream", "")
-        if merged.get("type") == "CHAIN_FAULT":
-            if ev_stream in chain_names_set:
-                merged["_chain"] = ev_stream
-            else:
-                merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
-        else:
-            merged["_chain"] = ", ".join(stream_to_chains.get(ev_stream, []))
+        merged["_chain"]       = _chain_tag(merged.get("stream",""), merged.get("type",""))
         all_events.append(merged)
         if eid:
             seen_ids.add(eid)
+
+    # Pass 2 — client site recent_alerts.  Skip any event whose ID is already
+    # present from the hub log above (the hub has the preferred copy).
+    for s in sites:
+        client_addr = s.get("_client_addr","")
+        site_name   = s.get("site","?")
+        for ev in s.get("recent_alerts", []):
+            eid = ev.get("id","")
+            if eid and eid in seen_ids:
+                continue   # hub already has this event — show hub copy only
+            merged = dict(ev)
+            merged["_site"]        = site_name
+            merged["_client_addr"] = client_addr
+            merged["_online"]      = s.get("online", False)
+            merged["_chain"]       = _chain_tag(merged.get("stream",""), merged.get("type",""))
+            all_events.append(merged)
+            if eid:
+                seen_ids.add(eid)
 
     # Sort newest first
     all_events.sort(key=lambda e: e.get("ts",""), reverse=True)
