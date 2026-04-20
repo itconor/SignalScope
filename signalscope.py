@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.166"
+BUILD                  = "SignalScope-3.5.167"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16428,17 +16428,33 @@ class HubServer:
                             # the effective_mixin_is_down / effective_post_mixin checks below
                             # fire immediately anyway, so no delay is needed here either.
                             if _zetta_on and not _zetta_spot and pending_adbreak:
-                                _ZETTA_GRACE_S = 20  # must be > max SOAP poll interval
+                                # Two separate grace windows:
+                                # _ZETTA_SOAP_GRACE_S = 20s — covers SOAP poll lag at the
+                                #   START of a break (Zetta may take 1-3 cycles to confirm
+                                #   asset_type==2 after the break begins).
+                                # _ZETTA_POST_SPOT_GRACE_S = 90s — covers Zetta pre-roll at
+                                #   the END of a break: Zetta often advances "now playing" to
+                                #   the next non-ad track before the last ad has finished
+                                #   (especially on chains with PDM/broadcast delay). A recent
+                                #   confirmed spot means we're likely still in the ad break.
+                                _ZETTA_SOAP_GRACE_S      = 20
+                                _ZETTA_POST_SPOT_GRACE_S = 90
+                                _last_spot_ts    = self._chain_zetta_spot_latch_ts.get(cid, 0)
+                                _since_last_spot = (now - _last_spot_ts) if _last_spot_ts else float('inf')
+                                _in_post_spot    = _last_spot_ts > 0 and _since_last_spot < _ZETTA_POST_SPOT_GRACE_S
+                                _ZETTA_GRACE_S   = _ZETTA_POST_SPOT_GRACE_S if _in_post_spot else _ZETTA_SOAP_GRACE_S
                                 # Is the mixin healthy (audio still present downstream)?
                                 _mixin_healthy = not mixin_is_down and not any_post_mixin_fault
                                 if _mixin_healthy:
                                     # High-confidence ad break candidate — apply grace period
-                                    _zns_ts = self._chain_zetta_no_spot_since.setdefault(cid, now)
+                                    _zns_ts  = self._chain_zetta_no_spot_since.setdefault(cid, now)
                                     _zns_age = now - _zns_ts
                                     if _zns_age >= _ZETTA_GRACE_S:
+                                        _grace_type = "post-spot/pre-roll" if _in_post_spot else "SOAP lag"
                                         monitor.log(
-                                            f"[Chain] '{result['name']}' — Zetta: no ad break "
-                                            f"confirmed for {round(_zns_age)}s (mixin healthy) — alerting.")
+                                            f"[Chain] '{result['name']}' — Zetta: no ad break confirmed for "
+                                            f"{round(_zns_age)}s ({_grace_type} grace {_ZETTA_GRACE_S}s expired, "
+                                            f"mixin healthy) — alerting.")
                                         elapsed = min_fault_secs
                                     # else: still within grace, let normal elapsed logic decide
                                 else:

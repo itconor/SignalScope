@@ -2,6 +2,26 @@
 
 ---
 
+### SignalScope-3.5.167 — 2026-04-20
+
+**Fix: Zetta ad-break exit false silence alert (Zetta pre-roll)**
+
+Chains using Zetta automation with local ad insertion (mixin architecture) could
+incorrectly fire a silence alert immediately after an ad break ended. Root cause:
+Zetta advances "now playing" to the next non-ad track before the last spot has
+finished airing (pre-roll), so `asset_type` stops being 2 while ads are still
+playing. With broadcast/PDM delays this pre-roll can exceed the 30 s spot latch +
+20 s SOAP-lag grace, causing a false alert.
+
+Fix: added a **post-spot grace window** (`_ZETTA_POST_SPOT_GRACE_S = 90 s`). When
+`_chain_zetta_spot_latch_ts[cid]` shows a confirmed spot within the last 90 s, the
+ad-break grace extends from 20 s to 90 s (mixin-healthy path). The original 20 s
+SOAP-lag grace is still used when no recent spot is on record. Log messages now
+indicate which grace mode fired ("post-spot/pre-roll" vs "SOAP lag") for easier
+diagnosis.
+
+---
+
 ### Brand Screen 1.3.2 / Producer View 1.4.3 / Listener 1.1.7 — 2026-04-20
 
 **Feature: cross-navigation between Producer, Listener, and Brand Screen admin**
