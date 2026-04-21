@@ -2513,7 +2513,7 @@ Models are saved as .onnx files and persist across restarts.
 Authors: Conor Ewings (ITConor) & James Pyper (JPDesignsNI / Jamespyper11@gmail.com)
 """
 
-import os, sys, json, math, time, wave, socket, struct, threading, io, hashlib, functools, queue, base64
+import os, sys, json, math, time, wave, socket, struct, threading, io, hashlib, functools, queue, base64, re
 import selectors
 import collections, urllib.request, urllib.error, urllib.parse, datetime, base64
 from dataclasses import dataclass, field
@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.168"
+BUILD                  = "SignalScope-3.5.169"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16136,9 +16136,20 @@ class HubServer:
                     # false positives. now_playing is None when idle → asset_type defaults to 0.
                     _zetta_np_title = ((_zcs.get("now_playing") or {}).get("title") or "").lower()
                     _BED_KEYWORDS   = ("news bed", "sport bed")
+                    # Per-chain extra keywords merged with the global defaults above.
+                    # Stored in chain["zetta_bed_keywords"] as newline-separated phrases.
+                    _chain_kw_raw   = (chain.get("zetta_bed_keywords") or "")
+                    _chain_kw_extra = [l.strip() for l in _chain_kw_raw.splitlines() if l.strip()]
+                    _ALL_BED_KW     = list(_BED_KEYWORDS) + _chain_kw_extra
+                    # Word-based keyword match: tokenise both keyword and title on any
+                    # non-alphanumeric character.  "sport bed" then matches track titles
+                    # like "Cool FM - Sport - Bed Only" (words separated by " - ") as
+                    # well as plain "Sport Bed".  All words in the keyword phrase must
+                    # appear in the title's word set.
+                    _title_words    = set(re.sub(r'[^a-z0-9]', ' ', _zetta_np_title).split())
                     _zetta_spot_raw = _zetta_on and (
                         int((_zcs.get("now_playing") or {}).get("asset_type") or 0) == 2
-                        or any(kw in _zetta_np_title for kw in _BED_KEYWORDS)
+                        or any(set(kw.split()).issubset(_title_words) for kw in _ALL_BED_KW)
                     )
                     # Spot latch: keep suppression alive for _SPOT_LATCH_S seconds after the
                     # last confirmed spot so inter-ad gaps (now_playing=None between consecutive
@@ -16270,7 +16281,15 @@ class HubServer:
                                 f"[Chain] '{result['name']}' — "
                                 f"Zetta confirms ad break in progress, fault suppressed.")
                         self._chain_fault_state[cid] = "pending"
-                        self._chain_fault_since.setdefault(cid, now)
+                        # Always update (not setdefault) so _chain_fault_since tracks
+                        # the most recent Zetta-confirmed-spot cycle.  When the spot latch
+                        # later expires, elapsed = now − _chain_fault_since ≈ 10–30 s
+                        # (one poll interval + latch holdover) rather than the full ad
+                        # break duration.  Without this reset, a long break whose duration
+                        # exceeds min_fault_seconds fires CHAIN_FAULT the instant the latch
+                        # expires, followed immediately by CHAIN_RECOVERY — producing a
+                        # spurious fault/recovery pair right at the end of the ad break.
+                        self._chain_fault_since[cid] = now
                         self._set_pending_fault_meta(cid, result.get("fault_index"), True)
                         self._chain_fault_holdoff_since.pop(cid, None)
                         # Zetta confirmed a spot — reset the "not-spot-since" grace timer
@@ -29650,6 +29669,11 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
             <input type="number" id="builder_clip_seconds" min="0" max="300" step="5" value="0" style="width:90px">
             <div class="field-hint">0 = default (10 s) · max 300 s</div>
           </div>
+          <div class="adv-field" style="grid-column:1/-1">
+            <label title="Extra Zetta now-playing title keywords to treat as an ad break (suppress CHAIN_FAULT). One phrase per line — all words in the phrase must appear in the track title, so 'sport bed' matches 'Cool FM - Sport - Bed Only'. Global defaults 'news bed' and 'sport bed' always apply; use this field for station-specific beds.">Ad-break title keywords (Zetta)</label>
+            <textarea id="builder_zetta_bed_kw" rows="3" placeholder="One phrase per line&#10;e.g. agri news bed&#10;traffic bed&#10;weather bed" style="width:100%;box-sizing:border-box;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:12px;font-family:inherit;resize:vertical"></textarea>
+            <div class="field-hint">Global defaults always active: "news bed" · "sport bed" — add extras here when station beds use different names</div>
+          </div>
         </div>
       </div>
     </div>
@@ -30243,6 +30267,7 @@ function showBuilder(chain){
     document.getElementById('builder_min_alert_interval').value=chain.min_alert_interval_minutes||0;
     document.getElementById('builder_trend_alert').value=chain.trend_alert_dbfs_per_min||0;
     document.getElementById('builder_clip_seconds').value=chain.clip_seconds||0;
+    document.getElementById('builder_zetta_bed_kw').value=chain.zetta_bed_keywords||'';
     var ucs=document.getElementById('builder_upstream_chain');
     if(ucs){
       ucs.innerHTML='<option value="">— None —</option>';
@@ -30272,6 +30297,7 @@ function showBuilder(chain){
     document.getElementById('builder_min_alert_interval').value=0;
     document.getElementById('builder_trend_alert').value=0;
     document.getElementById('builder_clip_seconds').value=0;
+    document.getElementById('builder_zetta_bed_kw').value='';
     var ucs2=document.getElementById('builder_upstream_chain');
     if(ucs2){
       ucs2.innerHTML='<option value="">— None —</option>';
@@ -30371,7 +30397,8 @@ function saveChain(){
   var trendAlert=parseFloat(document.getElementById('builder_trend_alert').value||'0')||0;
   var upstreamChainId=(document.getElementById('builder_upstream_chain')||{}).value||'';
   var clipSeconds=parseFloat(document.getElementById('builder_clip_seconds').value||'0')||0;
-  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_holdoff_seconds:faultHoldoff,fault_shift_grace_seconds:shiftGrace,adbreak_gap_tolerance_seconds:adbreakGapTol,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId,clip_seconds:clipSeconds};
+  var zetBedKw=(document.getElementById('builder_zetta_bed_kw')||{value:''}).value||'';
+  var payload={name:name,nodes:nodes,comparators:comparators,min_fault_seconds:minFault,fault_holdoff_seconds:faultHoldoff,fault_shift_grace_seconds:shiftGrace,adbreak_gap_tolerance_seconds:adbreakGapTol,mixin_node_idx:mixinIdx,min_recovery_seconds:minRecovery,min_alert_interval_minutes:minAlertInterval,trend_alert_dbfs_per_min:trendAlert,upstream_chain_id:upstreamChainId,clip_seconds:clipSeconds,zetta_bed_keywords:zetBedKw};
   if(cid)payload.id=cid;
   _btnLoad(_saveBtn);
   _f('/api/chains',{method:'POST',body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(d){
@@ -34584,6 +34611,11 @@ def api_chains_save():
             clip_seconds = max(CHAIN_CLIP_MIN_SECS, min(CHAIN_CLIP_MAX_SECS, clip_seconds))
     except (TypeError, ValueError):
         clip_seconds = 0.0
+    # zetta_bed_keywords: newline-separated keyword phrases treated as ad-break titles.
+    # Words within each phrase are matched independently (word-based, not exact substring)
+    # so "sport bed" matches "Cool FM - Sport - Bed Only".  Empty = no extras (global
+    # "news bed" / "sport bed" defaults still apply).
+    zetta_bed_keywords = (data.get("zetta_bed_keywords") or "").strip()
     chain_dict = {"id": cid if cid else "", "name": name,
                   "nodes": clean_nodes, "comparators": clean_comps,
                   "min_fault_seconds": min_fault_seconds,
@@ -34597,7 +34629,8 @@ def api_chains_save():
                   "min_alert_interval_minutes": min_alert_interval_minutes,
                   "trend_alert_dbfs_per_min": trend_alert_dbfs_per_min,
                   "upstream_chain_id": upstream_chain_id,
-                  "clip_seconds": clip_seconds}
+                  "clip_seconds": clip_seconds,
+                  "zetta_bed_keywords": zetta_bed_keywords}
     if cid:
         # Update existing — preserve maintenance_windows (managed by separate endpoints)
         for i, c in enumerate(chains):

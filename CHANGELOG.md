@@ -2,6 +2,21 @@
 
 ---
 
+### SignalScope-3.5.169 — 2026-04-21
+
+**Fix: Zetta ad-break keyword matching for beds with punctuated titles**
+
+- Keywords like `"sport bed"` now use word-based matching instead of exact substring matching. `"sport bed"` now correctly matches `"Cool FM - Sport - Bed Only"`, `"Downtown - Agri News - Bed Only"`, `"Cool 22 - Business News Bed - 1 min bed"`, etc. — any title containing all the words in the phrase regardless of hyphens, dashes, or other punctuation between them
+- Global defaults `"news bed"` and `"sport bed"` remain always active; previously neither matched typical station bed naming conventions
+- **New: per-chain custom keywords** — chain settings now include an "Ad-break title keywords (Zetta)" textarea. Add one phrase per line for station-specific beds (e.g. `agri news bed`, `traffic bed`). Words are matched independently so formatting doesn't matter
+
+**Fix: Spurious CHAIN_FAULT + CHAIN_RECOVERY at end of Zetta-confirmed ad breaks**
+
+- When the Zetta spot latch was active (chain held in "pending"), the `_chain_fault_since` clock was set only once at the start of the silence. When the latch expired (30 s after Zetta's last confirmed spot), `elapsed` equalled the full ad-break duration — which always exceeded `min_fault_seconds` for any break > the configured window, firing CHAIN_FAULT immediately followed by CHAIN_RECOVERY as the break ended
+- Fixed: `_chain_fault_since` is now updated on every cycle while the Zetta spot latch is active. When the latch expires, `elapsed` is ~10–30 s (one poll interval), so the normal confirmation window runs fresh from the end of the break rather than from when silence first began
+
+---
+
 ### Brand Screen 1.3.7 — 2026-04-21
 
 **Feature: Settings changes update TV displays instantly — no manual refresh needed**
