@@ -2,6 +2,23 @@
 
 ---
 
+### Brand Screen 1.3.7 — 2026-04-21
+
+**Feature: Settings changes update TV displays instantly — no manual refresh needed**
+
+- Saving any station setting (bg style, logo animation, toggles, colours, now-playing source, etc.) now fires a `settings_changed` SSE event to all studio screens showing that station
+- Uploading or deleting a logo also triggers the same instant reload
+- TV screen fades out and reloads in ~580 ms — same smooth transition as brand assignment changes
+- Previously, changes required a manual page refresh on each Yodeck screen
+
+**Fix: Yodeck/Raspberry Pi animation flashing — three root causes eliminated**
+
+- **Orbit rings (worst offender)**: `box-shadow` on the glowing dot `::before` pseudo-element inside a rotating `will-change:transform` layer forces a full re-rasterise every frame — the GPU cannot composite it. Replaced with a `radial-gradient` dot baked into the layer texture (zero per-frame cost). The dot is wider to maintain the glow appearance.
+- **Aurora preset**: `filter:hue-rotate()+brightness()` animated on a full-screen fixed element triggers a per-frame GPU filter pass on Pi. Replaced with `opacity` oscillation on `::before` — compositor-only, no repaint.
+- **Grid preset**: `background-position` animation is not GPU-compositable — the browser repaints the grid plane every frame at 60 fps. Moved the scrolling grid pattern into a `::before` pseudo-element that scrolls via `transform:translateY` instead (composited by GPU, no repaint). Also removed `overflow:hidden` from `.bg-grid` for the same Pi stacking-context reason as beams/burst.
+
+---
+
 ### Studio Board 3.14.6 — 2026-04-21
 
 **Tweak: cleared studio card uses default blue; adds pulsing "STUDIO FREE" availability badge**

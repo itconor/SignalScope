@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.6",
+    "version":  "1.3.7",
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -160,6 +160,12 @@ def _notify_studio_msg(studio_id, msg):
 
 def _notify_studio(studio_id):
     _notify_studio_msg(studio_id, "assignment_changed")
+
+def _notify_station_studios(cfg, station_id, msg="settings_changed"):
+    """Push msg to every studio SSE stream that is currently showing station_id."""
+    for studio in cfg.get("studios", []):
+        if studio.get("station_id") == station_id:
+            _notify_studio_msg(studio.get("id", ""), msg)
 
 def _sse_stream(studio_id):
     q = _queue.Queue(maxsize=8)
@@ -895,16 +901,18 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
   background:radial-gradient(ellipse 110% 105% at 50% 42%,var(--bg-mid) 0%,var(--bg-dark) 62%)}
 
 /* Aurora: full-hue base + vivid radial blooms covering entire screen */
-.bg-aurora{position:fixed;inset:0;z-index:0;background:var(--bg-dark);
-  animation:aurora-drift 16s ease-in-out infinite alternate}
+/* filter:hue-rotate()+brightness() animation removed — animating filter on a
+   full-screen fixed element forces a per-frame GPU filter pass on Raspberry
+   Pi / Yodeck, causing the screen to flash. Replaced with an opacity
+   oscillation on ::before (compositor-only, zero repaint cost). */
+.bg-aurora{position:fixed;inset:0;z-index:0;background:var(--bg-dark)}
 .bg-aurora::before{content:'';position:fixed;inset:0;z-index:0;
   background:
     radial-gradient(ellipse 85% 75% at 18% 22%,rgba(var(--brand-rgb),.70) 0%,transparent 62%),
     radial-gradient(ellipse 75% 68% at 82% 78%,rgba(var(--brand-rgb),.60) 0%,transparent 62%),
-    radial-gradient(ellipse 100% 85% at 50% 50%,rgba(var(--brand-rgb),.35) 0%,transparent 72%)}
-@keyframes aurora-drift{
-  0%  {filter:hue-rotate(0deg)   brightness(1)}
-  100%{filter:hue-rotate(14deg)  brightness(1.10)}}
+    radial-gradient(ellipse 100% 85% at 50% 50%,rgba(var(--brand-rgb),.35) 0%,transparent 72%);
+  animation:aurora-breathe 16s ease-in-out infinite alternate}
+@keyframes aurora-breathe{0%{opacity:.82}100%{opacity:1}}
 
 /* Waves: top-to-bottom brand gradient — the whole screen is the brand colour */
 .bg-waves{position:fixed;inset:0;z-index:0;
@@ -946,19 +954,25 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 @keyframes bsw4{0%,100%{opacity:.07;transform:rotate(36deg)}50%{opacity:.24;transform:rotate(21deg)}}
 
 /* Grid: synthwave perspective scrolling broadcast grid */
-.bg-grid{position:fixed;inset:0;z-index:0;background:var(--bg-dark);overflow:hidden}
+/* overflow:hidden removed for the same Pi compositor reason as bg-beams/burst —
+   clipping a will-change:transform child creates a stacking context Pi can fail to render. */
+.bg-grid{position:fixed;inset:0;z-index:0;background:var(--bg-dark)}
 .bg-grid::before{content:'';position:absolute;left:50%;top:35%;transform:translate(-50%,-50%);
   width:52vw;height:12vw;border-radius:50%;
   background:radial-gradient(circle,rgba(var(--brand-rgb),.42) 0%,transparent 68%);
   filter:blur(30px);pointer-events:none}
+/* Grid scroll: background-position animation replaced with transform:translateY on a
+   ::before pseudo-element — translateY is GPU-composited (no per-frame repaint);
+   background-position was not compositable and caused a full repaint every frame on Pi/Yodeck. */
 .bg-grid-plane{position:absolute;width:220%;left:-60%;top:32%;bottom:0;
-  transform-origin:50% 100%;transform:perspective(580px) rotateX(64deg);
+  transform-origin:50% 100%;transform:perspective(580px) rotateX(64deg)}
+.bg-grid-plane::before{content:'';position:absolute;top:-80px;left:0;right:0;bottom:0;
   background-image:linear-gradient(rgba(var(--brand-rgb),.32) 1px,transparent 1px),
     linear-gradient(90deg,rgba(var(--brand-rgb),.32) 1px,transparent 1px);
-  background-size:80px 80px;animation:grid-scroll 3.0s linear infinite;will-change:background-position}
+  background-size:80px 80px;animation:grid-scroll 3.0s linear infinite;will-change:transform}
 .bg-grid-fade{position:absolute;inset:0;pointer-events:none;
   background:linear-gradient(to bottom,var(--bg-dark) 0%,transparent 26%,transparent 50%,var(--bg-dark) 100%)}
-@keyframes grid-scroll{0%{background-position:0 0}100%{background-position:0 80px}}
+@keyframes grid-scroll{0%{transform:translateY(0)}100%{transform:translateY(80px)}}
 
 /* Burst: slowly rotating sunray starburst — bold, energetic */
 /* overflow:hidden removed for the same Pi compositor reason as bg-beams */
@@ -1052,16 +1066,21 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 .orb{position:absolute;border-radius:50%;border:1.5px solid var(--brand)}
 /* Ring 1: outer — solid, clockwise */
 .orb1{width:84vw;height:34vw;opacity:.52;animation:orb-s1 10s linear infinite}
-.orb1::before{content:'';position:absolute;width:clamp(8px,1.1vw,18px);height:clamp(8px,1.1vw,18px);
-  border-radius:50%;background:var(--brand);
-  box-shadow:0 0 clamp(10px,2vw,28px) clamp(4px,.8vw,12px) var(--brand);
-  top:calc(-1 * clamp(4px,.55vw,9px));left:calc(50% - clamp(4px,.55vw,9px))}
+/* box-shadow removed from orbit dots — on Raspberry Pi / Yodeck, box-shadow on a
+   ::before pseudo-element inside a rotating will-change:transform layer cannot be
+   compositor-only: the layer must be re-rasterised every frame to paint the shadow,
+   causing a visible screen flash. Replaced with a radial-gradient dot that is baked
+   into the rasterised texture — zero per-frame cost. Dot is wider to compensate. */
+.orb1::before{content:'';position:absolute;width:clamp(14px,2vw,28px);height:clamp(14px,2vw,28px);
+  border-radius:50%;
+  background:radial-gradient(circle,rgba(255,255,255,.96) 0%,var(--brand) 38%,transparent 70%);
+  top:calc(-1 * clamp(7px,1vw,14px));left:calc(50% - clamp(7px,1vw,14px))}
 /* Ring 2: inner — dashed, counter-clockwise */
 .orb2{width:63vw;height:26vw;opacity:.3;border-style:dashed;animation:orb-s2 16s linear infinite reverse}
-.orb2::before{content:'';position:absolute;width:clamp(6px,.9vw,14px);height:clamp(6px,.9vw,14px);
-  border-radius:50%;background:var(--brand);
-  box-shadow:0 0 clamp(8px,1.5vw,20px) clamp(3px,.6vw,8px) var(--brand);
-  bottom:calc(-1 * clamp(3px,.45vw,7px));left:calc(50% - clamp(3px,.45vw,7px))}
+.orb2::before{content:'';position:absolute;width:clamp(10px,1.5vw,22px);height:clamp(10px,1.5vw,22px);
+  border-radius:50%;
+  background:radial-gradient(circle,rgba(255,255,255,.96) 0%,var(--brand) 38%,transparent 70%);
+  bottom:calc(-1 * clamp(5px,.75vw,11px));left:calc(50% - clamp(5px,.75vw,11px))}
 @keyframes orb-s1{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes orb-s2{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 
@@ -1530,11 +1549,13 @@ function _clearTakeover(){
   document.getElementById('takeover').classList.remove('vis');
 }
 
-// ── SSE — instant studio assignment / takeover updates ───────────────────────
+// ── SSE — instant studio assignment / settings / takeover updates ────────────
 if(_studioId){
   var _es = new EventSource(_tk('/api/brandscreen/events/studio/'+_studioId),{withCredentials:true});
   _es.onmessage = function(e){
-    if(e.data==='assignment_changed'){
+    if(e.data==='assignment_changed' || e.data==='settings_changed'){
+      // Reload to pick up new brand settings, bg_style, logo_anim, toggles, etc.
+      // Fade-out first so there is no hard-cut flash during the page reload.
       document.getElementById('screen').classList.add('fade-out');
       setTimeout(function(){ location.replace(location.href); }, 580);
     } else if(e.data.indexOf('takeover:') === 0){
@@ -1817,6 +1838,7 @@ def register(app, ctx):
             if os.path.exists(old):
                 os.remove(old)
         f.save(os.path.join(_LOGO_DIR, f"{station_id}.{ext}"))
+        _notify_station_studios(_cfg_load(), station_id)
         return jsonify({"ok": True})
 
     @app.delete("/api/brandscreen/logo/<station_id>")
@@ -1827,6 +1849,7 @@ def register(app, ctx):
             p = os.path.join(_LOGO_DIR, f"{station_id}.{e}")
             if os.path.exists(p):
                 os.remove(p)
+        _notify_station_studios(_cfg_load(), station_id)
         return jsonify({"ok": True})
 
     # ── Studio CRUD ───────────────────────────────────────────────────────────
@@ -1908,6 +1931,8 @@ def register(app, ctx):
             if k in data:
                 s[k] = data[k]
         _cfg_save(cfg)
+        # Notify any studio screen currently showing this station
+        _notify_station_studios(cfg, station_id)
         p, _ = _logo_file(station_id)
         s["_has_logo"] = p is not None
         return jsonify({"ok": True, "station": s})
