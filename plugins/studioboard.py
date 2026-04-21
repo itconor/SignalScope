@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.4",
+    "version":  "3.14.5",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -396,11 +396,21 @@ def register(app, ctx):
             if key in data:
                 studio[key] = data[key]
         # If a brand is being assigned, clear it from every other studio first
+        # and wipe this studio's automation metadata
         new_brand_id = (data.get("brand_id") or "").strip()
-        if new_brand_id:
-            for s in cfg.get("studios", []):
-                if s.get("id") != studio_id and s.get("brand_id") == new_brand_id:
-                    s.pop("brand_id", None)
+        if "brand_id" in data:
+            if new_brand_id:
+                for s in cfg.get("studios", []):
+                    if s.get("id") != studio_id and s.get("brand_id") == new_brand_id:
+                        s.pop("brand_id", None)
+                for _k in ("_cleared_ts", "_auto_brand_name", "_auto_brand_color"):
+                    studio.pop(_k, None)
+            else:
+                _prev = _get_brand(cfg, studio.get("brand_id", ""))
+                if _prev:
+                    studio["_cleared_ts"] = int(_time.time())
+                    studio["_auto_brand_name"]  = _prev.get("name", "")
+                    studio["_auto_brand_color"] = _prev.get("color", "#17a8ff")
         _cfg_save(cfg)
         _sb_notify_all()
         return jsonify({"ok": True, "studio": studio})
@@ -498,11 +508,20 @@ def register(app, ctx):
                 return jsonify({"error": f"Brand '{brand_name}' not found"}), 404
         if brand_id and not _get_brand(cfg, brand_id):
             return jsonify({"error": "Brand not found"}), 404
-        # Clear this brand from any other studio that currently holds it
         if brand_id:
+            # Assigning — clear this brand from any other studio first;
+            # also wipe any prior automation metadata on the target studio
             for s in cfg.get("studios", []):
                 if s.get("id") != studio_id and s.get("brand_id") == brand_id:
                     s.pop("brand_id", None)
+            for _k in ("_cleared_ts", "_auto_brand_name", "_auto_brand_color"):
+                studio.pop(_k, None)
+        else:
+            # Clearing — record which brand went to automation so the TV can show it
+            _prev = _get_brand(cfg, studio.get("brand_id", ""))
+            studio["_cleared_ts"] = int(_time.time())
+            studio["_auto_brand_name"]  = _prev.get("name", "")  if _prev else studio.get("_auto_brand_name", "")
+            studio["_auto_brand_color"] = _prev.get("color", "#17a8ff") if _prev else studio.get("_auto_brand_color", "#17a8ff")
         studio["brand_id"] = brand_id
         _cfg_save(cfg)
         _sb_notify_all()
@@ -538,6 +557,8 @@ def register(app, ctx):
         if not studio:
             return jsonify({"error": "Studio not found"}), 404
         studio["mic_live"] = bool(data.get("live", False))
+        if studio["mic_live"]:
+            studio["_mic_live_ts"] = int(_time.time())
         _cfg_save(cfg)
         _sb_notify_all()
         return jsonify({"ok": True, "mic_live": studio["mic_live"]})
@@ -986,6 +1007,10 @@ def register(app, ctx):
                 "zetta_follow_chain": _zfollow_chain_name,
                 "message": (studio.get("message") or "").strip(),
                 "brand_id": brand_id,
+                "cleared_ts":       studio.get("_cleared_ts", 0),
+                "mic_live_ts":      studio.get("_mic_live_ts", 0),
+                "auto_brand_name":  studio.get("_auto_brand_name", ""),
+                "auto_brand_color": studio.get("_auto_brand_color", "#17a8ff"),
             })
 
         return jsonify({"studios": studios_out})
@@ -1704,10 +1729,18 @@ body.corp .col-wave{display:none}
   background:rgba(23,168,255,.12);border:1px solid rgba(23,168,255,.3);
   border-radius:4px;padding:2px 7px;margin-bottom:4px;flex-shrink:0}
 /* Free / available studio */
-.free-band{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;text-align:center}
-.free-icon{font-size:80px;opacity:.35;line-height:1}
-.free-lbl{font-size:20px;font-weight:700;text-transform:uppercase;letter-spacing:.15em;color:var(--ok);opacity:.75}
-.free-msg{font-size:17px;font-weight:400;color:rgba(255,255,255,.38);line-height:1.6;max-width:85%}
+/* ── Cleared / In-Automation studio panel ── */
+.free-band{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px 20px;text-align:center}
+.free-stu{font-size:20px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:rgba(255,255,255,.4)}
+.free-big-clk{font-size:clamp(52px,8vh,80px);font-weight:200;font-variant-numeric:tabular-nums;letter-spacing:.02em;color:rgba(255,255,255,.75);line-height:1}
+.free-vt{font-size:20px;font-weight:800;letter-spacing:.06em;color:var(--wn);
+  padding:10px 22px;border-radius:12px;
+  background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);
+  animation:vt-pulse 1.8s ease-in-out infinite}
+@keyframes vt-pulse{0%,100%{opacity:1;box-shadow:0 0 0 rgba(245,158,11,0)}50%{opacity:.8;box-shadow:0 0 24px rgba(245,158,11,.25)}}
+.free-auto-lbl{display:flex;flex-direction:column;align-items:center;gap:3px;margin-top:2px}
+.free-auto-name{font-size:18px;font-weight:700;color:rgba(255,255,255,.55)}
+.free-auto-sub{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:var(--wn);opacity:.65}
 </style></head>
 <body>
 <!-- Full-page brand-derived gradient background; updated by JS on first render() -->
@@ -1802,19 +1835,19 @@ var _SBDAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturd
 var _SBMONS=['January','February','March','April','May','June','July','August','September','October','November','December'];
 function _sbTick(){
   var d=new Date(),h=d.getHours(),m=d.getMinutes(),sec=d.getSeconds();
+  var ts=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(sec<10?'0':'')+sec;
   var ck=document.getElementById('sb-hdr-clock');
-  if(ck)ck.textContent=(h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(sec<10?'0':'')+sec;
+  if(ck)ck.textContent=ts;
   var dt=document.getElementById('sb-hdr-date');
   if(dt)dt.textContent=_SBDAYS[d.getDay()]+' '+d.getDate()+' '+_SBMONS[d.getMonth()];
+  /* Drive large clocks in cleared/in-automation studio panels */
+  var clks=document.querySelectorAll('[id^="free-clk"]');
+  for(var i=0;i<clks.length;i++)if(clks[i].style.display!=='none')clks[i].textContent=ts;
 }
 setInterval(_sbTick,1000);_sbTick();
 /* Smooth meter state */
 var _targetLev={},_curLev={},_peakHold={},_peakTs={},_lastRaf=0;
 var ATTACK_TC=0.05,DECAY_TC=0.7,PEAK_HOLD_MS=2500;
-/* Fun messages for unassigned studios */
-var _FREE_MSG=['Studio is ready and waiting...','On standby — awaiting the stars!',
-  'Signal clear, studio is free','Empty stage, full of potential \uD83C\uDFAC',
-  'Mic check: all clear! \uD83C\uDFA4','The show must go on \u2014 just not yet \u2728'];
 
 function lh(d){return Math.max(0,Math.min(100,(d-DB)/(-DB)*100))}
 
@@ -1864,7 +1897,7 @@ function gNp(s){var r=s.np_rpuid||'';return r?(NP[r]||{}):{}}
 function _urlHash(u){var h=5381;for(var i=0;i<Math.min(u.length,200);i++)h=((h<<5)+h)^u.charCodeAt(i);return(h>>>0).toString(36)}
 
 /* Track structural changes (chain/input assignment) so DOM rebuilds when needed */
-function _sig(ss){return ss.map(function(s){return s.id+':'+(s.chains||[]).join(',')+'/'+(s.inputs||[]).join(',')+'/'+(s.zetta_station_key||'')}).join('|')}
+function _sig(ss){return ss.map(function(s){return s.id+':'+(s.chains||[]).join(',')+'/'+(s.inputs||[]).join(',')+'/'+(s.zetta_station_key||'')+'/'+(s.brand_id||'')}).join('|')}
 
 /* Build the DOM once, then update in place — no flicker */
 function buildCol(s,idx){
@@ -1878,18 +1911,21 @@ function buildCol(s,idx){
       +'<div class=vb><div class=vf data-k="'+E(k)+'|R"></div><div class=vp data-p="'+E(k)+'|R"></div></div></div><div class=vl>'+E(nm)+'</div></div>'}
     else{mh+='<div class=vm><div class=vb><div class=vf data-k="'+E(k)+'"></div><div class=vp data-p="'+E(k)+'"></div></div><div class=vl>'+E(nm)+'</div></div>'}
   });
+  /* Card background: cleared studios use auto_brand_color for visual continuity with their last brand */
+  var _bgColor=isEmpty&&s.auto_brand_color?s.auto_brand_color:c;
+  var _bgR=RGB(_bgColor);
   /* Brandscreen-style: derive dark/mid shades of the brand colour for a solid card bg.
      Fully opaque so the in-card wave (at z-index:0) shows clearly against the base colour. */
-  var _dbg=_deriveBg(c);
+  var _dbg=_deriveBg(_bgColor);
   var colBg='linear-gradient(180deg,'+_dbg.mid+' 0%,'+_dbg.dark+' 100%)';
   var mainContent=isEmpty
-    /* Free / available studio */
+    /* Cleared / in-automation studio */
     ?('<div class=free-band id="free-band'+idx+'">'
-      +'<div class=free-icon>\uD83C\uDFA4</div>'
-      +'<div class=stu>'+E(s.name)+'</div>'
-      +(s.freq?'<div class=frq>'+E(s.freq)+'</div>':'')
-      +'<div class=free-lbl>AVAILABLE</div>'
-      +'<div class=free-msg id="freemsg'+idx+'"></div>'
+      +'<div class=free-stu>'+E(s.name)+'</div>'
+      +'<div class="free-vt" id="vt-badge'+idx+'" style="display:none">\uD83C\uDFBC VOICE TRACKING</div>'
+      +'<div class="free-big-clk" id="free-clk'+idx+'">--:--:--</div>'
+      +(s.auto_brand_name?'<div class=free-auto-lbl><div class=free-auto-name>'+E(s.auto_brand_name)+'</div><div class=free-auto-sub>IN AUTOMATION</div></div>':'')
+      +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
       +'</div>')
     /* Occupied studio — full content panel.
        When Zetta is configured the Planet Radio text stack is replaced with the
@@ -1919,7 +1955,7 @@ function buildCol(s,idx){
           +'<div class=idle id="idl'+idx+'"></div>'
           +'<div class=zq id="zq'+idx+'"></div>'))
       +'</div>');
-  return '<div class=col id="col'+idx+'" style="--cc:rgba('+r+',.6);--cg:rgba('+r+',.12);background:'+colBg+';border-color:rgba('+r+',.22)">'
+  return '<div class=col id="col'+idx+'" style="--cc:rgba('+_bgR+',.6);--cg:rgba('+_bgR+',.12);background:'+colBg+';border-color:rgba('+_bgR+',.22)">'
     /* Wave background — positioned by _posColWaves() after DOM build */
     +'<div class="col-wave" id="cw'+idx+'"></div>'
     /* Clock overlaid on top-left corner of the first card only */
@@ -1929,22 +1965,28 @@ function buildCol(s,idx){
 }
 
 function updateCol(s,idx){
-  /* Free / available studio — show idle message and bail */
   var isEmpty=!(s.chains&&s.chains.length)&&!(s.inputs&&s.inputs.length);
-  var freeMsg=document.getElementById('freemsg'+idx);
-  if(freeMsg){
-    var _fm=_FREE_MSG[idx%_FREE_MSG.length];
-    if(freeMsg.textContent!==_fm)freeMsg.textContent=_fm;
+  /* Mic button — always update regardless of isEmpty (presenter may be in cleared studio) */
+  var mic=document.getElementById('mic'+idx);
+  if(mic){mic.className='mic '+(s.mic_live?'on':'off');mic.textContent=s.mic_live?'MIC LIVE':'CLEAR'}
+  /* Cleared / in-automation studio — VT detection then bail */
+  if(isEmpty){
+    var _nts=Math.floor(Date.now()/1000);
+    var _cts=s.cleared_ts||0,_mts=s.mic_live_ts||0;
+    /* VT = mic went live AFTER studio was cleared AND within 5-min window,
+       or mic is currently live while studio is still cleared */
+    var _vt=(_cts>0&&_mts>_cts&&(_nts-_mts)<300)||(s.mic_live&&_cts>0);
+    var _vtel=document.getElementById('vt-badge'+idx);
+    var _ckel=document.getElementById('free-clk'+idx);
+    if(_vtel)_vtel.style.display=_vt?'':'none';
+    if(_ckel)_ckel.style.display=_vt?'none':'';
+    return;
   }
-  if(isEmpty)return;
 
   var np=gNp(s);
   // Follow Zetta badge
   var zfb=document.getElementById('zfbadge'+idx);
   if(zfb){zfb.style.display=s.zetta_follow_active?'':'none';}
-  // Mic
-  var mic=document.getElementById('mic'+idx);
-  if(mic){mic.className='mic '+(s.mic_live?'on':'off');mic.textContent=s.mic_live?'MIC LIVE':'CLEAR'}
   // Badges
   var bd=document.getElementById('badges'+idx);
   if(bd){var bh='';(s.chains||[]).forEach(function(x){

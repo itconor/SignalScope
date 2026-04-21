@@ -2,6 +2,18 @@
 
 ---
 
+### Studio Board 3.14.5 — 2026-04-21
+
+**Feature: Cleared/in-automation studio panel redesign with Voice Tracking detection**
+
+- Cleared studios now show a styled holding screen instead of the old "AVAILABLE" placeholder: studio name in muted uppercase, a large broadcast clock, and the station that was pushed to automation (with amber "IN AUTOMATION" sub-label)
+- **Voice Tracking detection**: if the mic went live after the studio was cleared and within the last 5 minutes, the clock is replaced by a pulsing amber "🎼 VOICE TRACKING" badge — indicating the room is in use for VT even though no chain is assigned
+- Mic button always visible on cleared studios — presenters recording VT can toggle it as normal
+- Card background uses `auto_brand_color` (the last-assigned brand's colour) for visual continuity when cleared
+- Removed orphaned `_FREE_MSG` fun-message array and old `.free-icon/.free-lbl/.free-msg` template
+
+---
+
 ### Studio Board 3.14.4 — 2026-04-21
 
 **Fix: logo corners no longer clipped — removed border-radius from .logo**
