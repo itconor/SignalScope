@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.5",
+    "version":  "3.14.6",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1730,8 +1730,16 @@ body.corp .col-wave{display:none}
   border-radius:4px;padding:2px 7px;margin-bottom:4px;flex-shrink:0}
 /* Free / available studio */
 /* ── Cleared / In-Automation studio panel ── */
-.free-band{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px 20px;text-align:center}
-.free-stu{font-size:20px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:rgba(255,255,255,.4)}
+.free-band{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px 20px;text-align:center}
+.free-avail{display:inline-flex;align-items:center;gap:7px;padding:6px 16px;border-radius:20px;
+  background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.28);
+  font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:var(--ok);
+  animation:avail-pulse 2.8s ease-in-out infinite}
+@keyframes avail-pulse{0%,100%{opacity:1}50%{opacity:.6}}
+.free-avail-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);
+  animation:dot-ping 2.8s ease-in-out infinite}
+@keyframes dot-ping{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.4);opacity:.5}}
+.free-stu{font-size:22px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:rgba(255,255,255,.55)}
 .free-big-clk{font-size:clamp(52px,8vh,80px);font-weight:200;font-variant-numeric:tabular-nums;letter-spacing:.02em;color:rgba(255,255,255,.75);line-height:1}
 .free-vt{font-size:20px;font-weight:800;letter-spacing:.06em;color:var(--wn);
   padding:10px 22px;border-radius:12px;
@@ -1911,17 +1919,16 @@ function buildCol(s,idx){
       +'<div class=vb><div class=vf data-k="'+E(k)+'|R"></div><div class=vp data-p="'+E(k)+'|R"></div></div></div><div class=vl>'+E(nm)+'</div></div>'}
     else{mh+='<div class=vm><div class=vb><div class=vf data-k="'+E(k)+'"></div><div class=vp data-p="'+E(k)+'"></div></div><div class=vl>'+E(nm)+'</div></div>'}
   });
-  /* Card background: cleared studios use auto_brand_color for visual continuity with their last brand */
-  var _bgColor=isEmpty&&s.auto_brand_color?s.auto_brand_color:c;
-  var _bgR=RGB(_bgColor);
   /* Brandscreen-style: derive dark/mid shades of the brand colour for a solid card bg.
      Fully opaque so the in-card wave (at z-index:0) shows clearly against the base colour. */
-  var _dbg=_deriveBg(_bgColor);
+  var _bgR=r;
+  var _dbg=_deriveBg(c);
   var colBg='linear-gradient(180deg,'+_dbg.mid+' 0%,'+_dbg.dark+' 100%)';
   var mainContent=isEmpty
     /* Cleared / in-automation studio */
     ?('<div class=free-band id="free-band'+idx+'">'
       +'<div class=free-stu>'+E(s.name)+'</div>'
+      +'<div class=free-avail><span class=free-avail-dot></span>STUDIO FREE</div>'
       +'<div class="free-vt" id="vt-badge'+idx+'" style="display:none">\uD83C\uDFBC VOICE TRACKING</div>'
       +'<div class="free-big-clk" id="free-clk'+idx+'">--:--:--</div>'
       +(s.auto_brand_name?'<div class=free-auto-lbl><div class=free-auto-name>'+E(s.auto_brand_name)+'</div><div class=free-auto-sub>IN AUTOMATION</div></div>':'')
@@ -1978,8 +1985,10 @@ function updateCol(s,idx){
     var _vt=(_cts>0&&_mts>_cts&&(_nts-_mts)<300)||(s.mic_live&&_cts>0);
     var _vtel=document.getElementById('vt-badge'+idx);
     var _ckel=document.getElementById('free-clk'+idx);
+    var _avel=document.querySelector('#free-band'+idx+' .free-avail');
     if(_vtel)_vtel.style.display=_vt?'':'none';
     if(_ckel)_ckel.style.display=_vt?'none':'';
+    if(_avel)_avel.style.display=_vt?'none':'';
     return;
   }
 

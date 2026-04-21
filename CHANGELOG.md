@@ -2,6 +2,16 @@
 
 ---
 
+### Studio Board 3.14.6 — 2026-04-21
+
+**Tweak: cleared studio card uses default blue; adds pulsing "STUDIO FREE" availability badge**
+
+- Card background restored to the studio's own default blue (no longer inherits the last brand colour)
+- Added a green pulsing "● STUDIO FREE" pill at the top of cleared panels — makes it immediately obvious the studio is available
+- The STUDIO FREE badge hides when Voice Tracking is detected (replaced by the amber VOICE TRACKING badge)
+
+---
+
 ### Studio Board 3.14.5 — 2026-04-21
 
 **Feature: Cleared/in-automation studio panel redesign with Voice Tracking detection**
