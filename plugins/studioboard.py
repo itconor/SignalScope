@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.1",
+    "version":  "3.14.2",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1533,6 +1533,9 @@ body.corp .col-wave{display:none}
   border:1px solid rgba(255,255,255,.05)}
 @keyframes mp-pulse{0%,100%{box-shadow:0 0 30px rgba(239,68,68,.3)}
   50%{box-shadow:0 0 50px rgba(239,68,68,.5)}}
+/* Badges wrapper — must be a centring flex column so individual badges
+   align with the .mic button above (which uses width:80% on the .mp flex axis) */
+[id^="badges"]{width:100%;display:flex;flex-direction:column;align-items:center;flex-shrink:0}
 .badge{display:flex;align-items:center;justify-content:center;gap:6px;
   width:90%;padding:8px 14px;border-radius:10px;font-size:16px;
   font-weight:700;margin-bottom:4px;flex-shrink:0;white-space:nowrap}

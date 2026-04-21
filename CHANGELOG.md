@@ -2,6 +2,14 @@
 
 ---
 
+### Studio Board 3.14.2 — 2026-04-21
+
+**Fix: ON AIR badges now centred under the mic button**
+
+- `[id^="badges"]` container was `display:block` with no explicit width, causing badge children to left-drift relative to the centred `.mic` pill above. Now a flex column with `width:100%;align-items:center` so badges sit centred on the same axis.
+
+---
+
 ### Studio Board 3.14.1 — 2026-04-21
 
 **Fix: brand assignment now exclusive — moving a brand clears it from its previous studio**
