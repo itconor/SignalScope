@@ -2,6 +2,14 @@
 
 ---
 
+### Studio Board 3.14.1 — 2026-04-21
+
+**Fix: brand assignment now exclusive — moving a brand clears it from its previous studio**
+
+- `POST /api/studioboard/studio/<id>/brand` and the admin Save Studio form both now clear the assigned brand from any other studio that held it before setting it on the target. A brand can only be active on one studio at a time.
+
+---
+
 ### Studio Board 3.14.0 — 2026-04-20
 
 **Feature: Brands — station presets, new admin UI, brand assignment REST API**

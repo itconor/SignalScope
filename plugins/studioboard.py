@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.0",
+    "version":  "3.14.1",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -362,6 +362,12 @@ def register(app, ctx):
                     "zetta_station_key", "zetta_follow", "zetta_computer"):
             if key in data:
                 studio[key] = data[key]
+        # If a brand is being assigned, clear it from every other studio first
+        new_brand_id = (data.get("brand_id") or "").strip()
+        if new_brand_id:
+            for s in cfg.get("studios", []):
+                if s.get("id") != studio_id and s.get("brand_id") == new_brand_id:
+                    s.pop("brand_id", None)
         _cfg_save(cfg)
         return jsonify({"ok": True, "studio": studio})
 
@@ -456,6 +462,11 @@ def register(app, ctx):
                 return jsonify({"error": f"Brand '{brand_name}' not found"}), 404
         if brand_id and not _get_brand(cfg, brand_id):
             return jsonify({"error": "Brand not found"}), 404
+        # Clear this brand from any other studio that currently holds it
+        if brand_id:
+            for s in cfg.get("studios", []):
+                if s.get("id") != studio_id and s.get("brand_id") == brand_id:
+                    s.pop("brand_id", None)
         studio["brand_id"] = brand_id
         _cfg_save(cfg)
         brand = _get_brand(cfg, brand_id) if brand_id else None
