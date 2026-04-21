@@ -2,6 +2,17 @@
 
 ---
 
+### Studio Board 3.14.7 — 2026-04-21
+
+**Cleared studio panel redesign — studio name and status at top, larger and more prominent**
+
+- Studio name is now pinned to the top of every cleared-studio card as the first and largest element (`clamp(28px–46px)`, bold white) — previously it was centred in the middle at a small muted size
+- **STUDIO FREE** badge moved under the studio name in the header, full-width with large text (`clamp(16px–24px)`) and a stronger green background — previously a tiny pill centred mid-card
+- **VOICE TRACKING** badge redesigned: fixed wrong emoji (was 🎼, now 🎙), full card-width amber block with large text (`clamp(26px–42px)`), stronger glow animation — much harder to miss
+- Two-section layout: fixed header (name + status) with a centred body below (clock / VT badge / automation label / mic button)
+
+---
+
 ### SignalScope-3.5.169 — 2026-04-21
 
 **Fix: Zetta ad-break keyword matching for beds with punctuated titles**

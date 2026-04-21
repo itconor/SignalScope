@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.6",
+    "version":  "3.14.7",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1728,27 +1728,40 @@ body.corp .col-wave{display:none}
 .zfollow-badge{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--acc);
   background:rgba(23,168,255,.12);border:1px solid rgba(23,168,255,.3);
   border-radius:4px;padding:2px 7px;margin-bottom:4px;flex-shrink:0}
-/* Free / available studio */
 /* ── Cleared / In-Automation studio panel ── */
-.free-band{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px 20px;text-align:center}
-.free-avail{display:inline-flex;align-items:center;gap:7px;padding:6px 16px;border-radius:20px;
-  background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.28);
-  font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:var(--ok);
+/* Two-section layout: fixed header (name + status) + centred body (clock / VT) */
+.free-band{flex:1;display:flex;flex-direction:column;align-items:stretch;text-align:center}
+/* Header — studio name + status badge pinned to top */
+.free-header{padding:20px 20px 16px;border-bottom:1px solid rgba(255,255,255,.07)}
+.free-stu{font-size:clamp(28px,3.8vh,46px);font-weight:900;text-transform:uppercase;
+  letter-spacing:.07em;color:#fff;line-height:1.05;margin-bottom:12px}
+.free-avail{display:flex;align-items:center;justify-content:center;gap:9px;
+  padding:10px 18px;border-radius:10px;
+  background:rgba(34,197,94,.16);border:1px solid rgba(34,197,94,.42);
+  font-size:clamp(16px,2.2vh,24px);font-weight:800;text-transform:uppercase;
+  letter-spacing:.14em;color:var(--ok);
   animation:avail-pulse 2.8s ease-in-out infinite}
-@keyframes avail-pulse{0%,100%{opacity:1}50%{opacity:.6}}
-.free-avail-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);
+.free-avail-dot{width:11px;height:11px;border-radius:50%;background:var(--ok);flex-shrink:0;
   animation:dot-ping 2.8s ease-in-out infinite}
-@keyframes dot-ping{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.4);opacity:.5}}
-.free-stu{font-size:22px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:rgba(255,255,255,.55)}
-.free-big-clk{font-size:clamp(52px,8vh,80px);font-weight:200;font-variant-numeric:tabular-nums;letter-spacing:.02em;color:rgba(255,255,255,.75);line-height:1}
-.free-vt{font-size:20px;font-weight:800;letter-spacing:.06em;color:var(--wn);
-  padding:10px 22px;border-radius:12px;
-  background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);
-  animation:vt-pulse 1.8s ease-in-out infinite}
-@keyframes vt-pulse{0%,100%{opacity:1;box-shadow:0 0 0 rgba(245,158,11,0)}50%{opacity:.8;box-shadow:0 0 24px rgba(245,158,11,.25)}}
-.free-auto-lbl{display:flex;flex-direction:column;align-items:center;gap:3px;margin-top:2px}
+@keyframes avail-pulse{0%,100%{opacity:1}50%{opacity:.65}}
+@keyframes dot-ping{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.5);opacity:.4}}
+/* Body — clock / VT badge / automation label / mic button, vertically centred */
+.free-body{flex:1;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:16px;padding:16px 18px 20px}
+.free-big-clk{font-size:clamp(52px,8vh,80px);font-weight:200;font-variant-numeric:tabular-nums;
+  letter-spacing:.02em;color:rgba(255,255,255,.75);line-height:1}
+/* VT badge — large amber block, very visible */
+.free-vt{width:100%;box-sizing:border-box;
+  font-size:clamp(26px,4vh,42px);font-weight:900;letter-spacing:.06em;color:var(--wn);
+  padding:16px 20px;border-radius:13px;
+  background:rgba(245,158,11,.16);border:2px solid rgba(245,158,11,.45);
+  animation:vt-pulse 1.6s ease-in-out infinite}
+@keyframes vt-pulse{0%,100%{opacity:1;box-shadow:0 0 0 rgba(245,158,11,0)}
+                   50%{opacity:.85;box-shadow:0 0 36px rgba(245,158,11,.35)}}
+.free-auto-lbl{display:flex;flex-direction:column;align-items:center;gap:3px}
 .free-auto-name{font-size:18px;font-weight:700;color:rgba(255,255,255,.55)}
-.free-auto-sub{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:var(--wn);opacity:.65}
+.free-auto-sub{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.18em;
+  color:var(--wn);opacity:.65}
 </style></head>
 <body>
 <!-- Full-page brand-derived gradient background; updated by JS on first render() -->
@@ -1927,12 +1940,18 @@ function buildCol(s,idx){
   var mainContent=isEmpty
     /* Cleared / in-automation studio */
     ?('<div class=free-band id="free-band'+idx+'">'
-      +'<div class=free-stu>'+E(s.name)+'</div>'
-      +'<div class=free-avail><span class=free-avail-dot></span>STUDIO FREE</div>'
-      +'<div class="free-vt" id="vt-badge'+idx+'" style="display:none">\uD83C\uDFBC VOICE TRACKING</div>'
-      +'<div class="free-big-clk" id="free-clk'+idx+'">--:--:--</div>'
-      +(s.auto_brand_name?'<div class=free-auto-lbl><div class=free-auto-name>'+E(s.auto_brand_name)+'</div><div class=free-auto-sub>IN AUTOMATION</div></div>':'')
-      +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
+      /* Header: studio name + status — always at top, most prominent */
+      +'<div class=free-header>'
+        +'<div class=free-stu>'+E(s.name)+'</div>'
+        +'<div class=free-avail id="free-avail'+idx+'"><span class=free-avail-dot></span>STUDIO FREE</div>'
+      +'</div>'
+      /* Body: VT alert / clock / automation / mic button — centred below header */
+      +'<div class=free-body>'
+        +'<div class="free-vt" id="vt-badge'+idx+'" style="display:none">\uD83C\uDF99 VOICE TRACKING</div>'
+        +'<div class="free-big-clk" id="free-clk'+idx+'">--:--:--</div>'
+        +(s.auto_brand_name?'<div class=free-auto-lbl><div class=free-auto-name>'+E(s.auto_brand_name)+'</div><div class=free-auto-sub>IN AUTOMATION</div></div>':'')
+        +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
+      +'</div>'
       +'</div>')
     /* Occupied studio — full content panel.
        When Zetta is configured the Planet Radio text stack is replaced with the
@@ -1985,7 +2004,7 @@ function updateCol(s,idx){
     var _vt=(_cts>0&&_mts>_cts&&(_nts-_mts)<300)||(s.mic_live&&_cts>0);
     var _vtel=document.getElementById('vt-badge'+idx);
     var _ckel=document.getElementById('free-clk'+idx);
-    var _avel=document.querySelector('#free-band'+idx+' .free-avail');
+    var _avel=document.getElementById('free-avail'+idx);
     if(_vtel)_vtel.style.display=_vt?'':'none';
     if(_ckel)_ckel.style.display=_vt?'none':'';
     if(_avel)_avel.style.display=_vt?'none':'';
