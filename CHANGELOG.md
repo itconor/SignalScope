@@ -2,6 +2,18 @@
 
 ---
 
+### Studio Board 3.14.3 — 2026-04-21
+
+**Feature: SSE instant update — TV display reacts immediately to config changes**
+
+- All connected TV browsers now hold a persistent `EventSource` to `GET /api/studioboard/events`
+- Server fires `config_changed` via SSE whenever brand assignment, mic live, message, brand colour/name, or any studio config changes
+- TV JS calls `poll()` immediately on receipt — no waiting for the 1.5 s interval
+- Mirrors BrandScreen SSE pattern; auto-reconnects on error after 5 s
+- Triggers: `sb_studio_update`, `sb_studio_assign_brand`, `sb_mic_live`, `sb_brand_update`, `sb_brand_delete`, `sb_message_set`, `sb_message_clear`
+
+---
+
 ### Studio Board 3.14.2 — 2026-04-21
 
 **Fix: ON AIR badges now centred under the mic button**

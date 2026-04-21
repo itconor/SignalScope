@@ -2,7 +2,7 @@
 # Large-format display for outside broadcast studios.
 # Drop into the plugins/ subdirectory.
 
-import os, json, re, time as _time, uuid as _uuid, threading as _threading, urllib.request as _urllib_req
+import os, json, re, time as _time, uuid as _uuid, threading as _threading, urllib.request as _urllib_req, queue as _queue
 
 SIGNALSCOPE_PLUGIN = {
     "id":       "studioboard",
@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.2",
+    "version":  "3.14.3",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +26,39 @@ _IMG_CACHE_DIR = os.path.join(_BASE_DIR, "studioboard_img_cache")
 
 _img_cache    = {}           # rpuid → {"url": str, "path": str, "ctype": str}
 _img_cache_lk = _threading.Lock()
+
+# ── SSE — instant config-change notification to all TV browsers ───────────────
+_SB_NOTIFY    = []           # list of Queue objects, one per connected TV browser
+_SB_NLOCK     = _threading.Lock()
+
+def _sb_notify_all():
+    """Push config_changed to every connected TV EventSource."""
+    with _SB_NLOCK:
+        qs = list(_SB_NOTIFY)
+    for q in qs:
+        try:
+            q.put_nowait("config_changed")
+        except _queue.Full:
+            pass
+
+def _sb_sse_stream():
+    q = _queue.Queue(maxsize=8)
+    with _SB_NLOCK:
+        _SB_NOTIFY.append(q)
+    try:
+        yield "data: connected\n\n"
+        while True:
+            try:
+                msg = q.get(timeout=25)
+                yield f"data: {msg}\n\n"
+            except _queue.Empty:
+                yield ": keepalive\n\n"
+    finally:
+        with _SB_NLOCK:
+            try:
+                _SB_NOTIFY.remove(q)
+            except ValueError:
+                pass
 
 def _safe_rpuid(rpuid):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', str(rpuid))
@@ -369,6 +402,7 @@ def register(app, ctx):
                 if s.get("id") != studio_id and s.get("brand_id") == new_brand_id:
                     s.pop("brand_id", None)
         _cfg_save(cfg)
+        _sb_notify_all()
         return jsonify({"ok": True, "studio": studio})
 
     @app.delete("/api/studioboard/studio/<studio_id>")
@@ -410,6 +444,7 @@ def register(app, ctx):
             if key in data:
                 brand[key] = data[key]
         _cfg_save(cfg)
+        _sb_notify_all()
         return jsonify({"ok": True, "brand": brand})
 
     @app.delete("/api/studioboard/brand/<brand_id>")
@@ -422,6 +457,7 @@ def register(app, ctx):
             if studio.get("brand_id") == brand_id:
                 studio.pop("brand_id", None)
         _cfg_save(cfg)
+        _sb_notify_all()
         return jsonify({"ok": True})
 
     # ── Brand assignment REST API ────────────────────────────────────
@@ -469,6 +505,7 @@ def register(app, ctx):
                     s.pop("brand_id", None)
         studio["brand_id"] = brand_id
         _cfg_save(cfg)
+        _sb_notify_all()
         brand = _get_brand(cfg, brand_id) if brand_id else None
         return jsonify({"ok": True, "studio_id": studio_id,
                         "brand_id": brand_id,
@@ -502,6 +539,7 @@ def register(app, ctx):
             return jsonify({"error": "Studio not found"}), 404
         studio["mic_live"] = bool(data.get("live", False))
         _cfg_save(cfg)
+        _sb_notify_all()
         return jsonify({"ok": True, "mic_live": studio["mic_live"]})
 
     # ── Chain assignment REST API ───────────────────────────────
@@ -640,6 +678,7 @@ def register(app, ctx):
             return jsonify({"error": "Studio not found"}), 404
         studio["message"] = (data.get("message") or "").strip()[:200]
         _cfg_save(cfg)
+        _sb_notify_all()
         return jsonify({"ok": True, "message": studio["message"]})
 
     @app.delete("/api/studioboard/message/<studio_id>")
@@ -652,6 +691,7 @@ def register(app, ctx):
             return jsonify({"error": "Studio not found"}), 404
         studio.pop("message", None)
         _cfg_save(cfg)
+        _sb_notify_all()
         return jsonify({"ok": True})
 
     # ── Log seen show names (called by display JS) ──────────────
@@ -738,6 +778,17 @@ def register(app, ctx):
         return "", 404
 
     # ── Live data endpoint for display ──────────────────────────
+
+    # ── SSE — instant config-change notification ────────────────────
+    @app.get("/api/studioboard/events")
+    @login_required
+    def sb_events():
+        from flask import Response, stream_with_context
+        return Response(
+            stream_with_context(_sb_sse_stream()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/studioboard/data")
     @login_required
@@ -2152,5 +2203,23 @@ poll();npPoll();live();showImgPoll();
 setInterval(poll,1500);setInterval(live,150);setInterval(npPoll,10000);setInterval(showImgPoll,30000);
 /* Re-position per-card waves on resize (card widths/positions change) */
 window.addEventListener('resize',_posColWaves);
+/* ── SSE — instant config-change push from server ────────────────────────────
+   When a brand is reassigned, mic goes live, or any studio config changes,
+   the server fires "config_changed" and we call poll() immediately rather
+   than waiting up to 1.5 s for the next interval tick. */
+(function(){
+  var _sseUrl=tk('/api/studioboard/events');
+  function _connect(){
+    var es=new EventSource(_sseUrl,{withCredentials:true});
+    es.onmessage=function(e){
+      if(e.data==='config_changed') poll();
+    };
+    es.onerror=function(){
+      es.close();
+      setTimeout(_connect,5000);  /* reconnect after 5 s on any error */
+    };
+  }
+  _connect();
+})();
 })();
 </script></body></html>"""
