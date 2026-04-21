@@ -2,6 +2,14 @@
 
 ---
 
+### Studio Board 3.14.4 — 2026-04-21
+
+**Fix: logo corners no longer clipped — removed border-radius from .logo**
+
+- `border-radius:16px` on `.logo` was clipping the image at all four corners, cutting off any logo design elements near the edges (e.g. Downtown bottom-right). Station logos are transparent PNGs designed to fill their canvas and should not have rounded corners applied.
+
+---
+
 ### Studio Board 3.14.3 — 2026-04-21
 
 **Feature: SSE instant update — TV display reacts immediately to config changes**

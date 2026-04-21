@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.3",
+    "version":  "3.14.4",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1567,7 +1567,7 @@ body.corp .col-wave{display:none}
   padding:16px 20px;z-index:1;min-width:0;overflow:hidden}
 /* Logo container — fixed height so all columns align below it */
 .logo-wrap{height:140px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-bottom:8px}
-.logo{width:90%;max-width:300px;max-height:130px;border-radius:16px;object-fit:contain}
+.logo{width:90%;max-width:300px;max-height:130px;object-fit:contain}
 .logo-ph{width:130px;height:130px;border-radius:24px;
   background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.06);
   display:flex;align-items:center;justify-content:center;
