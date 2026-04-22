@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.10",
+    "version":  "3.14.11",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1938,6 +1938,8 @@ var IDLE=[
   "Live and unfiltered \uD83D\uDEA8",
   "Peak radio. Right now. This is it.",
   "Nothing to see here. Carry on.",
+  /* \uD83D\uDD96 */
+  "Captain\u2019s log, stardate unknown: presenter still talking \uD83D\uDD96",
 ];
 var _idleIdx={},_idleTs={},_IDLE_MS=9000;
 function _idleMsg(key){
