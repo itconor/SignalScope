@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.8",
+    "version":  "3.14.9",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1567,8 +1567,8 @@ body.corp #page-bg{display:none}
    .col has position:relative + overflow:hidden (clips wave to column boundary).
    Each .col-wave is 200vw wide, positioned left:-cardViewportX so it starts
    at viewport x=0 in every column — making the wave continuous across all cards.
-   All cards share the same @keyframes pw-slide animation with no delay so the
-   phase is perfectly synchronised. z-index:0 keeps waves behind .mp/.rp (z-index:1)
+   All cards share the same @keyframes pw-slide animation; phase is kept in sync
+   via a negative animation-delay injected at render time. z-index:0 keeps waves behind .mp/.rp (z-index:1)
    so photos, text, and meters all appear in front of the animated background.
    The colour is the vivid brand colour at ~25% opacity over the solid dark card bg. ── */
 .col-wave{position:absolute;bottom:0;height:40vh;width:100vw;overflow:visible;z-index:0;pointer-events:none}
@@ -1576,8 +1576,8 @@ body.corp #page-bg{display:none}
    itself by viewBox aspect ratio, making it taller than the container so the wave fill
    (lower half of the viewBox) is below the visible area and invisible. */
 .col-wave svg{display:block;width:200%;height:100%}
-.col-wave .pw1{animation:pw-slide 9s  linear infinite}
-.col-wave .pw2{animation:pw-slide 13s linear infinite reverse;opacity:.6}
+.col-wave .pw1{animation:pw-slide 18s linear infinite}
+.col-wave .pw2{animation:pw-slide 26s linear infinite reverse;opacity:.6}
 @keyframes pw-slide{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
 body.corp .col-wave{display:none}
 .col:last-child{border-right:none}
@@ -1827,8 +1827,9 @@ function _posColWaves(){
   var t=(performance.now()-_waveEpoch)/1000; /* seconds since first render */
   /* Negative animation-delay = "start this animation as if N seconds have already elapsed."
      This keeps the wave visually continuous across innerHTML replacements and resizes. */
-  var d9 ='animation-delay:'+( -(t%9 )).toFixed(3)+'s';
-  var d13='animation-delay:'+( -(t%13)).toFixed(3)+'s';
+  /* Modulo values must match the CSS animation durations (18 s and 26 s). */
+  var d1='animation-delay:'+( -(t%18)).toFixed(3)+'s';
+  var d2='animation-delay:'+( -(t%26)).toFixed(3)+'s';
   var ss=getStudios();
   ss.forEach(function(s,idx){
     var col=document.getElementById('col'+idx);
@@ -1837,16 +1838,18 @@ function _posColWaves(){
     var x=Math.round(col.getBoundingClientRect().left);
     cw.style.left=(-x)+'px';
     var r=RGB(s.color||'#17a8ff');
-    /* Both wave paths are designed so the left half (x 0–720) exactly tiles into the
-       right half (x 720–1440), making translateX(-50%) loop seamless at the 9 s mark.
-       pw1 secondary was previously non-seamless (y=70 at x=0, y=90 at x=720) — fixed. */
+    /* pw1 carries two visually distinct paths so they read as separate layers:
+         Primary  — symmetric sine wave  (seamless, high amplitude)
+         Secondary— asymmetric S-curve   (different visual rhythm from primary)
+       pw2 is a separate SVG animating in reverse (26 s) to create cross-current motion.
+       pw2 path uses equal control-point distances at x=0 and x=720 for a seamless loop. */
     cw.innerHTML=
-      '<svg class="pw1" style="'+d9+'" viewBox="0 0 1440 110" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">'
+      '<svg class="pw1" style="'+d1+'" viewBox="0 0 1440 110" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">'
       +'<path d="M0,55 C240,95 480,15 720,55 C960,95 1200,15 1440,55 L1440,110 L0,110Z" fill="rgba('+r+',.27)"/>'
-      +'<path d="M0,70 C240,20 480,100 720,70 C960,20 1200,100 1440,70 L1440,110 L0,110Z" fill="rgba('+r+',.16)"/>'
+      +'<path d="M0,75 C300,35 600,100 900,65 C1100,45 1300,80 1440,75 L1440,110 L0,110Z" fill="rgba('+r+',.14)"/>'
       +'</svg>'
-      +'<svg class="pw2" style="'+d13+'" viewBox="0 0 1440 80" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">'
-      +'<path d="M0,40 C180,72 540,10 720,40 C900,70 1260,10 1440,40 L1440,80 L0,80Z" fill="rgba('+r+',.20)"/>'
+      +'<svg class="pw2" style="'+d2+'" viewBox="0 0 1440 80" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">'
+      +'<path d="M0,40 C180,72 540,8 720,40 C900,72 1260,8 1440,40 L1440,80 L0,80Z" fill="rgba('+r+',.20)"/>'
       +'</svg>';
   });
 }
