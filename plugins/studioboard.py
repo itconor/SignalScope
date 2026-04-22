@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.9",
+    "version":  "3.14.10",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1895,6 +1895,24 @@ var IDLE=[
   "DJ going deep on that link\u2026 \uD83D\uDD57",
   "The presenter\u2019s really going for it today!",
   "Long link incoming\u2026 grab a brew \u2615",
+  "We asked for 30 seconds. We got\u2026 this.",
+  "The intro ran out. The presenter did not.",
+  "Off-script and absolutely loving it \uD83D\uDE0A",
+  "The producer is counting ceiling tiles right now",
+  "Someone should probably time that link \uD83D\uDC40",
+  "Still going\u2026 the producer\u2019s sweating \uD83D\uDE05",
+  "A masterclass in filling dead air \uD83C\uDF93",
+  "The stopwatch has given up the will to live",
+  "Voice for radio. Brevity: optional.",
+  "More words than the Oxford Dictionary right now",
+  "Somewhere, a jingle is crying \uD83C\uDFB5",
+  "The sweeper has been queued for 4 minutes \uD83D\uDE2C",
+  "Producer frantically scrolling the playlist right now",
+  "Fun fact: this link started before some people\u2019s lunch",
+  "The music is waiting very patiently \uD83C\uDFB6",
+  "This is why radio has a cough button \uD83D\uDE04",
+  "Compliance is looking at a different screen. It\u2019s fine.",
+  "The floor manager stopped counting. Liberation.",
   /* Make Me A Winner */
   "Make Me A Winner time! \uD83C\uDFC6",
   "Getting ready for Make Me a Winner\u2026",
@@ -1902,7 +1920,9 @@ var IDLE=[
   "Someone\u2019s about to win big! \uD83C\uDF1F",
   "Make Me A Winner \u2014 the nation holds its breath!",
   "Will they pick up? The tension is real! \uD83D\uDCF1",
-  /* General */
+  "Ringing\u2026 ringing\u2026 please pick up! \uD83D\uDCDE",
+  "One lucky listener. Infinite suspense.",
+  /* General / in-between */
   "Music coming right up!",
   "Hold tight, we\u2019ll be right back!",
   "Loading the next banger\u2026 \uD83D\uDD25",
@@ -1911,6 +1931,13 @@ var IDLE=[
   "The hits keep coming \uD83C\uDFB6",
   "Stand by for more great radio!",
   "On air and sounding great \uD83D\uDCFB",
+  "Coming up: an absolute tune. Allegedly.",
+  "The next song is going to be a big one. We think.",
+  "Hold on tight \u2014 radio is happening",
+  "All systems go. Most of them, anyway.",
+  "Live and unfiltered \uD83D\uDEA8",
+  "Peak radio. Right now. This is it.",
+  "Nothing to see here. Carry on.",
 ];
 var _idleIdx={},_idleTs={},_IDLE_MS=9000;
 function _idleMsg(key){
