@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.15.0",
+    "version":  "3.15.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -613,7 +613,10 @@ body::after{
   animation:ambient 20s ease-in-out infinite alternate;
 }
 @keyframes ambient{0%{opacity:.6}100%{opacity:1}}
-#wb-hdr,#wb-content,#wb-ticker,#wb-drawer,#wb-overlay{position:relative;z-index:1}
+/* ── Anti-burn-in pixel drift — shifts non-overlay content by 1 px every 22.5 s ── */
+#wb-wrap{flex:1;display:flex;flex-direction:column;min-height:0;animation:wb-px-drift 90s step-end infinite}
+@keyframes wb-px-drift{0%,100%{transform:translate(0,0)}25%{transform:translate(1px,0)}50%{transform:translate(1px,1px)}75%{transform:translate(0,1px)}}
+#wb-wrap,#wb-hdr,#wb-content,#wb-ticker,#wb-drawer,#wb-overlay{position:relative;z-index:1}
 
 /* ═══ Header ═══ */
 #wb-hdr{
@@ -1475,6 +1478,8 @@ body.day-grad{transition:background 3s ease}
 </head>
 <body>
 
+<div id="wb-wrap">
+
 <header id="wb-hdr">
   <img class="wb-bauer-logo" src="/wallboard/asset/_bauer_logo_white.svg{% if wb_token %}?token={{wb_token}}{% endif %}" alt="Bauer Media">
   <img class="wb-brand" id="wb-brand-img" src="/wallboard/brand{% if wb_token %}?token={{wb_token}}{% endif %}" alt="" onerror="this.style.display='none'">
@@ -1512,6 +1517,8 @@ body.day-grad{transition:background 3s ease}
   <div id="wb-ticker-brand"><span class="tk-bug">⚡</span><span class="tk-lbl">Alerts</span></div>
   <div id="wb-ticker-scroll"><div id="wb-ticker-inner"><span class="tk-item tk-mu"><span class="tk-chip">No recent alerts</span></span></div></div>
 </div>
+
+</div><!-- /#wb-wrap — everything below is position:fixed and must NOT be inside the drifting wrapper -->
 
 <div id="wb-spotlight">
   <button id="sp-exit-btn" title="Exit spotlight">⊗ Exit Spotlight</button>
