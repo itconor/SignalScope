@@ -2,6 +2,18 @@
 
 ---
 
+### Studio Board 3.14.16 — 2026-04-25
+
+**Fix audio reactivity causing animation glitches and screen flashes**
+
+- Root cause 1: `_meterRaf` (60 fps) was calling `document.querySelectorAll('[data-k="..."]')` on every frame for every tracked stream. That is a full DOM scan at 60 fps — it forces synchronous style recalculation and interrupts the GPU-composited CSS animations (waves, pulse, drift), causing visible stuttering and flashes
+- Root cause 2: `.vf` had `transition:height .1s linear` and `.vp` had `transition:bottom .1s linear`. The JS RAF loop already does EMA attack/decay smoothing, so the CSS transition was doubling the smoothing delay and forcing an extra paint pass on every JS write
+- Fix: element references are now cached in `_levEls` / `_peakEls` maps by `data-k`/`data-p` key when the DOM is built. The RAF loop does a direct O(1) array lookup per element — no DOM query on any animation frame
+- Fix: CSS transitions removed from `.vf` and `.vp` — RAF smoothing alone is sufficient and avoids the redundant repaint cycle
+- Cache is rebuilt (via `_cacheEls()`) whenever the DOM is regenerated (studio/chain assignment changes)
+
+---
+
 ### Brand Screen 1.3.9 — 2026-04-25
 
 **Mic live takeover suppression**

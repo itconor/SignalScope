@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.15",
+    "version":  "3.14.16",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1676,9 +1676,10 @@ body.corp .col-wave{display:none}
   background:linear-gradient(to top,#22c55e 0% 75%,#f59e0b 75% 87.5%,#ef4444 87.5% 100%);opacity:.2}
 .vf{position:absolute;bottom:0;left:0;right:0;
   background:linear-gradient(to top,#22c55e 0%,#22c55e 75%,#f59e0b 82%,#ef4444 96%);
-  border-radius:4px 4px 0 0;transition:height .1s linear}
-.vp{position:absolute;left:-1px;right:-1px;height:2px;background:#fff;border-radius:1px;
-  box-shadow:0 0 3px rgba(255,255,255,.5);transition:bottom .1s linear}
+  border-radius:4px 4px 0 0}
+  /* No CSS transition — the RAF loop already does EMA smoothing; a CSS transition
+     on top causes double-smoothing and doubles the per-frame layout cost */
+.vp{position:absolute;left:-1px;right:-1px;height:2px;background:#fff;border-radius:1px;opacity:.7}
 .vl{font-size:10px;font-weight:700;color:var(--mu);text-align:center;white-space:nowrap}
 .vs{display:flex;gap:2px;flex:1;width:100%;height:100%}
 .vs .vb{flex:1}
@@ -1906,6 +1907,24 @@ setInterval(_sbTick,1000);_sbTick();
 /* Smooth meter state */
 var _targetLev={},_curLev={},_peakHold={},_peakTs={},_lastRaf=0;
 var ATTACK_TC=0.05,DECAY_TC=0.7,PEAK_HOLD_MS=2500;
+/* Cached element references — populated by _cacheEls() after every DOM build.
+   Avoids running querySelectorAll('[data-k="..."]') inside the 60 fps RAF loop,
+   which forces a synchronous style-recalculation on every frame and causes the
+   GPU compositor to drop frames, producing animation glitches and screen flashes. */
+var _levEls={},_peakEls={};
+function _cacheEls(){
+  _levEls={};_peakEls={};
+  document.querySelectorAll('[data-k]').forEach(function(el){
+    var k=el.getAttribute('data-k');
+    if(!_levEls[k])_levEls[k]=[];
+    _levEls[k].push(el);
+  });
+  document.querySelectorAll('[data-p]').forEach(function(el){
+    var k=el.getAttribute('data-p');
+    if(!_peakEls[k])_peakEls[k]=[];
+    _peakEls[k].push(el);
+  });
+}
 
 function lh(d){return Math.max(0,Math.min(100,(d-DB)/(-DB)*100))}
 
@@ -2234,8 +2253,9 @@ function render(){
   if(!_built){
     var h='<div class=cols>';ss.forEach(function(s,i){h+=buildCol(s,i)});h+='</div>';
     document.getElementById('sb').innerHTML=h;_built=true;
-    /* Position per-card waves after layout — use rAF so getBoundingClientRect() is valid */
-    requestAnimationFrame(_posColWaves);
+    /* Position per-card waves and cache meter element refs after layout —
+       use rAF so getBoundingClientRect() is valid and new DOM is fully painted */
+    requestAnimationFrame(function(){ _posColWaves(); _cacheEls(); });
   }
   ss.forEach(function(s,i){updateCol(s,i)});
   /* Drive page background from the first studio's brand colour */
@@ -2260,7 +2280,9 @@ function live(){fetch(tk('/api/hub/live_levels'),{credentials:'same-origin'})
       }
     })})}).catch(function(){})}
 
-/* requestAnimationFrame loop — exponential attack/decay smoothing, peak hold */
+/* requestAnimationFrame loop — exponential attack/decay smoothing, peak hold.
+   Uses _levEls/_peakEls caches (built by _cacheEls at DOM build time) so no
+   querySelectorAll calls happen inside the hot loop. */
 function _meterRaf(now){
   requestAnimationFrame(_meterRaf);
   if(!_lastRaf){_lastRaf=now;return;}
@@ -2273,16 +2295,17 @@ function _meterRaf(now){
     var tc=t>c?ATTACK_TC:DECAY_TC;
     c=c+(t-c)*(1-Math.exp(-dt/tc));
     _curLev[key]=c;
-    var pct=Math.max(0,Math.min(100,c));
-    document.querySelectorAll('[data-k="'+key+'"]').forEach(function(f){f.style.height=pct+'%'});
+    var pct=Math.max(0,Math.min(100,c)).toFixed(2);
+    /* Direct write to cached refs — no DOM query per frame */
+    var _ef=_levEls[key];
+    if(_ef){for(var ei=0;ei<_ef.length;ei++)_ef[ei].style.height=pct+'%';}
     /* Peak hold */
     var pkVal=_targetLev[key+'|pk']||0;
     if(pkVal>=(_peakHold[key]||0)){_peakHold[key]=pkVal;_peakTs[key]=now;}
     else if(now-(_peakTs[key]||0)>PEAK_HOLD_MS){_peakHold[key]=Math.max(0,(_peakHold[key]||0)-0.8);}
-    var ph=_peakHold[key]||0;
-    document.querySelectorAll('[data-p="'+key+'"]').forEach(function(p){
-      p.style.bottom=ph+'%';p.style.opacity=ph>1?'.8':'0';
-    });
+    var ph=(_peakHold[key]||0).toFixed(2);
+    var _pf=_peakEls[key];
+    if(_pf){for(var pi=0;pi<_pf.length;pi++){_pf[pi].style.bottom=ph+'%';_pf[pi].style.opacity=ph>1?'.7':'0';}}
   }
 }
 requestAnimationFrame(_meterRaf);
