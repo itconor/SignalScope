@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.7",
+    "version": "1.5.8",
 }
 
 import os
@@ -701,6 +701,30 @@ document.addEventListener('keydown',function(e){
   if(e.key==='m'||e.key==='M'){e.preventDefault();muteSelf();}
   if(e.key==='c'||e.key==='C'){e.preventDefault();stopCamera();}
 });
+
+// ── Delegated click handler (CSP-safe — replaces all onclick= attributes) ─────
+// All buttons use data-action= instead of onclick= so no CSP hash is required.
+// Functions guarded with typeof so hub-only / presenter-only actions don't error.
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('[data-action]');
+  if(!btn)return;
+  var a=btn.dataset.action;
+  if(a==='muteSelf')                                          muteSelf();
+  else if(a==='stopCamera')                                   stopCamera();
+  else if(a==='leaveMeeting')                                 leaveMeeting();
+  else if(a==='muteAll')                                      muteAll();
+  else if(a==='hangUp'      &&typeof hangUp==='function')     hangUp();
+  else if(a==='joinSaved'   &&typeof joinSaved==='function')  joinSaved(btn);
+  else if(a==='toggleManual'&&typeof toggleManual==='function')toggleManual();
+  else if(a==='joinManual'  &&typeof joinManual==='function') joinManual();
+  else if(a==='saveConfig'  &&typeof saveConfig==='function') saveConfig();
+  else if(a==='loadState'   &&typeof loadState==='function')  loadState();
+  else if(a==='addManual'   &&typeof addManual==='function')  addManual();
+  else if(a==='addMeeting'  &&typeof addMeeting==='function') addMeeting();
+  else if(a==='putOnAir'    &&typeof putOnAir==='function')   putOnAir(btn);
+  else if(a==='joinSavedAdmin'&&typeof joinSavedAdmin==='function')joinSavedAdmin(btn);
+  else if(a==='deleteMeeting'&&typeof deleteMeeting==='function')deleteMeeting(btn);
+});
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -746,10 +770,10 @@ main{max-width:860px}
 <!-- ── In-call toolbar ────────────────────────────────────────────────────── -->
 <div id="call-bar">
   <span class="badge">● ON CALL</span>
-  <button class="btn bg" id="mute-btn" onclick="muteSelf()">🔇 Mute Self</button>
-  <button class="btn bg" id="cam-btn"  onclick="stopCamera()">📷 Stop Camera</button>
+  <button class="btn bg" id="mute-btn" data-action="muteSelf">🔇 Mute Self</button>
+  <button class="btn bg" id="cam-btn"  data-action="stopCamera">📷 Stop Camera</button>
   <div class="spacer"></div>
-  <button class="btn bd" onclick="hangUp()">📴 Leave</button>
+  <button class="btn bd" data-action="hangUp">📴 Leave</button>
 </div>
 
 <!-- ── Video feed ─────────────────────────────────────────────────────────── -->
@@ -794,7 +818,7 @@ main{max-width:860px}
                 data-mid="{{m.id|e}}"
                 data-pass="{{m.pass|e}}"
                 data-dname="{{m.display_name|e}}"
-                onclick="joinSaved(this)">📞 Join</button>
+                data-action="joinSaved">📞 Join</button>
       </div>
       {% endfor %}
     {% else %}
@@ -805,15 +829,14 @@ main{max-width:860px}
 
 <!-- ── Manual join ─────────────────────────────────────────────────────────── -->
 <div id="manual-section">
-  <button id="manual-toggle" onclick="toggleManual()">＋ Join a different meeting…</button>
+  <button id="manual-toggle" data-action="toggleManual">＋ Join a different meeting…</button>
   <div id="manual-form">
     <div class="card" style="margin-top:8px;margin-bottom:0">
       <div class="ch">✏ Join Manually</div>
       <div class="cb">
         <div class="field">
           <label class="fl">Meeting ID</label>
-          <input type="text" id="mtg-id" placeholder="123 456 7890"
-                 onkeydown="if(event.key==='Enter')joinManual()">
+          <input type="text" id="mtg-id" placeholder="123 456 7890">
         </div>
         <div class="r2">
           <div class="field">
@@ -826,7 +849,7 @@ main{max-width:860px}
           </div>
         </div>
         <div class="brow">
-          <button class="btn bp join-btn" onclick="joinManual()">📞 Join Meeting</button>
+          <button class="btn bp join-btn" data-action="joinManual">📞 Join Meeting</button>
         </div>
       </div>
     </div>
@@ -875,7 +898,9 @@ function toggleManual(){
 }
 
 document.addEventListener('DOMContentLoaded',function(){
-  if(_videoUrl) initPreview(_videoUrl);
+  try{if(_videoUrl) initPreview(_videoUrl);}catch(e){}
+  var mi=document.getElementById('mtg-id');
+  if(mi) mi.addEventListener('keydown',function(e){if(e.key==='Enter') joinManual();});
 });
 </script>
 </body>
@@ -1013,7 +1038,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
           </div>
           <div class="field" style="justify-content:flex-end">
             <label class="fl">&nbsp;</label>
-            <button class="btn bp" onclick="saveConfig()">💾 Save &amp; Push to Site</button>
+            <button class="btn bp" data-action="saveConfig">💾 Save &amp; Push to Site</button>
           </div>
         </div>
         <div class="field" style="margin-top:4px">
@@ -1043,13 +1068,13 @@ _HUB_TPL = r"""<!DOCTYPE html>
           </div>
         </div>
         <div class="brow">
-          <button class="btn bp join-btn" style="flex:1;justify-content:center" onclick="joinManual()">📞 Join Meeting</button>
+          <button class="btn bp join-btn" style="flex:1;justify-content:center" data-action="joinManual">📞 Join Meeting</button>
         </div>
         <div class="brow call-btns" style="flex-wrap:wrap">
-          <button class="btn bg" id="mute-btn" onclick="muteSelf()">🔇 Mute Self</button>
-          <button class="btn bg" id="cam-btn"  onclick="stopCamera()">📷 Stop Camera</button>
-          <button class="btn bg"               onclick="muteAll()">🔇 Mute All</button>
-          <button class="btn bd"               onclick="leaveMeeting()">📴 Leave</button>
+          <button class="btn bg" id="mute-btn" data-action="muteSelf">🔇 Mute Self</button>
+          <button class="btn bg" id="cam-btn"  data-action="stopCamera">📷 Stop Camera</button>
+          <button class="btn bg"               data-action="muteAll">🔇 Mute All</button>
+          <button class="btn bd"               data-action="leaveMeeting">📴 Leave</button>
         </div>
       </div>
     </div>
@@ -1061,14 +1086,14 @@ _HUB_TPL = r"""<!DOCTYPE html>
   <div class="ch">👥 Participants
     <div class="ch-r">
       <span id="parts-ago" class="ago"></span>
-      <button class="btn bg bs" onclick="loadState()">↻ Refresh</button>
+      <button class="btn bg bs" data-action="loadState">↻ Refresh</button>
     </div>
   </div>
   <div class="cb">
     <div id="plist" class="plist"><div class="empty-note">Select a site and wait for the client to report participants</div></div>
     <div class="padd">
-      <input type="text" id="padd-in" placeholder="Manually add caller name…" onkeydown="if(event.key==='Enter')addManual()">
-      <button class="btn bg bs" onclick="addManual()">+ Add</button>
+      <input type="text" id="padd-in" placeholder="Manually add caller name…">
+      <button class="btn bg bs" data-action="addManual">+ Add</button>
     </div>
   </div>
 </div>
@@ -1100,7 +1125,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
         <label class="fl">Passcode (optional)</label>
         <input type="password" id="new-mtg-pass" placeholder="••••••">
       </div>
-      <button class="btn bp" style="align-self:flex-end" onclick="addMeeting()">+ Add</button>
+      <button class="btn bp" style="align-self:flex-end" data-action="addMeeting">+ Add</button>
     </div>
   </div>
 </div>
@@ -1199,7 +1224,7 @@ function renderParticipants(list){
   el.innerHTML=list.map(function(p){
     var safe=_esc(p.name);
     var b=(p.muted?'<span class="pbadge muted">MUTED</span>':'')+(p.active?'<span class="pbadge air">ON AIR</span>':'');
-    return '<div class="pi"><span class="pn">'+safe+'</span>'+b+'<button class="btn bw bs" data-name="'+safe+'" onclick="putOnAir(this)">\uD83D\uDCFA Put On Air</button></div>';
+    return '<div class="pi"><span class="pn">'+safe+'</span>'+b+'<button class="btn bw bs" data-name="'+safe+'" data-action="putOnAir">\uD83D\uDCFA Put On Air</button></div>';
   }).join('');
 }
 function addManual(){var inp=document.getElementById('padd-in');var n=inp.value.trim();if(!n)return;if(!_parts.some(function(p){return p.name===n;})){_parts.push({name:n,muted:false,active:false});renderParticipants(_parts);}inp.value='';}
@@ -1223,8 +1248,8 @@ function renderMeetingsAdmin(){
     return '<div class="mtg-admin-row">'
       +'<div><div class="mtg-name">'+_esc(m.name)+'</div>'
       +'<div class="mtg-id">ID: '+_esc(m.id)+(m.pass?' &nbsp;&middot;&nbsp; Passcode set':'')+'</div></div>'
-      +'<button class="btn bp bs" data-idx="'+i+'" onclick="joinSavedAdmin(this)">&#128222; Join</button>'
-      +'<button class="btn bd bs" data-idx="'+i+'" onclick="deleteMeeting(this)">&#x2715;</button>'
+      +'<button class="btn bp bs" data-idx="'+i+'" data-action="joinSavedAdmin">&#128222; Join</button>'
+      +'<button class="btn bd bs" data-idx="'+i+'" data-action="deleteMeeting">&#x2715;</button>'
       +'</div>';
   }).join('');
 }
@@ -1257,9 +1282,11 @@ function deleteMeeting(btn){
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',function(){
-  if(_videoUrl) initPreview(_videoUrl);
+  try{if(_videoUrl) initPreview(_videoUrl);}catch(e){}
   if(document.getElementById('target-site').value) loadState();
   loadMeetings();
+  var pi=document.getElementById('padd-in');
+  if(pi) pi.addEventListener('keydown',function(e){if(e.key==='Enter') addManual();});
 });
 </script>
 </body>

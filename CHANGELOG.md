@@ -2,6 +2,16 @@
 
 ---
 
+### vMix Caller 1.5.8 — 2026-04-25
+
+**Fix: ALL buttons broken on hub, presenter, and client pages (CSP)**
+
+Root cause confirmed: SignalScope's CSP `script-src-attr 'unsafe-hashes'` policy only hashes `onclick=` values from its own core templates at startup. Plugin templates are never scanned, so **every single** `onclick=` attribute in every vMix Caller page was silently blocked by the browser — no JS error, buttons just did nothing.
+
+Fix: removed every `onclick=` attribute from all three templates (`_HUB_TPL`, `_PRESENTER_TPL`, `_CLIENT_TPL`). Replaced with `data-action="fnName"` attributes. Added a single delegated `click` listener to `_JS_HELPERS` that dispatches by `btn.dataset.action` — this lives inside a nonce-protected `<script>` block, which CSP always allows. `onkeydown=` inline handlers (Enter-to-submit on text inputs) also removed and replaced with explicit `addEventListener` calls in `DOMContentLoaded`.
+
+---
+
 ### vMix Caller 1.5.7 — 2026-04-25
 
 **Fix: Save and Test vMix buttons broken on client node page (CSP)**
