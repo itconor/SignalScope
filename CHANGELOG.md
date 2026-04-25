@@ -2,6 +2,18 @@
 
 ---
 
+### vMix Caller 1.5.5 — 2026-04-25
+
+**Fix: Save and Test vMix buttons still broken on client page**
+
+Root cause: the 1.5.3 rewrite injected `_JS_HELPERS` (the full hub/presenter JS block — meeting state management, keyboard shortcuts, `sendCmd`, etc.) into `_CLIENT_TPL`. This code is designed for hub/presenter pages which have the matching DOM elements; loading it on the simpler client page caused a runtime JavaScript error that silently killed the entire script block before `saveClient` and `testLocal` were reached.
+
+Fix: rewrote `_CLIENT_TPL` as a self-contained page without `_JS_HELPERS`. The script block contains only what the client page needs: `_csrf()`, `showMsg()`, `initPreview()` (inline copy for the video preview), `saveClient()`, `testLocal()`, and the DOMContentLoaded preview init. `saveClient()` and `testLocal()` are restored to the proven 1.5.2 style (direct `fetch` calls, not abstracted through `_post()`).
+
+The video preview (`initPreview`, hls.js, preview card) introduced in 1.5.3 is retained.
+
+---
+
 ### vMix Caller 1.5.4 — 2026-04-25
 
 **Fix: Save and Test vMix buttons unresponsive on LAN-only client nodes**

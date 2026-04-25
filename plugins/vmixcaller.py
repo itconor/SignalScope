@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.4",
+    "version": "1.5.5",
 }
 
 import os
@@ -1259,38 +1259,71 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
 </div>
 </main>
 <script nonce="{{csp_nonce()}}">
-""" + _JS_HELPERS + r"""
+// ── Minimal helpers (client page only — no hub/presenter JS loaded here) ──────
+function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';}
+var _msgT=null;
+function showMsg(t,ok){var e=document.getElementById('msg');if(!e)return;e.textContent=t;e.className=ok?'mok':'mer';e.style.display='block';clearTimeout(_msgT);_msgT=setTimeout(function(){e.style.display='none';},5000);}
 
 var _videoUrl = {{video_url_json}};
 
-function saveClient(){
-  var d={
-    vmix_ip:    document.getElementById('vmix-ip').value.trim()||'127.0.0.1',
-    vmix_port:  parseInt(document.getElementById('vmix-port').value)||8088,
-    vmix_input: parseInt(document.getElementById('vmix-input').value)||1,
-    bridge_url: (document.getElementById('bridge-url').value||'').trim()
-  };
-  _post('/api/vmixcaller/config',d).then(function(r){
-    if(r.ok){
-      showMsg('Saved',true);
-      // Re-fetch the computed proxy URL so the preview reinitialises with
-      // any updated bridge URL
-      fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
-        .then(function(r){return r.json();})
-        .then(function(v){_videoUrl=v.url||'';initPreview(_videoUrl);})
-        .catch(function(){});
-    } else showMsg(r.error||'Save failed',false);
-  }).catch(function(e){showMsg('Error: '+e,false);});
+// ── Video preview (hls.js deferred — checked at call-time via typeof) ─────────
+function initPreview(purl){
+  var vid=document.getElementById('pvid');
+  var ov=document.getElementById('pvw-ov');
+  var msg=document.getElementById('pvmsg');
+  if(!vid||!ov)return;
+  if(vid._hls){try{vid._hls.destroy();}catch(e){}vid._hls=null;}
+  vid.src='';
+  if(!purl){ov.classList.remove('hidden');if(msg)msg.textContent='No preview stream configured';return;}
+  ov.classList.remove('hidden');if(msg)msg.textContent='Connecting to stream\u2026';
+  if(typeof Hls!=='undefined'&&Hls.isSupported()){
+    var hls=new Hls({lowLatencyMode:true,liveSyncDurationCount:2,maxBufferLength:10,xhrSetup:function(xhr){xhr.withCredentials=true;}});
+    vid._hls=hls;
+    hls.loadSource(purl);
+    hls.attachMedia(vid);
+    hls.on(Hls.Events.MANIFEST_PARSED,function(){ov.classList.add('hidden');vid.play().catch(function(){});});
+    hls.on(Hls.Events.ERROR,function(ev,data){
+      if(data.fatal){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';}
+    });
+  } else if(vid.canPlayType('application/vnd.apple.mpegurl')){
+    vid.src=purl;vid.load();
+    vid.oncanplay=function(){ov.classList.add('hidden');};
+    vid.onerror=function(){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';};
+    vid.play().catch(function(){});
+  } else {
+    ov.classList.remove('hidden');if(msg)msg.textContent='HLS not supported in this browser';
+  }
 }
 
-function testLocal(){
-  fetch('/api/vmixcaller/test_local',{credentials:'same-origin'})
+// ── Config buttons ────────────────────────────────────────────────────────────
+function saveClient(){
+  var d={
+    vmix_ip:   document.getElementById('vmix-ip').value.trim()||'127.0.0.1',
+    vmix_port: parseInt(document.getElementById('vmix-port').value)||8088,
+    vmix_input:parseInt(document.getElementById('vmix-input').value)||1,
+    bridge_url:(document.getElementById('bridge-url').value||'').trim()
+  };
+  fetch('/api/vmixcaller/config',{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},credentials:'same-origin',body:JSON.stringify(d)})
     .then(function(r){return r.json();})
-    .then(function(d){
-      var el=document.getElementById('test-result');
-      el.style.color=d.ok?'var(--ok)':'var(--al)';
-      el.textContent=d.ok?'\u2713 vMix reachable \u2014 version '+d.version:'\u2717 Cannot reach vMix: '+(d.error||'unknown');
-    }).catch(function(e){document.getElementById('test-result').textContent='Error: '+e;});
+    .then(function(r){
+      if(r.ok){
+        showMsg('Saved',true);
+        // Re-fetch proxy URL so preview reinitialises if bridge URL changed
+        fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
+          .then(function(r){return r.json();})
+          .then(function(v){_videoUrl=v.url||'';if(_videoUrl)initPreview(_videoUrl);})
+          .catch(function(){});
+      } else {
+        showMsg('Error: '+(r.error||'failed'),false);
+      }
+    }).catch(function(e){showMsg('Error: '+e,false);});
+}
+function testLocal(){
+  fetch('/api/vmixcaller/test_local',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var el=document.getElementById('test-result');
+    el.style.color=d.ok?'var(--ok)':'var(--al)';
+    el.textContent=d.ok?'\u2713 vMix reachable \u2014 version '+d.version:'\u2717 Cannot reach vMix: '+(d.error||'unknown');
+  }).catch(function(e){document.getElementById('test-result').textContent='Error: '+e;});
 }
 
 document.addEventListener('DOMContentLoaded',function(){
