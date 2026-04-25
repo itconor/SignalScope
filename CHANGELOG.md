@@ -2,6 +2,24 @@
 
 ---
 
+### vMix Caller 1.5.12 — 2026-04-25
+
+**Feature: On-demand HLS relay from client node to hub**
+
+Hub operators can now watch the caller video preview from the hub page, even when SRS is on the client LAN and the hub browser can't reach it directly.
+
+How it works:
+- A **"📡 Stream to hub"** button appears in the Caller Preview card header whenever the hub can't reach SRS directly (i.e. when the Preview URL is a `webrtc://` LAN address or similar). It's hidden when the hub already has a local preview.
+- Clicking it sends a `relay: "start"` command to the client node via the existing 3-second poll. The button immediately shows "Connecting…".
+- The client node starts pulling HLS segments from SRS (`http://HOST:8080/APP/STREAM.m3u8`, derived automatically from the `webrtc://` bridge URL) and pushing them to the hub every ~1.5 s.
+- Once the client confirms `relay_active: true` in its next status report (~12 s), the hub preview switches to the buffered HLS stream at `/hub/vmixcaller/video/relay.m3u8` and the button shows "● Live".
+- **"⏹ Stop stream"** stops the relay immediately, flushes buffered segments, and the hub preview returns to its previous state.
+- The relay only runs when explicitly requested — zero bandwidth overhead at rest.
+- `webrtc://HOST/APP/STREAM` bridge URLs are now automatically converted to `http://HOST:8080/APP/STREAM.m3u8` for the relay loop (SRS exposes both protocols simultaneously on the same stream).
+- Relay thread now also starts on `mode=both` nodes.
+
+---
+
 ### vMix Caller 1.5.11 — 2026-04-25
 
 **Fix: WebRTC preview "failed to fetch" — CORS/mixed-content on direct WHEP call**

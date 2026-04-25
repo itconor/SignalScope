@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.11",
+    "version": "1.5.12",
 }
 
 import os
@@ -61,9 +61,15 @@ _DEFAULTS: dict = {
 }
 
 # ── Hub-side runtime state ─────────────────────────────────────────────────────
-_pending_cmd: dict = {}   # site_name → {fn, value, input, seq}
-_site_status: dict = {}   # site_name → {ok, version, participants, error, ts}
+_pending_cmd: dict  = {}   # site_name → {fn, value, input, seq}
+_site_status: dict  = {}   # site_name → {ok, version, participants, error, ts}
+_relay_wanted: dict = {}   # site_name → bool (hub wants this site's video relay)
 _state_lock          = threading.Lock()
+
+# ── Client-side relay gate ─────────────────────────────────────────────────────
+# Set by the client thread when hub sends relay:"start"; cleared on "stop".
+# _video_relay_loop blocks on this so it only runs on demand.
+_relay_event = threading.Event()
 
 # ── Hub-side HLS relay buffer ──────────────────────────────────────────────────
 # Client nodes fetch TS segments from the local LAN bridge and push them here.
@@ -322,6 +328,14 @@ def _start_client_thread(monitor, hub_url: str):
                 continue
 
             d   = _hub_get(f"{hub_url}/api/vmixcaller/cmd", site, secret)
+
+            # ── Relay gate: hub tells us whether to run the video relay ──────
+            relay = d.get("relay")
+            if relay == "start":
+                _relay_event.set()
+            elif relay == "stop":
+                _relay_event.clear()
+
             cmd = d.get("cmd")
             if cmd and cmd.get("seq") != last_cmd_seq:
                 last_cmd_seq = cmd["seq"]
@@ -353,10 +367,11 @@ def _start_client_thread(monitor, hub_url: str):
                 last_full_report = now
                 ok_xml, xml_text = _vmix_xml(cfg)
                 report: dict = {
-                    "ts":        now,
-                    "ok":        ok_xml,
-                    "vmix_ip":   cfg.get("vmix_ip",  "127.0.0.1"),
-                    "vmix_port": cfg.get("vmix_port", 8088),
+                    "ts":          now,
+                    "ok":          ok_xml,
+                    "vmix_ip":     cfg.get("vmix_ip",  "127.0.0.1"),
+                    "vmix_port":   cfg.get("vmix_port", 8088),
+                    "relay_active": _relay_event.is_set(),
                 }
                 if ok_xml:
                     report["version"]      = _vmix_version(xml_text)
@@ -429,6 +444,9 @@ def _video_relay_loop(monitor, hub_url: str):
         urllib.request.urlopen(req, timeout=12).close()
 
     while True:
+        if not _relay_event.is_set():
+            time.sleep(2)
+            continue
         try:
             cfg        = _load_cfg()
             bridge_url = (cfg.get("bridge_url") or "").strip()
@@ -440,9 +458,26 @@ def _video_relay_loop(monitor, hub_url: str):
                 time.sleep(5)
                 continue
 
-            parsed       = urlparse(bridge_url)
-            base         = f"{parsed.scheme}://{parsed.netloc}"
-            manifest_url = base + parsed.path
+            # Derive the HLS manifest URL from bridge_url.
+            # webrtc://HOST/APP/STREAM  →  SRS HLS: http://HOST:8080/APP/STREAM.m3u8
+            # http(s)://HOST/path.m3u8  →  use as-is (existing HLS bridge)
+            low_bridge = bridge_url.lower()
+            if low_bridge.startswith("webrtc://"):
+                try:
+                    rest          = bridge_url.split("//", 1)[1]
+                    whost, wpath  = rest.split("/", 1)
+                    base          = f"http://{whost}:8080"
+                    manifest_url  = f"{base}/{wpath}.m3u8"
+                except Exception:
+                    time.sleep(5)
+                    continue
+            elif low_bridge.startswith("http"):
+                parsed       = urlparse(bridge_url)
+                base         = f"{parsed.scheme}://{parsed.netloc}"
+                manifest_url = base + parsed.path
+            else:
+                time.sleep(5)
+                continue
 
             # ── Fetch manifest ────────────────────────────────────────────────
             resp     = urllib.request.urlopen(
@@ -724,6 +759,7 @@ document.addEventListener('click',function(e){
   else if(a==='putOnAir'    &&typeof putOnAir==='function')   putOnAir(btn);
   else if(a==='joinSavedAdmin'&&typeof joinSavedAdmin==='function')joinSavedAdmin(btn);
   else if(a==='deleteMeeting'&&typeof deleteMeeting==='function')deleteMeeting(btn);
+  else if(a==='toggleRelay'  &&typeof toggleRelay==='function')  toggleRelay();
 });
 """
 
@@ -954,7 +990,12 @@ _HUB_TPL = r"""<!DOCTYPE html>
   <!-- ── LEFT: preview ──────────────────────────────────────────────────────── -->
   <div>
     <div class="card">
-      <div class="ch">📹 Caller Preview</div>
+      <div class="ch">📹 Caller Preview
+        <div class="ch-r" id="relay-ctrl" style="display:none">
+          <span id="relay-ind" style="font-size:11px;color:var(--ok)"></span>
+          <button id="relay-btn" class="btn bg bs" data-action="toggleRelay">📡 Stream to hub</button>
+        </div>
+      </div>
       <div class="cb" style="padding:10px">
         <div class="pvw-wrap">
           <video id="pvid" autoplay muted playsinline></video>
@@ -1143,7 +1184,51 @@ function setStatus(state,text,ts){
   if(ago)ago.textContent=ts?'('+_ago(ts)+')':'';
 }
 
-var _videoUrl = {{video_url_json|safe}};
+var _videoUrl    = {{video_url_json|safe}};
+var _relayOn     = false;
+var _relaySite   = '';
+var _relayLive   = false;   // true once client confirms relay_active
+
+function updateRelayCtrl(){
+  var ctrl=document.getElementById('relay-ctrl');
+  var btn =document.getElementById('relay-btn');
+  var ind =document.getElementById('relay-ind');
+  var site=(document.getElementById('target-site').value||'').trim();
+  if(!ctrl)return;
+  // Show relay control only when hub can't see SRS directly
+  // (_videoUrl is empty when bridge is a LAN WebRTC/HLS URL)
+  if(!site||_videoUrl){ctrl.style.display='none';return;}
+  ctrl.style.display='';
+  if(_relayOn){
+    btn.textContent='\u23F9 Stop stream';btn.className='btn bd bs';
+    ind.textContent=_relayLive?'\u25CF Live':'Connecting\u2026';
+    ind.style.color=_relayLive?'var(--ok)':'var(--wn)';
+  }else{
+    btn.textContent='\uD83D\uDCE1 Stream to hub';btn.className='btn bg bs';
+    ind.textContent='';
+  }
+}
+
+function toggleRelay(){
+  var site=(document.getElementById('target-site').value||'').trim();
+  if(!site){showMsg('Select a site first',false);return;}
+  var want=!_relayOn;
+  // Stop a relay on a different site if one is running
+  if(_relaySite&&_relaySite!==site&&_relayOn)
+    _post('/api/vmixcaller/relay',{site:_relaySite,active:false});
+  _post('/api/vmixcaller/relay',{site:site,active:want})
+    .then(function(d){
+      if(!d.ok){showMsg(d.error||'Failed',false);return;}
+      _relayOn=want;_relaySite=want?site:'';_relayLive=false;
+      updateRelayCtrl();
+      if(!want){
+        initPreview(_videoUrl);
+        showMsg('Relay stopped',true);
+      }else{
+        showMsg('Relay requested \u2014 stream will appear in a few seconds\u2026',true);
+      }
+    }).catch(function(e){showMsg('Error: '+e,false);});
+}
 
 function saveConfig(){
   var site  = document.getElementById('target-site').value;
@@ -1161,7 +1246,7 @@ function saveConfig(){
         // right path (relay manifest for LAN bridges, direct path for localhost)
         fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
           .then(function(r){return r.json();})
-          .then(function(v){_videoUrl=v.url||'';if(_videoUrl)initPreview(_videoUrl);})
+          .then(function(v){_videoUrl=v.url||'';initPreview(_videoUrl);updateRelayCtrl();})
           .catch(function(){});
       } else showMsg(d.error||'Save failed',false);
     }).catch(function(e){showMsg('Error: '+e,false);});
@@ -1210,6 +1295,12 @@ function loadState(){
       renderParticipants(d.participants||[]);
       var pago=document.getElementById('parts-ago');
       if(pago&&d.ts)pago.textContent='updated '+_ago(d.ts);
+      // Start HLS preview once client confirms relay is live
+      if(_relayOn&&d.relay_active&&!_relayLive){
+        _relayLive=true;
+        updateRelayCtrl();
+        initPreview('/hub/vmixcaller/video/relay.m3u8');
+      }
     }).catch(function(){setStatus('off','State poll failed',0);});
   _statePollT=setTimeout(loadState,8000);
 }
@@ -1283,7 +1374,21 @@ function deleteMeeting(btn){
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',function(){
   try{if(_videoUrl) initPreview(_videoUrl);}catch(e){}
-  if(document.getElementById('target-site').value) loadState();
+  var sel=document.getElementById('target-site');
+  if(sel){
+    if(sel.value) loadState();
+    sel.addEventListener('change',function(){
+      // Stop relay on old site when operator switches site
+      if(_relayOn&&_relaySite){
+        _post('/api/vmixcaller/relay',{site:_relaySite,active:false});
+        _relayOn=false;_relaySite='';_relayLive=false;
+        initPreview(_videoUrl);
+      }
+      updateRelayCtrl();
+      if(this.value) loadState();
+    });
+  }
+  updateRelayCtrl();
   loadMeetings();
   var pi=document.getElementById('padd-in');
   if(pi) pi.addEventListener('keydown',function(e){if(e.key==='Enter') addManual();});
@@ -1525,10 +1630,9 @@ def register(app, ctx):
             daemon=True, name="VmixCallerClient",
         ).start()
 
-    # ── Video relay thread (client only — pushes HLS segments to hub) ─────────
-    # Only start on pure client nodes.  Hub/both nodes are on the same machine
-    # as (or same LAN as) the bridge, so the proxy route reaches it directly.
-    if mode == "client" and hub_url:
+    # ── Video relay thread (client and both-mode nodes) ───────────────────────
+    # Event-driven — only pulls/pushes when hub requests relay via cmd response.
+    if mode in ("client", "both") and hub_url:
         threading.Thread(
             target=_video_relay_loop, args=(monitor, hub_url),
             daemon=True, name="VmixCallerVideoRelay",
@@ -1875,8 +1979,30 @@ def register(app, ctx):
         if not approved:
             return jsonify({"error": "not approved"}), 403
         with _state_lock:
-            cmd = _pending_cmd.pop(site, None)
-        return jsonify({"cmd": cmd} if cmd else {})
+            cmd          = _pending_cmd.pop(site, None)
+            relay_wanted = _relay_wanted.get(site, False)
+        result = {"relay": "start" if relay_wanted else "stop"}
+        if cmd:
+            result["cmd"] = cmd
+        return jsonify(result)
+
+    # ── Hub: start / stop video relay for a site ─────────────────────────────
+    @app.post("/api/vmixcaller/relay")
+    @login_required
+    @csrf_protect
+    def vmixcaller_relay_control():
+        data   = request.get_json(silent=True) or {}
+        site   = str(data.get("site", "") or "").strip()
+        active = bool(data.get("active", False))
+        if not site:
+            return jsonify({"ok": False, "error": "no site"}), 400
+        with _state_lock:
+            _relay_wanted[site] = active
+        if not active:
+            # Flush stale segments so relay.m3u8 doesn't serve old video
+            with _video_lock:
+                _video_segments.clear()
+        return jsonify({"ok": True})
 
     # ── Client reports status / participants ──────────────────────────────────
     @app.post("/api/vmixcaller/report")
