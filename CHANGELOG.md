@@ -2,6 +2,27 @@
 
 ---
 
+### vMix Caller 1.5.13 — 2026-04-25
+
+**Fix: relay sits at "Connecting" forever — two bugs**
+
+1. **`parsed` undefined for webrtc:// bridge URLs (NameError, silent)**: The relay loop
+   sets `base` and `manifest_url` for `webrtc://` URLs but never set `parsed`. The
+   subsequent line `manifest_dir = parsed.path.rsplit(...)` raised `NameError` every
+   cycle, caught silently by the outer `except Exception: pass`. No segments were ever
+   fetched or pushed to the hub. Fix: add `parsed = urlparse(manifest_url)` immediately
+   after deriving the manifest URL in the `webrtc://` branch.
+
+2. **Hub waits for `relay_active: true` report before loading HLS**: The client only
+   sends its full status report every 12 seconds, so the hub wouldn't start loading
+   `relay.m3u8` for up to 20 seconds after the relay started. Fix: `toggleRelay()` now
+   calls `initPreview('/hub/vmixcaller/video/relay.m3u8')` immediately when the relay is
+   requested. hls.js handles the empty-but-valid manifest gracefully and retries until
+   segments arrive (typically 3–6 s). The "● Live" badge still uses `relay_active` from
+   the periodic report — it just no longer gates the video load.
+
+---
+
 ### vMix Caller 1.5.12 — 2026-04-25
 
 **Feature: On-demand HLS relay from client node to hub**

@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.12",
+    "version": "1.5.13",
 }
 
 import os
@@ -468,6 +468,7 @@ def _video_relay_loop(monitor, hub_url: str):
                     whost, wpath  = rest.split("/", 1)
                     base          = f"http://{whost}:8080"
                     manifest_url  = f"{base}/{wpath}.m3u8"
+                    parsed        = urlparse(manifest_url)   # needed for manifest_dir below
                 except Exception:
                     time.sleep(5)
                     continue
@@ -1225,7 +1226,9 @@ function toggleRelay(){
         initPreview(_videoUrl);
         showMsg('Relay stopped',true);
       }else{
-        showMsg('Relay requested \u2014 stream will appear in a few seconds\u2026',true);
+        // Start loading relay.m3u8 immediately — hls.js will retry until
+        // segments arrive (typically 3–6 s after the client starts relaying)
+        initPreview('/hub/vmixcaller/video/relay.m3u8');
       }
     }).catch(function(e){showMsg('Error: '+e,false);});
 }
@@ -1295,11 +1298,10 @@ function loadState(){
       renderParticipants(d.participants||[]);
       var pago=document.getElementById('parts-ago');
       if(pago&&d.ts)pago.textContent='updated '+_ago(d.ts);
-      // Start HLS preview once client confirms relay is live
+      // Update "● Live" badge once client confirms relay is running
       if(_relayOn&&d.relay_active&&!_relayLive){
         _relayLive=true;
         updateRelayCtrl();
-        initPreview('/hub/vmixcaller/video/relay.m3u8');
       }
     }).catch(function(){setStatus('off','State poll failed',0);});
   _statePollT=setTimeout(loadState,8000);
