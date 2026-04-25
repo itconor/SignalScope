@@ -2,6 +2,16 @@
 
 ---
 
+### vMix Caller 1.5.10 — 2026-04-25
+
+**Fix: WebRTC/HLS preview overlay never hides — video appears blank**
+
+All three preview overlay divs (`_PRESENTER_TPL`, `_HUB_TPL`, `_CLIENT_TPL`) had `id="pvw-ov"` but were missing `class="pvw-ov"`. The CSS rule `.pvw-ov.hidden{display:none}` is a compound class selector — it only matches elements that have **both** the `pvw-ov` class and the `hidden` class. Because the element had no class at all, `ov.classList.add('hidden')` added the `hidden` class but the CSS rule never matched, so the overlay remained visible. The video was playing underneath but the camera icon and status message sat on top, making the preview appear completely blank.
+
+Fix: added `class="pvw-ov"` to all three overlay divs so the CSS selector works correctly.
+
+---
+
 ### vMix Caller 1.5.9 — 2026-04-25
 
 **Fix: ALL buttons dead on every page since 1.5.3 — root cause found**

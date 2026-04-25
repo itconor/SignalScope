@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.9",
+    "version": "1.5.10",
 }
 
 import os
@@ -790,7 +790,7 @@ main{max-width:860px}
     <div class="pvw-wrap">
       <video id="pvid" autoplay muted playsinline></video>
       <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
-      <div id="pvw-ov">
+      <div id="pvw-ov" class="pvw-ov">
         <div class="pvw-icon">📷</div>
         <div id="pvmsg">{% if bridge_url %}Waiting for caller…{% else %}No preview stream configured{% endif %}</div>
       </div>
@@ -959,7 +959,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
         <div class="pvw-wrap">
           <video id="pvid" autoplay muted playsinline></video>
           <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
-          <div id="pvw-ov">
+          <div id="pvw-ov" class="pvw-ov">
             <div class="pvw-icon">📷</div>
             <div id="pvmsg">Configure a Preview URL to enable preview</div>
           </div>
@@ -1316,7 +1316,7 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
     <div class="pvw-wrap">
       <video id="pvid" autoplay muted playsinline></video>
       <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
-      <div id="pvw-ov">
+      <div id="pvw-ov" class="pvw-ov">
         <div class="pvw-icon">📷</div>
         <div id="pvmsg">{% if cfg.bridge_url %}Waiting for caller…{% else %}Configure a Preview URL below to enable preview{% endif %}</div>
       </div>
