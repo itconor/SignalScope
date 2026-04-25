@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.14",
+    "version":  "3.14.15",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -2343,24 +2343,25 @@ setInterval(function(){
       if(cntN.textContent!==cs)cntN.textContent=cs;
       cntN.className='cnt-num'+(rem<15?' cnt-urgent':rem<30?' cnt-low':'');
     }
-    /* Segue indicator — per-cart first, station mode as fallback.
-       Per-cart segue_type on now_playing (from Zetta SOAP, if exposed):
-         0 = chain/segue → ⏭ green   (this cart auto-starts the next)
-         1 = stop        → ⏹ amber   (sequencer stops after this cart)
-       If segue_type is null (not in SOAP response), fall back to station mode:
-         mode 1 Automation → ⏭  mode 2 Manual → ⏹  mode 3 Live Assist → ⏯ */
+    /* Chain Type indicator — per-cart Zetta setting, station mode as fallback.
+       segue_type values (normalised by zetta.py _parse_chain_type):
+         0 = Segue     → ⏭ green   auto-starts next cart at segue point
+         1 = Stop      → ⏹ amber   sequencer stops; presenter takes over
+         2 = Auto Post → ⏭ green   link finishes synchronised to top of next song
+         3 = Link-Song → ⏭ green   adjusts start of next event
+       null = ChainType not in SOAP → fall back to station mode */
     var segEl=document.getElementById('cntseg'+i);
     if(segEl){
       var st=(zd.now_playing&&zd.now_playing.segue_type!=null)?zd.now_playing.segue_type:-1;
-      if(st===0){      /* per-cart: will chain to next */
-        segEl.textContent='\u23ED';segEl.className='cnt-seg seg-auto';   /* ⏭ */
-      } else if(st===1){ /* per-cart: will stop */
+      if(st===1){            /* Stop — sequencer halts after this cart */
         segEl.textContent='\u23F9';segEl.className='cnt-seg seg-stop';   /* ⏹ */
-      } else {         /* segue_type not reported — fall back to station mode */
+      } else if(st===0||st===2||st===3){ /* Segue / AutoPost / LinkSong — will continue */
+        segEl.textContent='\u23ED';segEl.className='cnt-seg seg-auto';   /* ⏭ */
+      } else {               /* ChainType not reported — fall back to station mode */
         var md=zd.mode||0;
-        if(md===1){segEl.textContent='\u23ED';segEl.className='cnt-seg seg-auto';}   /* ⏭ */
-        else if(md===2){segEl.textContent='\u23F9';segEl.className='cnt-seg seg-stop';}  /* ⏹ */
-        else if(md===3){segEl.textContent='\u23EF';segEl.className='cnt-seg seg-live';}  /* ⏯ */
+        if(md===1){segEl.textContent='\u23ED';segEl.className='cnt-seg seg-auto';}   /* ⏭ Automation */
+        else if(md===2){segEl.textContent='\u23F9';segEl.className='cnt-seg seg-stop';}  /* ⏹ Manual */
+        else if(md===3){segEl.textContent='\u23EF';segEl.className='cnt-seg seg-live';}  /* ⏯ Live Assist */
         else{segEl.textContent='';segEl.className='cnt-seg';}
       }
     }

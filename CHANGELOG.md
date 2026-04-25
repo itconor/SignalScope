@@ -2,6 +2,17 @@
 
 ---
 
+### Zetta Integration 2.1.26 / Studio Board 3.14.15 — 2026-04-25
+
+**Correct Zetta Chain Type handling (Stop / Segue / Auto Post / Link-Song)**
+
+- Added `_parse_chain_type()` helper that normalises the Zetta "Chain Type" field from any representation (string or numeric) to a small integer: `0`=Segue, `1`=Stop, `2`=Auto Post, `3`=Link-Song
+- Both SOAP parsers (raw XML and zeep) now search for `ChainType` first (correct Zetta field name, confirmed from Zetta documentation), then fall back to the previous candidates
+- String values like `"Stop"`, `"Segue"`, `"Auto Post"`, `"AutoPost"`, `"Link-Song"`, `"LinkSong"` are all handled case-insensitively; unrecognised numeric values are passed through as-is
+- Studio Board countdown icon updated: Stop → ⏹ amber; Segue / Auto Post / Link-Song → ⏭ green; field absent → falls back to station-mode indicator (3.14.13 behaviour)
+
+---
+
 ### Zetta Integration 2.1.25 / Studio Board 3.14.14 — 2026-04-25
 
 **Per-cart segue/stop type parsed and shown on presenter countdown**

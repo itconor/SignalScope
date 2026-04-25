@@ -20,7 +20,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":    "Zetta",
     "url":      "/zetta",
     "icon":     "📻",
-    "version":  "2.1.25",
+    "version":  "2.1.26",
 }
 
 import json
@@ -618,6 +618,41 @@ def _parse_zetta_ts(s: str) -> str:
     if dot != -1: s = s[:dot + 7]
     return s
 
+# ── Chain Type normaliser ──────────────────────────────────────────────────────
+# Zetta "Chain Type" controls what the sequencer does after a cart ends.
+# Returned values (SOAP field "ChainType") may be strings or integers depending
+# on the Zetta version and transport (raw SOAP vs zeep serialisation).
+#
+# Normalised to a small integer that studioboard JS understands:
+#   0 = Segue     — auto-starts next cart at the segue point
+#   1 = Stop      — sequencer halts; presenter must take action
+#   2 = AutoPost  — Auto Post (Link finishes at the top of the song)
+#   3 = LinkSong  — Link-Song (adjusts start of next event)
+#  None = field not present in this SOAP response
+
+_CHAIN_TYPE_STRINGS = {
+    "stop":      1,
+    "segue":     0,
+    "autopost":  2,
+    "auto post": 2,
+    "auto-post": 2,
+    "linksong":  3,
+    "link-song": 3,
+    "link song": 3,
+}
+
+def _parse_chain_type(raw: str):
+    """Normalise a raw ChainType value (string or numeric string) → int or None."""
+    if not raw:
+        return None
+    lower = raw.lower().strip()
+    if lower in _CHAIN_TYPE_STRINGS:
+        return _CHAIN_TYPE_STRINGS[lower]
+    try:
+        return int(raw)     # numeric value — pass through; JS handles the mapping
+    except (ValueError, TypeError):
+        return None         # unrecognised string — treat as not available
+
 # ── GetStationFull rich parser ─────────────────────────────────────────────────
 def _parse_station_full(root: ET.Element, station_id: str, spot_cats: list) -> dict:
     """Parse a full GetStationFull XML response into a display dict."""
@@ -666,11 +701,13 @@ def _parse_station_full(root: ET.Element, station_id: str, spot_cats: list) -> d
             ev_type   = int(_find(el, "Type") or 0)
             ev_guid   = _find(el, "EventGUID", "GUID") or ""
             raw_cat   = (_find(el, "CategoryName", "Category") or "").upper()
-            # Per-cart segue/stop type — field name varies across Zetta versions.
-            # 0 = segue/chain (auto-starts next cart)  1 = stop  None = not reported.
-            _seg_raw  = _find(el, "SegueType", "Segue", "TransitionType", "NextEventType")
-            try:    segue_t = int(_seg_raw) if _seg_raw.strip() else None
-            except: segue_t = None
+            # Per-cart Chain Type — what the sequencer does after this cart ends.
+            # Zetta SOAP field is likely "ChainType"; fallbacks for variant builds.
+            # String values: "Stop", "Segue", "AutoPost"/"Auto Post", "LinkSong"/"Link-Song"
+            # Numeric: exact mapping depends on Zetta version — stored as-is; JS maps.
+            _seg_raw  = _find(el, "ChainType", "SegueType", "Segue",
+                              "TransitionType", "NextEventType")
+            segue_t   = _parse_chain_type(_seg_raw.strip()) if _seg_raw.strip() else None
         except Exception:
             continue
 
@@ -780,14 +817,13 @@ def _parse_station_full_zeep(result, station_id: str, friendly_name: str, spot_c
         ev_guid = getattr(event, "EventGUID",        "") or ""
         raw_cat = (getattr(event, "CategoryName", None)
                    or getattr(event, "Category", "") or "").upper()
-        # Per-cart segue/stop type — try common field names across Zetta versions.
-        # 0 = segue/chain  1 = stop  None = not reported by this Zetta SOAP endpoint.
-        _seg_v  = (getattr(event, "SegueType",      None)
+        # Per-cart Chain Type — what the sequencer does after this cart ends.
+        _seg_v  = (getattr(event, "ChainType",      None)
+                or getattr(event, "SegueType",       None)
                 or getattr(event, "Segue",           None)
                 or getattr(event, "TransitionType",  None)
                 or getattr(event, "NextEventType",   None))
-        try:    segue_t = int(_seg_v) if _seg_v is not None else None
-        except: segue_t = None
+        segue_t = _parse_chain_type(str(_seg_v).strip()) if _seg_v is not None else None
 
         if asset_t not in DISPLAYABLE_ASSET_TYPES: continue
         if ev_type in FILTERED_EVENT_TYPES:         continue
