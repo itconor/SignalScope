@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.13",
+    "version": "1.5.14",
 }
 
 import os
@@ -761,6 +761,7 @@ document.addEventListener('click',function(e){
   else if(a==='joinSavedAdmin'&&typeof joinSavedAdmin==='function')joinSavedAdmin(btn);
   else if(a==='deleteMeeting'&&typeof deleteMeeting==='function')deleteMeeting(btn);
   else if(a==='toggleRelay'  &&typeof toggleRelay==='function')  toggleRelay();
+  else if(a==='testVmix'    &&typeof testVmix==='function')     testVmix();
 });
 """
 
@@ -1400,209 +1401,335 @@ document.addEventListener('DOMContentLoaded',function(){
 </html>"""
 
 
-# ── Client config page ─────────────────────────────────────────────────────────
+# ── Client page (full-featured — matches hub capabilities) ────────────────────
 _CLIENT_TPL = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
-<title>vMix Caller Client — SignalScope</title>
+<title>vMix Caller — SignalScope</title>
 <script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" defer></script>
-<style nonce="{{csp_nonce()}}">""" + _CSS + r"""</style>
+<style nonce="{{csp_nonce()}}">
+""" + _CSS + r"""
+/* client-specific */
+#sbar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mu);margin-bottom:14px;padding:8px 12px;background:var(--sur);border:1px solid var(--bor);border-radius:8px}
+.sep{border:none;border-top:1px solid var(--bor);margin:12px 0}
+.mtg-admin-row{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#091e42;border:1px solid var(--bor);border-radius:8px;margin-bottom:6px}
+.mtg-admin-row .mtg-name{flex:1;font-weight:600}
+.mtg-admin-row .mtg-id{font-size:11px;color:var(--mu)}
+.add-mtg{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;margin-top:10px;align-items:end}
+@media(max-width:600px){.add-mtg{grid-template-columns:1fr 1fr}}
+.hint{font-size:11px;color:var(--mu);margin-top:3px;line-height:1.4}
+</style>
 </head>
 <body>
 {{topnav("vmixcaller")|safe}}
 <main>
 <div id="msg"></div>
 
-<!-- ── Caller preview ─────────────────────────────────────────────────────── -->
-<div class="card">
-  <div class="ch">📹 Caller Preview</div>
-  <div class="cb" style="padding:10px">
-    <div class="pvw-wrap">
-      <video id="pvid" autoplay muted playsinline></video>
-      <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
-      <div id="pvw-ov" class="pvw-ov">
-        <div class="pvw-icon">📷</div>
-        <div id="pvmsg">{% if cfg.bridge_url %}Waiting for caller…{% else %}Configure a Preview URL below to enable preview{% endif %}</div>
+<!-- ── Status bar ─────────────────────────────────────────────────────────── -->
+<div id="sbar">
+  <span class="dot" id="vdot"></span>
+  <span id="vstatus">Checking vMix…</span>
+  <span id="vago" class="ago" style="margin-left:6px"></span>
+  <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
+    <a href="/hub/vmixcaller/presenter" class="btn bp bs" title="Presenter bookmark page">🖥 Presenter View</a>
+    <span><kbd>M</kbd> mute</span><span><kbd>C</kbd> camera</span>
+  </span>
+</div>
+
+<div class="g2">
+
+  <!-- ── LEFT: preview ──────────────────────────────────────────────────────── -->
+  <div>
+    <div class="card">
+      <div class="ch">📹 Caller Preview</div>
+      <div class="cb" style="padding:10px">
+        <div class="pvw-wrap">
+          <video id="pvid" autoplay muted playsinline></video>
+          <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
+          <div id="pvw-ov" class="pvw-ov">
+            <div class="pvw-icon">📷</div>
+            <div id="pvmsg">{% if cfg.bridge_url %}Waiting for caller…{% else %}Configure a Preview URL in settings{% endif %}</div>
+          </div>
+        </div>
       </div>
     </div>
+
+    {% if hub_url %}
+    <!-- Hub connection info -->
+    <div class="card">
+      <div class="ch">📡 Hub Connection</div>
+      <div class="cb" style="font-size:12px;color:var(--mu)">
+        <p>Hub: <strong style="color:var(--tx)">{{hub_url|e}}</strong></p>
+        <p style="margin-top:6px">Commands polled every 3 s. Participants reported every ~12 s.</p>
+        <p style="margin-top:6px">Hub operator can push vMix config from their settings page.</p>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ── RIGHT: controls ────────────────────────────────────────────────────── -->
+  <div>
+
+    <!-- vMix Settings -->
+    <div class="card">
+      <div class="ch">⚙ vMix Settings</div>
+      <div class="cb">
+        <div class="r2">
+          <div class="field">
+            <label class="fl">vMix IP</label>
+            <input type="text" id="vmix-ip" placeholder="127.0.0.1" value="{{cfg.vmix_ip|e}}">
+          </div>
+          <div class="field">
+            <label class="fl">Port</label>
+            <input type="number" id="vmix-port" value="{{cfg.vmix_port}}" min="1" max="65535">
+          </div>
+        </div>
+        <div class="r2">
+          <div class="field">
+            <label class="fl">Zoom/Teams Input #</label>
+            <input type="number" id="vmix-input" value="{{cfg.vmix_input}}" min="1" max="200">
+          </div>
+          <div class="field" style="justify-content:flex-end">
+            <label class="fl">&nbsp;</label>
+            <button class="btn bg bs" data-action="testVmix">🔌 Test vMix</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="fl">Preview URL</label>
+          <input type="text" id="bridge-url" placeholder="webrtc://192.168.x.x/live/caller" value="{{cfg.bridge_url|e}}">
+          <div class="hint">WebRTC: <code>webrtc://host/app/stream</code> · HLS: <code>.m3u8</code> URL. Usually pushed from the hub Save &amp; Push button.</div>
+        </div>
+        <div class="brow">
+          <button class="btn bp" data-action="saveConfig">💾 Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Meeting controls -->
+    <div class="card meeting-card" id="meeting-card">
+      <div class="ch">📞 Meeting Controls</div>
+      <div class="cb">
+        <div class="field">
+          <label class="fl">Meeting ID</label>
+          <input type="text" id="mtg-id" placeholder="123 456 7890">
+        </div>
+        <div class="r2">
+          <div class="field">
+            <label class="fl">Passcode</label>
+            <input type="password" id="mtg-pass" placeholder="••••••">
+          </div>
+          <div class="field">
+            <label class="fl">Display Name</label>
+            <input type="text" id="mtg-name" placeholder="Guest Producer">
+          </div>
+        </div>
+        <div class="brow">
+          <button class="btn bp join-btn" style="flex:1;justify-content:center" data-action="joinManual">📞 Join Meeting</button>
+        </div>
+        <div class="brow call-btns" style="flex-wrap:wrap">
+          <button class="btn bg" id="mute-btn" data-action="muteSelf">🔇 Mute Self</button>
+          <button class="btn bg" id="cam-btn"  data-action="stopCamera">📷 Stop Camera</button>
+          <button class="btn bg"               data-action="muteAll">🔇 Mute All</button>
+          <button class="btn bd"               data-action="leaveMeeting">📴 Leave</button>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
-<!-- ── Config ─────────────────────────────────────────────────────────────── -->
+<!-- ── Participants ────────────────────────────────────────────────────────── -->
 <div class="card">
-  <div class="ch">⚙ vMix Caller — Client Node</div>
+  <div class="ch">👥 Participants
+    <div class="ch-r">
+      <span id="parts-ago" class="ago"></span>
+      <button class="btn bg bs" data-action="loadState">↻ Refresh</button>
+    </div>
+  </div>
   <div class="cb">
-    <p style="margin-bottom:12px;color:var(--mu);font-size:12px">
-      This is a client node. The hub operator controls meetings from the hub;
-      commands are executed here against local vMix. vMix IP and port can be
-      set here or pushed remotely from the hub operator page.
-    </p>
-    <div class="r2">
-      <div class="field">
-        <label class="fl">Local vMix IP</label>
-        <input type="text" id="vmix-ip" placeholder="127.0.0.1" value="{{cfg.vmix_ip|e}}">
-      </div>
-      <div class="field">
-        <label class="fl">Port</label>
-        <input type="number" id="vmix-port" value="{{cfg.vmix_port}}" min="1" max="65535">
-      </div>
+    <div id="plist" class="plist"><div class="empty-note">No participants yet — join a meeting to see callers</div></div>
+    <div class="padd">
+      <input type="text" id="padd-in" placeholder="Manually add caller name…">
+      <button class="btn bg bs" data-action="addManual">+ Add</button>
     </div>
-    <div class="field">
-      <label class="fl">vMix Input # (Zoom/Teams input)</label>
-      <input type="number" id="vmix-input" value="{{cfg.vmix_input}}" min="1" max="200">
-    </div>
-    <div class="field">
-      <label class="fl">Preview URL</label>
-      <input type="text" id="bridge-url" placeholder="webrtc://192.168.x.x/live/caller" value="{{cfg.bridge_url|e}}">
-      <div style="font-size:11px;color:var(--mu);margin-top:3px">WebRTC stream: <code>webrtc://host/app/stream</code> — uses the SRS WHEP endpoint automatically. Also accepts an HLS <code>.m3u8</code> URL or SRS player page URL. Usually pushed from the hub Save &amp; Push button.</div>
-    </div>
-    <div class="brow">
-      <button class="btn bp" id="btn-save">💾 Save</button>
-      <button class="btn bg" id="btn-test">🔌 Test vMix</button>
-    </div>
-    <div id="test-result" style="margin-top:10px;font-size:12px;color:var(--mu)"></div>
   </div>
 </div>
 
+<!-- ── Saved Meetings ─────────────────────────────────────────────────────── -->
 <div class="card">
-  <div class="ch">📡 Hub Connection</div>
-  <div class="cb" style="font-size:12px;color:var(--mu)">
-    <p>Hub: <strong style="color:var(--tx)">{{hub_url|e}}</strong></p>
-    <p style="margin-top:6px">Polling every 3 s for commands. Participants reported every ~12 s.</p>
-    <p style="margin-top:6px">The hub operator can push vMix IP/port updates from the hub settings page.</p>
+  <div class="ch">📋 Saved Meetings
+    <div class="ch-r">
+      <a href="/hub/vmixcaller/presenter" class="btn bw bs" target="_blank">🖥 Open Presenter View</a>
+    </div>
+  </div>
+  <div class="cb">
+    <p style="font-size:12px;color:var(--mu);margin-bottom:10px">
+      Saved meetings appear on the Presenter View for one-click joining.
+    </p>
+    <div id="mtg-admin-list"></div>
+    <hr class="sep">
+    <p class="fl" style="margin-bottom:8px">Add Meeting</p>
+    <div class="add-mtg">
+      <div class="field" style="margin-bottom:0">
+        <label class="fl">Name</label>
+        <input type="text" id="new-mtg-name" placeholder="Morning Standup">
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label class="fl">Meeting ID</label>
+        <input type="text" id="new-mtg-id" placeholder="123 456 7890">
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label class="fl">Passcode (optional)</label>
+        <input type="password" id="new-mtg-pass" placeholder="••••••">
+      </div>
+      <button class="btn bp" style="align-self:flex-end" data-action="addMeeting">+ Add</button>
+    </div>
   </div>
 </div>
+
 </main>
 <script nonce="{{csp_nonce()}}">
-// ── Minimal helpers (client page only — no hub/presenter JS loaded here) ──────
-function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';}
-var _msgT=null;
-function showMsg(t,ok){var e=document.getElementById('msg');if(!e)return;e.textContent=t;e.className=ok?'mok':'mer';e.style.display='block';clearTimeout(_msgT);_msgT=setTimeout(function(){e.style.display='none';},5000);}
+""" + _JS_HELPERS + r"""
 
+// ── Client-specific additions ─────────────────────────────────────────────────
 var _videoUrl = {{video_url_json|safe}};
 
-// ── Video preview ─────────────────────────────────────────────────────────────
-// webrtc://host/app/stream → native WHEP into <video>
-// http(s)://...            → iframe (SRS player page)
-// /hub/... path            → HLS (hls.js deferred, checked at call-time)
-function _teardownPreview(vid){
-  if(!vid)return;
-  if(vid._pc){try{vid._pc.close();}catch(e){}vid._pc=null;}
-  if(vid._hls){try{vid._hls.destroy();}catch(e){}vid._hls=null;}
-  vid.srcObject=null;vid.src='';
-}
-function _startWhep(whepUrl,vid,ov,msg){
-  ov.classList.remove('hidden');if(msg)msg.textContent='Connecting (WebRTC)\u2026';
-  vid.style.display='block';
-  var pc=new RTCPeerConnection({iceServers:[]});
-  vid._pc=pc;
-  pc.addTransceiver('audio',{direction:'recvonly'});
-  pc.addTransceiver('video',{direction:'recvonly'});
-  pc.ontrack=function(e){
-    if(e.streams&&e.streams[0]){
-      vid.srcObject=e.streams[0];
-      vid.play().catch(function(){});
-      ov.classList.add('hidden');
-    }
-  };
-  pc.oniceconnectionstatechange=function(){
-    if(pc.iceConnectionState==='failed'||pc.iceConnectionState==='disconnected'){
-      ov.classList.remove('hidden');if(msg)msg.textContent='WebRTC connection lost \u2014 is SRS running?';
-    }
-  };
-  pc.createOffer()
-    .then(function(o){return pc.setLocalDescription(o);})
-    .then(function(){
-      return fetch('/api/vmixcaller/whep_proxy?url='+encodeURIComponent(whepUrl),{method:'POST',headers:{'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
-    })
-    .then(function(r){if(!r.ok)throw new Error('WHEP '+r.status);return r.text();})
-    .then(function(sdp){return pc.setRemoteDescription({type:'answer',sdp:sdp});})
-    .catch(function(e){ov.classList.remove('hidden');if(msg)msg.textContent='WebRTC error: '+e.message;});
-}
-function initPreview(purl){
-  var vid=document.getElementById('pvid');
-  var frm=document.getElementById('pvframe');
-  var ov=document.getElementById('pvw-ov');
-  var msg=document.getElementById('pvmsg');
-  if(!ov)return;
-  _teardownPreview(vid);
-  if(frm){frm.src='';frm.style.display='none';}
-  if(!purl){
-    if(vid)vid.style.display='none';
-    ov.classList.remove('hidden');if(msg)msg.textContent='No preview stream configured';return;
-  }
-  // webrtc://host/app/stream → WHEP
-  var wm=purl.match(/^webrtc:\/\/([^\/]+)\/([^\/]+)\/(.+)$/i);
-  if(wm){
-    var whepUrl='http://'+wm[1]+':1985/rtc/v1/whep/?app='+encodeURIComponent(wm[2])+'&stream='+encodeURIComponent(wm[3]);
-    _startWhep(whepUrl,vid,ov,msg);return;
-  }
-  // http(s):// → iframe
-  if(/^https?:\/\//i.test(purl)){
-    if(vid)vid.style.display='none';
-    if(frm){frm.src=purl;frm.style.display='block';}
-    ov.classList.add('hidden');return;
-  }
-  // /hub/... → HLS
-  if(vid)vid.style.display='block';
-  ov.classList.remove('hidden');if(msg)msg.textContent='Connecting to stream\u2026';
-  if(typeof Hls!=='undefined'&&Hls.isSupported()){
-    var hls=new Hls({lowLatencyMode:true,liveSyncDurationCount:2,maxBufferLength:10,xhrSetup:function(xhr){xhr.withCredentials=true;}});
-    vid._hls=hls;hls.loadSource(purl);hls.attachMedia(vid);
-    hls.on(Hls.Events.MANIFEST_PARSED,function(){ov.classList.add('hidden');vid.play().catch(function(){});});
-    hls.on(Hls.Events.ERROR,function(ev,data){
-      if(data.fatal){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';}
-    });
-  } else if(vid&&vid.canPlayType('application/vnd.apple.mpegurl')){
-    vid.src=purl;vid.load();
-    vid.oncanplay=function(){ov.classList.add('hidden');};
-    vid.onerror=function(){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';};
-    vid.play().catch(function(){});
-  } else {
-    ov.classList.remove('hidden');if(msg)msg.textContent='HLS not supported in this browser';
-  }
+function setStatus(state,text,ts){
+  document.getElementById('vdot').className='dot '+(state==='ok'?'dok':state==='warn'?'dwn':'dal');
+  document.getElementById('vstatus').textContent=text;
+  var ago=document.getElementById('vago');
+  if(ago)ago.textContent=ts?'('+_ago(ts)+')':'';
 }
 
-// ── Config buttons ────────────────────────────────────────────────────────────
-function saveClient(){
+function saveConfig(){
   var d={
-    vmix_ip:   document.getElementById('vmix-ip').value.trim()||'127.0.0.1',
+    vmix_ip:   (document.getElementById('vmix-ip').value||'').trim()||'127.0.0.1',
     vmix_port: parseInt(document.getElementById('vmix-port').value)||8088,
     vmix_input:parseInt(document.getElementById('vmix-input').value)||1,
     bridge_url:(document.getElementById('bridge-url').value||'').trim()
   };
-  fetch('/api/vmixcaller/config',{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},credentials:'same-origin',body:JSON.stringify(d)})
+  _post('/api/vmixcaller/config',d).then(function(r){
+    if(r.ok){
+      showMsg('Saved',true);
+      fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
+        .then(function(r){return r.json();})
+        .then(function(v){_videoUrl=v.url||'';initPreview(_videoUrl);})
+        .catch(function(){});
+    } else showMsg(r.error||'Save failed',false);
+  }).catch(function(e){showMsg('Error: '+e,false);});
+}
+
+function testVmix(){
+  fetch('/api/vmixcaller/test_local',{credentials:'same-origin'})
     .then(function(r){return r.json();})
-    .then(function(r){
-      if(r.ok){
-        showMsg('Saved',true);
-        // Re-fetch proxy URL so preview reinitialises if bridge URL changed
-        fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
-          .then(function(r){return r.json();})
-          .then(function(v){_videoUrl=v.url||'';if(_videoUrl)initPreview(_videoUrl);})
-          .catch(function(){});
-      } else {
-        showMsg('Error: '+(r.error||'failed'),false);
-      }
+    .then(function(d){
+      if(d.ok)showMsg('\u2713 vMix reachable \u2014 version '+d.version,true);
+      else showMsg('\u2717 Cannot reach vMix: '+(d.error||'unknown'),false);
     }).catch(function(e){showMsg('Error: '+e,false);});
 }
-function testLocal(){
-  fetch('/api/vmixcaller/test_local',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
-    var el=document.getElementById('test-result');
-    el.style.color=d.ok?'var(--ok)':'var(--al)';
-    el.textContent=d.ok?'\u2713 vMix reachable \u2014 version '+d.version:'\u2717 Cannot reach vMix: '+(d.error||'unknown');
-  }).catch(function(e){document.getElementById('test-result').textContent='Error: '+e;});
+
+function joinManual(){
+  var mid=(document.getElementById('mtg-id').value||'').trim();
+  var pass=(document.getElementById('mtg-pass').value||'').trim();
+  var name=(document.getElementById('mtg-name').value||'Guest Producer').trim();
+  joinWith(mid,pass,name);
 }
 
-// ── Button wiring (addEventListener — CSP-safe, no onclick attr needed) ──────
-document.getElementById('btn-save').addEventListener('click', saveClient);
-document.getElementById('btn-test').addEventListener('click', testLocal);
+// ── State polling — direct vMix query (no hub cycle delay) ───────────────────
+var _statePollT=null;
+function loadState(){
+  clearTimeout(_statePollT);
+  fetch('/api/vmixcaller/local_state',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){
+        setStatus('ok','vMix connected'+(d.version?' \u2014 v'+d.version:''),d.ts);
+      } else {
+        setStatus('al','vMix unreachable: '+(d.error||''),d.ts);
+      }
+      renderParticipants(d.participants||[]);
+      var pago=document.getElementById('parts-ago');
+      if(pago&&d.ts)pago.textContent='updated '+_ago(d.ts);
+    }).catch(function(){setStatus('off','Poll failed',0);});
+  _statePollT=setTimeout(loadState,8000);
+}
 
+// ── Participants ──────────────────────────────────────────────────────────────
+var _parts=[];
+function renderParticipants(list){
+  _parts=list;
+  var el=document.getElementById('plist');
+  if(!el)return;
+  if(!list||!list.length){el.innerHTML='<div class="empty-note">No participants yet</div>';return;}
+  el.innerHTML=list.map(function(p){
+    var safe=_esc(p.name);
+    var b=(p.muted?'<span class="pbadge muted">MUTED</span>':'')+(p.active?'<span class="pbadge air">ON AIR</span>':'');
+    return '<div class="pi"><span class="pn">'+safe+'</span>'+b+'<button class="btn bw bs" data-name="'+safe+'" data-action="putOnAir">\uD83D\uDCFA Put On Air</button></div>';
+  }).join('');
+}
+function addManual(){var inp=document.getElementById('padd-in');var n=inp.value.trim();if(!n)return;if(!_parts.some(function(p){return p.name===n;})){_parts.push({name:n,muted:false,active:false});renderParticipants(_parts);}inp.value='';}
+function putOnAir(btn){
+  sendCmd('ZoomSelectParticipantByName',btn.dataset.name)
+    .then(function(d){if(d.ok)showMsg('"'+btn.dataset.name+'" queued for air',true);});
+}
+
+// ── Saved meetings ────────────────────────────────────────────────────────────
+var _meetings=[];
+function loadMeetings(){
+  fetch('/api/vmixcaller/meetings',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){_meetings=d.meetings||[];renderMeetingsAdmin();})
+    .catch(function(){});
+}
+function renderMeetingsAdmin(){
+  var el=document.getElementById('mtg-admin-list');if(!el)return;
+  if(!_meetings.length){el.innerHTML='<div class="empty-note" style="margin-bottom:0">No saved meetings yet</div>';return;}
+  el.innerHTML=_meetings.map(function(m,i){
+    return '<div class="mtg-admin-row">'
+      +'<div><div class="mtg-name">'+_esc(m.name)+'</div>'
+      +'<div class="mtg-id">ID: '+_esc(m.id)+(m.pass?' &nbsp;&middot;&nbsp; Passcode set':'')+'</div></div>'
+      +'<button class="btn bp bs" data-idx="'+i+'" data-action="joinSavedAdmin">&#128222; Join</button>'
+      +'<button class="btn bd bs" data-idx="'+i+'" data-action="deleteMeeting">&#x2715;</button>'
+      +'</div>';
+  }).join('');
+}
+function joinSavedAdmin(btn){
+  var m=_meetings[parseInt(btn.dataset.idx)];if(!m)return;
+  joinWith(m.id,m.pass,m.display_name||'Guest Producer');
+}
+function addMeeting(){
+  var name=document.getElementById('new-mtg-name').value.trim();
+  var id=document.getElementById('new-mtg-id').value.trim();
+  var pass=document.getElementById('new-mtg-pass').value.trim();
+  if(!name||!id){showMsg('Name and Meeting ID are required',false);return;}
+  _post('/api/vmixcaller/meetings',{name:name,id:id,pass:pass,display_name:''})
+    .then(function(d){
+      if(d.ok){
+        document.getElementById('new-mtg-name').value='';
+        document.getElementById('new-mtg-id').value='';
+        document.getElementById('new-mtg-pass').value='';
+        loadMeetings();showMsg('Meeting saved',true);
+      } else showMsg(d.error||'Save failed',false);
+    }).catch(function(e){showMsg('Error: '+e,false);});
+}
+function deleteMeeting(btn){
+  _del('/api/vmixcaller/meetings/'+btn.dataset.idx)
+    .then(function(d){if(d.ok)loadMeetings();else showMsg(d.error||'Delete failed',false);})
+    .catch(function(e){showMsg('Error: '+e,false);});
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',function(){
   try{if(_videoUrl) initPreview(_videoUrl);}catch(e){}
+  loadState();
+  loadMeetings();
+  var pi=document.getElementById('padd-in');
+  if(pi) pi.addEventListener('keydown',function(e){if(e.key==='Enter') addManual();});
+  var mi=document.getElementById('mtg-id');
+  if(mi) mi.addEventListener('keydown',function(e){if(e.key==='Enter') joinManual();});
 });
 </script>
 </body>
@@ -2045,3 +2172,26 @@ def register(app, ctx):
         if ok:
             return jsonify({"ok": True, "version": _vmix_version(xml_text)})
         return jsonify({"ok": False, "error": xml_text[:120]})
+
+    # ── Client: live vMix state (participants + version, direct query) ────────
+    # Used by the client page's loadState() poll so participants update without
+    # waiting for the hub 12 s reporting cycle.  Works on any node mode.
+    @app.get("/api/vmixcaller/local_state")
+    @login_required
+    def vmixcaller_local_state():
+        cfg = _load_cfg()
+        now = time.time()
+        ok, xml_text = _vmix_xml(cfg)
+        if ok:
+            return jsonify({
+                "ok":           True,
+                "ts":           now,
+                "version":      _vmix_version(xml_text),
+                "participants": _parse_participants(xml_text, cfg.get("vmix_input", 1)),
+            })
+        return jsonify({
+            "ok":           False,
+            "ts":           now,
+            "error":        xml_text[:120],
+            "participants": [],
+        })

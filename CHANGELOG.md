@@ -2,6 +2,25 @@
 
 ---
 
+### vMix Caller 1.5.14 — 2026-04-25
+
+**Feature: Client node page now has full admin UI**
+
+The client node page (`/hub/vmixcaller` on a client node) has been completely rewritten to match the hub operator page in functionality. The old minimal config-only page is replaced with:
+
+- **Status bar** — live vMix connection indicator (green/amber/red dot + version), polled directly from vMix every 8 s via the new `GET /api/vmixcaller/local_state` endpoint. No 12-second hub reporting delay.
+- **Meeting Controls card** — join form (Meeting ID, Passcode, Display Name) + in-call buttons (Mute Self, Stop Camera, Mute All, Leave). Commands execute directly against local vMix (no hub round-trip needed).
+- **Participants card** — live list from vMix XML, with Put On Air and manual-add, refreshed on each state poll.
+- **Saved Meetings card** — full add/delete/join-with-one-click management, shared with the hub and presenter page.
+- **vMix Settings card** — IP, port, input number, Preview URL, Save and Test buttons (all via `data-action=` — CSP-safe).
+- **Presenter View** link in the status bar header.
+- Uses `_JS_HELPERS` (shared JS block) — identical meeting control logic, keyboard shortcuts (M/C), and `setMeetingState` as the hub and presenter pages.
+
+New backend endpoint:
+- `GET /api/vmixcaller/local_state` — fetches vMix XML directly, returns `{ok, ts, version, participants}`. Available on all node modes (hub, client, standalone).
+
+---
+
 ### vMix Caller 1.5.13 — 2026-04-25
 
 **Fix: relay sits at "Connecting" forever — two bugs**
