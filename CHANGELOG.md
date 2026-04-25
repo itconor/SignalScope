@@ -2,6 +2,16 @@
 
 ---
 
+### vMix Caller 1.5.4 — 2026-04-25
+
+**Fix: Save and Test vMix buttons unresponsive on LAN-only client nodes**
+
+Client nodes on studio LANs without internet access could not reach the hls.js CDN. The blocking `<script src="...hls.min.js">` tag (no `defer`) caused the browser to stall HTML parsing indefinitely, so the inline script block containing `saveClient()` and `testLocal()` never executed — both buttons appeared to do nothing.
+
+Fix: added `defer` to the hls.js `<script>` tag in all three templates (`_PRESENTER_TPL`, `_HUB_TPL`, `_CLIENT_TPL`). With `defer`, the CDN fetch happens in the background without blocking parsing; inline scripts execute normally even if the CDN is unreachable. The video preview is unaffected — hls.js still loads before `DOMContentLoaded` when the CDN is available.
+
+---
+
 ### vMix Caller 1.5.3 — 2026-04-25
 
 **Feature: video preview on client node page**

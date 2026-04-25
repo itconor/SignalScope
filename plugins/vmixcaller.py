@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.3",
+    "version": "1.5.4",
 }
 
 import os
@@ -628,7 +628,7 @@ _PRESENTER_TPL = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>Caller — vMix</title>
-<script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" defer></script>
 <style nonce="{{csp_nonce()}}">
 """ + _CSS + r"""
 /* ── Presenter-specific overrides ─────────────────────────────────────── */
@@ -806,7 +806,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>vMix Caller — SignalScope</title>
-<script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" defer></script>
 <style nonce="{{csp_nonce()}}">
 """ + _CSS + r"""
 /* hub-specific */
@@ -1191,7 +1191,7 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>vMix Caller Client — SignalScope</title>
-<script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" defer></script>
 <style nonce="{{csp_nonce()}}">""" + _CSS + r"""</style>
 </head>
 <body>
