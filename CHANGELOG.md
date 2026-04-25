@@ -2,6 +2,21 @@
 
 ---
 
+### vMix Caller 1.5.0 — 2026-04-25
+
+**HLS video relay — hub remote users get live caller video**
+
+Previously the hub's video proxy returned 503 immediately for LAN bridge URLs because the internet-facing hub can't reach a studio LAN IP. Remote users on the hub saw no video.
+
+Fix: the client node now runs a dedicated `VmixCallerVideoRelay` background thread. It polls the local LAN bridge manifest every 1.5 s, fetches each new TS segment, and POSTs it to `POST /api/vmixcaller/video_push` on the hub. The hub buffers the last 6 segments (~12–18 s) in memory. When a remote browser requests `/hub/vmixcaller/video/live/caller.m3u8`, the hub generates a synthetic HLS manifest pointing to buffered segment URLs (`/hub/vmixcaller/video/seg/N.ts`), which are served directly from the buffer.
+
+Result: the same `/hub/vmixcaller/video/...` URL works everywhere:
+- **Hub (remote users)** — served from relay buffer, ~5–10 s startup delay while buffer fills
+- **Client node (LAN users)** — proxied directly to LAN bridge, instant, no relay overhead
+- **Hub with localhost bridge** — proxied directly as before
+
+Video relay thread only starts on `mode == "client"` nodes (not hub/both, which can reach the bridge directly).
+
 ### vMix Caller 1.4.1 — 2026-04-25
 
 **Fix: hub video proxy causes timeout traceback for LAN bridge URLs**

@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.4.1",
+    "version": "1.5.0",
 }
 
 import os
@@ -64,6 +64,15 @@ _DEFAULTS: dict = {
 _pending_cmd: dict = {}   # site_name → {fn, value, input, seq}
 _site_status: dict = {}   # site_name → {ok, version, participants, error, ts}
 _state_lock          = threading.Lock()
+
+# ── Hub-side HLS relay buffer ──────────────────────────────────────────────────
+# Client nodes fetch TS segments from the local LAN bridge and push them here.
+# Hub serves a synthetic HLS manifest pointing to buffered segments so remote
+# browsers (HTTPS hub) can play the video without reaching the LAN bridge.
+_video_segments: dict = {}   # seq_num (int) → {"data": bytes, "duration": float}
+_video_seq             = [0] # next seq — list so nested functions can mutate
+_video_lock            = threading.Lock()
+_VIDEO_MAX_SEGS        = 6   # ~12–18 s buffer at 2–3 s/segment
 
 
 # ── Config helpers ─────────────────────────────────────────────────────────────
@@ -292,6 +301,121 @@ def _start_client_thread(monitor, hub_url: str):
             pass
 
         time.sleep(3)
+
+
+# ── Video relay — client pushes HLS segments to hub ───────────────────────────
+
+def _video_relay_loop(monitor, hub_url: str):
+    """Runs on client nodes only.  Fetches TS segments from the local LAN
+    bridge and POSTs them to the hub so remote browsers can play the stream
+    via the hub's synthetic HLS manifest — no direct LAN access needed.
+
+    Poll interval: 1.5 s (segments are typically 2–3 s long, so we get each
+    one once while staying well inside the segment duration).
+    """
+    import collections, hashlib, hmac as _hmac
+
+    hub_url = hub_url.rstrip("/")
+
+    # Track which segment filenames we have already pushed (bounded)
+    _sent_list: list = []
+    _sent_set:  set  = set()
+
+    def _track(name: str):
+        if name in _sent_set:
+            return
+        _sent_set.add(name)
+        _sent_list.append(name)
+        if len(_sent_list) > 40:
+            old = _sent_list.pop(0)
+            _sent_set.discard(old)
+
+    def _sign(secret: str, data_bytes: bytes, ts: float) -> str:
+        key = hashlib.sha256(f"{secret}:signing".encode()).digest()
+        msg = f"{ts:.0f}:".encode() + data_bytes
+        return _hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+    def _push(site: str, secret: str, seg_data: bytes, duration: float):
+        ts   = time.time()
+        hdrs = {
+            "Content-Type":   "application/octet-stream",
+            "X-Site":         site,
+            "X-Seg-Duration": f"{duration:.3f}",
+        }
+        if secret:
+            sig = _sign(secret, seg_data, ts)
+            hdrs.update({
+                "X-Hub-Sig":   sig,
+                "X-Hub-Ts":    f"{ts:.0f}",
+                "X-Hub-Nonce": hashlib.md5(os.urandom(8)).hexdigest()[:16],
+            })
+        req = urllib.request.Request(
+            f"{hub_url}/api/vmixcaller/video_push",
+            data=seg_data, headers=hdrs, method="POST",
+        )
+        urllib.request.urlopen(req, timeout=12).close()
+
+    while True:
+        try:
+            cfg        = _load_cfg()
+            bridge_url = (cfg.get("bridge_url") or "").strip()
+            app_cfg    = monitor.app_cfg
+            site       = (getattr(getattr(app_cfg, "hub", None), "site_name", "") or "").strip()
+            secret     = (getattr(getattr(app_cfg, "hub", None), "secret_key",  "") or "").strip()
+
+            if not bridge_url or not site:
+                time.sleep(5)
+                continue
+
+            parsed       = urlparse(bridge_url)
+            base         = f"{parsed.scheme}://{parsed.netloc}"
+            manifest_url = base + parsed.path
+
+            # ── Fetch manifest ────────────────────────────────────────────────
+            resp     = urllib.request.urlopen(
+                urllib.request.Request(manifest_url, method="GET"), timeout=5)
+            manifest = resp.read().decode("utf-8", errors="replace")
+
+            # ── Parse EXTINF + segment lines ──────────────────────────────────
+            to_fetch: list = []
+            duration = 2.0
+            for line in manifest.splitlines():
+                line = line.strip()
+                if line.startswith("#EXTINF:"):
+                    try:
+                        duration = float(line[8:].split(",")[0])
+                    except Exception:
+                        pass
+                elif line and not line.startswith("#"):
+                    to_fetch.append((line, duration))
+
+            # ── Fetch & push only new segments ────────────────────────────────
+            manifest_dir = parsed.path.rsplit("/", 1)[0]
+            for seg_name, seg_dur in to_fetch:
+                if seg_name in _sent_set:
+                    continue
+                if seg_name.startswith("http"):
+                    seg_url = seg_name
+                elif seg_name.startswith("/"):
+                    seg_url = base + seg_name
+                else:
+                    seg_url = base + manifest_dir + "/" + seg_name
+                try:
+                    seg_data = urllib.request.urlopen(
+                        urllib.request.Request(seg_url, method="GET"), timeout=10
+                    ).read()
+                except Exception:
+                    continue
+                try:
+                    _push(site, secret, seg_data, seg_dur)
+                    _track(seg_name)
+                except Exception:
+                    pass   # hub unreachable — will retry next cycle
+
+        except Exception:
+            pass   # bridge not running, not configured, etc. — keep looping
+
+        time.sleep(1.5)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1085,6 +1209,15 @@ def register(app, ctx):
             daemon=True, name="VmixCallerClient",
         ).start()
 
+    # ── Video relay thread (client only — pushes HLS segments to hub) ─────────
+    # Only start on pure client nodes.  Hub/both nodes are on the same machine
+    # as (or same LAN as) the bridge, so the proxy route reaches it directly.
+    if mode == "client" and hub_url:
+        threading.Thread(
+            target=_video_relay_loop, args=(monitor, hub_url),
+            daemon=True, name="VmixCallerVideoRelay",
+        ).start()
+
     # ── Operator / hub page ───────────────────────────────────────────────────
     @app.get("/hub/vmixcaller")
     @login_required
@@ -1117,16 +1250,20 @@ def register(app, ctx):
             bridge_url_json=json.dumps(bridge),
         )
 
-    # ── Authenticated HLS proxy  (/hub/vmixcaller/video/<path:seg>) ───────────
-    # Proxies HLS manifest and TS segments from the SRS bridge to authenticated
-    # browser sessions.  Registered on all nodes (hub and client).
+    # ── Authenticated HLS proxy / relay server (/hub/vmixcaller/video/<path>) ──
+    # Registered on ALL nodes (hub and client).
     #
-    # Short-circuit rule: if this node is the hub AND the bridge URL is not
-    # localhost/127.0.0.1, the hub is on the public internet and cannot reach
-    # a LAN bridge.  Return 503 immediately — no connection attempt, no
-    # timeout, no traceback.  The presenter should be using the client node
-    # URL (/hub/vmixcaller/presenter on the client node) so its local proxy
-    # can reach the LAN bridge instead.
+    # Hub with LAN bridge (internet hub, LAN bridge):
+    #   • Requests for seg/N.ts      → served from the in-memory relay buffer
+    #     (client pushed the segment via /api/vmixcaller/video_push)
+    #   • Requests for *.m3u8        → synthetic manifest referencing buffered segs
+    #   • Anything else              → 503 (not reachable)
+    #
+    # Hub with localhost bridge (bridge running on same machine as hub):
+    #   • All requests proxied directly to the local SRS server.
+    #
+    # Client node (any bridge URL):
+    #   • All requests proxied directly — client is on the same LAN as bridge.
     @app.get("/hub/vmixcaller/video/<path:seg>")
     @login_required
     def vmixcaller_video_proxy(seg):
@@ -1135,14 +1272,54 @@ def register(app, ctx):
         if not base_url:
             return Response("no bridge configured", status=404,
                             content_type="text/plain")
+
         parsed = urlparse(base_url)
         host   = (parsed.hostname or "").lower()
-        # Hub short-circuit: don't attempt a connection to a non-local bridge
-        if is_hub and host not in ("127.0.0.1", "localhost", "::1"):
-            return Response(
-                "bridge not reachable from hub — use client node presenter URL",
-                status=503, content_type="text/plain",
-            )
+        lan_bridge = is_hub and host not in ("127.0.0.1", "localhost", "::1")
+
+        # ── Hub + LAN bridge: serve from relay buffer ─────────────────────────
+        if lan_bridge:
+            # Buffered TS segment: path is "seg/N.ts"
+            if seg.startswith("seg/") and seg.endswith(".ts"):
+                try:
+                    seq = int(seg[4:-3])
+                except ValueError:
+                    return Response("", status=404)
+                with _video_lock:
+                    sd = _video_segments.get(seq)
+                if sd:
+                    return Response(sd["data"], content_type="video/mp2t",
+                                    headers={"Cache-Control": "no-cache"})
+                return Response("", status=404)
+
+            # Manifest: generate synthetic HLS from buffer
+            if seg.endswith(".m3u8"):
+                with _video_lock:
+                    if not _video_segments:
+                        # No segments yet — relay hasn't started or bridge is off
+                        return Response("", status=503, content_type="text/plain")
+                    seqs  = sorted(_video_segments.keys())
+                    lines = [
+                        "#EXTM3U",
+                        "#EXT-X-VERSION:3",
+                        "#EXT-X-TARGETDURATION:3",
+                        f"#EXT-X-MEDIA-SEQUENCE:{seqs[0]}",
+                    ]
+                    for s in seqs:
+                        d = _video_segments[s]
+                        lines.append(f"#EXTINF:{d['duration']:.3f},")
+                        lines.append(f"/hub/vmixcaller/video/seg/{s}.ts")
+                return Response(
+                    "\n".join(lines) + "\n",
+                    content_type="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "no-cache"},
+                )
+
+            # Unknown path for LAN bridge
+            return Response("use seg/N.ts or caller.m3u8 path", status=404,
+                            content_type="text/plain")
+
+        # ── Direct proxy (localhost bridge or client node) ────────────────────
         try:
             proxy_url = f"{parsed.scheme}://{parsed.netloc}/{seg}"
             req  = urllib.request.Request(proxy_url, method="GET")
@@ -1157,6 +1334,32 @@ def register(app, ctx):
             return Response("", status=e.code)
         except Exception:
             return Response("", status=502)
+
+    # ── Client pushes HLS segment to hub relay buffer ─────────────────────────
+    @app.post("/api/vmixcaller/video_push")
+    def vmixcaller_video_push():
+        site = request.headers.get("X-Site", "").strip()
+        if not site:
+            return jsonify({"error": "missing X-Site"}), 400
+        with hub_server._lock:
+            approved = hub_server._sites.get(site, {}).get("_approved")
+        if not approved:
+            return jsonify({"error": "not approved"}), 403
+        data = request.get_data()
+        if not data:
+            return jsonify({"ok": True})
+        try:
+            duration = float(request.headers.get("X-Seg-Duration", "2.0"))
+        except (ValueError, TypeError):
+            duration = 2.0
+        with _video_lock:
+            seq = _video_seq[0]
+            _video_seq[0] += 1
+            _video_segments[seq] = {"data": data, "duration": duration}
+            # Trim oldest segments
+            while len(_video_segments) > _VIDEO_MAX_SEGS:
+                del _video_segments[min(_video_segments.keys())]
+        return jsonify({"ok": True})
 
     # ── Config ────────────────────────────────────────────────────────────────
     @app.get("/api/vmixcaller/config")
