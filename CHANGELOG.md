@@ -2,6 +2,26 @@
 
 ---
 
+### vMix Caller 1.5.6 — 2026-04-25
+
+**Feature: native WebRTC preview via WHEP (SRS)**
+
+The Preview URL field now accepts three formats:
+
+- `webrtc://host/app/stream` — **new native WebRTC mode** (recommended). JavaScript parses the URL, constructs the SRS WHEP endpoint (`http://host:1985/rtc/v1/whep/?app=APP&stream=STREAM`), and plays directly into a `<video>` element via `RTCPeerConnection`. No iframe, no relay needed. Zero latency. Works on any Chromium or Firefox browser.
+- `http://host:8080/players/rtc_player.html?...` — SRS player page embedded in an `<iframe>` (legacy).
+- `http://host:8080/live/caller.m3u8` — HLS stream via hls.js (original mode, still fully supported).
+
+Mode is detected automatically from the URL. Config field label updated to "Preview URL" across hub, client, and presenter pages.
+
+`_compute_video_url` updated: `webrtc://` and player-page URLs are passed through as-is to the browser for client nodes; hub nodes with LAN addresses get `""` (browser on remote hub can't reach LAN SRS via WebRTC).
+
+`initPreview` refactored with `_teardownPreview` (cleans up both `RTCPeerConnection` and hls.js instance on re-init) and `_startWhep` helper. Both `_JS_HELPERS` (hub/presenter) and the `_CLIENT_TPL` inline copy are updated identically.
+
+The SRT Bridge Setup guide in the hub page is updated to lead with WebRTC / SRS WebRTC player, with HLS as the secondary option.
+
+---
+
 ### vMix Caller 1.5.5 — 2026-04-25
 
 **Fix: Save and Test vMix buttons still broken on client page**

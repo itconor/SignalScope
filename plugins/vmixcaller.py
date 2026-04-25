@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.5",
+    "version": "1.5.6",
 }
 
 import os
@@ -133,37 +133,71 @@ def _proxy_video_url(bridge_url: str) -> str:
 def _compute_video_url(cfg: dict, is_hub_node: bool) -> str:
     """Return the ready-to-use video URL for the browser to request.
 
-    Hub nodes with a localhost bridge proxy it directly (low latency).
-    Hub nodes with a LAN bridge — or no bridge configured — use the relay
-    buffer manifest so the hub can serve video that the client is pushing.
-    Client nodes proxy the LAN bridge path directly.
+    Two preview modes are detected automatically from the URL format:
+
+    HLS mode  (.m3u8 URL):
+      Hub with localhost bridge → proxied via /hub/vmixcaller/video/<path>
+      Hub with LAN bridge or no bridge → relay buffer (relay.m3u8)
+      Client node → proxied via /hub/vmixcaller/video/<path>
+
+    WebRTC / iframe mode  (any http(s):// URL that isn't .m3u8 — e.g. the
+      SRS player page at /players/rtc_player.html?...):
+      Client node → direct URL (SRS is on the same LAN, browser can reach it)
+      Hub node with localhost bridge → direct URL
+      Hub node with LAN bridge → "" (browser on remote hub can't reach LAN SRS)
     """
     bridge = (cfg.get("bridge_url") or "").strip()
-    if is_hub_node:
-        if bridge:
-            try:
-                host = (urlparse(bridge).hostname or "").lower()
-                if host in ("127.0.0.1", "localhost", "::1"):
-                    # Localhost bridge on hub server — proxy its exact path
-                    path = urlparse(bridge).path or "/live/caller.m3u8"
-                    if not path.startswith("/"):
-                        path = "/" + path
-                    return "/hub/vmixcaller/video" + path
-            except Exception:
-                pass
-        # LAN bridge or no bridge — serve from relay buffer
-        return "/hub/vmixcaller/video/relay.m3u8"
-    else:
-        # Client node — proxy bridge path directly
-        if not bridge:
-            return ""
+
+    low = bridge.lower()
+    # Detect mode
+    is_hls     = low.split("?")[0].endswith(".m3u8")
+    is_webrtc  = low.startswith("webrtc://")
+
+    def _is_local(url: str) -> bool:
         try:
-            path = urlparse(bridge).path or "/live/caller.m3u8"
-            if not path.startswith("/"):
-                path = "/" + path
-            return "/hub/vmixcaller/video" + path
+            h = (urlparse(url).hostname or "").lower()
+            return h in ("127.0.0.1", "localhost", "::1")
         except Exception:
+            return False
+
+    def _is_local_webrtc(url: str) -> bool:
+        try:
+            return url.split("//")[1].split("/")[0].lower() in (
+                "127.0.0.1", "localhost", "::1")
+        except Exception:
+            return False
+
+    if is_hls:
+        if is_hub_node:
+            if bridge and _is_local(bridge):
+                path = urlparse(bridge).path or "/live/caller.m3u8"
+                if not path.startswith("/"):
+                    path = "/" + path
+                return "/hub/vmixcaller/video" + path
+            # LAN bridge or no bridge — serve from relay buffer
+            return "/hub/vmixcaller/video/relay.m3u8"
+        else:
+            try:
+                path = urlparse(bridge).path or "/live/caller.m3u8"
+                if not path.startswith("/"):
+                    path = "/" + path
+                return "/hub/vmixcaller/video" + path
+            except Exception:
+                return ""
+
+    elif is_webrtc:
+        # webrtc://host/app/stream  — passed to JS which builds the WHEP URL.
+        # Hub nodes can't reach a LAN SRS; only return for localhost or client.
+        if is_hub_node and not _is_local_webrtc(bridge):
             return ""
+        return bridge
+
+    else:
+        # http(s):// player page → iframe in browser.
+        # Hub nodes can't reach a LAN SRS; only return for localhost or client.
+        if is_hub_node and not _is_local(bridge):
+            return ""
+        return bridge
 
 
 # ── vMix API helpers (executed on the CLIENT side) ────────────────────────────
@@ -495,6 +529,7 @@ kbd{background:#0d1e40;border:1px solid var(--bor);border-radius:3px;padding:0 5
 /* video */
 .pvw-wrap{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden}
 .pvw-wrap video{width:100%;height:100%;object-fit:cover;display:block}
+#pvframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none;background:#000}
 .pvw-ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--mu);font-size:12px;text-align:center;padding:20px;background:rgba(0,0,0,.82)}
 .pvw-ov.hidden{display:none}
 .pvw-icon{font-size:40px;line-height:1}
@@ -535,30 +570,81 @@ function _proxyUrl(u){
 }
 
 // ── Video preview ─────────────────────────────────────────────────────────────
-// purl is already the SignalScope proxy path (e.g. /hub/vmixcaller/video/...)
-// Uses hls.js for Chrome/Edge; falls back to native HLS for Safari.
+// Three modes detected from purl:
+//   webrtc://host/app/stream  → native WHEP (RTCPeerConnection into <video>)
+//   http(s)://...             → iframe (SRS player page or other web player)
+//   /hub/... path             → HLS proxied via SignalScope (hls.js / native)
+function _teardownPreview(vid){
+  if(!vid)return;
+  if(vid._pc){try{vid._pc.close();}catch(e){}vid._pc=null;}
+  if(vid._hls){try{vid._hls.destroy();}catch(e){}vid._hls=null;}
+  vid.srcObject=null;vid.src='';
+}
+function _startWhep(whepUrl,vid,ov,msg){
+  ov.classList.remove('hidden');if(msg)msg.textContent='Connecting (WebRTC)\u2026';
+  vid.style.display='block';
+  var pc=new RTCPeerConnection({iceServers:[]});
+  vid._pc=pc;
+  pc.addTransceiver('audio',{direction:'recvonly'});
+  pc.addTransceiver('video',{direction:'recvonly'});
+  pc.ontrack=function(e){
+    if(e.streams&&e.streams[0]){
+      vid.srcObject=e.streams[0];
+      vid.play().catch(function(){});
+      ov.classList.add('hidden');
+    }
+  };
+  pc.oniceconnectionstatechange=function(){
+    if(pc.iceConnectionState==='failed'||pc.iceConnectionState==='disconnected'){
+      ov.classList.remove('hidden');if(msg)msg.textContent='WebRTC connection lost \u2014 is SRS running?';
+    }
+  };
+  pc.createOffer()
+    .then(function(o){return pc.setLocalDescription(o);})
+    .then(function(){
+      return fetch(whepUrl,{method:'POST',headers:{'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
+    })
+    .then(function(r){if(!r.ok)throw new Error('WHEP '+r.status);return r.text();})
+    .then(function(sdp){return pc.setRemoteDescription({type:'answer',sdp:sdp});})
+    .catch(function(e){ov.classList.remove('hidden');if(msg)msg.textContent='WebRTC error: '+e.message;});
+}
 function initPreview(purl){
   var vid=document.getElementById('pvid');
+  var frm=document.getElementById('pvframe');
   var ov=document.getElementById('pvw-ov');
   var msg=document.getElementById('pvmsg');
-  if(!vid||!ov)return;
-  // Tear down any existing hls.js instance before re-initialising
-  if(vid._hls){try{vid._hls.destroy();}catch(e){}vid._hls=null;}
-  vid.src='';
-  if(!purl){ov.classList.remove('hidden');if(msg)msg.textContent='No preview stream configured';return;}
+  if(!ov)return;
+  _teardownPreview(vid);
+  if(frm){frm.src='';frm.style.display='none';}
+  if(!purl){
+    if(vid){vid.style.display='none';}
+    ov.classList.remove('hidden');if(msg)msg.textContent='No preview stream configured';return;
+  }
+  // webrtc://host/app/stream → native WHEP
+  var wm=purl.match(/^webrtc:\/\/([^\/]+)\/([^\/]+)\/(.+)$/i);
+  if(wm){
+    var whepUrl='http://'+wm[1]+':1985/rtc/v1/whep/?app='+encodeURIComponent(wm[2])+'&stream='+encodeURIComponent(wm[3]);
+    if(frm){frm.src='';frm.style.display='none';}
+    _startWhep(whepUrl,vid,ov,msg);return;
+  }
+  // http(s):// → iframe (SRS player page or other embedded player)
+  if(/^https?:\/\//i.test(purl)){
+    if(vid)vid.style.display='none';
+    if(frm){frm.src=purl;frm.style.display='block';}
+    ov.classList.add('hidden');return;
+  }
+  // /hub/... → HLS
+  if(vid)vid.style.display='block';
   ov.classList.remove('hidden');if(msg)msg.textContent='Connecting to stream\u2026';
   if(typeof Hls!=='undefined'&&Hls.isSupported()){
-    // Chrome, Firefox, Edge — native <video> can't play HLS; use hls.js
     var hls=new Hls({lowLatencyMode:true,liveSyncDurationCount:2,maxBufferLength:10,xhrSetup:function(xhr){xhr.withCredentials=true;}});
     vid._hls=hls;
-    hls.loadSource(purl);
-    hls.attachMedia(vid);
+    hls.loadSource(purl);hls.attachMedia(vid);
     hls.on(Hls.Events.MANIFEST_PARSED,function(){ov.classList.add('hidden');vid.play().catch(function(){});});
     hls.on(Hls.Events.ERROR,function(ev,data){
       if(data.fatal){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';}
     });
-  } else if(vid.canPlayType('application/vnd.apple.mpegurl')){
-    // Safari — native HLS
+  } else if(vid&&vid.canPlayType('application/vnd.apple.mpegurl')){
     vid.src=purl;vid.load();
     vid.oncanplay=function(){ov.classList.add('hidden');};
     vid.onerror=function(){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';};
@@ -679,6 +765,7 @@ main{max-width:860px}
   <div class="cb" style="padding:10px">
     <div class="pvw-wrap">
       <video id="pvid" autoplay muted playsinline></video>
+      <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
       <div id="pvw-ov">
         <div class="pvw-icon">📷</div>
         <div id="pvmsg">{% if bridge_url %}Waiting for caller…{% else %}No preview stream configured{% endif %}</div>
@@ -846,52 +933,48 @@ _HUB_TPL = r"""<!DOCTYPE html>
       <div class="cb" style="padding:10px">
         <div class="pvw-wrap">
           <video id="pvid" autoplay muted playsinline></video>
+          <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
           <div id="pvw-ov">
             <div class="pvw-icon">📷</div>
-            <div id="pvmsg">Configure a Bridge URL to enable preview</div>
+            <div id="pvmsg">Configure a Preview URL to enable preview</div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- SRT bridge setup guide -->
+    <!-- Bridge setup guide -->
     <div class="card">
-      <div class="ch">⚙ SRT Bridge Setup</div>
+      <div class="ch">⚙ Bridge Setup</div>
       <div class="cb" style="font-size:12px;color:var(--mu);line-height:1.65">
 
-        <p style="font-weight:600;color:var(--tx);margin-bottom:6px">Option A — Bridge on the same LAN as vMix <span style="font-weight:400;color:var(--ok)">(recommended)</span></p>
-        <p style="margin-bottom:6px">Run the bridge on any Ubuntu machine on the <strong style="color:var(--tx)">same LAN as vMix</strong> (can be the SignalScope client node):</p>
-        <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:11px;color:#7dd3fc;white-space:pre-wrap;margin:6px 0">docker run -d --name srs-srt --restart unless-stopped \
-  -p 10080:10080/udp -p 8080:8080 \
-  ossrs/srs:5 ./objs/srs -c conf/srt.conf</pre>
-        <p style="margin-bottom:4px">In vMix → Zoom input → <strong>Output</strong> → enable SRT, set <strong>Type: Caller</strong>:</p>
+        <p style="font-weight:600;color:var(--tx);margin-bottom:6px">Option A — WebRTC player page <span style="font-weight:400;color:var(--ok)">(recommended)</span></p>
+        <p style="margin-bottom:6px">Run SRS on the same LAN as vMix. Publish from vMix via SRT or RTMP; SRS exposes a built-in WebRTC player page for the browser:</p>
+        <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:11px;color:#7dd3fc;white-space:pre-wrap;margin:6px 0">docker run -d --name srs --restart unless-stopped \
+  -p 10080:10080/udp -p 8080:8080 -p 1935:1935 \
+  -p 8000:8000/udp \
+  ossrs/srs:5 ./objs/srs -c conf/rtc.conf</pre>
+        <p style="margin-bottom:4px">In vMix → Zoom input → <strong>Output</strong> → enable SRT (<strong>Type: Caller</strong>):</p>
         <ul style="padding-left:16px;margin-bottom:6px">
-          <li><strong style="color:var(--tx)">Hostname</strong> — LAN IP of the bridge machine (e.g. <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">192.168.13.2</code>)</li>
+          <li><strong style="color:var(--tx)">Hostname</strong> — LAN IP of the SRS machine (e.g. <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">192.168.13.2</code>)</li>
           <li><strong style="color:var(--tx)">Port</strong> — <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">10080</code></li>
           <li><strong style="color:var(--tx)">Stream ID</strong> — <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">#!::h=live/caller,m=publish</code></li>
         </ul>
-        <p>Set <strong style="color:var(--tx)">Bridge URL</strong> below to the bridge machine's LAN IP:</p>
-        <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://192.168.13.2:8080/live/caller.m3u8</pre>
-        <p style="font-size:11px;color:var(--wn);margin-top:4px">⚠ <strong>Hub uses HTTPS?</strong> Don't use the hub URL for the presenter page — the browser will block HTTP video as mixed content. Instead, bookmark the presenter page from the <strong>client node</strong> (see note below).</p>
+        <p>Set <strong style="color:var(--tx)">Preview URL</strong> below to the SRS WebRTC player page:</p>
+        <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://192.168.13.2:8080/players/rtc_player.html?autostart=true&amp;stream=webrtc://192.168.13.2/live/caller</pre>
+        <p style="font-size:11px;color:var(--wn);margin-top:4px">⚠ WebRTC preview is served directly from the SRS machine. The client node and presenter page must be on the <strong>same LAN</strong> as SRS. The hub operator page will not show the preview if the hub is on a remote server.</p>
 
         <hr style="border:none;border-top:1px solid var(--bor);margin:12px 0">
 
-        <p style="font-weight:600;color:var(--tx);margin-bottom:6px">Option B — Bridge on the hub server</p>
-        <p style="margin-bottom:6px">Run SRS on the hub server. Bind port 8080 to localhost — SignalScope proxies it securely. vMix pushes SRT over the internet to the hub's public IP.</p>
-        <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:11px;color:#7dd3fc;white-space:pre-wrap;margin:6px 0">docker run -d --name srs-srt --restart unless-stopped \
-  -p 10080:10080/udp -p 127.0.0.1:8080:8080 \
-  ossrs/srs:5 ./objs/srs -c conf/srt.conf</pre>
-        <p>Set vMix SRT Hostname to the hub's public IP, then set Bridge URL to:</p>
+        <p style="font-weight:600;color:var(--tx);margin-bottom:6px">Option B — HLS stream (legacy / hub-server bridge)</p>
+        <p style="margin-bottom:6px">Run SRS with SRT input on the hub server. Bind port 8080 to localhost — SignalScope proxies the HLS stream securely. Set Preview URL to:</p>
         <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://127.0.0.1:8080/live/caller.m3u8</pre>
-        <p style="font-size:11px">SignalScope automatically detects the localhost URL and proxies the stream — no public port 8080 needed.</p>
+        <p style="font-size:11px">SignalScope detects the <code>.m3u8</code> extension and proxies the stream — hub works from any browser.</p>
 
         <hr style="border:none;border-top:1px solid var(--bor);margin:12px 0">
 
-        <p style="font-weight:600;color:var(--tx);margin-bottom:6px">📌 Presenter bookmark — hub on HTTPS</p>
-        <p style="margin-bottom:6px">If your hub uses HTTPS and the bridge is on a LAN machine, the presenter page must be opened from the <strong style="color:var(--tx)">client node</strong> URL (HTTP), not the hub URL. The video is proxied through SignalScope locally — no cert or port changes needed.</p>
-        <p style="margin-bottom:4px">Give the presenter this bookmark:</p>
+        <p style="font-weight:600;color:var(--tx);margin-bottom:6px">📌 Presenter bookmark</p>
+        <p style="margin-bottom:4px">For WebRTC, open the presenter page from the <strong style="color:var(--tx)">client node</strong> URL so the browser is on the same LAN as SRS:</p>
         <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://&lt;client-node-ip&gt;:&lt;port&gt;/hub/vmixcaller/presenter</pre>
-        <p style="font-size:11px">The hub presenter button still works for operators (hub can proxy a localhost bridge). For a LAN bridge, only the client node can reach it.</p>
 
       </div>
     </div>
@@ -934,9 +1017,9 @@ _HUB_TPL = r"""<!DOCTYPE html>
           </div>
         </div>
         <div class="field" style="margin-top:4px">
-          <label class="fl">Bridge URL (internal HLS, proxied by SignalScope)</label>
-          <input type="text" id="bridge-url" placeholder="http://127.0.0.1:8080/live/caller.m3u8" value="{{cfg.bridge_url|e}}">
-          <div class="hint">Run the SRT bridge on this hub server — see setup guide on the left.</div>
+          <label class="fl">Preview URL</label>
+          <input type="text" id="bridge-url" placeholder="http://192.168.x.x:8080/players/rtc_player.html?autostart=true&stream=webrtc://192.168.x.x/live/caller" value="{{cfg.bridge_url|e}}">
+          <div class="hint">WebRTC player page (SRS <code>/players/rtc_player.html?...</code>) or HLS <code>.m3u8</code> URL. See setup guide on the left. Client node also uses this to drive its own preview.</div>
         </div>
       </div>
     </div>
@@ -1205,9 +1288,10 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
   <div class="cb" style="padding:10px">
     <div class="pvw-wrap">
       <video id="pvid" autoplay muted playsinline></video>
+      <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
       <div id="pvw-ov">
         <div class="pvw-icon">📷</div>
-        <div id="pvmsg">{% if cfg.bridge_url %}Waiting for caller…{% else %}Configure a Bridge URL below to enable preview{% endif %}</div>
+        <div id="pvmsg">{% if cfg.bridge_url %}Waiting for caller…{% else %}Configure a Preview URL below to enable preview{% endif %}</div>
       </div>
     </div>
   </div>
@@ -1237,9 +1321,9 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
       <input type="number" id="vmix-input" value="{{cfg.vmix_input}}" min="1" max="200">
     </div>
     <div class="field">
-      <label class="fl">Bridge URL (HLS preview stream)</label>
-      <input type="text" id="bridge-url" placeholder="http://192.168.x.x:8080/live/caller.m3u8" value="{{cfg.bridge_url|e}}">
-      <div style="font-size:11px;color:var(--mu);margin-top:3px">Usually pushed automatically from the hub when you click Save &amp; Push to Site there. Enter manually if needed.</div>
+      <label class="fl">Preview URL</label>
+      <input type="text" id="bridge-url" placeholder="webrtc://192.168.x.x/live/caller" value="{{cfg.bridge_url|e}}">
+      <div style="font-size:11px;color:var(--mu);margin-top:3px">WebRTC stream: <code>webrtc://host/app/stream</code> — uses the SRS WHEP endpoint automatically. Also accepts an HLS <code>.m3u8</code> URL or SRS player page URL. Usually pushed from the hub Save &amp; Push button.</div>
     </div>
     <div class="brow">
       <button class="btn bp" onclick="saveClient()">💾 Save</button>
@@ -1266,26 +1350,79 @@ function showMsg(t,ok){var e=document.getElementById('msg');if(!e)return;e.textC
 
 var _videoUrl = {{video_url_json}};
 
-// ── Video preview (hls.js deferred — checked at call-time via typeof) ─────────
+// ── Video preview ─────────────────────────────────────────────────────────────
+// webrtc://host/app/stream → native WHEP into <video>
+// http(s)://...            → iframe (SRS player page)
+// /hub/... path            → HLS (hls.js deferred, checked at call-time)
+function _teardownPreview(vid){
+  if(!vid)return;
+  if(vid._pc){try{vid._pc.close();}catch(e){}vid._pc=null;}
+  if(vid._hls){try{vid._hls.destroy();}catch(e){}vid._hls=null;}
+  vid.srcObject=null;vid.src='';
+}
+function _startWhep(whepUrl,vid,ov,msg){
+  ov.classList.remove('hidden');if(msg)msg.textContent='Connecting (WebRTC)\u2026';
+  vid.style.display='block';
+  var pc=new RTCPeerConnection({iceServers:[]});
+  vid._pc=pc;
+  pc.addTransceiver('audio',{direction:'recvonly'});
+  pc.addTransceiver('video',{direction:'recvonly'});
+  pc.ontrack=function(e){
+    if(e.streams&&e.streams[0]){
+      vid.srcObject=e.streams[0];
+      vid.play().catch(function(){});
+      ov.classList.add('hidden');
+    }
+  };
+  pc.oniceconnectionstatechange=function(){
+    if(pc.iceConnectionState==='failed'||pc.iceConnectionState==='disconnected'){
+      ov.classList.remove('hidden');if(msg)msg.textContent='WebRTC connection lost \u2014 is SRS running?';
+    }
+  };
+  pc.createOffer()
+    .then(function(o){return pc.setLocalDescription(o);})
+    .then(function(){
+      return fetch(whepUrl,{method:'POST',headers:{'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
+    })
+    .then(function(r){if(!r.ok)throw new Error('WHEP '+r.status);return r.text();})
+    .then(function(sdp){return pc.setRemoteDescription({type:'answer',sdp:sdp});})
+    .catch(function(e){ov.classList.remove('hidden');if(msg)msg.textContent='WebRTC error: '+e.message;});
+}
 function initPreview(purl){
   var vid=document.getElementById('pvid');
+  var frm=document.getElementById('pvframe');
   var ov=document.getElementById('pvw-ov');
   var msg=document.getElementById('pvmsg');
-  if(!vid||!ov)return;
-  if(vid._hls){try{vid._hls.destroy();}catch(e){}vid._hls=null;}
-  vid.src='';
-  if(!purl){ov.classList.remove('hidden');if(msg)msg.textContent='No preview stream configured';return;}
+  if(!ov)return;
+  _teardownPreview(vid);
+  if(frm){frm.src='';frm.style.display='none';}
+  if(!purl){
+    if(vid)vid.style.display='none';
+    ov.classList.remove('hidden');if(msg)msg.textContent='No preview stream configured';return;
+  }
+  // webrtc://host/app/stream → WHEP
+  var wm=purl.match(/^webrtc:\/\/([^\/]+)\/([^\/]+)\/(.+)$/i);
+  if(wm){
+    var whepUrl='http://'+wm[1]+':1985/rtc/v1/whep/?app='+encodeURIComponent(wm[2])+'&stream='+encodeURIComponent(wm[3]);
+    _startWhep(whepUrl,vid,ov,msg);return;
+  }
+  // http(s):// → iframe
+  if(/^https?:\/\//i.test(purl)){
+    if(vid)vid.style.display='none';
+    if(frm){frm.src=purl;frm.style.display='block';}
+    ov.classList.add('hidden');return;
+  }
+  // /hub/... → HLS
+  if(vid)vid.style.display='block';
   ov.classList.remove('hidden');if(msg)msg.textContent='Connecting to stream\u2026';
   if(typeof Hls!=='undefined'&&Hls.isSupported()){
     var hls=new Hls({lowLatencyMode:true,liveSyncDurationCount:2,maxBufferLength:10,xhrSetup:function(xhr){xhr.withCredentials=true;}});
-    vid._hls=hls;
-    hls.loadSource(purl);
-    hls.attachMedia(vid);
+    vid._hls=hls;hls.loadSource(purl);hls.attachMedia(vid);
     hls.on(Hls.Events.MANIFEST_PARSED,function(){ov.classList.add('hidden');vid.play().catch(function(){});});
     hls.on(Hls.Events.ERROR,function(ev,data){
       if(data.fatal){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';}
     });
-  } else if(vid.canPlayType('application/vnd.apple.mpegurl')){
+  } else if(vid&&vid.canPlayType('application/vnd.apple.mpegurl')){
     vid.src=purl;vid.load();
     vid.oncanplay=function(){ov.classList.add('hidden');};
     vid.onerror=function(){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';};
