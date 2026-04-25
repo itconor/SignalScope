@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.169"
+BUILD                  = "SignalScope-3.5.170"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -13724,15 +13724,22 @@ class HubClient:
             if inp._sla_monitored_s:
                 total = inp._sla_monitored_s + inp._sla_alert_s
                 sla_pct = round(inp._sla_monitored_s / max(total, 1) * 100, 3)
+            # Only include level values once the monitoring loop has actually
+            # processed audio (_has_real_level=True).  Until then, send None so
+            # the hub ingest path does NOT overwrite the last-known values that
+            # were restored from hub_state.json on restart — mirrors the same
+            # guard in _live_loop that protects the 5 Hz live-push path.
+            _has_lvl   = inp._has_real_level
+            _is_stereo = inp._audio_channels == 2
             streams.append({
                 "_client_idx":       _client_idx,   # original cfg.inputs position — survives hub-side sorting
                 "name":              inp.name,
                 "enabled":           inp.enabled,
                 "device_index":      inp.device_index,
-                "level_dbfs":        round(inp._last_level_dbfs, 1),
-                "peak_dbfs":         round(inp._last_peak_dbfs, 1),
-                "level_dbfs_l":      round(inp._level_dbfs_l, 1) if inp._audio_channels == 2 else None,
-                "level_dbfs_r":      round(inp._level_dbfs_r, 1) if inp._audio_channels == 2 else None,
+                "level_dbfs":        round(inp._last_level_dbfs, 1) if _has_lvl else None,
+                "peak_dbfs":         round(inp._last_peak_dbfs, 1)  if _has_lvl else None,
+                "level_dbfs_l":      round(inp._level_dbfs_l, 1) if (_has_lvl and _is_stereo) else None,
+                "level_dbfs_r":      round(inp._level_dbfs_r, 1) if (_has_lvl and _is_stereo) else None,
                 "stereo":            inp.stereo,
                 "silence_threshold_dbfs": inp.silence_threshold_dbfs,
                 "silence_active":    bool(inp._silence_secs >= inp.silence_min_duration),
@@ -15413,6 +15420,27 @@ class HubServer:
                     "_relay_bitrate":      prev.get("_relay_bitrate", 128),
                     "_pending_commands":   prev.get("_pending_commands", []),
                 })
+                # Preserve last-known level values from the previous heartbeat
+                # for any stream that sends level_dbfs=None (i.e. the client's
+                # monitoring loop hasn't yet established a real audio measurement
+                # after a restart).  Mirrors the same guard in hub_live_push so
+                # both the 5 Hz live-push path and the ~10 s heartbeat path
+                # behave consistently — neither overwrites good values with None.
+                if prev and stored.get("streams"):
+                    _prev_by_name = {
+                        s["name"]: s
+                        for s in (prev.get("streams") or [])
+                        if isinstance(s, dict) and s.get("name")
+                    }
+                    for _hb_st in stored["streams"]:
+                        _hb_name = _hb_st.get("name")
+                        if _hb_name and _hb_name in _prev_by_name:
+                            _pst = _prev_by_name[_hb_name]
+                            for _lf in ("level_dbfs", "peak_dbfs",
+                                        "level_dbfs_l", "level_dbfs_r"):
+                                if _hb_st.get(_lf) is None and _pst.get(_lf) is not None:
+                                    _hb_st[_lf] = _pst[_lf]
+
                 self._sites[site] = stored
                 snapshot = dict(self._sites)
 

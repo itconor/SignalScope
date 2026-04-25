@@ -4,7 +4,7 @@
 SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
 
 - **Repo**: https://github.com/itconor/SignalScope
-- **Current build string**: `BUILD = "SignalScope-3.5.156"` (increment on every release)
+- **Current build string**: `BUILD = "SignalScope-3.5.170"` (increment on every release)
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **`gh` CLI path**: `/opt/homebrew/bin/gh` — always use this full path, it is installed and working
 
@@ -542,6 +542,18 @@ Fix: `_fm_stereo_blend: float = field(default=0.0, init=False, repr=False)` adde
 Fix: added `_has_real_level: bool` field (default `False`) to `InputConfig`. `analyse_chunk` sets it `True` on the first real measurement. Monitor stop resets it to `False` alongside `_last_level_dbfs`. `_live_loop` now sends `null` for `level_dbfs`/`peak_dbfs` when `_has_real_level` is False — the hub merger already skips `null`, so restored state is preserved until real audio data flows (typically within 1–2 s of stream connect).
 
 **Rule**: Never send `_last_level_dbfs` in a live push frame unless `_has_real_level` is `True`. The value `-120.0` is the uninitialised default, not a real measurement.
+
+---
+
+### Hub level bars drop to zero ~10 s after page load, take 20–60 s to recover (fixed 3.5.170)
+The 3.4.105 fix applied the `_has_real_level` guard only to `_live_loop` (the 5 Hz live-push path). `_build_payload()` — used for the full ~10 s heartbeat — was never updated. So the first heartbeat after a monitor restart sent `level_dbfs=-120.0` for all streams. `ingest()` does a full site replacement (`self._sites[site] = stored`), so this overwrote the valid values `_load_state()` had just restored from `hub_state.json`. Within ~10 s of page load all bars collapsed to 0 % and stayed there until real audio data arrived.
+
+Two-part fix:
+- `_build_payload()`: added `_has_lvl = inp._has_real_level` local variable. `level_dbfs`, `peak_dbfs`, `level_dbfs_l`, `level_dbfs_r` are now sent as `None` when `_has_lvl` is `False`.
+- `ingest()`: after `self._sites[site] = stored`, a merge step walks `stored["streams"]` and, for any stream where a level field is `None`, restores the last-known value from `prev["streams"]` (the dict already in `_sites` before this heartbeat). Mirrors the `if live_st[_f] is not None` guard in `hub_live_push`.
+
+**Rule**: `_build_payload()` MUST have the same `_has_real_level` guard as `_live_loop`. Both paths feed into `hub_server._sites` and both can overwrite hub_state.json values with `-120.0` if not guarded.
+**Rule**: `ingest()` MUST preserve previous stream level values when the incoming heartbeat sends `None` (i.e. `_has_real_level=False`). The merge block lives just before `self._sites[site] = stored`.
 
 ---
 

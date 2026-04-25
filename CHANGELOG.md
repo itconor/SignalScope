@@ -2,6 +2,36 @@
 
 ---
 
+### 3.5.170 — 2026-04-25
+
+**Fix: hub level bars drop to zero shortly after page load, take a long time to recover**
+
+Root cause: `_build_payload()` (used for the full ~10 s heartbeat) always sent
+`level_dbfs = round(inp._last_level_dbfs, 1)` regardless of whether the monitoring loop
+had processed any audio yet. `_last_level_dbfs` defaults to `-120.0`, so the first
+heartbeat after a monitor restart overwrote the valid values that `_load_state()` had
+just restored from `hub_state.json` with `-120.0` — causing all bars to collapse to zero
+within ~10 s of page load, where they would stay until real audio data arrived (~20–60 s
+or more later).
+
+The 3.4.105 fix already applied the `_has_real_level` guard to `_live_loop` (the 5 Hz
+live-push path), but the heartbeat payload was never updated.
+
+Two-part fix:
+- `_build_payload()`: `level_dbfs`, `peak_dbfs`, `level_dbfs_l`, `level_dbfs_r` are now
+  sent as `None` when `inp._has_real_level` is `False` (monitoring loop hasn't processed
+  audio yet). Mirrors the existing guard in `_live_loop`.
+- `ingest()`: after storing the heartbeat payload, a merge step walks the new streams list
+  and, for any stream where `level_dbfs` is `None`, restores the last-known value from
+  `prev` (the previous heartbeat / hub_state.json). Mirrors the "never overwrite a valid
+  numeric field with None" rule already enforced in `hub_live_push`.
+
+Result: from the moment the hub page loads, bars show the last-known levels from
+hub_state.json and update smoothly as soon as real audio data starts flowing — no more
+zero-bar window after a monitor restart or server reboot.
+
+---
+
 ### Brand Screen 1.3.11 — 2026-04-25
 
 **Full-screen logo mode — static image display with no backgrounds or animations**
