@@ -4,8 +4,8 @@
     "name": "vMix Caller",
     "file": "vmixcaller.py",
     "icon": "📹",
-    "description": "Manage Zoom and Teams callers in vMix directly from the hub dashboard. Join/leave meetings, mute self, stop camera, mute all guests. Participants list pulled from the vMix XML API via a server-side proxy (no CORS issues). One-click Put On Air sends ZoomSelectParticipantByName to vMix instantly. Manual participant add for when the XML feed is unavailable. Optional caller video preview via an SRT-to-HLS bridge running in Docker on an Ubuntu server — one command to set up, runs persistently. Keyboard shortcuts: M = mute self, C = toggle camera.",
-    "version": "1.0.0",
+    "description": "Manage Zoom and Teams callers in vMix from the SignalScope hub dashboard. Hub/client architecture: the operator works on the hub; the site node alongside vMix polls for commands and executes them locally — works through NAT with no direct hub-to-site connectivity needed. Hub shows a site selector, meeting controls (join/leave/mute/camera/mute-all), and a live participants list reported from vMix. One-click Put On Air sends ZoomSelectParticipantByName. Client node config page sets the local vMix IP/port. Optional caller video preview via SRT-to-HLS bridge. Keyboard shortcuts: M = mute self, C = toggle camera.",
+    "version": "1.1.0",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/vmixcaller.py"
   },

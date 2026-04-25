@@ -2,6 +2,18 @@
 
 ---
 
+### vMix Caller 1.1.0 — 2026-04-25
+
+**Hub/client architecture — vMix lives at the site, hub is the control surface**
+
+- Hub page now shows a **site selector** dropdown (populated from all approved connected sites) instead of a direct vMix IP field — the operator picks which site node is running alongside vMix
+- Commands (join, leave, mute, camera, put-on-air) are **queued on the hub** via `_pending_cmd[site]` and collected by the site client on its next poll — works through NAT, no direct hub→site HTTP needed
+- **Client background thread** starts automatically on any `client` or `both` mode node that has a hub URL. Polls `GET /api/vmixcaller/cmd` (X-Site header) every 3 s, executes the command against the local vMix API, and POSTs the result + latest participants immediately back to `POST /api/vmixcaller/report`
+- **Periodic participant refresh** — client polls vMix XML every 12 s and reports participants to hub; hub browser polls `GET /api/vmixcaller/state` every 8 s to update the panel without the operator having to click Refresh
+- **Client config page** at `/hub/vmixcaller` on client nodes — shows current hub URL and a form to set the local vMix IP/port with a Test Connection button
+- Standalone mode still works as direct vMix control (original v1.0.0 behaviour, no site selector)
+- vMix IP/port config removed from hub page — those fields now live on the client config page where they belong
+
 ### vMix Caller 1.0.0 — 2026-04-25
 
 **New plugin — manage Zoom/Teams callers in vMix from the hub dashboard**
