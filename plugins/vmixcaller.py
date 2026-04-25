@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.4.0",
+    "version": "1.4.1",
 }
 
 import os
@@ -1118,33 +1118,45 @@ def register(app, ctx):
         )
 
     # ── Authenticated HLS proxy  (/hub/vmixcaller/video/<path:seg>) ───────────
-    # The SRS Docker container binds port 8080 to 127.0.0.1 only. This route
-    # proxies HLS manifest and TS segments from the internal SRS server to
-    # authenticated browser sessions — the video is never publicly reachable.
+    # Proxies HLS manifest and TS segments from the SRS bridge to authenticated
+    # browser sessions.  Registered on all nodes (hub and client).
+    #
+    # Short-circuit rule: if this node is the hub AND the bridge URL is not
+    # localhost/127.0.0.1, the hub is on the public internet and cannot reach
+    # a LAN bridge.  Return 503 immediately — no connection attempt, no
+    # timeout, no traceback.  The presenter should be using the client node
+    # URL (/hub/vmixcaller/presenter on the client node) so its local proxy
+    # can reach the LAN bridge instead.
     @app.get("/hub/vmixcaller/video/<path:seg>")
     @login_required
     def vmixcaller_video_proxy(seg):
         cfg      = _load_cfg()
         base_url = (cfg.get("bridge_url") or "").strip()
         if not base_url:
-            abort(404)
+            return Response("no bridge configured", status=404,
+                            content_type="text/plain")
+        parsed = urlparse(base_url)
+        host   = (parsed.hostname or "").lower()
+        # Hub short-circuit: don't attempt a connection to a non-local bridge
+        if is_hub and host not in ("127.0.0.1", "localhost", "::1"):
+            return Response(
+                "bridge not reachable from hub — use client node presenter URL",
+                status=503, content_type="text/plain",
+            )
         try:
-            parsed    = urlparse(base_url)
             proxy_url = f"{parsed.scheme}://{parsed.netloc}/{seg}"
-            req       = urllib.request.Request(proxy_url, method="GET")
-            resp      = urllib.request.urlopen(req, timeout=8)
-            data      = resp.read()
-            ct        = resp.headers.get("Content-Type", "application/octet-stream")
+            req  = urllib.request.Request(proxy_url, method="GET")
+            resp = urllib.request.urlopen(req, timeout=5)
+            data = resp.read()
+            ct   = resp.headers.get("Content-Type", "application/octet-stream")
             if seg.endswith(".m3u8"):
                 ct = "application/vnd.apple.mpegurl"
-            return Response(
-                data, content_type=ct,
-                headers={"Cache-Control": "no-cache"},
-            )
+            return Response(data, content_type=ct,
+                            headers={"Cache-Control": "no-cache"})
         except urllib.error.HTTPError as e:
-            abort(e.code)
+            return Response("", status=e.code)
         except Exception:
-            abort(502)
+            return Response("", status=502)
 
     # ── Config ────────────────────────────────────────────────────────────────
     @app.get("/api/vmixcaller/config")

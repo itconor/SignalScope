@@ -2,6 +2,14 @@
 
 ---
 
+### vMix Caller 1.4.1 — 2026-04-25
+
+**Fix: hub video proxy causes timeout traceback for LAN bridge URLs**
+
+When the bridge URL is a LAN IP (e.g. `http://192.168.13.2:8080/...`), the hub node is on the internet and cannot reach it. Previously the proxy route attempted a connection anyway, timed out after 8 s, then called `abort(502)` which Flask logs as a full traceback — one per HLS segment request, filling the log with noise.
+
+Fix: `vmixcaller_video_proxy` now checks `is_hub` and the bridge URL hostname before attempting any connection. If the hub detects a non-localhost bridge URL it immediately returns a plain `503` response with no connection attempt, no timeout delay, and no traceback. The browser video element shows the unavailable overlay cleanly. Error returns across the board changed from `abort()` to `Response()` to suppress Flask's exception logging.
+
 ### vMix Caller 1.4.0 — 2026-04-25
 
 **HTTPS-safe video proxy — no cert required for LAN bridges**
