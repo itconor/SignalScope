@@ -2,6 +2,16 @@
 
 ---
 
+### Studio Board 3.14.12 — 2026-04-25
+
+**Fix: Zetta countdown timer ~10 seconds behind**
+
+- `remaining_seconds` is now freshened on the server at HTTP-response time (using `play_start_time`) rather than being left at the stale Zetta-poll value. Previously the countdown could be up to one Zetta poll interval behind before the first JS tick
+- JS countdown now uses a purely client-side `_dataFetchTs` timestamp (recorded when `poll()` resolves) as the elapsed-time reference, eliminating any server ↔ client clock-skew error
+- Both the 500 ms countdown interval and the immediate post-render paint now use `_dataFetchTs`; `zd.ts` is no longer used for elapsed calculation
+
+---
+
 ### Studio Board 3.14.7 — 2026-04-21
 
 **Cleared studio panel redesign — studio name and status at top, larger and more prominent**

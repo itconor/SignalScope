@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.11",
+    "version":  "3.14.12",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -978,6 +978,17 @@ def register(app, ctx):
 
             _zskey = _src.get("zetta_station_key", "")
             _zetta_data = _zetta_live.get(_zskey) if _zskey else None
+            # Freshen remaining_seconds to HTTP-response time so the JS countdown
+            # starts accurate regardless of when the last Zetta SOAP poll ran.
+            # Also stamps ts=now so the JS _dataFetchTs approach has a consistent
+            # server reference (though JS no longer uses ts for elapsed).
+            if _zetta_data and _zetta_data.get("play_start_time"):
+                _zetta_data = dict(_zetta_data)   # shallow copy — never mutate cached state
+                _pst = float(_zetta_data["play_start_time"])
+                _dur = float(_zetta_data.get("duration_seconds") or 0)
+                if _dur > 0:
+                    _zetta_data["remaining_seconds"] = max(0.0, _dur - (now - _pst))
+                _zetta_data["ts"] = now            # server time when this response was built
             # Server-side image download timestamp — used by JS for cache-busting.
             # Changes when the background poller downloads a new presenter image,
             # ensuring the browser only requests the new URL after the server has
@@ -1855,7 +1866,8 @@ function _posColWaves(){
 }
 
 var DB=-80,D=null,NP={},SS={},LL={},_built=false,_artSrc={},_lastSig='';
-var _waveEpoch=0; /* timestamp of first wave render — used to sync animation phase on recreate */
+var _waveEpoch=0;     /* timestamp of first wave render — used to sync animation phase on recreate */
+var _dataFetchTs=0;   /* client-side Date.now()/1000 when last poll() data arrived — countdown reference */
 
 /* Theme detection — URL param ?theme=bauer|corp|dark, persisted in sessionStorage */
 (function(){
@@ -2178,7 +2190,8 @@ function updateCol(s,idx){
     if(zEl.innerHTML!==zh)zEl.innerHTML=zh;
     /* Immediately paint the progress / countdown after any DOM rebuild */
     if(zd&&zd.now_playing){
-      var _ex2=zd.ts?Math.max(0,Date.now()/1000-zd.ts):0;
+      /* Use client-side fetch timestamp — eliminates server/client clock skew */
+      var _ex2=_dataFetchTs?Math.max(0,Date.now()/1000-_dataFetchTs):0;
       var _rem2=Math.max(0,(zd.remaining_seconds||0)-_ex2);
       var _dur2=zd.duration_seconds||0;
       var _pct2=_dur2>0?Math.min(100,(1-_rem2/_dur2)*100):0;
@@ -2213,7 +2226,7 @@ function render(){
 }
 
 function poll(){fetch(tk('/api/studioboard/data'),{credentials:'same-origin'})
-  .then(function(r){return r.json()}).then(function(d){D=d;render()}).catch(function(){})}
+  .then(function(r){return r.json()}).then(function(d){D=d;_dataFetchTs=Date.now()/1000;render()}).catch(function(){})}
 
 /* Live levels — store targets for smooth RAF animation, no direct DOM writes */
 function live(){fetch(tk('/api/hub/live_levels'),{credentials:'same-origin'})
@@ -2293,8 +2306,11 @@ setInterval(function(){
   (D.studios||[]).forEach(function(s,i){
     if(!s.zetta_station_key)return;
     var zd=s.zetta;
-    if(!zd||!zd.now_playing||!zd.ts)return;
-    var ex=Math.max(0,Date.now()/1000-zd.ts);
+    if(!zd||!zd.now_playing||!_dataFetchTs)return;
+    /* Elapsed since the poll() response landed — purely client-side,
+       no server/client clock skew.  remaining_seconds was freshened to
+       HTTP-response time on the server so this gives correct remaining. */
+    var ex=Math.max(0,Date.now()/1000-_dataFetchTs);
     var rem=Math.max(0,(zd.remaining_seconds||0)-ex);
     var dur=zd.duration_seconds||0;
     var pct=dur>0?(1-rem/dur)*100:0;
