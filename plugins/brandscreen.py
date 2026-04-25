@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.9",
+    "version":  "1.3.10",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -25,8 +25,10 @@ _SB_CFG_PATH = os.path.join(_BASE_DIR, "studioboard_cfg.json")   # for mic-live 
 _LOCK        = threading.Lock()
 _NOTIFY      = {}              # studio_id → list[queue.Queue]
 _NLOCK       = threading.Lock()
-_takeovers   = {}              # studio_id → {"title":str,"text":str,"ts":float}
-_TLOCK       = threading.Lock()
+_takeovers         = {}    # studio_id  → {"title":str,"text":str,"ts":float}
+_station_takeovers = {}    # station_id → {"title":str,"text":str,"ts":float}
+_TLOCK             = threading.Lock()
+_STLOCK            = threading.Lock()
 _mic_live    = {}              # bs_studio_id → bool  (last known mic state)
 _MLOCK       = threading.Lock()
 
@@ -478,16 +480,27 @@ Content-Type: application/json
 </pre>
       <p class="hint" style="margin-top:6px">The browser display updates instantly via SSE — no reload needed. Send <code>{"station_id":""}</code> to unassign.</p>
       <hr class="sep">
-      <div class="slabel" style="margin-bottom:8px">Full-screen takeover</div>
+      <div class="slabel" style="margin-bottom:8px">Full-screen takeover — by Studio</div>
       <pre class="api-eg" id="eg-takeover">POST {{origin}}/api/brandscreen/studio/{studio_id}/takeover
 Authorization: Bearer {{api_key|e}}
 Content-Type: application/json
 
 {"title": "BREAKING", "text": "Your message here"}</pre>
-      <p class="hint" style="margin-top:6px">Instantly overlays the studio display with large title (brand colour) and body text. Background colours follow the station brand palette. Display updates in real time — no reload needed.</p>
+      <p class="hint" style="margin-top:6px">Instantly overlays one studio display. Background colours follow the station brand palette. Display updates in real time — no reload needed.</p>
       <pre class="api-eg" style="margin-top:8px">DELETE {{origin}}/api/brandscreen/studio/{studio_id}/takeover
 Authorization: Bearer {{api_key|e}}</pre>
-      <p class="hint" style="margin-top:6px">Clears the takeover and returns to normal branding.</p>
+      <p class="hint" style="margin-top:6px">Clears the takeover on that studio and returns to normal branding.</p>
+      <hr class="sep">
+      <div class="slabel" style="margin-bottom:8px">Full-screen takeover — by Station (all screens)</div>
+      <pre class="api-eg" id="eg-station-takeover">POST {{origin}}/api/brandscreen/station/{station_id}/takeover
+Authorization: Bearer {{api_key|e}}
+Content-Type: application/json
+
+{"title": "BREAKING", "text": "Your message here"}</pre>
+      <p class="hint" style="margin-top:6px">Fires on <strong>every studio currently displaying this station</strong>. Useful for sending a message to all screens showing a brand at once. A studio-level takeover takes priority over a station-level one on that screen.</p>
+      <pre class="api-eg" style="margin-top:8px">DELETE {{origin}}/api/brandscreen/station/{station_id}/takeover
+Authorization: Bearer {{api_key|e}}</pre>
+      <p class="hint" style="margin-top:6px">Clears the station-level takeover from all screens showing that station (studios with a studio-level override are not affected).</p>
       <hr class="sep">
       <div class="slabel" style="margin-bottom:8px">List studios &amp; stations</div>
       <pre class="api-eg">GET {{origin}}/api/brandscreen/studios
@@ -2093,8 +2106,67 @@ def register(app, ctx):
     @app.get("/api/brandscreen/studio/<studio_id>/takeover")
     @api_auth
     def bs_takeover_get(studio_id):
+        # Studio-level takeover takes priority
         with _TLOCK:
             t = dict(_takeovers.get(studio_id) or {})
+        if t:
+            return jsonify({"active": True, "title": t.get("title", ""),
+                            "text": t.get("text", ""), "ts": t.get("ts", 0)})
+        # Fall back to station-level takeover for whichever station this studio shows
+        cfg    = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if studio:
+            sid = studio.get("station_id", "")
+            if sid:
+                with _STLOCK:
+                    st = dict(_station_takeovers.get(sid) or {})
+                if st:
+                    return jsonify({"active": True, "title": st.get("title", ""),
+                                    "text": st.get("text", ""), "ts": st.get("ts", 0)})
+        return jsonify({"active": False})
+
+    # ── Station-level takeover (fires on every studio showing that station) ───
+
+    @app.route("/api/brandscreen/station/<station_id>/takeover", methods=["POST", "PUT"])
+    @api_auth
+    def bs_station_takeover_set(station_id):
+        cfg = _cfg_load()
+        if not _get_station(cfg, station_id):
+            return jsonify({"error": "Station not found"}), 404
+        data  = request.get_json(force=True) or {}
+        title = (data.get("title") or "").strip()
+        text  = (data.get("text")  or "").strip()
+        with _STLOCK:
+            _station_takeovers[station_id] = {"title": title, "text": text, "ts": _time.time()}
+        msg = "takeover:" + json.dumps({"title": title, "text": text})
+        notified = 0
+        for studio in cfg.get("studios", []):
+            if studio.get("station_id") == station_id:
+                _notify_studio_msg(studio["id"], msg)
+                notified += 1
+        return jsonify({"ok": True, "studios_notified": notified})
+
+    @app.delete("/api/brandscreen/station/<station_id>/takeover")
+    @api_auth
+    def bs_station_takeover_clear(station_id):
+        with _STLOCK:
+            _station_takeovers.pop(station_id, None)
+        cfg = _cfg_load()
+        for studio in cfg.get("studios", []):
+            if studio.get("station_id") == station_id:
+                sid = studio["id"]
+                # Only clear screens that have no studio-level override
+                with _TLOCK:
+                    has_studio_override = sid in _takeovers
+                if not has_studio_override:
+                    _notify_studio_msg(sid, "takeover_clear")
+        return jsonify({"ok": True})
+
+    @app.get("/api/brandscreen/station/<station_id>/takeover")
+    @api_auth
+    def bs_station_takeover_get(station_id):
+        with _STLOCK:
+            t = dict(_station_takeovers.get(station_id) or {})
         if t:
             return jsonify({"active": True, "title": t.get("title", ""),
                             "text": t.get("text", ""), "ts": t.get("ts", 0)})

@@ -2,6 +2,19 @@
 
 ---
 
+### Brand Screen 1.3.10 — 2026-04-25
+
+**Station-level takeover — fires on all screens showing that station**
+
+- New `POST /api/brandscreen/station/{station_id}/takeover` endpoint: sends a full-screen takeover to every studio currently displaying that station simultaneously. Useful for sending a brand-wide message (e.g. "OFF AIR") across all screens for a given station in one call
+- New `DELETE /api/brandscreen/station/{station_id}/takeover` — clears the station-level takeover from all affected screens. Studios with a studio-level override in place are not touched
+- New `GET /api/brandscreen/station/{station_id}/takeover` — query active state of the station-level takeover
+- `GET /api/brandscreen/studio/{studio_id}/takeover` (used on page load) now also checks the station-level takeover as a fallback: if no studio-level takeover is active, a station-level one for the assigned station is returned instead — so the screen always restores the correct state after reload
+- Studio-level takeovers always take priority over station-level ones on the same screen
+- REST API tab in the admin page updated with examples for both target types
+
+---
+
 ### Studio Board 3.14.16 — 2026-04-25
 
 **Fix audio reactivity causing animation glitches and screen flashes**
