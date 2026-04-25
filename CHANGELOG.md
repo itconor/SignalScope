@@ -2,6 +2,16 @@
 
 ---
 
+### vMix Caller 1.5.7 — 2026-04-25
+
+**Fix: Save and Test vMix buttons broken on client node page (CSP)**
+
+Root cause: `_CLIENT_TPL` buttons had `onclick="saveClient()"` and `onclick="testLocal()"` attributes. SignalScope's CSP policy (`script-src-attr 'unsafe-hashes'`) only hashes onclick values known at startup from main-app templates — plugin template onclick values are never pre-hashed, so the browser silently blocked both click handlers on every page load.
+
+Fix: removed `onclick=` from both buttons; wired them instead via `addEventListener` inside the nonce-protected `<script>` block, which is always allowed by CSP regardless of hashing. Also wrapped the `initPreview` DOMContentLoaded call in `try/catch` for robustness.
+
+---
+
 ### vMix Caller 1.5.6 — 2026-04-25
 
 **Feature: native WebRTC preview via WHEP (SRS)**

@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.6",
+    "version": "1.5.7",
 }
 
 import os
@@ -1326,8 +1326,8 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
       <div style="font-size:11px;color:var(--mu);margin-top:3px">WebRTC stream: <code>webrtc://host/app/stream</code> — uses the SRS WHEP endpoint automatically. Also accepts an HLS <code>.m3u8</code> URL or SRS player page URL. Usually pushed from the hub Save &amp; Push button.</div>
     </div>
     <div class="brow">
-      <button class="btn bp" onclick="saveClient()">💾 Save</button>
-      <button class="btn bg" onclick="testLocal()">🔌 Test vMix</button>
+      <button class="btn bp" id="btn-save">💾 Save</button>
+      <button class="btn bg" id="btn-test">🔌 Test vMix</button>
     </div>
     <div id="test-result" style="margin-top:10px;font-size:12px;color:var(--mu)"></div>
   </div>
@@ -1463,8 +1463,12 @@ function testLocal(){
   }).catch(function(e){document.getElementById('test-result').textContent='Error: '+e;});
 }
 
+// ── Button wiring (addEventListener — CSP-safe, no onclick attr needed) ──────
+document.getElementById('btn-save').addEventListener('click', saveClient);
+document.getElementById('btn-test').addEventListener('click', testLocal);
+
 document.addEventListener('DOMContentLoaded',function(){
-  if(_videoUrl) initPreview(_videoUrl);
+  try{if(_videoUrl) initPreview(_videoUrl);}catch(e){}
 });
 </script>
 </body>
