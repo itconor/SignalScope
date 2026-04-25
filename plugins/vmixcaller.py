@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.3.0",
+    "version": "1.4.0",
 }
 
 import os
@@ -354,21 +354,21 @@ function _esc(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&am
 function _ago(ts){if(!ts)return'';var s=Math.round((Date.now()/1000)-ts);if(s<5)return'just now';if(s<60)return s+'s ago';return Math.round(s/60)+'m ago';}
 
 // ── Proxy URL helper ──────────────────────────────────────────────────────────
-// If the bridge URL is localhost/127.0.0.1 (bridge running on the hub server),
-// route through the authenticated SignalScope proxy so port 8080 can stay
-// localhost-only.
-// For any other hostname (LAN IP, remote host) the URL is used directly —
-// the browser fetches it straight from the bridge machine, which is correct
-// when the bridge is on the same LAN as the presenter's computer.
+// Always routes video through the local SignalScope proxy
+// (/hub/vmixcaller/video/<path>), regardless of whether the bridge URL is
+// localhost or a LAN IP.
+//
+// Why this works for both setups:
+//  • Bridge on hub server (localhost): hub proxy fetches from 127.0.0.1 — works.
+//  • Bridge on client LAN: hub proxy can't reach the LAN IP, BUT the same
+//    proxy route is also registered on the client node. If the presenter opens
+//    the presenter page from the client node URL (http://client-ip:port/...)
+//    the client's proxy fetches from the LAN bridge — works, no HTTPS/mixed
+//    content issues, no cert needed.
 function _proxyUrl(u){
   if(!u)return'';
-  try{
-    var p=new URL(u);
-    if(p.hostname==='127.0.0.1'||p.hostname==='localhost'){
-      return'/hub/vmixcaller/video'+p.pathname;
-    }
-    return u;  // LAN / external — use directly
-  }catch(e){return'';}
+  try{var p=new URL(u);return'/hub/vmixcaller/video'+p.pathname;}
+  catch(e){return'';}
 }
 
 // ── Video preview ─────────────────────────────────────────────────────────────
@@ -646,7 +646,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
   <span id="vstatus">No site selected</span>
   <span id="vago" class="ago" style="margin-left:6px"></span>
   <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
-    <a href="/hub/vmixcaller/presenter" class="btn bp bs">🖥 Presenter View</a>
+    <a href="/hub/vmixcaller/presenter" class="btn bp bs" title="For HTTPS hubs with a LAN bridge, give the presenter the client node URL instead — see setup guide">🖥 Presenter View</a>
     <span><kbd>M</kbd> mute</span><span><kbd>C</kbd> camera</span>
   </span>
 </div>
@@ -686,7 +686,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
         </ul>
         <p>Set <strong style="color:var(--tx)">Bridge URL</strong> below to the bridge machine's LAN IP:</p>
         <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://192.168.13.2:8080/live/caller.m3u8</pre>
-        <p style="font-size:11px;color:var(--wn);margin-top:4px">⚠ The presenter's browser must be on the same LAN to reach this IP. If your hub uses HTTPS, add a self-signed cert to SRS or use Option B.</p>
+        <p style="font-size:11px;color:var(--wn);margin-top:4px">⚠ <strong>Hub uses HTTPS?</strong> Don't use the hub URL for the presenter page — the browser will block HTTP video as mixed content. Instead, bookmark the presenter page from the <strong>client node</strong> (see note below).</p>
 
         <hr style="border:none;border-top:1px solid var(--bor);margin:12px 0">
 
@@ -698,6 +698,14 @@ _HUB_TPL = r"""<!DOCTYPE html>
         <p>Set vMix SRT Hostname to the hub's public IP, then set Bridge URL to:</p>
         <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://127.0.0.1:8080/live/caller.m3u8</pre>
         <p style="font-size:11px">SignalScope automatically detects the localhost URL and proxies the stream — no public port 8080 needed.</p>
+
+        <hr style="border:none;border-top:1px solid var(--bor);margin:12px 0">
+
+        <p style="font-weight:600;color:var(--tx);margin-bottom:6px">📌 Presenter bookmark — hub on HTTPS</p>
+        <p style="margin-bottom:6px">If your hub uses HTTPS and the bridge is on a LAN machine, the presenter page must be opened from the <strong style="color:var(--tx)">client node</strong> URL (HTTP), not the hub URL. The video is proxied through SignalScope locally — no cert or port changes needed.</p>
+        <p style="margin-bottom:4px">Give the presenter this bookmark:</p>
+        <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://&lt;client-node-ip&gt;:&lt;port&gt;/hub/vmixcaller/presenter</pre>
+        <p style="font-size:11px">The hub presenter button still works for operators (hub can proxy a localhost bridge). For a LAN bridge, only the client node can reach it.</p>
 
       </div>
     </div>

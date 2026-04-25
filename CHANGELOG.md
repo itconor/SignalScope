@@ -2,6 +2,17 @@
 
 ---
 
+### vMix Caller 1.4.0 — 2026-04-25
+
+**HTTPS-safe video proxy — no cert required for LAN bridges**
+
+- `_proxyUrl()` now always routes video through the local SignalScope proxy (`/hub/vmixcaller/video/<path>`) rather than trying to detect LAN vs localhost. The proxy route is registered on **all** nodes (hub and client), so:
+  - **Hub with localhost bridge**: hub proxy fetches from 127.0.0.1 — works as before
+  - **Hub with LAN bridge + HTTPS**: hub proxy fails (can't reach LAN), but the presenter opens the presenter page from the **client node** URL (HTTP, same LAN). The client's proxy fetches from the LAN bridge — no mixed content, no cert, no config changes needed
+- Setup guide updated with a clear "Presenter bookmark — hub on HTTPS" section explaining the client node URL pattern (`http://client-node-ip:port/hub/vmixcaller/presenter`)
+- Warning on the presenter page updated to point to the client node solution rather than suggesting self-signed certs
+- Tooltip added to hub "Presenter View" button flagging the client node URL for HTTPS + LAN bridge setups
+
 ### vMix Caller 1.3.0 — 2026-04-25
 
 **vMix IP/port config from hub, dual bridge modes, correct setup guide**
