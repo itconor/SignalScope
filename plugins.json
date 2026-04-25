@@ -1,5 +1,15 @@
 [
   {
+    "id": "vmixcaller",
+    "name": "vMix Caller",
+    "file": "vmixcaller.py",
+    "icon": "📹",
+    "description": "Manage Zoom and Teams callers in vMix directly from the hub dashboard. Join/leave meetings, mute self, stop camera, mute all guests. Participants list pulled from the vMix XML API via a server-side proxy (no CORS issues). One-click Put On Air sends ZoomSelectParticipantByName to vMix instantly. Manual participant add for when the XML feed is unavailable. Optional caller video preview via an SRT-to-HLS bridge running in Docker on an Ubuntu server — one command to set up, runs persistently. Keyboard shortcuts: M = mute self, C = toggle camera.",
+    "version": "1.0.0",
+    "requirements": "",
+    "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/vmixcaller.py"
+  },
+  {
     "id": "brandscreen",
     "name": "Brand Screen",
     "file": "brandscreen.py",

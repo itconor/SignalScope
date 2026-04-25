@@ -2,6 +2,23 @@
 
 ---
 
+### vMix Caller 1.0.0 — 2026-04-25
+
+**New plugin — manage Zoom/Teams callers in vMix from the hub dashboard**
+
+- Join / leave Zoom meetings via vMix's `ZoomJoinMeeting` / `ZoomLeaveMeeting` API
+- Mute self, stop camera, mute all guests — with button-state toggle tracking
+- Participants list pulled from the vMix XML status feed via a server-side Python proxy (no CORS)
+- One-click **Put On Air** fires `ZoomSelectParticipantByName` to vMix instantly
+- Manual `+ Add` button as fallback when the vMix XML feed isn't accessible
+- Live connection dot — tests `http://vmix-ip:port/API/` on save and page load
+- Optional caller video preview: configure a bridge URL (e.g. HLS from SRS Docker container); the `<video>` tag plays natively in Safari; an in-page setup guide covers the one-time Docker command for Ubuntu
+- Config saved to `plugins/vmixcaller_config.json` (IP, port, input number, preview URL)
+- Keyboard shortcuts: **M** = mute self, **C** = toggle camera (ignored when focus is in a text field)
+- All vMix calls proxied through the SignalScope backend — no CORS issues regardless of where the hub is accessed from
+
+---
+
 ### 3.5.170 — 2026-04-25
 
 **Fix: hub level bars drop to zero shortly after page load, take a long time to recover**
