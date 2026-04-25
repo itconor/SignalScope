@@ -2,6 +2,19 @@
 
 ---
 
+### Brand Screen 1.3.8 — 2026-04-25
+
+**Mic live full-screen suppression overlay**
+
+- Each Brand Screen studio can now be linked to a Studio Board studio via a new **"Mic Live — Link to Studio Board Studio"** dropdown in the studio edit form
+- When the linked Studio Board studio reports a mic live, the brand screen shows a full-screen dark overlay with a pulsing red dot and **MIC LIVE** label (z-index 60, above the existing takeover overlay at 50) — suppressing all branding content while the mic is hot
+- The overlay clears automatically when the mic goes down
+- The background monitor thread (`bs-mic-monitor`) polls `studioboard_cfg.json` every 2 s and fires `mic_live` / `mic_down` SSE events to the screen browser instantly
+- New `GET /api/brandscreen/studio/<id>/mic_state` endpoint so the screen can restore the correct state on page load or reload without waiting for the next SSE event
+- No studioboard plugin dependency — brandscreen reads the studioboard config file directly, so it works even if studioboard is not installed (mic suppression is simply inactive)
+
+---
+
 ### Zetta Integration 2.1.26 / Studio Board 3.14.15 — 2026-04-25
 
 **Correct Zetta Chain Type handling (Stop / Segue / Auto Post / Link-Song)**

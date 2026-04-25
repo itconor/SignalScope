@@ -15,17 +15,20 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.7",
+    "version":  "1.3.8",
 }
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_CFG_PATH = os.path.join(_BASE_DIR, "brandscreen_cfg.json")
-_LOGO_DIR = os.path.join(_BASE_DIR, "brandscreen_logos")
-_LOCK     = threading.Lock()
-_NOTIFY    = {}              # studio_id → list[queue.Queue]
-_NLOCK     = threading.Lock()
-_takeovers = {}              # studio_id → {"title":str,"text":str,"ts":float}
-_TLOCK     = threading.Lock()
+_BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+_CFG_PATH    = os.path.join(_BASE_DIR, "brandscreen_cfg.json")
+_LOGO_DIR    = os.path.join(_BASE_DIR, "brandscreen_logos")
+_SB_CFG_PATH = os.path.join(_BASE_DIR, "studioboard_cfg.json")   # for mic-live polling
+_LOCK        = threading.Lock()
+_NOTIFY      = {}              # studio_id → list[queue.Queue]
+_NLOCK       = threading.Lock()
+_takeovers   = {}              # studio_id → {"title":str,"text":str,"ts":float}
+_TLOCK       = threading.Lock()
+_mic_live    = {}              # bs_studio_id → bool  (last known mic state)
+_MLOCK       = threading.Lock()
 
 os.makedirs(_LOGO_DIR, exist_ok=True)
 
@@ -79,10 +82,11 @@ def _new_station():
 
 def _new_studio():
     return {
-        "id":         str(uuid.uuid4())[:8],
-        "name":       "Studio",
-        "station_id": "",
-        "token":      str(uuid.uuid4()).replace("-", ""),
+        "id":           str(uuid.uuid4())[:8],
+        "name":         "Studio",
+        "station_id":   "",
+        "token":        str(uuid.uuid4()).replace("-", ""),
+        "sb_studio_id": "",   # linked studioboard studio for mic-live detection
     }
 
 def _ensure_api_key(cfg):
@@ -90,6 +94,46 @@ def _ensure_api_key(cfg):
         cfg["api_key"] = str(uuid.uuid4()).replace("-", "")
         _cfg_save(cfg)
     return cfg["api_key"]
+
+# ─────────────────────────────────── mic-live monitor ─────────────────────────
+
+def _sb_cfg_load():
+    """Load studioboard config without raising. Returns {} on any error."""
+    try:
+        with open(_SB_CFG_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _mic_monitor_loop():
+    """Background thread: poll studioboard_cfg.json every 2 s and push
+    mic_live / mic_down SSE events to any brand-screen studios that have a
+    linked studioboard studio set."""
+    while True:
+        try:
+            _time.sleep(2)
+            bs_cfg = _cfg_load()
+            sb_cfg = _sb_cfg_load()
+            sb_studios = {s["id"]: s for s in sb_cfg.get("studios", [])}
+            for bs_studio in bs_cfg.get("studios", []):
+                bs_id = bs_studio.get("id", "")
+                sb_id = (bs_studio.get("sb_studio_id") or "").strip()
+                if not bs_id or not sb_id:
+                    continue
+                sb_s     = sb_studios.get(sb_id)
+                new_live = bool(sb_s.get("mic_live", False)) if sb_s else False
+                with _MLOCK:
+                    old_live = _mic_live.get(bs_id, False)
+                    changed  = (new_live != old_live)
+                    if changed:
+                        _mic_live[bs_id] = new_live
+                if changed:
+                    _notify_studio_msg(bs_id, "mic_live" if new_live else "mic_down")
+        except Exception:
+            pass
+
+# Start mic monitor thread once at plugin load
+threading.Thread(target=_mic_monitor_loop, daemon=True, name="bs-mic-monitor").start()
 
 # ─────────────────────────────── brand palette derivation ────────────────────
 
@@ -459,10 +503,11 @@ Authorization: Bearer {{api_key|e}}</pre>
 <input type="file" id="logo-input" accept="image/png,image/svg+xml,image/jpeg,image/webp,image/gif" style="display:none">
 
 <script nonce="{{csp_nonce()}}">
-var _studios  = {{studios_json|safe}};
-var _stations = {{stations_json|safe}};
+var _studios     = {{studios_json|safe}};
+var _stations    = {{stations_json|safe}};
 var _zetStations = [];
-var _streams  = {{streams_json|safe}};
+var _streams     = {{streams_json|safe}};
+var _sbStudios   = [];   // studioboard studios for mic-live linking
 var _currentLogoSid = null;
 
 function _csrf(){ return (document.querySelector('meta[name="csrf-token"]')||{}).content||''; }
@@ -522,10 +567,18 @@ function _studioForm(sd){
   var stOpts=_stations.map(function(st){
     return '<option value="'+st.id+'"'+(sd.station_id===st.id?' selected':'')+'>'+_esc(st.name)+'</option>';
   }).join('');
+  var sbOpts=_sbStudios.map(function(s){
+    return '<option value="'+_esc(s.id)+'"'+((sd.sb_studio_id||'')=== s.id?' selected':'')+'>'+_esc(s.name)+'</option>';
+  }).join('');
   var screenUrl=location.origin+'/brandscreen/studio/'+sd.id+'?token='+sd.token;
   return '<div class="grid2" style="margin-bottom:12px">'
     +'<div class="field"><label>Studio Name</label><input type="text" id="sd-name-'+sd.id+'" value="'+_esc(sd.name)+'"></div>'
     +'<div class="field"><label>Assigned Station</label><select id="sd-st-'+sd.id+'"><option value="">— none —</option>'+stOpts+'</select></div>'
+    +'</div>'
+    +'<div class="field" style="margin-bottom:12px">'
+    +'<label>Mic Live — Link to Studio Board Studio</label>'
+    +'<select id="sd-sbst-'+sd.id+'"><option value="">— none (no mic suppression) —</option>'+sbOpts+'</select>'
+    +'<p class="hint" style="margin-top:4px">When the selected Studio Board studio has a mic live, this Brand Screen will show a full-screen suppression overlay.</p>'
     +'</div>'
     +'<div class="slabel">Screen URL</div>'
     +'<div class="tok-row" style="margin-bottom:6px"><input type="text" value="'+_esc(sd.token)+'" readonly>'
@@ -689,11 +742,14 @@ function _addStudio(){
 }
 function _saveSd(sid){
   var sd=_sdById(sid); if(!sd) return;
-  _post('/api/brandscreen/studio/'+sid,{name:_v('sd-name-'+sid)||sd.name,station_id:_v('sd-st-'+sid)||''})
-    .then(function(r){return r.json();}).then(function(d){
-      if(d.error){_msg(d.error,false);return;}
-      Object.assign(sd,d.studio); renderStudios(); renderApiRef(); _msg('Saved.',true);
-    });
+  _post('/api/brandscreen/studio/'+sid,{
+    name:_v('sd-name-'+sid)||sd.name,
+    station_id:_v('sd-st-'+sid)||'',
+    sb_studio_id:_v('sd-sbst-'+sid)||'',
+  }).then(function(r){return r.json();}).then(function(d){
+    if(d.error){_msg(d.error,false);return;}
+    Object.assign(sd,d.studio); renderStudios(); renderApiRef(); _msg('Saved.',true);
+  });
 }
 function _delSd(sid){
   if(!confirm('Delete studio?')) return;
@@ -865,6 +921,15 @@ fetch('/api/zetta/status_full',{credentials:'same-origin'})
     });
     _zetStations.sort(function(a,b){return a.name<b.name?-1:1;});
     renderStudios(); renderStations(); renderApiRef();
+  });
+
+// Fetch Studio Board studios for mic-live linking
+fetch('/api/studioboard/data',{credentials:'same-origin'})
+  .then(function(r){return r.ok?r.json():{};}).catch(function(){return{};})
+  .then(function(d){
+    _sbStudios=(d.studios||[]).map(function(s){return{id:s.id,name:s.name||s.id};});
+    _sbStudios.sort(function(a,b){return a.name<b.name?-1:1;});
+    renderStudios();
   });
 </script>
 </body>
@@ -1151,6 +1216,41 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 #takeover-text{font-size:clamp(22px,4vw,72px);font-weight:300;
   color:rgba(255,255,255,.92);letter-spacing:.01em;line-height:1.3;
   max-width:82vw}
+
+/* ── Mic-live suppression overlay (z-index:60 — above takeover at 50) ────── */
+/* Solid near-black fill so the branding is completely hidden while a mic is
+   live in the adjacent studio.  Brand colour bleeds through the ring as a
+   subtle halo — enough to keep the screen looking intentional, not broken. */
+#mic-live{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:clamp(14px,3vh,48px);
+  background:#050a14;
+  opacity:0;pointer-events:none;transition:opacity .45s ease}
+#mic-live.vis{opacity:1;pointer-events:auto}
+/* Outer pulsing ring in brand colour */
+#mic-live-ring{width:clamp(160px,28vmin,340px);height:clamp(160px,28vmin,340px);
+  border-radius:50%;border:3px solid var(--brand);
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 0 40px rgba(var(--brand-rgb),.35),inset 0 0 40px rgba(var(--brand-rgb),.12);
+  animation:ml-ring-pulse 1.6s ease-in-out infinite}
+@keyframes ml-ring-pulse{
+  0%,100%{box-shadow:0 0 30px rgba(var(--brand-rgb),.30),inset 0 0 30px rgba(var(--brand-rgb),.10)}
+  50%{box-shadow:0 0 70px rgba(var(--brand-rgb),.65),inset 0 0 55px rgba(var(--brand-rgb),.25)}}
+/* Red dot inside the ring */
+#mic-live-dot{width:clamp(60px,11vmin,130px);height:clamp(60px,11vmin,130px);
+  border-radius:50%;background:#ef4444;
+  box-shadow:0 0 28px rgba(239,68,68,.7),0 0 60px rgba(239,68,68,.35);
+  animation:ml-dot-pulse 1.6s ease-in-out infinite}
+@keyframes ml-dot-pulse{
+  0%,100%{transform:scale(1);box-shadow:0 0 28px rgba(239,68,68,.7),0 0 60px rgba(239,68,68,.35)}
+  50%{transform:scale(1.12);box-shadow:0 0 48px rgba(239,68,68,.9),0 0 90px rgba(239,68,68,.5)}}
+#mic-live-label{font-size:clamp(26px,5vw,80px);font-weight:800;
+  letter-spacing:.22em;text-transform:uppercase;color:#ef4444;
+  text-shadow:0 0 40px rgba(239,68,68,.55),0 0 100px rgba(239,68,68,.22);
+  animation:ml-label-pulse 1.6s ease-in-out infinite}
+@keyframes ml-label-pulse{
+  0%,100%{opacity:1}50%{opacity:.72}}
+#mic-live-sub{font-size:clamp(12px,1.8vw,24px);font-weight:400;
+  letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.35)}
 </style>
 </head>
 
@@ -1237,6 +1337,11 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 <div id="takeover">
   <div id="takeover-title"></div>
   <div id="takeover-text"></div>
+</div>
+<div id="mic-live">
+  <div id="mic-live-ring"><div id="mic-live-dot"></div></div>
+  <div id="mic-live-label">MIC LIVE</div>
+  <div id="mic-live-sub">{{studio_name|e}}</div>
 </div>
 
 <script nonce="{{csp_nonce()}}">
@@ -1549,7 +1654,15 @@ function _clearTakeover(){
   document.getElementById('takeover').classList.remove('vis');
 }
 
-// ── SSE — instant studio assignment / settings / takeover updates ────────────
+// ── Mic-live suppression overlay ────────────────────────────────────────────
+function _showMicLive(){
+  document.getElementById('mic-live').classList.add('vis');
+}
+function _clearMicLive(){
+  document.getElementById('mic-live').classList.remove('vis');
+}
+
+// ── SSE — instant studio assignment / settings / takeover / mic-live updates ─
 if(_studioId){
   var _es = new EventSource(_tk('/api/brandscreen/events/studio/'+_studioId),{withCredentials:true});
   _es.onmessage = function(e){
@@ -1562,12 +1675,21 @@ if(_studioId){
       try{ var _td=JSON.parse(e.data.slice(9)); _showTakeover(_td.title,_td.text); }catch(ex){}
     } else if(e.data==='takeover_clear'){
       _clearTakeover();
+    } else if(e.data==='mic_live'){
+      _showMicLive();
+    } else if(e.data==='mic_down'){
+      _clearMicLive();
     }
   };
   // Restore active takeover on page load / reload
   fetch(_tk('/api/brandscreen/studio/'+_studioId+'/takeover'),{credentials:'same-origin'})
     .then(function(r){ return r.ok?r.json():{}; })
     .then(function(d){ if(d.active) _showTakeover(d.title,d.text); })
+    .catch(function(){});
+  // Restore mic-live state on page load / reload
+  fetch(_tk('/api/brandscreen/studio/'+_studioId+'/mic_state'),{credentials:'same-origin'})
+    .then(function(r){ return r.ok?r.json():{}; })
+    .then(function(d){ if(d.mic_live) _showMicLive(); })
     .catch(function(){});
 }
 </script>
@@ -1872,7 +1994,7 @@ def register(app, ctx):
         if not s:
             return jsonify({"error": "Studio not found"}), 404
         data = request.get_json(force=True) or {}
-        for k in ("name", "station_id"):
+        for k in ("name", "station_id", "sb_studio_id"):
             if k in data:
                 s[k] = data[k]
         _cfg_save(cfg)
@@ -1987,6 +2109,31 @@ def register(app, ctx):
             return jsonify({"active": True, "title": t.get("title", ""),
                             "text": t.get("text", ""), "ts": t.get("ts", 0)})
         return jsonify({"active": False})
+
+    # ── Mic-live state query (used on page load to restore state) ─────────────
+    @app.get("/api/brandscreen/studio/<studio_id>/mic_state")
+    @api_auth
+    def bs_mic_state(studio_id):
+        """Return the current mic-live state for a brand-screen studio.
+        Reads from _mic_live (updated by the background monitor thread) or, if
+        not yet initialised for this studio, queries studioboard_cfg.json directly
+        so the very first page load always shows the correct state."""
+        with _MLOCK:
+            if studio_id in _mic_live:
+                return jsonify({"mic_live": _mic_live[studio_id]})
+        # Not yet populated by the background thread — read directly
+        bs_cfg = _cfg_load()
+        bs_sd  = _get_studio(bs_cfg, studio_id)
+        if not bs_sd:
+            return jsonify({"mic_live": False})
+        sb_id  = (bs_sd.get("sb_studio_id") or "").strip()
+        if not sb_id:
+            return jsonify({"mic_live": False})
+        sb_cfg = _sb_cfg_load()
+        for s in sb_cfg.get("studios", []):
+            if s.get("id") == sb_id:
+                return jsonify({"mic_live": bool(s.get("mic_live", False))})
+        return jsonify({"mic_live": False})
 
     # ── API key ───────────────────────────────────────────────────────────────
     @app.post("/api/brandscreen/regen_api_key")
