@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.10",
+    "version": "1.5.11",
 }
 
 import os
@@ -602,7 +602,7 @@ function _startWhep(whepUrl,vid,ov,msg){
   pc.createOffer()
     .then(function(o){return pc.setLocalDescription(o);})
     .then(function(){
-      return fetch(whepUrl,{method:'POST',headers:{'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
+      return fetch('/api/vmixcaller/whep_proxy?url='+encodeURIComponent(whepUrl),{method:'POST',headers:{'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
     })
     .then(function(r){if(!r.ok)throw new Error('WHEP '+r.status);return r.text();})
     .then(function(sdp){return pc.setRemoteDescription({type:'answer',sdp:sdp});})
@@ -1409,7 +1409,7 @@ function _startWhep(whepUrl,vid,ov,msg){
   pc.createOffer()
     .then(function(o){return pc.setLocalDescription(o);})
     .then(function(){
-      return fetch(whepUrl,{method:'POST',headers:{'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
+      return fetch('/api/vmixcaller/whep_proxy?url='+encodeURIComponent(whepUrl),{method:'POST',headers:{'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
     })
     .then(function(r){if(!r.ok)throw new Error('WHEP '+r.status);return r.text();})
     .then(function(sdp){return pc.setRemoteDescription({type:'answer',sdp:sdp});})
@@ -1572,6 +1572,33 @@ def register(app, ctx):
             bridge_url=bridge,
             video_url_json=json.dumps(video_url),
         )
+
+    # ── WHEP proxy — avoids browser CORS/mixed-content on direct SRS fetch ──────
+    # Browser POSTs SDP offer here; we forward to SRS and return the SDP answer.
+    # Works on hub, client, and standalone nodes.
+    @app.post("/api/vmixcaller/whep_proxy")
+    @login_required
+    def vmixcaller_whep_proxy():
+        import urllib.request as _ur
+        import urllib.error as _ue
+        url = request.args.get("url", "").strip()
+        if not url.startswith(("http://", "https://")):
+            return Response("Bad URL", status=400, mimetype="text/plain")
+        sdp_offer = request.get_data(as_text=True)
+        try:
+            req = _ur.Request(
+                url,
+                data=sdp_offer.encode(),
+                method="POST",
+                headers={"Content-Type": "application/sdp"},
+            )
+            with _ur.urlopen(req, timeout=10) as resp:
+                sdp_answer = resp.read().decode()
+            return Response(sdp_answer, status=200, mimetype="application/sdp")
+        except _ue.HTTPError as exc:
+            return Response(f"WHEP {exc.code}", status=exc.code, mimetype="text/plain")
+        except Exception as exc:
+            return Response(str(exc), status=502, mimetype="text/plain")
 
     # ── Authenticated HLS proxy / relay server (/hub/vmixcaller/video/<path>) ──
     # Registered on ALL nodes (hub and client).

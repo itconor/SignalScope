@@ -2,6 +2,16 @@
 
 ---
 
+### vMix Caller 1.5.11 — 2026-04-25
+
+**Fix: WebRTC preview "failed to fetch" — CORS/mixed-content on direct WHEP call**
+
+The browser was calling the SRS WHEP endpoint (`http://192.168.x.x:1985/rtc/v1/whep/`) directly from JavaScript. SRS does not send `Access-Control-Allow-Origin` headers on its WHEP endpoint, so the browser blocked the cross-origin POST. On HTTPS-hosted SignalScope instances it also fails as mixed content (HTTP fetch from an HTTPS page). Both produce the same generic "failed to fetch" error.
+
+Fix: added `POST /api/vmixcaller/whep_proxy?url=<encoded>` route. The browser now sends the SDP offer to SignalScope (same origin — no CORS); SignalScope forwards it server-to-server to SRS and returns the SDP answer. The RTCPeerConnection, ICE, and video track reception still happen natively in the browser — only the SDP exchange is proxied. Works on hub, client, and standalone nodes.
+
+---
+
 ### vMix Caller 1.5.10 — 2026-04-25
 
 **Fix: WebRTC/HLS preview overlay never hides — video appears blank**
