@@ -2,16 +2,17 @@
 
 ---
 
-### Brand Screen 1.3.8 — 2026-04-25
+### Brand Screen 1.3.9 — 2026-04-25
 
-**Mic live full-screen suppression overlay**
+**Mic live takeover suppression**
 
 - Each Brand Screen studio can now be linked to a Studio Board studio via a new **"Mic Live — Link to Studio Board Studio"** dropdown in the studio edit form
-- When the linked Studio Board studio reports a mic live, the brand screen shows a full-screen dark overlay with a pulsing red dot and **MIC LIVE** label (z-index 60, above the existing takeover overlay at 50) — suppressing all branding content while the mic is hot
-- The overlay clears automatically when the mic goes down
+- When the linked studio has a mic live, any full-screen takeover is silently **suppressed** — it does not appear on screen while a presenter mic is hot. The brand screen continues showing normally
+- If a takeover arrives while the mic is live it is **held pending**; the moment the mic goes down the takeover shows immediately
+- If a takeover is already visible when the mic goes live it is **hidden and parked** — restored automatically when the mic clears
 - The background monitor thread (`bs-mic-monitor`) polls `studioboard_cfg.json` every 2 s and fires `mic_live` / `mic_down` SSE events to the screen browser instantly
-- New `GET /api/brandscreen/studio/<id>/mic_state` endpoint so the screen can restore the correct state on page load or reload without waiting for the next SSE event
-- No studioboard plugin dependency — brandscreen reads the studioboard config file directly, so it works even if studioboard is not installed (mic suppression is simply inactive)
+- New `GET /api/brandscreen/studio/<id>/mic_state` endpoint so the correct state is restored on page load or reload (mic state is fetched before takeover state to ensure suppression applies correctly)
+- No studioboard plugin dependency — reads the config file directly; if studioboard is not installed, mic suppression is simply inactive
 
 ---
 

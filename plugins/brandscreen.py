@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.8",
+    "version":  "1.3.9",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -1217,40 +1217,6 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
   color:rgba(255,255,255,.92);letter-spacing:.01em;line-height:1.3;
   max-width:82vw}
 
-/* ── Mic-live suppression overlay (z-index:60 — above takeover at 50) ────── */
-/* Solid near-black fill so the branding is completely hidden while a mic is
-   live in the adjacent studio.  Brand colour bleeds through the ring as a
-   subtle halo — enough to keep the screen looking intentional, not broken. */
-#mic-live{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;gap:clamp(14px,3vh,48px);
-  background:#050a14;
-  opacity:0;pointer-events:none;transition:opacity .45s ease}
-#mic-live.vis{opacity:1;pointer-events:auto}
-/* Outer pulsing ring in brand colour */
-#mic-live-ring{width:clamp(160px,28vmin,340px);height:clamp(160px,28vmin,340px);
-  border-radius:50%;border:3px solid var(--brand);
-  display:flex;align-items:center;justify-content:center;
-  box-shadow:0 0 40px rgba(var(--brand-rgb),.35),inset 0 0 40px rgba(var(--brand-rgb),.12);
-  animation:ml-ring-pulse 1.6s ease-in-out infinite}
-@keyframes ml-ring-pulse{
-  0%,100%{box-shadow:0 0 30px rgba(var(--brand-rgb),.30),inset 0 0 30px rgba(var(--brand-rgb),.10)}
-  50%{box-shadow:0 0 70px rgba(var(--brand-rgb),.65),inset 0 0 55px rgba(var(--brand-rgb),.25)}}
-/* Red dot inside the ring */
-#mic-live-dot{width:clamp(60px,11vmin,130px);height:clamp(60px,11vmin,130px);
-  border-radius:50%;background:#ef4444;
-  box-shadow:0 0 28px rgba(239,68,68,.7),0 0 60px rgba(239,68,68,.35);
-  animation:ml-dot-pulse 1.6s ease-in-out infinite}
-@keyframes ml-dot-pulse{
-  0%,100%{transform:scale(1);box-shadow:0 0 28px rgba(239,68,68,.7),0 0 60px rgba(239,68,68,.35)}
-  50%{transform:scale(1.12);box-shadow:0 0 48px rgba(239,68,68,.9),0 0 90px rgba(239,68,68,.5)}}
-#mic-live-label{font-size:clamp(26px,5vw,80px);font-weight:800;
-  letter-spacing:.22em;text-transform:uppercase;color:#ef4444;
-  text-shadow:0 0 40px rgba(239,68,68,.55),0 0 100px rgba(239,68,68,.22);
-  animation:ml-label-pulse 1.6s ease-in-out infinite}
-@keyframes ml-label-pulse{
-  0%,100%{opacity:1}50%{opacity:.72}}
-#mic-live-sub{font-size:clamp(12px,1.8vw,24px);font-weight:400;
-  letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.35)}
 </style>
 </head>
 
@@ -1337,11 +1303,6 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 <div id="takeover">
   <div id="takeover-title"></div>
   <div id="takeover-text"></div>
-</div>
-<div id="mic-live">
-  <div id="mic-live-ring"><div id="mic-live-dot"></div></div>
-  <div id="mic-live-label">MIC LIVE</div>
-  <div id="mic-live-sub">{{studio_name|e}}</div>
 </div>
 
 <script nonce="{{csp_nonce()}}">
@@ -1644,22 +1605,49 @@ function _pollNP(){
 }
 if(_hasStation){ _pollNP(); setInterval(_pollNP, 10000); }
 
-// ── Full-screen takeover ─────────────────────────────────────────────────────
+// ── Full-screen takeover (with mic-live suppression) ────────────────────────
+// When a mic is live in the linked Studio Board studio, takeovers are held
+// back silently.  The moment the mic goes down, any pending takeover shows.
+var _micIsLive       = false;
+var _pendingTakeover = null;   // {title, text} stored while mic is live
+
 function _showTakeover(title, text){
+  if(_micIsLive){
+    // Mic live — store but do not show yet
+    _pendingTakeover = {title: title || '', text: text || ''};
+    return;
+  }
+  _pendingTakeover = null;
   document.getElementById('takeover-title').textContent = title || '';
   document.getElementById('takeover-text').textContent  = text  || '';
   document.getElementById('takeover').classList.add('vis');
 }
 function _clearTakeover(){
+  _pendingTakeover = null;
   document.getElementById('takeover').classList.remove('vis');
 }
 
-// ── Mic-live suppression overlay ────────────────────────────────────────────
-function _showMicLive(){
-  document.getElementById('mic-live').classList.add('vis');
-}
-function _clearMicLive(){
-  document.getElementById('mic-live').classList.remove('vis');
+// Called when mic state changes. On mic-up: hide any visible takeover and
+// park it as pending.  On mic-down: show any parked takeover.
+function _setMicLive(live){
+  _micIsLive = live;
+  if(live){
+    var to=document.getElementById('takeover');
+    if(to.classList.contains('vis')){
+      // Takeover was showing — park it and hide
+      _pendingTakeover = {
+        title: document.getElementById('takeover-title').textContent,
+        text:  document.getElementById('takeover-text').textContent,
+      };
+      to.classList.remove('vis');
+    }
+  } else {
+    // Mic down — release any parked takeover
+    if(_pendingTakeover){
+      var pt=_pendingTakeover; _pendingTakeover=null;
+      _showTakeover(pt.title, pt.text);
+    }
+  }
 }
 
 // ── SSE — instant studio assignment / settings / takeover / mic-live updates ─
@@ -1676,20 +1664,22 @@ if(_studioId){
     } else if(e.data==='takeover_clear'){
       _clearTakeover();
     } else if(e.data==='mic_live'){
-      _showMicLive();
+      _setMicLive(true);
     } else if(e.data==='mic_down'){
-      _clearMicLive();
+      _setMicLive(false);
     }
   };
-  // Restore active takeover on page load / reload
-  fetch(_tk('/api/brandscreen/studio/'+_studioId+'/takeover'),{credentials:'same-origin'})
-    .then(function(r){ return r.ok?r.json():{}; })
-    .then(function(d){ if(d.active) _showTakeover(d.title,d.text); })
-    .catch(function(){});
-  // Restore mic-live state on page load / reload
+  // On page load: fetch mic state first, then takeover state, so that
+  // _showTakeover already knows whether the mic is live and can park it.
   fetch(_tk('/api/brandscreen/studio/'+_studioId+'/mic_state'),{credentials:'same-origin'})
     .then(function(r){ return r.ok?r.json():{}; })
-    .then(function(d){ if(d.mic_live) _showMicLive(); })
+    .then(function(d){
+      _micIsLive = !!(d.mic_live);
+      // Now restore any active takeover — respects _micIsLive via _showTakeover
+      return fetch(_tk('/api/brandscreen/studio/'+_studioId+'/takeover'),{credentials:'same-origin'});
+    })
+    .then(function(r){ return r.ok?r.json():{}; })
+    .then(function(d){ if(d.active) _showTakeover(d.title,d.text); })
     .catch(function(){});
 }
 </script>
