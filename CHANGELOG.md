@@ -2,6 +2,18 @@
 
 ---
 
+### vMix Caller 1.3.0 — 2026-04-25
+
+**vMix IP/port config from hub, dual bridge modes, correct setup guide**
+
+- Hub operator page now has **vMix IP and Port fields** — entering them and clicking Save pushes the values to the client node automatically via the command channel (no need to visit the client machine). Client's current reported IP/port shown in the status bar after first contact.
+- **Dual bridge modes** — `_proxyUrl()` auto-detects which to use:
+  - `http://127.0.0.1:8080/...` → routes through the authenticated hub proxy (`/hub/vmixcaller/video/<path>`). Use when SRS runs on the hub server.
+  - Any LAN/remote IP → browser accesses directly. Use when SRS runs on the same LAN as vMix (Option A — recommended). No hub-side port needed.
+- **Setup guide** rewritten to show Option A (LAN bridge, vMix Caller mode) as the recommended approach, with correct vMix SRT settings (Type: Caller, Hostname: LAN IP, Stream ID: `#!::h=live/caller,m=publish`). Option B (bridge on hub server) described as an alternative.
+- Client node status report now includes `vmix_ip` and `vmix_port` so hub operator can verify the config that was applied.
+- Client node page updated to note that IP/port can be pushed remotely from the hub.
+
 ### vMix Caller 1.2.0 — 2026-04-25
 
 **Presenter view and saved meetings**

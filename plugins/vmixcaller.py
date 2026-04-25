@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-vMix Caller Manager — SignalScope plugin v1.2.0
+vMix Caller Manager — SignalScope plugin v1.3.0
 
 Two audiences:
   • Operator (hub page /hub/vmixcaller)
-      Selects the site running vMix, manages saved meetings, sees the
+      Selects the site running vMix, sets the vMix IP/port (pushed to the
+      client node automatically on save), manages saved meetings, sees the
       participants list, queues commands.  Back-of-house.
 
   • Presenter (/hub/vmixcaller/presenter)
@@ -17,6 +18,13 @@ Hub / client architecture:
   them and executes against the local vMix API, then reports participants
   and connection status back.  Works through NAT — no direct hub→site
   connectivity required.
+
+Video security:
+  The SRT→HLS bridge (SRS Docker) binds port 8080 to localhost only.
+  The plugin proxies HLS through /hub/vmixcaller/video/<path> which
+  requires a valid SignalScope session — the video is never publicly
+  accessible.  The SRT input port (UDP 10080) remains open so vMix can
+  push from the remote site.
 """
 
 SIGNALSCOPE_PLUGIN = {
@@ -24,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.2.0",
+    "version": "1.3.0",
 }
 
 import os
@@ -35,8 +43,9 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 
-from flask import request, jsonify, render_template_string
+from flask import request, jsonify, render_template_string, Response, abort
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _CFG_PATH = os.path.join(_BASE_DIR, "vmixcaller_config.json")
@@ -52,8 +61,8 @@ _DEFAULTS: dict = {
 }
 
 # ── Hub-side runtime state ─────────────────────────────────────────────────────
-_pending_cmd: dict = {}
-_site_status: dict = {}
+_pending_cmd: dict = {}   # site_name → {fn, value, input, seq}
+_site_status: dict = {}   # site_name → {ok, version, participants, error, ts}
 _state_lock          = threading.Lock()
 
 
@@ -93,6 +102,23 @@ def _save_cfg(data: dict) -> dict:
         with open(_CFG_PATH, "w") as fh:
             json.dump(current, fh, indent=2)
     return current
+
+
+def _proxy_video_url(bridge_url: str) -> str:
+    """Convert an internal bridge URL to the authenticated SignalScope proxy path.
+
+    e.g. "http://127.0.0.1:8080/live/caller.m3u8"
+       → "/hub/vmixcaller/video/live/caller.m3u8"
+    """
+    if not bridge_url:
+        return ""
+    try:
+        path = urlparse(bridge_url.strip()).path
+        if not path.startswith("/"):
+            path = "/" + path
+        return "/hub/vmixcaller/video" + path
+    except Exception:
+        return ""
 
 
 # ── vMix API helpers (executed on the CLIENT side) ────────────────────────────
@@ -220,20 +246,36 @@ def _start_client_thread(monitor, hub_url: str):
             cmd = d.get("cmd")
             if cmd and cmd.get("seq") != last_cmd_seq:
                 last_cmd_seq = cmd["seq"]
-                ok, resp = _vmix_fn(cfg, cmd["fn"],
-                                    value=cmd.get("value"), inp=cmd.get("input"))
-                try:
-                    _hub_post(f"{hub_url}/api/vmixcaller/report", site, secret, {
-                        "cmd_result": {"seq": cmd["seq"], "ok": ok, "resp": resp[:120]},
-                    })
-                except Exception:
-                    pass
+                fn = cmd.get("fn", "")
+
+                if fn == "__set_config__":
+                    # Hub is pushing vMix connection config — save locally
+                    updates = {}
+                    if "vmix_ip"   in cmd: updates["vmix_ip"]   = cmd["vmix_ip"]
+                    if "vmix_port" in cmd: updates["vmix_port"]  = cmd["vmix_port"]
+                    if updates:
+                        _save_cfg(updates)
+                        cfg = _load_cfg()   # reload so next iteration uses new values
+                else:
+                    ok, resp = _vmix_fn(cfg, fn,
+                                        value=cmd.get("value"), inp=cmd.get("input"))
+                    try:
+                        _hub_post(f"{hub_url}/api/vmixcaller/report", site, secret, {
+                            "cmd_result": {"seq": cmd["seq"], "ok": ok, "resp": resp[:120]},
+                        })
+                    except Exception:
+                        pass
 
             now = time.time()
             if now - last_full_report >= 12.0:
                 last_full_report = now
                 ok_xml, xml_text = _vmix_xml(cfg)
-                report: dict = {"ts": now, "ok": ok_xml}
+                report: dict = {
+                    "ts":        now,
+                    "ok":        ok_xml,
+                    "vmix_ip":   cfg.get("vmix_ip",  "127.0.0.1"),
+                    "vmix_port": cfg.get("vmix_port", 8088),
+                }
                 if ok_xml:
                     report["version"]      = _vmix_version(xml_text)
                     report["participants"] = _parse_participants(
@@ -311,17 +353,37 @@ function _del(url){return fetch(url,{method:'DELETE',headers:{'X-CSRFToken':_csr
 function _esc(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function _ago(ts){if(!ts)return'';var s=Math.round((Date.now()/1000)-ts);if(s<5)return'just now';if(s<60)return s+'s ago';return Math.round(s/60)+'m ago';}
 
+// ── Proxy URL helper ──────────────────────────────────────────────────────────
+// If the bridge URL is localhost/127.0.0.1 (bridge running on the hub server),
+// route through the authenticated SignalScope proxy so port 8080 can stay
+// localhost-only.
+// For any other hostname (LAN IP, remote host) the URL is used directly —
+// the browser fetches it straight from the bridge machine, which is correct
+// when the bridge is on the same LAN as the presenter's computer.
+function _proxyUrl(u){
+  if(!u)return'';
+  try{
+    var p=new URL(u);
+    if(p.hostname==='127.0.0.1'||p.hostname==='localhost'){
+      return'/hub/vmixcaller/video'+p.pathname;
+    }
+    return u;  // LAN / external — use directly
+  }catch(e){return'';}
+}
+
 // ── Video preview ─────────────────────────────────────────────────────────────
+// Always converts to proxy URL before setting video src.
 function initPreview(url){
   var vid=document.getElementById('pvid');
   var ov=document.getElementById('pvw-ov');
   var msg=document.getElementById('pvmsg');
   if(!vid||!ov)return;
-  if(!url){ov.classList.remove('hidden');if(msg)msg.textContent='No preview stream configured';return;}
-  ov.classList.remove('hidden');if(msg)msg.textContent='Connecting to stream…';
-  vid.src=url;vid.load();
+  var purl=_proxyUrl(url);
+  if(!purl){ov.classList.remove('hidden');if(msg)msg.textContent='No preview stream configured';return;}
+  ov.classList.remove('hidden');if(msg)msg.textContent='Connecting to stream\u2026';
+  vid.src=purl;vid.load();
   vid.oncanplay=function(){ov.classList.add('hidden');};
-  vid.onerror=function(){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable — is the bridge running?';};
+  vid.onerror=function(){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';};
   vid.play().catch(function(){});
 }
 
@@ -342,25 +404,25 @@ function setMeetingState(v){
 }
 function resetCallBtns(){
   var mb=document.getElementById('mute-btn');var cb=document.getElementById('cam-btn');
-  if(mb)mb.textContent='🔇 Mute Self';if(cb)cb.textContent='📷 Stop Camera';
+  if(mb)mb.textContent='\uD83D\uDD07 Mute Self';if(cb)cb.textContent='\uD83D\uDCF7 Stop Camera';
 }
 
 function joinWith(mid,pass,name){
   if(!mid){showMsg('Enter a Meeting ID',false);return;}
   sendCmd('ZoomJoinMeeting',mid+'|'+(pass||'')+'|'+(name||'Guest Producer'))
-    .then(function(d){if(d.ok){showMsg('Joining…',true);setMeetingState(true);}});
+    .then(function(d){if(d.ok){showMsg('Joining\u2026',true);setMeetingState(true);}});
 }
 function leaveMeeting(){
   sendCmd('ZoomLeaveMeeting').then(function(d){if(d.ok){showMsg('Left meeting',true);setMeetingState(false);}});
 }
 function muteSelf(){
   sendCmd('ZoomMuteSelf').then(function(d){
-    if(d.ok){_selfMuted=!_selfMuted;var b=document.getElementById('mute-btn');if(b)b.textContent=_selfMuted?'🔊 Unmute Self':'🔇 Mute Self';showMsg(_selfMuted?'Muted':'Unmuted',true);}
+    if(d.ok){_selfMuted=!_selfMuted;var b=document.getElementById('mute-btn');if(b)b.textContent=_selfMuted?'\uD83D\uDD0A Unmute Self':'\uD83D\uDD07 Mute Self';showMsg(_selfMuted?'Muted':'Unmuted',true);}
   });
 }
 function stopCamera(){
   sendCmd('ZoomStopCamera').then(function(d){
-    if(d.ok){_camOff=!_camOff;var b=document.getElementById('cam-btn');if(b)b.textContent=_camOff?'📷 Start Camera':'📷 Stop Camera';showMsg(_camOff?'Camera off':'Camera on',true);}
+    if(d.ok){_camOff=!_camOff;var b=document.getElementById('cam-btn');if(b)b.textContent=_camOff?'\uD83D\uDCF7 Start Camera':'\uD83D\uDCF7 Stop Camera';showMsg(_camOff?'Camera off':'Camera on',true);}
   });
 }
 function muteAll(){sendCmd('ZoomMuteAll').then(function(d){if(d.ok)showMsg('All guests muted',true);});}
@@ -389,10 +451,8 @@ _PRESENTER_TPL = r"""<!DOCTYPE html>
 """ + _CSS + r"""
 /* ── Presenter-specific overrides ─────────────────────────────────────── */
 main{max-width:860px}
-/* Video is the hero — large and centred */
 .hero-video{margin-bottom:18px}
 .pvw-wrap{border-radius:12px;border:2px solid var(--bor)}
-/* Saved meeting rows: bigger hit targets */
 .mtg-row{padding:11px 14px;cursor:default}
 .mtg-name{font-size:14px}
 .join-big{padding:7px 18px;font-size:13px}
@@ -401,13 +461,12 @@ main{max-width:860px}
 #call-bar.visible{display:flex}
 #call-bar .badge{font-size:11px;padding:2px 8px;border-radius:20px;background:#0f2318;color:var(--ok);border:1px solid #166534;font-weight:600}
 #call-bar .spacer{flex:1}
-/* Manual join section — collapsed by default */
+/* Manual join section */
 #manual-section{margin-bottom:14px}
 #manual-toggle{background:none;border:none;color:var(--mu);font-size:12px;cursor:pointer;padding:0;font-family:inherit;text-decoration:underline;text-underline-offset:2px}
 #manual-toggle:hover{color:var(--tx)}
 #manual-form{display:none;margin-top:10px}
 #manual-form.open{display:block}
-/* No saved meetings hint */
 .no-meetings{color:var(--mu);font-size:13px;padding:12px;text-align:center;border:1px dashed var(--bor);border-radius:8px}
 </style>
 </head>
@@ -416,7 +475,7 @@ main{max-width:860px}
 <main>
 <div id="msg"></div>
 
-<!-- ── In-call toolbar (hidden until joined) ──────────────────────────────── -->
+<!-- ── In-call toolbar ────────────────────────────────────────────────────── -->
 <div id="call-bar">
   <span class="badge">● ON CALL</span>
   <button class="btn bg" id="mute-btn" onclick="muteSelf()">🔇 Mute Self</button>
@@ -475,7 +534,7 @@ main{max-width:860px}
   </div>
 </div>
 
-<!-- ── Manual join (collapsed by default) ─────────────────────────────────── -->
+<!-- ── Manual join ─────────────────────────────────────────────────────────── -->
 <div id="manual-section">
   <button id="manual-toggle" onclick="toggleManual()">＋ Join a different meeting…</button>
   <div id="manual-form">
@@ -528,13 +587,11 @@ setMeetingState = function(v){
   _baseSMS(v);
   var bar=document.getElementById('call-bar');
   if(bar){if(v)bar.classList.add('visible');else bar.classList.remove('visible');}
-  // Dim / disable all join buttons while in a call
   document.querySelectorAll('.join-btn').forEach(function(b){b.disabled=v;});
 };
 
 function hangUp(){
   leaveMeeting();
-  // Reload preview so it goes back to "waiting" state
   if(_bridgeUrl) setTimeout(function(){initPreview(_bridgeUrl);},1500);
 }
 
@@ -569,13 +626,13 @@ _HUB_TPL = r"""<!DOCTYPE html>
 /* hub-specific */
 #sbar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mu);margin-bottom:14px;padding:8px 12px;background:var(--sur);border:1px solid var(--bor);border-radius:8px}
 .sep{border:none;border-top:1px solid var(--bor);margin:12px 0}
-/* saved meetings admin table */
 .mtg-admin-row{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#091e42;border:1px solid var(--bor);border-radius:8px;margin-bottom:6px}
 .mtg-admin-row .mtg-name{flex:1;font-weight:600}
 .mtg-admin-row .mtg-id{font-size:11px;color:var(--mu)}
-/* add meeting form */
 .add-mtg{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;margin-top:10px;align-items:end}
 @media(max-width:600px){.add-mtg{grid-template-columns:1fr 1fr}}
+.hint{font-size:11px;color:var(--mu);margin-top:3px;line-height:1.4}
+.reported-addr{font-size:11px;color:var(--ok);margin-top:3px}
 </style>
 </head>
 <body>
@@ -612,18 +669,36 @@ _HUB_TPL = r"""<!DOCTYPE html>
     </div>
 
     <!-- SRT bridge setup guide -->
-    <div class="card" id="guide-card">
-      <div class="ch">⚙ SRT Bridge Setup (Ubuntu)</div>
+    <div class="card">
+      <div class="ch">⚙ SRT Bridge Setup</div>
       <div class="cb" style="font-size:12px;color:var(--mu);line-height:1.65">
-        <p>One-time setup on your Ubuntu server:</p>
+
+        <p style="font-weight:600;color:var(--tx);margin-bottom:6px">Option A — Bridge on the same LAN as vMix <span style="font-weight:400;color:var(--ok)">(recommended)</span></p>
+        <p style="margin-bottom:6px">Run the bridge on any Ubuntu machine on the <strong style="color:var(--tx)">same LAN as vMix</strong> (can be the SignalScope client node):</p>
         <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:11px;color:#7dd3fc;white-space:pre-wrap;margin:6px 0">docker run -d --name srs-srt --restart unless-stopped \
   -p 10080:10080/udp -p 8080:8080 \
   ossrs/srs:5 ./objs/srs -c conf/srt.conf</pre>
-        <ol style="padding-left:18px;margin:8px 0">
-          <li style="margin-bottom:6px">In vMix, open the Zoom input → <strong>Output</strong> → enable <strong>SRT Output</strong>:<br>
-            <code style="background:#0d1e40;padding:2px 6px;border-radius:4px;font-size:11px">srt://&lt;ubuntu-ip&gt;:10080?streamid=#!::h=live/caller,m=publish</code></li>
-          <li>Set <strong>Bridge URL</strong> below to <code style="background:#0d1e40;padding:2px 6px;border-radius:4px;font-size:11px">http://&lt;ubuntu-ip&gt;:8080/live/caller.m3u8</code></li>
-        </ol>
+        <p style="margin-bottom:4px">In vMix → Zoom input → <strong>Output</strong> → enable SRT, set <strong>Type: Caller</strong>:</p>
+        <ul style="padding-left:16px;margin-bottom:6px">
+          <li><strong style="color:var(--tx)">Hostname</strong> — LAN IP of the bridge machine (e.g. <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">192.168.13.2</code>)</li>
+          <li><strong style="color:var(--tx)">Port</strong> — <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">10080</code></li>
+          <li><strong style="color:var(--tx)">Stream ID</strong> — <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">#!::h=live/caller,m=publish</code></li>
+        </ul>
+        <p>Set <strong style="color:var(--tx)">Bridge URL</strong> below to the bridge machine's LAN IP:</p>
+        <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://192.168.13.2:8080/live/caller.m3u8</pre>
+        <p style="font-size:11px;color:var(--wn);margin-top:4px">⚠ The presenter's browser must be on the same LAN to reach this IP. If your hub uses HTTPS, add a self-signed cert to SRS or use Option B.</p>
+
+        <hr style="border:none;border-top:1px solid var(--bor);margin:12px 0">
+
+        <p style="font-weight:600;color:var(--tx);margin-bottom:6px">Option B — Bridge on the hub server</p>
+        <p style="margin-bottom:6px">Run SRS on the hub server. Bind port 8080 to localhost — SignalScope proxies it securely. vMix pushes SRT over the internet to the hub's public IP.</p>
+        <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:11px;color:#7dd3fc;white-space:pre-wrap;margin:6px 0">docker run -d --name srs-srt --restart unless-stopped \
+  -p 10080:10080/udp -p 127.0.0.1:8080:8080 \
+  ossrs/srs:5 ./objs/srs -c conf/srt.conf</pre>
+        <p>Set vMix SRT Hostname to the hub's public IP, then set Bridge URL to:</p>
+        <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://127.0.0.1:8080/live/caller.m3u8</pre>
+        <p style="font-size:11px">SignalScope automatically detects the localhost URL and proxies the stream — no public port 8080 needed.</p>
+
       </div>
     </div>
   </div>
@@ -642,7 +717,17 @@ _HUB_TPL = r"""<!DOCTYPE html>
             <option value="{{s|e}}"{% if s==cfg.target_site %} selected{% endif %}>{{s|e}}</option>
             {% endfor %}
           </select>
-          <span style="font-size:11px;color:var(--mu);margin-top:2px">Site node running alongside vMix — configure vMix IP on that node</span>
+        </div>
+        <div class="r2">
+          <div class="field">
+            <label class="fl">vMix IP (on site node)</label>
+            <input type="text" id="vmix-ip" placeholder="127.0.0.1" value="{{cfg.vmix_ip|e}}">
+            <div class="hint" id="vmix-ip-reported"></div>
+          </div>
+          <div class="field">
+            <label class="fl">vMix Port</label>
+            <input type="number" id="vmix-port" value="{{cfg.vmix_port}}" min="1" max="65535">
+          </div>
         </div>
         <div class="r2">
           <div class="field">
@@ -651,12 +736,13 @@ _HUB_TPL = r"""<!DOCTYPE html>
           </div>
           <div class="field" style="justify-content:flex-end">
             <label class="fl">&nbsp;</label>
-            <button class="btn bp" onclick="saveConfig()">💾 Save</button>
+            <button class="btn bp" onclick="saveConfig()">💾 Save &amp; Push to Site</button>
           </div>
         </div>
         <div class="field" style="margin-top:4px">
-          <label class="fl">Bridge URL (preview stream)</label>
-          <input type="text" id="bridge-url" placeholder="http://ubuntu-server:8080/live/caller.m3u8" value="{{cfg.bridge_url|e}}">
+          <label class="fl">Bridge URL (internal HLS, proxied by SignalScope)</label>
+          <input type="text" id="bridge-url" placeholder="http://127.0.0.1:8080/live/caller.m3u8" value="{{cfg.bridge_url|e}}">
+          <div class="hint">Run the SRT bridge on this hub server — see setup guide on the left.</div>
         </div>
       </div>
     </div>
@@ -756,13 +842,19 @@ function setStatus(state,text,ts){
 }
 
 function saveConfig(){
-  var site=document.getElementById('target-site').value;
-  var inp=parseInt(document.getElementById('vmix-input').value)||1;
-  var url=document.getElementById('bridge-url').value.trim();
-  _post('/api/vmixcaller/config',{target_site:site,vmix_input:inp,bridge_url:url})
+  var site  = document.getElementById('target-site').value;
+  var ip    = document.getElementById('vmix-ip').value.trim()||'127.0.0.1';
+  var port  = parseInt(document.getElementById('vmix-port').value)||8088;
+  var inp   = parseInt(document.getElementById('vmix-input').value)||1;
+  var url   = document.getElementById('bridge-url').value.trim();
+  _post('/api/vmixcaller/config',{target_site:site,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:url})
     .then(function(d){
-      if(d.ok){showMsg('Settings saved',true);initPreview(url);if(site)loadState();}
-      else showMsg(d.error||'Save failed',false);
+      if(d.ok){
+        var msg=site?'Settings saved \u2014 vMix config sent to '+site:'Settings saved';
+        showMsg(msg,true);
+        initPreview(url);
+        if(site)loadState();
+      } else showMsg(d.error||'Save failed',false);
     }).catch(function(e){showMsg('Error: '+e,false);});
 }
 
@@ -792,9 +884,20 @@ function loadState(){
     .then(function(d){
       var site=(document.getElementById('target-site')||{}).value||'';
       if(!site){setStatus('off','No site selected',0);return;}
-      if(!d.has_data){setStatus('warn','Waiting for '+site+' to report…',0);}
-      else if(d.ok){setStatus('ok',site+' — vMix connected'+(d.version?' v'+d.version:''),d.ts);}
-      else setStatus('al',site+' — vMix unreachable: '+(d.error||''),d.ts);
+      if(!d.has_data){setStatus('warn','Waiting for '+site+' to report\u2026',0);}
+      else if(d.ok){
+        var addr=d.vmix_ip?'  \u2014  vMix at '+d.vmix_ip+':'+d.vmix_port:'';
+        setStatus('ok',site+(d.version?' \u2014 vMix v'+d.version:' \u2014 vMix connected')+addr,d.ts);
+        // Update IP/port fields with what the client is actually using
+        var ipEl=document.getElementById('vmix-ip');
+        var ptEl=document.getElementById('vmix-port');
+        var repEl=document.getElementById('vmix-ip-reported');
+        if(d.vmix_ip&&ipEl&&ipEl.value!==d.vmix_ip){
+          if(repEl)repEl.textContent='\u2714 Site reporting: '+d.vmix_ip+':'+d.vmix_port;
+        } else if(repEl){repEl.textContent='';}
+      } else {
+        setStatus('al',site+' \u2014 vMix unreachable: '+(d.error||''),d.ts);
+      }
       renderParticipants(d.participants||[]);
       var pago=document.getElementById('parts-ago');
       if(pago&&d.ts)pago.textContent='updated '+_ago(d.ts);
@@ -812,7 +915,7 @@ function renderParticipants(list){
   el.innerHTML=list.map(function(p){
     var safe=_esc(p.name);
     var b=(p.muted?'<span class="pbadge muted">MUTED</span>':'')+(p.active?'<span class="pbadge air">ON AIR</span>':'');
-    return '<div class="pi"><span class="pn">'+safe+'</span>'+b+'<button class="btn bw bs" data-name="'+safe+'" onclick="putOnAir(this)">📺 Put On Air</button></div>';
+    return '<div class="pi"><span class="pn">'+safe+'</span>'+b+'<button class="btn bw bs" data-name="'+safe+'" onclick="putOnAir(this)">\uD83D\uDCFA Put On Air</button></div>';
   }).join('');
 }
 function addManual(){var inp=document.getElementById('padd-in');var n=inp.value.trim();if(!n)return;if(!_parts.some(function(p){return p.name===n;})){_parts.push({name:n,muted:false,active:false});renderParticipants(_parts);}inp.value='';}
@@ -835,14 +938,14 @@ function renderMeetingsAdmin(){
   el.innerHTML=_meetings.map(function(m,i){
     return '<div class="mtg-admin-row">'
       +'<div><div class="mtg-name">'+_esc(m.name)+'</div>'
-      +'<div class="mtg-id">ID: '+_esc(m.id)+(m.pass?' &nbsp;·&nbsp; Passcode set':'')+'</div></div>'
-      +'<button class="btn bp bs" onclick="joinSavedAdmin('+i+')">📞 Join</button>'
-      +'<button class="btn bd bs" onclick="deleteMeeting('+i+')">✕</button>'
+      +'<div class="mtg-id">ID: '+_esc(m.id)+(m.pass?' &nbsp;&middot;&nbsp; Passcode set':'')+'</div></div>'
+      +'<button class="btn bp bs" data-idx="'+i+'" onclick="joinSavedAdmin(this)">&#128222; Join</button>'
+      +'<button class="btn bd bs" data-idx="'+i+'" onclick="deleteMeeting(this)">&#x2715;</button>'
       +'</div>';
   }).join('');
 }
-function joinSavedAdmin(i){
-  var m=_meetings[i];if(!m)return;
+function joinSavedAdmin(btn){
+  var m=_meetings[parseInt(btn.dataset.idx)];if(!m)return;
   var site=document.getElementById('target-site');
   if(site&&!site.value){showMsg('Select a site first',false);return;}
   joinWith(m.id,m.pass,m.display_name||'Guest Producer');
@@ -862,8 +965,8 @@ function addMeeting(){
       } else showMsg(d.error||'Save failed',false);
     }).catch(function(e){showMsg('Error: '+e,false);});
 }
-function deleteMeeting(i){
-  _del('/api/vmixcaller/meetings/'+i)
+function deleteMeeting(btn){
+  _del('/api/vmixcaller/meetings/'+btn.dataset.idx)
     .then(function(d){if(d.ok)loadMeetings();else showMsg(d.error||'Delete failed',false);})
     .catch(function(e){showMsg('Error: '+e,false);});
 }
@@ -897,8 +1000,9 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
   <div class="ch">📹 vMix Caller — Client Node</div>
   <div class="cb">
     <p style="margin-bottom:12px;color:var(--mu);font-size:12px">
-      This is a client node. Configure the local vMix connection — the hub operator
-      controls meetings from the hub; commands are executed here against local vMix.
+      This is a client node. The hub operator controls meetings from the hub;
+      commands are executed here against local vMix. vMix IP and port can be
+      set here or pushed remotely from the hub operator page.
     </p>
     <div class="r2">
       <div class="field">
@@ -926,6 +1030,7 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
   <div class="cb" style="font-size:12px;color:var(--mu)">
     <p>Hub: <strong style="color:var(--tx)">{{hub_url|e}}</strong></p>
     <p style="margin-top:6px">Polling every 3 s for commands. Participants reported every ~12 s.</p>
+    <p style="margin-top:6px">The hub operator can push vMix IP/port updates from the hub settings page.</p>
   </div>
 </div>
 </main>
@@ -941,7 +1046,7 @@ function testLocal(){
   fetch('/api/vmixcaller/test_local',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
     var el=document.getElementById('test-result');
     el.style.color=d.ok?'var(--ok)':'var(--al)';
-    el.textContent=d.ok?'✓ vMix reachable — version '+d.version:'✗ Cannot reach vMix: '+(d.error||'unknown');
+    el.textContent=d.ok?'\u2713 vMix reachable \u2014 version '+d.version:'\u2717 Cannot reach vMix: '+(d.error||'unknown');
   }).catch(function(e){document.getElementById('test-result').textContent='Error: '+e;});
 }
 </script>
@@ -954,8 +1059,6 @@ function testLocal(){
 # ══════════════════════════════════════════════════════════════════════════════
 
 def register(app, ctx):
-    import html as _html
-
     login_required  = ctx["login_required"]
     csrf_protect    = ctx["csrf_protect"]
     monitor         = ctx["monitor"]
@@ -998,15 +1101,42 @@ def register(app, ctx):
         cfg      = _load_cfg()
         meetings = cfg.get("saved_meetings") or []
         bridge   = (cfg.get("bridge_url") or "").strip()
-        # Pass bridge_url as JSON so JS can use it safely
-        bridge_json = json.dumps(bridge)
         return render_template_string(
             _PRESENTER_TPL,
             cfg=cfg,
             meetings=meetings,
             bridge_url=bridge,
-            bridge_url_json=bridge_json,
+            bridge_url_json=json.dumps(bridge),
         )
+
+    # ── Authenticated HLS proxy  (/hub/vmixcaller/video/<path:seg>) ───────────
+    # The SRS Docker container binds port 8080 to 127.0.0.1 only. This route
+    # proxies HLS manifest and TS segments from the internal SRS server to
+    # authenticated browser sessions — the video is never publicly reachable.
+    @app.get("/hub/vmixcaller/video/<path:seg>")
+    @login_required
+    def vmixcaller_video_proxy(seg):
+        cfg      = _load_cfg()
+        base_url = (cfg.get("bridge_url") or "").strip()
+        if not base_url:
+            abort(404)
+        try:
+            parsed    = urlparse(base_url)
+            proxy_url = f"{parsed.scheme}://{parsed.netloc}/{seg}"
+            req       = urllib.request.Request(proxy_url, method="GET")
+            resp      = urllib.request.urlopen(req, timeout=8)
+            data      = resp.read()
+            ct        = resp.headers.get("Content-Type", "application/octet-stream")
+            if seg.endswith(".m3u8"):
+                ct = "application/vnd.apple.mpegurl"
+            return Response(
+                data, content_type=ct,
+                headers={"Cache-Control": "no-cache"},
+            )
+        except urllib.error.HTTPError as e:
+            abort(e.code)
+        except Exception:
+            abort(502)
 
     # ── Config ────────────────────────────────────────────────────────────────
     @app.get("/api/vmixcaller/config")
@@ -1020,7 +1150,19 @@ def register(app, ctx):
     def vmixcaller_save_config():
         data = request.get_json(silent=True) or {}
         try:
-            return jsonify({"ok": True, "config": _save_cfg(data)})
+            cfg = _save_cfg(data)
+            # If on hub and a target site is selected, push vMix connection
+            # settings to the client node via the command channel.
+            target = (cfg.get("target_site") or "").strip()
+            if is_hub and target and ("vmix_ip" in data or "vmix_port" in data):
+                with _state_lock:
+                    _pending_cmd[target] = {
+                        "fn":        "__set_config__",
+                        "vmix_ip":   cfg.get("vmix_ip",  "127.0.0.1"),
+                        "vmix_port": cfg.get("vmix_port", 8088),
+                        "seq":       int(time.time() * 1000),
+                    }
+            return jsonify({"ok": True, "config": cfg})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
 
