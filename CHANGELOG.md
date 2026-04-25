@@ -2,6 +2,18 @@
 
 ---
 
+### vMix Caller 1.2.0 — 2026-04-25
+
+**Presenter view and saved meetings**
+
+- New **Presenter page** at `/hub/vmixcaller/presenter` — clean, bookmark-friendly page designed for the studio "email machine". No technical config visible; just the video feed and the tools a presenter needs
+- **Saved meetings list** — operator adds named meetings (name, meeting ID, passcode, display name) on the hub page. Presenter sees each meeting as a one-click row; tapping Join fires `ZoomJoinMeeting` immediately and shows the video feed
+- **In-call toolbar** appears automatically once joined: On Air badge, Mute, Camera, and Leave buttons. All join buttons disabled while a call is active to prevent double-joining
+- **Manual join** section collapsed behind a toggle link on the presenter page — keeps the UI clean for typical use but accessible when needed
+- Saved meetings also available from the hub operator page for back-of-house joins
+- `saved_meetings` list persisted in `vmixcaller_config.json` alongside existing scalar settings
+- New API endpoints: `GET /api/vmixcaller/meetings`, `POST /api/vmixcaller/meetings`, `DELETE /api/vmixcaller/meetings/<idx>`
+
 ### vMix Caller 1.1.0 — 2026-04-25
 
 **Hub/client architecture — vMix lives at the site, hub is the control surface**
