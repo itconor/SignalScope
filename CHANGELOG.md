@@ -2,6 +2,22 @@
 
 ---
 
+### vMix Caller 1.5.3 — 2026-04-25
+
+**Feature: video preview on client node page**
+
+The client node's vMix Caller page (`/hub/vmixcaller` on a client-mode node) now shows the full caller video preview, matching the hub operator page and presenter page. Previously the client page showed only the config fields with no video.
+
+Changes:
+- Added hls.js CDN script to `_CLIENT_TPL` head (same as hub/presenter pages)
+- Added 16:9 `pvw-wrap` preview card at the top of the client page
+- Replaced inline `_csrf`/`showMsg` with the shared `_JS_HELPERS` block (includes `initPreview`, hls.js wiring, keyboard shortcuts)
+- `saveClient()` now re-fetches `/api/vmixcaller/video_url` after save and calls `initPreview()` — bridge URL change is reflected immediately without a page reload
+- Route passes `video_url_json` (computed via `_compute_video_url(cfg, False)`) so the preview initialises on page load when a bridge URL is already configured
+- Overlay message shows "Configure a Bridge URL below" when no bridge is set vs "Waiting for caller…" when one is configured
+
+---
+
 ### vMix Caller 1.5.2 — 2026-04-25
 
 **Fix: HLS video not playing in Chrome/Edge; hub shows no video when bridge_url only set on client**

@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.2",
+    "version": "1.5.3",
 }
 
 import os
@@ -1191,14 +1191,31 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>vMix Caller Client — SignalScope</title>
+<script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 <style nonce="{{csp_nonce()}}">""" + _CSS + r"""</style>
 </head>
 <body>
 {{topnav("vmixcaller")|safe}}
 <main>
 <div id="msg"></div>
+
+<!-- ── Caller preview ─────────────────────────────────────────────────────── -->
 <div class="card">
-  <div class="ch">📹 vMix Caller — Client Node</div>
+  <div class="ch">📹 Caller Preview</div>
+  <div class="cb" style="padding:10px">
+    <div class="pvw-wrap">
+      <video id="pvid" autoplay muted playsinline></video>
+      <div id="pvw-ov">
+        <div class="pvw-icon">📷</div>
+        <div id="pvmsg">{% if cfg.bridge_url %}Waiting for caller…{% else %}Configure a Bridge URL below to enable preview{% endif %}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Config ─────────────────────────────────────────────────────────────── -->
+<div class="card">
+  <div class="ch">⚙ vMix Caller — Client Node</div>
   <div class="cb">
     <p style="margin-bottom:12px;color:var(--mu);font-size:12px">
       This is a client node. The hub operator controls meetings from the hub;
@@ -1231,6 +1248,7 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
     <div id="test-result" style="margin-top:10px;font-size:12px;color:var(--mu)"></div>
   </div>
 </div>
+
 <div class="card">
   <div class="ch">📡 Hub Connection</div>
   <div class="cb" style="font-size:12px;color:var(--mu)">
@@ -1241,25 +1259,43 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
 </div>
 </main>
 <script nonce="{{csp_nonce()}}">
-function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';}
-var _msgT=null;
-function showMsg(t,ok){var e=document.getElementById('msg');e.textContent=t;e.className=ok?'mok':'mer';e.style.display='block';clearTimeout(_msgT);_msgT=setTimeout(function(){e.style.display='none';},5000);}
+""" + _JS_HELPERS + r"""
+
+var _videoUrl = {{video_url_json}};
+
 function saveClient(){
   var d={
-    vmix_ip:   document.getElementById('vmix-ip').value.trim()||'127.0.0.1',
-    vmix_port: parseInt(document.getElementById('vmix-port').value)||8088,
-    vmix_input:parseInt(document.getElementById('vmix-input').value)||1,
-    bridge_url:(document.getElementById('bridge-url').value||'').trim()
+    vmix_ip:    document.getElementById('vmix-ip').value.trim()||'127.0.0.1',
+    vmix_port:  parseInt(document.getElementById('vmix-port').value)||8088,
+    vmix_input: parseInt(document.getElementById('vmix-input').value)||1,
+    bridge_url: (document.getElementById('bridge-url').value||'').trim()
   };
-  fetch('/api/vmixcaller/config',{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},credentials:'same-origin',body:JSON.stringify(d)}).then(function(r){return r.json();}).then(function(r){showMsg(r.ok?'Saved':'Error: '+(r.error||'failed'),r.ok);}).catch(function(e){showMsg('Error: '+e,false);});
+  _post('/api/vmixcaller/config',d).then(function(r){
+    if(r.ok){
+      showMsg('Saved',true);
+      // Re-fetch the computed proxy URL so the preview reinitialises with
+      // any updated bridge URL
+      fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
+        .then(function(r){return r.json();})
+        .then(function(v){_videoUrl=v.url||'';initPreview(_videoUrl);})
+        .catch(function(){});
+    } else showMsg(r.error||'Save failed',false);
+  }).catch(function(e){showMsg('Error: '+e,false);});
 }
+
 function testLocal(){
-  fetch('/api/vmixcaller/test_local',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
-    var el=document.getElementById('test-result');
-    el.style.color=d.ok?'var(--ok)':'var(--al)';
-    el.textContent=d.ok?'\u2713 vMix reachable \u2014 version '+d.version:'\u2717 Cannot reach vMix: '+(d.error||'unknown');
-  }).catch(function(e){document.getElementById('test-result').textContent='Error: '+e;});
+  fetch('/api/vmixcaller/test_local',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var el=document.getElementById('test-result');
+      el.style.color=d.ok?'var(--ok)':'var(--al)';
+      el.textContent=d.ok?'\u2713 vMix reachable \u2014 version '+d.version:'\u2717 Cannot reach vMix: '+(d.error||'unknown');
+    }).catch(function(e){document.getElementById('test-result').textContent='Error: '+e;});
 }
+
+document.addEventListener('DOMContentLoaded',function(){
+  if(_videoUrl) initPreview(_videoUrl);
+});
 </script>
 </body>
 </html>"""
@@ -1312,7 +1348,9 @@ def register(app, ctx):
             return render_template_string(_HUB_TPL, cfg=cfg, sites=sites,
                                           video_url_json=json.dumps(video_url))
         if is_client:
-            return render_template_string(_CLIENT_TPL, cfg=cfg, hub_url=hub_url)
+            video_url = _compute_video_url(cfg, False)
+            return render_template_string(_CLIENT_TPL, cfg=cfg, hub_url=hub_url,
+                                          video_url_json=json.dumps(video_url))
         # Standalone
         video_url = _compute_video_url(cfg, True)
         return render_template_string(_HUB_TPL, cfg=cfg, sites=[],
