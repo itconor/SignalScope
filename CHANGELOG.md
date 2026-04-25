@@ -2,6 +2,20 @@
 
 ---
 
+### Studio Board 3.14.13 — 2026-04-25
+
+**Segue / chain indicator on presenter countdown**
+
+- A mode icon now appears beside the big countdown timer, at near-matching size, showing whether the Zetta sequencer will chain automatically or stop for the presenter:
+  - ⏭ green — **Automation** mode: sequencer will chain to the next item automatically
+  - ⏹ amber — **Manual** mode: sequencer will stop after this track; presenter needs to take action
+  - ⏯ blue — **Live Assist** mode: presenter-driven / mixed
+  - Off Air / unknown: icon hidden
+- Icon sourced from Zetta's `mode` field (same field that drives the existing mode badges); no extra API calls
+- CSS `.cnt-seg` shares the `.cnt-row` flex container with the countdown number; inherits `transition:color` so mode changes animate smoothly
+
+---
+
 ### Studio Board 3.14.12 — 2026-04-25
 
 **Fix: Zetta countdown timer ~10 seconds behind**

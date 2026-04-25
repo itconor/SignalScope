@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.12",
+    "version":  "3.14.13",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1558,15 +1558,26 @@ body.bauer #sb-msg{background:rgba(245,158,11,.92)}
 /* ── Large countdown timer ── */
 .cnt-wrap{display:none;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0;padding:6px 0 2px}
 .cnt-wrap.cnt-active{display:flex}
+.cnt-row{display:flex;align-items:center;gap:10px;justify-content:center}
 .cnt-num{font-size:68px;font-weight:200;font-variant-numeric:tabular-nums;line-height:1;letter-spacing:.02em;color:var(--tx)}
 .cnt-num.cnt-low{color:var(--wn);font-weight:400}
 .cnt-num.cnt-urgent{color:var(--al);font-weight:700;animation:cnt-pulse 1s ease-in-out infinite}
 @keyframes cnt-pulse{0%,100%{opacity:1}50%{opacity:.55}}
+/* Segue / mode icon — sits right of the countdown at matching size */
+.cnt-seg{font-size:56px;line-height:1;font-weight:400;min-width:.9em;text-align:center;transition:color .4s,opacity .4s}
+.cnt-seg:empty{min-width:0}
+.cnt-seg.seg-auto{color:var(--ok)}   /* Automation — will chain */
+.cnt-seg.seg-stop{color:var(--wn)}   /* Manual — will stop */
+.cnt-seg.seg-live{color:var(--acc)}  /* Live Assist — presenter control */
 .cnt-label{font-size:9px;text-transform:uppercase;letter-spacing:.16em;color:var(--mu);font-weight:700;margin-top:2px}
 body.bauer .cnt-num{color:#fff}
+body.bauer .cnt-seg.seg-auto{color:#1fd1bd}
+body.bauer .cnt-seg.seg-stop{color:#ff7d6a}
 body.corp .cnt-num{color:#1d2d40}
 body.corp .cnt-num.cnt-low{color:#b45309}
 body.corp .cnt-num.cnt-urgent{color:#dc2626}
+body.corp .cnt-seg.seg-auto{color:#16a34a}
+body.corp .cnt-seg.seg-stop{color:#d97706}
 /* ── Anti-burn-in pixel drift ── */
 @keyframes sb-px-drift{0%,100%{transform:translate(0,0)}25%{transform:translate(1px,0)}50%{transform:translate(1px,1px)}75%{transform:translate(0,1px)}}
 #sb{animation:sb-px-drift 90s step-end infinite}
@@ -2023,7 +2034,13 @@ function buildCol(s,idx){
       /* Show name + image always present so updateCol can populate them */
       +'<img class=art id="showimg'+idx+'" alt="" style="display:none">'
       +'<div class=shw id="shw'+idx+'"></div>'
-      +'<div class="cnt-wrap" id="cnt'+idx+'"><div class="cnt-num" id="cntn'+idx+'">--:--</div><div class="cnt-label">Time Remaining</div></div>'
+      +'<div class="cnt-wrap" id="cnt'+idx+'">'
+      +'<div class="cnt-row">'
+      +'<div class="cnt-num" id="cntn'+idx+'">--:--</div>'
+      +'<div class="cnt-seg" id="cntseg'+idx+'"></div>'
+      +'</div>'
+      +'<div class="cnt-label">Time Remaining</div>'
+      +'</div>'
       +(s.zetta_station_key
         /* Zetta layout — artwork thumbnail + full sequencer data */
         ?'<div class=zq-main id="zq'+idx+'"></div>'
@@ -2325,6 +2342,19 @@ setInterval(function(){
       var cs=Math.floor(rs/60)+':'+(rs%60<10?'0':'')+(rs%60);
       if(cntN.textContent!==cs)cntN.textContent=cs;
       cntN.className='cnt-num'+(rem<15?' cnt-urgent':rem<30?' cnt-low':'');
+    }
+    /* Segue / mode icon — shows whether automation will chain or stop
+       ⏭ AUTO (mode 1) = will chain to next automatically  — green
+       ⏹ MANUAL (mode 2) = will stop, presenter takes over  — amber
+       ⏯ LIVE ASSIST (mode 3) = presenter-driven           — blue
+       Mode 4 (Off Air) and unknown: hide the icon */
+    var segEl=document.getElementById('cntseg'+i);
+    if(segEl){
+      var md=zd.mode||0;
+      if(md===1){segEl.textContent='\u23ED';segEl.className='cnt-seg seg-auto';}  /* ⏭ */
+      else if(md===2){segEl.textContent='\u23F9';segEl.className='cnt-seg seg-stop';}  /* ⏹ */
+      else if(md===3){segEl.textContent='\u23EF';segEl.className='cnt-seg seg-live';}  /* ⏯ */
+      else{segEl.textContent='';segEl.className='cnt-seg';}
     }
   });
 },500);
