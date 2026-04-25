@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.10",
+    "version":  "1.3.11",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -80,6 +80,7 @@ def _new_station():
         "np_manual":          "",
         "message":            "",
         "level_key":          "",   # "site|stream" for audio reactivity
+        "full_screen_logo":   False, # display logo only — no backgrounds, animations, clock, NP
     }
 
 def _new_studio():
@@ -691,6 +692,11 @@ function _stationForm(s){
     +'<div class="cb-row"><input type="checkbox" id="f-oair-'+s.id+'"'+(s.show_on_air?' checked':'')+'><label for="f-oair-'+s.id+'">On Air Badge</label></div>'
     +'<div class="cb-row"><input type="checkbox" id="f-np-'+s.id+'"'+(s.show_now_playing?' checked':'')+'><label for="f-np-'+s.id+'">Now Playing</label></div>'
     +'</div>'
+    +'<div class="cb-row" style="margin-bottom:4px">'
+    +'<input type="checkbox" id="f-fsl-'+s.id+'"'+(s.full_screen_logo?' checked':'')+'>'
+    +'<label for="f-fsl-'+s.id+'"><strong>Full-screen logo mode</strong> — show logo only, no background effects, animations, clock, or now-playing</label>'
+    +'</div>'
+    +'<p class="hint" style="margin-bottom:4px">Upload a logo and tick this for a clean static brand image. Takeovers still work on top.</p>'
     +'<hr class="sep">'
     +'<div class="slabel">Audio Level <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0">— drives orbit opacity, spin speed, bounce, pulse rate, glow, beams, burst, grid &amp; particles</span></div>'
     +'<div class="field"><label>Input Stream</label>'
@@ -793,6 +799,7 @@ function _saveSt(sid){
     brand_colour:_v('f-brand-'+sid)||s.brand_colour, accent_colour:_v('f-accent-'+sid)||s.accent_colour,
     bg_style:_v('f-bg-'+sid)||s.bg_style, logo_anim:_v('f-anim-'+sid)||s.logo_anim,
     show_clock:!!_v('f-clk-'+sid), show_on_air:!!_v('f-oair-'+sid), show_now_playing:!!_v('f-np-'+sid),
+    full_screen_logo:!!_v('f-fsl-'+sid),
     level_key:_v('f-lvkey-'+sid)||'',
     np_source:_v('f-npsrc-'+sid)||'none', np_zetta_key:_v('f-zpkey-'+sid)||'',
     np_api_url:_v('f-npurl-'+sid)||'', np_api_title_path:_v('f-nptpath-'+sid)||'',
@@ -1213,6 +1220,14 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 #waiting{position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;color:rgba(255,255,255,.3);z-index:20}
 #waiting.vis{display:flex}
 
+/* ── Full-screen logo mode ───────────────────────────────────────────────── */
+/* Covers all backgrounds and reactive overlays (z-0 to z-10). Sits below the
+   takeover (z-50) so breakings/messages still appear on top.
+   Anti-burn-in drift is applied via the same px-drift keyframe as #screen. */
+#fslogo-wrap{position:fixed;inset:0;z-index:25;display:flex;align-items:center;justify-content:center;
+  background:var(--bg-dark);animation:px-drift 90s step-end infinite}
+#fslogo-img{max-width:88vw;max-height:88vh;width:auto;height:auto;object-fit:contain;display:block}
+
 /* ── Full-screen takeover overlay ────────────────────────────────────────── */
 /* Sits above everything (z-index:50). Background uses brand-derived deep/dark
    colours so the palette is preserved. Title is brand-coloured at TV-legible
@@ -1275,6 +1290,12 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 <div class="bg-minimal"></div>
 {% endif %}
 
+{% if full_screen_logo and has_logo and station_id %}
+<div id="fslogo-wrap">
+  <img id="fslogo-img" src="/api/brandscreen/logo/{{station_id|e}}" alt="{{sname|e}}">
+</div>
+{% endif %}
+
 <div id="screen">
   <div id="top-bar">
     <div id="on-air"><div class="oa-dot"></div>ON AIR</div>
@@ -1328,6 +1349,9 @@ var _showClock  = {{show_clock|lower}};
 var _showOair   = {{show_on_air|lower}};
 var _showNP     = {{show_now_playing|lower}};
 var _levelKey   = '{{level_key|e}}';   // "site|stream" or ""
+// Full-screen logo mode — when true, all backgrounds/animations/NP are suppressed.
+// Takeovers still work.  SSE reload still works.
+var _fsLogo     = {{full_screen_logo|lower}};
 // Kiosk token: embedded server-side so JS sub-requests can pass it as
 // a query param (?token=...) without relying on session cookies.
 // Mirrors the wb_token pattern used by wallboard.py for Yodeck compat.
@@ -1339,7 +1363,7 @@ function _tk(url){ return _kioskToken ? (url + (url.indexOf('?')>=0?'&':'?') + '
 if(!_hasStation){ document.getElementById('waiting').classList.add('vis'); }
 
 // ── Clock ───────────────────────────────────────────────────────────────────
-if(_showClock && _hasStation){
+if(_showClock && _hasStation && !_fsLogo){
   document.getElementById('clock-wrap').classList.add('vis');
   var _D=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   var _M=['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1353,7 +1377,7 @@ if(_showClock && _hasStation){
 }
 
 // ── Particle canvas ─────────────────────────────────────────────────────────
-if(_bgStyle==='particles' && _hasStation){
+if(_bgStyle==='particles' && _hasStation && !_fsLogo){
   var cv=document.getElementById('cv');
   var ctx=cv.getContext('2d');
   var _rgb=_brandRgb.split(',').map(Number);
@@ -1563,7 +1587,7 @@ var _bounceY = 0, _bounceVy = 0, _prevSnapLev = 0;
 // /api/hub/live_levels returns a NESTED structure:
 //   { "site_name": [ {name, level_dbfs, ...}, ... ], ... }
 // _levelKey is "site|stream" — must split to look up d[site][stream].
-if(_levelKey && _hasStation){
+if(_levelKey && _hasStation && !_fsLogo){
   var _lkSep  = _levelKey.indexOf('|');
   var _lkSite = _lkSep >= 0 ? _levelKey.slice(0, _lkSep) : _levelKey;
   var _lkName = _lkSep >= 0 ? _levelKey.slice(_lkSep + 1) : '';
@@ -1616,7 +1640,7 @@ function _pollNP(){
   fetch(_tk('/api/brandscreen/data/'+_stationId),{credentials:'same-origin'})
     .then(function(r){return r.json();}).then(_applyNP).catch(function(){});
 }
-if(_hasStation){ _pollNP(); setInterval(_pollNP, 10000); }
+if(_hasStation && !_fsLogo){ _pollNP(); setInterval(_pollNP, 10000); }
 
 // ── Full-screen takeover (with mic-live suppression) ────────────────────────
 // When a mic is live in the linked Studio Board studio, takeovers are held
@@ -1785,6 +1809,7 @@ def register(app, ctx):
             show_now_playing=(st or {}).get("show_now_playing", True),
             has_logo=p is not None,
             level_key=lk,
+            full_screen_logo=bool((st or {}).get("full_screen_logo", False)),
             kiosk_token=kiosk_token,
         )
 
@@ -2051,6 +2076,7 @@ def register(app, ctx):
             "bg_style", "logo_anim", "show_clock", "show_on_air", "show_now_playing",
             "level_key", "np_source", "np_zetta_key", "np_api_url",
             "np_api_title_path", "np_api_artist_path", "np_manual", "message",
+            "full_screen_logo",
         ]
         for k in allowed:
             if k in data:

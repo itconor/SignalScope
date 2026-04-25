@@ -2,6 +2,21 @@
 
 ---
 
+### Brand Screen 1.3.11 — 2026-04-25
+
+**Full-screen logo mode — static image display with no backgrounds or animations**
+
+- New `full_screen_logo` boolean field on station config (default `false`)
+- Checkbox in the station editor Animation section: "Full-screen logo mode — show logo only, no background effects, animations, clock, or now-playing"
+- When enabled and a logo is uploaded, the screen displays only the uploaded logo centred on a solid brand-dark background — all backgrounds, particle canvas, orbit rings, pulse rings, reactive overlays, clock, On Air badge, now-playing, and message banner are suppressed
+- Anti-burn-in pixel drift (px-drift keyframe) still applies to the logo layer
+- Full-screen takeover still works on top (z-index 50 above the logo layer at z-index 25)
+- SSE-driven reload still works (the `#screen` div remains in the DOM underneath)
+- Useful for events or shows where a static brand image is required without any motion
+- Particle canvas, level poll, NP poll, and clock are all skipped in JS when `_fsLogo` is true (saves CPU on Pi/Yodeck kiosk displays)
+
+---
+
 ### Brand Screen 1.3.10 — 2026-04-25
 
 **Station-level takeover — fires on all screens showing that station**
