@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.8",
+    "version": "1.5.9",
 }
 
 import os
@@ -864,7 +864,7 @@ main{max-width:860px}
 // _videoUrl is the pre-computed SignalScope proxy path served by the server.
 // On hub nodes this is always /hub/vmixcaller/video/relay.m3u8 (relay buffer)
 // or the localhost-bridge proxy path. On client nodes it's the LAN bridge path.
-var _videoUrl = {{video_url_json}};
+var _videoUrl = {{video_url_json|safe}};
 
 function joinSaved(btn){
   joinWith(btn.dataset.mid, btn.dataset.pass, btn.dataset.dname||'Guest Producer');
@@ -1143,7 +1143,7 @@ function setStatus(state,text,ts){
   if(ago)ago.textContent=ts?'('+_ago(ts)+')':'';
 }
 
-var _videoUrl = {{video_url_json}};
+var _videoUrl = {{video_url_json|safe}};
 
 function saveConfig(){
   var site  = document.getElementById('target-site').value;
@@ -1375,7 +1375,7 @@ function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).c
 var _msgT=null;
 function showMsg(t,ok){var e=document.getElementById('msg');if(!e)return;e.textContent=t;e.className=ok?'mok':'mer';e.style.display='block';clearTimeout(_msgT);_msgT=setTimeout(function(){e.style.display='none';},5000);}
 
-var _videoUrl = {{video_url_json}};
+var _videoUrl = {{video_url_json|safe}};
 
 // ── Video preview ─────────────────────────────────────────────────────────────
 // webrtc://host/app/stream → native WHEP into <video>

@@ -2,6 +2,24 @@
 
 ---
 
+### vMix Caller 1.5.9 — 2026-04-25
+
+**Fix: ALL buttons dead on every page since 1.5.3 — root cause found**
+
+Root cause confirmed by inspecting the live page source. Jinja2's HTML autoescape was converting the `"` characters in `{{video_url_json}}` to `&#34;`, so the rendered JavaScript was:
+
+```
+var _videoUrl = &#34;/hub/vmixcaller/video/relay.m3u8&#34;;
+```
+
+The `&` at column 16 (right after `var _videoUrl = `) is a `SyntaxError: Unexpected token '&'` that kills the entire `<script>` block before a single function is defined. Every button on every page silently did nothing — no console error visible unless DevTools was open.
+
+Fix: `{{video_url_json|safe}}` in all three templates (`_HUB_TPL`, `_PRESENTER_TPL`, `_CLIENT_TPL`). The `|safe` filter tells Jinja2 the value is already safe and must not be HTML-escaped. `json.dumps()` output used in a `<script>` block does not need HTML escaping.
+
+This bug was present from 1.5.3 (when video preview was introduced) through 1.5.8.
+
+---
+
 ### vMix Caller 1.5.8 — 2026-04-25
 
 **Fix: ALL buttons broken on hub, presenter, and client pages (CSP)**
