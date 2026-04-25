@@ -20,7 +20,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":    "Zetta",
     "url":      "/zetta",
     "icon":     "📻",
-    "version":  "2.1.24",
+    "version":  "2.1.25",
 }
 
 import json
@@ -666,6 +666,11 @@ def _parse_station_full(root: ET.Element, station_id: str, spot_cats: list) -> d
             ev_type   = int(_find(el, "Type") or 0)
             ev_guid   = _find(el, "EventGUID", "GUID") or ""
             raw_cat   = (_find(el, "CategoryName", "Category") or "").upper()
+            # Per-cart segue/stop type — field name varies across Zetta versions.
+            # 0 = segue/chain (auto-starts next cart)  1 = stop  None = not reported.
+            _seg_raw  = _find(el, "SegueType", "Segue", "TransitionType", "NextEventType")
+            try:    segue_t = int(_seg_raw) if _seg_raw.strip() else None
+            except: segue_t = None
         except Exception:
             continue
 
@@ -698,6 +703,7 @@ def _parse_station_full(root: ET.Element, station_id: str, spot_cats: list) -> d
             "is_spot":          is_spot,
             "event_guid":       ev_guid,
             "raw_category":     raw_cat,
+            "segue_type":       segue_t,  # 0=chain, 1=stop, None=not in SOAP response
         }
 
         if ev_status == ST_PLAYING and now_playing is None:
@@ -774,6 +780,14 @@ def _parse_station_full_zeep(result, station_id: str, friendly_name: str, spot_c
         ev_guid = getattr(event, "EventGUID",        "") or ""
         raw_cat = (getattr(event, "CategoryName", None)
                    or getattr(event, "Category", "") or "").upper()
+        # Per-cart segue/stop type — try common field names across Zetta versions.
+        # 0 = segue/chain  1 = stop  None = not reported by this Zetta SOAP endpoint.
+        _seg_v  = (getattr(event, "SegueType",      None)
+                or getattr(event, "Segue",           None)
+                or getattr(event, "TransitionType",  None)
+                or getattr(event, "NextEventType",   None))
+        try:    segue_t = int(_seg_v) if _seg_v is not None else None
+        except: segue_t = None
 
         if asset_t not in DISPLAYABLE_ASSET_TYPES: continue
         if ev_type in FILTERED_EVENT_TYPES:         continue
@@ -798,6 +812,7 @@ def _parse_station_full_zeep(result, station_id: str, friendly_name: str, spot_c
             "status": ev_status, "asset_type": asset_t,
             "is_playing": ev_status == ST_PLAYING,
             "is_spot": is_spot, "event_guid": ev_guid, "raw_category": raw_cat,
+            "segue_type": segue_t,  # 0=chain, 1=stop, None=not in SOAP response
         }
 
         if ev_status == ST_PLAYING and now_playing is None:

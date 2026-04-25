@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.13",
+    "version":  "3.14.14",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1563,7 +1563,7 @@ body.bauer #sb-msg{background:rgba(245,158,11,.92)}
 .cnt-num.cnt-low{color:var(--wn);font-weight:400}
 .cnt-num.cnt-urgent{color:var(--al);font-weight:700;animation:cnt-pulse 1s ease-in-out infinite}
 @keyframes cnt-pulse{0%,100%{opacity:1}50%{opacity:.55}}
-/* Segue / mode icon — sits right of the countdown at matching size */
+/* Segue indicator — per-cart chain/stop from Zetta SOAP (falls back to station mode) */
 .cnt-seg{font-size:56px;line-height:1;font-weight:400;min-width:.9em;text-align:center;transition:color .4s,opacity .4s}
 .cnt-seg:empty{min-width:0}
 .cnt-seg.seg-auto{color:var(--ok)}   /* Automation — will chain */
@@ -2343,18 +2343,26 @@ setInterval(function(){
       if(cntN.textContent!==cs)cntN.textContent=cs;
       cntN.className='cnt-num'+(rem<15?' cnt-urgent':rem<30?' cnt-low':'');
     }
-    /* Segue / mode icon — shows whether automation will chain or stop
-       ⏭ AUTO (mode 1) = will chain to next automatically  — green
-       ⏹ MANUAL (mode 2) = will stop, presenter takes over  — amber
-       ⏯ LIVE ASSIST (mode 3) = presenter-driven           — blue
-       Mode 4 (Off Air) and unknown: hide the icon */
+    /* Segue indicator — per-cart first, station mode as fallback.
+       Per-cart segue_type on now_playing (from Zetta SOAP, if exposed):
+         0 = chain/segue → ⏭ green   (this cart auto-starts the next)
+         1 = stop        → ⏹ amber   (sequencer stops after this cart)
+       If segue_type is null (not in SOAP response), fall back to station mode:
+         mode 1 Automation → ⏭  mode 2 Manual → ⏹  mode 3 Live Assist → ⏯ */
     var segEl=document.getElementById('cntseg'+i);
     if(segEl){
-      var md=zd.mode||0;
-      if(md===1){segEl.textContent='\u23ED';segEl.className='cnt-seg seg-auto';}  /* ⏭ */
-      else if(md===2){segEl.textContent='\u23F9';segEl.className='cnt-seg seg-stop';}  /* ⏹ */
-      else if(md===3){segEl.textContent='\u23EF';segEl.className='cnt-seg seg-live';}  /* ⏯ */
-      else{segEl.textContent='';segEl.className='cnt-seg';}
+      var st=(zd.now_playing&&zd.now_playing.segue_type!=null)?zd.now_playing.segue_type:-1;
+      if(st===0){      /* per-cart: will chain to next */
+        segEl.textContent='\u23ED';segEl.className='cnt-seg seg-auto';   /* ⏭ */
+      } else if(st===1){ /* per-cart: will stop */
+        segEl.textContent='\u23F9';segEl.className='cnt-seg seg-stop';   /* ⏹ */
+      } else {         /* segue_type not reported — fall back to station mode */
+        var md=zd.mode||0;
+        if(md===1){segEl.textContent='\u23ED';segEl.className='cnt-seg seg-auto';}   /* ⏭ */
+        else if(md===2){segEl.textContent='\u23F9';segEl.className='cnt-seg seg-stop';}  /* ⏹ */
+        else if(md===3){segEl.textContent='\u23EF';segEl.className='cnt-seg seg-live';}  /* ⏯ */
+        else{segEl.textContent='';segEl.className='cnt-seg';}
+      }
     }
   });
 },500);

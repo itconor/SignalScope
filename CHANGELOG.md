@@ -2,6 +2,17 @@
 
 ---
 
+### Zetta Integration 2.1.25 / Studio Board 3.14.14 — 2026-04-25
+
+**Per-cart segue/stop type parsed and shown on presenter countdown**
+
+- Both Zetta event parsers (raw XML path and zeep path) now attempt to read the per-cart segue type from the `GetStationFull` SOAP response. Field names tried in order: `SegueType`, `Segue`, `TransitionType`, `NextEventType` — whichever the installed Zetta version exposes. Value is `0` = chain/segue (auto-starts next cart), `1` = stop, `null` = field not present in this Zetta SOAP endpoint.
+- `segue_type` is included in every parsed `now_playing` and queue-item dict and flows through to Studio Board via `/api/studioboard/data`.
+- Studio Board countdown segue icon now uses `now_playing.segue_type` when available: ⏭ green for chain, ⏹ amber for stop. Falls back to station-mode-based display (added 3.14.13) when `segue_type` is `null` — so if your Zetta SOAP doesn't expose the field, behaviour is unchanged.
+- **If the icon doesn't populate**: open Settings → Zetta → debug tab, call `GetStationFull` with your station ID, and look for the segue field name in the Event objects in the raw JSON. Report the field name and it can be added to the candidate list.
+
+---
+
 ### Studio Board 3.14.13 — 2026-04-25
 
 **Segue / chain indicator on presenter countdown**

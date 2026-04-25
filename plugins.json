@@ -85,7 +85,7 @@
     "file": "zetta.py",
     "icon": "📻",
     "description": "RCS Zetta broadcast automation integration. Multi-instance SOAP monitor — shows live sequencer state per station: mode (Auto/Manual/Voice Track), status (PLAYING/QUEUED/NEXT), GAP, ETM, now-playing title/artist/cart/category, and upcoming queue. Detects commercial/spot blocks in real time. Per-station broadcast chain assignment with live status chips on the Broadcast Chains page. Includes a SOAP debug explorer. Requires zeep.",
-    "version": "2.1.24",
+    "version": "2.1.25",
     "requirements": "zeep",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/zetta.py"
   },
@@ -215,7 +215,7 @@
     "file": "studioboard.py",
     "icon": "🎙",
     "description": "Large-format studio display for outside broadcast studios. Shows presenter/show info, now playing, live level meters, mic live status, chain health, and Zetta automation queue. Fully configurable admin page with Studios (physical screens) and Brands (station presets) — assign a brand to a studio in one REST call. REST API for mic live, brand assignment, and legacy chain assignment. Themeable (dark/Bauer/corp via ?theme=), clock header, big presenter countdown timer, message-from-hub banner, anti-burn-in pixel drift. Server-side presenter image cache. Hub-only.",
-    "version": "3.14.13",
+    "version": "3.14.14",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/studioboard.py"
   }
