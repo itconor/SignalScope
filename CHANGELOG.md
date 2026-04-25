@@ -2,6 +2,24 @@
 
 ---
 
+### vMix Caller 1.5.1 — 2026-04-25
+
+**Fix: bridge_url never reached the client — video broken everywhere**
+
+Root cause: `bridge_url` was saved in the hub's `vmixcaller_config.json` but never pushed to the client node. This broke three things simultaneously:
+
+1. **Client presenter page** showed "contact your engineer" because `cfg.bridge_url` was empty on the client
+2. **Video relay thread** (`_video_relay_loop`) read `bridge_url` from its own config, found nothing, and never started — so the hub's relay buffer stayed empty
+3. **Hub presenter/operator page** returned 503 for every video request because the relay buffer was empty
+
+Three fixes:
+
+- `vmixcaller_save_config`: now always queues a `__set_config__` command for the target site whenever any config is saved (previously only triggered on `vmix_ip` / `vmix_port` changes). The command now includes all four fields: `vmix_ip`, `vmix_port`, `vmix_input`, `bridge_url`.
+- `_start_client_thread` `__set_config__` handler: now saves all four fields (previously only `vmix_ip` and `vmix_port`).
+- `_CLIENT_TPL`: bridge URL field added to the client config page so it's visible, shows the pushed value, and can be set manually as a fallback.
+
+**To apply:** on the hub, open vMix Caller, confirm the Bridge URL is set, then click **Save & Push to Site**. The client will receive the bridge URL on its next poll (~3 s) and the relay will start automatically.
+
 ### vMix Caller 1.5.0 — 2026-04-25
 
 **HLS video relay — hub remote users get live caller video**

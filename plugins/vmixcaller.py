@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.0",
+    "version": "1.5.1",
 }
 
 import os
@@ -258,10 +258,13 @@ def _start_client_thread(monitor, hub_url: str):
                 fn = cmd.get("fn", "")
 
                 if fn == "__set_config__":
-                    # Hub is pushing vMix connection config — save locally
+                    # Hub is pushing full plugin config — save locally.
+                    # Includes bridge_url so the relay thread and presenter page
+                    # both have the correct value without manual client entry.
                     updates = {}
-                    if "vmix_ip"   in cmd: updates["vmix_ip"]   = cmd["vmix_ip"]
-                    if "vmix_port" in cmd: updates["vmix_port"]  = cmd["vmix_port"]
+                    for _k in ("vmix_ip", "vmix_port", "vmix_input", "bridge_url"):
+                        if _k in cmd:
+                            updates[_k] = cmd[_k]
                     if updates:
                         _save_cfg(updates)
                         cfg = _load_cfg()   # reload so next iteration uses new values
@@ -1150,6 +1153,11 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
       <label class="fl">vMix Input # (Zoom/Teams input)</label>
       <input type="number" id="vmix-input" value="{{cfg.vmix_input}}" min="1" max="200">
     </div>
+    <div class="field">
+      <label class="fl">Bridge URL (HLS preview stream)</label>
+      <input type="text" id="bridge-url" placeholder="http://192.168.x.x:8080/live/caller.m3u8" value="{{cfg.bridge_url|e}}">
+      <div style="font-size:11px;color:var(--mu);margin-top:3px">Usually pushed automatically from the hub when you click Save &amp; Push to Site there. Enter manually if needed.</div>
+    </div>
     <div class="brow">
       <button class="btn bp" onclick="saveClient()">💾 Save</button>
       <button class="btn bg" onclick="testLocal()">🔌 Test vMix</button>
@@ -1171,7 +1179,12 @@ function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).c
 var _msgT=null;
 function showMsg(t,ok){var e=document.getElementById('msg');e.textContent=t;e.className=ok?'mok':'mer';e.style.display='block';clearTimeout(_msgT);_msgT=setTimeout(function(){e.style.display='none';},5000);}
 function saveClient(){
-  var d={vmix_ip:document.getElementById('vmix-ip').value.trim()||'127.0.0.1',vmix_port:parseInt(document.getElementById('vmix-port').value)||8088,vmix_input:parseInt(document.getElementById('vmix-input').value)||1};
+  var d={
+    vmix_ip:   document.getElementById('vmix-ip').value.trim()||'127.0.0.1',
+    vmix_port: parseInt(document.getElementById('vmix-port').value)||8088,
+    vmix_input:parseInt(document.getElementById('vmix-input').value)||1,
+    bridge_url:(document.getElementById('bridge-url').value||'').trim()
+  };
   fetch('/api/vmixcaller/config',{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},credentials:'same-origin',body:JSON.stringify(d)}).then(function(r){return r.json();}).then(function(r){showMsg(r.ok?'Saved':'Error: '+(r.error||'failed'),r.ok);}).catch(function(e){showMsg('Error: '+e,false);});
 }
 function testLocal(){
@@ -1374,16 +1387,20 @@ def register(app, ctx):
         data = request.get_json(silent=True) or {}
         try:
             cfg = _save_cfg(data)
-            # If on hub and a target site is selected, push vMix connection
-            # settings to the client node via the command channel.
+            # Whenever the hub saves config with a target site selected,
+            # push ALL relevant fields to the client node so it has the
+            # bridge URL (for video relay + presenter page), vMix IP/port,
+            # and input number — no manual entry needed on the client.
             target = (cfg.get("target_site") or "").strip()
-            if is_hub and target and ("vmix_ip" in data or "vmix_port" in data):
+            if is_hub and target:
                 with _state_lock:
                     _pending_cmd[target] = {
-                        "fn":        "__set_config__",
-                        "vmix_ip":   cfg.get("vmix_ip",  "127.0.0.1"),
-                        "vmix_port": cfg.get("vmix_port", 8088),
-                        "seq":       int(time.time() * 1000),
+                        "fn":         "__set_config__",
+                        "vmix_ip":    cfg.get("vmix_ip",    "127.0.0.1"),
+                        "vmix_port":  cfg.get("vmix_port",   8088),
+                        "vmix_input": cfg.get("vmix_input",  1),
+                        "bridge_url": cfg.get("bridge_url",  ""),
+                        "seq":        int(time.time() * 1000),
                     }
             return jsonify({"ok": True, "config": cfg})
         except Exception as e:
