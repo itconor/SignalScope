@@ -2,6 +2,20 @@
 
 ---
 
+### vMix Caller 1.5.2 — 2026-04-25
+
+**Fix: HLS video not playing in Chrome/Edge; hub shows no video when bridge_url only set on client**
+
+Two bugs fixed:
+
+**1. Chrome/Edge don't support HLS natively.** The `<video src="...m3u8">` approach only works in Safari. vMix runs on Windows (Chrome/Edge) — setting `vid.src` to an HLS manifest produces a silent failure. Fixed by loading **hls.js** from the jsDelivr CDN (nonce-authenticated via SignalScope's CSP). `initPreview()` now tries `Hls.isSupported()` first (Chrome/Edge/Firefox), falls back to `vid.canPlayType('application/vnd.apple.mpegurl')` (Safari), and shows an error if neither works.
+
+**2. Hub shows no video when bridge_url was set only on the client config page.** The hub's presenter and operator pages rendered `video_url_json` as empty because the hub's own `vmixcaller_config.json` had no `bridge_url`. This caused `initPreview('')` → no video, even though the relay buffer was full. Fixed by:
+- New `_compute_video_url(cfg, is_hub_node)` helper: returns `/hub/vmixcaller/video/relay.m3u8` for hub nodes regardless of whether `bridge_url` is configured (the relay buffer is always the right source for hub users). Returns the direct proxy path for client nodes.
+- Both page routes now pass `video_url_json` (the pre-computed proxy URL) to the template. JS uses `_videoUrl = {{video_url_json}}` directly — no client-side `_proxyUrl()` conversion needed.
+- New `GET /api/vmixcaller/video_url` endpoint so `saveConfig()` can fetch the correct URL after a config change and re-init the video without a page reload.
+- Proxy route refactored: `relay.m3u8` always serves synthetic manifest from buffer; TS segment requests (`seg/N.ts`) always from buffer; other `.m3u8` paths on a localhost bridge proxy directly to SRS. Empty relay buffer returns a valid empty manifest (not 503) so hls.js retries rather than giving a fatal error.
+
 ### vMix Caller 1.5.1 — 2026-04-25
 
 **Fix: bridge_url never reached the client — video broken everywhere**

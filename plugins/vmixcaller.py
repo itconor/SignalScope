@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-vMix Caller Manager — SignalScope plugin v1.3.0
+vMix Caller Manager — SignalScope plugin v1.5.2
 
 Two audiences:
   • Operator (hub page /hub/vmixcaller)
@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.1",
+    "version": "1.5.2",
 }
 
 import os
@@ -128,6 +128,42 @@ def _proxy_video_url(bridge_url: str) -> str:
         return "/hub/vmixcaller/video" + path
     except Exception:
         return ""
+
+
+def _compute_video_url(cfg: dict, is_hub_node: bool) -> str:
+    """Return the ready-to-use video URL for the browser to request.
+
+    Hub nodes with a localhost bridge proxy it directly (low latency).
+    Hub nodes with a LAN bridge — or no bridge configured — use the relay
+    buffer manifest so the hub can serve video that the client is pushing.
+    Client nodes proxy the LAN bridge path directly.
+    """
+    bridge = (cfg.get("bridge_url") or "").strip()
+    if is_hub_node:
+        if bridge:
+            try:
+                host = (urlparse(bridge).hostname or "").lower()
+                if host in ("127.0.0.1", "localhost", "::1"):
+                    # Localhost bridge on hub server — proxy its exact path
+                    path = urlparse(bridge).path or "/live/caller.m3u8"
+                    if not path.startswith("/"):
+                        path = "/" + path
+                    return "/hub/vmixcaller/video" + path
+            except Exception:
+                pass
+        # LAN bridge or no bridge — serve from relay buffer
+        return "/hub/vmixcaller/video/relay.m3u8"
+    else:
+        # Client node — proxy bridge path directly
+        if not bridge:
+            return ""
+        try:
+            path = urlparse(bridge).path or "/live/caller.m3u8"
+            if not path.startswith("/"):
+                path = "/" + path
+            return "/hub/vmixcaller/video" + path
+        except Exception:
+            return ""
 
 
 # ── vMix API helpers (executed on the CLIENT side) ────────────────────────────
@@ -499,19 +535,37 @@ function _proxyUrl(u){
 }
 
 // ── Video preview ─────────────────────────────────────────────────────────────
-// Always converts to proxy URL before setting video src.
-function initPreview(url){
+// purl is already the SignalScope proxy path (e.g. /hub/vmixcaller/video/...)
+// Uses hls.js for Chrome/Edge; falls back to native HLS for Safari.
+function initPreview(purl){
   var vid=document.getElementById('pvid');
   var ov=document.getElementById('pvw-ov');
   var msg=document.getElementById('pvmsg');
   if(!vid||!ov)return;
-  var purl=_proxyUrl(url);
+  // Tear down any existing hls.js instance before re-initialising
+  if(vid._hls){try{vid._hls.destroy();}catch(e){}vid._hls=null;}
+  vid.src='';
   if(!purl){ov.classList.remove('hidden');if(msg)msg.textContent='No preview stream configured';return;}
   ov.classList.remove('hidden');if(msg)msg.textContent='Connecting to stream\u2026';
-  vid.src=purl;vid.load();
-  vid.oncanplay=function(){ov.classList.add('hidden');};
-  vid.onerror=function(){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';};
-  vid.play().catch(function(){});
+  if(typeof Hls!=='undefined'&&Hls.isSupported()){
+    // Chrome, Firefox, Edge — native <video> can't play HLS; use hls.js
+    var hls=new Hls({lowLatencyMode:true,liveSyncDurationCount:2,maxBufferLength:10,xhrSetup:function(xhr){xhr.withCredentials=true;}});
+    vid._hls=hls;
+    hls.loadSource(purl);
+    hls.attachMedia(vid);
+    hls.on(Hls.Events.MANIFEST_PARSED,function(){ov.classList.add('hidden');vid.play().catch(function(){});});
+    hls.on(Hls.Events.ERROR,function(ev,data){
+      if(data.fatal){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';}
+    });
+  } else if(vid.canPlayType('application/vnd.apple.mpegurl')){
+    // Safari — native HLS
+    vid.src=purl;vid.load();
+    vid.oncanplay=function(){ov.classList.add('hidden');};
+    vid.onerror=function(){ov.classList.remove('hidden');if(msg)msg.textContent='Stream unavailable \u2014 is the bridge running?';};
+    vid.play().catch(function(){});
+  } else {
+    ov.classList.remove('hidden');if(msg)msg.textContent='HLS not supported in this browser';
+  }
 }
 
 // ── Send command (queued via hub) ─────────────────────────────────────────────
@@ -574,6 +628,7 @@ _PRESENTER_TPL = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>Caller — vMix</title>
+<script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 <style nonce="{{csp_nonce()}}">
 """ + _CSS + r"""
 /* ── Presenter-specific overrides ─────────────────────────────────────── */
@@ -696,7 +751,10 @@ main{max-width:860px}
 """ + _JS_HELPERS + r"""
 
 // ── Presenter-specific ────────────────────────────────────────────────────────
-var _bridgeUrl = {{bridge_url_json}};
+// _videoUrl is the pre-computed SignalScope proxy path served by the server.
+// On hub nodes this is always /hub/vmixcaller/video/relay.m3u8 (relay buffer)
+// or the localhost-bridge proxy path. On client nodes it's the LAN bridge path.
+var _videoUrl = {{video_url_json}};
 
 function joinSaved(btn){
   joinWith(btn.dataset.mid, btn.dataset.pass, btn.dataset.dname||'Guest Producer');
@@ -719,7 +777,7 @@ setMeetingState = function(v){
 
 function hangUp(){
   leaveMeeting();
-  if(_bridgeUrl) setTimeout(function(){initPreview(_bridgeUrl);},1500);
+  if(_videoUrl) setTimeout(function(){initPreview(_videoUrl);},1500);
 }
 
 function toggleManual(){
@@ -730,7 +788,7 @@ function toggleManual(){
 }
 
 document.addEventListener('DOMContentLoaded',function(){
-  initPreview(_bridgeUrl);
+  if(_videoUrl) initPreview(_videoUrl);
 });
 </script>
 </body>
@@ -748,6 +806,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>vMix Caller — SignalScope</title>
+<script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 <style nonce="{{csp_nonce()}}">
 """ + _CSS + r"""
 /* hub-specific */
@@ -976,6 +1035,8 @@ function setStatus(state,text,ts){
   if(ago)ago.textContent=ts?'('+_ago(ts)+')':'';
 }
 
+var _videoUrl = {{video_url_json}};
+
 function saveConfig(){
   var site  = document.getElementById('target-site').value;
   var ip    = document.getElementById('vmix-ip').value.trim()||'127.0.0.1';
@@ -987,8 +1048,13 @@ function saveConfig(){
       if(d.ok){
         var msg=site?'Settings saved \u2014 vMix config sent to '+site:'Settings saved';
         showMsg(msg,true);
-        initPreview(url);
         if(site)loadState();
+        // Fetch the computed proxy URL from server so initPreview gets the
+        // right path (relay manifest for LAN bridges, direct path for localhost)
+        fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
+          .then(function(r){return r.json();})
+          .then(function(v){_videoUrl=v.url||'';if(_videoUrl)initPreview(_videoUrl);})
+          .catch(function(){});
       } else showMsg(d.error||'Save failed',false);
     }).catch(function(e){showMsg('Error: '+e,false);});
 }
@@ -1108,7 +1174,7 @@ function deleteMeeting(btn){
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',function(){
-  initPreview(document.getElementById('bridge-url').value.trim());
+  if(_videoUrl) initPreview(_videoUrl);
   if(document.getElementById('target-site').value) loadState();
   loadMeetings();
 });
@@ -1242,57 +1308,65 @@ def register(app, ctx):
                     n for n, d in hub_server._sites.items()
                     if d.get("_approved")
                 )
-            return render_template_string(_HUB_TPL, cfg=cfg, sites=sites)
+            video_url = _compute_video_url(cfg, is_hub)
+            return render_template_string(_HUB_TPL, cfg=cfg, sites=sites,
+                                          video_url_json=json.dumps(video_url))
         if is_client:
             return render_template_string(_CLIENT_TPL, cfg=cfg, hub_url=hub_url)
         # Standalone
-        return render_template_string(_HUB_TPL, cfg=cfg, sites=[])
+        video_url = _compute_video_url(cfg, True)
+        return render_template_string(_HUB_TPL, cfg=cfg, sites=[],
+                                      video_url_json=json.dumps(video_url))
 
     # ── Presenter page ────────────────────────────────────────────────────────
     @app.get("/hub/vmixcaller/presenter")
     @login_required
     def vmixcaller_presenter():
-        cfg      = _load_cfg()
-        meetings = cfg.get("saved_meetings") or []
-        bridge   = (cfg.get("bridge_url") or "").strip()
+        cfg       = _load_cfg()
+        meetings  = cfg.get("saved_meetings") or []
+        bridge    = (cfg.get("bridge_url") or "").strip()
+        video_url = _compute_video_url(cfg, is_hub)
         return render_template_string(
             _PRESENTER_TPL,
             cfg=cfg,
             meetings=meetings,
             bridge_url=bridge,
-            bridge_url_json=json.dumps(bridge),
+            video_url_json=json.dumps(video_url),
         )
 
     # ── Authenticated HLS proxy / relay server (/hub/vmixcaller/video/<path>) ──
     # Registered on ALL nodes (hub and client).
     #
-    # Hub with LAN bridge (internet hub, LAN bridge):
-    #   • Requests for seg/N.ts      → served from the in-memory relay buffer
-    #     (client pushed the segment via /api/vmixcaller/video_push)
-    #   • Requests for *.m3u8        → synthetic manifest referencing buffered segs
-    #   • Anything else              → 503 (not reachable)
+    # Hub with localhost bridge:
+    #   • Direct proxy to local SRS (except "relay.m3u8" which always uses buffer)
     #
-    # Hub with localhost bridge (bridge running on same machine as hub):
-    #   • All requests proxied directly to the local SRS server.
+    # Hub with LAN bridge or no bridge configured:
+    #   • seg/N.ts  → served from in-memory relay buffer (client pushed via video_push)
+    #   • *.m3u8    → synthetic manifest from relay buffer
+    #   • relay.m3u8 → always synthetic manifest even for localhost bridges
     #
-    # Client node (any bridge URL):
-    #   • All requests proxied directly — client is on the same LAN as bridge.
+    # Client node:
+    #   • All requests proxied directly to LAN bridge (same network).
     @app.get("/hub/vmixcaller/video/<path:seg>")
     @login_required
     def vmixcaller_video_proxy(seg):
         cfg      = _load_cfg()
         base_url = (cfg.get("bridge_url") or "").strip()
-        if not base_url:
-            return Response("no bridge configured", status=404,
-                            content_type="text/plain")
 
-        parsed = urlparse(base_url)
-        host   = (parsed.hostname or "").lower()
-        lan_bridge = is_hub and host not in ("127.0.0.1", "localhost", "::1")
+        if is_hub:
+            # Determine if we have a localhost bridge (direct proxy available)
+            localhost_bridge = False
+            parsed_lb = None
+            if base_url:
+                try:
+                    parsed_lb = urlparse(base_url)
+                    host = (parsed_lb.hostname or "").lower()
+                    localhost_bridge = host in ("127.0.0.1", "localhost", "::1")
+                except Exception:
+                    pass
 
-        # ── Hub + LAN bridge: serve from relay buffer ─────────────────────────
-        if lan_bridge:
-            # Buffered TS segment: path is "seg/N.ts"
+            # ── Buffered TS segments (relay buffer) ───────────────────────────
+            # These are always from the relay buffer regardless of bridge type.
             if seg.startswith("seg/") and seg.endswith(".ts"):
                 try:
                     seq = int(seg[4:-3])
@@ -1305,12 +1379,33 @@ def register(app, ctx):
                                     headers={"Cache-Control": "no-cache"})
                 return Response("", status=404)
 
-            # Manifest: generate synthetic HLS from buffer
+            # ── Manifest requests ─────────────────────────────────────────────
             if seg.endswith(".m3u8"):
+                # "relay.m3u8" always generates synthetic manifest from buffer.
+                # Other .m3u8 paths on localhost bridge → proxy to SRS directly.
+                if localhost_bridge and seg != "relay.m3u8":
+                    try:
+                        proxy_url = f"{parsed_lb.scheme}://{parsed_lb.netloc}/{seg}"
+                        resp = urllib.request.urlopen(
+                            urllib.request.Request(proxy_url, method="GET"), timeout=5)
+                        data = resp.read()
+                        return Response(data,
+                                        content_type="application/vnd.apple.mpegurl",
+                                        headers={"Cache-Control": "no-cache"})
+                    except urllib.error.HTTPError as e:
+                        return Response("", status=e.code)
+                    except Exception:
+                        return Response("", status=502)
+
+                # Relay buffer manifest (LAN bridge, no bridge, or relay.m3u8)
                 with _video_lock:
                     if not _video_segments:
-                        # No segments yet — relay hasn't started or bridge is off
-                        return Response("", status=503, content_type="text/plain")
+                        return Response(
+                            "#EXTM3U\n#EXT-X-TARGETDURATION:3\n",
+                            status=200,
+                            content_type="application/vnd.apple.mpegurl",
+                            headers={"Cache-Control": "no-cache"},
+                        )
                     seqs  = sorted(_video_segments.keys())
                     lines = [
                         "#EXTM3U",
@@ -1328,12 +1423,29 @@ def register(app, ctx):
                     headers={"Cache-Control": "no-cache"},
                 )
 
-            # Unknown path for LAN bridge
-            return Response("use seg/N.ts or caller.m3u8 path", status=404,
-                            content_type="text/plain")
+            # ── Other paths on localhost bridge (e.g. raw .ts from SRS) ──────
+            if localhost_bridge:
+                try:
+                    proxy_url = f"{parsed_lb.scheme}://{parsed_lb.netloc}/{seg}"
+                    resp = urllib.request.urlopen(
+                        urllib.request.Request(proxy_url, method="GET"), timeout=5)
+                    data = resp.read()
+                    ct   = resp.headers.get("Content-Type", "video/mp2t")
+                    return Response(data, content_type=ct,
+                                    headers={"Cache-Control": "no-cache"})
+                except urllib.error.HTTPError as e:
+                    return Response("", status=e.code)
+                except Exception:
+                    return Response("", status=502)
 
-        # ── Direct proxy (localhost bridge or client node) ────────────────────
+            return Response("not found", status=404, content_type="text/plain")
+
+        # ── Client node: direct proxy to LAN bridge ───────────────────────────
+        if not base_url:
+            return Response("no bridge configured", status=404,
+                            content_type="text/plain")
         try:
+            parsed = urlparse(base_url)
             proxy_url = f"{parsed.scheme}://{parsed.netloc}/{seg}"
             req  = urllib.request.Request(proxy_url, method="GET")
             resp = urllib.request.urlopen(req, timeout=5)
@@ -1379,6 +1491,16 @@ def register(app, ctx):
     @login_required
     def vmixcaller_get_config():
         return jsonify(_load_cfg())
+
+    @app.get("/api/vmixcaller/video_url")
+    @login_required
+    def vmixcaller_video_url():
+        """Return the browser-ready proxy URL for the video feed.
+        Called by the hub page after saving config so the JS can re-init
+        the video without a page reload.
+        """
+        cfg = _load_cfg()
+        return jsonify({"url": _compute_video_url(cfg, is_hub)})
 
     @app.post("/api/vmixcaller/config")
     @login_required
