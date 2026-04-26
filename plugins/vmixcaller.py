@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.20",
+    "version": "1.5.21",
 }
 
 import os
@@ -610,11 +610,54 @@ function _proxyUrl(u){
 //   webrtc://host/app/stream  → native WHEP (RTCPeerConnection into <video>)
 //   http(s)://...             → iframe (SRS player page or other web player)
 //   /hub/... path             → HLS proxied via SignalScope (hls.js / native)
+// Separate <audio> element used by toggleAudio() to play caller audio independently
+// of the <video> element's mute state — avoids autoplay-policy issues with vid.muted.
+var _hearAudio=null;
 function _teardownPreview(vid){
   if(!vid)return;
   if(vid._pc){try{vid._pc.close();}catch(e){}vid._pc=null;}
   if(vid._hls){try{vid._hls.destroy();}catch(e){}vid._hls=null;}
   vid.srcObject=null;vid.src='';
+  // Also stop any active audio output when the stream tears down.
+  if(_hearAudio){try{_hearAudio.pause();_hearAudio.srcObject=null;}catch(e){}_hearAudio=null;}
+}
+// _syncAudioBtn / toggleAudio are shared across all three pages.
+// Presenter page redefines _syncAudioBtn below to use its .call-btn.muted styling.
+function _syncAudioBtn(){
+  var btn=document.getElementById('audio-btn');
+  if(!btn)return;
+  if(_hearAudio){
+    btn.textContent='\uD83D\uDD0A Hearing Caller';
+    btn.classList.remove('muted');btn.classList.remove('bg');btn.classList.add('bp');
+    btn.title='Click to mute caller audio';
+  } else {
+    btn.textContent='\uD83D\uDD07 Hear Caller';
+    btn.classList.remove('bp');btn.classList.add('bg');btn.classList.add('muted');
+    btn.title='Click to hear caller audio through this page';
+  }
+}
+function toggleAudio(){
+  var vid=document.getElementById('pvid');
+  if(!vid)return;
+  if(_hearAudio){
+    // Stop audio
+    try{_hearAudio.pause();_hearAudio.srcObject=null;}catch(e){}
+    _hearAudio=null;
+  } else {
+    // Start audio — called inside a user-gesture click handler so play() is allowed.
+    // Use a dedicated <audio> element so we're completely independent of vid.muted state.
+    var ms=vid.srcObject;
+    var tracks=ms?ms.getAudioTracks():[];
+    if(tracks.length>0){
+      var ams=new MediaStream(tracks);
+      _hearAudio=new Audio();
+      _hearAudio.srcObject=ams;
+      _hearAudio.play().catch(function(e){console.warn('hear caller audio failed:',e);_hearAudio=null;});
+    } else {
+      console.warn('toggleAudio: no audio tracks in stream yet');
+    }
+  }
+  _syncAudioBtn();
 }
 function _startWhep(whepUrl,vid,ov,msg){
   ov.classList.remove('hidden');if(msg)msg.textContent='Connecting (WebRTC)\u2026';
@@ -1001,32 +1044,21 @@ function joinManual(){
   joinWith(mid, pass, name);
 }
 
-// ── Audio toggle ──────────────────────────────────────────────────────────────
-// The <video> element starts muted (required for browser autoplay policy).
-// Once the presenter clicks Hear Caller — a user-interaction event — the browser
-// allows audio playback. The button toggles vid.muted on every click.
+// ── Audio toggle — presenter override ────────────────────────────────────────
+// toggleAudio() is defined in _JS_HELPERS (shared). Override only _syncAudioBtn
+// here so the presenter's .call-btn.muted styling is used for this page's button.
 function _syncAudioBtn(){
-  var vid=document.getElementById('pvid');
   var btn=document.getElementById('audio-btn');
-  if(!vid||!btn)return;
-  if(vid.muted){
-    btn.textContent='\uD83D\uDD07 Hear Caller';
-    btn.classList.add('muted');
-    btn.title='Click to hear caller audio through this page';
-  } else {
+  if(!btn)return;
+  if(_hearAudio){
     btn.textContent='\uD83D\uDD0A Hearing Caller';
     btn.classList.remove('muted');
     btn.title='Click to mute caller audio preview';
+  } else {
+    btn.textContent='\uD83D\uDD07 Hear Caller';
+    btn.classList.add('muted');
+    btn.title='Click to hear caller audio through this page';
   }
-}
-function toggleAudio(){
-  var vid=document.getElementById('pvid');
-  if(!vid)return;
-  vid.muted=!vid.muted;
-  // Do NOT call vid.play() here. With muted set via JS (defaultMuted=false),
-  // toggling vid.muted is sufficient. Calling play() when defaultMuted=true
-  // (HTML muted attribute) would reset vid.muted back to true — that was the bug.
-  _syncAudioBtn();
 }
 
 // ── Override setMeetingState to drive presenter-specific UI ───────────────────
@@ -1218,6 +1250,9 @@ _HUB_TPL = r"""<!DOCTYPE html>
             <div class="pvw-icon">📷</div>
             <div id="pvmsg">Configure a Preview URL to enable preview</div>
           </div>
+        </div>
+        <div style="margin-top:8px;text-align:center">
+          <button class="btn bg bs muted" id="audio-btn" data-action="toggleAudio" title="Click to hear caller audio through this page">🔇 Hear Caller</button>
         </div>
       </div>
     </div>
@@ -1675,6 +1710,9 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
             <div class="pvw-icon">📷</div>
             <div id="pvmsg">{% if cfg.bridge_url %}Waiting for caller…{% else %}Configure a Preview URL in settings{% endif %}</div>
           </div>
+        </div>
+        <div style="margin-top:8px;text-align:center">
+          <button class="btn bg bs muted" id="audio-btn" data-action="toggleAudio" title="Click to hear caller audio through this page">🔇 Hear Caller</button>
         </div>
       </div>
     </div>

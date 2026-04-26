@@ -2,6 +2,12 @@
 
 ---
 
+### vMix Caller 1.5.21 — 2026-04-26
+
+**Fix: "Hear Caller" audio — use separate Audio element instead of vid.muted**
+
+All previous approaches (vid.muted toggle, vid.play() calls, removing HTML muted attribute) failed because Chrome's autoplay policy refuses to let a video element that was started muted suddenly output audio, regardless of how `muted` is set. Fix: `toggleAudio()` now creates a dedicated `new Audio()` element connected to only the audio tracks from the stream's MediaStream and calls `play()` directly inside the user-gesture click handler. This is completely independent of the `<video>` element's mute state. Added "Hear Caller" button to the client and hub pages (previously only existed on the presenter page). Shared `toggleAudio`/`_syncAudioBtn` moved to `_JS_HELPERS` so all three pages use the same implementation. `_teardownPreview` cleans up the audio element when the stream tears down.
+
 ### vMix Caller 1.5.20 — 2026-04-26
 
 **Fix: "Hear Caller" audio still silent — HTML `muted` attribute resets mute state on play()**
