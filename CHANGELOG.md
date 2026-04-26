@@ -2,6 +2,14 @@
 
 ---
 
+### vMix Caller 1.6.3 — 2026-04-26
+
+**Fix: Top nav bar broken on vMix admin page**
+
+Added `header{display:flex;align-items:center;gap:12px;padding:0}` to the plugin CSS. The `topnav()` function renders a `<header>` with no `display:flex` inline style; without this rule the logo, version pill, and nav stack vertically instead of laying out horizontally. Fixes the version number pushing the nav bar down on the hub admin page.
+
+---
+
 ### vMix Caller 1.6.2 — 2026-04-26
 
 **Fix: Zoom controls corrected against official vMix API (v28/v29)**
