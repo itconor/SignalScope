@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.19",
+    "version": "1.5.20",
 }
 
 import os
@@ -629,6 +629,10 @@ function _startWhep(whepUrl,vid,ov,msg){
   // and vid.srcObject ends up pointing to a video-only stream with no audio attached.
   var _ms=new MediaStream();
   vid.srcObject=_ms;
+  // Set muted via JS (not the HTML attribute) so defaultMuted stays false.
+  // The HTML 'muted' attribute makes defaultMuted=true; any subsequent play()
+  // call resets vid.muted back to true, permanently blocking audio unmuting.
+  vid.muted=true;
   pc.ontrack=function(e){
     _ms.addTrack(e.track);
     vid.play().catch(function(){});
@@ -908,7 +912,7 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
 
 <!-- ── Video hero ─────────────────────────────────────────────────────── -->
 <div class="video-hero">
-  <video id="pvid" autoplay muted playsinline></video>
+  <video id="pvid" autoplay playsinline></video>
   <iframe id="pvframe" src="" allow="autoplay" title="Caller preview" style="display:none"></iframe>
   <div id="pvw-ov" class="pvw-ov">
     <div class="pvw-icon">📷</div>
@@ -1019,11 +1023,9 @@ function toggleAudio(){
   var vid=document.getElementById('pvid');
   if(!vid)return;
   vid.muted=!vid.muted;
-  if(!vid.muted){
-    // Setting muted=false alone does not restart the audio pipeline in Chrome/Safari
-    // when the element was initially autoplay-started as muted — call play() to activate it.
-    vid.play().catch(function(){});
-  }
+  // Do NOT call vid.play() here. With muted set via JS (defaultMuted=false),
+  // toggling vid.muted is sufficient. Calling play() when defaultMuted=true
+  // (HTML muted attribute) would reset vid.muted back to true — that was the bug.
   _syncAudioBtn();
 }
 
@@ -1210,7 +1212,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
       </div>
       <div class="cb" style="padding:10px">
         <div class="pvw-wrap">
-          <video id="pvid" autoplay muted playsinline></video>
+          <video id="pvid" autoplay playsinline></video>
           <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
           <div id="pvw-ov" class="pvw-ov">
             <div class="pvw-icon">📷</div>
@@ -1667,7 +1669,7 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
       <div class="ch">📹 Caller Preview</div>
       <div class="cb" style="padding:10px">
         <div class="pvw-wrap">
-          <video id="pvid" autoplay muted playsinline></video>
+          <video id="pvid" autoplay playsinline></video>
           <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
           <div id="pvw-ov" class="pvw-ov">
             <div class="pvw-icon">📷</div>

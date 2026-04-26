@@ -2,6 +2,17 @@
 
 ---
 
+### vMix Caller 1.5.20 — 2026-04-26
+
+**Fix: "Hear Caller" audio still silent — HTML `muted` attribute resets mute state on play()**
+
+Root cause: the `<video>` element had the HTML `muted` attribute, which sets `defaultMuted = true`. In Chrome/Safari, any `play()` call on such an element resets `vid.muted` back to `true`. So `toggleAudio()` set `vid.muted = false`, then `vid.play()` immediately re-muted it.
+
+Fix:
+- Removed the HTML `muted` attribute from all three `<video id="pvid">` elements (so `defaultMuted = false`)
+- Set `vid.muted = true` via JavaScript in `_startWhep()` before the first `play()` call — autoplay still works (element is muted), but `defaultMuted` stays `false`
+- Removed the `vid.play()` call from `toggleAudio()` — with `defaultMuted = false`, simply setting `vid.muted = false` is sufficient and no longer risks a re-mute
+
 ### vMix Caller 1.5.19 — 2026-04-26
 
 **Fix: "Hear Caller" button produces no audio (WebRTC) — root cause**
