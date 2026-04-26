@@ -2,6 +2,12 @@
 
 ---
 
+### vMix Caller 1.5.22 — 2026-04-26
+
+**Fix: "Hear Caller" button missing from presenter page**
+
+The presenter page's audio button was inside `#call-bar` which is only shown when a call is active. Moved it below the video hero so it is always accessible. Removed the duplicate button from the call bar.
+
 ### vMix Caller 1.5.21 — 2026-04-26
 
 **Fix: "Hear Caller" audio — use separate Audio element instead of vid.muted**

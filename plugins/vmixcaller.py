@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.21",
+    "version": "1.5.22",
 }
 
 import os
@@ -948,7 +948,6 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
   <span id="onair-badge" class="onair-badge" style="display:none">📡 ON AIR</span>
   <button class="call-btn" id="mute-btn"  data-action="muteSelf">🔇 Mute Self</button>
   <button class="call-btn" id="cam-btn"   data-action="stopCamera">📷 Stop Camera</button>
-  <button class="call-btn muted" id="audio-btn" data-action="toggleAudio" title="Unmute to hear caller audio through this page">🔇 Hear Caller</button>
   <div class="call-spacer"></div>
   <button class="call-btn leave" data-action="hangUp">📴 Leave</button>
 </div>
@@ -964,6 +963,9 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
     <div class="pvw-hint">Ask your engineer to configure a Preview URL</div>
     {% endif %}
   </div>
+</div>
+<div style="text-align:center;margin-top:10px">
+  <button class="call-btn muted" id="audio-btn" data-action="toggleAudio" title="Click to hear caller audio through this page">🔇 Hear Caller</button>
 </div>
 
 <!-- ── Saved meetings ─────────────────────────────────────────────────── -->
