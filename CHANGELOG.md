@@ -2,6 +2,16 @@
 
 ---
 
+### Logger 1.6.4 — 2026-04-26
+
+**Bug fix: Client nodes no longer behave as hub instances**
+
+Logger was using `hub_server is not None` / `hub_server is None` to detect whether it was running on a hub or client node. However, `hub_server` in the plugin `ctx` is always a `HubServer()` instance — never `None` — so every node evaluated as a hub. Client nodes would enter hub-mode code paths, fail to register with the remote hub, and appear stuck on "connecting to recordings".
+
+Fix: `register()` now derives `is_hub` from the `mode` string in `monitor.app_cfg` (`mode in ("hub", "both")`), which is the correct way to detect hub vs client mode in SignalScope plugins. All 12 affected checks throughout `register()` have been updated.
+
+---
+
 ### vMix Caller 1.5.15 — 2026-04-26
 
 **Redesign: Presenter page matches Producer View design language + locked-down navigation**

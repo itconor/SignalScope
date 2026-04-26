@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.6.3",
+    "version": "1.6.4",
 }
 
 import datetime
@@ -700,9 +700,16 @@ def register(app, ctx):
     _app_dir       = Path(__file__).parent
     hub_server     = ctx.get("hub_server")
 
+    # Detect hub vs client mode — hub_server is ALWAYS a HubServer() instance,
+    # never None, so we must use the mode string from app config instead.
+    cfg_ss  = _monitor.app_cfg
+    mode    = getattr(getattr(cfg_ss, "hub", None), "mode", "standalone") or "standalone"
+    hub_url = (getattr(getattr(cfg_ss, "hub", None), "hub_url", "") or "").rstrip("/")
+    is_hub    = mode in ("hub", "both")
+
     # On hub nodes, persist the catalog to disk so it survives restarts
     # and is available immediately on the next page load.
-    if hub_server is not None:
+    if is_hub:
         _HUB_CATALOG_CACHE = _app_dir / "hub_catalog_cache.json"
         if _HUB_CATALOG_CACHE.exists():
             try:
@@ -725,13 +732,13 @@ def register(app, ctx):
     # Start hub poller on client nodes (also started unconditionally — checks hub_url each loop)
     threading.Thread(target=_hub_logger_poller, daemon=True, name="LoggerHubPoller").start()
 
-    if hub_server is not None:
+    if is_hub:
         _listen_registry = ctx["listen_registry"]
 
     @app.route("/hub/logger")
     @login_req
     def logger_page():
-        return render_template_string(_TPL, is_hub=(hub_server is not None))
+        return render_template_string(_TPL, is_hub=is_hub)
 
     @app.get("/api/logger/streams")
     @login_req
@@ -977,7 +984,7 @@ def register(app, ctx):
         return _serve_ranged(path, "audio/mpeg")
 
     # ── Hub aggregation routes (registered on hub nodes only) ─────────────────
-    if hub_server is not None:
+    if is_hub:
 
         @app.post("/api/logger/hub/register")
         def api_logger_hub_register():
@@ -1604,7 +1611,7 @@ def register(app, ctx):
     @app.get("/api/mobile/logger/sites")
     @mobile_api_req
     def api_mobile_logger_sites():
-        if hub_server is None:
+        if not is_hub:
             return jsonify({"sites": []})
         with _hub_logger_lock:
             sites = list(_hub_logger_streams.keys())
@@ -1614,7 +1621,7 @@ def register(app, ctx):
     @mobile_api_req
     def api_mobile_logger_streams():
         site = request.args.get("site", "").strip()
-        if hub_server is not None and site:
+        if is_hub and site:
             with _hub_logger_lock:
                 streams = list(_hub_logger_streams.get(site, []))
             return jsonify({"streams": streams})
@@ -1625,7 +1632,7 @@ def register(app, ctx):
     @mobile_api_req
     def api_mobile_logger_catalog():
         """Merged catalog of all streams with recordings across all sites."""
-        if hub_server is None:
+        if not is_hub:
             # Local mode: return catalog from local recording roots
             catalog = {}
             for root in _all_rec_roots():
@@ -1657,7 +1664,7 @@ def register(app, ctx):
         slug = request.args.get("slug", "").strip()
         if not slug:
             return jsonify({"error": "slug required"}), 400
-        if hub_server is not None and site:
+        if is_hub and site:
             key = f"{site}:{_safe(slug)}"
             with _hub_logger_lock:
                 if key in _hub_logger_days:
@@ -1684,7 +1691,7 @@ def register(app, ctx):
             return jsonify({"error": "slug and date required"}), 400
         if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
             return jsonify({"error": "invalid date"}), 400
-        if hub_server is not None and site:
+        if is_hub and site:
             key = f"{site}:{_safe(slug)}:{date}"
             with _hub_logger_lock:
                 if key in _hub_logger_segs:
@@ -1706,7 +1713,7 @@ def register(app, ctx):
             return jsonify({"error": "slug and date required"}), 400
         if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
             return jsonify({"error": "invalid date"}), 400
-        if hub_server is not None and site:
+        if is_hub and site:
             key = f"{site}:{_safe(slug)}:{date}"
             with _hub_logger_lock:
                 if key in _hub_logger_meta:
@@ -1734,7 +1741,7 @@ def register(app, ctx):
         if not (slug and date and filename):
             return jsonify({"error": "missing fields"}), 400
         # Local / direct-connect mode: return a direct PCM stream URL
-        if hub_server is None or not site:
+        if not is_hub or not site:
             qs = _urllib_parse.urlencode({
                 "slug": slug, "date": date, "filename": filename, "seek_s": seek_s
             })
@@ -1896,7 +1903,7 @@ def register(app, ctx):
             return jsonify({"error": "missing fields"}), 400
 
         # Direct / single-node mode: serve file straight from disk
-        if hub_server is None or not site:
+        if not is_hub or not site:
             qs = _urllib_parse.urlencode(
                 {"slug": slug, "date": date, "filename": filename, "seek_s": seek_s})
             return jsonify({
