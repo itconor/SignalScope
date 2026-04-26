@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.6.3",
+    "version": "1.6.4",
 }
 
 import os
@@ -872,7 +872,7 @@ function resetCallBtns(){
   if(mb)mb.textContent='\uD83D\uDD07 Mute Self';
 }
 
-var // vMix API: ZoomJoinMeeting Value = "MeetingID,Password" (comma-separated).
+// vMix API: ZoomJoinMeeting Value = "MeetingID,Password" (comma-separated).
 // Display name is set by the Zoom account inside vMix, not via API.
 var _lastJoin={mid:'',pass:''};
 function joinWith(mid,pass){

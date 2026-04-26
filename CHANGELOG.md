@@ -2,6 +2,21 @@
 
 ---
 
+### vMix Caller 1.6.4 — 2026-04-26
+
+**Fix: JS syntax error broke all vMix connection and video preview**
+
+A stray `var` keyword was left before a comment line in `_JS_HELPERS` during the 1.6.2 Zoom API fix:
+
+```javascript
+var // vMix API: ZoomJoinMeeting Value = "MeetingID,Password"...
+var _lastJoin={...};
+```
+
+`var` expects an identifier; finding another `var` keyword after the comment is a syntax error. The entire `_JS_HELPERS` script block crashed before any function was defined, so `loadState()` was never called (status stuck at "Checking vMix"), `initPreview()` never ran (video stuck at "Waiting for caller"), and no controls worked. Fixed by removing the stray `var`.
+
+---
+
 ### Morning Report 1.2.5 — 2026-04-26
 
 **Fix: Chain count and fault count inflated by stream-level events and old DB data**
