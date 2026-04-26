@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.6.4",
+    "version": "1.6.5",
 }
 
 import datetime
@@ -133,6 +133,8 @@ _recorders = {}   # slug → _RecorderThread
 _rec_lock  = threading.Lock()
 _disk_critical    = False      # set True when disk critically full (pauses recording)
 _disk_free_bytes  = -1         # last known minimum free bytes across all roots
+_disk_used_bytes  = -1         # cached total recordings disk usage — updated in background, never scanned inline
+_disk_scan_lock   = threading.Lock()   # prevents concurrent rglob scans
 _disk_warn_ts     = {}         # str(rec_root) → last warning time.time()
 
 # ─── Hub aggregation state (hub-only) ────────────────────────────────────────
@@ -906,28 +908,10 @@ def register(app, ctx):
                 "last_ok_ts": t.last_ok_ts,
                 "seg_count":  t.seg_count,
             } for sl, t in _recorders.items()}
-        # Sum disk usage across all configured root directories
-        seen_files = set()
-        total = 0
-        try:
-            for root in _all_rec_roots():
-                try:
-                    if not root.exists():
-                        continue
-                    for pat in _AUDIO_GLOBS:
-                      for f in root.rglob(pat):
-                        try:
-                            if f.is_file():
-                                key = str(f.resolve())
-                                if key not in seen_files:
-                                    seen_files.add(key)
-                                    total += f.stat().st_size
-                        except OSError:
-                            pass
-                except OSError as e:
-                    _log(f"[Logger] Disk scan error for {root}: {e}")
-        except Exception as e:
-            _log(f"[Logger] Status disk scan failed: {e}")
+        # Return the cached disk usage — updated in the background by _run_maintenance
+        # and _delayed_start.  Never scan inline: rglob over a large archive can take
+        # 10–30 s and would block the settings page (Promise.all waits for this endpoint).
+        total = _disk_used_bytes   # -1 = not yet calculated (shows "Calculating..." in UI)
         rec_root = _rec_root()
         # Compute local UTC offset from the server's system clock — respects DST automatically.
         # Never use the stored config value: it would go stale after a DST transition.
@@ -3212,6 +3196,10 @@ def _delayed_start():
     _seed_shared_meta_dbs()
     threading.Thread(target=_recover_startup_segments,
                      daemon=True, name="LoggerStartupRecovery").start()
+    # Kick off an early disk usage scan so the settings page has a real value
+    # within seconds of startup rather than waiting for the first maintenance cycle.
+    threading.Thread(target=_update_disk_used_bytes,
+                     daemon=True, name="LoggerDiskScan").start()
 
 def _reconcile_recorders():
     streams = _available_streams()
@@ -3254,13 +3242,50 @@ def _maintenance_loop():
             _log(f"[Logger] Maintenance error: {e}")
         time.sleep(3600)
 
+def _update_disk_used_bytes():
+    """Scan recording directories and cache total used bytes in _disk_used_bytes.
+
+    Called from _delayed_start (3 s after startup) and from _run_maintenance
+    (hourly).  Never called inline from a request handler — the scan can take
+    many seconds on large archives and would block the settings page.
+    """
+    global _disk_used_bytes
+    if not _disk_scan_lock.acquire(blocking=False):
+        return   # another scan is already running — skip
+    try:
+        seen_files: set = set()
+        total = 0
+        for root in _all_rec_roots():
+            try:
+                if not root.exists():
+                    continue
+                for pat in _AUDIO_GLOBS:
+                    for f in root.rglob(pat):
+                        try:
+                            if f.is_file():
+                                key = str(f.resolve())
+                                if key not in seen_files:
+                                    seen_files.add(key)
+                                    total += f.stat().st_size
+                        except OSError:
+                            pass
+            except OSError as e:
+                _log(f"[Logger] Disk scan error for {root}: {e}")
+        _disk_used_bytes = total
+    except Exception as e:
+        _log(f"[Logger] Disk used scan failed: {e}")
+    finally:
+        _disk_scan_lock.release()
+
+
 def _run_maintenance():
     global _disk_critical, _disk_free_bytes
     ffmpeg = _find_ffmpeg() or "ffmpeg"
     today  = datetime.date.today()
     seen_stream_dirs: set = set()
 
-    # ── Disk space check ──────────────────────────────────────────────────────
+    # ── Disk space check (free bytes via fast statvfs) + used bytes scan ──────
+    _update_disk_used_bytes()   # runs inline here — maintenance thread, not a request
     min_free = float("inf")
     for rec_root in _all_rec_roots():
         try:
@@ -5129,7 +5154,7 @@ function loadStatus(){
       });
     }
     var di = document.getElementById('disk-info');
-    if(di) di.textContent = 'Disk: '+_fmtBytes(data.disk_bytes||0)
+    if(di) di.textContent = 'Disk: '+(data.disk_bytes>=0 ? _fmtBytes(data.disk_bytes) : 'Calculating…')
       +(running.length ? ' · '+running.length+' recording' : ' · idle')
       +(errored.length ? ' · '+errored.length+' error(s)' : '');
     // Disk warning banner
@@ -5166,7 +5191,7 @@ function loadSettingsPanel(){
     renderSettingsRows();
     var st = res[2];
     document.getElementById('disk-info').textContent =
-      'Disk usage: '+_fmtBytes(st.disk_bytes||0);
+      'Disk usage: '+(st.disk_bytes>=0 ? _fmtBytes(st.disk_bytes) : 'Calculating…');
     var rdInp = document.getElementById('rec-dir-input');
     rdInp.value = _cfg.rec_dir || '';
     var rdRes = document.getElementById('rec-dir-resolved');
@@ -5371,7 +5396,7 @@ document.getElementById('save-settings-btn').addEventListener('click', function(
       fetch('/api/logger/status').then(function(res){ return res.json(); }).then(function(st){
         var rdRes=document.getElementById('rec-dir-resolved');
         rdRes.textContent = st.rec_root ? '→ '+st.rec_root : '';
-        document.getElementById('disk-info').textContent='Disk usage: '+_fmtBytes(st.disk_bytes||0);
+        document.getElementById('disk-info').textContent='Disk usage: '+(st.disk_bytes>=0 ? _fmtBytes(st.disk_bytes) : 'Calculating…');
       });
       var anyEnabled=Object.values(streams).some(function(s){ return s.enabled; });
       document.getElementById('tl-notice').classList.toggle('hidden', anyEnabled);
