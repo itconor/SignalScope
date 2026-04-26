@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.6.0",
+    "version": "1.6.1",
 }
 
 import os
@@ -2002,38 +2002,50 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
   <!-- ── RIGHT: controls ────────────────────────────────────────────────────── -->
   <div>
 
-    <!-- vMix Settings -->
+    <!-- vMix Instance management -->
     <div class="card">
-      <div class="ch">⚙ vMix Settings</div>
+      <div class="ch">🔌 vMix Instances</div>
       <div class="cb">
-        <div class="r2">
+
+        <!-- Instance selector row -->
+        <div class="inst-act-label">Active Instance</div>
+        <div style="display:flex;gap:6px;margin-bottom:12px">
+          <select id="inst-sel" style="flex:1">
+            {% for inst in instances %}
+            <option value="{{inst.id|e}}"{% if inst.id==active_instance_id %} selected{% endif %}>{{inst.name|e}}</option>
+            {% endfor %}
+          </select>
+          <button class="btn bg bs" data-action="newInstance" title="Add new instance">+&nbsp;New</button>
+          <button class="btn bd bs" id="del-inst-btn" data-action="deleteInstance" title="Delete this instance">🗑</button>
+        </div>
+
+        <!-- Instance edit fields -->
+        <div class="field">
+          <label class="fl">Instance Name</label>
+          <input type="text" id="inst-name" placeholder="Studio A — vMix 1" value="{{active_inst.name|e}}">
+        </div>
+        <div class="r3">
           <div class="field">
             <label class="fl">vMix IP</label>
-            <input type="text" id="vmix-ip" placeholder="127.0.0.1" value="{{cfg.vmix_ip|e}}">
+            <input type="text" id="vmix-ip" placeholder="127.0.0.1" value="{{active_inst.vmix_ip|e}}">
           </div>
           <div class="field">
             <label class="fl">Port</label>
-            <input type="number" id="vmix-port" value="{{cfg.vmix_port}}" min="1" max="65535">
+            <input type="number" id="vmix-port" value="{{active_inst.vmix_port}}" min="1" max="65535">
           </div>
-        </div>
-        <div class="r2">
           <div class="field">
             <label class="fl">Zoom Input</label>
-            <input type="text" id="vmix-input" value="{{cfg.vmix_input}}" placeholder="1">
-            <div class="hint">Number or name of the Zoom input in vMix.</div>
-          </div>
-          <div class="field" style="justify-content:flex-end">
-            <label class="fl">&nbsp;</label>
-            <button class="btn bg bs" data-action="testVmix">🔌 Test vMix</button>
+            <input type="text" id="vmix-input" value="{{active_inst.vmix_input}}" placeholder="1">
           </div>
         </div>
         <div class="field">
-          <label class="fl">Preview URL</label>
-          <input type="text" id="bridge-url" placeholder="webrtc://192.168.x.x/live/caller" value="{{cfg.bridge_url|e}}">
-          <div class="hint">WebRTC: <code>webrtc://host/app/stream</code> · HLS: <code>.m3u8</code> URL. Usually pushed from the hub Save &amp; Push button.</div>
+          <label class="fl">Preview / SRT Bridge URL</label>
+          <input type="text" id="bridge-url" placeholder="webrtc://192.168.x.x/live/caller1" value="{{active_inst.bridge_url|e}}">
+          <div class="hint">Stream name differentiates instances on one SRS — e.g. <code>.../caller1</code>, <code>.../caller2</code>.</div>
         </div>
         <div class="brow">
-          <button class="btn bp" data-action="saveConfig">💾 Save</button>
+          <button class="btn bp" data-action="saveInstance">💾 Save Instance</button>
+          <button class="btn bg bs" data-action="testVmix">🔌 Test vMix</button>
         </div>
       </div>
     </div>
@@ -2126,7 +2138,73 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
 """ + _JS_HELPERS + r"""
 
 // ── Client-specific additions ─────────────────────────────────────────────────
-var _videoUrl = {{video_url_json|safe}};
+var _videoUrl    = {{video_url_json|safe}};
+var _instances   = {{instances_json|safe}};
+var _activeInstId= {{active_instance_id_json|safe}};
+
+function _getInstById(id){return _instances.find(function(i){return i.id===id;})||null;}
+
+function _refreshVideoUrl(){
+  fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(v){_videoUrl=v.url||'';initPreview(_videoUrl);})
+    .catch(function(){});
+}
+
+function newInstance(){
+  var id='i'+Date.now().toString(36);
+  var inst={id:id,name:'New Instance',vmix_ip:'127.0.0.1',vmix_port:8088,vmix_input:'1',bridge_url:''};
+  _instances.push(inst);
+  var sel=document.getElementById('inst-sel');
+  if(sel){var opt=document.createElement('option');opt.value=id;opt.textContent='New Instance';opt.selected=true;sel.appendChild(opt);}
+  _activeInstId=id;
+  _populateInstForm(inst);
+  var n=document.getElementById('inst-name');if(n){n.focus();n.select();}
+}
+
+function saveInstance(){
+  var id=(document.getElementById('inst-sel')||{}).value||_activeInstId;
+  var name=((document.getElementById('inst-name')||{}).value||'').trim()||'Instance';
+  var ip=((document.getElementById('vmix-ip')||{}).value||'').trim()||'127.0.0.1';
+  var port=parseInt((document.getElementById('vmix-port')||{}).value)||8088;
+  var inpR=((document.getElementById('vmix-input')||{}).value||'').trim();
+  var inp=inpR===''||isNaN(inpR)?inpR:(parseInt(inpR)||1);
+  var burl=((document.getElementById('bridge-url')||{}).value||'').trim();
+  _post('/api/vmixcaller/instances/'+encodeURIComponent(id),{
+    name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl,activate:true
+  }).then(function(d){
+    if(d.ok){
+      var i=_instances.findIndex(function(x){return x.id===id;});
+      var upd={id:id,name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl};
+      if(i>=0)_instances[i]=upd;else _instances.push(upd);
+      var sel=document.getElementById('inst-sel');
+      if(sel){for(var j=0;j<sel.options.length;j++){if(sel.options[j].value===id){sel.options[j].textContent=name;break;}}}
+      // Sync active pill labels
+      document.querySelectorAll('.inst-pill').forEach(function(p){
+        if(p.dataset.id===id)p.textContent=name;
+      });
+      showMsg('Instance saved',true);
+      _refreshVideoUrl();
+    }else showMsg(d.error||'Save failed',false);
+  }).catch(function(e){showMsg('Error: '+e,false);});
+}
+
+function deleteInstance(){
+  if(_instances.length<=1){showMsg('Cannot delete the only instance',false);return;}
+  var id=(document.getElementById('inst-sel')||{}).value||_activeInstId;
+  if(!confirm('Delete this instance?'))return;
+  fetch('/api/vmixcaller/instances/'+encodeURIComponent(id),{
+    method:'DELETE',headers:{'X-CSRFToken':_csrf()},credentials:'same-origin'
+  }).then(function(r){return r.json();}).then(function(d){
+    if(d.ok){
+      _instances=_instances.filter(function(i){return i.id!==id;});
+      var sel=document.getElementById('inst-sel');
+      if(sel){for(var j=sel.options.length-1;j>=0;j--){if(sel.options[j].value===id){sel.remove(j);break;}}}
+      if(sel&&sel.value){_activeInstId=sel.value;_populateInstForm(_getInstById(_activeInstId));}
+      showMsg('Instance deleted',true);
+    }else showMsg(d.error||'Delete failed',false);
+  }).catch(function(e){showMsg('Error: '+e,false);});
+}
 
 // Switch active vMix instance (same logic as presenter page)
 function switchInstance(btn){
@@ -2271,6 +2349,16 @@ function deleteMeeting(btn){
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',function(){
   try{if(_videoUrl) initPreview(_videoUrl);}catch(e){}
+  // Populate instance form with active instance on load
+  _populateInstForm(_getInstById(_activeInstId));
+  // Instance selector change → populate form fields + update active id
+  var isel=document.getElementById('inst-sel');
+  if(isel){
+    isel.addEventListener('change',function(){
+      _activeInstId=this.value;
+      _populateInstForm(_getInstById(_activeInstId));
+    });
+  }
   loadState();
   loadMeetings();
   var pi=document.getElementById('padd-in');

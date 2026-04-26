@@ -2,6 +2,16 @@
 
 ---
 
+### vMix Caller 1.6.1 — 2026-04-26
+
+**Fix: Client page instance management fully functional**
+
+The 1.6.0 client page had the instance management HTML card but the JavaScript was incomplete — `_instances`, `_activeInstId`, `saveInstance`, `newInstance`, `deleteInstance`, and `_getInstById` were only defined in the hub template. Clicking Save/New/Delete on the client page silently failed; the instance selector `change` event was not wired up; `_populateInstForm` was not called on load.
+
+Fix: all instance management functions and variables are now also defined in the client template's script block. On DOMContentLoaded the form is pre-populated from the active instance and the selector is wired to update the form on change. Client `saveInstance` calls `PUT /api/vmixcaller/instances/<id>` with `activate:true` (no site push — the client manages its own config directly).
+
+---
+
 ### vMix Caller 1.6.0 — 2026-04-26
 
 **Feature: Multiple saved vMix instances — one SRS handles all streams by name**
