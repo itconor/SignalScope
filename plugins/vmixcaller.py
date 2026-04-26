@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.17",
+    "version": "1.5.18",
 }
 
 import os
@@ -1015,6 +1015,11 @@ function toggleAudio(){
   var vid=document.getElementById('pvid');
   if(!vid)return;
   vid.muted=!vid.muted;
+  if(!vid.muted){
+    // Setting muted=false alone does not restart the audio pipeline in Chrome/Safari
+    // when the element was initially autoplay-started as muted — call play() to activate it.
+    vid.play().catch(function(){});
+  }
   _syncAudioBtn();
 }
 

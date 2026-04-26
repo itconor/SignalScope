@@ -2,6 +2,14 @@
 
 ---
 
+### vMix Caller 1.5.18 — 2026-04-26
+
+**Fix: "Hear Caller" button produces no audio (WebRTC)**
+
+Clicking "Hear Caller" to unmute the caller video/audio feed produced no sound even though the video was playing correctly. Root cause: setting `vid.muted = false` alone does not restart the audio pipeline in Chrome or Safari when the `<video>` element was initially started in the `muted` autoplay state. Fixed by calling `vid.play()` immediately after unmuting within the user-gesture context so the browser activates the audio track.
+
+---
+
 ### SignalScope-3.5.172 — 2026-04-26
 
 **Feature: Studio Board assignments on Broadcast Chains page**
