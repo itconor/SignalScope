@@ -2,6 +2,14 @@
 
 ---
 
+### Studio Board 3.14.18 — 2026-04-26
+
+**Feature: Backup & Restore**
+
+New Backup tab in the Studio Board admin page. "Download Backup" produces a ZIP containing `studioboard_cfg.json` and all show artwork images — all studio IDs, brand IDs, and API tokens are preserved exactly. "Restore from ZIP" uploads the backup, validates the structure, writes the config and artwork, and reloads all connected TV displays immediately via SSE. Restore is blocked for viewer-role accounts by the existing RBAC middleware.
+
+---
+
 ### Studio Board 3.14.17 — 2026-04-26
 
 **Feature: Expose chain→studio assignments to Broadcast Chains page**

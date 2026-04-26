@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.17",
+    "version":  "3.14.18",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1058,6 +1058,82 @@ def register(app, ctx):
     _rebuild_chain_studios_into(_chain_studios, _cfg_load())
     monitor._studioboard_chain_studios = _chain_studios
 
+    # ── Backup / Restore ─────────────────────────────────────────
+
+    @app.get("/api/studioboard/backup")
+    @login_required
+    def sb_backup():
+        """Download a ZIP of studioboard_cfg.json + artwork images."""
+        import io as _io, zipfile as _zf, datetime as _dt
+        from flask import send_file as _sf
+        buf = _io.BytesIO()
+        with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
+            if os.path.exists(_CFG_PATH):
+                zf.write(_CFG_PATH, "studioboard_cfg.json")
+            else:
+                zf.writestr("studioboard_cfg.json",
+                            json.dumps({"studios": [], "brands": []}, indent=2))
+            if os.path.isdir(_ART_DIR):
+                for fname in sorted(os.listdir(_ART_DIR)):
+                    fpath = os.path.join(_ART_DIR, fname)
+                    if os.path.isfile(fpath):
+                        zf.write(fpath, "studioboard_art/" + fname)
+        buf.seek(0)
+        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        return _sf(buf, as_attachment=True,
+                   download_name=f"studioboard_backup_{ts}.zip",
+                   mimetype="application/zip")
+
+    @app.post("/api/studioboard/restore")
+    @login_required
+    def sb_restore():
+        """Restore config and artwork from a previously downloaded backup ZIP."""
+        import io as _io, zipfile as _zf
+        f = request.files.get("backup")
+        if not f or not f.filename:
+            return jsonify({"error": "No file uploaded"}), 400
+        raw = f.read(25 * 1024 * 1024 + 1)
+        if len(raw) > 25 * 1024 * 1024:
+            return jsonify({"error": "File too large (max 25 MB)"}), 400
+        try:
+            with _zf.ZipFile(_io.BytesIO(raw)) as zf:
+                names = zf.namelist()
+                if "studioboard_cfg.json" not in names:
+                    return jsonify({"error": "Not a valid Studio Board backup "
+                                             "(studioboard_cfg.json missing)"}), 400
+                try:
+                    cfg = json.loads(zf.read("studioboard_cfg.json").decode("utf-8"))
+                except Exception:
+                    return jsonify({"error": "studioboard_cfg.json is not valid JSON"}), 400
+                if not (isinstance(cfg.get("studios"), list)
+                        and isinstance(cfg.get("brands"), list)):
+                    return jsonify({"error": "Invalid config structure — "
+                                             "must have studios and brands lists"}), 400
+                # Restore artwork — only accept safe filenames
+                art_count = 0
+                os.makedirs(_ART_DIR, exist_ok=True)
+                for name in names:
+                    if (name.startswith("studioboard_art/")
+                            and not name.endswith("/")):
+                        fname = os.path.basename(name)
+                        if re.match(r'^[a-zA-Z0-9._-]+$', fname):
+                            with open(os.path.join(_ART_DIR, fname), "wb") as out:
+                                out.write(zf.read(name))
+                            art_count += 1
+                # Save config (also rebuilds _chain_studios)
+                _cfg_save(cfg)
+        except _zf.BadZipFile:
+            return jsonify({"error": "Invalid or corrupted ZIP file"}), 400
+        except Exception as exc:
+            return jsonify({"error": f"Restore failed: {exc}"}), 500
+        _sb_notify_all()
+        return jsonify({
+            "ok": True,
+            "studios": len(cfg.get("studios", [])),
+            "brands":  len(cfg.get("brands", [])),
+            "artwork": art_count,
+        })
+
     # ── Start background presenter image cache thread ─────────────
     # Pre-load any images already on disk from a previous run, then
     # start the poller that keeps the cache fresh every 60 s.
@@ -1145,6 +1221,7 @@ select[multiple]{min-height:90px}
   <button class="tab active" data-tab="studios">Studios</button>
   <button class="tab" data-tab="brands">Brands</button>
   <button class="tab" data-tab="api">API</button>
+  <button class="tab" data-tab="backup">Backup</button>
 </nav>
 <div id="msg-bar" style="display:none" class="msg" style="border-radius:0;margin:0"></div>
 
@@ -1156,6 +1233,26 @@ select[multiple]{min-height:90px}
 </div>
 <div class="pane main" id="pane-api">
   <div id="api-docs"></div>
+</div>
+<div class="pane main" id="pane-backup">
+  <div class="card">
+    <div class="ch">Backup</div>
+    <div class="cb">
+      <p style="color:var(--mu);margin-bottom:12px">Downloads a ZIP containing your complete Studio Board configuration and all show artwork images. All studio IDs, brand IDs, and API tokens are preserved — restore to any SignalScope installation and everything works immediately.</p>
+      <a class="btn bp" href="/api/studioboard/backup" download>⬇ Download Backup</a>
+    </div>
+  </div>
+  <div class="card">
+    <div class="ch">Restore</div>
+    <div class="cb">
+      <p style="color:var(--wn);margin-bottom:12px">⚠ Restoring will <strong>replace</strong> the current configuration and artwork. This cannot be undone. Only upload backups downloaded from this page.</p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input type="file" id="restore-file" accept=".zip" style="color:var(--tx);font-size:12px">
+        <button class="btn bp" id="restore-btn">↑ Restore from ZIP</button>
+      </div>
+      <div id="restore-msg" style="display:none;margin-top:10px;padding:8px 12px;border-radius:8px;font-size:12px"></div>
+    </div>
+  </div>
 </div>
 
 <script nonce="{{csp_nonce()}}">
@@ -1527,6 +1624,38 @@ document.addEventListener('click',function(e){
     };fileInp.click();
     return;
   }
+});
+
+/* ── Backup / Restore tab ──────────────────────────── */
+document.getElementById('restore-btn').addEventListener('click',function(){
+  var fileEl=document.getElementById('restore-file');
+  var msgEl=document.getElementById('restore-msg');
+  if(!fileEl.files||!fileEl.files[0]){
+    msgEl.style.display='';
+    msgEl.style.background='#2a0a0a';msgEl.style.color='var(--al)';msgEl.style.border='1px solid #991b1b';
+    msgEl.textContent='Please choose a backup ZIP file first.';
+    return;
+  }
+  if(!confirm('This will replace the current Studio Board configuration and artwork. Continue?'))return;
+  var fd=new FormData();
+  fd.append('backup',fileEl.files[0]);
+  fetch('/api/studioboard/restore',{method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':_getCsrf()},body:fd})
+    .then(function(r){return r.json()}).then(function(d){
+      msgEl.style.display='';
+      if(d.ok){
+        msgEl.style.background='#0f2318';msgEl.style.color='var(--ok)';msgEl.style.border='1px solid #166534';
+        msgEl.textContent='Restored: '+d.studios+' studio(s), '+d.brands+' brand(s), '+d.artwork+' artwork image(s).';
+        fileEl.value='';
+        loadAll();
+      } else {
+        msgEl.style.background='#2a0a0a';msgEl.style.color='var(--al)';msgEl.style.border='1px solid #991b1b';
+        msgEl.textContent=d.error||'Restore failed.';
+      }
+    }).catch(function(e){
+      msgEl.style.display='';
+      msgEl.style.background='#2a0a0a';msgEl.style.color='var(--al)';msgEl.style.border='1px solid #991b1b';
+      msgEl.textContent='Network error: '+e;
+    });
 });
 
 loadAll();
