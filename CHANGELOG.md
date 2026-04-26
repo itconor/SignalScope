@@ -2,6 +2,21 @@
 
 ---
 
+### vMix Caller 1.6.0 — 2026-04-26
+
+**Feature: Multiple saved vMix instances — one SRS handles all streams by name**
+
+Each saved instance bundles a vMix connection (IP, port, Zoom input) with a preview URL (SRT/WebRTC bridge stream). One SRS Docker container handles multiple instances via different stream names — e.g. `webrtc://192.168.1.50/live/caller1`, `.../caller2`, `.../caller3` — same ports, different paths.
+
+- **Saved instances**: create, rename, edit, delete from the hub operator page. Old single-config installations migrate automatically to a "Default" instance on first load.
+- **Hub page**: new "Site & Instance" card — instance selector dropdown, editable fields (name, vMix IP, port, Zoom input, Preview URL), "Save Instance & Push to Site" sends the active instance's config to the client node.
+- **Presenter page**: instance pill selector strip shown above the video hero when more than one instance is configured. Clicking a pill activates that instance and reloads the video preview.
+- **Client page**: same instance pill selector above the preview card.
+- **API**: `GET/PUT/DELETE /api/vmixcaller/instances/<id>`, `POST /api/vmixcaller/instances/<id>/activate`.
+- All existing code (client polling thread, video relay, `__set_config__` push) continues to work unchanged via backwards-compat flat-field injection.
+
+---
+
 ### SignalScope-3.5.174 — 2026-04-26
 
 **Fix: CHAIN_FAULT notifications suppressed by cooldown when chain had already recovered (orphan CHAIN_RECOVERED)**

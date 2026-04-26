@@ -32,12 +32,13 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.23",
+    "version": "1.6.0",
 }
 
 import os
 import json
 import time
+import uuid as _uuid_mod
 import threading
 import urllib.request
 import urllib.parse
@@ -50,15 +51,6 @@ from flask import request, jsonify, render_template_string, Response, abort
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _CFG_PATH = os.path.join(_BASE_DIR, "vmixcaller_config.json")
 _cfg_lock = threading.Lock()
-
-_DEFAULTS: dict = {
-    "target_site":    "",
-    "bridge_url":     "",
-    "vmix_input":     1,
-    "vmix_ip":        "127.0.0.1",
-    "vmix_port":      8088,
-    # saved_meetings is a list — handled separately below
-}
 
 # ── Hub-side runtime state ─────────────────────────────────────────────────────
 _pending_cmd: dict  = {}   # site_name → {fn, value, input, seq}
@@ -82,41 +74,150 @@ _VIDEO_MAX_SEGS        = 6   # ~12–18 s buffer at 2–3 s/segment
 
 
 # ── Config helpers ─────────────────────────────────────────────────────────────
+# Config schema (stored in vmixcaller_config.json):
+#   target_site:         str   — which SignalScope site runs vMix
+#   active_instance_id:  str   — ID of the currently selected vMix instance
+#   instances:           list  — saved vMix instances (see _make_instance below)
+#   saved_meetings:      list  — saved Zoom meeting presets
+#
+# Each instance dict:
+#   id, name, vmix_ip, vmix_port, vmix_input, bridge_url
+#
+# Backwards compat: if no "instances" key, legacy flat vmix_ip/bridge_url
+# fields are migrated to a single "Default" instance transparently.
 
-def _load_cfg() -> dict:
+def _make_instance(name="New Instance", vmix_ip="127.0.0.1", vmix_port=8088,
+                   vmix_input=1, bridge_url="", inst_id=None) -> dict:
+    return {
+        "id":         inst_id or str(_uuid_mod.uuid4())[:8],
+        "name":       name,
+        "vmix_ip":    vmix_ip,
+        "vmix_port":  int(vmix_port or 8088),
+        "vmix_input": vmix_input,
+        "bridge_url": bridge_url,
+    }
+
+
+def _load_raw() -> dict:
+    """Return raw stored JSON dict without any processing."""
     with _cfg_lock:
         try:
             with open(_CFG_PATH) as fh:
-                saved = json.load(fh)
+                return json.load(fh)
         except Exception:
-            saved = {}
-    out = dict(_DEFAULTS)
-    for k in _DEFAULTS:
-        if k in saved:
-            out[k] = saved[k]
-    # saved_meetings is preserved as-is (list of dicts)
-    out["saved_meetings"] = saved.get("saved_meetings") or []
-    return out
+            return {}
+
+
+def _load_cfg() -> dict:
+    """Return processed config.
+
+    Active instance fields (vmix_ip, vmix_port, vmix_input, bridge_url) are
+    injected at the top level so all existing code keeps working unchanged.
+    """
+    raw = _load_raw()
+
+    # ── Migration: legacy flat fields → single "Default" instance ─────────
+    instances = raw.get("instances")
+    if instances is None:
+        leg_ip    = raw.get("vmix_ip",    "127.0.0.1")
+        leg_port  = raw.get("vmix_port",   8088)
+        leg_input = raw.get("vmix_input",  1)
+        leg_burl  = raw.get("bridge_url",  "")
+        if any([leg_ip != "127.0.0.1", leg_port != 8088, leg_input != 1, leg_burl]):
+            instances = [_make_instance("Default", leg_ip, leg_port,
+                                        leg_input, leg_burl, "default")]
+        else:
+            instances = []
+
+    active_id = raw.get("active_instance_id", "")
+    active: dict = {}
+    for inst in instances:
+        if inst.get("id") == active_id:
+            active = inst
+            break
+    if not active and instances:
+        active = instances[0]
+        active_id = active.get("id", "")
+
+    return {
+        "target_site":         raw.get("target_site", ""),
+        "active_instance_id":  active_id,
+        "instances":           instances,
+        "saved_meetings":      raw.get("saved_meetings") or [],
+        # Flat fields from active instance — keeps all downstream code unchanged
+        "vmix_ip":    active.get("vmix_ip",    "127.0.0.1"),
+        "vmix_port":  active.get("vmix_port",   8088),
+        "vmix_input": active.get("vmix_input",  1),
+        "bridge_url": active.get("bridge_url",  ""),
+    }
 
 
 def _save_cfg(data: dict) -> dict:
-    # Load full current config so we never lose keys we're not updating
-    current = _load_cfg()
-    for k in _DEFAULTS:
-        if k in data:
-            v = data[k]
-            if k in ("vmix_port", "vmix_input"):
-                try:
-                    v = int(v)
-                except (TypeError, ValueError):
-                    v = _DEFAULTS[k]
-            current[k] = v
-    if "saved_meetings" in data:
-        current["saved_meetings"] = data["saved_meetings"]
+    """Persist a partial update and return the new processed config.
+
+    Handles two call styles:
+    • Instance-aware: pass ``instances``, ``active_instance_id``, ``target_site``
+    • Legacy flat: pass ``vmix_ip``/``vmix_port``/``vmix_input``/``bridge_url`` —
+      these are written into the current active instance so the client node's
+      local ``saveConfig`` and the ``__set_config__`` push both keep working.
+    """
     with _cfg_lock:
+        try:
+            with open(_CFG_PATH) as fh:
+                current = json.load(fh)
+        except Exception:
+            current = {}
+
+        for k in ("target_site", "active_instance_id"):
+            if k in data:
+                current[k] = data[k]
+        if "instances" in data:
+            current["instances"] = data["instances"]
+        if "saved_meetings" in data:
+            current["saved_meetings"] = data["saved_meetings"]
+
+        # Legacy flat fields → update the active instance in-place
+        _flat = {k: data[k] for k in ("vmix_ip", "vmix_port", "vmix_input", "bridge_url")
+                 if k in data}
+        if _flat:
+            instances = current.get("instances")
+            if instances is None:
+                # First use without instances: create "Default" from merged flat fields
+                defaults = {"vmix_ip": "127.0.0.1", "vmix_port": 8088,
+                            "vmix_input": 1, "bridge_url": ""}
+                defaults.update(_flat)
+                instances = [_make_instance(
+                    "Default", defaults["vmix_ip"], defaults["vmix_port"],
+                    defaults["vmix_input"], defaults["bridge_url"], "default")]
+                current["instances"] = instances
+                if not current.get("active_instance_id"):
+                    current["active_instance_id"] = "default"
+            else:
+                aid = current.get("active_instance_id", "")
+                idx = next((i for i, x in enumerate(instances) if x.get("id") == aid), None)
+                if idx is None and instances:
+                    idx = 0
+                if idx is not None:
+                    for k, v in _flat.items():
+                        if k == "vmix_port":
+                            try:
+                                v = int(v)
+                            except (TypeError, ValueError):
+                                v = 8088
+                        instances[idx][k] = v
+
         with open(_CFG_PATH, "w") as fh:
             json.dump(current, fh, indent=2)
-    return current
+    return _load_cfg()
+
+
+def _get_active_instance(cfg: dict) -> dict:
+    instances = cfg.get("instances") or []
+    aid = cfg.get("active_instance_id", "")
+    for inst in instances:
+        if inst.get("id") == aid:
+            return inst
+    return instances[0] if instances else {}
 
 
 def _proxy_video_url(bridge_url: str) -> str:
@@ -578,7 +679,13 @@ kbd{background:#0d1e40;border:1px solid var(--bor);border-radius:3px;padding:0 5
 /* saved meetings */
 .mtg-row{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#091e42;border:1px solid var(--bor);border-radius:8px;margin-bottom:6px}
 .mtg-name{flex:1;font-weight:600}
-.mtg-id{font-size:11px;color:var(--mu)}"""
+.mtg-id{font-size:11px;color:var(--mu)}
+/* vMix instance pills */
+.inst-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.inst-pill{background:var(--sur);border:1.5px solid var(--bor);border-radius:20px;color:var(--mu);font-size:12px;font-weight:600;padding:5px 14px;cursor:pointer;font-family:inherit;transition:border-color .2s,color .2s,background .2s}
+.inst-pill:hover{border-color:var(--acc);color:var(--tx)}
+.inst-pill.active{background:rgba(23,168,255,.12);border-color:var(--acc);color:var(--acc)}
+.inst-act-label{font-size:11px;color:var(--mu);margin-bottom:5px}"""
 
 # ── Shared JS helpers (inlined into both pages) ────────────────────────────────
 _JS_HELPERS = r"""
@@ -829,7 +936,26 @@ document.addEventListener('click',function(e){
   else if(a==='toggleRelay'  &&typeof toggleRelay==='function')  toggleRelay();
   else if(a==='testVmix'    &&typeof testVmix==='function')     testVmix();
   else if(a==='reconnect'   &&typeof reconnect==='function')    reconnect();
+  else if(a==='switchInstance'&&typeof switchInstance==='function')switchInstance(btn);
+  else if(a==='newInstance'  &&typeof newInstance==='function')   newInstance();
+  else if(a==='saveInstance' &&typeof saveInstance==='function')  saveInstance();
+  else if(a==='deleteInstance'&&typeof deleteInstance==='function')deleteInstance();
 });
+
+// ── Shared instance form helper (used by hub and client pages) ───────────────
+function _populateInstForm(inst){
+  if(!inst)return;
+  var flds={
+    'inst-name':  inst.name||'',
+    'vmix-ip':    inst.vmix_ip||'127.0.0.1',
+    'vmix-port':  inst.vmix_port||8088,
+    'vmix-input': inst.vmix_input!=null?inst.vmix_input:'1',
+    'bridge-url': inst.bridge_url||''
+  };
+  Object.keys(flds).forEach(function(id){
+    var el=document.getElementById(id);if(el)el.value=flds[id];
+  });
+}
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -967,6 +1093,20 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
   <button class="call-btn leave" data-action="hangUp">📴 Leave</button>
 </div>
 
+<!-- ── Instance selector (only shown when >1 instance configured) ─────── -->
+{% if instances|length > 1 %}
+<div style="padding:14px 0 4px">
+  <div class="inst-act-label">Select vMix Instance</div>
+  <div class="inst-strip">
+    {% for inst in instances %}
+    <button class="inst-pill{% if inst.id==active_instance_id %} active{% endif %}"
+            data-id="{{inst.id|e}}"
+            data-action="switchInstance">{{inst.name|e}}</button>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 <!-- ── Video hero ─────────────────────────────────────────────────────── -->
 <div class="video-hero">
   <video id="pvid" autoplay playsinline></video>
@@ -1051,6 +1191,21 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
 
 // ── Presenter-specific ────────────────────────────────────────────────────────
 var _videoUrl = {{video_url_json|safe}};
+
+// Switch active vMix instance and reload video preview
+function switchInstance(btn){
+  var id=btn.dataset.id;
+  document.querySelectorAll('.inst-pill').forEach(function(p){p.classList.toggle('active',p.dataset.id===id);});
+  _post('/api/vmixcaller/instances/'+encodeURIComponent(id)+'/activate',{})
+    .then(function(d){
+      if(d.ok){
+        fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
+          .then(function(r){return r.json();})
+          .then(function(v){_videoUrl=v.url||'';if(_videoUrl)initPreview(_videoUrl);})
+          .catch(function(){});
+      }
+    }).catch(function(){});
+}
 
 function joinSaved(btn){
   joinWith(btn.dataset.mid, btn.dataset.pass, btn.dataset.dname||'Guest Producer');
@@ -1321,12 +1476,15 @@ _HUB_TPL = r"""<!DOCTYPE html>
 
   <!-- ── RIGHT: controls ────────────────────────────────────────────────────── -->
   <div>
-    <!-- Settings -->
+
+    <!-- Site & Instance -->
     <div class="card">
-      <div class="ch">🔌 Site &amp; Settings</div>
+      <div class="ch">🔌 Site &amp; Instance</div>
       <div class="cb">
+
+        <!-- Site selector -->
         <div class="field">
-          <label class="fl">vMix Site</label>
+          <label class="fl">vMix Site (SignalScope node)</label>
           <select id="target-site">
             <option value="">— select site —</option>
             {% for s in sites %}
@@ -1334,32 +1492,48 @@ _HUB_TPL = r"""<!DOCTYPE html>
             {% endfor %}
           </select>
         </div>
-        <div class="r2">
+
+        <hr style="border:none;border-top:1px solid var(--bor);margin:10px 0 12px">
+
+        <!-- Instance selector row -->
+        <div class="inst-act-label">vMix Instance</div>
+        <div style="display:flex;gap:6px;margin-bottom:12px">
+          <select id="inst-sel" style="flex:1">
+            {% for inst in instances %}
+            <option value="{{inst.id|e}}"{% if inst.id==active_instance_id %} selected{% endif %}>{{inst.name|e}}</option>
+            {% endfor %}
+          </select>
+          <button class="btn bg bs" data-action="newInstance" title="Add new instance">+&nbsp;New</button>
+          <button class="btn bd bs" id="del-inst-btn" data-action="deleteInstance" title="Delete this instance">🗑</button>
+        </div>
+
+        <!-- Instance edit fields -->
+        <div class="field">
+          <label class="fl">Instance Name</label>
+          <input type="text" id="inst-name" placeholder="Studio A — vMix 1" value="{{active_inst.name|e}}">
+        </div>
+        <div class="r3">
           <div class="field">
-            <label class="fl">vMix IP (on site node)</label>
-            <input type="text" id="vmix-ip" placeholder="127.0.0.1" value="{{cfg.vmix_ip|e}}">
+            <label class="fl">vMix IP</label>
+            <input type="text" id="vmix-ip" placeholder="127.0.0.1" value="{{active_inst.vmix_ip|e}}">
             <div class="hint" id="vmix-ip-reported"></div>
           </div>
           <div class="field">
-            <label class="fl">vMix Port</label>
-            <input type="number" id="vmix-port" value="{{cfg.vmix_port}}" min="1" max="65535">
+            <label class="fl">Port</label>
+            <input type="number" id="vmix-port" value="{{active_inst.vmix_port}}" min="1" max="65535">
           </div>
-        </div>
-        <div class="r2">
           <div class="field">
-            <label class="fl">vMix Zoom Input</label>
-            <input type="text" id="vmix-input" value="{{cfg.vmix_input}}" placeholder="1">
-            <div class="hint">Number or name of the Zoom input in vMix. Names work if you've renamed the input (e.g. "Zoom Call 1").</div>
-          </div>
-          <div class="field" style="justify-content:flex-end">
-            <label class="fl">&nbsp;</label>
-            <button class="btn bp" data-action="saveConfig">💾 Save &amp; Push to Site</button>
+            <label class="fl">Zoom Input</label>
+            <input type="text" id="vmix-input" value="{{active_inst.vmix_input}}" placeholder="1">
           </div>
         </div>
-        <div class="field" style="margin-top:4px">
-          <label class="fl">Preview URL</label>
-          <input type="text" id="bridge-url" placeholder="http://192.168.x.x:8080/players/rtc_player.html?autostart=true&stream=webrtc://192.168.x.x/live/caller" value="{{cfg.bridge_url|e}}">
-          <div class="hint">WebRTC player page (SRS <code>/players/rtc_player.html?...</code>) or HLS <code>.m3u8</code> URL. See setup guide on the left. Client node also uses this to drive its own preview.</div>
+        <div class="field">
+          <label class="fl">Preview / SRT Bridge URL</label>
+          <input type="text" id="bridge-url" placeholder="webrtc://192.168.x.x/live/caller1" value="{{active_inst.bridge_url|e}}">
+          <div class="hint">One SRS handles multiple instances via stream names — e.g. <code>webrtc://192.168.1.50/live/caller1</code>, <code>.../caller2</code>. See setup guide.</div>
+        </div>
+        <div class="brow">
+          <button class="btn bp" data-action="saveInstance">💾 Save Instance &amp; Push to Site</button>
         </div>
       </div>
     </div>
@@ -1512,27 +1686,71 @@ function toggleRelay(){
     }).catch(function(e){showMsg('Error: '+e,false);});
 }
 
-function saveConfig(){
-  var site  = document.getElementById('target-site').value;
-  var ip    = document.getElementById('vmix-ip').value.trim()||'127.0.0.1';
-  var port  = parseInt(document.getElementById('vmix-port').value)||8088;
-  var inpRaw=(document.getElementById('vmix-input').value||'').trim();
-  var inp=isNaN(inpRaw)||inpRaw===''?inpRaw:(parseInt(inpRaw)||1); // keep string names; coerce plain numbers
-  var url   = document.getElementById('bridge-url').value.trim();
-  _post('/api/vmixcaller/config',{target_site:site,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:url})
-    .then(function(d){
-      if(d.ok){
-        var msg=site?'Settings saved \u2014 vMix config sent to '+site:'Settings saved';
-        showMsg(msg,true);
-        if(site)loadState();
-        // Fetch the computed proxy URL from server so initPreview gets the
-        // right path (relay manifest for LAN bridges, direct path for localhost)
-        fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
-          .then(function(r){return r.json();})
-          .then(function(v){_videoUrl=v.url||'';initPreview(_videoUrl);updateRelayCtrl();})
-          .catch(function(){});
-      } else showMsg(d.error||'Save failed',false);
-    }).catch(function(e){showMsg('Error: '+e,false);});
+// \u2500\u2500 Instance management \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+var _instances = {{instances_json|safe}};
+var _activeInstId = {{active_instance_id_json|safe}};
+
+function _getInstById(id){return _instances.find(function(i){return i.id===id;})||null;}
+
+function _refreshVideoUrl(){
+  fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(v){_videoUrl=v.url||'';initPreview(_videoUrl);updateRelayCtrl();})
+    .catch(function(){});
+}
+
+function newInstance(){
+  var id='i'+Date.now().toString(36);
+  var inst={id:id,name:'New Instance',vmix_ip:'127.0.0.1',vmix_port:8088,vmix_input:'1',bridge_url:''};
+  _instances.push(inst);
+  var sel=document.getElementById('inst-sel');
+  if(sel){var opt=document.createElement('option');opt.value=id;opt.textContent='New Instance';opt.selected=true;sel.appendChild(opt);}
+  _activeInstId=id;
+  _populateInstForm(inst);
+  var n=document.getElementById('inst-name');if(n){n.focus();n.select();}
+}
+
+function saveInstance(){
+  var id=(document.getElementById('inst-sel')||{}).value||_activeInstId;
+  var name=((document.getElementById('inst-name')||{}).value||'').trim()||'Instance';
+  var ip=((document.getElementById('vmix-ip')||{}).value||'').trim()||'127.0.0.1';
+  var port=parseInt((document.getElementById('vmix-port')||{}).value)||8088;
+  var inpR=((document.getElementById('vmix-input')||{}).value||'').trim();
+  var inp=inpR===''||isNaN(inpR)?inpR:(parseInt(inpR)||1);
+  var burl=((document.getElementById('bridge-url')||{}).value||'').trim();
+  var site=((document.getElementById('target-site')||{}).value||'').trim();
+  _post('/api/vmixcaller/instances/'+encodeURIComponent(id),{
+    name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl,
+    activate:true,target_site:site||''
+  }).then(function(d){
+    if(d.ok){
+      var i=_instances.findIndex(function(x){return x.id===id;});
+      var upd={id:id,name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl};
+      if(i>=0)_instances[i]=upd;else _instances.push(upd);
+      var sel=document.getElementById('inst-sel');
+      if(sel){for(var j=0;j<sel.options.length;j++){if(sel.options[j].value===id){sel.options[j].textContent=name;break;}}}
+      showMsg(site?'Saved \u2014 pushed to '+site:'Instance saved',true);
+      _refreshVideoUrl();
+      if(site)loadState();
+    }else showMsg(d.error||'Save failed',false);
+  }).catch(function(e){showMsg('Error: '+e,false);});
+}
+
+function deleteInstance(){
+  if(_instances.length<=1){showMsg('Cannot delete the only instance',false);return;}
+  var id=(document.getElementById('inst-sel')||{}).value||_activeInstId;
+  if(!confirm('Delete this instance?'))return;
+  fetch('/api/vmixcaller/instances/'+encodeURIComponent(id),{
+    method:'DELETE',headers:{'X-CSRFToken':_csrf()},credentials:'same-origin'
+  }).then(function(r){return r.json();}).then(function(d){
+    if(d.ok){
+      _instances=_instances.filter(function(i){return i.id!==id;});
+      var sel=document.getElementById('inst-sel');
+      if(sel){for(var j=sel.options.length-1;j>=0;j--){if(sel.options[j].value===id){sel.remove(j);break;}}}
+      if(sel&&sel.value){_activeInstId=sel.value;_populateInstForm(_getInstById(_activeInstId));}
+      showMsg('Instance deleted',true);
+    }else showMsg(d.error||'Delete failed',false);
+  }).catch(function(e){showMsg('Error: '+e,false);});
 }
 
 function joinManual(){
@@ -1656,6 +1874,16 @@ function deleteMeeting(btn){
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',function(){
   try{if(_videoUrl) initPreview(_videoUrl);}catch(e){}
+  // Populate instance form with active instance on load
+  _populateInstForm(_getInstById(_activeInstId));
+  // Instance selector change → populate form fields
+  var isel=document.getElementById('inst-sel');
+  if(isel){
+    isel.addEventListener('change',function(){
+      _activeInstId=this.value;
+      _populateInstForm(_getInstById(_activeInstId));
+    });
+  }
   var sel=document.getElementById('target-site');
   if(sel){
     if(sel.value) loadState();
@@ -1726,6 +1954,21 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
 
   <!-- ── LEFT: preview ──────────────────────────────────────────────────────── -->
   <div>
+    <!-- Instance selector (only when >1 instance) -->
+    {% if instances|length > 1 %}
+    <div class="card">
+      <div class="ch">📹 Active Instance</div>
+      <div class="cb" style="padding:10px 14px">
+        <div class="inst-strip" style="margin-bottom:0">
+          {% for inst in instances %}
+          <button class="inst-pill{% if inst.id==active_instance_id %} active{% endif %}"
+                  data-id="{{inst.id|e}}"
+                  data-action="switchInstance">{{inst.name|e}}</button>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
     <div class="card">
       <div class="ch">📹 Caller Preview</div>
       <div class="cb" style="padding:10px">
@@ -1884,6 +2127,21 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
 
 // ── Client-specific additions ─────────────────────────────────────────────────
 var _videoUrl = {{video_url_json|safe}};
+
+// Switch active vMix instance (same logic as presenter page)
+function switchInstance(btn){
+  var id=btn.dataset.id;
+  document.querySelectorAll('.inst-pill').forEach(function(p){p.classList.toggle('active',p.dataset.id===id);});
+  _post('/api/vmixcaller/instances/'+encodeURIComponent(id)+'/activate',{})
+    .then(function(d){
+      if(d.ok){
+        fetch('/api/vmixcaller/video_url',{credentials:'same-origin'})
+          .then(function(r){return r.json();})
+          .then(function(v){_videoUrl=v.url||'';if(_videoUrl)initPreview(_videoUrl);})
+          .catch(function(){});
+      }
+    }).catch(function(){});
+}
 
 function setStatus(state,text,ts){
   document.getElementById('vdot').className='dot '+(state==='ok'?'dok':state==='warn'?'dwn':'dal');
@@ -2056,11 +2314,25 @@ def register(app, ctx):
             daemon=True, name="VmixCallerVideoRelay",
         ).start()
 
+    def _tpl_inst_vars(cfg: dict) -> dict:
+        """Common template vars for instance selector rendering."""
+        instances = cfg.get("instances") or []
+        active_id = cfg.get("active_instance_id", "")
+        active    = _get_active_instance(cfg)
+        return {
+            "instances":           instances,
+            "active_instance_id":  active_id,
+            "active_inst":         active,
+            "instances_json":      json.dumps(instances),
+            "active_instance_id_json": json.dumps(active_id),
+        }
+
     # ── Operator / hub page ───────────────────────────────────────────────────
     @app.get("/hub/vmixcaller")
     @login_required
     def vmixcaller_page():
         cfg = _load_cfg()
+        iv  = _tpl_inst_vars(cfg)
         if is_hub:
             with hub_server._lock:
                 sites = sorted(
@@ -2069,21 +2341,22 @@ def register(app, ctx):
                 )
             video_url = _compute_video_url(cfg, is_hub)
             return render_template_string(_HUB_TPL, cfg=cfg, sites=sites,
-                                          video_url_json=json.dumps(video_url))
+                                          video_url_json=json.dumps(video_url), **iv)
         if is_client:
             video_url = _compute_video_url(cfg, False)
             return render_template_string(_CLIENT_TPL, cfg=cfg, hub_url=hub_url,
-                                          video_url_json=json.dumps(video_url))
+                                          video_url_json=json.dumps(video_url), **iv)
         # Standalone
         video_url = _compute_video_url(cfg, True)
         return render_template_string(_HUB_TPL, cfg=cfg, sites=[],
-                                      video_url_json=json.dumps(video_url))
+                                      video_url_json=json.dumps(video_url), **iv)
 
     # ── Presenter page ────────────────────────────────────────────────────────
     @app.get("/hub/vmixcaller/presenter")
     @login_required
     def vmixcaller_presenter():
         cfg       = _load_cfg()
+        iv        = _tpl_inst_vars(cfg)
         meetings  = cfg.get("saved_meetings") or []
         bridge    = (cfg.get("bridge_url") or "").strip()
         video_url = _compute_video_url(cfg, is_hub)
@@ -2093,6 +2366,7 @@ def register(app, ctx):
             meetings=meetings,
             bridge_url=bridge,
             video_url_json=json.dumps(video_url),
+            **iv,
         )
 
     # ── WHEP proxy — avoids browser CORS/mixed-content on direct SRS fetch ──────
@@ -2297,27 +2571,95 @@ def register(app, ctx):
     @login_required
     @csrf_protect
     def vmixcaller_save_config():
+        """Legacy config save endpoint — kept for backwards compat."""
         data = request.get_json(silent=True) or {}
         try:
-            cfg = _save_cfg(data)
-            # Whenever the hub saves config with a target site selected,
-            # push ALL relevant fields to the client node so it has the
-            # bridge URL (for video relay + presenter page), vMix IP/port,
-            # and input number — no manual entry needed on the client.
+            cfg    = _save_cfg(data)
             target = (cfg.get("target_site") or "").strip()
-            if is_hub and target:
-                with _state_lock:
-                    _pending_cmd[target] = {
-                        "fn":         "__set_config__",
-                        "vmix_ip":    cfg.get("vmix_ip",    "127.0.0.1"),
-                        "vmix_port":  cfg.get("vmix_port",   8088),
-                        "vmix_input": cfg.get("vmix_input",  1),
-                        "bridge_url": cfg.get("bridge_url",  ""),
-                        "seq":        int(time.time() * 1000),
-                    }
+            _push_instance_to_site(_get_active_instance(cfg), target)
             return jsonify({"ok": True, "config": cfg})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
+
+    # ── Instance CRUD ─────────────────────────────────────────────────────────
+
+    def _push_instance_to_site(inst: dict, target: str):
+        """Queue a __set_config__ command so the client gets the instance fields."""
+        if is_hub and target and inst:
+            with _state_lock:
+                _pending_cmd[target] = {
+                    "fn":         "__set_config__",
+                    "vmix_ip":    inst.get("vmix_ip",    "127.0.0.1"),
+                    "vmix_port":  inst.get("vmix_port",   8088),
+                    "vmix_input": inst.get("vmix_input",  1),
+                    "bridge_url": inst.get("bridge_url",  ""),
+                    "seq":        int(time.time() * 1000),
+                }
+
+    @app.get("/api/vmixcaller/instances")
+    @login_required
+    def vmixcaller_list_instances():
+        cfg = _load_cfg()
+        return jsonify({
+            "instances":          cfg.get("instances") or [],
+            "active_instance_id": cfg.get("active_instance_id", ""),
+        })
+
+    @app.route("/api/vmixcaller/instances/<inst_id>", methods=["PUT"])
+    @login_required
+    @csrf_protect
+    def vmixcaller_update_instance(inst_id):
+        data      = request.get_json(silent=True) or {}
+        raw       = _load_raw()
+        instances = list(raw.get("instances") or [])
+        # If this is a new client-side instance (not yet persisted), append it
+        idx = next((i for i, x in enumerate(instances) if x.get("id") == inst_id), None)
+        updated = _make_instance(
+            name       = str(data.get("name",       "") or "").strip() or "Instance",
+            vmix_ip    = str(data.get("vmix_ip",    "127.0.0.1") or "127.0.0.1").strip(),
+            vmix_port  = int(data.get("vmix_port",  8088) or 8088),
+            vmix_input = data.get("vmix_input", 1),
+            bridge_url = str(data.get("bridge_url", "") or "").strip(),
+            inst_id    = inst_id,
+        )
+        if idx is not None:
+            instances[idx] = updated
+        else:
+            instances.append(updated)
+        save_data: dict = {"instances": instances}
+        if data.get("activate"):
+            save_data["active_instance_id"] = inst_id
+        target = str(data.get("target_site") or raw.get("target_site", "") or "").strip()
+        if target:
+            save_data["target_site"] = target
+        _save_cfg(save_data)
+        if data.get("activate"):
+            _push_instance_to_site(updated, target)
+        return jsonify({"ok": True})
+
+    @app.route("/api/vmixcaller/instances/<inst_id>", methods=["DELETE"])
+    @login_required
+    @csrf_protect
+    def vmixcaller_delete_instance(inst_id):
+        raw       = _load_raw()
+        instances = [i for i in (raw.get("instances") or []) if i.get("id") != inst_id]
+        update: dict = {"instances": instances}
+        if raw.get("active_instance_id") == inst_id:
+            update["active_instance_id"] = instances[0].get("id") if instances else ""
+        _save_cfg(update)
+        return jsonify({"ok": True})
+
+    @app.post("/api/vmixcaller/instances/<inst_id>/activate")
+    @login_required
+    @csrf_protect
+    def vmixcaller_activate_instance(inst_id):
+        raw       = _load_raw()
+        instances = raw.get("instances") or []
+        inst      = next((i for i in instances if i.get("id") == inst_id), None)
+        if not inst:
+            return jsonify({"ok": False, "error": "Instance not found"}), 404
+        _save_cfg({"active_instance_id": inst_id})
+        return jsonify({"ok": True, "bridge_url": inst.get("bridge_url", "")})
 
     # ── Saved meetings ────────────────────────────────────────────────────────
     @app.get("/api/vmixcaller/meetings")
