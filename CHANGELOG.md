@@ -2,6 +2,14 @@
 
 ---
 
+### vMix Caller 1.5.19 — 2026-04-26
+
+**Fix: "Hear Caller" button produces no audio (WebRTC) — root cause**
+
+The real cause: `ontrack` fires once per transceiver (audio then video). The previous code relied on `e.streams[0]` and re-assigned `vid.srcObject` on each event. When the SRS/vMix server returns no MSID in its SDP answer (common), `e.streams` is empty for the audio track — the guard `if(e.streams&&e.streams[0])` silently skipped it — and `vid.srcObject` was overwritten by the video-only stream on the video track event. Result: the audio track was never attached to the element.
+
+Fix: create one `MediaStream` upfront, assign it to `vid.srcObject` once, and call `_ms.addTrack(e.track)` for every arriving track. Both audio and video are always present in the element's source regardless of whether the server includes MSIDs.
+
 ### vMix Caller 1.5.18 — 2026-04-26
 
 **Fix: "Hear Caller" button produces no audio (WebRTC)**

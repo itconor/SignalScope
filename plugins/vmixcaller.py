@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.18",
+    "version": "1.5.19",
 }
 
 import os
@@ -623,12 +623,16 @@ function _startWhep(whepUrl,vid,ov,msg){
   vid._pc=pc;
   pc.addTransceiver('audio',{direction:'recvonly'});
   pc.addTransceiver('video',{direction:'recvonly'});
+  // Use a single owned MediaStream and addTrack() each arriving track.
+  // Relying on e.streams[0] fails when the server sends no MSID in the SDP answer
+  // (common with SRS/vMix) — in that case e.streams is empty for the audio track
+  // and vid.srcObject ends up pointing to a video-only stream with no audio attached.
+  var _ms=new MediaStream();
+  vid.srcObject=_ms;
   pc.ontrack=function(e){
-    if(e.streams&&e.streams[0]){
-      vid.srcObject=e.streams[0];
-      vid.play().catch(function(){});
-      ov.classList.add('hidden');
-    }
+    _ms.addTrack(e.track);
+    vid.play().catch(function(){});
+    if(e.track.kind==='video')ov.classList.add('hidden');
   };
   pc.oniceconnectionstatechange=function(){
     if(pc.iceConnectionState==='failed'||pc.iceConnectionState==='disconnected'){
