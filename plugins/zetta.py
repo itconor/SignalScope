@@ -20,7 +20,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":    "Zetta",
     "url":      "/zetta",
     "icon":     "📻",
-    "version":  "2.1.26",
+    "version":  "2.1.27",
 }
 
 import json
@@ -2041,6 +2041,102 @@ def register(app, ctx):
                 clean = {k: v for k, v in sdata.items()}
                 merged[sid] = clean
         return jsonify({"stations": merged, "ts": time.time()})
+
+    # ── Mobile API: Zetta sequencer status ───────────────────────────────────
+    mobile_api_req = ctx.get("mobile_api_required", ctx["login_required"])
+
+    @app.get("/api/mobile/zetta/status")
+    @mobile_api_req
+    def zetta_mobile_status():
+        from flask import jsonify
+        cfg    = _load_cfg()
+        chains = list(monitor.app_cfg.signal_chains or [])
+
+        out_insts = []
+        for inst in cfg.get("instances", []):
+            iid       = inst.get("id", "")
+            poll_site = (inst.get("poll_site") or "").strip()
+            p         = _pollers.get(iid)
+
+            if poll_site:
+                with _remote_state_lock:
+                    state = dict(_remote_state.get(iid, {}))
+                last_push = max((v.get("ts", 0) for v in state.values()), default=0)
+                age        = time.time() - last_push if last_push else None
+                connected  = bool(state) and (age is not None and age < 60)
+                last_error = (None if connected else
+                              (f"No data from site '{poll_site}'" if not state
+                               else f"Last update {int(age)}s ago"))
+            else:
+                state      = p.get_state() if p else {}
+                sf_health  = p.sf_health   if p else {"ok": None}
+                connected  = sf_health.get("ok") is not False
+                last_error = sf_health.get("error") or None
+
+            # Enrich with configured station names
+            stns_cfg = {str(s["id"]): s for s in inst.get("stations", [])}
+            for sid, sdata in state.items():
+                if sid in stns_cfg:
+                    sdata.setdefault("station_name", stns_cfg[sid].get("name", sid))
+
+            # Placeholder entries for stations not yet polled
+            for sid, scfg in stns_cfg.items():
+                if sid not in state:
+                    state[sid] = {
+                        "station_id": sid, "station_name": scfg.get("name", sid),
+                        "mode_name": "Unknown", "status_name": "QUEUED",
+                        "gap": "+00:00", "etm": "--:--:--",
+                        "computer_name": None, "now_playing": None, "queue": [],
+                        "is_spot": False, "error": "Waiting for first poll",
+                        "remaining_seconds": 0, "duration_seconds": 0,
+                    }
+
+            # Flatten to a sorted array and strip non-mobile fields
+            stations_out = []
+            for sid, sdata in sorted(state.items(),
+                                     key=lambda x: x[1].get("station_name", x[0])):
+                np = sdata.get("now_playing")
+                np_out = None
+                if np:
+                    np_out = {
+                        "title":            (np.get("raw_title") or np.get("title") or "").strip(),
+                        "artist":           (np.get("raw_artist") or "").strip(),
+                        "asset_type":       int(np.get("asset_type") or 0),
+                        "duration_seconds": int(np.get("duration_seconds") or 0),
+                    }
+                queue_out = []
+                for qi in (sdata.get("queue") or [])[:3]:
+                    queue_out.append({
+                        "title":            (qi.get("raw_title") or qi.get("title") or "").strip(),
+                        "artist":           (qi.get("raw_artist") or "").strip(),
+                        "asset_type":       int(qi.get("asset_type") or 0),
+                        "duration_seconds": int(qi.get("duration_seconds") or 0),
+                    })
+                stations_out.append({
+                    "station_id":        sdata.get("station_id", sid),
+                    "station_name":      sdata.get("station_name", sid),
+                    "mode_name":         sdata.get("mode_name", ""),
+                    "status_name":       sdata.get("status_name", ""),
+                    "gap":               sdata.get("gap", ""),
+                    "etm":               sdata.get("etm", ""),
+                    "remaining_seconds": float(sdata.get("remaining_seconds") or 0),
+                    "duration_seconds":  float(sdata.get("duration_seconds") or 0),
+                    "computer_name":     sdata.get("computer_name"),
+                    "is_spot":           bool(sdata.get("is_spot", False)),
+                    "now_playing":       np_out,
+                    "queue":             queue_out,
+                    "error":             sdata.get("error"),
+                })
+
+            out_insts.append({
+                "id":         iid,
+                "name":       inst.get("name", iid),
+                "connected":  connected,
+                "last_error": last_error,
+                "stations":   stations_out,
+            })
+
+        return jsonify({"instances": out_insts, "ts": time.time()})
 
     # ── Add instance ─────────────────────────────────────────────────────────
     @app.post("/api/zetta/instance/add")
