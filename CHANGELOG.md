@@ -2,6 +2,14 @@
 
 ---
 
+### SignalScope-3.5.172 — 2026-04-26
+
+**Feature: Studio Board assignments on Broadcast Chains page**
+
+Each chain card on the Broadcast Chains page now shows a `📺 Studio Name` badge when the chain is assigned to one or more studios in the Studio Board plugin configuration. The `/api/chains/status` endpoint includes a `studios` list in each chain result (empty list when Studio Board is not installed or the chain has no studio assignment). Gracefully absent when the Studio Board plugin is not loaded.
+
+---
+
 ### Studio Board 3.14.18 — 2026-04-26
 
 **Feature: Backup & Restore**
