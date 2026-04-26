@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.2.4",
+    "version":  "1.2.5",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -212,19 +212,44 @@ def _generate_report(hub_server, monitor) -> dict:
     # Build chain_id → chain_name map for resolving UUIDs from the fault log DB
     _id_map = _chain_id_to_name_map(monitor)
 
+    # Build stream → chain mapping early so faults_by_stream_day can use chain names
+    # as keys (needed for the 7-day average lookups in the chain health table).
+    _stream_to_chain_early: dict = {}
+    _live_chain_names_early: set = set()
+    if monitor is not None:
+        try:
+            cfg_ss = monitor.app_cfg
+            for c in (cfg_ss.signal_chains or []) if cfg_ss else []:
+                cname = (c.get("name") or "").strip()
+                if cname:
+                    _live_chain_names_early.add(cname)
+                for node in (c.get("nodes") or []):
+                    sname = (node.get("stream") or "").strip()
+                    if sname and cname:
+                        _stream_to_chain_early[sname] = cname
+        except Exception:
+            pass
+
     # Yesterday's events only (from alert_log)
     y_events = [e for e in all_events if ystart_e <= e.get("_ts_epoch", 0) <= yend_e]
 
-    # Last 30 days events split by (stream, day)
+    # Last 30 days fault counts per chain per day (for 7-day averages).
+    # Keys are chain names, not raw stream names, so chain health averages are accurate.
     faults_by_stream_day = defaultdict(lambda: defaultdict(int))
     for ev in all_events:
+        if ev.get("type") == "CHAIN_FAULT":
+            continue  # chain_fault_log is the authoritative chain fault source
         ep = ev.get("_ts_epoch", 0)
         if ep > 0:
             d = datetime.datetime.fromtimestamp(ep).date()
-            s = ev.get("stream") or ev.get("chain_name") or ""
-            if s:
-                faults_by_stream_day[s][d] += 1
-
+            raw = ev.get("stream") or ev.get("chain_name") or ""
+            if not raw:
+                continue
+            # Map stream name → chain name; only count for configured chains
+            key = _stream_to_chain_early.get(raw, raw)
+            if _live_chain_names_early and key not in _live_chain_names_early:
+                continue  # skip orphan streams/chains
+            faults_by_stream_day[key][d] += 1
     # Yesterday's fault events grouped by chain/stream
     fault_events_y = [e for e in y_events if e.get("type") in (
         "CHAIN_FAULT", "SILENCE", "STUDIO_FAULT", "STL_FAULT",
@@ -236,50 +261,78 @@ def _generate_report(hub_server, monitor) -> dict:
     # Last 30 days chain faults (for averages)
     chain_faults_30 = _query_chain_faults_range(time.time() - 30 * 86400, ystart_e, _id_map)
 
+    # Incorporate 30-day chain_fault_log (SQLite) per-day counts into faults_by_stream_day
+    # so that the 7-day average in the chain health table reflects chain-level DB data too.
+    for row in chain_faults_30:
+        cname = row.get("chain_name", "")
+        ft    = row.get("fault_ts", 0)
+        if cname and ft and (_live_chain_names_early and cname in _live_chain_names_early
+                             or not _live_chain_names_early):
+            d = datetime.datetime.fromtimestamp(ft).date()
+            faults_by_stream_day[cname][d] += 1
+
     all_chains_db = _query_all_chains(_id_map)
 
-    # ── Live chain names from monitor config (catches chains with no fault history) ──
-    live_chain_names = set()
-    if monitor is not None:
-        try:
-            cfg_ss = monitor.app_cfg
-            for c in (cfg_ss.signal_chains or []) if cfg_ss else []:
-                n = (c.get("name") or "").strip()
-                if n:
-                    live_chain_names.add(n)
-        except Exception:
-            pass
+    # Re-use the already-computed mappings built before faults_by_stream_day
+    live_chain_names = _live_chain_names_early
+    stream_to_chain  = _stream_to_chain_early
 
-    # ── At a glance ────────────────────────────────────────────────────────────
-    total_faults = len(fault_events_y) + len(chain_faults_y)
+    # ── all_chain_names — anchored to configured chains only ──────────────────
+    # IMPORTANT: never include raw stream names from the alert log, and never
+    # include orphan chain IDs from old DB rows that no longer exist in the
+    # current config. Either of those inflates the chain count far beyond what
+    # the user actually has set up.
+    if live_chain_names:
+        # Primary path: use exactly the chains the user has configured.
+        # Still include any historical chains from the DB whose UUID resolves
+        # to a name in the live config (they're the same chains, just older rows).
+        all_chain_names = live_chain_names
+    else:
+        # Fallback when monitor is unavailable (edge case): use DB-derived names
+        chain_names_db = set(all_chains_db)
+        chain_names_30 = set(r["chain_name"] for r in chain_faults_30)
+        all_chain_names = chain_names_db | chain_names_30
 
-    # Downtime by chain (from chain_fault_log duration_s)
+    # ── Downtime by chain — configured chains only ────────────────────────────
     downtime_by_chain = defaultdict(float)
     for row in chain_faults_y:
-        dur = row.get("duration_s") or 0
-        downtime_by_chain[row["chain_name"]] += dur
+        cname = row["chain_name"]
+        if cname in all_chain_names:
+            dur = row.get("duration_s") or 0
+            downtime_by_chain[cname] += dur
 
     total_downtime_s = sum(downtime_by_chain.values())
     total_downtime_min = round(total_downtime_s / 60, 1)
 
-    # Chains monitored = union of chains from DB + alert log
-    chain_names_alert = set(
-        (e.get("stream") or "") for e in fault_events_y if e.get("stream")
-    )
-    chain_names_db = set(all_chains_db)
-    # Also pull from 30-day history to get all chains seen recently
-    chain_names_30 = set(r["chain_name"] for r in chain_faults_30)
-    # Include ALL live-configured chains so chains with no fault history still appear
-    all_chain_names = chain_names_db | chain_names_30 | chain_names_alert | live_chain_names
-
-    # Faults per chain yesterday (combine alert log + chain_fault_log)
+    # ── Faults per chain yesterday ────────────────────────────────────────────
+    # Primary source: chain_fault_log (SQLite) — one row per chain outage.
+    # Do NOT add raw stream names as chain keys; that caused the "18 chains"
+    # inflation. Stream-level events (SILENCE etc.) are attributed via
+    # stream_to_chain and only counted when the owning chain has NO chain_fault_log
+    # entries (standalone-monitored streams not part of a comparator chain).
+    # CHAIN_FAULT events in the alert log are skipped entirely — they are already
+    # captured by chain_fault_log, so counting both would double every fault.
     faults_per_chain_y = defaultdict(int)
     for row in chain_faults_y:
-        faults_per_chain_y[row["chain_name"]] += 1
+        cname = row["chain_name"]
+        if cname in all_chain_names:
+            faults_per_chain_y[cname] += 1
+
+    # Supplement with stream-level silence/fault events attributed to configured chains.
+    # Only adds a count for chains that have NO chain_fault_log entry (avoids
+    # double-counting chains that already have authoritative DB records).
     for ev in fault_events_y:
+        if ev.get("type") == "CHAIN_FAULT":
+            continue  # already in chain_fault_log; skip
         s = ev.get("stream") or ""
-        if s and s not in faults_per_chain_y:
-            faults_per_chain_y[s] += 1
+        if not s:
+            continue
+        target = stream_to_chain.get(s)
+        if target and target in all_chain_names and faults_per_chain_y[target] == 0:
+            faults_per_chain_y[target] += 1
+
+    # total_faults = sum of per-chain counts (deduped, configured chains only)
+    total_faults = sum(faults_per_chain_y.values())
 
     total_chains = max(len(all_chain_names), 1)
 
@@ -402,15 +455,22 @@ def _generate_report(hub_server, monitor) -> dict:
     # ── Hourly heatmap ─────────────────────────────────────────────────────────
     hourly_counts = [0] * 24
     for row in chain_faults_y:
+        if row["chain_name"] not in all_chain_names:
+            continue
         ft = row.get("fault_ts", 0)
         if ft:
             h = datetime.datetime.fromtimestamp(ft).hour
             hourly_counts[h] += 1
     for ev in fault_events_y:
-        ep = ev.get("_ts_epoch", 0)
-        if ep:
-            h = datetime.datetime.fromtimestamp(ep).hour
-            hourly_counts[h] += 1
+        if ev.get("type") == "CHAIN_FAULT":
+            continue  # already counted from chain_fault_log above
+        s = ev.get("stream") or ""
+        target = stream_to_chain.get(s) if s else None
+        if target and target in all_chain_names:
+            ep = ev.get("_ts_epoch", 0)
+            if ep:
+                h = datetime.datetime.fromtimestamp(ep).hour
+                hourly_counts[h] += 1
 
     # ── Notable patterns ───────────────────────────────────────────────────────
     patterns = []

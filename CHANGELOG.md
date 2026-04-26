@@ -2,6 +2,19 @@
 
 ---
 
+### Morning Report 1.2.5 — 2026-04-26
+
+**Fix: Chain count and fault count inflated by stream-level events and old DB data**
+
+The report was showing e.g. "55 interruptions across 18 chains" when only 3 chains were configured. Three compounding bugs fixed:
+
+- **`all_chain_names` included raw stream names**: Every SILENCE/STUDIO_FAULT/TX_DOWN event in the alert log has a `stream` field (e.g. "BBC R2 128k"). The old code unioned these stream names with chain names, making each monitored stream appear as a separate "chain". With 15 streams across 3 chains, that produced 18 "chains". Fix: `all_chain_names` is now anchored to the live configured chains from `monitor.app_cfg.signal_chains`. Orphan stream names and old DB chain IDs that no longer exist in config are excluded.
+- **`faults_per_chain_y` added stream names as chain keys**: The alert log loop added every stream name from SILENCE/STUDIO_FAULT events as a separate fault counter, again inflating counts. Fix: stream-level events are now mapped back to their owning chain via a `stream_to_chain` map (built by walking each chain's node list). Only attributed to a chain if the chain is configured and has no chain_fault_log entry (to avoid double-counting).
+- **`total_faults` double-counted every chain fault**: `len(fault_events_y) + len(chain_faults_y)` summed alert log events (which include CHAIN_FAULT type) AND chain_fault_log SQLite entries — the same fault appeared in both. Fix: `total_faults = sum(faults_per_chain_y.values())` from the deduplicated per-chain counts. CHAIN_FAULT events from the alert log are skipped entirely (chain_fault_log is the authoritative source).
+- **7-day averages used stream names as keys**: `faults_by_stream_day` was keyed by raw stream names, but the chain health table looked up by chain name — always returning 0. Fix: events are now keyed by chain name via `stream_to_chain`; chain_fault_log 30-day data is also incorporated into the per-day counts.
+
+---
+
 ### vMix Caller 1.6.3 — 2026-04-26
 
 **Fix: Top nav bar broken on vMix admin page**

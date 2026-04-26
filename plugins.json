@@ -105,7 +105,7 @@
     "file": "morning_report.py",
     "icon": "\ud83d\udcf0",
     "description": "Daily morning briefing auto-generated at 06:00 covering the previous day. Plain-English fault summary, per-chain health table with on-air %, traffic-light trend pills, hourly fault heatmap, stream quality summary, and Zetta automation health section (failovers, mode changes, GAP warnings, faults during ad breaks). Hub-only.",
-    "version": "1.2.4",
+    "version": "1.2.5",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/morning_report.py"
   },
