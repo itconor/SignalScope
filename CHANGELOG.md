@@ -2,15 +2,21 @@
 
 ---
 
+### SignalScope-3.5.174 — 2026-04-26
+
+**Fix: CHAIN_FAULT notifications suppressed by cooldown when chain had already recovered (orphan CHAIN_RECOVERED)**
+
+Root cause: `_zetta_on_bypass` (added with Zetta integration) bypasses the confirmation window for non-ad-break faults, causing brief faults to fire `CHAIN_FAULT` immediately and stamp `_chain_last_alert_ts`. If the chain recovered and then faulted again within the cooldown window, the second `CHAIN_FAULT` was suppressed — but `_chain_last_recovery` had been updated when the chain came back. After the cooldown window elapsed, the recovery notification passed the timestamp check and fired, giving an orphan `CHAIN_RECOVERED` with no preceding fault alert.
+
+Fix: the cooldown suppression in `_fire_chain_fault` now checks whether a recovery has occurred since the last notification. If `_chain_last_recovery[cid] > _chain_last_alert_ts[cid]`, the chain has recovered and re-faulted — a new fault cycle — so the cooldown is bypassed and the fault always alerts. Cooldown is only applied when `last_recovery <= last_alert` (same fault cycle, no recovery in between, e.g. flapping).
+
+Also reverted the incorrect `_chain_fault_notified` dict introduced in 3.5.173, which suppressed recovery notifications whenever a fault was suppressed — making a bad situation worse by silencing valid recovery alerts.
+
+---
+
 ### SignalScope-3.5.173 — 2026-04-26
 
-**Fix: CHAIN_RECOVERED firing without a preceding CHAIN_FAULT notification**
-
-When Zetta integration added `_zetta_on_bypass` (bypassing the confirmation window for non-ad-break faults), brief faults that were previously absorbed by the confirmation window now fire `CHAIN_FAULT` immediately. This consumed the `min_alert_interval_minutes` cooldown immediately. When the chain then re-faulted within the cooldown window, the second fault notification was suppressed — but `_chain_last_alert_ts` was not updated. After the cooldown elapsed, the recovery notification passed the timestamp check and fired, giving the user a `CHAIN_RECOVERED` with no preceding `CHAIN_FAULT`.
-
-Fix: added `_chain_fault_notified` dict (cid → bool). Set to `True` in `_fire_chain_fault` and `_flush_shared_fault` when the notification is actually sent (not suppressed). In `_do_chain_recovery`, recovery notification is suppressed and logged when `_chain_fault_notified` is False for that chain. The flag is always cleared after recovery (whether suppressed or sent) so the next fault cycle starts clean. The flapping-resolved path also clears the flag.
-
-Result: recovery and fault notifications are always paired — if the fault was silently suppressed, the recovery is also suppressed.
+**Fix: CHAIN_RECOVERED firing without a preceding CHAIN_FAULT notification** *(superseded by 3.5.174)*
 
 ---
 
