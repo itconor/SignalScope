@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.15",
+    "version": "1.5.16",
 }
 
 import os
@@ -750,6 +750,7 @@ document.addEventListener('click',function(e){
   else if(a==='leaveMeeting')                                 leaveMeeting();
   else if(a==='muteAll')                                      muteAll();
   else if(a==='hangUp'      &&typeof hangUp==='function')     hangUp();
+  else if(a==='toggleAudio' &&typeof toggleAudio==='function')toggleAudio();
   else if(a==='joinSaved'   &&typeof joinSaved==='function')  joinSaved(btn);
   else if(a==='toggleManual'&&typeof toggleManual==='function')toggleManual();
   else if(a==='joinManual'  &&typeof joinManual==='function') joinManual();
@@ -803,6 +804,9 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 .call-btn.muted{background:rgba(245,158,11,.12);color:var(--wn);border-color:rgba(245,158,11,.35)}
 .call-btn.leave{background:rgba(239,68,68,.12);color:var(--al);border-color:rgba(239,68,68,.3)}
 .call-btn.leave:hover{background:rgba(239,68,68,.22);filter:none}
+.onair-badge{font-size:12px;font-weight:700;padding:4px 14px;border-radius:20px;background:rgba(239,68,68,.18);color:var(--al);border:1px solid rgba(239,68,68,.4);animation:onair-pulse 1.4s ease-in-out infinite}
+@keyframes onair-pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.caller-waiting{color:var(--ok)!important;font-weight:600!important}
 
 /* ── Main ────────────────────────────────────────────────────────────── */
 main{max-width:1060px;margin:0 auto;padding:0 24px 48px}
@@ -890,8 +894,10 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
 <!-- ── In-call bar (hidden until in meeting) ─────────────────────────── -->
 <div id="call-bar">
   <span class="call-badge">● ON CALL</span>
-  <button class="call-btn" id="mute-btn" data-action="muteSelf">🔇 Mute Self</button>
-  <button class="call-btn" id="cam-btn"  data-action="stopCamera">📷 Stop Camera</button>
+  <span id="onair-badge" class="onair-badge" style="display:none">📡 ON AIR</span>
+  <button class="call-btn" id="mute-btn"  data-action="muteSelf">🔇 Mute Self</button>
+  <button class="call-btn" id="cam-btn"   data-action="stopCamera">📷 Stop Camera</button>
+  <button class="call-btn muted" id="audio-btn" data-action="toggleAudio" title="Unmute to hear caller audio through this page">🔇 Hear Caller</button>
   <div class="call-spacer"></div>
   <button class="call-btn leave" data-action="hangUp">📴 Leave</button>
 </div>
@@ -987,16 +993,41 @@ function joinManual(){
   joinWith(mid, pass, name);
 }
 
-// Override setMeetingState to drive the presenter-specific UI
+// ── Audio toggle ──────────────────────────────────────────────────────────────
+// The <video> element starts muted (required for browser autoplay policy).
+// Once the presenter clicks Hear Caller — a user-interaction event — the browser
+// allows audio playback. The button toggles vid.muted on every click.
+function _syncAudioBtn(){
+  var vid=document.getElementById('pvid');
+  var btn=document.getElementById('audio-btn');
+  if(!vid||!btn)return;
+  if(vid.muted){
+    btn.textContent='\uD83D\uDD07 Hear Caller';
+    btn.classList.add('muted');
+    btn.title='Click to hear caller audio through this page';
+  } else {
+    btn.textContent='\uD83D\uDD0A Hearing Caller';
+    btn.classList.remove('muted');
+    btn.title='Click to mute caller audio preview';
+  }
+}
+function toggleAudio(){
+  var vid=document.getElementById('pvid');
+  if(!vid)return;
+  vid.muted=!vid.muted;
+  _syncAudioBtn();
+}
+
+// ── Override setMeetingState to drive presenter-specific UI ───────────────────
 var _baseSMS = setMeetingState;
 setMeetingState = function(v){
   _baseSMS(v);
   // In-call action bar
   var bar=document.getElementById('call-bar');
   if(bar){if(v)bar.classList.add('visible');else bar.classList.remove('visible');}
-  // Header status line
+  // Header status line — polling will override when caller is waiting
   var sub=document.getElementById('hdr-sub');
-  if(sub){sub.className=v?'hdr-sub on-call':'hdr-sub';sub.textContent=v?'● On call':'Ready to join';}
+  if(sub&&v){sub.className='hdr-sub on-call';sub.textContent='● On call';}
   // Disable all join buttons while in a meeting
   document.querySelectorAll('.join-btn').forEach(function(b){b.disabled=v;});
   // Manual join section — collapse when call starts
@@ -1006,6 +1037,8 @@ setMeetingState = function(v){
     if(f){f.classList.remove('open');}
     if(t){t.textContent='＋ Join a different meeting…';}
   }
+  // Sync audio button text whenever call state changes
+  _syncAudioBtn();
 };
 
 function hangUp(){
@@ -1020,8 +1053,91 @@ function toggleManual(){
   t.textContent=open?'✕ Cancel':'＋ Join a different meeting…';
 }
 
+// ── Presenter state polling ───────────────────────────────────────────────────
+// Polls /api/vmixcaller/state every 4 s so the presenter page reacts to:
+//   • A new caller joining (chime + flash + header update)
+//   • A caller going ON AIR in vMix (pulsing red ON AIR badge)
+//   • All callers leaving (header resets to Ready to join)
+// The presenter never polls when there's no data (no site configured on hub).
+
+var _presParts=[], _presPollT=null;
+
+function _presChime(){
+  try{
+    var ac=new(window.AudioContext||window.webkitAudioContext)();
+    var osc=ac.createOscillator(), gain=ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.frequency.value=880; gain.gain.value=0;
+    gain.gain.setValueAtTime(0,ac.currentTime);
+    gain.gain.linearRampToValueAtTime(0.25,ac.currentTime+0.04);
+    gain.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.5);
+    osc.start(ac.currentTime); osc.stop(ac.currentTime+0.55);
+    // Second tone after brief gap
+    var osc2=ac.createOscillator(), g2=ac.createGain();
+    osc2.connect(g2); g2.connect(ac.destination);
+    osc2.frequency.value=1100; g2.gain.value=0;
+    g2.gain.setValueAtTime(0,ac.currentTime+0.18);
+    g2.gain.linearRampToValueAtTime(0.2,ac.currentTime+0.22);
+    g2.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.65);
+    osc2.start(ac.currentTime+0.18); osc2.stop(ac.currentTime+0.7);
+  }catch(e){}
+}
+
+function _presFlash(){
+  var h=document.querySelector('.video-hero');
+  if(!h)return;
+  var orig=h.style.boxShadow;
+  h.style.transition='box-shadow .25s';
+  h.style.boxShadow='0 0 0 3px rgba(34,197,94,.7)';
+  setTimeout(function(){h.style.boxShadow='0 0 32px rgba(34,197,94,.45)';},280);
+  setTimeout(function(){h.style.boxShadow=orig;},1200);
+}
+
+function _pollPresenterState(){
+  clearTimeout(_presPollT);
+  fetch('/api/vmixcaller/state',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!d.has_data){_presPollT=setTimeout(_pollPresenterState,4000);return;}
+      var parts=d.participants||[];
+
+      // Caller-joined detection: previous list was non-empty comparison base,
+      // skip the very first poll (no previous baseline yet → _presParts is [])
+      // Only fire if we already had at least 0 known entries (not first load).
+      if(_presParts!==null && parts.length>_presParts.length){
+        _presChime();
+        _presFlash();
+        showMsg('\uD83D\uDCDE Caller joined: '+(parts[parts.length-1].name||'Guest'),true);
+      }
+      _presParts=parts;
+
+      // ON AIR tally — any participant with active:true means they're on air in vMix
+      var onAir=parts.some(function(p){return p.active;});
+      var badge=document.getElementById('onair-badge');
+      if(badge) badge.style.display=onAir?'inline-flex':'none';
+
+      // Header status when not in a meeting
+      if(!_inMeeting){
+        var sub=document.getElementById('hdr-sub');
+        if(sub){
+          if(parts.length>0){
+            sub.className='hdr-sub on-call';
+            sub.textContent='\u25CF Caller waiting (\u2026join to connect)';
+          } else {
+            sub.className='hdr-sub';
+            sub.textContent='Ready to join';
+          }
+        }
+      }
+    })
+    .catch(function(){});
+  _presPollT=setTimeout(_pollPresenterState,4000);
+}
+
 document.addEventListener('DOMContentLoaded',function(){
   try{if(_videoUrl) initPreview(_videoUrl);}catch(e){}
+  _syncAudioBtn();
+  _pollPresenterState();
   var mi=document.getElementById('mtg-id');
   if(mi) mi.addEventListener('keydown',function(e){if(e.key==='Enter') joinManual();});
 });
@@ -1390,7 +1506,7 @@ function loadState(){
         updateRelayCtrl();
       }
     }).catch(function(){setStatus('off','State poll failed',0);});
-  _statePollT=setTimeout(loadState,8000);
+  _statePollT=setTimeout(loadState,4000);
 }
 
 // ── Participants ──────────────────────────────────────────────────────────────
@@ -1739,7 +1855,7 @@ function loadState(){
       var pago=document.getElementById('parts-ago');
       if(pago&&d.ts)pago.textContent='updated '+_ago(d.ts);
     }).catch(function(){setStatus('off','Poll failed',0);});
-  _statePollT=setTimeout(loadState,8000);
+  _statePollT=setTimeout(loadState,4000);
 }
 
 // ── Participants ──────────────────────────────────────────────────────────────
