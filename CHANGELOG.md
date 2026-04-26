@@ -2,6 +2,14 @@
 
 ---
 
+### vMix Caller 1.6.5 — 2026-04-26
+
+**Fix: Save Instance returns SyntaxError (405 Method Not Allowed)**
+
+The `_post()` JS helper always sends HTTP POST, but the `/api/vmixcaller/instances/<id>` route was registered with `methods=["PUT"]` only. Flask returned a 405 HTML error page; the JS `.then(r => r.json())` chain failed to parse it with `SyntaxError: The string did not match the expected pattern`. Fixed by registering the route for both POST and PUT.
+
+---
+
 ### vMix Caller 1.6.4 — 2026-04-26
 
 **Fix: JS syntax error broke all vMix connection and video preview**

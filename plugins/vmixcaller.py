@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.6.4",
+    "version": "1.6.5",
 }
 
 import os
@@ -2662,7 +2662,7 @@ def register(app, ctx):
             "active_instance_id": cfg.get("active_instance_id", ""),
         })
 
-    @app.route("/api/vmixcaller/instances/<inst_id>", methods=["PUT"])
+    @app.route("/api/vmixcaller/instances/<inst_id>", methods=["POST", "PUT"])
     @login_required
     @csrf_protect
     def vmixcaller_update_instance(inst_id):
