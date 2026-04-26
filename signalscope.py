@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.172"
+BUILD                  = "SignalScope-3.5.173"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -15010,6 +15010,11 @@ class HubServer:
         # Per-chain last alert notification timestamp — cid → epoch ts
         # Used for min_alert_interval_minutes cooldown (Change 4)
         self._chain_last_alert_ts: dict = {}
+        # Tracks whether the CHAIN_FAULT notification was actually sent for each
+        # chain.  Recovery is suppressed when the corresponding fault was not
+        # notified (e.g. suppressed by cooldown) to prevent orphan recovery
+        # alerts that have no preceding fault notification.
+        self._chain_fault_notified: dict = {}
         # Hysteresis: per-node silence fault active flag — "cid:node_index" → bool
         # True when that node is currently in a silence fault state (Change 2)
         self._chain_node_fault_active: dict = {}
@@ -16879,6 +16884,7 @@ class HubServer:
         # Check if chain was in flapping state
         if self._chain_flapping.get(cid):
             self._chain_flapping.pop(cid, None)
+            self._chain_fault_notified.pop(cid, None)  # reset for next fault cycle
             try:
                 flap_msg = f"Chain '{result['name']}' flapping has resolved — chain is now stable."
                 sender.send(f"CHAIN STABLE — {result['name']}", flap_msg,
@@ -16930,6 +16936,18 @@ class HubServer:
                 "ptp_jitter_us": 0,
                 "ptp_gm":        "",
             })
+            # Only send recovery notification if the corresponding fault was
+            # notified.  When the fault was suppressed (e.g. by cooldown) but
+            # enough time has passed for the cooldown check to pass, sending a
+            # recovery without a preceding fault alert is confusing.  We gate on
+            # _chain_fault_notified so the pair is always consistent.
+            if not self._chain_fault_notified.get(cid, False):
+                if not suppress_notify and not cascade_suppressed:
+                    monitor.log(f"[Chain] '{result['name']}' recovery suppressed — "
+                                f"corresponding fault notification was not sent")
+                suppress_notify = True
+            # Always clear the flag so the next fault cycle starts fresh.
+            self._chain_fault_notified.pop(cid, None)
             if not suppress_notify and not cascade_suppressed:
                 self._chain_last_alert_ts[cid] = now
                 try:
@@ -17412,6 +17430,7 @@ class HubServer:
                     monitor.log(f"[Chain] '{chain_label}' added to shared-fault window for machine '{fault_machine}' ({len(pending['chains'])} chains)")
             else:
                 self._chain_last_alert_ts[cid] = now
+                self._chain_fault_notified[cid] = True
                 try:
                     sender.send(f"CHAIN FAULT — {chain_label}", msg, fault_clip,
                                 alert_type="CHAIN_FAULT", stream=chain_label)
@@ -17472,6 +17491,7 @@ class HubServer:
                         suppress_notify = True
                 if not suppress_notify:
                     self._chain_last_alert_ts[cid] = now
+                    self._chain_fault_notified[cid] = True
                     try:
                         sender.send(f"CHAIN FAULT — {chain_label}", msg, fault_clip,
                                     alert_type="CHAIN_FAULT", stream=chain_label)
