@@ -2,6 +2,18 @@
 
 ---
 
+### vMix Caller 1.5.23 — 2026-04-26
+
+**Fix: ZoomJoinMeeting passes Value/Value2/Value3 correctly; fix ZoomStopCamera and ZoomMuteAll function names; add Reconnect button; vMix input accepts names**
+
+- **ZoomJoinMeeting**: vMix API requires meeting ID as `Value`, password as `Value2`, display name as `Value3`. The JS was passing these pipe-delimited into a single `Value` which vMix silently ignored. Fixed in `_vmix_fn` (added `value2`/`value3` URL params) and the server-side handler now splits the pipe-delimited value before calling vMix. The hub→client command queue and client execution path also updated.
+- **ZoomStopCamera → ZoomStopVideo / ZoomStartVideo**: `ZoomStopCamera` is not a documented vMix function. `stopCamera()` now sends `ZoomStopVideo` or `ZoomStartVideo` depending on current camera state.
+- **ZoomMuteAll → ZoomMuteAllParticipants**: corrected to the documented vMix function name.
+- **Reconnect button**: presenter page shows a 🔄 Reconnect button after the first join. Stores last meeting ID/password/name and re-sends ZoomJoinMeeting. Hidden until a meeting has been joined in this session.
+- **vMix input accepts names**: input field changed from `type="number"` to `type="text"` — vMix accepts either an integer index or the input name string (e.g. "Zoom Call 1"). `saveConfig` JS updated to pass string names through without parseInt coercion.
+- **Teams clarification**: updated plugin description — Teams has no vMix call-control API; Teams NDI feeds can be monitored passively but not joined/controlled by this plugin.
+- **Participant timing hint**: note added below participant list that Zoom may take 15–30 s to populate after joining.
+
 ### vMix Caller 1.5.22 — 2026-04-26
 
 **Fix: "Hear Caller" button missing from presenter page**

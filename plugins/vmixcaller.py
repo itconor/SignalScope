@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.22",
+    "version": "1.5.23",
 }
 
 import os
@@ -214,14 +214,16 @@ def _vmix_base(cfg: dict) -> str:
     return f"http://{ip}:{port}/API"
 
 
-def _vmix_fn(cfg: dict, fn: str, value: str = None, inp: int = None):
+def _vmix_fn(cfg: dict, fn: str, value: str = None, inp: int = None,
+             value2: str = None, value3: str = None):
     """Call a vMix API function. Returns (ok: bool, text: str)."""
     params: dict = {"Function": fn}
     input_num = inp or cfg.get("vmix_input")
     if input_num:
         params["Input"] = str(input_num)
-    if value is not None:
-        params["Value"] = str(value)
+    if value  is not None: params["Value"]  = str(value)
+    if value2 is not None: params["Value2"] = str(value2)
+    if value3 is not None: params["Value3"] = str(value3)
     url = _vmix_base(cfg) + "/?" + urllib.parse.urlencode(params)
     try:
         resp = urllib.request.urlopen(
@@ -354,7 +356,8 @@ def _start_client_thread(monitor, hub_url: str):
                         cfg = _load_cfg()   # reload so next iteration uses new values
                 else:
                     ok, resp = _vmix_fn(cfg, fn,
-                                        value=cmd.get("value"), inp=cmd.get("input"))
+                                        value=cmd.get("value"), inp=cmd.get("input"),
+                                        value2=cmd.get("value2"), value3=cmd.get("value3"))
                     try:
                         _hub_post(f"{hub_url}/api/vmixcaller/report", site, secret, {
                             "cmd_result": {"seq": cmd["seq"], "ok": ok, "resp": resp[:120]},
@@ -761,13 +764,22 @@ function resetCallBtns(){
   if(mb)mb.textContent='\uD83D\uDD07 Mute Self';if(cb)cb.textContent='\uD83D\uDCF7 Stop Camera';
 }
 
+var _lastJoin={mid:'',pass:'',name:''};
 function joinWith(mid,pass,name){
   if(!mid){showMsg('Enter a Meeting ID',false);return;}
+  _lastJoin={mid:mid,pass:pass||'',name:name||'Guest Producer'};
+  if(typeof _updateReconnectBtn==='function')_updateReconnectBtn();
   sendCmd('ZoomJoinMeeting',mid+'|'+(pass||'')+'|'+(name||'Guest Producer'))
     .then(function(d){if(d.ok){showMsg('Joining\u2026',true);setMeetingState(true);}});
 }
 function leaveMeeting(){
   sendCmd('ZoomLeaveMeeting').then(function(d){if(d.ok){showMsg('Left meeting',true);setMeetingState(false);}});
+}
+function reconnect(){
+  if(!_lastJoin.mid){showMsg('No previous meeting to reconnect to',false);return;}
+  showMsg('Reconnecting\u2026',true);
+  sendCmd('ZoomJoinMeeting',_lastJoin.mid+'|'+_lastJoin.pass+'|'+_lastJoin.name)
+    .then(function(d){if(d.ok)setMeetingState(true);});
 }
 function muteSelf(){
   sendCmd('ZoomMuteSelf').then(function(d){
@@ -775,11 +787,13 @@ function muteSelf(){
   });
 }
 function stopCamera(){
-  sendCmd('ZoomStopCamera').then(function(d){
+  // Correct vMix API names: ZoomStopVideo / ZoomStartVideo
+  var fn=_camOff?'ZoomStartVideo':'ZoomStopVideo';
+  sendCmd(fn).then(function(d){
     if(d.ok){_camOff=!_camOff;var b=document.getElementById('cam-btn');if(b)b.textContent=_camOff?'\uD83D\uDCF7 Start Camera':'\uD83D\uDCF7 Stop Camera';showMsg(_camOff?'Camera off':'Camera on',true);}
   });
 }
-function muteAll(){sendCmd('ZoomMuteAll').then(function(d){if(d.ok)showMsg('All guests muted',true);});}
+function muteAll(){sendCmd('ZoomMuteAllParticipants').then(function(d){if(d.ok)showMsg('All guests muted',true);});}
 
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
 document.addEventListener('keydown',function(e){
@@ -814,6 +828,7 @@ document.addEventListener('click',function(e){
   else if(a==='deleteMeeting'&&typeof deleteMeeting==='function')deleteMeeting(btn);
   else if(a==='toggleRelay'  &&typeof toggleRelay==='function')  toggleRelay();
   else if(a==='testVmix'    &&typeof testVmix==='function')     testVmix();
+  else if(a==='reconnect'   &&typeof reconnect==='function')    reconnect();
 });
 """
 
@@ -964,8 +979,9 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
     {% endif %}
   </div>
 </div>
-<div style="text-align:center;margin-top:10px">
+<div style="text-align:center;margin-top:10px;display:flex;justify-content:center;gap:10px;flex-wrap:wrap">
   <button class="call-btn muted" id="audio-btn" data-action="toggleAudio" title="Click to hear caller audio through this page">🔇 Hear Caller</button>
+  <button class="call-btn" id="reconnect-btn" data-action="reconnect" style="display:none" title="Rejoin the last meeting">🔄 Reconnect</button>
 </div>
 
 <!-- ── Saved meetings ─────────────────────────────────────────────────── -->
@@ -1061,6 +1077,12 @@ function _syncAudioBtn(){
     btn.classList.add('muted');
     btn.title='Click to hear caller audio through this page';
   }
+}
+
+// ── Reconnect button visibility ───────────────────────────────────────────────
+function _updateReconnectBtn(){
+  var btn=document.getElementById('reconnect-btn');
+  if(btn)btn.style.display=_lastJoin.mid?'':'none';
 }
 
 // ── Override setMeetingState to drive presenter-specific UI ───────────────────
@@ -1325,8 +1347,9 @@ _HUB_TPL = r"""<!DOCTYPE html>
         </div>
         <div class="r2">
           <div class="field">
-            <label class="fl">vMix Input #</label>
-            <input type="number" id="vmix-input" value="{{cfg.vmix_input}}" min="1" max="200">
+            <label class="fl">vMix Zoom Input</label>
+            <input type="text" id="vmix-input" value="{{cfg.vmix_input}}" placeholder="1">
+            <div class="hint">Number or name of the Zoom input in vMix. Names work if you've renamed the input (e.g. "Zoom Call 1").</div>
           </div>
           <div class="field" style="justify-content:flex-end">
             <label class="fl">&nbsp;</label>
@@ -1493,7 +1516,8 @@ function saveConfig(){
   var site  = document.getElementById('target-site').value;
   var ip    = document.getElementById('vmix-ip').value.trim()||'127.0.0.1';
   var port  = parseInt(document.getElementById('vmix-port').value)||8088;
-  var inp   = parseInt(document.getElementById('vmix-input').value)||1;
+  var inpRaw=(document.getElementById('vmix-input').value||'').trim();
+  var inp=isNaN(inpRaw)||inpRaw===''?inpRaw:(parseInt(inpRaw)||1); // keep string names; coerce plain numbers
   var url   = document.getElementById('bridge-url').value.trim();
   _post('/api/vmixcaller/config',{target_site:site,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:url})
     .then(function(d){
@@ -1751,8 +1775,9 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
         </div>
         <div class="r2">
           <div class="field">
-            <label class="fl">Zoom/Teams Input #</label>
-            <input type="number" id="vmix-input" value="{{cfg.vmix_input}}" min="1" max="200">
+            <label class="fl">Zoom Input</label>
+            <input type="text" id="vmix-input" value="{{cfg.vmix_input}}" placeholder="1">
+            <div class="hint">Number or name of the Zoom input in vMix.</div>
           </div>
           <div class="field" style="justify-content:flex-end">
             <label class="fl">&nbsp;</label>
@@ -1813,6 +1838,7 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
   </div>
   <div class="cb">
     <div id="plist" class="plist"><div class="empty-note">No participants yet — join a meeting to see callers</div></div>
+    <div class="hint" style="margin-top:6px">After joining, Zoom may take 15–30 s to fully connect and populate callers in vMix. If the list is empty, wait 30 s then refresh.</div>
     <div class="padd">
       <input type="text" id="padd-in" placeholder="Manually add caller name…">
       <button class="btn bg bs" data-action="addManual">+ Add</button>
@@ -1867,10 +1893,11 @@ function setStatus(state,text,ts){
 }
 
 function saveConfig(){
+  var _inpRaw=(document.getElementById('vmix-input').value||'').trim();
   var d={
     vmix_ip:   (document.getElementById('vmix-ip').value||'').trim()||'127.0.0.1',
     vmix_port: parseInt(document.getElementById('vmix-port').value)||8088,
-    vmix_input:parseInt(document.getElementById('vmix-input').value)||1,
+    vmix_input:isNaN(_inpRaw)||_inpRaw===''?_inpRaw:(parseInt(_inpRaw)||1),
     bridge_url:(document.getElementById('bridge-url').value||'').trim()
   };
   _post('/api/vmixcaller/config',d).then(function(r){
@@ -2342,11 +2369,22 @@ def register(app, ctx):
             return jsonify({"ok": False, "error": "Missing function name"}), 400
         cfg         = _load_cfg()
         target_site = cfg.get("target_site", "").strip()
+        # ZoomJoinMeeting requires Value (meeting ID), Value2 (password), Value3 (display name).
+        # JS sends these pipe-delimited in value for backwards compat; unpack here.
+        raw_value = data.get("value")
+        value2    = data.get("value2")
+        value3    = data.get("value3")
+        if fn == "ZoomJoinMeeting" and raw_value and "|" in str(raw_value) and value2 is None:
+            parts     = str(raw_value).split("|", 2)
+            raw_value = parts[0]                                         # meeting ID
+            value2    = parts[1] if len(parts) > 1 else ""               # password
+            value3    = parts[2] if len(parts) > 2 else "Guest Producer" # display name
         if not is_hub:
             # Standalone: execute directly
             if not cfg.get("vmix_ip"):
                 return jsonify({"ok": False, "error": "No vMix IP configured"})
-            ok, resp = _vmix_fn(cfg, fn, value=data.get("value"), inp=data.get("input"))
+            ok, resp = _vmix_fn(cfg, fn, value=raw_value, inp=data.get("input"),
+                                value2=value2, value3=value3)
             return jsonify({"ok": ok,
                             "response": resp[:200] if ok else None,
                             "error":    resp if not ok else None})
@@ -2354,10 +2392,12 @@ def register(app, ctx):
             return jsonify({"ok": False, "error": "No target site selected — save settings first"}), 400
         with _state_lock:
             _pending_cmd[target_site] = {
-                "fn":    fn,
-                "value": data.get("value"),
-                "input": data.get("input") or cfg.get("vmix_input", 1),
-                "seq":   int(time.time() * 1000),
+                "fn":     fn,
+                "value":  raw_value,
+                "value2": value2,
+                "value3": value3,
+                "input":  data.get("input") or cfg.get("vmix_input", 1),
+                "seq":    int(time.time() * 1000),
             }
         return jsonify({"ok": True, "queued_for": target_site})
 
