@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.14",
+    "version": "1.5.15",
 }
 
 import os
@@ -776,132 +776,205 @@ _PRESENTER_TPL = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="csrf-token" content="{{csrf_token()}}">
 <title>Caller — vMix</title>
+<link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
 <script nonce="{{csp_nonce()}}" src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" defer></script>
 <style nonce="{{csp_nonce()}}">
-""" + _CSS + r"""
-/* ── Presenter-specific overrides ─────────────────────────────────────── */
-main{max-width:860px}
-.hero-video{margin-bottom:18px}
-.pvw-wrap{border-radius:12px;border:2px solid var(--bor)}
-.mtg-row{padding:11px 14px;cursor:default}
-.mtg-name{font-size:14px}
-.join-big{padding:7px 18px;font-size:13px}
-/* In-call toolbar */
-#call-bar{display:none;background:var(--sur);border:1px solid var(--bor);border-radius:12px;padding:12px 14px;margin-bottom:14px;align-items:center;gap:10px;flex-wrap:wrap}
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-family:system-ui,sans-serif;font-size:14px;min-height:100vh}
+
+/* ── Header — no nav links, presenter-only ──────────────────────────── */
+.hdr{background:linear-gradient(180deg,rgba(10,31,65,.97),rgba(9,24,48,.97));border-bottom:1px solid var(--bor);padding:14px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:50;backdrop-filter:blur(8px)}
+.hdr-logo{font-size:22px;flex-shrink:0}
+.hdr-title{font-size:17px;font-weight:700;letter-spacing:-.02em}
+.hdr-sub{font-size:11px;color:var(--mu);margin-top:1px;transition:color .3s,font-weight .3s}
+.hdr-sub.on-call{color:var(--ok);font-weight:600}
+.hdr-powered{font-size:11px;color:var(--mu);opacity:.45;text-decoration:none;letter-spacing:.04em;transition:opacity .2s;white-space:nowrap;margin-left:auto}
+.hdr-powered:hover{opacity:.8}
+@media(max-width:500px){.hdr-powered{display:none}}
+
+/* ── In-call bar ─────────────────────────────────────────────────────── */
+#call-bar{display:none;margin:16px 24px 0;max-width:1060px;margin-left:auto;margin-right:auto;background:linear-gradient(135deg,rgba(34,197,94,.11),rgba(34,197,94,.06));border:1.5px solid rgba(34,197,94,.35);border-radius:16px;padding:14px 20px;align-items:center;gap:12px;flex-wrap:wrap}
 #call-bar.visible{display:flex}
-#call-bar .badge{font-size:11px;padding:2px 8px;border-radius:20px;background:#0f2318;color:var(--ok);border:1px solid #166534;font-weight:600}
-#call-bar .spacer{flex:1}
-/* Manual join section */
-#manual-section{margin-bottom:14px}
-#manual-toggle{background:none;border:none;color:var(--mu);font-size:12px;cursor:pointer;padding:0;font-family:inherit;text-decoration:underline;text-underline-offset:2px}
+.call-badge{font-size:12px;font-weight:700;padding:4px 14px;border-radius:20px;background:rgba(34,197,94,.16);color:var(--ok);border:1px solid rgba(34,197,94,.3)}
+.call-spacer{flex:1}
+.call-btn{border:none;border-radius:10px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;background:#0d2346;color:var(--tx);border:1px solid var(--bor);transition:filter .15s,background .2s,color .2s}
+.call-btn:hover{filter:brightness(1.2)}
+.call-btn.muted{background:rgba(245,158,11,.12);color:var(--wn);border-color:rgba(245,158,11,.35)}
+.call-btn.leave{background:rgba(239,68,68,.12);color:var(--al);border-color:rgba(239,68,68,.3)}
+.call-btn.leave:hover{background:rgba(239,68,68,.22);filter:none}
+
+/* ── Main ────────────────────────────────────────────────────────────── */
+main{max-width:1060px;margin:0 auto;padding:0 24px 48px}
+
+/* ── Video hero ──────────────────────────────────────────────────────── */
+.video-hero{margin-top:20px;border-radius:20px;overflow:hidden;border:1.5px solid var(--bor);background:#000;position:relative;aspect-ratio:16/9;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.video-hero video,.video-hero iframe{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border:0;display:block}
+.pvw-ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--mu);font-size:13px;text-align:center;padding:30px;background:rgba(0,0,0,.84)}
+.pvw-ov.hidden{display:none}
+.pvw-icon{font-size:56px;line-height:1}
+#pvmsg{font-size:14px;color:var(--mu);line-height:1.5}
+.pvw-hint{font-size:12px;color:rgba(138,164,200,.5);margin-top:4px}
+
+/* ── Section heading ─────────────────────────────────────────────────── */
+.section{padding:28px 0 0}
+.section-title{font-size:12px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.1em;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.section-title span{font-weight:400;text-transform:none;letter-spacing:0;color:#4a6080;font-size:11px}
+
+/* ── Meeting cards ───────────────────────────────────────────────────── */
+.mtg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.mtg-card{background:var(--sur);border:1.5px solid var(--bor);border-radius:18px;padding:20px;display:flex;flex-direction:column;gap:14px;transition:border-color .2s,box-shadow .2s,transform .15s}
+.mtg-card:hover{border-color:rgba(23,168,255,.35);transform:translateY(-2px);box-shadow:0 10px 28px rgba(0,0,0,.4)}
+.mtg-top{display:flex;align-items:flex-start;gap:13px}
+.mtg-av{width:48px;height:48px;border-radius:13px;display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:800;color:#fff;flex-shrink:0;box-shadow:0 4px 12px rgba(0,0,0,.3);letter-spacing:-.01em}
+.mtg-meta{flex:1;min-width:0}
+.mtg-name{font-size:15px;font-weight:700;line-height:1.3;margin-bottom:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.mtg-id-text{font-size:11px;color:var(--mu)}
+.join-big{background:linear-gradient(135deg,#1a7fe8,#17a8ff);border:none;border-radius:12px;color:#fff;font-size:14px;font-weight:700;padding:12px;width:100%;cursor:pointer;font-family:inherit;box-shadow:0 2px 12px rgba(23,168,255,.3);transition:filter .2s,box-shadow .2s;display:flex;align-items:center;justify-content:center;gap:8px}
+.join-big:hover{filter:brightness(1.1);box-shadow:0 4px 18px rgba(23,168,255,.5)}
+.join-big:disabled{opacity:.4;cursor:not-allowed;filter:none;box-shadow:none}
+.no-meetings{background:rgba(23,52,95,.25);border:1px dashed var(--bor);border-radius:16px;padding:36px 28px;text-align:center;color:var(--mu);font-size:13px;line-height:1.7}
+
+/* ── Manual join ─────────────────────────────────────────────────────── */
+#manual-section{padding:22px 0 0}
+#manual-toggle{background:none;border:none;color:var(--mu);font-size:12px;cursor:pointer;padding:0;font-family:inherit;text-decoration:underline;text-underline-offset:2px;transition:color .2s}
 #manual-toggle:hover{color:var(--tx)}
-#manual-form{display:none;margin-top:10px}
+#manual-form{display:none;margin-top:14px}
 #manual-form.open{display:block}
-.no-meetings{color:var(--mu);font-size:13px;padding:12px;text-align:center;border:1px dashed var(--bor);border-radius:8px}
+.manual-card{background:var(--sur);border:1.5px solid var(--bor);border-radius:18px;padding:22px}
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.field:last-child{margin-bottom:0}
+.fl{font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+input[type=text],input[type=password]{background:#0d1e40;border:1px solid var(--bor);border-radius:9px;color:var(--tx);padding:10px 13px;font-size:14px;font-family:inherit;width:100%;transition:border-color .2s}
+input:focus{outline:none;border-color:var(--acc)}
+.r2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.join-manual{background:linear-gradient(135deg,#1a7fe8,#17a8ff);border:none;border-radius:12px;color:#fff;font-size:14px;font-weight:700;padding:12px;width:100%;margin-top:16px;cursor:pointer;font-family:inherit;box-shadow:0 2px 12px rgba(23,168,255,.3);transition:filter .2s;display:flex;align-items:center;justify-content:center;gap:8px}
+.join-manual:hover{filter:brightness(1.1)}
+
+/* ── Msg ─────────────────────────────────────────────────────────────── */
+#msg{display:none;padding:10px 16px;border-radius:10px;margin-top:16px;font-size:13px}
+.mok{background:#0f2318;color:var(--ok);border:1px solid #166534}
+.mer{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
+
+/* ── Keyboard hints ──────────────────────────────────────────────────── */
+.kbd-hints{padding:18px 0 0;text-align:center;font-size:11px;color:rgba(138,164,200,.4)}
+kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radius:3px;padding:0 5px;font-size:10px;font-family:monospace}
+
+/* ── Responsive ──────────────────────────────────────────────────────── */
+@media(max-width:700px){
+  main{padding:0 16px 36px}
+  #call-bar{margin:12px 0 0;padding:12px 16px}
+  .video-hero{margin-top:14px;border-radius:14px}
+  .section{padding:22px 0 0}
+  .mtg-grid{grid-template-columns:1fr 1fr}
+  .hdr{padding:12px 16px}
+}
+@media(max-width:440px){.mtg-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-{{topnav("vmixcaller")|safe}}
+
+<!-- ── Header — presenter-only, no SignalScope navigation ───────────── -->
+<header class="hdr">
+  <span class="hdr-logo">📹</span>
+  <div>
+    <div class="hdr-title">Caller</div>
+    <div class="hdr-sub" id="hdr-sub">Ready to join</div>
+  </div>
+  <a href="/" class="hdr-powered">SignalScope</a>
+</header>
+
 <main>
 <div id="msg"></div>
 
-<!-- ── In-call toolbar ────────────────────────────────────────────────────── -->
+<!-- ── In-call bar (hidden until in meeting) ─────────────────────────── -->
 <div id="call-bar">
-  <span class="badge">● ON CALL</span>
-  <button class="btn bg" id="mute-btn" data-action="muteSelf">🔇 Mute Self</button>
-  <button class="btn bg" id="cam-btn"  data-action="stopCamera">📷 Stop Camera</button>
-  <div class="spacer"></div>
-  <button class="btn bd" data-action="hangUp">📴 Leave</button>
+  <span class="call-badge">● ON CALL</span>
+  <button class="call-btn" id="mute-btn" data-action="muteSelf">🔇 Mute Self</button>
+  <button class="call-btn" id="cam-btn"  data-action="stopCamera">📷 Stop Camera</button>
+  <div class="call-spacer"></div>
+  <button class="call-btn leave" data-action="hangUp">📴 Leave</button>
 </div>
 
-<!-- ── Video feed ─────────────────────────────────────────────────────────── -->
-<div class="card hero-video">
-  <div class="ch">
-    📹 Caller
+<!-- ── Video hero ─────────────────────────────────────────────────────── -->
+<div class="video-hero">
+  <video id="pvid" autoplay muted playsinline></video>
+  <iframe id="pvframe" src="" allow="autoplay" title="Caller preview" style="display:none"></iframe>
+  <div id="pvw-ov" class="pvw-ov">
+    <div class="pvw-icon">📷</div>
+    <div id="pvmsg">{% if bridge_url %}Waiting for caller…{% else %}No preview stream configured{% endif %}</div>
     {% if not bridge_url %}
-    <span style="margin-left:auto;font-size:11px;color:var(--wn);font-weight:400;text-transform:none;letter-spacing:0">
-      ⚠ No preview stream — ask your engineer to configure a Bridge URL
-    </span>
-    {% endif %}
-  </div>
-  <div class="cb" style="padding:10px">
-    <div class="pvw-wrap">
-      <video id="pvid" autoplay muted playsinline></video>
-      <iframe id="pvframe" src="" allow="autoplay" title="Caller preview"></iframe>
-      <div id="pvw-ov" class="pvw-ov">
-        <div class="pvw-icon">📷</div>
-        <div id="pvmsg">{% if bridge_url %}Waiting for caller…{% else %}No preview stream configured{% endif %}</div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ── Saved meetings ──────────────────────────────────────────────────────── -->
-<div class="card">
-  <div class="ch">
-    📋 Meetings
-    <div class="ch-r">
-      <a href="/hub/vmixcaller" class="btn bg bs">⚙ Hub Controls</a>
-    </div>
-  </div>
-  <div class="cb">
-    {% if meetings %}
-      {% for m in meetings %}
-      <div class="mtg-row">
-        <div>
-          <div class="mtg-name">{{m.name|e}}</div>
-          <div class="mtg-id">ID: {{m.id|e}}{% if m.pass %} &nbsp;·&nbsp; Passcode set{% endif %}</div>
-        </div>
-        <button class="btn bp join-big join-btn"
-                data-mid="{{m.id|e}}"
-                data-pass="{{m.pass|e}}"
-                data-dname="{{m.display_name|e}}"
-                data-action="joinSaved">📞 Join</button>
-      </div>
-      {% endfor %}
-    {% else %}
-      <div class="no-meetings">No saved meetings yet — add them in <a href="/hub/vmixcaller" style="color:var(--acc)">Hub Controls</a></div>
+    <div class="pvw-hint">Ask your engineer to configure a Preview URL</div>
     {% endif %}
   </div>
 </div>
 
-<!-- ── Manual join ─────────────────────────────────────────────────────────── -->
+<!-- ── Saved meetings ─────────────────────────────────────────────────── -->
+{% if meetings %}
+<div class="section">
+  <div class="section-title">Saved Meetings <span>— one click to join</span></div>
+</div>
+<div class="mtg-grid">
+  {% set av_colors=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#9333e8','#a855f7'],['#c87f0a','#f59e0b'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316']] %}
+  {% for m in meetings %}
+  {% set c = av_colors[loop.index0 % av_colors|length] %}
+  <div class="mtg-card">
+    <div class="mtg-top">
+      <div class="mtg-av" style="background:linear-gradient(135deg,{{c[0]}},{{c[1]}})">{{(m.name[:1])|upper|e}}</div>
+      <div class="mtg-meta">
+        <div class="mtg-name">{{m.name|e}}</div>
+        <div class="mtg-id-text">{{m.id|e}}{% if m.pass %} &nbsp;·&nbsp; Passcode set{% endif %}</div>
+      </div>
+    </div>
+    <button class="join-big join-btn"
+            data-mid="{{m.id|e}}"
+            data-pass="{{m.pass|e}}"
+            data-dname="{{m.display_name|e}}"
+            data-action="joinSaved">📞 Join</button>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="section">
+  <div class="section-title">Saved Meetings</div>
+</div>
+<div class="no-meetings">
+  No saved meetings yet.<br>
+  Your engineer can add them from the hub or client controls page.
+</div>
+{% endif %}
+
+<!-- ── Manual join ────────────────────────────────────────────────────── -->
 <div id="manual-section">
   <button id="manual-toggle" data-action="toggleManual">＋ Join a different meeting…</button>
   <div id="manual-form">
-    <div class="card" style="margin-top:8px;margin-bottom:0">
-      <div class="ch">✏ Join Manually</div>
-      <div class="cb">
+    <div class="manual-card">
+      <div class="field">
+        <label class="fl">Meeting ID</label>
+        <input type="text" id="mtg-id" placeholder="123 456 7890">
+      </div>
+      <div class="r2">
         <div class="field">
-          <label class="fl">Meeting ID</label>
-          <input type="text" id="mtg-id" placeholder="123 456 7890">
+          <label class="fl">Passcode</label>
+          <input type="password" id="mtg-pass" placeholder="••••••">
         </div>
-        <div class="r2">
-          <div class="field">
-            <label class="fl">Passcode</label>
-            <input type="password" id="mtg-pass" placeholder="••••••">
-          </div>
-          <div class="field">
-            <label class="fl">Your Display Name</label>
-            <input type="text" id="mtg-name" placeholder="Guest Producer">
-          </div>
-        </div>
-        <div class="brow">
-          <button class="btn bp join-btn" data-action="joinManual">📞 Join Meeting</button>
+        <div class="field">
+          <label class="fl">Your Name</label>
+          <input type="text" id="mtg-name" placeholder="Guest Producer">
         </div>
       </div>
+      <button class="join-manual join-btn" data-action="joinManual">📞 Join Meeting</button>
     </div>
   </div>
 </div>
+
+<div class="kbd-hints"><kbd>M</kbd> mute &nbsp;·&nbsp; <kbd>C</kbd> camera</div>
 
 </main>
 <script nonce="{{csp_nonce()}}">
 """ + _JS_HELPERS + r"""
 
 // ── Presenter-specific ────────────────────────────────────────────────────────
-// _videoUrl is the pre-computed SignalScope proxy path served by the server.
-// On hub nodes this is always /hub/vmixcaller/video/relay.m3u8 (relay buffer)
-// or the localhost-bridge proxy path. On client nodes it's the LAN bridge path.
 var _videoUrl = {{video_url_json|safe}};
 
 function joinSaved(btn){
@@ -914,13 +987,25 @@ function joinManual(){
   joinWith(mid, pass, name);
 }
 
-// Override setMeetingState to also show/hide call bar and disable join buttons
+// Override setMeetingState to drive the presenter-specific UI
 var _baseSMS = setMeetingState;
 setMeetingState = function(v){
   _baseSMS(v);
+  // In-call action bar
   var bar=document.getElementById('call-bar');
   if(bar){if(v)bar.classList.add('visible');else bar.classList.remove('visible');}
+  // Header status line
+  var sub=document.getElementById('hdr-sub');
+  if(sub){sub.className=v?'hdr-sub on-call':'hdr-sub';sub.textContent=v?'● On call':'Ready to join';}
+  // Disable all join buttons while in a meeting
   document.querySelectorAll('.join-btn').forEach(function(b){b.disabled=v;});
+  // Manual join section — collapse when call starts
+  if(v){
+    var f=document.getElementById('manual-form');
+    var t=document.getElementById('manual-toggle');
+    if(f){f.classList.remove('open');}
+    if(t){t.textContent='＋ Join a different meeting…';}
+  }
 };
 
 function hangUp(){

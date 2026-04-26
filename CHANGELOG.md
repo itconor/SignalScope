@@ -2,6 +2,27 @@
 
 ---
 
+### vMix Caller 1.5.15 — 2026-04-26
+
+**Redesign: Presenter page matches Producer View design language + locked-down navigation**
+
+The presenter page (`/hub/vmixcaller/presenter`) has been redesigned to match the Producer View plugin's visual style, and all links to the rest of SignalScope have been removed.
+
+Design changes:
+- **Custom sticky header** replaces the full SignalScope navbar. Shows "Caller" title and a live status sub-line ("Ready to join" → "● On call" in green). The only link outside the page is a subtle "SignalScope" watermark. No nav links, no route back to the hub or settings.
+- **In-call action bar** replaces the old floating call-bar. When a meeting starts it appears as a styled green-accented panel with Mute Self, Stop Camera, and Leave buttons. Collapses when the meeting ends. The manual join section also auto-collapses when a call starts.
+- **Video hero** is full-width with a prominent 16:9 aspect-ratio card, rounded corners, drop shadow — the video takes centre stage.
+- **Meeting cards** displayed in a responsive grid (like the Producer View station cards). Each card has a coloured gradient avatar initial, meeting name, ID, and a full-width "📞 Join" button. Gradient avatars cycle through 7 brand colours keyed by position.
+- **Manual join** collapses to a subtle underlined link; expands to a clean card with larger inputs.
+- **Keyboard hint footer** (M / C) subtle, very low opacity — visible if you know to look, unobtrusive otherwise.
+
+Removed:
+- `{{topnav("vmixcaller")|safe}}` — no SignalScope navigation bar
+- "⚙ Hub Controls" link in the meetings card header
+- All `href="/hub/vmixcaller"` anchor tags on the presenter page
+
+---
+
 ### vMix Caller 1.5.14 — 2026-04-25
 
 **Feature: Client node page now has full admin UI**
