@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.6.5",
+    "version": "1.6.6",
 }
 
 import datetime
@@ -2361,6 +2361,42 @@ class _MetaPoller(threading.Thread):
                             }
             except Exception as e:
                 _log(f"[Logger] MetaPoller ({self.slug}): Zetta error: {e}")
+
+        # ── Zetta hub fallback (client nodes where Zetta plugin is not local) ─
+        # When Zetta runs only on the hub and Logger runs on a client recording
+        # node, monitor._zetta_chain_state is always empty.  Fall back to fetching
+        # the chain now-playing state from the hub via GET /api/zetta/chain_np.
+        if zetta_chain_id and _monitor and not info:
+            try:
+                _cfg_ss  = _monitor.app_cfg
+                _hub_url = (getattr(getattr(_cfg_ss, "hub", None), "hub_url", "") or "").rstrip("/")
+                if _hub_url:
+                    _secret = (getattr(getattr(_cfg_ss, "hub", None), "secret_key", "") or "").strip()
+                    _ts     = time.time()
+                    _hdrs   = {}
+                    if _secret:
+                        _hdrs["X-Hub-Sig"]   = _make_sig(_secret, b"", _ts)
+                        _hdrs["X-Hub-Ts"]    = f"{_ts:.0f}"
+                        _hdrs["X-Hub-Nonce"] = _hashlib.md5(os.urandom(8)).hexdigest()[:16]
+                    _req = _urllib_req.Request(f"{_hub_url}/api/zetta/chain_np", headers=_hdrs)
+                    with _urllib_req.urlopen(_req, timeout=10) as _r:
+                        _data = json.loads(_r.read().decode("utf-8", errors="replace"))
+                    _zd  = (_data.get("chains") or {}).get(zetta_chain_id, {})
+                    _zts = float(_zd.get("ts") or 0)
+                    if _zd and (time.time() - _zts) < 60:
+                        _np = _zd.get("now_playing")
+                        if _np and int(_np.get("asset_type") or 0) != 2:
+                            _title  = (_np.get("title")  or "").strip()
+                            _artist = (_np.get("artist") or "").strip()
+                            if _title:
+                                info = {
+                                    "title":      _title,
+                                    "artist":     _artist,
+                                    "show_name":  "",
+                                    "presenter":  "",
+                                }
+            except Exception as _e:
+                _log(f"[Logger] MetaPoller ({self.slug}): Zetta hub fetch error: {_e}")
 
         # ── Planet Radio / custom URL (secondary) ────────────────────────────
         if not info and url:

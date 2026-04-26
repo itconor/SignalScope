@@ -10,12 +10,36 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.16",
+    "version":  "3.14.17",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 _APP_DIR       = os.path.dirname(_BASE_DIR)
 _CFG_PATH      = os.path.join(_BASE_DIR, "studioboard_cfg.json")
+
+# ── Chain → Studio mapping (exposed to signalscope.py as monitor._studioboard_chain_studios) ──
+# Mutable dict so the signalscope.py reference stays valid after config changes.
+_chain_studios: dict = {}   # {chain_id: [studio_name, ...]}
+
+def _rebuild_chain_studios_into(target: dict, cfg: dict) -> None:
+    """Rebuild {chain_id: [studio_name, ...]} from studioboard config. Mutates target in-place."""
+    result: dict = {}
+    brands_by_id = {b["id"]: b for b in cfg.get("brands", []) if b.get("id")}
+    for studio in cfg.get("studios", []):
+        sname = (studio.get("name") or "").strip()
+        if not sname:
+            continue
+        brand_id = studio.get("brand_id", "")
+        brand    = brands_by_id.get(brand_id) if brand_id else None
+        chain_ids = (brand.get("chains") or []) if brand else (studio.get("chains") or [])
+        for cid in chain_ids:
+            if cid:
+                result.setdefault(cid, [])
+                if sname not in result[cid]:
+                    result[cid].append(sname)
+    target.clear()
+    target.update(result)
+
 _ART_DIR       = os.path.join(_BASE_DIR, "studioboard_art")
 _IMG_CACHE_DIR = os.path.join(_BASE_DIR, "studioboard_img_cache")
 
@@ -162,6 +186,7 @@ def _cfg_load():
 def _cfg_save(c):
     with open(_CFG_PATH, "w") as f:
         json.dump(c, f, indent=2)
+    _rebuild_chain_studios_into(_chain_studios, c)
 
 def _get_studio(cfg, studio_id):
     for s in cfg.get("studios", []):
@@ -1025,6 +1050,13 @@ def register(app, ctx):
             })
 
         return jsonify({"studios": studios_out})
+
+    # ── Build initial chain→studio mapping and expose to signalscope.py ──────
+    # Rebuilds whenever any config-save route calls _cfg_save(), so the dict
+    # stays current without polling. signalscope.py reads via
+    # getattr(monitor, '_studioboard_chain_studios', {}).
+    _rebuild_chain_studios_into(_chain_studios, _cfg_load())
+    monitor._studioboard_chain_studios = _chain_studios
 
     # ── Start background presenter image cache thread ─────────────
     # Pre-load any images already on disk from a previous run, then

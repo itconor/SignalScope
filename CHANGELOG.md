@@ -2,6 +2,14 @@
 
 ---
 
+### Studio Board 3.14.17 — 2026-04-26
+
+**Feature: Expose chain→studio assignments to Broadcast Chains page**
+
+Studio Board now publishes a `monitor._studioboard_chain_studios` dict (`{chain_id: [studio_name, ...]}`) that is rebuilt from config on every save. The Broadcast Chains API (`/api/chains/status`) reads this and includes a `studios` list in each chain result. Each chain card on the Broadcast Chains page now shows a `📺 Studio Name` badge when the chain is assigned to one or more studios in the Studio Board configuration.
+
+---
+
 ### SignalScope-3.5.171 — 2026-04-26
 
 **Fix: Chain confirmation window bypassed when no mixin node is configured**

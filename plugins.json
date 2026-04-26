@@ -5,7 +5,7 @@
     "file": "vmixcaller.py",
     "icon": "📹",
     "description": "Manage Zoom and Teams callers in vMix from the SignalScope hub dashboard. Hub/client architecture: the operator works on the hub; the site node alongside vMix polls for commands and executes them locally — works through NAT with no direct hub-to-site connectivity needed. Hub shows a site selector, vMix IP/port config (pushed to client node on save), meeting controls (join/leave/mute/camera/mute-all), and a live participants list reported from vMix. One-click Put On Air sends ZoomSelectParticipantByName. Optional caller video preview via SRT-to-HLS bridge — LAN bridge (vMix pushes SRT to local machine, browser accesses directly) or hub-server bridge (proxied securely through SignalScope). Presenter view at /hub/vmixcaller/presenter — bookmark-friendly page for the studio email machine: one-click join from saved meetings list, full-screen video feed, in-call mute/camera/leave toolbar. Client node page now includes full admin UI — meeting controls, participants (live from vMix), saved meetings management — matching the hub operator page. Keyboard shortcuts: M = mute self, C = toggle camera.",
-    "version": "1.5.16",
+    "version": "1.5.17",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/vmixcaller.py"
   },
@@ -64,8 +64,8 @@
     "name": "Logger",
     "file": "logger.py",
     "icon": "\ud83c\udf99",
-    "description": "Compliance logger for continuous 24/7 recording of all monitored streams. Hub mode aggregates recordings from all connected sites — browse timelines, play audio, and export segments with mark in/out. Supports now-playing metadata from Planet Radio, Triton, or any JSON API. Requires ffmpeg.",
-    "version": "1.6.5",
+    "description": "Compliance logger for continuous 24/7 recording of all monitored streams. Hub mode aggregates recordings from all connected sites — browse timelines, play audio, and export segments with mark in/out. Supports now-playing metadata from Planet Radio, Triton, Zetta, or any JSON API. Requires ffmpeg.",
+    "version": "1.6.6",
     "requirements": "ffmpeg",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/logger.py"
   },
@@ -94,8 +94,8 @@
     "name": "Zetta Integration",
     "file": "zetta.py",
     "icon": "📻",
-    "description": "RCS Zetta broadcast automation integration. Multi-instance SOAP monitor — shows live sequencer state per station: mode (Auto/Manual/Voice Track), status (PLAYING/QUEUED/NEXT), GAP, ETM, now-playing title/artist/cart/category, and upcoming queue. Detects commercial/spot blocks in real time. Per-station broadcast chain assignment with live status chips on the Broadcast Chains page. Includes a SOAP debug explorer. Requires zeep.",
-    "version": "2.1.27",
+    "description": "RCS Zetta broadcast automation integration. Multi-instance SOAP monitor — shows live sequencer state per station: mode (Auto/Manual/Voice Track), status (PLAYING/QUEUED/NEXT), GAP, ETM, now-playing title/artist/cart/category, and upcoming queue. Detects commercial/spot blocks in real time. Per-station broadcast chain assignment with live status chips on the Broadcast Chains page. Exposes chain now-playing data to Logger on client recording nodes. Includes a SOAP debug explorer. Requires zeep.",
+    "version": "2.1.28",
     "requirements": "zeep",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/zetta.py"
   },
@@ -225,7 +225,7 @@
     "file": "studioboard.py",
     "icon": "🎙",
     "description": "Large-format studio display for outside broadcast studios. Shows presenter/show info, now playing, live level meters, mic live status, chain health, and Zetta automation queue. Fully configurable admin page with Studios (physical screens) and Brands (station presets) — assign a brand to a studio in one REST call. REST API for mic live, brand assignment, and legacy chain assignment. Themeable (dark/Bauer/corp via ?theme=), clock header, big presenter countdown timer, message-from-hub banner, anti-burn-in pixel drift. Server-side presenter image cache. Hub-only.",
-    "version": "3.14.16",
+    "version": "3.14.17",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/studioboard.py"
   }

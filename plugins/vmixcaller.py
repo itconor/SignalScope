@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.5.16",
+    "version": "1.5.17",
 }
 
 import os
@@ -1392,15 +1392,21 @@ var _relayOn     = false;
 var _relaySite   = '';
 var _relayLive   = false;   // true once client confirms relay_active
 
+function _needsRelay(){
+  // Hub needs the relay when it can't access the bridge directly:
+  //   • _videoUrl is empty  → LAN WebRTC or no bridge configured
+  //   • _videoUrl points at relay.m3u8  → LAN HLS (compute_video_url already
+  //     resolved it to relay buffer because bridge host isn't localhost)
+  return !_videoUrl || _videoUrl.indexOf('relay.m3u8') >= 0;
+}
+
 function updateRelayCtrl(){
   var ctrl=document.getElementById('relay-ctrl');
   var btn =document.getElementById('relay-btn');
   var ind =document.getElementById('relay-ind');
   var site=(document.getElementById('target-site').value||'').trim();
   if(!ctrl)return;
-  // Show relay control only when hub can't see SRS directly
-  // (_videoUrl is empty when bridge is a LAN WebRTC/HLS URL)
-  if(!site||_videoUrl){ctrl.style.display='none';return;}
+  if(!site||!_needsRelay()){ctrl.style.display='none';return;}
   ctrl.style.display='';
   if(_relayOn){
     btn.textContent='\u23F9 Stop stream';btn.className='btn bd bs';
@@ -1596,6 +1602,10 @@ document.addEventListener('DOMContentLoaded',function(){
   loadMeetings();
   var pi=document.getElementById('padd-in');
   if(pi) pi.addEventListener('keydown',function(e){if(e.key==='Enter') addManual();});
+  // Stop relay cleanly when operator closes/refreshes the tab
+  window.addEventListener('beforeunload',function(){
+    if(_relayOn&&_relaySite) _post('/api/vmixcaller/relay',{site:_relaySite,active:false});
+  });
 });
 </script>
 </body>
@@ -2100,8 +2110,11 @@ def register(app, ctx):
                 # Relay buffer manifest (LAN bridge, no bridge, or relay.m3u8)
                 with _video_lock:
                     if not _video_segments:
+                        # Return a valid open-ended live manifest with no segments.
+                        # hls.js treats this as "stream not yet available" and retries
+                        # at the target duration interval (~3 s) rather than erroring.
                         return Response(
-                            "#EXTM3U\n#EXT-X-TARGETDURATION:3\n",
+                            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:0\n",
                             status=200,
                             content_type="application/vnd.apple.mpegurl",
                             headers={"Cache-Control": "no-cache"},
@@ -2298,9 +2311,12 @@ def register(app, ctx):
         return jsonify({"ok": True, "queued_for": target_site})
 
     # ── Client polls for pending command ──────────────────────────────────────
+    # NOT decorated with @login_required — client polls from a background thread
+    # using HMAC headers (no session cookie).  Auth is via site approval + optional
+    # HMAC signature, matching vmixcaller_report / vmixcaller_video_push.
     @app.get("/api/vmixcaller/cmd")
-    @login_required
     def vmixcaller_cmd_poll():
+        import hashlib as _hs, hmac as _hm
         site = request.headers.get("X-Site", "").strip()
         if not site:
             return jsonify({"error": "missing X-Site"}), 400
@@ -2308,6 +2324,21 @@ def register(app, ctx):
             approved = hub_server._sites.get(site, {}).get("_approved")
         if not approved:
             return jsonify({"error": "not approved"}), 403
+        # Optional HMAC verification
+        secret = getattr(getattr(monitor.app_cfg, "hub", None), "secret_key", "") or ""
+        if secret:
+            sig  = request.headers.get("X-Hub-Sig", "")
+            ts_s = request.headers.get("X-Hub-Ts", "0")
+            try:
+                ts = float(ts_s)
+                if abs(time.time() - ts) > 120:
+                    return jsonify({"error": "timestamp expired"}), 403
+                key      = _hs.sha256(f"{secret}:signing".encode()).digest()
+                expected = _hm.new(key, f"{ts:.0f}:".encode() + b"", _hs.sha256).hexdigest()
+                if not _hm.compare_digest(sig, expected):
+                    return jsonify({"error": "bad signature"}), 403
+            except Exception:
+                return jsonify({"error": "auth error"}), 403
         with _state_lock:
             cmd          = _pending_cmd.pop(site, None)
             relay_wanted = _relay_wanted.get(site, False)

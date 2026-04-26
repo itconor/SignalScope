@@ -29803,6 +29803,7 @@ var _chainData={
     <span class="chain-maint-badge" id="chain_maint_{{c.id|e}}" style="display:none;font-size:11px;background:#1d4ed8;color:#bfdbfe;border-radius:999px;padding:2px 8px;border:1px solid #3b82f6" title="Entire chain is in maintenance mode">🔧 Maintenance</span>
     <span id="chain_glitch_{{c.id|e}}" style="display:none;font-size:11px;color:#f59e0b;background:rgba(245,158,11,.1);border:1px solid #b45309;border-radius:999px;padding:2px 8px" title="One or more nodes have detected audio dropouts in the last 5 minutes">⚡ Glitching</span>
     <span id="chain_flat_{{c.id|e}}" style="display:none;font-size:11px;color:#a855f7;background:rgba(168,85,247,.1);border:1px solid #7e22ce;border-radius:999px;padding:2px 8px" title="One or more nodes have detected audio flatness (possible static or frozen audio)">〰 Static detected</span>
+    <span id="studio_badge_{{c.id|e}}" style="display:none;font-size:11px;color:#bfdbfe;background:#1e3a8a;border:1px solid #3b82f6;border-radius:999px;padding:2px 8px" title="Studio assignment from Studio Board plugin"></span>
     {% if c.min_fault_seconds %}
     <span style="font-size:11px;color:var(--mu);background:#0d2346;border:1px solid var(--bor);border-radius:999px;padding:2px 8px" title="Fault confirmation delay — alert fires only after fault persists this long">⏱ {{c.min_fault_seconds}}s delay</span>
     {% endif %}
@@ -30836,6 +30837,13 @@ function refreshStatus(){
       if(glitchBadge){glitchBadge.style.display=chain.has_glitch?'':'none';}
       var flatBadge=document.getElementById('chain_flat_'+chain.id);
       if(flatBadge){flatBadge.style.display=chain.has_flatness?'':'none';}
+      // Studio Board assignment badge
+      var studioBadge=document.getElementById('studio_badge_'+chain.id);
+      if(studioBadge){
+        var studios=chain.studios||[];
+        if(studios.length>0){studioBadge.textContent='📺 '+studios.join(', ');studioBadge.style.display='';}
+        else{studioBadge.style.display='none';}
+      }
       // Flapping override badge
       if(chain.flapping&&badge){
         badge.textContent='FLAPPING';badge.className='badge badge-flap';
@@ -32648,6 +32656,13 @@ def api_chains_status():
                     result["adbreak_stats"] = None
             except Exception:
                 result["adbreak_stats"] = None
+
+            # ── Studio Board assignment ────────────────────────────────────
+            # List of studio names (from studioboard plugin) that have this chain assigned.
+            # Empty list when studioboard plugin is not installed or chain has no assignment.
+            result["studios"] = list(
+                getattr(monitor, "_studioboard_chain_studios", {}).get(cid, [])
+            )
 
             results.append(result)
         except Exception as e:

@@ -20,7 +20,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":    "Zetta",
     "url":      "/zetta",
     "icon":     "📻",
-    "version":  "2.1.27",
+    "version":  "2.1.28",
 }
 
 import json
@@ -2825,6 +2825,42 @@ def register(app, ctx):
                         "instance_count": len(snapshot),
                         "total_stations": sum(len(v) for v in snapshot.values()),
                         "site_zeep_status": zeep_snapshot})
+
+    # ── Chain now-playing state (for Logger on client nodes) ─────────────────
+    # Logger's MetaPoller calls GET /api/zetta/chain_np when the Zetta plugin is
+    # not installed locally (i.e., the Logger runs on a client recording node but
+    # Zetta only runs on the hub). Returns a simplified view of _chain_zetta_state
+    # keyed by chain_id. HMAC-authenticated using the hub secret.
+    @app.get("/api/zetta/chain_np")
+    def zetta_chain_np():
+        import hashlib as _hs, hmac as _hm
+        from flask import request, jsonify
+        secret = getattr(getattr(monitor.app_cfg, "hub", None), "secret_key", "") or ""
+        if secret:
+            sig  = request.headers.get("X-Hub-Sig", "")
+            ts_s = request.headers.get("X-Hub-Ts", "0")
+            try:
+                ts = float(ts_s)
+                if abs(time.time() - ts) > 120:
+                    return jsonify({"error": "timestamp expired"}), 403
+                key      = _hs.sha256(f"{secret}:signing".encode()).digest()
+                expected = _hm.new(key, f"{ts:.0f}:".encode() + b"", _hs.sha256).hexdigest()
+                if not _hm.compare_digest(sig, expected):
+                    return jsonify({"error": "bad signature"}), 403
+            except Exception:
+                return jsonify({"error": "auth error"}), 403
+        out = {}
+        for chain_id, zd in list(_chain_zetta_state.items()):
+            np_raw = zd.get("now_playing")
+            out[chain_id] = {
+                "now_playing": {
+                    "title":      (np_raw.get("raw_title") or np_raw.get("title") or "").strip(),
+                    "artist":     (np_raw.get("raw_artist") or "").strip(),
+                    "asset_type": int(np_raw.get("asset_type") or 0),
+                } if np_raw else None,
+                "ts": float(zd.get("ts") or 0),
+            }
+        return jsonify({"chains": out, "ts": time.time()})
 
     # Expose the chain-Zetta state dict on the monitor so _chains_monitor_loop
     # in signalscope.py can read it directly without importing this plugin module.
