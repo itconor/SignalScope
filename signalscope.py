@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.170"
+BUILD                  = "SignalScope-3.5.171"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16353,15 +16353,22 @@ class HubServer:
                             # confirmed the break is over and the chain remains silent.
                             _adbreak_cand = result.get("adbreak_candidate", False)
                             _zetta_on_bypass = _zetta_on and not _adbreak_cand
+                            # No mixin node and no ad-break candidate: the chain has no
+                            # concept of ad breaks so the confirmation window serves no
+                            # suppression purpose — bypass it and alert immediately.
+                            _no_mixin_bypass = (mixin_idx is None and not _adbreak_cand)
                             if (min_fault_secs == 0 or mixin_is_down or fault_is_post_mixin
-                                    or any_post_mixin_fault or _zetta_on_bypass):
+                                    or any_post_mixin_fault or _zetta_on_bypass
+                                    or _no_mixin_bypass):
                                 # Alert immediately:
                                 #  - no confirmation delay configured, OR
                                 #  - mix-in point itself is also silent (can't be an ad break), OR
                                 #  - Zetta linked + fresh + NOT an adbreak candidate, OR
                                 #  - fault is at/after the mix-in point, OR
                                 #  - any node at/after the mix-in point is faulted (even if
-                                #    the primary fault_idx is pre-mixin)
+                                #    the primary fault_idx is pre-mixin), OR
+                                #  - no mixin node configured at all (no ad-break concept exists
+                                #    for this chain so the window would only delay real alerts)
                                 if min_fault_secs > 0 and mixin_is_down:
                                     monitor.log(
                                         f"[Chain] '{result['name']}' — mix-in point also silent, "
@@ -16373,6 +16380,10 @@ class HubServer:
                                 elif min_fault_secs > 0 and _zetta_on_bypass:
                                     monitor.log(
                                         f"[Chain] '{result['name']}' — Zetta confirms not an ad break, "
+                                        f"bypassing {min_fault_secs}s confirmation window.")
+                                elif min_fault_secs > 0 and _no_mixin_bypass:
+                                    monitor.log(
+                                        f"[Chain] '{result['name']}' — no mix-in node configured, "
                                         f"bypassing {min_fault_secs}s confirmation window.")
                                 self._chain_fault_state[cid] = "alerted"
                                 self._chain_fault_since.pop(cid, None)

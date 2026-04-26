@@ -2,6 +2,18 @@
 
 ---
 
+### SignalScope-3.5.171 — 2026-04-26
+
+**Fix: Chain confirmation window bypassed when no mixin node is configured**
+
+Previously, `min_fault_seconds` (the confirmation window) was always respected regardless of whether a mixin node was set on the chain. This meant a chain with `min_fault_seconds = 330` but no mixin node would silently swallow any outage shorter than 330 seconds — never alerting — because the confirmation window serves no ad-break suppression purpose without a mixin point.
+
+Fix: added `_no_mixin_bypass` condition. When a chain has no mixin node (`mixin_node_idx` is unset) and the fault is not a stack-based ad-break candidate, the confirmation window is bypassed and the fault alerts immediately. Chains that rely on `min_fault_seconds` purely for brief-dropout suppression are unaffected as long as they have a mixin node configured.
+
+Logged as: `[Chain] 'Name' — no mix-in node configured, bypassing Ns confirmation window.`
+
+---
+
 ### Logger 1.6.4 — 2026-04-26
 
 **Bug fix: Client nodes no longer behave as hub instances**
