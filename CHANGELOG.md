@@ -2,6 +2,23 @@
 
 ---
 
+### vMix Caller 1.6.2 — 2026-04-26
+
+**Fix: Zoom controls corrected against official vMix API (v28/v29)**
+
+Cross-referenced all Zoom functions against the official vMix Shortcut Function Reference. Multiple bugs found and fixed:
+
+- **`ZoomJoinMeeting` wrong separator**: Value must be `MeetingID,Password` (comma-separated per official API). Plugin was sending `MeetingID|Password|DisplayName` with pipes. All call sites (joinWith, reconnect) and the Python backend shim updated.
+- **`ZoomMuteSelf` toggle broken**: Always called `ZoomMuteSelf` for both mute and unmute. The official API has two separate functions — `ZoomMuteSelf` to mute and `ZoomUnMuteSelf` to unmute. Fixed to call the correct function based on current mute state.
+- **`ZoomMuteAllParticipants` removed**: Does not exist in the official vMix API. Mute All button removed from hub, client, and presenter pages.
+- **`ZoomStopVideo`/`ZoomStartVideo` removed**: Do not exist in the official vMix API. Stop Camera button and `stopCamera()` function removed from all pages. `C` keyboard shortcut removed.
+- **Display name removed from join form**: `ZoomJoinMeeting` does not accept a display name — the Zoom account name configured inside vMix is used. Removed the "Display Name" / "Your Name" field from manual join forms on all three pages to avoid misleading users.
+- **Python backend pipe-shim removed**: The `vmixcaller_function` handler had a backwards-compat block that split pipe-delimited values into Value2/Value3 params. Now that JS sends the correct comma format, this shim is no longer needed and was removed.
+
+Remaining official vMix Zoom API: `ZoomJoinMeeting` (Value=ID,Pass), `ZoomMuteSelf`, `ZoomUnMuteSelf`, `ZoomSelectParticipantByName` (Value=Name). `ZoomLeaveMeeting` is kept (not in official docs but may work in some vMix versions).
+
+---
+
 ### vMix Caller 1.6.1 — 2026-04-26
 
 **Fix: Client page instance management fully functional**

@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.6.1",
+    "version": "1.6.2",
 }
 
 import os
@@ -860,23 +860,25 @@ function sendCmd(fn, value){
 }
 
 // ── Call state ────────────────────────────────────────────────────────────────
-var _inMeeting=false,_selfMuted=false,_camOff=false;
+var _inMeeting=false,_selfMuted=false;
 function setMeetingState(v){
   _inMeeting=v;
   document.querySelectorAll('.meeting-card').forEach(function(c){c.className=v?'card meeting-card in-meeting':'card meeting-card';});
-  if(!v){_selfMuted=false;_camOff=false;resetCallBtns();}
+  if(!v){_selfMuted=false;resetCallBtns();}
 }
 function resetCallBtns(){
-  var mb=document.getElementById('mute-btn');var cb=document.getElementById('cam-btn');
-  if(mb)mb.textContent='\uD83D\uDD07 Mute Self';if(cb)cb.textContent='\uD83D\uDCF7 Stop Camera';
+  var mb=document.getElementById('mute-btn');
+  if(mb)mb.textContent='\uD83D\uDD07 Mute Self';
 }
 
-var _lastJoin={mid:'',pass:'',name:''};
-function joinWith(mid,pass,name){
+var // vMix API: ZoomJoinMeeting Value = "MeetingID,Password" (comma-separated).
+// Display name is set by the Zoom account inside vMix, not via API.
+var _lastJoin={mid:'',pass:''};
+function joinWith(mid,pass){
   if(!mid){showMsg('Enter a Meeting ID',false);return;}
-  _lastJoin={mid:mid,pass:pass||'',name:name||'Guest Producer'};
+  _lastJoin={mid:mid,pass:pass||''};
   if(typeof _updateReconnectBtn==='function')_updateReconnectBtn();
-  sendCmd('ZoomJoinMeeting',mid+'|'+(pass||'')+'|'+(name||'Guest Producer'))
+  sendCmd('ZoomJoinMeeting',mid+','+(pass||''))
     .then(function(d){if(d.ok){showMsg('Joining\u2026',true);setMeetingState(true);}});
 }
 function leaveMeeting(){
@@ -885,29 +887,23 @@ function leaveMeeting(){
 function reconnect(){
   if(!_lastJoin.mid){showMsg('No previous meeting to reconnect to',false);return;}
   showMsg('Reconnecting\u2026',true);
-  sendCmd('ZoomJoinMeeting',_lastJoin.mid+'|'+_lastJoin.pass+'|'+_lastJoin.name)
+  sendCmd('ZoomJoinMeeting',_lastJoin.mid+','+_lastJoin.pass)
     .then(function(d){if(d.ok)setMeetingState(true);});
 }
 function muteSelf(){
-  sendCmd('ZoomMuteSelf').then(function(d){
+  // ZoomMuteSelf mutes; ZoomUnMuteSelf unmutes (separate official API functions)
+  var fn=_selfMuted?'ZoomUnMuteSelf':'ZoomMuteSelf';
+  sendCmd(fn).then(function(d){
     if(d.ok){_selfMuted=!_selfMuted;var b=document.getElementById('mute-btn');if(b)b.textContent=_selfMuted?'\uD83D\uDD0A Unmute Self':'\uD83D\uDD07 Mute Self';showMsg(_selfMuted?'Muted':'Unmuted',true);}
   });
 }
-function stopCamera(){
-  // Correct vMix API names: ZoomStopVideo / ZoomStartVideo
-  var fn=_camOff?'ZoomStartVideo':'ZoomStopVideo';
-  sendCmd(fn).then(function(d){
-    if(d.ok){_camOff=!_camOff;var b=document.getElementById('cam-btn');if(b)b.textContent=_camOff?'\uD83D\uDCF7 Start Camera':'\uD83D\uDCF7 Stop Camera';showMsg(_camOff?'Camera off':'Camera on',true);}
-  });
-}
-function muteAll(){sendCmd('ZoomMuteAllParticipants').then(function(d){if(d.ok)showMsg('All guests muted',true);});}
+
 
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
 document.addEventListener('keydown',function(e){
   var t=(document.activeElement||{}).tagName||'';
   if(t==='INPUT'||t==='TEXTAREA'||t==='SELECT')return;
   if(e.key==='m'||e.key==='M'){e.preventDefault();muteSelf();}
-  if(e.key==='c'||e.key==='C'){e.preventDefault();stopCamera();}
 });
 
 // ── Delegated click handler (CSP-safe — replaces all onclick= attributes) ─────
@@ -918,9 +914,7 @@ document.addEventListener('click',function(e){
   if(!btn)return;
   var a=btn.dataset.action;
   if(a==='muteSelf')                                          muteSelf();
-  else if(a==='stopCamera')                                   stopCamera();
   else if(a==='leaveMeeting')                                 leaveMeeting();
-  else if(a==='muteAll')                                      muteAll();
   else if(a==='hangUp'      &&typeof hangUp==='function')     hangUp();
   else if(a==='toggleAudio' &&typeof toggleAudio==='function')toggleAudio();
   else if(a==='joinSaved'   &&typeof joinSaved==='function')  joinSaved(btn);
@@ -1088,7 +1082,6 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
   <span class="call-badge">● ON CALL</span>
   <span id="onair-badge" class="onair-badge" style="display:none">📡 ON AIR</span>
   <button class="call-btn" id="mute-btn"  data-action="muteSelf">🔇 Mute Self</button>
-  <button class="call-btn" id="cam-btn"   data-action="stopCamera">📷 Stop Camera</button>
   <div class="call-spacer"></div>
   <button class="call-btn leave" data-action="hangUp">📴 Leave</button>
 </div>
@@ -1168,15 +1161,9 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
         <label class="fl">Meeting ID</label>
         <input type="text" id="mtg-id" placeholder="123 456 7890">
       </div>
-      <div class="r2">
-        <div class="field">
-          <label class="fl">Passcode</label>
-          <input type="password" id="mtg-pass" placeholder="••••••">
-        </div>
-        <div class="field">
-          <label class="fl">Your Name</label>
-          <input type="text" id="mtg-name" placeholder="Guest Producer">
-        </div>
+      <div class="field">
+        <label class="fl">Passcode</label>
+        <input type="password" id="mtg-pass" placeholder="••••••">
       </div>
       <button class="join-manual join-btn" data-action="joinManual">📞 Join Meeting</button>
     </div>
@@ -1208,13 +1195,12 @@ function switchInstance(btn){
 }
 
 function joinSaved(btn){
-  joinWith(btn.dataset.mid, btn.dataset.pass, btn.dataset.dname||'Guest Producer');
+  joinWith(btn.dataset.mid, btn.dataset.pass);
 }
 function joinManual(){
   var mid =(document.getElementById('mtg-id').value||'').trim();
   var pass=(document.getElementById('mtg-pass').value||'').trim();
-  var name=(document.getElementById('mtg-name').value||'Guest Producer').trim();
-  joinWith(mid, pass, name);
+  joinWith(mid, pass);
 }
 
 // ── Audio toggle — presenter override ────────────────────────────────────────
@@ -1406,7 +1392,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
   <span id="vago" class="ago" style="margin-left:6px"></span>
   <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
     <a href="/hub/vmixcaller/presenter" class="btn bp bs" title="For HTTPS hubs with a LAN bridge, give the presenter the client node URL instead — see setup guide">🖥 Presenter View</a>
-    <span><kbd>M</kbd> mute</span><span><kbd>C</kbd> camera</span>
+    <span><kbd>M</kbd> mute</span>
   </span>
 </div>
 
@@ -1546,23 +1532,15 @@ _HUB_TPL = r"""<!DOCTYPE html>
           <label class="fl">Meeting ID</label>
           <input type="text" id="mtg-id" placeholder="123 456 7890">
         </div>
-        <div class="r2">
-          <div class="field">
-            <label class="fl">Passcode</label>
-            <input type="password" id="mtg-pass" placeholder="••••••">
-          </div>
-          <div class="field">
-            <label class="fl">Display Name</label>
-            <input type="text" id="mtg-name" placeholder="Guest Producer">
-          </div>
+        <div class="field">
+          <label class="fl">Passcode</label>
+          <input type="password" id="mtg-pass" placeholder="••••••">
         </div>
         <div class="brow">
           <button class="btn bp join-btn" style="flex:1;justify-content:center" data-action="joinManual">📞 Join Meeting</button>
         </div>
         <div class="brow call-btns" style="flex-wrap:wrap">
           <button class="btn bg" id="mute-btn" data-action="muteSelf">🔇 Mute Self</button>
-          <button class="btn bg" id="cam-btn"  data-action="stopCamera">📷 Stop Camera</button>
-          <button class="btn bg"               data-action="muteAll">🔇 Mute All</button>
           <button class="btn bd"               data-action="leaveMeeting">📴 Leave</button>
         </div>
       </div>
@@ -1758,8 +1736,7 @@ function joinManual(){
   if(!site){showMsg('Select a site first',false);return;}
   var mid =(document.getElementById('mtg-id').value||'').trim();
   var pass=(document.getElementById('mtg-pass').value||'').trim();
-  var name=(document.getElementById('mtg-name').value||'Guest Producer').trim();
-  joinWith(mid,pass,name);
+  joinWith(mid,pass);
 }
 
 // Override sendCmd to check site selection first
@@ -1848,7 +1825,7 @@ function joinSavedAdmin(btn){
   var m=_meetings[parseInt(btn.dataset.idx)];if(!m)return;
   var site=document.getElementById('target-site');
   if(site&&!site.value){showMsg('Select a site first',false);return;}
-  joinWith(m.id,m.pass,m.display_name||'Guest Producer');
+  joinWith(m.id,m.pass);
 }
 function addMeeting(){
   var name=document.getElementById('new-mtg-name').value.trim();
@@ -1946,7 +1923,7 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
   <span id="vago" class="ago" style="margin-left:6px"></span>
   <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
     <a href="/hub/vmixcaller/presenter" class="btn bp bs" title="Presenter bookmark page">🖥 Presenter View</a>
-    <span><kbd>M</kbd> mute</span><span><kbd>C</kbd> camera</span>
+    <span><kbd>M</kbd> mute</span>
   </span>
 </div>
 
@@ -2058,23 +2035,15 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
           <label class="fl">Meeting ID</label>
           <input type="text" id="mtg-id" placeholder="123 456 7890">
         </div>
-        <div class="r2">
-          <div class="field">
-            <label class="fl">Passcode</label>
-            <input type="password" id="mtg-pass" placeholder="••••••">
-          </div>
-          <div class="field">
-            <label class="fl">Display Name</label>
-            <input type="text" id="mtg-name" placeholder="Guest Producer">
-          </div>
+        <div class="field">
+          <label class="fl">Passcode</label>
+          <input type="password" id="mtg-pass" placeholder="••••••">
         </div>
         <div class="brow">
           <button class="btn bp join-btn" style="flex:1;justify-content:center" data-action="joinManual">📞 Join Meeting</button>
         </div>
         <div class="brow call-btns" style="flex-wrap:wrap">
           <button class="btn bg" id="mute-btn" data-action="muteSelf">🔇 Mute Self</button>
-          <button class="btn bg" id="cam-btn"  data-action="stopCamera">📷 Stop Camera</button>
-          <button class="btn bg"               data-action="muteAll">🔇 Mute All</button>
           <button class="btn bd"               data-action="leaveMeeting">📴 Leave</button>
         </div>
       </div>
@@ -2259,8 +2228,7 @@ function testVmix(){
 function joinManual(){
   var mid=(document.getElementById('mtg-id').value||'').trim();
   var pass=(document.getElementById('mtg-pass').value||'').trim();
-  var name=(document.getElementById('mtg-name').value||'Guest Producer').trim();
-  joinWith(mid,pass,name);
+  joinWith(mid,pass);
 }
 
 // ── State polling — direct vMix query (no hub cycle delay) ───────────────────
@@ -2323,7 +2291,7 @@ function renderMeetingsAdmin(){
 }
 function joinSavedAdmin(btn){
   var m=_meetings[parseInt(btn.dataset.idx)];if(!m)return;
-  joinWith(m.id,m.pass,m.display_name||'Guest Producer');
+  joinWith(m.id,m.pass);
 }
 function addMeeting(){
   var name=document.getElementById('new-mtg-name').value.trim();
@@ -2799,16 +2767,11 @@ def register(app, ctx):
             return jsonify({"ok": False, "error": "Missing function name"}), 400
         cfg         = _load_cfg()
         target_site = cfg.get("target_site", "").strip()
-        # ZoomJoinMeeting requires Value (meeting ID), Value2 (password), Value3 (display name).
-        # JS sends these pipe-delimited in value for backwards compat; unpack here.
+        # ZoomJoinMeeting Value = "MeetingID,Password" (comma-separated per official vMix API).
+        # JS now sends it pre-formatted; no splitting needed here.
         raw_value = data.get("value")
         value2    = data.get("value2")
         value3    = data.get("value3")
-        if fn == "ZoomJoinMeeting" and raw_value and "|" in str(raw_value) and value2 is None:
-            parts     = str(raw_value).split("|", 2)
-            raw_value = parts[0]                                         # meeting ID
-            value2    = parts[1] if len(parts) > 1 else ""               # password
-            value3    = parts[2] if len(parts) > 2 else "Guest Producer" # display name
         if not is_hub:
             # Standalone: execute directly
             if not cfg.get("vmix_ip"):
