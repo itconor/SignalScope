@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.7.1",
+    "version": "1.7.2",
 }
 
 import os
@@ -69,6 +69,9 @@ _zoom_token_lock      = threading.Lock()
 _zoom_token_cache     = {"token": "", "expires": 0.0}
 _zoom_meetings_lock   = threading.Lock()
 _zoom_meetings_cache  = {"ts": 0.0, "data": []}
+_zoom_participants_cache = {"ts": 0.0, "meeting_id": "", "data": {"participants": [], "waiting": []}}
+_zoom_participants_lock  = threading.Lock()
+_zoom_webhook_counter    = [0]   # incremented on each inbound webhook event
 
 
 # ── Hub-side HLS relay buffer ──────────────────────────────────────────────────
@@ -346,6 +349,52 @@ def _zoom_fetch_meetings(raw: dict, force: bool = False) -> list:
     return out
 
 
+
+def _zoom_fetch_participants(raw: dict, meeting_id: str, force: bool = False) -> dict:
+    """Fetch live + waiting-room participants for a running meeting (20 s cache)."""
+    with _zoom_participants_lock:
+        cached = _zoom_participants_cache
+        if (not force
+                and cached.get("meeting_id") == meeting_id
+                and time.time() - cached.get("ts", 0) < 20):
+            return dict(cached.get("data", {}))
+
+    def _names(resp):
+        out = []
+        for p in resp.get("participants", []):
+            pid  = (p.get("id") or "").strip()
+            name = (p.get("user_name") or p.get("name") or "").strip()
+            if not name:
+                continue
+            out.append({
+                "id":      pid,
+                "name":    name,
+                "audio":   bool(p.get("audio")),   # audio field: "computer"/"Phone"/""
+                "video":   str(p.get("video") or "").lower() == "started",
+                "muted":   str(p.get("audio") or "") == "",   # empty = muted
+                "is_host": bool(p.get("is_host")),
+            })
+        return out
+
+    ok1, r1 = _zoom_api(raw, "GET",
+        f"/meetings/{meeting_id}/participants?type=live&page_size=300")
+    ok2, r2 = _zoom_api(raw, "GET",
+        f"/meetings/{meeting_id}/participants?type=pending&page_size=300")
+
+    data = {
+        "participants": _names(r1) if ok1 else [],
+        "waiting":      _names(r2) if ok2 else [],
+        "error":        (r1 if not ok1 else {}).get("message", ""),
+    }
+    with _zoom_participants_lock:
+        _zoom_participants_cache.update({
+            "ts":         time.time(),
+            "meeting_id": meeting_id,
+            "data":       data,
+        })
+    return data
+
+
 def _zoom_execute_action(raw: dict, action: str, data: dict) -> dict:
     """Execute a Zoom action. Returns a dict for jsonify()."""
     if not _zoom_has_creds(raw):
@@ -399,7 +448,94 @@ def _zoom_execute_action(raw: dict, action: str, data: dict) -> dict:
         except Exception as ex:
             return {"ok": False, "error": str(ex)[:120]}
 
+    elif action == "mute_participant":
+        mid = (data.get("meeting_id") or "").strip()
+        pid = (data.get("participant_id") or "").strip()
+        mute = bool(data.get("mute", True))
+        if not mid or not pid:
+            return {"ok": False, "error": "Missing meeting_id or participant_id"}
+        ok, resp = _zoom_api(raw, "PUT", f"/meetings/{mid}/participants/{pid}",
+                             {"mute": mute})
+        if ok:
+            with _zoom_participants_lock:
+                if _zoom_participants_cache.get("meeting_id") == mid:
+                    _zoom_participants_cache["ts"] = 0.0
+            return {"ok": True}
+        return {"ok": False, "error": str(resp.get("message") or resp)[:120]}
+
+    elif action == "remove_participant":
+        mid = (data.get("meeting_id") or "").strip()
+        pid = (data.get("participant_id") or "").strip()
+        if not mid or not pid:
+            return {"ok": False, "error": "Missing meeting_id or participant_id"}
+        ok, resp = _zoom_api(raw, "DELETE", f"/meetings/{mid}/participants/{pid}")
+        if ok:
+            with _zoom_participants_lock:
+                if _zoom_participants_cache.get("meeting_id") == mid:
+                    _zoom_participants_cache["ts"] = 0.0
+            return {"ok": True}
+        return {"ok": False, "error": str(resp.get("message") or resp)[:120]}
+
+    elif action == "admit_participant":
+        mid = (data.get("meeting_id") or "").strip()
+        pid = (data.get("participant_id") or "").strip()
+        if not mid or not pid:
+            return {"ok": False, "error": "Missing meeting_id or participant_id"}
+        ok, resp = _zoom_api(raw, "PUT", f"/meetings/{mid}/participants/{pid}",
+                             {"hold": False})
+        if ok:
+            with _zoom_participants_lock:
+                if _zoom_participants_cache.get("meeting_id") == mid:
+                    _zoom_participants_cache["ts"] = 0.0
+            return {"ok": True}
+        return {"ok": False, "error": str(resp.get("message") or resp)[:120]}
+
+    elif action == "admit_all":
+        mid = (data.get("meeting_id") or "").strip()
+        if not mid:
+            return {"ok": False, "error": "Missing meeting_id"}
+        ok, resp = _zoom_api(raw, "GET",
+                             f"/meetings/{mid}/participants?type=pending&page_size=300")
+        if not ok:
+            return {"ok": False, "error": str(resp.get("message") or resp)[:120]}
+        waiting = resp.get("participants", [])
+        errors  = []
+        for p in waiting:
+            pid = (p.get("id") or "").strip()
+            if not pid:
+                continue
+            ok2, r2 = _zoom_api(raw, "PUT", f"/meetings/{mid}/participants/{pid}",
+                                {"hold": False})
+            if not ok2:
+                errors.append(str(r2.get("message") or r2)[:60])
+        with _zoom_participants_lock:
+            if _zoom_participants_cache.get("meeting_id") == mid:
+                _zoom_participants_cache["ts"] = 0.0
+        if errors:
+            return {"ok": True, "admitted": len(waiting) - len(errors),
+                    "warnings": errors}
+        return {"ok": True, "admitted": len(waiting)}
+
+
     return {"ok": False, "error": f"Unknown action: {action!r}"}
+
+
+def _zoom_validate_webhook(secret: str, ts_ms: str, body: bytes) -> bool:
+    """Validate Zoom webhook HMAC-SHA256 signature.
+    Zoom sends: x-zm-signature = 'v0=' + HMAC(secret, f'v0:{ts_ms}:{body_str}')
+    """
+    import hmac as _hm
+    if not secret:
+        return True   # no secret configured — accept all (dev/testing mode)
+    try:
+        msg      = f"v0:{ts_ms}:".encode() + body
+        key      = secret.encode()
+        expected = "v0=" + _hm.new(key, msg, __import__("hashlib").sha256).hexdigest()
+        sig      = __import__("flask").request.headers.get("x-zm-signature", "")
+        return _hm.compare_digest(sig, expected)
+    except Exception:
+        return False
+
 
 
 def _zoom_hub_proxy_get(url: str, site: str, secret: str) -> dict:
@@ -1327,7 +1463,11 @@ function joinWith(mid,pass){
     });
 }
 function leaveMeeting(){
-  sendCmd('ZoomLeaveMeeting').then(function(d){if(d.ok){showMsg('Left meeting',true);setMeetingState(false);}});
+  sendCmd('ZoomLeaveMeeting').then(function(d){if(d.ok){
+    showMsg('Left meeting',true);
+    setMeetingState(false);
+    if(typeof setActiveMeeting==='function')setActiveMeeting('','');
+  }});
 }
 function reconnect(){
   if(!_lastJoin.mid){showMsg('No previous meeting to reconnect to',false);return;}
@@ -1385,6 +1525,12 @@ document.addEventListener('click',function(e){
   else if(a==='refreshZoom'   &&typeof loadZoomData==='function')   loadZoomData(true);
   else if(a==='saveZoomCreds' &&typeof saveZoomCreds==='function')  saveZoomCreds();
   else if(a==='discoverNdi'   &&typeof discoverNdi==='function')    discoverNdi();
+  else if(a==='zoomMuteParticipant'   &&typeof zoomMuteParticipant==='function')   zoomMuteParticipant(btn);
+  else if(a==='zoomRemoveParticipant' &&typeof zoomRemoveParticipant==='function') zoomRemoveParticipant(btn);
+  else if(a==='zoomAdmitParticipant'  &&typeof zoomAdmitParticipant==='function')  zoomAdmitParticipant(btn);
+  else if(a==='zoomAdmitAll'          &&typeof zoomAdmitAll==='function')          zoomAdmitAll();
+  else if(a==='loadZoomParticipants'  &&typeof loadZoomParticipants==='function')  loadZoomParticipants(true);
+  else if(a==='copyWebhookUrl'        &&typeof copyWebhookUrl==='function')        copyWebhookUrl();
   else if(a==='newInstance'  &&typeof newInstance==='function')   newInstance();
   else if(a==='saveInstance' &&typeof saveInstance==='function')  saveInstance();
   else if(a==='deleteInstance'&&typeof deleteInstance==='function')deleteInstance();
@@ -1474,6 +1620,11 @@ function _renderZoomMtgs(meetings,configured){
   if(!el)return;
   if(!configured){el.innerHTML='<div class="empty-note">Zoom API not configured on hub — add credentials in hub settings</div>';return;}
   if(!meetings.length){el.innerHTML='<div class="empty-note">No upcoming meetings found</div>';return;}
+  // Auto-select if exactly one meeting is live and none manually chosen
+  if(typeof setActiveMeeting==='function'&&!_activeMeetingId){
+    var _livM=meetings.filter(function(m){return m.status==='started';});
+    if(_livM.length===1)setActiveMeeting(_livM[0].id,_livM[0].topic||'');
+  }
   el.innerHTML=meetings.map(function(m){
     var live=m.status==='started';
     var ts=m.start_time?_zFmt(m.start_time):'';
@@ -1483,7 +1634,7 @@ function _renderZoomMtgs(meetings,configured){
         +'<div class="mtg-name">'+_esc(m.topic)+'</div>'
         +'<div class="mtg-id">ID: '+_esc(m.id)+(ts?' · '+_esc(ts):'')+(live?' <b style="color:var(--ok)">LIVE</b>':'')+'</div>'
       +'</div>'
-      +'<button class="btn bp bs" data-action="zoomJoin" data-mid="'+_esc(m.id)+'" data-pass="'+_esc(m.password||'')+'">Join</button>'
+      +'<button class="btn bp bs" data-action="zoomJoin" data-mid="'+_esc(m.id)+'" data-pass="'+_esc(m.password||'')+'" data-topic="'+_esc(m.topic||'')+'">Join</button>'
       +(live?'<button class="btn bd bs" data-action="zoomEnd" data-mid="'+_esc(m.id)+'" title="End for all">End</button>':'')
       +'<button class="btn bg bs" data-action="zoomAddSaved" data-mid="'+_esc(m.id)+'" data-pass="'+_esc(m.password||'')+'" data-topic="'+_esc(m.topic)+'" title="Save to presets for Presenter View">+Save</button>'
       +'</div>';
@@ -1509,11 +1660,15 @@ function createZoomNow(){
         showMsg('Meeting created — #'+d.meeting_id+(d.password?' (passcode: '+d.password+')':''),true);
         cancelZoomCreate();
         joinWith(d.meeting_id,d.password||'');
+        if(typeof setActiveMeeting==='function')setActiveMeeting(d.meeting_id,topic||'New Meeting');
         setTimeout(function(){loadZoomData(true);},2000);
       } else showMsg(d.error||'Create failed',false);
     }).catch(function(e){showMsg('Error: '+e,false);});
 }
-function zoomJoin(btn){joinWith(btn.dataset.mid||'',btn.dataset.pass||'');}
+function zoomJoin(btn){
+  if(typeof setActiveMeeting==='function')setActiveMeeting(btn.dataset.mid||'',btn.dataset.topic||'');
+  joinWith(btn.dataset.mid||'',btn.dataset.pass||'');
+}
 function zoomEnd(btn){
   if(!confirm('End this meeting for all participants?'))return;
   _post('/api/vmixcaller/zoom_action',{action:'end',meeting_id:btn.dataset.mid})
@@ -1537,7 +1692,8 @@ function saveZoomCreds(){
   var aid=((document.getElementById('zoom-account-id')||{}).value||'').trim();
   var cid=((document.getElementById('zoom-client-id')||{}).value||'').trim();
   var cs=((document.getElementById('zoom-client-secret')||{}).value||'').trim();
-  _post('/api/vmixcaller/zoom_credentials',{zoom_account_id:aid,zoom_client_id:cid,zoom_client_secret:cs})
+  var whs=((document.getElementById('zoom-webhook-secret')||{}).value||'').trim();
+  _post('/api/vmixcaller/zoom_credentials',{zoom_account_id:aid,zoom_client_id:cid,zoom_client_secret:cs,zoom_webhook_secret:whs})
     .then(function(d){
       if(d.ok){
         showMsg('Credentials saved — testing…',true);
@@ -1551,6 +1707,171 @@ function saveZoomCreds(){
       } else showMsg(d.error||'Save failed',false);
     }).catch(function(e){showMsg('Error: '+e,false);});
 }
+
+// ── Phase 2: Zoom participant management ──────────────────────────────────────
+var _activeMeetingId    = '';
+var _activeMeetingTopic = '';
+var _partsAutoT         = null;
+
+function setActiveMeeting(mid, topic) {
+  _activeMeetingId    = (mid || '').replace(/\s+/g, '');
+  _activeMeetingTopic = topic || '';
+  clearTimeout(_partsAutoT);
+  _partsAutoT = null;
+  var card = document.getElementById('zoom-parts-card');
+  var lbl  = document.getElementById('zoom-parts-meeting-label');
+  if (card) card.style.display = _activeMeetingId ? '' : 'none';
+  if (lbl)  lbl.textContent    = _activeMeetingTopic
+                                    ? _esc(_activeMeetingTopic)
+                                    : (_activeMeetingId ? 'ID ' + _activeMeetingId : '');
+  if (_activeMeetingId) {
+    loadZoomParticipants(true);
+  } else {
+    var pl = document.getElementById('zoom-parts-list');
+    var ws = document.getElementById('zoom-waiting-section');
+    if (pl) pl.innerHTML = '<div class="empty-note">Join a meeting to see Zoom participants</div>';
+    if (ws) ws.style.display = 'none';
+  }
+}
+
+function loadZoomParticipants(force) {
+  if (!_activeMeetingId) return;
+  clearTimeout(_partsAutoT);
+  _partsAutoT = null;
+  fetch('/api/vmixcaller/zoom_participants?meeting_id=' + encodeURIComponent(_activeMeetingId)
+        + (force ? '&refresh=1' : ''), {credentials: 'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(d) { renderZoomParticipants(d); })
+    .catch(function() {})
+    .then(function() {
+      if (_activeMeetingId)
+        _partsAutoT = setTimeout(function() { loadZoomParticipants(false); }, 15000);
+    });
+}
+
+function renderZoomParticipants(data) {
+  var pl  = document.getElementById('zoom-parts-list');
+  var ws  = document.getElementById('zoom-waiting-section');
+  var wl  = document.getElementById('zoom-waiting-list');
+  var pc  = document.getElementById('zoom-parts-count');
+  var wc  = document.getElementById('zoom-waiting-count');
+  if (!pl) return;
+  var parts   = data.participants || [];
+  var waiting = data.waiting      || [];
+  var mid     = _activeMeetingId;
+  if (pc) pc.textContent = parts.length ? '(' + parts.length + ' in call)' : '';
+  // Waiting room
+  if (ws) ws.style.display = waiting.length ? '' : 'none';
+  if (wc) wc.textContent = waiting.length ? '(' + waiting.length + ' waiting)' : '';
+  if (wl) {
+    wl.innerHTML = waiting.length ? waiting.map(function(p) {
+      return '<div class="pi">'
+        + '<span class="pn">' + _esc(p.name || 'Unknown') + '</span>'
+        + '<button class="btn bw bs" data-action="zoomAdmitParticipant"'
+        + ' data-pid="' + _esc(p.id) + '" data-mid="' + _esc(mid) + '">Admit</button>'
+        + '</div>';
+    }).join('') : '';
+  }
+  // Live participants
+  if (!parts.length) {
+    pl.innerHTML = data.error
+      ? '<div class="empty-note" style="color:var(--al)">' + _esc(data.error) + '</div>'
+      : '<div class="empty-note">No participants in meeting</div>';
+    return;
+  }
+  pl.innerHTML = parts.map(function(p) {
+    var safe      = _esc(p.name || 'Unknown');
+    var audioIco  = p.muted ? '🔇' : '🔊';
+    var videoIco  = p.video ? ' 📹' : '';
+    var hostBadge = p.is_host ? '<span class="pbadge air">HOST</span>' : '';
+    var muteLbl   = p.muted ? 'Req. Unmute' : 'Mute';
+    return '<div class="pi">'
+      + '<span style="font-size:13px;margin-right:4px;flex-shrink:0">' + audioIco + videoIco + '</span>'
+      + '<span class="pn">' + safe + '</span>'
+      + hostBadge
+      + '<button class="btn bg bs" data-action="zoomMuteParticipant"'
+      + ' data-pid="' + _esc(p.id) + '" data-mid="' + _esc(mid) + '"'
+      + ' data-muted="' + (p.muted ? '1' : '0') + '">' + muteLbl + '</button>'
+      + (p.is_host ? '' :
+        '<button class="btn bd bs" data-action="zoomRemoveParticipant"'
+        + ' data-pid="' + _esc(p.id) + '" data-mid="' + _esc(mid) + '"'
+        + ' data-name="' + safe + '">Remove</button>')
+      + '</div>';
+  }).join('');
+}
+
+function zoomMuteParticipant(btn) {
+  var mid    = btn.dataset.mid || _activeMeetingId;
+  var pid    = btn.dataset.pid;
+  var isMuted = btn.dataset.muted === '1';
+  var wantMute = !isMuted;
+  _post('/api/vmixcaller/zoom_action',
+        {action: 'mute_participant', meeting_id: mid, participant_id: pid, mute: wantMute})
+    .then(function(d) {
+      if (d.ok) {
+        showMsg(wantMute ? 'Muted' : 'Unmute request sent', true);
+        btn.dataset.muted = wantMute ? '1' : '0';
+        btn.textContent   = wantMute ? 'Req. Unmute' : 'Mute';
+        setTimeout(function() { loadZoomParticipants(true); }, 1500);
+      } else { showMsg(d.error || 'Failed', false); }
+    }).catch(function(e) { showMsg('Error: ' + e, false); });
+}
+
+function zoomRemoveParticipant(btn) {
+  var name = btn.dataset.name || 'this participant';
+  if (!confirm('Remove ' + name + ' from the meeting?')) return;
+  var mid = btn.dataset.mid || _activeMeetingId;
+  var pid = btn.dataset.pid;
+  _post('/api/vmixcaller/zoom_action',
+        {action: 'remove_participant', meeting_id: mid, participant_id: pid})
+    .then(function(d) {
+      if (d.ok) { showMsg(name + ' removed', true); setTimeout(function() { loadZoomParticipants(true); }, 1500); }
+      else       { showMsg(d.error || 'Failed to remove', false); }
+    }).catch(function(e) { showMsg('Error: ' + e, false); });
+}
+
+function zoomAdmitParticipant(btn) {
+  var mid  = btn.dataset.mid || _activeMeetingId;
+  var pid  = btn.dataset.pid;
+  var pRow = btn.closest('.pi');
+  var name = pRow ? (pRow.querySelector('.pn') || {}).textContent || 'participant' : 'participant';
+  _post('/api/vmixcaller/zoom_action',
+        {action: 'admit_participant', meeting_id: mid, participant_id: pid})
+    .then(function(d) {
+      if (d.ok) { showMsg(name + ' admitted', true); setTimeout(function() { loadZoomParticipants(true); }, 1500); }
+      else       { showMsg(d.error || 'Failed to admit', false); }
+    }).catch(function(e) { showMsg('Error: ' + e, false); });
+}
+
+function zoomAdmitAll() {
+  if (!_activeMeetingId) return;
+  _post('/api/vmixcaller/zoom_action', {action: 'admit_all', meeting_id: _activeMeetingId})
+    .then(function(d) {
+      if (d.ok) {
+        var n = d.admitted || 0;
+        showMsg(n + ' participant' + (n === 1 ? '' : 's') + ' admitted', true);
+        setTimeout(function() { loadZoomParticipants(true); }, 1500);
+      } else { showMsg(d.error || 'Failed to admit all', false); }
+    }).catch(function(e) { showMsg('Error: ' + e, false); });
+}
+
+// ── Phase 3: Webhook URL helper ───────────────────────────────────────────────
+function copyWebhookUrl() {
+  var el = document.getElementById('zoom-webhook-url-display');
+  if (!el) return;
+  var url = el.value;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(url).then(function() { showMsg('Webhook URL copied', true); });
+  } else {
+    try { el.select(); document.execCommand('copy'); showMsg('Webhook URL copied', true); }
+    catch(e) { showMsg('Copy failed — select URL manually', false); }
+  }
+}
+// Populate webhook URL field with current origin once DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+  var el = document.getElementById('zoom-webhook-url-display');
+  if (el) el.value = window.location.origin + '/api/vmixcaller/zoom_webhook';
+});
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2233,10 +2554,24 @@ _HUB_TPL = r"""<!DOCTYPE html>
       <div class="field"><label class="fl">Client Secret</label><input type="password" id="zoom-client-secret" placeholder="Client Secret"></div>
     </div>
     <div class="brow"><button class="btn bp bs" data-action="saveZoomCreds">Save &amp; Test</button></div>
+    <hr style="border-color:var(--bor);margin:14px 0">
+    <p class="fl" style="margin-bottom:6px">Phase 3 &#8212; Webhooks (Optional)</p>
+    <p class="hint" style="margin-bottom:10px">Real-time participant events. In your Zoom S2S OAuth app at <a href="https://marketplace.zoom.us" target="_blank" rel="noopener" style="color:var(--acc)">marketplace.zoom.us</a>, add an <em>Event Subscription</em> and paste this URL. Subscribe to: <em>Meeting &gt; Participant/Host joined, left, waiting room joined/left, meeting started/ended</em>.</p>
+    <div class="field">
+      <label class="fl">Webhook Endpoint URL &#8212; copy into Zoom Dashboard</label>
+      <div style="display:flex;gap:6px">
+        <input type="text" id="zoom-webhook-url-display" readonly style="font-family:monospace;font-size:11px;color:var(--mu)">
+        <button class="btn bg bs" data-action="copyWebhookUrl" title="Copy to clipboard">Copy</button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="fl">Webhook Secret Token</label>
+      <input type="password" id="zoom-webhook-secret" placeholder="{% if zoom_webhook_configured %}Configured &#8212; re-enter to update{% else %}Secret Token from Zoom webhook config{% endif %}">
+    </div>
   </div>
 </div>
 
-<!-- ── Zoom Meetings (hub view) ───────────────────────────────────────────── -->
+<!-- &#9135;&#9135; Zoom Meetings (hub view) &#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135;&#9135; -->
 <div class="card" id="zoom-meetings-card">
   <div class="ch">&#128197; Zoom Meetings
     <div class="ch-r">
@@ -2265,6 +2600,32 @@ _HUB_TPL = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ── Zoom Participants & Waiting Room ──────────────────────────────────── -->
+<div class="card" id="zoom-parts-card" style="display:none">
+  <div class="ch">&#128101; Zoom Participants
+    <div class="ch-r">
+      <span id="zoom-parts-meeting-label" class="ago"></span>
+      <button class="btn bg bs" data-action="loadZoomParticipants">&#8635; Refresh</button>
+    </div>
+  </div>
+  <div class="cb">
+    <div id="zoom-waiting-section" style="display:none;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--bor)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span class="fl" style="color:var(--wn)">&#9201; Waiting Room</span>
+        <span id="zoom-waiting-count" style="font-size:11px;color:var(--wn)"></span>
+        <button class="btn bg bs" style="margin-left:auto" data-action="zoomAdmitAll">Admit All</button>
+      </div>
+      <div id="zoom-waiting-list" class="plist"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span class="fl">In Meeting</span>
+      <span id="zoom-parts-count" class="ago"></span>
+    </div>
+    <div id="zoom-parts-list" class="plist">
+      <div class="empty-note">Join a meeting to see Zoom participants</div>
+    </div>
+  </div>
+</div>
 
 </main>
 <script nonce="{{csp_nonce()}}">
@@ -2407,6 +2768,7 @@ function joinManual(){
   if(!site){showMsg('Select a site first',false);return;}
   var mid =(document.getElementById('mtg-id').value||'').trim();
   var pass=(document.getElementById('mtg-pass').value||'').trim();
+  if(mid&&typeof setActiveMeeting==='function')setActiveMeeting(mid,'');
   joinWith(mid,pass);
 }
 
@@ -2502,6 +2864,7 @@ function joinSavedAdmin(btn){
   var m=_meetings[parseInt(btn.dataset.idx)];if(!m)return;
   var site=document.getElementById('target-site');
   if(site&&!site.value){showMsg('Select a site first',false);return;}
+  if(typeof setActiveMeeting==='function')setActiveMeeting(m.id,m.name||m.id);
   joinWith(m.id,m.pass);
 }
 function addMeeting(){
@@ -2828,6 +3191,32 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ── Zoom Participants & Waiting Room ──────────────────────────────────── -->
+<div class="card" id="zoom-parts-card" style="display:none">
+  <div class="ch">&#128101; Zoom Participants
+    <div class="ch-r">
+      <span id="zoom-parts-meeting-label" class="ago"></span>
+      <button class="btn bg bs" data-action="loadZoomParticipants">&#8635; Refresh</button>
+    </div>
+  </div>
+  <div class="cb">
+    <div id="zoom-waiting-section" style="display:none;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--bor)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span class="fl" style="color:var(--wn)">&#9201; Waiting Room</span>
+        <span id="zoom-waiting-count" style="font-size:11px;color:var(--wn)"></span>
+        <button class="btn bg bs" style="margin-left:auto" data-action="zoomAdmitAll">Admit All</button>
+      </div>
+      <div id="zoom-waiting-list" class="plist"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span class="fl">In Meeting</span>
+      <span id="zoom-parts-count" class="ago"></span>
+    </div>
+    <div id="zoom-parts-list" class="plist">
+      <div class="empty-note">Join a meeting to see Zoom participants</div>
+    </div>
+  </div>
+</div>
 
 </main>
 <script nonce="{{csp_nonce()}}">
@@ -2959,6 +3348,7 @@ function testVmix(){
 function joinManual(){
   var mid=(document.getElementById('mtg-id').value||'').trim();
   var pass=(document.getElementById('mtg-pass').value||'').trim();
+  if(mid&&typeof setActiveMeeting==='function')setActiveMeeting(mid,'');
   joinWith(mid,pass);
 }
 
@@ -3022,6 +3412,7 @@ function renderMeetingsAdmin(){
 }
 function joinSavedAdmin(btn){
   var m=_meetings[parseInt(btn.dataset.idx)];if(!m)return;
+  if(typeof setActiveMeeting==='function')setActiveMeeting(m.id,m.name||m.id);
   joinWith(m.id,m.pass);
 }
 function addMeeting(){
@@ -3132,7 +3523,9 @@ def register(app, ctx):
             video_url = _compute_video_url(cfg, is_hub)
             return render_template_string(_HUB_TPL, cfg=cfg, sites=sites,
                                           video_url_json=json.dumps(video_url),
-                                          zoom_configured=zoom_cfg, **iv)
+                                          zoom_configured=zoom_cfg,
+                                          zoom_webhook_configured=bool(raw.get("zoom_webhook_secret")),
+                                          **iv)
         if is_client:
             video_url = _compute_video_url(cfg, False)
             return render_template_string(_CLIENT_TPL, cfg=cfg, hub_url=hub_url,
@@ -3142,7 +3535,9 @@ def register(app, ctx):
         video_url = _compute_video_url(cfg, True)
         return render_template_string(_HUB_TPL, cfg=cfg, sites=[],
                                       video_url_json=json.dumps(video_url),
-                                      zoom_configured=zoom_cfg, **iv)
+                                      zoom_configured=zoom_cfg,
+                                      zoom_webhook_configured=bool(raw.get("zoom_webhook_secret")),
+                                      **iv)
 
     # ── Presenter page ────────────────────────────────────────────────────────
     @app.get("/hub/vmixcaller/presenter")
@@ -3738,7 +4133,7 @@ def register(app, ctx):
                     current = json.load(fh)
             except Exception:
                 current = {}
-            for k in ("zoom_account_id", "zoom_client_id", "zoom_client_secret"):
+            for k in ("zoom_account_id", "zoom_client_id", "zoom_client_secret", "zoom_webhook_secret"):
                 if k in data:
                     current[k] = str(data[k]).strip()
             with open(_CFG_PATH, "w") as fh:
@@ -3845,6 +4240,154 @@ def register(app, ctx):
         data   = request.get_json(silent=True) or {}
         action = str(data.get("action", "") or "").strip()
         return jsonify(_zoom_execute_action(raw, action, data))
+
+
+    # ── Participants — browser-facing (hub serves / client proxies) ───────────
+    @app.get("/api/vmixcaller/zoom_participants")
+    @login_required
+    def vmixcaller_zoom_participants():
+        meeting_id = request.args.get("meeting_id", "").strip()
+        if not meeting_id:
+            return jsonify({"participants": [], "waiting": [], "error": "no meeting_id"})
+        force = request.args.get("refresh") == "1"
+        if is_hub or mode == "standalone":
+            raw = _load_raw()
+            if not _zoom_has_creds(raw):
+                return jsonify({"participants": [], "waiting": [],
+                                "error": "Zoom API not configured on hub"})
+            try:
+                return jsonify(_zoom_fetch_participants(raw, meeting_id, force=force))
+            except Exception as e:
+                return jsonify({"participants": [], "waiting": [], "error": str(e)[:120]})
+        if is_client:
+            app_cfg = monitor.app_cfg
+            site    = (getattr(getattr(app_cfg, "hub", None), "site_name", "") or "").strip()
+            secret  = (getattr(getattr(app_cfg, "hub", None), "secret_key",  "") or "").strip()
+            qstr    = f"?meeting_id={urllib.parse.quote(meeting_id)}"
+            if force:
+                qstr += "&refresh=1"
+            try:
+                data = _zoom_hub_proxy_get(
+                    f"{hub_url}/api/vmixcaller/zoom_hub_participants{qstr}", site, secret)
+                return jsonify(data)
+            except Exception as e:
+                return jsonify({"participants": [], "waiting": [], "error": str(e)[:120]})
+        return jsonify({"participants": [], "waiting": []})
+
+    # ── Participants — HMAC-auth hub endpoint (for client proxy) ─────────────
+    @app.get("/api/vmixcaller/zoom_hub_participants")
+    def vmixcaller_zoom_hub_participants():
+        import hmac as _hm
+        site = request.headers.get("X-Site", "").strip()
+        if not site:
+            return jsonify({"error": "missing X-Site"}), 400
+        with hub_server._lock:
+            if not hub_server._sites.get(site, {}).get("_approved"):
+                return jsonify({"error": "not approved"}), 403
+        secret = getattr(getattr(monitor.app_cfg, "hub", None), "secret_key", "") or ""
+        if secret:
+            sig  = request.headers.get("X-Hub-Sig", "")
+            ts_s = request.headers.get("X-Hub-Ts", "0")
+            try:
+                ts = float(ts_s)
+                if abs(time.time() - ts) > 120:
+                    return jsonify({"error": "timestamp expired"}), 403
+                key      = hashlib.sha256(f"{secret}:signing".encode()).digest()
+                expected = _hm.new(key, f"{ts:.0f}:".encode() + b"", hashlib.sha256).hexdigest()
+                if not _hm.compare_digest(sig, expected):
+                    return jsonify({"error": "bad signature"}), 403
+            except Exception:
+                return jsonify({"error": "auth error"}), 403
+        meeting_id = request.args.get("meeting_id", "").strip()
+        if not meeting_id:
+            return jsonify({"participants": [], "waiting": []})
+        raw   = _load_raw()
+        force = request.args.get("refresh") == "1"
+        if not _zoom_has_creds(raw):
+            return jsonify({"participants": [], "waiting": [],
+                            "error": "Zoom API not configured"})
+        try:
+            return jsonify(_zoom_fetch_participants(raw, meeting_id, force=force))
+        except Exception as e:
+            return jsonify({"participants": [], "waiting": [], "error": str(e)[:120]})
+
+    # ── Zoom Webhook receiver (Phase 3) ───────────────────────────────────────
+    # NOT @login_required — Zoom POSTs from the internet.
+    # Validated via HMAC-SHA256 if zoom_webhook_secret is configured.
+    @app.post("/api/vmixcaller/zoom_webhook")
+    def vmixcaller_zoom_webhook():
+        import hmac as _hm
+        body = request.get_data()
+        try:
+            data = json.loads(body) if body else {}
+        except Exception:
+            return jsonify({"error": "invalid JSON"}), 400
+
+        event = data.get("event", "")
+
+        # ── URL validation challenge (Zoom calls this to verify the endpoint) ─
+        if event == "endpoint.url_validation":
+            plain_token = (data.get("payload") or {}).get("plainToken", "")
+            if not plain_token:
+                return jsonify({"error": "no plainToken"}), 400
+            raw    = _load_raw()
+            secret = (raw.get("zoom_webhook_secret") or "").strip()
+            if secret:
+                import hmac as _hm2
+                encrypted = _hm2.new(
+                    secret.encode(), plain_token.encode(),
+                    __import__("hashlib").sha256
+                ).hexdigest()
+            else:
+                encrypted = ""
+            return jsonify({"plainToken": plain_token, "encryptedToken": encrypted})
+
+        # ── Validate signature (skip if no secret configured) ─────────────────
+        raw    = _load_raw()
+        secret = (raw.get("zoom_webhook_secret") or "").strip()
+        ts_ms  = request.headers.get("x-zm-request-timestamp", "0")
+        if not _zoom_validate_webhook(secret, ts_ms, body):
+            return jsonify({"error": "invalid signature"}), 403
+        # Check timestamp freshness (5 minutes)
+        try:
+            if abs(time.time() * 1000 - int(ts_ms)) > 300000:
+                return jsonify({"error": "timestamp expired"}), 403
+        except Exception:
+            pass
+
+        # ── Process events ────────────────────────────────────────────────────
+        payload    = data.get("payload") or {}
+        obj        = payload.get("object") or {}
+        meeting_id = str(obj.get("id") or "").strip()
+
+        if event in ("meeting.participant_joined", "meeting.participant_left",
+                     "meeting.participant_waiting_room_joined",
+                     "meeting.participant_waiting_room_left"):
+            # Invalidate participant cache so next browser poll gets fresh data
+            with _zoom_participants_lock:
+                if _zoom_participants_cache.get("meeting_id") == meeting_id:
+                    _zoom_participants_cache["ts"] = 0.0
+            _zoom_webhook_counter[0] += 1
+
+        elif event in ("meeting.started", "meeting.ended"):
+            with _zoom_meetings_lock:
+                _zoom_meetings_cache["ts"] = 0.0
+            if event == "meeting.ended":
+                with _zoom_participants_lock:
+                    if _zoom_participants_cache.get("meeting_id") == meeting_id:
+                        _zoom_participants_cache["ts"] = 0.0
+            _zoom_webhook_counter[0] += 1
+
+        elif event.startswith("recording."):
+            _zoom_webhook_counter[0] += 1
+
+        return jsonify({"ok": True})
+
+    # ── Webhook event counter — browser polls this to detect new events ───────
+    @app.get("/api/vmixcaller/zoom_webhook_counter")
+    @login_required
+    def vmixcaller_zoom_webhook_counter():
+        return jsonify({"counter": _zoom_webhook_counter[0]})
 
     # ── Meeting actions — browser-facing (hub executes / client proxies) ──────
     @app.post("/api/vmixcaller/zoom_action")

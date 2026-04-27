@@ -2,6 +2,31 @@
 
 ---
 
+### vMix Caller 1.7.2 — 2026-04-27
+
+**Feature: Zoom participant management (Phase 2) + Webhook receiver (Phase 3)**
+
+Phase 2 — Live participant panel:
+- **Zoom Participants card**: appears automatically once a meeting is joined (or auto-detected when exactly one live meeting is running). Shows every in-call participant with audio/video status icons.
+- **Mute / Request Unmute**: per-participant button to mute (or request unmute for those already muted).
+- **Remove participant**: remove from meeting with a confirmation prompt. Not available for the host.
+- **Waiting Room section**: appears when participants are queued. Admit individually or Admit All in one click.
+- **15-second auto-refresh**: participant list polls automatically while a meeting is active; manual Refresh button available.
+- Active meeting tracked in browser via `setActiveMeeting()` — called automatically on Join from meetings list, manual join, or saved preset join. Cleared on Leave.
+- Hub/client proxy: client nodes proxy participant requests to the hub via HMAC-signed `zoom_hub_participants` endpoint — credentials never leave the hub.
+
+Phase 3 — Webhook receiver:
+- **Webhook endpoint** at `/api/vmixcaller/zoom_webhook` — configure in your Zoom S2S OAuth app (Event Subscriptions).
+- **URL display field** in the Zoom API Configuration card (hub only), populated from `window.location.origin`. Copy-to-clipboard button.
+- **Webhook Secret Token** field (password input): enter the Zoom-generated secret. When set, all incoming webhooks are validated via HMAC-SHA256 (`v0=HMAC(secret, "v0:{ts}:{body}")`).
+- Handles Zoom URL validation challenge automatically (`endpoint.url_validation`).
+- Participant join/leave events invalidate the participant cache immediately — next 15-second poll delivers fresh data.
+- Meeting started/ended events invalidate the meetings list cache.
+- `/api/vmixcaller/zoom_webhook_counter` endpoint — browser can poll this to detect any new webhook event without a full data reload.
+- Subscribe to: *Meeting → Participant/Host joined, left, waiting room joined/left, meeting started/ended*.
+
+---
+
 ### vMix Caller 1.7.1 — 2026-04-27
 
 **Feature: NDI video preview mode**
