@@ -225,7 +225,7 @@
     "file": "studioboard.py",
     "icon": "🎙",
     "description": "Large-format studio display for outside broadcast studios. Shows presenter/show info, now playing, live level meters, mic live status, chain health, and Zetta automation queue. Fully configurable admin page with Studios (physical screens) and Brands (station presets) — assign a brand to a studio in one REST call. REST API for mic live, brand assignment, and legacy chain assignment. Themeable (dark/Bauer/corp via ?theme=), clock header, big presenter countdown timer, message-from-hub banner, anti-burn-in pixel drift. Server-side presenter image cache. Hub-only.",
-    "version": "3.14.18",
+    "version": "3.14.19",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/studioboard.py"
   }

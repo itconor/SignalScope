@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.18",
+    "version":  "3.14.19",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -802,6 +802,39 @@ def register(app, ctx):
             return send_file(path, max_age=300)
         return '', 404
 
+    @app.post("/api/studioboard/default_logo")
+    @login_required
+    @csrf_protect
+    def sb_default_logo_upload():
+        f = request.files.get("logo")
+        if not f or not f.filename:
+            return jsonify({"error": "No file"}), 400
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".webp", ".svg"):
+            return jsonify({"error": "Unsupported format"}), 400
+        data = f.read(2 * 1024 * 1024 + 1)
+        if len(data) > 2 * 1024 * 1024:
+            return jsonify({"error": "File too large (max 2 MB)"}), 400
+        os.makedirs(_ART_DIR, exist_ok=True)
+        # Remove any existing default logo
+        for old in os.listdir(_ART_DIR):
+            if old.startswith("_default_logo."):
+                os.remove(os.path.join(_ART_DIR, old))
+        fname = "_default_logo" + ext
+        with open(os.path.join(_ART_DIR, fname), "wb") as out:
+            out.write(data)
+        return jsonify({"ok": True, "url": "/studioboard/art/" + fname})
+
+    @app.delete("/api/studioboard/default_logo")
+    @login_required
+    @csrf_protect
+    def sb_default_logo_delete():
+        if os.path.isdir(_ART_DIR):
+            for old in os.listdir(_ART_DIR):
+                if old.startswith("_default_logo."):
+                    os.remove(os.path.join(_ART_DIR, old))
+        return jsonify({"ok": True})
+
     @app.get("/studioboard/cached_show_img/<rpuid>")
     @login_required
     def sb_cached_show_img(rpuid):
@@ -1049,7 +1082,14 @@ def register(app, ctx):
                 "auto_brand_color": studio.get("_auto_brand_color", "#17a8ff"),
             })
 
-        return jsonify({"studios": studios_out})
+        # Check for a default logo for cleared studios
+        _def_logo_url = ""
+        if os.path.isdir(_ART_DIR):
+            for _fn in os.listdir(_ART_DIR):
+                if _fn.startswith("_default_logo."):
+                    _def_logo_url = "/studioboard/art/" + _fn
+                    break
+        return jsonify({"studios": studios_out, "default_logo_url": _def_logo_url})
 
     # ── Build initial chain→studio mapping and expose to signalscope.py ──────
     # Rebuilds whenever any config-save route calls _cfg_save(), so the dict
@@ -1229,6 +1269,22 @@ select[multiple]{min-height:90px}
   <div id="studios-list"><div class="empty">Loading…</div></div>
 </div>
 <div class="pane main" id="pane-brands">
+  <div class="card" id="deflogo-card">
+    <div class="ch">Cleared Studio Default Logo</div>
+    <div class="cb">
+      <p style="color:var(--mu);margin-bottom:12px;font-size:12px">Shown on the TV display when a studio has no brand assigned. PNG, JPEG, WebP or SVG, max 2 MB.</p>
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <div id="deflogo-preview" style="display:none">
+          <img id="deflogo-img" src="" alt="" style="max-height:80px;max-width:180px;border-radius:8px;border:1px solid var(--bor);object-fit:contain;background:rgba(255,255,255,.04)">
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="file" id="deflogo-file" accept=".png,.jpg,.jpeg,.webp,.svg" style="display:none">
+          <button class="btn bp bs" id="deflogo-upload-btn">Upload Logo</button>
+          <button class="btn bd bs" id="deflogo-remove-btn" style="display:none">Remove</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="brands-list"><div class="empty">Loading…</div></div>
 </div>
 <div class="pane main" id="pane-api">
@@ -1323,6 +1379,35 @@ function loadAll(){
     renderStudios();
     renderBrands();
   });
+  loadDefLogo();
+}
+
+/* ── Default cleared-studio logo ──────────────────────────────── */
+function loadDefLogo(){
+  fetch('/api/studioboard/data',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
+    var url=d.default_logo_url||'';
+    var img=document.getElementById('deflogo-img');
+    var prev=document.getElementById('deflogo-preview');
+    var rmBtn=document.getElementById('deflogo-remove-btn');
+    if(url&&img){img.src=url;prev.style.display='block';if(rmBtn)rmBtn.style.display='';}
+    else{if(prev)prev.style.display='none';if(rmBtn)rmBtn.style.display='none';}
+  }).catch(function(){});
+}
+function _defLogoUpload(){
+  var fi=document.getElementById('deflogo-file');
+  if(!fi||!fi.files||!fi.files[0])return;
+  var fd=new FormData();fd.append('logo',fi.files[0]);
+  fetch('/api/studioboard/default_logo',{method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':_getCsrf()},body:fd})
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.ok){_showMsg('Default logo updated.',true);loadDefLogo();}
+      else _showMsg(d.error||'Upload failed',false);
+    }).catch(function(e){_showMsg('Error: '+e,false);});
+}
+function _defLogoRemove(){
+  fetch('/api/studioboard/default_logo',{method:'DELETE',credentials:'same-origin',headers:{'X-CSRFToken':_getCsrf()}})
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.ok){_showMsg('Default logo removed.',true);loadDefLogo();}
+    }).catch(function(){});
 }
 
 /* ── Studios tab ─────────────────────────────────────── */
@@ -1658,6 +1743,17 @@ document.getElementById('restore-btn').addEventListener('click',function(){
     });
 });
 
+/* ── Default logo button wiring ───── */
+document.getElementById('deflogo-upload-btn').addEventListener('click',function(){
+  document.getElementById('deflogo-file').click();
+});
+document.getElementById('deflogo-file').addEventListener('change',function(){
+  if(this.files&&this.files[0])_defLogoUpload();
+});
+document.getElementById('deflogo-remove-btn').addEventListener('click',function(){
+  if(confirm('Remove the default cleared studio logo?'))_defLogoRemove();
+});
+
 loadAll();
 })();
 </script>
@@ -1946,18 +2042,21 @@ body.corp .col-wave{display:none}
 .free-auto-name{font-size:18px;font-weight:700;color:rgba(255,255,255,.55)}
 .free-auto-sub{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.18em;
   color:var(--wn);opacity:.65}
+/* Default logo shown in cleared studios */
+.free-logo{max-width:55%;max-height:28vh;object-fit:contain;opacity:.65;pointer-events:none}
 </style></head>
 <body>
 <!-- Full-page brand-derived gradient background; updated by JS on first render() -->
 <div id="page-bg"></div>
-<div id="sb-msg">📡 <span id="sb-msg-text"></span></div>
+<div id="sb-msg"><span id="sb-msg-text"></span></div>
 <div id="sb"><div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--mu)">
-<div style="text-align:center"><div style="font-size:48px;margin-bottom:12px">🎙</div>
+<div style="text-align:center"><div style="font-size:48px;margin-bottom:12px">&#9678;</div>
 <div style="font-size:18px;font-weight:700">Connecting…</div></div></div></div>
 <script nonce="{{csp_nonce()}}">
 (function(){
 'use strict';
 var T='{{wb_token|default("")}}',SID='{{studio_id|default("")}}';
+var _defLogo=''; /* URL of default cleared-studio logo, set from poll data */
 function tk(u){if(!T)return u;return u+(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(T)}
 function E(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function RGB(h){h=h.replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];var n=parseInt(h,16);return((n>>16)&255)+','+((n>>8)&255)+','+(n&255)}
@@ -2092,57 +2191,57 @@ function lh(d){return Math.max(0,Math.min(100,(d-DB)/(-DB)*100))}
 /* Witty automation messages — rotate every 9 seconds */
 var IDLE=[
   /* DJ on mic / long links */
-  "Mic\u2019s live \u2014 the DJ\u2019s at it again! \uD83C\uDFA4",
-  "Presenter\u2019s doing a very long read\u2026 \uD83D\uDE05",
+  "Mic\u2019s live \u2014 the DJ\u2019s at it again! \u266A",
+  "Presenter\u2019s doing a very long read\u2026",
   "Still talking\u2026 we promise music is coming!",
-  "DJ going deep on that link\u2026 \uD83D\uDD57",
+  "DJ going deep on that link\u2026",
   "The presenter\u2019s really going for it today!",
   "Long link incoming\u2026 grab a brew \u2615",
   "We asked for 30 seconds. We got\u2026 this.",
   "The intro ran out. The presenter did not.",
-  "Off-script and absolutely loving it \uD83D\uDE0A",
+  "Off-script and absolutely loving it",
   "The producer is counting ceiling tiles right now",
-  "Someone should probably time that link \uD83D\uDC40",
-  "Still going\u2026 the producer\u2019s sweating \uD83D\uDE05",
-  "A masterclass in filling dead air \uD83C\uDF93",
+  "Someone should probably time that link",
+  "Still going\u2026 the producer\u2019s sweating",
+  "A masterclass in filling dead air",
   "The stopwatch has given up the will to live",
   "Voice for radio. Brevity: optional.",
   "More words than the Oxford Dictionary right now",
-  "Somewhere, a jingle is crying \uD83C\uDFB5",
-  "The sweeper has been queued for 4 minutes \uD83D\uDE2C",
+  "Somewhere, a jingle is crying",
+  "The sweeper has been queued for 4 minutes",
   "Producer frantically scrolling the playlist right now",
   "Fun fact: this link started before some people\u2019s lunch",
-  "The music is waiting very patiently \uD83C\uDFB6",
-  "This is why radio has a cough button \uD83D\uDE04",
+  "The music is waiting very patiently",
+  "This is why radio has a cough button",
   "Compliance is looking at a different screen. It\u2019s fine.",
   "The floor manager stopped counting. Liberation.",
   /* Make Me A Winner */
-  "Make Me A Winner time! \uD83C\uDFC6",
+  "Make Me A Winner time!",
   "Getting ready for Make Me a Winner\u2026",
-  "Could you be today\u2019s winner? \uD83C\uDF89",
-  "Someone\u2019s about to win big! \uD83C\uDF1F",
+  "Could you be today\u2019s winner?",
+  "Someone\u2019s about to win big!",
   "Make Me A Winner \u2014 the nation holds its breath!",
-  "Will they pick up? The tension is real! \uD83D\uDCF1",
-  "Ringing\u2026 ringing\u2026 please pick up! \uD83D\uDCDE",
+  "Will they pick up? The tension is real!",
+  "Ringing\u2026 ringing\u2026 please pick up!",
   "One lucky listener. Infinite suspense.",
   /* General / in-between */
   "Music coming right up!",
   "Hold tight, we\u2019ll be right back!",
-  "Loading the next banger\u2026 \uD83D\uDD25",
+  "Loading the next banger\u2026",
   "Probably on an ad break\u2026",
   "Back with more music in just a moment!",
-  "The hits keep coming \uD83C\uDFB6",
+  "The hits keep coming",
   "Stand by for more great radio!",
-  "On air and sounding great \uD83D\uDCFB",
+  "On air and sounding great",
   "Coming up: an absolute tune. Allegedly.",
   "The next song is going to be a big one. We think.",
   "Hold on tight \u2014 radio is happening",
   "All systems go. Most of them, anyway.",
-  "Live and unfiltered \uD83D\uDEA8",
+  "Live and unfiltered",
   "Peak radio. Right now. This is it.",
   "Nothing to see here. Carry on.",
-  /* \uD83D\uDD96 */
-  "Captain\u2019s log, stardate unknown: presenter still talking \uD83D\uDD96",
+  /* */
+  "Captain\u2019s log, stardate unknown: presenter still talking",
 ];
 var _idleIdx={},_idleTs={},_IDLE_MS=9000;
 function _idleMsg(key){
@@ -2193,7 +2292,9 @@ function buildCol(s,idx){
       +'</div>'
       /* Body: VT alert / clock / automation / mic button — centred below header */
       +'<div class=free-body>'
-        +'<div class="free-vt" id="vt-badge'+idx+'" style="display:none">\uD83C\uDF99 VOICE TRACKING</div>'
+        +'<div class="free-vt" id="vt-badge'+idx+'" style="display:none">VOICE TRACKING</div>'
+        /* Default cleared-studio logo — src/visibility managed by updateCol */
+        +'<img class="free-logo" id="free-deflogo'+idx+'" alt="" style="display:none" onerror="this.style.display=\'none\'">'
         +'<div class="free-big-clk" id="free-clk'+idx+'">--:--:--</div>'
         +(s.auto_brand_name?'<div class=free-auto-lbl><div class=free-auto-name>'+E(s.auto_brand_name)+'</div><div class=free-auto-sub>IN AUTOMATION</div></div>':'')
         +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
@@ -2257,9 +2358,19 @@ function updateCol(s,idx){
     var _vtel=document.getElementById('vt-badge'+idx);
     var _ckel=document.getElementById('free-clk'+idx);
     var _avel=document.getElementById('free-avail'+idx);
+    var _lgel=document.getElementById('free-deflogo'+idx);
     if(_vtel)_vtel.style.display=_vt?'':'none';
     if(_ckel)_ckel.style.display=_vt?'none':'';
     if(_avel)_avel.style.display=_vt?'none':'';
+    /* Default logo — show when cleared and not in VT mode */
+    if(_lgel){
+      if(_defLogo&&!_vt){
+        if(_lgel.src!==_defLogo)_lgel.src=_defLogo;
+        _lgel.style.display='';
+      }else{
+        _lgel.style.display='none';
+      }
+    }
     return;
   }
 
@@ -2352,7 +2463,7 @@ function updateCol(s,idx){
       var _au=np.artwork||''; /* np = gNp(s) declared at top of updateCol */
       var _zart=_au
         ?'<img class="zm-art" src="'+E(_au)+'" alt="" onerror="this.className=\'zm-art zm-art-ph\';this.removeAttribute(\'src\')">'
-        :'<div class="zm-art zm-art-ph">\uD83C\uDFA4</div>';
+        :'<div class="zm-art zm-art-ph">\u266A</div>';
       var _zartist=E(zd.now_playing.raw_artist||zd.now_playing.artist||'');
       var _ztitle=E(zd.now_playing.raw_title||zd.now_playing.title||'');
       /* asset_type 2 = ASSET_SPOT in Zetta — use raw Zetta type, not category string matching */
@@ -2424,7 +2535,11 @@ function render(){
 }
 
 function poll(){fetch(tk('/api/studioboard/data'),{credentials:'same-origin'})
-  .then(function(r){return r.json()}).then(function(d){D=d;_dataFetchTs=Date.now()/1000;render()}).catch(function(){})}
+  .then(function(r){return r.json()}).then(function(d){
+    D=d;_dataFetchTs=Date.now()/1000;
+    _defLogo=d.default_logo_url?tk(d.default_logo_url):'';
+    render();
+  }).catch(function(){})}
 
 /* Live levels — store targets for smooth RAF animation, no direct DOM writes */
 function live(){fetch(tk('/api/hub/live_levels'),{credentials:'same-origin'})

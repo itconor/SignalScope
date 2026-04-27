@@ -2,6 +2,30 @@
 
 ---
 
+### Studio Board 3.14.19 — 2026-04-27
+
+**Fix: emoji not rendering on Yodeck / Raspberry Pi displays + default cleared-studio logo**
+
+**Emoji → standard Unicode / text replacements (Yodeck / Pi fix):**
+
+Yodeck players run Chromium on Raspberry Pi OS which lacks a colour emoji font by default. Several emoji used in `_TV_TPL` appeared as blank boxes on those devices:
+- Removed `📡` prefix from the status message bar (text label is sufficient)
+- Replaced `🎙` (U+1F399) in the "Connecting…" splash with `◎` (U+25CE — standard Unicode ring, no emoji font needed)
+- Removed `🎙` prefix from the VOICE TRACKING badge (the amber pulsing badge styling is already visually distinctive)
+- Replaced `🎤` (U+1F3A4) in the Zetta no-artwork placeholder with `♪` (U+266A — standard Unicode music note)
+- Stripped surrogate-pair emoji from all 24 IDLE automation messages (decorative suffixes only — the text remains)
+
+**Default cleared-studio logo:**
+
+Studios with no brand assigned ("Studio Free") now support a default logo image displayed in the cleared state. Configured in **Admin → Brands → Cleared Studio Default Logo**:
+- Upload a PNG, JPEG, WebP, or SVG image (max 2 MB) — stored as `_default_logo.{ext}` in `studioboard_art/`
+- The logo appears centred in the studio card whenever the studio is cleared and not in VT mode
+- Hidden during VOICE TRACKING (amber badge takes priority)
+- Upload / Remove buttons in the Brands admin tab; no page reload needed
+- Logo responds to live poll updates — shown/hidden within the next 10 s poll cycle if changed
+
+---
+
 ### vMix Caller 1.6.7 — 2026-04-27
 
 **Fix: client page call controls silently do nothing / better vMix API diagnostics**
