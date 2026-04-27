@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.6.5",
+    "version": "1.6.6",
 }
 
 import os
@@ -1740,22 +1740,28 @@ function joinManual(){
   joinWith(mid,pass);
 }
 
-// Override sendCmd to check site selection first
+// Override sendCmd to include currently-selected site in every command POST.
+// The base sendCmd does not know about the hub site selector — the backend reads
+// target_site from saved config which may not match the selected site yet.
+// By injecting site here, commands work immediately without a prior save.
 var _baseSendCmd=sendCmd;
 sendCmd=function(fn,value){
-  var site=document.getElementById('target-site');
-  if(site&&!site.value){showMsg('Select a site first',false);return Promise.resolve({ok:false});}
-  return _baseSendCmd(fn,value);
+  var siteSel=document.getElementById('target-site');
+  var siteVal=siteSel?siteSel.value:'';
+  if(!siteVal){showMsg('Select a site first',false);return Promise.resolve({ok:false});}
+  return _post('/api/vmixcaller/function',{fn:fn,value:value,site:siteVal})
+    .then(function(d){if(!d.ok)showMsg(d.error||'Error queuing command',false);return d;})
+    .catch(function(e){showMsg('Error: '+e,false);return{ok:false};});
 };
 
 // ── State polling ─────────────────────────────────────────────────────────────
 var _statePollT=null;
 function loadState(){
   clearTimeout(_statePollT);
-  fetch('/api/vmixcaller/state',{credentials:'same-origin'})
+  var site=(document.getElementById('target-site')||{}).value||'';
+  fetch('/api/vmixcaller/state?site='+encodeURIComponent(site),{credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      var site=(document.getElementById('target-site')||{}).value||'';
       if(!site){setStatus('off','No site selected',0);return;}
       if(!d.has_data){setStatus('warn','Waiting for '+site+' to report\u2026',0);}
       else if(d.ok){
@@ -2767,7 +2773,8 @@ def register(app, ctx):
         if not fn:
             return jsonify({"ok": False, "error": "Missing function name"}), 400
         cfg         = _load_cfg()
-        target_site = cfg.get("target_site", "").strip()
+        # Use site from request body first (hub page always sends it); fall back to saved config.
+        target_site = (data.get("site") or cfg.get("target_site", "")).strip()
         # ZoomJoinMeeting Value = "MeetingID,Password" (comma-separated per official vMix API).
         # JS now sends it pre-formatted; no splitting needed here.
         raw_value = data.get("value")
@@ -2872,7 +2879,9 @@ def register(app, ctx):
     @login_required
     def vmixcaller_state():
         cfg         = _load_cfg()
-        target_site = cfg.get("target_site", "").strip()
+        # site can be passed as a query param (hub page sends it on every poll).
+        # Fall back to saved config for backwards compat.
+        target_site = (request.args.get("site") or cfg.get("target_site", "")).strip()
         if not target_site:
             return jsonify({"has_data": False})
         with _state_lock:

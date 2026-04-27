@@ -2,6 +2,22 @@
 
 ---
 
+### vMix Caller 1.6.6 — 2026-04-26
+
+**Fix: Join meeting buttons and all call controls did nothing on hub page**
+
+The hub page's `sendCmd` override checked that a site was selected in the dropdown but never included the selected site in the POST body sent to `/api/vmixcaller/function`. The backend read `target_site` from the saved config file — if the operator hadn't explicitly saved an instance with that site, the backend returned "No target site selected — save settings first" and queued nothing. Similarly, `loadState()` polled `/api/vmixcaller/state` without passing the current site, so the vMix connection status always reflected the *saved* target site rather than whatever was selected in the dropdown.
+
+Fixed by:
+- Hub `sendCmd` override now passes `site: siteVal` in the POST body (and duplicates the full `_post` + error-show chain to avoid calling the base helper that lacks site)
+- `loadState()` passes `?site=<selected>` as a query param on every state poll
+- `vmixcaller_function` backend reads `data.get("site")` first, falls back to saved config
+- `vmixcaller_state` backend reads `request.args.get("site")` first, falls back to saved config
+
+Commands and status now work immediately when a site is chosen in the dropdown, without requiring a prior "Save Instance" step.
+
+---
+
 ### vMix Caller 1.6.5 — 2026-04-26
 
 **Fix: Save Instance returns SyntaxError (405 Method Not Allowed)**
