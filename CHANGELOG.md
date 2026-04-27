@@ -2,6 +2,14 @@
 
 ---
 
+### Push Server 1.0.7 — 2026-04-27
+
+**Fix: Migrate button does nothing**
+
+The Migrate and error-handling paths called `_btnLoad()`, `_btnReset()`, and `_ssToast()` — helpers defined by the main app's topnav JS. The Push Server page uses a custom header (not `{{topnav(...)}}`), so those functions were never defined. Clicking Migrate threw a `ReferenceError` immediately, the `fetch()` call never ran, and nothing happened. Save-button error messages were also silently swallowed. Added inline shims for all three functions to the plugin's own `<script>` block.
+
+---
+
 ### Studio Board 3.14.21 — 2026-04-27
 
 **Fix: Boards freeze momentarily after mic-live change**

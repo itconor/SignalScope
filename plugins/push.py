@@ -16,11 +16,11 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/push",
     "icon":     "📡",
     "hub_only": True,
-    "version":  "1.0.6",
+    "version":  "1.0.7",
 }
 
 # ─── plugin version ───────────────────────────────────────────────────────────
-_PLUGIN_VERSION = "1.0.5"
+_PLUGIN_VERSION = "1.0.7"
 
 import json as _json
 import os as _os
@@ -389,7 +389,26 @@ function _csrf(){
   return (document.querySelector('meta[name="csrf-token"]')||{}).content
         ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
 }
-function _val(id){var e=document.getElementById(id);return e?e.value:'';};
+function _val(id){var e=document.getElementById(id);return e?e.value:'';}
+
+/* Shims for topnav helpers — this page uses a custom header, not {{topnav()}} */
+function _btnLoad(b){b.disabled=true;b._orig=b.textContent;b.textContent='Working…';}
+function _btnReset(b){b.disabled=false;if(b._orig!==undefined)b.textContent=b._orig;}
+function _ssToast(msg,type){
+  var el=document.getElementById('_push_toast');
+  if(!el){
+    el=document.createElement('div');el.id='_push_toast';
+    el.style.cssText='position:fixed;bottom:20px;right:20px;padding:10px 16px;'
+      +'border-radius:8px;font-size:13px;z-index:9999;max-width:420px;'
+      +'box-shadow:0 2px 12px rgba(0,0,0,.5);';
+    document.body.appendChild(el);
+  }
+  el.style.background=type==='err'?'#2a0a0a':'#0f2318';
+  el.style.color=type==='err'?'#ef4444':'#22c55e';
+  el.style.border=type==='err'?'1px solid #991b1b':'1px solid #166534';
+  el.textContent=msg;
+  clearTimeout(el._t);el._t=setTimeout(function(){el.textContent='';},5000);
+}
 
 var _sb=document.getElementById('save-btn');
 if(_sb){_sb.addEventListener('click',function(){
