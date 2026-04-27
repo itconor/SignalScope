@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.19",
+    "version":  "3.14.20",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +20,16 @@ _CFG_PATH      = os.path.join(_BASE_DIR, "studioboard_cfg.json")
 # ── Chain → Studio mapping (exposed to signalscope.py as monitor._studioboard_chain_studios) ──
 # Mutable dict so the signalscope.py reference stays valid after config changes.
 _chain_studios: dict = {}   # {chain_id: [studio_name, ...]}
+
+# ── In-memory mic-live state ─────────────────────────────────────────────────
+# Mic-live is runtime state (not configuration) — keeping it out of the config
+# file prevents broadcast mic-toggle events from triggering disk writes and
+# maximising the crash-during-write window.  State is lost on server restart
+# (expected: mic must be re-triggered by the desk), so no persistence is needed.
+_mic_live_state: dict = {}   # studio_id → {"live": bool, "ts": int}
+
+# ── Config file write lock ───────────────────────────────────────────────────
+_CFG_LOCK = _threading.Lock()
 
 def _rebuild_chain_studios_into(target: dict, cfg: dict) -> None:
     """Rebuild {chain_id: [studio_name, ...]} from studioboard config. Mutates target in-place."""
@@ -174,18 +184,40 @@ def _img_cache_poller_fn():
 # ── Config helpers ──────────────────────────────────────────────
 
 def _cfg_load():
-    try:
-        with open(_CFG_PATH) as f:
-            cfg = json.load(f)
-    except Exception:
-        return {"studios": [], "brands": []}
-    if _cfg_migrate(cfg):
-        _cfg_save(cfg)
-    return cfg
+    # Try the main file first, then the backup (.bak) left from the previous
+    # save.  The backup exists when a crash interrupted the last write rotation
+    # after the old main was renamed away but before the tmp was moved in.
+    for _path in (_CFG_PATH, _CFG_PATH + ".bak"):
+        try:
+            with open(_path) as f:
+                cfg = json.load(f)
+            if _cfg_migrate(cfg):
+                _cfg_save(cfg)
+            return cfg
+        except Exception:
+            continue
+    return {"studios": [], "brands": []}
 
 def _cfg_save(c):
-    with open(_CFG_PATH, "w") as f:
-        json.dump(c, f, indent=2)
+    """Write config atomically: tmp → backup → main.
+    Uses os.replace() which is atomic on POSIX (rename syscall).
+    A crash between the two os.replace() calls leaves the old main
+    intact as .bak, which _cfg_load() falls back to on next startup.
+    """
+    _tmp = _CFG_PATH + ".tmp"
+    _bak = _CFG_PATH + ".bak"
+    with _CFG_LOCK:
+        with open(_tmp, "w") as f:
+            json.dump(c, f, indent=2)
+        # Rotate old main → backup before promoting tmp → main.
+        # If the process dies here the old main is in .bak and tmp is orphaned;
+        # _cfg_load falls back to .bak and recovers cleanly.
+        if os.path.exists(_CFG_PATH):
+            try:
+                os.replace(_CFG_PATH, _bak)
+            except Exception:
+                pass
+        os.replace(_tmp, _CFG_PATH)
     _rebuild_chain_studios_into(_chain_studios, c)
 
 def _get_studio(cfg, studio_id):
@@ -446,6 +478,7 @@ def register(app, ctx):
         cfg = _cfg_load()
         cfg["studios"] = [s for s in cfg.get("studios", [])
                           if s.get("id") != studio_id]
+        _mic_live_state.pop(studio_id, None)
         _cfg_save(cfg)
         return jsonify({"ok": True})
 
@@ -577,16 +610,15 @@ def register(app, ctx):
             else:
                 return jsonify({"error": "Unauthorized"}), 403
         data = request.get_json(force=True)
-        cfg = _cfg_load()
-        studio = _get_studio(cfg, studio_id)
-        if not studio:
+        # Validate the studio exists without loading the full config
+        _sb_cfg_check = _cfg_load()
+        if not _get_studio(_sb_cfg_check, studio_id):
             return jsonify({"error": "Studio not found"}), 404
-        studio["mic_live"] = bool(data.get("live", False))
-        if studio["mic_live"]:
-            studio["_mic_live_ts"] = int(_time.time())
-        _cfg_save(cfg)
+        # Mic-live is runtime state — store in memory only, no disk write.
+        _live = bool(data.get("live", False))
+        _mic_live_state[studio_id] = {"live": _live, "ts": int(_time.time())}
         _sb_notify_all()
-        return jsonify({"ok": True, "mic_live": studio["mic_live"]})
+        return jsonify({"ok": True, "mic_live": _live})
 
     # ── Chain assignment REST API ───────────────────────────────
 
@@ -1057,12 +1089,15 @@ def register(app, ctx):
                 with _img_cache_lk:
                     _ic = _img_cache.get(_rpuid) or _img_cache.get(_safe_rpuid(_rpuid)) or {}
                 _img_ts = _ic.get("ts", 0)
+            # Mic-live comes from the in-memory state dict (no disk read needed;
+            # state is cleared on server restart, which is correct behaviour).
+            _mls = _mic_live_state.get(sid, {})
             studios_out.append({
                 "id": sid,
                 "name": studio.get("name", ""),
                 "color": _src.get("color", "#17a8ff"),
                 "freq": _src.get("freq", ""),
-                "mic_live": studio.get("mic_live", False),
+                "mic_live": _mls.get("live", False),
                 "chains": s_chains,
                 "inputs": s_inputs,
                 "np_rpuid": _rpuid,
@@ -1077,7 +1112,7 @@ def register(app, ctx):
                 "message": (studio.get("message") or "").strip(),
                 "brand_id": brand_id,
                 "cleared_ts":       studio.get("_cleared_ts", 0),
-                "mic_live_ts":      studio.get("_mic_live_ts", 0),
+                "mic_live_ts":      _mls.get("ts", 0),
                 "auto_brand_name":  studio.get("_auto_brand_name", ""),
                 "auto_brand_color": studio.get("_auto_brand_color", "#17a8ff"),
             })

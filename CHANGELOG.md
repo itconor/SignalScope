@@ -2,6 +2,17 @@
 
 ---
 
+### Studio Board 3.14.20 — 2026-04-27
+
+**Fix: Config wipe after days of uptime**
+
+- `_cfg_save` opened the JSON file with `"w"` (truncating it to 0 bytes immediately) then wrote the new content. Any crash, OOM-kill, or `systemctl restart` between truncation and write completion left the file empty or partially written. On next startup `json.load` failed and `_cfg_load` returned `{"studios": [], "brands": []}`, silently wiping all studios and brands.
+- Fixed with atomic writes: config is now written to a `.tmp` file first, the existing file is then rotated to `.bak`, and finally the `.tmp` is renamed into place. All three operations are protected by a module-level lock. `os.replace()` is atomic on POSIX (rename syscall) so there is no window in which a partial file can be observed.
+- `_cfg_load` now falls back to `.bak` (the previous good save) if the main file is missing or corrupt. Any server restart following a write-interrupted crash will load from the backup automatically.
+- **Mic-live writes eliminated**: every mic-on/mic-off toggle previously rewrote the entire config to disk, dramatically increasing the crash-during-write probability during broadcasts. Mic-live is now held in a module-level memory dict (`_mic_live_state`) and never touches the file. State is cleared on server restart (expected: the desk must re-trigger mic-live after a restart).
+
+---
+
 ### SignalScope-3.5.175 — 2026-04-27
 
 **Fix: Chain fault push notifications not delivered when Push Server URL is configured**
