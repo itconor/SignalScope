@@ -32,13 +32,14 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.6.7",
+    "version": "1.7.0",
 }
 
 import os
 import json
 import time
 import uuid as _uuid_mod
+import hashlib
 import threading
 import urllib.request
 import urllib.parse
@@ -62,6 +63,13 @@ _state_lock          = threading.Lock()
 # Set by the client thread when hub sends relay:"start"; cleared on "stop".
 # _video_relay_loop blocks on this so it only runs on demand.
 _relay_event = threading.Event()
+
+# ── Zoom API hub-side state ──────────────────────────────────────────────
+_zoom_token_lock      = threading.Lock()
+_zoom_token_cache     = {"token": "", "expires": 0.0}
+_zoom_meetings_lock   = threading.Lock()
+_zoom_meetings_cache  = {"ts": 0.0, "data": []}
+
 
 # ── Hub-side HLS relay buffer ──────────────────────────────────────────────────
 # Client nodes fetch TS segments from the local LAN bridge and push them here.
@@ -218,6 +226,201 @@ def _get_active_instance(cfg: dict) -> dict:
         if inst.get("id") == aid:
             return inst
     return instances[0] if instances else {}
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Zoom Server-to-Server OAuth helpers (hub-side only)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _zoom_has_creds(raw: dict) -> bool:
+    return bool(raw.get("zoom_account_id") and
+                raw.get("zoom_client_id") and
+                raw.get("zoom_client_secret"))
+
+
+def _zoom_get_token(raw: dict) -> str:
+    """Get or refresh Zoom S2S OAuth Bearer token. Thread-safe, cached 1 hr."""
+    import base64
+    import hmac as _hmac
+    with _zoom_token_lock:
+        if time.time() < _zoom_token_cache["expires"] - 30:
+            return _zoom_token_cache["token"]
+        aid = (raw.get("zoom_account_id")    or "").strip()
+        cid = (raw.get("zoom_client_id")     or "").strip()
+        cs  = (raw.get("zoom_client_secret") or "").strip()
+        if not (aid and cid and cs):
+            return ""
+        creds = base64.b64encode(f"{cid}:{cs}".encode()).decode()
+        url   = ("https://zoom.us/oauth/token"
+                 "?grant_type=account_credentials"
+                 f"&account_id={urllib.parse.quote(aid)}")
+        req = urllib.request.Request(
+            url, method="POST",
+            headers={"Authorization": f"Basic {creds}",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=12) as r:
+                resp = json.loads(r.read())
+            token = resp.get("access_token", "")
+            exp   = int(resp.get("expires_in", 3600))
+            _zoom_token_cache.update({"token": token, "expires": time.time() + exp})
+            return token
+        except Exception:
+            _zoom_token_cache.update({"token": "", "expires": 0.0})
+            return ""
+
+
+def _zoom_api(raw: dict, method: str, path: str, body=None):
+    """Call Zoom REST API v2. Returns (ok: bool, data: dict)."""
+    import hmac as _hmac
+    token = _zoom_get_token(raw)
+    if not token:
+        return False, {"message": "Zoom credentials not configured or auth failed"}
+    url  = f"https://api.zoom.us/v2{path}"
+    data = json.dumps(body, separators=(",", ":")).encode() if body else None
+    req  = urllib.request.Request(
+        url, data=data, method=method,
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            raw_body = r.read()
+            return True, json.loads(raw_body) if raw_body else {}
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read())
+        except Exception:
+            err = {"message": str(e)}
+        if e.code == 401:
+            with _zoom_token_lock:
+                _zoom_token_cache.update({"token": "", "expires": 0.0})
+        return False, err
+    except Exception as e:
+        return False, {"message": str(e)}
+
+
+def _zoom_fetch_meetings(raw: dict, force: bool = False) -> list:
+    """Return upcoming + running meetings from Zoom API, cached for 60 s."""
+    with _zoom_meetings_lock:
+        if not force and (time.time() - _zoom_meetings_cache["ts"]) < 60:
+            return list(_zoom_meetings_cache["data"])
+    out:  list = []
+    seen: set  = set()
+
+    def _add(m, status=None):
+        mid = str(m.get("id", "")).strip()
+        if not mid or mid in seen:
+            return
+        seen.add(mid)
+        out.append({"id": mid,
+                    "topic":      (m.get("topic") or "Untitled").strip(),
+                    "status":     status or m.get("status", "waiting"),
+                    "start_time": m.get("start_time", ""),
+                    "duration":   int(m.get("duration") or 60),
+                    "join_url":   m.get("join_url", ""),
+                    "password":   (m.get("password") or "").strip()})
+
+    ok, resp = _zoom_api(raw, "GET", "/users/me/meetings?type=upcoming&page_size=50")
+    if ok:
+        for m in resp.get("meetings", []):
+            _add(m)
+    ok2, resp2 = _zoom_api(raw, "GET", "/users/me/meetings?type=live&page_size=20")
+    if ok2:
+        for m in resp2.get("meetings", []):
+            mid = str(m.get("id", ""))
+            if mid in seen:
+                for e in out:
+                    if e["id"] == mid:
+                        e["status"] = "started"; break
+            else:
+                _add(m, status="started")
+
+    with _zoom_meetings_lock:
+        _zoom_meetings_cache.update({"ts": time.time(), "data": out})
+    return out
+
+
+def _zoom_execute_action(raw: dict, action: str, data: dict) -> dict:
+    """Execute a Zoom action. Returns a dict for jsonify()."""
+    if not _zoom_has_creds(raw):
+        return {"ok": False, "error": "Zoom API not configured on hub"}
+
+    if action == "create":
+        topic = (data.get("topic") or "").strip() or "Untitled Meeting"
+        dur   = max(15, min(480, int(data.get("duration") or 60)))
+        pw    = (data.get("passcode") or "").strip()
+        wr    = bool(data.get("waiting_room", False))
+        body  = {"topic": topic, "type": 1, "duration": dur,
+                 "settings": {"waiting_room": wr, "join_before_host": not wr}}
+        if pw:
+            body["password"] = pw
+        ok, resp = _zoom_api(raw, "POST", "/users/me/meetings", body)
+        if ok:
+            with _zoom_meetings_lock:
+                _zoom_meetings_cache["ts"] = 0.0
+            return {"ok": True,
+                    "meeting_id": str(resp.get("id", "")),
+                    "topic":      resp.get("topic", ""),
+                    "password":   resp.get("password", ""),
+                    "join_url":   resp.get("join_url", "")}
+        return {"ok": False, "error": str(resp.get("message") or resp)[:120]}
+
+    elif action == "end":
+        mid = (data.get("meeting_id") or "").strip()
+        if not mid:
+            return {"ok": False, "error": "No meeting ID"}
+        ok, resp = _zoom_api(raw, "PUT", f"/meetings/{mid}/status", {"action": "end"})
+        if ok or (isinstance(resp, dict) and resp.get("code") in (3001, 3002)):
+            with _zoom_meetings_lock:
+                _zoom_meetings_cache["ts"] = 0.0
+            return {"ok": True}
+        return {"ok": False, "error": str(resp.get("message") or resp)[:120]}
+
+    elif action == "delete":
+        mid = (data.get("meeting_id") or "").strip()
+        if not mid:
+            return {"ok": False, "error": "No meeting ID"}
+        ok, resp = _zoom_api(raw, "DELETE", f"/meetings/{mid}")
+        if ok:
+            with _zoom_meetings_lock:
+                _zoom_meetings_cache["ts"] = 0.0
+            return {"ok": True}
+        return {"ok": False, "error": str(resp.get("message") or resp)[:120]}
+
+    elif action == "refresh":
+        try:
+            return {"ok": True, "meetings": _zoom_fetch_meetings(raw, force=True)}
+        except Exception as ex:
+            return {"ok": False, "error": str(ex)[:120]}
+
+    return {"ok": False, "error": f"Unknown action: {action!r}"}
+
+
+def _zoom_hub_proxy_get(url: str, site: str, secret: str) -> dict:
+    """HMAC-signed GET from client Flask to hub zoom_hub_data endpoint."""
+    import hmac as _hmac
+    ts   = time.time()
+    hdrs = {"X-Site": site}
+    if secret:
+        key   = hashlib.sha256(f"{secret}:signing".encode()).digest()
+        sig   = _hmac.new(key, f"{ts:.0f}:".encode() + b"", hashlib.sha256).hexdigest()
+        nonce = hashlib.md5(os.urandom(8)).hexdigest()[:16]
+        hdrs.update({"X-Hub-Sig": sig, "X-Hub-Ts": f"{ts:.0f}", "X-Hub-Nonce": nonce})
+    req = urllib.request.Request(url, headers=hdrs, method="GET")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+def _zoom_hub_proxy_post(url: str, site: str, payload: dict) -> dict:
+    """POST from client Flask to hub zoom_hub_action endpoint (approval-only auth)."""
+    data = json.dumps(payload, separators=(",", ":")).encode()
+    hdrs = {"Content-Type": "application/json", "X-Site": site}
+    req  = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+    with urllib.request.urlopen(req, timeout=12) as r:
+        return json.loads(r.read())
 
 
 def _proxy_video_url(bridge_url: str) -> str:
@@ -942,6 +1145,14 @@ document.addEventListener('click',function(e){
   else if(a==='testVmix'    &&typeof testVmix==='function')     testVmix();
   else if(a==='reconnect'   &&typeof reconnect==='function')    reconnect();
   else if(a==='switchInstance'&&typeof switchInstance==='function')switchInstance(btn);
+  else if(a==='zoomJoin'      &&typeof zoomJoin==='function')       zoomJoin(btn);
+  else if(a==='zoomEnd'       &&typeof zoomEnd==='function')        zoomEnd(btn);
+  else if(a==='zoomAddSaved'  &&typeof zoomAddSaved==='function')   zoomAddSaved(btn);
+  else if(a==='toggleZoomCreate'&&typeof toggleZoomCreate==='function')toggleZoomCreate();
+  else if(a==='cancelZoomCreate'&&typeof cancelZoomCreate==='function')cancelZoomCreate();
+  else if(a==='createZoomNow' &&typeof createZoomNow==='function')  createZoomNow();
+  else if(a==='refreshZoom'   &&typeof loadZoomData==='function')   loadZoomData(true);
+  else if(a==='saveZoomCreds' &&typeof saveZoomCreds==='function')  saveZoomCreds();
   else if(a==='newInstance'  &&typeof newInstance==='function')   newInstance();
   else if(a==='saveInstance' &&typeof saveInstance==='function')  saveInstance();
   else if(a==='deleteInstance'&&typeof deleteInstance==='function')deleteInstance();
@@ -960,6 +1171,105 @@ function _populateInstForm(inst){
   Object.keys(flds).forEach(function(id){
     var el=document.getElementById(id);if(el)el.value=flds[id];
   });
+}
+
+// ── Zoom API meetings ─────────────────────────────────────────────────────────
+var _zAutoT=null;
+function loadZoomData(force){
+  var url='/api/vmixcaller/zoom_data'+(force?'?refresh=1':'');
+  fetch(url,{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var conn=document.getElementById('zoom-connected');
+      var ncfg=document.getElementById('zoom-not-cfg');
+      if(conn)conn.style.display=d.configured?'':'none';
+      if(ncfg)ncfg.style.display=d.configured?'none':'';
+      _renderZoomMtgs(d.meetings||[],d.configured);
+    }).catch(function(){});
+  clearTimeout(_zAutoT);
+  _zAutoT=setTimeout(function(){loadZoomData(false);},60000);
+}
+function _renderZoomMtgs(meetings,configured){
+  var el=document.getElementById('zoom-meeting-list');
+  if(!el)return;
+  if(!configured){el.innerHTML='<div class="empty-note">Zoom API not configured on hub — add credentials in hub settings</div>';return;}
+  if(!meetings.length){el.innerHTML='<div class="empty-note">No upcoming meetings found</div>';return;}
+  el.innerHTML=meetings.map(function(m){
+    var live=m.status==='started';
+    var ts=m.start_time?_zFmt(m.start_time):'';
+    return '<div class="mtg-row">'
+      +'<span class="dot '+(live?'dok':'dwn')+'" style="flex-shrink:0" title="'+(live?'Live':'Scheduled')+'"></span>'
+      +'<div style="flex:1;min-width:0;margin:0 6px">'
+        +'<div class="mtg-name">'+_esc(m.topic)+'</div>'
+        +'<div class="mtg-id">ID: '+_esc(m.id)+(ts?' · '+_esc(ts):'')+(live?' <b style="color:var(--ok)">LIVE</b>':'')+'</div>'
+      +'</div>'
+      +'<button class="btn bp bs" data-action="zoomJoin" data-mid="'+_esc(m.id)+'" data-pass="'+_esc(m.password||'')+'">Join</button>'
+      +(live?'<button class="btn bd bs" data-action="zoomEnd" data-mid="'+_esc(m.id)+'" title="End for all">End</button>':'')
+      +'<button class="btn bg bs" data-action="zoomAddSaved" data-mid="'+_esc(m.id)+'" data-pass="'+_esc(m.password||'')+'" data-topic="'+_esc(m.topic)+'" title="Save to presets for Presenter View">+Save</button>'
+      +'</div>';
+  }).join('');
+}
+function _zFmt(iso){
+  try{var d=new Date(iso);return d.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}
+  catch(e){return iso;}
+}
+function toggleZoomCreate(){
+  var f=document.getElementById('zoom-create-form');
+  if(f)f.style.display=f.style.display==='none'?'':'none';
+}
+function cancelZoomCreate(){var f=document.getElementById('zoom-create-form');if(f)f.style.display='none';}
+function createZoomNow(){
+  var topic=((document.getElementById('zm-topic')||{}).value||'').trim();
+  var pass=((document.getElementById('zm-pass')||{}).value||'').trim();
+  var dur=parseInt(((document.getElementById('zm-dur')||{}).value)||'60')||60;
+  var wr=!!(document.getElementById('zm-waiting-room')||{}).checked;
+  _post('/api/vmixcaller/zoom_action',{action:'create',topic:topic,passcode:pass,duration:dur,waiting_room:wr})
+    .then(function(d){
+      if(d.ok){
+        showMsg('Meeting created — #'+d.meeting_id+(d.password?' (passcode: '+d.password+')':''),true);
+        cancelZoomCreate();
+        joinWith(d.meeting_id,d.password||'');
+        setTimeout(function(){loadZoomData(true);},2000);
+      } else showMsg(d.error||'Create failed',false);
+    }).catch(function(e){showMsg('Error: '+e,false);});
+}
+function zoomJoin(btn){joinWith(btn.dataset.mid||'',btn.dataset.pass||'');}
+function zoomEnd(btn){
+  if(!confirm('End this meeting for all participants?'))return;
+  _post('/api/vmixcaller/zoom_action',{action:'end',meeting_id:btn.dataset.mid})
+    .then(function(d){
+      if(d.ok){showMsg('Meeting ended',true);setTimeout(function(){loadZoomData(true);},1500);}
+      else showMsg(d.error||'Failed to end meeting',false);
+    }).catch(function(e){showMsg('Error: '+e,false);});
+}
+function zoomAddSaved(btn){
+  var name=(btn.dataset.topic||'Meeting').substring(0,40);
+  var mid=btn.dataset.mid||'';var pass=btn.dataset.pass||'';
+  if(!mid){showMsg('No meeting ID',false);return;}
+  _post('/api/vmixcaller/meetings',{name:name,id:mid,pass:pass,display_name:''})
+    .then(function(d){
+      if(d.ok){showMsg('"'+_esc(name)+'" added to saved meetings',true);if(typeof loadMeetings==='function')loadMeetings();}
+      else showMsg(d.error||'Save failed',false);
+    }).catch(function(e){showMsg('Error: '+e,false);});
+}
+// Hub-only: save Zoom credentials and immediately test them
+function saveZoomCreds(){
+  var aid=((document.getElementById('zoom-account-id')||{}).value||'').trim();
+  var cid=((document.getElementById('zoom-client-id')||{}).value||'').trim();
+  var cs=((document.getElementById('zoom-client-secret')||{}).value||'').trim();
+  _post('/api/vmixcaller/zoom_credentials',{zoom_account_id:aid,zoom_client_id:cid,zoom_client_secret:cs})
+    .then(function(d){
+      if(d.ok){
+        showMsg('Credentials saved — testing…',true);
+        fetch('/api/vmixcaller/zoom_status',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s){
+          var dot=document.getElementById('zoom-status-dot');
+          var txt=document.getElementById('zoom-status-txt');
+          if(dot)dot.className='dot '+(s.ok?'dok':'dal');
+          if(txt)txt.textContent=s.ok?('✓ '+s.name+' ('+s.email+')'):('Auth failed: '+(s.error||''));
+          if(s.ok){loadZoomData(true);}
+        }).catch(function(){});
+      } else showMsg(d.error||'Save failed',false);
+    }).catch(function(e){showMsg('Error: '+e,false);});
 }
 """
 
@@ -1608,6 +1918,55 @@ _HUB_TPL = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ── Zoom API Configuration ─────────────────────────────────────────────── -->
+<div class="card">
+  <div class="ch">&#128247; Zoom API
+    <div class="ch-r">
+      <span id="zoom-status-dot" class="dot"></span>
+      <span id="zoom-status-txt" class="ago" style="margin-left:4px">{% if zoom_configured %}Credentials saved &#8212; test below{% else %}Not configured{% endif %}</span>
+    </div>
+  </div>
+  <div class="cb">
+    <p class="hint" style="margin-bottom:10px">Server-to-Server OAuth &#8212; register a <em>Server-to-Server OAuth</em> app at <a href="https://marketplace.zoom.us" target="_blank" rel="noopener" style="color:var(--acc)">marketplace.zoom.us</a> and grant <code style="font-size:11px">meeting:write:admin</code> and <code style="font-size:11px">meeting:read:admin</code> scopes.</p>
+    <div class="field"><label class="fl">Account ID</label><input type="text" id="zoom-account-id" placeholder="{% if zoom_configured %}Configured &#8212; re-enter to update{% else %}Your Account ID{% endif %}"></div>
+    <div class="r2">
+      <div class="field"><label class="fl">Client ID</label><input type="text" id="zoom-client-id" placeholder="Client ID"></div>
+      <div class="field"><label class="fl">Client Secret</label><input type="password" id="zoom-client-secret" placeholder="Client Secret"></div>
+    </div>
+    <div class="brow"><button class="btn bp bs" data-action="saveZoomCreds">Save &amp; Test</button></div>
+  </div>
+</div>
+
+<!-- ── Zoom Meetings (hub view) ───────────────────────────────────────────── -->
+<div class="card" id="zoom-meetings-card">
+  <div class="ch">&#128197; Zoom Meetings
+    <div class="ch-r">
+      <span id="zoom-connected" style="display:none;font-size:11px;color:var(--ok)">&#10003; Connected</span>
+      <span id="zoom-not-cfg"   style="display:none;font-size:11px;color:var(--mu)">Not configured</span>
+      <button class="btn bg bs" data-action="refreshZoom">&#8635; Refresh</button>
+      <button class="btn bp bs" data-action="toggleZoomCreate">+ Create</button>
+    </div>
+  </div>
+  <div class="cb">
+    <div id="zoom-create-form" style="display:none;background:#091e42;border:1px solid var(--bor);border-radius:8px;padding:12px;margin-bottom:12px">
+      <div class="r2" style="margin-bottom:8px">
+        <div class="field" style="margin-bottom:0"><label class="fl">Topic</label><input type="text" id="zm-topic" placeholder="Meeting topic"></div>
+        <div class="field" style="margin-bottom:0"><label class="fl">Passcode (optional)</label><input type="text" id="zm-pass" placeholder="Leave blank for none"></div>
+      </div>
+      <div class="r2" style="margin-bottom:8px">
+        <div class="field" style="margin-bottom:0"><label class="fl">Duration (min)</label><input type="number" id="zm-dur" value="60" min="15" max="480"></div>
+        <div class="field" style="margin-bottom:0;justify-content:flex-end"><label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding-bottom:2px"><input type="checkbox" id="zm-waiting-room"> Waiting room</label></div>
+      </div>
+      <div class="brow">
+        <button class="btn bp bs" data-action="createZoomNow">&#9654; Start Now &amp; Join in vMix</button>
+        <button class="btn bg bs" data-action="cancelZoomCreate">Cancel</button>
+      </div>
+    </div>
+    <div id="zoom-meeting-list"><div class="empty-note">{% if zoom_configured %}Loading&#8230;{% else %}Save credentials above to load meetings{% endif %}</div></div>
+  </div>
+</div>
+
+
 </main>
 <script nonce="{{csp_nonce()}}">
 """ + _JS_HELPERS + r"""
@@ -1894,6 +2253,7 @@ document.addEventListener('DOMContentLoaded',function(){
   }
   updateRelayCtrl();
   loadMeetings();
+  loadZoomData({% if zoom_configured %}true{% else %}false{% endif %});
   var pi=document.getElementById('padd-in');
   if(pi) pi.addEventListener('keydown',function(e){if(e.key==='Enter') addManual();});
   // Stop relay cleanly when operator closes/refreshes the tab
@@ -2118,6 +2478,36 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
+
+<!-- ── Zoom API Meetings ───────────────────────────────────────────────────── -->
+<div class="card" id="zoom-meetings-card">
+  <div class="ch">&#128247; Zoom Meetings
+    <div class="ch-r">
+      <span id="zoom-connected" style="display:none;font-size:11px;color:var(--ok)">&#10003; Zoom API</span>
+      <span id="zoom-not-cfg"   style="display:none;font-size:11px;color:var(--mu)">Not configured on hub</span>
+      <button class="btn bg bs" data-action="refreshZoom" title="Refresh from Zoom API">&#8635;</button>
+      <button class="btn bp bs" data-action="toggleZoomCreate">+ Create</button>
+    </div>
+  </div>
+  <div class="cb">
+    <div id="zoom-create-form" style="display:none;background:#091e42;border:1px solid var(--bor);border-radius:8px;padding:12px;margin-bottom:12px">
+      <div class="r2" style="margin-bottom:8px">
+        <div class="field" style="margin-bottom:0"><label class="fl">Topic</label><input type="text" id="zm-topic" placeholder="Meeting topic"></div>
+        <div class="field" style="margin-bottom:0"><label class="fl">Passcode (optional)</label><input type="text" id="zm-pass" placeholder="Leave blank for none"></div>
+      </div>
+      <div class="r2" style="margin-bottom:8px">
+        <div class="field" style="margin-bottom:0"><label class="fl">Duration (min)</label><input type="number" id="zm-dur" value="60" min="15" max="480"></div>
+        <div class="field" style="margin-bottom:0;justify-content:flex-end"><label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding-bottom:2px"><input type="checkbox" id="zm-waiting-room"> Waiting room</label></div>
+      </div>
+      <div class="brow">
+        <button class="btn bp bs" data-action="createZoomNow">&#9654; Start Now &amp; Join in vMix</button>
+        <button class="btn bg bs" data-action="cancelZoomCreate">Cancel</button>
+      </div>
+    </div>
+    <div id="zoom-meeting-list"><div class="empty-note">Loading&#8230;</div></div>
+  </div>
+</div>
+
 
 </main>
 <script nonce="{{csp_nonce()}}">
@@ -2347,6 +2737,7 @@ document.addEventListener('DOMContentLoaded',function(){
   }
   loadState();
   loadMeetings();
+  loadZoomData(false);
   var pi=document.getElementById('padd-in');
   if(pi) pi.addEventListener('keydown',function(e){if(e.key==='Enter') addManual();});
   var mi=document.getElementById('mtg-id');
@@ -2405,8 +2796,10 @@ def register(app, ctx):
     @app.get("/hub/vmixcaller")
     @login_required
     def vmixcaller_page():
-        cfg = _load_cfg()
-        iv  = _tpl_inst_vars(cfg)
+        cfg      = _load_cfg()
+        raw      = _load_raw()
+        iv       = _tpl_inst_vars(cfg)
+        zoom_cfg = _zoom_has_creds(raw)
         if is_hub:
             with hub_server._lock:
                 sites = sorted(
@@ -2415,15 +2808,18 @@ def register(app, ctx):
                 )
             video_url = _compute_video_url(cfg, is_hub)
             return render_template_string(_HUB_TPL, cfg=cfg, sites=sites,
-                                          video_url_json=json.dumps(video_url), **iv)
+                                          video_url_json=json.dumps(video_url),
+                                          zoom_configured=zoom_cfg, **iv)
         if is_client:
             video_url = _compute_video_url(cfg, False)
             return render_template_string(_CLIENT_TPL, cfg=cfg, hub_url=hub_url,
-                                          video_url_json=json.dumps(video_url), **iv)
+                                          video_url_json=json.dumps(video_url),
+                                          zoom_configured=zoom_cfg, **iv)
         # Standalone
         video_url = _compute_video_url(cfg, True)
         return render_template_string(_HUB_TPL, cfg=cfg, sites=[],
-                                      video_url_json=json.dumps(video_url), **iv)
+                                      video_url_json=json.dumps(video_url),
+                                      zoom_configured=zoom_cfg, **iv)
 
     # ── Presenter page ────────────────────────────────────────────────────────
     @app.get("/hub/vmixcaller/presenter")
@@ -2933,3 +3329,149 @@ def register(app, ctx):
             "error":        xml_text[:120],
             "participants": [],
         })
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Zoom API routes
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # ── Save credentials (hub admin) ─────────────────────────────────────────
+    @app.post("/api/vmixcaller/zoom_credentials")
+    @login_required
+    @csrf_protect
+    def vmixcaller_zoom_credentials():
+        if not is_hub and mode != "standalone":
+            return jsonify({"ok": False, "error": "Hub only"}), 403
+        data = request.get_json(silent=True) or {}
+        with _cfg_lock:
+            try:
+                with open(_CFG_PATH) as fh:
+                    current = json.load(fh)
+            except Exception:
+                current = {}
+            for k in ("zoom_account_id", "zoom_client_id", "zoom_client_secret"):
+                if k in data:
+                    current[k] = str(data[k]).strip()
+            with open(_CFG_PATH, "w") as fh:
+                json.dump(current, fh, indent=2)
+        with _zoom_token_lock:
+            _zoom_token_cache.update({"token": "", "expires": 0.0})
+        with _zoom_meetings_lock:
+            _zoom_meetings_cache.update({"ts": 0.0, "data": []})
+        return jsonify({"ok": True})
+
+    # ── Test credentials (hub admin) ─────────────────────────────────────────
+    @app.get("/api/vmixcaller/zoom_status")
+    @login_required
+    def vmixcaller_zoom_status():
+        if not is_hub and mode != "standalone":
+            return jsonify({"ok": False, "error": "Hub only"})
+        raw = _load_raw()
+        if not _zoom_has_creds(raw):
+            return jsonify({"ok": False, "configured": False,
+                            "error": "No credentials configured"})
+        ok, data = _zoom_api(raw, "GET", "/users/me")
+        if ok:
+            return jsonify({"ok": True, "configured": True,
+                            "name":  (data.get("display_name") or
+                                      data.get("first_name", "")).strip(),
+                            "email": data.get("email", "")})
+        return jsonify({"ok": False, "configured": True,
+                        "error": str(data.get("message") or data)[:120]})
+
+    # ── Meetings data for client proxy (HMAC-authenticated) ──────────────────
+    @app.get("/api/vmixcaller/zoom_hub_data")
+    def vmixcaller_zoom_hub_data():
+        import hmac as _hm
+        site = request.headers.get("X-Site", "").strip()
+        if not site:
+            return jsonify({"error": "missing X-Site"}), 400
+        with hub_server._lock:
+            if not hub_server._sites.get(site, {}).get("_approved"):
+                return jsonify({"error": "not approved"}), 403
+        secret = getattr(getattr(monitor.app_cfg, "hub", None), "secret_key", "") or ""
+        if secret:
+            sig  = request.headers.get("X-Hub-Sig", "")
+            ts_s = request.headers.get("X-Hub-Ts", "0")
+            try:
+                ts = float(ts_s)
+                if abs(time.time() - ts) > 120:
+                    return jsonify({"error": "timestamp expired"}), 403
+                key      = hashlib.sha256(f"{secret}:signing".encode()).digest()
+                expected = _hm.new(key, f"{ts:.0f}:".encode() + b"", hashlib.sha256).hexdigest()
+                if not _hm.compare_digest(sig, expected):
+                    return jsonify({"error": "bad signature"}), 403
+            except Exception:
+                return jsonify({"error": "auth error"}), 403
+        raw = _load_raw()
+        if not _zoom_has_creds(raw):
+            return jsonify({"configured": False, "meetings": []})
+        try:
+            force    = request.args.get("refresh") == "1"
+            meetings = _zoom_fetch_meetings(raw, force=force)
+            return jsonify({"configured": True, "meetings": meetings})
+        except Exception as e:
+            return jsonify({"configured": True, "meetings": [],
+                            "error": str(e)[:120]})
+
+    # ── Meetings data — browser-facing (hub serves / client proxies) ──────────
+    @app.get("/api/vmixcaller/zoom_data")
+    @login_required
+    def vmixcaller_zoom_data():
+        if is_hub or mode == "standalone":
+            raw = _load_raw()
+            if not _zoom_has_creds(raw):
+                return jsonify({"configured": False, "meetings": []})
+            try:
+                force    = request.args.get("refresh") == "1"
+                meetings = _zoom_fetch_meetings(raw, force=force)
+                return jsonify({"configured": True, "meetings": meetings})
+            except Exception as e:
+                return jsonify({"configured": True, "meetings": [],
+                                "error": str(e)[:120]})
+        if is_client:
+            app_cfg = monitor.app_cfg
+            site    = (getattr(getattr(app_cfg, "hub", None), "site_name", "") or "").strip()
+            secret  = (getattr(getattr(app_cfg, "hub", None), "secret_key",  "") or "").strip()
+            qstr    = "?refresh=1" if request.args.get("refresh") == "1" else ""
+            try:
+                data = _zoom_hub_proxy_get(
+                    f"{hub_url}/api/vmixcaller/zoom_hub_data{qstr}", site, secret)
+                return jsonify(data)
+            except Exception as e:
+                return jsonify({"configured": False, "meetings": [],
+                                "error": str(e)[:120]})
+        return jsonify({"configured": False, "meetings": []})
+
+    # ── Meeting actions — hub-side for client proxy (approval-only auth) ──────
+    @app.post("/api/vmixcaller/zoom_hub_action")
+    def vmixcaller_zoom_hub_action():
+        site = request.headers.get("X-Site", "").strip()
+        if not site:
+            return jsonify({"error": "missing X-Site"}), 400
+        with hub_server._lock:
+            if not hub_server._sites.get(site, {}).get("_approved"):
+                return jsonify({"error": "not approved"}), 403
+        raw    = _load_raw()
+        data   = request.get_json(silent=True) or {}
+        action = str(data.get("action", "") or "").strip()
+        return jsonify(_zoom_execute_action(raw, action, data))
+
+    # ── Meeting actions — browser-facing (hub executes / client proxies) ──────
+    @app.post("/api/vmixcaller/zoom_action")
+    @login_required
+    @csrf_protect
+    def vmixcaller_zoom_action():
+        data   = request.get_json(silent=True) or {}
+        action = str(data.get("action", "") or "").strip()
+        if is_client and hub_url:
+            app_cfg = monitor.app_cfg
+            site    = (getattr(getattr(app_cfg, "hub", None), "site_name", "") or "").strip()
+            try:
+                result = _zoom_hub_proxy_post(
+                    f"{hub_url}/api/vmixcaller/zoom_hub_action", site, data)
+                return jsonify(result)
+            except Exception as e:
+                return jsonify({"ok": False, "error": str(e)[:120]})
+        raw = _load_raw()
+        return jsonify(_zoom_execute_action(raw, action, data))
+

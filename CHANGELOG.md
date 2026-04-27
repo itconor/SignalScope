@@ -2,6 +2,23 @@
 
 ---
 
+### vMix Caller 1.7.0 — 2026-04-27
+
+**Feature: Zoom API integration (Phase 1)**
+
+Hub acts as a Zoom Server-to-Server OAuth bridge — client nodes are the primary operator surface and proxy all Zoom data and actions through the hub. No Zoom credentials are ever stored on or exposed to client nodes.
+
+- **Hub credentials panel**: Enter Zoom S2S OAuth Account ID, Client ID, and Client Secret in the vMix Caller hub page. "Save & Test" verifies the credentials and shows the connected account name and email.
+- **Meetings list** (hub + client): Live list of upcoming and in-progress Zoom meetings fetched from the Zoom API (60 s cache, manual refresh). Each row shows live/scheduled status, meeting ID, scheduled time, and per-meeting **Join**, **End**, and **+Save** buttons.
+- **Create meeting** inline form: Topic, passcode (optional), duration, and waiting room toggle. "Start Now & Join in vMix" creates the meeting and immediately joins it via the existing vMix Zoom function.
+- **End meeting**: Confirmation prompt then ends the meeting for all participants via Zoom API.
+- **+Save to presets**: Adds any listed meeting to the existing saved-meetings list for the Presenter View.
+- **Hub ↔ client proxy**: Client node Flask routes proxy all Zoom requests to the hub using HMAC-signed GET (read) and approval-only POST (write). The browser never talks to the hub directly — no CORS issues.
+- Token cache: S2S Bearer tokens cached for up to 1 hour (refreshed 30 s before expiry), protected by a threading lock.
+- All existing vMix controls, video relay, saved meetings, and participants functionality is unchanged.
+
+---
+
 ### Studio Board 3.14.19 — 2026-04-27
 
 **Fix: emoji not rendering on Yodeck / Raspberry Pi displays + default cleared-studio logo**
