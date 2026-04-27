@@ -2,6 +2,22 @@
 
 ---
 
+### vMix Caller 1.7.3 — 2026-04-27
+
+**Feature: Studio picker on Presenter View**
+
+The Presenter View (`/hub/vmixcaller/presenter`) now opens a studio selection screen when multiple vMix instances are configured. Studio names come directly from the configured vMix instance names.
+
+- **Studio picker**: a grid of cards — one per vMix instance — shown when the presenter first opens the page. Each card shows the instance name and vMix IP. Clicking "Enter Studio" navigates to `?inst=<id>`.
+- **Per-session selection**: instance choice is in the URL (`?inst=<id>`), not a shared global setting. Multiple presenters can independently be in different studios at the same time.
+- **Single-instance setup**: if only one vMix instance is configured, the picker is skipped entirely and the presenter lands directly on the full page (no change in behaviour).
+- **Studio name in header**: once a studio is selected, the header title shows the studio name and the sub-line shows "Ready to join" as normal.
+- **◂ Studios back link**: a small "◂ Studios" link replaces the SignalScope link in the header when multiple studios exist, letting the presenter switch studios easily.
+- **Correct video preview per studio**: each studio loads the video preview URL from its own `bridge_url`, not the globally active instance.
+- **Correct vMix input routing**: commands (join/leave/mute) automatically include the selected studio's `vmix_input` index, so the right Zoom caller input in vMix is controlled.
+
+---
+
 ### vMix Caller 1.7.2 — 2026-04-27
 
 **Feature: Zoom participant management (Phase 2) + Webhook receiver (Phase 3)**

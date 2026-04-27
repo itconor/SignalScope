@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.7.2",
+    "version": "1.7.3",
 }
 
 import os
@@ -1990,15 +1990,20 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
 <header class="hdr">
   <span class="hdr-logo">📹</span>
   <div>
-    <div class="hdr-title">Caller</div>
-    <div class="hdr-sub" id="hdr-sub">Ready to join</div>
+    <div class="hdr-title">{% if selected_inst %}{{selected_inst.name|e}}{% else %}Caller{% endif %}</div>
+    <div class="hdr-sub" id="hdr-sub">{% if selected_inst %}Ready to join{% else %}Select your studio{% endif %}</div>
   </div>
+  {% if selected_inst and instances|length > 1 %}
+  <a href="/hub/vmixcaller/presenter" class="hdr-powered" style="font-size:12px">&#9664; Studios</a>
+  {% else %}
   <a href="/" class="hdr-powered">SignalScope</a>
+  {% endif %}
 </header>
 
 <main>
 <div id="msg"></div>
 
+{% if selected_inst %}
 <!-- ── In-call bar (hidden until in meeting) ─────────────────────────── -->
 <div id="call-bar">
   <span class="call-badge">● ON CALL</span>
@@ -2007,20 +2012,6 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
   <div class="call-spacer"></div>
   <button class="call-btn leave" data-action="hangUp">📴 Leave</button>
 </div>
-
-<!-- ── Instance selector (only shown when >1 instance configured) ─────── -->
-{% if instances|length > 1 %}
-<div style="padding:14px 0 4px">
-  <div class="inst-act-label">Select vMix Instance</div>
-  <div class="inst-strip">
-    {% for inst in instances %}
-    <button class="inst-pill{% if inst.id==active_instance_id %} active{% endif %}"
-            data-id="{{inst.id|e}}"
-            data-action="switchInstance">{{inst.name|e}}</button>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
 
 <!-- ── Video hero ─────────────────────────────────────────────────────── -->
 <div class="video-hero">
@@ -2094,12 +2085,56 @@ kbd{background:rgba(13,30,64,.8);border:1px solid rgba(23,52,95,.8);border-radiu
 
 <div class="kbd-hints"><kbd>M</kbd> mute &nbsp;·&nbsp; <kbd>C</kbd> camera</div>
 
+{% else %}
+<!-- ── Studio picker ──────────────────────────────────────────────────── -->
+{% if instances %}
+<div class="section" style="padding-top:36px">
+  <div class="section-title">Your Studios <span>&#8212; select to begin</span></div>
+</div>
+<div class="mtg-grid" style="margin-top:4px">
+  {% set av_colors=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#9333e8','#a855f7'],['#c87f0a','#f59e0b'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316']] %}
+  {% for inst in instances %}
+  {% set c = av_colors[loop.index0 % av_colors|length] %}
+  <div class="mtg-card">
+    <div class="mtg-top">
+      <div class="mtg-av" style="background:linear-gradient(135deg,{{c[0]}},{{c[1]}})">{{(inst.name[:1])|upper|e}}</div>
+      <div class="mtg-meta">
+        <div class="mtg-name">{{inst.name|e}}</div>
+        <div class="mtg-id-text">vMix &#64; {{inst.vmix_ip|e}}{% if inst.vmix_port and inst.vmix_port != 8088 %}:{{inst.vmix_port}}{% endif %}</div>
+      </div>
+    </div>
+    <a href="/hub/vmixcaller/presenter?inst={{inst.id|e}}" class="join-big">&#127897; Enter Studio</a>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="no-meetings" style="margin-top:36px">
+  No studios configured yet.<br>
+  Ask your engineer to add vMix instances in the hub settings.
+</div>
+{% endif %}
+{% endif %}
+
 </main>
 <script nonce="{{csp_nonce()}}">
 """ + _JS_HELPERS + r"""
 
 // ── Presenter-specific ────────────────────────────────────────────────────────
-var _videoUrl = {{video_url_json|safe}};
+var _videoUrl      = {{video_url_json|safe}};
+var _presInstData  = {{selected_inst_json|safe}};
+var _presInstId    = _presInstData.id    || '';
+var _presInstInput = _presInstData.vmix_input || 1;
+
+// Route all vMix commands to the selected instance's vmix_input
+if (_presInstId) {
+  sendCmd = function(fn, value) {
+    return _post('/api/vmixcaller/function', {fn: fn, value: value, input: _presInstInput})
+      .then(function(d) {
+        if (!d.ok) showMsg(d.error || 'Error queuing command', false);
+        return d;
+      }).catch(function(e) { showMsg('Error: ' + e, false); return {ok: false}; });
+  };
+}
 
 // Switch active vMix instance and reload video preview
 function switchInstance(btn){
@@ -3544,17 +3579,35 @@ def register(app, ctx):
     @login_required
     def vmixcaller_presenter():
         cfg       = _load_cfg()
-        iv        = _tpl_inst_vars(cfg)
+        instances = cfg.get("instances") or []
         meetings  = cfg.get("saved_meetings") or []
-        bridge    = (cfg.get("bridge_url") or "").strip()
-        video_url = _compute_video_url(cfg, is_hub)
+
+        # ?inst=<id> selects the studio. Auto-select when only one instance.
+        inst_id       = request.args.get("inst", "").strip()
+        selected_inst = next((i for i in instances if i.get("id") == inst_id), None)
+        if selected_inst is None and len(instances) == 1:
+            selected_inst = instances[0]
+
+        # Compute video URL from the selected instance's own bridge_url.
+        if selected_inst:
+            inst_bridge = (selected_inst.get("bridge_url") or "").strip()
+            inst_cfg    = dict(cfg, bridge_url=inst_bridge)
+            video_url   = _compute_video_url(inst_cfg, is_hub)
+        else:
+            inst_bridge = ""
+            video_url   = ""
+
         return render_template_string(
             _PRESENTER_TPL,
             cfg=cfg,
             meetings=meetings,
-            bridge_url=bridge,
+            instances=instances,
+            bridge_url=inst_bridge,
             video_url_json=json.dumps(video_url),
-            **iv,
+            selected_inst=selected_inst,
+            selected_inst_json=json.dumps(selected_inst or {}),
+            active_instance_id=(selected_inst or {}).get("id", ""),
+            active_instance_id_json=json.dumps((selected_inst or {}).get("id", "")),
         )
 
     # ── WHEP proxy — avoids browser CORS/mixed-content on direct SRS fetch ──────
