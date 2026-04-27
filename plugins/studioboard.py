@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.20",
+    "version":  "3.14.21",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -199,25 +199,41 @@ def _cfg_load():
     return {"studios": [], "brands": []}
 
 def _cfg_save(c):
-    """Write config atomically: tmp → backup → main.
-    Uses os.replace() which is atomic on POSIX (rename syscall).
-    A crash between the two os.replace() calls leaves the old main
-    intact as .bak, which _cfg_load() falls back to on next startup.
+    """Write config atomically: unique-tmp → backup → main.
+
+    The JSON dump happens BEFORE acquiring the lock (slow I/O, no contention).
+    The lock only covers the two os.replace() rename calls (microseconds).
+    Using a unique temp filename via tempfile means concurrent _cfg_save calls
+    never race each other's temp file — each gets its own, and only the final
+    rename pair is serialised by the lock.
+
+    A crash between the two renames leaves the old main in .bak, which
+    _cfg_load() falls back to automatically.
     """
-    _tmp = _CFG_PATH + ".tmp"
+    import tempfile as _tempfile
     _bak = _CFG_PATH + ".bak"
-    with _CFG_LOCK:
-        with open(_tmp, "w") as f:
+    # Write to a unique temp file — no lock needed, no shared .tmp collision
+    _fd, _tmp = _tempfile.mkstemp(dir=_BASE_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(_fd, "w") as f:
             json.dump(c, f, indent=2)
-        # Rotate old main → backup before promoting tmp → main.
-        # If the process dies here the old main is in .bak and tmp is orphaned;
-        # _cfg_load falls back to .bak and recovers cleanly.
-        if os.path.exists(_CFG_PATH):
+        _fd = None   # fdopen took ownership; mark as closed
+        # Hold the lock only for the instant rename pair
+        with _CFG_LOCK:
+            if os.path.exists(_CFG_PATH):
+                try:
+                    os.replace(_CFG_PATH, _bak)
+                except Exception:
+                    pass
+            os.replace(_tmp, _CFG_PATH)
+            _tmp = None  # rename succeeded; don't unlink
+    finally:
+        # Clean up orphaned temp file if anything went wrong before the rename
+        if _tmp and os.path.exists(_tmp):
             try:
-                os.replace(_CFG_PATH, _bak)
+                os.unlink(_tmp)
             except Exception:
                 pass
-        os.replace(_tmp, _CFG_PATH)
     _rebuild_chain_studios_into(_chain_studios, c)
 
 def _get_studio(cfg, studio_id):
@@ -610,11 +626,9 @@ def register(app, ctx):
             else:
                 return jsonify({"error": "Unauthorized"}), 403
         data = request.get_json(force=True)
-        # Validate the studio exists without loading the full config
-        _sb_cfg_check = _cfg_load()
-        if not _get_studio(_sb_cfg_check, studio_id):
-            return jsonify({"error": "Studio not found"}), 404
-        # Mic-live is runtime state — store in memory only, no disk write.
+        # Mic-live is runtime state — store in memory only, no disk read/write.
+        # The studio_id comes from the URL of an auth-protected endpoint; no
+        # need to round-trip to disk just to confirm the ID is known.
         _live = bool(data.get("live", False))
         _mic_live_state[studio_id] = {"live": _live, "ts": int(_time.time())}
         _sb_notify_all()

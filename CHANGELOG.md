@@ -2,6 +2,16 @@
 
 ---
 
+### Studio Board 3.14.21 — 2026-04-27
+
+**Fix: Boards freeze momentarily after mic-live change**
+
+- 3.14.20 moved mic-live state to memory and eliminated the `_cfg_save` disk write on every mic toggle. As a side effect, the SSE `config_changed` notification now fires *instantly* (no longer after the slow disk write completes). All connected TV boards respond simultaneously by fetching `/api/studioboard/data`, which calls `eval_chain()` on every chain — serialised through `hub_server._lock`. The burst of concurrent requests under that lock caused the momentary freeze.
+- Fixed `_cfg_save`: JSON is now written to a **unique temp file** (via `tempfile.mkstemp`) before acquiring the lock, so the I/O happens outside any contention window. The lock is held only for the two `os.replace()` rename calls (microseconds). Concurrent saves no longer race each other for a shared `.tmp` filename.
+- Removed the redundant `_cfg_load()` disk read from `sb_mic_live` — the mic endpoint only updates the in-memory dict; reading the full config just to validate the studio ID was unnecessary I/O on every toggle.
+
+---
+
 ### Studio Board 3.14.20 — 2026-04-27
 
 **Fix: Config wipe after days of uptime**
