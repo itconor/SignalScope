@@ -2,6 +2,14 @@
 
 ---
 
+### Push Server 1.0.8 — 2026-04-27
+
+**Fix: Migrate button still does nothing after 1.0.7**
+
+The 1.0.7 fix added shim functions (`_btnLoad`, `_btnReset`, `_ssToast`) immediately below a JavaScript block comment: `/* Shims for topnav helpers — this page uses a custom header, not {{topnav()}} */`. The `{{topnav()}}` expression inside the comment was evaluated by Jinja2 (topnav is a registered context processor available in all templates), inserting the full navigation HTML — several kilobytes of HTML including `*/` characters from CSS rules, URLs, and embedded JS. The `*/` terminated the block comment prematurely, causing a JavaScript syntax error that silently prevented every function definition that followed from being parsed. The shims were never defined; clicking Migrate still threw `ReferenceError`. Fixed by removing the Jinja2 expression from the comment.
+
+---
+
 ### Push Server 1.0.7 — 2026-04-27
 
 **Fix: Migrate button does nothing**

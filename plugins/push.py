@@ -16,11 +16,11 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/push",
     "icon":     "📡",
     "hub_only": True,
-    "version":  "1.0.7",
+    "version":  "1.0.8",
 }
 
 # ─── plugin version ───────────────────────────────────────────────────────────
-_PLUGIN_VERSION = "1.0.7"
+_PLUGIN_VERSION = "1.0.8"
 
 import json as _json
 import os as _os
@@ -391,7 +391,7 @@ function _csrf(){
 }
 function _val(id){var e=document.getElementById(id);return e?e.value:'';}
 
-/* Shims for topnav helpers — this page uses a custom header, not {{topnav()}} */
+/* Shims — these helpers are normally provided by topnav() but this page uses a custom header */
 function _btnLoad(b){b.disabled=true;b._orig=b.textContent;b.textContent='Working…';}
 function _btnReset(b){b.disabled=false;if(b._orig!==undefined)b.textContent=b._orig;}
 function _ssToast(msg,type){

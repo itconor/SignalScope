@@ -135,7 +135,7 @@
     "file": "push.py",
     "icon": "\ud83d\udce1",
     "description": "Centralised push notification server for iOS and Android. Holds APNs and FCM credentials and delivers notifications on behalf of any SignalScope installation that points its Push Server URL here. Hub-only.",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "requirements": "cryptography httpx[http2]",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/push.py"
   },
