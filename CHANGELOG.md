@@ -2,6 +2,16 @@
 
 ---
 
+### SignalScope-3.5.175 — 2026-04-27
+
+**Fix: Chain fault push notifications not delivered when Push Server URL is configured**
+
+- `CHAIN_RECOVERED` notifications were sent via `_send_apns_push()` (direct APNs, always uses local credentials, ignores Push Server URL setting). `CHAIN_FAULT` notifications were sent via `_dispatch_push()` (respects Push Server URL, routes through relay when set). This asymmetry meant: users with Push Server URL set received recovery notifications (direct APNs worked) but never received fault notifications (relay didn't know their credentials).
+- Fixed: recovery notifications now use `_dispatch_push()` matching the fault path. Both notification types now route through the same channel. **If you have local APNs credentials configured and fault notifications weren't arriving, clear the Push Server URL field in Settings → Mobile API and save — your direct credentials will then be used for all notifications.**
+- Also fixed: recovery notifications were never sent to Android (FCM). `_dispatch_push()` handles both APNs and FCM; `_send_apns_push()` was iOS-only.
+
+---
+
 ### vMix Caller 1.7.3 — 2026-04-27
 
 **Feature: Studio picker on Presenter View**

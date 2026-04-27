@@ -2540,7 +2540,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.174"
+BUILD                  = "SignalScope-3.5.175"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16938,7 +16938,7 @@ class HubServer:
                     monitor.log(f"[Chain] {rec_msg}")
                 except Exception as e:
                     monitor.log(f"[Chain] Recovery notification error: {e}")
-                _send_apns_push(
+                _dispatch_push(
                     title=f"✅ Recovered: {result['name']}",
                     body=rec_msg[:180],
                     data={"chain_id": cid, "event": "recovered"},
