@@ -2,6 +2,20 @@
 
 ---
 
+### vMix Caller 1.6.7 — 2026-04-27
+
+**Fix: client page call controls silently do nothing / better vMix API diagnostics**
+
+Three improvements to the client node page (`_CLIENT_TPL`):
+
+1. **Meeting ID space stripping** — users often paste meeting IDs formatted as "123 456 7890". The spaces were being URL-encoded and sent to vMix verbatim, causing vMix to silently reject the join (HTTP 200 returned but Zoom doesn't connect). `joinWith` now strips all whitespace from the meeting ID before sending.
+
+2. **vMix response body visibility** — when vMix returns a non-empty response body to a function call (which can happen on errors like "Zoom input not found" or "invalid meeting ID"), it was previously discarded and the JS always showed the generic "Joining…" message. `joinWith` now shows the vMix response body if non-empty, coloured red if it contains "error" or "false", so silent API failures are immediately visible.
+
+3. **Test vMix shows address** — `testVmix` result now includes the IP:port being tested (e.g. "✓ vMix reachable (192.168.1.5:8088) — v27.0.0.122"), confirming which machine is being reached and helping diagnose "wrong vMix" scenarios.
+
+---
+
 ### vMix Caller 1.6.6 — 2026-04-26
 
 **Fix: Join meeting buttons and all call controls did nothing on hub page**

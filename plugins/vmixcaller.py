@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.6.6",
+    "version": "1.6.7",
 }
 
 import os
@@ -876,11 +876,21 @@ function resetCallBtns(){
 // Display name is set by the Zoom account inside vMix, not via API.
 var _lastJoin={mid:'',pass:''};
 function joinWith(mid,pass){
+  // Strip spaces — users often copy meeting IDs as "123 456 7890"
+  mid=(mid||'').replace(/\s+/g,'');
   if(!mid){showMsg('Enter a Meeting ID',false);return;}
   _lastJoin={mid:mid,pass:pass||''};
   if(typeof _updateReconnectBtn==='function')_updateReconnectBtn();
   sendCmd('ZoomJoinMeeting',mid+','+(pass||''))
-    .then(function(d){if(d.ok){showMsg('Joining\u2026',true);setMeetingState(true);}});
+    .then(function(d){
+      if(d.ok){
+        // If vMix returned a non-empty body it may be a silent error — show it
+        var vr=(d.response||'').trim();
+        var isErr=vr&&(vr.toLowerCase().indexOf('error')>=0||vr.toLowerCase().indexOf('false')>=0);
+        showMsg(vr||'Joining…',!isErr);
+        setMeetingState(true);
+      }
+    });
 }
 function leaveMeeting(){
   sendCmd('ZoomLeaveMeeting').then(function(d){if(d.ok){showMsg('Left meeting',true);setMeetingState(false);}});
@@ -2227,8 +2237,9 @@ function testVmix(){
   fetch('/api/vmixcaller/test_local',{credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      if(d.ok)showMsg('\u2713 vMix reachable \u2014 version '+d.version,true);
-      else showMsg('\u2717 Cannot reach vMix: '+(d.error||'unknown'),false);
+      var addr=d.vmix_addr?' ('+d.vmix_addr+')':'';
+      if(d.ok)showMsg('\u2713 vMix reachable'+addr+' \u2014 v'+d.version,true);
+      else showMsg('\u2717 Cannot reach vMix'+addr+': '+(d.error||'unknown error'),false);
     }).catch(function(e){showMsg('Error: '+e,false);});
 }
 
@@ -2895,9 +2906,10 @@ def register(app, ctx):
     def vmixcaller_test_local():
         cfg = _load_cfg()
         ok, xml_text = _vmix_xml(cfg)
+        vmix_addr = f"{cfg.get('vmix_ip','127.0.0.1')}:{cfg.get('vmix_port',8088)}"
         if ok:
-            return jsonify({"ok": True, "version": _vmix_version(xml_text)})
-        return jsonify({"ok": False, "error": xml_text[:120]})
+            return jsonify({"ok": True, "version": _vmix_version(xml_text), "vmix_addr": vmix_addr})
+        return jsonify({"ok": False, "error": xml_text[:120], "vmix_addr": vmix_addr})
 
     # ── Client: live vMix state (participants + version, direct query) ────────
     # Used by the client page's loadState() poll so participants update without
