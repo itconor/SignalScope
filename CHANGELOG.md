@@ -2,6 +2,20 @@
 
 ---
 
+### vMix Caller 1.7.1 — 2026-04-27
+
+**Feature: NDI video preview mode**
+
+Alternative to the SRT/Docker bridge — the client node receives the vMix NDI output directly over the LAN, encodes it to HLS via ffmpeg named pipes, and pushes segments to the hub. No Docker, no SRS, no port forwarding required.
+
+- **Preview Mode toggle**: Per-instance radio button in the Instance Settings panel (SRT Bridge / NDI). Existing SRT bridge setups are unchanged.
+- **NDI Source Name field**: Type the source directly (e.g. `VMIX-PC (vMix - Input 1 - Zoom)`) or click **Discover** to scan the LAN and pick from a live list.
+- **Discover button**: Triggers a 4-second LAN scan via `ndi-python` and presents results as a temporary dropdown. On hub nodes the scan is proxied to the configured client site via HMAC-signed request so NDI sources visible at the studio are returned.
+- **Installer prompt**: `install_signalscope.sh` now asks "Install NDI support for vMix Caller video preview?" during fresh install. Also supports `--ndi` / `--no-ndi` CLI flags.
+- Graceful degradation: NDI mode silently falls back to a retry loop when `ndi-python` is not installed or the NDI source is not found. The SRT path is completely unaffected.
+
+---
+
 ### vMix Caller 1.7.0 — 2026-04-27
 
 **Feature: Zoom API integration (Phase 1)**

@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.7.0",
+    "version": "1.7.1",
 }
 
 import os
@@ -95,14 +95,17 @@ _VIDEO_MAX_SEGS        = 6   # ~12–18 s buffer at 2–3 s/segment
 # fields are migrated to a single "Default" instance transparently.
 
 def _make_instance(name="New Instance", vmix_ip="127.0.0.1", vmix_port=8088,
-                   vmix_input=1, bridge_url="", inst_id=None) -> dict:
+                   vmix_input=1, bridge_url="", inst_id=None,
+                   preview_mode="srt", ndi_source="") -> dict:
     return {
-        "id":         inst_id or str(_uuid_mod.uuid4())[:8],
-        "name":       name,
-        "vmix_ip":    vmix_ip,
-        "vmix_port":  int(vmix_port or 8088),
-        "vmix_input": vmix_input,
-        "bridge_url": bridge_url,
+        "id":           inst_id or str(_uuid_mod.uuid4())[:8],
+        "name":         name,
+        "vmix_ip":      vmix_ip,
+        "vmix_port":    int(vmix_port or 8088),
+        "vmix_input":   vmix_input,
+        "bridge_url":   bridge_url,
+        "preview_mode": preview_mode if preview_mode in ("srt", "ndi") else "srt",
+        "ndi_source":   ndi_source,
     }
 
 
@@ -423,6 +426,202 @@ def _zoom_hub_proxy_post(url: str, site: str, payload: dict) -> dict:
         return json.loads(r.read())
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NDI video preview helpers (client-side only)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Runtime NDI availability — checked once at import time so that the plugin
+# loads cleanly even when ndi-python is not installed.
+try:
+    import NDIlib as _NDI
+    _ndi_available: bool = True
+except ImportError:
+    _NDI              = None        # type: ignore
+    _ndi_available    = False
+
+
+def _ndi_sources(timeout_s: float = 4.0) -> list:
+    """Return a list of NDI source name strings visible on the LAN."""
+    if not _ndi_available:
+        return []
+    _NDI.initialize()
+    find = _NDI.find_create_v2()
+    try:
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            sources = _NDI.find_get_current_sources(find) or []
+            if sources:
+                time.sleep(0.3)   # let the list stabilise
+                sources = _NDI.find_get_current_sources(find) or []
+                return [s.ndi_name for s in sources if s.ndi_name]
+            time.sleep(0.25)
+        return []
+    finally:
+        _NDI.find_destroy(find)
+
+
+def _ndi_hls_relay(source_name: str, push_fn, stop_evt) -> None:
+    """Receive NDI from *source_name*, encode to HLS via ffmpeg, call
+    push_fn(data: bytes, duration: float) for each new TS segment.
+
+    Runs synchronously — call from a daemon thread.
+    Only works on POSIX systems (uses os.mkfifo for named pipes).
+    """
+    import tempfile, shutil, subprocess as _sp
+
+    if not _ndi_available or not hasattr(os, "mkfifo"):
+        return
+
+    tmpdir = None
+    recv   = None
+    ff     = None
+    vfh    = None
+    afh    = None
+
+    try:
+        _NDI.initialize()
+        tmpdir = tempfile.mkdtemp(prefix="ss_ndi_")
+
+        # ── Discover source ──────────────────────────────────────────────────
+        find     = _NDI.find_create_v2()
+        deadline = time.time() + 10
+        target   = None
+        while time.time() < deadline and not stop_evt.is_set():
+            for s in (_NDI.find_get_current_sources(find) or []):
+                if s.ndi_name == source_name:
+                    target = s
+                    break
+            if target:
+                break
+            time.sleep(0.4)
+        _NDI.find_destroy(find)
+        if target is None or stop_evt.is_set():
+            return
+
+        # ── Create receiver ──────────────────────────────────────────────────
+        rd               = _NDI.RecvCreateV3()
+        rd.color_format  = _NDI.RECV_COLOR_FORMAT_BGRX_BGRA
+        recv             = _NDI.recv_create_v3(rd)
+        _NDI.recv_connect(recv, target)
+
+        # ── Probe: collect video + audio params from first frames ────────────
+        w = h = fps_n = fps_d = ar = nch = None
+        for _ in range(500):
+            if stop_evt.is_set():
+                return
+            ft, vf, af, mf = _NDI.recv_capture_v2(recv, 50)
+            if ft == _NDI.FRAME_TYPE_VIDEO and w is None:
+                w, h  = vf.xres, vf.yres
+                fps_n = vf.frame_rate_N
+                fps_d = max(vf.frame_rate_D, 1)
+                _NDI.recv_free_video_v2(recv, vf)
+            elif ft == _NDI.FRAME_TYPE_AUDIO and ar is None:
+                ar  = int(af.sample_rate or 48000)
+                nch = max(int(af.no_channels or 2), 1)
+                _NDI.recv_free_audio_v2(recv, af)
+            if w and ar:
+                break
+        if not w or stop_evt.is_set():
+            return
+
+        # ── Named pipes + ffmpeg ─────────────────────────────────────────────
+        vpipe  = os.path.join(tmpdir, "v")
+        apipe  = os.path.join(tmpdir, "a")
+        outdir = os.path.join(tmpdir, "hls")
+        os.makedirs(outdir, exist_ok=True)
+        os.mkfifo(vpipe)
+        os.mkfifo(apipe)
+
+        # Opener threads block until ffmpeg opens the reading side
+        _v_ready = threading.Event()
+        _a_ready = threading.Event()
+        _vb, _ab = [None], [None]
+        def _ov(): _vb[0] = open(vpipe, "wb"); _v_ready.set()
+        def _oa(): _ab[0] = open(apipe, "wb"); _a_ready.set()
+        threading.Thread(target=_ov, daemon=True).start()
+        threading.Thread(target=_oa, daemon=True).start()
+
+        ff_cmd = [
+            "ffmpeg", "-y",
+            "-f", "rawvideo", "-pix_fmt", "bgra",
+            "-s", f"{w}x{h}", "-r", f"{fps_n}/{fps_d}", "-i", vpipe,
+            "-f", "s16le", "-ar", str(ar), "-ac", str(nch), "-i", apipe,
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-b:v", "2000k", "-maxrate", "2500k", "-bufsize", "4000k",
+            "-c:a", "aac", "-b:a", "128k",
+            "-f", "hls", "-hls_time", "2", "-hls_list_size", "6",
+            "-hls_flags", "delete_segments+independent_segments",
+            "-hls_segment_filename", os.path.join(outdir, "seg%05d.ts"),
+            os.path.join(outdir, "stream.m3u8"),
+        ]
+        ff = _sp.Popen(ff_cmd, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        _v_ready.wait(timeout=10)
+        _a_ready.wait(timeout=10)
+        vfh = _vb[0]
+        afh = _ab[0]
+        if not vfh or not afh:
+            return
+
+        # ── Frame receive + encode loop ──────────────────────────────────────
+        pushed      = set()
+        push_clock  = time.time()
+
+        def _push_new():
+            for fn in sorted(os.listdir(outdir)):
+                if not fn.endswith(".ts") or fn in pushed:
+                    continue
+                path = os.path.join(outdir, fn)
+                try:
+                    data = open(path, "rb").read()
+                    if data:
+                        push_fn(data, 2.0)
+                        pushed.add(fn)
+                except Exception:
+                    pass
+
+        while not stop_evt.is_set():
+            ft, vf, af, mf = _NDI.recv_capture_v2(recv, 50)
+            try:
+                if ft == _NDI.FRAME_TYPE_VIDEO and vf.data is not None:
+                    vfh.write(bytes(vf.data)); vfh.flush()
+                    _NDI.recv_free_video_v2(recv, vf)
+                elif ft == _NDI.FRAME_TYPE_AUDIO and af.data is not None:
+                    # Float32 planar (channels × samples) → int16 interleaved
+                    import numpy as _np
+                    arr = _np.array(af.data, dtype=_np.float32)
+                    pcm = (_np.clip(arr, -1.0, 1.0) * 32767.0).astype(_np.int16)
+                    afh.write(pcm.T.flatten().tobytes()); afh.flush()
+                    _NDI.recv_free_audio_v2(recv, af)
+            except (BrokenPipeError, OSError):
+                break
+            if time.time() - push_clock > 0.5:
+                _push_new()
+                push_clock = time.time()
+
+        _push_new()   # flush any final segments
+
+    finally:
+        try:
+            if vfh: vfh.close()
+        except Exception:
+            pass
+        try:
+            if afh: afh.close()
+        except Exception:
+            pass
+        if ff is not None:
+            try:
+                ff.wait(timeout=3)
+            except Exception:
+                pass
+            if ff.poll() is None:
+                ff.kill()
+        if recv is not None:
+            _NDI.recv_destroy(recv)
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
 def _proxy_video_url(bridge_url: str) -> str:
     """Convert an internal bridge URL to the authenticated SignalScope proxy path.
 
@@ -652,7 +851,8 @@ def _start_client_thread(monitor, hub_url: str):
                     # Includes bridge_url so the relay thread and presenter page
                     # both have the correct value without manual client entry.
                     updates = {}
-                    for _k in ("vmix_ip", "vmix_port", "vmix_input", "bridge_url"):
+                    for _k in ("vmix_ip", "vmix_port", "vmix_input", "bridge_url",
+                               "preview_mode", "ndi_source"):
                         if _k in cmd:
                             updates[_k] = cmd[_k]
                     if updates:
@@ -755,11 +955,42 @@ def _video_relay_loop(monitor, hub_url: str):
             time.sleep(2)
             continue
         try:
-            cfg        = _load_cfg()
-            bridge_url = (cfg.get("bridge_url") or "").strip()
-            app_cfg    = monitor.app_cfg
-            site       = (getattr(getattr(app_cfg, "hub", None), "site_name", "") or "").strip()
-            secret     = (getattr(getattr(app_cfg, "hub", None), "secret_key",  "") or "").strip()
+            cfg          = _load_cfg()
+            bridge_url   = (cfg.get("bridge_url")   or "").strip()
+            preview_mode = (cfg.get("preview_mode") or "srt").strip()
+            ndi_source   = (cfg.get("ndi_source")   or "").strip()
+            app_cfg      = monitor.app_cfg
+            site         = (getattr(getattr(app_cfg, "hub", None), "site_name", "") or "").strip()
+            secret       = (getattr(getattr(app_cfg, "hub", None), "secret_key",  "") or "").strip()
+
+            # ── NDI mode: generate HLS segments from NDI source ──────────
+            if preview_mode == "ndi":
+                if not ndi_source or not site:
+                    time.sleep(5)
+                    continue
+                if not _ndi_available:
+                    time.sleep(30)
+                    continue
+                _ndi_kill = threading.Event()
+                def _ndi_push(data, dur,
+                              _site=site, _secret=secret):
+                    try:
+                        _push(_site, _secret, data, dur)
+                    except Exception:
+                        pass
+                _ndi_t = threading.Thread(
+                    target=_ndi_hls_relay,
+                    args=(ndi_source, _ndi_push, _ndi_kill),
+                    daemon=True,
+                )
+                _ndi_t.start()
+                while _relay_event.is_set() and _ndi_t.is_alive():
+                    time.sleep(1)
+                _ndi_kill.set()
+                _ndi_t.join(timeout=8)
+                if _relay_event.is_set():
+                    time.sleep(5)  # source lost; pause before retry
+                continue
 
             if not bridge_url or not site:
                 time.sleep(5)
@@ -1153,6 +1384,7 @@ document.addEventListener('click',function(e){
   else if(a==='createZoomNow' &&typeof createZoomNow==='function')  createZoomNow();
   else if(a==='refreshZoom'   &&typeof loadZoomData==='function')   loadZoomData(true);
   else if(a==='saveZoomCreds' &&typeof saveZoomCreds==='function')  saveZoomCreds();
+  else if(a==='discoverNdi'   &&typeof discoverNdi==='function')    discoverNdi();
   else if(a==='newInstance'  &&typeof newInstance==='function')   newInstance();
   else if(a==='saveInstance' &&typeof saveInstance==='function')  saveInstance();
   else if(a==='deleteInstance'&&typeof deleteInstance==='function')deleteInstance();
@@ -1166,11 +1398,59 @@ function _populateInstForm(inst){
     'vmix-ip':    inst.vmix_ip||'127.0.0.1',
     'vmix-port':  inst.vmix_port||8088,
     'vmix-input': inst.vmix_input!=null?inst.vmix_input:'1',
-    'bridge-url': inst.bridge_url||''
+    'bridge-url': inst.bridge_url||'',
+    'ndi-source': inst.ndi_source||''
   };
   Object.keys(flds).forEach(function(id){
     var el=document.getElementById(id);if(el)el.value=flds[id];
   });
+  var _pm=inst.preview_mode||'srt';
+  var _pmr=document.querySelector('input[name="preview-mode"][value="'+_pm+'"]');
+  if(_pmr)_pmr.checked=true;
+  _syncPreviewMode(_pm);
+}
+
+// ── NDI preview mode helpers ──────────────────────────────────────────────────
+function _syncPreviewMode(pm){
+  var sf=document.getElementById('srt-fields');
+  var nf=document.getElementById('ndi-fields');
+  if(sf)sf.style.display=pm==='ndi'?'none':'';
+  if(nf)nf.style.display=pm==='ndi'?'':'none';
+  // Sync any radio not yet checked (called on page load via _populateInstForm)
+  var r=document.querySelector('input[name="preview-mode"][value="'+pm+'"]');
+  if(r&&!r.checked)r.checked=true;
+}
+document.addEventListener('change',function(e){
+  if(e.target&&e.target.name==='preview-mode')_syncPreviewMode(e.target.value);
+});
+function discoverNdi(){
+  var btn=document.querySelector('[data-action="discoverNdi"]');
+  if(btn){btn.disabled=true;btn.textContent='Scanning…';}
+  fetch('/api/vmixcaller/ndi_sources',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(btn){btn.disabled=false;btn.textContent='Discover';}
+      var srcs=d.sources||[];
+      if(!srcs.length){showMsg('No NDI sources found on LAN',false);return;}
+      var el=document.getElementById('ndi-source');
+      if(!el)return;
+      // Build a temporary select that copies the chosen value into the text input
+      var sel=document.createElement('select');
+      sel.style.cssText='background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:4px 6px;font-size:12px;margin-left:4px';
+      sel.innerHTML='<option value="">— choose source —</option>'+srcs.map(function(s){
+        return '<option value="'+_esc(s)+'">'+_esc(s)+'</option>';
+      }).join('');
+      sel.onchange=function(){
+        if(sel.value){el.value=sel.value;}
+        sel.parentNode.removeChild(sel);
+      };
+      el.parentNode.appendChild(sel);
+      sel.focus();
+    })
+    .catch(function(){
+      if(btn){btn.disabled=false;btn.textContent='Discover';}
+      showMsg('NDI discovery request failed',false);
+    });
 }
 
 // ── Zoom API meetings ─────────────────────────────────────────────────────────
@@ -1835,9 +2115,28 @@ _HUB_TPL = r"""<!DOCTYPE html>
           </div>
         </div>
         <div class="field">
-          <label class="fl">Preview / SRT Bridge URL</label>
-          <input type="text" id="bridge-url" placeholder="webrtc://192.168.x.x/live/caller1" value="{{active_inst.bridge_url|e}}">
-          <div class="hint">One SRS handles multiple instances via stream names — e.g. <code>webrtc://192.168.1.50/live/caller1</code>, <code>.../caller2</code>. See setup guide.</div>
+          <label class="fl">Video Preview Mode</label>
+          <div style="display:flex;gap:14px;align-items:center">
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer"><input type="radio" name="preview-mode" value="srt" {% if active_inst.preview_mode != "ndi" %}checked{% endif %}> SRT Bridge</label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer"><input type="radio" name="preview-mode" value="ndi" {% if active_inst.preview_mode == "ndi" %}checked{% endif %}> NDI</label>
+          </div>
+        </div>
+        <div id="srt-fields" {% if active_inst.preview_mode == "ndi" %}style="display:none"{% endif %}>
+          <div class="field">
+            <label class="fl">SRT Bridge URL</label>
+            <input type="text" id="bridge-url" placeholder="webrtc://192.168.x.x/live/caller1" value="{{active_inst.bridge_url|e}}">
+            <div class="hint">One SRS handles multiple instances via stream names — e.g. <code>webrtc://192.168.1.50/live/caller1</code>, <code>.../caller2</code>. See setup guide.</div>
+          </div>
+        </div>
+        <div id="ndi-fields" {% if active_inst.preview_mode != "ndi" %}style="display:none"{% endif %}>
+          <div class="field">
+            <label class="fl">NDI Source Name</label>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input type="text" id="ndi-source" placeholder="VMIX-PC (vMix - Input 1 - Zoom)" value="{{active_inst.ndi_source|e}}" style="flex:1">
+              <button class="btn bg bs" data-action="discoverNdi" title="Scan LAN for NDI sources (run from client node)">Discover</button>
+            </div>
+            <div class="hint">vMix advertises all inputs as NDI — the source name is usually <code>MACHINE-NAME (vMix - Input N - Zoom)</code>. Use the Discover button on the <b>client node page</b> to find the exact name. No SRT bridge or Docker needed.</div>
+          </div>
         </div>
         <div class="brow">
           <button class="btn bp" data-action="saveInstance">💾 Save Instance &amp; Push to Site</button>
@@ -2066,14 +2365,16 @@ function saveInstance(){
   var inpR=((document.getElementById('vmix-input')||{}).value||'').trim();
   var inp=inpR===''||isNaN(inpR)?inpR:(parseInt(inpR)||1);
   var burl=((document.getElementById('bridge-url')||{}).value||'').trim();
+  var pm=(document.querySelector('input[name="preview-mode"]:checked')||{}).value||'srt';
+  var ndis=((document.getElementById('ndi-source')||{}).value||'').trim();
   var site=((document.getElementById('target-site')||{}).value||'').trim();
   _post('/api/vmixcaller/instances/'+encodeURIComponent(id),{
     name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl,
-    activate:true,target_site:site||''
+    preview_mode:pm,ndi_source:ndis,activate:true,target_site:site||''
   }).then(function(d){
     if(d.ok){
       var i=_instances.findIndex(function(x){return x.id===id;});
-      var upd={id:id,name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl};
+      var upd={id:id,name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl,preview_mode:pm,ndi_source:ndis};
       if(i>=0)_instances[i]=upd;else _instances.push(upd);
       var sel=document.getElementById('inst-sel');
       if(sel){for(var j=0;j<sel.options.length;j++){if(sel.options[j].value===id){sel.options[j].textContent=name;break;}}}
@@ -2393,9 +2694,28 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
           </div>
         </div>
         <div class="field">
-          <label class="fl">Preview / SRT Bridge URL</label>
-          <input type="text" id="bridge-url" placeholder="webrtc://192.168.x.x/live/caller1" value="{{active_inst.bridge_url|e}}">
-          <div class="hint">Stream name differentiates instances on one SRS — e.g. <code>.../caller1</code>, <code>.../caller2</code>.</div>
+          <label class="fl">Video Preview Mode</label>
+          <div style="display:flex;gap:14px;align-items:center">
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer"><input type="radio" name="preview-mode" value="srt" {% if active_inst.preview_mode != "ndi" %}checked{% endif %}> SRT Bridge</label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer"><input type="radio" name="preview-mode" value="ndi" {% if active_inst.preview_mode == "ndi" %}checked{% endif %}> NDI</label>
+          </div>
+        </div>
+        <div id="srt-fields" {% if active_inst.preview_mode == "ndi" %}style="display:none"{% endif %}>
+          <div class="field">
+            <label class="fl">SRT Bridge URL</label>
+            <input type="text" id="bridge-url" placeholder="webrtc://192.168.x.x/live/caller1" value="{{active_inst.bridge_url|e}}">
+            <div class="hint">Stream name differentiates instances on one SRS — e.g. <code>.../caller1</code>, <code>.../caller2</code>.</div>
+          </div>
+        </div>
+        <div id="ndi-fields" {% if active_inst.preview_mode != "ndi" %}style="display:none"{% endif %}>
+          <div class="field">
+            <label class="fl">NDI Source Name</label>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input type="text" id="ndi-source" placeholder="VMIX-PC (vMix - Input 1 - Zoom)" value="{{active_inst.ndi_source|e}}" style="flex:1">
+              <button class="btn bg bs" data-action="discoverNdi" title="Scan LAN for NDI sources">Discover</button>
+            </div>
+            <div class="hint">Click <b>Discover</b> to scan the LAN and pick from a list, or type the source name directly. vMix sources are usually <code>MACHINE-NAME (vMix - Input N - Zoom)</code>.</div>
+          </div>
         </div>
         <div class="brow">
           <button class="btn bp" data-action="saveInstance">💾 Save Instance</button>
@@ -2546,12 +2866,15 @@ function saveInstance(){
   var inpR=((document.getElementById('vmix-input')||{}).value||'').trim();
   var inp=inpR===''||isNaN(inpR)?inpR:(parseInt(inpR)||1);
   var burl=((document.getElementById('bridge-url')||{}).value||'').trim();
+  var pm=(document.querySelector('input[name="preview-mode"]:checked')||{}).value||'srt';
+  var ndis=((document.getElementById('ndi-source')||{}).value||'').trim();
   _post('/api/vmixcaller/instances/'+encodeURIComponent(id),{
-    name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl,activate:true
+    name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl,
+    preview_mode:pm,ndi_source:ndis,activate:true
   }).then(function(d){
     if(d.ok){
       var i=_instances.findIndex(function(x){return x.id===id;});
-      var upd={id:id,name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl};
+      var upd={id:id,name:name,vmix_ip:ip,vmix_port:port,vmix_input:inp,bridge_url:burl,preview_mode:pm,ndi_source:ndis};
       if(i>=0)_instances[i]=upd;else _instances.push(upd);
       var sel=document.getElementById('inst-sel');
       if(sel){for(var j=0;j<sel.options.length;j++){if(sel.options[j].value===id){sel.options[j].textContent=name;break;}}}
@@ -3062,8 +3385,10 @@ def register(app, ctx):
                     "vmix_ip":    inst.get("vmix_ip",    "127.0.0.1"),
                     "vmix_port":  inst.get("vmix_port",   8088),
                     "vmix_input": inst.get("vmix_input",  1),
-                    "bridge_url": inst.get("bridge_url",  ""),
-                    "seq":        int(time.time() * 1000),
+                    "bridge_url":   inst.get("bridge_url",   ""),
+                    "preview_mode": inst.get("preview_mode", "srt"),
+                    "ndi_source":   inst.get("ndi_source",   ""),
+                    "seq":          int(time.time() * 1000),
                 }
 
     @app.get("/api/vmixcaller/instances")
@@ -3085,12 +3410,14 @@ def register(app, ctx):
         # If this is a new client-side instance (not yet persisted), append it
         idx = next((i for i, x in enumerate(instances) if x.get("id") == inst_id), None)
         updated = _make_instance(
-            name       = str(data.get("name",       "") or "").strip() or "Instance",
-            vmix_ip    = str(data.get("vmix_ip",    "127.0.0.1") or "127.0.0.1").strip(),
-            vmix_port  = int(data.get("vmix_port",  8088) or 8088),
-            vmix_input = data.get("vmix_input", 1),
-            bridge_url = str(data.get("bridge_url", "") or "").strip(),
-            inst_id    = inst_id,
+            name         = str(data.get("name",         "") or "").strip() or "Instance",
+            vmix_ip      = str(data.get("vmix_ip",      "127.0.0.1") or "127.0.0.1").strip(),
+            vmix_port    = int(data.get("vmix_port",    8088) or 8088),
+            vmix_input   = data.get("vmix_input", 1),
+            bridge_url   = str(data.get("bridge_url",   "") or "").strip(),
+            preview_mode = str(data.get("preview_mode", "srt") or "srt").strip(),
+            ndi_source   = str(data.get("ndi_source",   "") or "").strip(),
+            inst_id      = inst_id,
         )
         if idx is not None:
             instances[idx] = updated
@@ -3329,6 +3656,69 @@ def register(app, ctx):
             "error":        xml_text[:120],
             "participants": [],
         })
+
+
+    # ── NDI source discovery (client-node only) ──────────────────────────────
+    @app.get("/api/vmixcaller/ndi_sources")
+    @login_required
+    def vmixcaller_ndi_sources():
+        if is_hub and mode != "standalone":
+            # Hub can't see LAN NDI — proxy to the configured client node
+            app_cfg  = monitor.app_cfg
+            raw      = _load_raw()
+            site     = (raw.get("target_site") or "").strip()
+            hub_cfg  = getattr(app_cfg, "hub", None)
+            secret   = (getattr(hub_cfg, "secret_key", "") or "").strip()
+            hub_base = (getattr(hub_cfg, "hub_url", "") or "").rstrip("/")
+            if site and hub_base:
+                try:
+                    data = _zoom_hub_proxy_get(
+                        f"{hub_base}/api/vmixcaller/ndi_sources_client", site, secret)
+                    return jsonify(data)
+                except Exception as e:
+                    return jsonify({"sources": [], "error": str(e)[:80]})
+            return jsonify({"sources": [], "note": "No client site configured"})
+        # Running on client (or standalone) — scan locally
+        if not _ndi_available:
+            return jsonify({"sources": [],
+                            "error": "ndi-python not installed — run: pip install ndi-python"})
+        try:
+            sources = _ndi_sources(timeout_s=4.0)
+            return jsonify({"sources": sources})
+        except Exception as e:
+            return jsonify({"sources": [], "error": str(e)[:120]})
+
+    # ── NDI sources — HMAC-auth endpoint for hub proxy ──────────────────────
+    @app.get("/api/vmixcaller/ndi_sources_client")
+    def vmixcaller_ndi_sources_client():
+        import hmac as _hm
+        site = request.headers.get("X-Site", "").strip()
+        if not site:
+            return jsonify({"error": "missing X-Site"}), 400
+        with hub_server._lock:
+            if not hub_server._sites.get(site, {}).get("_approved"):
+                return jsonify({"error": "not approved"}), 403
+        secret = getattr(getattr(monitor.app_cfg, "hub", None), "secret_key", "") or ""
+        if secret:
+            sig  = request.headers.get("X-Hub-Sig", "")
+            ts_s = request.headers.get("X-Hub-Ts", "0")
+            try:
+                ts = float(ts_s)
+                if abs(time.time() - ts) > 120:
+                    return jsonify({"error": "timestamp expired"}), 403
+                key      = hashlib.sha256(f"{secret}:signing".encode()).digest()
+                expected = _hm.new(key, f"{ts:.0f}:".encode() + b"", hashlib.sha256).hexdigest()
+                if not _hm.compare_digest(sig, expected):
+                    return jsonify({"error": "bad signature"}), 403
+            except Exception:
+                return jsonify({"error": "auth error"}), 403
+        if not _ndi_available:
+            return jsonify({"sources": [],
+                            "error": "ndi-python not installed on this client node"})
+        try:
+            return jsonify({"sources": _ndi_sources(timeout_s=4.0)})
+        except Exception as e:
+            return jsonify({"sources": [], "error": str(e)[:120]})
 
     # ══════════════════════════════════════════════════════════════════════════
     # Zoom API routes

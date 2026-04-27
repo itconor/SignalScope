@@ -35,6 +35,7 @@ ENABLE_SERVICE=""
 ENABLE_NGINX=""
 ENABLE_LIVEWIRE=""
 ENABLE_ICECAST=""
+ENABLE_NDI=""
 FORCE_RETUNE=0
 NGINX_FQDN=""
 NGINX_FQDN_DEFAULT=""   # pre-filled from a broken/existing config during repair
@@ -87,6 +88,8 @@ Options:
   --no-livewire             Apply standard UDP tuning only
   --icecast                 Install Icecast2 (for the Icecast Streaming plugin)
   --no-icecast              Skip Icecast2 installation
+  --ndi                     Install NDI support (ndi-python) for vMix Caller video preview
+  --no-ndi                  Skip NDI support
   --retune                  Re-apply kernel network tuning even on an update (combine with --livewire)
   --nginx                   Install and configure nginx reverse proxy
   --no-nginx                Skip nginx setup
@@ -246,6 +249,8 @@ parse_args() {
       --no-livewire) ENABLE_LIVEWIRE=0; shift ;;
       --icecast) ENABLE_ICECAST=1; shift ;;
       --no-icecast) ENABLE_ICECAST=0; shift ;;
+      --ndi) ENABLE_NDI=1; shift ;;
+      --no-ndi) ENABLE_NDI=0; shift ;;
       --retune) FORCE_RETUNE=1; shift ;;
       --pi-overclock) ENABLE_OVERCLOCK=1; shift ;;
       --no-pi-overclock) ENABLE_OVERCLOCK=0; shift ;;
@@ -1099,6 +1104,17 @@ main() {
         ENABLE_ICECAST=0
       fi
     fi
+
+    if [[ -z "${ENABLE_NDI}" ]]; then
+      echo
+      info "NDI support (ndi-python) enables the vMix Caller plugin to receive NDI video"
+      info "directly from vMix — eliminating the Docker/SRS bridge requirement for video preview."
+      if ask_yes_no "Install NDI support for vMix Caller video preview?" "n"; then
+        ENABLE_NDI=1
+      else
+        ENABLE_NDI=0
+      fi
+    fi
   fi
 
   EXISTING_PROXY=0
@@ -1190,6 +1206,7 @@ main() {
   fi
   info "Install service: $([[ "${ENABLE_SERVICE}" == "1" ]] && echo yes || echo no)"
   info "Install SDR: $([[ "${ENABLE_SDR}" == "1" ]] && echo yes || echo no)"
+  info "Install NDI: $([[ "${ENABLE_NDI}" == "1" ]] && echo yes || echo no)"
   info "Install nginx: $([[ "${ENABLE_NGINX}" == "1" ]] && echo yes || echo no)"
   if [[ "${IS_UPDATE}" -ne 1 ]]; then
     info "UDP tuning: $([[ "${ENABLE_LIVEWIRE}" == "1" ]] && echo "Livewire/AES67 (1.5 GB default, ~2 GB burst, IGMP limit → 512)" || echo "standard")"
@@ -1403,6 +1420,17 @@ main() {
     ok "aiortc installed — IP Link server-side WebRTC available"
   else
     warn "aiortc not available — IP Link will fall back to browser-managed WebRTC (Livewire server routing still works)"
+  fi
+
+  if [[ "${ENABLE_NDI}" == "1" ]]; then
+    step "Installing NDI Python bindings (ndi-python)"
+    # ndi-python bundles the NDI runtime — no separate SDK download required.
+    # Supports Linux x64 and aarch64 (Raspberry Pi 64-bit).
+    if python -m pip install ndi-python; then
+      ok "ndi-python installed — vMix Caller NDI video preview available"
+    else
+      warn "ndi-python not available on this platform — vMix Caller will fall back to SRT Bridge mode"
+    fi
   fi
 
   step "Installing/checking ONNX stack"
