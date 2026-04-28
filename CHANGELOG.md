@@ -2,6 +2,14 @@
 
 ---
 
+### Wallboard 3.16.0 — 2026-04-28
+
+**Feature: Staff message board**
+
+Operators can now post a short message (up to 280 characters) directly from the Wallboard settings drawer (⚙ → Staff Message section). The message appears as a prominent amber banner between the status hero strip and the chain cards — visible to everyone in the office. Posted time is shown below the message text. Messages auto-expire after 24 hours. The banner is theme-aware (amber tint in dark/bauer mode, orange in corp/light mode). Clearing is immediate — just press ✕ Clear or post an empty message.
+
+---
+
 ### SignalScope-3.5.179 — 2026-04-28
 
 **Fix: Thread-safety race in `hub_alert_poll()` / `HubAlertFanout` cleanup**

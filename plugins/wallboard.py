@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.15.2",
+    "version":  "3.16.0",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -425,13 +425,27 @@ def register(app, ctx):
                 ],
             }
 
+        cfg_data = _cfg_load()
+
+        # Staff message — auto-expire after 24h
+        msg_out = None
+        if cfg_data.get("message"):
+            msg_ts = float(cfg_data.get("message_ts") or 0)
+            if now - msg_ts < 86400:
+                msg_out = {"text": cfg_data["message"], "ts": msg_ts}
+            else:
+                cfg_data.pop("message", None)
+                cfg_data.pop("message_ts", None)
+                _cfg_save(cfg_data)
+
         return jsonify({
             "sites": sites_out,
             "chain_logos": chain_logos,
             "alerts": alerts_out[:20],
             "chain_faults": chain_faults,
-            "config": _cfg_load(),
+            "config": cfg_data,
             "zetta": zetta_out,
+            "message": msg_out,
         })
 
     @app.get("/api/wallboard/config")
@@ -443,6 +457,25 @@ def register(app, ctx):
     @login_required
     def wallboard_config_save():
         _cfg_save(request.get_json(force=True))
+        return jsonify({"ok": True})
+
+    @app.post("/api/wallboard/message")
+    @login_required
+    @csrf_protect
+    def wallboard_message_post():
+        """Set or clear the staff message banner.
+        POST {"message": "text"} to post, {"message": ""} to clear.
+        """
+        payload = request.get_json(force=True) or {}
+        msg = (payload.get("message") or "").strip()[:280]
+        cfg = _cfg_load()
+        if msg:
+            cfg["message"]    = msg
+            cfg["message_ts"] = _time.time()
+        else:
+            cfg.pop("message",    None)
+            cfg.pop("message_ts", None)
+        _cfg_save(cfg)
         return jsonify({"ok": True})
 
     @app.post("/api/wallboard/logo/<chain_id>")
@@ -1029,6 +1062,33 @@ body.corp .cc-np-artist{color:#1d1d1f}
 .tk-site{font-size:14px;font-weight:600;color:var(--tx)}
 .tk-sep{padding:0 14px;font-size:18px;color:var(--bor);opacity:.4}
 
+/* ═══ Staff message banner ═══ */
+#wb-message{
+  flex-shrink:0;margin:8px 20px 0;border-radius:10px;
+  padding:10px 18px;
+  background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(245,158,11,.06));
+  border:1.5px solid rgba(245,158,11,.4);
+  box-shadow:0 0 24px rgba(245,158,11,.07);
+  display:none;align-items:center;gap:14px;
+  animation:msg-glow 3s ease-in-out infinite;
+}
+@keyframes msg-glow{
+  0%,100%{box-shadow:0 0 24px rgba(245,158,11,.07)}
+  50%{box-shadow:0 0 36px rgba(245,158,11,.14)}
+}
+#wb-msg-icon{font-size:22px;flex-shrink:0;line-height:1}
+#wb-msg-body{flex:1;min-width:0}
+#wb-msg-text{
+  font-size:20px;font-weight:700;color:#fbbf24;
+  line-height:1.3;word-break:break-word;
+}
+#wb-msg-time{font-size:11px;color:rgba(251,191,36,.55);margin-top:2px;font-weight:600;letter-spacing:.04em}
+body.bauer #wb-message{background:rgba(255,200,0,.08);border-color:rgba(255,200,0,.35)}
+body.bauer #wb-msg-text{color:#ffd700}
+body.corp #wb-message{background:rgba(255,149,0,.07);border-color:rgba(255,149,0,.3)}
+body.corp #wb-msg-text{color:#ff9500}
+body.corp #wb-msg-time{color:rgba(255,149,0,.55)}
+
 /* ═══ Settings drawer ═══ */
 #wb-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:490;opacity:0;pointer-events:none;transition:opacity .3s}
 #wb-overlay.show{opacity:1;pointer-events:auto}
@@ -1519,6 +1579,13 @@ body.day-grad{transition:background 3s ease}
     </div>
     <div class="hero-badge" id="hero-badge"></div>
   </div>
+  <div id="wb-message">
+    <div id="wb-msg-icon">📢</div>
+    <div id="wb-msg-body">
+      <div id="wb-msg-text"></div>
+      <div id="wb-msg-time"></div>
+    </div>
+  </div>
   <div id="wb-chains"></div>
   <div id="wb-scroll"><div id="wb-meters"></div></div>
 </div>
@@ -1628,6 +1695,17 @@ body.day-grad{transition:background 3s ease}
     <div class="dr-section">
       <div class="dr-stitle">Visible Streams <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--mu)">(uncheck to hide)</span></div>
       <div id="dr-streams"><span style="color:var(--mu);font-size:12px">Loading…</span></div>
+    </div>
+    <div class="dr-section">
+      <div class="dr-stitle">📢 Staff Message</div>
+      <div style="font-size:11px;color:var(--mu);margin-bottom:8px">Displays an amber banner on the wallboard visible to all staff. Auto-clears after 24 hours.</div>
+      <textarea id="wb-msg-input" maxlength="280" rows="3" placeholder="Type a message for all staff…" style="width:100%;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:7px 9px;font-size:13px;font-family:inherit;resize:vertical;line-height:1.4"></textarea>
+      <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
+        <button class="btn bp bs" id="btn-msg-post">📢 Post</button>
+        <button class="btn bd bs" id="btn-msg-clear">✕ Clear</button>
+        <span id="wb-msg-dr-status" style="font-size:11px;color:var(--ok);margin-left:4px"></span>
+      </div>
+      <div id="wb-msg-dr-current" style="font-size:11px;color:var(--mu);margin-top:6px"></div>
     </div>
   </div>
 </aside>
@@ -1810,7 +1888,15 @@ function _resetHide(){clearTimeout(_hideT);document.getElementById('wb-hdr').cla
 document.addEventListener('fullscreenchange',function(){var f=!!document.fullscreenElement;document.getElementById('btn-fs').textContent=f?'✕ Exit':'⛶ Full';if(f){_resetHide();document.addEventListener('mousemove',_resetHide)}else{clearTimeout(_hideT);document.getElementById('wb-hdr').classList.remove('hide');document.removeEventListener('mousemove',_resetHide)}});
 
 /* ── Drawer ── */
-function openDrawer(){document.getElementById('wb-drawer').classList.add('open');document.getElementById('wb-overlay').classList.add('show');renderDrawerChains();renderDrawerStreams()}
+function openDrawer(){
+  document.getElementById('wb-drawer').classList.add('open');
+  document.getElementById('wb-overlay').classList.add('show');
+  renderDrawerChains();renderDrawerStreams();
+  /* Populate message textarea with active message (if any) */
+  var inp=document.getElementById('wb-msg-input');
+  if(inp&&inp.value===''&&_msgCurrent&&_msgCurrent.text)inp.value=_msgCurrent.text;
+  _updateMsgBanner(_msgCurrent); /* refresh drawer current-message line */
+}
 function closeDrawer(){document.getElementById('wb-drawer').classList.remove('open');document.getElementById('wb-overlay').classList.remove('show')}
 
 /* ── Helpers ── */
@@ -2496,6 +2582,60 @@ function _spRefreshNP(){
 }
 
 /* ═══ Polling ═══ */
+/* ═══ Staff message banner ═══ */
+var _msgCurrent=null; /* {text, ts} or null */
+function _updateMsgBanner(msg){
+  _msgCurrent=msg||null;
+  var el=document.getElementById('wb-message');
+  var txtEl=document.getElementById('wb-msg-text');
+  var tmEl=document.getElementById('wb-msg-time');
+  if(!el)return;
+  if(msg&&msg.text){
+    if(txtEl)txtEl.textContent=msg.text;
+    if(tmEl)tmEl.textContent='Posted '+fmtTime(msg.ts);
+    el.style.display='flex';
+  }else{
+    el.style.display='none';
+  }
+  /* Update drawer current-message line if drawer is open */
+  var cur=document.getElementById('wb-msg-dr-current');
+  if(cur){
+    if(msg&&msg.text){
+      cur.textContent='Active: "'+msg.text.slice(0,60)+(msg.text.length>60?'…':'')+'"';
+    }else{
+      cur.textContent='No message currently displayed.';
+    }
+  }
+}
+function _postMessage(txt){
+  fetch(_tkUrl('/api/wallboard/message'),{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},
+    body:JSON.stringify({message:txt||''})})
+  .then(function(r){return r.ok?r.json():Promise.reject()})
+  .then(function(){
+    var st=document.getElementById('wb-msg-dr-status');
+    if(st){st.textContent=txt?'✓ Posted':'✓ Cleared';setTimeout(function(){st.textContent=''},3000);}
+    poll();
+  })
+  .catch(function(){
+    var st=document.getElementById('wb-msg-dr-status');
+    if(st){st.textContent='✗ Error';setTimeout(function(){st.textContent=''},3000);}
+  });
+}
+(function(){
+  var postBtn=document.getElementById('btn-msg-post');
+  var clearBtn=document.getElementById('btn-msg-clear');
+  if(postBtn)postBtn.addEventListener('click',function(){
+    var txt=(document.getElementById('wb-msg-input').value||'').trim();
+    if(!txt){var st=document.getElementById('wb-msg-dr-status');if(st){st.textContent='Type a message first';setTimeout(function(){st.textContent=''},2500);}return;}
+    _postMessage(txt);
+  });
+  if(clearBtn)clearBtn.addEventListener('click',function(){
+    document.getElementById('wb-msg-input').value='';
+    _postMessage('');
+  });
+})();
+
 function poll(){
   fetch(_tkUrl('/api/wallboard/data'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
     /* Server config only applied on initial load or after an explicit Save.
@@ -2504,6 +2644,7 @@ function poll(){
     _chainLogos=d.chain_logos||{};_chainLogos._ts=Date.now();
     _zetChains=d.zetta||{};
     if(d.chain_faults)_loadFaultHistory(d.chain_faults);
+    _updateMsgBanner(d.message||null);
     renderMeters(d);buildTicker(d.alerts||[]);
   }).catch(function(){});
 }
