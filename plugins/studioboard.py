@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.15.0",
+    "version":  "3.15.1",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1453,7 +1453,7 @@ select[multiple]{min-height:90px}
 <nav class="tabs">
   <button class="tab active" data-tab="studios">Studios</button>
   <button class="tab" data-tab="brands">Brands</button>
-  <button class="tab" data-tab="liveread">📅 Liveread</button>
+  <button class="tab" data-tab="liveread">📅 Airwave</button>
   <button class="tab" data-tab="api">API</button>
   <button class="tab" data-tab="backup">Backup</button>
 </nav>
@@ -1483,9 +1483,9 @@ select[multiple]{min-height:90px}
 </div>
 <div class="pane main" id="pane-liveread">
   <div class="card">
-    <div class="ch">Liveread API Settings</div>
+    <div class="ch">Airwave API Settings</div>
     <div class="cb">
-      <p style="color:var(--mu);font-size:12px;margin-bottom:14px">Connect to the Liveread Studio Bookings API. When a studio has no brand assigned, the next booking from the matched Liveread studio will appear on the TV display.</p>
+      <p style="color:var(--mu);font-size:12px;margin-bottom:14px">Connect to the Airwave Studio Bookings API. When a studio has no brand assigned, the next booking from the matched Airwave studio will appear on the TV display.</p>
       <div class="row">
         <div class="field" style="flex:2"><label>API URL</label>
           <input id="lr-url" placeholder="https://liveread.bauerni.co.uk/api/external">
@@ -1505,7 +1505,7 @@ select[multiple]{min-height:90px}
     <div class="ch">Studio Mapping</div>
     <div class="cb">
       <p style="color:var(--mu);font-size:12px;margin-bottom:14px">
-        Match each SignalScope studio to its Liveread counterpart. When the studio has no brand assigned the next confirmed booking from that Liveread studio will appear on the TV display automatically.
+        Match each SignalScope studio to its Airwave counterpart. When the studio has no brand assigned the next confirmed booking from that Airwave studio will appear on the TV display automatically.
       </p>
       <div id="lr-map-body"></div>
       <div style="margin-top:12px">
@@ -1605,7 +1605,7 @@ function loadAll(){
         _zStations.push({key:inst.id+':'+sid,label:(inst.name||inst.id)+' / '+(inst.stations[sid].station_name||sid)});
       });
     });
-    // Populate Liveread config fields from saved config
+    // Populate Airwave config fields from saved config
     var lr=res[0].liveread||{};
     _lrCfg={api_url:lr.api_url||'https://liveread.bauerni.co.uk/api/external',
             token:lr.token||'',studio_map:lr.studio_map||{}};
@@ -1613,7 +1613,7 @@ function loadAll(){
     var tokEl=document.getElementById('lr-token');if(tokEl&&_lrCfg.token)tokEl.placeholder='(saved — paste to change)';
     renderStudios();
     renderBrands();
-    // If on Liveread tab and studios are available, render mapping
+    // If on Airwave tab and studios are available, render mapping
     if(_activeTab==='liveread'&&_lrStudios.length)lrRenderMap();
   });
   loadDefLogo();
@@ -1647,7 +1647,7 @@ function _defLogoRemove(){
     }).catch(function(){});
 }
 
-/* ── Liveread tab ────────────────────────────────────── */
+/* ── Airwave tab ────────────────────────────────────── */
 function lrShowMsg(txt,ok){
   var el=document.getElementById('lr-test-msg');if(!el)return;
   el.style.display='';
@@ -1664,7 +1664,7 @@ function lrRenderMap(){
   var html='<table style="width:100%;border-collapse:collapse">'
     +'<thead><tr>'
     +'<th style="text-align:left;font-size:11px;color:var(--mu);padding:6px 0;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--bor)">SignalScope Studio</th>'
-    +'<th style="text-align:left;font-size:11px;color:var(--mu);padding:6px 8px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--bor)">Liveread Studio</th>'
+    +'<th style="text-align:left;font-size:11px;color:var(--mu);padding:6px 8px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--bor)">Airwave Studio</th>'
     +'</tr></thead><tbody>';
   _studios.forEach(function(st){
     var mapped=_lrCfg.studio_map[st.id]||'';
@@ -2037,7 +2037,7 @@ document.addEventListener('click',function(e){
   }
 });
 
-/* ── Liveread button wiring ──────────────────────── */
+/* ── Airwave button wiring ──────────────────────── */
 document.getElementById('lr-save-btn').addEventListener('click',lrSaveSettings);
 document.getElementById('lr-test-btn').addEventListener('click',lrTest);
 document.getElementById('lr-map-save-btn').addEventListener('click',lrSaveMap);
@@ -2375,7 +2375,7 @@ body.corp .col-wave{display:none}
   color:var(--wn);opacity:.65}
 /* Default logo shown in cleared studios */
 .free-logo{max-width:55%;max-height:28vh;object-fit:contain;opacity:.65;pointer-events:none}
-/* ── Liveread next-booking card in cleared studios ── */
+/* ── Airwave next-booking card in cleared studios ── */
 .lr-book{width:92%;box-sizing:border-box;padding:14px 18px;border-radius:13px;
   background:rgba(23,168,255,.08);border:1px solid rgba(23,168,255,.25);
   display:flex;flex-direction:column;align-items:center;gap:6px;
@@ -2645,7 +2645,7 @@ function buildCol(s,idx){
         +'<img class="free-logo" id="free-deflogo'+idx+'" alt="" style="display:none" onerror="this.style.display=\'none\'">'
         +'<div class="free-big-clk" id="free-clk'+idx+'">--:--:--</div>'
         +(s.auto_brand_name?'<div class=free-auto-lbl><div class=free-auto-name>'+E(s.auto_brand_name)+'</div><div class=free-auto-sub>IN AUTOMATION</div></div>':'')
-        /* Liveread next-booking panel — populated/hidden by updateCol */
+        /* Airwave next-booking panel — populated/hidden by updateCol */
         +'<div id="lr-book'+idx+'" style="display:none;width:92%"></div>'
         +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
       +'</div>'
@@ -2721,13 +2721,13 @@ function updateCol(s,idx){
         _lgel.style.display='none';
       }
     }
-    /* Liveread next-booking panel */
+    /* Airwave next-booking panel */
     var _lrEl=document.getElementById('lr-book'+idx);
     if(_lrEl){
       var bk=s.next_booking;
       if(bk&&!_vt){
         var _live=(bk._status==='in_progress');
-        var _lbl=_live?'NOW IN STUDIO':'UP NEXT';
+        var _lbl=_live?'NOW IN STUDIO':'NEXT BOOKING';
         var _timeStr=bk.start_time+(bk.end_time?' – '+bk.end_time:'');
         var _who=(bk.booked_by||'').trim();
         var _html='<div class="lr-book">'

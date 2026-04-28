@@ -2,6 +2,13 @@
 
 ---
 
+### Studio Board 3.15.1 — 2026-04-28
+
+- TV display: "UP NEXT" booking badge renamed to "NEXT BOOKING"
+- Admin UI: integration renamed from "Liveread" to "Airwave" throughout (tab label, card headers, descriptive text, column header, JS comments)
+
+---
+
 ### AzuraCast 1.2.1 — 2026-04-28
 
 **Fix: "Discover Stations" did nothing**
