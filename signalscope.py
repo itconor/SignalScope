@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.177"
+BUILD                  = "SignalScope-3.5.178"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -29034,99 +29034,31 @@ def _hub_prepare_site(site: dict) -> dict:
     s["problem_count"] = s["alert_count"] + s["warn_count"]
     return s
 
-@app.get("/hub/stream/events")
+@app.get("/api/hub/alert_poll")
 @login_required
-def hub_stream_events():
-    """SSE endpoint — pushes live metric frames to authenticated browser clients."""
+def hub_alert_poll():
+    """Short-poll endpoint for browser-notification alert events.
+
+    Returns immediately with any chain_fault / chain_recovered events whose
+    seq number is greater than ``since`` query param (default 0).  The caller
+    passes back the highest seq it received as the next ``since`` value.
+
+    This is intentionally NOT an SSE stream — each call releases its Waitress
+    thread immediately.  SSE connections hold a thread indefinitely, which
+    exhausts the thread pool when many browser tabs and TV displays are open
+    concurrently.
+    """
     if not hub_server:
-        return jsonify({"error": "not a hub"}), 404
-
-    allowed = _allowed_sites()
-    site_filter = request.args.get("site", "").strip() or None
-
-    def _generate():
-        # Send an initial snapshot of all sites the user can see
-        sites_snap = hub_server.get_sites()
-        sites_snap = _filter_sites(sites_snap)
-        yield f"data: {json.dumps({'type': 'snapshot', 'sites': sites_snap})}\n\n"
-
-        # Per-site last-seen timestamps for change detection
-        last_ts = {}
-        idle = 0
-        while True:
-            try:
-                sites = [s.get("site", "") for s in hub_server.get_sites()
-                         if not allowed or s.get("site", "") in allowed]
-                if site_filter:
-                    sites = [s for s in sites if s == site_filter]
-
-                updated = False
-                for site in sites:
-                    frame = hub_live_fanout.latest(site)
-                    if not frame:
-                        continue
-                    ts = frame.get("ts", 0)
-                    if ts > last_ts.get(site, 0):
-                        last_ts[site] = ts
-                        yield f"data: {json.dumps(frame)}\n\n"
-                        updated = True
-
-                if not updated:
-                    idle += 1
-                    if idle >= 5:   # keepalive every ~5s
-                        yield ": keepalive\n\n"
-                        idle = 0
-                    # Wait for any site update
-                    if sites:
-                        hub_live_fanout.wait_for_update(sites[0], last_ts.get(sites[0], 0), timeout=1.0)
-                    else:
-                        time.sleep(1.0)
-                else:
-                    idle = 0
-                    time.sleep(0.1)
-            except GeneratorExit:
-                return
-            except Exception:
-                time.sleep(1.0)
-
-    resp = Response(_generate(), mimetype="text/event-stream",
-                    headers={"X-Accel-Buffering": "no",
-                             "Cache-Control": "no-cache",
-                             "Connection": "keep-alive"})
-    resp.direct_passthrough = True
-    return resp
-
-@app.get("/hub/alert/events")
-@login_required
-def hub_alert_events():
-    """SSE endpoint — streams chain-fault and recovery events to browser clients.
-    Used by the browser-notification feature on the hub dashboard."""
-    if not hub_server:
-        return jsonify({"error": "not a hub"}), 404
-
-    def _generate():
-        yield ": connected\n\n"
-        since_seq = 0
-        while True:
-            try:
-                events = hub_alert_fanout.get_events(since_seq, timeout=30.0)
-                if events:
-                    for ev in events:
-                        since_seq = ev.get("_seq", since_seq)
-                        yield f"data: {json.dumps(ev)}\n\n"
-                else:
-                    yield ": keepalive\n\n"
-            except GeneratorExit:
-                return
-            except Exception:
-                time.sleep(1.0)
-
-    resp = Response(_generate(), mimetype="text/event-stream",
-                    headers={"X-Accel-Buffering": "no",
-                             "Cache-Control": "no-cache",
-                             "Connection": "keep-alive"})
-    resp.direct_passthrough = True
-    return resp
+        return jsonify({"events": [], "seq": 0})
+    try:
+        since = int(request.args.get("since", 0))
+    except (TypeError, ValueError):
+        since = 0
+    events = [e for e in hub_alert_fanout._queue if e.get("_seq", 0) > since]
+    new_seq = events[-1]["_seq"] if events else since
+    # Strip internal _seq from the response
+    out = [{k: v for k, v in e.items() if k != "_seq"} for e in events]
+    return jsonify({"events": out, "seq": new_seq})
 
 @app.get("/hub/site/<path:site_name>/open")
 @login_required
@@ -40255,10 +40187,10 @@ setInterval(_loadTrends, 300000);
 })();
 </script>
 <script nonce="{{csp_nonce()}}">
-// ── Browser notifications — alert SSE stream ───────────────────────────────
+// ── Browser notifications — short-poll (releases server thread each call) ─────
 (function(){
   var _KEY='ss_browser_notif';
-  var _src=null,_retryT=null;
+  var _seq=0,_pollT=null,_running=false;
 
   function _canNotify(){
     var en=false;
@@ -40279,34 +40211,30 @@ setInterval(_loadTrends, 300000);
     }catch(e){}
   }
 
-  function _connect(){
-    if(!_canNotify())return;
-    if(_src){try{_src.close();}catch(e){}_src=null;}
-    clearTimeout(_retryT);
-    _src=new EventSource('/hub/alert/events',{withCredentials:true});
-    _src.onmessage=function(e){
-      var d;try{d=JSON.parse(e.data);}catch(_){return;}
-      if(!_canNotify()){_src.close();_src=null;return;}
-      if(d.type==='chain_fault'){
-        _notify('⚠ Chain Fault: '+d.chain, d.msg||'', true);
-      } else if(d.type==='chain_recovered'){
-        _notify('✅ Recovered: '+d.chain, d.msg||'', false);
-      }
-    };
-    _src.onerror=function(){
-      if(_src){try{_src.close();}catch(e){}_src=null;}
-      clearTimeout(_retryT);_retryT=setTimeout(_connect,15000);
-    };
+  function _poll(){
+    if(!_canNotify()){_running=false;return;}
+    fetch('/api/hub/alert_poll?since='+_seq,{credentials:'same-origin'})
+      .then(function(r){return r.ok?r.json():null;})
+      .then(function(d){
+        if(!d){_pollT=setTimeout(_poll,10000);return;}
+        if(d.seq>_seq)_seq=d.seq;
+        (d.events||[]).forEach(function(ev){
+          if(ev.type==='chain_fault')_notify('⚠ Chain Fault: '+ev.chain,ev.msg||'',true);
+          else if(ev.type==='chain_recovered')_notify('✅ Recovered: '+ev.chain,ev.msg||'',false);
+        });
+        _pollT=setTimeout(_poll,5000);
+      })
+      .catch(function(){_pollT=setTimeout(_poll,15000);});
   }
 
-  document.addEventListener('DOMContentLoaded',function(){
-    if(_canNotify())_connect();
-  });
+  function _start(){
+    if(_running||!_canNotify())return;
+    _running=true;_poll();
+  }
 
-  // Re-connect if user granted permission in another tab and switches back
-  document.addEventListener('visibilitychange',function(){
-    if(!document.hidden&&_canNotify()&&!_src)_connect();
-  });
+  document.addEventListener('DOMContentLoaded',function(){if(_canNotify())_start();});
+  // Pick up if user enables notifications in Settings tab then returns here
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)_start();});
 })();
 </script>
 </body></html>"""
@@ -40602,11 +40530,11 @@ if __name__=="__main__":
 
     try:
         from waitress import serve
-        print(f"[{BUILD}] Starting waitress WSGI server on {_bind_host}:5000 (threads=24)")
+        print(f"[{BUILD}] Starting waitress WSGI server on {_bind_host}:5000 (threads=64)")
         serve(app,
               host=_bind_host,
               port=5000,
-              threads=24,
+              threads=64,
               channel_timeout=120,
               asyncore_use_poll=True,
               ident=BUILD)

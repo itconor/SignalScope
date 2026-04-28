@@ -2,6 +2,20 @@
 
 ---
 
+### SignalScope-3.5.178 — 2026-04-28
+
+**Fix: Server unresponsive / sites losing connectivity under load (SSE thread exhaustion)**
+
+Waitress was configured with `threads=24`. Each SSE connection holds one thread indefinitely. With multiple hub browser tabs, Studio Board TV displays, and Brand Screen displays all open simultaneously, the thread pool was exhausted — client heartbeats and page loads couldn't get a thread, causing sites to go offline and pages to fail.
+
+- **`/hub/alert/events` SSE removed** and replaced with `GET /api/hub/alert_poll?since=<seq>` short-poll. The hub page polls every 5 s (15 s on error); each call completes instantly and releases its thread. This eliminates 1 persistent thread per hub browser tab. Chain fault notifications fire within 5 s of the event, which is indistinguishable in practice from instant.
+- **`/hub/stream/events`** (dead code — never referenced by any template or plugin; live levels have always been delivered by polling `/api/hub/live_levels`) **removed**.
+- **Waitress threads raised 24 → 64** to give more headroom for Studio Board and Brand Screen SSE connections that remain (one permanent thread per TV display is unavoidable with SSE).
+
+**Rule**: Never add an SSE endpoint for data that can be delivered by short-polling. SSE holds a Waitress thread permanently. Short-poll releases it after each response. Reserve SSE only for cases where instant push with no latency is essential (Studio Board config change notifications) and the connection count is bounded.
+
+---
+
 ### SignalScope-3.5.177 — 2026-04-28
 
 **Fix: Browser notification test shows success even when OS suppresses the notification**
