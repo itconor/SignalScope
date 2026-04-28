@@ -2,6 +2,19 @@
 
 ---
 
+### SignalScope-3.5.180 — 2026-04-28
+
+**Fix: Chain fault "Ongoing" forever after server restart — missed CHAIN_FAULT alerts**
+
+`_chain_fault_state` (the in-memory fault state machine) was not restored from the database on startup. After a restart, every chain defaulted to state `"ok"` regardless of what the DB showed. Two consequences:
+
+1. **Stuck "Ongoing" faults** — a chain whose fault was still open at restart time would see `prev == "ok"` on the next monitor tick, so `_do_chain_recovery()` was never called, `ts_recovered` was never written, and the fault remained "Ongoing" in the UI indefinitely.
+2. **Missed new CHAIN_FAULT alerts** — while a chain was stuck in the "alerted" state (open DB row, but state machine said "ok"), silence events on the same chain would fire `_do_chain_recovery()` for an already-closed fault rather than raising a fresh `CHAIN_FAULT`. Subsequent silence was silently ignored.
+
+Fix: `_load_fault_log_from_db()` now also restores `_chain_fault_state[cid] = "alerted"` for any chain whose most recent fault log entry has `ts_recovered is None`. A startup log line lists all chains restored to open-fault state. On the next monitor tick, the recovery path fires normally (writes `ts_recovered`, clears the fault), or if the chain is genuinely still faulted a new alert is raised.
+
+---
+
 ### Brand Screen 1.3.12 — 2026-04-28
 
 **Fix: Full-screen logo mode showed colour bars around the logo**

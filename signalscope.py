@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.179"
+BUILD                  = "SignalScope-3.5.180"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -15328,8 +15328,21 @@ class HubServer:
                 if entries:
                     self._chain_fault_log[cid] = entries
                     loaded += len(entries)
+                    # Restore in-memory fault state for chains that were still
+                    # faulted at the time of the last server restart.  Without
+                    # this, _chain_fault_state[cid] defaults to "ok" after a
+                    # restart, so the recovery path never fires (prev == "ok"
+                    # rather than "alerted"), ts_recovered stays NULL, and the
+                    # fault shows "Ongoing" forever.  It also prevents new
+                    # CHAIN_FAULT alerts because the alerted→fault transition
+                    # is treated as "already notified, nothing to do".
+                    if entries[-1].get("ts_recovered") is None:
+                        self._chain_fault_state[cid] = "alerted"
             if loaded:
                 print(f"[HubServer] Restored {loaded} chain fault log entry/entries from DB")
+            open_faults = [cid for cid, st in self._chain_fault_state.items() if st == "alerted"]
+            if open_faults:
+                print(f"[HubServer] Restored open-fault state for chains: {open_faults}")
         except Exception as e:
             print(f"[HubServer] Could not load fault log from DB: {e}")
 
