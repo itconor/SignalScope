@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "AzuraCast",
     "url":     "/azuracast",
     "icon":    "🎙",
-    "version": "1.0.1",
+    "version": "1.1.0",
 }
 
 import hashlib
@@ -79,10 +79,20 @@ def _load_cfg() -> dict:
 
 
 def _save_cfg(cfg: dict) -> None:
+    import tempfile
     path = _cfg_path()
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception as exc:
         _log(f"[AzuraCast] Config save error: {exc}")
 
@@ -165,7 +175,10 @@ def _az_request(server_url: str, api_key: str, path: str, timeout: int = 10) -> 
     url = server_url.rstrip("/") + "/api" + path
     headers = {"Accept": "application/json"}
     if api_key:
+        # AzuraCast accepts both Authorization: Bearer and X-API-Key; send both for
+        # maximum compatibility across AzuraCast versions.
         headers["Authorization"] = f"Bearer {api_key}"
+        headers["X-API-Key"] = api_key
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8", errors="replace"))
@@ -200,17 +213,45 @@ def _poll_server(server_cfg: dict) -> None:
 
         try:
             data = _az_request(srv_url, api_key, f"/nowplaying/{station_id}")
+        except urllib.error.HTTPError as http_exc:
+            if http_exc.code == 404:
+                err_str = (
+                    "Station not found (HTTP 404). "
+                    "Check the station ID and ensure 'Enable public pages' is turned on "
+                    "in AzuraCast → Station → Profile, or add a valid API key."
+                )
+            elif http_exc.code == 403:
+                err_str = "Access denied (HTTP 403). Check your API key."
+            elif http_exc.code == 401:
+                err_str = "Unauthorized (HTTP 401). Check your API key."
+            else:
+                err_str = str(http_exc)
+            with _lock:
+                existing = dict(_station_status.get(key, {}))
+                existing.update({
+                    "server_id":    srv_id,
+                    "server_url":   srv_url,
+                    "station_id":   station_id,
+                    "station_name": display_name or station_id,
+                    "input_name":   input_name,
+                    "silence_alert": silence_alert,
+                    "error":        err_str,
+                    "last_updated": time.time(),
+                })
+                _station_status[key] = existing
+            _log(f"[AzuraCast] Poll error {key}: {err_str}")
+            continue
         except Exception as exc:
             with _lock:
                 existing = dict(_station_status.get(key, {}))
                 existing.update({
-                    "server_id":   srv_id,
-                    "server_url":  srv_url,
-                    "station_id":  station_id,
+                    "server_id":    srv_id,
+                    "server_url":   srv_url,
+                    "station_id":   station_id,
                     "station_name": display_name or station_id,
-                    "input_name":  input_name,
+                    "input_name":   input_name,
                     "silence_alert": silence_alert,
-                    "error":       str(exc),
+                    "error":        str(exc),
                     "last_updated": time.time(),
                 })
                 _station_status[key] = existing
@@ -1038,19 +1079,36 @@ def register(app, ctx):
             return jsonify({"ok": False, "error": "URL must start with http:// or https://"}), 400
 
         try:
-            data = _az_request(url, api_key, "/stations", timeout=10)
+            # /api/nowplaying returns a list of NowPlaying objects — each has
+            # is_online, listeners.current, and station metadata.  This is the
+            # correct discovery endpoint; /api/stations returns NowPlayingStation
+            # objects which have no listeners or is_online fields.
+            data = _az_request(url, api_key, "/nowplaying", timeout=15)
+        except urllib.error.HTTPError as http_exc:
+            if http_exc.code == 403:
+                err = "Access denied (HTTP 403). Check your API key."
+            elif http_exc.code == 401:
+                err = "Unauthorized (HTTP 401). Check your API key."
+            else:
+                err = str(http_exc)
+            return jsonify({"ok": False, "error": err}), 200
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 200
 
         stations_out = []
         for s in (data if isinstance(data, list) else []):
+            station_info = s.get("station", {}) or {}
+            listeners    = s.get("listeners", {}) or {}
+            station_id   = str(station_info.get("id", "")).strip()
+            if not station_id:
+                continue
             stations_out.append({
-                "id":        str(s.get("id", "")),
-                "name":      s.get("name", ""),
-                "shortcode": s.get("shortcode", ""),
-                "listen_url": s.get("listen_url", ""),
-                "listeners": int((s.get("listeners") or {}).get("current", 0)),
-                "is_online": bool(s.get("is_online", True)),
+                "id":        station_id,
+                "name":      station_info.get("name", ""),
+                "shortcode": station_info.get("shortcode", ""),
+                "listen_url": station_info.get("listen_url", ""),
+                "listeners": int(listeners.get("current", 0)),
+                "is_online": bool(s.get("is_online", False)),
             })
         return jsonify({"ok": True, "stations": stations_out})
 

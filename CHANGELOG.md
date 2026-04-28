@@ -2,6 +2,17 @@
 
 ---
 
+### AzuraCast 1.1.0 — 2026-04-28
+
+**Fix: Discovery endpoint, HTTP error messages, and atomic config saves**
+
+- **Discovery now uses `/api/nowplaying`** instead of `/api/stations`. The `/api/stations` endpoint returns `NowPlayingStation` objects which have no `listeners` or `is_online` fields — the discovery table always showed 0 listeners and "Online" for every station regardless of actual state. `/api/nowplaying` returns full NowPlaying objects with real listener counts and live online status.
+- **HTTP error handling improved** in the per-station poller: HTTP 404 now shows a plain-English message ("Station not found — check station ID and enable_public_api setting") instead of a raw urllib error; 401/403 also have specific messages.
+- **Dual auth headers** — `X-API-Key` is now sent alongside `Authorization: Bearer` for maximum compatibility across AzuraCast versions.
+- **Atomic config saves** — `_save_cfg` now uses `tempfile.mkstemp` + `os.replace` to prevent config corruption if the process is killed mid-write.
+
+---
+
 ### Wallboard 3.16.0 — 2026-04-28
 
 **Feature: Staff message board**
