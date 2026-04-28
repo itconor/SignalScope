@@ -2,6 +2,16 @@
 
 ---
 
+### SignalScope-3.5.182 — 2026-04-28
+
+**Fix: 500 Internal Server Error on `/hub` after fresh restart**
+
+`level_dbfs` can be `None` in the heartbeat payload when a stream hasn't yet produced a real audio measurement (since 3.5.170, `_build_payload()` sends `None` instead of `-120.0` to avoid overwriting hub_state.json with uninitialised values). The HUB_TPL and HUB_WALL_TPL Jinja2 templates computed `(lev + 80)` directly without a None guard — causing `TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'` and HTTP 500 on every `/hub` page load until the first audio measurement arrived.
+
+Fix: both template locations now use `{% set lev = s.level_dbfs if s.level_dbfs is not none else -120.0 %}`.
+
+---
+
 ### Studio Board 3.15.0 — 2026-04-28
 
 **Feature: Liveread Studio Bookings integration**

@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.181"
+BUILD                  = "SignalScope-3.5.182"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -36256,7 +36256,7 @@ main{padding:18px;max-width:1500px;margin:0 auto}
       {% for s in site.get('streams', []) %}
       {% set i = loop.index0 %}
       {% set ai = s.ai_status or 'Idle' %}
-      {% set lev = s.level_dbfs %}
+      {% set lev = s.level_dbfs if s.level_dbfs is not none else -120.0 %}
       {% set lpct = [(lev+80)/80*100, 100]|min|int %}
       {% set lcol = 'var(--al)' if lev<=-55 else ('var(--wn)' if lev<=-20 else 'var(--ok)') %}
       {% set ph = s.ai_phase or '' %}
@@ -39726,7 +39726,7 @@ setInterval(_loadTrends, 300000);
     {% for s in site.streams %}
     {% set i = loop.index0 %}
     {% set ai = s.ai_status or 'Idle' %}
-    {% set lev = s.level_dbfs %}
+    {% set lev = s.level_dbfs if s.level_dbfs is not none else -120.0 %}
     {% set lpct = [(lev+80)/80*100, 100]|min|int %}
     {% set lcol = 'var(--al)' if lev<=-55 else ('var(--wn)' if lev<=-20 else 'var(--ok)') %}
     {% set ai  = s.ai_status or '' %}
