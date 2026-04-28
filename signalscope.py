@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.182"
+BUILD                  = "SignalScope-3.5.183"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -29852,6 +29852,7 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
     <div class="blk-collapsible" id="blk_comparators" style="margin-top:0">
       <div class="blk-collapsible-hdr" data-target="comp_body">
         <span>↔ Signal Comparators</span>
+        <span id="comp_count_badge" style="display:none;font-size:11px;font-weight:700;background:var(--acc);color:#fff;border-radius:999px;padding:1px 7px;margin-left:6px"></span>
         <span style="font-size:11px;color:var(--mu);margin-left:8px">Needs ≥ 5 min shared history</span>
         <span class="blk-caret" style="margin-left:auto">▶</span>
       </div>
@@ -30134,6 +30135,13 @@ function _mkCompSel(idx,sub){
   }
   return sel;
 }
+function _updateCompCount(){
+  var n=document.querySelectorAll('#builder_comparators .comp-row').length;
+  var badge=document.getElementById('comp_count_badge');
+  if(!badge)return;
+  if(n>0){badge.textContent=n;badge.style.display='';}
+  else{badge.style.display='none';}
+}
 function addComparator(fromIdx,fromSub,toIdx,toSub){
   var container=document.getElementById('builder_comparators');
   var row=document.createElement('div');row.className='comp-row';
@@ -30142,9 +30150,10 @@ function addComparator(fromIdx,fromSub,toIdx,toSub){
   var sep=document.createElement('span');sep.textContent='↔';sep.style.cssText='color:var(--mu);font-size:16px;flex-shrink:0';
   var ts=_mkCompSel(toIdx!==undefined?toIdx:(opts.length>1?opts[opts.length-1].idx:0),toSub);
   var rm=document.createElement('button');rm.type='button';rm.textContent='✕';rm.className='btn bd bs';
-  rm.onclick=function(){container.removeChild(row);};
+  rm.onclick=function(){container.removeChild(row);_updateCompCount();};
   row.appendChild(fs);row.appendChild(sep);row.appendChild(ts);row.appendChild(rm);
   container.appendChild(row);
+  _updateCompCount();
 }
 document.getElementById('btn_add_comp').addEventListener('click',function(){addComparator();});
 document.getElementById('btn_add_e2e').addEventListener('click',function(){
@@ -30488,6 +30497,13 @@ function showBuilder(chain){
   var _advHdr=document.querySelector('#blk_advanced .blk-collapsible-hdr');
   if(_hasAdv&&_advBody){_advBody.style.display='';if(_advHdr)_advHdr.classList.add('open');}
   else if(_advBody){_advBody.style.display='none';if(_advHdr)_advHdr.classList.remove('open');}
+  // Auto-expand comparators section when chain has comparators configured
+  var _compBody=document.getElementById('comp_body');
+  var _compHdr=document.querySelector('#blk_comparators .blk-collapsible-hdr');
+  var _hasComps=chain&&(chain.comparators||[]).length>0;
+  if(_hasComps&&_compBody){_compBody.style.display='';if(_compHdr)_compHdr.classList.add('open');}
+  else if(_compBody){_compBody.style.display='none';if(_compHdr)_compHdr.classList.remove('open');}
+  _updateCompCount();
   // Open drawer
   document.getElementById('builder').classList.add('open');
   document.getElementById('builder-backdrop').classList.add('open');
@@ -31215,12 +31231,21 @@ function refreshStatus(){
 // the clicked node keeps its pulsing blue ring while audio is playing.
 window._chainAudioEl = null;   // the .chain-node DOM element currently active
 
+function _adjustBuilderForMiniPlayer(show){
+  var drawer = document.getElementById('builder');
+  if(!drawer) return;
+  // When the mini-player is visible it sits at bottom:0, z-index:9999 and would
+  // cover the drawer footer (which is also at the bottom of the fixed drawer).
+  // Push the drawer up by the mini-player height so the Save button stays visible.
+  drawer.style.bottom = show ? '64px' : '';
+}
 function _stopListen(){
   var cmpAudio = document.getElementById('cmp-audio');
   if(cmpAudio){ cmpAudio.pause(); cmpAudio.src = ''; }
   var mp = document.getElementById('chain-mini-player');
   if(mp) mp.style.display = 'none';
   document.body.style.paddingBottom = '';
+  _adjustBuilderForMiniPlayer(false);
   if(window._chainAudioEl){
     window._chainAudioEl.classList.remove('listening');
     window._chainAudioEl = null;
@@ -31246,7 +31271,8 @@ function _startListen(nodeEl, url){
   audio.load();
   audio.play().catch(function(){ _stopListen(); });
   mp.style.display = 'flex';
-  document.body.style.paddingBottom = '72px';
+  document.body.style.paddingBottom = '64px';
+  _adjustBuilderForMiniPlayer(true);
   window._chainAudioEl = nodeEl;
   nodeEl.classList.add('listening');
 }
@@ -34712,14 +34738,25 @@ def api_chains_save():
             cn = _clean_single_node(n)
             if cn:
                 clean_nodes.append(cn)
-    # Sanitise comparators — validate indices are in range and not equal
+    # Sanitise comparators — validate indices are in range and not identical
     clean_comps = []
     for comp in data.get("comparators", []):
         try:
             fi = int(comp.get("from_idx", 0))
             ti = int(comp.get("to_idx",   1))
-            if fi >= 0 and ti >= 0 and fi != ti and fi < len(clean_nodes) and ti < len(clean_nodes):
-                clean_comps.append({"from_idx": fi, "to_idx": ti})
+            fs_raw = comp.get("from_sub")
+            ts_raw = comp.get("to_sub")
+            fs = int(fs_raw) if fs_raw is not None and fs_raw != "" else None
+            ts = int(ts_raw) if ts_raw is not None and ts_raw != "" else None
+            # Two endpoints are identical if same node AND same sub-index
+            same = (fi == ti) and (fs == ts)
+            if not same and fi >= 0 and ti >= 0 and fi < len(clean_nodes) and ti < len(clean_nodes):
+                entry = {"from_idx": fi, "to_idx": ti}
+                if fs is not None:
+                    entry["from_sub"] = fs
+                if ts is not None:
+                    entry["to_sub"] = ts
+                clean_comps.append(entry)
         except (TypeError, ValueError):
             pass
     cfg    = monitor.app_cfg

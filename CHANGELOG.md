@@ -2,6 +2,23 @@
 
 ---
 
+### SignalScope-3.5.183 — 2026-04-28
+
+**Fix: Chain editor — comparators section hidden after rebuild**
+
+The "Signal Comparators" collapsible in the chain builder started collapsed with no count badge, so when editing a chain with comparators configured, the rows were populated but invisible — it looked as though the comparators had been deleted. Three changes:
+
+- The section now auto-expands when opening a chain that has comparators. Closing and reopening a new/empty chain collapses it back.
+- A blue pill badge (e.g. "2") appears in the header whenever comparators are present, updating as rows are added or removed.
+- `from_sub` and `to_sub` (stack sub-node indices) are now correctly saved and round-tripped. Previously only `from_idx`/`to_idx` were saved, losing the sub-index on every save.
+- The identity check for duplicate comparators now also considers sub-index, so two different nodes within the same stack can be compared.
+
+**Fix: Chain editor footer obscured by live audio mini-player**
+
+When clicking a chain node's live-listen button while the chain builder was open, the audio mini-player (`position:fixed;bottom:0;z-index:9999`) covered the drawer's Save/Cancel footer. `_startListen` now bumps the builder drawer's `bottom` by 64 px when the mini-player is shown, and resets it when the mini-player is dismissed.
+
+---
+
 ### SignalScope-3.5.182 — 2026-04-28
 
 **Fix: 500 Internal Server Error on `/hub` after fresh restart**
