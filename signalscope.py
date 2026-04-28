@@ -486,9 +486,20 @@ document.addEventListener('DOMContentLoaded',function(){
             });
             _tBtn.addEventListener('click',function(){
               try{
-                var n=new Notification('SignalScope — Test',{body:'Browser notifications are working correctly.',tag:'ss-test'});
-                setTimeout(function(){n.close();},6000);
-                _msg('✓ Test notification sent.','var(--ok)');
+                // Use a fresh tag each click so the browser doesn't deduplicate
+                var n=new Notification('SignalScope — Test',{
+                  body:'Browser notifications are working correctly.',
+                  tag:'ss-test-'+Date.now()
+                });
+                _msg('⏳ Waiting for notification to appear…','var(--mu)');
+                n.onshow=function(){_msg('✓ Notification shown — check your screen or notification centre.','var(--ok)');};
+                n.onerror=function(e){_msg('✗ Notification error: '+(e.message||e),'var(--al)');};
+                // If onshow hasn't fired after 4 s the OS swallowed it silently
+                setTimeout(function(){
+                  if(_res.textContent.indexOf('Waiting')!==-1){
+                    _msg('⚠ No confirmation — notification may be suppressed by OS Focus/DND mode, or Chrome quiet-notifications. Check: System notification settings → Chrome → Allow banners.','var(--wn)');
+                  }
+                },4000);
               }catch(e){_msg('✗ '+e,'var(--al)');}
             });
             _dBtn.addEventListener('click',function(){
