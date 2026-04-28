@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.180"
+BUILD                  = "SignalScope-3.5.181"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16348,6 +16348,27 @@ class HubServer:
                             # No confirmation delay — suppress duplicate alert.
                             self._chain_fault_state[cid] = "alerted"
                         else:
+                            # curr == "ok" (or "unknown").
+                            # If an open fault entry exists in the log (ts_recovered
+                            # is None) and the chain is currently healthy, close the
+                            # entry silently right here.  This handles the common case
+                            # of a server restart while a fault was active:
+                            # _load_fault_log_from_db() restored state to "alerted",
+                            # but since the warmup block runs before the recovery path
+                            # it would otherwise overwrite "alerted" → "ok" without
+                            # ever writing ts_recovered, leaving the fault "Ongoing"
+                            # forever.  No recovery notification is sent during warmup
+                            # to avoid spurious alerts for old faults.
+                            if curr == "ok":
+                                _flog_wu = self._chain_fault_log.get(cid, [])
+                                if _flog_wu and _flog_wu[-1].get("ts_recovered") is None:
+                                    _flog_wu[-1]["ts_recovered"] = now
+                                    metrics_db.fault_log_set_recovered(
+                                        _flog_wu[-1].get("id", ""), now)
+                                    monitor.log(
+                                        f"[Chain] Silently closed orphaned open fault for "
+                                        f"'{chain.get('name', cid)}' during warmup — chain is "
+                                        f"healthy; server was restarted while fault was active.")
                             self._chain_fault_state[cid] = "ok"
                         continue
 

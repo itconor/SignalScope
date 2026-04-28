@@ -2,6 +2,16 @@
 
 ---
 
+### SignalScope-3.5.181 — 2026-04-28
+
+**Fix: Orphaned "Ongoing" fault still not closed after 3.5.180 restart**
+
+3.5.180 correctly restored `_chain_fault_state[cid] = "alerted"` in `_load_fault_log_from_db()`, but the chain monitor's warmup block (which runs once on first pass) unconditionally overwrites `_chain_fault_state` based purely on the current chain status, then `continue`s — bypassing the recovery code path entirely. For a chain that was faulted at restart time but has since recovered (`curr == "ok"`), the warmup set state to `"ok"` without ever writing `ts_recovered`, leaving the fault "Ongoing" indefinitely.
+
+Fix: in the warmup `else` branch (chain currently healthy), check whether the fault log has an open entry (`ts_recovered is None`). If so, write `ts_recovered` and call `fault_log_set_recovered()` right there, silently (no recovery notification — avoids spurious alerts for old faults). A log line confirms the close. On the next monitor tick the chain is cleanly in `"ok"` state and new faults can fire normally.
+
+---
+
 ### SignalScope-3.5.180 — 2026-04-28
 
 **Fix: Chain fault "Ongoing" forever after server restart — missed CHAIN_FAULT alerts**
