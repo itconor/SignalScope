@@ -434,6 +434,70 @@ document.addEventListener('DOMContentLoaded',function(){
             }
           });
           </script>
+  <div class="sec">🖥 Browser Notifications</div>
+          <p class="help" style="margin-bottom:10px">Show OS desktop notifications when a chain fault or recovery fires — works in Chrome, Edge, and Firefox while this tab is open. Stored in your browser only; no server setting.</p>
+          <div id="bn-status" style="margin-bottom:10px;font-size:12px;color:var(--mu)">Checking…</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" id="bn-enable-btn" class="btn bg">🔔 Enable browser notifications</button>
+            <button type="button" id="bn-test-btn" class="btn bg" style="display:none">🧪 Test notification</button>
+            <button type="button" id="bn-disable-btn" class="btn bg bs" style="display:none">✕ Disable</button>
+          </div>
+          <div id="bn-result" style="margin-top:8px;font-size:12px"></div>
+          <script nonce="{{csp_nonce()}}">
+          (function(){
+            var _KEY='ss_browser_notif';
+            var _st=document.getElementById('bn-status');
+            var _enBtn=document.getElementById('bn-enable-btn');
+            var _tBtn=document.getElementById('bn-test-btn');
+            var _dBtn=document.getElementById('bn-disable-btn');
+            var _res=document.getElementById('bn-result');
+            function _msg(t,c){_res.style.color=c||'var(--ok)';_res.textContent=t;}
+            function _upd(){
+              if(!('Notification' in window)){
+                _st.textContent='Your browser does not support desktop notifications.';
+                _st.style.color='var(--wn)';_enBtn.disabled=true;return;
+              }
+              var perm=Notification.permission,en=false;
+              try{en=localStorage.getItem(_KEY)==='1';}catch(e){}
+              if(perm==='denied'){
+                _st.innerHTML='🚫 Notifications blocked — reset via the browser address-bar lock icon.';
+                _st.style.color='var(--al)';
+                _enBtn.style.display='none';_tBtn.style.display='none';_dBtn.style.display='none';
+              } else if(perm==='granted'&&en){
+                _st.innerHTML='✅ Enabled — chain faults will appear as desktop alerts.';
+                _st.style.color='var(--ok)';
+                _enBtn.style.display='none';_tBtn.style.display='';_dBtn.style.display='';
+              } else {
+                _st.textContent=perm==='granted'?'Permission granted — click Enable to activate.':'Not yet enabled.';
+                _st.style.color='var(--mu)';
+                _enBtn.style.display='';_tBtn.style.display='none';_dBtn.style.display='none';
+              }
+            }
+            _enBtn.addEventListener('click',function(){
+              if(!('Notification' in window))return;
+              Notification.requestPermission().then(function(p){
+                if(p==='granted'){
+                  try{localStorage.setItem(_KEY,'1');}catch(e){}
+                  _upd();_msg('✓ Enabled — chain fault alerts will now appear on your desktop.','var(--ok)');
+                } else {
+                  _msg('✗ Permission denied — check browser site settings.','var(--al)');_upd();
+                }
+              });
+            });
+            _tBtn.addEventListener('click',function(){
+              try{
+                var n=new Notification('SignalScope — Test',{body:'Browser notifications are working correctly.',tag:'ss-test'});
+                setTimeout(function(){n.close();},6000);
+                _msg('✓ Test notification sent.','var(--ok)');
+              }catch(e){_msg('✗ '+e,'var(--al)');}
+            });
+            _dBtn.addEventListener('click',function(){
+              try{localStorage.removeItem(_KEY);}catch(e){}
+              _upd();_msg('Notifications disabled.','var(--mu)');
+            });
+            _upd();
+          })();
+          </script>
   <div class="act"><button class="btn bp" type="button" id="settings-save-btn">Save</button><a class="btn bg" href="/">Cancel</a><button type="button" class="btn bg bs" onclick="st('maint');setTimeout(checkForUpdates,200)">🔄 Update</button></div>
 </div>
 <div class="pn" id="p-hub">
@@ -2540,7 +2604,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.175"
+BUILD                  = "SignalScope-3.5.176"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -16930,6 +16994,13 @@ class HubServer:
                 "ptp_jitter_us": 0,
                 "ptp_gm":        "",
             })
+            # Always notify browser SSE clients on recovery
+            hub_alert_fanout.push({
+                "type":     "chain_recovered",
+                "chain":    result["name"],
+                "chain_id": cid,
+                "msg":      rec_msg,
+            })
             if not suppress_notify and not cascade_suppressed:
                 self._chain_last_alert_ts[cid] = now
                 try:
@@ -17375,6 +17446,14 @@ class HubServer:
             "zetta_now_playing":  _zetta_fire_now_playing,
         })
 
+        # ── Notify browser SSE clients immediately (always, regardless of cooldown) ──
+        hub_alert_fanout.push({
+            "type":     "chain_fault",
+            "chain":    chain_label,
+            "chain_id": cid,
+            "msg":      msg,
+        })
+
         # ── Send notification (skip if cascade-suppressed or cooldown active) ─
         if not cascade_suppressed and not suppress_notify:
             if _use_shared_aggregation:
@@ -17762,6 +17841,47 @@ class HubLiveFanout:
             return self._live_state.get(site, {})
 
 
+class HubAlertFanout:
+    """Broadcasts chain-fault / recovery events to SSE-connected browser clients.
+
+    Keeps a short ring of the last 50 events so a freshly-connected client
+    can receive any events it missed while the tab was navigating.  Each
+    event carries a monotonically increasing ``_seq`` so clients can ask
+    for only the events they haven't seen yet.
+    """
+    _MAX = 50
+
+    def __init__(self):
+        self._cond  = threading.Condition(threading.Lock())
+        self._queue: list = []   # recent events, each dict with "_seq"
+        self._seq   = 0
+
+    def push(self, event: dict):
+        """Append event and wake any waiting SSE generators."""
+        with self._cond:
+            self._seq += 1
+            event = dict(event)
+            event["_seq"] = self._seq
+            self._queue.append(event)
+            if len(self._queue) > self._MAX:
+                del self._queue[:-self._MAX]
+            self._cond.notify_all()
+
+    def get_events(self, since_seq: int, timeout: float = 30.0) -> list:
+        """Block until new events (seq > since_seq) arrive, or timeout.
+        Returns a list of new events (may be empty on timeout)."""
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while True:
+                pending = [e for e in self._queue if e.get("_seq", 0) > since_seq]
+                if pending:
+                    return pending
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return []
+                self._cond.wait(timeout=min(remaining, 5.0))
+
+
 class ListenSlotRegistry:
     """Thread-safe registry of active listen slots."""
 
@@ -17833,6 +17953,7 @@ class ListenSlotRegistry:
 
 listen_registry  = ListenSlotRegistry()
 hub_live_fanout  = HubLiveFanout()
+hub_alert_fanout = HubAlertFanout()
 
 # ─── Flask + templates ────────────────────────────────────────────────────────
 
@@ -28952,6 +29073,38 @@ def hub_stream_events():
                 else:
                     idle = 0
                     time.sleep(0.1)
+            except GeneratorExit:
+                return
+            except Exception:
+                time.sleep(1.0)
+
+    resp = Response(_generate(), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no",
+                             "Cache-Control": "no-cache",
+                             "Connection": "keep-alive"})
+    resp.direct_passthrough = True
+    return resp
+
+@app.get("/hub/alert/events")
+@login_required
+def hub_alert_events():
+    """SSE endpoint — streams chain-fault and recovery events to browser clients.
+    Used by the browser-notification feature on the hub dashboard."""
+    if not hub_server:
+        return jsonify({"error": "not a hub"}), 404
+
+    def _generate():
+        yield ": connected\n\n"
+        since_seq = 0
+        while True:
+            try:
+                events = hub_alert_fanout.get_events(since_seq, timeout=30.0)
+                if events:
+                    for ev in events:
+                        since_seq = ev.get("_seq", since_seq)
+                        yield f"data: {json.dumps(ev)}\n\n"
+                else:
+                    yield ": keepalive\n\n"
             except GeneratorExit:
                 return
             except Exception:
@@ -40088,6 +40241,61 @@ setInterval(_loadTrends, 300000);
     fnp(); setInterval(fnp,30000);
   }
   document.querySelectorAll('.np-strip[data-rpuid]').forEach(_pollNp);
+})();
+</script>
+<script nonce="{{csp_nonce()}}">
+// ── Browser notifications — alert SSE stream ───────────────────────────────
+(function(){
+  var _KEY='ss_browser_notif';
+  var _src=null,_retryT=null;
+
+  function _canNotify(){
+    var en=false;
+    try{en=localStorage.getItem(_KEY)==='1';}catch(e){}
+    return en&&('Notification' in window)&&Notification.permission==='granted';
+  }
+
+  function _notify(title,body,isFault){
+    try{
+      var n=new Notification(title,{
+        body:body,
+        icon:'/static/icon.png',
+        tag:isFault?'ss-chain-fault':'ss-chain-recovered',
+        requireInteraction:isFault
+      });
+      if(isFault){n.onclick=function(){window.focus();n.close();};}
+      else{setTimeout(function(){n.close();},8000);}
+    }catch(e){}
+  }
+
+  function _connect(){
+    if(!_canNotify())return;
+    if(_src){try{_src.close();}catch(e){}_src=null;}
+    clearTimeout(_retryT);
+    _src=new EventSource('/hub/alert/events',{withCredentials:true});
+    _src.onmessage=function(e){
+      var d;try{d=JSON.parse(e.data);}catch(_){return;}
+      if(!_canNotify()){_src.close();_src=null;return;}
+      if(d.type==='chain_fault'){
+        _notify('⚠ Chain Fault: '+d.chain, d.msg||'', true);
+      } else if(d.type==='chain_recovered'){
+        _notify('✅ Recovered: '+d.chain, d.msg||'', false);
+      }
+    };
+    _src.onerror=function(){
+      if(_src){try{_src.close();}catch(e){}_src=null;}
+      clearTimeout(_retryT);_retryT=setTimeout(_connect,15000);
+    };
+  }
+
+  document.addEventListener('DOMContentLoaded',function(){
+    if(_canNotify())_connect();
+  });
+
+  // Re-connect if user granted permission in another tab and switches back
+  document.addEventListener('visibilitychange',function(){
+    if(!document.hidden&&_canNotify()&&!_src)_connect();
+  });
 })();
 </script>
 </body></html>"""

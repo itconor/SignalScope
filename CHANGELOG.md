@@ -2,6 +2,17 @@
 
 ---
 
+### SignalScope-3.5.176 — 2026-04-28
+
+**Feature: Browser notifications for chain faults**
+
+- **Settings → Notifications → Browser Notifications**: new section with an Enable button that calls `Notification.requestPermission()` and stores the preference in `localStorage`. Includes a Test button and a Disable button. Shows permission status (enabled / denied / not yet requested).
+- Hub dashboard connects to a new SSE stream (`/hub/alert/events`) when browser notifications are enabled. Chain fault and recovery events are pushed in real time via the new `HubAlertFanout` class (separate from the live-level fanout). The SSE stream auto-reconnects after 15 s on error.
+- Chain fault → `⚠ Chain Fault: <name>` with `requireInteraction: true` (stays until dismissed). Chain recovery → `✅ Recovered: <name>` (auto-closes after 8 s). Browser-notification events fire immediately on every fault/recovery regardless of email/push cooldown — same events the alert log captures.
+- Re-connects automatically when the tab becomes visible again, so granting permission in the Settings tab and switching back to the dashboard activates it without a page reload.
+
+---
+
 ### Push Server 1.0.8 — 2026-04-27
 
 **Fix: Migrate button still does nothing after 1.0.7**
