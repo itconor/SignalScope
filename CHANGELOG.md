@@ -2,6 +2,16 @@
 
 ---
 
+### SignalScope-3.5.177 — 2026-04-28
+
+**Fix: Browser notification test shows success even when OS suppresses the notification**
+
+`new Notification()` never throws an exception when the OS silently discards the notification (macOS Focus/DND, Chrome quiet-notifications mode). The test button was immediately showing "✓ Test notification sent" without confirming the notification was actually displayed.
+
+Fixed: the test now uses `n.onshow` to confirm the notification appeared; until then shows "Waiting…". `n.onerror` shows the actual error. A 4 s timeout detects silent suppression and shows a specific warning pointing to OS notification settings → Chrome → banners. Each test click uses a unique tag so the browser never deduplicates consecutive clicks.
+
+---
+
 ### SignalScope-3.5.176 — 2026-04-28
 
 **Feature: Browser notifications for chain faults**
