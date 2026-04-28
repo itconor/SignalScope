@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "AzuraCast",
     "url":     "/azuracast",
     "icon":    "🎙",
-    "version": "1.2.0",
+    "version": "1.2.1",
 }
 
 import hashlib
@@ -674,6 +674,39 @@ function _showMsg(txt, ok){
   var el = document.getElementById('msg');
   el.textContent = txt;
   el.className = ok ? 'msg-ok' : 'msg-err';
+}
+
+// ── Button loading helpers (not available from standalone plugin template) ──
+function _btnLoad(b){
+  if(!b)return;
+  b._oTxt=b.innerHTML; b._oDis=b.disabled;
+  b.disabled=true; b.style.opacity='0.6';
+}
+function _btnReset(b){
+  if(!b)return;
+  b.disabled=b._oDis||false; b.style.opacity='';
+  if(b._oTxt!==undefined) b.innerHTML=b._oTxt;
+}
+function _ssConfirm(msg,onYes,opts){
+  opts=opts||{};
+  var bd=document.createElement('div');
+  bd.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:99998;display:flex;align-items:center;justify-content:center';
+  var box=document.createElement('div');
+  box.style.cssText='background:#0d2346;border:1px solid #17345f;border-radius:12px;padding:24px;width:min(380px,90vw);box-shadow:0 24px 60px rgba(0,0,0,.65);font-family:system-ui,sans-serif';
+  var yBg=opts.danger?'#ef4444':'#17a8ff';
+  box.innerHTML=(opts.title?'<div style="font-size:15px;font-weight:700;color:#eef5ff;margin-bottom:10px">'+opts.title+'</div>':'')
+    +'<div style="font-size:13px;color:#c5d8f5;line-height:1.55;margin-bottom:20px">'+msg+'</div>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end">'
+    +'<button class="_ssc_no" style="background:#17345f;color:#eef5ff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">'+(opts.noLabel||'Cancel')+'</button>'
+    +'<button class="_ssc_yes" style="background:'+yBg+';color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">'+(opts.yesLabel||'Confirm')+'</button>'
+    +'</div>';
+  bd.appendChild(box); document.body.appendChild(bd);
+  function close(){if(bd.parentNode)bd.parentNode.removeChild(bd);}
+  box.querySelector('._ssc_yes').onclick=function(){close();if(onYes)onYes();};
+  box.querySelector('._ssc_no').onclick=close;
+  bd.onclick=function(e){if(e.target===bd)close();};
+  function _ek(e){if(e.key==='Escape'){close();document.removeEventListener('keydown',_ek);}}
+  document.addEventListener('keydown',_ek);
 }
 
 function _fmtSecs(s){

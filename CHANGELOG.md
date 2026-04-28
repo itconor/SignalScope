@@ -2,6 +2,16 @@
 
 ---
 
+### AzuraCast 1.2.1 — 2026-04-28
+
+**Fix: "Discover Stations" did nothing**
+
+The plugin called `_btnLoad()`, `_btnReset()`, and `_ssConfirm()` — helpers that only exist in the main SignalScope template and are unavailable on standalone plugin pages. `_btnLoad()` threw a `ReferenceError` immediately, killing the function before the fetch ever ran. The "Discovering…" text would appear but the API call never fired.
+
+Fix: added lightweight local definitions of all three helpers at the top of the plugin's `<script>` block.
+
+---
+
 ### SignalScope-3.5.183 — 2026-04-28
 
 **Fix: Chain editor — comparators section hidden after rebuild**
