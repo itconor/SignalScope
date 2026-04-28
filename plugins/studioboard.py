@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.14.21",
+    "version":  "3.15.0",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -30,6 +30,11 @@ _mic_live_state: dict = {}   # studio_id → {"live": bool, "ts": int}
 
 # ── Config file write lock ───────────────────────────────────────────────────
 _CFG_LOCK = _threading.Lock()
+
+# ── Liveread Studio Bookings integration ──────────────────────────────────────
+_liveread_cache: dict = {}   # {"ts": float, "studios": list, "error": str, "token": str}
+_liveread_cache_lock = _threading.Lock()
+_LIVEREAD_TTL = 300          # 5-minute cache TTL
 
 def _rebuild_chain_studios_into(target: dict, cfg: dict) -> None:
     """Rebuild {chain_id: [studio_name, ...]} from studioboard config. Mutates target in-place."""
@@ -292,6 +297,87 @@ def _cfg_migrate(cfg):
         brands.append(brand)
     cfg["brands"] = brands
     return True
+
+
+# ── Liveread helpers ─────────────────────────────────────────────
+
+def _liveread_fetch(lr_cfg: dict) -> dict:
+    """Fetch studios+bookings from the Liveread API. Returns dict with 'studios' or 'error'."""
+    import datetime as _dt
+    api_url = (lr_cfg.get("api_url") or "https://liveread.bauerni.co.uk/api/external").rstrip("/")
+    token   = (lr_cfg.get("token") or "").strip()
+    if not token:
+        return {"error": "No API token configured"}
+    today  = _dt.date.today()
+    end_dt = today + _dt.timedelta(days=7)
+    url    = f"{api_url}/studios?from={today.isoformat()}&to={end_dt.isoformat()}"
+    req    = _urllib_req.Request(url, headers={
+        "Authorization": f"Bearer {token}",
+        "Accept":        "application/json",
+        "User-Agent":    "SignalScope/studioboard",
+    })
+    try:
+        with _urllib_req.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except _urllib_req.HTTPError as e:
+        _msgs = {401: "Unauthorised — check your API token",
+                 400: "Bad request — check the API URL",
+                 503: "Service unavailable — no token generated yet on that server"}
+        return {"error": _msgs.get(e.code, f"HTTP {e.code}: {e.reason}")}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _liveread_get_cached(cfg: dict) -> dict:
+    """Return cached Liveread data, refreshing if stale (5-min TTL)."""
+    lr_cfg = cfg.get("liveread") or {}
+    token  = lr_cfg.get("token", "")
+    with _liveread_cache_lock:
+        cached = dict(_liveread_cache)
+    now = _time.time()
+    # Cache hit: same token, no error, not expired
+    if (cached.get("token") == token and not cached.get("error")
+            and now - cached.get("ts", 0) < _LIVEREAD_TTL):
+        return cached
+    data   = _liveread_fetch(lr_cfg)
+    result = {"ts": now, "token": token, **data}
+    with _liveread_cache_lock:
+        _liveread_cache.clear()
+        _liveread_cache.update(result)
+    return result
+
+
+def _liveread_next_booking(studios: list, liveread_studio_id) -> dict:
+    """Find the next upcoming or currently-in-progress booking for a Liveread studio ID.
+    Returns a booking dict augmented with '_status' ('in_progress'|'upcoming') and
+    '_lr_studio' (studio name), or None if nothing found."""
+    import datetime as _dt
+    now       = _dt.datetime.now()
+    today_str = now.date().isoformat()
+    now_t     = now.strftime("%H:%M")
+    target_id = str(liveread_studio_id)
+    for studio in (studios or []):
+        if str(studio.get("id")) != target_id:
+            continue
+        upcoming = None
+        for bk in (studio.get("bookings") or []):
+            d = bk.get("date", "")
+            s = bk.get("start_time", "")
+            e = bk.get("end_time", "") or "23:59"
+            if not (d and s):
+                continue
+            # In progress: today, started, not yet ended
+            if d == today_str and s <= now_t < e:
+                return {**bk, "_status": "in_progress", "_lr_studio": studio.get("name", "")}
+            # Upcoming: today after now, or any future date
+            is_future = (d > today_str) or (d == today_str and s > now_t)
+            if is_future:
+                if (upcoming is None
+                        or d < upcoming.get("date", "")
+                        or (d == upcoming.get("date", "") and s < upcoming.get("start_time", ""))):
+                    upcoming = {**bk, "_status": "upcoming", "_lr_studio": studio.get("name", "")}
+        return upcoming    # None if no upcoming bookings for this studio
+    return None
 
 
 # ── Plugin registration ─────────────────────────────────────────
@@ -786,6 +872,49 @@ def register(app, ctx):
         _sb_notify_all()
         return jsonify({"ok": True})
 
+    # ── Liveread API proxy + config ────────────────────────────────
+
+    @app.get("/api/studioboard/liveread/studios")
+    @login_required
+    def sb_liveread_studios():
+        """Proxy to Liveread API — returns studios list for admin dropdowns.
+        Pass ?fresh=1 to bypass the in-memory cache (used by the Test button)."""
+        cfg    = _cfg_load()
+        lr_cfg = cfg.get("liveread") or {}
+        if request.args.get("fresh") == "1":
+            data = _liveread_fetch(lr_cfg)
+            if "studios" in data:
+                with _liveread_cache_lock:
+                    _liveread_cache.clear()
+                    _liveread_cache.update({"ts": _time.time(),
+                                            "token": lr_cfg.get("token", ""),
+                                            **data})
+            return jsonify(data)
+        return jsonify(_liveread_get_cached(cfg))
+
+    @app.post("/api/studioboard/liveread/config")
+    @login_required
+    @csrf_protect
+    def sb_liveread_config_save():
+        """Save Liveread API URL, token, and studio mapping."""
+        data = request.get_json(force=True) or {}
+        cfg  = _cfg_load()
+        lr   = cfg.setdefault("liveread", {})
+        if "api_url" in data:
+            lr["api_url"] = (data["api_url"] or
+                             "https://liveread.bauerni.co.uk/api/external").strip()
+        if "token" in data:
+            lr["token"] = (data["token"] or "").strip()
+        if "studio_map" in data:
+            # {local_studio_id: liveread_studio_id (int/str) or "" to unmap}
+            raw_map = data["studio_map"] or {}
+            lr["studio_map"] = {k: v for k, v in raw_map.items() if k and v != ""}
+        _cfg_save(cfg)
+        # Invalidate cache so next sb_data() call fetches fresh data with new token
+        with _liveread_cache_lock:
+            _liveread_cache.clear()
+        return jsonify({"ok": True})
+
     # ── Log seen show names (called by display JS) ──────────────
 
     @app.post("/api/studioboard/seen_show/<studio_id>")
@@ -922,6 +1051,16 @@ def register(app, ctx):
         sb_cfg = _cfg_load()
         now = _time.time()
         studios_out = []
+
+        # ── Liveread: fetch cached bookings data once per request ──────────
+        _lr_map     = (sb_cfg.get("liveread") or {}).get("studio_map") or {}
+        _lr_studios = []
+        if _lr_map:
+            try:
+                _lr_data    = _liveread_get_cached(sb_cfg)
+                _lr_studios = _lr_data.get("studios") or []
+            except Exception:
+                pass
 
         # Read live Zetta station data once per request — uses the same live
         # source as /api/zetta/status_full so the TV page is always current.
@@ -1129,6 +1268,11 @@ def register(app, ctx):
                 "mic_live_ts":      _mls.get("ts", 0),
                 "auto_brand_name":  studio.get("_auto_brand_name", ""),
                 "auto_brand_color": studio.get("_auto_brand_color", "#17a8ff"),
+                # Liveread next booking — only populated when a mapping exists
+                "next_booking": (
+                    _liveread_next_booking(_lr_studios, _lr_map[sid])
+                    if _lr_map.get(sid) is not None else None
+                ),
             })
 
         # Check for a default logo for cleared studios
@@ -1309,6 +1453,7 @@ select[multiple]{min-height:90px}
 <nav class="tabs">
   <button class="tab active" data-tab="studios">Studios</button>
   <button class="tab" data-tab="brands">Brands</button>
+  <button class="tab" data-tab="liveread">📅 Liveread</button>
   <button class="tab" data-tab="api">API</button>
   <button class="tab" data-tab="backup">Backup</button>
 </nav>
@@ -1335,6 +1480,39 @@ select[multiple]{min-height:90px}
     </div>
   </div>
   <div id="brands-list"><div class="empty">Loading…</div></div>
+</div>
+<div class="pane main" id="pane-liveread">
+  <div class="card">
+    <div class="ch">Liveread API Settings</div>
+    <div class="cb">
+      <p style="color:var(--mu);font-size:12px;margin-bottom:14px">Connect to the Liveread Studio Bookings API. When a studio has no brand assigned, the next booking from the matched Liveread studio will appear on the TV display.</p>
+      <div class="row">
+        <div class="field" style="flex:2"><label>API URL</label>
+          <input id="lr-url" placeholder="https://liveread.bauerni.co.uk/api/external">
+        </div>
+      </div>
+      <div class="field"><label>Bearer Token</label>
+        <input id="lr-token" type="password" placeholder="Paste your API token here" autocomplete="off">
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn bp bs" id="lr-save-btn">Save Settings</button>
+        <button class="btn bg bs" id="lr-test-btn">⟳ Test &amp; Load Studios</button>
+      </div>
+      <div id="lr-test-msg" style="display:none;margin-top:10px;padding:8px 12px;border-radius:8px;font-size:12px"></div>
+    </div>
+  </div>
+  <div class="card" id="lr-map-card" style="display:none">
+    <div class="ch">Studio Mapping</div>
+    <div class="cb">
+      <p style="color:var(--mu);font-size:12px;margin-bottom:14px">
+        Match each SignalScope studio to its Liveread counterpart. When the studio has no brand assigned the next confirmed booking from that Liveread studio will appear on the TV display automatically.
+      </p>
+      <div id="lr-map-body"></div>
+      <div style="margin-top:12px">
+        <button class="btn bp bs" id="lr-map-save-btn">Save Mapping</button>
+      </div>
+    </div>
+  </div>
 </div>
 <div class="pane main" id="pane-api">
   <div id="api-docs"></div>
@@ -1365,6 +1543,7 @@ select[multiple]{min-height:90px}
 'use strict';
 var _studios=[], _brands=[], _chains=[], _inputs=[], _npStations=[], _zStations=[];
 var _activeTab='studios';
+var _lrStudios=[], _lrCfg={api_url:'',token:'',studio_map:{}};
 
 function _getCsrf(){
   return (document.querySelector('meta[name="csrf-token"]')||{}).content
@@ -1395,6 +1574,7 @@ document.querySelector('.tabs').addEventListener('click',function(e){
   document.getElementById('btn-add').style.display=(id==='studios'||id==='brands')?'':'none';
   document.getElementById('btn-add').textContent=id==='studios'?'+ Add Studio':'+ Add Brand';
   if(id==='api')buildApiDocs();
+  if(id==='liveread'&&_lrStudios.length)lrRenderMap();
 });
 document.getElementById('btn-add').style.display='';
 document.getElementById('btn-add').textContent='+ Add Studio';
@@ -1425,8 +1605,16 @@ function loadAll(){
         _zStations.push({key:inst.id+':'+sid,label:(inst.name||inst.id)+' / '+(inst.stations[sid].station_name||sid)});
       });
     });
+    // Populate Liveread config fields from saved config
+    var lr=res[0].liveread||{};
+    _lrCfg={api_url:lr.api_url||'https://liveread.bauerni.co.uk/api/external',
+            token:lr.token||'',studio_map:lr.studio_map||{}};
+    var urlEl=document.getElementById('lr-url');if(urlEl)urlEl.value=_lrCfg.api_url;
+    var tokEl=document.getElementById('lr-token');if(tokEl&&_lrCfg.token)tokEl.placeholder='(saved — paste to change)';
     renderStudios();
     renderBrands();
+    // If on Liveread tab and studios are available, render mapping
+    if(_activeTab==='liveread'&&_lrStudios.length)lrRenderMap();
   });
   loadDefLogo();
 }
@@ -1457,6 +1645,95 @@ function _defLogoRemove(){
     .then(function(r){return r.json()}).then(function(d){
       if(d.ok){_showMsg('Default logo removed.',true);loadDefLogo();}
     }).catch(function(){});
+}
+
+/* ── Liveread tab ────────────────────────────────────── */
+function lrShowMsg(txt,ok){
+  var el=document.getElementById('lr-test-msg');if(!el)return;
+  el.style.display='';
+  el.style.background=ok?'#0f2318':'#2a0a0a';
+  el.style.color=ok?'var(--ok)':'var(--al)';
+  el.style.border='1px solid '+(ok?'#166534':'#991b1b');
+  el.textContent=txt;
+}
+function lrRenderMap(){
+  var card=document.getElementById('lr-map-card');
+  var body=document.getElementById('lr-map-body');
+  if(!card||!body)return;
+  if(!_studios.length){body.innerHTML='<div style="color:var(--mu);font-size:12px">No SignalScope studios configured yet.</div>';card.style.display='';return;}
+  var html='<table style="width:100%;border-collapse:collapse">'
+    +'<thead><tr>'
+    +'<th style="text-align:left;font-size:11px;color:var(--mu);padding:6px 0;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--bor)">SignalScope Studio</th>'
+    +'<th style="text-align:left;font-size:11px;color:var(--mu);padding:6px 8px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--bor)">Liveread Studio</th>'
+    +'</tr></thead><tbody>';
+  _studios.forEach(function(st){
+    var mapped=_lrCfg.studio_map[st.id]||'';
+    var opts='<option value="">&#8212; Not mapped &#8212;</option>';
+    _lrStudios.forEach(function(ls){
+      var sel=(String(ls.id)===String(mapped))?' selected':'';
+      opts+='<option value="'+ls.id+'"'+sel+'>'+_e(ls.name)+'</option>';
+    });
+    html+='<tr>'
+      +'<td style="padding:8px 0;font-size:13px;font-weight:600;border-bottom:1px solid rgba(255,255,255,.04)">'+_e(st.name)+'</td>'
+      +'<td style="padding:8px;border-bottom:1px solid rgba(255,255,255,.04)">'
+      +'<select data-lr-sid="'+_e(st.id)+'" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 8px;font-size:12px;width:100%;font-family:inherit">'+opts+'</select>'
+      +'</td></tr>';
+  });
+  html+='</tbody></table>';
+  body.innerHTML=html;
+  card.style.display='';
+}
+function lrSaveMap(){
+  var map={};
+  document.querySelectorAll('[data-lr-sid]').forEach(function(sel){
+    var sid=sel.dataset.lrSid;var val=sel.value;
+    if(sid&&val)map[sid]=val;
+  });
+  _lrCfg.studio_map=map;
+  _post('/api/studioboard/liveread/config',{studio_map:map})
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.ok)_showMsg('Studio mapping saved.',true);
+      else _showMsg(d.error||'Save failed.',false);
+    }).catch(function(e){_showMsg('Error: '+e,false);});
+}
+function lrSaveSettings(){
+  var urlEl=document.getElementById('lr-url');
+  var tokEl=document.getElementById('lr-token');
+  var url=(urlEl?urlEl.value:'').trim();
+  var tok=(tokEl?tokEl.value:'').trim();
+  var payload={api_url:url};
+  if(tok)payload.token=tok;  // only send token if user typed something new
+  _post('/api/studioboard/liveread/config',payload)
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.ok){
+        _lrCfg.api_url=url||'https://liveread.bauerni.co.uk/api/external';
+        if(tok)_lrCfg.token=tok;
+        if(tokEl&&tok){tokEl.value='';tokEl.placeholder='(saved — paste to change)';}
+        _showMsg('Settings saved.',true);
+      }else _showMsg(d.error||'Save failed.',false);
+    }).catch(function(e){_showMsg('Error: '+e,false);});
+}
+function lrTest(){
+  var urlEl=document.getElementById('lr-url');
+  var tokEl=document.getElementById('lr-token');
+  // Save current field values first so the test uses them
+  var url=(urlEl?urlEl.value:'').trim();
+  var tok=(tokEl?tokEl.value:'').trim();
+  var payload={api_url:url};
+  if(tok)payload.token=tok;
+  lrShowMsg('Saving and testing…',true);
+  _post('/api/studioboard/liveread/config',payload)
+    .then(function(){
+      return fetch('/api/studioboard/liveread/studios?fresh=1',{credentials:'same-origin'});
+    })
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.error){lrShowMsg('Error: '+d.error,false);return;}
+      _lrStudios=d.studios||[];
+      if(tok){tokEl.value='';tokEl.placeholder='(saved — paste to change)';}
+      if(urlEl)_lrCfg.api_url=url||'https://liveread.bauerni.co.uk/api/external';
+      lrShowMsg('Connected — found '+_lrStudios.length+' studio(s): '+_lrStudios.map(function(s){return s.name}).join(', ')+'.',true);
+      lrRenderMap();
+    }).catch(function(e){lrShowMsg('Error: '+e,false);});
 }
 
 /* ── Studios tab ─────────────────────────────────────── */
@@ -1759,6 +2036,11 @@ document.addEventListener('click',function(e){
     return;
   }
 });
+
+/* ── Liveread button wiring ──────────────────────── */
+document.getElementById('lr-save-btn').addEventListener('click',lrSaveSettings);
+document.getElementById('lr-test-btn').addEventListener('click',lrTest);
+document.getElementById('lr-map-save-btn').addEventListener('click',lrSaveMap);
 
 /* ── Backup / Restore tab ──────────────────────────── */
 document.getElementById('restore-btn').addEventListener('click',function(){
@@ -2093,6 +2375,23 @@ body.corp .col-wave{display:none}
   color:var(--wn);opacity:.65}
 /* Default logo shown in cleared studios */
 .free-logo{max-width:55%;max-height:28vh;object-fit:contain;opacity:.65;pointer-events:none}
+/* ── Liveread next-booking card in cleared studios ── */
+.lr-book{width:92%;box-sizing:border-box;padding:14px 18px;border-radius:13px;
+  background:rgba(23,168,255,.08);border:1px solid rgba(23,168,255,.25);
+  display:flex;flex-direction:column;align-items:center;gap:6px;
+  animation:lr-fade-in .4s ease}
+@keyframes lr-fade-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.lr-book-label{font-size:9px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--acc);margin-bottom:2px}
+.lr-book-label.lr-live{color:var(--ok)}
+.lr-book-title{font-size:clamp(18px,2.8vh,28px);font-weight:700;text-align:center;
+  line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  width:100%;color:#fff}
+.lr-book-who{font-size:13px;color:rgba(255,255,255,.55);text-align:center;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%}
+.lr-book-time{font-size:12px;font-weight:700;letter-spacing:.06em;color:var(--acc);
+  background:rgba(23,168,255,.12);border-radius:6px;padding:3px 10px}
+.lr-book-time.lr-live{color:var(--ok);background:rgba(34,197,94,.12)}
 </style></head>
 <body>
 <!-- Full-page brand-derived gradient background; updated by JS on first render() -->
@@ -2346,6 +2645,8 @@ function buildCol(s,idx){
         +'<img class="free-logo" id="free-deflogo'+idx+'" alt="" style="display:none" onerror="this.style.display=\'none\'">'
         +'<div class="free-big-clk" id="free-clk'+idx+'">--:--:--</div>'
         +(s.auto_brand_name?'<div class=free-auto-lbl><div class=free-auto-name>'+E(s.auto_brand_name)+'</div><div class=free-auto-sub>IN AUTOMATION</div></div>':'')
+        /* Liveread next-booking panel — populated/hidden by updateCol */
+        +'<div id="lr-book'+idx+'" style="display:none;width:92%"></div>'
         +'<div class="mic off" id="mic'+idx+'">CLEAR</div>'
       +'</div>'
       +'</div>')
@@ -2418,6 +2719,28 @@ function updateCol(s,idx){
         _lgel.style.display='';
       }else{
         _lgel.style.display='none';
+      }
+    }
+    /* Liveread next-booking panel */
+    var _lrEl=document.getElementById('lr-book'+idx);
+    if(_lrEl){
+      var bk=s.next_booking;
+      if(bk&&!_vt){
+        var _live=(bk._status==='in_progress');
+        var _lbl=_live?'NOW IN STUDIO':'UP NEXT';
+        var _timeStr=bk.start_time+(bk.end_time?' – '+bk.end_time:'');
+        var _who=(bk.booked_by||'').trim();
+        var _html='<div class="lr-book">'
+          +'<div class="lr-book-label'+(_live?' lr-live':'')+'">'+_lbl+'</div>'
+          +'<div class="lr-book-title">'+E(bk.title||'Booking')+'</div>'
+          +(_who?'<div class="lr-book-who">'+E(_who)+'</div>':'')
+          +'<div class="lr-book-time'+(_live?' lr-live':'')+'">'+E(_timeStr)+'</div>'
+          +'</div>';
+        if(_lrEl.innerHTML!==_html)_lrEl.innerHTML=_html;
+        _lrEl.style.display='';
+      }else{
+        _lrEl.style.display='none';
+        _lrEl.innerHTML='';
       }
     }
     return;

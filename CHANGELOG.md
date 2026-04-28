@@ -2,6 +2,33 @@
 
 ---
 
+### Studio Board 3.15.0 — 2026-04-28
+
+**Feature: Liveread Studio Bookings integration**
+
+When a studio has no brand assigned, the TV display now shows the next confirmed booking pulled from the [Liveread](https://liveread.bauerni.co.uk) Studio Bookings API, so staff can see at a glance what session is coming up (or in progress) without switching to another system.
+
+**Admin — new "Liveread" tab:**
+- Enter the API URL (pre-filled to the production endpoint) and your Bearer token
+- "Test & Load Studios" button validates credentials and fetches the studio list from Liveread
+- Map each SignalScope studio to its Liveread counterpart with per-row dropdowns
+- Mapping is saved independently of the API credentials so you can change the token without remapping
+
+**TV display — cleared studio card:**
+- When studio has no brand assigned AND a Liveread mapping exists:
+  - **"NOW IN STUDIO"** badge (green) if a booking is currently in progress (within start–end time window)
+  - **"UP NEXT"** badge (blue) for the next upcoming booking today or this week
+  - Shows: booking title, presenter name, time range (e.g. `09:00 – 11:00`)
+- Disappears when a brand is assigned (occupied studio shows full brand panel as before)
+- Booking data is cached on the server for 5 minutes to avoid hammering the Liveread API on every TV poll
+
+**Backend:**
+- `GET /api/studioboard/liveread/studios` — server-side proxy to Liveread API (avoids CORS; admin UI calls this)
+- `POST /api/studioboard/liveread/config` — saves URL, token, and studio mapping into `studioboard_cfg.json` under a `liveread` key
+- `sb_data()` includes `next_booking` per studio when a mapping is configured
+
+---
+
 ### SignalScope-3.5.181 — 2026-04-28
 
 **Fix: Orphaned "Ongoing" fault still not closed after 3.5.180 restart**
