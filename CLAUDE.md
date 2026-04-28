@@ -4,7 +4,7 @@
 SignalScope is a broadcast signal intelligence platform. Single Python file (`signalscope.py`) — Flask web app, client/hub architecture, RTL-SDR integration for FM/DAB monitoring.
 
 - **Repo**: https://github.com/itconor/SignalScope
-- **Current build string**: `BUILD = "SignalScope-3.5.170"` (increment on every release)
+- **Current build string**: `BUILD = "SignalScope-3.5.179"` (increment on every release)
 - **Update this file** at the end of any session where bugs are fixed, architecture is discovered, or features are added.
 - **`gh` CLI path**: `/opt/homebrew/bin/gh` — always use this full path, it is installed and working
 
@@ -940,6 +940,44 @@ if (zdNp && zdNp.asset_type === 2) {
     // Planet Radio fallback — runs when no Zetta now_playing (sequencer idle etc.)
 }
 ```
+
+---
+
+## Server Architecture Rules
+
+### SSE vs short-poll
+
+**Rule**: Never add a new SSE (`text/event-stream`) endpoint for data that can be delivered by short-polling. Waitress holds one worker thread open for the entire lifetime of each SSE connection. With multiple hub browser tabs, Studio Board displays, and Brand Screen displays all open simultaneously, the thread pool can be exhausted — client heartbeats and page loads then queue behind SSE connections, making sites appear offline and pages fail to load. Use short-poll (`/api/hub/something?since=N`) instead: each call gets a thread, responds, and releases it immediately. If blocking / long-poll is needed, cap the wait at a few seconds with a condition variable and always release the thread before the Waitress timeout.
+
+**Rule**: The `threads=64` Waitress configuration is the current floor. If new persistent connections are added (WebSockets, SSE), review thread headroom before shipping.
+
+### Jinja2 in JavaScript
+
+**Rule**: Never put `{{...}}` Jinja2 expressions inside JS `/* */` block comments. Jinja2 evaluates template expressions everywhere in the template string — including inside comments. If the rendered value contains `*/` (for example, `{{topnav()}}` renders full nav HTML that contains `*/` in CSS or JS), it prematurely closes the JS block comment, causing a silent SyntaxError that blocks the entire script. Plain-text comments describing Jinja2 calls are fine; evaluated expressions are not.
+
+### Web Notifications API
+
+**Rule**: `new Notification()` does not throw when the OS silently suppresses the notification (e.g. Focus/DND mode, Chrome quiet-notifications). Always use `n.onshow` / `n.onerror` callbacks plus a 4-second timeout to detect suppression and report it to the user. Never show a "✓ sent" confirmation without waiting for `n.onshow`.
+
+**Rule**: Always pass a unique `tag` per test notification click (e.g. `'ss-test-' + Date.now()`). Without a unique tag, a second test click while the first notification is still visible silently replaces the first one — the `onshow` callback on the second fires correctly, but the user sees no second banner on screen.
+
+### Atomic config saves in plugins
+
+**Rule**: Plugin config files (`*_cfg.json`, `*_config.json`) must be written atomically using `tempfile.mkstemp` + `os.replace`. A direct `open(path, "w")` truncates the file before writing — if the server crashes mid-write, the config is left empty and the plugin fails to load on restart. Pattern:
+```python
+import tempfile, os
+tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(cfg_path), suffix=".tmp")
+try:
+    with os.fdopen(tmp_fd, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, cfg_path)
+except Exception:
+    try: os.unlink(tmp_path)
+    except OSError: pass
+    raise
+```
+
+---
 
 ### `_zetta_chain_state` — per-chain Zetta data (for wallboard, chain fault logic)
 Module-level dict in `zetta.py`, keyed by `chain_id`. Built by `_rebuild_chain_zetta_state()` after every poll. Exposed as `monitor._zetta_chain_state`. The `now_playing` value is the full parsed dict from `_parse_station_full` / `_parse_station_full_zeep`, which includes `raw_title`, `raw_artist`, `asset_type`, `duration_seconds`, etc.

@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.15.1",
+    "version":  "3.15.2",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -28,8 +28,18 @@ def _cfg_load():
         return {}
 
 def _cfg_save(c):
-    with open(_CFG_PATH, "w") as f:
-        json.dump(c, f, indent=2)
+    import tempfile
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(_CFG_PATH), suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(c, f, indent=2)
+        os.replace(tmp_path, _CFG_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 def _has_logo(chain_id):
     for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
@@ -41,7 +51,7 @@ def _load_alerts(limit=20):
     try:
         with open(_ALERT_LOG) as f:
             data = json.load(f)
-        data.sort(key=lambda e: e.get("time", 0), reverse=True)
+        data.sort(key=lambda e: e.get("ts", 0), reverse=True)
         return data[:limit]
     except Exception:
         return []

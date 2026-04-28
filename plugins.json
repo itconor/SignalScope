@@ -135,7 +135,7 @@
     "file": "push.py",
     "icon": "\ud83d\udce1",
     "description": "Centralised push notification server for iOS and Android. Holds APNs and FCM credentials and delivers notifications on behalf of any SignalScope installation that points its Push Server URL here. Hub-only.",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "requirements": "cryptography httpx[http2]",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/push.py"
   },
@@ -145,7 +145,7 @@
     "file": "wallboard.py",
     "icon": "📺",
     "description": "TV-optimised broadcast wallboard with live chain status cards, station logos, PPM-style level meters, alert ticker, and full customisation. Upload logos per chain, select which streams to display, toggle LUFS/now-playing/hero banner. Gradient avatars, health bars, zone-coloured meters at 150 ms update rate. Zetta mode badges on chain cards, drag-to-reorder chain cards via settings drawer, anti-burn-in pixel drift. Hub-only.",
-    "version": "3.15.1",
+    "version": "3.15.2",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/wallboard.py"
   },

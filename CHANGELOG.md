@@ -2,6 +2,30 @@
 
 ---
 
+### SignalScope-3.5.179 — 2026-04-28
+
+**Fix: Thread-safety race in `hub_alert_poll()` / `HubAlertFanout` cleanup**
+
+`hub_alert_poll()` was reading `hub_alert_fanout._queue` directly without holding the condition lock, creating a race with `push()` writing to the same list. Replaced with a new thread-safe `get_since(seq)` method that acquires the lock before reading. The old `get_events()` blocking method (used by the now-removed SSE endpoint) was removed. Also CLAUDE.md updated with two architectural rules from recent sessions.
+
+---
+
+### Wallboard 3.15.2 — 2026-04-28
+
+**Fix: Non-atomic config save / alert ticker sort order**
+
+`_cfg_save` now writes to a temp file and uses `os.replace` for an atomic swap — prevents config corruption if the server is killed mid-write (same fix as Studio Board 3.14.20). `_load_alerts` was sorting on `e.get("time", 0)` but the correct key is `"ts"` — alerts were in storage order rather than newest-first.
+
+---
+
+### Push Server 1.0.9 — 2026-04-28
+
+**Fix: Non-atomic config save**
+
+`_save_cfg` now writes to a temp file and uses `os.replace` for an atomic swap — prevents credential loss if the server is killed mid-write.
+
+---
+
 ### SignalScope-3.5.178 — 2026-04-28
 
 **Fix: Server unresponsive / sites losing connectivity under load (SSE thread exhaustion)**

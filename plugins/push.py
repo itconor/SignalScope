@@ -16,11 +16,11 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/push",
     "icon":     "📡",
     "hub_only": True,
-    "version":  "1.0.8",
+    "version":  "1.0.9",
 }
 
 # ─── plugin version ───────────────────────────────────────────────────────────
-_PLUGIN_VERSION = "1.0.8"
+_PLUGIN_VERSION = "1.0.9"
 
 import json as _json
 import os as _os
@@ -54,7 +54,18 @@ def _load_cfg(path: "_pathlib.Path") -> dict:
 
 
 def _save_cfg(path: "_pathlib.Path", data: dict):
-    path.write_text(_json.dumps(data, indent=2))
+    import tempfile as _tempfile
+    tmp_fd, tmp_path = _tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with _os.fdopen(tmp_fd, "w") as f:
+            f.write(_json.dumps(data, indent=2))
+        _os.replace(tmp_path, str(path))
+    except Exception:
+        try:
+            _os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _log_delivery(msg: str):

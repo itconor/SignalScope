@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.178"
+BUILD                  = "SignalScope-3.5.179"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -17853,7 +17853,7 @@ class HubLiveFanout:
 
 
 class HubAlertFanout:
-    """Broadcasts chain-fault / recovery events to SSE-connected browser clients.
+    """Broadcasts chain-fault / recovery events to short-poll browser clients.
 
     Keeps a short ring of the last 50 events so a freshly-connected client
     can receive any events it missed while the tab was navigating.  Each
@@ -17868,7 +17868,7 @@ class HubAlertFanout:
         self._seq   = 0
 
     def push(self, event: dict):
-        """Append event and wake any waiting SSE generators."""
+        """Append event and wake any waiting consumers."""
         with self._cond:
             self._seq += 1
             event = dict(event)
@@ -17878,19 +17878,16 @@ class HubAlertFanout:
                 del self._queue[:-self._MAX]
             self._cond.notify_all()
 
-    def get_events(self, since_seq: int, timeout: float = 30.0) -> list:
-        """Block until new events (seq > since_seq) arrive, or timeout.
-        Returns a list of new events (may be empty on timeout)."""
-        deadline = time.monotonic() + timeout
+    def get_since(self, since_seq: int) -> tuple:
+        """Return (events, max_seq) for all events with _seq > since_seq.
+
+        Thread-safe — holds the condition lock while reading the queue.
+        Returns immediately (non-blocking).
+        """
         with self._cond:
-            while True:
-                pending = [e for e in self._queue if e.get("_seq", 0) > since_seq]
-                if pending:
-                    return pending
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return []
-                self._cond.wait(timeout=min(remaining, 5.0))
+            events = [e for e in self._queue if e.get("_seq", 0) > since_seq]
+            new_seq = events[-1]["_seq"] if events else since_seq
+            return events, new_seq
 
 
 class ListenSlotRegistry:
@@ -29054,8 +29051,7 @@ def hub_alert_poll():
         since = int(request.args.get("since", 0))
     except (TypeError, ValueError):
         since = 0
-    events = [e for e in hub_alert_fanout._queue if e.get("_seq", 0) > since]
-    new_seq = events[-1]["_seq"] if events else since
+    events, new_seq = hub_alert_fanout.get_since(since)
     # Strip internal _seq from the response
     out = [{k: v for k, v in e.items() if k != "_seq"} for e in events]
     return jsonify({"events": out, "seq": new_seq})
