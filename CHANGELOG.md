@@ -2,6 +2,14 @@
 
 ---
 
+### Brand Screen 1.3.12 — 2026-04-28
+
+**Fix: Full-screen logo mode showed colour bars around the logo**
+
+`#fslogo-img` was constrained to `max-width:88vw;max-height:88vh`, leaving a hard-coded 6% gap on every side that displayed as the brand background colour. Changed to `width:100vw;height:100vh;object-fit:contain` — the image now fills the full viewport and `object-fit:contain` handles aspect ratio preservation naturally, with no artificial margin.
+
+---
+
 ### AzuraCast 1.2.0 — 2026-04-28
 
 **Feature: Song history, listener sparkline, queue, mount breakdown, station controls, webhooks**

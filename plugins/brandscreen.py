@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.11",
+    "version":  "1.3.12",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -1226,7 +1226,7 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
    Anti-burn-in drift is applied via the same px-drift keyframe as #screen. */
 #fslogo-wrap{position:fixed;inset:0;z-index:25;display:flex;align-items:center;justify-content:center;
   background:var(--bg-dark);animation:px-drift 90s step-end infinite}
-#fslogo-img{max-width:88vw;max-height:88vh;width:auto;height:auto;object-fit:contain;display:block}
+#fslogo-img{width:100vw;height:100vh;object-fit:contain;display:block}
 
 /* ── Full-screen takeover overlay ────────────────────────────────────────── */
 /* Sits above everything (z-index:50). Background uses brand-derived deep/dark
