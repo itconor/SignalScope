@@ -2,6 +2,19 @@
 
 ---
 
+### AzuraCast 1.2.0 — 2026-04-28
+
+**Feature: Song history, listener sparkline, queue, mount breakdown, station controls, webhooks**
+
+- **Song history** — each station card now has a collapsible "Recent tracks" section showing the last 15 songs with play times, fetched every 60 s via `/api/station/{id}/history`.
+- **Listener sparkline** — a 70×16 px trend chart sits next to the listener count badge, showing the last 30 min of audience data sampled on every poll cycle.
+- **Upcoming queue** — collapsible "Up next" section showing the next 8 AutoDJ tracks (requires station-admin API key; silently absent without one).
+- **Mount/stream breakdown** — collapsible "Streams" section showing listener count per mount point format (MP3, AAC, HLS, etc.), sourced from `/api/station/{id}/listeners` (requires admin key).
+- **⏭ Skip / 🔄 Restart controls** — appear on station cards only when an API key is configured. Skip jumps to the next AutoDJ track; Restart triggers a full station broadcasting restart (with confirmation prompt). Routes: `POST /api/azuracast/control/skip` and `POST /api/azuracast/control/restart`.
+- **Webhook receiver** — `POST /api/azuracast/webhook/{server_id}/{station_id}`. Configure in AzuraCast → Station → Webhooks → Generic (POST). Webhook URL shown with a Copy button per station in the settings drawer. Receives NowPlaying payloads for instant updates between poll cycles; fires fault/recovery alerts on online-state transitions.
+
+---
+
 ### AzuraCast 1.1.0 — 2026-04-28
 
 **Fix: Discovery endpoint, HTTP error messages, and atomic config saves**

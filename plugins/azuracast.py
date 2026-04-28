@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "AzuraCast",
     "url":     "/azuracast",
     "icon":    "🎙",
-    "version": "1.1.0",
+    "version": "1.2.0",
 }
 
 import hashlib
@@ -46,6 +46,8 @@ _app_dir   = ""
 
 _poller_threads: dict = {}   # server_id → (thread, stop_event)
 _poller_lock = threading.Lock()
+
+_last_extras_poll: dict = {}  # key → float, throttle for history/queue/mount fetches
 
 _alert_fn = None
 
@@ -184,6 +186,26 @@ def _az_request(server_url: str, api_key: str, path: str, timeout: int = 10) -> 
         return json.loads(resp.read().decode("utf-8", errors="replace"))
 
 
+def _az_post(server_url: str, api_key: str, path: str, data: "dict | None" = None, timeout: int = 10):
+    """Make a POST request to the AzuraCast API. Returns parsed JSON dict or raises."""
+    url  = server_url.rstrip("/") + "/api" + path
+    body = json.dumps(data or {}).encode("utf-8")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["X-API-Key"] = api_key
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+
+def _get_server_cfg(server_id: str) -> "dict | None":
+    return next(
+        (s for s in _get_cfg().get("servers", []) if s.get("id") == server_id),
+        None,
+    )
+
+
 def _fmt_seconds(s: "int | None") -> str:
     if s is None or s < 0:
         return "0:00"
@@ -268,6 +290,12 @@ def _poll_server(server_cfg: dict) -> None:
         listeners    = data.get("listeners", {}) or {}
         is_online    = bool(data.get("is_online", False))
 
+        # Maintain rolling 30-min listener history (1 point per poll, max 60)
+        _lh = list(prev.get("listener_history", []))
+        _lh.append({"ts": int(time.time()), "count": int(listeners.get("current", 0))})
+        if len(_lh) > 60:
+            _lh = _lh[-60:]
+
         status = {
             "server_id":       srv_id,
             "server_url":      srv_url,
@@ -275,11 +303,16 @@ def _poll_server(server_cfg: dict) -> None:
             "station_name":    station_name,
             "input_name":      input_name,
             "silence_alert":   silence_alert,
+            "_has_key":        bool(api_key),
             "is_online":       is_online,
             "is_live":         bool(live_info.get("is_live", False)),
             "streamer_name":   live_info.get("streamer_name", ""),
             "listeners":       int(listeners.get("current", 0)),
             "listeners_unique": int(listeners.get("unique", 0)),
+            "listener_history": _lh,
+            "history":         prev.get("history", []),
+            "queue":           prev.get("queue", []),
+            "mounts":          prev.get("mounts", []),
             "now_playing": {
                 "title":    song.get("title", ""),
                 "artist":   song.get("artist", ""),
@@ -336,6 +369,80 @@ def _poll_server(server_cfg: dict) -> None:
                     _silence_alerted.discard(key)
             except Exception as exc:
                 _log(f"[AzuraCast] Silence check error: {exc}")
+
+        # ── Extras: history, queue, mount breakdown — throttled to every 60 s ─
+        _now_t = time.time()
+        if _now_t - _last_extras_poll.get(key, 0) >= 60.0:
+            _last_extras_poll[key] = _now_t
+            _poll_extras(srv_url, api_key, station_id, key)
+
+
+def _poll_extras(srv_url: str, api_key: str, station_id: str, key: str) -> None:
+    """Fetch song history, upcoming queue, and mount breakdown. Called every ~60 s."""
+
+    # ── Song history ──────────────────────────────────────────────────────────
+    try:
+        h_data = _az_request(srv_url, api_key, f"/station/{station_id}/history", timeout=10)
+        history = []
+        for item in (h_data if isinstance(h_data, list) else [])[:15]:
+            song = item.get("song", {}) or {}
+            history.append({
+                "title":     song.get("title", ""),
+                "artist":    song.get("artist", ""),
+                "text":      song.get("text", ""),
+                "played_at": int(item.get("played_at", 0)),
+                "duration":  int(item.get("duration", 0)),
+            })
+        with _lock:
+            if key in _station_status:
+                _station_status[key]["history"] = history
+    except urllib.error.HTTPError:
+        pass  # 403/404 — not available without auth; silently ignore
+    except Exception as exc:
+        _log(f"[AzuraCast] History error {key}: {exc}")
+
+    # ── Upcoming queue ────────────────────────────────────────────────────────
+    try:
+        q_data = _az_request(srv_url, api_key, f"/station/{station_id}/queue", timeout=10)
+        queue = []
+        for item in (q_data if isinstance(q_data, list) else [])[:8]:
+            song = item.get("song", {}) or {}
+            queue.append({
+                "title":    song.get("title", ""),
+                "artist":   song.get("artist", ""),
+                "text":     song.get("text", ""),
+                "duration": int(item.get("duration", 0)),
+                "cued_at":  int(item.get("cued_at", 0)),
+            })
+        with _lock:
+            if key in _station_status:
+                _station_status[key]["queue"] = queue
+    except urllib.error.HTTPError:
+        pass  # 403 = no station-admin access; silently ignore
+    except Exception as exc:
+        _log(f"[AzuraCast] Queue error {key}: {exc}")
+
+    # ── Mount / stream breakdown ──────────────────────────────────────────────
+    try:
+        l_data = _az_request(srv_url, api_key, f"/station/{station_id}/listeners", timeout=10)
+        mounts: dict = {}
+        for listener in (l_data if isinstance(l_data, list) else []):
+            mount_info = listener.get("mount") or {}
+            m_name = (mount_info.get("name")
+                      or listener.get("mount_name")
+                      or "default")
+            mounts[m_name] = mounts.get(m_name, 0) + 1
+        mounts_list = sorted(
+            [{"name": k, "count": v} for k, v in mounts.items()],
+            key=lambda x: -x["count"],
+        )
+        with _lock:
+            if key in _station_status:
+                _station_status[key]["mounts"] = mounts_list
+    except urllib.error.HTTPError:
+        pass  # 403 = requires admin auth; silently ignore
+    except Exception as exc:
+        _log(f"[AzuraCast] Mounts error {key}: {exc}")
 
 
 def _server_poller_thread(server_cfg: dict, stop_evt: threading.Event) -> None:
@@ -487,6 +594,17 @@ td{padding:6px 8px}
 .empty-state .es-icon{font-size:28px;margin-bottom:8px;display:block;opacity:.5}
 .empty-state .es-title{font-size:13px;font-weight:600;color:var(--tx);margin-bottom:4px}
 .empty-state .es-sub{font-size:12px;line-height:1.5}
+.az-details{margin-top:8px}
+.az-details>summary{font-size:11px;color:var(--mu);cursor:pointer;user-select:none;padding:2px 0;list-style:none}
+.az-details>summary::-webkit-details-marker{display:none}
+.az-details>summary:hover{color:var(--tx)}
+.az-list{margin-top:5px}
+.az-row{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(23,52,95,.3);font-size:11px;gap:8px}
+.az-time{color:var(--mu);flex-shrink:0;min-width:36px;text-align:right}
+.az-track{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.az-ctrl{display:flex;gap:6px;margin-top:10px;padding-top:8px;border-top:1px solid var(--bor)}
+.wh-box{font-family:monospace;font-size:11px;background:#0a1a36;border:1px solid var(--bor);border-radius:4px;padding:4px 8px;word-break:break-all;color:var(--acc);margin-top:4px;display:flex;align-items:center;gap:6px}
+.wh-box span{flex:1}
 </style>
 </head>
 <body>
@@ -566,6 +684,26 @@ function _fmtSecs(s){
 
 function _safeKey(k){ return k.replace(/[^a-zA-Z0-9]/g,'_'); }
 
+function _fmtTime(ts){
+  if(!ts) return '—';
+  var d = new Date(ts*1000);
+  return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
+}
+
+function _sparkline(data,w,h){
+  if(!data||data.length<2) return '';
+  var counts=data.map(function(d){return d.count||0;});
+  var mn=Math.min.apply(null,counts),mx=Math.max.apply(null,counts);
+  var rng=mx-mn||1;
+  var pts=counts.map(function(c,i){
+    return (i/(counts.length-1)*w).toFixed(1)+','+(h-1-(c-mn)/rng*(h-3)).toFixed(1);
+  }).join(' ');
+  return '<svg width="'+w+'" height="'+h
+    +'" style="vertical-align:middle;margin-left:4px;opacity:.85">'
+    +'<polyline fill="none" stroke="var(--acc)" stroke-width="1.5" '
+    +'stroke-linejoin="round" points="'+pts+'"/></svg>';
+}
+
 function _renderCard(s){
   var key = _safeKey(s.server_id + '_' + s.station_id);
   var onlineBadge = s.is_online
@@ -574,8 +712,9 @@ function _renderCard(s){
   var liveBadge = s.is_live
     ? '<span class="badge b-wn" style="margin-right:4px">🎤 Live</span>'
     : '';
+  var spark = _sparkline(s.listener_history||[], 70, 16);
   var listeners = '<span class="badge b-mu" style="margin-right:4px">'
-    + (s.listeners||0) + ' 👥</span>';
+    + (s.listeners||0) + ' 👥</span>' + spark;
 
   var np = s.now_playing || {};
   var title = np.title || (s.is_online ? '—' : '');
@@ -586,7 +725,6 @@ function _renderCard(s){
   var elapsed = np.elapsed || 0;
   var duration = np.duration || 0;
   var pct = duration > 0 ? Math.min(100, Math.round(elapsed/duration*100)) : 0;
-
   _progData[key] = { elapsed: elapsed, duration: duration, fetchedAt: Date.now()/1000 };
 
   var playlistLine = '';
@@ -609,10 +747,59 @@ function _renderCard(s){
     ? '<div style="color:var(--al);font-size:11px;margin-top:6px">⚠ ' + _esc(s.error) + '</div>'
     : '';
 
+  // ── History ────────────────────────────────────────────────────────────────
+  var histHtml = '';
+  if(s.history && s.history.length){
+    histHtml = '<details class="az-details"><summary>▾ Recent tracks ('+s.history.length+')</summary>'
+      + '<div class="az-list">';
+    s.history.forEach(function(h){
+      var t = h.text || ([h.artist,h.title].filter(Boolean).join(' — ')) || '—';
+      histHtml += '<div class="az-row"><span class="az-track">'+_esc(t)+'</span>'
+        + '<span class="az-time">'+_fmtTime(h.played_at)+'</span></div>';
+    });
+    histHtml += '</div></details>';
+  }
+
+  // ── Queue ──────────────────────────────────────────────────────────────────
+  var queueHtml = '';
+  if(s.queue && s.queue.length){
+    queueHtml = '<details class="az-details"><summary>▾ Up next ('+s.queue.length+')</summary>'
+      + '<div class="az-list">';
+    s.queue.forEach(function(q,i){
+      var t = q.text || ([q.artist,q.title].filter(Boolean).join(' — ')) || '—';
+      queueHtml += '<div class="az-row"><span class="az-track">'+_esc(t)+'</span>'
+        + '<span class="az-time" style="min-width:22px">#'+(i+1)+'</span></div>';
+    });
+    queueHtml += '</div></details>';
+  }
+
+  // ── Mount breakdown ────────────────────────────────────────────────────────
+  var mountsHtml = '';
+  if(s.mounts && s.mounts.length > 1){
+    mountsHtml = '<details class="az-details"><summary>▾ Streams ('+s.mounts.length+')</summary>'
+      + '<div class="az-list">';
+    s.mounts.forEach(function(m){
+      mountsHtml += '<div class="az-row"><span class="az-track">'+_esc(m.name)+'</span>'
+        + '<span class="az-time">'+m.count+' 👥</span></div>';
+    });
+    mountsHtml += '</div></details>';
+  }
+
+  // ── Controls (only when API key configured) ────────────────────────────────
+  var ctrlHtml = '';
+  if(s._has_key){
+    ctrlHtml = '<div class="az-ctrl">'
+      + '<button class="btn bg bs az-skip-btn"'
+      + ' data-srv="'+_esc(s.server_id)+'" data-sta="'+_esc(s.station_id)+'">⏭ Skip</button>'
+      + '<button class="btn bd bs az-restart-btn"'
+      + ' data-srv="'+_esc(s.server_id)+'" data-sta="'+_esc(s.station_id)+'">🔄 Restart</button>'
+      + '</div>';
+  }
+
   return '<div class="station-card">'
     + '<div class="ch" style="justify-content:space-between">'
     + '<span>🎙 ' + _esc(s.station_name) + '</span>'
-    + '<span>' + liveBadge + listeners + onlineBadge + '</span>'
+    + '<span style="display:flex;align-items:center">' + liveBadge + listeners + onlineBadge + '</span>'
     + '</div>'
     + '<div class="cb">'
     + '<div style="font-size:14px;font-weight:600;color:var(--tx);margin-bottom:2px">' + _esc(title) + '</div>'
@@ -628,6 +815,10 @@ function _renderCard(s){
     + (nextInfo ? '<div style="font-size:11px;color:var(--mu);margin-bottom:6px">' + nextInfo + '</div>' : '')
     + '<div style="margin-top:8px;font-size:11px;color:var(--mu)">' + inputLine + '</div>'
     + errorLine
+    + histHtml
+    + queueHtml
+    + mountsHtml
+    + ctrlHtml
     + '</div>'
     + '</div>';
 }
@@ -670,6 +861,9 @@ function _renderSrvList(servers, stations){
         + '<th>Station</th><th>Display Name</th><th>Input</th><th>Silence Alert</th><th></th>'
         + '</tr></thead><tbody>';
       srvStations.forEach(function(s){
+        var whUrl = window.location.origin
+          + '/api/azuracast/webhook/' + encodeURIComponent(srv.id)
+          + '/' + encodeURIComponent(s.station_id);
         html += '<tr>'
           + '<td>' + _esc(s.station_id) + '</td>'
           + '<td>' + _esc(s.station_name) + '</td>'
@@ -678,7 +872,12 @@ function _renderSrvList(servers, stations){
           + '<td><button class="btn bd bs sta-rm-btn"'
           + ' data-srv-id="' + _esc(srv.id) + '"'
           + ' data-sta-id="' + _esc(s.station_id) + '">Remove</button></td>'
-          + '</tr>';
+          + '</tr>'
+          + '<tr><td colspan="5" style="padding:2px 8px 8px">'
+          + '<div style="font-size:11px;color:var(--mu);margin-bottom:3px">Webhook URL — paste into AzuraCast → Station → Webhooks → Generic (POST)</div>'
+          + '<div class="wh-box"><span>' + _esc(whUrl) + '</span>'
+          + '<button class="btn bg bs wh-copy-btn" data-url="' + _esc(whUrl) + '">Copy</button></div>'
+          + '</td></tr>';
       });
       html += '</tbody></table>';
     } else {
@@ -692,7 +891,14 @@ function _renderSrvList(servers, stations){
     var rmSrv = e.target.closest('.srv-rm-btn');
     if(rmSrv){ doRemoveServer(rmSrv.dataset.srvId); return; }
     var rmSta = e.target.closest('.sta-rm-btn');
-    if(rmSta){ doRemoveStation(rmSta.dataset.srvId, rmSta.dataset.staId); }
+    if(rmSta){ doRemoveStation(rmSta.dataset.srvId, rmSta.dataset.staId); return; }
+    var cp = e.target.closest('.wh-copy-btn');
+    if(cp){
+      navigator.clipboard.writeText(cp.dataset.url).then(function(){
+        var old = cp.textContent; cp.textContent = '✓ Copied'; cp.disabled = true;
+        setTimeout(function(){ cp.textContent = old; cp.disabled = false; }, 2000);
+      }).catch(function(){ _showMsg('Copy failed — select text manually.', false); });
+    }
   });
 }
 
@@ -856,6 +1062,33 @@ function doRemoveServer(srvId){
     }).catch(function(e){ _showMsg('Error: '+e, false); });
   });
 }
+
+// ── Station controls ─────────────────────────────────────────────────────────
+
+function _doControlReq(action, srvId, staId){
+  _post('/api/azuracast/control/'+action, {server_id:srvId, station_id:staId})
+    .then(function(d){
+      if(d.ok) _showMsg(action==='skip'?'⏭ Skipped to next track.':'🔄 Station restart requested.', true);
+      else _showMsg(d.error||'Control error', false);
+    }).catch(function(e){ _showMsg('Error: '+e, false); });
+}
+
+function doControl(action, srvId, staId){
+  if(action === 'restart'){
+    _ssConfirm('Restart station broadcasting?', function(){
+      _doControlReq(action, srvId, staId);
+    });
+  } else {
+    _doControlReq(action, srvId, staId);
+  }
+}
+
+document.getElementById('cards').addEventListener('click', function(e){
+  var skip = e.target.closest('.az-skip-btn');
+  if(skip){ doControl('skip', skip.dataset.srv, skip.dataset.sta); return; }
+  var restart = e.target.closest('.az-restart-btn');
+  if(restart){ doControl('restart', restart.dataset.srv, restart.dataset.sta); }
+});
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadStatus();
@@ -1252,6 +1485,145 @@ def register(app, ctx):
 
         _set_cfg(cfg_now)
         _start_pollers()
+        return jsonify({"ok": True})
+
+    # ── Station control routes ─────────────────────────────────────────────────
+
+    @app.post("/api/azuracast/control/skip")
+    @login_required
+    @csrf_protect
+    def azuracast_control_skip():
+        body       = request.get_json(silent=True) or {}
+        server_id  = str(body.get("server_id", "")).strip()
+        station_id = str(body.get("station_id", "")).strip()
+        srv = _get_server_cfg(server_id)
+        if not srv:
+            return jsonify({"ok": False, "error": "Server not found"}), 404
+        api_key = srv.get("api_key", "")
+        if not api_key:
+            return jsonify({"ok": False, "error": "API key required for station control"}), 403
+        try:
+            _az_post(srv["url"], api_key, f"/station/{station_id}/backend/skip")
+            return jsonify({"ok": True})
+        except urllib.error.HTTPError as exc:
+            return jsonify({"ok": False, "error": f"AzuraCast returned HTTP {exc.code}"}), 200
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 200
+
+    @app.post("/api/azuracast/control/restart")
+    @login_required
+    @csrf_protect
+    def azuracast_control_restart():
+        body       = request.get_json(silent=True) or {}
+        server_id  = str(body.get("server_id", "")).strip()
+        station_id = str(body.get("station_id", "")).strip()
+        srv = _get_server_cfg(server_id)
+        if not srv:
+            return jsonify({"ok": False, "error": "Server not found"}), 404
+        api_key = srv.get("api_key", "")
+        if not api_key:
+            return jsonify({"ok": False, "error": "API key required for station control"}), 403
+        try:
+            _az_post(srv["url"], api_key, f"/station/{station_id}/restart")
+            return jsonify({"ok": True})
+        except urllib.error.HTTPError as exc:
+            return jsonify({"ok": False, "error": f"AzuraCast returned HTTP {exc.code}"}), 200
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 200
+
+    # ── Webhook receiver ───────────────────────────────────────────────────────
+    # AzuraCast → Station → Webhooks → Add → Generic (POST) → URL below.
+    # No auth header needed; the path contains the server_id (random hex) as
+    # implicit security — anyone who can POST to it already knows the ID.
+
+    @app.post("/api/azuracast/webhook/<server_id>/<station_id>")
+    def azuracast_webhook(server_id, station_id):
+        cfg_now = _get_cfg()
+        srv = next((s for s in cfg_now.get("servers", []) if s.get("id") == server_id), None)
+        if not srv:
+            abort(404)
+        sta = next(
+            (s for s in srv.get("stations", []) if str(s.get("station_id", "")) == station_id),
+            None,
+        )
+        if not sta:
+            abort(404)
+
+        data = request.get_json(silent=True) or {}
+
+        station_info = data.get("station", {}) or {}
+        now_pl       = data.get("now_playing", {}) or {}
+        song         = now_pl.get("song", {}) or {}
+        playing_next = data.get("playing_next", {}) or {}
+        next_song    = playing_next.get("song", {}) or {}
+        live_info    = data.get("live", {}) or {}
+        listeners    = data.get("listeners", {}) or {}
+        is_online    = bool(data.get("is_online", False))
+        display_name = sta.get("display_name", "")
+        station_name = display_name or station_info.get("name", station_id)
+        key = f"{server_id}::{station_id}"
+
+        with _lock:
+            prev = dict(_station_status.get(key, {}))
+
+        _lh = list(prev.get("listener_history", []))
+        _lh.append({"ts": int(time.time()), "count": int(listeners.get("current", 0))})
+        if len(_lh) > 60:
+            _lh = _lh[-60:]
+
+        status = {
+            "server_id":       server_id,
+            "server_url":      srv.get("url", ""),
+            "station_id":      station_id,
+            "station_name":    station_name,
+            "input_name":      sta.get("input_name", ""),
+            "silence_alert":   bool(sta.get("silence_alert", False)),
+            "_has_key":        bool(srv.get("api_key", "")),
+            "is_online":       is_online,
+            "is_live":         bool(live_info.get("is_live", False)),
+            "streamer_name":   live_info.get("streamer_name", ""),
+            "listeners":       int(listeners.get("current", 0)),
+            "listeners_unique": int(listeners.get("unique", 0)),
+            "listener_history": _lh,
+            "history":          prev.get("history", []),
+            "queue":            prev.get("queue", []),
+            "mounts":           prev.get("mounts", []),
+            "now_playing": {
+                "title":    song.get("title", ""),
+                "artist":   song.get("artist", ""),
+                "album":    song.get("album", ""),
+                "text":     song.get("text", ""),
+                "art_url":  song.get("art", ""),
+                "playlist": now_pl.get("playlist", ""),
+                "elapsed":  int(now_pl.get("elapsed", 0)),
+                "duration": int(now_pl.get("duration", 0)),
+                "is_request": bool(now_pl.get("is_request", False)),
+            },
+            "playing_next": {
+                "title":  next_song.get("title", ""),
+                "artist": next_song.get("artist", ""),
+                "text":   next_song.get("text", "") or (playing_next.get("song") or {}).get("text", ""),
+            },
+            "last_updated": time.time(),
+            "error":        "",
+            "_via_webhook": True,
+        }
+
+        with _lock:
+            _station_status[key] = status
+
+        # Transition alerts (same logic as _poll_server)
+        prev_online = prev.get("is_online")
+        if prev_online is not None:
+            if prev_online and not is_online:
+                _append_alert(station_name, "AZURACAST_FAULT",
+                              f"[AzuraCast] {station_name} went offline")
+                _log(f"[AzuraCast] FAULT (webhook) — {station_name} offline")
+            elif not prev_online and is_online:
+                _append_alert(station_name, "AZURACAST_RECOVERY",
+                              f"[AzuraCast] {station_name} is back online")
+                _log(f"[AzuraCast] RECOVERY (webhook) — {station_name} online")
+
         return jsonify({"ok": True})
 
     # ── Mobile route ─────────────────────────────────────────────────────────
