@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "Logger",
     "url":     "/hub/logger",
     "icon":    "🎙",
-    "version": "1.6.6",
+    "version": "1.6.7",
 }
 
 import datetime
@@ -3435,8 +3435,15 @@ def _maybe_downgrade(path, slug, date, lq_br, ffmpeg):
         if r.returncode == 0 and tmp.exists() and tmp.stat().st_size > 1000:
             tmp.replace(path)
             db = _get_db()
-            db.execute("UPDATE segments SET quality='low' WHERE stream=? AND date=? AND filename=?",
-                       (slug, date, path.name))
+            cur = db.execute("UPDATE segments SET quality='low' WHERE stream=? AND date=? AND filename=?",
+                             (slug, date, path.name))
+            if cur.rowcount == 0:
+                # No existing row (file pre-dates DB or DB was rebuilt) — insert a stub
+                # so future maintenance passes skip this already-downgraded file.
+                db.execute(
+                    "INSERT OR IGNORE INTO segments "
+                    "(stream, date, filename, start_s, quality) VALUES (?,?,?,0.0,'low')",
+                    (slug, date, path.name))
             db.commit()
             db.close()
             _log(f"[Logger] Downgraded {slug}/{date}/{path.name}")

@@ -65,7 +65,7 @@
     "file": "logger.py",
     "icon": "\ud83c\udf99",
     "description": "Compliance logger for continuous 24/7 recording of all monitored streams. Hub mode aggregates recordings from all connected sites — browse timelines, play audio, and export segments with mark in/out. Supports now-playing metadata from Planet Radio, Triton, Zetta, or any JSON API. Requires ffmpeg.",
-    "version": "1.6.6",
+    "version": "1.6.7",
     "requirements": "ffmpeg",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/logger.py"
   },

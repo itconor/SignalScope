@@ -2,6 +2,22 @@
 
 ---
 
+### Logger 1.6.7 — 2026-04-29
+
+**Fix: downgrade loop for recordings with no DB record**
+
+- `_maybe_downgrade` was stuck in an infinite re-encode loop for any audio file
+  that had no matching row in the `segments` table (common for recordings made
+  before the current DB, or after a DB rebuild).
+- The `UPDATE segments SET quality='low'` succeeded at the file level but
+  matched 0 rows, so the next maintenance cycle found `quality != 'low'` again
+  and re-encoded the same files endlessly.
+- Fix: after a successful downgrade, if `rowcount == 0`, insert a stub record
+  `(stream, date, filename, start_s=0.0, quality='low')` via `INSERT OR IGNORE`
+  so future passes skip the already-downgraded file.
+
+---
+
 ### Studio Board 3.15.3 — 2026-04-29
 
 **AzuraCast now-playing on Studio Board TV displays**
