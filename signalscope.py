@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.185"
+BUILD                  = "SignalScope-3.5.186"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -9578,10 +9578,28 @@ class MonitorManager:
         self.log(f"[{name}] DAB shared: launching {' '.join(cmd)}")
 
         try:
-            import os as _os
+            import os as _os, resource as _resource
             def _elevate_priority():
                 try: _os.nice(-10)
                 except Exception: pass
+                # Raise the open-file-descriptor limit for welle-cli.  The default
+                # Linux soft limit is typically 1024.  After days of continuous
+                # operation welle-cli's embedded HTTP server accumulates socket FDs
+                # (prewarm connections, mux.json keep-alives, ffmpeg reconnects) and
+                # hits the limit with "accept failed: Too many open files".  Raising
+                # it to 65536 in the child process prevents that without affecting
+                # the parent SignalScope process.
+                try:
+                    _resource.setrlimit(_resource.RLIMIT_NOFILE, (65536, 65536))
+                except Exception:
+                    try:
+                        # Hard limit may be lower than 65536 on some systems;
+                        # try raising to whatever the hard limit allows.
+                        _soft, _hard = _resource.getrlimit(_resource.RLIMIT_NOFILE)
+                        if _hard > _soft:
+                            _resource.setrlimit(_resource.RLIMIT_NOFILE, (_hard, _hard))
+                    except Exception:
+                        pass
             session.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                             bufsize=0, preexec_fn=_elevate_priority)
         except Exception as e:
@@ -9598,6 +9616,11 @@ class MonitorManager:
                 "inputfactory:error while opening device",
                 # rtl_tcp proxy crashed mid-session — welle-cli prints this and exits
                 "rtl-tcp connection closed",
+                # FD exhaustion — welle-cli's HTTP server can no longer accept connections.
+                # Happens after days of uptime when the process FD limit is too low.
+                # Treated as fatal so _stop_dab_session is called and a fresh welle-cli
+                # is spawned (which inherits the raised RLIMIT_NOFILE from _elevate_priority).
+                "too many open files",
             )
             try:
                 for raw in session.proc.stderr:

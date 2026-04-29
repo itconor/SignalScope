@@ -2,6 +2,16 @@
 
 ---
 
+### SignalScope-3.5.186 — 2026-04-29
+
+**Fixed: DAB "Too many open files" after days of uptime**
+
+- `_elevate_priority` (the `preexec_fn` run inside the welle-cli child process at launch) now calls `resource.setrlimit(RLIMIT_NOFILE, (65536, 65536))` to raise the FD limit from the default ~1024 to 65536. After days of continuous operation, welle-cli's embedded HTTP server accumulates socket FDs from prewarm keep-alives, mux.json polls, and ffmpeg reconnects. Hitting the limit caused `accept failed: Too many open files` to repeat every second and DAB audio to drop.
+- Falls back gracefully: if 65536 exceeds the system hard limit, the limit is raised to the hard limit maximum instead. The parent SignalScope process is unaffected.
+- `"too many open files"` added to the welle-cli stderr fatal-marker list — if the error occurs despite the raised limit (e.g. running pre-fix binary on a very old session), the DAB shared session is treated as failed and a fresh welle-cli is spawned automatically.
+
+---
+
 ### SignalScope-3.5.185 + Studio Board 3.15.2 + Morning Report 1.2.6 — 2026-04-29
 
 **Studio moves logged to Hub Reports and Morning Report**
