@@ -2,6 +2,14 @@
 
 ---
 
+### Morning Report 1.3.1 — 2026-04-29
+
+**Added: Engineering notes shown in outage detail cards**
+
+When an operator has added a note to a chain fault (via the fault log UI or the iOS app), it now appears in the outage detail card as a highlighted "Engineering Note" block — including the note text, who added it, and when. The note is pulled from `chain_notes.json` using the fault's primary key (`id`) which is now also selected in the `chain_fault_log` query.
+
+---
+
 ### Morning Report 1.3.0 — 2026-04-29
 
 **Added: Per-outage detail log**

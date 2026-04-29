@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.3.0",
+    "version":  "1.3.1",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -21,6 +21,7 @@ _CACHE_PATH  = os.path.join(_BASE_DIR, "morning_report_cache.json")
 _METRICS_DB  = os.path.join(_APP_DIR,  "metrics_history.db")
 _ALERT_LOG   = os.path.join(_APP_DIR,  "alert_log.json")
 _SLA_PATH    = os.path.join(_APP_DIR,  "sla_data.json")
+_NOTES_PATH  = os.path.join(_APP_DIR,  "chain_notes.json")
 
 _DEFAULT_CFG = {"report_time": "06:00"}
 
@@ -97,6 +98,17 @@ def _load_sla() -> dict:
     return {}
 
 
+def _load_chain_notes() -> dict:
+    """Return {fault_log_id: {text, by, ts, edited_at}} from chain_notes.json."""
+    try:
+        if os.path.exists(_NOTES_PATH):
+            with open(_NOTES_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
 # ── Metrics DB helpers ─────────────────────────────────────────────────────────
 
 def _chain_id_to_name_map(monitor) -> dict:
@@ -163,6 +175,7 @@ def _normalise_fault_row_full(row: dict, id_map: dict) -> dict:
         "zetta_title":     _znp_title,
         "zetta_artist":    _znp_artist,
         "zetta_is_spot":   bool(row.get("zetta_is_spot", 0)),
+        "fault_log_id":    row.get("id", ""),   # PK — used to join engineering notes
         "message":         row.get("message", ""),
         "cascaded_from":   row.get("cascaded_from", ""),
     })
@@ -198,11 +211,12 @@ def _query_chain_faults(day_start: float, day_end: float, id_map: dict = None) -
     if not os.path.exists(_METRICS_DB):
         return []
     # Try extended columns first; fall back to the original 5-column query on old DBs.
+    # id is included so the caller can join engineering notes from chain_notes.json.
     try:
         with sqlite3.connect(_METRICS_DB, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.execute(
-                """SELECT chain_id, ts_start, ts_recovered, fault_node_label, fault_site,
+                """SELECT id, chain_id, ts_start, ts_recovered, fault_node_label, fault_site,
                           fault_stream, zetta_computer, zetta_mode, zetta_now_playing,
                           zetta_is_spot, message, cascaded_from
                    FROM chain_fault_log
@@ -238,7 +252,7 @@ def _query_chain_faults_range(start: float, end: float, id_map: dict = None) -> 
         with sqlite3.connect(_METRICS_DB, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.execute(
-                """SELECT chain_id, ts_start, ts_recovered, fault_node_label, fault_site,
+                """SELECT id, chain_id, ts_start, ts_recovered, fault_node_label, fault_site,
                           fault_stream, zetta_computer, zetta_mode, zetta_now_playing,
                           zetta_is_spot, message, cascaded_from
                    FROM chain_fault_log
@@ -768,6 +782,7 @@ def _generate_report(hub_server, monitor) -> dict:
     # One entry per chain_fault_log row for yesterday, with full context.
     # all_events already has STUDIO_MOVE entries from up to 30 days back, which
     # is all we need for the studio-at-time cross-reference.
+    chain_notes = _load_chain_notes()   # {fault_log_id: {text, by, ts, edited_at}}
     outage_detail = []
     for row in chain_faults_y:
         cname = row.get("chain_name", "")
@@ -806,6 +821,13 @@ def _generate_report(hub_server, monitor) -> dict:
         # Studio context at the fault time
         studios = _studio_at_time(all_events, ts_s) if ts_s else {}
 
+        # Engineering note (added by operators via the fault log UI)
+        _flog_id  = row.get("fault_log_id", "")
+        _note_rec = chain_notes.get(_flog_id, {}) if _flog_id else {}
+        note_text = (_note_rec.get("text") or "").strip()
+        note_by   = (_note_rec.get("by")   or "").strip()
+        note_ts   = (_note_rec.get("edited_at") or _note_rec.get("ts") or "").strip()
+
         outage_detail.append({
             "chain_name":         cname,
             "fault_time_str":     fault_time_str,
@@ -822,6 +844,9 @@ def _generate_report(hub_server, monitor) -> dict:
             "message":            row.get("message", ""),
             "cascaded_from":      row.get("cascaded_from", ""),
             "studios":            studios,
+            "note_text":          note_text,
+            "note_by":            note_by,
+            "note_ts":            note_ts,
         })
 
     # Sort by fault time ascending
@@ -1071,6 +1096,10 @@ tr:hover td{background:rgba(255,255,255,.03)}
 .od-sub-hdr{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--acc);margin:10px 0 6px;padding-top:8px;border-top:1px solid var(--bor)}
 .od-spot-notice{background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:6px 10px;font-size:11px;color:var(--wn);margin-top:8px}
 .od-cascade-note{font-size:11px;color:var(--mu);margin-top:6px;font-style:italic}
+.od-eng-note{background:rgba(23,168,255,.07);border:1px solid rgba(23,168,255,.25);border-radius:6px;padding:8px 12px;margin-top:10px}
+.od-eng-note-hdr{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--acc);margin-bottom:4px}
+.od-eng-note-text{font-size:12px;color:var(--tx);white-space:pre-wrap;word-break:break-word}
+.od-eng-note-meta{font-size:10px;color:var(--mu);margin-top:4px}
 /* Footer */
 .rpt-footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--bor);font-size:11px;color:var(--mu);display:flex;flex-wrap:wrap;gap:12px}
 /* No data */
@@ -1299,6 +1328,18 @@ tr:hover td{background:rgba(255,255,255,.03)}
       {% endif %}
       {% if od.cascaded_from %}
       <div class="od-cascade-note">Cascaded from: {{od.cascaded_from}}</div>
+      {% endif %}
+      {% if od.note_text %}
+      <div class="od-eng-note">
+        <div class="od-eng-note-hdr">✏️ Engineering Note</div>
+        <div class="od-eng-note-text">{{od.note_text}}</div>
+        {% if od.note_by or od.note_ts %}
+        <div class="od-eng-note-meta">
+          {% if od.note_by %}Added by {{od.note_by}}{% endif %}
+          {% if od.note_ts %} · {{od.note_ts}}{% endif %}
+        </div>
+        {% endif %}
+      </div>
       {% endif %}
     </div>
   </div>
