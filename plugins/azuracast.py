@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "AzuraCast",
     "url":     "/azuracast",
     "icon":    "🎙",
-    "version": "1.3.0",
+    "version": "1.3.1",
 }
 
 import hashlib
@@ -445,11 +445,78 @@ def _poll_extras(srv_url: str, api_key: str, station_id: str, key: str) -> None:
         _log(f"[AzuraCast] Mounts error {key}: {exc}")
 
 
+def _rebuild_az_chain_state() -> None:
+    """Build monitor._azuracast_chain_state — keyed by chain_id, mirrors the
+    shape of monitor._zetta_chain_state so consumers can use either source."""
+    mon = _monitor
+    if mon is None:
+        return
+    try:
+        chains = getattr(getattr(mon, "app_cfg", None), "signal_chains", None) or []
+        with _lock:
+            # Build a quick lookup: input_name → station status dict
+            by_input = {
+                s["input_name"]: s
+                for s in _station_status.values()
+                if s.get("input_name")
+            }
+        new_state = {}
+        for chain in chains:
+            cid = chain.get("id", "")
+            if not cid:
+                continue
+            for node in chain.get("nodes", []):
+                stream = node.get("stream", "")
+                if not stream or stream not in by_input:
+                    continue
+                st   = by_input[stream]
+                np   = st.get("now_playing", {}) or {}
+                nxt  = st.get("playing_next", {}) or {}
+                age  = time.time() - float(st.get("last_updated", 0) or 0)
+                if age > 120:
+                    break  # stale — skip
+                elapsed  = int(np.get("elapsed", 0))
+                duration = int(np.get("duration", 0))
+                remaining = max(0, duration - elapsed) if duration > 0 else 0
+                title   = (np.get("title") or "").strip()
+                artist  = (np.get("artist") or "").strip()
+                new_state[cid] = {
+                    "now_playing": {
+                        "title":      title,
+                        "artist":     artist,
+                        "asset_type": 0,   # AzuraCast has no ad-break signal
+                        "playlist":   (np.get("playlist") or "").strip(),
+                        "art_url":    (np.get("art_url") or "").strip(),
+                    } if (title or artist) else None,
+                    "playing_next": {
+                        "title":  (nxt.get("title") or "").strip(),
+                        "artist": (nxt.get("artist") or "").strip(),
+                    },
+                    "remaining_seconds": remaining,
+                    "duration_seconds":  duration,
+                    "elapsed_seconds":   elapsed,
+                    "is_live":        bool(st.get("is_live", False)),
+                    "streamer_name":  (st.get("streamer_name") or "").strip(),
+                    "station_name":   st.get("station_name", ""),
+                    "is_online":      bool(st.get("is_online", False)),
+                    "listeners":      int(st.get("listeners", 0)),
+                    "ts":             float(st.get("last_updated", 0)),
+                    "input_name":     stream,
+                    "server_url":     st.get("server_url", ""),
+                    "source":         "azuracast",
+                }
+                break  # first matching node wins
+        mon._azuracast_chain_state = new_state
+    except Exception as exc:
+        _log(f"[AzuraCast] chain state rebuild error: {exc}")
+
+
 def _server_poller_thread(server_cfg: dict, stop_evt: threading.Event) -> None:
     poll_interval = _get_cfg().get("poll_interval", _POLL_INTERVAL)
     while not stop_evt.is_set():
         try:
             _poll_server(server_cfg)
+            _rebuild_az_chain_state()
         except Exception as exc:
             _log(f"[AzuraCast] Poller error: {exc}")
         stop_evt.wait(poll_interval)
@@ -1380,6 +1447,10 @@ def register(app, ctx):
 
     _monitor = monitor
     _app_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Initialise chain state dict so consumers can always safely getattr it
+    if not hasattr(monitor, "_azuracast_chain_state"):
+        monitor._azuracast_chain_state = {}
 
     # Load config from disk
     with _cfg_lock:

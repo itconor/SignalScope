@@ -2,6 +2,50 @@
 
 ---
 
+### SignalScope 3.5.191 — 2026-04-29
+
+**AzuraCast now-playing integrated into chain fault annotation**
+
+- `_fire_chain_fault()` now reads `monitor._azuracast_chain_state` as a fallback when
+  no Zetta is linked to a chain. If an AzuraCast station is linked via `input_name`,
+  the track playing at fault time is captured into `zetta_now_playing` (same field,
+  displayed with `[AzuraCast]` tag) — visible in chain fault history, morning report,
+  and the fault log table.
+- Live streamer state is also captured: `🔴 LIVE — <name> [AzuraCast]`.
+- Broadcast Chains API now includes `az_now_playing` dict for each chain that has an
+  AzuraCast station linked, for use by the Broadcast Chains page and any future UI.
+
+---
+
+### AzuraCast 1.3.1 — 2026-04-29
+
+**Added: `monitor._azuracast_chain_state` — chain-level now-playing for cross-plugin use**
+
+- New `_rebuild_az_chain_state()` function builds a dict keyed by `chain_id`,
+  mirroring the shape of `monitor._zetta_chain_state`. Populated by matching each
+  chain node's stream name against AzuraCast stations' `input_name` field —
+  no extra config required.
+- Called after every poll cycle; set as `monitor._azuracast_chain_state`.
+- Initialised to `{}` at plugin load so consumers can always safely `getattr` it.
+- Fields: `now_playing` (title, artist, playlist, art_url, asset_type=0), 
+  `playing_next`, `remaining_seconds`, `duration_seconds`, `elapsed_seconds`,
+  `is_live`, `streamer_name`, `station_name`, `is_online`, `listeners`, `ts`, `source`.
+
+---
+
+### Wallboard 3.16.1 — 2026-04-29
+
+**Added: AzuraCast now-playing on chain cards**
+
+- Chain cards now show AzuraCast now-playing when no Zetta is linked to a chain.
+  Priority: Zetta (full sequencer) → AzuraCast → Planet Radio text fallback.
+- AzuraCast display shows artist, title, playlist name, a progress bar (elapsed/duration),
+  and the next track. Live streams show 🔴 LIVE with the streamer name.
+- Data comes from `monitor._azuracast_chain_state` via the `/api/wallboard/data`
+  endpoint (`azuracast` key alongside `zetta`).
+
+---
+
 ### AzuraCast 1.3.0 — 2026-04-29
 
 **Added: Auto-create monitored input from AzuraCast stream URL on station add**

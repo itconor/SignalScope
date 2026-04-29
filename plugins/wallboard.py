@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/wallboard",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "3.16.0",
+    "version":  "3.16.1",
 }
 
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -425,6 +425,34 @@ def register(app, ctx):
                 ],
             }
 
+        # AzuraCast now-playing — fallback when no Zetta linked to a chain
+        az_out = {}
+        _azcs = getattr(monitor, "_azuracast_chain_state", {}) or {}
+        for _cid, _azd in _azcs.items():
+            if _cid in zetta_out:
+                continue  # Zetta takes priority
+            if (now - float(_azd.get("ts", 0) or 0)) > 120:
+                continue  # stale
+            _np = _azd.get("now_playing") or {}
+            az_out[_cid] = {
+                "station_name":      _azd.get("station_name") or "",
+                "remaining_seconds": float(_azd.get("remaining_seconds") or 0),
+                "duration_seconds":  float(_azd.get("duration_seconds") or 0),
+                "elapsed_seconds":   float(_azd.get("elapsed_seconds") or 0),
+                "is_live":           bool(_azd.get("is_live", False)),
+                "streamer_name":     _azd.get("streamer_name") or "",
+                "listeners":         int(_azd.get("listeners") or 0),
+                "ts":                float(_azd.get("ts") or 0),
+                "now_playing": {
+                    "title":      (_np.get("title") or "").strip(),
+                    "artist":     (_np.get("artist") or "").strip(),
+                    "playlist":   (_np.get("playlist") or "").strip(),
+                    "art_url":    (_np.get("art_url") or "").strip(),
+                    "asset_type": 0,
+                } if _np else None,
+                "playing_next": _azd.get("playing_next") or {},
+            }
+
         cfg_data = _cfg_load()
 
         # Staff message — auto-expire after 24h
@@ -445,6 +473,7 @@ def register(app, ctx):
             "chain_faults": chain_faults,
             "config": cfg_data,
             "zetta": zetta_out,
+            "azuracast": az_out,
             "message": msg_out,
         })
 
@@ -1730,7 +1759,7 @@ var _sizes={sm:120,md:155,lg:210};
 var AVATAR_COLORS=[['#1a7fe8','#17a8ff'],['#16a047','#22c55e'],['#c87f0a','#f59e0b'],['#9333e8','#a855f7'],['#d91a6e','#ec4899'],['#0d9488','#14b8a6'],['#c2440f','#f97316'],['#c81e1e','#ef4444']];
 
 var _cfg={card_size:'lg',show_lufs:true,show_np:true,show_sites:true,show_ticker:true,show_hero:true,sort_level:false,hidden_streams:[],corp_mode:false,bauer_mode:false,hide_hdr:false,sound_alert:false,show_qr:false,chain_freq:{},chain_color:{},show_spotlight:false,spotlight_secs:10,chain_order:[]};
-var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={},_zetChains={};
+var _peaks={},_sortLev=false,_lastData=null,_lastChains=null,_chainLogos={},_zetChains={},_azChains={};
 var _liveActive=false,_targetLev={},_dispLev={},_rafTs=null,_cfgLoaded=false,_dirty=false;
 var _allStreams=[];  // for stream selector
 
@@ -2072,12 +2101,14 @@ function renderChains(chains){
         modeEl.className='cc-mode-badge'+(_mn.toLowerCase().indexOf('voice')>=0?' mode-voice':' mode-manual');}
     }
 
-    // Now playing — Zetta full sequencer (primary) or Planet Radio text (fallback)
+    // Now playing — Zetta full sequencer (primary) → AzuraCast → Planet Radio text (fallback)
     var npWrap=card.querySelector('.cc-np-wrap');
     if(npWrap){
       var npInner='';
       var zd=_zetChains[cid];
       var zdNp=zd&&zd.now_playing;
+      var azd=_azChains[cid];
+      var azdNp=azd&&azd.now_playing;
       if(zd){
         /* ── Zetta full sequencer ── */
         var _isSpot=(zdNp&&zdNp.asset_type===2);
@@ -2116,8 +2147,34 @@ function renderChains(chains){
           _zq+='</div>';
         }
         npInner='<div class="cc-zet-seq">'+_znow+_zprog+_zetm+_zq+'</div>';
+      } else if(azd&&(azdNp||azd.is_live)){
+        /* ── AzuraCast now-playing ── */
+        var _azartist=azdNp?_e(azdNp.artist||''):'';
+        var _aztitle =azdNp?_e(azdNp.title||''):'';
+        var _azplist =azdNp?_e(azdNp.playlist||''):'';
+        var _aznow='<div class="zm-now">'
+          +'<div class="zm-art-ph">'+(azd.is_live?'🎙':'🎵')+'</div>'
+          +'<div class="zm-text">'
+          +(azd.is_live&&azd.streamer_name?'<div class="zm-mode" style="color:var(--al)">🔴 LIVE — '+_e(azd.streamer_name)+'</div>':'')
+          +(azdNp&&(_azartist||_aztitle)
+            ?'<div class="zm-artist">'+_azartist+'</div><div class="zm-title">'+_aztitle+'</div>'
+            :'<div class="zm-artist" style="opacity:.4">AzuraCast</div>')
+          +(_azplist&&!azd.is_live?'<div class="zm-mode" style="font-size:9px">'+_azplist+'</div>':'')
+          +'</div></div>';
+        var _azrem=azd.remaining_seconds||0;
+        var _azdur=azd.duration_seconds||0;
+        var _azpct=(_azdur>0)?Math.round(Math.min(100,(1-_azrem/_azdur)*100)):0;
+        var _azprog=_azdur>0?('<div class="zm-prog-wrap"><div class="zm-prog-fill" style="width:'+_azpct+'%"></div></div>'):'' ;
+        /* next track */
+        var _aznxt=azd.playing_next||{};
+        var _azq=(_aznxt.title||_aznxt.artist)
+          ?'<div class="zm-queue"><div class="zm-q-row">'
+            +'<span class="zm-q-lbl">NEXT</span>'
+            +'<span class="zm-q-title">'+_e(_aznxt.title||'')+'</span>'
+            +'</div></div>':'';
+        npInner='<div class="cc-zet-seq">'+_aznow+_azprog+_azq+'</div>';
       } else if(np&&(np.artist||np.title)){
-        /* Planet Radio fallback — only when no Zetta entry at all for this chain */
+        /* Planet Radio fallback — only when no Zetta or AzuraCast entry for this chain */
         var track=np.artist?'<span class="cc-np-artist">'+_e(np.artist)+'</span> — '+_e(np.title):_e(np.title);
         npInner='<div class="cc-np-track">'+track+'</div>';
       }
@@ -2643,6 +2700,7 @@ function poll(){
     if(d.config){if(!_dirty){_cfg=Object.assign(_cfg,d.config,_urlOverrides);applyConfig();}_cfgLoaded=true;}
     _chainLogos=d.chain_logos||{};_chainLogos._ts=Date.now();
     _zetChains=d.zetta||{};
+    _azChains=d.azuracast||{};
     if(d.chain_faults)_loadFaultHistory(d.chain_faults);
     _updateMsgBanner(d.message||null);
     renderMeters(d);buildTicker(d.alerts||[]);

@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.190"
+BUILD                  = "SignalScope-3.5.191"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -17434,6 +17434,28 @@ class HubServer:
                 + (f" — mode: {_zm_name}" if _zm_name else "")
                 + " — check automation system]"
             )
+        # ── AzuraCast now-playing at fault time (fallback when no Zetta) ─────
+        # When a chain has AzuraCast linked (via input_name) but no Zetta,
+        # capture the track from AzuraCast so it appears in fault history
+        # and the morning report — same field, different source.
+        if not _zetta_fire_now_playing:
+            _azcs_fire = getattr(monitor, "_azuracast_chain_state", {}).get(cid, {})
+            _azcs_age  = now - float(_azcs_fire.get("ts", 0) or 0)
+            if _azcs_fire and _azcs_age < 120:
+                _az_np = _azcs_fire.get("now_playing") or {}
+                _az_title  = (_az_np.get("title") or "").strip()
+                _az_artist = (_az_np.get("artist") or "").strip()
+                if _az_title or _az_artist:
+                    _zetta_fire_now_playing = (
+                        f"{_az_title} — {_az_artist}" if _az_title and _az_artist
+                        else _az_title or _az_artist
+                    )
+                    _zetta_fire_now_playing += " [AzuraCast]"
+                if _azcs_fire.get("is_live"):
+                    _sn = (_azcs_fire.get("streamer_name") or "").strip()
+                    _zetta_fire_now_playing = (
+                        f"🔴 LIVE — {_sn}" if _sn else "🔴 LIVE"
+                    ) + " [AzuraCast]"
 
         upstream_id = chain.get("upstream_chain_id", "")
         cascade_suppressed = False
@@ -32590,6 +32612,22 @@ def api_chains_status():
             _zcs_api_age = now - float(_zcs_api.get("ts", 0) or 0)
             _zetta_spot_api = (bool(_zcs_api) and _zcs_api_age < 60
                                and int((_zcs_api.get("now_playing") or {}).get("asset_type") or 0) == 2)
+            # AzuraCast now-playing for this chain (used when no Zetta linked)
+            _azcs_api = getattr(monitor, "_azuracast_chain_state", {}).get(cid, {})
+            _az_api_age = now - float(_azcs_api.get("ts", 0) or 0)
+            if _azcs_api and _az_api_age < 120:
+                _az_api_np = _azcs_api.get("now_playing") or {}
+                result["az_now_playing"] = {
+                    "title":          (_az_api_np.get("title") or "").strip(),
+                    "artist":         (_az_api_np.get("artist") or "").strip(),
+                    "playlist":       (_az_api_np.get("playlist") or "").strip(),
+                    "is_live":        bool(_azcs_api.get("is_live", False)),
+                    "streamer_name":  (_azcs_api.get("streamer_name") or "").strip(),
+                    "listeners":      int(_azcs_api.get("listeners") or 0),
+                    "station_name":   _azcs_api.get("station_name", ""),
+                    "remaining_seconds": float(_azcs_api.get("remaining_seconds") or 0),
+                    "duration_seconds":  float(_azcs_api.get("duration_seconds") or 0),
+                }
 
             if internal_state == "pending" and adbreak_candidate and since is not None:
                 # Monitor loop has confirmed the pending/adbreak state
