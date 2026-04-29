@@ -2,6 +2,16 @@
 
 ---
 
+### SignalScope-3.5.188 — 2026-04-29
+
+**Fixed: Chain builder "Save Chain" button hidden behind Privacy Policy footer**
+
+`body>*{position:relative;z-index:1}` creates a stacking context on every direct body child. `<main>` and `<footer>` both had z-index:1; since `<footer>` appears later in the DOM it painted on top of `<main>` at the same z-index level. The chain builder overlay (`.builder-drawer`, `position:fixed;z-index:950`) lives inside `<main>`'s stacking context — its internal z-index:950 wins within `<main>` but `<main>` as a whole still loses to `<footer>` at the body level. Result: the footer's "Privacy Policy" text rendered over the Save Chain / Cancel row at the bottom of the builder.
+
+Fix: added `footer{z-index:0}` on the chains page so `<main>` (z-index:1) paints above `<footer>` (z-index:0), and the full builder overlay is unobscured.
+
+---
+
 ### SignalScope-3.5.187 — 2026-04-29
 
 **Fixed: DAB crashes when system clock is corrected by NTP/PTP step**

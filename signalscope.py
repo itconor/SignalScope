@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.187"
+BUILD                  = "SignalScope-3.5.188"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -29449,6 +29449,11 @@ BROADCAST_CHAINS_TPL = r"""<!doctype html><html lang="en"><head><meta charset="u
 body{font-family:system-ui,sans-serif;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-size:14px;position:relative}
 body::before{content:"";position:fixed;right:28px;bottom:22px;width:280px;height:280px;background:url("/static/signalscope_icon.png") no-repeat center/contain;opacity:.045;pointer-events:none;filter:drop-shadow(0 0 24px rgba(23,168,255,.10));z-index:0}
 body>*{position:relative;z-index:1}
+/* The builder drawer is position:fixed inside <main>. Both <main> and <footer>
+   get z-index:1 from body>* above; equal z-index means DOM order wins, so
+   <footer> (later in DOM) would paint over the drawer's Save button row.
+   Override footer to z-index:0 so <main> (z-index:1) wins. */
+footer{z-index:0}
 header{display:flex;align-items:center;gap:10px;padding:0 20px;min-height:64px;flex-wrap:wrap}
 nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .nav-active{background:var(--acc)!important;color:#fff!important}
