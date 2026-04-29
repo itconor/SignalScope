@@ -2,6 +2,16 @@
 
 ---
 
+### SignalScope-3.5.189 — 2026-04-29
+
+**Fixed: Comparator correlation chips stuck at "…" — never update**
+
+The Jinja template built element IDs in the form `corr_{id}_{from_idx}_{from_sub|'x'}_{to_idx}_{to_sub|'x'}` (e.g. `corr_abc_0_x_1_x`). The JavaScript `getElementById` lookup was constructed as `corr_{id}_{from_idx}_{to_idx}` — omitting both `from_sub` and `to_sub` segments. Every lookup returned `null`, so the `.cv` span value never changed from the placeholder "…" and the chip colour class never updated.
+
+Fix: JS now mirrors the template exactly — `corr_+chain.id+'_'+from_idx+'_'+(from_sub??'x')+'_'+to_idx+'_'+(to_sub??'x')`.
+
+---
+
 ### SignalScope-3.5.188 — 2026-04-29
 
 **Fixed: Chain builder "Save Chain" button hidden behind Privacy Policy footer**

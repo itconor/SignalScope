@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.188"
+BUILD                  = "SignalScope-3.5.189"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -31198,8 +31198,12 @@ function refreshStatus(){
         });
       }
       // Update correlation chips
+      // Element ID format (must match Jinja template):
+      //   corr_{chain.id}_{from_idx}_{from_sub|'x'}_{to_idx}_{to_sub|'x'}
       (chain.comparators||[]).forEach(function(comp){
-        var el=document.getElementById('corr_'+chain.id+'_'+comp.from_idx+'_'+comp.to_idx);
+        var fsId=(comp.from_sub!=null?comp.from_sub:'x');
+        var tsId=(comp.to_sub!=null?comp.to_sub:'x');
+        var el=document.getElementById('corr_'+chain.id+'_'+comp.from_idx+'_'+fsId+'_'+comp.to_idx+'_'+tsId);
         if(!el)return;
         var cv=el.querySelector('.cv');if(!cv)return;
         var pct=comp.pct;
