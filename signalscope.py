@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.189"
+BUILD                  = "SignalScope-3.5.190"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -17203,17 +17203,27 @@ class HubServer:
             also_down = [n for n in downstream_nodes if not _node_is_ok(n)]
             if still_up and not also_down:
                 up_names = ", ".join(_node_label(n) for n in still_up)
-                ds_note = f" Audio still present downstream: {up_names}."
+                ds_note = f" Audio confirmed OK further down the chain: {up_names}."
             elif still_up and also_down:
                 up_names   = ", ".join(_node_label(n) for n in still_up)
                 down_names = ", ".join(_node_label(n) for n in also_down)
-                ds_note = f" Audio still present at {up_names}; {down_names} also affected."
+                ds_note = f" OK at: {up_names}. Also lost at: {down_names}."
             else:
-                ds_note = f" {len(also_down)} downstream position(s) also affected."
+                _n = len(also_down)
+                ds_note = f" {_n} further position{'s' if _n != 1 else ''} in the chain also lost audio."
         else:
             ds_note = ""
 
         # ── Build the fault description ────────────────────────────────────────
+        # Guidelines: plain English, no technical jargon, no redundant fields.
+        # - Use stream name as the primary node identifier (cleaner than label).
+        # - Add site as brief location context.
+        # - Never repeat info already present in the stream/label.
+        # - Never write "This is the first failed point" — always true, adds nothing.
+        _fn_stream = fn.get("stream") or fn.get("label") or "?"
+        _fn_site   = fn.get("site") or ""
+        _fn_loc    = f" ({_fn_site})" if _fn_site else ""
+
         if fn.get("type") == "stack":
             # Stack fault — describe each sub-node's individual state,
             # distinguishing between silent streams and offline sites.
@@ -17222,64 +17232,49 @@ class HubServer:
             n_total      = len(sub_nodes)
             silent_subs  = [n for n in sub_nodes if n.get("status") == "down"]
             offline_subs = [n for n in sub_nodes if n.get("status") == "offline"]
-            faulted_subs = silent_subs + offline_subs
             ok_subs      = [n for n in sub_nodes if n.get("status") not in ("down", "offline")]
-            n_down       = len(faulted_subs)
+            n_down       = len(silent_subs) + len(offline_subs)
             pos_label    = fn.get("label") or f"position {idx + 1}"
-
-            ok_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in ok_subs)
+            ok_names     = ", ".join(n.get("stream") or n.get("label") or "?" for n in ok_subs)
 
             if n_down == n_total:
-                # Every stream at this position is faulted
                 if offline_subs and not silent_subs:
-                    # All offline — site(s) not reporting
-                    off_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in offline_subs)
-                    detail = (f"all {n_total} node(s) at '{pos_label}' are offline "
-                              f"({off_names})")
+                    off_names = ", ".join(n.get("stream") or n.get("label") or "?" for n in offline_subs)
+                    detail = f"all feeds at '{pos_label}' have gone offline — sites not reporting ({off_names})"
                 elif offline_subs and silent_subs:
-                    # Mixed — some offline, some silent
-                    off_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in offline_subs)
-                    sil_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in silent_subs)
-                    detail = (f"all {n_total} stream(s) at '{pos_label}' are faulted "
+                    off_names = ", ".join(n.get("stream") or n.get("label") or "?" for n in offline_subs)
+                    sil_names = ", ".join(n.get("stream") or n.get("label") or "?" for n in silent_subs)
+                    detail = (f"all feeds at '{pos_label}' are out "
                               f"({off_names} offline; {sil_names} silent)")
                 else:
-                    # All silent
-                    sil_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in silent_subs)
-                    detail = (f"all {n_total} stream(s) at '{pos_label}' are silent "
-                              f"({sil_names})")
+                    sil_names = ", ".join(n.get("stream") or n.get("label") or "?" for n in silent_subs)
+                    detail = f"all feeds at '{pos_label}' are silent ({sil_names})"
             else:
-                # Partial failure — some streams still OK
                 parts = []
                 if offline_subs:
-                    off_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in offline_subs)
+                    off_names = ", ".join(n.get("stream") or n.get("label") or "?" for n in offline_subs)
                     parts.append(f"{off_names} offline")
                 if silent_subs:
-                    sil_names = ", ".join(n.get("label") or n.get("stream") or "?" for n in silent_subs)
+                    sil_names = ", ".join(n.get("stream") or n.get("label") or "?" for n in silent_subs)
                     parts.append(f"{sil_names} silent")
-                faulted_desc = "; ".join(parts)
-                detail = (f"{n_down} of {n_total} stream(s) at '{pos_label}' "
-                          f"{'is' if n_down == 1 else 'are'} faulted "
-                          f"({faulted_desc}; {ok_names} OK)")
+                faulted_desc = ", ".join(parts)
+                detail = (f"partial fault at '{pos_label}': {faulted_desc} "
+                          f"({ok_names} still OK)")
                 if mode == "any":
-                    detail += " — stack mode is ANY, so this triggers a fault"
+                    detail += " — chain is set to fault on any feed loss"
 
-            msg = (f"Chain fault in '{chain_label}' — {detail}. "
-                   f"This is the first failed position in the chain.{ds_note}")
+            msg = f"{chain_label} — {detail}.{ds_note}"
         else:
             # Regular single node — distinguish offline site from audio silence
             node_status = fn.get("status", "down")
             if node_status == "offline":
                 offline_age = fn.get("offline_age_s")
-                age_note = f", last seen {round(offline_age)}s ago" if offline_age else ""
-                msg = (f"Chain fault in '{chain_label}' — node offline: "
-                       f"'{fn.get('label', '?')}' (site: {fn.get('site', '?')}, "
-                       f"stream: {fn.get('stream', '?')}) is not reporting{age_note}. "
-                       f"This is the first failed point in the chain.{ds_note}")
+                age_note = f" (last seen {round(offline_age)}s ago)" if offline_age else ""
+                msg = (f"{chain_label} — {_fn_stream}{_fn_loc} has gone offline{age_note}."
+                       f"{ds_note}")
             else:
-                msg = (f"Chain fault in '{chain_label}' — signal lost at "
-                       f"'{fn.get('label', '?')}' (site: {fn.get('site', '?')}, "
-                       f"stream: {fn.get('stream', '?')}). "
-                       f"This is the first failed point in the chain.{ds_note}")
+                msg = (f"{chain_label} — Audio lost at {_fn_stream}{_fn_loc}."
+                       f"{ds_note}")
 
         # ── Save clips from every node in the chain ────────────────────────────
         # Walk all positions; for local nodes save directly and collect into

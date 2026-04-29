@@ -2,6 +2,26 @@
 
 ---
 
+### SignalScope-3.5.190 — 2026-04-29
+
+**Improved: Chain fault alert messages — plain English, no redundancy**
+
+Before: `Chain fault in 'Downtown Radio' — signal lost at 'London - Livewire/Downtown Radio - LONCTAXMQ05' (site: London - Livewire, stream: Downtown Radio - LONCTAXMQ05). This is the first failed point in the chain. 3 downstream position(s) also affected.`
+
+After: `Downtown Radio — Audio lost at Downtown Radio - LONCTAXMQ05 (London - Livewire). 3 further positions in the chain also lost audio.`
+
+Changes across all fault message paths:
+- Removed "Chain fault in" opener — chain name is the subject, not a prefix
+- Removed `(site: X, stream: Y)` parenthetical — the node label already contains this info; repeating it is pure clutter
+- Removed "This is the first failed point in the chain." — always true for the detected fault, adds no information
+- "signal lost at" → "Audio lost at" — clearer to non-technical staff
+- "is not reporting" → "has gone offline" — simpler language for offline nodes
+- "3 downstream position(s) also affected" → "3 further positions in the chain also lost audio" — plain English
+- Downstream note when some feeds still OK: "Audio confirmed OK further down the chain: [names]"
+- Stack partial fault: "partial fault at [pos]: [faulted], ([ok] still OK)"
+
+---
+
 ### Morning Report 1.3.1 — 2026-04-29
 
 **Added: Engineering notes shown in outage detail cards**
