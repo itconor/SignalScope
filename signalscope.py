@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.184"
+BUILD                  = "SignalScope-3.5.185"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -35236,7 +35236,8 @@ def hub_reports():
                       "MAINS_HUM", "DC_OFFSET", "PHASE_REVERSAL",
                       "LEVEL_DRIFT", "OVERMOD", "MONO_ON_STEREO", "STEREO_IMBALANCE",
                       "OVER_COMPRESSION", "TONE_DETECT", "HF_LOSS", "DEAD_CHANNEL",
-                      "DLS_STALE", "RDS_STALE"}
+                      "DLS_STALE", "RDS_STALE",
+                      "STUDIO_MOVE"}
     type_names  = sorted(
         set(e.get("type","") for e in all_events if e.get("type")) | _SILENCE_TYPES
     )
@@ -35722,6 +35723,7 @@ tr.ev-info td:first-child{border-left:3px solid var(--acc)}
 .t-ai_alert{background:#3a1e1e;color:#fca5a5}.t-ai_warn{background:#3a2a0f;color:#fde68a}
 .t-ptp{background:#1e3a2a;color:#86efac}.t-cmp{background:#2a1e3a;color:#d8b4fe}
 .t-chain_fault{background:#4a1010;color:#fca5a5;font-weight:700}
+.t-studio{background:#1e2a3a;color:#7dd3fc}
 .t-other{background:var(--bor);color:var(--mu)}
 .chain-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;background:#1e2e1a;color:#86efac;white-space:nowrap;font-weight:600;max-width:180px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
 .chain-row td{border-left:3px solid var(--al)}
@@ -35812,10 +35814,10 @@ tr.ev-info td:first-child{border-left:3px solid var(--acc)}
   <table id="evt_table">
     <thead>
       <tr>
-        <th style="width:110px">Time</th>
+        <th style="width:130px">Time</th>
         <th style="width:160px">Site</th>
         <th style="width:110px">Stream</th>
-        <th style="width:95px">Type</th>
+        <th style="width:105px">Type</th>
         <th style="width:120px">Chain</th>
         <th>Detail</th>
         <th style="width:70px">Level</th>
@@ -35826,11 +35828,11 @@ tr.ev-info td:first-child{border-left:3px solid var(--acc)}
     <tbody id="evt_body">
     {% for e in events %}
     {% set tl = e.type.lower() if e.type else '' %}
-    {% set tc = 'chain_fault' if tl=='chain_fault' else ('t-silence' if tl=='silence' else ('t-clip' if tl=='clip' else ('t-hiss' if tl=='hiss' else ('t-rtp' if 'rtp' in tl else ('t-ai_alert' if tl=='ai_alert' else ('t-ai_warn' if tl=='ai_warn' else ('t-ptp' if 'ptp' in tl else ('t-cmp' if 'cmp' in tl else 't-other')))))))) %}
+    {% set tc = 'chain_fault' if tl=='chain_fault' else ('t-studio' if tl=='studio_move' else ('t-silence' if tl=='silence' else ('t-clip' if tl=='clip' else ('t-hiss' if tl=='hiss' else ('t-rtp' if 'rtp' in tl else ('t-ai_alert' if tl=='ai_alert' else ('t-ai_warn' if tl=='ai_warn' else ('t-ptp' if 'ptp' in tl else ('t-cmp' if 'cmp' in tl else 't-other'))))))))) %}
     {% set is_chain_row = tl == 'chain_fault' %}
     {% set ev_row_cls = 'ev-alert' if ('ALERT' in (e.type or '') or 'FAULT' in (e.type or '') or e.type in ('SILENCE','STUDIO_FAULT','STL_FAULT','TX_DOWN','RTP_LOSS')) else ('ev-silence' if ('WARN' in (e.type or '') or e.type == 'RTP_LOSS_WARN') else ('ev-ok' if ('OK' in (e.type or '') or e.type == 'RECOVERY') else 'ev-info')) %}
     <tr data-id="{{e.id or ''}}" data-site="{{e._site}}" data-stream="{{e.stream or ''}}" data-type="{{e.type or ''}}" data-ts="{{e.ts or ''}}" data-clip="{{e.clip or ''}}" data-chain="{{e._chain or ''}}" class="{{ev_row_cls}} {{'chain-row ' if is_chain_row else ''}}{{'offline-site' if not e._online else ''}}">
-      <td style="color:var(--mu);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{e.ts or ''}}</td>
+      <td style="min-width:120px"><div style="color:var(--mu);font-size:12px">{{(e.ts or '')[:10]}}</div><div style="color:var(--mu);font-size:11px;margin-top:1px;opacity:.8">{{(e.ts or '')[11:] if (e.ts or '')|length > 10 else ''}}</div></td>
       <td><span class="site-badge" title="{{e._site|e}}">{{e._site}}</span></td>
       <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{{e.stream or ''}}"><strong>{{e.stream or ''}}</strong></td>
       <td><span class="type-badge t-{{tc}}">{{e.type or ''}}</span></td>

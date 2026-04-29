@@ -10,12 +10,13 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.15.1",
+    "version":  "3.15.2",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 _APP_DIR       = os.path.dirname(_BASE_DIR)
 _CFG_PATH      = os.path.join(_BASE_DIR, "studioboard_cfg.json")
+_ALERT_LOG_PATH = os.path.join(_APP_DIR,  "alert_log.json")
 
 # ── Chain → Studio mapping (exposed to signalscope.py as monitor._studioboard_chain_studios) ──
 # Mutable dict so the signalscope.py reference stays valid after config changes.
@@ -35,6 +36,44 @@ _CFG_LOCK = _threading.Lock()
 _liveread_cache: dict = {}   # {"ts": float, "studios": list, "error": str, "token": str}
 _liveread_cache_lock = _threading.Lock()
 _LIVEREAD_TTL = 300          # 5-minute cache TTL
+
+def _log_studio_move(studio_name: str, brand_name: str, prev_brand_name: str = "",
+                     brand_chains: list = None) -> None:
+    """Append a STUDIO_MOVE event to the main SignalScope alert log.
+
+    Called whenever a brand is assigned to or cleared from a studio.
+    Writes directly to alert_log.json (NDJSON format).  A single-line
+    append is effectively atomic on POSIX systems so no explicit lock is
+    needed — the main app's _alert_log_lock guards its own writes, but
+    brief interleaving is harmless for informational events like this.
+    """
+    import json as _json2, uuid as _uuid2
+    if brand_name:
+        msg = f"{brand_name} → {studio_name}"
+        if prev_brand_name:
+            msg += f" (was: {prev_brand_name})"
+    else:
+        msg = f"{studio_name} → Automation"
+        if prev_brand_name:
+            msg += f" (was: {prev_brand_name})"
+    event = {
+        "id":           str(_uuid2.uuid4()),
+        "ts":           _time.strftime("%Y-%m-%d %H:%M:%S"),
+        "type":         "STUDIO_MOVE",
+        "stream":       "",
+        "message":      msg,
+        "studio_name":  studio_name,
+        "brand_name":   brand_name or "",
+        "prev_brand":   prev_brand_name or "",
+        "brand_chains": list(brand_chains or []),
+        "_site":        "(hub)",
+    }
+    try:
+        with open(_ALERT_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(_json2.dumps(event) + "\n")
+    except Exception:
+        pass
+
 
 def _rebuild_chain_studios_into(target: dict, cfg: dict) -> None:
     """Rebuild {chain_id: [studio_name, ...]} from studioboard config. Mutates target in-place."""
@@ -548,6 +587,11 @@ def register(app, ctx):
         studio = _get_studio(cfg, studio_id)
         if not studio:
             return jsonify({"error": "Studio not found"}), 404
+        # Capture previous brand info before any mutations (for audit log)
+        _su_old_bid   = studio.get("brand_id", "")
+        _su_old_bobj  = _get_brand(cfg, _su_old_bid) if _su_old_bid else None
+        _su_old_bname = _su_old_bobj.get("name", "") if _su_old_bobj else ""
+        _su_studio_name = studio.get("name", studio_id)
         for key in ("name", "brand_id", "show_artwork",
                     # legacy direct fields — kept for backward compat with /assign
                     "color", "chains", "inputs", "np_rpuid", "freq",
@@ -557,6 +601,7 @@ def register(app, ctx):
         # If a brand is being assigned, clear it from every other studio first
         # and wipe this studio's automation metadata
         new_brand_id = (data.get("brand_id") or "").strip()
+        _su_brand_changed = "brand_id" in data and new_brand_id != _su_old_bid
         if "brand_id" in data:
             if new_brand_id:
                 for s in cfg.get("studios", []):
@@ -565,13 +610,22 @@ def register(app, ctx):
                 for _k in ("_cleared_ts", "_auto_brand_name", "_auto_brand_color"):
                     studio.pop(_k, None)
             else:
-                _prev = _get_brand(cfg, studio.get("brand_id", ""))
+                _prev = _get_brand(cfg, _su_old_bid)
                 if _prev:
                     studio["_cleared_ts"] = int(_time.time())
                     studio["_auto_brand_name"]  = _prev.get("name", "")
                     studio["_auto_brand_color"] = _prev.get("color", "#17a8ff")
         _cfg_save(cfg)
         _sb_notify_all()
+        if _su_brand_changed:
+            _su_new_bobj  = _get_brand(cfg, new_brand_id) if new_brand_id else None
+            _su_new_bname = _su_new_bobj.get("name", "") if _su_new_bobj else ""
+            _log_studio_move(
+                studio_name=studio.get("name", _su_studio_name),
+                brand_name=_su_new_bname,
+                prev_brand_name=_su_old_bname,
+                brand_chains=(_su_new_bobj.get("chains") or []) if _su_new_bobj else [],
+            )
         return jsonify({"ok": True, "studio": studio})
 
     @app.delete("/api/studioboard/studio/<studio_id>")
@@ -668,6 +722,11 @@ def register(app, ctx):
                 return jsonify({"error": f"Brand '{brand_name}' not found"}), 404
         if brand_id and not _get_brand(cfg, brand_id):
             return jsonify({"error": "Brand not found"}), 404
+        # Capture current state before any mutations for the audit log
+        _prev_bid   = studio.get("brand_id", "")
+        _prev_bobj  = _get_brand(cfg, _prev_bid) if _prev_bid else None
+        _prev_bname = _prev_bobj.get("name", "") if _prev_bobj else ""
+        _studio_name = studio.get("name", studio_id)
         if brand_id:
             # Assigning — clear this brand from any other studio first;
             # also wipe any prior automation metadata on the target studio
@@ -686,9 +745,16 @@ def register(app, ctx):
         _cfg_save(cfg)
         _sb_notify_all()
         brand = _get_brand(cfg, brand_id) if brand_id else None
+        _new_bname = brand.get("name", "") if brand else ""
+        _log_studio_move(
+            studio_name=_studio_name,
+            brand_name=_new_bname,
+            prev_brand_name=_prev_bname,
+            brand_chains=(brand.get("chains") or []) if brand else [],
+        )
         return jsonify({"ok": True, "studio_id": studio_id,
                         "brand_id": brand_id,
-                        "brand_name": brand.get("name", "") if brand else ""})
+                        "brand_name": _new_bname})
 
     # ── Mic Live REST API ───────────────────────────────────────
 

@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.2.5",
+    "version":  "1.2.6",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -646,6 +646,36 @@ def _generate_report(hub_server, monitor) -> dict:
         "has_zetta_data":    bool(zetta_events_y or _ad_break_faults or _manual_faults),
     }
 
+    # ── Studio Moves (from Studio Board plugin STUDIO_MOVE events) ─────────────
+    # Collect yesterday's STUDIO_MOVE events and group them into a per-studio
+    # timeline so the report shows which brand was live in each studio and when.
+    studio_move_events = [
+        e for e in y_events if e.get("type") == "STUDIO_MOVE"
+    ]
+    # Build a structured list: [{time, studio, brand, prev_brand, message}, ...]
+    studio_moves = []
+    for e in studio_move_events:
+        studio_moves.append({
+            "ts":           e.get("ts", ""),
+            "time":         (e.get("ts") or "")[-8:],     # HH:MM:SS part
+            "studio":       e.get("studio_name") or "",
+            "brand":        e.get("brand_name") or "",
+            "prev_brand":   e.get("prev_brand") or "",
+            "message":      e.get("message") or "",
+            "chains":       e.get("brand_chains") or [],
+        })
+    # Per-studio summary: {studio_name: [{brand, from_time, to_time}, ...]}
+    _studio_timeline: dict = {}
+    for mv in studio_moves:
+        sname = mv["studio"] or "Unknown Studio"
+        _studio_timeline.setdefault(sname, []).append(mv)
+    studio_activity = {
+        "moves":         studio_moves,
+        "timeline":      _studio_timeline,
+        "total_moves":   len(studio_moves),
+        "has_data":      bool(studio_moves),
+    }
+
     # ── Assemble report ────────────────────────────────────────────────────────
     cfg = _load_cfg()
     report_h, report_m = _parse_time(cfg.get("report_time", "06:00"))
@@ -664,6 +694,7 @@ def _generate_report(hub_server, monitor) -> dict:
         "patterns":        patterns,
         "stream_quality":  stream_quality,
         "automation_health": automation_health,
+        "studio_activity": studio_activity,
     }
     return report
 
@@ -1103,6 +1134,36 @@ tr:hover td{background:rgba(255,255,255,.03)}
   <div style="padding:8px 12px;background:rgba(138,164,200,.06);border:1px solid var(--bor);border-radius:8px;font-size:12px">
     ℹ️ <b>{{ah.manual_faults}}</b> chain fault{% if ah.manual_faults != 1 %}s{% endif %} occurred while Zetta was in Manual mode — these may represent intentional off-air periods.
   </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ── Studio Activity (Studio Board moves) ── #}
+{% set sa = report.get('studio_activity') %}
+{% if sa and sa.has_data %}
+<div class="sec">
+  <div class="sec-hdr">🎙 Studio Activity</div>
+  <p style="font-size:11px;color:var(--mu);margin-bottom:10px">Brand-to-studio assignments recorded yesterday by the Studio Board plugin. Each row is one move — who was on air in which studio and when.</p>
+  {% for studio_name, moves in sa.timeline.items() %}
+  <div style="margin-bottom:14px">
+    <div style="font-size:12px;font-weight:700;color:var(--acc);margin-bottom:6px">📺 {{studio_name}}</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Time</th><th>On Air</th><th>Was</th><th>Chains</th></tr></thead>
+      <tbody>
+        {% for mv in moves %}
+        <tr>
+          <td style="white-space:nowrap;color:var(--mu);font-variant-numeric:tabular-nums">{{mv.time}}</td>
+          <td><b style="color:{% if mv.brand %}var(--tx){% else %}var(--mu){% endif %}">{{mv.brand if mv.brand else '— Automation —'}}</b></td>
+          <td style="color:var(--mu)">{{mv.prev_brand if mv.prev_brand else '—'}}</td>
+          <td style="color:var(--mu);font-size:11px">{{mv.chains|join(', ') if mv.chains else '—'}}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+  {% endfor %}
+  {% if sa.total_moves == 0 %}
+  <div class="no-data">No studio moves recorded yesterday.</div>
   {% endif %}
 </div>
 {% endif %}

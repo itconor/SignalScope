@@ -2,6 +2,24 @@
 
 ---
 
+### SignalScope-3.5.185 + Studio Board 3.15.2 + Morning Report 1.2.6 — 2026-04-29
+
+**Studio moves logged to Hub Reports and Morning Report**
+
+*Studio Board 3.15.2*
+- Every brand-to-studio assignment and studio clear now writes a `STUDIO_MOVE` event to the hub alert log. The event records the studio name, the incoming brand, the outgoing brand, and the chains carried by that brand.
+- Fires from both the REST assignment endpoint (`/api/studioboard/studio/<id>/brand`) and the general studio update endpoint.
+
+*SignalScope-3.5.185 (main app)*
+- `STUDIO_MOVE` added to the always-present type filter list in Hub Reports — it appears in the Type dropdown even when no recent moves are in the visible window.
+- New `t-studio` badge style (light blue pill) for `STUDIO_MOVE` events in the reports table.
+- **Fixed: Hub Reports TIME column was truncated** — "2026-04-29 ..." cut off the time portion. The timestamp is now displayed on two lines (date / time) so both are always fully visible without widening the column.
+
+*Morning Report 1.2.6*
+- New **🎙 Studio Activity** section at the bottom of each daily report. Shows a per-studio table of brand assignments from the previous day: time of move, brand that went on air, brand that was displaced, and which broadcast chains it carried. Only appears when Studio Board is active and moves were recorded.
+
+---
+
 ### SignalScope-3.5.184 — 2026-04-28
 
 **Chain builder redesigned as full-screen two-column overlay**
