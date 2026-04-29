@@ -2,6 +2,18 @@
 
 ---
 
+### Morning Report 1.3.0 — 2026-04-29
+
+**Added: Per-outage detail log**
+
+New "Outage Detail Log" section appears when chains had outages yesterday. Each outage gets a card showing: fault start/end time, duration, which node and site detected it, monitoring stream. If Zetta data is present: Zetta computer/instance name, automation mode (Auto/Manual/Voice Track), what was playing (title + artist), and an amber notice when the fault occurred during an ad break. Studio context: cross-references STUDIO_MOVE events to show which brand was live in each studio at the moment of the fault. Cascaded faults are labelled.
+
+**Fixed: "Best Performing Chain" showing the chain with outages**
+
+`min(faults_per_chain_y, ...)` only considered chains that actually had faults — so when only one chain faulted it appeared as both "Best" and "Worst". Fixed: "Best Performing Chain" now requires a chain with zero faults. If every monitored chain had at least one interruption the card is suppressed entirely.
+
+---
+
 ### SignalScope-3.5.189 — 2026-04-29
 
 **Fixed: Comparator correlation chips stuck at "…" — never update**

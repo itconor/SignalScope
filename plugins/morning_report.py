@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.2.6",
+    "version":  "1.3.0",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -137,12 +137,82 @@ def _normalise_fault_row(row: dict, id_map: dict) -> dict:
     }
 
 
+def _normalise_fault_row_full(row: dict, id_map: dict) -> dict:
+    """Like _normalise_fault_row but also carries the extended Zetta/context columns.
+
+    The extra columns (fault_stream, zetta_computer, zetta_mode, zetta_now_playing,
+    zetta_is_spot, message, cascaded_from) may not exist on older DBs — they are
+    accessed with .get() so missing keys just return ''/0/None gracefully.
+    """
+    base = _normalise_fault_row(row, id_map)
+    # Parse zetta_now_playing JSON string → title + artist
+    _znp_raw  = row.get("zetta_now_playing") or ""
+    _znp_title  = ""
+    _znp_artist = ""
+    if _znp_raw:
+        try:
+            _znp = json.loads(_znp_raw)
+            _znp_title  = (_znp.get("title")  or "").strip()
+            _znp_artist = (_znp.get("artist") or "").strip()
+        except Exception:
+            pass
+    base.update({
+        "fault_stream":    row.get("fault_stream", ""),
+        "zetta_computer":  row.get("zetta_computer", ""),
+        "zetta_mode":      row.get("zetta_mode", ""),
+        "zetta_title":     _znp_title,
+        "zetta_artist":    _znp_artist,
+        "zetta_is_spot":   bool(row.get("zetta_is_spot", 0)),
+        "message":         row.get("message", ""),
+        "cascaded_from":   row.get("cascaded_from", ""),
+    })
+    return base
+
+
+def _studio_at_time(all_move_events: list, fault_ts_epoch: float) -> dict:
+    """Return {studio_name: brand_name} for each studio at the given epoch.
+
+    For each studio, finds the last STUDIO_MOVE event whose _ts_epoch is at or
+    before fault_ts_epoch.  Events that have no studio_name are skipped.
+    """
+    # Collect the most recent move per studio up to fault_ts_epoch
+    studio_brand: dict = {}
+    for ev in all_move_events:
+        if ev.get("type") != "STUDIO_MOVE":
+            continue
+        ev_ts = ev.get("_ts_epoch", 0)
+        if ev_ts > fault_ts_epoch:
+            continue
+        sname = (ev.get("studio_name") or "").strip()
+        if not sname:
+            continue
+        # Keep the latest event per studio (events are sorted oldest-first)
+        studio_brand[sname] = (ev.get("brand_name") or "").strip()
+    return studio_brand
+
+
 def _query_chain_faults(day_start: float, day_end: float, id_map: dict = None) -> list:
     """Return chain_fault_log rows for the given epoch window."""
     if id_map is None:
         id_map = {}
     if not os.path.exists(_METRICS_DB):
         return []
+    # Try extended columns first; fall back to the original 5-column query on old DBs.
+    try:
+        with sqlite3.connect(_METRICS_DB, timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                """SELECT chain_id, ts_start, ts_recovered, fault_node_label, fault_site,
+                          fault_stream, zetta_computer, zetta_mode, zetta_now_playing,
+                          zetta_is_spot, message, cascaded_from
+                   FROM chain_fault_log
+                   WHERE ts_start >= ? AND ts_start < ?
+                   ORDER BY ts_start""",
+                (day_start, day_end)
+            )
+            return [_normalise_fault_row_full(dict(r), id_map) for r in cur.fetchall()]
+    except Exception:
+        pass
     try:
         with sqlite3.connect(_METRICS_DB, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
@@ -163,6 +233,22 @@ def _query_chain_faults_range(start: float, end: float, id_map: dict = None) -> 
         id_map = {}
     if not os.path.exists(_METRICS_DB):
         return []
+    # Try extended columns first; fall back to the original 5-column query on old DBs.
+    try:
+        with sqlite3.connect(_METRICS_DB, timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                """SELECT chain_id, ts_start, ts_recovered, fault_node_label, fault_site,
+                          fault_stream, zetta_computer, zetta_mode, zetta_now_playing,
+                          zetta_is_spot, message, cascaded_from
+                   FROM chain_fault_log
+                   WHERE ts_start >= ? AND ts_start < ?
+                   ORDER BY ts_start""",
+                (start, end)
+            )
+            return [_normalise_fault_row_full(dict(r), id_map) for r in cur.fetchall()]
+    except Exception:
+        pass
     try:
         with sqlite3.connect(_METRICS_DB, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
@@ -336,12 +422,14 @@ def _generate_report(hub_server, monitor) -> dict:
 
     total_chains = max(len(all_chain_names), 1)
 
-    if faults_per_chain_y:
-        cleanest = min(faults_per_chain_y, key=faults_per_chain_y.get)
-        worst    = max(faults_per_chain_y, key=faults_per_chain_y.get)
-    else:
-        cleanest = None
-        worst    = None
+    # "Best Performing Chain" = a chain with ZERO faults (truly clean).
+    # Never use min(faults_per_chain_y, ...) — that dict only contains chains
+    # that actually had faults, so its minimum is still a faulty chain.
+    # If every configured chain had at least one fault, suppress the card.
+    _truly_clean = sorted(c for c in all_chain_names if faults_per_chain_y.get(c, 0) == 0)
+    cleanest = _truly_clean[0] if _truly_clean else None
+
+    worst = max(faults_per_chain_y, key=faults_per_chain_y.get) if faults_per_chain_y else None
 
     # Plain-English headline for non-technical users
     _chains_with_faults = len([c for c in all_chain_names if faults_per_chain_y.get(c, 0) > 0])
@@ -676,6 +764,69 @@ def _generate_report(hub_server, monitor) -> dict:
         "has_data":      bool(studio_moves),
     }
 
+    # ── Outage Detail Log ──────────────────────────────────────────────────────
+    # One entry per chain_fault_log row for yesterday, with full context.
+    # all_events already has STUDIO_MOVE entries from up to 30 days back, which
+    # is all we need for the studio-at-time cross-reference.
+    outage_detail = []
+    for row in chain_faults_y:
+        cname = row.get("chain_name", "")
+        if cname not in all_chain_names:
+            continue
+
+        ts_s = row.get("fault_ts", 0)
+        ts_r = row.get("recovery_ts")
+        dur_s = row.get("duration_s") or 0
+
+        # Format times
+        if ts_s:
+            fault_time_str = datetime.datetime.fromtimestamp(ts_s).strftime("%H:%M:%S")
+        else:
+            fault_time_str = ""
+
+        if ts_r:
+            recovery_time_str = datetime.datetime.fromtimestamp(ts_r).strftime("%H:%M:%S")
+        else:
+            recovery_time_str = "Ongoing"
+
+        # Human-readable duration
+        if dur_s >= 3600:
+            _dh = int(dur_s // 3600)
+            _dm = int((dur_s % 3600) // 60)
+            duration_str = f"{_dh}h {_dm}m" if _dm else f"{_dh}h"
+        elif dur_s >= 60:
+            _dm = int(dur_s // 60)
+            _ds = int(dur_s % 60)
+            duration_str = f"{_dm}m {_ds}s" if _ds else f"{_dm}m"
+        elif dur_s > 0:
+            duration_str = f"{int(dur_s)}s"
+        else:
+            duration_str = ""
+
+        # Studio context at the fault time
+        studios = _studio_at_time(all_events, ts_s) if ts_s else {}
+
+        outage_detail.append({
+            "chain_name":         cname,
+            "fault_time_str":     fault_time_str,
+            "recovery_time_str":  recovery_time_str,
+            "duration_str":       duration_str,
+            "fault_node":         row.get("fault_node", ""),
+            "fault_site":         row.get("site", ""),
+            "fault_stream":       row.get("fault_stream", ""),
+            "zetta_computer":     row.get("zetta_computer", ""),
+            "zetta_mode":         row.get("zetta_mode", ""),
+            "zetta_title":        row.get("zetta_title", ""),
+            "zetta_artist":       row.get("zetta_artist", ""),
+            "zetta_is_spot":      bool(row.get("zetta_is_spot", False)),
+            "message":            row.get("message", ""),
+            "cascaded_from":      row.get("cascaded_from", ""),
+            "studios":            studios,
+        })
+
+    # Sort by fault time ascending
+    outage_detail.sort(key=lambda x: x["fault_time_str"])
+
     # ── Assemble report ────────────────────────────────────────────────────────
     cfg = _load_cfg()
     report_h, report_m = _parse_time(cfg.get("report_time", "06:00"))
@@ -695,6 +846,7 @@ def _generate_report(hub_server, monitor) -> dict:
         "stream_quality":  stream_quality,
         "automation_health": automation_health,
         "studio_activity": studio_activity,
+        "outage_detail":   outage_detail,
     }
     return report
 
@@ -903,6 +1055,22 @@ tr:hover td{background:rgba(255,255,255,.03)}
 .sq-row{display:flex;justify-content:space-between;font-size:11px;color:var(--mu);padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04)}
 .sq-row:last-child{border-bottom:none}
 .sq-row span:last-child{color:var(--tx);font-variant-numeric:tabular-nums}
+/* Outage detail cards */
+.od-card{background:var(--sur);border:1px solid var(--bor);border-radius:10px;overflow:hidden;margin-bottom:14px}
+.od-head{display:flex;align-items:center;gap:10px;padding:10px 14px;background:linear-gradient(180deg,#1a2f58,#122548);border-bottom:1px solid var(--bor);flex-wrap:wrap}
+.od-chain{font-weight:700;font-size:13px;color:var(--wn)}
+.od-timerange{font-size:11px;color:var(--mu);font-variant-numeric:tabular-nums}
+.od-dur{display:inline-block;background:rgba(245,158,11,.15);color:var(--wn);border-radius:10px;padding:2px 9px;font-size:11px;font-weight:700;white-space:nowrap}
+.od-body{padding:12px 14px}
+.od-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 20px}
+@media(max-width:600px){.od-grid{grid-template-columns:1fr}}
+.od-row{display:flex;flex-direction:column;gap:1px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.od-row:last-child{border-bottom:none}
+.od-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--mu)}
+.od-val{font-size:12px;color:var(--tx)}
+.od-sub-hdr{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--acc);margin:10px 0 6px;padding-top:8px;border-top:1px solid var(--bor)}
+.od-spot-notice{background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:6px 10px;font-size:11px;color:var(--wn);margin-top:8px}
+.od-cascade-note{font-size:11px;color:var(--mu);margin-top:6px;font-style:italic}
 /* Footer */
 .rpt-footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--bor);font-size:11px;color:var(--mu);display:flex;flex-wrap:wrap;gap:12px}
 /* No data */
@@ -1045,6 +1213,98 @@ tr:hover td{background:rgba(255,255,255,.03)}
   <div class="no-data">No audio chains found.</div>
   {% endif %}
 </div>
+
+{# ── Outage Detail Log ── #}
+{% set od_list = report.get('outage_detail', []) %}
+{% if od_list %}
+<div class="sec">
+  <div class="sec-hdr">🔍 Outage Detail Log</div>
+  <p style="font-size:11px;color:var(--mu);margin-bottom:14px">One card per recorded outage yesterday. Times are local server time.</p>
+  {% for od in od_list %}
+  <div class="od-card">
+    <div class="od-head">
+      <span class="od-chain">{{od.chain_name}}</span>
+      {% if od.fault_time_str %}
+      <span class="od-timerange">
+        {{od.fault_time_str}}
+        {% if od.recovery_time_str and od.recovery_time_str != 'Ongoing' %} — {{od.recovery_time_str}}
+        {% elif od.recovery_time_str == 'Ongoing' %} — <span style="color:var(--al)">Ongoing</span>
+        {% endif %}
+      </span>
+      {% endif %}
+      {% if od.duration_str %}<span class="od-dur">{{od.duration_str}}</span>{% endif %}
+    </div>
+    <div class="od-body">
+      <div class="od-grid">
+        {% if od.fault_node or od.fault_site %}
+        <div class="od-row">
+          <span class="od-lbl">Fault Detected At</span>
+          <span class="od-val">{% if od.fault_node %}{{od.fault_node}}{% endif %}{% if od.fault_node and od.fault_site %} — {% endif %}{% if od.fault_site %}{{od.fault_site}}{% endif %}</span>
+        </div>
+        {% endif %}
+        {% if od.fault_stream %}
+        <div class="od-row">
+          <span class="od-lbl">Monitoring Stream</span>
+          <span class="od-val">{{od.fault_stream}}</span>
+        </div>
+        {% endif %}
+        {% if od.message %}
+        <div class="od-row">
+          <span class="od-lbl">Fault Context</span>
+          <span class="od-val">{{od.message}}</span>
+        </div>
+        {% endif %}
+      </div>
+      {% if od.zetta_computer or od.zetta_mode or od.zetta_title or od.zetta_artist %}
+      <div class="od-sub-hdr">Automation Context</div>
+      <div class="od-grid">
+        {% if od.zetta_computer %}
+        <div class="od-row">
+          <span class="od-lbl">Zetta Computer</span>
+          <span class="od-val">{{od.zetta_computer}}</span>
+        </div>
+        {% endif %}
+        {% if od.zetta_mode %}
+        <div class="od-row">
+          <span class="od-lbl">Automation Mode</span>
+          <span class="od-val">{{od.zetta_mode}}</span>
+        </div>
+        {% endif %}
+        {% if od.zetta_title or od.zetta_artist %}
+        <div class="od-row">
+          <span class="od-lbl">What Was Playing</span>
+          <span class="od-val">
+            {% if od.zetta_artist and od.zetta_title %}{{od.zetta_artist}} — {{od.zetta_title}}
+            {% elif od.zetta_title %}{{od.zetta_title}}
+            {% elif od.zetta_artist %}{{od.zetta_artist}}
+            {% endif %}
+          </span>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if od.studios %}
+      <div class="od-sub-hdr">Studio at Time of Fault</div>
+      <div class="od-grid">
+        {% for studio_name, brand_name in od.studios.items() %}
+        <div class="od-row">
+          <span class="od-lbl">{{studio_name}}</span>
+          <span class="od-val">{% if brand_name %}{{brand_name}}{% else %}<span style="color:var(--mu)">—</span>{% endif %}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if od.zetta_is_spot %}
+      <div class="od-spot-notice">Fault occurred during an ad break — likely expected</div>
+      {% endif %}
+      {% if od.cascaded_from %}
+      <div class="od-cascade-note">Cascaded from: {{od.cascaded_from}}</div>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
 
 {# ── Automation Health (Zetta) ── #}
 {% set ah = report.automation_health %}
