@@ -2,9 +2,12 @@
 set -Eeuo pipefail
 
 # ─── Colours ──────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m';  YELLOW='\033[1;33m';  RED='\033[0;31m'
-BLUE='\033[0;34m';   CYAN='\033[0;36m';    BOLD='\033[1m'
-DIM='\033[2m';       NC='\033[0m'
+# Use $'...' ANSI-C quoting so the actual ESC byte is stored in the variable.
+# Single quotes ('\033[1m') store a literal backslash — fine for printf format
+# strings (which interpret \033) but NOT for read -p prompts (which don't).
+GREEN=$'\033[0;32m';  YELLOW=$'\033[1;33m';  RED=$'\033[0;31m'
+BLUE=$'\033[0;34m';   CYAN=$'\033[0;36m';    BOLD=$'\033[1m'
+DIM=$'\033[2m';       NC=$'\033[0m'
 
 # ─── UI / verbosity mode ──────────────────────────────────────────────────────
 # --debug shows every command's raw output instead of spinners.
