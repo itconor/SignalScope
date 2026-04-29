@@ -2,6 +2,20 @@
 
 ---
 
+### Studio Board 3.15.3 — 2026-04-29
+
+**AzuraCast now-playing on Studio Board TV displays**
+
+- When a studio's broadcast chain has an AzuraCast station linked (via `input_name`)
+  and no Zetta is configured, the Studio Board TV display now shows AzuraCast
+  now-playing data in the lower panel: artist, title, playlist label, album artwork
+  (from AzuraCast or Planet Radio fallback), progress bar, countdown timer, next track,
+  and a live streamer badge (🔴 LIVE) when the station is in live mode.
+- Priority: Zetta (full sequencer) → AzuraCast NP → idle message. Zetta always wins.
+- Progress bar and countdown update at the same poll cadence as Zetta data.
+
+---
+
 ### SignalScope 3.5.191 — 2026-04-29
 
 **AzuraCast now-playing integrated into chain fault annotation**

@@ -10,7 +10,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/studioboard",
     "icon":     "🎙",
     "hub_only": True,
-    "version":  "3.15.2",
+    "version":  "3.15.3",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1298,6 +1298,16 @@ def register(app, ctx):
                 if _dur > 0:
                     _zetta_data["remaining_seconds"] = max(0.0, _dur - (now - _pst))
                 _zetta_data["ts"] = now            # server time when this response was built
+
+            # AzuraCast now-playing — fallback when no Zetta station is configured
+            _az_np = None
+            if not _zskey and s_chains:
+                _az_cs = getattr(monitor, "_azuracast_chain_state", {}) or {}
+                for _sc in s_chains:
+                    _azd = _az_cs.get(_sc.get("id", ""))
+                    if _azd and (now - float(_azd.get("ts", 0) or 0)) < 120:
+                        _az_np = _azd
+                        break
             # Server-side image download timestamp — used by JS for cache-busting.
             # Changes when the background poller downloads a new presenter image,
             # ensuring the browser only requests the new URL after the server has
@@ -1325,6 +1335,7 @@ def register(app, ctx):
                 "seen_shows": studio.get("seen_shows", []),
                 "zetta_station_key": _zskey,
                 "zetta": _zetta_data,
+                "az_np": _az_np,
                 "zetta_follow": _zfollow,
                 "zetta_follow_active": _zfollow_active,
                 "zetta_follow_chain": _zfollow_chain_name,
@@ -2677,7 +2688,7 @@ function gNp(s){var r=s.np_rpuid||'';return r?(NP[r]||{}):{}}
 function _urlHash(u){var h=5381;for(var i=0;i<Math.min(u.length,200);i++)h=((h<<5)+h)^u.charCodeAt(i);return(h>>>0).toString(36)}
 
 /* Track structural changes (chain/input assignment) so DOM rebuilds when needed */
-function _sig(ss){return ss.map(function(s){return s.id+':'+(s.chains||[]).join(',')+'/'+(s.inputs||[]).join(',')+'/'+(s.zetta_station_key||'')+'/'+(s.brand_id||'')}).join('|')}
+function _sig(ss){return ss.map(function(s){return s.id+':'+(s.chains||[]).join(',')+'/'+(s.inputs||[]).join(',')+'/'+(s.zetta_station_key||'')+'/'+(s.brand_id||'')+'/'+(s.az_np?'1':'0')}).join('|')}
 
 /* Build the DOM once, then update in place — no flicker */
 function buildCol(s,idx){
@@ -2738,8 +2749,8 @@ function buildCol(s,idx){
       +'</div>'
       +'<div class="cnt-label">Time Remaining</div>'
       +'</div>'
-      +(s.zetta_station_key
-        /* Zetta layout — artwork thumbnail + full sequencer data */
+      +((s.zetta_station_key||s.az_np)
+        /* Zetta / AzuraCast layout — full sequencer panel */
         ?'<div class=zq-main id="zq'+idx+'"></div>'
         /* Planet Radio layout — now-playing text, legacy Zetta strip */
         :('<div class=np-div></div>'
@@ -2825,9 +2836,9 @@ function updateCol(s,idx){
   var col=document.getElementById('col'+idx);
   if(col){var fl=false;(s.chains||[]).forEach(function(x){if(x.status==='fault')fl=true});
     col.classList.toggle('fault',fl)}
-  // Big countdown — show when Zetta has now_playing
+  // Big countdown — show when Zetta or AzuraCast has now_playing
   var cntW=document.getElementById('cnt'+idx);
-  if(cntW)cntW.classList.toggle('cnt-active',!!(s.zetta_station_key&&s.zetta&&s.zetta.now_playing));
+  if(cntW)cntW.classList.toggle('cnt-active',!!(s.zetta_station_key&&s.zetta&&s.zetta.now_playing)||!!(s.az_np&&s.az_np.now_playing));
   // Show/presenter image — served from the server-side image cache.
   // Cache-bust param = server download timestamp (show_img_ts from /api/studioboard/data).
   // This changes only AFTER the background poller has confirmed the new image is on disk,
@@ -2889,49 +2900,87 @@ function updateCol(s,idx){
     if(_smsgTxt.textContent!==_anyMsg)_smsgTxt.textContent=_anyMsg;
   }
 
-  // Zetta main panel — mirror Zetta plugin: always show now_playing, never hide it
+  // Zetta / AzuraCast main panel — always show now_playing, never hide it
   var zEl=document.getElementById('zq'+idx);
-  if(zEl&&s.zetta_station_key){
+  if(zEl&&(s.zetta_station_key||s.az_np)){
     var zd=(s.zetta_station_key&&s.zetta)?s.zetta:null;
+    var azd=(!s.zetta_station_key&&s.az_np)?s.az_np:null;
+    var _aznp=azd?azd.now_playing:null;
     var zh='';
-    if(!zd){
-      zh='<div class="zm-wait">Waiting for Zetta data\u2026</div>';
-    }else if(zd.now_playing){
-      /* Always show now-playing — spot or music. Amber badge if it's an ad. */
-      var _au=np.artwork||''; /* np = gNp(s) declared at top of updateCol */
-      var _zart=_au
-        ?'<img class="zm-art" src="'+E(_au)+'" alt="" onerror="this.className=\'zm-art zm-art-ph\';this.removeAttribute(\'src\')">'
-        :'<div class="zm-art zm-art-ph">\u266A</div>';
-      var _zartist=E(zd.now_playing.raw_artist||zd.now_playing.artist||'');
-      var _ztitle=E(zd.now_playing.raw_title||zd.now_playing.title||'');
-      /* asset_type 2 = ASSET_SPOT in Zetta — use raw Zetta type, not category string matching */
-      var _isSpot=(zd.now_playing.asset_type===2);
-      /* Build zh WITHOUT inline progress style so string stays stable between RAF ticks */
-      zh='<div class="zm-now'+ (_isSpot?' zm-now-ad':'') +'">'
-        +(_isSpot?'<div class="zm-ad-badge">AD</div>':'')
-        +_zart
-        +'<div class="zm-text">'
-        +(_isSpot&&zd.etm?'<div class="zm-mode">Back on air '+E(zd.etm)+'</div>':'')
-        +'<div class="zm-artist">'+_zartist+'</div>'
-        +'<div class="zm-title">'+_ztitle+'</div>'
-        +'</div></div>'
-        +'<div class="zm-prog-wrap"><div class="zm-prog-fill'+ (_isSpot?' zm-prog-ad':'') +'" id="zqpf'+idx+'"></div></div>'
-        +'<div class="zm-time" id="zqtm'+idx+'"></div>';
-      var _nq=zd.queue||[];
-      if(_nq.length){
-        zh+='<div class="zm-queue">';
-        _nq.slice(0,4).forEach(function(q,qi){
-          zh+='<div class="zm-q-row'+(q.asset_type===2?' zm-q-spot':'')+'">'
-            +'<span class="zm-q-lbl">'+(qi===0?'NEXT':'')+'</span>'
-            +'<span class="zm-q-title">'+E(q.title||q.raw_title||'')+'</span>'
-            +'<span class="zm-q-dur">'+E(q.duration||'')+'</span>'
-            +'</div>';
-        });
-        zh+='</div>';
+    if(s.zetta_station_key){
+      if(!zd){
+        zh='<div class="zm-wait">Waiting for Zetta data\u2026</div>';
+      }else if(zd.now_playing){
+        /* Always show now-playing — spot or music. Amber badge if it's an ad. */
+        var _au=np.artwork||''; /* np = gNp(s) declared at top of updateCol */
+        var _zart=_au
+          ?'<img class="zm-art" src="'+E(_au)+'" alt="" onerror="this.className=\'zm-art zm-art-ph\';this.removeAttribute(\'src\')">'
+          :'<div class="zm-art zm-art-ph">\u266A</div>';
+        var _zartist=E(zd.now_playing.raw_artist||zd.now_playing.artist||'');
+        var _ztitle=E(zd.now_playing.raw_title||zd.now_playing.title||'');
+        /* asset_type 2 = ASSET_SPOT in Zetta — use raw Zetta type, not category string matching */
+        var _isSpot=(zd.now_playing.asset_type===2);
+        /* Build zh WITHOUT inline progress style so string stays stable between RAF ticks */
+        zh='<div class="zm-now'+ (_isSpot?' zm-now-ad':'') +'">'  
+          +(_isSpot?'<div class="zm-ad-badge">AD</div>':'')
+          +_zart
+          +'<div class="zm-text">'
+          +(_isSpot&&zd.etm?'<div class="zm-mode">Back on air '+E(zd.etm)+'</div>':'')
+          +'<div class="zm-artist">'+_zartist+'</div>'
+          +'<div class="zm-title">'+_ztitle+'</div>'
+          +'</div></div>'
+          +'<div class="zm-prog-wrap"><div class="zm-prog-fill'+ (_isSpot?' zm-prog-ad':'') +'" id="zqpf'+idx+'"></div></div>'
+          +'<div class="zm-time" id="zqtm'+idx+'"></div>';
+        var _nq=zd.queue||[];
+        if(_nq.length){
+          zh+='<div class="zm-queue">';
+          _nq.slice(0,4).forEach(function(q,qi){
+            zh+='<div class="zm-q-row'+(q.asset_type===2?' zm-q-spot':'')+'">'  
+              +'<span class="zm-q-lbl">'+(qi===0?'NEXT':'')+'</span>'
+              +'<span class="zm-q-title">'+E(q.title||q.raw_title||'')+'</span>'
+              +'<span class="zm-q-dur">'+E(q.duration||'')+'</span>'
+              +'</div>';
+          });
+          zh+='</div>';
+        }
+      }else{
+        /* No now-playing — show rotating witty message instead of mode name */
+        zh='<div class="zm-wait">'+E(_idleMsg('z|'+s.id))+'</div>';
       }
-    }else{
-      /* No now-playing — show rotating witty message instead of mode name */
-      zh='<div class="zm-wait">'+E(_idleMsg('z|'+s.id))+'</div>';
+    }else if(azd){
+      /* — AzuraCast data available (no Zetta linked) — */
+      var _azArt=(_aznp&&_aznp.art_url)||np.artwork||'';
+      var _azartEl=_azArt
+        ?'<img class="zm-art" src="'+E(_azArt)+'" alt="" onerror="this.className=\'zm-art zm-art-ph\';this.removeAttribute(\'src\')">'
+        :'<div class="zm-art zm-art-ph">\u266A</div>';
+      if(azd.is_live){
+        zh='<div class="zm-now">'
+          +'<div class="zm-ad-badge" style="background:#ef4444">🔴 LIVE</div>'
+          +_azartEl
+          +'<div class="zm-text">'
+          +'<div class="zm-artist">'+E(azd.streamer_name||'Live Broadcast')+'</div>'
+          +'<div class="zm-title">On Air</div>'
+          +'</div></div>';
+      }else if(_aznp&&(_aznp.title||_aznp.artist)){
+        zh='<div class="zm-now">'
+          +_azartEl
+          +'<div class="zm-text">'
+          +'<div class="zm-artist">'+E(_aznp.artist||'')+'</div>'
+          +'<div class="zm-title">'+E(_aznp.title||'')+'</div>'
+          +(_aznp.playlist?'<div class="zm-mode">'+E(_aznp.playlist)+'</div>':'')
+          +'</div></div>'
+          +'<div class="zm-prog-wrap"><div class="zm-prog-fill" id="zqpf'+idx+'"></div></div>'
+          +'<div class="zm-time" id="zqtm'+idx+'"></div>';
+        var _azNxt=azd.playing_next||{};
+        if(_azNxt.title||_azNxt.artist){
+          zh+='<div class="zm-queue"><div class="zm-q-row">'
+            +'<span class="zm-q-lbl">NEXT</span>'
+            +'<span class="zm-q-title">'+E(_azNxt.title||_azNxt.artist||'')+'</span>'
+            +'</div></div>';
+        }
+      }else{
+        zh='<div class="zm-wait">'+E(_idleMsg('az|'+s.id))+'</div>';
+      }
     }
     if(zEl.innerHTML!==zh)zEl.innerHTML=zh;
     /* Immediately paint the progress / countdown after any DOM rebuild */
@@ -2946,6 +2995,16 @@ function updateCol(s,idx){
       if(_pfEl)_pfEl.style.width=_pct2.toFixed(1)+'%';
       var _tmEl=document.getElementById('zqtm'+idx);
       if(_tmEl)_tmEl.textContent='-'+Math.floor(_rs2/60)+':'+(_rs2%60<10?'0':'')+(_rs2%60);
+    }else if(azd&&_aznp&&azd.duration_seconds>0){
+      var _ex3=_dataFetchTs?Math.max(0,Date.now()/1000-_dataFetchTs):0;
+      var _rem3=Math.max(0,(azd.remaining_seconds||0)-_ex3);
+      var _dur3=azd.duration_seconds||0;
+      var _pct3=_dur3>0?Math.min(100,(1-_rem3/_dur3)*100):0;
+      var _rs3=Math.round(_rem3);
+      var _pfEl3=document.getElementById('zqpf'+idx);
+      if(_pfEl3)_pfEl3.style.width=_pct3.toFixed(1)+'%';
+      var _tmEl3=document.getElementById('zqtm'+idx);
+      if(_tmEl3)_tmEl3.textContent='-'+Math.floor(_rs3/60)+':'+(_rs3%60<10?'0':'')+(_rs3%60);
     }
   }
 }
