@@ -2,6 +2,17 @@
 
 ---
 
+### Morning Report 1.3.4 — 2026-04-29
+
+**Fixed: Three missing sections in HTML email + atomic config saves**
+
+- Email now includes Studio Activity table (brand-to-studio moves per studio)
+- Email now includes Stream Quality table (glitches, loudness, packet loss, silence events per stream)
+- Email now includes Hourly Interruptions heatmap (24-cell table with colour-coded fault counts — CSS grids unsupported in email clients so rendered as a table)
+- `_save_cfg()` now uses `tempfile.mkstemp` + `os.replace` atomic write pattern — prevents an empty config file if the server crashes mid-write
+
+---
+
 ### Morning Report 1.3.3 — 2026-04-29
 
 **Added: HTML email delivery**

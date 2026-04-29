@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.3.3",
+    "version":  "1.3.4",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -44,11 +44,17 @@ def _load_cfg() -> dict:
 
 
 def _save_cfg(cfg: dict):
+    import tempfile
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(_CFG_PATH), suffix=".tmp")
     try:
-        with open(_CFG_PATH, "w") as f:
+        with os.fdopen(tmp_fd, "w") as f:
             json.dump(cfg, f, indent=2)
+        os.replace(tmp_path, _CFG_PATH)
     except Exception:
-        pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 # ── Alert log helpers ──────────────────────────────────────────────────────────
@@ -416,6 +422,89 @@ def _build_email_html(report: dict) -> str:
               '&#8505;&#65039; <b>' + e(n_mf) + '</b> fault' + ('s' if n_mf != 1 else '')
               + ' occurred in Manual mode &mdash; may represent intentional off-air periods.</div>')
         a('</td></tr>')
+
+    # ── STUDIO ACTIVITY ──
+    sa = report.get("studio_activity", {})
+    if sa and sa.get("has_data") and sa.get("timeline"):
+        a('<tr><td style="background:' + SUR + ';border:1px solid ' + BOR + ';border-top:none;padding:16px 20px">')
+        a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:' + MU
+          + ';margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid ' + BOR + '">&#127897; Studio Activity</div>')
+        TH_SA = 'style="padding:6px 8px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:' + MU + ';border-bottom:1px solid ' + BOR + ';background:' + SUR2 + '"'
+        for studio_name, moves in sa["timeline"].items():
+            if not moves: continue
+            a('<div style="font-size:12px;font-weight:700;color:' + ACC + ';margin-bottom:6px">&#128250; ' + e(studio_name) + '</div>')
+            a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:14px">')
+            a('<tr><th ' + TH_SA + '>Time</th><th ' + TH_SA + '>On Air</th><th ' + TH_SA + '>Was</th><th ' + TH_SA + '>Chains</th></tr>')
+            for mv in moves:
+                brand_col = TX if mv.get("brand") else MU
+                brand_val = e(mv["brand"]) if mv.get("brand") else '&#8212; Automation &#8212;'
+                TD_SA = 'style="padding:6px 8px;border-bottom:1px solid ' + BOR + ';font-size:12px"'
+                a('<tr>'
+                  '<td ' + TD_SA + '><span style="color:' + MU + '">' + e(mv.get("time","")) + '</span></td>'
+                  '<td ' + TD_SA + '><b style="color:' + brand_col + '">' + brand_val + '</b></td>'
+                  '<td ' + TD_SA + '><span style="color:' + MU + '">' + e(mv.get("prev_brand") or "&#8212;") + '</span></td>'
+                  '<td ' + TD_SA + '><span style="color:' + MU + ';font-size:11px">'
+                  + e(", ".join(mv.get("chains") or []) or "&#8212;") + '</span></td>'
+                  '</tr>')
+            a('</table>')
+        a('</td></tr>')
+
+    # ── STREAM QUALITY ──
+    sq = report.get("stream_quality", [])
+    if sq:
+        a('<tr><td style="background:' + SUR + ';border:1px solid ' + BOR + ';border-top:none;padding:16px 20px">')
+        a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:' + MU
+          + ';margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid ' + BOR + '">Live Stream Quality</div>')
+        a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">')
+        TH_SQ = 'style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:' + MU + ';border-bottom:2px solid ' + BOR + ';background:' + SUR2 + '"'
+        a('<tr><th ' + TH_SQ + '>Stream</th><th ' + TH_SQ + '>Site</th><th ' + TH_SQ + '>Glitches</th>'
+          '<th ' + TH_SQ + '>Loudness</th><th ' + TH_SQ + '>Packet Loss</th><th ' + TH_SQ + '>Silence Events</th></tr>')
+        for i, st in enumerate(sq):
+            rb = SUR2 if i % 2 == 0 else SUR
+            TD_SQ = 'style="padding:6px 10px;border-bottom:1px solid ' + BOR + ';font-size:12px;background:' + rb + '"'
+            gc = st.get("glitch_count", 0)
+            glitch_html = ('<span style="color:' + OK + '">None</span>' if gc == 0
+                           else '<span style="color:' + WN + '">' + e(gc) + '</span>')
+            lufs = st.get("lufs_i")
+            lufs_html = (e(round(lufs, 1)) + ' LUFS' if lufs is not None and lufs > -70
+                         else '<span style="color:' + MU + '">&#8212;</span>')
+            rtp = st.get("rtp_loss_pct")
+            if rtp is not None:
+                rtp_html = ('<span style="color:' + OK + '">' if rtp < 0.1 else '<span style="color:' + WN + '">') + e(round(rtp, 2)) + '%</span>'
+            else:
+                rtp_html = '<span style="color:' + MU + '">&#8212;</span>'
+            sc = st.get("silence_count", 0)
+            sil_html = ('<span style="color:' + OK + '">None</span>' if sc == 0
+                        else '<span style="color:' + AL + '">' + e(sc) + '</span>')
+            a('<tr>'
+              '<td ' + TD_SQ + '><b style="color:' + TX + '">' + e(st.get("name","")) + '</b></td>'
+              '<td ' + TD_SQ + '><span style="color:' + MU + '">' + e(st.get("site","")) + '</span></td>'
+              '<td ' + TD_SQ + '>' + glitch_html + '</td>'
+              '<td ' + TD_SQ + '>' + lufs_html + '</td>'
+              '<td ' + TD_SQ + '>' + rtp_html + '</td>'
+              '<td ' + TD_SQ + '>' + sil_html + '</td>'
+              '</tr>')
+        a('</table></td></tr>')
+
+    # ── HOURLY HEATMAP (table representation — CSS grids unsupported in email) ──
+    hourly = report.get("hourly_counts", [])
+    if hourly and any(h > 0 for h in hourly):
+        HM_BG = ["#17345f", "rgba(23,168,255,.3)", "rgba(23,168,255,.55)", "rgba(239,68,68,.55)"]
+        a('<tr><td style="background:' + SUR + ';border:1px solid ' + BOR + ';border-top:none;padding:16px 20px">')
+        a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:' + MU
+          + ';margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid ' + BOR + '">Audio Interruptions by Hour</div>')
+        a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>')
+        for h in range(24):
+            cnt = hourly[h] if h < len(hourly) else 0
+            c   = min(cnt, 3)
+            bg  = HM_BG[c]
+            txt = str(cnt) if cnt > 0 else ""
+            a('<td width="4%" style="text-align:center;padding:1px">'
+              '<div style="background:' + bg + ';border-radius:3px;height:28px;line-height:28px;'
+              'font-size:9px;font-weight:600;color:rgba(255,255,255,.8)">' + txt + '</div>'
+              '<div style="font-size:8px;color:' + MU + ';text-align:center;margin-top:2px">'
+              + str(h).zfill(2) + '</div></td>')
+        a('</tr></table></td></tr>')
 
     # ── FOOTER ──
     a('<tr><td style="background:' + BG + ';border:1px solid ' + BOR
