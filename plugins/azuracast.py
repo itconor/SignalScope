@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "AzuraCast",
     "url":     "/azuracast",
     "icon":    "🎙",
-    "version": "1.2.1",
+    "version": "1.2.2",
 }
 
 import hashlib
@@ -1032,9 +1032,8 @@ function doDiscover(btn){
             + '<input type="checkbox" id="sa-' + i + '" checked>'
             + '<label for="sa-' + i + '" style="text-transform:none;letter-spacing:0;color:var(--tx)">Alert when AzuraCast is online but input is silent</label>'
             + '</div>'
-            + '<button class="btn bp bs" onclick="doAddStation('
-            + i + ',\'' + _esc(String(s.id)) + '\')">Confirm Add</button>'
-            + ' <button class="btn bg bs" onclick="document.getElementById(\'add-form-' + i + '\').style.display=\'none\'">Cancel</button>'
+            + '<button class="btn bp bs disc-confirm-btn" data-idx="' + i + '" data-station-id="' + _esc(String(s.id)) + '">Confirm Add</button>'
+            + ' <button class="btn bg bs disc-cancel-btn" data-idx="' + i + '">Cancel</button>'
             + '</div>'
             + '</td></tr>';
         });
@@ -1042,11 +1041,19 @@ function doDiscover(btn){
         var el = document.getElementById('disc-result');
         el.innerHTML = html;
         el.addEventListener('click', function(ev){
-          var btn = ev.target.closest('.disc-add-btn');
-          if(btn){
-            var idx = btn.dataset.idx;
+          var addBtn = ev.target.closest('.disc-add-btn');
+          if(addBtn){
+            var idx = addBtn.dataset.idx;
             var row = document.getElementById('add-form-' + idx);
             if(row) row.style.display = (row.style.display === 'none' ? '' : 'none');
+            return;
+          }
+          var confBtn = ev.target.closest('.disc-confirm-btn');
+          if(confBtn){ doAddStation(confBtn.dataset.idx, confBtn.dataset.stationId); return; }
+          var cancelBtn = ev.target.closest('.disc-cancel-btn');
+          if(cancelBtn){
+            var row = document.getElementById('add-form-' + cancelBtn.dataset.idx);
+            if(row) row.style.display = 'none';
           }
         });
       })

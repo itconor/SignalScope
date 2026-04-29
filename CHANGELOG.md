@@ -2,6 +2,20 @@
 
 ---
 
+### AzuraCast 1.2.2 — 2026-04-29
+
+**Fixed: Discover Stations button non-functional (SyntaxError on page load)**
+
+- The Confirm Add and Cancel buttons inside the discovery results table used `onclick=` with
+  `\'` escapes inside a Python `"""` template string. Python renders `\'` as `'` (not `\'`),
+  producing broken JS string literals (`',''`) that caused `SyntaxError: Unexpected string`
+  at page load — preventing the entire script block from executing.
+- Fix: replaced `onclick=` handlers with `data-idx` / `data-station-id` attributes and
+  extended the existing `disc-result` click delegation to handle `.disc-confirm-btn` and
+  `.disc-cancel-btn`, matching the pattern already used for the Add button.
+
+---
+
 ### Morning Report 1.3.4 — 2026-04-29
 
 **Fixed: Three missing sections in HTML email + atomic config saves**
