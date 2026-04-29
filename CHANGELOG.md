@@ -2,6 +2,21 @@
 
 ---
 
+### Morning Report 1.3.3 — 2026-04-29
+
+**Added: HTML email delivery**
+
+Morning Report can now email the full report as a rich HTML email automatically when it is generated each morning.
+
+- **Settings → Morning Report → Email Recipients** — one address per line; leave blank to disable
+- Uses the hub's existing SMTP configuration from **Settings → Notifications → Email** — no separate SMTP setup needed
+- Email is a self-contained dark HTML document with inline styles: headline banner, at-a-glance stats, chain health table, outage detail cards (including engineering notes), automation health, and patterns sections
+- Plain-text fallback included for clients that don't render HTML
+- **Send Report Now** button on the settings page lets you test delivery immediately using the current cached report
+- Scheduler re-reads the recipient list each morning so changes to settings take effect without a restart
+
+---
+
 ### Morning Report 1.3.2 — 2026-04-29
 
 **Fixed: Scheduler thread and hub routes no longer start on client nodes**

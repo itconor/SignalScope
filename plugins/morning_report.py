@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.3.2",
+    "version":  "1.3.3",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -23,7 +23,7 @@ _ALERT_LOG   = os.path.join(_APP_DIR,  "alert_log.json")
 _SLA_PATH    = os.path.join(_APP_DIR,  "sla_data.json")
 _NOTES_PATH  = os.path.join(_APP_DIR,  "chain_notes.json")
 
-_DEFAULT_CFG = {"report_time": "06:00"}
+_DEFAULT_CFG = {"report_time": "06:00", "email_recipients": ""}
 
 # Module-level cached report data and generation lock
 _report_cache    = {}          # loaded from _CACHE_PATH at startup
@@ -107,6 +107,402 @@ def _load_chain_notes() -> dict:
     except Exception:
         pass
     return {}
+
+
+# ── Email ──────────────────────────────────────────────────────────────────────
+
+def _build_email_html(report: dict) -> str:
+    """Build a self-contained HTML email for the morning report.
+    All styles are inline for email client compatibility.
+    Matches the dark SignalScope colour scheme.
+    """
+    import html as _html
+
+    def e(v):
+        return _html.escape(str(v) if v is not None else "")
+
+    # Palette
+    BG = "#07142b"; SUR = "#0d2346"; BOR = "#17345f"; ACC = "#17a8ff"
+    OK = "#22c55e"; WN = "#f59e0b"; AL = "#ef4444"; TX = "#eef5ff"; MU = "#8aa4c8"
+    SUR2 = "#122548"
+
+    HL_COL = {"ok": OK,        "wn": WN,        "al": AL}
+    HL_BG  = {"ok": "#0b2918", "wn": "#241a05", "al": "#230a0a"}
+    TREND_BG  = {"ok": "#0f3320", "al": "#2a0a0a", "wn": "#2a1a00", "mu": "#0f1e35"}
+    TREND_COL = {"ok": OK,        "al": AL,         "wn": WN,        "mu": MU}
+    PCOL = {"red": AL, "amber": WN, "blue": ACC, "green": OK}
+
+    hc     = report.get("headline_color", "ok")
+    hl_col = HL_COL.get(hc, OK)
+    hl_bg  = HL_BG.get(hc, "#0b2918")
+
+    out = []
+    a = out.append
+
+    # ── Doctype / head ──
+    a('<!DOCTYPE html><html lang="en"><head>')
+    a('<meta charset="utf-8">')
+    a('<meta name="viewport" content="width=device-width,initial-scale=1.0">')
+    a('<meta name="color-scheme" content="dark">')
+    a('<meta name="supported-color-schemes" content="dark">')
+    a('<title>Morning Report &mdash; ' + e(report.get("covers_label", "")) + '</title>')
+    a('<style>body,table,td{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%}</style>')
+    a('</head>')
+    a('<body style="margin:0;padding:0;background:' + BG + ';font-family:system-ui,-apple-system,Helvetica Neue,Arial,sans-serif;color:' + TX + ';font-size:13px">')
+
+    # Outer wrapper
+    a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:' + BG + '">')
+    a('<tr><td align="center" style="padding:24px 16px">')
+
+    # Inner 680px content table
+    a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:680px;width:100%">')
+
+    # ── HEADER BAR ──
+    a('<tr><td style="background:linear-gradient(180deg,#1a3a7a,#0d2346);border:1px solid ' + BOR + ';border-radius:10px 10px 0 0;padding:18px 24px">')
+    a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>')
+    a('<td style="vertical-align:middle"><span style="font-size:22px">&#128240;</span>'
+      ' <span style="font-size:17px;font-weight:700;color:' + TX + ';letter-spacing:.01em">Morning Report</span></td>')
+    a('<td align="right" style="vertical-align:middle"><span style="font-size:12px;color:' + MU + '">'
+      + e(report.get("covers_label", "")) + '</span></td>')
+    a('</tr></table></td></tr>')
+
+    # ── HEADLINE BANNER ──
+    a('<tr><td style="padding:0">')
+    a('<div style="background:' + hl_bg + ';border-left:4px solid ' + hl_col
+      + ';padding:14px 20px;font-size:14px;font-weight:600;color:' + hl_col + ';line-height:1.4;margin:0">'
+      + e(report.get("headline", "")) + '</div>')
+    a('</td></tr>')
+
+    # ── DIVIDER ──
+    a('<tr><td style="height:3px;background:' + BOR + '"></td></tr>')
+
+    # ── AT A GLANCE ──
+    aag = report.get("at_a_glance", {})
+    if aag:
+        tf = aag.get("total_faults", 0)
+        tc = aag.get("total_chains", 0)
+        dm = aag.get("total_downtime_min", 0)
+        cleanest = aag.get("cleanest_chain")
+        worst    = aag.get("worst_chain")
+
+        a('<tr><td style="background:' + SUR + ';border:1px solid ' + BOR + ';border-top:none;padding:16px 20px">')
+        a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:' + MU
+          + ';margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid ' + BOR + '">Yesterday at a Glance</div>')
+        a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>')
+
+        def _stat_cell(val, col, lbl, small=False):
+            fs = "14px" if small else "26px"
+            a('<td width="25%" style="text-align:center;padding:4px">')
+            a('<div style="background:' + BG + ';border:1px solid ' + BOR + ';border-radius:8px;padding:14px 8px">')
+            a('<div style="font-size:' + fs + ';font-weight:800;color:' + col + ';line-height:1.2">' + e(val) + '</div>')
+            a('<div style="font-size:10px;color:' + MU + ';margin-top:4px">' + lbl + '</div>')
+            a('</div></td>')
+
+        _stat_cell(tf, AL if tf > 0 else OK, "Audio Interruptions")
+        _stat_cell(tc, TX, "Chains Monitored")
+        _stat_cell(dm, WN if dm > 0 else OK, "Minutes Off-Air")
+        if cleanest:
+            _stat_cell(cleanest, OK, "Best Performing", small=True)
+        elif worst:
+            wf = aag.get("worst_chain_faults", 0)
+            _stat_cell(worst, AL, "Most Issues (" + str(wf) + ")", small=True)
+        else:
+            a('<td width="25%"></td>')
+
+        a('</tr></table></td></tr>')
+
+    # ── CHAIN HEALTH TABLE ──
+    chain_health = report.get("chain_health", [])
+    if chain_health:
+        TH = 'style="padding:7px 10px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:' + MU + ';border-bottom:2px solid ' + BOR + ';white-space:nowrap;background:' + SUR2 + '"'
+        a('<tr><td style="background:' + SUR + ';border:1px solid ' + BOR + ';border-top:none;padding:16px 20px">')
+        a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:' + MU
+          + ';margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid ' + BOR + '">Audio Chain Health</div>')
+        a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">')
+        a('<tr>')
+        for h in ["Chain", "Interruptions", "Off-Air", "On-Air&nbsp;%", "7-Day&nbsp;Avg", "vs&nbsp;Usual"]:
+            a('<th ' + TH + '>' + h + '</th>')
+        a('</tr>')
+        for i, row in enumerate(chain_health):
+            rb = SUR2 if i % 2 == 0 else SUR
+            TD = 'style="padding:7px 10px;border-bottom:1px solid ' + BOR + ';font-size:12px;background:' + rb + '"'
+            a('<tr>')
+            a('<td ' + TD + '><b style="color:' + TX + '">' + e(row.get("name","")) + '</b></td>')
+            fy = row.get("faults_y", 0)
+            a('<td ' + TD + '>'
+              + ('<span style="color:' + OK + '">&#10003; None</span>' if fy == 0
+                 else '<span style="color:' + AL + ';font-weight:700">' + e(fy) + '</span>')
+              + '</td>')
+            dm2 = row.get("downtime_min", 0)
+            a('<td ' + TD + '>'
+              + ('<span style="color:' + WN + '">' + e(dm2) + '&nbsp;min</span>' if dm2 > 0
+                 else '<span style="color:' + OK + '">&mdash;</span>')
+              + '</td>')
+            upt = row.get("uptime_pct", 100.0)
+            uc = OK if upt >= 99.9 else (MU if upt >= 99.0 else AL)
+            a('<td ' + TD + '><span style="color:' + uc + ';font-weight:700">' + e(upt) + '%</span></td>')
+            avg7 = row.get("avg7", 0)
+            a('<td ' + TD + '><span style="color:' + MU + '">'
+              + (e(avg7) + '/day' if avg7 > 0 else '<span style="color:' + OK + '">No history</span>')
+              + '</span></td>')
+            tc_name = row.get("trend_color", "mu")
+            a('<td ' + TD + '><span style="background:' + TREND_BG.get(tc_name, TREND_BG["mu"])
+              + ';color:' + TREND_COL.get(tc_name, MU)
+              + ';border-radius:10px;padding:2px 8px;font-size:10px;font-weight:700">'
+              + e(row.get("trend_label","")) + '</span></td>')
+            a('</tr>')
+        a('</table></td></tr>')
+
+    # ── OUTAGE DETAIL LOG ──
+    od_list = report.get("outage_detail", [])
+    if od_list:
+        a('<tr><td style="background:' + SUR + ';border:1px solid ' + BOR + ';border-top:none;padding:16px 20px">')
+        a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:' + MU
+          + ';margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid ' + BOR + '">&#128269; Outage Detail Log</div>')
+
+        for od in od_list:
+            a('<div style="background:' + BG + ';border:1px solid ' + BOR + ';border-radius:8px;margin-bottom:12px;overflow:hidden">')
+            # card header
+            a('<div style="background:linear-gradient(180deg,#1a2f58,#122548);padding:10px 14px;border-bottom:1px solid ' + BOR + '">')
+            a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>')
+            a('<td style="vertical-align:middle">'
+              '<span style="font-weight:700;font-size:13px;color:' + WN + '">' + e(od.get("chain_name","")) + '</span>')
+            if od.get("fault_time_str"):
+                a(' <span style="font-size:11px;color:' + MU + '">' + e(od["fault_time_str"]))
+                if od.get("recovery_time_str") and od["recovery_time_str"] != "Ongoing":
+                    a(' &mdash; ' + e(od["recovery_time_str"]))
+                elif od.get("recovery_time_str") == "Ongoing":
+                    a(' &mdash; <span style="color:' + AL + '">Ongoing</span>')
+                a('</span>')
+            a('</td>')
+            if od.get("duration_str"):
+                a('<td align="right" style="vertical-align:middle">'
+                  '<span style="background:rgba(245,158,11,.15);color:' + WN
+                  + ';border-radius:10px;padding:2px 9px;font-size:11px;font-weight:700">'
+                  + e(od["duration_str"]) + '</span></td>')
+            a('</tr></table></div>')
+
+            # card body
+            a('<div style="padding:12px 14px">')
+
+            def _od_row(lbl, val):
+                a('<div style="margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,.04)">'
+                  '<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:' + MU + '">' + lbl + '</div>'
+                  '<div style="font-size:12px;color:' + TX + '">' + val + '</div>'
+                  '</div>')
+
+            if od.get("fault_node") or od.get("fault_site"):
+                parts_v = []
+                if od.get("fault_node"): parts_v.append(e(od["fault_node"]))
+                if od.get("fault_site"): parts_v.append(e(od["fault_site"]))
+                _od_row("Fault Detected At", " &mdash; ".join(parts_v))
+            if od.get("fault_stream"):  _od_row("Monitoring Stream", e(od["fault_stream"]))
+            if od.get("message"):       _od_row("Fault Context",     e(od["message"]))
+
+            # Automation context
+            if od.get("zetta_computer") or od.get("zetta_mode") or od.get("zetta_title") or od.get("zetta_artist"):
+                a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:' + ACC
+                  + ';margin:10px 0 6px;padding-top:8px;border-top:1px solid ' + BOR + '">Automation Context</div>')
+                if od.get("zetta_computer"): _od_row("Zetta Computer",   e(od["zetta_computer"]))
+                if od.get("zetta_mode"):     _od_row("Automation Mode",  e(od["zetta_mode"]))
+                if od.get("zetta_title") or od.get("zetta_artist"):
+                    if od.get("zetta_artist") and od.get("zetta_title"):
+                        znp = e(od["zetta_artist"]) + " &mdash; " + e(od["zetta_title"])
+                    elif od.get("zetta_title"):  znp = e(od["zetta_title"])
+                    else:                        znp = e(od["zetta_artist"])
+                    _od_row("What Was Playing", znp)
+
+            # Studios
+            studios = od.get("studios", {})
+            if studios:
+                a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:' + ACC
+                  + ';margin:10px 0 6px;padding-top:8px;border-top:1px solid ' + BOR + '">Studio at Time of Fault</div>')
+                for sname, bname in studios.items():
+                    _od_row(e(sname), e(bname) if bname else '<span style="color:' + MU + '">&mdash;</span>')
+
+            if od.get("zetta_is_spot"):
+                a('<div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.4);border-radius:6px;'
+                  'padding:6px 10px;font-size:11px;color:' + WN + ';margin-top:8px">'
+                  'Fault occurred during an ad break &mdash; likely expected</div>')
+            if od.get("cascaded_from"):
+                a('<div style="font-size:11px;color:' + MU + ';margin-top:6px;font-style:italic">'
+                  'Cascaded from: ' + e(od["cascaded_from"]) + '</div>')
+            if od.get("note_text"):
+                a('<div style="background:rgba(23,168,255,.07);border:1px solid rgba(23,168,255,.25);'
+                  'border-radius:6px;padding:8px 12px;margin-top:10px">')
+                a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:' + ACC
+                  + ';margin-bottom:4px">&#9999;&#65039; Engineering Note</div>')
+                a('<div style="font-size:12px;color:' + TX + ';white-space:pre-wrap;word-break:break-word">'
+                  + e(od["note_text"]) + '</div>')
+                note_meta = []
+                if od.get("note_by"): note_meta.append("Added by " + e(od["note_by"]))
+                if od.get("note_ts"): note_meta.append(e(od["note_ts"]))
+                if note_meta:
+                    a('<div style="font-size:10px;color:' + MU + ';margin-top:4px">'
+                      + " &middot; ".join(note_meta) + '</div>')
+                a('</div>')
+
+            a('</div>')  # card body
+            a('</div>')  # card
+
+        a('</td></tr>')
+
+    # ── PATTERNS ──
+    patterns = report.get("patterns", [])
+    if patterns:
+        a('<tr><td style="background:' + SUR + ';border:1px solid ' + BOR + ';border-top:none;padding:16px 20px">')
+        a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:' + MU
+          + ';margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid ' + BOR + '">What Stood Out Yesterday</div>')
+        for p in patterns:
+            pc = PCOL.get(p.get("color", "blue"), ACC)
+            a('<div style="background:' + BG + ';border-left:3px solid ' + pc
+              + ';border-radius:4px;padding:10px 14px;margin-bottom:8px;font-size:12px;color:' + TX + '">'
+              + e(p.get("text","")) + '</div>')
+        a('</td></tr>')
+
+    # ── AUTOMATION HEALTH ──
+    ah = report.get("automation_health", {})
+    if ah and ah.get("has_zetta_data"):
+        n_fo = len(ah.get("failovers", []))
+        n_mc = len(ah.get("mode_changes", []))
+        n_gw = len(ah.get("gap_warnings", []))
+        n_ab = ah.get("ad_break_faults", 0)
+        n_mf = ah.get("manual_faults", 0)
+
+        a('<tr><td style="background:' + SUR + ';border:1px solid ' + BOR + ';border-top:none;padding:16px 20px">')
+        a('<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:' + MU
+          + ';margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid ' + BOR + '">&#129302; Automation Health</div>')
+        a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:14px"><tr>')
+        for val, col, lbl in [
+            (n_fo, AL if n_fo else OK, "Failovers"),
+            (n_mc, WN if n_mc else OK, "Mode Changes"),
+            (n_gw, WN if n_gw else OK, "GAP Warnings"),
+            (n_ab, MU, "Ad Break Faults"),
+            (n_mf, MU, "Manual Mode"),
+        ]:
+            a('<td width="20%" style="text-align:center;padding:4px">'
+              '<div style="background:' + BG + ';border:1px solid ' + BOR + ';border-radius:8px;padding:12px 6px">'
+              '<div style="font-size:22px;font-weight:800;color:' + col + '">' + e(val) + '</div>'
+              '<div style="font-size:10px;color:' + MU + ';margin-top:3px">' + lbl + '</div>'
+              '</div></td>')
+        a('</tr></table>')
+
+        def _ah_table(events, color, title):
+            if not events: return
+            TH2 = 'style="padding:6px 8px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:' + MU + ';border-bottom:1px solid ' + BOR + '"'
+            a('<div style="margin-bottom:12px">'
+              '<div style="font-size:11px;font-weight:700;color:' + color + ';margin-bottom:6px">' + title + '</div>')
+            a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">')
+            a('<tr><th ' + TH2 + '>Time</th><th ' + TH2 + '>Chain</th><th ' + TH2 + '>Detail</th></tr>')
+            for ev in events:
+                TD2 = 'style="padding:6px 8px;border-bottom:1px solid ' + BOR + ';font-size:12px"'
+                a('<tr>'
+                  '<td ' + TD2 + '><span style="color:' + MU + '">' + e(ev.get("ts","")) + '</span></td>'
+                  '<td ' + TD2 + '><b>' + e(ev.get("stream","")) + '</b></td>'
+                  '<td ' + TD2 + '><span style="color:' + MU + '">' + e(ev.get("message","")) + '</span></td>'
+                  '</tr>')
+            a('</table></div>')
+
+        _ah_table(ah.get("failovers",[]),     AL, "&#128308; Failover Events")
+        _ah_table(ah.get("mode_changes",[]),  WN, "&#9888;&#65039; Mode Changes")
+        _ah_table(ah.get("gap_warnings",[]),  WN, "&#9201; GAP Warnings")
+
+        if n_ab:
+            a('<div style="padding:8px 12px;background:#1a0a2e;border:1px solid #4c1d95;border-radius:8px;font-size:12px;color:' + TX + ';margin-bottom:6px">'
+              '&#8505;&#65039; <b>' + e(n_ab) + '</b> fault' + ('s' if n_ab != 1 else '')
+              + ' occurred during an ad break &mdash; expected, not genuine audio loss.</div>')
+        if n_mf:
+            a('<div style="padding:8px 12px;background:' + SUR2 + ';border:1px solid ' + BOR + ';border-radius:8px;font-size:12px;color:' + TX + '">'
+              '&#8505;&#65039; <b>' + e(n_mf) + '</b> fault' + ('s' if n_mf != 1 else '')
+              + ' occurred in Manual mode &mdash; may represent intentional off-air periods.</div>')
+        a('</td></tr>')
+
+    # ── FOOTER ──
+    a('<tr><td style="background:' + BG + ';border:1px solid ' + BOR
+      + ';border-top:none;border-radius:0 0 10px 10px;padding:14px 20px">')
+    a('<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>')
+    a('<td style="font-size:11px;color:' + MU + '">')
+    footer_parts = []
+    if report.get("generated_ts"):
+        footer_parts.append("Generated: <b style='color:" + TX + "'>" + e(report["generated_ts"]) + "</b>")
+    if report.get("covers_date"):
+        footer_parts.append("Covers: <b style='color:" + TX + "'>" + e(report["covers_date"]) + "</b>")
+    a(" &nbsp;&middot;&nbsp; ".join(footer_parts))
+    a('</td><td align="right" style="font-size:11px;color:rgba(148,163,184,.35)">SignalScope Morning Report</td>')
+    a('</tr></table></td></tr>')
+
+    # Close outer tables
+    a('</table>')
+    a('</td></tr></table>')
+    a('</body></html>')
+
+    return "".join(out)
+
+
+def _send_report_email(report: dict, monitor, recipients_str: str) -> tuple:
+    """Send the morning report as an HTML email.
+
+    Uses the SMTP credentials from monitor.app_cfg.email.
+    Returns (success: bool, error_message: str).
+    """
+    recipients = [r.strip() for r in recipients_str.replace(",", "\n").splitlines() if r.strip()]
+    if not recipients:
+        return False, "No recipients configured"
+
+    ec = monitor.app_cfg.email
+    if not getattr(ec, "enabled", False):
+        return False, "Email alerts are disabled in SignalScope settings"
+    if not getattr(ec, "smtp_host", ""):
+        return False, "No SMTP host configured in SignalScope settings"
+
+    subject = "Morning Report — " + (report.get("covers_label") or report.get("covers_date") or "Yesterday")
+    html_body = _build_email_html(report)
+
+    # Plain-text fallback
+    tf = (report.get("at_a_glance") or {}).get("total_faults", 0)
+    text_body = (
+        "Morning Report\n"
+        + report.get("headline", "") + "\n\n"
+        + ("All clear — no audio interruptions yesterday.\n" if tf == 0
+           else str(tf) + " audio interruption(s) yesterday.\n")
+        + "\nView the full report in SignalScope."
+    )
+
+    try:
+        import smtplib, ssl
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = getattr(ec, "from_addr", "") or getattr(ec, "username", "")
+        msg["To"]      = ", ".join(recipients)
+
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html",  "utf-8"))
+
+        host = getattr(ec, "smtp_host", "")
+        port = int(getattr(ec, "smtp_port", 587))
+        user = getattr(ec, "username", "")
+        pw   = getattr(ec, "password", "")
+        tls  = getattr(ec, "use_tls", True)
+
+        if tls and port == 465:
+            with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=15) as s:
+                if user: s.login(user, pw)
+                s.sendmail(msg["From"], recipients, msg.as_string())
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as s:
+                s.ehlo()
+                if tls:
+                    s.starttls(context=ssl.create_default_context())
+                    s.ehlo()
+                if user: s.login(user, pw)
+                s.sendmail(msg["From"], recipients, msg.as_string())
+
+        return True, ""
+    except Exception as ex:
+        return False, str(ex)
 
 
 # ── Metrics DB helpers ─────────────────────────────────────────────────────────
@@ -926,6 +1322,16 @@ def _scheduler_loop(hub_server, monitor):
             except Exception:
                 pass
             monitor.log(f"[MorningReport] Daily report generated for {report.get('covers_date','?')}")
+            # Send email if recipients are configured
+            _cfg2 = _load_cfg()
+            _rcpt = _cfg2.get("email_recipients", "").strip()
+            if _rcpt:
+                _ok, _err = _send_report_email(report, monitor, _rcpt)
+                if _ok:
+                    _n = len([r for r in _rcpt.replace(",", "\n").splitlines() if r.strip()])
+                    monitor.log(f"[MorningReport] Report emailed to {_n} recipient(s)")
+                else:
+                    monitor.log(f"[MorningReport] Email failed: {_err}")
         except Exception as e:
             monitor.log(f"[MorningReport] Generation error: {e}")
         # Small sleep to avoid double-fire on exact boundary
@@ -1051,9 +1457,32 @@ def register(app, ctx):
         except Exception:
             rt = "06:00"
         cfg["report_time"] = rt
+        # Recipients: strip, deduplicate, normalise to one-per-line
+        raw_rcpt = request.form.get("email_recipients", "")
+        rcpt_list = [r.strip() for r in raw_rcpt.replace(",", "\n").splitlines() if r.strip()]
+        cfg["email_recipients"] = "\n".join(rcpt_list)
         _save_cfg(cfg)
-        monitor.log(f"[MorningReport] Report time set to {rt}")
+        monitor.log(f"[MorningReport] Settings saved — report_time={rt}, recipients={len(rcpt_list)}")
         return render_template_string(_SETTINGS_TPL, cfg=cfg, build=BUILD, saved=True)
+
+    @app.post("/api/morning-report/send-email")
+    @login_required
+    @csrf_protect
+    def morning_report_send_email():
+        with _report_lock:
+            report = dict(_report_cache)
+        if not report:
+            return jsonify({"ok": False, "error": "No report generated yet — click Regenerate first"}), 400
+        cfg = _load_cfg()
+        rcpt_str = cfg.get("email_recipients", "").strip()
+        if not rcpt_str:
+            return jsonify({"ok": False, "error": "No recipients configured — add them in Morning Report settings"}), 400
+        ok, err = _send_report_email(report, monitor, rcpt_str)
+        if ok:
+            count = len([r for r in rcpt_str.replace(",", "\n").splitlines() if r.strip()])
+            monitor.log(f"[MorningReport] Manual email send to {count} recipient(s)")
+            return jsonify({"ok": True, "count": count})
+        return jsonify({"ok": False, "error": err}), 500
 
 
 # ── Templates ──────────────────────────────────────────────────────────────────
@@ -1655,13 +2084,20 @@ body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);font-
 .btn:hover{filter:brightness(1.2)}.btn.bp{background:var(--acc);color:#fff}
 .topbar{display:flex;align-items:center;gap:10px;padding:10px 20px;background:var(--sur);border-bottom:1px solid var(--bor)}
 .topbar-title{font-size:16px;font-weight:700}.topbar-right{margin-left:auto;display:flex;gap:8px}
-.page{max-width:600px;margin:30px auto;padding:0 16px}
-.form-card{background:var(--sur);border:1px solid var(--bor);border-radius:10px;padding:20px 24px}
-.form-row{margin-bottom:16px}
+.page{max-width:640px;margin:30px auto;padding:0 16px}
+.form-card{background:var(--sur);border:1px solid var(--bor);border-radius:10px;padding:20px 24px;margin-bottom:16px}
+.card-hdr{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--acc);margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid var(--bor)}
+.form-row{margin-bottom:18px}
 label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mu);margin-bottom:5px}
 input[type=time]{background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 10px;font-size:13px;width:160px}
 input[type=time]:focus{outline:none;border-color:var(--acc)}
+textarea{width:100%;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:8px 10px;font-size:13px;resize:vertical;font-family:inherit}
+textarea:focus{outline:none;border-color:var(--acc)}
+.help{font-size:11px;color:var(--mu);margin-top:5px;line-height:1.5}
 .saved-banner{background:rgba(34,197,94,.12);border:1px solid var(--ok);border-radius:7px;padding:8px 14px;margin-bottom:16px;font-size:12px;color:var(--ok)}
+.send-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px}
+#email-status{font-size:12px}
+.status-ok{color:var(--ok)}.status-err{color:var(--al)}
 </style>
 <link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
 </head>
@@ -1677,19 +2113,87 @@ input[type=time]:focus{outline:none;border-color:var(--acc)}
   {% if saved %}
   <div class="saved-banner">✓ Settings saved.</div>
   {% endif %}
+
   <div class="form-card">
+    <div class="card-hdr">⏰ Schedule</div>
     <form method="post" action="/hub/morning-report/settings">
       <input type="hidden" name="_csrf_token" value="{{csrf_token()}}">
       <div class="form-row">
         <label for="report_time">Daily Report Generation Time</label>
         <input type="time" id="report_time" name="report_time" value="{{cfg.report_time}}">
-        <div style="font-size:11px;color:var(--mu);margin-top:5px">
-          The report will be automatically generated each day at this local time, covering the previous calendar day.
+        <div class="help">
+          The report is automatically generated each day at this local time, covering the previous calendar day.
+          If email recipients are configured below, the report is emailed at the same time.
         </div>
       </div>
-      <button type="submit" class="btn bp">Save Settings</button>
+
+      <div class="form-row">
+        <label for="email_recipients">Email Recipients</label>
+        <textarea id="email_recipients" name="email_recipients" rows="5"
+          placeholder="engineer@station.com&#10;manager@station.com">{{cfg.get('email_recipients','')}}</textarea>
+        <div class="help">
+          One address per line. The full Morning Report is emailed to these addresses automatically when generated.<br>
+          Uses the SMTP server configured in <b style="color:var(--tx)">Settings → Notifications → Email</b>.
+          Leave blank to disable email delivery.
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button type="submit" class="btn bp">Save Settings</button>
+      </div>
     </form>
   </div>
+
+  <div class="form-card">
+    <div class="card-hdr">📧 Email</div>
+    <p class="help" style="margin-bottom:14px">Send the current cached report to the configured recipients immediately. Useful for testing your SMTP setup.</p>
+    <div class="send-row">
+      <button type="button" class="btn" id="btn-test-email">📧 Send Report Now</button>
+      <span id="email-status"></span>
+    </div>
+  </div>
+
 </div>
+
+<script nonce="{{csp_nonce()}}">
+(function(){
+  function _getCsrf(){
+    return (document.querySelector('meta[name="csrf-token"]')||{}).content
+        || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]
+        || '';
+  }
+  document.getElementById('btn-test-email').addEventListener('click', function(){
+    var btn = this;
+    var st  = document.getElementById('email-status');
+    btn.disabled = true;
+    btn.textContent = '📧 Sending…';
+    st.textContent = '';
+    st.className = '';
+    fetch('/api/morning-report/send-email', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'X-CSRFToken': _getCsrf(), 'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    }).then(function(r){ return r.json(); })
+      .then(function(d){
+        btn.disabled = false;
+        btn.textContent = '📧 Send Report Now';
+        if(d.ok){
+          st.textContent = '✓ Sent to ' + d.count + ' recipient' + (d.count === 1 ? '' : 's');
+          st.className = 'status-ok';
+        } else {
+          st.textContent = '✗ ' + (d.error || 'Failed');
+          st.className = 'status-err';
+        }
+      })
+      .catch(function(e){
+        btn.disabled = false;
+        btn.textContent = '📧 Send Report Now';
+        st.textContent = '✗ Request failed';
+        st.className = 'status-err';
+      });
+  });
+})();
+</script>
 </body>
 </html>"""
