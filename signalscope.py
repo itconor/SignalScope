@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.186"
+BUILD                  = "SignalScope-3.5.187"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -9661,7 +9661,7 @@ class MonitorManager:
                             # device index wait 3 s before the next attempt,
                             # preventing rapid-fire crash loops that lock up
                             # the USB bus entirely.
-                            self._dab_usb_backoffs[session.device_idx] = time.time() + 8.0
+                            self._dab_usb_backoffs[session.device_idx] = time.monotonic() + 8.0
                         session.failed = True
                         session.ready.set()
                         try:
@@ -9676,7 +9676,7 @@ class MonitorManager:
                     pass
 
         def _poll_mux():
-            deadline = time.time() + 45
+            deadline = time.monotonic() + 45
             announced = False
             while not session.stop_evt.is_set():
                 if session.proc.poll() is not None:
@@ -9715,13 +9715,13 @@ class MonitorManager:
                                 session._prev_svc_count = cur_count
                         time.sleep(2)
                         continue
-                    if time.time() >= deadline and not announced:
+                    if time.monotonic() >= deadline and not announced:
                         session.failed = True
                         session.ready.set()
                         self.log(f"[DAB {session.channel}] mux endpoint came up but no services appeared before timeout")
                         return
                 except Exception:
-                    if time.time() >= deadline and not announced:
+                    if time.monotonic() >= deadline and not announced:
                         session.failed = True
                         session.ready.set()
                         self.log(f"[DAB {session.channel}] shared mux session timed out waiting for services")
@@ -10020,12 +10020,12 @@ class MonitorManager:
         try:
             # DAB inputs can start at the same time. Be patient and retry so a
             # consumer can attach to the mux session that eventually wins.
-            startup_deadline = time.time() + 180
+            startup_deadline = time.monotonic() + 180
             sid = None
             svc_name = None
             audio_url = None
             attempt = 0
-            while time.time() < startup_deadline and not stop_evt.is_set():
+            while time.monotonic() < startup_deadline and not stop_evt.is_set():
                 attempt += 1
                 if attempt > 1:
                     self.log(f"[{name}] DAB: retrying shared mux attach (attempt {attempt})")
@@ -10034,8 +10034,8 @@ class MonitorManager:
                 # usb_claim_interface error for this device, wait together rather
                 # than hammering the USB bus with independent rapid retries.
                 backoff_until = self._dab_usb_backoffs.get(device_idx, 0)
-                if backoff_until > time.time():
-                    wait_s = backoff_until - time.time()
+                if backoff_until > time.monotonic():
+                    wait_s = backoff_until - time.monotonic()
                     self.log(f"[{name}] DAB: USB busy backoff — waiting {wait_s:.1f}s before retry")
                     if stop_evt.wait(timeout=wait_s):
                         return
@@ -10058,7 +10058,7 @@ class MonitorManager:
                     time.sleep(2.0)
                     continue
 
-                if not session.ready.wait(timeout=min(45, max(1, int(startup_deadline - time.time())))) or session.failed:
+                if not session.ready.wait(timeout=min(45, max(1, int(startup_deadline - time.monotonic())))) or session.failed:
                     self.log(f"[{name}] DAB: shared mux session did not become ready")
                     try:
                         self._release_dab_session(session, name)
@@ -10072,8 +10072,8 @@ class MonitorManager:
                 sid, svc_name = self._find_dab_service_in_mux(mux, service)
                 if not sid:
                     # Give the mux a little extra time to populate services.
-                    deadline = time.time() + 20
-                    while time.time() < deadline and not stop_evt.is_set():
+                    deadline = time.monotonic() + 20
+                    while time.monotonic() < deadline and not stop_evt.is_set():
                         mux = session.mux or {}
                         self._copy_dab_metrics_from_mux(cfg, mux, service)
                         sid, svc_name = self._find_dab_service_in_mux(mux, service)
@@ -10129,9 +10129,9 @@ class MonitorManager:
             #
             # ready_deadline covers 12 services × 52 s = 624 s worst case.
             stream_ready   = False
-            ready_deadline = time.time() + 660   # 11 min worst case
-            _PROBE_TIMEOUT = 70                  # per-read timeout: > 52 s, < 104 s
-            while not stream_ready and not stop_evt.is_set() and time.time() < ready_deadline:
+            ready_deadline = time.monotonic() + 660   # 11 min worst case
+            _PROBE_TIMEOUT = 70                        # per-read timeout: > 52 s, < 104 s
+            while not stream_ready and not stop_evt.is_set() and time.monotonic() < ready_deadline:
                 if session.proc.poll() is not None:
                     self.log(f"[{name}] DAB: welle-cli exited before audio stream became ready")
                     return
@@ -10219,7 +10219,7 @@ class MonitorManager:
 
                 buf = bytearray()
                 pcm_started = False
-                pcm_deadline = time.time() + 15
+                pcm_deadline = time.monotonic() + 15
                 audio_lost = False
                 # ff_proc is now live — ensure it is cleaned up no matter how we exit
                 _ff_proc_ref = ff_proc
@@ -10237,7 +10237,7 @@ class MonitorManager:
                             break
                         chunk = ff_proc.stdout.read(4096)
                         if not chunk:
-                            if (not pcm_started) and time.time() > pcm_deadline:
+                            if (not pcm_started) and time.monotonic() > pcm_deadline:
                                 self.log(f"[{name}] DAB: ffmpeg connected but no PCM arrived")
                                 audio_lost = True
                                 break
@@ -10376,9 +10376,9 @@ class MonitorManager:
 
                     # Wait for the audio endpoint to come back before relaunching ffmpeg
                     self.log(f"[{name}] DAB: audio stream lost, waiting for endpoint to recover (attempt {_audio_fail_count}/{_MAX_AUDIO_FAILURES})...")
-                    recover_deadline = time.time() + 20
+                    recover_deadline = time.monotonic() + 20
                     recovered = False
-                    while time.time() < recover_deadline and not stop_evt.is_set():
+                    while time.monotonic() < recover_deadline and not stop_evt.is_set():
                         if session.proc.poll() is not None or session.failed:
                             break
                         try:

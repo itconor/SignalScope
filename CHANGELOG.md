@@ -2,6 +2,27 @@
 
 ---
 
+### SignalScope-3.5.187 — 2026-04-29
+
+**Fixed: DAB crashes when system clock is corrected by NTP/PTP step**
+
+NTP (or chrony) corrects large clock offsets by *stepping* `CLOCK_REALTIME` forward. All DAB timeout deadlines used `time.time()` (wall clock), so a +66 s NTP step made every active deadline appear expired in zero real time. The `pcm_deadline` (15 s to receive first audio from ffmpeg) expired immediately, `audio_lost = True` broke the inner audio loop for every DAB consumer, all consumers called `_release_dab_session`, and when the last consumer released, `_stop_dab_session` killed rtl_tcp — exactly matching the `[rtl_tcp] Signal caught, exiting!` crash signature seen after a machine boots with the system clock significantly wrong.
+
+Fix: every deadline/timeout in the DAB monitoring code now uses `time.monotonic()` (immune to wall-clock steps). Affected paths:
+- `_poll_mux` — mux availability deadline
+- `_dab_usb_backoffs` — USB error backoff timer
+- Consumer startup deadline (180 s)
+- USB backoff comparison
+- `session.ready.wait()` timeout
+- Service-in-mux extra wait deadline (20 s)
+- Audio probe `ready_deadline` (660 s)
+- `pcm_deadline` (15 s to first PCM chunk from ffmpeg)
+- `recover_deadline` (20 s audio endpoint recovery)
+
+Timestamps written to metrics DB, HMAC signing, and DLS last-change tracking remain as `time.time()` (they record wall-clock UTC times, not durations).
+
+---
+
 ### SignalScope-3.5.186 — 2026-04-29
 
 **Fixed: DAB "Too many open files" after days of uptime**
