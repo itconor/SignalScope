@@ -2,6 +2,18 @@
 
 ---
 
+### AzuraCast 1.2.3 — 2026-04-29
+
+**Fixed: Discover Stations button still did nothing after 1.2.2**
+
+- All plugin functions (`doDiscover`, `doAddStation`, etc.) are defined inside an IIFE
+  `(function(){ 'use strict'; ... })()` for encapsulation. HTML `onclick="doDiscover(this)"`
+  looks up the name in `window` scope, where it doesn't exist → `ReferenceError`.
+- Fix: removed the `onclick=` attribute, added `id="disc-btn"`, and wired the click
+  listener inside the IIFE's init section alongside the other delegated listeners.
+
+---
+
 ### AzuraCast 1.2.2 — 2026-04-29
 
 **Fixed: Discover Stations button non-functional (SyntaxError on page load)**

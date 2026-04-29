@@ -195,7 +195,7 @@
     "file": "azuracast.py",
     "icon": "\ud83c\udf99",
     "description": "AzuraCast web radio integration. Live now-playing data, listener counts, and station health across all connected sites. Fires AZURACAST_FAULT/RECOVERY alerts and optionally cross-references with SignalScope silence detection.",
-    "version": "1.2.2",
+    "version": "1.2.3",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/azuracast.py"
   },

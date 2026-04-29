@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "AzuraCast",
     "url":     "/azuracast",
     "icon":    "🎙",
-    "version": "1.2.2",
+    "version": "1.2.3",
 }
 
 import hashlib
@@ -637,7 +637,7 @@ td{padding:6px 8px}
             <div class="field"><label>API Key (optional)</label>
               <input id="az-key" type="text" placeholder="Leave blank for public API" spellcheck="false" autocomplete="off">
             </div>
-            <button class="btn bp" onclick="doDiscover(this)">🔍 Discover Stations</button>
+            <button class="btn bp" id="disc-btn">🔍 Discover Stations</button>
             <div id="disc-result" style="margin-top:12px"></div>
           </div>
         </div>
@@ -1131,6 +1131,7 @@ document.getElementById('cards').addEventListener('click', function(e){
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────
+document.getElementById('disc-btn').addEventListener('click', function(){ doDiscover(this); });
 loadStatus();
 _startTimers();
 
