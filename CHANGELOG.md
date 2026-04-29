@@ -2,6 +2,17 @@
 
 ---
 
+### SignalScope-3.5.184 — 2026-04-28
+
+**Chain builder redesigned as full-screen two-column overlay**
+
+- The chain builder now opens as a full-screen overlay (replaces the narrow 540 px side drawer). Fade-in/scale animation replaces the slide-in.
+- Signal path configuration (preview, chain name, positions, advanced settings) occupies the left column; the right column is always visible and contains Signal Comparators and Alert Timing.
+- Comparators are now a permanent, always-visible panel — never hidden in a collapsed section. No more "where did my comparators go?" confusion.
+- Alert Timing fields moved from the pinned strip above the footer into the always-visible right column.
+
+---
+
 ### Studio Board 3.15.1 — 2026-04-28
 
 - TV display: "UP NEXT" booking badge renamed to "NEXT BOOKING"

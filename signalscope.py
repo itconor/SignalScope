@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.183"
+BUILD                  = "SignalScope-3.5.184"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -29629,16 +29629,15 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
 #cmp-audio{flex:1;min-width:200px;height:32px;accent-color:#3b82f6}
 #cmp-close{background:none;border:1px solid var(--bor);border-radius:6px;color:var(--mu);font-size:13px;cursor:pointer;padding:5px 12px;line-height:1;flex-shrink:0;white-space:nowrap}
 #cmp-close:hover{border-color:var(--al);color:var(--al)}
-/* ── Drawer ── */
-.builder-drawer{position:fixed;top:0;right:0;bottom:0;width:540px;max-width:100vw;background:#070f24;border-left:1px solid var(--bor);z-index:950;display:flex;flex-direction:column;transform:translateX(100%);transition:transform .24s cubic-bezier(.4,0,.2,1);box-shadow:-12px 0 48px rgba(0,0,0,.6)}
-.builder-drawer.open{transform:translateX(0)}
-.builder-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:949;opacity:0;pointer-events:none;transition:opacity .24s}
-.builder-backdrop.open{opacity:1;pointer-events:auto}
-.drawer-hdr{padding:13px 16px;border-bottom:1px solid var(--bor);display:flex;align-items:center;gap:10px;flex-shrink:0;background:#06101e}
-.drawer-body{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
-.drawer-timing{flex-shrink:0;border-top:2px solid var(--acc);background:#07142b}
-.drawer-timing .timing-quick{padding:10px 14px}
-.drawer-footer{padding:11px 16px;border-top:1px solid var(--bor);display:flex;align-items:center;gap:8px;flex-shrink:0;background:#06101e}
+/* ── Drawer (full-screen overlay) ── */
+.builder-drawer{position:fixed;inset:0;background:#07142b;z-index:950;display:flex;flex-direction:column;opacity:0;pointer-events:none;transform:scale(.97) translateY(6px);transition:opacity .22s cubic-bezier(.4,0,.2,1),transform .22s cubic-bezier(.4,0,.2,1)}
+.builder-drawer.open{opacity:1;pointer-events:auto;transform:scale(1) translateY(0)}
+.builder-backdrop{display:none}
+.drawer-hdr{padding:13px 20px;border-bottom:1px solid var(--bor);display:flex;align-items:center;gap:10px;flex-shrink:0;background:linear-gradient(180deg,#0d2346,#091830)}
+.drawer-content-grid{flex:1;overflow:hidden;display:grid;grid-template-columns:1fr 420px}
+.drawer-col-l{overflow-y:auto;padding:20px;border-right:1px solid var(--bor);display:flex;flex-direction:column;gap:14px}
+.drawer-col-r{overflow-y:auto;padding:20px;background:#060d1e;display:flex;flex-direction:column;gap:16px}
+.drawer-footer{padding:11px 20px;border-top:1px solid var(--bor);display:flex;align-items:center;gap:8px;flex-shrink:0;background:#06101e}
 /* ── Preview ── */
 .preview-wrap{background:#060e1c;border:1px solid var(--bor);border-radius:10px;padding:12px 16px;min-height:68px;display:flex;align-items:center;flex-wrap:nowrap;overflow-x:auto;gap:0}
 .preview-empty{color:var(--mu);font-size:12px;font-style:italic;margin:auto;white-space:nowrap}
@@ -29781,124 +29780,129 @@ input[type=datetime-local]{background:#12305c;border:1px solid var(--bor);color:
     <span id="builder_title" style="font-size:15px;font-weight:700;color:var(--tx)">New Chain</span>
     <button type="button" id="btn_cancel_builder" class="btn bg bs" style="margin-left:auto;font-size:12px">✕ Close</button>
   </div>
-  <div class="drawer-body">
-    <input type="hidden" id="builder_id">
+  <div class="drawer-content-grid">
+    <!-- LEFT COLUMN: signal path config -->
+    <div class="drawer-col-l">
+      <input type="hidden" id="builder_id">
 
-    <!-- Live preview -->
-    <div>
-      <div style="font-size:10px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Live Preview</div>
-      <div class="preview-wrap" id="builder-preview"><span class="preview-empty">Add positions to see chain</span></div>
-    </div>
-
-    <!-- Chain name -->
-    <div>
-      <label style="font-size:12px;font-weight:600;color:var(--mu);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;display:block">Chain Name</label>
-      <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%">
-    </div>
-
-    <!-- Signal path -->
-    <div>
-      <div class="blk-hdr">
-        <span>Signal Path <span style="font-size:10px;color:var(--mu);font-weight:400">— left = source, right = destination</span></span>
-        <span style="font-size:11px;color:var(--mu)">Each position can stack multiple streams</span>
+      <!-- Live preview -->
+      <div>
+        <div style="font-size:10px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Live Preview</div>
+        <div class="preview-wrap" id="builder-preview"><span class="preview-empty">Add positions to see chain</span></div>
       </div>
-      <div id="builder_nodes" style="display:flex;flex-direction:column;gap:8px;margin:10px 0 8px"></div>
-      <button class="btn bg bs" id="btn_add_node" type="button">＋ Add Position</button>
-    </div>
 
-    <!-- Advanced settings — collapsible -->
-    <div class="blk-collapsible" id="blk_advanced">
-      <div class="blk-collapsible-hdr" data-target="adv_body">
-        <span>⚙ Advanced Settings</span>
-        <span class="blk-caret">▶</span>
+      <!-- Chain name -->
+      <div>
+        <label style="font-size:12px;font-weight:600;color:var(--mu);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;display:block">Chain Name</label>
+        <input type="text" id="builder_name" placeholder="e.g. Cool FM Distribution" style="width:100%">
       </div>
-      <div id="adv_body" style="display:none">
-        <div class="adv-grid">
-          <div class="adv-field">
-            <label title="Suppress notifications if this upstream chain is also faulted.">Upstream chain (cascade)</label>
-            <select id="builder_upstream_chain" style="width:100%"><option value="">— None —</option></select>
-            <div class="field-hint">Suppress if upstream faulted</div>
-          </div>
-          <div class="adv-field">
-            <label title="Extra grace if fault position shifts during the confirmation window.">Fault shift grace (s)</label>
-            <input type="number" id="builder_fault_shift_grace" min="0" max="300" step="10" value="0" style="width:90px">
-            <div class="field-hint">0 = keep clock</div>
-          </div>
-          <div class="adv-field">
-            <label title="Brief inter-ad silences shorter than this share one confirmation window. Prevents false faults from badly-segued ads.">Ad-break gap tolerance (s)</label>
-            <input type="number" id="builder_adbreak_gap_tol" min="0" max="30" step="1" value="5" style="width:90px">
-            <div class="field-hint">5 s default · 0 = off</div>
-          </div>
-          <div class="adv-field">
-            <label title="Alert when level trend falls below this slope. 0 = disabled.">Degrading trend (dBFS/min)</label>
-            <input type="number" id="builder_trend_alert" min="-10" max="0" step="0.1" value="0" style="width:90px">
-            <div class="field-hint">0 = off · e.g. −1.0 = 1 dB/min drop</div>
-          </div>
-          <div class="adv-field">
-            <label title="Duration of onset and recovery audio clips. 0 = use system default (10 s).">Clip duration (s)</label>
-            <input type="number" id="builder_clip_seconds" min="0" max="300" step="5" value="0" style="width:90px">
-            <div class="field-hint">0 = default (10 s) · max 300 s</div>
-          </div>
-          <div class="adv-field" style="grid-column:1/-1">
-            <label title="Extra Zetta now-playing title keywords to treat as an ad break (suppress CHAIN_FAULT). One phrase per line — all words in the phrase must appear in the track title, so 'sport bed' matches 'Cool FM - Sport - Bed Only'. Global defaults 'news bed' and 'sport bed' always apply; use this field for station-specific beds.">Ad-break title keywords (Zetta)</label>
-            <textarea id="builder_zetta_bed_kw" rows="3" placeholder="One phrase per line&#10;e.g. agri news bed&#10;traffic bed&#10;weather bed" style="width:100%;box-sizing:border-box;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:12px;font-family:inherit;resize:vertical"></textarea>
-            <div class="field-hint">Global defaults always active: "news bed" · "sport bed" — add extras here when station beds use different names</div>
+
+      <!-- Signal path -->
+      <div>
+        <div class="blk-hdr">
+          <span>Signal Path <span style="font-size:10px;color:var(--mu);font-weight:400">— left = source, right = destination</span></span>
+          <span style="font-size:11px;color:var(--mu)">Each position can stack multiple streams</span>
+        </div>
+        <div id="builder_nodes" style="display:flex;flex-direction:column;gap:8px;margin:10px 0 8px"></div>
+        <button class="btn bg bs" id="btn_add_node" type="button">＋ Add Position</button>
+      </div>
+
+      <!-- Advanced settings — collapsible -->
+      <div class="blk-collapsible" id="blk_advanced">
+        <div class="blk-collapsible-hdr" data-target="adv_body">
+          <span>⚙ Advanced Settings</span>
+          <span class="blk-caret">▶</span>
+        </div>
+        <div id="adv_body" style="display:none">
+          <div class="adv-grid">
+            <div class="adv-field">
+              <label title="Suppress notifications if this upstream chain is also faulted.">Upstream chain (cascade)</label>
+              <select id="builder_upstream_chain" style="width:100%"><option value="">— None —</option></select>
+              <div class="field-hint">Suppress if upstream faulted</div>
+            </div>
+            <div class="adv-field">
+              <label title="Extra grace if fault position shifts during the confirmation window.">Fault shift grace (s)</label>
+              <input type="number" id="builder_fault_shift_grace" min="0" max="300" step="10" value="0" style="width:90px">
+              <div class="field-hint">0 = keep clock</div>
+            </div>
+            <div class="adv-field">
+              <label title="Brief inter-ad silences shorter than this share one confirmation window. Prevents false faults from badly-segued ads.">Ad-break gap tolerance (s)</label>
+              <input type="number" id="builder_adbreak_gap_tol" min="0" max="30" step="1" value="5" style="width:90px">
+              <div class="field-hint">5 s default · 0 = off</div>
+            </div>
+            <div class="adv-field">
+              <label title="Alert when level trend falls below this slope. 0 = disabled.">Degrading trend (dBFS/min)</label>
+              <input type="number" id="builder_trend_alert" min="-10" max="0" step="0.1" value="0" style="width:90px">
+              <div class="field-hint">0 = off · e.g. −1.0 = 1 dB/min drop</div>
+            </div>
+            <div class="adv-field">
+              <label title="Duration of onset and recovery audio clips. 0 = use system default (10 s).">Clip duration (s)</label>
+              <input type="number" id="builder_clip_seconds" min="0" max="300" step="5" value="0" style="width:90px">
+              <div class="field-hint">0 = default (10 s) · max 300 s</div>
+            </div>
+            <div class="adv-field" style="grid-column:1/-1">
+              <label title="Extra Zetta now-playing title keywords to treat as an ad break (suppress CHAIN_FAULT). One phrase per line — all words in the phrase must appear in the track title, so 'sport bed' matches 'Cool FM - Sport - Bed Only'. Global defaults 'news bed' and 'sport bed' always apply; use this field for station-specific beds.">Ad-break title keywords (Zetta)</label>
+              <textarea id="builder_zetta_bed_kw" rows="3" placeholder="One phrase per line&#10;e.g. agri news bed&#10;traffic bed&#10;weather bed" style="width:100%;box-sizing:border-box;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:12px;font-family:inherit;resize:vertical"></textarea>
+              <div class="field-hint">Global defaults always active: "news bed" · "sport bed" — add extras here when station beds use different names</div>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </div><!-- /drawer-col-l -->
 
-    <!-- Comparators — collapsible -->
-    <div class="blk-collapsible" id="blk_comparators" style="margin-top:0">
-      <div class="blk-collapsible-hdr" data-target="comp_body">
-        <span>↔ Signal Comparators</span>
-        <span id="comp_count_badge" style="display:none;font-size:11px;font-weight:700;background:var(--acc);color:#fff;border-radius:999px;padding:1px 7px;margin-left:6px"></span>
-        <span style="font-size:11px;color:var(--mu);margin-left:8px">Needs ≥ 5 min shared history</span>
-        <span class="blk-caret" style="margin-left:auto">▶</span>
+    <!-- RIGHT COLUMN: comparators + alert timing -->
+    <div class="drawer-col-r">
+
+      <!-- Signal Comparators — always visible -->
+      <div>
+        <div style="font-size:10px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+          ↔ Signal Comparators
+          <span id="comp_count_badge" style="display:none;font-size:11px;font-weight:700;background:var(--acc);color:#fff;border-radius:999px;padding:1px 7px"></span>
+        </div>
+        <div style="background:#0a1e42;border:1px solid var(--bor);border-radius:8px;overflow:hidden">
+          <div id="builder_comparators" style="padding:10px 12px 4px;min-height:36px"></div>
+          <div style="padding:8px 12px 10px;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn bg bs" type="button" id="btn_add_comp">＋ Add Comparator</button>
+            <button class="btn bg bs" type="button" id="btn_add_e2e">↔ End-to-End</button>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--mu);margin-top:5px;line-height:1.4">Requires ≥ 5 min of shared history per pair. Compares levels between two signal path positions to detect path failures.</div>
       </div>
-      <div id="comp_body" style="display:none">
-        <div id="builder_comparators" style="padding:10px 12px 0"></div>
-        <div style="padding:8px 12px 12px;display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn bg bs" type="button" id="btn_add_comp">＋ Add Comparator</button>
-          <button class="btn bg bs" type="button" id="btn_add_e2e">↔ Add End-to-End</button>
+
+      <!-- Alert Timing — always visible -->
+      <div>
+        <div style="font-size:10px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">⏱ Alert Timing</div>
+        <div style="background:#0a1e42;border:1px solid var(--bor);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:12px">
+          <div class="adv-field">
+            <label title="Universal hold-off before any CHAIN_FAULT fires — applies to ALL fault types. Use to prevent alerts from brief silences between songs.">Min silence before alert (s)</label>
+            <input type="number" id="builder_fault_holdoff" min="0" max="300" step="5" value="0" style="width:100%">
+            <div class="field-hint">0 = instant · e.g. 10 = wait 10 s</div>
+          </div>
+          <div class="adv-field">
+            <label title="Maximum ad break duration. Pre-mix-in silence shorter than this is treated as an ad break and suppressed. Has no effect without an Ad mix-in node set.">Max ad break (s)</label>
+            <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:100%">
+            <div class="field-hint">0 = off · requires mix-in node</div>
+          </div>
+          <div class="adv-field">
+            <label>Confirm recovery (s)</label>
+            <input type="number" id="builder_min_recovery" min="0" max="3600" step="30" value="0" style="width:100%">
+            <div class="field-hint">0 = immediate</div>
+          </div>
+          <div class="adv-field">
+            <label>Re-alert after (min)</label>
+            <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:100%">
+            <div class="field-hint">0 = no repeat</div>
+          </div>
+          <div class="adv-field">
+            <label title="Mark the node where ad audio is injected. Silent here = real fault, not ad break.">Ad mix-in node</label>
+            <select id="builder_mixin_idx" style="width:100%"><option value="">— None —</option></select>
+            <div class="field-hint">Silent here = real fault, not ad break</div>
+          </div>
         </div>
       </div>
-    </div>
-  </div>
 
-  <!-- Alert Timing — pinned above footer, always visible regardless of scroll -->
-  <div class="drawer-timing">
-    <div style="display:flex;align-items:center;gap:8px;padding:7px 14px;font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--bor)">
-      <span>⏱ Alert Timing</span>
-    </div>
-    <div class="timing-quick">
-      <div class="adv-field">
-        <label title="Universal hold-off before any CHAIN_FAULT fires — applies to ALL fault types. Use to prevent alerts from brief silences between songs.">Min silence before alert (s)</label>
-        <input type="number" id="builder_fault_holdoff" min="0" max="300" step="5" value="0" style="width:100%">
-        <div class="field-hint">0 = instant · e.g. 10 = wait 10 s</div>
-      </div>
-      <div class="adv-field">
-        <label title="Maximum ad break duration. Pre-mix-in silence shorter than this is treated as an ad break and suppressed. Has no effect without an Ad mix-in node set.">Max ad break (s)</label>
-        <input type="number" id="builder_min_fault" min="0" max="3600" step="30" value="0" style="width:100%">
-        <div class="field-hint">0 = off · requires mix-in node</div>
-      </div>
-      <div class="adv-field">
-        <label>Confirm recovery (s)</label>
-        <input type="number" id="builder_min_recovery" min="0" max="3600" step="30" value="0" style="width:100%">
-        <div class="field-hint">0 = immediate</div>
-      </div>
-      <div class="adv-field">
-        <label>Re-alert after (min)</label>
-        <input type="number" id="builder_min_alert_interval" min="0" max="1440" step="5" value="0" style="width:100%">
-        <div class="field-hint">0 = no repeat</div>
-      </div>
-      <div class="adv-field">
-        <label title="Mark the node where ad audio is injected. Silent here = real fault, not ad break.">Ad mix-in node</label>
-        <select id="builder_mixin_idx" style="width:100%"><option value="">— None —</option></select>
-        <div class="field-hint">Silent here = real fault, not ad break</div>
-      </div>
-    </div>
-  </div>
+    </div><!-- /drawer-col-r -->
+  </div><!-- /drawer-content-grid -->
 
   <div class="drawer-footer">
     <button class="btn bp" id="btn_save_chain" type="button">💾 Save Chain</button>
@@ -30497,12 +30501,6 @@ function showBuilder(chain){
   var _advHdr=document.querySelector('#blk_advanced .blk-collapsible-hdr');
   if(_hasAdv&&_advBody){_advBody.style.display='';if(_advHdr)_advHdr.classList.add('open');}
   else if(_advBody){_advBody.style.display='none';if(_advHdr)_advHdr.classList.remove('open');}
-  // Auto-expand comparators section when chain has comparators configured
-  var _compBody=document.getElementById('comp_body');
-  var _compHdr=document.querySelector('#blk_comparators .blk-collapsible-hdr');
-  var _hasComps=chain&&(chain.comparators||[]).length>0;
-  if(_hasComps&&_compBody){_compBody.style.display='';if(_compHdr)_compHdr.classList.add('open');}
-  else if(_compBody){_compBody.style.display='none';if(_compHdr)_compHdr.classList.remove('open');}
   _updateCompCount();
   // Open drawer
   document.getElementById('builder').classList.add('open');
