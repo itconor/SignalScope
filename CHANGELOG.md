@@ -2,6 +2,16 @@
 
 ---
 
+### Morning Report 1.3.2 — 2026-04-29
+
+**Fixed: Scheduler thread and hub routes no longer start on client nodes**
+
+`hub_only: True` in `SIGNALSCOPE_PLUGIN` only hides the nav item — it does not prevent the plugin from being loaded and `register()` from running on every node. The `_scheduler_loop` thread was starting unconditionally, querying `metrics_history.db` and `alert_log.json` that don't exist on client machines and producing empty reports every morning.
+
+`register()` now reads the node `mode` before doing anything hub-specific. On client nodes the scheduler thread is never started and the hub routes return a plain "hub only" message. All report generation, cache loading, and settings persist only on hub/standalone nodes.
+
+---
+
 ### SignalScope-3.5.190 — 2026-04-29
 
 **Improved: Chain fault alert messages — plain English, no redundancy**

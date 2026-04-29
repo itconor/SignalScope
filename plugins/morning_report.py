@@ -8,7 +8,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/morning-report",
     "icon":     "📰",
     "hub_only": True,
-    "version":  "1.3.1",
+    "version":  "1.3.2",
 }
 
 import os, json, time, threading, datetime, sqlite3, statistics
@@ -944,6 +944,45 @@ def register(app, ctx):
     BUILD          = ctx["BUILD"]
 
     from flask import render_template_string, request, jsonify, redirect, url_for
+
+    # Determine whether this node is a hub (or standalone) vs a pure client node.
+    # On client nodes the scheduler must NOT run — it reads shared app data files
+    # (metrics_history.db, alert_log.json) that only exist on the hub, and writing
+    # a report cache on every client would waste I/O and produce empty reports.
+    cfg_ss = monitor.app_cfg
+    mode   = getattr(getattr(cfg_ss, "hub", None), "mode", "standalone") or "standalone"
+    is_hub = mode in ("hub", "both", "standalone")
+
+    if not is_hub:
+        # Client node: register stub routes only so Flask doesn't 404 if somehow
+        # reached, but do NOT start the scheduler or load any cached report.
+
+        @app.get("/hub/morning-report")
+        @login_required
+        def morning_report_page():
+            return "<p style='font-family:sans-serif;padding:2em'>Morning Report is only available on the hub.</p>", 200
+
+        @app.post("/api/morning-report/generate")
+        @login_required
+        @csrf_protect
+        def morning_report_generate():
+            return jsonify({"ok": False, "error": "Morning Report runs on the hub only."}), 403
+
+        @app.get("/hub/morning-report/settings")
+        @login_required
+        def morning_report_settings_page():
+            return "<p style='font-family:sans-serif;padding:2em'>Morning Report settings are only available on the hub.</p>", 200
+
+        @app.post("/hub/morning-report/settings")
+        @login_required
+        @csrf_protect
+        def morning_report_settings_save():
+            return jsonify({"ok": False, "error": "Morning Report runs on the hub only."}), 403
+
+        monitor.log("[MorningReport] Client node — scheduler not started")
+        return
+
+    # ── Hub / standalone only ──────────────────────────────────────────────────
 
     # Load cached report from disk on startup
     with _report_lock:
