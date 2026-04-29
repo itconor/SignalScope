@@ -6,7 +6,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "AzuraCast",
     "url":     "/azuracast",
     "icon":    "🎙",
-    "version": "1.2.3",
+    "version": "1.3.0",
 }
 
 import hashlib
@@ -885,9 +885,10 @@ function _renderSrvList(servers, stations){
   servers.forEach(function(srv){
     var srvStations = stations.filter(function(s){ return s.server_id === srv.id; });
     html += '<div class="srv-section">';
-    html += '<div style="display:flex;justify-content:space-between;align-items:center">'
-      + '<h4>' + _esc(srv.url) + '</h4>'
-      + '<button class="btn bd bs srv-rm-btn" data-srv-id="' + _esc(srv.id) + '">Remove Server</button>'
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+      + '<h4 style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">' + _esc(srv.url) + '</h4>'
+      + '<button class="btn bp bs srv-discover-btn" data-srv-id="' + _esc(srv.id) + '" data-srv-url="' + _esc(srv.url) + '">🔍 Discover more</button>'
+      + '<button class="btn bd bs srv-rm-btn" data-srv-id="' + _esc(srv.id) + '">Remove</button>'
       + '</div>';
     if(srvStations.length){
       html += '<table style="margin-top:6px"><thead><tr>'
@@ -921,6 +922,8 @@ function _renderSrvList(servers, stations){
   el.innerHTML = html;
 
   el.addEventListener('click', function(e){
+    var discMore = e.target.closest('.srv-discover-btn');
+    if(discMore){ doDiscoverSaved(discMore, discMore.dataset.srvId, discMore.dataset.srvUrl); return; }
     var rmSrv = e.target.closest('.srv-rm-btn');
     if(rmSrv){ doRemoveServer(rmSrv.dataset.srvId); return; }
     var rmSta = e.target.closest('.sta-rm-btn');
@@ -984,6 +987,96 @@ function _inputSelect(id){
   return '<select id="' + id + '">' + opts + '</select>';
 }
 
+function _showDiscoverResult(d){
+  if(!d.ok){ _showMsg(d.error||'Discovery failed', false);
+    document.getElementById('disc-result').innerHTML=''; return; }
+  // Pre-fill az-url so doAddStation can find the right server record
+  if(d.srv_url) document.getElementById('az-url').value = d.srv_url;
+  var stations = d.stations||[];
+  if(!stations.length){
+    document.getElementById('disc-result').innerHTML
+      = '<div style="color:var(--mu)">No stations found.</div>';
+    return;
+  }
+  var html = '<table><thead><tr>'
+    + '<th>ID</th><th>Name</th><th>Shortcode</th><th>Listeners</th><th>Status</th><th></th>'
+    + '</tr></thead><tbody>';
+  stations.forEach(function(s, i){
+    var hasStream = !!(s.listen_url);
+    html += '<tr class="disc-row">'
+      + '<td>' + _esc(s.id) + '</td>'
+      + '<td>' + _esc(s.name) + '</td>'
+      + '<td>' + _esc(s.shortcode) + '</td>'
+      + '<td>' + (s.listeners||0) + '</td>'
+      + '<td>' + (s.is_online ? '<span class="badge b-ok">Online</span>' : '<span class="badge b-al">Offline</span>') + '</td>'
+      + '<td><button class="btn bp bs disc-add-btn"'
+      + ' data-idx="' + i + '"'
+      + ' data-id="' + _esc(String(s.id)) + '"'
+      + ' data-name="' + _esc(s.name) + '"'
+      + '>Add</button></td>'
+      + '</tr>'
+      + '<tr id="add-form-' + i + '" style="display:none"><td colspan="6">'
+      + '<div style="padding:8px;background:#0a1a36;border-radius:8px">'
+      + '<div class="field"><label>Display Name</label>'
+      + '<input id="dn-' + i + '" type="text" value="' + _esc(s.name) + '"></div>'
+      + '<div class="field"><label>Link to existing input (optional)</label>'
+      + _inputSelect('inp-' + i)
+      + '</div>'
+      + (hasStream
+        ? '<hr style="border:none;border-top:1px solid var(--bor);margin:8px 0">'
+          + '<div class="field" style="flex-direction:row;align-items:center;gap:8px">'
+          + '<input type="checkbox" id="ci-' + i + '" checked>'
+          + '<label for="ci-' + i + '" style="text-transform:none;letter-spacing:0;color:var(--tx);font-weight:600">Add HTTP stream as monitored input</label>'
+          + '</div>'
+          + '<div id="ci-wrap-' + i + '" style="margin-top:6px;display:flex;flex-direction:column;gap:6px">'
+          + '<div class="field"><label>Stream URL</label>'
+          + '<input id="ci-url-' + i + '" type="url" value="' + _esc(s.listen_url) + '" style="font-size:12px;font-family:monospace"></div>'
+          + '<div class="field" style="flex-direction:row;align-items:center;gap:8px">'
+          + '<input type="checkbox" id="ci-stereo-' + i + '">'
+          + '<label for="ci-stereo-' + i + '" style="text-transform:none;letter-spacing:0;color:var(--tx)">Stereo stream</label>'
+          + '</div>'
+          + '</div>'
+          + '<hr style="border:none;border-top:1px solid var(--bor);margin:8px 0">'
+        : '')
+      + '<div class="field" style="flex-direction:row;align-items:center;gap:8px">'
+      + '<input type="checkbox" id="sa-' + i + '" checked>'
+      + '<label for="sa-' + i + '" style="text-transform:none;letter-spacing:0;color:var(--tx)">Alert when AzuraCast shows online but input is silent</label>'
+      + '</div>'
+      + '<button class="btn bp bs disc-confirm-btn" data-idx="' + i + '" data-station-id="' + _esc(String(s.id)) + '">Confirm Add</button>'
+      + ' <button class="btn bg bs disc-cancel-btn" data-idx="' + i + '">Cancel</button>'
+      + '</div>'
+      + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  var el = document.getElementById('disc-result');
+  el.innerHTML = html;
+  // Wire ci-N checkboxes to show/hide the stream URL section
+  el.querySelectorAll('input[id^="ci-"]').forEach(function(cb){
+    if(cb.type !== 'checkbox') return;
+    var idx = cb.id.replace('ci-', '');
+    cb.addEventListener('change', function(){
+      var wrap = document.getElementById('ci-wrap-' + idx);
+      if(wrap) wrap.style.display = this.checked ? '' : 'none';
+    });
+  });
+  el.addEventListener('click', function(ev){
+    var addBtn = ev.target.closest('.disc-add-btn');
+    if(addBtn){
+      var idx = addBtn.dataset.idx;
+      var row = document.getElementById('add-form-' + idx);
+      if(row) row.style.display = (row.style.display === 'none' ? '' : 'none');
+      return;
+    }
+    var confBtn = ev.target.closest('.disc-confirm-btn');
+    if(confBtn){ doAddStation(confBtn.dataset.idx, confBtn.dataset.stationId); return; }
+    var cancelBtn = ev.target.closest('.disc-cancel-btn');
+    if(cancelBtn){
+      var row = document.getElementById('add-form-' + cancelBtn.dataset.idx);
+      if(row) row.style.display = 'none';
+    }
+  });
+}
+
 function doDiscover(btn){
   var url = document.getElementById('az-url').value.trim();
   var key = document.getElementById('az-key').value.trim();
@@ -995,68 +1088,25 @@ function doDiscover(btn){
 
   _loadInputs(function(){
     _post('/api/azuracast/discover', {url:url, api_key:key})
-      .then(function(d){
-        _btnReset(btn);
-        if(!d.ok){ _showMsg(d.error||'Discovery failed', false);
-          document.getElementById('disc-result').innerHTML=''; return; }
-        var stations = d.stations||[];
-        if(!stations.length){
-          document.getElementById('disc-result').innerHTML
-            = '<div style="color:var(--mu)">No stations found.</div>';
-          return;
-        }
-        var html = '<table><thead><tr>'
-          + '<th>ID</th><th>Name</th><th>Shortcode</th><th>Listeners</th><th>Status</th><th></th>'
-          + '</tr></thead><tbody>';
-        stations.forEach(function(s, i){
-          html += '<tr class="disc-row">'
-            + '<td>' + _esc(s.id) + '</td>'
-            + '<td>' + _esc(s.name) + '</td>'
-            + '<td>' + _esc(s.shortcode) + '</td>'
-            + '<td>' + (s.listeners||0) + '</td>'
-            + '<td>' + (s.is_online ? '<span class="badge b-ok">Online</span>' : '<span class="badge b-al">Offline</span>') + '</td>'
-            + '<td><button class="btn bp bs disc-add-btn"'
-            + ' data-idx="' + i + '"'
-            + ' data-id="' + _esc(String(s.id)) + '"'
-            + ' data-name="' + _esc(s.name) + '"'
-            + '>Add</button></td>'
-            + '</tr>'
-            + '<tr id="add-form-' + i + '" style="display:none"><td colspan="6">'
-            + '<div style="padding:8px;background:#0a1a36;border-radius:8px">'
-            + '<div class="field"><label>Display Name</label>'
-            + '<input id="dn-' + i + '" type="text" value="' + _esc(s.name) + '"></div>'
-            + '<div class="field"><label>Link to Input</label>'
-            + _inputSelect('inp-' + i)
-            + '</div>'
-            + '<div class="field" style="flex-direction:row;align-items:center;gap:8px">'
-            + '<input type="checkbox" id="sa-' + i + '" checked>'
-            + '<label for="sa-' + i + '" style="text-transform:none;letter-spacing:0;color:var(--tx)">Alert when AzuraCast is online but input is silent</label>'
-            + '</div>'
-            + '<button class="btn bp bs disc-confirm-btn" data-idx="' + i + '" data-station-id="' + _esc(String(s.id)) + '">Confirm Add</button>'
-            + ' <button class="btn bg bs disc-cancel-btn" data-idx="' + i + '">Cancel</button>'
-            + '</div>'
-            + '</td></tr>';
-        });
-        html += '</tbody></table>';
-        var el = document.getElementById('disc-result');
-        el.innerHTML = html;
-        el.addEventListener('click', function(ev){
-          var addBtn = ev.target.closest('.disc-add-btn');
-          if(addBtn){
-            var idx = addBtn.dataset.idx;
-            var row = document.getElementById('add-form-' + idx);
-            if(row) row.style.display = (row.style.display === 'none' ? '' : 'none');
-            return;
-          }
-          var confBtn = ev.target.closest('.disc-confirm-btn');
-          if(confBtn){ doAddStation(confBtn.dataset.idx, confBtn.dataset.stationId); return; }
-          var cancelBtn = ev.target.closest('.disc-cancel-btn');
-          if(cancelBtn){
-            var row = document.getElementById('add-form-' + cancelBtn.dataset.idx);
-            if(row) row.style.display = 'none';
-          }
-        });
-      })
+      .then(function(d){ _btnReset(btn); _showDiscoverResult(d); })
+      .catch(function(e){ _btnReset(btn); _showMsg('Discover error: '+e, false); });
+  });
+}
+
+function doDiscoverSaved(btn, srvId, srvUrl){
+  // Pre-fill URL field (no key — stored server-side) and open the accordion
+  document.getElementById('az-url').value = srvUrl || '';
+  document.getElementById('az-key').value = '';
+  var details = document.getElementById('cfg-details');
+  if(details) details.open = true;
+  var discResult = document.getElementById('disc-result');
+  discResult.innerHTML = '<div style="color:var(--mu)">Discovering…</div>';
+  discResult.scrollIntoView({behavior:'smooth', block:'nearest'});
+  _btnLoad(btn);
+
+  _loadInputs(function(){
+    _post('/api/azuracast/discover', {server_id: srvId})
+      .then(function(d){ _btnReset(btn); _showDiscoverResult(d); })
       .catch(function(e){ _btnReset(btn); _showMsg('Discover error: '+e, false); });
   });
 }
@@ -1064,22 +1114,54 @@ function doDiscover(btn){
 function doAddStation(idx, stationId){
   var url    = document.getElementById('az-url').value.trim();
   var apiKey = document.getElementById('az-key').value.trim();
-  var dn     = (document.getElementById('dn-'  + idx)||{}).value || '';
-  var inp    = (document.getElementById('inp-' + idx)||{}).value || '';
+  var dn     = ((document.getElementById('dn-'  + idx)||{}).value || '').trim();
   var sa     = !!(document.getElementById('sa-'  + idx)||{}).checked;
 
-  _post('/api/azuracast/station/add', {
+  // Create-input fields (optional — only present when station has a listen_url)
+  var ciEl      = document.getElementById('ci-' + idx);
+  var doCreate  = !!(ciEl && ciEl.checked);
+  var streamUrl = ((document.getElementById('ci-url-'    + idx)||{}).value || '').trim();
+  var stereo    = !!(document.getElementById('ci-stereo-' + idx)||{}).checked;
+  var inputName = dn || stationId;
+
+  // When auto-creating an input, link the station to it for silence detection
+  var inp = doCreate && streamUrl
+    ? inputName
+    : ((document.getElementById('inp-' + idx)||{}).value || '');
+
+  var p1 = _post('/api/azuracast/station/add', {
     url: url, api_key: apiKey,
     station_id: stationId,
     display_name: dn,
     input_name: inp,
     silence_alert: sa
-  }).then(function(d){
-    if(d.ok){ _showMsg('Station added.', true); loadStatus();
-      document.getElementById('disc-result').innerHTML='';
-      document.getElementById('az-url').value='';
-      document.getElementById('az-key').value='';
-    } else { _showMsg(d.error||'Add failed', false); }
+  });
+
+  var p2 = (doCreate && streamUrl)
+    ? fetch('/inputs/add_dab_bulk', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json','X-CSRFToken': _getCsrf()},
+        credentials: 'same-origin',
+        body: JSON.stringify({services: [{name: inputName, device_index: streamUrl, stereo: stereo}]})
+      }).then(function(r){ return r.json(); })
+    : Promise.resolve(null);
+
+  Promise.all([p1, p2]).then(function(res){
+    var d1 = res[0], d2 = res[1];
+    if(!d1.ok){ _showMsg(d1.error||'Add failed', false); return; }
+    var msg = 'Station added.';
+    if(d2){
+      if(d2.ok || (d2.added && d2.added.length)){
+        msg += ' Input "' + (d2.added && d2.added[0] ? d2.added[0] : inputName) + '" created.';
+      } else if(d2.error){
+        msg += ' Input warning: ' + d2.error;
+      }
+    }
+    _showMsg(msg, true);
+    loadStatus();
+    document.getElementById('disc-result').innerHTML='';
+    document.getElementById('az-url').value='';
+    document.getElementById('az-key').value='';
   }).catch(function(e){ _showMsg('Error: '+e, false); });
 }
 
@@ -1345,11 +1427,20 @@ def register(app, ctx):
     @login_required
     @csrf_protect
     def azuracast_discover():
-        body    = request.get_json(silent=True) or {}
-        url     = str(body.get("url", "")).strip().rstrip("/")
-        api_key = str(body.get("api_key", "")).strip()
+        body      = request.get_json(silent=True) or {}
+        server_id = str(body.get("server_id", "")).strip()
+        url       = str(body.get("url", "")).strip().rstrip("/")
+        api_key   = str(body.get("api_key", "")).strip()
 
-        if not url.startswith(("http://", "https://")):
+        if server_id:
+            # Use stored credentials for a previously-saved server
+            cfg_now = _get_cfg()
+            srv = next((s for s in cfg_now.get("servers", []) if s.get("id") == server_id), None)
+            if not srv:
+                return jsonify({"ok": False, "error": "Server not found in config"}), 200
+            url     = srv.get("url", "").rstrip("/")
+            api_key = srv.get("api_key", "")
+        elif not url.startswith(("http://", "https://")):
             return jsonify({"ok": False, "error": "URL must start with http:// or https://"}), 400
 
         try:
@@ -1377,14 +1468,15 @@ def register(app, ctx):
             if not station_id:
                 continue
             stations_out.append({
-                "id":        station_id,
-                "name":      station_info.get("name", ""),
-                "shortcode": station_info.get("shortcode", ""),
+                "id":         station_id,
+                "name":       station_info.get("name", ""),
+                "shortcode":  station_info.get("shortcode", ""),
                 "listen_url": station_info.get("listen_url", ""),
-                "listeners": int(listeners.get("current", 0)),
-                "is_online": bool(s.get("is_online", False)),
+                "listeners":  int(listeners.get("current", 0)),
+                "is_online":  bool(s.get("is_online", False)),
+                "srv_url":    url,   # so JS can pre-fill az-url for doAddStation
             })
-        return jsonify({"ok": True, "stations": stations_out})
+        return jsonify({"ok": True, "stations": stations_out, "srv_url": url})
 
     @app.post("/api/azuracast/station/add")
     @login_required

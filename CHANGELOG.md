@@ -2,6 +2,25 @@
 
 ---
 
+### AzuraCast 1.3.0 — 2026-04-29
+
+**Added: Auto-create monitored input from AzuraCast stream URL on station add**
+
+- Each station in discovery results now shows an "Add HTTP stream as monitored input"
+  section (only when AzuraCast returns a listen_url). Stream URL is pre-filled and
+  editable; stereo checkbox included. When confirmed, both the AzuraCast station
+  record AND a SignalScope HTTP input are created in one click. The new input is
+  automatically linked to the station for silence detection.
+- The `/api/azuracast/discover` endpoint now accepts `server_id` as an alternative
+  to URL + API key, so saved-server credentials never need to be re-entered.
+- "🔍 Discover more" button added to each saved server in the server list — triggers
+  discovery immediately using stored credentials; pre-fills the URL field so Confirm
+  Add still works correctly.
+- `doDiscover`/`doDiscoverSaved` refactored around shared `_showDiscoverResult(d)`
+  to eliminate code duplication.
+
+---
+
 ### AzuraCast 1.2.3 — 2026-04-29
 
 **Fixed: Discover Stations button still did nothing after 1.2.2**
