@@ -2,6 +2,67 @@
 
 ---
 
+### Audio Router 1.2.9 — 2026-04-30
+
+**Fix: hub responsiveness degraded by Audio Router streaming connections**
+
+The hub relay endpoint (`hub_stream`) held one Waitress worker thread open for
+the entire lifetime of each active cross-site route — ffmpeg on the dest node
+opened a persistent HTTP connection and the thread was never released.  With
+Waitress's fixed thread pool this caused page loads and API calls to queue
+behind streaming connections, producing the "times out or doesn't load
+properly" symptoms.
+
+**New architecture — short-lived long-poll (`hub_chunks`):**
+- New `GET /api/audiorouter/hub_chunks/<rid>` endpoint on the hub.
+- Each call blocks for at most 1.5 s using the broadcaster's condition
+  variable (no busy-wait), returns all available chunks, and releases the
+  Waitress thread immediately.
+- Dest client spawns a background polling thread (`ARDestPoll-*`) that
+  fetches chunks in a tight loop and writes them to ffmpeg's stdin
+  (`-i pipe:0`).  One round-trip per ~100 ms of audio; the hub thread is
+  free for the rest of every request interval.
+- `hub_stream` is retained for backward compatibility and external tooling
+  but is no longer used by the dest client.
+
+**Routing logic changes:**
+- `_start_dest_route` now forks on `via`: direct P2P keeps ffmpeg pulling
+  the source node URL; hub relay uses ffmpeg stdin + `ARDestPoll-*` thread.
+- `_stop_route_proc` signals the `ARDestPoll-*` thread via a `threading.Event`
+  before killing ffmpeg, preventing a race between the poll loop writing to
+  a closed stdin pipe.
+
+**Rule**: Never give ffmpeg a hub relay URL as `-i` directly — that holds a
+hub Waitress thread for the full connection lifetime.  Use `hub_chunks` with
+the stdin-pipe approach instead.
+
+---
+
+### Audio Router 1.2.8 — 2026-04-30
+
+**Feature: unicast RTP output**
+
+Routes can now send audio to any RTP-capable receiver (VLC, ffplay, OBS,
+Icecast2 via RTP, hardware codecs) instead of — or alongside — Livewire
+multicast.
+
+**New route option — Output Type: RTP Unicast:**
+- Unicast destination IP and UDP port (default 5004).
+- Codec: PCM L16 (`pcm_s16be` — uncompressed, lowest latency), MP3
+  (`libmp3lame`, 192 kbps), or AAC (192 kbps).
+- Receive in VLC: `Media → Open Network → rtp://@:<port>`.
+  Or: `vlc rtp://@:5004` from the command line.
+
+**Implementation:**
+- `_dest_output_args(route)` dispatcher: returns Livewire or RTP output
+  args based on `route["dest_type"]`.
+- `_ffmpeg_unicast_output_args(ip, port, codec)`: builds the ffmpeg output
+  section for RTP unicast.
+- Route cards show unicast target, codec, and receive instructions when
+  `dest_type == "rtp_unicast"`.
+
+---
+
 ### Audio Router 1.2.7 — 2026-04-30
 
 **Fix: audio skipping on remote/WAN connections — adaptive jitter buffer**
