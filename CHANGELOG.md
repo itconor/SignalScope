@@ -2,6 +2,26 @@
 
 ---
 
+### Audio Router 1.1.3 — 2026-04-30
+
+**DAB and FM sources now supported**
+
+- Routes with a `dab://` or `fm://` source no longer fail with "source type
+  not supported". SignalScope already decodes DAB/FM audio in its monitoring
+  loop — the router now reads from `inp._stream_buffer` (float32 PCM chunks,
+  ~0.5 s each) and converts to int16 LE bytes in-process.
+- For same-site (local) routes: PCM bytes are piped directly to ffmpeg stdin
+  (`-f s16le -ar 48000 -ac 1 -i pipe:0`), which re-encodes to Livewire L24
+  stereo RTP. No welle-cli or rtl_fm interaction needed.
+- For cross-site (source) routes: a `_SentinelProc` occupies `_active_procs`
+  so the "already running" guard works; the buffer reader drives the same
+  `_StreamBroadcaster` fan-out as the ffmpeg-based source path, giving both
+  hub relay and direct P2P to the dest node.
+- `numpy` required for float32 → int16 conversion (already present in any
+  SignalScope install). Falls back to "numpy required" error if missing.
+
+---
+
 ### Audio Router 1.1.2 — 2026-04-30
 
 **Fix: client thread not starting on hub-mode nodes**

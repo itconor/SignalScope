@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.1.2",
+    "version":  "1.1.3",
 }
 
 import hashlib
@@ -32,6 +32,12 @@ import urllib.error
 import urllib.request
 import uuid
 from flask import jsonify, render_template_string, request
+
+try:
+    import numpy as _np
+    _HAVE_NP = True
+except ImportError:
+    _HAVE_NP = False
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -120,6 +126,44 @@ def _input_type(device_index: str) -> str:
     if di.startswith("dab://"):
         return "dab"
     return "alsa"
+
+
+def _find_input(source_stream: str, monitor):
+    """Return the InputConfig whose name matches source_stream, or None."""
+    try:
+        for inp in (getattr(monitor.app_cfg, "inputs", None) or []):
+            if getattr(inp, "name", "") == source_stream:
+                return inp
+    except Exception:
+        pass
+    return None
+
+
+def _stream_buf_chunks(inp, stop: threading.Event):
+    """
+    Generator that yields int16 LE PCM bytes from inp._stream_buffer.
+    Blocks between SignalScope chunk deliveries (~0.5 s each).
+    Uses inp._live_chunk_seq as a low-overhead change signal.
+    """
+    if not _HAVE_NP:
+        return
+    seen_seq = getattr(inp, "_live_chunk_seq", 0)
+    while not stop.is_set():
+        cur_seq = getattr(inp, "_live_chunk_seq", seen_seq)
+        if cur_seq <= seen_seq:
+            stop.wait(0.05)
+            continue
+        n_new = min(cur_seq - seen_seq, len(inp._stream_buffer))
+        if n_new > 0:
+            for c in list(inp._stream_buffer)[-n_new:]:
+                try:
+                    yield (_np.clip(c * 32767, -32768, 32767)
+                           .astype(_np.int16).tobytes())
+                except Exception:
+                    pass
+        seen_seq = cur_seq
+        stop.wait(0.05)
+
 
 
 # ── P2P stream broadcaster ─────────────────────────────────────────────────────
@@ -1116,8 +1160,23 @@ def _start_route(route: dict, hub_url: str, site_name: str, monitor, listen_regi
     itype = _input_type(device_index) if role in ("local", "source") else "relay"
 
     if itype in ("fm", "dab"):
-        monitor.log(f"[AudioRouter] Route {route['name']!r}: source type not supported for routing ({device_index})")
-        _report_status(hub_url, site_name, rid, "error", "Source type not supported (FM/DAB)")
+        # DAB/FM: audio is already decoded by SignalScope's monitoring loop.
+        # Read from inp._stream_buffer (float32 PCM) instead of spawning ffmpeg
+        # on the raw dab:// / fm:// URI which ffmpeg cannot parse.
+        inp = _find_input(source_stream, monitor)
+        if inp is None:
+            monitor.log(f"[AudioRouter] Route {route['name']!r}: input {source_stream!r} not found locally")
+            _report_status(hub_url, site_name, rid, "error",
+                           f"Input '{source_stream}' not found on this node")
+            return
+        if not _HAVE_NP:
+            _report_status(hub_url, site_name, rid, "error", "numpy required for DAB/FM routing")
+            return
+        if role == "local":
+            _start_local_route_buffered(route, inp, rtp_url, hub_url, site_name, monitor)
+        else:  # source
+            _start_source_route_buffered(route, inp, hub_url, site_name, monitor,
+                                         cfg_ss=monitor.app_cfg)
         return
 
     if role == "local":
@@ -1154,6 +1213,142 @@ def _ffmpeg_lw_output_args(rtp_url: str) -> list[str]:
         "-payload_type", "97",
         rtp_url,
     ]
+
+
+def _start_local_route_buffered(route: dict, inp, rtp_url: str,
+                                hub_url: str, site_name: str, monitor):
+    """Same-site DAB/FM route: SignalScope PCM buffer → ffmpeg stdin → Livewire RTP."""
+    import shutil
+    rid    = route["id"]
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        _report_status(hub_url, site_name, rid, "error", "ffmpeg not found")
+        return
+
+    cmd = ([ffmpeg, "-y",
+            "-f", "s16le", "-ar", "48000", "-ac", "1",
+            "-i", "pipe:0"]
+           + _ffmpeg_lw_output_args(rtp_url))
+    monitor.log(f"[AudioRouter] Local/buffered route {route['name']!r}: {' '.join(cmd)}")
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with _procs_lock:
+            _active_procs[rid] = proc
+    except Exception as e:
+        monitor.log(f"[AudioRouter] Local/buffered route {route['name']!r} ffmpeg failed: {e}")
+        _report_status(hub_url, site_name, rid, "error", str(e))
+        return
+
+    _report_status(hub_url, site_name, rid, "active")
+
+    stop = threading.Event()
+
+    def _writer():
+        try:
+            for pcm_bytes in _stream_buf_chunks(inp, stop):
+                if proc.poll() is not None:
+                    break
+                try:
+                    proc.stdin.write(pcm_bytes)
+                except BrokenPipeError:
+                    break
+        except Exception as e:
+            monitor.log(f"[AudioRouter] Buffer writer {route['name']!r} error: {e}")
+        finally:
+            stop.set()
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+            monitor.log(f"[AudioRouter] Buffer writer {route['name']!r} stopped.")
+
+    threading.Thread(target=_writer, daemon=True, name=f"ARBuf-{rid[:8]}").start()
+
+    with _src_threads_lock:
+        _active_src_threads[rid] = threading.current_thread()
+
+
+def _start_source_route_buffered(route: dict, inp, hub_url: str, site_name: str,
+                                  monitor, cfg_ss=None):
+    """Cross-site DAB/FM SOURCE role: SignalScope PCM buffer → broadcaster → hub relay + direct HTTP."""
+    rid     = route["id"]
+    slot_id = route.get("slot_id", "")
+    secret  = route.get("hub_secret", "")
+
+    if not slot_id:
+        _report_status(hub_url, site_name, rid, "error", "No relay slot assigned yet")
+        return
+
+    bc = _StreamBroadcaster()
+    with _bcast_lock:
+        _active_broadcasters[rid] = bc
+
+    token      = _compute_stream_token(secret, rid)
+    direct_url = _my_direct_url(cfg_ss, rid, token) if cfg_ss else ""
+
+    # Sentinel proc so _stop_route_proc / already-running check works
+    stop = threading.Event()
+
+    class _SentinelProc:
+        def poll(self): return None if not stop.is_set() else 0
+        def kill(self): stop.set()
+        def wait(self, timeout=None): stop.wait(timeout)
+
+    with _procs_lock:
+        _active_procs[rid] = _SentinelProc()
+
+    _report_status(hub_url, site_name, rid, "connecting", direct_url=direct_url)
+
+    def _reader():
+        first = True
+        try:
+            for pcm_bytes in _stream_buf_chunks(inp, stop):
+                bc.push(pcm_bytes)
+                if first:
+                    _report_status(hub_url, site_name, rid, "active", direct_url=direct_url)
+                    first = False
+        except Exception as e:
+            monitor.log(f"[AudioRouter] Buffered source reader {route['name']!r} error: {e}")
+        finally:
+            bc.close()
+            with _bcast_lock:
+                _active_broadcasters.pop(rid, None)
+            stop.set()
+            monitor.log(f"[AudioRouter] Buffered source reader {route['name']!r} stopped.")
+
+    threading.Thread(target=_reader, daemon=True, name=f"ARBufR-{rid[:8]}").start()
+
+    chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
+
+    def _hub_sender():
+        try:
+            for chunk in bc.consumer():
+                ts    = time.time()
+                sig   = _sign_chunk(secret, chunk, ts) if secret else ""
+                nonce = hashlib.md5(os.urandom(8)).hexdigest()[:16]
+                req   = urllib.request.Request(
+                    chunk_url, data=chunk, method="POST",
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "X-Hub-Sig":    sig,
+                        "X-Hub-Ts":     f"{ts:.0f}",
+                        "X-Hub-Nonce":  nonce,
+                    },
+                )
+                try:
+                    urllib.request.urlopen(req, timeout=5).close()
+                except Exception:
+                    pass
+        except Exception as e:
+            monitor.log(f"[AudioRouter] Buffered hub sender {route['name']!r} error: {e}")
+        finally:
+            _report_status(hub_url, site_name, rid, "idle")
+
+    t = threading.Thread(target=_hub_sender, daemon=True, name=f"ARBufS-{rid[:8]}")
+    t.start()
+    with _src_threads_lock:
+        _active_src_threads[rid] = t
 
 
 def _start_local_route(route: dict, device_index: str, itype: str, rtp_url: str,
