@@ -2,6 +2,32 @@
 
 ---
 
+### Audio Router 1.0.0 — 2026-04-29
+
+**New plugin: Broadcast Audio Router**
+
+- Route any monitored input on any connected SignalScope site to a Livewire
+  multicast output on any connected site. Named routes are configured in a
+  hub UI; client nodes execute them autonomously via short-poll.
+- **Same-site routes**: client runs ffmpeg locally — input → Livewire L24
+  stereo 48 kHz RTP multicast (`pcm_s24be`, payload type 97).
+- **Cross-site routes**: hub creates a relay slot (`listen_registry.create`).
+  Source client encodes the input to 16-bit LE mono 48 kHz PCM, posts
+  HMAC-signed 9600-byte chunks to `/api/v1/audio_chunk/<slot_id>`. Dest
+  client fetches raw PCM from `/hub/scanner/stream/<slot_id>` and pipes
+  it to ffmpeg → Livewire RTP multicast.
+- Supports HTTP, HTTPS, SRT, RTSP, and ALSA inputs. FM and DAB inputs are
+  reported as unsupported.
+- Hub page: add/enable/disable/delete routes, live status badges (Active /
+  Connecting / Error / Disabled / Idle), multicast address preview.
+- Client status reported back to hub via `POST /api/audiorouter/client_status`
+  after each state change.
+- Config stored atomically in `plugins/audiorouter_cfg.json`.
+- No SSE — uses short-poll everywhere (8 s client poll, 10 s hub UI refresh).
+- Requires ffmpeg on client nodes.
+
+---
+
 ### Logger 1.6.7 — 2026-04-29
 
 **Fix: downgrade loop for recordings with no DB record**

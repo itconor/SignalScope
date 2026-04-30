@@ -1,0 +1,1163 @@
+# audiorouter.py — Broadcast Audio Router plugin for SignalScope
+# Drop into plugins/. Requires ffmpeg on client nodes.
+#
+# Routes audio from any monitored input on any connected SignalScope site to a
+# Livewire multicast output on any connected site.
+#
+# Architecture:
+#   Hub stores route config and manages relay slots for cross-site routes.
+#   Clients poll /api/audiorouter/poll every 8 s, start/stop ffmpeg processes.
+#   Same-site: client runs ffmpeg locally (input → Livewire multicast).
+#   Cross-site: source client POSTs PCM chunks to hub relay slot;
+#               dest client fetches from hub relay, pipes to ffmpeg → Livewire.
+
+SIGNALSCOPE_PLUGIN = {
+    "id":       "audiorouter",
+    "label":    "Audio Router",
+    "url":      "/hub/audiorouter",
+    "icon":     "🔀",
+    "hub_only": True,
+    "version":  "1.0.0",
+}
+
+import hashlib
+import hmac as _hmac
+import json
+import os
+import subprocess
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+import uuid
+from flask import jsonify, render_template_string, request
+
+# ── Paths ──────────────────────────────────────────────────────────────────────
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_CFG_PATH = os.path.join(_BASE_DIR, "audiorouter_cfg.json")
+
+# ── Module-level state ─────────────────────────────────────────────────────────
+_cfg_lock   = threading.Lock()
+_status_lock = threading.Lock()
+
+# Per-route runtime status reported by clients: route_id → {site, status, error, ts}
+_route_status: dict = {}
+
+# Per-route relay slot IDs managed by hub: route_id → slot_id
+_route_slots: dict = {}
+_slots_lock = threading.Lock()
+
+# Active ffmpeg processes on client: route_id → subprocess.Popen
+_active_procs: dict = {}
+_procs_lock = threading.Lock()
+
+# Active source PCM reader threads: route_id → threading.Thread
+_active_src_threads: dict = {}
+_src_threads_lock = threading.Lock()
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _lw_multicast(stream_id: int) -> str:
+    """Livewire multicast address formula."""
+    return f"239.192.{(stream_id >> 8) & 0xFF}.{stream_id & 0xFF}"
+
+
+def _sign_chunk(secret: str, data: bytes, ts: float) -> str:
+    key = hashlib.sha256(f"{secret}:signing".encode()).digest()
+    msg = f"{ts:.0f}:".encode() + data
+    return _hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def _load_cfg() -> dict:
+    try:
+        with open(_CFG_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"routes": []}
+
+
+def _save_cfg(data: dict):
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(_CFG_PATH), suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, _CFG_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _get_route(rid: str) -> dict | None:
+    with _cfg_lock:
+        cfg = _load_cfg()
+    for r in cfg.get("routes", []):
+        if r.get("id") == rid:
+            return r
+    return None
+
+
+def _ffmpeg_rtp_url(stream_id: int) -> str:
+    mc = _lw_multicast(stream_id)
+    return f"rtp://{mc}:5004?ttl=15&buffer_size=65536"
+
+
+def _input_type(device_index: str) -> str:
+    """Classify a device_index string."""
+    di = (device_index or "").lower().strip()
+    if di.startswith(("http://", "https://", "srt://", "rtsp://")):
+        return "network"
+    if di.startswith("fm://"):
+        return "fm"
+    if di.startswith("dab://"):
+        return "dab"
+    return "alsa"
+
+
+def _stop_route_proc(route_id: str):
+    """Kill any running ffmpeg for this route_id (source or dest)."""
+    with _procs_lock:
+        proc = _active_procs.pop(route_id, None)
+    if proc and proc.poll() is None:
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+    with _src_threads_lock:
+        _active_src_threads.pop(route_id, None)
+
+
+def _report_status(hub_url: str, site_name: str, route_id: str, status: str, error: str = ""):
+    """POST status update to hub."""
+    try:
+        payload = json.dumps({
+            "route_id": route_id,
+            "site":     site_name,
+            "status":   status,
+            "error":    error,
+        }).encode()
+        req = urllib.request.Request(
+            f"{hub_url}/api/audiorouter/client_status",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json", "X-Site": site_name},
+        )
+        urllib.request.urlopen(req, timeout=8).close()
+    except Exception:
+        pass
+
+
+# ── Hub page template ──────────────────────────────────────────────────────────
+
+_HUB_TPL = r"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Audio Router — SignalScope</title>
+<link rel="icon" type="image/x-icon" href="/static/signalscope_icon.png">
+<meta name="csrf-token" content="{{csrf_token()}}">
+<style nonce="{{csp_nonce()}}">
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;font-size:13px;background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);min-height:100vh}
+header{background:linear-gradient(180deg,rgba(10,31,65,.96),rgba(9,24,48,.96));border-bottom:1px solid var(--bor);padding:12px 20px;display:flex;align-items:center;gap:12px}
+a{color:var(--acc);text-decoration:none}
+.btn{display:inline-flex;align-items:center;border:none;border-radius:8px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;text-decoration:none;white-space:nowrap}
+.btn:hover{filter:brightness(1.15)}
+.bg{background:var(--bor);color:var(--tx)}.bp{background:var(--acc);color:#fff}.bd{background:var(--al);color:#fff}
+.bs{padding:3px 9px;font-size:12px}
+.nav-active{background:var(--acc)!important;color:#fff!important}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.b-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
+.b-al{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
+.b-mu{background:#0d1e40;color:var(--mu);border:1px solid var(--bor)}
+.b-wn{background:#1f1200;color:var(--wn);border:1px solid #92400e}
+main{padding:24px 20px 48px;max-width:1100px;margin:0 auto}
+.ph{margin-bottom:20px}
+.ph h1{font-size:22px;font-weight:800;letter-spacing:-.02em}
+.ph p{color:var(--mu);margin-top:4px;font-size:12px}
+.card{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;margin-bottom:16px}
+.ch{padding:9px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--bor);background:linear-gradient(180deg,#143766,#102b54);font-size:12px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.06em}
+.ch-right{margin-left:auto}
+.cb{padding:14px}
+table{width:100%;border-collapse:collapse}
+th{color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:6px 10px;border-bottom:1px solid var(--bor);text-align:left;font-weight:600}
+td{padding:9px 10px;border-bottom:1px solid rgba(23,52,95,.35);font-size:13px;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(23,52,95,.35)}
+.mu{color:var(--mu)} .ts{font-size:11px;color:var(--mu)}
+.field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.field label{font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+input[type=text],input[type=number],select{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;font-family:inherit}
+input[type=text]:focus,input[type=number]:focus,select:focus{outline:none;border-color:var(--acc)}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+#msg{padding:10px 14px;border-radius:8px;margin-bottom:14px;display:none;font-weight:600;font-size:13px}
+.msg-ok{background:#0f2318;color:var(--ok);border:1px solid #166534;display:block!important}
+.msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b;display:block!important}
+.empty{padding:32px;text-align:center;color:var(--mu);font-size:13px}
+code{font-family:monospace;font-size:12px;color:var(--mu)}
+.form-collapse{display:none}
+.form-collapse.open{display:block}
+.act-btns{display:flex;gap:6px}
+</style>
+</head><body>
+{{topnav("audiorouter")|safe}}
+<main>
+  <div class="ph">
+    <h1>🔀 Audio Router</h1>
+    <p>Route monitored inputs to Livewire multicast outputs across connected sites.</p>
+  </div>
+  <div id="msg"></div>
+
+  <!-- Add Route card -->
+  <div class="card">
+    <div class="ch">
+      Add Route
+      <span class="ch-right">
+        <button class="btn bg bs" id="toggle-form-btn">+ New Route</button>
+      </span>
+    </div>
+    <div class="cb form-collapse" id="add-form">
+      <div class="field">
+        <label>Route Name</label>
+        <input type="text" id="f-name" placeholder="e.g. Cool FM → Studio 1" style="max-width:400px">
+      </div>
+      <div class="grid2" style="margin-bottom:12px">
+        <div class="field" style="margin-bottom:0">
+          <label>Source Site</label>
+          <select id="f-src-site">
+            <option value="">— select —</option>
+            {% for s in sites %}<option value="{{s|e}}">{{s|e}}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0">
+          <label>Source Stream</label>
+          <select id="f-src-stream">
+            <option value="">— select source site first —</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid2" style="margin-bottom:12px">
+        <div class="field" style="margin-bottom:0">
+          <label>Dest Site</label>
+          <select id="f-dst-site">
+            <option value="">— select —</option>
+            {% for s in sites %}<option value="{{s|e}}">{{s|e}}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0">
+          <label>Livewire Stream ID (1–65535)</label>
+          <input type="number" id="f-lw-id" min="1" max="65535" placeholder="1001" style="max-width:200px">
+        </div>
+      </div>
+      <div id="lw-addr-preview" class="ts" style="margin-bottom:14px"></div>
+      <button class="btn bp" id="add-route-btn">Add Route</button>
+    </div>
+  </div>
+
+  <!-- Routes table card -->
+  <div class="card">
+    <div class="ch">Routes</div>
+    <div id="routes-wrap">
+      <div class="empty">Loading&hellip;</div>
+    </div>
+  </div>
+</main>
+<script nonce="{{csp_nonce()}}">
+(function(){
+'use strict';
+function _getCsrf(){
+  return (document.querySelector('meta[name="csrf-token"]')||{}).content
+      || (document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+}
+function _post(url,body){
+  return fetch(url,{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':_getCsrf()},
+    body:JSON.stringify(body)});
+}
+function _del(url){
+  return fetch(url,{method:'DELETE',credentials:'same-origin',
+    headers:{'X-CSRFToken':_getCsrf()}});
+}
+function _patch(url,body){
+  return fetch(url,{method:'PATCH',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':_getCsrf()},
+    body:JSON.stringify(body)});
+}
+function _esc(s){var d=document.createElement('div');d.textContent=String(s||'');return d.innerHTML;}
+function _showMsg(txt,err){
+  var el=document.getElementById('msg');
+  el.textContent=txt;el.className=err?'msg-err':'msg-ok';
+  setTimeout(function(){el.className='';el.textContent='';},5000);
+}
+function _lwMc(id){
+  id=parseInt(id,10);
+  if(isNaN(id)||id<1||id>65535) return '';
+  return '239.192.'+((id>>8)&0xFF)+'.'+(id&0xFF)+':5004';
+}
+
+// Stream list cache: site → [stream names]
+var _streamCache = {};
+
+function _loadStreams(site,selEl,defVal){
+  if(!site){selEl.innerHTML='<option value="">— select source site first —</option>';return;}
+  if(_streamCache[site]){_populateStreams(selEl,_streamCache[site],defVal);return;}
+  fetch('/api/audiorouter/site_streams?site='+encodeURIComponent(site),{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      _streamCache[site]=d.streams||[];
+      _populateStreams(selEl,_streamCache[site],defVal);
+    }).catch(function(){
+      selEl.innerHTML='<option value="">Error loading streams</option>';
+    });
+}
+
+function _populateStreams(selEl,streams,defVal){
+  if(!streams.length){
+    selEl.innerHTML='<option value="">No streams on this site</option>';
+    return;
+  }
+  selEl.innerHTML=streams.map(function(s){
+    var sel=(s===defVal)?' selected':'';
+    return '<option value="'+_esc(s)+'"'+sel+'>'+_esc(s)+'</option>';
+  }).join('');
+}
+
+// ── Add form ──────────────────────────────────────────────────────────────────
+var toggleBtn=document.getElementById('toggle-form-btn');
+var addForm=document.getElementById('add-form');
+toggleBtn.addEventListener('click',function(){
+  addForm.classList.toggle('open');
+  toggleBtn.textContent=addForm.classList.contains('open')?'✕ Cancel':'+ New Route';
+});
+
+document.getElementById('f-src-site').addEventListener('change',function(){
+  _loadStreams(this.value,document.getElementById('f-src-stream'),'');
+});
+
+document.getElementById('f-lw-id').addEventListener('input',function(){
+  var mc=_lwMc(this.value);
+  document.getElementById('lw-addr-preview').textContent=mc?'Multicast: '+mc:'';
+});
+
+document.getElementById('add-route-btn').addEventListener('click',function(){
+  var name=document.getElementById('f-name').value.trim();
+  var srcSite=document.getElementById('f-src-site').value;
+  var srcStream=document.getElementById('f-src-stream').value;
+  var dstSite=document.getElementById('f-dst-site').value;
+  var lwId=parseInt(document.getElementById('f-lw-id').value||'0',10);
+  if(!name){_showMsg('Route name is required.',true);return;}
+  if(!srcSite){_showMsg('Select a source site.',true);return;}
+  if(!srcStream){_showMsg('Select a source stream.',true);return;}
+  if(!dstSite){_showMsg('Select a destination site.',true);return;}
+  if(!lwId||lwId<1||lwId>65535){_showMsg('Livewire Stream ID must be 1–65535.',true);return;}
+  _post('/api/audiorouter/routes',{
+    name:name,source_site:srcSite,source_stream:srcStream,
+    dest_site:dstSite,dest_lw_stream_id:lwId,enabled:true
+  }).then(function(r){return r.json();})
+  .then(function(d){
+    if(d.ok){
+      _showMsg('Route added.',false);
+      addForm.classList.remove('open');
+      toggleBtn.textContent='+ New Route';
+      document.getElementById('f-name').value='';
+      document.getElementById('f-src-site').value='';
+      document.getElementById('f-src-stream').innerHTML='<option value="">— select source site first —</option>';
+      document.getElementById('f-dst-site').value='';
+      document.getElementById('f-lw-id').value='';
+      document.getElementById('lw-addr-preview').textContent='';
+      _refresh();
+    } else {
+      _showMsg('Error: '+(d.error||'unknown'),true);
+    }
+  }).catch(function(e){_showMsg('Request failed: '+e,true);});
+});
+
+// ── Routes table ──────────────────────────────────────────────────────────────
+function _statusBadge(r){
+  if(!r.enabled) return '<span class="badge b-mu">Disabled</span>';
+  var st=r.status||'';
+  if(st==='active')   return '<span class="badge b-ok">Active</span>';
+  if(st==='error')    return '<span class="badge b-al" title="'+_esc(r.error||'')+'">Error</span>';
+  if(st==='connecting') return '<span class="badge b-wn">Connecting</span>';
+  return '<span class="badge b-mu">Idle</span>';
+}
+
+function _renderRoutes(routes){
+  var wrap=document.getElementById('routes-wrap');
+  if(!routes.length){
+    wrap.innerHTML='<div class="empty">No routes configured — click "+ New Route" to add one.</div>';
+    return;
+  }
+  var html='<table><thead><tr>'
+    +'<th>Name</th><th>Source</th><th>Destination</th><th>Multicast</th><th>Status</th><th>Actions</th>'
+    +'</tr></thead><tbody>';
+  for(var i=0;i<routes.length;i++){
+    var r=routes[i];
+    var mc=_lwMc(r.dest_lw_stream_id);
+    html+='<tr>'
+      +'<td><strong>'+_esc(r.name)+'</strong></td>'
+      +'<td>'+_esc(r.source_site)+' / '+_esc(r.source_stream)+'</td>'
+      +'<td>'+_esc(r.dest_site)+' LW '+_esc(r.dest_lw_stream_id)+'</td>'
+      +'<td><code>'+_esc(mc)+'</code></td>'
+      +'<td>'+_statusBadge(r)+'</td>'
+      +'<td><span class="act-btns">'
+      +'<button class="btn bg bs route-toggle-btn" data-id="'+_esc(r.id)+'" data-enabled="'+(r.enabled?'1':'0')+'">'
+      +(r.enabled?'Disable':'Enable')
+      +'</button>'
+      +'<button class="btn bd bs route-del-btn" data-id="'+_esc(r.id)+'">Delete</button>'
+      +'</span></td>'
+      +'</tr>';
+  }
+  html+='</tbody></table>';
+  wrap.innerHTML=html;
+}
+
+// Event delegation for table actions
+document.getElementById('routes-wrap').addEventListener('click',function(e){
+  var tb=e.target.closest('.route-toggle-btn');
+  if(tb){
+    var rid=tb.dataset.id;
+    var enabled=(tb.dataset.enabled==='0');
+    _patch('/api/audiorouter/routes/'+encodeURIComponent(rid),{enabled:enabled})
+      .then(function(r){return r.json();})
+      .then(function(d){if(d.ok)_refresh();else _showMsg('Error: '+(d.error||'?'),true);});
+    return;
+  }
+  var db=e.target.closest('.route-del-btn');
+  if(db){
+    var rid2=db.dataset.id;
+    if(!confirm('Delete this route?')) return;
+    _del('/api/audiorouter/routes/'+encodeURIComponent(rid2))
+      .then(function(r){return r.json();})
+      .then(function(d){if(d.ok)_refresh();else _showMsg('Error: '+(d.error||'?'),true);});
+  }
+});
+
+function _refresh(){
+  fetch('/api/audiorouter/routes',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){_renderRoutes(d.routes||[]);})
+    .catch(function(){});
+}
+
+_refresh();
+setInterval(_refresh,10000);
+})();
+</script></body></html>"""
+
+
+# ── Client/standalone page (redirects to hub) ──────────────────────────────────
+
+_CLIENT_TPL = r"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>Audio Router — SignalScope</title>
+<style nonce="{{csp_nonce()}}">
+body{font-family:system-ui,sans-serif;font-size:13px;background:#07142b;color:#eef5ff;
+     display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.box{background:#0d2346;border:1px solid #17345f;border-radius:12px;padding:32px 40px;max-width:400px;text-align:center}
+h2{margin-bottom:12px;font-size:18px}
+p{color:#8aa4c8;font-size:13px;margin-bottom:20px}
+a{color:#17a8ff;text-decoration:none;font-weight:600}
+</style>
+</head><body>
+<div class="box">
+  <h2>🔀 Audio Router</h2>
+  <p>Audio Router is a hub-only feature.<br>Manage routes from the hub dashboard.</p>
+  <a href="/">← Dashboard</a>
+</div>
+</body></html>"""
+
+
+# ── register ───────────────────────────────────────────────────────────────────
+
+def register(app, ctx):
+    global _route_status, _route_slots
+
+    login_required   = ctx["login_required"]
+    csrf_protect     = ctx["csrf_protect"]
+    monitor          = ctx["monitor"]
+    hub_server       = ctx["hub_server"]
+    listen_registry  = ctx["listen_registry"]
+    BUILD            = ctx["BUILD"]
+
+    cfg_ss    = monitor.app_cfg
+    mode      = getattr(getattr(cfg_ss, "hub", None), "mode",      "standalone") or "standalone"
+    hub_url   = (getattr(getattr(cfg_ss, "hub", None), "hub_url",  "") or "").rstrip("/")
+    site_name = (getattr(getattr(cfg_ss, "hub", None), "site_name","") or "")
+    secret    = (getattr(getattr(cfg_ss, "hub", None), "secret_key","") or "")
+
+    is_hub    = mode in ("hub", "both")
+    is_client = mode in ("client", "both") and bool(hub_url)
+
+    # ── Hub page ───────────────────────────────────────────────────────────────
+
+    @app.get("/hub/audiorouter")
+    @login_required
+    def audiorouter_hub_page():
+        if not is_hub:
+            return render_template_string(_CLIENT_TPL)
+        sites = _get_known_sites(hub_server, cfg_ss, site_name)
+        return render_template_string(_HUB_TPL, sites=sites)
+
+    @app.get("/audiorouter")
+    @login_required
+    def audiorouter_client_page():
+        if is_hub:
+            from flask import redirect
+            return redirect("/hub/audiorouter")
+        return render_template_string(_CLIENT_TPL)
+
+    # ── Hub API: list streams for a site (populates Add Route dropdown) ────────
+
+    @app.get("/api/audiorouter/site_streams")
+    @login_required
+    def audiorouter_site_streams():
+        site = request.args.get("site", "").strip()
+        streams = _streams_for_site(site, hub_server, cfg_ss, site_name)
+        return jsonify({"streams": streams})
+
+    # ── Hub API: list all routes (with status merged) ──────────────────────────
+
+    @app.get("/api/audiorouter/routes")
+    @login_required
+    def audiorouter_routes_list():
+        with _cfg_lock:
+            cfg = _load_cfg()
+        routes = cfg.get("routes", [])
+        # Merge runtime status
+        with _status_lock:
+            snap = dict(_route_status)
+        merged = []
+        for r in routes:
+            entry = dict(r)
+            st = snap.get(r["id"], {})
+            entry["status"] = st.get("status", "idle")
+            entry["error"]  = st.get("error", "")
+            merged.append(entry)
+        return jsonify({"routes": merged})
+
+    # ── Hub API: create route ─────────────────────────────────────────────────
+
+    @app.post("/api/audiorouter/routes")
+    @login_required
+    @csrf_protect
+    def audiorouter_routes_create():
+        data = request.get_json(silent=True) or {}
+        name        = str(data.get("name", "")).strip()
+        source_site = str(data.get("source_site", "")).strip()
+        source_stream = str(data.get("source_stream", "")).strip()
+        dest_site   = str(data.get("dest_site", "")).strip()
+        lw_id       = data.get("dest_lw_stream_id")
+        enabled     = bool(data.get("enabled", True))
+
+        if not name:
+            return jsonify({"ok": False, "error": "name required"}), 400
+        if not source_site or not source_stream:
+            return jsonify({"ok": False, "error": "source_site and source_stream required"}), 400
+        if not dest_site:
+            return jsonify({"ok": False, "error": "dest_site required"}), 400
+        try:
+            lw_id = int(lw_id)
+            assert 1 <= lw_id <= 65535
+        except Exception:
+            return jsonify({"ok": False, "error": "dest_lw_stream_id must be 1–65535"}), 400
+
+        route = {
+            "id":               str(uuid.uuid4()),
+            "name":             name,
+            "source_site":      source_site,
+            "source_stream":    source_stream,
+            "dest_site":        dest_site,
+            "dest_lw_stream_id": lw_id,
+            "enabled":          enabled,
+        }
+
+        # Create relay slot for cross-site routes
+        if source_site != dest_site and enabled:
+            _ensure_relay_slot(route, listen_registry, monitor)
+
+        with _cfg_lock:
+            cfg = _load_cfg()
+            cfg.setdefault("routes", []).append(route)
+            _save_cfg(cfg)
+
+        return jsonify({"ok": True, "id": route["id"]})
+
+    # ── Hub API: delete route ─────────────────────────────────────────────────
+
+    @app.delete("/api/audiorouter/routes/<rid>")
+    @login_required
+    @csrf_protect
+    def audiorouter_routes_delete(rid):
+        with _cfg_lock:
+            cfg = _load_cfg()
+        routes = cfg.get("routes", [])
+        new_routes = [r for r in routes if r.get("id") != rid]
+        if len(new_routes) == len(routes):
+            return jsonify({"ok": False, "error": "not found"}), 404
+
+        # Close relay slot if one exists
+        with _slots_lock:
+            slot_id = _route_slots.pop(rid, None)
+        if slot_id:
+            slot = listen_registry.get(slot_id)
+            if slot:
+                slot.closed = True
+
+        with _status_lock:
+            _route_status.pop(rid, None)
+
+        with _cfg_lock:
+            cfg["routes"] = new_routes
+            _save_cfg(cfg)
+
+        return jsonify({"ok": True})
+
+    # ── Hub API: update route (enabled/name) ──────────────────────────────────
+
+    @app.patch("/api/audiorouter/routes/<rid>")
+    @login_required
+    @csrf_protect
+    def audiorouter_routes_update(rid):
+        data = request.get_json(silent=True) or {}
+
+        with _cfg_lock:
+            cfg = _load_cfg()
+        routes = cfg.get("routes", [])
+        target = None
+        for r in routes:
+            if r.get("id") == rid:
+                target = r
+                break
+        if target is None:
+            return jsonify({"ok": False, "error": "not found"}), 404
+
+        if "enabled" in data:
+            target["enabled"] = bool(data["enabled"])
+        if "name" in data:
+            target["name"] = str(data["name"]).strip()
+
+        # When enabling a cross-site route, ensure relay slot exists
+        if target.get("enabled") and target.get("source_site") != target.get("dest_site"):
+            with _slots_lock:
+                has_slot = rid in _route_slots
+            if not has_slot:
+                _ensure_relay_slot(target, listen_registry, monitor)
+
+        # When disabling, close relay slot
+        if not target.get("enabled"):
+            with _slots_lock:
+                slot_id = _route_slots.pop(rid, None)
+            if slot_id:
+                slot = listen_registry.get(slot_id)
+                if slot:
+                    slot.closed = True
+            with _status_lock:
+                _route_status.pop(rid, None)
+
+        with _cfg_lock:
+            _save_cfg(cfg)
+
+        return jsonify({"ok": True})
+
+    # ── Hub API: client poll ───────────────────────────────────────────────────
+
+    @app.get("/api/audiorouter/poll")
+    @login_required
+    def audiorouter_poll():
+        """
+        Client polls this endpoint. Returns routes where this site is source or dest,
+        with role ('local'/'source'/'dest'), relay slot info for cross-site, and
+        hub credentials for HMAC signing.
+        """
+        polling_site = request.headers.get("X-Site", "").strip()
+        if not polling_site:
+            return jsonify({"error": "missing X-Site header"}), 400
+
+        # Validate site is approved (skip check for standalone/same-machine mode)
+        if is_hub and hub_server:
+            sdata = hub_server._sites.get(polling_site, {})
+            if not sdata.get("_approved") and polling_site != site_name:
+                return jsonify({"error": "site not approved"}), 403
+
+        with _cfg_lock:
+            cfg = _load_cfg()
+        routes = cfg.get("routes", [])
+
+        out = []
+        for r in routes:
+            if not r.get("enabled"):
+                continue
+            src = r.get("source_site", "")
+            dst = r.get("dest_site",   "")
+            if polling_site not in (src, dst):
+                continue
+
+            entry = dict(r)
+
+            if src == dst and src == polling_site:
+                # Same-site: this client handles everything locally
+                entry["role"] = "local"
+                entry["hub_url"]    = ""
+                entry["hub_secret"] = ""
+            elif polling_site == src:
+                # Cross-site: we are the source — post PCM chunks to hub
+                entry["role"] = "source"
+                entry["hub_url"]    = _self_url(cfg_ss)
+                entry["hub_secret"] = secret
+                with _slots_lock:
+                    entry["slot_id"] = _route_slots.get(r["id"], "")
+            else:
+                # Cross-site: we are the dest — fetch relay from hub
+                entry["role"] = "dest"
+                entry["hub_url"]    = _self_url(cfg_ss)
+                entry["hub_secret"] = secret
+                with _slots_lock:
+                    entry["slot_id"] = _route_slots.get(r["id"], "")
+
+            # Attach device_index for the source stream so clients can build ffmpeg cmd
+            if entry["role"] in ("local", "source"):
+                di = _get_device_index(r["source_site"], r["source_stream"],
+                                       hub_server, cfg_ss, site_name, polling_site)
+                entry["device_index"] = di or ""
+
+            out.append(entry)
+
+        return jsonify({"routes": out})
+
+    # ── Hub API: client status report ─────────────────────────────────────────
+
+    @app.post("/api/audiorouter/client_status")
+    def audiorouter_client_status():
+        data = request.get_json(silent=True) or {}
+        rid    = str(data.get("route_id", "")).strip()
+        rsite  = str(data.get("site", "")).strip()
+        status = str(data.get("status", "")).strip()
+        error  = str(data.get("error", "")).strip()
+        if not rid:
+            return jsonify({"ok": False, "error": "route_id required"}), 400
+        with _status_lock:
+            _route_status[rid] = {
+                "site":   rsite,
+                "status": status,
+                "error":  error,
+                "ts":     time.time(),
+            }
+        return jsonify({"ok": True})
+
+    # ── Client: start routing daemon thread ───────────────────────────────────
+
+    if is_client or mode in ("both", "standalone"):
+        _effective_hub_url = hub_url if is_client else _self_url(cfg_ss)
+
+        def _client_router_thread():
+            # Give the Flask app a moment to fully start before polling
+            time.sleep(5)
+            monitor.log("[AudioRouter] Client router thread started.")
+            while True:
+                try:
+                    _poll_and_execute(
+                        _effective_hub_url,
+                        site_name,
+                        monitor,
+                        listen_registry,
+                    )
+                except Exception as e:
+                    monitor.log(f"[AudioRouter] Poll cycle error: {e}")
+                time.sleep(8)
+
+        threading.Thread(
+            target=_client_router_thread,
+            daemon=True,
+            name="AudioRouterClient",
+        ).start()
+
+
+# ── Hub helper: ensure a relay slot exists for a cross-site route ──────────────
+
+def _ensure_relay_slot(route: dict, listen_registry, monitor):
+    rid = route["id"]
+    with _slots_lock:
+        if rid in _route_slots:
+            return _route_slots[rid]
+
+    try:
+        slot = listen_registry.create(
+            route["dest_site"],
+            0,
+            kind="scanner",
+            mimetype="application/octet-stream",
+        )
+        with _slots_lock:
+            _route_slots[rid] = slot.slot_id
+        monitor.log(f"[AudioRouter] Relay slot {slot.slot_id} created for route {route['name']!r}")
+        return slot.slot_id
+    except Exception as e:
+        monitor.log(f"[AudioRouter] Failed to create relay slot for {route['name']!r}: {e}")
+        return None
+
+
+# ── Site/stream helpers ────────────────────────────────────────────────────────
+
+def _get_known_sites(hub_server, cfg_ss, local_site_name: str) -> list[str]:
+    """Return list of known site names (hub _sites + local site)."""
+    sites = set()
+    if hub_server:
+        try:
+            with hub_server._lock:
+                for sname in hub_server._sites:
+                    sites.add(sname)
+        except Exception:
+            pass
+    if local_site_name:
+        sites.add(local_site_name)
+    return sorted(sites)
+
+
+def _streams_for_site(site: str, hub_server, cfg_ss, local_site_name: str) -> list[str]:
+    """Return list of monitored stream names for a given site."""
+    # For the local site, read directly from config
+    if site == local_site_name:
+        try:
+            inputs = getattr(cfg_ss, "inputs", []) or []
+            return [getattr(inp, "name", "") for inp in inputs if getattr(inp, "name", "")]
+        except Exception:
+            return []
+
+    # For remote sites, read from hub heartbeat data
+    if hub_server:
+        try:
+            sdata = hub_server._sites.get(site, {})
+            streams = sdata.get("streams", [])
+            if isinstance(streams, list):
+                return [s.get("name", "") for s in streams if s.get("name")]
+        except Exception:
+            pass
+    return []
+
+
+def _get_device_index(source_site: str, source_stream: str,
+                      hub_server, cfg_ss, local_site_name: str,
+                      polling_site: str) -> str:
+    """Return device_index for source_stream on source_site."""
+    if source_site == local_site_name and source_site == polling_site:
+        try:
+            inputs = getattr(cfg_ss, "inputs", []) or []
+            for inp in inputs:
+                if getattr(inp, "name", "") == source_stream:
+                    return getattr(inp, "device_index", "") or ""
+        except Exception:
+            pass
+        return ""
+
+    # For remote sites the hub doesn't store device_index in heartbeat —
+    # the client running on source_site will look it up from its own cfg.
+    # Return empty; the client ignores this field for its own streams.
+    return ""
+
+
+def _self_url(cfg_ss) -> str:
+    """Best-effort URL for reaching this node (hub_url or localhost fallback)."""
+    hub_url = (getattr(getattr(cfg_ss, "hub", None), "hub_url", "") or "").rstrip("/")
+    if hub_url:
+        return hub_url
+    port = getattr(getattr(cfg_ss, "network", None), "port", 8080) or 8080
+    return f"http://127.0.0.1:{port}"
+
+
+# ── Client routing logic ───────────────────────────────────────────────────────
+
+def _poll_and_execute(hub_url: str, site_name: str, monitor, listen_registry):
+    """
+    Poll hub for routes assigned to this site.
+    Start/stop ffmpeg processes as needed.
+    """
+    try:
+        req = urllib.request.Request(
+            f"{hub_url}/api/audiorouter/poll",
+            headers={"X-Site": site_name},
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            return  # Not approved yet — silent
+        raise
+    except Exception as e:
+        monitor.log(f"[AudioRouter] Poll failed: {e}")
+        return
+
+    routes = data.get("routes", [])
+    active_ids = {r["id"] for r in routes}
+
+    # Stop processes for routes no longer in our list
+    with _procs_lock:
+        stale = [rid for rid in list(_active_procs.keys()) if rid not in active_ids]
+    for rid in stale:
+        monitor.log(f"[AudioRouter] Stopping removed/disabled route {rid}")
+        _stop_route_proc(rid)
+        _report_status(hub_url, site_name, rid, "idle")
+
+    # Start / maintain routes
+    for route in routes:
+        rid  = route["id"]
+        role = route.get("role", "")
+
+        # For local/source roles, fill in device_index from local config if absent
+        if role in ("local", "source") and not route.get("device_index"):
+            try:
+                inputs = getattr(monitor.app_cfg, "inputs", []) or []
+                for inp in inputs:
+                    if getattr(inp, "name", "") == route.get("source_stream", ""):
+                        route = dict(route)
+                        route["device_index"] = getattr(inp, "device_index", "") or ""
+                        break
+            except Exception:
+                pass
+
+        # Check if already running and healthy
+        with _procs_lock:
+            existing = _active_procs.get(rid)
+        if existing is not None and existing.poll() is None:
+            continue  # Already running
+
+        if existing is not None:
+            # Process died unexpectedly
+            monitor.log(f"[AudioRouter] Route {route['name']!r} process exited — restarting")
+            _stop_route_proc(rid)
+
+        _start_route(route, hub_url, site_name, monitor, listen_registry)
+
+
+def _start_route(route: dict, hub_url: str, site_name: str, monitor, listen_registry):
+    """Start the appropriate ffmpeg process(es) for a route on this client."""
+    rid         = route["id"]
+    role        = route.get("role", "")
+    lw_id       = int(route.get("dest_lw_stream_id", 0))
+    rtp_url     = _ffmpeg_rtp_url(lw_id)
+    source_site = route.get("source_site", "")
+    source_stream = route.get("source_stream", "")
+    device_index = route.get("device_index", "")
+
+    # For the source role, device_index should have been populated by _poll_and_execute.
+    # If still missing, report an error — we cannot start without knowing the input source.
+    if role in ("local", "source") and not device_index:
+        monitor.log(
+            f"[AudioRouter] Route {route['name']!r}: "
+            f"no device_index for {source_stream!r} on {source_site!r}"
+        )
+        _report_status(hub_url, site_name, rid, "error",
+                       f"device_index not found for {source_stream!r}")
+        return
+
+    itype = _input_type(device_index) if role in ("local", "source") else "relay"
+
+    if itype in ("fm", "dab"):
+        monitor.log(f"[AudioRouter] Route {route['name']!r}: source type not supported for routing ({device_index})")
+        _report_status(hub_url, site_name, rid, "error", "Source type not supported (FM/DAB)")
+        return
+
+    if role == "local":
+        _start_local_route(route, device_index, itype, rtp_url, hub_url, site_name, monitor)
+    elif role == "source":
+        _start_source_route(route, device_index, itype, hub_url, site_name, monitor)
+    elif role == "dest":
+        _start_dest_route(route, rtp_url, hub_url, site_name, monitor)
+
+
+def _build_ffmpeg_input_args(device_index: str, itype: str) -> list[str]:
+    """Build ffmpeg input arguments for a given device_index and input type."""
+    if itype == "network":
+        return [
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
+            "-i", device_index,
+        ]
+    elif itype == "alsa":
+        return ["-f", "alsa", "-i", device_index]
+    else:
+        return ["-i", device_index]
+
+
+def _ffmpeg_lw_output_args(rtp_url: str) -> list[str]:
+    """ffmpeg output arguments for Livewire L24 stereo 48kHz RTP."""
+    return [
+        "-ac", "2",
+        "-ar", "48000",
+        "-acodec", "pcm_s24be",
+        "-f", "rtp",
+        "-payload_type", "97",
+        rtp_url,
+    ]
+
+
+def _start_local_route(route: dict, device_index: str, itype: str, rtp_url: str,
+                       hub_url: str, site_name: str, monitor):
+    """Same-site route: input → Livewire multicast via ffmpeg."""
+    rid = route["id"]
+    import shutil
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        _report_status(hub_url, site_name, rid, "error", "ffmpeg not found")
+        return
+
+    cmd = [ffmpeg, "-y"] + _build_ffmpeg_input_args(device_index, itype) + \
+          _ffmpeg_lw_output_args(rtp_url)
+
+    monitor.log(f"[AudioRouter] Local route {route['name']!r}: {' '.join(cmd)}")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        with _procs_lock:
+            _active_procs[rid] = proc
+        _report_status(hub_url, site_name, rid, "active")
+    except Exception as e:
+        monitor.log(f"[AudioRouter] Local route {route['name']!r} failed to start: {e}")
+        _report_status(hub_url, site_name, rid, "error", str(e))
+
+
+def _start_source_route(route: dict, device_index: str, itype: str,
+                        hub_url: str, site_name: str, monitor):
+    """
+    Cross-site SOURCE role:
+    ffmpeg → raw PCM stdout → thread → POST 9600-byte chunks to hub relay slot.
+    """
+    rid     = route["id"]
+    slot_id = route.get("slot_id", "")
+    secret  = route.get("hub_secret", "")
+
+    if not slot_id:
+        _report_status(hub_url, site_name, rid, "error", "No relay slot assigned yet")
+        return
+
+    import shutil
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        _report_status(hub_url, site_name, rid, "error", "ffmpeg not found")
+        return
+
+    # Produce raw 16-bit LE mono 48kHz PCM on stdout
+    cmd = [ffmpeg, "-y"] + _build_ffmpeg_input_args(device_index, itype) + [
+        "-ac", "1",
+        "-ar", "48000",
+        "-f", "s16le",
+        "pipe:1",
+    ]
+
+    monitor.log(f"[AudioRouter] Source route {route['name']!r}: {' '.join(cmd)}")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        with _procs_lock:
+            _active_procs[rid] = proc
+    except Exception as e:
+        monitor.log(f"[AudioRouter] Source route {route['name']!r} ffmpeg failed: {e}")
+        _report_status(hub_url, site_name, rid, "error", str(e))
+        return
+
+    chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
+    _report_status(hub_url, site_name, rid, "connecting")
+
+    def _sender():
+        first = True
+        try:
+            while proc.poll() is None:
+                chunk = proc.stdout.read(9600)
+                if not chunk:
+                    break
+                if first:
+                    _report_status(hub_url, site_name, rid, "active")
+                    first = False
+                ts  = time.time()
+                sig = _sign_chunk(secret, chunk, ts) if secret else ""
+                nonce = hashlib.md5(os.urandom(8)).hexdigest()[:16]
+                req = urllib.request.Request(
+                    chunk_url,
+                    data=chunk,
+                    method="POST",
+                    headers={
+                        "Content-Type":  "application/octet-stream",
+                        "X-Hub-Sig":     sig,
+                        "X-Hub-Ts":      f"{ts:.0f}",
+                        "X-Hub-Nonce":   nonce,
+                    },
+                )
+                try:
+                    urllib.request.urlopen(req, timeout=5).close()
+                except Exception:
+                    pass  # Hub temporarily unreachable — keep reading PCM
+        except Exception as e:
+            monitor.log(f"[AudioRouter] Source sender {route['name']!r} error: {e}")
+        finally:
+            _report_status(hub_url, site_name, rid, "idle")
+            monitor.log(f"[AudioRouter] Source sender {route['name']!r} stopped.")
+
+    t = threading.Thread(target=_sender, daemon=True, name=f"ARSrc-{rid[:8]}")
+    t.start()
+    with _src_threads_lock:
+        _active_src_threads[rid] = t
+
+
+def _start_dest_route(route: dict, rtp_url: str,
+                      hub_url: str, site_name: str, monitor):
+    """
+    Cross-site DEST role:
+    Fetch raw PCM from hub relay slot → ffmpeg → Livewire RTP multicast.
+    """
+    rid     = route["id"]
+    slot_id = route.get("slot_id", "")
+
+    if not slot_id:
+        _report_status(hub_url, site_name, rid, "error", "No relay slot assigned yet")
+        return
+
+    import shutil
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        _report_status(hub_url, site_name, rid, "error", "ffmpeg not found")
+        return
+
+    stream_url = f"{hub_url}/hub/scanner/stream/{slot_id}"
+
+    # Raw 16-bit LE mono 48kHz PCM from relay → upmix stereo → L24 RTP Livewire
+    cmd = [
+        ffmpeg, "-y",
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+        "-f", "s16le",
+        "-ar", "48000",
+        "-ac", "1",
+        "-i", stream_url,
+    ] + _ffmpeg_lw_output_args(rtp_url)
+
+    monitor.log(f"[AudioRouter] Dest route {route['name']!r}: {' '.join(cmd)}")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        with _procs_lock:
+            _active_procs[rid] = proc
+        _report_status(hub_url, site_name, rid, "active")
+    except Exception as e:
+        monitor.log(f"[AudioRouter] Dest route {route['name']!r} ffmpeg failed: {e}")
+        _report_status(hub_url, site_name, rid, "error", str(e))
+
