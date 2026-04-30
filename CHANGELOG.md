@@ -2,6 +2,29 @@
 
 ---
 
+### Audio Router 1.2.5 — 2026-04-30
+
+**Fix: hub overload / Waitress thread exhaustion from hub_stream blocking**
+
+- Root cause: `_StreamBroadcaster.consumer()` uses `_cond.wait(timeout=2.0)`.
+  When used inside a Flask streaming response (`hub_stream`, `direct_stream`),
+  the generator blocks for up to 2 seconds without yielding. Waitress holds
+  its worker thread for the entire block duration. If no audio is flowing
+  (source hasn't started yet), the generator loops indefinitely — holding the
+  thread forever. With ffmpeg `-reconnect 1`, each reconnect piles on a new
+  thread. The thread pool exhausts and the hub stops serving other requests.
+- Fix: added `_StreamBroadcaster.consumer_with_keepalive(catchup=0, interval=0.1)`.
+  Waits at most `interval` (0.1 s) between yields. On timeout with no real
+  audio, yields a silence chunk (`bytes(9600)`) so the Waitress thread returns
+  to a yield point — allowing client disconnect detection and freeing the
+  thread for other requests. When audio flows, the `notify_all()` on each
+  push wakes the consumer immediately (no added latency).
+- `hub_stream` and `direct_stream` both now use `consumer_with_keepalive()`.
+- Removed the explicit silence-prime `yield bytes(9600)` from 1.2.4 — it is
+  no longer needed since the keepalive handles the first-byte problem.
+
+---
+
 ### Audio Router 1.2.4 — 2026-04-30
 
 **Fix: hub_stream 5XX — prime connection to prevent nginx proxy_read_timeout**

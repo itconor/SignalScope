@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.2.4",
+    "version":  "1.2.5",
 }
 
 import hashlib
@@ -230,6 +230,37 @@ class _StreamBroadcaster:
                     continue
             for s, chunk in sorted(available, key=lambda x: x[0]):
                 seq = s + 1
+                yield chunk
+
+    def consumer_with_keepalive(self, catchup: int = 0, interval: float = 0.1):
+        """Like consumer() but yields silence every `interval` s when no audio flows.
+
+        This prevents Waitress from holding a worker thread indefinitely while
+        waiting for the first real chunk.  Silence keeps the HTTP connection
+        alive and ensures GeneratorExit is delivered promptly when the dest
+        disconnects.  0.1 s silence = 9600 bytes at 48 kHz / 16-bit mono.
+        """
+        _SILENCE = bytes(9600)
+        with self._lock:
+            seq = max(0, self._seq - catchup)
+        while True:
+            to_yield = []
+            with self._cond:
+                if self.closed:
+                    return
+                available = [(s, c) for s, c in self._buf if s >= seq]
+                if not available:
+                    self._cond.wait(timeout=interval)
+                    if self.closed:
+                        return
+                    available = [(s, c) for s, c in self._buf if s >= seq]
+            if available:
+                for s, chunk in sorted(available, key=lambda x: x[0]):
+                    seq = s + 1
+                    to_yield.append(chunk)
+            else:
+                to_yield.append(_SILENCE)
+            for chunk in to_yield:
                 yield chunk
 
 
@@ -1031,7 +1062,7 @@ def register(app, ctx):
 
         def _gen():
             try:
-                for chunk in bc.consumer():
+                for chunk in bc.consumer_with_keepalive():
                     yield chunk
             except GeneratorExit:
                 pass
@@ -1040,7 +1071,7 @@ def register(app, ctx):
             _gen(),
             mimetype="application/octet-stream",
             headers={
-                "Transfer-Encoding": "chunked",
+                "X-Accel-Buffering": "no",
                 "X-Audio-Format":    "s16le/48000/1",
                 "Cache-Control":     "no-cache",
             },
@@ -1088,11 +1119,13 @@ def register(app, ctx):
                 _hub_broadcasters[rid] = bc
 
         def _gen():
-            # Prime the connection immediately so nginx doesn't time out
-            # waiting for the first byte while the source is still starting.
-            yield bytes(9600)  # one block of silence (48000 Hz / 10 × 2 bytes)
+            # consumer_with_keepalive() yields silence every 0.1 s when the
+            # source hasn't started yet — this commits HTTP headers immediately
+            # (preventing nginx proxy_read_timeout) AND ensures the Waitress
+            # thread returns to a yield point regularly so client disconnects
+            # are detected promptly.
             try:
-                for chunk in bc.consumer(catchup=0):
+                for chunk in bc.consumer_with_keepalive(catchup=0):
                     yield chunk
             except GeneratorExit:
                 pass
