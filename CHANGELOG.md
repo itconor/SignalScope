@@ -2,6 +2,20 @@
 
 ---
 
+### Brand Screen plugin v1.3.22 — 2026-04-30
+
+**Per-strip brightness control**
+
+Each DMX strip in the studio config now has a **Dim** slider (0–100%). The brand colour sets the hue; brightness scales the final output — so "dim red" is the same red hue at 10% intensity rather than needing a separate colour.
+
+- Slider renders next to the W field in each strip row; live `%` readout updates as you drag
+- 100% (default) = full output, same behaviour as before
+- 0% = all channels sent as `Channel N At 0` (lights off for that strip while others stay on)
+- Applied after RGBW decomposition, so white extraction and brightness scaling work together
+- Strips default to 100% on "+ Add Strip"; existing strips without a saved brightness also default to 100%
+
+---
+
 ### Brand Screen plugin v1.3.21 — 2026-04-30
 
 **Multi-strip RGBW DMX support per studio**

@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.21",
+    "version":  "1.3.22",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -288,38 +288,41 @@ def _cueserver_trigger(studio, station):
 def _cs_colour_cmd(hex_colour, strips):
     """Build a CueScript command that sets all configured DMX strips from a hex colour.
 
-    Each strip is a dict {name, ch_r, ch_g, ch_b, ch_w} where:
-    - ch_r/g/b  = DMX channel numbers (1–512); 0 = skip that channel
-    - ch_w      = White channel; 0 = not fitted (RGB mode).
-                  When ch_w > 0, RGBW mode: the minimum of R/G/B is extracted
-                  as white and subtracted from each colour channel so the
-                  combined output matches the intended hue without over-driving.
+    Each strip is a dict {name, ch_r, ch_g, ch_b, ch_w, brightness} where:
+    - ch_r/g/b/w = DMX channel numbers (1–512); 0 = skip that channel
+    - ch_w       = White channel; 0 = not fitted (RGB mode).
+                   When ch_w > 0, RGBW decomposition is applied:
+                   W = min(R,G,B); RGB reduced accordingly.
+    - brightness = 0–100 (default 100). Scales the final channel values so
+                   the same hue can be sent at full or reduced intensity.
+                   e.g. brightness=10, pure red → Channel R At 10 (not 100).
 
-    CueScript percentage values: 0–100 (255 → 100, 128 → 50, etc.)
-
-    Example (two RGBW strips, brand colour #17a8ff):
-      "Channel 1 At 9 Channel 2 At 66 Channel 3 At 100 Channel 4 At 9
-       Channel 5 At 9 Channel 6 At 66 Channel 7 At 100 Channel 8 At 9"
+    CueScript uses percentage values (0–100), so 255 → 100, 128 → 50, etc.
     """
     r, g, b = _hex_rgb(hex_colour)
     parts = []
     for strip in strips:
-        ch_r = int(strip.get("ch_r") or 0)
-        ch_g = int(strip.get("ch_g") or 0)
-        ch_b = int(strip.get("ch_b") or 0)
-        ch_w = int(strip.get("ch_w") or 0)
+        ch_r  = int(strip.get("ch_r") or 0)
+        ch_g  = int(strip.get("ch_g") or 0)
+        ch_b  = int(strip.get("ch_b") or 0)
+        ch_w  = int(strip.get("ch_w") or 0)
+        bri   = max(0.0, min(100.0, float(strip.get("brightness") if strip.get("brightness") is not None else 100)))
+        scale = bri / 100.0
 
         if ch_w:
-            # RGBW: extract white component from the colour
+            # RGBW: extract white component
             w_raw = min(r, g, b)
             r_c, g_c, b_c = r - w_raw, g - w_raw, b - w_raw
         else:
             r_c, g_c, b_c, w_raw = r, g, b, 0
 
-        if ch_r: parts.append(f"Channel {ch_r} At {round(r_c / 255 * 100)}")
-        if ch_g: parts.append(f"Channel {ch_g} At {round(g_c / 255 * 100)}")
-        if ch_b: parts.append(f"Channel {ch_b} At {round(b_c / 255 * 100)}")
-        if ch_w: parts.append(f"Channel {ch_w} At {round(w_raw / 255 * 100)}")
+        def _pct(v):
+            return round(v / 255 * 100 * scale)
+
+        if ch_r: parts.append(f"Channel {ch_r} At {_pct(r_c)}")
+        if ch_g: parts.append(f"Channel {ch_g} At {_pct(g_c)}")
+        if ch_b: parts.append(f"Channel {ch_b} At {_pct(b_c)}")
+        if ch_w: parts.append(f"Channel {ch_w} At {_pct(w_raw)}")
 
     return " ".join(parts)
 
@@ -1804,6 +1807,7 @@ var _csSceneCache={};   // studio_id → [{num,label}]
 
 function _csStripRowHtml(studio_id, strip, idx){
   strip=strip||{};
+  var bri=(strip.brightness!==undefined&&strip.brightness!==null)?strip.brightness:100;
   return '<div class="cs-strip-row" style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">'
     +'<input class="cs-sr-name" type="text" value="'+_esc(strip.name||'Strip '+(idx+1))+'" placeholder="Strip name" style="width:90px;font-size:12px">'
     +'<span style="font-size:10px;color:var(--mu)">R</span>'
@@ -1813,8 +1817,12 @@ function _csStripRowHtml(studio_id, strip, idx){
     +'<span style="font-size:10px;color:var(--mu)">B</span>'
     +'<input class="cs-sr-b" type="number" min="0" max="512" value="'+(strip.ch_b||0)+'" style="width:54px;font-size:12px" title="Blue channel (0=off)">'
     +'<span style="font-size:10px;color:var(--mu)">W</span>'
-    +'<input class="cs-sr-w" type="number" min="0" max="512" value="'+(strip.ch_w||0)+'" style="width:54px;font-size:12px" title="White channel (0=not fitted)">'
-    +'<span style="font-size:10px;color:var(--mu);margin-right:4px">W=0 if RGB only</span>'
+    +'<input class="cs-sr-w" type="number" min="0" max="512" value="'+(strip.ch_w||0)+'" style="width:54px;font-size:12px" title="White channel (0=not fitted, RGBW when set)">'
+    +'<span style="font-size:10px;color:var(--mu)">Dim</span>'
+    +'<div style="display:flex;align-items:center;gap:4px">'
+    +'<input class="cs-sr-bri" type="range" min="0" max="100" value="'+bri+'" style="width:70px;accent-color:var(--acc);cursor:pointer" title="Brightness (0=off, 100=full)">'
+    +'<span class="cs-sr-bri-lbl" style="font-size:11px;color:var(--tx);min-width:30px;text-align:right">'+bri+'%</span>'
+    +'</div>'
     +'<button class="btn bd bs" data-action="cs-del-strip" data-sid="'+_esc(studio_id)+'">×</button>'
     +'</div>';
 }
@@ -1825,11 +1833,12 @@ function _csGetStrips(studio_id){
   var strips=[];
   container.querySelectorAll('.cs-strip-row').forEach(function(row){
     strips.push({
-      name: (row.querySelector('.cs-sr-name').value||'').trim()||'Strip',
-      ch_r: parseInt(row.querySelector('.cs-sr-r').value,10)||0,
-      ch_g: parseInt(row.querySelector('.cs-sr-g').value,10)||0,
-      ch_b: parseInt(row.querySelector('.cs-sr-b').value,10)||0,
-      ch_w: parseInt(row.querySelector('.cs-sr-w').value,10)||0,
+      name:       (row.querySelector('.cs-sr-name').value||'').trim()||'Strip',
+      ch_r:       parseInt(row.querySelector('.cs-sr-r').value,10)||0,
+      ch_g:       parseInt(row.querySelector('.cs-sr-g').value,10)||0,
+      ch_b:       parseInt(row.querySelector('.cs-sr-b').value,10)||0,
+      ch_w:       parseInt(row.querySelector('.cs-sr-w').value,10)||0,
+      brightness: parseInt(row.querySelector('.cs-sr-bri').value,10),
     });
   });
   return strips;
@@ -1847,7 +1856,7 @@ function _csAddStrip(studio_id){
     lastW=Math.max(lastW,w,b);
   });
   var start=lastW?lastW+1:1;
-  var newStrip={name:'Strip '+(idx+1),ch_r:start,ch_g:start+1,ch_b:start+2,ch_w:start+3};
+  var newStrip={name:'Strip '+(idx+1),ch_r:start,ch_g:start+1,ch_b:start+2,ch_w:start+3,brightness:100};
   var div=document.createElement('div');
   div.innerHTML=_csStripRowHtml(studio_id,newStrip,idx);
   container.appendChild(div.firstChild);
@@ -2054,6 +2063,13 @@ document.addEventListener('change',function(e){
     var _stId=e.target.id.replace('f-brand-','');
     var sw=document.getElementById('f-cs-swatch-'+_stId);
     if(sw) sw.style.background=e.target.value;
+  }
+});
+// Live-update brightness % label as range slider moves
+document.addEventListener('input',function(e){
+  if(e.target.classList.contains('cs-sr-bri')){
+    var lbl=e.target.parentNode.querySelector('.cs-sr-bri-lbl');
+    if(lbl) lbl.textContent=e.target.value+'%';
   }
 });
 
@@ -3464,12 +3480,16 @@ def register(app, ctx):
                 def _ch(v):
                     try: return max(0, min(512, int(v)))
                     except (TypeError, ValueError): return 0
+                def _bri(v):
+                    try: return max(0, min(100, int(round(float(v)))))
+                    except (TypeError, ValueError): return 100
                 clean.append({
-                    "name": str(strip.get("name") or "Strip")[:40],
-                    "ch_r": _ch(strip.get("ch_r")),
-                    "ch_g": _ch(strip.get("ch_g")),
-                    "ch_b": _ch(strip.get("ch_b")),
-                    "ch_w": _ch(strip.get("ch_w")),
+                    "name":       str(strip.get("name") or "Strip")[:40],
+                    "ch_r":       _ch(strip.get("ch_r")),
+                    "ch_g":       _ch(strip.get("ch_g")),
+                    "ch_b":       _ch(strip.get("ch_b")),
+                    "ch_w":       _ch(strip.get("ch_w")),
+                    "brightness": _bri(strip.get("brightness", 100)),
                 })
             s["cs_strips"] = clean
         _cfg_save(cfg)
