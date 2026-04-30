@@ -4,7 +4,7 @@
 # brand-hued backgrounds, and audio-level reactive animations.
 # Drop into the plugins/ subdirectory.
 
-import os, json, uuid, threading, mimetypes, functools, colorsys, time as _time, hashlib
+import os, json, uuid, threading, mimetypes, functools, colorsys, time as _time, hashlib, datetime as _dt
 import queue as _queue
 from flask import (request, jsonify, render_template_string,
                    send_file, session, Response, stream_with_context, g, make_response)
@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.12",
+    "version":  "1.3.13",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +32,14 @@ _STLOCK            = threading.Lock()
 _mic_live    = {}              # bs_studio_id → bool  (last known mic state)
 _MLOCK       = threading.Lock()
 
+# ─────────────────────────────────────── schedule state ──────────────────────
+# Runtime state tracking active schedule takeovers — not persisted.
+# Per studio: pre_station_id = what to revert to; rest_override = True when a
+# REST call came in during the scheduled window (suppresses the end-of-window
+# revert so the operator assignment sticks).
+_schedule_state: dict = {}   # studio_id → {pre_station_id, active_schedule_id, rest_override}
+_SCHED_LOCK = threading.Lock()
+
 os.makedirs(_LOGO_DIR, exist_ok=True)
 
 # ─────────────────────────────────────────────── config helpers ───────────────
@@ -39,9 +47,12 @@ os.makedirs(_LOGO_DIR, exist_ok=True)
 def _cfg_load():
     try:
         with open(_CFG_PATH) as f:
-            return json.load(f)
+            d = json.load(f)
+            if "schedules" not in d:
+                d["schedules"] = []
+            return d
     except Exception:
-        return {"stations": [], "studios": [], "api_key": ""}
+        return {"stations": [], "studios": [], "api_key": "", "schedules": []}
 
 def _cfg_save(cfg):
     with _LOCK:
@@ -135,8 +146,96 @@ def _mic_monitor_loop():
         except Exception:
             pass
 
+def _check_schedules():
+    """Check all schedules and activate/deactivate as needed. Called every 30 s."""
+    cfg = _cfg_load()
+    schedules = cfg.get("schedules", [])
+    studios   = {s["id"]: s for s in cfg.get("studios", [])}
+
+    now        = _dt.datetime.now()
+    day_short  = now.strftime("%a").lower()      # "mon", "tue", …
+    current_hm = now.strftime("%H:%M")           # "14:35"
+
+    # Build map of which schedule (if any) should be active per studio right now
+    active_by_studio = {}
+    for sched in schedules:
+        if not sched.get("enabled", True):
+            continue
+        studio_id = sched.get("studio_id", "")
+        if not studio_id:
+            continue
+        days = sched.get("days") or []           # [] = every day
+        if days and day_short not in days:
+            continue
+        start = sched.get("start_time", "00:00")
+        end   = sched.get("end_time",   "23:59")
+        if start <= current_hm < end:
+            if studio_id not in active_by_studio:
+                active_by_studio[studio_id] = sched  # first matching wins
+
+    # ── Activate schedules that just became current ────────────────────────────
+    for studio_id, sched in active_by_studio.items():
+        with _SCHED_LOCK:
+            state = _schedule_state.get(studio_id, {})
+            if state.get("active_schedule_id"):
+                continue               # already under a schedule
+            studio = studios.get(studio_id)
+            if not studio:
+                continue
+            pre_station_id = studio.get("station_id", "")
+            _schedule_state[studio_id] = {
+                "pre_station_id":    pre_station_id,
+                "active_schedule_id": sched["id"],
+                "rest_override":     False,
+            }
+        # Apply the scheduled station and push SSE update
+        cfg2 = _cfg_load()
+        for st in cfg2.get("studios", []):
+            if st["id"] == studio_id:
+                st["station_id"] = sched["station_id"]
+                break
+        _cfg_save(cfg2)
+        _notify_studio(studio_id)
+
+    # ── Deactivate schedules whose window has passed ───────────────────────────
+    with _SCHED_LOCK:
+        to_check = list(_schedule_state.items())
+
+    for studio_id, state in to_check:
+        if studio_id in active_by_studio:
+            continue                                  # still inside the window
+        if not state.get("active_schedule_id"):
+            continue
+
+        rest_override  = state.get("rest_override", False)
+        pre_station_id = state.get("pre_station_id", "")
+
+        with _SCHED_LOCK:
+            _schedule_state.pop(studio_id, None)
+
+        if not rest_override:
+            # Revert studio to the brand it had before the schedule activated
+            cfg2 = _cfg_load()
+            for st in cfg2.get("studios", []):
+                if st["id"] == studio_id:
+                    st["station_id"] = pre_station_id
+                    break
+            _cfg_save(cfg2)
+            _notify_studio(studio_id)
+
+
+def _schedule_loop():
+    """Background thread: run schedule checks every 30 s."""
+    while True:
+        try:
+            _time.sleep(30)
+            _check_schedules()
+        except Exception:
+            pass
+
 # Start mic monitor thread once at plugin load
 threading.Thread(target=_mic_monitor_loop, daemon=True, name="bs-mic-monitor").start()
+threading.Thread(target=_schedule_loop, daemon=True, name="bs-scheduler").start()
 
 # ─────────────────────────────── brand palette derivation ────────────────────
 
@@ -388,6 +487,23 @@ th{color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.05em;
 td{padding:6px 8px;font-size:12px;border-bottom:1px solid rgba(23,52,95,.4)}
 td code{font-size:11px;background:#050e20;padding:2px 6px;border-radius:4px;color:var(--acc)}
 .lev-badge{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--ok);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:20px;padding:1px 8px;margin-left:6px}
+.sched-row{background:var(--sur);border:1px solid var(--bor);border-radius:8px;margin-bottom:8px;padding:11px 14px;display:flex;align-items:center;gap:12px}
+.sched-row.active-sched{border-color:var(--acc)}
+.sched-info{flex:1;min-width:0}
+.sched-name{font-weight:700;font-size:13px;margin-bottom:3px}
+.sched-detail{font-size:11px;color:var(--mu)}
+.sched-badge{font-size:10px;font-weight:700;background:rgba(23,168,255,.18);color:var(--acc);border:1px solid rgba(23,168,255,.35);border-radius:999px;padding:2px 8px;margin-left:6px}
+.day-btns{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+.day-btn{padding:3px 8px;border:1px solid var(--bor);border-radius:6px;background:#0d1e40;color:var(--mu);font-size:11px;font-weight:600;cursor:pointer}
+.day-btn.sel{background:rgba(23,168,255,.2);color:var(--acc);border-color:var(--acc)}
+input[type=time]{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;font-family:inherit}
+input[type=time]:focus{border-color:var(--acc);outline:none}
+.tog{position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0}
+.tog input{opacity:0;width:0;height:0}
+.tog-sl{position:absolute;cursor:pointer;inset:0;background:#1a3060;border-radius:20px;transition:.2s}
+.tog-sl:before{content:"";position:absolute;height:14px;width:14px;left:3px;bottom:3px;background:#8aa4c8;border-radius:50%;transition:.2s}
+.tog input:checked+.tog-sl{background:var(--acc)}
+.tog input:checked+.tog-sl:before{transform:translateX(16px);background:#fff}
 </style>
 </head>
 <body>
@@ -449,6 +565,7 @@ td code{font-size:11px;background:#050e20;padding:2px 6px;border-radius:4px;colo
   <nav class="tab-nav" id="tab-nav">
     <button class="tab-btn active" data-tab="studios">🖥 Studios<span class="tab-count" id="tc-studios"></span></button>
     <button class="tab-btn" data-tab="stations">📡 Stations<span class="tab-count" id="tc-stations"></span></button>
+    <button class="tab-btn" data-tab="schedules">⏰ Schedules<span class="tab-count" id="tc-schedules"></span></button>
     <button class="tab-btn" data-tab="api">🔗 REST API</button>
   </nav>
 
@@ -460,6 +577,57 @@ td code{font-size:11px;background:#050e20;padding:2px 6px;border-radius:4px;colo
   <div class="tab-panel" id="tp-stations">
     <div style="margin-bottom:14px"><button class="btn bp" id="add-station-btn">＋ Add Station</button></div>
     <div id="station-list"></div>
+  </div>
+
+  <div class="tab-panel" id="tp-schedules">
+    <!-- Add Schedule form -->
+    <div class="sc" id="add-sched-wrap" style="margin-bottom:14px">
+      <div class="sc-head" style="cursor:pointer" id="add-sched-toggle">
+        <span style="font-weight:700;font-size:13px">＋ Add Schedule</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--mu)" id="add-sched-arrow">▼</span>
+      </div>
+      <div class="sc-body" id="add-sched-body" style="display:none">
+        <div class="field">
+          <label>Schedule Name</label>
+          <input type="text" id="sf-name" placeholder="e.g. Afternoon Show" style="max-width:340px">
+        </div>
+        <div class="grid2" style="margin-bottom:12px">
+          <div class="field" style="margin-bottom:0">
+            <label>Studio</label>
+            <select id="sf-studio"></select>
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label>Brand (Station)</label>
+            <select id="sf-station"></select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Days (leave all unselected = every day)</label>
+          <div class="day-btns" id="sf-days">
+            <button type="button" class="day-btn" data-day="mon">Mon</button>
+            <button type="button" class="day-btn" data-day="tue">Tue</button>
+            <button type="button" class="day-btn" data-day="wed">Wed</button>
+            <button type="button" class="day-btn" data-day="thu">Thu</button>
+            <button type="button" class="day-btn" data-day="fri">Fri</button>
+            <button type="button" class="day-btn" data-day="sat">Sat</button>
+            <button type="button" class="day-btn" data-day="sun">Sun</button>
+          </div>
+        </div>
+        <div class="grid2" style="margin-bottom:14px">
+          <div class="field" style="margin-bottom:0">
+            <label>Start Time</label>
+            <input type="time" id="sf-start" value="09:00">
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label>End Time</label>
+            <input type="time" id="sf-end" value="17:00">
+          </div>
+        </div>
+        <button class="btn bp" id="sf-save-btn">Save Schedule</button>
+      </div>
+    </div>
+    <!-- Schedule list -->
+    <div id="sched-list"><div style="color:var(--mu);font-size:13px">No schedules yet.</div></div>
   </div>
 
   <div class="tab-panel" id="tp-api">
@@ -526,6 +694,7 @@ var _currentLogoSid = null;
 
 function _csrf(){ return (document.querySelector('meta[name="csrf-token"]')||{}).content||''; }
 function _post(url,data){ return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},body:JSON.stringify(data)}); }
+function _patch(url,data){ return fetch(url,{method:'PATCH',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},body:JSON.stringify(data)}); }
 function _del(url){ return fetch(url,{method:'DELETE',headers:{'X-CSRFToken':_csrf()}}); }
 function _msg(txt,ok){
   var el=document.getElementById('msg');
@@ -545,6 +714,7 @@ document.getElementById('tab-nav').addEventListener('click',function(e){
   var btn=e.target.closest('.tab-btn'); if(!btn) return;
   document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
   document.querySelectorAll('.tab-panel').forEach(function(p){p.classList.remove('active');});
+  if(btn.dataset.tab==='schedules') _populateSchedSelects();
   btn.classList.add('active');
   document.getElementById('tp-'+btn.dataset.tab).classList.add('active');
 });
@@ -905,8 +1075,10 @@ function _checkOnboard(){
   // Update tab count chips
   var tcs=document.getElementById('tc-studios');
   var tct=document.getElementById('tc-stations');
+  var tcsched=document.getElementById('tc-schedules');
   if(tcs) tcs.textContent=_studios.length?'  '+_studios.length:'';
   if(tct) tct.textContent=_stations.length?'  '+_stations.length:'';
+  if(tcsched) tcsched.textContent=_schedules.length?'  '+_schedules.length:'';
 }
 (function(){
   var obs=document.getElementById('onboard-add-station');
@@ -942,6 +1114,142 @@ fetch('/api/zetta/status_full',{credentials:'same-origin'})
     _zetStations.sort(function(a,b){return a.name<b.name?-1:1;});
     renderStudios(); renderStations(); renderApiRef();
   });
+
+// ── Schedules ────────────────────────────────────────────────────────────────
+var _schedules = {{schedules_json|safe}};
+var _schedActive = {};
+
+function _schedDayLabel(days){
+  if(!days||!days.length) return 'Every day';
+  var names={mon:'Mon',tue:'Tue',wed:'Wed',thu:'Thu',fri:'Fri',sat:'Sat',sun:'Sun'};
+  return days.map(function(d){return names[d]||d;}).join(', ');
+}
+
+function renderSchedules(){
+  var el=document.getElementById('sched-list');
+  if(!el) return;
+  if(!_schedules.length){el.innerHTML='<div style="color:var(--mu);font-size:13px;padding:8px 0">No schedules yet.</div>';return;}
+  var studioMap={};_studios.forEach(function(s){studioMap[s.id]=s.name||s.id;});
+  var stationMap={};_stations.forEach(function(s){stationMap[s.id]=s.name||s.id;});
+  var html='';
+  _schedules.forEach(function(sc){
+    var isActive=!!_schedActive[sc.studio_id]&&_schedActive[sc.studio_id].active_schedule_id===sc.id;
+    var restOvr=isActive&&_schedActive[sc.studio_id].rest_override;
+    html+='<div class="sched-row'+(isActive?' active-sched':'')+'" data-sched-id="'+sc.id+'">'
+      +'<div class="sched-info">'
+      +'<div class="sched-name">'+_esc(sc.name||'Unnamed')
+      +(isActive?'<span class="sched-badge">'+(restOvr?'REST OVERRIDE':'ACTIVE')+'</span>':'')+'</div>'
+      +'<div class="sched-detail">Studio: <strong>'+_esc(studioMap[sc.studio_id]||sc.studio_id)+'</strong>'
+      +' → Brand: <strong>'+_esc(stationMap[sc.station_id]||sc.station_id)+'</strong></div>'
+      +'<div class="sched-detail">'+_schedDayLabel(sc.days)+' &nbsp;·&nbsp; '
+      +_esc(sc.start_time||'?')+' – '+_esc(sc.end_time||'?')+'</div>'
+      +'</div>'
+      +'<label class="tog" title="Enable/disable"><input type="checkbox" class="sched-tog"'+(sc.enabled?' checked':'')+' data-sid="'+sc.id+'"><span class="tog-sl"></span></label>'
+      +'<button class="btn bd bs sched-del-btn" data-sid="'+sc.id+'">Delete</button>'
+      +'</div>';
+  });
+  el.innerHTML=html;
+  // Toggle enable
+  el.querySelectorAll('.sched-tog').forEach(function(cb){
+    cb.addEventListener('change',function(){
+      var sid=this.dataset.sid;
+      _patch('/api/brandscreen/schedule/'+sid,{enabled:this.checked})
+        .then(function(r){return r.json();}).then(function(d){
+          if(!d.ok){_msg('Save failed',false);return;}
+          var sc=_schedules.find(function(s){return s.id===sid;});
+          if(sc) sc.enabled=cb.checked;
+        });
+    });
+  });
+  // Delete
+  el.querySelectorAll('.sched-del-btn').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var sid=this.dataset.sid;
+      if(!confirm('Delete this schedule?')) return;
+      _del('/api/brandscreen/schedule/'+sid)
+        .then(function(r){return r.json();}).then(function(d){
+          if(!d.ok){_msg('Delete failed',false);return;}
+          _schedules=_schedules.filter(function(s){return s.id!==sid;});
+          renderSchedules();
+          _updateTabCounts();
+        });
+    });
+  });
+}
+
+// Add-schedule form toggle
+(function(){
+  var tog=document.getElementById('add-sched-toggle');
+  var body=document.getElementById('add-sched-body');
+  var arrow=document.getElementById('add-sched-arrow');
+  if(tog&&body) tog.addEventListener('click',function(){
+    var open=body.style.display!=='none';
+    body.style.display=open?'none':'block';
+    if(arrow) arrow.textContent=open?'▼':'▲';
+  });
+})();
+
+// Populate studio/station dropdowns when tab opens
+function _populateSchedSelects(){
+  var ss=document.getElementById('sf-studio');
+  var st=document.getElementById('sf-station');
+  if(!ss||!st) return;
+  ss.innerHTML='<option value="">— select studio —</option>';
+  _studios.forEach(function(s){ss.innerHTML+='<option value="'+s.id+'">'+_esc(s.name||s.id)+'</option>';});
+  st.innerHTML='<option value="">— select brand —</option>';
+  _stations.forEach(function(s){st.innerHTML+='<option value="'+s.id+'">'+_esc(s.name||s.id)+'</option>';});
+}
+
+// Day button toggle
+document.getElementById('sf-days').addEventListener('click',function(e){
+  var btn=e.target.closest('.day-btn');
+  if(btn) btn.classList.toggle('sel');
+});
+
+// Load active schedule state
+function _loadSchedActive(){
+  fetch('/api/brandscreen/schedules',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      _schedActive=d.active||{};
+      renderSchedules();
+    }).catch(function(){});
+}
+_loadSchedActive();
+// Refresh active state every 60 s
+setInterval(_loadSchedActive, 60000);
+
+// Save new schedule
+document.getElementById('sf-save-btn').addEventListener('click',function(){
+  var name=document.getElementById('sf-name').value.trim();
+  var studio=document.getElementById('sf-studio').value;
+  var station=document.getElementById('sf-station').value;
+  var start=document.getElementById('sf-start').value;
+  var end=document.getElementById('sf-end').value;
+  var days=[].slice.call(document.querySelectorAll('#sf-days .day-btn.sel'))
+    .map(function(b){return b.dataset.day;});
+  if(!name){_msg('Enter a schedule name.',false);return;}
+  if(!studio){_msg('Select a studio.',false);return;}
+  if(!station){_msg('Select a brand.',false);return;}
+  if(!start||!end){_msg('Set start and end times.',false);return;}
+  if(start>=end){_msg('End time must be after start time.',false);return;}
+  _post('/api/brandscreen/schedule',{name:name,studio_id:studio,station_id:station,days:days,start_time:start,end_time:end})
+    .then(function(r){return r.json();}).then(function(d){
+      if(!d.ok){_msg(d.error||'Save failed',false);return;}
+      _schedules.push(d.schedule);
+      renderSchedules();
+      _updateTabCounts();
+      // Reset form
+      document.getElementById('sf-name').value='';
+      document.getElementById('sf-days').querySelectorAll('.day-btn.sel').forEach(function(b){b.classList.remove('sel');});
+      document.getElementById('sf-start').value='09:00';
+      document.getElementById('sf-end').value='17:00';
+      document.getElementById('add-sched-body').style.display='none';
+      var arrow=document.getElementById('add-sched-arrow');
+      if(arrow) arrow.textContent='▼';
+      _msg('Schedule saved.',true);
+    });
+});
 
 // Fetch Studio Board studios for mic-live linking
 fetch('/api/studioboard/data',{credentials:'same-origin'})
@@ -1845,6 +2153,7 @@ def register(app, ctx):
             _ADMIN_TPL,
             stations_json=json.dumps(stations),
             studios_json=json.dumps(cfg.get("studios", [])),
+            schedules_json=json.dumps(cfg.get("schedules", [])),
             streams_json=json.dumps(_get_streams()),
             api_key=api_key,
             origin=request.host_url.rstrip("/"),
@@ -1955,10 +2264,86 @@ def register(app, ctx):
         station_id = (data.get("station_id") or "").strip()
         if station_id and not _get_station(cfg, station_id):
             return jsonify({"error": "Station not found"}), 404
+        # If a scheduled takeover is currently active for this studio, mark it
+        # as REST-overridden so the schedule end does NOT revert the assignment.
+        with _SCHED_LOCK:
+            if studio_id in _schedule_state:
+                _schedule_state[studio_id]["rest_override"] = True
         studio["station_id"] = station_id
         _cfg_save(cfg)
         _notify_studio(studio_id)
         return jsonify({"ok": True, "studio_id": studio_id, "station_id": station_id})
+
+    # ── Schedule CRUD ─────────────────────────────────────────────────────────
+
+    @app.get("/api/brandscreen/schedules")
+    @login_required
+    def bs_schedules_list():
+        cfg = _cfg_load()
+        with _SCHED_LOCK:
+            active = {sid: {"pre_station_id": s.get("pre_station_id", ""),
+                            "active_schedule_id": s.get("active_schedule_id", ""),
+                            "rest_override": s.get("rest_override", False)}
+                      for sid, s in _schedule_state.items()}
+        return jsonify({"schedules": cfg.get("schedules", []), "active": active})
+
+    @app.post("/api/brandscreen/schedule")
+    @login_required
+    @csrf_protect
+    def bs_schedule_create():
+        cfg  = _cfg_load()
+        data = request.get_json(force=True) or {}
+        studio_id  = (data.get("studio_id")  or "").strip()
+        station_id = (data.get("station_id") or "").strip()
+        if not studio_id or not _get_studio(cfg, studio_id):
+            return jsonify({"error": "Studio not found"}), 400
+        if not station_id or not _get_station(cfg, station_id):
+            return jsonify({"error": "Station not found"}), 400
+        valid_days = {"mon","tue","wed","thu","fri","sat","sun"}
+        days = [d for d in (data.get("days") or []) if d in valid_days]
+        start = (data.get("start_time") or "00:00").strip()
+        end   = (data.get("end_time")   or "23:59").strip()
+        sched = {
+            "id":         str(uuid.uuid4())[:8],
+            "name":       (data.get("name") or "Schedule").strip()[:80],
+            "studio_id":  studio_id,
+            "station_id": station_id,
+            "days":       days,
+            "start_time": start,
+            "end_time":   end,
+            "enabled":    True,
+        }
+        cfg.setdefault("schedules", []).append(sched)
+        _cfg_save(cfg)
+        return jsonify({"ok": True, "schedule": sched})
+
+    @app.patch("/api/brandscreen/schedule/<sched_id>")
+    @login_required
+    @csrf_protect
+    def bs_schedule_update(sched_id):
+        cfg   = _cfg_load()
+        sched = next((s for s in cfg.get("schedules", []) if s["id"] == sched_id), None)
+        if not sched:
+            return jsonify({"error": "Schedule not found"}), 404
+        data  = request.get_json(force=True) or {}
+        for k in ("name", "days", "start_time", "end_time", "enabled",
+                  "studio_id", "station_id"):
+            if k in data:
+                sched[k] = data[k]
+        _cfg_save(cfg)
+        return jsonify({"ok": True, "schedule": sched})
+
+    @app.delete("/api/brandscreen/schedule/<sched_id>")
+    @login_required
+    @csrf_protect
+    def bs_schedule_delete(sched_id):
+        cfg = _cfg_load()
+        before = len(cfg.get("schedules", []))
+        cfg["schedules"] = [s for s in cfg.get("schedules", []) if s["id"] != sched_id]
+        if len(cfg["schedules"]) == before:
+            return jsonify({"error": "Not found"}), 404
+        _cfg_save(cfg)
+        return jsonify({"ok": True})
 
     # ── Logo ──────────────────────────────────────────────────────────────────
     @app.get("/api/brandscreen/logo/<station_id>")

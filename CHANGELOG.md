@@ -2,6 +2,30 @@
 
 ---
 
+### Brand Screen 1.3.13 — 2026-04-30
+
+**Feature: Studio brand scheduling**
+
+Schedule different brands to take over a studio screen for specific day/time
+windows. After the schedule window ends the screen automatically reverts to
+whatever brand was assigned before the takeover.
+
+- **CRUD schedule API**: `GET/POST /api/brandscreen/schedules`,
+  `PATCH /api/brandscreen/schedule/<id>`,
+  `DELETE /api/brandscreen/schedule/<id>`.
+- **Schedule fields**: name, studio, station, days of week (Mon–Sun),
+  start time, end time, enabled toggle.
+- **REST override**: if a REST `PUT /api/brandscreen/assign` arrives while a
+  scheduled takeover is active, the assignment takes effect immediately and the
+  auto-revert at schedule end is suppressed for that window. The schedule
+  resumes as normal on its next occurrence.
+- **Schedules tab** added to the Brand Screen admin UI with a form to create
+  schedules, an enable/disable toggle per schedule, and a delete button.
+  List auto-refreshes every 60 s.
+- Background `bs-scheduler` daemon thread evaluates active windows every 30 s.
+
+---
+
 ### Audio Router 1.2.10 — 2026-04-30
 
 **Fix: hub still unresponsive — hub_chunks thread occupancy ~91% on LAN**
