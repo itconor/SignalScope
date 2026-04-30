@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.2.3",
+    "version":  "1.2.4",
 }
 
 import hashlib
@@ -1088,8 +1088,11 @@ def register(app, ctx):
                 _hub_broadcasters[rid] = bc
 
         def _gen():
+            # Prime the connection immediately so nginx doesn't time out
+            # waiting for the first byte while the source is still starting.
+            yield bytes(9600)  # one block of silence (48000 Hz / 10 × 2 bytes)
             try:
-                for chunk in bc.consumer():
+                for chunk in bc.consumer(catchup=0):
                     yield chunk
             except GeneratorExit:
                 pass
@@ -1098,7 +1101,7 @@ def register(app, ctx):
             _gen(),
             mimetype="application/octet-stream",
             headers={
-                "Transfer-Encoding": "chunked",
+                "X-Accel-Buffering": "no",
                 "X-Audio-Format":    "s16le/48000/1",
                 "Cache-Control":     "no-cache",
             },

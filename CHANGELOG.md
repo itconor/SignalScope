@@ -2,6 +2,26 @@
 
 ---
 
+### Audio Router 1.2.4 — 2026-04-30
+
+**Fix: hub_stream 5XX — prime connection to prevent nginx proxy_read_timeout**
+
+- Root cause: `audiorouter_hub_stream` generator blocked in `bc.consumer()` waiting
+  for the first audio chunk from the source. Flask/Werkzeug does not call
+  `start_response()` (commit HTTP headers) until the generator yields its first
+  byte. If the source is slow to start, nginx `proxy_read_timeout` fires before
+  any bytes are yielded and the dest ffmpeg receives a 5XX reply.
+- Fix: generator now yields `bytes(9600)` (one block of silence) immediately before
+  entering the consumer loop, committing headers instantly regardless of source
+  readiness.
+- Changed `bc.consumer()` to `bc.consumer(catchup=0)` so dest starts from live
+  data only (avoids replaying a burst of stale buffered chunks on connect).
+- Added `X-Accel-Buffering: no` response header to disable nginx proxy buffering
+  for the streaming response. Removed redundant `Transfer-Encoding: chunked`
+  (Flask sets this automatically for generator responses).
+
+---
+
 ### Audio Router 1.2.3 — 2026-04-30
 
 **Fix: hub relay 404 — replace scanner-slot relay with hub-side broadcaster**
