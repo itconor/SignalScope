@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.22",
+    "version":  "1.3.23",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -106,6 +106,7 @@ def _new_station():
         "level_key":          "",   # "site|stream" for audio reactivity
         "full_screen_logo":   False, # display logo only — no backgrounds, animations, clock, NP
         "cueserver_cmd":      "",    # CueServer CGI command string (e.g. "Cue 5 Go")
+        "cs_brightness":      100,   # LED brightness for this brand (0–100, default 100)
     }
 
 def _new_studio():
@@ -117,9 +118,12 @@ def _new_studio():
         "sb_studio_id":    "",   # linked studioboard studio for mic-live detection
         "cueserver_site": "",    # hub site name where CueServer lives
         "cueserver_host": "",    # CueServer hostname / IP on that site's LAN
+        "cs_zone_name":   "",    # CueServer zone name (e.g. "Studio1LED") — if set,
+                                 # commands use "ZONE "…" Preset N ON" format instead of "Cue N Go"
         # List of DMX strips: [{name, ch_r, ch_g, ch_b, ch_w}]
         # ch_w = 0 means no white channel (RGB only).
         # ch_w > 0 enables RGBW — white component extracted from the brand colour.
+        # Brightness is per-brand (cs_brightness on the station), NOT per strip.
         "cs_strips": [],
     }
 
@@ -274,40 +278,52 @@ def _cueserver_trigger(studio, station):
     schedule activate, or schedule deactivate/revert).  The command is stored
     in _cs_pending keyed by site name.  The client poller thread (started in
     register() on client nodes) picks it up within ~5 s and fires the CGI call.
+
+    If station.cueserver_cmd is set it is fired as-is (supports both
+    "Cue N Go" and "ZONE "Name" Preset N ON" formats).  If no command is set
+    but the studio has cs_strips configured, a live Channel-At command is
+    generated from the brand colour using station.cs_brightness (0–100).
     """
     if not studio or not station:
         return
     cs_site = (studio.get("cueserver_site") or "").strip()
     cs_host = (studio.get("cueserver_host") or "").strip()
-    cs_cmd  = (station.get("cueserver_cmd")  or "").strip()
-    if not cs_site or not cs_host or not cs_cmd:
+    if not cs_site or not cs_host:
+        return
+    cs_cmd = (station.get("cueserver_cmd") or "").strip()
+    if not cs_cmd:
+        # Fall back to live DMX colour command from brand colour + brightness
+        strips = studio.get("cs_strips") or []
+        if strips and station.get("brand_colour"):
+            bri    = int(station.get("cs_brightness") or 100)
+            cs_cmd = _cs_colour_cmd(station["brand_colour"], strips, bri)
+    if not cs_cmd:
         return
     with _cs_lock:
         _cs_pending[cs_site] = {"host": cs_host, "cmd": cs_cmd}
 
-def _cs_colour_cmd(hex_colour, strips):
+def _cs_colour_cmd(hex_colour, strips, brightness=100):
     """Build a CueScript command that sets all configured DMX strips from a hex colour.
 
-    Each strip is a dict {name, ch_r, ch_g, ch_b, ch_w, brightness} where:
+    Each strip is a dict {name, ch_r, ch_g, ch_b, ch_w} where:
     - ch_r/g/b/w = DMX channel numbers (1–512); 0 = skip that channel
     - ch_w       = White channel; 0 = not fitted (RGB mode).
                    When ch_w > 0, RGBW decomposition is applied:
                    W = min(R,G,B); RGB reduced accordingly.
-    - brightness = 0–100 (default 100). Scales the final channel values so
-                   the same hue can be sent at full or reduced intensity.
-                   e.g. brightness=10, pure red → Channel R At 10 (not 100).
+
+    `brightness` (0–100, default 100) is the per-brand/station brightness and
+    applies uniformly to all strips.  It is stored on the station, not the strip.
 
     CueScript uses percentage values (0–100), so 255 → 100, 128 → 50, etc.
     """
     r, g, b = _hex_rgb(hex_colour)
-    parts = []
+    scale   = max(0.0, min(100.0, float(brightness))) / 100.0
+    parts   = []
     for strip in strips:
         ch_r  = int(strip.get("ch_r") or 0)
         ch_g  = int(strip.get("ch_g") or 0)
         ch_b  = int(strip.get("ch_b") or 0)
         ch_w  = int(strip.get("ch_w") or 0)
-        bri   = max(0.0, min(100.0, float(strip.get("brightness") if strip.get("brightness") is not None else 100)))
-        scale = bri / 100.0
 
         if ch_w:
             # RGBW: extract white component
@@ -1490,7 +1506,12 @@ function _studioForm(sd){
     +'<p class="hint" style="margin-top:4px">IP address or hostname of the CueServer appliance on the studio LAN.</p>'
     +'</div>'
     +'</div>'
-    +'<div class="slabel" style="margin-bottom:6px">DMX Strips <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;color:var(--mu)">— add one row per LED strip (RGBW or RGB; W=0 if no white channel)</span></div>'
+    +'<div class="field" style="margin-bottom:10px">'
+    +'<label>Zone Name <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;color:var(--mu)">(optional)</span></label>'
+    +'<input type="text" id="sd-cs-zone-'+sd.id+'" value="'+_esc(sd.cs_zone_name||'')+'" placeholder="e.g. Studio1LED" style="max-width:220px">'
+    +'<p class="hint" style="margin-top:4px">CueServer zone name for this studio. When set, brand commands use <code>ZONE "…" Preset N ON</code> format. Leave blank to use <code>Cue N Go</code>.</p>'
+    +'</div>'
+    +'<div class="slabel" style="margin-bottom:6px">DMX Strips <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;color:var(--mu)">— channels only; brightness is set per brand below</span></div>'
     +'<div id="sd-cs-strips-'+sd.id+'">'
     +(function(){
       var strips=sd.cs_strips&&sd.cs_strips.length?sd.cs_strips:[];
@@ -1626,10 +1647,19 @@ function _stationForm(s){
     +'<p class="hint" style="margin-top:5px">PNG with transparent background recommended. SVG, JPG, WebP also supported.</p>'
     +'<hr class="sep">'
     +'<div class="slabel">CueServer LED</div>'
-    +'<div class="field" style="margin-bottom:8px">'
+    +'<div class="grid2" style="margin-bottom:8px">'
+    +'<div class="field">'
     +'<label>Command string</label>'
-    +'<input type="text" id="f-csCmd-'+s.id+'" value="'+_esc(s.cueserver_cmd||'')+'" placeholder="Cue 5 Go">'
-    +'<p class="hint" style="margin-top:4px">CueServer CGI command fired when this brand becomes active (e.g. <code>Cue 5 Go</code>, <code>M1</code>). Leave blank to skip.</p>'
+    +'<input type="text" id="f-csCmd-'+s.id+'" value="'+_esc(s.cueserver_cmd||'')+'" placeholder="Cue 5 Go  or  ZONE \\"Studio1LED\\" Preset 3 ON">'
+    +'<p class="hint" style="margin-top:4px">Fired when this brand goes live. Use the tools below to auto-set from a scene.</p>'
+    +'</div>'
+    +'<div class="field">'
+    +(function(){var bri=s.cs_brightness!==undefined?s.cs_brightness:100;
+      return '<label>Brightness <span id="f-csBri-lbl-'+s.id+'" style="font-weight:400;color:var(--tx)">'+bri+'%</span></label>'
+      +'<input type="range" id="f-csBri-'+s.id+'" min="0" max="100" value="'+bri+'" style="width:100%;accent-color:var(--acc);cursor:pointer" title="LED brightness for this brand">'
+      +'<p class="hint" style="margin-top:4px">0 = off · 100 = full. Applies to all DMX strips for this brand.</p>';
+    })()
+    +'</div>'
     +'</div>'
     +'<div style="background:rgba(23,52,95,.3);border:1px solid var(--bor);border-radius:8px;padding:12px;margin-bottom:4px">'
     +'<div class="slabel" style="margin-bottom:8px;font-size:10px">Create / preview scene from brand colour</div>'
@@ -1641,7 +1671,7 @@ function _stationForm(s){
       return '<option value="'+_esc(sd.id)+'">'+_esc(sd.name)+'</option>';
     }).join('')
     +'</select></div>'
-    +'<div class="field"><label>Cue number</label>'
+    +'<div class="field"><label id="f-cs-cue-lbl-'+s.id+'">Cue / Preset number</label>'
     +'<input type="number" id="f-cs-cue-'+s.id+'" min="1" max="9999" placeholder="e.g. 5" style="width:100%"></div>'
     +'</div>'
     +'<div id="f-cs-scenes-'+s.id+'" style="margin-bottom:8px;display:none"></div>'
@@ -1649,7 +1679,7 @@ function _stationForm(s){
     +'<span style="font-size:11px;color:var(--mu)">Brand colour:</span>'
     +'<span id="f-cs-swatch-'+s.id+'" style="width:22px;height:22px;border-radius:4px;border:1px solid var(--bor);background:'+_esc(s.brand_colour||'#17a8ff')+';flex-shrink:0"></span>'
     +'<button class="btn bg bs" data-action="cs-preview" data-sid="'+s.id+'">💡 Preview on LEDs</button>'
-    +'<button class="btn bp bs" data-action="cs-record" data-sid="'+s.id+'">📋 Save as Cue → fill command</button>'
+    +'<button class="btn bp bs" data-action="cs-record" data-sid="'+s.id+'">📋 Save as Cue</button>'
     +'<span id="f-cs-status-'+s.id+'" style="font-size:11px;color:var(--mu)"></span>'
     +'</div>'
     +'</div>'
@@ -1706,6 +1736,7 @@ function _saveSd(sid){
     sb_studio_id:_v('sd-sbst-'+sid)||'',
     cueserver_site:_v('sd-cs-site-'+sid)||'',
     cueserver_host:_v('sd-cs-host-'+sid)||'',
+    cs_zone_name:(_v('sd-cs-zone-'+sid)||'').trim(),
     cs_strips:_csGetStrips(sid),
   }).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
@@ -1734,7 +1765,7 @@ function _addStation(){
     document.getElementById('stb-'+d.station.id).classList.add('open'); _msg('Station created.',true);
   });
 }
-function _saveSt(sid){
+function _saveSt(sid, _onDone){
   var s=_stById(sid); if(!s) return;
   var data={
     name:_v('f-name-'+sid)||s.name, enabled:!!_v('f-en-'+sid),
@@ -1748,10 +1779,14 @@ function _saveSt(sid){
     np_api_artist_path:_v('f-npapath-'+sid)||'', np_manual:_v('f-npman-'+sid)||'',
     message:_v('f-msg-'+sid)||'',
     cueserver_cmd:_v('f-csCmd-'+sid)||'',
+    cs_brightness:parseInt(_v('f-csBri-'+sid)||'100',10),
   };
   _post('/api/brandscreen/station/'+sid, data).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
-    Object.assign(s,d.station); renderStations(); renderStudios(); _msg('Saved.',true);
+    Object.assign(s,d.station);
+    // Update in-memory brightness so live swatch stays correct
+    renderStations(); renderStudios();
+    if(_onDone) _onDone(); else _msg('Saved.',true);
   });
 }
 function _delSt(sid){
@@ -1807,22 +1842,16 @@ var _csSceneCache={};   // studio_id → [{num,label}]
 
 function _csStripRowHtml(studio_id, strip, idx){
   strip=strip||{};
-  var bri=(strip.brightness!==undefined&&strip.brightness!==null)?strip.brightness:100;
   return '<div class="cs-strip-row" style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">'
     +'<input class="cs-sr-name" type="text" value="'+_esc(strip.name||'Strip '+(idx+1))+'" placeholder="Strip name" style="width:90px;font-size:12px">'
     +'<span style="font-size:10px;color:var(--mu)">R</span>'
-    +'<input class="cs-sr-r" type="number" min="0" max="512" value="'+(strip.ch_r||0)+'" style="width:54px;font-size:12px" title="Red channel (0=off)">'
+    +'<input class="cs-sr-r" type="number" min="0" max="512" value="'+(strip.ch_r||0)+'" style="width:54px;font-size:12px" title="Red DMX channel (0=off)">'
     +'<span style="font-size:10px;color:var(--mu)">G</span>'
-    +'<input class="cs-sr-g" type="number" min="0" max="512" value="'+(strip.ch_g||0)+'" style="width:54px;font-size:12px" title="Green channel (0=off)">'
+    +'<input class="cs-sr-g" type="number" min="0" max="512" value="'+(strip.ch_g||0)+'" style="width:54px;font-size:12px" title="Green DMX channel (0=off)">'
     +'<span style="font-size:10px;color:var(--mu)">B</span>'
-    +'<input class="cs-sr-b" type="number" min="0" max="512" value="'+(strip.ch_b||0)+'" style="width:54px;font-size:12px" title="Blue channel (0=off)">'
+    +'<input class="cs-sr-b" type="number" min="0" max="512" value="'+(strip.ch_b||0)+'" style="width:54px;font-size:12px" title="Blue DMX channel (0=off)">'
     +'<span style="font-size:10px;color:var(--mu)">W</span>'
-    +'<input class="cs-sr-w" type="number" min="0" max="512" value="'+(strip.ch_w||0)+'" style="width:54px;font-size:12px" title="White channel (0=not fitted, RGBW when set)">'
-    +'<span style="font-size:10px;color:var(--mu)">Dim</span>'
-    +'<div style="display:flex;align-items:center;gap:4px">'
-    +'<input class="cs-sr-bri" type="range" min="0" max="100" value="'+bri+'" style="width:70px;accent-color:var(--acc);cursor:pointer" title="Brightness (0=off, 100=full)">'
-    +'<span class="cs-sr-bri-lbl" style="font-size:11px;color:var(--tx);min-width:30px;text-align:right">'+bri+'%</span>'
-    +'</div>'
+    +'<input class="cs-sr-w" type="number" min="0" max="512" value="'+(strip.ch_w||0)+'" style="width:54px;font-size:12px" title="White DMX channel (0=not fitted, RGBW when set)">'
     +'<button class="btn bd bs" data-action="cs-del-strip" data-sid="'+_esc(studio_id)+'">×</button>'
     +'</div>';
 }
@@ -1833,12 +1862,11 @@ function _csGetStrips(studio_id){
   var strips=[];
   container.querySelectorAll('.cs-strip-row').forEach(function(row){
     strips.push({
-      name:       (row.querySelector('.cs-sr-name').value||'').trim()||'Strip',
-      ch_r:       parseInt(row.querySelector('.cs-sr-r').value,10)||0,
-      ch_g:       parseInt(row.querySelector('.cs-sr-g').value,10)||0,
-      ch_b:       parseInt(row.querySelector('.cs-sr-b').value,10)||0,
-      ch_w:       parseInt(row.querySelector('.cs-sr-w').value,10)||0,
-      brightness: parseInt(row.querySelector('.cs-sr-bri').value,10),
+      name: (row.querySelector('.cs-sr-name').value||'').trim()||'Strip',
+      ch_r: parseInt(row.querySelector('.cs-sr-r').value,10)||0,
+      ch_g: parseInt(row.querySelector('.cs-sr-g').value,10)||0,
+      ch_b: parseInt(row.querySelector('.cs-sr-b').value,10)||0,
+      ch_w: parseInt(row.querySelector('.cs-sr-w').value,10)||0,
     });
   });
   return strips;
@@ -1856,7 +1884,7 @@ function _csAddStrip(studio_id){
     lastW=Math.max(lastW,w,b);
   });
   var start=lastW?lastW+1:1;
-  var newStrip={name:'Strip '+(idx+1),ch_r:start,ch_g:start+1,ch_b:start+2,ch_w:start+3,brightness:100};
+  var newStrip={name:'Strip '+(idx+1),ch_r:start,ch_g:start+1,ch_b:start+2,ch_w:start+3};
   var div=document.createElement('div');
   div.innerHTML=_csStripRowHtml(studio_id,newStrip,idx);
   container.appendChild(div.firstChild);
@@ -1927,13 +1955,31 @@ function _csFetchScenes(studio_id){
     }).catch(function(){if(statusEl)statusEl.textContent='Request failed';});
 }
 
+function _csBri(station_id){
+  // Return current brightness value (0–100) for a station's brand form.
+  var el=document.getElementById('f-csBri-'+station_id);
+  return el?parseInt(el.value,10):100;
+}
+function _csStudioZone(studio_id){
+  // Return the zone name configured on a studio (may be empty).
+  var sd=_sdById(studio_id); return sd?(sd.cs_zone_name||''):'';
+}
+function _csBuildCmd(studio_id, num){
+  // Build the correct CueScript command for a cue/preset number.
+  // If the studio has a zone name set → ZONE "Name" Preset N ON
+  // Otherwise                          → Cue N Go
+  var zone=_csStudioZone(studio_id);
+  return zone?('ZONE "'+zone+'" Preset '+num+' ON'):('Cue '+num+' Go');
+}
+
 function _csPreview(station_id){
   var studio_id=_v('f-cs-studio-'+station_id)||'';
   if(!studio_id){_msg('Pick a studio first',false); return;}
   var colour=_v('f-brand-'+station_id)||'#17a8ff';
+  var bri=_csBri(station_id);
   var statusEl=document.getElementById('f-cs-status-'+station_id);
   if(statusEl)statusEl.textContent='Sending…';
-  _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'preview_colour',colour:colour})
+  _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'preview_colour',colour:colour,brightness:bri})
     .then(function(r){return r.json();}).then(function(d){
       if(d.error){if(statusEl)statusEl.textContent='Error: '+d.error; return;}
       if(statusEl)statusEl.textContent='Colour sent — LEDs should update within ~5 s';
@@ -1944,26 +1990,32 @@ function _csRecord(station_id){
   var studio_id=_v('f-cs-studio-'+station_id)||'';
   if(!studio_id){_msg('Pick a studio first',false); return;}
   var cue_num=parseInt(_v('f-cs-cue-'+station_id)||'0',10);
-  if(!cue_num||cue_num<1){_msg('Enter a cue number first',false); return;}
+  if(!cue_num||cue_num<1){_msg('Enter a cue / preset number first',false); return;}
   var colour=_v('f-brand-'+station_id)||'#17a8ff';
+  var bri=_csBri(station_id);
   var statusEl=document.getElementById('f-cs-status-'+station_id);
   if(statusEl)statusEl.textContent='Recording…';
-  _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'record_cue',colour:colour,cue_num:cue_num})
+  _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'record_cue',colour:colour,cue_num:cue_num,brightness:bri})
     .then(function(r){return r.json();}).then(function(d){
       if(d.error){if(statusEl)statusEl.textContent='Error: '+d.error; return;}
       _csPollResult(studio_id,'record_cue',
         function(data){
-          // Auto-fill the command field
+          var cmd=_csBuildCmd(studio_id,cue_num);
           var cmdInput=document.getElementById('f-csCmd-'+station_id);
-          if(cmdInput) cmdInput.value='Cue '+cue_num+' Go';
-          if(statusEl)statusEl.textContent='✓ Cue '+cue_num+' recorded — command field updated';
+          if(cmdInput) cmdInput.value=cmd;
+          if(statusEl)statusEl.textContent='Saving…';
+          // Auto-save the station so the command persists without a manual click
+          _saveSt(station_id,function(){
+            if(statusEl)statusEl.textContent='✓ Cue '+cue_num+' recorded · command saved: '+cmd;
+          });
         },
         function(err){if(statusEl)statusEl.textContent='Error: '+err;}
       );
     }).catch(function(){if(statusEl)statusEl.textContent='Request failed';});
 }
 
-// When the studio dropdown in a brand form changes, show cached scene list
+// When the studio dropdown in a brand form changes, show cached scene list and
+// update the cue label to reflect whether this studio uses zones or cues.
 document.addEventListener('change',function(e){
   var sel=e.target.closest('[data-cs-st-sel]');
   if(sel){
@@ -1971,6 +2023,12 @@ document.addEventListener('change',function(e){
     var studio_id=sel.value;
     var scenesEl=document.getElementById('f-cs-scenes-'+station_id);
     if(!scenesEl) return;
+    // Update label to hint about zone vs cue format
+    var lbl=document.getElementById('f-cs-cue-lbl-'+station_id);
+    if(lbl){
+      var zone=studio_id?_csStudioZone(studio_id):'';
+      lbl.textContent=zone?'Preset number':'Cue number';
+    }
     if(!studio_id){scenesEl.style.display='none'; return;}
     // Show cached scenes if available, otherwise hide
     var cached=_csSceneCache[studio_id];
@@ -1978,6 +2036,15 @@ document.addEventListener('change',function(e){
       _csRenderScenes(cached,'f-cs-scenes-'+station_id,function(cueNum){
         var inp=document.getElementById('f-cs-cue-'+station_id);
         if(inp) inp.value=cueNum;
+        // Auto-set command and save when user clicks "Use" from the scene list
+        var cmd=_csBuildCmd(studio_id,cueNum);
+        var cmdInput=document.getElementById('f-csCmd-'+station_id);
+        if(cmdInput) cmdInput.value=cmd;
+        var statusEl=document.getElementById('f-cs-status-'+station_id);
+        if(statusEl) statusEl.textContent='Saving…';
+        _saveSt(station_id,function(){
+          if(statusEl) statusEl.textContent='✓ Command saved: '+cmd;
+        });
       });
     } else {
       scenesEl.style.display='none';
@@ -2065,11 +2132,14 @@ document.addEventListener('change',function(e){
     if(sw) sw.style.background=e.target.value;
   }
 });
-// Live-update brightness % label as range slider moves
+// Live-update brightness % labels as range sliders move
 document.addEventListener('input',function(e){
-  if(e.target.classList.contains('cs-sr-bri')){
-    var lbl=e.target.parentNode.querySelector('.cs-sr-bri-lbl');
+  // Per-brand brightness slider (on brand/station form)
+  if(e.target.id&&e.target.id.startsWith('f-csBri-')){
+    var _stId=e.target.id.replace('f-csBri-','');
+    var lbl=document.getElementById('f-csBri-lbl-'+_stId);
     if(lbl) lbl.textContent=e.target.value+'%';
+    // Also update the CueServer colour swatch preview opacity to hint at brightness
   }
 });
 
@@ -3467,10 +3537,13 @@ def register(app, ctx):
         if not s:
             return jsonify({"error": "Studio not found"}), 404
         data = request.get_json(force=True) or {}
-        for k in ("name", "station_id", "sb_studio_id", "cueserver_site", "cueserver_host"):
+        for k in ("name", "station_id", "sb_studio_id",
+                  "cueserver_site", "cueserver_host", "cs_zone_name"):
             if k in data:
-                s[k] = data[k]
+                s[k] = str(data[k])[:200] if data[k] is not None else ""
         # cs_strips: validate each strip's channel numbers
+        # Brightness is per-brand/station (cs_brightness), NOT per strip —
+        # strip dicts contain channel assignments only.
         if "cs_strips" in data:
             raw_strips = data["cs_strips"] if isinstance(data["cs_strips"], list) else []
             clean = []
@@ -3480,16 +3553,12 @@ def register(app, ctx):
                 def _ch(v):
                     try: return max(0, min(512, int(v)))
                     except (TypeError, ValueError): return 0
-                def _bri(v):
-                    try: return max(0, min(100, int(round(float(v)))))
-                    except (TypeError, ValueError): return 100
                 clean.append({
-                    "name":       str(strip.get("name") or "Strip")[:40],
-                    "ch_r":       _ch(strip.get("ch_r")),
-                    "ch_g":       _ch(strip.get("ch_g")),
-                    "ch_b":       _ch(strip.get("ch_b")),
-                    "ch_w":       _ch(strip.get("ch_w")),
-                    "brightness": _bri(strip.get("brightness", 100)),
+                    "name": str(strip.get("name") or "Strip")[:40],
+                    "ch_r": _ch(strip.get("ch_r")),
+                    "ch_g": _ch(strip.get("ch_g")),
+                    "ch_b": _ch(strip.get("ch_b")),
+                    "ch_w": _ch(strip.get("ch_w")),
                 })
             s["cs_strips"] = clean
         _cfg_save(cfg)
@@ -3543,11 +3612,17 @@ def register(app, ctx):
             "bg_style", "logo_anim", "show_clock", "show_on_air", "show_now_playing",
             "level_key", "np_source", "np_zetta_key", "np_api_url",
             "np_api_title_path", "np_api_artist_path", "np_manual", "message",
-            "full_screen_logo", "cueserver_cmd",
+            "full_screen_logo", "cueserver_cmd", "cs_brightness",
         ]
         for k in allowed:
             if k in data:
                 s[k] = data[k]
+        # Clamp cs_brightness to 0–100
+        if "cs_brightness" in data:
+            try:
+                s["cs_brightness"] = max(0, min(100, int(round(float(data["cs_brightness"])))))
+            except (TypeError, ValueError):
+                s["cs_brightness"] = 100
         _cfg_save(cfg)
         # Notify any studio screen currently showing this station
         _notify_station_studios(cfg, station_id)
@@ -3778,12 +3853,18 @@ def register(app, ctx):
             b_ch = int(studio.get("cs_dmx_b") or 3)
             strips = [{"name": "Strip 1", "ch_r": r_ch, "ch_g": g_ch, "ch_b": b_ch, "ch_w": 0}]
 
+        # brightness: sent from browser, clamped 0–100
+        try:
+            bri = max(0, min(100, int(round(float(data.get("brightness") or 100)))))
+        except (TypeError, ValueError):
+            bri = 100
+
         if action == "poll_scenes":
             cmd = {"action": "poll_scenes", "host": cs_host}
 
         elif action == "preview_colour":
             colour  = (data.get("colour") or "#ffffff").strip()
-            cs_cmd  = _cs_colour_cmd(colour, strips)
+            cs_cmd  = _cs_colour_cmd(colour, strips, bri)
             if not cs_cmd:
                 return jsonify({"error": "No DMX strips configured for this studio"}), 400
             cmd = {"action": "preview_colour", "host": cs_host, "cs_cmd": cs_cmd}
@@ -3793,7 +3874,7 @@ def register(app, ctx):
             cue_num = int(data.get("cue_num") or 0)
             if cue_num <= 0:
                 return jsonify({"error": "Invalid cue number"}), 400
-            cs_cmd = _cs_colour_cmd(colour, strips)
+            cs_cmd = _cs_colour_cmd(colour, strips, bri)
             if not cs_cmd:
                 return jsonify({"error": "No DMX strips configured for this studio"}), 400
             cmd = {
