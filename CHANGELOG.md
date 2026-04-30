@@ -2,6 +2,19 @@
 
 ---
 
+### vMix Caller 1.7.6 — 2026-04-30
+
+**Feature: Docker auto-install from the SRS Bridge card**
+
+The ⬇ Install Docker button now appears whenever Docker is not found, on both the client page (local) and hub page (remote site).
+
+- **Client page**: clicking Install Docker runs `apt-get install docker.io` locally (falls back to the `get.docker.com` convenience script if apt is not available). Status refreshes automatically on success.
+- **Hub page**: clicking Install Docker on [site] queues a `docker_install` command for the selected client node. The install runs in a background thread on the client so the command-poll loop stays responsive. Result reports back when done; may take a few minutes for first-time image download.
+- **Linux only** for auto-install. macOS/Windows shows a message with a link to the Docker download page.
+- Requires SignalScope to be running as root (or with sudo) so that `apt-get` succeeds — the standard systemd service install satisfies this.
+
+---
+
 ### vMix Caller 1.7.5 — 2026-04-30
 
 **Feature: Cross-site SRS management — hub controls client SRS; client page is primary surface**

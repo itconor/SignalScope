@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.7.5",
+    "version": "1.7.6",
 }
 
 import os
@@ -946,6 +946,51 @@ def _srs_stop() -> dict:
         return {"ok": False, "msg": str(e)[:200]}
 
 
+def _docker_install() -> dict:
+    """Attempt to install Docker on this machine (Linux only via apt-get or get.docker.com)."""
+    import platform, subprocess as _sp
+    system = platform.system()
+    if system != "Linux":
+        return {
+            "ok":  False,
+            "msg": f"Auto-install only supported on Linux ({system} detected). "
+                   "Download Docker Desktop from https://docs.docker.com/get-docker/",
+        }
+    import shutil as _sh
+    env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+    apt = _sh.which("apt-get")
+    if apt:
+        try:
+            _sp.run([apt, "-y", "update"],
+                    capture_output=True, text=True, timeout=120, env=env)
+            r = _sp.run([apt, "-y", "install", "docker.io"],
+                        capture_output=True, text=True, timeout=300, env=env)
+            if r.returncode == 0:
+                return {"ok": True,
+                        "msg": "Docker installed successfully via apt-get."}
+            out = ((r.stderr or "") + (r.stdout or "")).strip()[:400]
+            return {"ok": False, "msg": out or "apt-get install docker.io failed"}
+        except Exception as e:
+            return {"ok": False, "msg": str(e)[:200]}
+    curl = _sh.which("curl")
+    if curl:
+        try:
+            r = _sp.run(["sh", "-c", "curl -fsSL https://get.docker.com | sh"],
+                        capture_output=True, text=True, timeout=600, env=env)
+            if r.returncode == 0:
+                return {"ok": True,
+                        "msg": "Docker installed via get.docker.com script."}
+            out = ((r.stderr or "") + (r.stdout or "")).strip()[:400]
+            return {"ok": False, "msg": out or "install script failed"}
+        except Exception as e:
+            return {"ok": False, "msg": str(e)[:200]}
+    return {
+        "ok":  False,
+        "msg": "No package manager found. Install Docker manually: "
+               "https://docs.docker.com/engine/install/",
+    }
+
+
 # ── vMix API helpers (executed on the CLIENT side) ────────────────────────────
 
 def _vmix_base(cfg: dict) -> str:
@@ -1103,6 +1148,37 @@ def _start_client_thread(monitor, hub_url: str):
                                 "seq":  cmd["seq"],
                                 "ok":   result["ok"],
                                 "resp": (result.get("msg") or "")[:120],
+                            },
+                        })
+                    except Exception:
+                        pass
+                elif fn == "docker_install":
+                    # Run install in background so polling thread isn't blocked
+                    _seq = cmd["seq"]
+                    def _do_docker_install(_seq=_seq, _site=site, _secret=secret,
+                                           _hub=hub_url):
+                        result = _docker_install()
+                        try:
+                            _hub_post(f"{_hub}/api/vmixcaller/report", _site, _secret, {
+                                "cmd_result": {
+                                    "seq":  _seq,
+                                    "ok":   result["ok"],
+                                    "resp": (result.get("msg") or "")[:120],
+                                },
+                            })
+                        except Exception:
+                            pass
+                    threading.Thread(
+                        target=_do_docker_install, daemon=True,
+                        name="DockerInstall",
+                    ).start()
+                    # Ack immediately so polling continues uninterrupted
+                    try:
+                        _hub_post(f"{hub_url}/api/vmixcaller/report", site, secret, {
+                            "cmd_result": {
+                                "seq":  cmd["seq"],
+                                "ok":   True,
+                                "resp": "Docker install started on client — may take a few minutes",
                             },
                         })
                     except Exception:
@@ -2550,6 +2626,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
               <div style="font-size:12px;color:var(--mu);margin-bottom:2px">Container status</div>
               <div id="srs-status-text" style="font-size:13px;color:var(--tx)">Waiting for report…</div>
             </div>
+            <button class="btn bp bs" id="srs-install-docker-btn" data-srs-action="install-docker" style="display:none">⬇ Install Docker</button>
             <button class="btn bp bs" id="srs-start-btn" data-srs-action="start" style="display:none">▶ Start SRS</button>
             <button class="btn bd bs" id="srs-stop-btn" data-srs-action="stop" style="display:none">■ Stop SRS</button>
           </div>
@@ -3135,9 +3212,11 @@ document.addEventListener('DOMContentLoaded',function(){
     if(noSite)noSite.style.display='none';
     if(panel)panel.style.display='';
     if(lbl)lbl.textContent=site;
+    var installBtn=document.getElementById('srs-install-docker-btn');
     if(!srs){
       if(txt)txt.textContent='Waiting for first report…';
       if(badge){badge.textContent='';badge.style.background='';}
+      if(installBtn)installBtn.style.display='none';
       if(startBtn)startBtn.style.display='none';
       if(stopBtn)stopBtn.style.display='none';
       return;
@@ -3145,10 +3224,12 @@ document.addEventListener('DOMContentLoaded',function(){
     if(!srs.docker_ok){
       if(txt)txt.textContent='Docker not found on '+site;
       if(badge){badge.textContent='unavailable';badge.style.background='#374151';badge.style.color='#9ca3af';}
+      if(installBtn)installBtn.style.display='inline-block';
       if(startBtn)startBtn.style.display='none';
       if(stopBtn)stopBtn.style.display='none';
       return;
     }
+    if(installBtn)installBtn.style.display='none';
     var st=srs.status_text||'unknown';
     if(txt)txt.textContent=srs.exists?(st.charAt(0).toUpperCase()+st.slice(1)):'Not created';
     if(badge){
@@ -3162,7 +3243,8 @@ document.addEventListener('DOMContentLoaded',function(){
   function srsSendCmd(action){
     var site=(document.getElementById('target-site')||{}).value||'';
     if(!site){_srsMsg('Select a site first',false);return;}
-    _srsMsg((action==='start'?'Starting':'Stopping')+' SRS on '+site+' — command queued…',true);
+    var _actionLabel = action==='start'?'Starting SRS':action==='stop'?'Stopping SRS':'Installing Docker';
+    _srsMsg(_actionLabel+' on '+site+' — command queued…',true);
     var startBtn=document.getElementById('srs-start-btn');
     var stopBtn=document.getElementById('srs-stop-btn');
     if(startBtn)startBtn.disabled=true;
@@ -3174,7 +3256,10 @@ document.addEventListener('DOMContentLoaded',function(){
       body:JSON.stringify({site:site,action:action})})
       .then(function(r){return r.json();})
       .then(function(d){
-        if(d.ok){_srsMsg('Command sent to '+site+' — status updates in ~12 s',true);}
+        var _waitMsg = action==='install_docker'
+          ? 'Install command sent to '+site+' — this may take a few minutes. Status updates when client reports back.'
+          : 'Command sent to '+site+' — status updates in ~12 s';
+        if(d.ok){_srsMsg(_waitMsg,true);}
         else{_srsMsg(d.error||'Failed',false);}
         if(startBtn)startBtn.disabled=false;
         if(stopBtn)stopBtn.disabled=false;
@@ -3187,6 +3272,7 @@ document.addEventListener('DOMContentLoaded',function(){
     var act=btn.dataset.srsAction;
     if(act==='start') srsSendCmd('start');
     else if(act==='stop') srsSendCmd('stop');
+    else if(act==='install-docker') srsSendCmd('install_docker');
   });
   updateSrsCard(null, '');
 });
@@ -3292,6 +3378,7 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
             <div style="font-size:12px;color:var(--mu);margin-bottom:2px">Container status</div>
             <div id="srs-status-text" style="font-size:13px;color:var(--tx)">Checking…</div>
           </div>
+          <button class="btn bp bs" id="srs-install-docker-btn" data-srs-action="install-docker" style="display:none">⬇ Install Docker</button>
           <button class="btn bp bs" id="srs-start-btn" data-srs-action="start" style="display:none">▶ Start SRS</button>
           <button class="btn bd bs" id="srs-stop-btn" data-srs-action="stop" style="display:none">■ Stop SRS</button>
           <button class="btn bg bs" data-srs-action="refresh" title="Refresh status">↻</button>
@@ -3741,14 +3828,18 @@ function srsRefresh(){
   fetch('/api/vmixcaller/srs_status',{credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
+      var installBtn=document.getElementById('srs-install-docker-btn');
       if(!d.docker_ok){
-        if(txt) txt.textContent='Docker not found — install Docker to use this feature';
+        if(txt) txt.textContent='Docker not found on this machine';
         if(badge){badge.textContent='unavailable';badge.style.background='#374151';badge.style.color='#9ca3af';}
+        if(installBtn) installBtn.style.display='inline-block';
         if(startBtn) startBtn.style.display='none';
         if(stopBtn)  stopBtn.style.display='none';
         if(logsWrap) logsWrap.style.display='none';
         return;
       }
+      var installBtn=document.getElementById('srs-install-docker-btn');
+      if(installBtn) installBtn.style.display='none';
       var st=d.status_text||'unknown';
       if(txt) txt.textContent=d.exists?(st.charAt(0).toUpperCase()+st.slice(1)):'Not created';
       if(badge){
@@ -3808,6 +3899,22 @@ function srsStop(){
     })
     .catch(function(e){_srsMsg('Error: '+e,false);if(stopBtn) stopBtn.disabled=false;});
 }
+function srsInstallDocker(){
+  _srsMsg('Installing Docker — this may take a few minutes…',true);
+  var installBtn=document.getElementById('srs-install-docker-btn');
+  if(installBtn) installBtn.disabled=true;
+  var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content
+         ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+  fetch('/api/vmixcaller/docker_install',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:'{}'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      _srsMsg((d.msg||''),d.ok);
+      if(installBtn) installBtn.disabled=false;
+      if(d.ok) setTimeout(srsRefresh,2000);
+    })
+    .catch(function(e){_srsMsg('Error: '+e,false);if(installBtn) installBtn.disabled=false;});
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',function(){
@@ -3839,6 +3946,7 @@ document.addEventListener('DOMContentLoaded',function(){
       if(act==='start') srsStart();
       else if(act==='stop') srsStop();
       else if(act==='refresh') srsRefresh();
+      else if(act==='install-docker') srsInstallDocker();
     });
     srsRefresh();
     setInterval(srsRefresh,15000);
@@ -4816,19 +4924,27 @@ def register(app, ctx):
     @login_required
     @csrf_protect
     def vmixcaller_srs_cmd():
-        """Hub queues an srs_start or srs_stop command for a remote site."""
+        """Hub queues an srs_start, srs_stop, or docker_install command for a remote site."""
         data   = request.get_json(silent=True) or {}
         site   = str(data.get("site",   "") or "").strip()
         action = str(data.get("action", "") or "").strip()
-        if not site or action not in ("start", "stop"):
+        if not site or action not in ("start", "stop", "install_docker"):
             return jsonify({"ok": False,
-                            "error": "site and action (start/stop) required"}), 400
+                            "error": "site and action (start/stop/install_docker) required"}), 400
+        fn = f"srs_{action}" if action != "install_docker" else "docker_install"
         with _state_lock:
             _pending_cmd[site] = {
-                "fn":  f"srs_{action}",
+                "fn":  fn,
                 "seq": int(time.time() * 1000),
             }
         return jsonify({"ok": True, "queued_for": site})
+
+    @app.post("/api/vmixcaller/docker_install")
+    @login_required
+    @csrf_protect
+    def vmixcaller_docker_install():
+        """Install Docker on this (local) machine — used by client page."""
+        return jsonify(_docker_install())
 
     # ── Meeting actions — browser-facing (hub executes / client proxies) ──────
     @app.post("/api/vmixcaller/zoom_action")
