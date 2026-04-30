@@ -2,6 +2,30 @@
 
 ---
 
+### vMix Caller 1.7.4 — 2026-04-30
+
+**Feature: SRS Server card — manage Docker SDI bridge from the UI**
+
+The hub page now has a **🐳 SRS Server** card that starts and stops the
+`ossrs/srs:5` Docker container (the WebRTC/SRT bridge used for SDI preview)
+without any manual `docker run` commands.
+
+- **Status badge** — shows `● running` / `● stopped` / `not created` with
+  colour coding, refreshed every 15 s automatically.
+- **▶ Start SRS** — creates and starts the container on first click (pulls
+  the image if not already present; may take ~1 minute). On subsequent
+  clicks it just restarts the existing container.
+- **■ Stop SRS** — stops the container (container is preserved; Start
+  restarts it instantly next time).
+- **Log viewer** — last 30 lines of SRS stdout/stderr shown inline so you
+  can confirm streams are being received without leaving SignalScope.
+- Requires Docker installed and the `docker` binary accessible to SignalScope.
+  If Docker is not found, the card explains this rather than showing buttons.
+- Container runs with `--restart unless-stopped`, so it survives machine
+  reboots automatically once started.
+
+---
+
 ### Brand Screen 1.3.13 — 2026-04-30
 
 **Feature: Studio brand scheduling**

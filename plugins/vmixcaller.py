@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.7.3",
+    "version": "1.7.4",
 }
 
 import os
@@ -843,6 +843,107 @@ def _compute_video_url(cfg: dict, is_hub_node: bool) -> str:
         if is_hub_node and not _is_local(bridge):
             return ""
         return bridge
+
+
+# ── SRS Docker helpers ────────────────────────────────────────────────────────
+
+_SRS_CONTAINER   = "srs"
+_SRS_IMAGE       = "ossrs/srs:5"
+_SRS_RUN_ARGS    = [
+    "-d", "--name", _SRS_CONTAINER, "--restart", "unless-stopped",
+    "-p", "10080:10080/udp",
+    "-p", "8080:8080",
+    "-p", "1935:1935",
+    "-p", "8000:8000/udp",
+    _SRS_IMAGE,
+    "./objs/srs", "-c", "conf/rtc.conf",
+]
+
+
+def _docker_bin() -> str | None:
+    """Return path to docker binary, or None if not installed."""
+    import shutil
+    return shutil.which("docker")
+
+
+def _srs_status() -> dict:
+    """Return dict: docker_ok, running, exists, status_text, logs."""
+    docker = _docker_bin()
+    if not docker:
+        return {"docker_ok": False, "running": False, "exists": False,
+                "status_text": "docker not found", "logs": ""}
+    import subprocess as _sp
+    try:
+        r = _sp.run(
+            [docker, "inspect", "--format", "{{.State.Status}}", _SRS_CONTAINER],
+            capture_output=True, text=True, timeout=8,
+        )
+        if r.returncode != 0:
+            return {"docker_ok": True, "running": False, "exists": False,
+                    "status_text": "not created", "logs": ""}
+        status = r.stdout.strip()
+        running = status == "running"
+        # Fetch last 30 log lines
+        lr = _sp.run(
+            [docker, "logs", "--tail", "30", _SRS_CONTAINER],
+            capture_output=True, text=True, timeout=8,
+        )
+        logs = (lr.stdout + lr.stderr).strip()
+        return {"docker_ok": True, "running": running, "exists": True,
+                "status_text": status, "logs": logs}
+    except Exception as e:
+        return {"docker_ok": True, "running": False, "exists": False,
+                "status_text": "error", "logs": str(e)}
+
+
+def _srs_start() -> dict:
+    """Start the SRS container. Pulls image on first run."""
+    docker = _docker_bin()
+    if not docker:
+        return {"ok": False, "msg": "docker not found — install Docker first"}
+    import subprocess as _sp
+    try:
+        # Check current state
+        st = _srs_status()
+        if st.get("running"):
+            return {"ok": True, "msg": "SRS already running"}
+
+        if st.get("exists"):
+            # Container exists but stopped — just start it
+            r = _sp.run([docker, "start", _SRS_CONTAINER],
+                        capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                return {"ok": True, "msg": "SRS started"}
+            # Container is in a bad state — remove and recreate
+            _sp.run([docker, "rm", "-f", _SRS_CONTAINER],
+                    capture_output=True, timeout=15)
+
+        # Fresh run — may pull image (can take a minute first time)
+        r = _sp.run([docker, "run"] + _SRS_RUN_ARGS,
+                    capture_output=True, text=True, timeout=120)
+        if r.returncode == 0:
+            return {"ok": True, "msg": "SRS container started"}
+        err = (r.stderr or r.stdout or "unknown error").strip()[:300]
+        return {"ok": False, "msg": err}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)[:200]}
+
+
+def _srs_stop() -> dict:
+    """Stop the SRS container (leaves it removable via docker start later)."""
+    docker = _docker_bin()
+    if not docker:
+        return {"ok": False, "msg": "docker not found"}
+    import subprocess as _sp
+    try:
+        r = _sp.run([docker, "stop", _SRS_CONTAINER],
+                    capture_output=True, text=True, timeout=20)
+        if r.returncode == 0:
+            return {"ok": True, "msg": "SRS stopped"}
+        err = (r.stderr or r.stdout or "").strip()[:200]
+        return {"ok": False, "msg": err or "stop failed"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)[:200]}
 
 
 # ── vMix API helpers (executed on the CLIENT side) ────────────────────────────
@@ -2385,7 +2486,7 @@ _HUB_TPL = r"""<!DOCTYPE html>
       <div class="cb" style="font-size:12px;color:var(--mu);line-height:1.65">
 
         <p style="font-weight:600;color:var(--tx);margin-bottom:6px">Option A — WebRTC player page <span style="font-weight:400;color:var(--ok)">(recommended)</span></p>
-        <p style="margin-bottom:6px">Run SRS on the same LAN as vMix. Publish from vMix via SRT or RTMP; SRS exposes a built-in WebRTC player page for the browser:</p>
+        <p style="margin-bottom:6px">Run SRS on the same LAN as vMix. If Docker is installed on this machine use the <strong style="color:var(--acc)">SRS Server card below</strong> — it starts the container automatically. Or run manually:</p>
         <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:11px;color:#7dd3fc;white-space:pre-wrap;margin:6px 0">docker run -d --name srs --restart unless-stopped \
   -p 10080:10080/udp -p 8080:8080 -p 1935:1935 \
   -p 8000:8000/udp \
@@ -2413,6 +2514,34 @@ _HUB_TPL = r"""<!DOCTYPE html>
         <p style="margin-bottom:4px">For WebRTC, open the presenter page from the <strong style="color:var(--tx)">client node</strong> URL so the browser is on the same LAN as SRS:</p>
         <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://&lt;client-node-ip&gt;:&lt;port&gt;/hub/vmixcaller/presenter</pre>
 
+      </div>
+    </div>
+
+    <!-- SRS Server management -->
+    <div class="card" id="srs-card">
+      <div class="ch">🐳 SRS Server
+        <span id="srs-badge" style="margin-left:8px;font-size:10px;padding:2px 8px;border-radius:10px;font-weight:700"></span>
+      </div>
+      <div class="cb">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:160px">
+            <div style="font-size:12px;color:var(--mu);margin-bottom:2px">Container status</div>
+            <div id="srs-status-text" style="font-size:13px;color:var(--tx)">Checking…</div>
+          </div>
+          <button class="btn bp bs" id="srs-start-btn" data-srs-action="start" style="display:none">▶ Start SRS</button>
+          <button class="btn bd bs" id="srs-stop-btn" data-srs-action="stop" style="display:none">■ Stop SRS</button>
+          <button class="btn bg bs" data-srs-action="refresh" title="Refresh status">↻</button>
+        </div>
+        <div id="srs-msg" style="display:none;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:12px"></div>
+        <div id="srs-logs-wrap" style="margin-top:10px;display:none">
+          <div style="font-size:11px;color:var(--mu);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Last 30 log lines</div>
+          <pre id="srs-logs" style="background:#050e20;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:10px;color:#7dd3fc;max-height:160px;overflow-y:auto;white-space:pre-wrap;margin:0"></pre>
+        </div>
+        <p style="font-size:11px;color:var(--mu);margin-top:10px;margin-bottom:0">
+          Manages the <code>ossrs/srs:5</code> Docker container on this machine.
+          Docker must be installed and the <code>docker</code> command must be accessible to SignalScope.
+          First start may take a minute while the image is pulled.
+        </p>
       </div>
     </div>
   </div>
@@ -2959,6 +3088,94 @@ document.addEventListener('DOMContentLoaded',function(){
   window.addEventListener('beforeunload',function(){
     if(_relayOn&&_relaySite) _post('/api/vmixcaller/relay',{site:_relaySite,active:false});
   });
+  // ── SRS Server card ──────────────────────────────────────────────────────────
+  var _srsTimer=null;
+  function srsRefresh(){
+    var txt=document.getElementById('srs-status-text');
+    var badge=document.getElementById('srs-badge');
+    var startBtn=document.getElementById('srs-start-btn');
+    var stopBtn=document.getElementById('srs-stop-btn');
+    var logsWrap=document.getElementById('srs-logs-wrap');
+    var logsEl=document.getElementById('srs-logs');
+    if(txt) txt.textContent='Checking…';
+    fetch('/api/vmixcaller/srs_status',{credentials:'same-origin'})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(!d.docker_ok){
+          if(txt) txt.textContent='Docker not found — install Docker to use this feature';
+          if(badge){badge.textContent='unavailable';badge.style.background='#374151';badge.style.color='#9ca3af';}
+          if(startBtn) startBtn.style.display='none';
+          if(stopBtn)  stopBtn.style.display='none';
+          if(logsWrap) logsWrap.style.display='none';
+          return;
+        }
+        var st=d.status_text||'unknown';
+        if(txt) txt.textContent=d.exists?(st.charAt(0).toUpperCase()+st.slice(1)):'Not created';
+        if(badge){
+          if(d.running){badge.textContent='● running';badge.style.background='#052e16';badge.style.color='#22c55e';}
+          else if(d.exists){badge.textContent='● stopped';badge.style.background='#2a0a0a';badge.style.color='#ef4444';}
+          else{badge.textContent='not created';badge.style.background='#374151';badge.style.color='#9ca3af';}
+        }
+        if(startBtn) startBtn.style.display=d.running?'none':'inline-block';
+        if(stopBtn)  stopBtn.style.display=d.running?'inline-block':'none';
+        if(d.logs&&d.logs.trim()){
+          if(logsWrap) logsWrap.style.display='block';
+          if(logsEl){logsEl.textContent=d.logs;logsEl.scrollTop=logsEl.scrollHeight;}
+        } else {
+          if(logsWrap) logsWrap.style.display='none';
+        }
+      })
+      .catch(function(){if(txt) txt.textContent='Status unavailable';});
+  }
+  function _srsMsg(txt,ok){
+    var el=document.getElementById('srs-msg');
+    if(!el) return;
+    el.textContent=txt;
+    el.style.display=txt?'block':'none';
+    el.style.background=ok?'#0f2318':'#2a0a0a';
+    el.style.color=ok?'#22c55e':'#ef4444';
+    el.style.border='1px solid '+(ok?'#166534':'#991b1b');
+  }
+  function srsStart(){
+    _srsMsg('Starting SRS — please wait…',true);
+    document.getElementById('srs-start-btn').disabled=true;
+    var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content
+           ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+    fetch('/api/vmixcaller/srs_start',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:'{}'})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        _srsMsg(d.msg||'',d.ok);
+        document.getElementById('srs-start-btn').disabled=false;
+        setTimeout(srsRefresh,1500);
+      })
+      .catch(function(e){_srsMsg('Error: '+e,false);document.getElementById('srs-start-btn').disabled=false;});
+  }
+  function srsStop(){
+    _srsMsg('Stopping SRS…',true);
+    document.getElementById('srs-stop-btn').disabled=true;
+    var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content
+           ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+    fetch('/api/vmixcaller/srs_stop',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:'{}'})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        _srsMsg(d.msg||'',d.ok);
+        document.getElementById('srs-stop-btn').disabled=false;
+        setTimeout(srsRefresh,1500);
+      })
+      .catch(function(e){_srsMsg('Error: '+e,false);document.getElementById('srs-stop-btn').disabled=false;});
+  }
+  document.getElementById('srs-card').addEventListener('click',function(e){
+    var btn=e.target.closest('[data-srs-action]');
+    if(!btn) return;
+    var act=btn.dataset.srsAction;
+    if(act==='start') srsStart();
+    else if(act==='stop') srsStop();
+    else if(act==='refresh') srsRefresh();
+  });
+  srsRefresh();
+  _srsTimer=setInterval(srsRefresh,15000);
 });
 </script>
 </body>
@@ -4441,6 +4658,24 @@ def register(app, ctx):
     @login_required
     def vmixcaller_zoom_webhook_counter():
         return jsonify({"counter": _zoom_webhook_counter[0]})
+
+    # ── SRS Docker management ─────────────────────────────────────────────────
+    @app.get("/api/vmixcaller/srs_status")
+    @login_required
+    def vmixcaller_srs_status():
+        return jsonify(_srs_status())
+
+    @app.post("/api/vmixcaller/srs_start")
+    @login_required
+    @csrf_protect
+    def vmixcaller_srs_start():
+        return jsonify(_srs_start())
+
+    @app.post("/api/vmixcaller/srs_stop")
+    @login_required
+    @csrf_protect
+    def vmixcaller_srs_stop():
+        return jsonify(_srs_stop())
 
     # ── Meeting actions — browser-facing (hub executes / client proxies) ──────
     @app.post("/api/vmixcaller/zoom_action")
