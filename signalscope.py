@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.192"
+BUILD                  = "SignalScope-3.5.193"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -15124,6 +15124,10 @@ class HubServer:
         self._chain_adbreak_gap_start: dict = {}
         # Ad-break gap stitching — cid → original _chain_fault_since before brief recovery
         self._chain_adbreak_original_since: dict = {}
+        # Zetta onset grace — cid → epoch ts when new fault first detected while Zetta linked.
+        # Keeps chain in "pending" for _ZETTA_ONSET_GRACE_S seconds so Zetta's SOAP poll has
+        # time to confirm asset_type==2 before a CHAIN_FAULT alert is sent.
+        self._chain_zetta_onset_grace: dict = {}
         # A/B Group last alert timestamp — group_id → float
         self._abgroup_alert_ts: dict = {}
         # Remote backup metadata — site_name → {"ts": float, "size": int}
@@ -16296,6 +16300,11 @@ class HubServer:
                     # The latch is cleared when the chain returns to "ok" (audio restored), so
                     # a genuine fault after the ad break ends is never masked.
                     _SPOT_LATCH_S = 30
+                    # Onset grace: seconds to wait on a NEW fault before alerting,
+                    # giving Zetta's SOAP poll time to update asset_type to 2.
+                    # Applies only to pre-mixin / no-mixin-concept faults while Zetta
+                    # is linked.  Post-mixin faults bypass this (TX silent = urgent).
+                    _ZETTA_ONSET_GRACE_S = 30
                     if _zetta_spot_raw:
                         self._chain_zetta_spot_latch_ts[cid] = now
                     _spot_latch_age = now - self._chain_zetta_spot_latch_ts.get(cid, 0)
@@ -16455,6 +16464,9 @@ class HubServer:
                         # Zetta confirmed a spot — reset the "not-spot-since" grace timer
                         # so a subsequent silence after the break gets a fresh window.
                         self._chain_zetta_no_spot_since.pop(cid, None)
+                        # Clear onset grace — Zetta has confirmed the spot, so no more
+                        # deferred-fire needed (the main suppression block handles it).
+                        self._chain_zetta_onset_grace.pop(cid, None)
                         continue   # skip normal fault/recovery handling for this cycle
 
                     # ── Fault detection ──────────────────────────────────────
@@ -16489,9 +16501,42 @@ class HubServer:
                             # concept of ad breaks so the confirmation window serves no
                             # suppression purpose — bypass it and alert immediately.
                             _no_mixin_bypass = (mixin_idx is None and not _adbreak_cand)
-                            if (min_fault_secs == 0 or mixin_is_down or fault_is_post_mixin
-                                    or any_post_mixin_fault or _zetta_on_bypass
-                                    or _no_mixin_bypass):
+                            # ── Zetta onset grace ───────────────────────────────────────
+                            # When Zetta is linked but has NOT yet confirmed a spot, hold
+                            # the fault in "pending" for _ZETTA_ONSET_GRACE_S seconds so
+                            # the SOAP poll has time to return asset_type==2.  This covers
+                            # the race window at the very START of an ad break where the
+                            # chain evaluator fires before the next Zetta poll completes.
+                            #
+                            # Only applies to pre-mixin / no-mixin-concept faults.
+                            # Post-mixin faults (TX silent) and mixin-down bypass this
+                            # entirely and fire immediately as before.
+                            _zetta_onset_floor = 0
+                            if (_zetta_on and not _zetta_spot
+                                    and not fault_is_post_mixin and not any_post_mixin_fault
+                                    and not mixin_is_down):
+                                _og_start = self._chain_zetta_onset_grace.get(cid)
+                                if _og_start is None:
+                                    self._chain_zetta_onset_grace[cid] = now
+                                    _zetta_onset_floor = _ZETTA_ONSET_GRACE_S
+                                    monitor.log(
+                                        f"[Chain] '{result['name']}' — Zetta linked but spot "
+                                        f"not yet confirmed; deferring alert {_ZETTA_ONSET_GRACE_S}s "
+                                        f"to allow SOAP poll to update.")
+                                elif now - _og_start < _ZETTA_ONSET_GRACE_S:
+                                    _zetta_onset_floor = _ZETTA_ONSET_GRACE_S
+                                else:
+                                    # Grace expired — clear and allow normal fire
+                                    self._chain_zetta_onset_grace.pop(cid, None)
+                            # When onset grace is active, override min_fault_secs floor and
+                            # suppress the _zetta_on_bypass / _no_mixin_bypass short-circuits
+                            # so the chain enters "pending" rather than alerting immediately.
+                            _effective_min_fault = max(min_fault_secs, _zetta_onset_floor)
+                            _effective_zetta_bypass   = _zetta_on_bypass   and _zetta_onset_floor == 0
+                            _effective_no_mixin_bypass = _no_mixin_bypass  and _zetta_onset_floor == 0
+                            if (_effective_min_fault == 0 or mixin_is_down or fault_is_post_mixin
+                                    or any_post_mixin_fault or _effective_zetta_bypass
+                                    or _effective_no_mixin_bypass):
                                 # Alert immediately:
                                 #  - no confirmation delay configured, OR
                                 #  - mix-in point itself is also silent (can't be an ad break), OR
@@ -16603,6 +16648,20 @@ class HubServer:
                                         f"({_elapsed_so_far}s / {min_fault_secs}s elapsed).")
                             elapsed = now - self._chain_fault_since.get(cid, now)
                             pending_adbreak = bool(pending_meta.get("adbreak_candidate", False))
+                            # ── Zetta onset grace (pending continuation) ──────────────────
+                            # If this chain entered pending via the onset grace path
+                            # (_chain_zetta_onset_grace is still set), impose the same
+                            # _ZETTA_ONSET_GRACE_S floor on min_fault_secs so the confirmation
+                            # window isn't shorter than the grace window.  Prevents the case
+                            # where min_fault_secs=0 causes elapsed(0s) ≥ min_fault_secs(0)
+                            # to fire on the very next eval after entering pending.
+                            _og_pending = self._chain_zetta_onset_grace.get(cid)
+                            if _og_pending is not None:
+                                if now - _og_pending < _ZETTA_ONSET_GRACE_S:
+                                    min_fault_secs = max(min_fault_secs, _ZETTA_ONSET_GRACE_S)
+                                else:
+                                    # Grace expired while in pending — clear and allow fire
+                                    self._chain_zetta_onset_grace.pop(cid, None)
                             # ── Zetta: break definitively ended — fire after grace ────────
                             # The confirmation window may have started as an ad-break
                             # candidate (heuristic guess), but Zetta now says it is NOT
@@ -16776,6 +16835,8 @@ class HubServer:
                             self._chain_zetta_spot_latch_ts.pop(cid, None)
                             # Clear the no-spot grace timer: fresh window for next fault.
                             self._chain_zetta_no_spot_since.pop(cid, None)
+                            # Clear onset grace: chain is healthy, next fault starts fresh.
+                            self._chain_zetta_onset_grace.pop(cid, None)
                         # prev == "ok": already ok, nothing to do
 
                     # ── pending_recovery → fault: abort recovery ─────────────
@@ -17003,6 +17064,8 @@ class HubServer:
                     pass
         # Clear adbreak-overshoot flag now that the chain is ok
         self._chain_fault_adbreak.pop(cid, None)
+        # Clear Zetta onset grace — chain recovered, next fault starts fresh
+        self._chain_zetta_onset_grace.pop(cid, None)
         # Reset degrading-alert fired flags for all nodes in this chain (Change 6)
         _chain_name_pfx = cid + ":"
         for _k in list(self._chain_degrading_fired.keys()):

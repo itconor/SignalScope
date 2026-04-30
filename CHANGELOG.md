@@ -2,6 +2,30 @@
 
 ---
 
+### SignalScope-3.5.193 — 2026-04-30
+
+**Fix: False CHAIN_FAULT at ad break start when Zetta SOAP poll lags audio silence**
+
+When a Zetta-linked chain detects silence (e.g. Player A→B crossfade, brief
+programme-to-ads gap), the chain evaluator could fire CHAIN_FAULT BEFORE Zetta's
+SOAP poll returned `asset_type == 2`. The existing `_SPOT_LATCH_S = 30` window
+covers inter-ad gaps, but not the START of the first ad in a break when the
+evaluator happens to run in the 3–10 s window before Zetta updates.
+
+Fix: added `_ZETTA_ONSET_GRACE_S = 30` — a per-chain timer that starts the
+moment a new fault is detected while Zetta is linked but `_zetta_spot = False`.
+During this window the chain is held in "pending" (amber in UI) regardless of
+`min_fault_seconds` setting and the `_zetta_on_bypass` / `_no_mixin_bypass`
+short-circuits are suppressed. If Zetta confirms `asset_type == 2` during the
+window the main spot-suppression block handles it (no alert). If the window
+expires without Zetta confirming, normal fault logic resumes. Post-mixin faults
+and mixin-down conditions still bypass and alert immediately.
+
+State: `HubServer._chain_zetta_onset_grace` dict (cid → epoch ts). Cleared on
+recovery, when Zetta confirms a spot, and when the grace window expires.
+
+---
+
 ### SignalScope-3.5.192 — 2026-04-30
 
 **Fix: Wall mode (`/hub?wall=1`) 500 error**
