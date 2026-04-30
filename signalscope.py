@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.191"
+BUILD                  = "SignalScope-3.5.192"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -38280,7 +38280,7 @@ body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-
     {% for st in s.get('streams',[]) %}
     {% set ns.found = true %}
     {% set ai  = st.get('ai_status','') or '' %}
-    {% set lev = st.get('level_dbfs', -120.0) %}
+    {% set lev = st.level_dbfs if st.level_dbfs is not none else -120.0 %}
     {% set lpct = [(lev+80)/80*100, 100]|min|int %}
     {% set is_down = lev <= -55.0 %}
     {% if not s.online %}

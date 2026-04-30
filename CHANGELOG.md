@@ -2,6 +2,23 @@
 
 ---
 
+### SignalScope-3.5.192 — 2026-04-30
+
+**Fix: Wall mode (`/hub?wall=1`) 500 error**
+
+`HUB_WALL_TPL` had `{% set lev = st.get('level_dbfs', -120.0) %}` on line 38283.
+When `level_dbfs` is explicitly `None` in the stream dict (streams that haven't
+yet measured audio after a fresh restart — the `_has_real_level` guard introduced
+in 3.4.105 causes this), `.get()` returns `None` rather than the default because
+the key exists. The next line `[(lev+80)/80*100, 100]|min|int` then fails with
+a TypeError → HTTP 500.
+
+`HUB_TPL` was patched in 3.5.182 with `st.level_dbfs if st.level_dbfs is not
+none else -120.0` but the identical line in `HUB_WALL_TPL` was missed. Fixed
+with the same one-line change.
+
+---
+
 ### vMix Caller 1.7.7 — 2026-04-30
 
 **Fix: Docker/SRS management works correctly for non-root users**
